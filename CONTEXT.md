@@ -1,6 +1,10 @@
 # Context: why sigrun exists
 
-> Companion to `docs/superpowers/specs/2026-10-02-sigrun.md` (the *what*).
+> Companion to the sigrun specs in `docs/superpowers/specs/` (the *what*):
+> `2026-10-04-sigrun-core.md` (core, zero external dependencies),
+> `2026-10-04-sigrun-hermes-replacement.md` (parity extensions + cutover),
+> `2026-10-04-sigrun-improvements.md` (post-hermes capabilities). The original
+> `2026-10-02-sigrun.md` is superseded and retained as decision history.
 > This document is the *why* — what the assistant is for, what it replaces, and
 > the constraints that shaped it. Written 2026-10-02.
 
@@ -84,15 +88,23 @@ process owning state, thin clients attaching.
 Chosen because it is the only option that makes the "second agent loop" problem
 structurally impossible: the loop lives in the harness, and every surface
 (webui, TUI, cron trigger, future channels) is a client submitting to and
-watching conversations. It also brings crash survival and exactly-once
-submissions, which the current stack lacks.
+watching conversations. It also brings crash survival and idempotent
+submissions (requestId dedup — exactly-once-across-crash semantics are
+pending M1 verification), which the current stack lacks.
 
 Known constraints accepted at choice time:
 
-- Experimental; the API changes between releases (`1.0.0`, published 2026-10-01).
-- Image input is not supported yet — vision tools wait.
+- Experimental; the API changes between releases (`1.0.2` at spec time;
+  pinned exactly, with a captured-schema drift fixture and an upgrade drill
+  in the core spec).
 - One process owns a storage file at a time; no cross-process locking. Matches
   the single-harness design anyway.
+
+Resolved since the choice (2026-10-04 probes against the pinned package):
+image input **works** (base64 inline in submissions — verified live), and the
+async-approval mechanism works across crash+restart (`beforeTool` + durable
+memo — verified live). These were open questions at choice time; they are now
+verified facts recorded in the core spec's Appendix C.
 
 ### 3.3 Keep pi's philosophy
 
