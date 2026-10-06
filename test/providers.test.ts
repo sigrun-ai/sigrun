@@ -141,6 +141,21 @@ test("missing env credentials leave the degenerate provider unconfigured, not bo
 	expect(await models.getAuth("openai")).toBeUndefined();
 });
 
+test("zero-extension boot with a non-openai pin serves it under that namespace", () => {
+	const { models, defaultModel } = collectProviders([], {
+		SIGRUN_MODEL: "gateway/llama-3",
+		OPENAI_API_KEY: "sk-test",
+		OPENAI_BASE_URL: "https://gw.example/v1",
+	});
+	// The degenerate provider registers under the pinned namespace, not `openai`.
+	expect(defaultModel).toEqual({ provider: "gateway", modelId: "llama-3" });
+	expect(models.getModel("gateway", "llama-3")).toMatchObject({
+		id: "llama-3",
+		provider: "gateway",
+	});
+	expect(models.getProvider("openai")).toBeUndefined();
+});
+
 test("no SIGRUN_MODEL and no contributor default fails loud", () => {
 	expect(() =>
 		collectProviders([contributor("ext-a", "x", [{ id: "m", name: "M" }])], {}),
