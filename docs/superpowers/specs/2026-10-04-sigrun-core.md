@@ -73,7 +73,7 @@ runs with zero extensions.
 | **Context management** | pi-durable's compaction task: policy (`reserveTokens`, `backgroundTokens`) in core settings; `CompactionHooks.beforeCompact` may decline/replace the summary; summarizer model choosable per policy | upstream + sigrun policy | pi-durable defaults, tuned (§3.1) |
 | **Context files** | section loaders keyed by convention: `SOUL.md` → persona section, `AGENTS.md` → per-workspace instructions, read via the conversation's ExecutionEnv. **A missing file is an empty section, not an error** — a fresh deployment boots cleanly | upstream sections | present |
 | **Model providers** | **provider-contributor contract**: an extension may contribute `createProvider()` results (pi-ai) + a default model at boot; core merges contributions into one `Models` store before `Harness.open()`. Merge semantics: deterministic, last-registered wins on id collision, collisions logged (never silent); `SIGRUN_MODEL` env overrides any contributor default; a conversation pinned to an unserved model id fails explicitly at submit (4xx + available ids) | **sigrun contract** | env-driven OpenAI-compat provider |
-| **Channels** | clients of the §5 API. Webui, CLI, Discord — all equal clients; no in-process privilege | §5 API | webui |
+| **Channels** | clients of the §5 API. Webui, CLI, Discord — all equal clients; no in-process privilege. **Channel bundles are deploy-time clients, not extensions** — they contribute nothing to conversations and are never quarantined; the core serves a deployed channel's static assets as a convenience, and a deployment with no webui bundle serves the §5 API only (a TUI is the reference second client) | §5 API | webui when deployed, else API-only |
 | **Scheduled jobs** | pi-durable `defineTask` state machines; `runtime.sleep(until)` is a durable wait (survives restart, rechecks the harness clock); `watchDoc` for event-driven wake | upstream | none |
 | **Workspace** | `HarnessOptions.env` → the `workspaceService` wrapper (§4.5) | sigrun wrapper | static local path |
 
@@ -87,6 +87,7 @@ Boot order: load configured extensions → collect provider contributions (plus 
 default if none contributed) → `Harness.open(models, registry)` → `resume()`. A failing
 extension at boot is **quarantined** (logged, surfaced as a degraded surface via
 `GET /v1/meta`), never aborts `Harness.open()` — chat survives a bad extension release.
+`GET /v1/meta` `capabilities.channels` reports which channel bundles are deployed (§5).
 
 ### 3.1 Context-management tuning (v1 defaults)
 
@@ -112,7 +113,7 @@ extension at boot is **quarantined** (logged, surfaced as a degraded surface via
 ### 4.1 Process layout
 
 One Deployment, single replica, **one container**: the sigrun process runs the harness,
-serves the §5 API, and serves the webui as static assets. Extensions are configured at boot
+serves the §5 API, and serves any deployed channel's static assets (§6). Extensions are configured at boot
 (deploy-time list in a ConfigMap; pi-style package.json, not runtime plugin management).
 
 **Extension-selection semantics (v1):** the boot list is **global** — every conversation
@@ -258,7 +259,10 @@ v1 endpoints:
   read/write endpoint; policy configurability is spec C lane C9.
 - `GET /v1/meta` — `{ harnessVersion, schemaVersion, extensions: [{name, status}],
   health: { backup: "configured" | "unconfigured" | "degraded", memory: "ok" | "degraded",
-  providers: "ok" | "degraded" }, capabilities: { backup: bool } }`.
+  providers: "ok" | "degraded" }, capabilities: { backup: bool, channels: string[] } }`.
+  `capabilities.channels` lists the deployed channel bundles (§4.1, §6) — `"webui"` when the
+  reference webui is deployed, absent when the core serves the API only. A TUI or Discord
+  client reads §5 over the network and never appears here (it is not server-deployed).
   `schemaVersion` hashes the captured fixture (upstream drift bumps it before any sigrun
   release); the webui refuses to render on mismatch. `extensions[].status` surfaces
   quarantined (boot-failed) extensions; the `health` block surfaces runtime-degraded
@@ -281,7 +285,10 @@ exists in schema from day 1; the flow does not.
 
 ## 6. The webui
 
-The flagship artifact. **Goal: hermes-webui's UX, shamelessly, rebuilt as a thin client.**
+The flagship channel — but a **channel**, not a required core component. The webui is the
+reference channel bundle; a deployment with no webui bundle serves the §5 API only, and a
+TUI or any other client consumes the same endpoints. **Goal: hermes-webui's UX,
+shamelessly, rebuilt as a thin client.**
 
 ### 6.1 Feature list (ship gate)
 
@@ -538,6 +545,54 @@ when M1 runs** (the named-verifications list below is their checklist).
 
 **Not present upstream:** skill directory convention (sigrun defines it, §3.2);
 cross-process storage locking (accepted — single harness process).
+
+---
+
+## Appendix C.1 — plan-time verification addendum (pinned `pi-durable@1.0.2` types read)
+
+Resolved from the shipped `.d.ts` before planning. Each entry closes or reshapes a named
+M1 verification above; the remaining runtime (crash/replay) items stay for M1.
+
+- **`pi.agent` storage key — RESOLVED (real).** `AgentDoc` is a
+  `RewindableConversationDocToken<AgentState>`; `AgentState.extensions?: string[] | { add,
+  remove }`. Per-conversation extension selection is a first-class stored field, so spec C
+  lane C6b wraps `Conversation.configure({ extensions })` rather than inventing storage.
+  Core v1 §5 still *accepts only* `model` and `thinking` (policy choice, not an upstream
+  limit — `AgentChange` also carries `extensions`, `tools`, `instructions`, `cwd`).
+- **`FileSystem.listDir` — RESOLVED (present).** `env/index.d.ts` defines
+  `listDir(path): Promise<Result<FileInfo[], FileError>>`; the files-list endpoint is
+  verified against the type, no fallback needed.
+- **`afterResponse` user-text capture — RESOLVED (design settled).**
+  `GenerationHooks.afterResponse(message: AssistantMessage, api, context)` receives the
+  **assistant** message only. User-side observation reads the just-committed user entry via
+  the hook's `DocumentReader` (`api.read`), so the paired capture is the design, not the
+  fallback. The observe-record schema is fixed in the plan (T-MEM).
+- **Document model for session-meta / approval policy — RESOLVED (present).**
+  `defineDoc` / `defineDocFamily` support `session` / `conversation` / `task` scopes with
+  `migrate(version)` and `checkpointWhen`; `Session.snapshot`/`watchDoc` are typed.
+  Session-meta and approval policy are conversation documents; observe records are a
+  conversation doc family keyed by turn.
+- **Watch reconnect replay — RESOLVED (shape).** `Conversation.watch()` returns a
+  "serialized exact-frame watch with bounded pending frames"; `conversationViews.attach`
+  registers an observer that "sees every later publication and nothing earlier." Reconnect
+  = re-attach and take a fresh snapshot; the §5 reconnect contract maps onto this. Bounded
+  pending frames means a slow consumer can miss intermediate frames, so the §5 server
+  buffers per-conversation frames (a small ring) rather than assuming upstream retention.
+- **`GenerationHooks.afterResponse` replay-guard — RESOLVED (mechanism).** The hook runs
+  inside the generation task; the memo guard keys on the generation's durable id via
+  `HookApi.memo(name)`, which is shared between the hook and the task. Confirmed by the
+  2026-10-04 live approvals probe's durable-memo behavior.
+
+**⚠ Spec correction (material):** §5 described `ConversationView` as carrying "streaming
+answer, running tools, pending approvals." The type is **structural only**:
+`ConversationView = { conversation, entries, docs }`. Streaming deltas, running-tool slots,
+and live run state live in **`watchEvents(harness, id)` → `AgentEventStream`** (snapshot +
+`message_*` / `tool_execution_*` events) and the built-in **`LiveDoc`** (`pi.live`:
+`run`, `generation.message` partial, `tools: ToolSlot[]`, `compactions`), with queued
+submissions in **`InboxDoc`** (`pi.inbox`). The §5 server view is therefore **composite**:
+serialize `ConversationView` for transcript/docs, plus `LiveDoc`/`InboxDoc` for run state,
+plus the `AgentEventStream` for streaming. The captured-schema fixture (§5) covers all
+three sources. This corrects §5's parenthetical, not its endpoint list.
 
 ---
 
