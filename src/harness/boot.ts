@@ -43,9 +43,9 @@ export interface OpenedHarness {
 	readonly providerCollisions: readonly ProviderCollision[];
 	/**
 	 * The workspace `env` builder passed into `HarnessOptions.env` — what
-	 * pi-durable invokes per tool call. Exposed because core surfaces that
-	 * read workspace files (uploads, files endpoints, sections) resolve the
-	 * conversation env the same way the harness does.
+	 * pi-durable invokes per tool call. Exposed because the §5 file and upload
+	 * endpoints (Task 9) resolve the conversation env the same way the harness
+	 * does; prompt sections instead receive env via `PromptInput.env`.
 	 */
 	readonly envBuilder: EnvBuilder;
 }

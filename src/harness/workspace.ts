@@ -10,10 +10,10 @@
  * and nothing downstream changes.
  *
  * v1 is deliberately static: every conversation resolves to the same local
- * workspace. Per-conversation `agent.cwd` is applied by pi-durable itself —
- * the harness reads the conversation's committed `pi.agent` document and
- * passes `cwd` through `EnvTarget`; relative paths inside the env resolve
- * against it — so this service must not re-derive it.
+ * workspace. Per-conversation `agent.cwd` (the committed `pi.agent`
+ * document's directory within the workspace) is applied by the `toHarnessEnv`
+ * adapter below: pi-durable passes it through `EnvTarget.cwd` and applies
+ * nothing itself, so the adapter must root the env at it.
  */
 
 import type {
@@ -22,6 +22,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { isAbsolute, resolve } from "node:path";
 import type { LocalWorkspace } from "../config.js";
 
 /**
@@ -99,14 +100,31 @@ export function defaultWorkspacePrefs(
 
 /**
  * Adapt the service to the `HarnessOptions.env` builder pi-durable invokes
- * per tool call. The target carries the conversation id (and the agent's
- * `cwd`, which upstream applies through relative-path resolution); the
- * static service resolves from preferences, not from the target.
+ * per tool call. pi-durable passes the conversation's committed `agent.cwd`
+ * through `EnvTarget.cwd` and applies nothing itself (verified:
+ * dist/harness/harness.js:137-138) — this adapter roots the resolved env
+ * there, so tools see the conversation's directory. `agent.cwd` is a
+ * directory within the environment's file system: an absolute path is
+ * assigned as-is, a relative one is joined to the env's base (the workspace
+ * root the service resolved), because upstream's Node env would otherwise
+ * anchor a bare relative `cwd` at the process directory. Without a cwd, the
+ * env stays at the workspace root.
  */
 export function toHarnessEnv(
 	service: WorkspaceService,
 	prefs: WorkspacePreferences,
 ): EnvBuilder {
-	return (target, _context) =>
-		service.forConversation({ id: target.conversationId }, prefs);
+	return async (target, _context) => {
+		const env = await service.forConversation(
+			{ id: target.conversationId },
+			prefs,
+		);
+		if (target.cwd !== undefined) {
+			env.cwd = isAbsolute(target.cwd)
+				? target.cwd
+				: resolve(env.cwd, target.cwd);
+		}
+		return env;
+	};
 }
+
