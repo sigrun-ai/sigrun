@@ -12,6 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
+	type HarnessSettings,
 	type ModelRef,
 	type Registry,
 } from "@earendil-works/pi-durable";
@@ -61,6 +62,12 @@ export interface OpenHarnessOptions {
 	readonly extensions?: readonly ProviderContributor[];
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
+	/**
+	 * Harness settings passthrough (pi-durable `HarnessSettings`),
+	 * merged over upstream defaults. Deploy code leaves it unset; tests use
+	 * it to force compaction thresholds hermetically.
+	 */
+	readonly settings?: HarnessSettings;
 }
 
 /**
@@ -107,7 +114,12 @@ export async function openHarness(
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
 	const harness = await Harness.open(
 		storage,
-		{ models, registry, env: envBuilder },
+		{
+			models,
+			registry,
+			env: envBuilder,
+			...(options.settings === undefined ? {} : { settings: options.settings }),
+		},
 		BACKGROUND_CONTEXT,
 	);
 	harness.resume();
