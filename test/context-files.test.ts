@@ -215,13 +215,12 @@ test("harness generation includes the persona section from SOUL.md", async () =>
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: workspacePath,
 		});
-		const opened = await openHarness(config);
+		// Scrubbed env keeps the test hermetic: no ambient OPENAI_API_KEY (or
+		// sibling credential) may leak into the degenerate provider and turn the
+		// deliberate request failure into a real network call. Sections render
+		// in `prepare` before the provider call either way.
+		const opened = await openHarness(config, { env: {} });
 		try {
-			// The root conversation needs a model for generation to reach request
-			// preparation (where sections render); the degenerate provider is
-			// unconfigured without OPENAI_API_KEY, so the request then fails fast
-			// and non-retryably — the sections are committed in `prepare` before
-			// the provider call either way.
 			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 				agent: { model: opened.defaultModel },
 			});
