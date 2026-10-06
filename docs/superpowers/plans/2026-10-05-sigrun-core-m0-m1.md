@@ -50,11 +50,12 @@ Greenfield `package.json` in the worktree root; sources under `src/`.
 | `src/harness/workspace.ts` | `workspaceService.forConversation()` → static `ExecutionEnv` (local path); the the-work-fabric-scrubbed-swap seam |
 | `src/harness/providers/index.ts` | provider-contributor contract: collect `createProvider()` results + defaults, merge into one `Models`, env-driven OpenAI-compat degenerate provider |
 | `src/harness/sections/context-files.ts` | `SOUL.md`/`AGENTS.md` → prompt sections via conversation ExecutionEnv; missing file = empty section |
-| `src/extensions/memory/degenerate.ts` | degenerate `MemoryBackend` extension: observe hook (afterResponse + paired user capture), recall tool over `entries()`, placeholder `section()` |
-| `src/extensions/memory/backend.ts` | the `MemoryBackend` interface + observe-record schema (conversationId, generationId, role, text, timestamp) |
-| `src/extensions/approvals/index.ts` | approvals extension: `beforeTool` block/await, durable-memo decisions, per-conversation policy doc, submission-abort auto-deny |
-| `src/extensions/skills/index.ts` | skills convention: workspace `skills/` scan, 4KB-capped section, `load_skill` tool |
+| `src/harness/loader.ts` | the extension loader: parse `SIGRUN_EXTENSIONS`, dynamic-import each package, `registry.install` with boot-failure quarantine (never abort `Harness.open`), expose outcomes for `GET /v1/meta` |
+| `src/harness/memory-default.ts` | the no-op memory surface core boots with zero extensions (placeholder section, no tool, empty observe) — full memory only via `sigrun-ext-memory` |
 | `src/extensions/health.ts` | `health()` aggregation into the §5 meta `health` block |
+| `src/skills/index.ts` | skills convention (core-owned per spec §3): workspace `skills/` scan, 4KB-capped section, `load_skill` tool |
+
+**External extension packages (separate repos — architectural decision, 2026-10-06):** the degenerate memory backend and the approvals extension are NOT first-party in this repo. They live at `~/repos/sigrun-memory` (pkg `sigrun-ext-memory`) and `~/repos/sigrun-approvals` (pkg `sigrun-ext-approvals`), consumed as git/npm deps. The `MemoryBackend` contract ships with `sigrun-ext-memory` (the reference implementation); core references the no-op default until an extension installs. The skills loader and `load_skill` tool stay core-owned (spec §3: "core-owned code, not an extension").
 | `src/server/index.ts` | HTTP server: §5 endpoints, SSE view/event streams, auth seam (trusted-principal passthrough) |
 | `src/server/views.ts` | serialize `ConversationView` + `LiveDoc` + `InboxDoc` + `watchEvents` into the wire shape; capture the fixture |
 | `src/server/schema-fixture.ts` + `test/fixtures/` | captured-schema type fixture + drift test |
@@ -166,8 +167,10 @@ test("SIGRUN_MODEL overrides any contributor default", ...);
 
 ## Task 5: MemoryBackend interface + degenerate implementation
 
-**Files:**
-- Create: `src/extensions/memory/backend.ts`, `src/extensions/memory/degenerate.ts`
+> **DONE + EXTRACTED.** This task shipped in-tree (commits `2182774`/`1d4293c`, review-approved), then was **moved to the standalone repo `~/repos/sigrun-memory`** (pkg `sigrun-ext-memory`, commit `06a8863`) per the extension-separation decision. Core no longer carries the degenerate backend; it boots a **no-op memory default** (see Task 5.5) and consumes `sigrun-ext-memory` as a git/npm dependency for demonstrated memory. The description below is the historical record of what was built.
+
+**Files (now in sigrun-ext-memory, not this repo):**
+- `src/backend.ts` (the `MemoryBackend` interface + `ObserveRecord` schema), `src/degenerate.ts` (degenerate impl + `createMemory` wiring)
 - Test: `test/memory-degenerate.test.ts`
 
 **Interfaces:**
@@ -183,10 +186,35 @@ test("SIGRUN_MODEL overrides any contributor default", ...);
 - [ ] **Step 4: Run, expect PASS** (or record the entries() fallback outcome in App C).
 - [ ] **Step 5: Commit** `feat: degenerate MemoryBackend (observe/recall/section)`
 
-## Task 6: Approvals extension (beforeTool + durable memo + auto-deny)
+## Task 5.5: Extension loader + no-op memory default (NEW — extension-separation decision)
+
+Extensions are now external packages (separate repos), so core must own the *loader* and the *zero-extension defaults*. This task was inserted after the extraction decision; the spec §3 boot order already requires it ("load configured extensions … quarantined, never aborts Harness.open()").
 
 **Files:**
-- Create: `src/extensions/approvals/index.ts`
+- Create: `src/harness/loader.ts`, `src/harness/memory-default.ts`
+- Modify: `src/harness/boot.ts` (call the loader in boot order), `src/config.ts` (parse `SIGRUN_EXTENSIONS`)
+- Test: `test/loader.test.ts`
+
+**Interfaces:**
+- Consumes: `openHarness`, the pi-durable `Registry`, config.
+- Produces: `loadExtensions(config, registry, context)` — parses `SIGRUN_EXTENSIONS` (a comma-separated list of package names/specifiers), dynamic-`import()`s each, resolves its extension entry (default export or a named `extension`), `registry.install`s it, and returns `Array<{ name, status: "ok"|"quarantined", error? }>` for the `GET /v1/meta` `extensions[].status` block. A failing import/install is **quarantined** (logged + reported) and never aborts `Harness.open()` (spec §3). Also produces `createNoopMemory()` — the placeholder section + empty observe + no recall tool that core boots when no memory extension is installed (the zero-extensions guarantee).
+
+- [ ] **Step 1: Failing tests**:
+  - a valid extension package (fixture) is imported + installed (its tool/section appears in the registry snapshot).
+  - a package whose import throws is quarantined: `Harness.open()` still succeeds, the outcome list marks it `quarantined` with the error, and the rest of the boot proceeds.
+  - zero extensions configured → boot succeeds, the no-op memory surface is present (placeholder section), outcome list is empty.
+  - `sigrun-ext-memory` (the real extracted package) loads through the loader and registers `memory_recall` + `long-term-memory`.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement** `loadExtensions` (config parse → dynamic import → install → quarantine-on-throw) and `createNoopMemory`.
+- [ ] **Step 4: Run, expect PASS.**
+- [ ] **Step 5: Commit** `feat: extension loader (quarantine) + no-op memory default`
+
+## Task 6: Approvals extension (beforeTool + durable memo + auto-deny)
+
+> **EXTERNAL REPO.** Built in `~/repos/sigrun-approvals` (pkg `sigrun-ext-approvals`), not this repo. The description below is the contract the package satisfies; tests live in that repo and open a raw pi-durable Harness (no sigrun-core imports).
+
+**Files (in sigrun-ext-approvals, not this repo):**
+- `src/approvals.ts` (extension + beforeTool hook), `src/index.ts` (exports)
 - Test: `test/approvals.test.ts`
 
 **Interfaces:**
