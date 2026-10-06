@@ -119,7 +119,7 @@ export function toHarnessEnv(
 			{ id: target.conversationId },
 			prefs,
 		);
-		if (target.cwd !== undefined) {
+		if (target.cwd != null) {
 			env.cwd = isAbsolute(target.cwd)
 				? target.cwd
 				: resolve(env.cwd, target.cwd);
@@ -127,4 +127,3 @@ export function toHarnessEnv(
 		return env;
 	};
 }
-
