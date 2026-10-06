@@ -31,12 +31,22 @@ Non-goals: improvements hermes never had (spec C), the-work-fabric-scrubbed inte
 
 Notes:
 
-- **Memory:** each user = a honcho peer; sigrun = a honcho AI peer. Observe rides the
-  `afterResponse` hook per the core contract; the observe-record schema is fixed by the
-  core's degenerate implementation, so this extension maps records → honcho observations.
+- **Memory:** each user = a honcho peer; sigrun = a honcho AI peer. **Peer continuity
+  decision:** sigrun reuses hermes's exact peer ids (same workspace `user`, same peer
+  naming), so hermes's honcho memory carries over with no migration (§5). The id strings
+  are pinned in the extension's config, not derived. Observe rides the `afterResponse`
+  hook per the core contract; the observe-record schema is fixed by the core's degenerate
+  implementation, so this extension maps records → honcho observations.
   Recall = honcho dialectic/hybrid query; `section()` = the dialectic injection hermes
-  performs today. **Replaces** the degenerate backend (the stable-placeholder section means
-  the prompt surface doesn't fork when it lands).
+  performs today. **Replaces** the degenerate backend **globally at boot** (core §4.1:
+  boot-time global selection; existing conversations pick it up on their next turn). The
+  stable-placeholder section means the prompt surface doesn't fork when it lands.
+  **Runtime-degradation semantics:** honcho unreachable at turn time → `section()`
+  degrades to the stable placeholder, the failure is logged and surfaced via
+  `GET /v1/meta`, and submits are never blocked; `recall` returns an explicit error to
+  the model. `section()` is cached per conversation with a TTL (dialectic latency is
+  8–20s at medium — a per-request re-render without a cache is unacceptable) and a hard
+  timeout beyond which the placeholder serves.
 - **Servarr safety:** all mutating agentic-maintenance tools declare `replay: "unsafe"`; the core's
   M1 crash battery establishes the replay semantics before any of these ship.
 - **Web research:** searxng (keenable + braveapi engines) and crawl4ai as tools, not MCP —
@@ -45,7 +55,8 @@ Notes:
 ## 3. Deployment deltas
 
 - Chart `sigrun` gains: SealedSecrets for honcho, bifrost VK, searxng, crawl4ai; the
-  extension list in the boot ConfigMap.
+  extension list in the boot ConfigMap. (Backup credentials, when backup is configured, are
+  a **core** secret per core §4.3 — not an extension secret.)
 - In-cluster endpoints (already deployed): honcho
   (`http://honcho-app-api.honcho.svc.cluster.local`), bifrost
   (`https://llm-gateway.tailnet.example.test`), searxng, crawl4ai.
@@ -55,24 +66,28 @@ Notes:
 Lanes are independent in implementation order. The cutover gate is a property of the whole
 lane set, not any single lane.
 
-### Lane B1 — Memory (`sigrun-ext-honcho`) — *first, user requirement*
-- `MemoryBackend` → honcho: observe mapping, hybrid-recall tool, dialectic section.
+### Lane B1 — Memory (`sigrun-ext-honcho`) — *first, user requirement* (~1 day)
+- `MemoryBackend` → honcho: observe mapping, hybrid-recall tool, dialectic section
+  (cached + timeout per §2's runtime-degradation semantics).
 - Parity with current hermes honcho values.
 - **Exit:** "what did we discuss about X last week" works; search works from the composer.
 
-### Lane B2 — Research (`sigrun-ext-web-research`)
+### Lane B2 — Research (`sigrun-ext-web-research`) (~½ day)
 - searxng + crawl4ai tools.
 - **Exit:** "go find out about X" works from the composer.
 
 ### Lane B3 — Cron + agentic-maintenance (2 days)
 - `sigrun-ext-cron`: port the crontasks actually used (durable by construction); webui cron
   panel reading the read-only `GET /v1/jobs` enumeration added with this lane (per core §5).
+  **The shape of `GET /v1/jobs` is owned by this lane and pinned in the core's
+  captured-schema fixture when it ships** (`[{name, schedule, lastRun, nextRun, state,
+  lastError}]`).
 - `sigrun-ext-agentic-maintenance`: 1:1 port of hermes toolset logic; unsafe-replay semantics verified
   against a side-effect-free dummy before any agentic-maintenance tool ships.
 - **Exit:** one concrete scheduled job runs on schedule and survives a pod restart; one
   concrete agentic-maintenance action works end-to-end (observation, not a parity vibe).
 
-### Lane B4 — Bifrost provider
+### Lane B4 — Bifrost provider (~½ day)
 - Small; can land any time after the core's contributor contract exists (it is the
   contract's first proof and may even land during core M1).
 - **Exit:** model picker lists the gateway chains; `SIGRUN_MODEL` override works.
@@ -80,7 +95,10 @@ lane set, not any single lane.
 ## 5. The cutover gate
 
 **Cutover gate (hermes → 0) = B1 + B3 exited, plus B2 if daily research matters before
-decommissioning (expected — CONTEXT §2 calls research the most common use).**
+decommissioning (expected — CONTEXT §2 calls research the most common use), plus a
+daily-soak period passed** (the soak follows B1+B2 per core §7 M2; gaps found in soak are
+filed and fixed **before** this gate — the gate is a property of the whole lane set plus
+the soak, not any single lane).
 
 When it passes:
 

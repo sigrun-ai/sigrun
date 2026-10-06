@@ -2,8 +2,8 @@
 
 **Status:** Draft v1
 **Date:** 2026-10-04
-**Consumes:** the core spec (`2026-10-04-sigrun-core.md`) and, for L4, the hermes-replacement
-spec's landed state. No core-contract changes without a core revision.
+**Consumes:** the core spec (`2026-10-04-sigrun-core.md`) and, for C3, the hermes-replacement
+spec's landed state. No core-contract changes without a core revision (C6b names one).
 **Goal:** the capabilities CONTEXT.md names that hermes does not provide today, plus the
 the-work-fabric-scrubbed integration that makes sigrun's extensions reusable by other agents. This spec runs
 **after** (or alongside) the cutover; nothing here blocks hermes retirement.
@@ -71,7 +71,7 @@ Two decoupled pieces, both gated on the-work-fabric-scrubbed's own milestones:
 
 - **C5a — Workspace swap** (gated on the-work-fabric-scrubbed T1: registry + resolve + Workspace kind): the
   core's `workspaceService` swaps static config for `registry.resolve(name,
-  agentLocation)`; the wrapper signature is unchanged (core §4.4). Skill discovery extends
+  agentLocation)`; the wrapper signature is unchanged (core §4.5). Skill discovery extends
   to remote workspaces once the workspace is remote — this is where the core's skills v1
   scope lifts.
 - **C5b — Cards/kanban** (`sigrun-ext-kanban`, gated on the-work-fabric-scrubbed's Card kind — currently
@@ -90,18 +90,35 @@ The core ships a single `SOUL.md` persona. This adds: `personas/` directory conv
 selection stored per conversation, the composer picker appearing when the list has more
 than one item (the core's picker convention).
 
+### C6b — Per-conversation extension selection
+
+Core §4.1 makes v1 extension selection boot-time-global (conversation-stored names exist
+only for resume-tolerance). This lane adds the deliberate per-conversation selection: an
+extension-set field on `POST /v1/conversations/:id/configure`, per-conversation resolution
+of the enabled set, and the webui picker (same picker convention). **Requires a core
+revision** — core §5 fixes `configure()` to exactly `model` and `thinking`, so the
+configure surface widens under that revision, not by extension. Lands with or after C6 —
+both are per-conversation selection over a stored conversation value.
+
 ### C7 — Fallback provider (`sigrun-ext-direct-<provider>`)
 
 A second provider contributor (e.g. direct ollama) so a bifrost outage doesn't take
-sigrun's chat and jobs dark. Deliberately not in the MVP (core App B.20); buildable at any
-time as just another contributor. Pair with a core-side consideration: gateway outage
-detection in `GET /v1/meta` so the degraded state is visible.
+sigrun's chat and jobs dark. Deliberately not in the MVP (decision 20, `2026-10-02-sigrun.md`
+App B); buildable at any time as just another contributor. **Pairs with the core's
+`health.providers` meta field** (core §5) so the degraded state is visible.
 
 ### C8 — Richer context management (vcc-style)
 
 Beyond the core's tuned compaction defaults: strategy extensions over
 `CompactionHooks.beforeCompact` (e.g. selective retention, structured summaries).
 The hooks are the seam; no core change needed.
+
+### C9 — Approval-policy configuration
+
+The core ships the conservative approvals policy as a fixed default (write/exec prompt;
+read-only pass). This lane adds per-conversation policy configuration: read/write of the
+approval-policy document via the configure/planning surface, and the webui affordance.
+Lands with the extension-selection lane (C6b) or independently.
 
 ## 3. Sequencing
 

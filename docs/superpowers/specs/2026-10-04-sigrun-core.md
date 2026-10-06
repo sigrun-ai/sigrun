@@ -67,15 +67,21 @@ runs with zero extensions.
 | Surface | Contract | Inventor | Degenerate default |
 |---|---|---|---|
 | **Tools** | pi-durable `defineTool` — TypeBox schema, `replay: "safe"/"unsafe"`, per-call ExecutionEnv | upstream | none needed |
-| **Approvals** | pi-durable `beforeTool` hook: block/allow/await. **Verified upstream (2026-10-04, App C): a blocked call can durably await an external decision across crash+restart via `api.memo`.** Decisions are stored in the hook's durable memo *before* acting, so a crash between "user clicked allow" and "tool ran" never re-prompts or re-executes | upstream mechanism | core approvals extension: write/exec tools prompt, read-only tools pass; policy in a per-conversation document; decision enum `allow \| deny`; aborting a conversation auto-**denies** pending approvals (memo reason `aborted`) |
-| **Skills** | `skills/` in the conversation workspace; SKILL.md frontmatter (agentskills.io shape); rendered as a prompt section + a `load_skill` tool | **sigrun convention** | directory scan; empty = none |
-| **Memory** | one interface: **`MemoryBackend { observe(record), recall(query), section() }`**. Observe rides `GenerationHooks.afterResponse` (pinned: single fire per turn; replay-guard via durable memo keyed by generation id). `recall` is a tool backed by `conversation.entries()` (verified: paginated full-history query; compaction-dropped entries remain in storage). `section()` injects the memory block | **sigrun contract** | `MemoryBackend` over harness entries; `section()` emits a stable placeholder ("long-term memory backend not configured") so the prompt surface is identical across configurations |
+| **Approvals** | pi-durable `beforeTool` hook: block/allow/await. **Verified upstream (2026-10-04, App C): a blocked call can durably await an external decision across crash+restart via `api.memo`.** Decisions are stored in the hook's durable memo *before* acting, so a crash between "user clicked allow" and "tool ran" never re-prompts or re-executes | upstream mechanism | core approvals extension: write/exec tools prompt, read-only tools pass; policy in a per-conversation document; decision enum `allow \| deny`; **aborting a submission auto-denies that submission's pending approvals** (memo reason `aborted`) — v1 exposes only per-submission abort (§5), so that is the trigger; a conversation-level abort rule lands with the jobs lane |
+| **Skills** | `skills/` in the conversation workspace; SKILL.md frontmatter (agentskills.io shape); rendered as a prompt section + a `load_skill` tool. **The skill-section loader and the `load_skill` tool are core-owned code, not an extension** — extension quarantine (boot order, below) applies only to extension-contributed surfaces | **sigrun convention** | directory scan; empty = none |
+| **Memory** | one interface: **`MemoryBackend { observe(record), recall(query), section() }`**. Observe rides `GenerationHooks.afterResponse` (intended: single fire per turn; replay-guard via durable memo keyed by generation id — the hook's re-fire behavior on replay is a named M1 verification that determines the guard's final design, App C). **Design assumption pending the App C verification:** `afterResponse` fires on the assistant response and its payload gives access to the user submission the turn answers (if it does not, a paired user-side capture point is the named fallback). The record's `role` field distinguishes the two; both roles are observed — a steered/queued submission that interrupts a turn is observed as its own user-role record when that turn is answered (multi-user-input turns produce multiple user records). The degenerate backend's observe records exist for **schema stability** (spec B maps the same shape onto honcho observations); degenerate `recall` does not read them — it is backed by `conversation.entries()` (paginated full-history query; whether compaction-dropped entries are reachable is a named M1 verification, App C, currently docs-sourced). `section()` injects the memory block | **sigrun contract** | `MemoryBackend` over harness entries; `section()` emits a stable placeholder ("long-term memory backend not configured") so the prompt surface is identical across configurations |
 | **Context management** | pi-durable's compaction task: policy (`reserveTokens`, `backgroundTokens`) in core settings; `CompactionHooks.beforeCompact` may decline/replace the summary; summarizer model choosable per policy | upstream + sigrun policy | pi-durable defaults, tuned (§3.1) |
 | **Context files** | section loaders keyed by convention: `SOUL.md` → persona section, `AGENTS.md` → per-workspace instructions, read via the conversation's ExecutionEnv. **A missing file is an empty section, not an error** — a fresh deployment boots cleanly | upstream sections | present |
 | **Model providers** | **provider-contributor contract**: an extension may contribute `createProvider()` results (pi-ai) + a default model at boot; core merges contributions into one `Models` store before `Harness.open()`. Merge semantics: deterministic, last-registered wins on id collision, collisions logged (never silent); `SIGRUN_MODEL` env overrides any contributor default; a conversation pinned to an unserved model id fails explicitly at submit (4xx + available ids) | **sigrun contract** | env-driven OpenAI-compat provider |
 | **Channels** | clients of the §5 API. Webui, CLI, Discord — all equal clients; no in-process privilege | §5 API | webui |
 | **Scheduled jobs** | pi-durable `defineTask` state machines; `runtime.sleep(until)` is a durable wait (survives restart, rechecks the harness clock); `watchDoc` for event-driven wake | upstream | none |
-| **Workspace** | `HarnessOptions.env` → the `workspaceService` wrapper (§4.4) | sigrun wrapper | static local path |
+| **Workspace** | `HarnessOptions.env` → the `workspaceService` wrapper (§4.5) | sigrun wrapper | static local path |
+
+Each surface's contract owner above is also that surface's
+**health producer**: a contract whose implementation can fail at runtime exposes
+`health(): "ok" | "degraded"` alongside its operational methods (memory backends and
+provider contributors implement it in v1; degenerate implementations always report
+`"ok"`). Core aggregates these into the §5 meta `health` block.
 
 Boot order: load configured extensions → collect provider contributions (plus the env
 default if none contributed) → `Harness.open(models, registry)` → `resume()`. A failing
@@ -108,10 +114,22 @@ extension at boot is **quarantined** (logged, surfaced as a degraded surface via
 One Deployment, single replica, **one container**: the sigrun process runs the harness,
 serves the §5 API, and serves the webui as static assets. Extensions are configured at boot
 (deploy-time list in a ConfigMap; pi-style package.json, not runtime plugin management).
-Conversations store extension names, so a deployed extension-set change is picked up on
-restart without touching transcripts. A resumed conversation referencing a removed
-extension resumes with that surface's degenerate default; the name is preserved so
-re-enabling restores it without a transcript migration.
+
+**Extension-selection semantics (v1):** the boot list is **global** — every conversation
+uses the deployment's configured set. Conversations store extension names so that a
+*resume after the set changed* degrades gracefully: a resumed conversation referencing a
+removed or quarantined extension resumes with that surface's degenerate default; the name
+is preserved so re-enabling restores it without a transcript migration. (The storage key —
+believed to be the conversation's `pi.agent` state from the superseded spec — is a named
+M1 verification, App C.) There is **no v1 endpoint that changes a conversation's
+extension set** — per-conversation selection is spec C lane C6b (which requires a core
+revision). Consequence for spec B: `sigrun-ext-honcho` replacing the degenerate memory
+backend is a **global, boot-time** replacement; existing conversations pick it up on
+their next turn (the degenerate backend is stateless across turns — its observe records
+exist for schema stability, not as state to migrate). **Accepted:** turns observed before
+the honcho extension first lands are never backfilled into honcho — honcho memory starts
+from its deployment date; degenerate `recall` still covers earlier turns from
+`entries()`.
 
 ### 4.2 Upstream dependency policy
 
@@ -123,20 +141,51 @@ scratch copy → verify `resume()` + view serialization + the crash battery → 
 
 ### 4.3 Storage
 
-- **Conversation SQLite on a local-path PV, not NFS.** SQLite's WAL/shared-memory semantics
-  assume local disk; NFS is a documented corruption hazard. (Cluster note: this cluster's
-  DR runbook explicitly does **not** preserve local-path PVCs — which makes the backup
-  below the only disaster copy of transcripts. For a public release the same rule holds:
-  local disk + real backups.)
+- **Conversation SQLite on local-block storage, not NFS.** SQLite's WAL/shared-memory
+  semantics assume local disk semantics; NFS is a documented corruption hazard. Local-path
+  provisioner, iSCSI-backed block PVCs, and hostPath all satisfy this — the requirement is
+  *block-like semantics*, not a specific provisioner. Workspace artifacts (which reach tools
+  through the ExecutionEnv, not the sqlite) are free to live on NFS.
 - **Journal mode** pinned per pi-durable's storage default, confirmed in M1 and recorded in
   Appendix C.
-- **Nightly backup:** `sqlite3 .backup` (CronJob in the chart) to an object-store or NFS
-  target, retention ≥ 30 days, restore drill in M1's exit criteria. The backup CronJob: same
-  node selector + tolerations as the Deployment (local-path is node-bound — a naive CronJob
-  hangs Pending), image must contain `sqlite3`, target credentials are **core** secrets (not
-  extension secrets), restore procedure documented in the chart's runbook.
+- **Backup is an optional capability.** The contract is: *when* backup is configured,
+  it is nightly `sqlite3 .backup` (consistent against a live WAL database) to a
+  pluggable target — S3-compatible object store or a mounted path — with retention ≥ 30
+  days, and a restore drill in M1's exit criteria. When it is **not** configured, sigrun
+  runs fine and says so (an unconfigured-backup badge in `GET /v1/meta`, not an error).
+  The backup CronJob carries the Deployment's node placement constraints (a node-bound
+  local-path PVC hangs a naive CronJob in Pending; block-backed PVCs don't have this
+  constraint) and an image containing `sqlite3` + the target's client. Target credentials
+  are **core** secrets, not extension secrets. **Taking the backup against the live harness
+  is a named M1 verification** (App C) — the CronJob is a second process touching the
+  sqlite file, exactly the class of assumption the ledger rule covers.
 
-### 4.4 Workspace resolution
+### 4.4 Deployment (chart)
+
+Chart name: **`sigrun`**. The chart is the reference deployment; the core itself (Node +
+harness + webui) runs anywhere Node does. Portable requirements:
+
+- Deployment: single replica, one container, `Recreate` strategy (the sqlite PVC is RWO —
+  a RollingUpdate would deadlock two pods on one volume).
+- Storage per §4.3: sqlite on block-like storage; workspace artifacts volume optional.
+- Service: ClusterIP; how the webui is reached (ingress, Tailscale LB, port-forward) is a
+  deployment choice, not a core contract.
+- Observability: a health/metrics surface that distinguishes process-up from
+  harness-ready (storage writable + resume complete + extension boot outcomes), plus
+  wedged-state gauges (oldest in-flight submission age, oldest waking task age — stuck
+  `runtime.sleep`/`watchDoc` becomes an actionable alert instead of a silent stall).
+- Secrets: env-injected for whatever the enabled extensions need, plus core backup
+  credentials when backup is configured. Extensions are trusted code with no capability
+  isolation — every enabled extension can read every env secret. Accepted for v1
+  (single-user, single trust domain).
+
+**Appendix D** carries one concrete homelab instantiation of this chart as an example.
+Public-release users write their own values against this section, not Appendix D.
+**A deployment that skips the optional backup has zero disaster copies of transcripts** —
+if the storage backend is lost, conversation history is gone. That is an accepted
+deployment choice (the badge keeps it visible), not a supported-recovery posture.
+
+### 4.5 Workspace resolution
 
 The harness's `env()` builder — what pi-durable calls per tool call to produce an
 `ExecutionEnv` — is a thin wrapper:
@@ -155,32 +204,39 @@ doesn't change.
 
 **Shape: serialized native views, not a bespoke endpoint list.** pi-durable's
 `ConversationView`/`watch()` are designed for UI clients ("everything a UI needs is
-committed state"). The sigrun server authenticates (§4.4 of the deployment story:
-tailnet/ingress = trusted principal for self-hosters; bearer-token layer reserved as the
-seam for the first non-browser client — not day 1), serializes the native view/watch
-frames, and adds the write endpoints below.
+committed state"). The sigrun server authenticates (network perimeter = trusted principal
+for self-hosters, §6.4; bearer-token layer reserved as the seam for the first non-browser
+client — not day 1), serializes the native view/watch frames, and adds the write
+endpoints below.
 
 v1 endpoints:
 
 - **Views + watch frames** over SSE — the native `ConversationView` (transcript, streaming
   answer, running tools, queued submissions, pending approvals, agent, usage) serialized
   per the captured schema; includes a per-conversation `steer` field reflecting
-  submit-while-busy queue semantics.
+  submit-while-busy queue semantics. **Reconnect contract:** a client that reconnects
+  passes its last-seen cursor and receives a fresh snapshot plus missed frames — no lost
+  state across transport drops. Whether upstream `watch()` replays exactly this shape is
+  a named M1 verification (App C; fallback: sigrun serves its own per-conversation ring
+  buffer).
 - `POST /v1/conversations` — create a conversation (upstream `createConversation()`,
   type-verified); `GET /v1/conversations` — list with session-meta. v1 is
   multi-**session**, single-user; the root conversation is the default.
 - `GET /v1/conversations/:id/meta` / `PATCH` — session metadata:
   `pinned: bool`, `tagged: string[]`, `archived: bool`, `draft: { text: string,
-  attachments: string[] }`, `source: "user" | "cron"`. PATCH is a merge; explicit `null`
-  clears a field. ("session" ≡ conversation; one resource, one path.)
-- `POST /v1/conversations/:id/submissions` `{ input, requestId }` — `input` carries
-  content parts: `{ type: "text", text }` or `{ type: "image" | "file", path, mime? }`
-  (workspace-relative). **The server resolves path-parts to inline content (base64/text)
-  at submit time** — the verified upstream path — via the conversation's ExecutionEnv; a
-  missing path yields an explicit error part, never a silent drop. `requestId` makes
-  duplicate submission idempotent (verified: API present; **crash-replay semantics are a
-  named M1 verification**). Submitting while busy queues the input (queue semantics also
-  verified in M1).
+  attachments: string[] }`, `source: "user" | "cron"`. Field types as listed; PATCH is a
+  merge, explicit `null` clears a field. `draft.attachments` are workspace-relative paths
+  from the uploads endpoint (the attachment tray survives a reload). ("session" ≡
+  conversation; one resource, one path.)
+- `POST /v1/conversations/:id/submissions` `{ input, requestId }` — **content-part
+  schema:** `input` is an array of parts, each `{ type: "text", text: string }` or
+  `{ type: "image" | "file", path: string, mime?: string }` with `path` workspace-relative
+  (from the uploads endpoint). **The server resolves path-parts to inline content
+  (base64 for images, text for files) at submit time** — the verified upstream path — via
+  the conversation's ExecutionEnv; a missing path yields an explicit error part, never a
+  silent drop. `requestId` makes duplicate submission idempotent (verified: API present;
+  **crash-replay semantics are a named M1 verification**). Submitting while busy queues the
+  input (queue semantics also verified in M1).
 - `POST /v1/conversations/:id/uploads` — materialize an uploaded file into the
   conversation's workspace; returns the workspace-relative path. v1 writes via the
   resolved workspace path (static workspace makes this exact); the ExecutionEnv write
@@ -197,10 +253,18 @@ v1 endpoints:
   (type-verified); v1 accepts exactly `model` and `thinking`.
 - `GET /v1/conversations/:id/approvals` + `POST .../approvals/:approvalId`
   `{ decision: "allow" | "deny" }` — pending approvals surface in the view; decision via
-  endpoint; terminal state delivered via the watch stream.
-- `GET /v1/meta` — `{ harnessVersion, schemaVersion, extensions: [{name, status}] }`.
+  endpoint; terminal state delivered via the watch stream. The approval **policy**
+  (per-conversation document, §3) is fixed to the conservative default in v1 with no
+  read/write endpoint; policy configurability is spec C lane C9.
+- `GET /v1/meta` — `{ harnessVersion, schemaVersion, extensions: [{name, status}],
+  health: { backup: "configured" | "unconfigured" | "degraded", memory: "ok" | "degraded",
+  providers: "ok" | "degraded" }, capabilities: { backup: bool } }`.
   `schemaVersion` hashes the captured fixture (upstream drift bumps it before any sigrun
-  release); the webui refuses to render on mismatch. Also surfaces quarantined extensions.
+  release); the webui refuses to render on mismatch. `extensions[].status` surfaces
+  quarantined (boot-failed) extensions; the `health` block surfaces runtime-degraded
+  surfaces (unreachable memory backend, provider outage) and the
+  unconfigured-backup badge (§4.3); `capabilities` lets clients hide affordances whose
+  backing capability is absent.
 
 **Captured schema:** the serialized view/watch shapes **and the `configure()` accepted
 field set** are captured from the pinned version and committed in-repo as type fixtures.
@@ -232,8 +296,9 @@ The flagship artifact. **Goal: hermes-webui's UX, shamelessly, rebuilt as a thin
 - Light/dark + accent theme system.
 - Per-session persistent composer draft.
 - "Steer" — injecting text into a running session (submit-while-busy).
-- Surface visibility: what's enabled per conversation, rendered from `GET /v1/meta`
-  (read-only badge).
+- Surface visibility: the enabled extension set, rendered from `GET /v1/meta`
+  (read-only badge). v1's extension set is global (§4.1), so the badge is per-deployment;
+  a per-conversation view arrives with the spec C selection lane.
 - v1's only event channel is the watch stream; push notifications are a later concern. The
   audit treats hermes's service-worker/notification settings as drop-don't-port.
 - No cron panel at the ship gate (no jobs surface exists until spec B's lane lands).
@@ -260,9 +325,9 @@ Gate: the ship-gate milestone begins with a **4-hour audit** of hermes-webui's f
 *pattern reference only* (same webui-over-agent shape; a piclaw finding cannot flip the
 port/rebuild decision by itself).
 
-Threshold: ≥60% of hermes-webui's frontend reusable as-is (API calls replaced,
-layout/session/theme logic intact) → port. Below that → **rebuild**: TypeScript + React
-against the §5 API. If the audit lands <60%, M2 is re-baselined before work starts.
+Threshold: **more than 60%** of hermes-webui's frontend reusable as-is (API calls replaced,
+layout/session/theme logic intact) → port. At or below 60% → **rebuild**: TypeScript +
+React against the §5 API. If the audit lands ≤60%, M2 is re-baselined before work starts.
 
 The audit must also measure **render-code coupling**, not just layout/theme reuse: message
 renderers coupled to hermes's message shape do not port regardless of layout percentage.
@@ -270,8 +335,9 @@ Record per subsystem what survives unchanged vs what re-keys to the §5 schema.
 
 ### 6.4 Trust boundary
 
-- The network perimeter (tailnet/ingress) is the trusted principal; sigrun assumes a
-  single authenticated user behind it. The API never accepts or returns credentials.
+- The network perimeter (tailnet/ingress) is the trusted principal for the reference
+  deployment; sigrun assumes a single authenticated user behind it. The API never accepts
+  or returns credentials.
 - **Bearer tokens: seam, not day 1.** The server reserves a bearer-token layer (tokens
   from a secret, one per client — webui, CLI, future bots) implemented when the first
   non-browser client lands.
@@ -285,8 +351,8 @@ Record per subsystem what survives unchanged vs what re-keys to the §5 schema.
 - Root repo layout: `package.json`, `docs/`, `src/harness/`, `src/extensions/`, `src/webui/`
 - (Provider-API and approvals-mechanism verification are done — App C, 2026-10-04.)
 
-### M1 — Core skeleton (1–2 days)
-- `Harness.open` over SQLite on a local-path PV, `resume()` on start
+### M1 — Core skeleton (3–4 days)
+- `Harness.open` over SQLite on block-like storage per §4.3, `resume()` on start
 - Provider-contributor contract + env-driven degenerate provider
 - Skills convention skeleton (§3.2 scope exactly)
 - Context files (`SOUL.md`, `AGENTS.md`) as sections (missing = empty)
@@ -296,8 +362,11 @@ Record per subsystem what survives unchanged vs what re-keys to the §5 schema.
 - Context-management defaults (§3.1), summarizer pinned to cheapest available
 - Static `workspaceService`
 - §5 server: the full v1 endpoint list incl. files list/read, uploads, approvals, meta
-- Backup CronJob + restore procedure (§4.3)
-- Deployment on worker nodes
+- **Backup CronJob + restore procedure (§4.3) — when backup is configured.** The reference
+  deployment (Appendix D) configures it; the restore drill runs there. For the
+  public-release verification path (no Appendix D), M1 runs the same drill against a
+  scratch mount on any block-backed volume.
+- Deployment on the target platform
 - **Crash-verification battery (exit criteria, not optional):**
   1. `kill -9` mid-streaming-generation → restart → answer completes **or** is marked
      aborted; no duplicate final answer.
@@ -311,9 +380,13 @@ Record per subsystem what survives unchanged vs what re-keys to the §5 schema.
   4. Duplicate-`requestId` submit after crash → single completion.
   5. Submit-while-busy → queued/steered behavior observed and recorded.
   6. Hook re-fire behavior on replay observed and recorded (determines the observe-guard).
+  7. `kill -9` a task mid-durable-`sleep(until)` → restart → the task wakes at (or after)
+     the deadline **exactly once** — no double-fire, no missed wake. (CONTEXT App A makes
+     scheduled-job durability a hard constraint; `defineTask`/`sleep` are type-verified
+     only until this runs.)
 - **Exit:** text assistant reachable via curl; pod restart resumes; **restore from the
-  nightly backup resumes**; provider arrived via extension contract; the battery passes
-  with recorded outcomes.
+  nightly backup resumes (in the reference deployment, which configures backup)**;
+  provider arrived via extension contract; the battery passes with recorded outcomes.
 
 ### M2 — WebUI → **SHIP GATE** (2–4 days)
 - Step 0: §6.3 audit (4 hours), records port/rebuild; re-baseline if <60%
@@ -324,7 +397,7 @@ Record per subsystem what survives unchanged vs what re-keys to the §5 schema.
   1. Start a second session; switch between sessions; archive one.
   2. Send a text message; send an image.
   3. Steer a running session.
-  4. Approve a read-only tool; deny a write tool; see the denial reflected.
+  4. Approve a write/exec tool; deny a write tool; see the denial reflected.
   5. Pick a model from the catalog.
   6. Read a tool card (expand, see output).
   7. **Ask about something compacted out of the live window; degenerate `recall` returns
@@ -332,11 +405,14 @@ Record per subsystem what survives unchanged vs what re-keys to the §5 schema.
   8. Open the workspace panel; list a directory; read a file.
   9. Switch theme.
   10. Restart the pod mid-conversation; resume and continue.
-- A daily-soak period follows **after spec B's L1+L2 restore memory and research** — the
+  11. Confirm degraded surfaces appear in `GET /v1/meta` (unconfigured backup in the
+      public-release verification deployment; injected failure of one surface in the
+      reference deployment).
+- A daily-soak period follows **after spec B's B1+B2 restore memory and research** — the
   ship gate is a milestone, not the daily-driver gate. Gaps found in soak are filed and
   fixed before any cutover (spec B's gate).
 
-**Estimates:** M0–M2 ≈ 4–6 days focused work.
+**Estimates:** M0–M2 ≈ 6–9 days focused work.
 
 ---
 
@@ -384,9 +460,11 @@ The full numbered decision record lives in `2026-10-02-sigrun.md` Appendix B (de
     away surface; the deepseek-review "no attention path" finding is dissolved; transport
     is deployment.
 
-## Appendix C — verification record (2026-10-04)
+## Appendix C — verification record
 
-Performed against `@earendil-works/pi-durable@1.0.2`, `@earendil-works/pi-ai`, Node 26.
+**Probes performed 2026-10-04** against `@earendil-works/pi-durable@1.0.2`,
+`@earendil-works/pi-ai`, Node 26. **M1 battery outcomes are recorded in this appendix
+when M1 runs** (the named-verifications list below is their checklist).
 
 **Verified live/behaviorally:**
 - Custom provider via `createProvider` + `openai-completions` `stream`/`streamSimple`;
@@ -408,28 +486,82 @@ Performed against `@earendil-works/pi-durable@1.0.2`, `@earendil-works/pi-ai`, N
 **Verified by type inspection (dist .d.ts, pinned 1.0.2):**
 - `createConversation(options, context)` and `Conversation.configure(change, context)`.
 - `Conversation.entries(query, limit, cursor, context)` — paginated history query; the
-  degenerate recall primitive (upstream docs: compaction-dropped entries remain in
-  storage).
+  degenerate recall primitive. Whether **compaction-dropped entries remain reachable**
+  through it is sourced from upstream docs only — promoted to the named list below.
 - `ConversationView`, `watch()`, `abortSubmission`, `requestId` idempotent submissions,
   `resume()`, `defineTask` + `runtime.sleep(until)` + `watchDoc`, `CompactionHooks`,
-  `GenerationHooks`, `ExecutionEnv` (`FileSystem` + `Shell` interfaces).
+  `GenerationHooks`, `ExecutionEnv` (`FileSystem` + `Shell` interfaces). Whether
+  `FileSystem` exposes a **directory-list** primitive is not verified — named below.
 
 **Named M1 verifications (claimed, not yet observed — each with a fallback):**
 - requestId crash-replay semantics (fallback: treat as at-most-once per process, document).
 - resume() recovery outcomes for mid-generation / mid-tool / mid-compaction (the battery;
   criteria in §7 M1).
 - Hook re-fire behavior on replay (determines observe-guard final design).
-- Steer/follow-up queue semantics on busy submit.
-- Journal mode pi-durable actually sets on its SQLite storage.
+- **`GenerationHooks.afterResponse` payload shape** — what the hook receives per turn
+  (does it include the user submission text, or must user-side observation capture it
+  separately). Determines the observe-record schema spec B's honcho mapping consumes;
+  the paired user-side capture point is the named fallback, mandatory for steered/queued
+  inputs (core §3). The schema — including which generation id steered records carry —
+  is fixed at M1 either way.
+- **Extension-name storage key** — `pi.agent` per the superseded spec, unverified here
+  (fallback: any conversation-scoped durable field; the §4.1 semantics are identical).
+- Steer/follow-up queue semantics on busy submit (fallback: busy submits return 4xx with
+  position-in-queue; the webui renders the queue as read-only).
+- Journal mode pi-durable actually sets on its SQLite storage (fallback: pin WAL +
+  `synchronous=NORMAL` in sigrun's open path).
+- **Watch-stream reconnect replay** — whether upstream `watch()`'s cursor replays missed
+  frames plus a snapshot as §5 states (fallback: sigrun serves its own per-conversation
+  ring buffer).
 - `abortSubmission` idempotence under concurrent aborts.
+- **`entries()` reaches compaction-dropped entries** (currently docs-sourced; fallback:
+  degenerate recall reads the pinned-version SQLite schema directly, covered by the
+  captured-schema fixture test).
+- **Live-harness backup resumes**: `sqlite3 .backup` taken against the running harness
+  restores and resumes (a second process touching the file — exactly the accepted
+  no-cross-process-locking assumption; fallback: scale-to-0 backup window).
+- **`FileSystem` directory-list primitive** for the workspace browser's list endpoint
+  (fallback: server-side fs for the static workspace, documented).
+- **Task wake after kill-during-`sleep(until)`**: exactly-once, no double-fire, no missed
+  wake (battery item 7; fallback: document wake semantics honestly, design cron extension
+  accordingly).
 - sigrun co-tenancy of the harness sqlite file — **decision: use pi-durable documents
   first** (session-meta, approval policy, observe records are conversation-scoped docs;
-  `watchDoc` gives free reactivity), **own prefixed tables only if a shape doesn't fit**;
-  if tables are used, the upgrade drill covers them and the co-tenancy question becomes a
-  named verification.
+  `watchDoc` gives free reactivity). **`watchDoc` is type-verified; that arbitrary
+  app-defined document shapes are supported is part of this verification** (fallback: own
+  prefixed tables, covered by the upgrade drill). **Own prefixed tables only if a shape
+  doesn't fit**; if tables are used, the upgrade drill covers them and the co-tenancy
+  question becomes a named verification.
 - Whether `ConversationView` serializes directly to JSON or needs a projection — M1's
   server task captures the fixture first and defines the projection then (planned work,
   not discovered work).
 
 **Not present upstream:** skill directory convention (sigrun defines it, §3.2);
 cross-process storage locking (accepted — single harness process).
+
+---
+
+## Appendix D — homelab deployment instantiation (user's cluster)
+
+The concrete values this deployment uses against §4.4. Kept here so the core sections
+stay portable — nothing in §1–§7 or App A–C depends on these specifics.
+
+- **Chart:** `sigrun` in `~/repos/helm-charts`, modeled on `hermes-pantheon` (~⅓ the size).
+- **Storage class:** iSCSI-backed block PVC for the sqlite (block semantics, safe for WAL);
+  workspace artifacts on `REPLACE-nfs-node` if a separate volume is wanted. (The cluster's
+  local-path provisioner also exists and satisfies §4.3, but iSCSI block is preferred — and
+  the DR runbook explicitly does not preserve local-path PVCs, whereas the backup below is
+  target-agnostic.)
+- **Node placement:** worker nodeSelector + `dedicated=workload` toleration (both pools are
+  tainted). With the iSCSI PVC the backup CronJob has no node-binding constraint; the
+  placement stays for consistency.
+- **Service:** ClusterIP + Tailscale LB (`tailscale` class) at
+  `sigrun.tailnet.example.test`.
+- **Backup target:** RustFS S3 at `RUSTFS-ENDPOINT-REMOVED.example.invalid:3900` (the CNPG barman
+  precedent); retention is enforced by a retention step in the backup CronJob unless
+  RustFS bucket-lifecycle behavior is verified in M1 (added to App C's named
+  verifications); credentials in a core SealedSecret. **This is the only disaster copy of
+  transcripts** — the DR runbook does not preserve local-path PVCs, and the iSCSI volume's
+  own replication is not a transcript backup. Unconfigured backup (allowed by §4.3) means
+  zero disaster copies; this deployment does not make that choice.
+- **Monitoring:** ServiceMonitor + PrometheusRule as §4.4 describes.
