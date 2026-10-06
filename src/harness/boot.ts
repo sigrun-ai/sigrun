@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
+import { contextFilesExtension } from "./sections/context-files.js";
 import {
 	collectProviders,
 	createProviderMergeSink,
@@ -79,6 +80,11 @@ export async function openHarness(
 ): Promise<OpenedHarness> {
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
+	// Context-file sections (SOUL.md persona, AGENTS.md instructions) are
+	// core-owned: every conversation gets them, so they install before
+	// `Harness.open` reads the registry. install() publishes at once and
+	// replaces any same-name extension in place.
+	registry.install(contextFilesExtension);
 	const sink = createProviderMergeSink();
 	const env = options.env ?? process.env;
 	// `config.models` is the already-validated parse of SIGRUN_MODEL (loadConfig
