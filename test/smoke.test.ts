@@ -38,3 +38,8 @@ test("SIGRUN_PORT rejects non-positive or non-integer values", () => {
   expect(() => loadConfig({ SIGRUN_MODEL: "m", SIGRUN_PORT: "0" })).toThrow(/SIGRUN_PORT/);
   expect(() => loadConfig({ SIGRUN_MODEL: "m", SIGRUN_PORT: "abc" })).toThrow(/SIGRUN_PORT/);
 });
+
+test("SIGRUN_MODEL rejects empty provider or model id", () => {
+  expect(() => loadConfig({ SIGRUN_MODEL: "openai/" })).toThrow(/SIGRUN_MODEL/);
+  expect(() => loadConfig({ SIGRUN_MODEL: "/gpt-4o" })).toThrow(/SIGRUN_MODEL/);
+});

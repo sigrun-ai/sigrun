@@ -68,10 +68,14 @@ export function loadConfig(env: Env): SigrunConfig {
 	if (slash === -1) {
 		models = { provider: DEFAULT_PROVIDER, modelId: modelSpec };
 	} else {
-		models = {
-			provider: modelSpec.slice(0, slash),
-			modelId: modelSpec.slice(slash + 1),
-		};
+		const provider = modelSpec.slice(0, slash);
+		const modelId = modelSpec.slice(slash + 1);
+		if (!provider || !modelId) {
+			throw new Error(
+				`SIGRUN_MODEL must have a non-empty provider and model id, got ${JSON.stringify(modelSpec)}`,
+			);
+		}
+		models = { provider, modelId };
 	}
 
 	let port = DEFAULT_PORT;
