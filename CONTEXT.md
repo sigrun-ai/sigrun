@@ -4,7 +4,9 @@
 > `2026-10-04-sigrun-core.md` (core, zero external dependencies),
 > `2026-10-04-sigrun-hermes-replacement.md` (parity extensions + cutover),
 > `2026-10-04-sigrun-improvements.md` (post-hermes capabilities). The original
-> `2026-10-02-sigrun.md` is superseded and retained as decision history.
+> `2026-10-02-sigrun.md` is superseded and retained as decision history (the numbered
+> decision record, App B 1–23, lives there; its deployment §6 was carried into the core
+> spec, so the three active specs stand alone).
 > This document is the *why* — what the assistant is for, what it replaces, and
 > the constraints that shaped it. Written 2026-10-02.
 
