@@ -147,11 +147,13 @@ export function collectProviders(
 			const previous = ownership.get(provider.id);
 			if (previous !== undefined) {
 				const replaced = modelIdsOf(models, provider.id);
-				const incoming = new Set(modelIdsOfProvider(provider));
 				sink.record({
 					kind: "provider",
 					provider: provider.id,
-					modelIds: replaced.filter((id) => incoming.has(id)),
+					// Record every model the replaced provider served, not just the ids the
+					// incoming one re-declares — a contributor replacing `{m1,m2}` with `{m2}`
+					// silently drops `m1`; meta must surface the full set that changed.
+					modelIds: replaced,
 					previous,
 					contributor: extension.name,
 				});
@@ -177,11 +179,14 @@ export function collectProviders(
 		);
 	}
 
-	// The env-driven degenerate provider only ever serves the default model
-	// when that model is an `openai`-namespace one; anything else belongs to
-	// a contributor, and an unserved pin fails loud at submit instead.
-	if (defaultModel.provider === DEFAULT_PROVIDER && !models.getProvider(DEFAULT_PROVIDER)) {
-		models.setProvider(envDegenerateProvider(env, defaultModel.modelId));
+	// Degenerate fallback: when no extension contributed a provider for the
+	// pinned default model's namespace, register the env-driven OpenAI-compat
+	// provider there (any namespace), so a zero-extension boot still serves its
+	// pin instead of leaving the catalog empty and failing loud at submit.
+	if (!models.getProvider(defaultModel.provider)) {
+		models.setProvider(
+			envDegenerateProvider(env, defaultModel.provider, defaultModel.modelId),
+		);
 	}
 
 	return { models, defaultModel };
@@ -211,7 +216,11 @@ function modelIdsOfProvider(provider: Provider): string[] {
  * `cost` is required by the `Model` shape but unknown for an arbitrary
  * gateway model, so it is zeroed; usage tracking stays structural.
  */
-export function envDegenerateProvider(env: Env, modelId: string): Provider {
+export function envDegenerateProvider(
+	env: Env,
+	providerId: string,
+	modelId: string,
+): Provider {
 	const apiKey = env[OPENAI_API_KEY_ENV]?.trim() || undefined;
 	const baseUrl = env[OPENAI_BASE_URL_ENV]?.trim() || DEFAULT_OPENAI_BASE_URL;
 
@@ -219,7 +228,7 @@ export function envDegenerateProvider(env: Env, modelId: string): Provider {
 		id: modelId,
 		name: modelId,
 		api: "openai-completions",
-		provider: DEFAULT_PROVIDER,
+		provider: providerId,
 		baseUrl,
 		input: ["text", "image"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -229,8 +238,8 @@ export function envDegenerateProvider(env: Env, modelId: string): Provider {
 	};
 
 	return createProvider({
-		id: DEFAULT_PROVIDER,
-		name: "OpenAI-compatible (env)",
+		id: providerId,
+		name: `OpenAI-compatible (env, ${providerId})`,
 		baseUrl,
 		auth: {
 			apiKey: {
