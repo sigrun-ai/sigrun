@@ -12,7 +12,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
-	type Harness as HarnessType,
 	type Registry,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -21,7 +20,7 @@ import { createRegistry } from "./registry.js";
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
-	readonly harness: HarnessType;
+	readonly harness: Harness;
 	readonly registry: Registry;
 }
 

@@ -8,4 +8,3 @@
  */
 
 export { createRegistry } from "@earendil-works/pi-durable";
-export type { Registry, RegistryReader } from "@earendil-works/pi-durable";
