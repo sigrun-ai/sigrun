@@ -30,16 +30,22 @@ import {
 	MEMORY_PLACEHOLDER,
 	type MemoryWiring,
 } from "../src/extensions/memory/degenerate.js";
+import type { HarnessSettings } from "@earendil-works/pi-durable";
+
+type CompactionSettings = NonNullable<HarnessSettings["compaction"]>;
+type RetrySettings = NonNullable<HarnessSettings["retry"]>;
 
 /**
  * Open a hermetic harness whose root conversation answers through a faux
  * provider, with the memory extension installed. `compaction` forces
  * pi-durable's threshold-compaction thresholds (the compacted-recall test);
- * the default leaves pi-durable's policy untouched.
+ * `retry` lowers retry delays (the retry-path test); the defaults leave
+ * pi-durable's policies untouched.
  */
 async function openMemoryHarness(
 	dir: string,
-	compaction?: { reserveTokens: number; keepRecentTokens: number; backgroundTokens: number },
+	compaction?: CompactionSettings,
+	retry?: RetrySettings,
 ) {
 	const config = loadConfig({
 		SIGRUN_MODEL: "faux/m",
@@ -51,6 +57,10 @@ async function openMemoryHarness(
 	});
 	faux.setResponses([fauxAssistantMessage("faux answer one")]);
 	const memory = createMemory();
+	const settings: HarnessSettings = {
+		...(compaction === undefined ? {} : { compaction }),
+		...(retry === undefined ? {} : { retry }),
+	};
 	const opened = await openHarness(config, {
 		extensions: [
 			{
@@ -64,7 +74,7 @@ async function openMemoryHarness(
 			},
 		],
 		env: {},
-		...(compaction === undefined ? {} : { settings: { compaction } }),
+		...(Object.keys(settings).length === 0 ? {} : { settings }),
 	});
 	// The memory extension is sigrun-owned, not boot-owned: install it into the
 	// opened registry (hooks resolve against the live registry snapshot).
@@ -220,6 +230,92 @@ test("section() returns the stable placeholder and the section renders it", asyn
 					BACKGROUND_CONTEXT,
 				),
 			).toBe(MEMORY_PLACEHOLDER);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// Review Finding 1: observe only the ANSWER round, not error/retry rounds.
+test("a retryable error round observes nothing; the retried turn records the final answer once", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	try {
+		const { opened, memory, faux } = await openMemoryHarness(dir, undefined, {
+			enabled: true,
+			maxRetries: 3,
+			baseDelayMs: 1,
+			maxAgentDelayMs: 5,
+		});
+		try {
+			// First attempt: a retryable provider error; second: the real answer.
+			faux.setResponses([
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "provider 500 temporarily overloaded",
+				}),
+				fauxAssistantMessage("recovered answer"),
+			]);
+			const { submission } = await ask(
+				opened,
+				memory,
+				"retry me",
+				BACKGROUND_CONTEXT,
+			);
+			const settled = await submission.wait(BACKGROUND_CONTEXT);
+			expect(settled.status).toBe("done");
+
+			// Exactly two records: one user, one final answer. The error round
+			// observed nothing (no error-text assistant record, and the final
+			// answer is not dropped by a first-fire memo).
+			const records = memory.backend.records();
+			expect(records).toHaveLength(2);
+			expect(records[0]?.role).toBe("user");
+			expect(records[0]?.text).toBe("retry me");
+			expect(records[1]?.role).toBe("assistant");
+			expect(records[1]?.text).toBe("recovered answer");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a model-failed run leaves no orphan user record", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	try {
+		const { opened, memory, faux } = await openMemoryHarness(dir, undefined, {
+			enabled: true,
+			maxRetries: 1,
+			baseDelayMs: 1,
+			maxAgentDelayMs: 5,
+		});
+		try {
+			// Every attempt fails; the run settles unanswered (model_error).
+			faux.setResponses([
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "provider 500 temporarily overloaded",
+				}),
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: "provider 500 temporarily overloaded",
+				}),
+			]);
+			const { submission } = await ask(
+				opened,
+				memory,
+				"doomed input",
+				BACKGROUND_CONTEXT,
+			);
+			const settled = await submission.wait(BACKGROUND_CONTEXT);
+			expect(settled.status).not.toBe("done");
+
+			// No answer round fired, so nothing is observed — most importantly no
+			// orphaned half of the turn the run never answered.
+			expect(memory.backend.records()).toHaveLength(0);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}

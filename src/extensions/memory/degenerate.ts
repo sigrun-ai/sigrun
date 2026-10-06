@@ -25,10 +25,8 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type {
-	AssistantMessage,
-	Message,
-} from "@earendil-works/pi-ai";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
@@ -42,7 +40,6 @@ import {
 } from "@earendil-works/pi-durable";
 import type {
 	Conversation,
-	ConversationHandle,
 	Cursor,
 	EntryRecord,
 	Extension,
@@ -50,6 +47,7 @@ import type {
 	Page,
 	Submission,
 	SubmissionDraft,
+	SubmissionId,
 } from "@earendil-works/pi-durable";
 import type {
 	MemoryBackend,
@@ -59,8 +57,7 @@ import type {
 } from "./backend.js";
 
 /** The stable `long-term-memory` section until a real backend is wired (spec B). */
-export const MEMORY_PLACEHOLDER =
-	"Long-term memory backend not configured.";
+export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
 
 /** Ring buffer capacity; the oldest records drop once full. */
 export const DEFAULT_RING_CAPACITY = 1000;
@@ -96,7 +93,10 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 	async recall(query: string): Promise<RecallResult[]> {
 		const source = this.#recallSource;
 		if (source === undefined) return [];
-		return recallFromEntries(source, query);
+		// BACKGROUND_CONTEXT: recall is a host-initiated read with no incoming
+		// request context (the tool passes none); the degenerate scan carries
+		// no caller deadline to honour.
+		return recallFromEntries(source, query, BACKGROUND_CONTEXT);
 	}
 
 	section(): string {
@@ -130,25 +130,28 @@ function contentText(
 		.join("");
 }
 
-/** Plain text of the first `model` message of an entry, if it carries one. */
+/** Plain text across an entry's model contributions (review Finding 5). */
 function entryText(entry: EntryRecord): string {
-	const message: Message | undefined = entry.model?.[0];
-	if (message === undefined) return "";
-	if (message.role === "user") return contentText(message.content);
-	if (message.role === "assistant") {
-		return message.content
-			.filter((block) => block.type === "text")
-			.map((block) => (block.type === "text" ? block.text : ""))
-			.join("");
-	}
-	return "";
+	return (entry.model ?? [])
+		.map((message) => {
+			if (message.role === "user") return contentText(message.content);
+			if (message.role === "assistant") {
+				return message.content
+					.filter((block) => block.type === "text")
+					.map((block) => (block.type === "text" ? block.text : ""))
+					.join("");
+			}
+			return "";
+		})
+		.filter((text) => text !== "")
+		.join("\n");
 }
 
 /** Scan one conversation's newest-first history for query matches. */
 export async function recallFromEntries(
 	source: RecallSource,
 	query: string,
-	context?: Context,
+	context: Context,
 ): Promise<RecallResult[]> {
 	const needle = query.toLowerCase();
 	const hits: RecallResult[] = [];
@@ -159,7 +162,7 @@ export async function recallFromEntries(
 			{},
 			RECALL_PAGE_SIZE,
 			cursor,
-			context ?? ({} as Context),
+			context,
 		);
 		for (const entry of page.items) {
 			scanned++;
@@ -253,53 +256,83 @@ export function createMemory(
 	backend: DegenerateMemoryBackend = new DegenerateMemoryBackend(),
 ): MemoryWiring {
 	/**
-	 * Input texts pending observation, in submit order (FIFO). Recorded
-	 * synchronously *before* admission so no generation can outrun the
-	 * capture. `afterResponse` drains one entry per input the generation
-	 * answers; steering-merged inputs each get their own user record. A
-	 * submission that is never placed (rejected while busy) leaves its text
-	 * queued for the next generation — a documented degenerate limitation.
+	 * Input texts pending observation, keyed by submission id (review Finding
+	 * 2). Recorded synchronously *before* admission so no generation can outrun
+	 * the capture. `afterResponse` matches the live run's `inputs` by identity,
+	 * so a steering-merged input gets its own user record and a rejected /
+	 * requeued submit never mis-pairs a stale text to a later run. An input
+	 * that is admitted but never answered (busy-rejected is the only path that
+	 * writes nothing; a queued input carries its id) keeps its text here until
+	 * its run answers — a documented degenerate limitation.
 	 */
-	const pendingInputs: { conversationId: number; text: string }[] = [];
+	const pendingInputs = new Map<SubmissionId, { conversationId: number; text: string }>();
 
 	async function afterResponse(
 		message: AssistantMessage,
 		api: HookApi,
 		context: Context,
 	): Promise<void> {
-		// Replay guard (brief): first write wins; a retry or recovery replay of
-		// the same generation observes nothing a second time.
-		const memoName = `sigrun.memory.observe:${api.taskId}`;
-		const existing = await api.memo<{ observed: true }>(memoName, context);
-		if (existing !== undefined) return;
-		await api.memo(memoName, { observed: true }, context);
+		// afterResponse fires per terminal provider MESSAGE (every round:
+		// tool requests, error rounds, retries — verified generation.js:335,
+		// before classification), NOT once per turn. Observe only the round
+		// that ANSWERS the run; error/tool rounds observe nothing, so a
+		// retried turn records exactly its final answer and a model-failed
+		// run leaves no orphan user record. Answer classification mirrors
+		// upstream's (generation.js:337-340): stop/length, and toolUse with
+		// no tool-call block (a tool request is a round, not the answer).
+		const calls = message.content.filter(
+			(block) => block.type === "toolCall",
+		);
+		const isAnswer =
+			message.stopReason === "stop" ||
+			message.stopReason === "length" ||
+			(message.stopReason === "toolUse" && calls.length === 0);
+		if (!isAnswer) return;
 
+		// Replay guard (review Finding 3): the memo carries the RECORDS, so a
+		// crash between memo-write and observe could not lose them. First
+		// write wins — a retry/recovery replay returns the stored winner and
+		// re-observes it (idempotent), never re-deriving timestamps.
+		const memoName = `sigrun.memory.observe:${api.taskId}`;
+		const records = await api.memo<ObserveRecord[]>(memoName, context);
+		if (records !== undefined) {
+			for (const record of records) backend.observe(record);
+			return;
+		}
+
+		const now = Date.now();
+		const pending: ObserveRecord[] = [];
 		// Which submissions this generation answers (still live: afterResponse
 		// fires inside classify, before endRun — verified dist/harness/generation.js).
+		// Match by submission IDENTITY (review Finding 2), not FIFO count: a
+		// rejected/requeued submit no longer mis-pairs a stale text to this run.
 		const live = await api.snapshot(LiveDoc, api.conversationId, context);
-		const inputCount = live?.run?.inputs.length ?? 0;
-		for (let index = 0; index < inputCount; index++) {
-			const pending = pendingInputs.shift();
-			if (pending === undefined) break; // submitted outside the wiring
-			backend.observe({
+		const inputs = live?.run?.inputs ?? [];
+		for (const id of inputs) {
+			const input = pendingInputs.get(id);
+			if (input === undefined) continue; // submitted outside the wiring
+			pendingInputs.delete(id);
+			pending.push({
 				conversationId: api.conversationId,
 				generationId: api.taskId,
 				role: "user",
-				text: pending.text,
-				timestamp: Date.now(),
+				text: input.text,
+				timestamp: now,
 			});
 		}
 		const answerText = message.content
 			.filter((block) => block.type === "text")
 			.map((block) => (block.type === "text" ? block.text : ""))
 			.join("");
-		backend.observe({
+		pending.push({
 			conversationId: api.conversationId,
 			generationId: api.taskId,
 			role: "assistant",
 			text: answerText,
 			timestamp: message.timestamp,
 		});
+		await api.memo(memoName, pending, context);
+		for (const record of pending) backend.observe(record);
 	}
 
 	const extension = defineExtension({
@@ -314,18 +347,21 @@ export function createMemory(
 		extension,
 		async submit(root, submission, context) {
 			backend.bindRecallSource(root);
+			const placed = await root.submit(submission, context);
+			// Record after admission: `placed.id` is the submission id the run's
+			// `run.inputs` carries, so the hook matches by identity, not order.
+			// Admission resolved before any generation can answer it, so the id
+			// is in the map before `afterResponse` can fire for this turn.
 			if (
 				submission.type === "input" &&
 				typeof submission.content === "string"
 			) {
-				// Synchronously before admission: the scheduler may run the
-				// generation as soon as `root.submit` commits.
-				pendingInputs.push({
+				pendingInputs.set(placed.id, {
 					conversationId: root.id,
 					text: submission.content,
 				});
 			}
-			return root.submit(submission, context);
+			return placed;
 		},
 	};
 }
