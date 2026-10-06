@@ -63,9 +63,10 @@ export interface OpenHarnessOptions {
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
 	/**
-	 * Harness settings passthrough (pi-durable `HarnessSettings`),
-	 * merged over upstream defaults. Deploy code leaves it unset; tests use
-	 * it to force compaction thresholds hermetically.
+	 * Harness settings passthrough (pi-durable `HarnessSettings`), merged over
+	 * upstream defaults. This is the compaction/retry policy seam: deploy code
+	 * uses it for Task 8's tuned values, tests use it to force thresholds
+	 * hermetically.
 	 */
 	readonly settings?: HarnessSettings;
 }
