@@ -242,7 +242,7 @@ test("SIGRUN_MODEL overrides any contributor default", ...);
 
 **Interfaces:**
 - Consumes: `openHarness`, providers, workspace, memory, approvals, skills (T1–T7).
-- Produces: the §5 endpoints; `GET /v1/meta` shape `{ harnessVersion, schemaVersion, extensions[{name,status}], health{backup,memory,providers}, capabilities{backup} }`; the composite view serializer (ConversationView + LiveDoc + InboxDoc + watchEvents per App C.1); the in-repo type fixture.
+- Produces: the §5 endpoints; `GET /v1/meta` shape `{ harnessVersion, schemaVersion, extensions[{name,status}], health{backup,memory,providers}, capabilities{backup, channels: string[]} }`; the composite view serializer (ConversationView + LiveDoc + InboxDoc + watchEvents per App C.1); the in-repo type fixture. `capabilities.channels` lists deployed channel bundles — `["webui"]` when its static bundle is present, `[]` when the core serves the API only.
 
 - [ ] **Step 1: Capture the fixture first** (planned work, App C): serialize a real `ConversationView` + `LiveDoc` + `InboxDoc` + an `AgentEventStream` snapshot, commit as `test/fixtures/view-schema.json`. Write `test/schema-drift.test.ts` that fails if the serialized shape diverges from the fixture (this is the upstream-drift tripwire).
 - [ ] **Step 2: Failing server tests** — the full §5 v1 endpoint list:
