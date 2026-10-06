@@ -41,16 +41,46 @@ export const DEFAULT_PORT = 3000;
 export type Env = Record<string, string | undefined>;
 
 /**
- * Parse sigrun configuration from an environment (usually `process.env`).
+ * Parse one model spec into `{ provider, modelId }`.
  *
- * `SIGRUN_MODEL` is required and selects the default model:
  * - `provider/model-id` pins the provider explicitly (first `/` splits;
  *   the model id may itself contain further path segments), or
  * - a bare `model-id` uses the env-driven OpenAI-compat provider
  *   (`openai`, the degenerate provider of spec §3).
  *
- * Optional overrides: `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`,
- * `SIGRUN_PORT`.
+ * Shared by `loadConfig` and the provider collector so both parse
+ * identically.
+ *
+ * @throws Error naming `SIGRUN_MODEL` when the spec is empty or has an
+ * empty provider or model id.
+ */
+export function parseModelSpec(spec: string): SigrunModels {
+	const trimmed = spec.trim();
+	if (!trimmed) {
+		throw new Error(
+			"SIGRUN_MODEL must be a non-empty model spec, e.g. openai/gpt-4o",
+		);
+	}
+	const slash = trimmed.indexOf("/");
+	if (slash === -1) {
+		return { provider: DEFAULT_PROVIDER, modelId: trimmed };
+	}
+	const provider = trimmed.slice(0, slash);
+	const modelId = trimmed.slice(slash + 1);
+	if (!provider || !modelId) {
+		throw new Error(
+			`SIGRUN_MODEL must have a non-empty provider and model id, got ${JSON.stringify(trimmed)}`,
+		);
+	}
+	return { provider, modelId };
+}
+
+/**
+ * Parse sigrun configuration from an environment (usually `process.env`).
+ *
+ * `SIGRUN_MODEL` is required and selects the default model (see
+ * `parseModelSpec` for the format). Optional overrides:
+ * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_PORT`.
  *
  * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, and
  * naming `SIGRUN_PORT` when it is set but not a positive integer.
@@ -63,20 +93,7 @@ export function loadConfig(env: Env): SigrunConfig {
 		);
 	}
 
-	let models: SigrunModels;
-	const slash = modelSpec.indexOf("/");
-	if (slash === -1) {
-		models = { provider: DEFAULT_PROVIDER, modelId: modelSpec };
-	} else {
-		const provider = modelSpec.slice(0, slash);
-		const modelId = modelSpec.slice(slash + 1);
-		if (!provider || !modelId) {
-			throw new Error(
-				`SIGRUN_MODEL must have a non-empty provider and model id, got ${JSON.stringify(modelSpec)}`,
-			);
-		}
-		models = { provider, modelId };
-	}
+	const models = parseModelSpec(modelSpec);
 
 	let port = DEFAULT_PORT;
 	if (env.SIGRUN_PORT !== undefined && env.SIGRUN_PORT !== "") {
