@@ -24,6 +24,12 @@ import {
 	type ProviderContributor,
 } from "./providers/index.js";
 import { createRegistry } from "./registry.js";
+import {
+	createWorkspaceService,
+	defaultWorkspacePrefs,
+	toHarnessEnv,
+	type EnvBuilder,
+} from "./workspace.js";
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
@@ -35,6 +41,13 @@ export interface OpenedHarness {
 	readonly defaultModel: ModelRef;
 	/** Provider-merge collisions; the sink `GET /v1/meta` reads (Task 9). */
 	readonly providerCollisions: readonly ProviderCollision[];
+	/**
+	 * The workspace `env` builder passed into `HarnessOptions.env` — what
+	 * pi-durable invokes per tool call. Exposed because core surfaces that
+	 * read workspace files (uploads, files endpoints, sections) resolve the
+	 * conversation env the same way the harness does.
+	 */
+	readonly envBuilder: EnvBuilder;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -80,11 +93,24 @@ export async function openHarness(
 		effectiveEnv,
 		sink,
 	);
+	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
+	// resolves through it, so the the-work-fabric-scrubbed swap changes this wiring's inputs and
+	// nothing downstream.
+	const workspaceService = createWorkspaceService();
+	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
+	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
 	const harness = await Harness.open(
 		storage,
-		{ models, registry },
+		{ models, registry, env: envBuilder },
 		BACKGROUND_CONTEXT,
 	);
 	harness.resume();
-	return { harness, registry, models, defaultModel, providerCollisions: sink.collisions };
+	return {
+		harness,
+		registry,
+		models,
+		defaultModel,
+		providerCollisions: sink.collisions,
+		envBuilder,
+	};
 }
