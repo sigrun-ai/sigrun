@@ -1,0 +1,25 @@
+{
+	"name": "sigrun",
+	"version": "0.1.0",
+	"description": "Durable personal assistant on pi-durable",
+	"type": "module",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@earendil-works/pi-durable": "1.0.2",
+		"@earendil-works/pi-ai": "^1.0.4",
+		"@sinclair/typebox": "^0.34.52",
+		"fastify": "^5.12.5"
+	},
+	"devDependencies": {
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3",
+		"tsx": "^4.23.15",
+		"@types/node": "^26.6.4"
+	}
+}
