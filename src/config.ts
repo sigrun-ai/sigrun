@@ -23,11 +23,22 @@ export type BackupConfig =
 	| { target: "s3"; bucket: string; prefix?: string }
 	| { target: "path"; path: string };
 
+/**
+ * The static workspace every conversation resolves to (spec §4.5): a local
+ * directory reached through the conversation's `ExecutionEnv`.
+ */
+export interface LocalWorkspace {
+	readonly type: "local";
+	readonly path: string;
+}
+
 export interface SigrunConfig {
 	storagePath: string;
 	models: SigrunModels;
 	extensionsDir: string;
 	port: number;
+	/** Root of the static local workspace (spec §4.5 `defaultWorkspace`). */
+	workspace: LocalWorkspace;
 	backup?: BackupConfig;
 }
 
@@ -37,6 +48,8 @@ export const DEFAULT_PROVIDER = "openai";
 export const DEFAULT_STORAGE_PATH = "data/sigrun.db";
 export const DEFAULT_EXTENSIONS_DIR = "extensions";
 export const DEFAULT_PORT = 3000;
+/** Spec §4.5: core ships `{ defaultWorkspace: { type: "local", path: "/home/sigrun" } }`. */
+export const DEFAULT_WORKSPACE_PATH = "/home/sigrun";
 
 export type Env = Record<string, string | undefined>;
 
@@ -80,7 +93,8 @@ export function parseModelSpec(spec: string): SigrunModels {
  *
  * `SIGRUN_MODEL` is required and selects the default model (see
  * `parseModelSpec` for the format). Optional overrides:
- * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_PORT`.
+ * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_PORT`,
+ * `SIGRUN_WORKSPACE_PATH`.
  *
  * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, and
  * naming `SIGRUN_PORT` when it is set but not a positive integer.
@@ -109,5 +123,9 @@ export function loadConfig(env: Env): SigrunConfig {
 		models,
 		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || DEFAULT_EXTENSIONS_DIR,
 		port,
+		workspace: {
+			type: "local",
+			path: env.SIGRUN_WORKSPACE_PATH || DEFAULT_WORKSPACE_PATH,
+		},
 	};
 }
