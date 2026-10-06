@@ -15,12 +15,17 @@ test("harness reopens persisted root conversation", async () => {
 		});
 
 		const first = await openHarness(config);
-		expect(first.registry).toBeDefined();
 		const root = await first.harness.root(BACKGROUND_CONTEXT);
 		expect(root.id).toBeTruthy();
 		await first.harness.close(BACKGROUND_CONTEXT);
 
 		const second = await openHarness(config);
+		// The root id is a reserved constant, so `reopened.id === root.id` cannot
+		// prove persistence. Assert the conversation row actually survived the
+		// close/reopen by reading it back from storage before root() re-creates it.
+		expect(
+			await second.harness.conversation(root.id, BACKGROUND_CONTEXT),
+		).toBeDefined();
 		const reopened = await second.harness.root(BACKGROUND_CONTEXT);
 		expect(reopened.id).toBe(root.id);
 		await second.harness.close(BACKGROUND_CONTEXT);
