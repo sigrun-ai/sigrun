@@ -46,3 +46,68 @@ export interface ConversationCreateResponse {
 	readonly id: number;
 	readonly view: ConversationView;
 }
+
+/**
+ * The admit response of `POST /v1/conversations/:id/submissions` (Task 9b):
+ * the durable submission record (`SubmissionRecord` — id, conversationId,
+ * requestId?, type, status, entry?/answer?/reason?) after waiting for
+ * settlement. v1 waits server-side (SSE watch is T9d); the record is the
+ * wire shape.
+ */
+export interface SubmissionResponse {
+	readonly id: number;
+	readonly conversationId: number;
+	readonly type: string;
+	readonly status: string;
+	readonly entry?: number;
+	readonly answer?: number;
+	readonly reason?: string;
+}
+
+/** The upload response of `POST /v1/conversations/:id/uploads` (Task 9b). */
+export interface UploadResponse {
+	/** The workspace-relative path to use in submission content parts. */
+	readonly path: string;
+}
+
+/** One `GET /v1/conversations/:id/files` entry (upstream `FileInfo`). */
+export interface FileEntry {
+	readonly name: string;
+	readonly path: string;
+	readonly kind: "file" | "directory" | "symlink";
+	readonly size: number;
+	readonly mtimeMs: number;
+}
+
+/** The list response of `GET /v1/conversations/:id/files` (Task 9b). */
+export interface FileListResponse {
+	readonly entries: readonly FileEntry[];
+}
+
+/** The read response of `GET /v1/conversations/:id/files/content`. */
+export interface FileContentResponse {
+	/** `"text"` (valid UTF-8) or `"base64"` (binary). */
+	readonly encoding: "text" | "base64";
+	readonly content: string;
+	/** Size in bytes. */
+	readonly size: number;
+}
+
+/** One `GET /v1/models` entry (Task 9b): picker fields, no provider internals. */
+export interface ModelEntry {
+	/** `"provider/modelId"` — the id submission/configure `model` takes. */
+	readonly id: string;
+	readonly provider: string;
+	readonly modelId: string;
+	readonly name: string;
+	readonly contextWindow: number;
+	readonly maxTokens: number;
+	readonly reasoning: boolean;
+	readonly input: readonly string[];
+	readonly cost: Readonly<Record<string, number>>;
+}
+
+/** The response of `GET /v1/models`. */
+export interface ModelsResponse {
+	readonly models: readonly ModelEntry[];
+}

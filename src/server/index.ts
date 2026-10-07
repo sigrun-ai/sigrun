@@ -8,9 +8,10 @@
  * entry listens; tests use `app.inject()`).
  *
  * Endpoints in THIS slice: `POST /v1/conversations`, `GET
- * /v1/conversations`, `GET /v1/conversations/:id`, `GET /v1/meta`.
- * Submissions, uploads, files, approvals, configure, abort, and SSE arrive in
- * later slices (T9b–T9e).
+ * /v1/conversations`, `GET /v1/conversations/:id`, `GET /v1/meta` (T9a);
+ * `POST .../submissions` (content-part resolution), `POST .../uploads`, `GET
+ * .../files`, `GET .../files/content`, `GET /v1/models` (T9b). Approvals,
+ * configure, abort, and SSE arrive in later slices (T9c–T9e).
  *
  * **Conversation listing gap (v1):** pi-durable's `Harness` has no
  * conversation enumeration (its storage has `scanConversations`, but the
@@ -28,13 +29,25 @@ import type {
 	Conversation,
 	ConversationId,
 } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
+	isConfinedPath,
+	parseSubmissionInput,
+	resolveParts,
+} from "./content-parts.js";
+import {
 	serializeConversationView,
 	type ConversationCreateResponse,
 	type ConversationList,
+	type FileContentResponse,
+	type FileListResponse,
+	type ModelEntry,
+	type ModelsResponse,
+	type SubmissionResponse,
+	type UploadResponse,
 } from "./views.js";
 
 /** Integer path params for `/v1/conversations/:id`. */
@@ -76,6 +89,53 @@ async function readView(conversation: Conversation) {
 	const view = serializeConversationView(state.value);
 	await state.dispose();
 	return view;
+}
+
+/**
+ * Build the conversation's workspace `ExecutionEnv` the same way
+ * `Harness.buildEnv` does for tool calls (dist/harness/harness.js:133-139):
+ * resolve the committed `agent.cwd` and hand it, with the harness as the
+ * doc `read` line, to the boot `envBuilder`. The §5 file/upload/submission
+ * endpoints resolve through this — one seam, so a the-work-fabric-scrubbed-swap of the
+ * workspace service moves them all at once.
+ */
+async function conversationEnv(
+	opened: OpenedHarness,
+	conversation: Conversation,
+): Promise<ExecutionEnv> {
+	const agent = await conversation.agent(BACKGROUND_CONTEXT);
+	const built = await opened.envBuilder(
+		{
+			conversationId: conversation.id,
+			...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
+			read: opened.harness,
+		},
+		BACKGROUND_CONTEXT,
+	);
+	// `HarnessOptions.env` types as optional; sigrun always passes one, so a
+	// missing env is a boot-invariant violation — fail loud, never null-check.
+	if (built === undefined) {
+		throw new Error("envBuilder returned no ExecutionEnv");
+	}
+	return built;
+}
+
+/** The upload read cap for `files/content` (binary-safe; 1 MiB). */
+const FILE_CONTENT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Decode a base64 body strictly: Node's `Buffer.from(s, "base64")` is
+ * LENIENT (invalid characters are skipped, so `"!!!"` decodes to empty), so
+ * uploads validate the alphabet and round-trip — invalid base64 is a client
+ * error, never a silent partial decode.
+ */
+function decodeBase64Strict(value: string): Buffer | undefined {
+	const trimmed = value.trim();
+	if (trimmed.length === 0 || trimmed.length % 4 !== 0) return undefined;
+	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(trimmed)) return undefined;
+	const bytes = Buffer.from(trimmed, "base64");
+	if (bytes.toString("base64") !== trimmed) return undefined;
+	return bytes;
 }
 
 /**
@@ -189,6 +249,232 @@ export async function createServer(
 			return readView(conversation);
 		},
 	);
+
+	// Submissions: content-part resolution + upstream idempotence (T9b).
+	// Conversation resolution is storage-backed (`harness.conversation`), so
+	// an id that exists in storage works even when the tracked Set forgot it
+	// (restart amnesia — the Set remains listing-only).
+	app.post(
+		"/v1/conversations/:id/submissions",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<SubmissionResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const body = request.body as Record<string, unknown> | undefined;
+			if (
+				body === undefined ||
+				typeof body !== "object" ||
+				Array.isArray(body)
+			) {
+				return await reply.code(400).send({ error: "invalid_body" });
+			}
+			const parsed = parseSubmissionInput(body.input);
+			if (!parsed.ok) {
+				return await reply.code(400).send({ error: "invalid_input" });
+			}
+			const requestId =
+				body.requestId === undefined ? undefined : String(body.requestId);
+			// Resolve path-parts to inline content NOW, against the live
+			// workspace (Review Focus #1: missing paths become explicit error
+			// parts; other workspace failures throw → Fastify 500, fail-loud).
+			const env = await conversationEnv(opened, conversation);
+			const content = await resolveParts(
+				parsed.parts,
+				env,
+				BACKGROUND_CONTEXT,
+			);
+			const submission = await conversation.submit(
+				{
+					type: "input",
+					content,
+					...(requestId === undefined ? {} : { requestId }),
+				},
+				BACKGROUND_CONTEXT,
+			);
+			// v1 waits for settlement server-side (the watch stream is T9d);
+			// `wait()` resolves with the settled record either way.
+			const settled = await submission.wait(BACKGROUND_CONTEXT);
+			return await reply.code(202).send(settled);
+		},
+	);
+
+	// Uploads: materialize a base64 body into the conversation's upload
+	// namespace via the workspace env (spec §5: correct for remote workspaces).
+	app.post(
+		"/v1/conversations/:id/uploads",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<UploadResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const body = request.body as Record<string, unknown> | undefined;
+			const name = body?.name;
+			const contentBase64 = body?.contentBase64;
+			if (
+				body === undefined ||
+				typeof name !== "string" ||
+				name.length === 0 ||
+				name.includes("/") ||
+				name.includes("\\") ||
+				name === "." ||
+				name === ".." ||
+				typeof contentBase64 !== "string"
+			) {
+				return await reply.code(400).send({ error: "invalid_body" });
+			}
+			let bytes: Buffer | undefined;
+			try {
+				bytes = decodeBase64Strict(contentBase64);
+			} catch {
+				bytes = undefined;
+			}
+			if (bytes === undefined) {
+				return await reply.code(400).send({ error: "invalid_body" });
+			}
+			// v1 namespaces uploads per conversation: workspaces are static and
+			// shared in v1, so un-namespaced names would clobber across
+				// conversations. The returned path is exactly what a content part
+			// takes.
+			const path = `uploads/${conversation.id}/${name}`;
+			const env = await conversationEnv(opened, conversation);
+			const written = await env.writeFile(
+				path,
+				new Uint8Array(bytes),
+				BACKGROUND_CONTEXT,
+			);
+			if (!written.ok) {
+				// A failed upload is a server-side fault: fail loud.
+				throw written.error;
+			}
+			return await reply.code(201).send({ path });
+		},
+	);
+
+	// Files: read-only workspace listing through the conversation env.
+	app.get(
+		"/v1/conversations/:id/files",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<FileListResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const query = request.query as { path?: string };
+			const path = query.path ?? ".";
+			if (!isConfinedPath(path)) {
+				return await reply.code(400).send({ error: "invalid_path" });
+			}
+			const env = await conversationEnv(opened, conversation);
+			const listed = await env.listDir(path, BACKGROUND_CONTEXT);
+			if (!listed.ok) {
+				if (listed.error.code === "not_found") {
+					return await reply.code(404).send({ error: "not_found" });
+				}
+				throw listed.error;
+			}
+			return { entries: listed.value };
+		},
+	);
+
+	// Files content: text when strictly valid UTF-8, else base64; size-capped.
+	app.get(
+		"/v1/conversations/:id/files/content",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<FileContentResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const query = request.query as { path?: string };
+			const path = query.path ?? "";
+			if (!isConfinedPath(path)) {
+				return await reply.code(400).send({ error: "invalid_path" });
+			}
+			if (path.length === 0 || path === ".") {
+				return await reply.code(400).send({ error: "invalid_path" });
+			}
+			const env = await conversationEnv(opened, conversation);
+			const info = await env.fileInfo(path, BACKGROUND_CONTEXT);
+			if (!info.ok) {
+				if (info.error.code === "not_found") {
+					return await reply.code(404).send({ error: "not_found" });
+				}
+				throw info.error;
+			}
+			if (info.value.size > FILE_CONTENT_MAX_BYTES) {
+				return await reply
+					.code(413)
+					.send({
+							error: "file_too_large",
+						maxBytes: FILE_CONTENT_MAX_BYTES,
+					});
+			}
+			const read = await env.readBinaryFile(path, BACKGROUND_CONTEXT);
+			if (!read.ok) {
+				if (read.error.code === "not_found") {
+					return await reply.code(404).send({ error: "not_found" });
+				}
+				throw read.error;
+			}
+			const bytes = read.value;
+			// Text when strictly valid UTF-8, else base64 — the same rule as
+			// file-part inlining, applied at the read boundary.
+			try {
+				const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+				return { encoding: "text", content: text, size: bytes.length };
+			} catch {
+				return {
+					encoding: "base64",
+					content: Buffer.from(bytes).toString("base64"),
+					size: bytes.length,
+				};
+			}
+		},
+	);
+
+	// Models: the merged chat-model catalog as picker entries (no provider
+	// internals — baseUrl/headers/auth stay server-side).
+	app.get("/v1/models", async (): Promise<ModelsResponse> => {
+		const models: ModelEntry[] = opened.models.getModels().map((model) => ({
+			id: `${model.provider}/${model.id}`,
+			provider: model.provider,
+			modelId: model.id,
+			name: model.name,
+			contextWindow: model.contextWindow,
+			maxTokens: model.maxTokens,
+			reasoning: model.reasoning,
+			input: model.input,
+			cost: model.cost as unknown as Record<string, number>,
+		}));
+		return { models };
+	});
 
 	return app;
 }
