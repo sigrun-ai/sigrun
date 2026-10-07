@@ -92,7 +92,11 @@ extension at boot is **quarantined** (logged, surfaced as a degraded surface via
 
 - Background compaction on, tuned values chosen in M1 against the default model's window.
 - The summarizer model is a policy decision: core pins it to the cheapest long-context
-  model available from the provider contributions (configurable).
+  model available from the provider contributions (configurable). **Deferred (M1, verified
+  2026-10-07):** pi-durable 1.0.2 resolves the summarizer to the conversation's own
+  `agent.model` with no separate settings knob (compaction.js) — pinning to a cheaper model
+  requires a `beforeCompact` hook or a custom compaction task, which is spec C work. v1 uses
+  the conversation's own model for summarization.
 - Richer strategies (vcc-style) are spec C.
 
 ### 3.2 Skills convention (v1 scope, exact)
