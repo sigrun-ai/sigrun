@@ -60,7 +60,8 @@ function deriveSteer(view: ConversationView): SteerField {
 	const busy =
 		typeof live === "object" &&
 		live !== null &&
-		typeof (live as { run?: unknown }).run === "object";
+		typeof (live as { run?: unknown }).run === "object" &&
+		(live as { run?: unknown }).run !== null;
 	const inbox = view.docs["pi.inbox"];
 	const items =
 		typeof inbox === "object" && inbox !== null
