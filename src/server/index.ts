@@ -342,6 +342,7 @@ export async function createServer(
 			const body = request.body as Record<string, unknown> | undefined;
 			if (
 				body === undefined ||
+				body === null ||
 				typeof body !== "object" ||
 				Array.isArray(body)
 			) {
@@ -428,9 +429,16 @@ export async function createServer(
 					.send({ error: "conversation_not_found" });
 			}
 			const inspection = await opened.harness.inspect(BACKGROUND_CONTEXT);
+			// Lowest live id = oldest admitted = the placed run input over later-
+			// queued inbox items. reduce() with a first-element seed is ordering-
+			// independent (a future pi-durable inspect() ordering change cannot
+			// silently target the wrong submission); empty → undefined.
 			const active = inspection.submissions
 				.filter((s) => s.conversationId === conversation.id)
-				.at(0);
+				.reduce<(typeof inspection.submissions)[number] | undefined>(
+					(min, s) => (min === undefined || s.id < min.id ? s : min),
+					undefined,
+				);
 			if (active === undefined) {
 				return await reply
 					.code(404)
@@ -441,8 +449,8 @@ export async function createServer(
 				BACKGROUND_CONTEXT,
 				conversation.id,
 			);
-			// `not_found` here means the submission settled between `inspect` and
-			// `abort` — the conversation is no longer busy, so the honest answer
+			// `not_found` means the submission's record vanished between `inspect`
+			// and `abort` — the conversation is no longer busy, so the honest answer
 			// is the same as nothing-active.
 			if (result === "not_found") {
 				return await reply
