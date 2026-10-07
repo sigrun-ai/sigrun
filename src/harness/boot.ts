@@ -21,6 +21,7 @@ import type { Env, SigrunConfig } from "../config.js";
 import { loadExtensions, type ExtensionOutcome } from "./loader.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
+import { skillsExtension } from "../skills/index.js";
 import {
 	collectProviders,
 	createProviderMergeSink,
@@ -109,11 +110,14 @@ export async function openHarness(
 ): Promise<OpenedHarness> {
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
-	// Context-file sections (SOUL.md persona, AGENTS.md instructions) are
-	// core-owned: every conversation gets them, so they install before
-	// `Harness.open` reads the registry. install() publishes at once and
+	// Context-file sections (SOUL.md persona, AGENTS.md instructions) and the
+	// skills convention (skills/ scan, skills section, load_skill) are both
+	// core-owned surfaces (spec §3): every conversation gets them, so they
+	// install before `Harness.open` reads the registry — never through the
+	// extension loader, never quarantined. install() publishes at once and
 	// replaces any same-name extension in place.
 	registry.install(contextFilesExtension);
+	registry.install(skillsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues.
 	const extensionOutcomes = await loadExtensions(
