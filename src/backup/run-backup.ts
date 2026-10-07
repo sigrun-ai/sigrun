@@ -50,7 +50,7 @@ function run(
 	args: readonly string[],
 ): Promise<{ code: number; stderr: string }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString("utf8");
@@ -138,6 +138,16 @@ export async function runBackup(
 ): Promise<void> {
 	if (!dbPath) {
 		throw new Error("SIGRUN_STORAGE_PATH is required (the db to back up)");
+	}
+	// sqlite3 opens its source with create flags: a MISSING db file backs up
+	// "successfully" as an empty database (a SIGRUN_STORAGE_PATH typo or a
+	// CronJob firing before first boot would then produce nightly empty
+	// backups indistinguishable from real ones). Fail loud instead.
+	const dbStat = await stat(dbPath).catch(() => undefined);
+	if (dbStat === undefined || dbStat.size === 0) {
+		throw new Error(
+			`database ${dbPath} does not exist or is empty — refusing to back up nothing`,
+		);
 	}
 	// Temp file in the TARGET's filesystem (path target) so the final move
 	// is an atomic rename, not a copy; for s3 the temp dir is irrelevant to

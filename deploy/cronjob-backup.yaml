@@ -53,10 +53,15 @@ spec:
           containers:
             - name: backup
               # Reference image: must carry sqlite3 + awscli (the target's
-              # client, spec §4.3). Task 13 owns the concrete image pin.
-              image: REPLACEME-sqlite3-awscli-image
+              # client, spec §4.3) AND tsx (the script's runtime — every
+              # tested invocation goes through tsx; the repo's internal
+              # imports use .js specifiers resolving to .ts files, which
+              # stock node does not resolve). Task 13 owns the concrete
+              # image pin.
+              image: REPLACEME-sqlite3-awscli-tsx-image
               command:
-                - node
+                - npx
+                - tsx
                 - /app/src/backup/run-backup.ts
               envFrom:
                 # Core backup secret (spec §4.3): SIGRUN_BACKUP_PATH or
