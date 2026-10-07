@@ -104,7 +104,12 @@ export interface ModelEntry {
 	readonly maxTokens: number;
 	readonly reasoning: boolean;
 	readonly input: readonly string[];
-	readonly cost: Readonly<Record<string, number>>;
+	readonly cost: {
+		readonly input: number;
+		readonly output: number;
+		readonly cacheRead: number;
+		readonly cacheWrite: number;
+	};
 }
 
 /** The response of `GET /v1/models`. */
