@@ -76,9 +76,8 @@ export interface OpenHarnessOptions {
 	/**
 	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
 	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
-	 * every field a caller sets here wins over the config value — the
-	 * hermetic-test seam other settings (retry, stream) pass through
-	 * untouched.
+	 * every field a caller sets here wins over the config value. Other settings
+	 * (retry, stream) pass through untouched — this is the hermetic-test seam.
 	 */
 	readonly settings?: HarnessSettings;
 	/**

@@ -69,6 +69,10 @@ export const DEFAULT_WORKSPACE_PATH = "/home/sigrun";
  * `DEFAULT_COMPACTION_POLICY`. Restated here rather than imported so the
  * equality is a checked decision (`test/compaction.test.ts` fails loudly if
  * upstream retunes and sigrun silently follows).
+ *
+ * These values presume a large-context default model (spec §3.1: "tuned
+ * against the default model's window"); a small-window `SIGRUN_MODEL`
+ * deployment must retune via `SIGRUN_COMPACTION_*`.
  */
 export const DEFAULT_COMPACTION: CompactionPolicy = {
 	enabled: true,
