@@ -64,9 +64,11 @@ const SETTLE_DEADLINE_MS = 30_000;
 /** The final answer the verify pass's fresh provider serves. */
 const RECOVERED_ANSWER = "recovered final answer after mid-tool kill";
 
-/** Count one execution of `tool` in its marker file (one line per run). */
-function countExecution(dir: string, tool: string): void {
-	appendFileSync(join(dir, `exec-${tool}.count`), "x\n");
+/** Count one execution of `tool` in its marker file (one line per run,
+ * carrying the arguments so a REPLAYED execution proves it received the
+ * original arguments, not a reconstructed/default set). */
+function countExecution(dir: string, tool: string, argsNote: string): void {
+	appendFileSync(join(dir, `exec-${tool}.count`), `${argsNote}\n`);
 }
 
 /** The line count of a tool's execution marker file (0 when absent). */
@@ -101,7 +103,7 @@ function scenarioTools(dir: string, mode: "setup" | "verify") {
 		parameters: Type.Object({ note: Type.String() }),
 		replay: "unsafe",
 		async execute(args) {
-			countExecution(dir, UNSAFE_TOOL);
+			countExecution(dir, UNSAFE_TOOL, args.note);
 			await blockOrReturn(UNSAFE_TOOL);
 			return {
 				content: [{ type: "text", text: `${UNSAFE_TOOL} executed (${mode}) with ${args.note}` }],
@@ -114,7 +116,7 @@ function scenarioTools(dir: string, mode: "setup" | "verify") {
 		parameters: Type.Object({ note: Type.String() }),
 		replay: "safe",
 		async execute(args) {
-			countExecution(dir, SAFE_TOOL);
+			countExecution(dir, SAFE_TOOL, args.note);
 			await blockOrReturn(SAFE_TOOL);
 			return {
 				content: [{ type: "text", text: `${SAFE_TOOL} executed (${mode}) with ${args.note}` }],
@@ -258,6 +260,20 @@ async function main(): Promise<never> {
 		return verifyFailed(
 			`safe tool ${SAFE_TOOL} execution count ${safeExecutions} outside the expected 1–2`,
 		);
+	}
+	// Argument fidelity: when the safe tool RE-executed, the replay must have
+	// received the ORIGINAL arguments (recovery re-runs from the durable
+	// intent checkpoint — a reconstructed/default argument set would prove
+	// the checkpoint contents wrong). Every marker line carries the note.
+	if (safeExecutions === 2) {
+		const lines = (await readFile(join(dir, `exec-${SAFE_TOOL}.count`), "utf8"))
+			.split("\n")
+			.filter((line) => line.length > 0);
+		if (lines.some((line) => line !== "lookup")) {
+			return verifyFailed(
+				`safe tool re-executed with wrong arguments (marker lines: ${JSON.stringify(lines)})`,
+			);
+		}
 	}
 
 	// Visible state for the unsafe call: its result entry must be an error
