@@ -23,11 +23,12 @@ test(
 	{ timeout: 120_000 },
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-battery-tool-"));
+		let setup: ReturnType<typeof spawnDriver> | undefined;
 		try {
 			const driverPath = join(DRIVER_DIR, "mid-tool-call.ts");
 			// Setup pass: boot with both tools registered, submit; both tools
 			// start (parallel round), print their markers, and block.
-			const setup = spawnDriver(driverPath, ["setup", dir]);
+			setup = spawnDriver(driverPath, ["setup", dir]);
 			await setup.waitForLine("READY", BOOT_DEADLINE_MS);
 			await setup.waitForLine("TOOL_RUNNING:unsafe_write", KILL_MARKER_DEADLINE_MS);
 			await setup.waitForLine("TOOL_RUNNING:safe_read", KILL_MARKER_DEADLINE_MS);
@@ -58,6 +59,9 @@ test(
 			expect(payload.settledStatus).toBe("done");
 			expect(payload.finalAnswers).toBe(1);
 		} finally {
+			// Reap the setup driver promptly on the failure path (on the happy
+			// path it is already dead; kill() is best-effort and never throws).
+			await setup?.kill().catch(() => undefined);
 			// The test owns the tmpdir lifecycle.
 			await rm(dir, { recursive: true, force: true });
 		}
