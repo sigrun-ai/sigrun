@@ -1,18 +1,19 @@
 /**
- * §5 wire serializers (Task 9a).
+ * §5 wire serializers (Tasks 9a–9d).
  *
  * Spec §5: the server serves pi-durable's NATIVE views, not a bespoke
  * endpoint list — so the conversation wire payload IS the `ConversationView`
  * (`{ conversation, entries, docs }`; JSON-safe by construction: JsonObject
- * docs, EntryRecords whose `model` messages are plain pi-ai JSON). The
- * captured-schema fixture (`schema-fixture.ts`, `view-schema.json`) pins this
- * shape; `test/schema-drift.test.ts` trips on upstream drift.
+ * docs, EntryRecords whose `model` messages are plain pi-ai JSON) PLUS the
+ * sigrun-side `steer` field (T9d, below). The captured-schema fixture
+ * (`schema-fixture.ts`, `view-schema.json`) pins the UPSTREAM shape only —
+ * `steer` is a sigrun projection, not upstream drift — and
+ * `test/schema-drift.test.ts` trips on upstream drift while asserting the
+ * wire is exactly view + `steer`.
  *
- * `serializeConversationView` is therefore a structural passthrough today —
- * the single chokepoint where per-conversation projections land in later
- * slices (T9d adds the `steer` field, T9b/T9c surface submissions and
- * approvals). Every §5 endpoint that returns a conversation goes through it,
- * so the fixture continues to describe the wire.
+ * `serializeConversationView` is the single chokepoint every §5 endpoint
+ * that returns a conversation goes through — including each SSE watch
+ * frame (T9d) — so the fixture continues to describe the wire.
  */
 
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -23,13 +24,62 @@ import type {
 } from "@earendil-works/pi-durable";
 
 /**
- * One conversation as served over the wire. Returned as-is: upstream view
- * frames are immutable and JSON-safe, so Fastify's JSON serialization of the
- * reference is exact — no copy, no projection, nothing to drift from the
- * fixture.
+ * The per-conversation steer field (spec §5: "reflecting submit-while-busy
+ * queue semantics"). `busy` = a run is live; `queued` = submissions waiting
+ * in the inbox behind it.
  */
-export function serializeConversationView(view: ConversationView): ConversationView {
-	return view;
+export interface SteerField {
+	readonly busy: boolean;
+	readonly queued: number;
+}
+
+/**
+ * One conversation as served over the wire: the upstream view plus the
+ * derived `steer` field (see {@link serializeConversationView}).
+ */
+export type ConversationViewWire = ConversationView & {
+	readonly steer: SteerField;
+};
+
+/**
+ * Derive the steer field from the view's own docs — no extra inspect()/
+ * storage call per frame (the watch fires per revision; the docs are
+ * already in the frame).
+ *
+ * - `busy`: `docs["pi.live"].run` present — LiveState's run control
+ *   (taskId + inputs) exists "present exactly while busy"
+ *   (pi-durable live.d.ts).
+ * - `queued`: `docs["pi.inbox"].items` length — the built-in queue of
+ *   submissions waiting for a boundary; absent doc = 0.
+ */
+function deriveSteer(view: ConversationView): SteerField {
+	// docs is an untyped Record<string, JsonObject>; both shapes are
+	// narrowed structurally (unexpected shapes fail soft to idle — upstream
+	// drift would surface in the schema fixture first).
+	const live = view.docs["pi.live"];
+	const busy =
+		typeof live === "object" &&
+		live !== null &&
+		typeof (live as { run?: unknown }).run === "object";
+	const inbox = view.docs["pi.inbox"];
+	const items =
+		typeof inbox === "object" && inbox !== null
+			? (inbox as { items?: unknown }).items
+			: undefined;
+	const queued = Array.isArray(items) ? items.length : 0;
+	return { busy, queued };
+}
+
+/**
+ * Serialize one conversation view onto the wire: the upstream view plus the
+ * derived `steer` field. A shallow spread (upstream frames are immutable
+ * and JSON-safe; `conversation`/`entries`/`docs` are shared by reference —
+ * the projection adds one key, it never rewrites upstream state).
+ */
+export function serializeConversationView(
+	view: ConversationView,
+): ConversationViewWire {
+	return { ...view, steer: deriveSteer(view) };
 }
 
 /** One list item of `GET /v1/conversations` (Task 9a: ids, not full views). */
@@ -49,7 +99,7 @@ export interface ConversationList {
 /** The create response of `POST /v1/conversations`. */
 export interface ConversationCreateResponse {
 	readonly id: number;
-	readonly view: ConversationView;
+	readonly view: ConversationViewWire;
 }
 
 /**

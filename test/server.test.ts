@@ -110,6 +110,8 @@ describe("POST /v1/conversations", () => {
 		expect(body.view.docs["pi.agent"]).toEqual({
 			model: { provider: "faux", modelId: "m" },
 		});
+		// T9d: every wire view carries the derived steer field (idle here).
+		expect(body.view.steer).toEqual({ busy: false, queued: 0 });
 	});
 
 	test("each create returns a distinct conversation", async () => {
@@ -198,6 +200,8 @@ describe("GET /v1/conversations/:id", () => {
 		expect(kinds).toContain("pi.user");
 		expect(kinds).toContain("pi.assistant");
 		expect(view.docs["pi.usage"].models["faux/m"].input).toBeGreaterThan(0);
+		// The settled turn is complete: steer back to idle on the wire view.
+		expect(view.steer).toEqual({ busy: false, queued: 0 });
 	});
 
 	test("404s for an unknown conversation id", async () => {

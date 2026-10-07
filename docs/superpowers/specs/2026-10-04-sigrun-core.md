@@ -514,9 +514,16 @@ when M1 runs** (the named-verifications list below is their checklist).
   position-in-queue; the webui renders the queue as read-only).
 - Journal mode pi-durable actually sets on its SQLite storage (fallback: pin WAL +
   `synchronous=NORMAL` in sigrun's open path).
-- **Watch-stream reconnect replay** — whether upstream `watch()`'s cursor replays missed
-  frames plus a snapshot as §5 states (fallback: sigrun serves its own per-conversation
-  ring buffer).
+- **Watch-stream reconnect replay** — VERIFIED by implementation (T9d, 2026-10-07,
+  type-verified against pinned 1.0.2): every `watch()` frame is a FULL immutable
+  `ConversationView` (`WatchHandle<ConversationView>` delivers complete state, not
+  deltas), so the §5 reconnect contract "fresh snapshot plus missed frames" collapses
+  to "fresh snapshot on (re)connect" — there is nothing a missed intermediate frame
+  could lose that the next full frame (or the connect-time snapshot from
+  `watch.value`) does not already carry. `Last-Event-ID` is accepted and ignored.
+  The per-conversation ring-buffer fallback is NOT taken. Live-verified end-to-end by
+  `test/sse-view.test.ts` (reconnect test: second connection's snapshot reflects a
+  commit made while disconnected, no replay mechanism involved).
 - `abortSubmission` idempotence under concurrent aborts.
 - **`entries()` reaches compaction-dropped entries** (currently docs-sourced; fallback:
   degenerate recall reads the pinned-version SQLite schema directly, covered by the
