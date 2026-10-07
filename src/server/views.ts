@@ -16,7 +16,11 @@
  */
 
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
+import type {
+	ConversationView,
+	JsonObject,
+	ModelRef,
+} from "@earendil-works/pi-durable";
 
 /**
  * One conversation as served over the wire. Returned as-is: upstream view
@@ -130,3 +134,84 @@ export type AbortResponse =
 	| { readonly result: "aborted"; readonly submissionId: number }
 	| { readonly result: "already_placed"; readonly submissionId: number }
 	| { readonly result: "settled"; readonly submissionId: number };
+
+/**
+ * One pending approval in `GET /v1/conversations/:id/approvals` (T9c-ii),
+ * joined from the LiveDoc tool slot (callId, toolName) and the
+ * `ApprovalsDoc[callId]` record (status, arguments, requestedAt). A slot
+ * live with no decision record yet is `pending` and carries no `arguments`
+ * (the loader wires no `onPending` sink, so the record lands on first
+ * decide).
+ */
+export interface ApprovalSummary {
+	readonly callId: string;
+	readonly toolName: string;
+	readonly status: "pending";
+	readonly arguments?: JsonObject;
+	readonly requestedAt?: number;
+}
+
+/** The list response of `GET /v1/conversations/:id/approvals` (T9c-ii). */
+export interface ApprovalList {
+	readonly approvals: readonly ApprovalSummary[];
+}
+
+/** The response of `POST /v1/conversations/:id/approvals/:approvalId` (T9c-ii). */
+export interface ApprovalDecideResponse {
+	readonly callId: string;
+	readonly status: "allow" | "deny";
+}
+
+/**
+ * One pending approval in `GET /v1/conversations/:id/approvals` (T9c-ii),
+ * joined from the LiveDoc tool slot (callId, toolName) and the
+ * `ApprovalsDoc[callId]` record (status, arguments, requestedAt). A slot
+ * live with no decision record yet is `pending` and carries no `arguments`
+ * (the loader wires no `onPending` sink, so the record lands on first
+ * decide).
+ */
+export interface ApprovalSummary {
+	readonly callId: string;
+	readonly toolName: string;
+	readonly status: "pending";
+	readonly arguments?: JsonObject;
+	readonly requestedAt?: number;
+}
+
+/** The list response of `GET /v1/conversations/:id/approvals` (T9c-ii). */
+export interface ApprovalList {
+	readonly approvals: readonly ApprovalSummary[];
+}
+
+/** The response of `POST /v1/conversations/:id/approvals/:approvalId` (T9c-ii). */
+export interface ApprovalDecideResponse {
+	readonly callId: string;
+	readonly status: "allow" | "deny";
+}
+
+/**
+ * One pending approval in `GET /v1/conversations/:id/approvals` (T9c-ii),
+ * joined from the LiveDoc tool slot (callId, toolName) and the
+ * `ApprovalsDoc[callId]` record (status, arguments, requestedAt). A slot
+ * live with no decision record yet is `pending` and carries no `arguments`
+ * (the loader wires no `onPending` sink, so the record lands on first
+ * decide).
+ */
+export interface ApprovalSummary {
+	readonly callId: string;
+	readonly toolName: string;
+	readonly status: "pending";
+	readonly arguments?: JsonObject;
+	readonly requestedAt?: number;
+}
+
+/** The list response of `GET /v1/conversations/:id/approvals` (T9c-ii). */
+export interface ApprovalList {
+	readonly approvals: readonly ApprovalSummary[];
+}
+
+/** The response of `POST /v1/conversations/:id/approvals/:approvalId` (T9c-ii). */
+export interface ApprovalDecideResponse {
+	readonly callId: string;
+	readonly status: "allow" | "deny";
+}
