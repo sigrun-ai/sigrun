@@ -341,6 +341,11 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		const empty = await patchMeta(app, root.id, {});
 		expect(empty.statusCode).toBe(400);
 		expect(empty.json()).toEqual({ error: "invalid_body" });
+		// An empty draft sub-object changes nothing either — same client-error
+		// rule as the top-level empty body (fail-loud consistency).
+		const emptyDraft = await patchMeta(app, root.id, { draft: {} });
+		expect(emptyDraft.statusCode).toBe(400);
+		expect(emptyDraft.json()).toEqual({ error: "invalid_body" });
 	});
 
 	test("404s for an unknown conversation id", async () => {
