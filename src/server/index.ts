@@ -471,7 +471,14 @@ export async function createServer(
 			maxTokens: model.maxTokens,
 			reasoning: model.reasoning,
 			input: model.input,
-			cost: model.cost as unknown as Record<string, number>,
+			// Project the four rate fields explicitly (ModelCostRates); `tiers` is
+			// dropped for v1 (the picker doesn't use them) — no unsound cast.
+			cost: {
+				input: model.cost.input,
+				output: model.cost.output,
+				cacheRead: model.cost.cacheRead,
+				cacheWrite: model.cost.cacheWrite,
+			},
 		}));
 		return { models };
 	});
