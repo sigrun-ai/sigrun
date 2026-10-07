@@ -23,11 +23,19 @@ import {
 import { loadConfig } from "../../../src/config.js";
 import { openHarness, type OpenedHarness } from "../../../src/harness/boot.js";
 import type { ProviderContributor } from "../../../src/harness/providers/index.js";
+import type { HarnessSettings } from "@earendil-works/pi-durable";
 
 /** The scenario state the setup pass records for the verify pass. */
 export interface ScenarioState {
 	/** The submission the scenario killed mid-flight. */
 	readonly submissionId: string | number;
+	/** Item 3: the background-compaction task the kill interrupted. */
+	readonly compactionTaskId?: string | number;
+	/** Item 5: the second (queued) submission and what the default
+	 * `whenBusy` admission was observed to do. */
+	readonly secondSubmissionId?: string | number;
+	readonly observedDefaultMode?: string;
+	readonly secondInitialStatus?: string;
 }
 
 /**
@@ -84,12 +92,15 @@ export async function writeScenarioState(
  * Boot a REAL harness on `<dir>/sigrun.db` with the faux provider — the same
  * registration pattern as `test/backup.test.ts`'s `bootHarness` (T11). The
  * faux options pass `tokensPerSecond`/`tokenSize` through so a driver can
- * slow streaming deterministically (the kill-timing lever).
+ * slow streaming deterministically (the kill-timing lever). `settings` is
+ * the OpenHarnessOptions.settings seam (T8): caller-set HarnessSettings
+ * fields win over config — the compaction-policy lever for item 3.
  */
 export async function bootScenarioHarness(
 	dir: string,
 	responses: FauxResponseStep[],
 	fauxOptions?: { tokensPerSecond?: number; tokenSize?: { min?: number; max?: number } },
+	settings?: HarnessSettings,
 ): Promise<OpenedHarness> {
 	const faux = fauxProvider({
 		provider: "faux",
@@ -106,7 +117,11 @@ export async function bootScenarioHarness(
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
-	return openHarness(config, { extensions: [contributor], env: {} });
+	return openHarness(config, {
+		extensions: [contributor],
+		env: {},
+		...(settings === undefined ? {} : { settings }),
+	});
 }
 
 /** Await `promise` but never longer than `ms`; fail loud on the deadline. */
