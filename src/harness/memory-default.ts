@@ -37,8 +37,3 @@ export const noopMemoryExtension = defineExtension({
 		section(MEMORY_SECTION_KEY, () => MEMORY_PLACEHOLDER),
 	],
 });
-
-/** Build the no-op memory extension (shape symmetry with the loader contract). */
-export function createNoopMemory() {
-	return { extension: noopMemoryExtension };
-}
