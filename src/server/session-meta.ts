@@ -189,6 +189,11 @@ export function validateSessionMetaPatch(
 							return { error: "invalid_field", field: `draft.${subKey}` };
 					}
 				}
+				// An empty draft sub-object changes nothing — the same client-error
+				// rule the top-level empty body gets (fail-loud consistency).
+				if (Object.keys(sub).length === 0) {
+					return { error: "invalid_body" };
+				}
 				patch.draft = sub;
 				break;
 			}
