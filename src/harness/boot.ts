@@ -63,9 +63,11 @@ export interface OpenedHarness {
 /** Optional `openHarness` inputs beyond the parsed config. */
 export interface OpenHarnessOptions {
 	/**
-	 * Deploy-time extension list (spec §4.1). Provider contributors are
-	 * collected before `Harness.open()`; extension *loading* from disk is
-	 * later work, so the default empty list boots the env default provider.
+	 * PROVIDER contributors (Task 2 seam) — NOT the extension package list.
+	 * These feed the Models collector; they are distinct from the deployed
+	 * extension *packages* loaded from `config.extensions` by the loader
+	 * (Task 5.5). (Renaming this field to `providerContributors` is a queued
+	 * cleanup to end the collision with `config.extensions`.)
 	 */
 	readonly extensions?: readonly ProviderContributor[];
 	/** Environment the provider collector reads; defaults to `process.env`. */

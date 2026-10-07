@@ -3,7 +3,7 @@
  *
  * Extensions are EXTERNAL packages (separate repos — the
  * extension-separation ruling). `SIGRUN_EXTENSIONS` carries a comma-separated
- * list of package specifiers (npm names or `file:` URLs); the loader
+ * specifiers (npm package names or resolvable paths); the loader
  * dynamic-imports each, resolves the sigrun extension-package contract, and
  * installs the pi-durable `Extension` into the registry *before*
  * `Harness.open` reads it.
@@ -95,8 +95,9 @@ export function resolveExtension(module: ExtensionModule): Extension | undefined
 /**
  * Load and install every configured extension, quarantining failures.
  *
- * @param specifiers package specifiers from `SIGRUN_EXTENSIONS` (npm names or
- * `file:` URLs) — or the test seam's explicit list.
+ * @param specifiers package specifiers from `SIGRUN_EXTENSIONS` (npm names,
+ * absolute/relative paths, or `file://` URLs) — or the test seam's explicit
+ * list.
  * @param registry the application-owned registry; install publishes at once,
  * so extensions land before `Harness.open` reads the registry.
  * @returns the outcome list, one entry per specifier, in order — never
