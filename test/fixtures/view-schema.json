@@ -1,0 +1,340 @@
+{
+	"kind": "object",
+	"fields": {
+		"conversation": {
+			"kind": "object",
+			"fields": {
+				"id": {
+					"kind": "number"
+				}
+			}
+		},
+		"entries": {
+			"kind": "array",
+			"variants": [
+				{
+					"kind": "object",
+					"fields": {
+						"model": {
+							"kind": "array",
+							"variants": [
+								{
+									"kind": "object",
+									"fields": {
+										"role": {
+											"kind": "string"
+										},
+										"content": {
+											"kind": "array",
+											"variants": [
+												{
+													"kind": "object",
+													"fields": {
+														"type": {
+															"kind": "string"
+														},
+														"text": {
+															"kind": "string"
+														}
+													}
+												}
+											]
+										},
+										"api": {
+											"kind": "string"
+										},
+										"provider": {
+											"kind": "string"
+										},
+										"model": {
+											"kind": "string"
+										},
+										"usage": {
+											"kind": "object",
+											"fields": {
+												"input": {
+													"kind": "number"
+												},
+												"output": {
+													"kind": "number"
+												},
+												"cacheRead": {
+													"kind": "number"
+												},
+												"cacheWrite": {
+													"kind": "number"
+												},
+												"totalTokens": {
+													"kind": "number"
+												},
+												"cost": {
+													"kind": "object",
+													"fields": {
+														"input": {
+															"kind": "number"
+														},
+														"output": {
+															"kind": "number"
+														},
+														"cacheRead": {
+															"kind": "number"
+														},
+														"cacheWrite": {
+															"kind": "number"
+														},
+														"total": {
+															"kind": "number"
+														}
+													}
+												}
+											}
+										},
+										"stopReason": {
+											"kind": "string"
+										},
+										"timestamp": {
+											"kind": "number"
+										}
+									}
+								}
+							]
+						},
+						"kind": {
+							"kind": "string"
+						},
+						"id": {
+							"kind": "number"
+						},
+						"conversationId": {
+							"kind": "number"
+						},
+						"byTaskId": {
+							"kind": "number"
+						}
+					}
+				},
+				{
+					"kind": "object",
+					"fields": {
+						"model": {
+							"kind": "array",
+							"variants": [
+								{
+									"kind": "object",
+									"fields": {
+										"role": {
+											"kind": "string"
+										},
+										"content": {
+											"kind": "string"
+										},
+										"sections": {
+											"kind": "object",
+											"fields": {
+												"long-term-memory": {
+													"kind": "string"
+												}
+											}
+										},
+										"toolsAdded": {
+											"kind": "array",
+											"variants": [
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"name": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												}
+											]
+										},
+										"timestamp": {
+											"kind": "number"
+										}
+									}
+								}
+							]
+						},
+						"kind": {
+							"kind": "string"
+						},
+						"id": {
+							"kind": "number"
+						},
+						"conversationId": {
+							"kind": "number"
+						},
+						"byTaskId": {
+							"kind": "number"
+						}
+					}
+				},
+				{
+					"kind": "object",
+					"fields": {
+						"model": {
+							"kind": "array",
+							"variants": [
+								{
+									"kind": "object",
+									"fields": {
+										"role": {
+											"kind": "string"
+										},
+										"content": {
+											"kind": "string"
+										},
+										"timestamp": {
+											"kind": "number"
+										}
+									}
+								}
+							]
+						},
+						"kind": {
+							"kind": "string"
+						},
+						"id": {
+							"kind": "number"
+						},
+						"conversationId": {
+							"kind": "number"
+						}
+					}
+				}
+			]
+		},
+		"docs": {
+			"kind": "object",
+			"fields": {
+				"pi.agent": {
+					"kind": "object",
+					"fields": {
+						"model": {
+							"kind": "object",
+							"fields": {
+								"provider": {
+									"kind": "string"
+								},
+								"modelId": {
+									"kind": "string"
+								}
+							}
+						}
+					}
+				},
+				"pi.live": {
+					"kind": "object",
+					"fields": {}
+				},
+				"pi.inbox": {
+					"kind": "object",
+					"fields": {
+						"items": {
+							"kind": "array",
+							"variants": []
+						}
+					}
+				},
+				"pi.provider": {
+					"kind": "object",
+					"fields": {
+						"sessionId": {
+							"kind": "string"
+						}
+					}
+				},
+				"pi.usage": {
+					"kind": "object",
+					"fields": {
+						"models": {
+							"kind": "object",
+							"fields": {
+								"faux/m": {
+									"kind": "object",
+									"fields": {
+										"input": {
+											"kind": "number"
+										},
+										"output": {
+											"kind": "number"
+										},
+										"cacheRead": {
+											"kind": "number"
+										},
+										"cacheWrite": {
+											"kind": "number"
+										},
+										"totalTokens": {
+											"kind": "number"
+										},
+										"cost": {
+											"kind": "object",
+											"fields": {
+												"input": {
+													"kind": "number"
+												},
+												"output": {
+													"kind": "number"
+												},
+												"cacheRead": {
+													"kind": "number"
+												},
+												"cacheWrite": {
+													"kind": "number"
+												},
+												"total": {
+													"kind": "number"
+												}
+											}
+										}
+									}
+								}
+							}
+						},
+						"tools": {
+							"kind": "object",
+							"fields": {}
+						}
+					}
+				}
+			}
+		}
+	}
+}
