@@ -36,7 +36,6 @@ import type {
 	Conversation,
 	ConversationId,
 	ConversationView,
-	JsonObject,
 	ModelRef,
 	ToolSlot,
 } from "@earendil-works/pi-durable";
