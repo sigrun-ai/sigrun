@@ -13,7 +13,8 @@
  * .../files`, `GET .../files/content`, `GET /v1/models` (T9b); `POST
  * .../configure`, `POST .../abort` (T9c-i); `GET .../approvals`, `POST
  * .../approvals/:approvalId` (T9c-ii); `GET .../stream` — the SSE view
- * stream (T9d); `GET /v1/meta` real health aggregation (T9e).
+ * stream (T9d); `GET /v1/meta` real health aggregation (T9e); `GET/PATCH
+ * .../meta` — the session-meta sidebar resource (T10).
  *
  * NOTE (T9d): the SSE endpoint is exercised over a REAL socket — it hijacks
  * the reply and writes raw frames, which `app.inject()` cannot observe
@@ -56,6 +57,13 @@ import {
 	parseSubmissionInput,
 	resolveParts,
 } from "./content-parts.js";
+import {
+	applySessionMetaPatch,
+	DEFAULT_SESSION_META,
+	SessionMetaDoc,
+	validateSessionMetaPatch,
+	type SessionMeta,
+} from "./session-meta.js";
 import {
 	serializeConversationView,
 	type AbortResponse,
@@ -705,6 +713,80 @@ export async function createServer(
 			// `already_placed`/`settled` are still 200: abort is idempotent and
 			// the body reports which state the submission was found in.
 			return { result, submissionId: active.id };
+		},
+	);
+
+	// Session meta: the conversation-scoped sidebar resource (T10, spec §5).
+	// GET serves the doc — or the defaults when it was never written; a read
+	// NEVER materializes the doc (defaults are free; a write-per-read would
+	// churn a doc revision on every sidebar poll). PATCH merges per the spec
+	// table (null clears, draft sub-merges, tagged replaces wholesale) inside
+	// ONE commit callback — the read-modify-write pattern keeps concurrent
+	// patches from losing each other's fields (the mutation line serializes
+	// commits, mirroring the T9c-ii decide pattern).
+	app.get(
+		"/v1/conversations/:id/meta",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<SessionMeta> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			// Absent doc → DEFAULT_SESSION_META: served, not written.
+			return (
+				(await opened.harness.snapshot(
+					SessionMetaDoc,
+					conversation.id,
+					BACKGROUND_CONTEXT,
+				)) ?? DEFAULT_SESSION_META
+			);
+		},
+	);
+
+	app.patch(
+		"/v1/conversations/:id/meta",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<SessionMeta> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			// Validate FIRST — a rejected patch never touches the doc.
+			const validated = validateSessionMetaPatch(request.body);
+			if ("error" in validated) {
+				return await reply.code(400).send(validated);
+			}
+			// Read-modify-write inside ONE commit: tx.doc materializes the doc
+			// (initial()) when absent, the patch mutates the tracked draft, and the
+			// return value — a plain projection, since the draft handle dies at
+			// callback return — is exactly what the commit stores.
+			return await conversation.commit(async (tx) => {
+				const draft = await tx.doc(SessionMetaDoc, conversation.id);
+				applySessionMetaPatch(draft, validated);
+				return {
+					pinned: draft.pinned,
+					tagged: [...draft.tagged],
+					archived: draft.archived,
+					source: draft.source,
+					draft: {
+						text: draft.draft.text,
+						attachments: [...draft.draft.attachments],
+					},
+					...(draft.owner === undefined ? {} : { owner: draft.owner }),
+				};
+			}, BACKGROUND_CONTEXT);
 		},
 	);
 
