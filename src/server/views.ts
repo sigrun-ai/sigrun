@@ -15,7 +15,8 @@
  * so the fixture continues to describe the wire.
  */
 
-import type { ConversationView } from "@earendil-works/pi-durable";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ConversationView, ModelRef } from "@earendil-works/pi-durable";
 
 /**
  * One conversation as served over the wire. Returned as-is: upstream view
@@ -116,3 +117,16 @@ export interface ModelEntry {
 export interface ModelsResponse {
 	readonly models: readonly ModelEntry[];
 }
+
+/** The configured agent surface `POST .../configure` returns (T9c-i). */
+export interface ConfigureResponse {
+	/** Absent when unset — no model means no generation. */
+	readonly model?: ModelRef;
+	readonly thinkingLevel: ModelThinkingLevel;
+}
+
+/** The result mapping `POST .../abort` returns (T9c-i). */
+export type AbortResponse =
+	| { readonly result: "aborted"; readonly submissionId: number }
+	| { readonly result: "already_placed"; readonly submissionId: number }
+	| { readonly result: "settled"; readonly submissionId: number };

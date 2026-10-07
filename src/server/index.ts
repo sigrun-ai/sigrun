@@ -10,8 +10,9 @@
  * Endpoints in THIS slice: `POST /v1/conversations`, `GET
  * /v1/conversations`, `GET /v1/conversations/:id`, `GET /v1/meta` (T9a);
  * `POST .../submissions` (content-part resolution), `POST .../uploads`, `GET
- * .../files`, `GET .../files/content`, `GET /v1/models` (T9b). Approvals,
- * configure, abort, and SSE arrive in later slices (T9c–T9e).
+ * .../files`, `GET .../files/content`, `GET /v1/models` (T9b); `POST
+ * .../configure`, `POST .../abort` (T9c-i). Approvals and SSE arrive in
+ * later slices (T9c-ii, T9d–T9e).
  *
  * **Conversation listing gap (v1):** pi-durable's `Harness` has no
  * conversation enumeration (its storage has `scanConversations`, but the
@@ -28,7 +29,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
 	Conversation,
 	ConversationId,
+	ModelRef,
 } from "@earendil-works/pi-durable";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
@@ -40,8 +43,10 @@ import {
 } from "./content-parts.js";
 import {
 	serializeConversationView,
+	type AbortResponse,
 	type ConversationCreateResponse,
 	type ConversationList,
+	type ConfigureResponse,
 	type FileContentResponse,
 	type FileListResponse,
 	type ModelEntry,
@@ -49,6 +54,17 @@ import {
 	type SubmissionResponse,
 	type UploadResponse,
 } from "./views.js";
+
+/** The `thinking` values `configure` accepts (pi-ai `ModelThinkingLevel`). */
+const THINKING_LEVELS: readonly string[] = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
 
 /** Integer path params for `/v1/conversations/:id`. */
 const ID_PARAMS_SCHEMA = {
@@ -303,6 +319,139 @@ export async function createServer(
 			// `wait()` resolves with the settled record either way.
 			const settled = await submission.wait(BACKGROUND_CONTEXT);
 			return await reply.code(202).send(settled);
+		},
+	);
+
+	// Configure: change the conversation's model and/or thinking level (T9c-i).
+	// v1 accepts EXACTLY `model` + `thinking` — any other key is a fail-loud
+	// 400 (the agent's other knobs are not wire surface yet).
+	app.post(
+		"/v1/conversations/:id/configure",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<ConfigureResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const body = request.body as Record<string, unknown> | undefined;
+			if (
+				body === undefined ||
+				typeof body !== "object" ||
+				Array.isArray(body)
+			) {
+				return await reply.code(400).send({ error: "invalid_body" });
+			}
+			const unknownKey = Object.keys(body).find(
+				(key) => key !== "model" && key !== "thinking",
+			);
+			if (unknownKey !== undefined) {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: unknownKey });
+			}
+			const model = body.model;
+			const thinking = body.thinking;
+			if (model === undefined && thinking === undefined) {
+				// A configure that changes nothing is a client error, not a no-op.
+				return await reply.code(400).send({ error: "invalid_body" });
+			}
+			// `model` is `"provider/modelId"`, split on the FIRST `/` (a modelId
+			// may itself contain slashes); both parts must be non-empty.
+			let parsedModel: ModelRef | undefined;
+			if (model !== undefined) {
+				if (typeof model !== "string" || !model.includes("/")) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: "model" });
+				}
+				const slash = model.indexOf("/");
+				const provider = model.slice(0, slash);
+				const modelId = model.slice(slash + 1);
+				if (provider.length === 0 || modelId.length === 0) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: "model" });
+				}
+				parsedModel = { provider, modelId };
+			}
+			if (
+				thinking !== undefined &&
+				(typeof thinking !== "string" ||
+					!THINKING_LEVELS.includes(thinking))
+			) {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: "thinking" });
+			}
+			await conversation.configure(
+				{
+					...(parsedModel === undefined ? {} : { model: parsedModel }),
+					...(thinking === undefined
+						? {}
+						: { thinkingLevel: thinking as ModelThinkingLevel }),
+				},
+				BACKGROUND_CONTEXT,
+			);
+			// Read the agent back and project the configured surface only —
+			// resolved extensions/tools/sections stay server-side.
+			const agent = await conversation.agent(BACKGROUND_CONTEXT);
+			return {
+				...(agent.model === undefined ? {} : { model: agent.model }),
+				thinkingLevel: agent.thinkingLevel,
+			};
+		},
+	);
+
+	// Abort: withdraw/settle the conversation's active submission (T9c-i).
+	// `inspect()` is the read-only union of placed run inputs and queued inbox
+	// items (all conversations); filtered to this conversation, the LOWEST id
+	// is the active one — anything queued behind a busy conversation was
+	// admitted later and has a higher id.
+	app.post(
+		"/v1/conversations/:id/abort",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<AbortResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const inspection = await opened.harness.inspect(BACKGROUND_CONTEXT);
+			const active = inspection.submissions
+				.filter((s) => s.conversationId === conversation.id)
+				.at(0);
+			if (active === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "no_active_submission" });
+			}
+			const result = await opened.harness.abortSubmission(
+				active.id,
+				BACKGROUND_CONTEXT,
+				conversation.id,
+			);
+			// `not_found` here means the submission settled between `inspect` and
+			// `abort` — the conversation is no longer busy, so the honest answer
+			// is the same as nothing-active.
+			if (result === "not_found") {
+				return await reply
+					.code(404)
+					.send({ error: "no_active_submission" });
+			}
+			// `already_placed`/`settled` are still 200: abort is idempotent and
+			// the body reports which state the submission was found in.
+			return { result, submissionId: active.id };
 		},
 	);
 
