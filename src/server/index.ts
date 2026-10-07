@@ -446,7 +446,15 @@ export async function createServer(
 				raw.end();
 			};
 			raw.on("close", () => finish(false));
-			void watch.closed.then(() => finish(true));
+			// Upstream resolves `closed` with a WatchEnd for every terminal
+			// state (failures included); a rejection would be an upstream
+			// contract violation — catch it so one stream's anomaly ends that
+			// stream instead of taking the process down as an unhandled
+			// rejection.
+			void watch.closed.then(
+				() => finish(true),
+				() => finish(true),
+			);
 			// The client may have disconnected while the watch was being
 			// acquired (before the close listener existed): `destroyed` covers
 			// that window — stop the just-acquired watch instead of leaking it.
