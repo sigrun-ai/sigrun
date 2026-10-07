@@ -36,6 +36,8 @@ export interface SigrunConfig {
 	storagePath: string;
 	models: SigrunModels;
 	extensionsDir: string;
+	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS`. */
+	extensions: readonly string[];
 	port: number;
 	/** Root of the static local workspace (spec §4.5 `defaultWorkspace`). */
 	workspace: LocalWorkspace;
@@ -93,12 +95,20 @@ export function parseModelSpec(spec: string): SigrunModels {
  *
  * `SIGRUN_MODEL` is required and selects the default model (see
  * `parseModelSpec` for the format). Optional overrides:
- * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_PORT`,
- * `SIGRUN_WORKSPACE_PATH`.
+ * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_EXTENSIONS`,
+ * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`.
  *
  * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, and
  * naming `SIGRUN_PORT` when it is set but not a positive integer.
  */
+export function parseExtensionList(raw: string | undefined): string[] {
+	if (raw === undefined || raw.trim() === "") return [];
+	return raw
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry !== "");
+}
+
 export function loadConfig(env: Env): SigrunConfig {
 	const modelSpec = env.SIGRUN_MODEL?.trim();
 	if (!modelSpec) {
@@ -122,6 +132,7 @@ export function loadConfig(env: Env): SigrunConfig {
 		storagePath: env.SIGRUN_STORAGE_PATH || DEFAULT_STORAGE_PATH,
 		models,
 		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || DEFAULT_EXTENSIONS_DIR,
+		extensions: parseExtensionList(env.SIGRUN_EXTENSIONS),
 		port,
 		workspace: {
 			type: "local",
