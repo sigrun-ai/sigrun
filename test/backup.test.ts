@@ -21,7 +21,6 @@
  */
 
 import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +35,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
-import { runBackup, BACKUP_RETENTION_DAYS } from "../src/backup/run-backup.js";
+import { BACKUP_RETENTION_DAYS } from "../src/backup/run-backup.js";
 
 /** The backup script under test, resolved through the repo (tsx runs TS). */
 const SCRIPT = join(
@@ -298,6 +297,24 @@ describe("runBackup (path target, live harness)", () => {
 		expect(result.code).not.toBe(0);
 		expect(result.stderr).toMatch(/SIGRUN_BACKUP/);
 	});
+
+	test("missing source db → fail loud, no output file (P1: sqlite3 create-on-open)", async () => {
+		// sqlite3 opens its source with create flags: a nonexistent db path
+		// backs up "successfully" as an EMPTY database — a SIGRUN_STORAGE_PATH
+		// typo in deployment would produce nightly empty backups
+		// indistinguishable from real ones. The script must refuse.
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		const missing = join(dir, "never-created.db");
+		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(backupDir, { recursive: true, force: true }));
+		const result = await runScript(missing, {
+			SIGRUN_BACKUP_PATH: backupDir,
+		});
+		expect(result.code).not.toBe(0);
+		expect(result.stderr).toMatch(/does not exist or is empty/);
+		expect(await import("node:fs/promises").then((fs) => fs.readdir(backupDir))).toEqual([]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -315,6 +332,16 @@ describe("restore drill: live-harness backup resumes", () => {
 			BACKGROUND_CONTEXT,
 		);
 		await submission.wait(BACKGROUND_CONTEXT);
+
+		// Pin the live-WAL property the drill exists to verify: the WAL
+		// sidecar must be non-empty at backup time (an un-checkpointed live
+		// database). If pi-durable ever checkpoints eagerly this assertion
+		// fails — surfacing that the drill no longer exercises the live-WAL
+		// path rather than silently degrading to a checkpointed-file backup.
+		const walStat = await import("node:fs/promises").then((fs) =>
+			fs.stat(`${dbPath}-wal`),
+		);
+		expect(walStat.size).toBeGreaterThan(0);
 
 		// Backup against the live (still-open, WAL) harness.
 		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
@@ -407,6 +434,9 @@ describe("runBackup (s3 target, stubbed aws)", () => {
 		const result = await runScript(dbPath, {
 			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
 			SIGRUN_BACKUP_S3_PREFIX: "nightly/",
+			// The S3-compatible-store leg (spec §4.3's pluggable target):
+			// the endpoint lands as aws's --endpoint-url.
+			SIGRUN_BACKUP_S3_ENDPOINT: "https://RUSTFS-ENDPOINT-REMOVED.example.invalid:3900",
 			// The stub dir PREPENDS to PATH: `aws` resolves to the stub while
 			// sqlite3 still resolves through the parent PATH.
 			PATH: `${binDir}:${process.env.PATH}`,
@@ -417,6 +447,7 @@ describe("runBackup (s3 target, stubbed aws)", () => {
 		const argv = (await fs.readFile(logFile, "utf8")).trim();
 		expect(argv).toContain("s3 cp");
 		expect(argv).toContain("s3://sigrun-backups/nightly/sigrun-");
+		expect(argv).toContain("--endpoint-url https://RUSTFS-ENDPOINT-REMOVED.example.invalid:3900");
 
 		// And the fail-loud leg: aws exits non-zero → script fails, no
 		// silent success.
