@@ -18,6 +18,8 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
+import { loadExtensions, type ExtensionOutcome } from "./loader.js";
+import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import {
 	collectProviders,
@@ -50,6 +52,12 @@ export interface OpenedHarness {
 	 * does; prompt sections instead receive env via `PromptInput.env`.
 	 */
 	readonly envBuilder: EnvBuilder;
+	/**
+	 * Extension-load outcomes (spec §3 quarantined-never-aborts): one entry
+	 * per configured extension, `"ok"` or `"quarantined"` with the error.
+	 * `GET /v1/meta` (Task 9) renders this as `extensions[].status`.
+	 */
+	readonly extensionOutcomes: readonly ExtensionOutcome[];
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -69,6 +77,12 @@ export interface OpenHarnessOptions {
 	 * hermetically.
 	 */
 	readonly settings?: HarnessSettings;
+	/**
+	 * Extension package specifiers to load, overriding `config.extensions` —
+	 * the hermetic-test seam for the loader (specifiers resolve to local
+	 * fixture packages, not the deploy-time package list).
+	 */
+	readonly extensionSpecifiers?: readonly string[];
 }
 
 /**
@@ -80,7 +94,12 @@ export interface OpenHarnessOptions {
  * one `Models` store *before* `Harness.open()`, per the spec §3 boot order.
  * Generation against a model no contributor serves fails loud upstream
  * (`no_model`); there is never a silent fallback. Task scheduling is enabled
- * (`resume()` is idempotent and throws only after close).
+ * (`resume()` is idempotent and throws only after close). Extension packages
+ * (spec §4.1 deploy-time list) load and install BEFORE `Harness.open` per
+ * the spec §3 boot order; a failing extension is quarantined (logged +
+ * reported in `extensionOutcomes`), never an abort. When no loaded extension
+ * provides a `long-term-memory` section, the no-op memory default installs
+ * so a bare core still renders the stable placeholder surface.
  */
 export async function openHarness(
 	config: SigrunConfig,
@@ -93,6 +112,22 @@ export async function openHarness(
 	// `Harness.open` reads the registry. install() publishes at once and
 	// replaces any same-name extension in place.
 	registry.install(contextFilesExtension);
+	// Extension packages load before `Harness.open` reads the registry
+	// (spec §3 boot order). Failures quarantine and boot continues.
+	const extensionOutcomes = await loadExtensions(
+		options.extensionSpecifiers ?? config.extensions,
+		registry,
+	);
+	// Zero-extension guarantee: when no loaded extension provides the
+	// memory surface (a `long-term-memory` section), install the no-op
+	// default so every conversation still renders the stable placeholder.
+	const memoryProvided = registry
+		.snapshot()
+		.sections()
+		.some((entry) => entry.section.key === MEMORY_SECTION_KEY);
+	if (!memoryProvided) {
+		registry.install(noopMemoryExtension);
+	}
 	const sink = createProviderMergeSink();
 	const env = options.env ?? process.env;
 	// `config.models` is the already-validated parse of SIGRUN_MODEL (loadConfig
@@ -131,5 +166,6 @@ export async function openHarness(
 		defaultModel,
 		providerCollisions: sink.collisions,
 		envBuilder,
+		extensionOutcomes,
 	};
 }
