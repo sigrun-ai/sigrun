@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
+import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome } from "./loader.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
@@ -59,6 +60,21 @@ export interface OpenedHarness {
 	 * `GET /v1/meta` (Task 9) renders this as `extensions[].status`.
 	 */
 	readonly extensionOutcomes: readonly ExtensionOutcome[];
+	/**
+	 * §3 health producers from provider contributors (Task 9e): the meta
+	 * route aggregates them into the §5 `health.providers` field — any
+	 * `"degraded"` degrades the surface; empty is `"ok"` (the degenerate
+	 * env provider reports ok by absence).
+	 */
+	readonly providerHealth: readonly HealthProducer[];
+	/**
+	 * The loaded memory extension's §3 producer (Task 9e), when its factory
+	 * result carried one; `undefined` for the no-op memory default, a
+	 * quarantined memory extension, or a producer-less memory extension —
+	 * memory health is then `"ok"` (quarantines already surface via
+	 * `extensionOutcomes`; no double-report).
+	 */
+	readonly memoryHealth: (() => HealthStatus) | undefined;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -102,7 +118,11 @@ export interface OpenHarnessOptions {
  * the spec §3 boot order; a failing extension is quarantined (logged +
  * reported in `extensionOutcomes`), never an abort. When no loaded extension
  * provides a `long-term-memory` section, the no-op memory default installs
- * so a bare core still renders the stable placeholder surface.
+ * so a bare core still renders the stable placeholder surface. §3 health
+ * producers are retained at boot — contributor producers on
+ * `providerHealth`, the memory extension's producer on `memoryHealth` — for
+ * the §5 meta `health` aggregation (Task 9e), a pure synchronous derivation
+ * over this state.
  */
 export async function openHarness(
 	config: SigrunConfig,
@@ -119,21 +139,31 @@ export async function openHarness(
 	registry.install(contextFilesExtension);
 	registry.install(skillsExtension);
 	// Extension packages load before `Harness.open` reads the registry
-	// (spec §3 boot order). Failures quarantine and boot continues.
-	const extensionOutcomes = await loadExtensions(
-		options.extensionSpecifiers ?? config.extensions,
-		registry,
-	);
-	// Zero-extension guarantee: when no loaded extension provides the
-	// memory surface (a `long-term-memory` section), install the no-op
-	// default so every conversation still renders the stable placeholder.
-	const memoryProvided = registry
+	// (spec §3 boot order). Failures quarantine and boot continues. §3
+	// factory-result producers are retained alongside the outcomes (Task 9e).
+	const { outcomes: extensionOutcomes, healthProducers: extensionHealth } =
+		await loadExtensions(
+			options.extensionSpecifiers ?? config.extensions,
+			registry,
+		);
+	// The memory-surface owner: the installed extension whose sections
+	// include the long-term-memory key. None → the no-op default installs
+	// (the zero-extensions guarantee); a quarantined memory extension also
+	// leaves the surface to the no-op default.
+	const memoryOwner = registry
 		.snapshot()
 		.sections()
-		.some((entry) => entry.section.key === MEMORY_SECTION_KEY);
-	if (!memoryProvided) {
+		.find((entry) => entry.section.key === MEMORY_SECTION_KEY)?.extension;
+	if (memoryOwner === undefined) {
 		registry.install(noopMemoryExtension);
 	}
+	// §5 memory health (Task 9e): the memory extension's retained §3 producer
+	// — identity-matched against the INSTALLED extension, so a same-name
+	// reinstall cannot mis-attribute a producer. No match → undefined →
+	// "ok" (no-op default, quarantined, or producer-less memory extension).
+	const memoryHealth = extensionHealth.find(
+		(producer) => producer.extension === memoryOwner,
+	)?.health;
 	const sink = createProviderMergeSink();
 	const env = options.env ?? process.env;
 	// `config.models` is the already-validated parse of SIGRUN_MODEL (loadConfig
@@ -143,11 +173,8 @@ export async function openHarness(
 		...env,
 		SIGRUN_MODEL: `${config.models.provider}/${config.models.modelId}`,
 	};
-	const { models, defaultModel } = collectProviders(
-		options.extensions ?? [],
-		effectiveEnv,
-		sink,
-	);
+	const { models, defaultModel, healthProducers: providerHealth } =
+		collectProviders(options.extensions ?? [], effectiveEnv, sink);
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so the the-work-fabric-scrubbed swap changes this wiring's inputs and
 	// nothing downstream.
@@ -182,5 +209,7 @@ export async function openHarness(
 		providerCollisions: sink.collisions,
 		envBuilder,
 		extensionOutcomes,
+		providerHealth,
+		memoryHealth,
 	};
 }
