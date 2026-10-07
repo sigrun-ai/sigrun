@@ -1,3 +1,5 @@
+import type { CompactionPolicy } from "@earendil-works/pi-durable";
+
 /**
  * Sigrun configuration.
  *
@@ -42,6 +44,15 @@ export interface SigrunConfig {
 	/** Root of the static local workspace (spec §4.5 `defaultWorkspace`). */
 	workspace: LocalWorkspace;
 	backup?: BackupConfig;
+	/**
+	 * Context-management policy (spec §3.1), parsed from `SIGRUN_COMPACTION_*`
+	 * and passed through `openHarness` into pi-durable's
+	 * `HarnessSettings.compaction`. Defaults equal upstream's
+	 * `DEFAULT_COMPACTION_POLICY`; `backgroundTokens > 0` keeps background
+	 * compaction on (spec §3.1 "Background compaction on" — upstream starts
+	 * one `backgroundTokens` below the blocking threshold; `0` disables it).
+	 */
+	compaction: CompactionPolicy;
 }
 
 /** The provider id used when `SIGRUN_MODEL` carries no `provider/` prefix. */
@@ -52,6 +63,19 @@ export const DEFAULT_EXTENSIONS_DIR = "extensions";
 export const DEFAULT_PORT = 3000;
 /** Spec §4.5: core ships `{ defaultWorkspace: { type: "local", path: "/home/sigrun" } }`. */
 export const DEFAULT_WORKSPACE_PATH = "/home/sigrun";
+
+/**
+ * Sigrun's compaction defaults, deliberately equal to pi-durable's
+ * `DEFAULT_COMPACTION_POLICY`. Restated here rather than imported so the
+ * equality is a checked decision (`test/compaction.test.ts` fails loudly if
+ * upstream retunes and sigrun silently follows).
+ */
+export const DEFAULT_COMPACTION: CompactionPolicy = {
+	enabled: true,
+	reserveTokens: 16384,
+	keepRecentTokens: 20000,
+	backgroundTokens: 32768,
+};
 
 export type Env = Record<string, string | undefined>;
 
@@ -96,10 +120,12 @@ export function parseModelSpec(spec: string): SigrunModels {
  * `SIGRUN_MODEL` is required and selects the default model (see
  * `parseModelSpec` for the format). Optional overrides:
  * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_EXTENSIONS`,
- * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`.
+ * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`, and the `SIGRUN_COMPACTION_*`
+ * knobs of the context-management policy.
  *
- * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, and
- * naming `SIGRUN_PORT` when it is set but not a positive integer.
+ * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, naming
+ * `SIGRUN_PORT` when it is set but not a positive integer, and naming the
+ * offending `SIGRUN_COMPACTION_*` variable when set to an invalid value.
  */
 export function parseExtensionList(raw: string | undefined): string[] {
 	if (raw === undefined || raw.trim() === "") return [];
@@ -107,6 +133,56 @@ export function parseExtensionList(raw: string | undefined): string[] {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry !== "");
+}
+
+/** Parse `SIGRUN_COMPACTION_ENABLED` ("true"/"false", case-insensitive). */
+function parseCompactionEnabled(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_COMPACTION_ENABLED;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true") return true;
+	if (lowered === "false") return false;
+	throw new Error(
+		`SIGRUN_COMPACTION_ENABLED must be "true" or "false", got ${JSON.stringify(raw)}`,
+	);
+}
+
+/**
+ * Parse one `SIGRUN_COMPACTION_*` token count. `minimum` is 1 for all knobs
+ * except `backgroundTokens`, where 0 is the designed "background off" value
+ * (upstream starts a background compaction only when `backgroundTokens > 0`).
+ */
+function parseTokenCount(
+	env: Env,
+	key: "SIGRUN_COMPACTION_RESERVE_TOKENS" | "SIGRUN_COMPACTION_KEEP_RECENT_TOKENS" | "SIGRUN_COMPACTION_BACKGROUND_TOKENS",
+	minimum: number,
+): number | undefined {
+	const raw = env[key];
+	if (raw === undefined || raw === "") return undefined;
+	const parsed = Number(raw);
+	if (!Number.isInteger(parsed) || parsed < minimum) {
+		const constraint =
+			minimum === 0
+				? "a non-negative integer"
+				: "a positive integer";
+		throw new Error(`${key} must be ${constraint}, got ${raw}`);
+	}
+	return parsed;
+}
+
+function parseCompaction(env: Env): CompactionPolicy {
+	return {
+		enabled: parseCompactionEnabled(env) ?? DEFAULT_COMPACTION.enabled,
+		reserveTokens:
+			parseTokenCount(env, "SIGRUN_COMPACTION_RESERVE_TOKENS", 1) ??
+			DEFAULT_COMPACTION.reserveTokens,
+		keepRecentTokens:
+			parseTokenCount(env, "SIGRUN_COMPACTION_KEEP_RECENT_TOKENS", 1) ??
+			DEFAULT_COMPACTION.keepRecentTokens,
+		backgroundTokens:
+			parseTokenCount(env, "SIGRUN_COMPACTION_BACKGROUND_TOKENS", 0) ??
+			DEFAULT_COMPACTION.backgroundTokens,
+	};
 }
 
 export function loadConfig(env: Env): SigrunConfig {
@@ -138,5 +214,6 @@ export function loadConfig(env: Env): SigrunConfig {
 			type: "local",
 			path: env.SIGRUN_WORKSPACE_PATH || DEFAULT_WORKSPACE_PATH,
 		},
+		compaction: parseCompaction(env),
 	};
 }
