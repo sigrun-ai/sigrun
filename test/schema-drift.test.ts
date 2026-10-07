@@ -40,15 +40,16 @@ import {
 	captureViewShape,
 	type Shape,
 } from "../src/server/schema-fixture.js";
+import { serializeConversationView } from "../src/server/views.js";
 
 /**
  * The fixture's capture scenario, replayed exactly: faux `faux/m` model,
  * empty workspace (so the only rendered section is the no-op memory
  * placeholder), root conversation, one settled turn.
  *
- * Returns the live view's shape.
+ * Returns the live view (the raw upstream ConversationView).
  */
-async function captureLiveShape(): Promise<Shape> {
+async function captureLiveView() {
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
@@ -79,15 +80,20 @@ async function captureLiveShape(): Promise<Shape> {
 			);
 			await submission.wait(BACKGROUND_CONTEXT);
 			const viewState = await root.viewState(BACKGROUND_CONTEXT);
-			const shape = captureViewShape(viewState.value);
+			const view = viewState.value;
 			await viewState.dispose();
-			return shape;
+			return view;
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+}
+
+/** The live view's structural shape (the capture scenario above). */
+async function captureLiveShape(): Promise<Shape> {
+	return captureViewShape(await captureLiveView());
 }
 
 test("the committed fixture file matches the embedded VIEW_SCHEMA", async () => {
@@ -101,6 +107,22 @@ test("the committed fixture file matches the embedded VIEW_SCHEMA", async () => 
 test("a live ConversationView's shape still matches the fixture", async () => {
 	const live = await captureLiveShape();
 	expect(live).toEqual(VIEW_SCHEMA);
+});
+
+test("the wire view is the upstream view plus exactly the steer key (T9d)", async () => {
+	// The fixture pins the UPSTREAM ConversationView; serializeConversationView
+	// adds sigrun's derived steer field on top (it is a sigrun-side projection,
+	// NOT upstream drift). The wire is exactly view + steer — nothing else.
+	const live = await captureLiveView();
+	const wire = serializeConversationView(live);
+	expect(wire).toEqual({ ...live, steer: { busy: false, queued: 0 } });
+	expect(Object.keys(wire).sort()).toEqual(
+		[...Object.keys(live), "steer"].sort(),
+	);
+	// And the upstream subobject is untouched: spreading did not project it.
+	expect(wire.conversation).toBe(live.conversation);
+	expect(wire.entries).toBe(live.entries);
+	expect(wire.docs).toBe(live.docs);
 });
 
 test("SCHEMA_VERSION is the sha256 of the fixture's canonical JSON", () => {
