@@ -18,8 +18,12 @@ export interface SigrunModels {
 }
 
 /**
- * Optional backup target (spec §4.3). Parsing is wired when the backup
- * capability lands; the type is fixed here so `SigrunConfig` is stable.
+ * Optional backup target (spec §4.3). Parsed from the backup env
+ * variables by {@link parseBackupConfig}: `SIGRUN_BACKUP_PATH` (path
+ * target) or `SIGRUN_BACKUP_S3_BUCKET` + optional
+ * `SIGRUN_BACKUP_S3_PREFIX` (s3 target). Exactly one may be set — both
+ * is a fail-loud config error (ambiguous target); neither leaves backup
+ * unconfigured (sigrun runs fine and says so in `/v1/meta`).
  */
 export type BackupConfig =
 	| { target: "s3"; bucket: string; prefix?: string }
@@ -124,12 +128,16 @@ export function parseModelSpec(spec: string): SigrunModels {
  * `SIGRUN_MODEL` is required and selects the default model (see
  * `parseModelSpec` for the format). Optional overrides:
  * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_EXTENSIONS`,
- * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`, and the `SIGRUN_COMPACTION_*`
- * knobs of the context-management policy.
+ * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`, the `SIGRUN_COMPACTION_*`
+ * knobs of the context-management policy, and the backup target variables
+ * (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+
+ * `SIGRUN_BACKUP_S3_PREFIX`; see {@link parseBackupConfig}).
  *
  * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, naming
- * `SIGRUN_PORT` when it is set but not a positive integer, and naming the
- * offending `SIGRUN_COMPACTION_*` variable when set to an invalid value.
+ * `SIGRUN_PORT` when it is set but not a positive integer, naming the
+ * offending `SIGRUN_COMPACTION_*` variable when set to an invalid value,
+ * and naming both backup variables when they are both set (ambiguous
+ * backup target).
  */
 export function parseExtensionList(raw: string | undefined): string[] {
 	if (raw === undefined || raw.trim() === "") return [];
@@ -172,6 +180,38 @@ function parseTokenCount(
 		throw new Error(`${key} must be ${constraint}, got ${raw}`);
 	}
 	return parsed;
+}
+
+/**
+ * Parse the optional backup target (spec §4.3, Task 11).
+ *
+ * - `SIGRUN_BACKUP_PATH=<dir>` → `{ target: "path", path }`
+ * - `SIGRUN_BACKUP_S3_BUCKET=<bucket>` (+ optional
+ *   `SIGRUN_BACKUP_S3_PREFIX`) → `{ target: "s3", bucket, prefix? }`
+ * - both set → throw (ambiguous target — a CronJob would otherwise ship
+ *   backups to one target while the badge says the other)
+ * - neither → `undefined` (backup unconfigured; a badge, not an error)
+ *
+ * Empty strings count as unset ("" is the shell's unset-adjacent value —
+ * a manifest carrying `SIGRUN_BACKUP_PATH: ""` should boot unconfigured
+ * the same as omitting the key, not crash).
+ */
+export function parseBackupConfig(env: Env): BackupConfig | undefined {
+	const path = env.SIGRUN_BACKUP_PATH?.trim() || undefined;
+	const bucket = env.SIGRUN_BACKUP_S3_BUCKET?.trim() || undefined;
+	const prefix = env.SIGRUN_BACKUP_S3_PREFIX?.trim() || undefined;
+	if (path !== undefined && bucket !== undefined) {
+		throw new Error(
+			"SIGRUN_BACKUP_PATH and SIGRUN_BACKUP_S3_BUCKET are both set — exactly one backup target is allowed",
+		);
+	}
+	if (path !== undefined) return { target: "path", path };
+	if (bucket !== undefined) {
+		return prefix === undefined
+			? { target: "s3", bucket }
+			: { target: "s3", bucket, prefix };
+	}
+	return undefined;
 }
 
 function parseCompaction(env: Env): CompactionPolicy {
@@ -218,6 +258,7 @@ export function loadConfig(env: Env): SigrunConfig {
 			type: "local",
 			path: env.SIGRUN_WORKSPACE_PATH || DEFAULT_WORKSPACE_PATH,
 		},
+		backup: parseBackupConfig(env),
 		compaction: parseCompaction(env),
 	};
 }

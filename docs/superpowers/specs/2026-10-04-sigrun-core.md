@@ -528,9 +528,16 @@ when M1 runs** (the named-verifications list below is their checklist).
 - **`entries()` reaches compaction-dropped entries** (currently docs-sourced; fallback:
   degenerate recall reads the pinned-version SQLite schema directly, covered by the
   captured-schema fixture test).
-- **Live-harness backup resumes**: `sqlite3 .backup` taken against the running harness
-  restores and resumes (a second process touching the file — exactly the accepted
-  no-cross-process-locking assumption; fallback: scale-to-0 backup window).
+- **Live-harness backup resumes** — VERIFIED by implementation (T11, 2026-10-07,
+  automated as `test/backup.test.ts`'s restore drill): `sqlite3 .backup` taken
+  against the RUNNING harness (WAL mode, un-checkpointed turn in the -wal file)
+  restores, `Harness.open` + `resume()` reads the root conversation with the
+  turn present, and a post-restore submit settles `done`. Mechanism probe: a
+  naive `cp` of the live main-db file restored to 0 entries (everything was
+  in the WAL) while `sqlite3 .backup` captured all of it — the online-safe API
+  is load-bearing, not cosmetic. A second process touching the file is the
+  accepted no-cross-process-locking assumption; the scale-to-0 fallback is
+  NOT taken.
 - **`FileSystem` directory-list primitive** for the workspace browser's list endpoint
   (fallback: server-side fs for the static workspace, documented).
 - **Task wake after kill-during-`sleep(until)`**: exactly-once, no double-fire, no missed

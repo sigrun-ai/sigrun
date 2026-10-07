@@ -1,0 +1,81 @@
+# Sigrun nightly backup CronJob (spec §4.3, Task 11) — REFERENCE MANIFEST.
+#
+# This is a reference shape for the deployment Task 13 chart, NOT applied to
+# any cluster in M1. It exists so the chart task copies a known-good job
+# rather than re-deriving the constraints.
+#
+# Contract (spec §4.3):
+# - Nightly `sqlite3 .backup` against the LIVE harness database — the
+#   online-safe backup API, consistent while the harness holds the db in WAL
+#   mode (verified live by test/backup.test.ts's restore drill, App C).
+# - Image carries `sqlite3` plus the target's client (`aws` CLI for s3).
+# - Target credentials are CORE secrets (not extension secrets), injected
+#   from the sigrun backup Secret.
+# - The CronJob carries the Deployment's node placement constraints: a
+#   node-bound local-path PVC hangs a naive CronJob in Pending forever
+#   (unschedulable: the one node holding the volume may be cordoned), so
+#   the manifest carries a nodeSelector placeholder — match it to the
+#   Deployment's (or drop it when the PVC is block-backed, which has no
+#   node binding).
+# - Retention (30 days, path target) and fail-loud exit codes live in the
+#   script itself (src/backup/run-backup.ts); a failed job is visible as a
+#   failed CronJob batch, not a silent no-backup.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sigrun-backup
+  labels:
+    app.kubernetes.io/name: sigrun
+    app.kubernetes.io/component: backup
+spec:
+  # Nightly at 03:00 (cluster local time).
+  schedule: "0 3 * * *"
+  # One run at a time; skip if the previous is still running (a slow upload
+  # must not stack a second sqlite pass on the same target).
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: sigrun
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          # Node placement (spec §4.3): MUST match the sigrun Deployment's
+          # constraints while the sqlite PVC is node-bound (local-path). A
+          # block-backed PVC has no node binding — drop this placeholder.
+          nodeSelector: {}
+            # kubernetes.io/hostname: <the node the sigrun PVC binds to>
+          containers:
+            - name: backup
+              # Reference image: must carry sqlite3 + awscli (the target's
+              # client, spec §4.3). Task 13 owns the concrete image pin.
+              image: REPLACEME-sqlite3-awscli-image
+              command:
+                - node
+                - /app/src/backup/run-backup.ts
+              envFrom:
+                # Core backup secret (spec §4.3): SIGRUN_BACKUP_PATH or
+                # SIGRUN_BACKUP_S3_BUCKET/PREFIX, AWS_* credentials, and
+                # SIGRUN_BACKUP_S3_ENDPOINT for an S3-compatible store.
+                - secretRef:
+                    name: sigrun-backup
+              env:
+                # The db under backup: the same PVC the Deployment mounts.
+                - name: SIGRUN_STORAGE_PATH
+                  value: /data/sigrun.db
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          volumes:
+            # The sqlite PVC the Deployment mounts. Mounted read-WRITE
+            # even though the script never writes the db: reading a WAL
+            # database requires lock access to its -shm/-wal sidecar
+            # files, which a read-only volume mount blocks.
+            - name: data
+              persistentVolumeClaim:
+                claimName: sigrun-data

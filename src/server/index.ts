@@ -115,7 +115,12 @@ interface MetaResponse {
 	 * §3) — synchronous status reads, never network or storage.
 	 */
 	readonly health: {
-		/** Derived from `config.backup` presence; Task 11 owns "degraded". */
+		/**
+		 * Derived from `config.backup` presence. T11 deliberately emits only
+		 * "configured"/"unconfigured" (no runtime backup health signal exists
+		 * in v1 — the CronJob is an external process); the "degraded" literal
+		 * stays in the spec §5 union for a future runtime signal.
+		 */
 		readonly backup: "configured" | "unconfigured" | "degraded";
 		/** The memory extension's §3 producer, else "ok" (no-op default). */
 		readonly memory: HealthStatus;
@@ -284,9 +289,10 @@ function decodeBase64Strict(value: string): Buffer | undefined {
  * @param opened the booted harness (from `openHarness`) — the server serves
  * exactly this harness's conversations.
  * @param config parsed sigrun config; the listen entry consumes
- * `config.port` and the meta route derives `health.backup` from
- * `config.backup` presence (Task 11 owns the degraded case). Auth arrives
- * with a later slice.
+ * `config.port`, the meta route derives `health.backup` from
+ * `config.backup` presence, and `capabilities.backup` from the same
+ * presence (the §5 backup affordance gate). Auth arrives with a later
+ * slice.
  */
 export async function createServer(
 	opened: OpenedHarness,
@@ -313,16 +319,23 @@ export async function createServer(
 			})),
 			// §5 health (Task 9e): pure aggregation over boot-retained §3
 			// producers — backup from config presence ("configured" iff set;
-			// T11 adds degraded), memory from the memory extension's producer
-			// ("ok" for the no-op default — quarantines surface via
-			// extensions[].status, never double-reported here), providers
-			// aggregated across contributors (empty → "ok").
+			// no runtime backup health signal exists in v1 — the CronJob is
+			// external, so "degraded" is deliberately NOT introduced), memory
+			// from the memory extension's producer ("ok" for the no-op default
+			// — quarantines surface via extensions[].status, never
+			// double-reported here), providers aggregated across contributors
+			// (empty → "ok").
 			health: {
 				backup: config.backup === undefined ? "unconfigured" : "configured",
 				memory: opened.memoryHealth?.() ?? "ok",
 				providers: aggregateHealth(opened.providerHealth),
 			},
-			capabilities: { backup: false, channels: [] },
+			// §5 capabilities: backup affordances exist iff a target is
+			// configured (Task 11 — the badge, not an error, when absent).
+			capabilities: {
+				backup: config.backup !== undefined,
+				channels: [],
+			},
 		};
 	});
 
