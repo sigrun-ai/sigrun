@@ -10,7 +10,10 @@
  *
  * `SIGRUN_MODEL` overrides any contributor default. When no extension
  * contributes the `openai` provider, the env-driven OpenAI-compat
- * degenerate provider (the design test's three env vars) serves it.
+ * degenerate provider (the design test's three env vars) serves it. Each
+ * contributor's §3 `health()` producer is retained on the collected result
+ * for the §5 meta `health.providers` aggregation (Task 9e); the degenerate
+ * env provider reports `"ok"` by absence.
  */
 
 import {
@@ -24,6 +27,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { DEFAULT_PROVIDER, parseModelSpec, type Env } from "../../config.js";
+import type { HealthProducer, HealthStatus } from "../health.js";
 
 /** One provider two or more contributors both claimed; the later one won. */
 export interface ProviderCollision {
@@ -91,15 +95,23 @@ export interface ProviderContributor {
 	/**
 	 * v1 health producer for this surface (spec §3): `"ok"` unless the
 	 * contributor knows its backend is degraded. Degenerate implementations
-	 * always report `"ok"`.
+	 * report `"ok"` — omitting the producer entirely is the same convention
+	 * (degenerate ok by absence).
 	 */
-	readonly health?: () => "ok" | "degraded";
+	readonly health?: () => HealthStatus;
 }
 
 export interface CollectedProviders {
 	readonly models: Models;
 	/** The boot default model: `SIGRUN_MODEL` if set, else the last contributor default. */
 	readonly defaultModel: ModelRef;
+	/**
+	 * §3 health producers from contributors that define one (spec §5):
+	 * `GET /v1/meta` aggregates them into `health.providers` — any
+	 * `"degraded"` degrades the surface. The env-driven degenerate provider
+	 * reports `"ok"` by absence: no synthetic producer is added for it.
+	 */
+	readonly healthProducers: readonly HealthProducer[];
 }
 
 /** Environment keys the degenerate env provider reads. */
@@ -140,8 +152,18 @@ export function collectProviders(
 	const models: MutableModels = createModels();
 	let defaultModel: ModelRef | undefined;
 	const ownership = new Map<string, string>();
+	const healthProducers: HealthProducer[] = [];
 
 	for (const extension of extensions) {
+		// §3 producers are collected from every contributor that defines one,
+		// independent of its provider contributions (a health-only contributor
+		// still reports its surface's health).
+		if (extension.health !== undefined) {
+			healthProducers.push({
+				name: extension.name,
+				health: extension.health,
+			});
+		}
 		for (const contribution of extension.providers ?? []) {
 			const provider = contribution.provider;
 			const previous = ownership.get(provider.id);
@@ -189,7 +211,7 @@ export function collectProviders(
 		);
 	}
 
-	return { models, defaultModel };
+	return { models, defaultModel, healthProducers };
 }
 
 function modelIdsOf(models: Models, providerId: string): string[] {

@@ -13,7 +13,7 @@
  * .../files`, `GET .../files/content`, `GET /v1/models` (T9b); `POST
  * .../configure`, `POST .../abort` (T9c-i); `GET .../approvals`, `POST
  * .../approvals/:approvalId` (T9c-ii); `GET .../stream` — the SSE view
- * stream (T9d). Health aggregation arrives in T9e.
+ * stream (T9d); `GET /v1/meta` real health aggregation (T9e).
  *
  * NOTE (T9d): the SSE endpoint is exercised over a REAL socket — it hijacks
  * the reply and writes raw frames, which `app.inject()` cannot observe
@@ -49,6 +49,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { aggregateHealth, type HealthStatus } from "../harness/health.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
 	isConfinedPath,
@@ -92,7 +93,7 @@ const ID_PARAMS_SCHEMA = {
 	additionalProperties: false,
 } as const;
 
-/** The static `GET /v1/meta` payload (health aggregation lands in T9e). */
+/** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
 interface MetaResponse {
 	readonly harnessVersion: string;
 	readonly schemaVersion: string;
@@ -101,10 +102,17 @@ interface MetaResponse {
 		readonly status: string;
 		readonly error?: string;
 	}[];
+	/**
+	 * §5 health: pure aggregation over boot-retained §3 producers (spec
+	 * §3) — synchronous status reads, never network or storage.
+	 */
 	readonly health: {
-		readonly backup: string;
-		readonly memory: string;
-		readonly providers: string;
+		/** Derived from `config.backup` presence; Task 11 owns "degraded". */
+		readonly backup: "configured" | "unconfigured" | "degraded";
+		/** The memory extension's §3 producer, else "ok" (no-op default). */
+		readonly memory: HealthStatus;
+		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
+		readonly providers: HealthStatus;
 	};
 	readonly capabilities: {
 		readonly backup: boolean;
@@ -267,13 +275,14 @@ function decodeBase64Strict(value: string): Buffer | undefined {
  *
  * @param opened the booted harness (from `openHarness`) — the server serves
  * exactly this harness's conversations.
- * @param _config parsed sigrun config; the foundation routes read nothing
- * from it yet (the listen entry consumes `config.port`; auth/backup health
- * arrive with later slices) — the parameter fixes the factory signature now.
+ * @param config parsed sigrun config; the listen entry consumes
+ * `config.port` and the meta route derives `health.backup` from
+ * `config.backup` presence (Task 11 owns the degraded case). Auth arrives
+ * with a later slice.
  */
 export async function createServer(
 	opened: OpenedHarness,
-	_config: SigrunConfig,
+	config: SigrunConfig,
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
 	// Conversation ids this server can list: the reserved root (ensured now)
@@ -294,8 +303,17 @@ export async function createServer(
 				status: outcome.status,
 				...(outcome.error === undefined ? {} : { error: outcome.error }),
 			})),
-			// Static healthy shape (T9e replaces this with real aggregation).
-			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
+			// §5 health (Task 9e): pure aggregation over boot-retained §3
+			// producers — backup from config presence ("configured" iff set;
+			// T11 adds degraded), memory from the memory extension's producer
+			// ("ok" for the no-op default — quarantines surface via
+			// extensions[].status, never double-reported here), providers
+			// aggregated across contributors (empty → "ok").
+			health: {
+				backup: config.backup === undefined ? "unconfigured" : "configured",
+				memory: opened.memoryHealth?.() ?? "ok",
+				providers: aggregateHealth(opened.providerHealth),
+			},
 			capabilities: { backup: false, channels: [] },
 		};
 	});
