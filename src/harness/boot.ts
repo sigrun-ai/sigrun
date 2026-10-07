@@ -74,10 +74,11 @@ export interface OpenHarnessOptions {
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
 	/**
-	 * Harness settings passthrough (pi-durable `HarnessSettings`), merged over
-	 * upstream defaults. This is the compaction/retry policy seam: deploy code
-	 * uses it for Task 8's tuned values, tests use it to force thresholds
-	 * hermetically.
+	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
+	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
+	 * every field a caller sets here wins over the config value — the
+	 * hermetic-test seam other settings (retry, stream) pass through
+	 * untouched.
 	 */
 	readonly settings?: HarnessSettings;
 	/**
@@ -160,7 +161,16 @@ export async function openHarness(
 			models,
 			registry,
 			env: envBuilder,
-			...(options.settings === undefined ? {} : { settings: options.settings }),
+			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
+			// tuning, with any caller-set field winning over it. Upstream merges
+			// the result over `DEFAULT_COMPACTION_POLICY` per field.
+			settings: {
+				...options.settings,
+				compaction: {
+					...config.compaction,
+					...options.settings?.compaction,
+				},
+			},
 		},
 		BACKGROUND_CONTEXT,
 	);
