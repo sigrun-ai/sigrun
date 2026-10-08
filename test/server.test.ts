@@ -63,11 +63,19 @@ async function bootServer(options?: {
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
 	};
-	const config = loadConfig({
+	const config0 = loadConfig({
 		SIGRUN_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
+	// This suite asserts the API-only shape (channels: []): override the
+	// bundle path to an absent dir so the result never depends on whether
+	// the repo's real webui/dist happens to be built in this checkout.
+	const config = {
+		...config0,
+		webuiBundle: join(dir, "no-webui-bundle"),
+		webuiBundleExplicit: false,
+	};
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
