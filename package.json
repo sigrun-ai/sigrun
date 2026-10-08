@@ -1,30 +1,30 @@
 {
-	"name": "sigrun",
-	"version": "0.1.0",
-	"private": true,
-	"description": "Durable personal assistant on pi-durable",
-	"type": "module",
-	"engines": {
-		"node": ">=22.19.0"
-	},
-	"scripts": {
-		"start": "tsx src/index.ts",
-		"test": "vitest run",
-		"typecheck": "tsc --noEmit"
-	},
-	"dependencies": {
-		"@earendil-works/chord": "^1.0.4",
-		"@earendil-works/pi-ai": "^1.0.4",
-		"@earendil-works/pi-durable": "1.0.2",
-		"fastify": "^5.12.5"
-	},
-	"devDependencies": {
-		"@types/node": "^26.6.4",
-		"sigrun-ext-approvals": "file:../../../sigrun-approvals-work",
-		"sigrun-ext-memory": "file:../../../sigrun-memory-work",
-		"tsx": "^4.23.15",
-		"typescript": "^7.0.2",
-		"vitest": "^5.0.3",
-		"yaml": "^2.9.1"
-	}
+  "name": "sigrun",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Durable personal assistant on pi-durable",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "^1.0.4",
+    "@earendil-works/pi-ai": "^1.0.4",
+    "@earendil-works/pi-durable": "1.0.2",
+    "fastify": "^5.12.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "sigrun-ext-approvals": "git+file:///home/user/repos/sigrun-approvals#c207938da9",
+    "sigrun-ext-memory": "git+file:///home/user/repos/sigrun-memory#2fe1ac9ebc",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1"
+  }
 }

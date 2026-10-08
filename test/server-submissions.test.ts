@@ -111,6 +111,39 @@ async function submit(
 // ---------------------------------------------------------------------------
 
 describe("POST /v1/conversations/:id/submissions", () => {
+	test("a conversation pinned to an unserved model gets 400 + available ids at submit", async () => {
+		// Spec §2/§3 binding contract (Review Focus #2): fail loud at SUBMIT
+		// with the available list, never a silent fallback and never a settled
+		// no_model run surfaced later. Configure the conversation to a model
+		// no provider serves, then submit.
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const configured = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/configure`,
+			payload: { model: "faux/nonexistent" },
+			headers: { "content-type": "application/json" },
+		});
+		// configure accepts it (validation of the catalog is not configure's
+		// job — T9c-i ruling); the submit is where the contract bites.
+		expect(configured.statusCode).toBe(200);
+		const response = await submit(app, root.id, "hello");
+		expect(response.statusCode).toBe(400);
+		const body = response.json();
+		expect(body.error).toBe("unserved_model");
+		expect(body.model).toBe("faux/nonexistent");
+		expect(body.available).toContain("faux/m");
+		// And nothing was admitted: no submission, no run, no entries.
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		expect(
+			view.entries.filter((e: { kind: string }) => e.kind === "pi.user"),
+		).toEqual([]);
+	});
+
 	test("a bare string input submits and the answer lands in the view", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
