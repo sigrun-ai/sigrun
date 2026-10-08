@@ -58,6 +58,11 @@ import {
 } from "../harness/providers/index.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
+	resolveWebuiBundle,
+	serveWebuiBundle,
+	WEBUI_CHANNEL,
+} from "./static.js";
+import {
 	isConfinedPath,
 	parseSubmissionInput,
 	resolveParts,
@@ -304,6 +309,15 @@ export async function createServer(
 	config: SigrunConfig,
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
+	// The webui channel bundle (Task 20, spec §4.1/§6): mount the static
+	// bundle + SPA fallback when it resolves; an explicit-but-missing bundle
+	// rejects here (fail loud, per the deploy entry's boot contract). Explicit
+	// routes win over the static wildcard, so the /v1 API + probes are
+	// unaffected by the mount.
+	const webuiBundle = await resolveWebuiBundle(config);
+	if (webuiBundle !== undefined) {
+		await serveWebuiBundle(app, webuiBundle);
+	}
 	// Conversation ids this server can list: the reserved root (ensured now)
 	// plus this server's own creates. See the module docstring for the
 	// enumeration gap.
@@ -402,7 +416,9 @@ export async function createServer(
 			// configured (Task 11 — the badge, not an error, when absent).
 			capabilities: {
 				backup: config.backup !== undefined,
-				channels: [],
+				// §4.1/§6 channels: "webui" exactly while the channel bundle is
+				// mounted; an API-only deploy reports [].
+				channels: webuiBundle === undefined ? [] : [WEBUI_CHANNEL],
 			},
 		};
 	});
