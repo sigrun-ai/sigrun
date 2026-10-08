@@ -109,6 +109,9 @@ export interface MessageWire {
 	readonly usage?: UsageWire;
 	readonly stopReason?: string;
 	readonly timestamp?: number;
+	/** Tool correlation — present on `toolResult`-role messages. */
+	readonly toolName?: string;
+	readonly toolCallId?: string;
 }
 
 /**
@@ -138,17 +141,63 @@ export interface ConversationViewWire {
 	readonly steer: { readonly busy: boolean; readonly queued: number };
 }
 
-/** The §5 client surface (Task 20 subset — later slices add the rest). */
+/** One live tool slot of `docs["pi.live"]` (the LiveState tools list). */
+export interface ToolSlotWire {
+	readonly callId: string;
+	readonly name: string;
+	readonly status: string;
+	readonly output?: string;
+}
+
+/**
+ * The `docs["pi.live"]` LiveState doc, narrowed to what the webui reads
+ * (`run`/`generation`/`compactions` are consumed by later tasks).
+ */
+export interface LiveDocWire {
+	readonly run?: unknown;
+	readonly generation?: unknown;
+	readonly tools?: readonly ToolSlotWire[];
+	readonly compactions?: unknown;
+}
+
+/** A pending approval (`GET /v1/conversations/:id/approvals` item). */
+export interface ApprovalWire {
+	readonly callId: string;
+	readonly toolName: string;
+	readonly status: string;
+	readonly arguments?: unknown;
+	readonly requestedAt?: number;
+}
+
+/** The response of `GET /v1/conversations/:id/approvals`. */
+export interface ApprovalsResponse {
+	readonly approvals: readonly ApprovalWire[];
+}
+
+/** The §5 approval decision enum (`allow | deny`). */
+export type ApprovalDecision = "allow" | "deny";
+
+/** The §5 client surface. */
 export interface SigrunClient {
 	getMeta(): Promise<MetaResponse>;
 	listConversations(): Promise<ConversationList>;
 	listModels(): Promise<ModelsResponse>;
+	listApprovals(conversationId: number): Promise<ApprovalsResponse>;
+	decideApproval(
+		conversationId: number,
+		approvalId: string,
+		decision: ApprovalDecision,
+	): Promise<void>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
 export type FetchLike = (
 	input: string,
-	init?: { readonly method?: string; readonly headers?: Record<string, string> },
+	init?: {
+		readonly method?: string;
+		readonly headers?: Record<string, string>;
+		readonly body?: string;
+	},
 ) => Promise<{
 	readonly ok: boolean;
 	readonly status: number;
@@ -187,9 +236,33 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		return (await response.json()) as T;
 	}
 
+	/** POST a JSON body; fail-loud on non-2xx. The response body is ignored. */
+	async function post(path: string, body: unknown): Promise<void> {
+		const response = await fetchImpl(`${baseUrl}${path}`, {
+			method: "POST",
+			headers: {
+				accept: "application/json",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+		if (!response.ok) {
+			throw new Error(
+				`sigrun api: POST ${path} failed with status ${response.status}`,
+			);
+		}
+	}
+
 	return {
 		getMeta: () => get<MetaResponse>("/v1/meta"),
 		listConversations: () => get<ConversationList>("/v1/conversations"),
 		listModels: () => get<ModelsResponse>("/v1/models"),
+		listApprovals: (conversationId) =>
+			get<ApprovalsResponse>(`/v1/conversations/${conversationId}/approvals`),
+		decideApproval: (conversationId, approvalId, decision) =>
+			post(
+				`/v1/conversations/${conversationId}/approvals/${encodeURIComponent(approvalId)}`,
+				{ decision },
+			),
 	};
 }
