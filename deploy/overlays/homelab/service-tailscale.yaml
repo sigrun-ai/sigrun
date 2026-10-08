@@ -6,15 +6,19 @@
 # + the tailscale.com/hostname annotation — the operator publishes the
 # Service at <hostname>.<tailnet-domain> (here: sigrun.tailnet.example.test).
 # The base ClusterIP Service stays alongside it for in-cluster traffic and
-# the ServiceMonitor (a ServiceMonitor selects by label; two Services with
-# the same selector are fine — only this one is a LoadBalancer).
+# the ServiceMonitor. The ServiceMonitor matches Service METADATA labels
+# ({name: sigrun, component: server}), so this Service must NOT carry that
+# pair — it would become a second scrape target to the same pods (double
+# scrapes / duplicated up{} series). Its pod `selector` below still targets
+# the server pods; only the metadata labels differ.
 apiVersion: v1
 kind: Service
 metadata:
   name: sigrun-tailscale
   labels:
     app.kubernetes.io/name: sigrun
-    app.kubernetes.io/component: server
+    # Distinct component: the ServiceMonitor's matchLabels must NOT match.
+    app.kubernetes.io/component: tailscale-lb
   annotations:
     tailscale.com/hostname: sigrun
 spec:

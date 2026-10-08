@@ -48,6 +48,10 @@ spec:
             - npx
             - tsx
             - src/index.ts
+          # The relative `src/index.ts` resolves against this directory, not
+          # the image's WORKDIR convention — pin it so the contract is in the
+          # manifest, not the image.
+          workingDir: /app
           ports:
             - name: http
               containerPort: 3000

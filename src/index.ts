@@ -57,7 +57,14 @@ async function main(): Promise<void> {
 	// Machine-greppable: the deploy-entry test waits for this line, and an
 	// operator reading pod logs sees the bound port without guessing.
 	console.log(`sigrun listening on http://0.0.0.0:${config.port}`);
+	// A second signal (Ctrl-C twice, or SIGTERM+SIGINT) must not re-enter
+	// shutdown: the second harness.close() throws upstream, and which
+	// invocation reaches process.exit first would be a race — a benign
+	// double-signal could exit 1. The guard makes the first signal win.
+	let stopping = false;
 	const stop = (): void => {
+		if (stopping) return;
+		stopping = true;
 		void shutdown(app, opened.harness);
 	};
 	process.on("SIGTERM", stop);
