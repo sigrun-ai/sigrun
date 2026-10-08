@@ -69,6 +69,75 @@ export interface ModelsResponse {
 	readonly models: readonly ModelEntry[];
 }
 
+/* -------------------------------------------------------------------------
+ * Conversation view stream wire types (Task 21) — same hand-mirror discipline
+ * as the shapes above: they mirror the server's view serializer consumed by
+ * `GET /v1/conversations/:id/stream` (`snapshot` + `view` frames). Keep in
+ * sync by hand; the stream is the §5 full-immutable-revision contract.
+ * ---------------------------------------------------------------------- */
+
+/** One content block of a message (`{type: "text", text}`, image/file parts…). */
+export interface ContentBlockWire {
+	readonly type: string;
+	readonly text?: string;
+	readonly path?: string;
+}
+
+/** Token usage + cost on an assistant message (mirrors the §5 usage shape). */
+export interface UsageWire {
+	readonly input: number;
+	readonly output: number;
+	readonly cacheRead: number;
+	readonly cacheWrite: number;
+	readonly totalTokens: number;
+	readonly cost: {
+		readonly input: number;
+		readonly output: number;
+		readonly cacheRead: number;
+		readonly cacheWrite: number;
+		readonly total: number;
+	};
+}
+
+/** One model message carried by a §5 entry. */
+export interface MessageWire {
+	readonly role: string;
+	readonly content: string | readonly ContentBlockWire[];
+	readonly api?: string;
+	readonly provider?: string;
+	readonly model?: string;
+	readonly usage?: UsageWire;
+	readonly stopReason?: string;
+	readonly timestamp?: number;
+}
+
+/**
+ * One §5 conversation entry. Renderers dispatch on `kind` (`pi.user`,
+ * `pi.assistant`, `pi.tool-result`, `pi.system`, …) — kept as `string` so the
+ * client stays forward-compatible with new kinds.
+ */
+export interface ConversationEntryWire {
+	readonly id: number;
+	readonly conversationId: number;
+	readonly kind: string;
+	readonly model: readonly MessageWire[];
+	readonly byTaskId?: number;
+}
+
+/**
+ * The §5 conversation view frame (`snapshot` and `view` events carry the same
+ * shape — every frame is a FULL revision: replace, never accumulate). `docs`
+ * holds the named LiveDocs (`pi.live`, `pi.inbox`, `pi.usage`, …); their
+ * shapes are narrowed by the consumers that read them. `steer` reflects the
+ * run state the composer needs (busy flips send→steer; queued = inbox depth).
+ */
+export interface ConversationViewWire {
+	readonly conversation: { readonly id: number };
+	readonly entries: readonly ConversationEntryWire[];
+	readonly docs: Readonly<Record<string, unknown>>;
+	readonly steer: { readonly busy: boolean; readonly queued: number };
+}
+
 /** The §5 client surface (Task 20 subset — later slices add the rest). */
 export interface SigrunClient {
 	getMeta(): Promise<MetaResponse>;
