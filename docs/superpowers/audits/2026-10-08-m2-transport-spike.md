@@ -38,3 +38,13 @@ reference for the hook and the entry-rendering shape.
 - React via ESM CDN (no build); the production webui is Vite + TS + React with a build.
 - The audit's evidence gap stands: `rcarmo/piclaw` was never consulted (§6.3 pattern
   reference only; cannot flip the rebuild decision).
+
+## Layout mockup (verified rendering)
+
+`spikes/webui-transport/mockup.html` is a static three-panel mockup of the §6.1
+ship-gate layout (sessions sidebar, chat center with tool/approval cards, workspace
+browser, composer footer with model picker + context ring + steer hint, light/dark +
+accent themes, extension/health badges). Rendering verified headlessly (chromium):
+no console errors; the DOM carries all four session states, all five message kinds
+(user/assistant/tool/approval/assistant), the workspace tree, and the composer draft.
+Screenshot at the time of verification: `/tmp/sigrun-mockup.png` (local, not committed).
