@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<!--
+  M2 layout mockup: the three-panel webui shell per spec §6.1, rendered as a
+  static page (no server). Open over any static server or file://.
+
+  Ship-gate features visualized: three-panel layout (sessions sidebar, chat
+  center, workspace file browser), composer footer (model picker, context
+  ring), tool cards + approval cards, light/dark + accent themes, per-session
+  draft, steer affordance, extension-set badge.
+-->
+<html lang="en" data-theme="dark" data-accent="indigo">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>sigrun webui — layout mockup</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161a22; --panel-2: #1c212b; --border: #262d3a;
+    --text: #e6e9ef; --text-dim: #8b93a3; --accent: #6366f1;
+    --ok: #34d399; --warn: #fbbf24; --danger: #f87171;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  [data-theme="light"] {
+    --bg: #f6f7f9; --panel: #ffffff; --panel-2: #eef1f5; --border: #d8dee8;
+    --text: #1c2330; --text-dim: #5b6474;
+  }
+  [data-accent="emerald"] { --accent: #10b981; }
+  [data-accent="amber"] { --accent: #f59e0b; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* ── top bar ─────────────────────────────────────────────── */
+  header {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .5rem .875rem; background: var(--panel); border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  header .brand { font-weight: 650; letter-spacing: .2px; }
+  header .badge {
+    font-size: 11px; color: var(--text-dim); border: 1px solid var(--border);
+    padding: .1rem .45rem; border-radius: 999px; font-family: var(--mono);
+  }
+  header .badge.degraded { color: var(--warn); border-color: var(--warn); }
+  header .spacer { flex: 1; }
+  header select, header button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: .3rem .55rem; font: inherit; cursor: pointer;
+  }
+
+  /* ── three-panel body ────────────────────────────────────── */
+  main { flex: 1; display: grid; grid-template-columns: 250px 1fr 300px; min-height: 0; }
+
+  /* sessions sidebar */
+  #sessions { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  #sessions .list { overflow: auto; flex: 1; padding: .4rem; }
+  .session {
+    display: block; width: 100%; text-align: left; border: 0; background: none;
+    color: var(--text); padding: .5rem .6rem; border-radius: 7px; cursor: pointer;
+  }
+  .session:hover { background: var(--panel-2); }
+  .session.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .session .title { display: block; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session .sub { display: block; font-size: 11px; color: var(--text-dim); }
+  .session .sub .dot { color: var(--ok); }
+  .session.archived { opacity: .5; }
+  #sessions footer { padding: .5rem; border-top: 1px solid var(--border); }
+  #sessions footer button { width: 100%; }
+
+  /* chat center */
+  #chat { display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+  #chat .scroll { flex: 1; overflow: auto; padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: .8rem; }
+  .msg { max-width: 76ch; padding: .65rem .9rem; border-radius: 10px; }
+  .msg.user { align-self: flex-end; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); }
+  .msg .role { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-dim); margin-bottom: .25rem; }
+  .msg p { margin: .25rem 0; }
+  .msg code { font-family: var(--mono); background: var(--panel-2); padding: .1em .35em; border-radius: 4px; }
+
+  /* tool card */
+  .tool { border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); overflow: hidden; align-self: stretch; max-width: 76ch; }
+  .tool summary { padding: .5rem .8rem; cursor: pointer; font-family: var(--mono); font-size: 12px; color: var(--text-dim); display: flex; gap: .5rem; align-items: center; }
+  .tool summary .status { margin-left: auto; font-family: inherit; }
+  .tool summary .status.ok { color: var(--ok); }
+  .tool pre { margin: 0; padding: .6rem .8rem; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 12px; overflow: auto; max-height: 240px; }
+
+  /* approval card */
+  .approval { border: 1px solid var(--warn); border-radius: 8px; background: color-mix(in srgb, var(--warn) 8%, var(--panel)); padding: .7rem .9rem; align-self: stretch; max-width: 76ch; }
+  .approval .head { display: flex; gap: .5rem; align-items: center; font-weight: 600; }
+  .approval .head .icon { color: var(--warn); }
+  .approval pre { margin: .5rem 0; padding: .5rem .7rem; background: var(--panel); border-radius: 6px; font-family: var(--mono); font-size: 12px; }
+  .approval .actions { display: flex; gap: .5rem; }
+  .approval button { padding: .35rem .8rem; border-radius: 6px; border: 1px solid var(--border); font: inherit; cursor: pointer; }
+  .approval .allow { background: var(--ok); color: #06281c; border-color: transparent; font-weight: 600; }
+  .approval .deny { background: none; color: var(--danger); }
+
+  /* composer */
+  #composer { flex: none; border-top: 1px solid var(--border); background: var(--panel); padding: .7rem .9rem; display: flex; flex-direction: column; gap: .55rem; }
+  #composer .input-row { display: flex; gap: .6rem; align-items: flex-end; }
+  #composer textarea {
+    flex: 1; resize: none; min-height: 44px; max-height: 160px; padding: .6rem .75rem;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font: inherit;
+  }
+  #composer .meta-row { display: flex; align-items: center; gap: .7rem; font-size: 12px; color: var(--text-dim); }
+  #composer .meta-row select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: .2rem .4rem; font: inherit; }
+  .ring { width: 22px; height: 22px; border-radius: 50%;
+    background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--border) 0); display: inline-block; vertical-align: middle; }
+  .ring-wrap { display: inline-flex; align-items: center; gap: .35rem; }
+  #composer .attach { background: none; border: 1px dashed var(--border); color: var(--text-dim); border-radius: 6px; padding: .25rem .5rem; cursor: pointer; font-size: 12px; }
+  #composer .steer { color: var(--warn); }
+  #composer .send { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem .9rem; font-weight: 600; cursor: pointer; }
+
+  /* workspace browser */
+  #workspace { background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  #workspace header2, #workspace .ws-head { padding: .6rem .8rem; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; }
+  #workspace .tree { overflow: auto; padding: .4rem; font-family: var(--mono); font-size: 12px; }
+  #workspace .tree .dir { padding: .2rem .3rem; border-radius: 5px; cursor: pointer; }
+  #workspace .tree .dir:hover { background: var(--panel-2); }
+  #workspace .tree .file { padding: .2rem .3rem .2rem 1.1rem; border-radius: 5px; cursor: pointer; color: var(--text-dim); }
+  #workspace .tree .file:hover { background: var(--panel-2); color: var(--text); }
+  #workspace .preview { border-top: 1px solid var(--border); padding: .6rem .8rem; font-family: var(--mono); font-size: 11px; overflow: auto; max-height: 40%; background: var(--panel-2); }
+
+  @media (max-width: 1000px) { main { grid-template-columns: 210px 1fr; } #workspace { display: none; } }
+  @media (max-width: 680px) { main { grid-template-columns: 1fr; } #sessions { display: none; } }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand">sigrun</span>
+    <span class="badge" id="extBadge" title="Extensions from GET /v1/meta">ext: memory · approvals</span>
+    <span class="badge degraded" title="health.backup from /v1/meta">backup: unconfigured</span>
+    <span class="spacer"></span>
+    <select id="accentSel" title="accent theme">
+      <option value="indigo">indigo</option><option value="emerald">emerald</option><option value="amber">amber</option>
+    </select>
+    <button id="themeBtn" title="light/dark">◐ theme</button>
+  </header>
+
+  <main>
+    <!-- sessions sidebar -->
+    <aside id="sessions">
+      <div class="list" id="sessionList"></div>
+      <footer><button class="send" style="width:100%">+ new session</button></footer>
+    </aside>
+
+    <!-- chat center -->
+    <section id="chat">
+      <div class="scroll" id="scroll"></div>
+      <footer id="composer">
+        <div class="input-row">
+          <textarea id="draft" placeholder="Message sigrun…  (draft persists per session)"></textarea>
+          <button class="send" id="sendBtn">send</button>
+        </div>
+        <div class="meta-row">
+          <select id="modelSel" title="model picker (from GET /v1/models)">
+            <option>faux/m</option><option>gateway/glm-5.3-flash</option><option>gateway/kimi-k3</option>
+          </select>
+          <span class="ring-wrap" title="context usage (pi.usage)"><span class="ring" id="ring" style="--p:38"></span><span id="ringLabel">38%</span></span>
+          <button class="attach" title="uploads">📎 attach</button>
+          <span class="steer" id="steerHint" hidden>⏵ running — send steers the turn</span>
+          <span class="spacer" style="flex:1"></span>
+          <span id="draftSaved" style="font-size:11px">draft saved</span>
+        </div>
+      </footer>
+    </section>
+
+    <!-- workspace browser -->
+    <aside id="workspace">
+      <div class="ws-head">workspace</div>
+      <div class="tree" id="tree"></div>
+      <div class="preview" id="preview">// select a file to preview (read-only)</div>
+    </aside>
+  </main>
+
+<script>
+  // ── demo state (no server) ─────────────────────────────────────────────
+  const sessions = [
+    { id: 1, title: "backup retention follow-up", sub: "gateway/glm-5.3-flash · active", active: true, busy: true },
+    { id: 2, title: "crash battery review", sub: "gateway/kimi-k3 · idle" },
+    { id: 3, title: "webui layout pass", sub: "faux/m · idle" },
+    { id: 4, title: "old onboarding notes", sub: "archived", archived: true },
+  ];
+  const messages = [
+    { kind: "user", text: "pick up the backup retention work — s3 side has no lifecycle yet" },
+    { kind: "assistant", text: "Reading the backup script and the CronJob manifest, then I'll wire retention for the s3 target." },
+    { kind: "tool", name: "read_file", args: 'src/backup/run-backup.ts', status: "ok", out: "export async function runBackup(dbPath, backup) {\n  // temp file in the target's filesystem…" },
+    { kind: "approval", name: "write_file", args: 'src/backup/run-backup.ts (+ retention for s3)', detail: "+38 lines — s3 lifecycle: list + delete > 30d" },
+    { kind: "assistant", text: "Retention is wired for both targets now. The s3 leg lists `s3://bucket/prefix/sigrun-*` and deletes anything older than 30 days after each upload." },
+  ];
+  const tree = [
+    { d: "src", open: true, children: [
+      { d: "server", children: [ { f: "index.ts" }, { f: "views.ts" }, { f: "session-meta.ts" } ] },
+      { d: "backup", children: [ { f: "run-backup.ts", sel: true } ] },
+      { d: "harness", children: [ { f: "boot.ts" }, { f: "loader.ts" } ] },
+    ]},
+    { d: "deploy", children: [ { f: "cronjob-backup.yaml" } ] },
+    { d: "docs", children: [ { f: "specs/" }, { f: "audits/" } ] },
+  ];
+
+  // ── tiny safe-DOM helper (no innerHTML — the mockup renders demo strings
+  // the same way the real renderer will treat model output) ────────────────
+  function el(tag, attrs = {}, ...children) {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") e.className = v; else if (k === "text") e.textContent = v;
+      else e.setAttribute(k, v);
+    }
+    for (const c of children) e.append(c);
+    return e;
+  }
+
+  // ── render sessions ────────────────────────────────────────────────────
+  const list = document.getElementById("sessionList");
+  for (const s of sessions) {
+    const b = el("button", { class: "session" + (s.active ? " active" : "") + (s.archived ? " archived" : "") });
+    b.append(el("span", { class: "title", text: s.title }));
+    const sub = el("span", { class: "sub" });
+    if (s.busy) sub.append(el("span", { class: "dot", text: "●" }), " ");
+    sub.append(s.sub);
+    b.append(sub);
+    b.onclick = () => { document.querySelectorAll(".session").forEach(x => x.classList.remove("active")); b.classList.add("active"); };
+    list.appendChild(b);
+  }
+
+  // ── render messages ────────────────────────────────────────────────────
+  const scroll = document.getElementById("scroll");
+  for (const m of messages) {
+    if (m.kind === "user" || m.kind === "assistant") {
+      scroll.appendChild(el("div", { class: `msg ${m.kind}` },
+        el("div", { class: "role", text: m.kind }), el("p", { text: m.text })));
+    } else if (m.kind === "tool") {
+      const sum = el("summary", {}, `⚙ ${m.name} `, el("span", { style: "color:var(--text-dim)", text: m.args }), " ", el("span", { class: "status ok", text: "done" }));
+      scroll.appendChild(el("details", { class: "tool" }, sum, el("pre", { text: m.out })));
+    } else if (m.kind === "approval") {
+      const head = el("div", { class: "head" }, el("span", { class: "icon", text: "⚠" }), " approval needed — ", el("code", { text: m.name }));
+      const actions = el("div", { class: "actions" }, el("button", { class: "allow", text: "allow" }), el("button", { class: "deny", text: "deny" }));
+      scroll.appendChild(el("div", { class: "approval" }, head, el("pre", { text: `${m.args}\n${m.detail}` }), actions));
+    }
+  }
+  scroll.scrollTop = scroll.scrollHeight;
+
+  // ── workspace tree ─────────────────────────────────────────────────────
+  const treeEl = document.getElementById("tree");
+  const preview = document.getElementById("preview");
+  function renderTree(nodes, depth = 0) {
+    for (const n of nodes) {
+      if (n.d) {
+        const d = document.createElement("div");
+        d.className = "dir"; d.textContent = `${n.open ? "▾" : "▸"} ${n.d}`;
+        d.style.paddingLeft = `${depth * 12 + 4}px`;
+        treeEl.appendChild(d);
+        if (n.children && n.open !== false) renderTree(n.children, depth + 1);
+      } else if (n.f) {
+        const f = document.createElement("div");
+        f.className = "file"; f.textContent = n.f;
+        f.style.paddingLeft = `${depth * 12 + 16}px`;
+        f.onclick = () => { preview.textContent = `// ${n.f}\n// read-only preview via GET /v1/conversations/:id/files/content?path=…\nexport async function runBackup(dbPath, backup) {\n  const dbStat = await stat(dbPath).catch(() => undefined);\n  if (dbStat === undefined || dbStat.size === 0) {\n    throw new Error("refusing to back up nothing");\n  }\n  …\n}`; };
+        treeEl.appendChild(f);
+      }
+    }
+  }
+  renderTree(tree);
+
+  // ── composer behavior (demo only) ──────────────────────────────────────
+  const busy = sessions.find(s => s.active)?.busy;
+  document.getElementById("steerHint").hidden = !busy;
+  document.getElementById("sendBtn").textContent = busy ? "steer" : "send";
+  const draft = document.getElementById("draft");
+  const saved = document.getElementById("draftSaved");
+  draft.value = localStorage.getItem("demo-draft") || "";
+  draft.addEventListener("input", () => { localStorage.setItem("demo-draft", draft.value); saved.textContent = "draft saved"; });
+
+  // ── theme controls ─────────────────────────────────────────────────────
+  document.getElementById("themeBtn").onclick = () => {
+    const r = document.documentElement;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+  };
+  document.getElementById("accentSel").onchange = (e) => {
+    document.documentElement.dataset.accent = e.target.value;
+  };
+</script>
+</body>
+</html>
