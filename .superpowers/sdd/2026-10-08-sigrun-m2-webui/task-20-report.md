@@ -14,8 +14,9 @@ Status: COMPLETE.
   fail-loud on non-2xx, injectable fetch + baseUrl),
   `src/api.test.ts` (stub-fetch client tests, webui-local vitest).
 - Root `package.json` → npm workspace root (`"workspaces": ["webui"]`),
-  `@fastify/static@^9.1.0` added (v10 rides fastify-plugin ^6 while registry
-  fastify is still 5.12.5 — the ^9 line is the fastify-5-era plugin);
+  `@fastify/static@^9.1.0` added (the fastify-5-compatible major; review
+  correction — the resolved 9.3.0 declares fastify-plugin ^6, so the
+  original fastify-plugin-^5 rationale was inaccurate);
   convenience scripts `build:webui` / `typecheck:webui`. Root
   `start`/`test`/`typecheck` unchanged in behavior.
 - `src/config.ts`: `SigrunConfig.webuiBundle` (env `SIGRUN_WEBUI_BUNDLE`,
@@ -44,8 +45,10 @@ Status: COMPLETE.
   package stays the sigrun core package; `webui/` is `@sigrun/webui`
   (private). Root scripts (`start`/`test`/`typecheck`) unchanged in behavior;
   added convenience `build:webui` / `typecheck:webui` scripts.
-- **Serving seam:** `@fastify/static@^9.1.0` (the fastify-plugin ^5 line —
-  v10 moved to fastify-plugin ^6 while registry fastify is still 5.12.5).
+- **Serving seam:** `@fastify/static@^9.1.0` (the fastify-5-compatible
+  @fastify/static major; the resolved 9.3.0 declares fastify-plugin ^6, so the
+  original fastify-plugin-^5 rationale was inaccurate — no plugin-major pin
+  is in effect).
   Mounted at prefix `/` only when the bundle resolves. `GET /` serves the
   bundle's `index.html` (fastify-static default index behavior); assets serve
   under their built paths.
@@ -195,9 +198,11 @@ repo convention). Working tree clean after commit.
 
 ## Notes for the record
 
-- `@fastify/static` pinned to `^9.1.0` deliberately: v10.x moved to
-  `fastify-plugin@^6` while registry fastify is still 5.12.5 — the ^9 line
-  is the fastify-5-era plugin.
+- `@fastify/static` is on `^9.1.0`, the fastify-5-compatible major. (Review
+  correction: the resolved 9.3.0 declares fastify-plugin ^6 — the
+  v10-avoidance rationale I originally wrote was inaccurate; the pin simply
+  tracks the fastify-5-era @fastify/static line, and the resolved set passes
+  all tests.)
 - The in-memory index.html is used ONLY by the SPA fallback; `GET /` itself
   is served from disk by fastify-static (verified in the smoke: `/` carries
   etag/last-modified, the fallback response carries neither).
