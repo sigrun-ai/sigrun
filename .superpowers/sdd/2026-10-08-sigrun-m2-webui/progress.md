@@ -33,3 +33,15 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - Tests drive a stubbed EventSource (the injectable factory seam — no real server).
 - Review dispatched (run 49ed7d0e, default reviewer model — bifrost/kimi-k3 works post-gateway-fix).
 - Note: the worker committed the .superpowers/ SDD reports (5fdee99) — they are the audit trail; this branch tracks them (the M0+M1 worktree's gitignore convention was that worktree's, not the repo's).
+
+## Task 21 — DONE (transport hook + conversation view state)
+- Implementer (kimi-k3, run 38ad4358): ea21aee + report 5fdee99, webui 21/21 + root 208/208.
+- Review (bifrost/kimi-k3, run 49ed7d0e): APPROVED, 4 P2s. Verified: the wire mirror is field-exact against the fixture + views.ts (steer confirmed a sigrun projection); thin-client invariant holds (two setState paths, both full-replace); the reconnect backoff ladder is precisely tested.
+- Fix round (orchestrator, 61fcd98): effect-dep doc comment + shared test-utils.ts StubEventSource. Deferred: react-test-renderer deprecation (dev-only), source-identity guard (browser-unreachable).
+- Next: T22 (entry renderers by kind + tool/approval cards).
+
+## Task 22 — implemented (in review)
+- Implementer (kimi-k3, run 35faf1b4): 55fd077, webui 46/46 (25 new) + root 208/208, webui tsc clean.
+- webui/src/entries/: EntryList (kind dispatch) + UserEntry + AssistantEntry (react-markdown + remark-gfm) + ToolResultEntry (expandable, running state from LiveDoc slots) + SystemEntry + ApprovalCard (pending gated calls; allow/deny POST; clears on next frame).
+- The worker made a scope call the warden challenged: no browser screenshot because the components are NOT mounted yet (App.tsx is still the T20 badge scaffold; composition is T23, theming T25). The verification is structural via react-test-renderer. The reviewer is asked to judge whether that's the right scope call.
+- Review dispatched (run f1a3afa4).

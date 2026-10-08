@@ -76,7 +76,7 @@ describe("openConversationStream", () => {
 		source.emit("open");
 		source.emit("snapshot", JSON.stringify(view(7, "snap")));
 		source.emit("view", JSON.stringify(view(7, "live")));
-		expect(snapshots.map((v) => v.entries[0]?.model[0]?.content)).toEqual([
+		expect(snapshots.map((v) => v.entries[0]?.model?.[0]?.content)).toEqual([
 			[{ type: "text", text: "snap" }],
 		]);
 		expect(views).toHaveLength(1);

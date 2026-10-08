@@ -37,7 +37,7 @@ function Entry(props: {
 			return (
 				<div className="entry entry-unknown">
 					unsupported entry kind: {entry.kind} —{" "}
-					{entry.model
+					{(entry.model ?? [])
 						.map((message) => messageText(message))
 						.filter((text) => text !== "")
 						.join(" ")}

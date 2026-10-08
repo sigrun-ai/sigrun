@@ -16,9 +16,10 @@ export function ToolResultEntry(props: {
 	slot?: ToolSlotWire;
 }) {
 	const [expanded, setExpanded] = useState(false);
+	const entryModel = props.entry.model ?? [];
 	const message =
-		props.entry.model.find((candidate) => candidate.role === "toolResult") ??
-		props.entry.model[0];
+		entryModel.find((candidate) => candidate.role === "toolResult") ??
+		entryModel[0];
 	const name = props.slot?.name ?? message?.toolName ?? "tool";
 	const status = props.slot?.status ?? "done";
 	const running = status === "running";
