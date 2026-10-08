@@ -52,6 +52,10 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { aggregateHealth, type HealthStatus } from "../harness/health.js";
+import {
+	requireServedModel,
+	UnservedModelError,
+} from "../harness/providers/index.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
 	isConfinedPath,
@@ -605,6 +609,26 @@ export async function createServer(
 			const parsed = parseSubmissionInput(body.input);
 			if (!parsed.ok) {
 				return await reply.code(400).send({ error: "invalid_input" });
+			}
+			// Spec §2/§3 binding contract (Review Focus #2): a conversation
+			// pinned to an unserved model fails explicitly AT SUBMIT — 4xx with
+			// the available ids — never a silent fallback, and never a settled
+			// no_model run surfaced only later. `requireServedModel` throws
+			// UnservedModelError carrying the catalog; map it to 400.
+			const agent = await conversation.agent(BACKGROUND_CONTEXT);
+			try {
+				if (agent.model !== undefined) {
+					requireServedModel(opened.models, agent.model);
+				}
+			} catch (error) {
+				if (error instanceof UnservedModelError) {
+					return await reply.code(400).send({
+						error: "unserved_model",
+						model: `${error.ref.provider}/${error.ref.modelId}`,
+						available: error.available,
+					});
+				}
+				throw error;
 			}
 			const requestId =
 				body.requestId === undefined ? undefined : String(body.requestId);
