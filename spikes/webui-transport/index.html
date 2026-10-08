@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!--
+  M2 transport spike: a minimal React page driving the sigrun §5 API +
+  SSE view stream. No build step — React via ESM CDN. Run the spike server
+  first: npx tsx spikes/webui-transport/serve-spike.ts (default port 4173),
+  then open this file over any static server or file://.
+
+  The spike proves the useConversationView hook shape: one EventSource over
+  GET /v1/conversations/:id/stream, treating every frame as a FULL revision
+  (replace, don't accumulate) — the exact transport the M2 rebuild uses.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>sigrun webui transport spike</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+    #root { display: flex; flex-direction: column; gap: 1rem; }
+    .entry { padding: .5rem .75rem; border-radius: 6px; background: #f0f0f0; }
+    .entry.pi-user { background: #d7ebff; }
+    .entry.pi-assistant { background: #e7f6e7; }
+    .entry.pi-tool-result { background: #fff3cd; font-family: monospace; font-size: .85em; }
+    .meta { color: #666; font-size: .8em; }
+    .row { display: flex; gap: .5rem; }
+    input, button { padding: .4rem .6rem; font: inherit; }
+    #status { font-size: .85em; color: #444; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "react": "https://esm.sh/react@18.3.1",
+      "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+    } }
+  </script>
+</head>
+<body>
+  <h1>sigrun webui transport spike</h1>
+  <div id="root"></div>
+  <script type="module">
+    import React, { useEffect, useRef, useState } from "react";
+    import { createRoot } from "react-dom/client";
+
+    const API = "http://127.0.0.1:4173";
+
+    // The spike's core question: does one EventSource over the §5 stream,
+    // treating every frame as a full revision, give a clean React data flow?
+    function useConversationView(conversationId) {
+      const [view, setView] = useState(null);
+      const [status, setStatus] = useState("idle");
+      useEffect(() => {
+        if (conversationId == null) return;
+        setStatus("connecting");
+        const es = new EventSource(`${API}/v1/conversations/${conversationId}/stream`);
+        es.addEventListener("snapshot", (e) => {
+          try { setView(JSON.parse(e.data)); setStatus("snapshot"); }
+          catch { setStatus("bad-frame"); } // a malformed frame must not kill the stream
+        });
+        es.addEventListener("view", (e) => {
+          try { setView(JSON.parse(e.data)); setStatus("live"); }
+          catch { setStatus("bad-frame"); } // full revision: replace, never accumulate
+        });
+        es.onerror = () => setStatus("error");
+        return () => { es.close(); setStatus("closed"); };
+      }, [conversationId]);
+      return { view, status };
+    }
+
+    function Entry({ entry }) {
+      const cls = `entry ${entry.kind.replace(".", "-")}`;
+      // The §5 entry model: kind pi.user / pi.assistant / pi.tool-result, with
+      // model: [{ role, content: [{type, text}] }] on user/assistant.
+      let text = "";
+      if (Array.isArray(entry.model)) {
+        text = entry.model
+          .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+          .filter((b) => b.type === "text" && typeof b.text === "string")
+          .map((b) => b.text)
+          .join("\n");
+      } else if (typeof entry.model === "object" && entry.model?.content) {
+        text = String(entry.model.content);
+      }
+      return React.createElement("div", { className: cls },
+        React.createElement("div", { className: "meta" }, entry.kind),
+        React.createElement("div", null, text || JSON.stringify(entry).slice(0, 200)));
+    }
+
+    function App() {
+      const [conversationId, setConversationId] = useState(null);
+      const { view, status } = useConversationView(conversationId);
+      const inputRef = useRef(null);
+      const [frames, setFrames] = useState(0);
+      const viewRef = useRef(null);
+      if (view !== viewRef.current) { viewRef.current = view; setFrames((n) => n + 1); }
+
+      const create = async () => {
+        const r = await fetch(`${API}/v1/conversations`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+        const d = await r.json();
+        setConversationId(d.id);
+      };
+      const submit = async () => {
+        const text = inputRef.current.value;
+        inputRef.current.value = "";
+        await fetch(`${API}/v1/conversations/${conversationId}/submissions`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: [{ type: "text", text }] }),
+        });
+      };
+
+      const entries = view?.entries ?? [];
+      const live = view?.docs?.["pi.live"];
+      const busy = Boolean(live && live.run);
+      return React.createElement("div", null,
+        React.createElement("div", { className: "row" },
+          React.createElement("button", { onClick: create }, "new conversation"),
+          conversationId != null && React.createElement(React.Fragment, null,
+            React.createElement("input", { ref: inputRef, placeholder: "message", onKeyDown: (e) => e.key === "Enter" && submit() }),
+            React.createElement("button", { onClick: submit }, "send"))),
+        React.createElement("div", { id: "status" },
+          `conversation ${conversationId ?? "—"} · stream ${status} · frames ${frames} · ${busy ? "BUSY" : "idle"}`),
+        entries.map((e, i) => React.createElement(Entry, { key: e.id ?? i, entry: e })));
+    }
+
+    createRoot(document.getElementById("root")).render(React.createElement(App));
+  </script>
+</body>
+</html>
