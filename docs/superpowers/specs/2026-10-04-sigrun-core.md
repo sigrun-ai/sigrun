@@ -539,11 +539,12 @@ when M1 runs** (the named-verifications list below is their checklist).
   and `whenBusy: "reject"` variants behave per their contracts (reject
   surfaces ConversationBusy and writes no inbox trace).
 - Journal mode pi-durable actually sets on its SQLite storage — VERIFIED as
-  WAL (T11, 2026-10-07): the restore drill's non-vacuity probe observed a live
-  386KB `-wal` sidecar (a naive `cp` of the main db restored zero entries; the
-  `.backup` captured all three), and the WAL-non-empty assertion is now pinned
-  in the automated drill. `synchronous` was not separately probed; WAL is the
-  load-bearing fact and it is confirmed.
+  WAL (T11, 2026-10-07): the automated restore drill pins the live-WAL
+  property (`test/backup.test.ts` asserts the `-wal` sidecar is non-empty at
+  backup time), and T11's manual non-vacuity probe observed a live 386KB WAL
+  (a naive `cp` of the main db restored zero entries while `.backup` captured
+  all). `synchronous` was not separately probed; WAL is the load-bearing fact
+  and it is confirmed.
 - **Watch-stream reconnect replay** — VERIFIED by implementation (T9d, 2026-10-07,
   type-verified against pinned 1.0.2): every `watch()` frame is a FULL immutable
   `ConversationView` (`WatchHandle<ConversationView>` delivers complete state, not
@@ -569,16 +570,15 @@ when M1 runs** (the named-verifications list below is their checklist).
   accepted no-cross-process-locking assumption; the scale-to-0 fallback is
   NOT taken.
 - **`FileSystem` directory-list primitive** — VERIFIED (T9b, 2026-10-07,
-  content; the §5 files endpoints ride it.
-  (fallback: server-side fs for the static workspace, documented).
+  `test/workspace.test.ts` "workspace env lists and reads files in the
+  workspace root"): the ExecutionEnv's FileSystem lists a workspace directory
+  and reads file content; the §5 files endpoints ride it.
 - **Task wake after kill-during-`sleep(until)`** — VERIFIED (T12c item 7,
   2026-10-07, `test/battery/task-wake.test.ts`): kill -9 during the durable
   sleep, reopen + resume before the deadline → exactly one START and one WOKE
   marker (the sleep phase's checkpoint transition is durable and re-sleeps to
   the SAME deadline, so no double-fire), WOKE observed 6ms after the deadline
   (no early wake, no missed wake).
-  wake (battery item 7; fallback: document wake semantics honestly, design cron extension
-  accordingly).
 - sigrun co-tenancy of the harness sqlite file — **decision: use pi-durable documents
   first** (session-meta, approval policy, observe records are conversation-scoped docs;
   `watchDoc` gives free reactivity). **`watchDoc` is type-verified; that arbitrary
@@ -587,9 +587,11 @@ when M1 runs** (the named-verifications list below is their checklist).
   doesn't fit**; if tables are used, the upgrade drill covers them and the co-tenancy
   question becomes a named verification.
 - Whether `ConversationView` serializes directly to JSON — VERIFIED (T9a,
-  T9d `steer` field.
-  server task captures the fixture first and defines the projection then (planned work,
-  not discovered work).
+  2026-10-07, `test/schema-drift.test.ts` + the T9d `test/sse-view.test.ts`
+  reconnect path): it does; `serializeConversationView` is a structural
+  passthrough, the drift test re-captures a live view and asserts
+  shape-equality with the committed fixture, and the wire adds only the T9d
+  `steer` field.
 
 **Not present upstream:** skill directory convention (sigrun defines it, §3.2);
 cross-process storage locking (accepted — single harness process).
