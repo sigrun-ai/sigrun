@@ -1,0 +1,22 @@
+# Sigrun Service (spec §4.4, Task 13) — ClusterIP, port 3000.
+#
+# §4.4: "how the webui is reached (ingress, Tailscale LB, port-forward) is a
+# deployment choice, not a core contract" — the base carries ONLY the
+# in-cluster ClusterIP (what the ServiceMonitor scrapes); reach from outside
+# the cluster is an overlay concern (see overlays/homelab/service-tailscale).
+apiVersion: v1
+kind: Service
+metadata:
+  name: sigrun
+  labels:
+    app.kubernetes.io/name: sigrun
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sigrun
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

@@ -1,0 +1,7 @@
+# Appendix D: iSCSI-backed block storage for the sqlite PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sigrun-data
+spec:
+  storageClassName: REPLACE-storage-class

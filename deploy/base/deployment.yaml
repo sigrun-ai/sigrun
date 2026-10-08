@@ -1,0 +1,105 @@
+# Sigrun Deployment (spec §4.4, Task 13) — REFERENCE MANIFEST (render-only).
+#
+# Portable requirements (§4.4):
+# - single replica, one container
+# - Recreate strategy: the sqlite PVC is ReadWriteOnce — a RollingUpdate
+#   starts the replacement while the old pod still holds the volume, and two
+#   pods deadlock on one RWO PVC.
+# - sqlite on block-like storage (the `sigrun-data` PVC, storage class is a
+#   deployment choice — see pvc.yaml)
+# - liveness → /healthz (process-up, always 200 once listening)
+# - readiness → /readyz (harness-ready: T9e health not degraded + a real
+#   storage read; 503 otherwise — see src/server/index.ts)
+#
+# The image must carry Node >= 22.19 (node:sqlite), the repo at /app with
+# node_modules, and tsx (internal imports use .js specifiers resolving to
+# .ts sources — stock node cannot resolve them; same rule as the backup
+# CronJob). Task 13 ships no published image: the placeholder documents the
+# contract; the apply step pins a real one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sigrun
+  labels:
+    app.kubernetes.io/name: sigrun
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sigrun
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sigrun
+        app.kubernetes.io/component: server
+    spec:
+      containers:
+        - name: sigrun
+          image: REPLACEME-node22-sigrun-image
+          # The deploy entry (src/index.ts), run exactly as `npm start` does
+          # (package.json "start": "tsx src/index.ts"). Direct tsx — not
+          # `npm start` — so SIGTERM reaches the entry with no npm in the
+          # signal path (graceful close of server + harness, exit 0).
+          command:
+            - npx
+            - tsx
+            - src/index.ts
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Wired to this manifest's own volume: the db lives on the PVC.
+            - name: SIGRUN_STORAGE_PATH
+              value: /data/sigrun.db
+            # The static workspace root (spec §4.5): on the same PVC in the
+            # base shape (a separate artifacts volume is a deployment
+            # choice, §4.4 "workspace artifacts volume optional").
+            - name: SIGRUN_WORKSPACE_PATH
+              value: /data/workspace
+            # Must match the Service port below (default 3000).
+            - name: SIGRUN_PORT
+              value: "3000"
+          # Everything else config-shaped comes from the Secret:
+          # SIGRUN_MODEL (required), OPENAI_API_KEY / OPENAI_BASE_URL (the
+          # degenerate env provider) or extension provider creds, and the
+          # SIGRUN_EXTENSIONS package list (spec §4.1). All extension env
+          # lives here too — extensions read the whole environment (§4.4:
+          # "every enabled extension can read every env secret").
+          envFrom:
+            - secretRef:
+                name: sigrun-env
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # Placeholder requests/limits — the apply step tunes these
+            # against observed usage; nothing in the base depends on them.
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        # The sqlite PVC (RWO, block-like storage — see pvc.yaml). Mounted
+        # read-write: WAL mode writes -wal/-shm sidecar files continuously.
+        - name: data
+          persistentVolumeClaim:
+            claimName: sigrun-data
