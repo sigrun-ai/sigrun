@@ -8,6 +8,7 @@
 import { describe, expect, test } from "vitest";
 import {
 	createClient,
+	type ApprovalsResponse,
 	type ConversationList,
 	type FetchLike,
 	type MetaResponse,
@@ -16,12 +17,18 @@ import {
 
 /** A fetch stub returning one canned JSON body; records its calls. */
 function stubFetch(body: unknown, init?: { status?: number }) {
-	const calls: { input: string; method?: string; accept?: string }[] = [];
+	const calls: {
+		input: string;
+		method?: string;
+		accept?: string;
+		body?: string;
+	}[] = [];
 	const fetchImpl: FetchLike = (input, request) => {
 		calls.push({
 			input,
 			method: request?.method,
 			accept: request?.headers?.["accept"],
+			body: request?.body,
 		});
 		return Promise.resolve({
 			ok: (init?.status ?? 200) >= 200 && (init?.status ?? 200) < 300,
@@ -87,5 +94,44 @@ describe("createClient", () => {
 		const client = createClient({ fetch: fetchImpl });
 		await expect(client.getMeta()).rejects.toThrow("503");
 		await expect(client.getMeta()).rejects.toThrow("/v1/meta");
+	});
+
+	test("listApprovals GETs the conversation's approvals", async () => {
+		const body: ApprovalsResponse = {
+			approvals: [{ callId: "c1", toolName: "bash", status: "pending" }],
+		};
+		const { calls, fetchImpl } = stubFetch(body);
+		const client = createClient({ fetch: fetchImpl });
+		const list = await client.listApprovals(9);
+		expect(list.approvals).toHaveLength(1);
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/9/approvals",
+				method: "GET",
+				accept: "application/json",
+			},
+		]);
+	});
+
+	test("decideApproval POSTs the decision as JSON", async () => {
+		const { calls, fetchImpl } = stubFetch({});
+		const client = createClient({ fetch: fetchImpl });
+		await client.decideApproval(9, "call-1", "deny");
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/9/approvals/call-1",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({ decision: "deny" }),
+			},
+		]);
+	});
+
+	test("decideApproval is fail-loud on a non-2xx response", async () => {
+		const { fetchImpl } = stubFetch({}, { status: 404 });
+		const client = createClient({ fetch: fetchImpl });
+		await expect(client.decideApproval(9, "c1", "allow")).rejects.toThrow(
+			"404",
+		);
 	});
 });
