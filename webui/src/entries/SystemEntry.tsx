@@ -9,7 +9,7 @@ import { messageText } from "./content";
 export function SystemEntry(props: { entry: ConversationEntryWire }) {
 	return (
 		<div className="entry entry-system">
-			{props.entry.model
+			{(props.entry.model ?? [])
 				.map((message) => messageText(message))
 				.filter((text) => text !== "")
 				.join(" ")}

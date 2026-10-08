@@ -30,7 +30,7 @@ export function slotForEntry(
 	entry: ConversationEntryWire,
 	slots: readonly ToolSlotWire[],
 ): ToolSlotWire | undefined {
-	for (const message of entry.model) {
+	for (const message of entry.model ?? []) {
 		if (typeof message.toolCallId === "string") {
 			const match = slots.find(
 				(slot) => slot.callId === message.toolCallId,

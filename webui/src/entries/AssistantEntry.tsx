@@ -13,7 +13,7 @@ import { messageText } from "./content";
 export function AssistantEntry(props: { entry: ConversationEntryWire }) {
 	return (
 		<div className="entry entry-assistant">
-			{props.entry.model.map((message, index) => (
+			{props.entry.model?.map((message, index) => (
 				<div className="entry-assistant-message" key={index}>
 					<Markdown remarkPlugins={[remarkGfm]}>
 						{messageText(message)}

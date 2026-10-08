@@ -123,7 +123,12 @@ export interface ConversationEntryWire {
 	readonly id: number;
 	readonly conversationId: number;
 	readonly kind: string;
-	readonly model: readonly MessageWire[];
+	/**
+	 * The entry's message payload. ABSENT on some kinds (pi-durable's
+	 * `pi.reset` carries no model — dist/entries.d.ts:20-22), so optional,
+	 * never assumed.
+	 */
+	readonly model?: readonly MessageWire[];
 	readonly byTaskId?: number;
 }
 

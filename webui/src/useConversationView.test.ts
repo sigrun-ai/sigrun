@@ -121,7 +121,7 @@ describe("useConversationView", () => {
 		// Full replace: a different object carrying the new content, no merge.
 		expect(h.state().view).not.toBe(firstView);
 		expect(
-			h.state().view?.entries[0]?.model[0]?.content,
+			h.state().view?.entries[0]?.model?.[0]?.content,
 		).toEqual([{ type: "text", text: "second" }]);
 		h.unmount();
 	});
@@ -134,7 +134,7 @@ describe("useConversationView", () => {
 		expect(h.state().status).toBe("error");
 		expect(h.state().error).toMatch(/malformed/i);
 		expect(h.state().frames).toBe(1); // the bad frame did not count
-		expect(h.state().view?.entries[0]?.model[0]?.content).toEqual([
+		expect(h.state().view?.entries[0]?.model?.[0]?.content).toEqual([
 			{ type: "text", text: "good" },
 		]);
 		expect(h.sources[0]?.closed).toBe(false); // stream survives
