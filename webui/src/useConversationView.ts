@@ -45,13 +45,19 @@ export interface ConversationViewState {
 	readonly error: string | null;
 }
 
+/**
+ * Options for {@link useConversationView}. BOTH fields are effect deps —
+ * pass a STABLE reference (a module constant or a memoized value): an
+ * inline arrow / computed string reopens the stream on every render.
+ */
 export interface UseConversationViewOptions {
 	/**
 	 * URL prefix for the API, default "" (same-origin — the bundle is served
-	 * by the sigrun server itself).
+	 * by the sigrun server itself). Stable reference — see the options note.
 	 */
 	readonly baseUrl?: string;
-	/** Injected for tests; defaults to the browser's native `EventSource`. */
+	/** Injected for tests; defaults to the browser's native `EventSource`.
+	 * Stable reference — see the options note. */
 	readonly createEventSource?: EventSourceFactory;
 }
 

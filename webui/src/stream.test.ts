@@ -15,32 +15,7 @@ import {
 } from "./stream";
 
 /** A scripted EventSource: tests emit events, the wrapper under test reacts. */
-class StubEventSource implements EventSourceLike {
-	closed = false;
-	private readonly listeners = new Map<
-		string,
-		((event: StreamMessageEvent) => void)[]
-	>();
-
-	addEventListener(
-		type: string,
-		listener: (event: StreamMessageEvent) => void,
-	): void {
-		const list = this.listeners.get(type) ?? [];
-		list.push(listener);
-		this.listeners.set(type, list);
-	}
-
-	close(): void {
-		this.closed = true;
-	}
-
-	emit(type: string, data = ""): void {
-		for (const listener of this.listeners.get(type) ?? []) {
-			listener({ data });
-		}
-	}
-}
+import { StubEventSource } from "./test-utils";
 
 function stubFactory() {
 	const sources: StubEventSource[] = [];
