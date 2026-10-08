@@ -93,7 +93,11 @@ extension at boot is **quarantined** (logged, surfaced as a degraded surface via
 
 - Background compaction on, tuned values chosen in M1 against the default model's window.
 - The summarizer model is a policy decision: core pins it to the cheapest long-context
-  model available from the provider contributions (configurable).
+  model available from the provider contributions (configurable). **Deferred (M1, verified
+  2026-10-07):** pi-durable 1.0.2 resolves the summarizer to the conversation's own
+  `agent.model` with no separate settings knob (compaction.js) — pinning to a cheaper model
+  requires a `beforeCompact` hook or a custom compaction task, which is spec C work. v1 uses
+  the conversation's own model for summarization.
 - Richer strategies (vcc-style) are spec C.
 
 ### 3.2 Skills convention (v1 scope, exact)
@@ -501,37 +505,87 @@ when M1 runs** (the named-verifications list below is their checklist).
   `FileSystem` exposes a **directory-list** primitive is not verified — named below.
 
 **Named M1 verifications (claimed, not yet observed — each with a fallback):**
-- requestId crash-replay semantics (fallback: treat as at-most-once per process, document).
-- resume() recovery outcomes for mid-generation / mid-tool / mid-compaction (the battery;
-  criteria in §7 M1).
-- Hook re-fire behavior on replay (determines observe-guard final design).
-- **`GenerationHooks.afterResponse` payload shape** — what the hook receives per turn
-  (does it include the user submission text, or must user-side observation capture it
-  separately). Determines the observe-record schema spec B's honcho mapping consumes;
-  the paired user-side capture point is the named fallback, mandatory for steered/queued
-  inputs (core §3). The schema — including which generation id steered records carry —
-  is fixed at M1 either way.
+- requestId crash-replay semantics — VERIFIED (T12b item 4, 2026-10-07,
+  `test/battery/duplicate-request-id.test.ts`): submit with requestId, kill -9
+  mid-generation, resume settles the crashed submission, then resubmitting the
+  identical draft returns the SAME submission id (upstream submissions.d.ts:
+  "a known request ID returns its existing submission without writing") with
+  no second run — exactly one final answer + one user entry, asserted both
+  before and after the resubmit.
+- resume() recovery outcomes — VERIFIED (the battery, 2026-10-07):
+  mid-generation (T12a item 1, `mid-generation.test.ts`) the answer COMPLETES
+  on resume with no duplicate final answer; mid-tool-call (T12a item 2,
+  `mid-tool-call.test.ts`) the unsafe-replay tool parks FAILED with a visible
+  `interrupted` tool-result (no silent re-execution, one execution marker
+  across both processes) while the safe tool re-executes (1→2) with its
+  original arguments; mid-compaction (T12b item 3, `mid-compaction.test.ts`)
+  resume succeeds with committed turns intact, no half-written summary, the
+  view serializes, and subsequent submits succeed.
+- Hook re-fire behavior on replay — VERIFIED (T12c item 6, 2026-10-07,
+  `test/battery/hook-refire.test.ts`): `GenerationHooks.afterResponse` fired
+  EXACTLY ONCE for a turn killed mid-flight (hookFires=1 across both
+  processes) — it does NOT re-fire on replay. **Observe-guard conclusion:
+  the memory extension's durable-memo guard is defensive-only, not a
+  correctness requirement.** (Vacuity-guarded: zero fires with a completed
+  turn fails as broken registration.)
+- **`GenerationHooks.afterResponse` payload shape** — RESOLVED, fallback taken
+  (sigrun-ext-memory, 2026-10-06): `HookApi` exposes no submission/entry reads
+  and `LiveDoc.run.inputs` carries submission *ids*, not text — the hook does
+  NOT receive the user submission text. The named fallback is the shipped
+  design: the user half of each turn is captured at the submit boundary (the
+  memory wiring's `submit()` records submission id → text) and `afterResponse`
+  pairs those texts with the live run's input ids. The observe-record schema
+  is fixed on that basis.
 - **Extension-name storage key** — `pi.agent` per the superseded spec, unverified here
   (fallback: any conversation-scoped durable field; the §4.1 semantics are identical).
-- Steer/follow-up queue semantics on busy submit (fallback: busy submits return 4xx with
-  position-in-queue; the webui renders the queue as read-only).
-- Journal mode pi-durable actually sets on its SQLite storage (fallback: pin WAL +
-  `synchronous=NORMAL` in sigrun's open path).
-- **Watch-stream reconnect replay** — whether upstream `watch()`'s cursor replays missed
-  frames plus a snapshot as §5 states (fallback: sigrun serves its own per-conversation
-  ring buffer).
+- Steer/follow-up queue semantics on busy submit — VERIFIED (T12b item 5,
+  2026-10-07, `test/battery/submit-while-busy.test.ts`): the default busy
+  submit was OBSERVED and recorded (the inbox mode, carried in scenario.json
+  + the QUEUED marker); a queued submission durably waits through a kill and
+  is recovered after resume (nothing lost); the explicit `whenBusy: "steer"`
+  and `whenBusy: "reject"` variants behave per their contracts (reject
+  surfaces ConversationBusy and writes no inbox trace).
+- Journal mode pi-durable actually sets on its SQLite storage — VERIFIED as
+  WAL (T11, 2026-10-07): the automated restore drill pins the live-WAL
+  property (`test/backup.test.ts` asserts the `-wal` sidecar is non-empty at
+  backup time), and T11's manual non-vacuity probe observed a live 386KB WAL
+  (a naive `cp` of the main db restored zero entries while `.backup` captured
+  all). `synchronous` was not separately probed; WAL is the load-bearing fact
+  and it is confirmed.
+- **Watch-stream reconnect replay** — VERIFIED by implementation (T9d, 2026-10-07,
+  type-verified against pinned 1.0.2): every `watch()` frame is a FULL immutable
+  `ConversationView` (`WatchHandle<ConversationView>` delivers complete state, not
+  deltas), so the §5 reconnect contract "fresh snapshot plus missed frames" collapses
+  to "fresh snapshot on (re)connect" — there is nothing a missed intermediate frame
+  could lose that the next full frame (or the connect-time snapshot from
+  `watch.value`) does not already carry. `Last-Event-ID` is accepted and ignored.
+  The per-conversation ring-buffer fallback is NOT taken. Live-verified end-to-end by
+  `test/sse-view.test.ts` (reconnect test: second connection's snapshot reflects a
+  commit made while disconnected, no replay mechanism involved).
 - `abortSubmission` idempotence under concurrent aborts.
 - **`entries()` reaches compaction-dropped entries** (currently docs-sourced; fallback:
   degenerate recall reads the pinned-version SQLite schema directly, covered by the
   captured-schema fixture test).
-- **Live-harness backup resumes**: `sqlite3 .backup` taken against the running harness
-  restores and resumes (a second process touching the file — exactly the accepted
-  no-cross-process-locking assumption; fallback: scale-to-0 backup window).
-- **`FileSystem` directory-list primitive** for the workspace browser's list endpoint
-  (fallback: server-side fs for the static workspace, documented).
-- **Task wake after kill-during-`sleep(until)`**: exactly-once, no double-fire, no missed
-  wake (battery item 7; fallback: document wake semantics honestly, design cron extension
-  accordingly).
+- **Live-harness backup resumes** — VERIFIED by implementation (T11, 2026-10-07,
+  automated as `test/backup.test.ts`'s restore drill): `sqlite3 .backup` taken
+  against the RUNNING harness (WAL mode, un-checkpointed turn in the -wal file)
+  restores, `Harness.open` + `resume()` reads the root conversation with the
+  turn present, and a post-restore submit settles `done`. Mechanism probe: a
+  naive `cp` of the live main-db file restored to 0 entries (everything was
+  in the WAL) while `sqlite3 .backup` captured all of it — the online-safe API
+  is load-bearing, not cosmetic. A second process touching the file is the
+  accepted no-cross-process-locking assumption; the scale-to-0 fallback is
+  NOT taken.
+- **`FileSystem` directory-list primitive** — VERIFIED (T9b, 2026-10-07,
+  `test/workspace.test.ts` "workspace env lists and reads files in the
+  workspace root"): the ExecutionEnv's FileSystem lists a workspace directory
+  and reads file content; the §5 files endpoints ride it.
+- **Task wake after kill-during-`sleep(until)`** — VERIFIED (T12c item 7,
+  2026-10-07, `test/battery/task-wake.test.ts`): kill -9 during the durable
+  sleep, reopen + resume before the deadline → exactly one START and one WOKE
+  marker (the sleep phase's checkpoint transition is durable and re-sleeps to
+  the SAME deadline, so no double-fire), WOKE observed 6ms after the deadline
+  (no early wake, no missed wake).
 - sigrun co-tenancy of the harness sqlite file — **decision: use pi-durable documents
   first** (session-meta, approval policy, observe records are conversation-scoped docs;
   `watchDoc` gives free reactivity). **`watchDoc` is type-verified; that arbitrary
@@ -539,9 +593,12 @@ when M1 runs** (the named-verifications list below is their checklist).
   prefixed tables, covered by the upgrade drill). **Own prefixed tables only if a shape
   doesn't fit**; if tables are used, the upgrade drill covers them and the co-tenancy
   question becomes a named verification.
-- Whether `ConversationView` serializes directly to JSON or needs a projection — M1's
-  server task captures the fixture first and defines the projection then (planned work,
-  not discovered work).
+- Whether `ConversationView` serializes directly to JSON — VERIFIED (T9a,
+  2026-10-07, `test/schema-drift.test.ts` + the T9d `test/sse-view.test.ts`
+  reconnect path): it does; `serializeConversationView` is a structural
+  passthrough, the drift test re-captures a live view and asserts
+  shape-equality with the committed fixture, and the wire adds only the T9d
+  `steer` field.
 
 **Not present upstream:** skill directory convention (sigrun defines it, §3.2);
 cross-process storage locking (accepted — single harness process).

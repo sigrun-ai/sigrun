@@ -1,0 +1,22 @@
+# Sigrun sqlite PVC (spec §4.3/§4.4, Task 13) — RWO block-like storage.
+#
+# §4.4: "sqlite on block-like storage". The storage class is deliberately a
+# placeholder: it must provide block semantics (safe for sqlite WAL — a
+# local-path provisioner satisfies §4.3 but binds the pod to one node, which
+# is why the backup CronJob carries a nodeSelector placeholder too). An
+# overlay pins the class (see overlays/homelab → REPLACE-storage-class).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sigrun-data
+  labels:
+    app.kubernetes.io/name: sigrun
+    app.kubernetes.io/component: server
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # REPLACE with the deployment's block storage class.
+  storageClassName: REPLACEME-block-storage-class
+  resources:
+    requests:
+      storage: 2Gi

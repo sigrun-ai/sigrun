@@ -1,0 +1,43 @@
+# Sigrun PrometheusRule (spec §4.4, Task 13) — M1 alerts over the readiness
+# scrape (see servicemonitor.yaml's scoping note: /readyz is the only scraped
+# surface; degraded T9e health ⇒ 503 ⇒ up == 0, so "meta-degraded" folds
+# into SigrunNotReady).
+#
+# - SigrunNotReady: the scrape fails for 10m — process down OR harness not
+#   ready (storage unreachable, memory/provider health degraded).
+# - SigrunNoScrape: the series is absent for 30m — the ServiceMonitor/
+#   Prometheus wiring itself broke (SigrunNotReady cannot fire when nothing
+#   scrapes the target, so the absence needs its own signal).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sigrun
+  labels:
+    app.kubernetes.io/name: sigrun
+    app.kubernetes.io/component: server
+spec:
+  groups:
+    - name: sigrun
+      rules:
+        - alert: SigrunNotReady
+          expr: up{job="sigrun"} == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: sigrun scrape failing (process down or harness not ready)
+            description: >-
+              The sigrun /readyz scrape has failed for 10m — the process is
+              down, or readiness is failing (storage read, memory/provider
+              health). Check the pod and GET /v1/meta for the health block.
+        - alert: SigrunNoScrape
+          expr: absent(up{job="sigrun"})
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: sigrun is not being scraped
+            description: >-
+              No up{job="sigrun"} series for 30m — the ServiceMonitor or
+              Prometheus discovery wiring broke (SigrunNotReady cannot fire
+              when nothing scrapes the target).
