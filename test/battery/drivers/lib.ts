@@ -27,8 +27,8 @@ import type { HarnessSettings } from "@earendil-works/pi-durable";
 
 /** The scenario state the setup pass records for the verify pass. */
 export interface ScenarioState {
-	/** The submission the scenario killed mid-flight. */
-	readonly submissionId: string | number;
+	/** The submission the scenario killed mid-flight (items 1-5). */
+	submissionId?: string | number;
 	/** Item 3: the background-compaction task the kill interrupted. */
 	readonly compactionTaskId?: string | number;
 	/** Item 5: the second (queued) submission and what the default
@@ -36,6 +36,11 @@ export interface ScenarioState {
 	readonly secondSubmissionId?: string | number;
 	readonly observedDefaultMode?: string;
 	readonly secondInitialStatus?: string;
+	/** Item 7: the durable-sleep task the kill interrupted (its id; the
+	 * deadline lives in the task's own checkpoint, read at verify boot). */
+	readonly wakeTaskId?: string | number;
+	/** Item 7: the sleep deadline (epoch ms) the verify pass reopens before. */
+	readonly wakeDeadline?: number;
 }
 
 /**
