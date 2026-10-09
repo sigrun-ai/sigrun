@@ -10,6 +10,7 @@ import {
 	createClient,
 	type ApprovalsResponse,
 	type ConversationList,
+	type ConversationMeta,
 	type FetchLike,
 	type MetaResponse,
 	type ModelsResponse,
@@ -125,6 +126,65 @@ describe("createClient", () => {
 				body: JSON.stringify({ decision: "deny" }),
 			},
 		]);
+	});
+
+	test("getConversationMeta GETs the meta shape", async () => {
+		const body: ConversationMeta = {
+			pinned: true,
+			tagged: false,
+			archived: false,
+			draft: false,
+			source: "webui",
+			owner: "local",
+		};
+		const { calls, fetchImpl } = stubFetch(body);
+		const client = createClient({ fetch: fetchImpl });
+		const meta = await client.getConversationMeta(7);
+		expect(meta.pinned).toBe(true);
+		expect(meta.owner).toBe("local");
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/7/meta",
+				method: "GET",
+				accept: "application/json",
+			},
+		]);
+	});
+
+	test("patchConversationMeta PATCHes a merge body", async () => {
+		const { calls, fetchImpl } = stubFetch({});
+		const client = createClient({ fetch: fetchImpl });
+		await client.patchConversationMeta(7, { archived: true });
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/7/meta",
+				method: "PATCH",
+				accept: "application/json",
+				body: JSON.stringify({ archived: true }),
+			},
+		]);
+	});
+
+	test("createConversation POSTs /v1/conversations and parses the created summary", async () => {
+		const body = { id: 42, root: false, entryCount: 0 };
+		const { calls, fetchImpl } = stubFetch(body);
+		const client = createClient({ fetch: fetchImpl });
+		const created = await client.createConversation();
+		expect(created).toEqual(body);
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({}),
+			},
+		]);
+	});
+
+	test("createConversation is fail-loud on a non-2xx response", async () => {
+		const { fetchImpl } = stubFetch({}, { status: 500 });
+		const client = createClient({ fetch: fetchImpl });
+		await expect(client.createConversation()).rejects.toThrow("500");
 	});
 
 	test("decideApproval is fail-loud on a non-2xx response", async () => {

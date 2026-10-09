@@ -46,6 +46,20 @@ export interface ConversationList {
 	readonly conversations: readonly ConversationSummary[];
 }
 
+/**
+ * The `GET /v1/conversations/:id/meta` payload (mirrors the server's meta
+ * serializer). `PATCH /v1/conversations/:id/meta` MERGES a partial of this
+ * shape (`{ archived: true }` archives).
+ */
+export interface ConversationMeta {
+	readonly pinned: boolean;
+	readonly tagged: boolean;
+	readonly archived: boolean;
+	readonly draft: boolean;
+	readonly source: string;
+	readonly owner?: string;
+}
+
 /** One `GET /v1/models` entry (mirrors `ModelEntry`). */
 export interface ModelEntry {
 	readonly id: string;
@@ -187,6 +201,12 @@ export interface SigrunClient {
 	getMeta(): Promise<MetaResponse>;
 	listConversations(): Promise<ConversationList>;
 	listModels(): Promise<ModelsResponse>;
+	getConversationMeta(conversationId: number): Promise<ConversationMeta>;
+	patchConversationMeta(
+		conversationId: number,
+		patch: Partial<ConversationMeta>,
+	): Promise<void>;
+	createConversation(): Promise<ConversationSummary>;
 	listApprovals(conversationId: number): Promise<ApprovalsResponse>;
 	decideApproval(
 		conversationId: number,
@@ -241,10 +261,14 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		return (await response.json()) as T;
 	}
 
-	/** POST a JSON body; fail-loud on non-2xx. The response body is ignored. */
-	async function post(path: string, body: unknown): Promise<void> {
+	/** POST/PATCH a JSON body; fail-loud on non-2xx. `parsed` returns the body. */
+	async function send(
+		method: "POST" | "PATCH",
+		path: string,
+		body: unknown,
+	): Promise<unknown> {
 		const response = await fetchImpl(`${baseUrl}${path}`, {
-			method: "POST",
+			method,
 			headers: {
 				accept: "application/json",
 				"content-type": "application/json",
@@ -253,15 +277,28 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		});
 		if (!response.ok) {
 			throw new Error(
-				`sigrun api: POST ${path} failed with status ${response.status}`,
+				`sigrun api: ${method} ${path} failed with status ${response.status}`,
 			);
 		}
+		return response.json();
+	}
+
+	function post(path: string, body: unknown): Promise<void> {
+		return send("POST", path, body).then(() => undefined);
 	}
 
 	return {
 		getMeta: () => get<MetaResponse>("/v1/meta"),
 		listConversations: () => get<ConversationList>("/v1/conversations"),
 		listModels: () => get<ModelsResponse>("/v1/models"),
+		getConversationMeta: (conversationId) =>
+			get<ConversationMeta>(`/v1/conversations/${conversationId}/meta`),
+		patchConversationMeta: (conversationId, patch) =>
+			send("PATCH", `/v1/conversations/${conversationId}/meta`, patch).then(
+				() => undefined,
+			),
+		createConversation: async () =>
+			(await send("POST", "/v1/conversations", {})) as ConversationSummary,
 		listApprovals: (conversationId) =>
 			get<ApprovalsResponse>(`/v1/conversations/${conversationId}/approvals`),
 		decideApproval: (conversationId, approvalId, decision) =>

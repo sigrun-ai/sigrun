@@ -1,76 +1,87 @@
-import { useEffect, useState } from "react";
-import { createClient, type MetaResponse } from "./api";
+import { useCallback, useState } from "react";
+import { createClient, type SigrunClient } from "./api";
+import { EntryList } from "./entries/EntryList";
+import { SessionList } from "./sessions/SessionList";
+import type { EventSourceFactory } from "./stream";
+import { useConversationView } from "./useConversationView";
 
 /**
- * The M2 webui scaffold smoke surface (Task 20): the sigrun wordmark plus the
- * `/v1/meta` badges — enough to prove the bundle serves and the §5 client
- * works end to end. The real UI arrives with the later M2 tasks; the thin
- * hand-rolled style follows the mockup's direction (no CSS framework).
+ * The app shell (Task 23a): three panels — SessionList left, the chat
+ * center (EntryList over `useConversationView(activeId)`), a right-panel
+ * placeholder (T24 replaces it with the details/approvals surface). The
+ * composer slot is an EMPTY footer placeholder — T23b adds the composer.
+ *
+ * The active conversation id is App state: `SessionList.onSelect` flips it,
+ * and the view hook re-drives (a fresh stream opens; the stale one closes —
+ * the hook's cleanup owns that).
+ *
+ * Styling: thin hand-rolled CSS in app.css (the mockup's direction, no
+ * framework), continuing the T20 scaffold's no-dependency stance.
  */
 
-const client = createClient();
+/** The default client (same-origin); tests inject a stub-backed one. */
+const defaultClient = createClient();
 
-const badgeStyle: React.CSSProperties = {
-	display: "inline-block",
-	margin: "0 0.5rem 0.5rem 0",
-	padding: "0.25rem 0.6rem",
-	border: "1px solid #444",
-	borderRadius: "0.4rem",
-	fontFamily: "monospace",
-	fontSize: "0.85rem",
-};
+export interface AppOptions {
+	/** Injected for tests; defaults to the same-origin §5 client. */
+	readonly client?: SigrunClient;
+	/** Injected for tests; defaults to the browser's native EventSource. */
+	readonly createEventSource?: EventSourceFactory;
+}
 
-function Badge(props: { label: string; value: string }) {
+function ChatCenter(props: {
+	activeId: number | null;
+	createEventSource: EventSourceFactory | undefined;
+}) {
+	const { activeId, createEventSource } = props;
+	const { view, status, error } = useConversationView(activeId, {
+		createEventSource,
+	});
+
+	if (activeId === null) {
+		return (
+			<section className="chat-center">
+				<p className="chat-empty">Select or create a conversation</p>
+			</section>
+		);
+	}
 	return (
-		<span style={badgeStyle}>
-			{props.label}: {props.value}
-		</span>
+		<section
+			className="chat-center"
+			data-view-status={status}
+			aria-label="chat transcript"
+		>
+			{error !== null && <p role="alert">{error}</p>}
+			{view === null ? (
+				<p className="chat-loading">loading…</p>
+			) : (
+				<EntryList view={view} />
+			)}
+		</section>
 	);
 }
 
-export function App() {
-	const [meta, setMeta] = useState<MetaResponse | undefined>(undefined);
-	const [error, setError] = useState<string | undefined>(undefined);
-
-	useEffect(() => {
-		let cancelled = false;
-		client.getMeta().then(
-			(loaded) => {
-				if (!cancelled) setMeta(loaded);
-			},
-			(cause: unknown) => {
-				if (!cancelled) {
-					setError(cause instanceof Error ? cause.message : String(cause));
-				}
-			},
-		);
-		return () => {
-			cancelled = true;
-		};
-	}, []);
+export function App(options: AppOptions = {}) {
+	const client = options.client ?? defaultClient;
+	const [activeId, setActiveId] = useState<number | null>(null);
+	const onSelect = useCallback((id: number) => setActiveId(id), []);
 
 	return (
-		<main style={{ fontFamily: "system-ui, sans-serif", margin: "2rem" }}>
-			<h1>sigrun</h1>
-			{error !== undefined && <p role="alert">meta fetch failed: {error}</p>}
-			{meta === undefined && error === undefined && <p>loading…</p>}
-			{meta !== undefined && (
-				<section aria-label="server meta">
-					<Badge label="harness" value={meta.harnessVersion} />
-					<Badge label="schema" value={meta.schemaVersion} />
-					<Badge label="memory" value={meta.health.memory} />
-					<Badge label="providers" value={meta.health.providers} />
-					<Badge label="backup" value={meta.health.backup} />
-					<Badge
-						label="channels"
-						value={
-							meta.capabilities.channels.length === 0
-								? "api-only"
-								: meta.capabilities.channels.join(", ")
-						}
-					/>
-				</section>
-			)}
+		<main className="app-shell">
+			<SessionList
+				client={client}
+				activeId={activeId}
+				onSelect={onSelect}
+			/>
+			<div className="chat-column">
+				<ChatCenter
+					activeId={activeId}
+					createEventSource={options.createEventSource}
+				/>
+				{/* Composer arrives in T23b; the slot stays empty for now. */}
+				<footer className="composer-slot" />
+			</div>
+			<aside className="right-panel">details</aside>
 		</main>
 	);
 }

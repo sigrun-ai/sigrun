@@ -47,6 +47,22 @@ export class StubEventSource implements EventSourceLike {
 	}
 }
 
+/**
+ * Create a react-test-renderer instance inside an ASYNC `act` — flushes
+ * effect-triggered promises (client fetches) before returning. Use for
+ * components whose effects await the §5 client (SessionList, App).
+ */
+export async function renderAsync(
+	element: ReactElement,
+): Promise<TestRenderer.ReactTestRenderer> {
+	let renderer: TestRenderer.ReactTestRenderer | undefined;
+	await act(async () => {
+		renderer = TestRenderer.create(element);
+	});
+	if (renderer === undefined) throw new Error("test renderer not created");
+	return renderer;
+}
+
 /** Create a react-test-renderer instance inside `act` (the T21/T22 harness). */
 export function render(element: ReactElement): TestRenderer.ReactTestRenderer {
 	let renderer: TestRenderer.ReactTestRenderer | undefined;
