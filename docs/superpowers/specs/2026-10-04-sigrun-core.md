@@ -653,6 +653,60 @@ three sources. This corrects §5's parenthetical, not its endpoint list.
 
 ---
 
+## Appendix C.2 — M2 ship-gate record (the §7 M2 exit checklist, all 11 items)
+
+**Run 2026-10-08, the M2 webui ship gate — all 11 §7 M2 exit-checklist items PASS,
+no fallback**, driven end-to-end in a real browser (Playwright + headless chromium)
+against the real M1 server serving the built webui bundle over a faux provider
+(`webui/e2e/ship-gate.spec.ts` + `webui/e2e/ship-gate-hard.spec.ts`; `npm run
+test:e2e` builds the bundle fresh and runs the full suite — 12/12 green, the 11
+checklist items + the harness smoke test):
+
+1. Start a second session; switch between sessions; archive one — PASS (the
+   sessions sidebar).
+2. Send a text message; send an image — PASS (the composer + the
+   upload→attach→submit path-parts flow).
+3. Steer a running session — PASS (the composer's busy→Steer toggle sends
+   `whenBusy:"steer"`; the T26a server fix made the submissions route honor it).
+4. Approve a write/exec tool; deny a write tool; see the denial reflected —
+   PASS (the approval card from the endpoint, the T22-P1 sourcing).
+5. Pick a model from the catalog — PASS (the multi-model harness; the picker
+   drives the turn's model).
+6. Read a tool card (expand, see output) — PASS (a `load_skill` toolUse, the
+   expandable card).
+7. Ask about something compacted out of the live window; degenerate recall
+   returns it — PASS (a forced small-`reserveTokens` compaction; the
+   T26a-fixed memory binding makes `memory_recall` answer).
+8. Open the workspace panel; list a directory; read a file — PASS (the
+   workspace browser + read-only preview).
+9. Switch theme — PASS (the theme toggle flips the root `data-theme`).
+10. Restart the server mid-conversation; resume and continue — PASS (the
+    transcript survives; a new submit works post-restart).
+11. Confirm degraded surfaces appear in `GET /v1/meta` — PASS (the
+    unconfigured-backup badge).
+
+**Ship-gate-surfaced fixes (the gate working as intended — recorded per the
+honest-verification rule):**
+- The submissions route dropped `whenBusy` (a webui Steer fell to queued
+  follow-up) — fixed in T26a (`bc5c282`).
+- The memory recall source was never bound in the real server composition
+  (the loader discarded the memory wiring's `submit`) — fixed in T26a
+  (`bc5c282`).
+- The composer gated on `sending` alone, making Steer unclickable while a
+  session ran — fixed in T26b-iii groundwork (`95140d6`).
+- The files list endpoint returned absolute paths (pi-durable `listDir`
+  resolves them) while the files/content endpoint requires workspace-relative
+  paths (`isConfinedPath`) — the tree's paths couldn't feed the preview; the
+  list endpoint now relativizes against the workspace root (T26b-ii,
+  `381a541`).
+- The App never auto-selected a conversation (the composer was disabled until
+  a click) — fixed in T26b-ii (`381a541`).
+
+**M2 exit: the §7 M2 ship gate is met — the webui is a functional thin client
+over the durable harness.**
+
+---
+
 ## Appendix D — homelab deployment instantiation (user's cluster)
 
 The concrete values this deployment uses against §4.4. Kept here so the core sections

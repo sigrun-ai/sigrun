@@ -163,3 +163,8 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - TWO fixes the E2E surfaced (the gate working as intended): (1) App.tsx boot-time default selection of the root conversation (the composer was disabled until a click); (2) the files list endpoint returned ABSOLUTE paths (pi-durable listDir) but files/content requires RELATIVE (isConfinedPath) — a genuine server contract inconsistency; the list endpoint now relativizes.
 - App unit tests updated for the default selection. webui 114/114, root 212/212, e2e 8/8, tsc clean both.
 - Next: T26b-iii (items 3 steer, 4 approvals, 7 compaction recall, 10 restart resume) — the harder four.
+
+## T26b-iii — groundwork committed (95140d6); the four specs still to write
+- Worker (run 1a2d58a8) timed out post-groundwork: the harness extensions (tokensPerSecond, settings, extensionSpecifiers, restart()) landed + a genuine ship-gate bug found+fixed (the Composer's send button was disabled while busy — Steer unclickable). NO checklist specs written.
+- Orchestrator committed the groundwork + fixed the item-6 timing race (the draft-restore/settle race, same as item 2). e2e 8/8 still green.
+- Next: write the four specs (steer, approvals, compaction recall, restart-resume) against the extended harness — dispatch a fresh worker or orchestrator-write.
