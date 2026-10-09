@@ -102,3 +102,16 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - The worker explicitly flagged visual rendering as UNVERIFIED (no browser tool in its toolset; visual verification is T26's ship-gate E2E lane). The standing scope call the T22/T23 reviewers endorsed.
 - Review dispatched (run 89b0a049).
 - Next: T25 (themes + badges + layout shell — the visual polish task), then T26 (ship-gate E2E).
+
+## Task 24 — DONE (uploads + workspace browser)
+- Implementer (kimi-k3, run 5601dda8): 558e2aa, webui 97/97 + root 208/208.
+- Review (bifrost/kimi-k3, run 89b0a049 → resumed bd76af4e after the verdict didn't surface): APPROVED, no P0/P1, 3 P2s. ALL FOUR wire-shape risk checks passed against the server (upload {name,contentBase64}→{path}; files/files-content shapes; session-meta draft sub-merge preserves the other sub-key; submission parts {type,path,mime}).
+- Fix round (orchestrator, 0f5b71b): suppress the perpetual loading label after a failed root list. Deferred (latent under v1's shared static workspaces): cross-conversation attachment pollution on mid-upload switch; stale children-cache repopulation.
+- Next: T25 (themes + badges + layout shell — the visual polish task), then T26 (ship-gate E2E).
+
+## Task 25 — implemented (in review)
+- Implementer (kimi-k3, run 3448adc6): e0f965f, webui 114/114 (17 new) + root 209/209, both tsc clean.
+- Theme system (light/dark + accent, CSS custom properties, useTheme persisted to localStorage) + TopBar (extension badge, health badges, theme controls) + layout shell styled to the mockup + the schema-version gate + the picker convention (model picker hides on a single-model catalog).
+- THE VISUAL CHECK LANDED: built the bundle, booted the server, headless screenshot at /tmp/sigrun-t25/sigrun-webui-t25.png — verified non-blank programmatically (256 distinct byte values; orchestrator re-verified the PNG is 1280x800/33KB/non-blank). Neither worker nor orchestrator can view images — the visual content is verified structurally (dump-dom) + non-blank, not by eye. The theme toggle/accent live click-through is deferred to T26's E2E.
+- Review dispatched (run 0bd6faa1).
+- Next: T26 (the ship-gate E2E — the final M2 task).
