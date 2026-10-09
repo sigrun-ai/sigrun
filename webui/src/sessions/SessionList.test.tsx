@@ -47,10 +47,10 @@ function makeFetch(routes: Record<string, (call: Call) => unknown>): {
 
 const META_DEFAULTS = {
 	pinned: false,
-	tagged: false,
+	tagged: [],
 	archived: false,
-	draft: false,
-	source: "webui",
+	draft: { text: "", attachments: [] },
+	source: "user",
 } satisfies Partial<ConversationMeta>;
 
 function makeHarness() {

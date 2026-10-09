@@ -28,10 +28,10 @@ interface ListedConversation {
 /** The meta rendered before one loads (or when its GET fails). */
 const DEFAULT_META: ConversationMeta = {
 	pinned: false,
-	tagged: false,
+	tagged: [],
 	archived: false,
-	draft: false,
-	source: "webui",
+	draft: { text: "", attachments: [] },
+	source: "user",
 };
 
 /** Title placeholder until a titling task lands: `Conversation #<id>`. */
@@ -50,7 +50,7 @@ function badgesOf(item: ListedConversation): string {
 	const badges: string[] = [];
 	if (item.meta.pinned) badges.push("pinned");
 	if (item.meta.archived) badges.push("archived");
-	if (item.meta.draft) badges.push("draft");
+	if (item.meta.draft.text.length > 0) badges.push("draft");
 	return badges.length === 0 ? "" : ` (${badges.join(", ")})`;
 }
 

@@ -27,17 +27,17 @@ function makeHarness() {
 	const metas: Record<number, ConversationMeta> = {
 		1: {
 			pinned: false,
-			tagged: false,
+			tagged: [],
 			archived: false,
-			draft: false,
-			source: "webui",
+			draft: { text: "", attachments: [] },
+			source: "user",
 		},
 		2: {
 			pinned: false,
-			tagged: false,
+			tagged: [],
 			archived: false,
-			draft: false,
-			source: "webui",
+			draft: { text: "", attachments: [] },
+			source: "user",
 		},
 	};
 	const calls: Call[] = [];

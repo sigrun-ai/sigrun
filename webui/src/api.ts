@@ -50,15 +50,38 @@ export interface ConversationList {
  * The `GET /v1/conversations/:id/meta` payload (mirrors the server's meta
  * serializer). `PATCH /v1/conversations/:id/meta` MERGES a partial of this
  * shape (`{ archived: true }` archives).
+ *
+ * Mirrors the server's SessionMeta (src/server/session-meta.ts). Corrected in
+ * the T23a review: `tagged` is a string array, `draft` is an object (the
+ * per-session composer draft), `source` is the `"user" | "cron"` enum — the
+ * first draft of this interface had all three wrong, which would have
+ * rendered the DEFAULT_META fallback for every live conversation.
  */
 export interface ConversationMeta {
 	readonly pinned: boolean;
-	readonly tagged: boolean;
+	readonly tagged: readonly string[];
 	readonly archived: boolean;
-	readonly draft: boolean;
-	readonly source: string;
+	readonly draft: { readonly text: string; readonly attachments: readonly string[] };
+	readonly source: "user" | "cron";
 	readonly owner?: string;
 }
+
+/**
+ * A PATCH body for `/v1/conversations/:id/meta`: a merge where an explicit
+ * `null` CLEARS the field (spec §5 + the server's validateSessionMetaPatch).
+ * `draft` sub-merges (a draft patch with only `text` preserves
+ * `attachments`); `draft: null` resets the whole draft.
+ */
+export type ConversationMetaPatch = {
+	readonly pinned?: boolean | null;
+	readonly tagged?: readonly string[] | null;
+	readonly archived?: boolean | null;
+	readonly draft?:
+		| { readonly text?: string | null; readonly attachments?: readonly string[] | null }
+		| null;
+	readonly source?: "user" | "cron" | null;
+	readonly owner?: string | null;
+};
 
 /** One `GET /v1/models` entry (mirrors `ModelEntry`). */
 export interface ModelEntry {
@@ -204,7 +227,7 @@ export interface SigrunClient {
 	getConversationMeta(conversationId: number): Promise<ConversationMeta>;
 	patchConversationMeta(
 		conversationId: number,
-		patch: Partial<ConversationMeta>,
+		patch: ConversationMetaPatch,
 	): Promise<void>;
 	createConversation(): Promise<ConversationSummary>;
 	listApprovals(conversationId: number): Promise<ApprovalsResponse>;
