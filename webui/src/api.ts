@@ -219,6 +219,47 @@ export interface ApprovalsResponse {
 /** The §5 approval decision enum (`allow | deny`). */
 export type ApprovalDecision = "allow" | "deny";
 
+/** One `GET /v1/conversations/:id/files` entry (mirrors `FileEntry`). */
+export interface FileEntryWire {
+	readonly name: string;
+	readonly path: string;
+	readonly kind: "file" | "directory" | "symlink";
+	readonly size: number;
+	readonly mtimeMs: number;
+}
+
+/** The list response of `GET /v1/conversations/:id/files` (mirrors `FileListResponse`). */
+export interface FileListResponseWire {
+	readonly entries: readonly FileEntryWire[];
+}
+
+/**
+ * The read response of `GET /v1/conversations/:id/files/content` (mirrors
+ * `FileContentResponse`): `"text"` when the bytes are strictly valid UTF-8,
+ * else `"base64"`. `size` is the byte length; the server caps reads at 1 MiB
+ * (413 `file_too_large` over the cap).
+ */
+export interface FileContentResponseWire {
+	readonly encoding: "text" | "base64";
+	readonly content: string;
+	readonly size: number;
+}
+
+/** The response of `POST /v1/conversations/:id/uploads` (mirrors `UploadResponse`). */
+export interface UploadResponseWire {
+	/** The workspace-relative path a submission content part consumes. */
+	readonly path: string;
+}
+
+/**
+ * The minimal file surface `upload` consumes — the browser's `File`/`Blob`
+ * satisfy this structurally; tests pass a plain object.
+ */
+export interface UploadFileInput {
+	readonly name: string;
+	arrayBuffer(): Promise<ArrayBuffer>;
+}
+
 /** One content part of a submission input (spec §5: text + workspace-relative path parts). */
 export interface SubmissionInputPart {
 	readonly type: string;
@@ -276,6 +317,24 @@ export interface SigrunClient {
 		input: readonly SubmissionInputPart[],
 		options?: SubmitOptions,
 	): Promise<SubmissionResponseWire>;
+	/**
+	 * List a workspace directory (`GET .../files?path=`; `path` defaults to
+	 * the workspace root `"."`).
+	 */
+	listFiles(conversationId: number, path?: string): Promise<FileListResponseWire>;
+	/** Read a workspace file (`GET .../files/content?path=`). */
+	readFile(
+		conversationId: number,
+		path: string,
+	): Promise<FileContentResponseWire>;
+	/**
+	 * Materialize an upload (`POST .../uploads` with `{name, contentBase64}`);
+	 * resolves to the workspace-relative path a submission part consumes.
+	 */
+	upload(
+		conversationId: number,
+		file: UploadFileInput,
+	): Promise<UploadResponseWire>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -301,6 +360,20 @@ export interface SigrunClientOptions {
 	readonly baseUrl?: string;
 	/** Injected for tests; defaults to the ambient `fetch`. */
 	readonly fetch?: FetchLike;
+}
+
+/**
+ * Bytes → base64 for the uploads body's `contentBase64`. Chunked: spreading
+ * the full array into `String.fromCharCode` blows the call stack on large
+ * files. `btoa` is a global in browsers AND in Node ≥16 (the test runner).
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+	const CHUNK = 0x8000;
+	let binary = "";
+	for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+		binary += String.fromCharCode(...bytes.subarray(offset, offset + CHUNK));
+	}
+	return btoa(binary);
 }
 
 /** Create a §5 client. See {@link SigrunClientOptions} for the seams. */
@@ -379,5 +452,20 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 					? {}
 					: { whenBusy: options.whenBusy }),
 			}) as Promise<SubmissionResponseWire>,
+		listFiles: (conversationId, path) =>
+			get<FileListResponseWire>(
+				`/v1/conversations/${conversationId}/files?path=${encodeURIComponent(path ?? ".")}`,
+			),
+		readFile: (conversationId, path) =>
+			get<FileContentResponseWire>(
+				`/v1/conversations/${conversationId}/files/content?path=${encodeURIComponent(path)}`,
+			),
+		upload: async (conversationId, file) => {
+			const bytes = new Uint8Array(await file.arrayBuffer());
+			return (await send("POST", `/v1/conversations/${conversationId}/uploads`, {
+				name: file.name,
+				contentBase64: bytesToBase64(bytes),
+			})) as UploadResponseWire;
+		},
 	};
 }

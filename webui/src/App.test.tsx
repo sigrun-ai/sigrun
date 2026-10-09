@@ -55,7 +55,9 @@ function makeHarness(init?: {
 		let body: unknown;
 		if (metaMatch !== null) body = metas[Number(metaMatch[1])];
 		else if (input === "/v1/models") body = { models: [] };
-		else if (/^\/v1\/conversations\/\d+\/approvals$/.test(input)) {
+		else if (/^\/v1\/conversations\/\d+\/files\?/.test(input)) {
+			body = { entries: [] };
+		} else if (/^\/v1\/conversations\/\d+\/approvals$/.test(input)) {
 			body = { approvals };
 		} else {
 			body = {
@@ -106,7 +108,7 @@ async function clickByClass(
 }
 
 describe("App shell", () => {
-	test("composes sidebar + chat center + right placeholder + composer slot; no stream until a conversation is selected", async () => {
+	test("composes sidebar + chat center + workspace right panel + composer slot; no stream until a conversation is selected", async () => {
 		const { client, createEventSource, sources } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
@@ -115,11 +117,11 @@ describe("App shell", () => {
 		// Sidebar conversations rendered.
 		expect(text).toContain("#1");
 		expect(text).toContain("#2");
-		// Empty chat state + right placeholder; the composer slot renders the
-		// idle (no-conversation) Composer, which submits nothing until a
-		// conversation is active.
+		// Empty chat state + the workspace browser's no-selection state; the
+		// composer slot renders the idle (no-conversation) Composer, which
+		// submits nothing until a conversation is active.
 		expect(text).toContain("Select or create a conversation");
-		expect(text).toContain("details");
+		expect(text).toContain("Select a conversation to browse its workspace");
 		const composer = renderer.root.findByProps({
 			className: "composer-slot",
 		});
@@ -130,8 +132,8 @@ describe("App shell", () => {
 		expect(sources).toEqual([]);
 	});
 
-	test("selecting a conversation drives the view hook and renders the transcript", async () => {
-		const { client, createEventSource, sources } = makeHarness();
+	test("selecting a conversation drives the view hook and renders the transcript + the workspace browser", async () => {
+		const { calls, client, createEventSource, sources } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
@@ -156,6 +158,10 @@ describe("App shell", () => {
 		});
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("hello from conversation two");
+		// The right-panel browser listed conversation 2's workspace root.
+		expect(calls.map((c) => c.input)).toContain(
+			"/v1/conversations/2/files?path=.",
+		);
 	});
 
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {

@@ -12,6 +12,8 @@ import {
 	type ConversationList,
 	type ConversationMeta,
 	type FetchLike,
+	type FileContentResponseWire,
+	type FileListResponseWire,
 	type MetaResponse,
 	type ModelsResponse,
 } from "./api";
@@ -232,5 +234,76 @@ describe("createClient", () => {
 		await expect(client.decideApproval(9, "c1", "allow")).rejects.toThrow(
 			"404",
 		);
+	});
+
+	test("listFiles GETs the files endpoint with the path query (default '.')", async () => {
+		const body: FileListResponseWire = {
+			entries: [
+				{
+					name: "src",
+					path: "src",
+					kind: "directory",
+					size: 0,
+					mtimeMs: 1,
+				},
+			],
+		};
+		const { calls, fetchImpl } = stubFetch(body);
+		const client = createClient({ fetch: fetchImpl });
+		const listed = await client.listFiles(4);
+		expect(listed.entries[0]?.kind).toBe("directory");
+		expect(calls[0]?.input).toBe("/v1/conversations/4/files?path=.");
+		await client.listFiles(4, "src/deep dir");
+		expect(calls[1]?.input).toBe(
+			"/v1/conversations/4/files?path=src%2Fdeep%20dir",
+		);
+	});
+
+	test("readFile GETs files/content with the encoded path and parses both encodings", async () => {
+		const textBody: FileContentResponseWire = {
+			encoding: "text",
+			content: "hello",
+			size: 5,
+		};
+		const { calls, fetchImpl } = stubFetch(textBody);
+		const client = createClient({ fetch: fetchImpl });
+		const read = await client.readFile(4, "src/a file.txt");
+		expect(read).toEqual(textBody);
+		expect(calls[0]?.input).toBe(
+			"/v1/conversations/4/files/content?path=src%2Fa%20file.txt",
+		);
+	});
+
+	test("upload POSTs {name, contentBase64} and returns the workspace-relative path", async () => {
+		const { calls, fetchImpl } = stubFetch(
+			{ path: "uploads/4/note.txt" },
+			{ status: 201 },
+		);
+		const client = createClient({ fetch: fetchImpl });
+		const file = {
+			name: "note.txt",
+			// "hi" = 0x68 0x69 → base64 "aGk="
+			arrayBuffer: () =>
+				Promise.resolve(new Uint8Array([104, 105]).buffer),
+		};
+		const uploaded = await client.upload(4, file);
+		expect(uploaded).toEqual({ path: "uploads/4/note.txt" });
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/4/uploads",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({ name: "note.txt", contentBase64: "aGk=" }),
+			},
+		]);
+	});
+
+	test("readFile is fail-loud on a non-2xx response (e.g. 413 file_too_large)", async () => {
+		const { fetchImpl } = stubFetch(
+			{ error: "file_too_large", maxBytes: 1048576 },
+			{ status: 413 },
+		);
+		const client = createClient({ fetch: fetchImpl });
+		await expect(client.readFile(4, "big.bin")).rejects.toThrow("413");
 	});
 });
