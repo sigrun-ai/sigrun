@@ -1,10 +1,10 @@
 /**
- * ApprovalCard (Task 22): a pending gated call (a `docs["pi.live"].tools`
- * slot with status "pending") rendered with allow/deny. Clicking POSTs
- * `{decision}` to `/v1/conversations/:id/approvals/:approvalId` via the api
- * client's seam (stub fetch). The card never self-clears: after a decision
- * it shows a decided state and the NEXT VIEW FRAME (the slot no longer
- * pending) removes it — the stream drives the transcript, not local guesses.
+ * ApprovalCard (Task 22): a pending gated call rendered with allow/deny.
+ * Clicking POSTs `{decision}` to `/v1/conversations/:id/approvals/:approvalId`
+ * via the api client's seam (stub fetch). The card never self-clears: after
+ * a decision it shows a decided state and the PARENT removes it (the
+ * Composer's next `listApprovals` refresh — the endpoint is the sole truth
+ * for the approval lifecycle, NOT the view slots).
  */
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -14,11 +14,11 @@ import { act, createElement as h, Fragment } from "react";
 import { describe, expect, test } from "vitest";
 import {
 	createClient,
-	type ConversationViewWire,
+	type ApprovalWire,
 	type FetchLike,
 } from "../api";
 import { makeView, render, textContent } from "../test-utils";
-import { ApprovalCard, pendingApprovalsFromView } from "./ApprovalCard";
+import { ApprovalCard } from "./ApprovalCard";
 
 /** A fetch stub recording calls; returns one canned status (default 200). */
 function stubFetch(init?: { status?: number }) {
@@ -133,44 +133,20 @@ describe("ApprovalCard", () => {
 	});
 });
 
-describe("pendingApprovalsFromView", () => {
-	test("derives pending approvals from the live doc's pending tool slots", () => {
-		const view = makeView({
-			id: 9,
-			docs: {
-				"pi.live": {
-					tools: [
-						{ callId: "call-1", name: "bash", status: "pending" },
-						{ callId: "call-2", name: "read", status: "running" },
-					],
-				},
-			},
-		});
-		expect(pendingApprovalsFromView(view)).toEqual([
-			{ callId: "call-1", toolName: "bash", status: "pending" },
-		]);
-	});
-
-	test("no live doc (or no pending slots) means no approvals", () => {
-		expect(pendingApprovalsFromView(makeView({}))).toEqual([]);
-		expect(
-			pendingApprovalsFromView(
-				makeView({ docs: { "pi.live": { tools: [] } } }),
-			),
-		).toEqual([]);
-	});
-});
-
-describe("approval lifecycle across view frames", () => {
-	function Harness(props: { view: ConversationViewWire }) {
+describe("approval lifecycle across parent re-lists", () => {
+	// The parent (the Composer) owns the approvals list from `listApprovals`;
+	// this harness simulates that: the parent holds the list and re-renders
+	// the cards from it. The card must stay visible after its own click until
+	// the parent's list drops the approval.
+	function Harness(props: { approvals: readonly ApprovalWire[] }) {
 		const client = createClient({ fetch: harnessFetch });
 		return h(
 			Fragment,
 			null,
-			...pendingApprovalsFromView(props.view).map((approval) =>
+			...props.approvals.map((approval) =>
 				h(ApprovalCard, {
 					key: approval.callId,
-					conversationId: props.view.conversation.id,
+					conversationId: 9,
 					approval,
 					client,
 				}),
@@ -188,20 +164,17 @@ describe("approval lifecycle across view frames", () => {
 		});
 	};
 
-	test("a pending approval clears on the next view frame, not on the click", async () => {
+	test("a pending approval clears when the parent re-lists, not on the click", async () => {
 		harnessCalls = [];
-		const frame1 = makeView({
-			id: 9,
-			docs: {
-				"pi.live": {
-					tools: [{ callId: "call-1", name: "bash", status: "pending" }],
-				},
-			},
-		});
-		const renderer = render(h(Harness, { view: frame1 }));
+		const pending: ApprovalWire = {
+			callId: "call-1",
+			toolName: "bash",
+			status: "pending",
+		};
+		const renderer = render(h(Harness, { approvals: [pending] }));
 		expect(textContent(renderer.toJSON())).toContain("bash");
 
-		// The click POSTs the decision but the card stays until the frame.
+		// The click POSTs the decision but the card stays until the re-list.
 		await act(async () => {
 			await renderer.root
 				.findByProps({ className: "approval-allow" })
@@ -210,17 +183,9 @@ describe("approval lifecycle across view frames", () => {
 		expect(harnessCalls).toHaveLength(1);
 		expect(textContent(renderer.toJSON())).toContain("bash");
 
-		// The next frame: the slot flipped to running — the card is gone.
-		const frame2 = makeView({
-			id: 9,
-			docs: {
-				"pi.live": {
-					tools: [{ callId: "call-1", name: "bash", status: "running" }],
-				},
-			},
-		});
+		// The parent re-lists: the approval is gone — the card is removed.
 		act(() => {
-			renderer.update(h(Harness, { view: frame2 }));
+			renderer.update(h(Harness, { approvals: [] }));
 		});
 		expect(textContent(renderer.toJSON())).not.toContain("bash");
 		renderer.unmount();

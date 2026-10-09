@@ -5,10 +5,11 @@
  *
  * The card NEVER self-clears: after a successful decision it shows a
  * decided state (buttons disabled — the decision cannot be double-sent) and
- * the NEXT VIEW FRAME removes it, because pending approvals are view-derived
- * (`pendingApprovalsFromView`: the `docs["pi.live"].tools` slots with status
- * "pending"). The stream drives the transcript, not local guesses. A failed
- * POST surfaces the error (fail loud) and re-enables the buttons.
+ * the NEXT approvals-list refresh removes it. Pending approvals are sourced
+ * from the server's approvals endpoint (`listApprovals`) by the Composers,
+ * NOT derived from view slots — the endpoint is the sole truth for the
+ * approval lifecycle. A failed POST surfaces the error (fail loud) and
+ * re-enables the buttons.
  */
 
 import { useState } from "react";
@@ -16,26 +17,8 @@ import {
 	createClient,
 	type ApprovalDecision,
 	type ApprovalWire,
-	type ConversationViewWire,
 	type SigrunClient,
 } from "../api";
-import { liveToolSlots } from "./liveDoc";
-
-/**
- * The pending gated calls of a view frame: the live tool slots with status
- * "pending" (the §5 approvals vocabulary), mapped to the approval shape.
- */
-export function pendingApprovalsFromView(
-	view: ConversationViewWire,
-): readonly ApprovalWire[] {
-	return liveToolSlots(view)
-		.filter((slot) => slot.status === "pending")
-		.map((slot) => ({
-			callId: slot.callId,
-			toolName: slot.name,
-			status: "pending",
-		}));
-}
 
 const defaultClient = createClient();
 
