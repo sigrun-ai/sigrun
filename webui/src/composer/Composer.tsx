@@ -1,9 +1,18 @@
 /**
- * Composer (Task 23b): the footer of the chat column.
+ * Composer (Task 23b + T24 attachments): the footer of the chat column.
  *
  * - Textarea backed by {@link useDraft} (the per-session persistent draft —
  *   restored from `/meta` on switch, saved debounced, cleared after submit
  *   without a late flush resurrecting it).
+ * - Attach path (Task 24): the attach control (a `<label>` wrapping a hidden
+ *   `<input type="file" multiple>` — native activation, no ref-click)
+ *   uploads each selected file via `client.upload` → the returned
+ *   workspace-relative path lands in `draft.attachments` (session-meta —
+ *   the tray survives a reload). The tray renders one chip per path with a
+ *   remove control. Submit sends one `{type:"image"|"file", path, mime?}`
+ *   part per attachment + the text part; a known image extension maps to
+ *   `image` + its mime, anything else to `file` (the server resolves
+ *   path-parts at submit time, spec §5).
  * - Model picker from `client.listModels()` (the §5 catalog). v1 is
  *   display-only: the selection names the model the usage ring reads and
  *   the composer label — the wire-level model change is `configure`, a
@@ -21,16 +30,15 @@
  *   NOT from `view.docs["pi.live"].tools` slots (pi-durable marks
  *   not-yet-started calls `pending` regardless of gating; a slot-derived
  *   card would render for an ungated tool and 404 on click).
- *
- * NO attach button: uploads are T24.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import {
 	type ApprovalWire,
 	type ConversationViewWire,
 	type ModelEntry,
 	type SigrunClient,
+	type SubmissionInputPart,
 } from "../api";
 import { ApprovalCard } from "../entries/ApprovalCard";
 import { useDraft } from "./useDraft";
@@ -67,6 +75,39 @@ function usageFraction(
 		(entry.cacheRead ?? 0) +
 		(entry.cacheWrite ?? 0);
 	return Math.max(0, Math.min(1, used / model.contextWindow));
+}
+
+/** Known image extensions → mime (the submit part's `image` discriminator). */
+const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	bmp: "image/bmp",
+	svg: "image/svg+xml",
+	avif: "image/avif",
+};
+
+/** The last path segment (the tray chip label / extension source). */
+function basename(path: string): string {
+	const slash = path.lastIndexOf("/");
+	return slash === -1 ? path : path.slice(slash + 1);
+}
+
+/**
+ * An attachment path → its §5 submission part: a known image extension
+ * yields `{type:"image", path, mime}` (the mime is derivable from the path,
+ * so the tray — which persists only paths — needs nothing else); anything
+ * else yields `{type:"file", path}` and the server resolves the content.
+ */
+function attachmentPart(path: string): SubmissionInputPart {
+	const name = basename(path);
+	const dot = name.lastIndexOf(".");
+	const extension = dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+	const mime = IMAGE_MIME_BY_EXTENSION[extension];
+	if (mime === undefined) return { type: "file", path };
+	return { type: "image", path, mime };
 }
 
 /** The compact context-usage ring (an SVG arc + percent label). */
@@ -127,6 +168,7 @@ export function Composer(props: {
 	const [approvals, setApprovals] = useState<readonly ApprovalWire[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
+	const [uploading, setUploading] = useState(false);
 
 	// The model catalog: fetched once per mount (the §5 catalog is a server
 	// boot constant for M2's purposes).
@@ -185,20 +227,52 @@ export function Composer(props: {
 	const model = models.find((m) => m.id === selectedModel);
 	const fraction = usageFraction(view, model);
 
+	async function attach(files: Iterable<File>): Promise<void> {
+		if (conversationId === null || uploading) return;
+		setUploading(true);
+		setError(null);
+		try {
+			// Sequential: the per-file PATCHes build on each other, and the
+			// tray order matches the picker order.
+			for (const file of files) {
+				const uploaded = await client.upload(conversationId, file);
+				draft.addAttachment(uploaded.path);
+			}
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setUploading(false);
+		}
+	}
+
+	function onFilesSelected(event: ChangeEvent<HTMLInputElement>): unknown {
+		const files = event.target.files;
+		const picked = files === null ? [] : Array.from(files);
+		// Reset so picking the SAME file again re-fires the change event.
+		event.target.value = "";
+		if (picked.length === 0) return undefined;
+		return attach(picked);
+	}
+
 	async function send(): Promise<void> {
 		const text = draft.text.trim();
-		if (conversationId === null || text === "" || sending) return;
+		if (conversationId === null || sending) return;
+		if (text === "" && draft.attachments.length === 0) return;
 		setSending(true);
 		setError(null);
 		try {
+			const parts: SubmissionInputPart[] = [
+				...draft.attachments.map(attachmentPart),
+				...(text === "" ? [] : [{ type: "text", text }]),
+			];
 			await client.submit(
 				conversationId,
-				[{ type: "text", text }],
+				parts,
 				busy ? { whenBusy: "steer" } : undefined,
 			);
-			// Cleared WITH persisting: the submitted text must not resurrect from
-			// a late debounce flush OR a reload (the server meta keeps the draft
-			// until it's overwritten — persist the clear).
+			// Cleared WITH persisting: the submitted text AND the tray must not
+			// resurrect from a late debounce flush OR a reload (the server meta
+			// keeps the draft until it's overwritten — persist the clear).
 			draft.clear(true);
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
@@ -222,6 +296,29 @@ export function Composer(props: {
 				</div>
 			)}
 			{error !== null && <p role="alert">{error}</p>}
+			{draft.attachments.length > 0 && (
+				<ul className="composer-attachments">
+					{draft.attachments.map((path) => (
+						<li
+							key={path}
+							className="composer-attachment"
+							data-path={path}
+						>
+							<span className="composer-attachment-name">
+								{basename(path)}
+							</span>
+							<button
+								type="button"
+								className="composer-attachment-remove"
+								aria-label={`remove ${basename(path)}`}
+								onClick={() => draft.removeAttachment(path)}
+							>
+								×
+							</button>
+						</li>
+					))}
+				</ul>
+			)}
 			<div className="composer-row">
 				<textarea
 					className="composer-input"
@@ -238,6 +335,20 @@ export function Composer(props: {
 					onChange={(event) => draft.setText(event.target.value)}
 				/>
 				<div className="composer-side">
+					<label
+						className="composer-attach"
+						data-uploading={uploading || undefined}
+					>
+						{uploading ? "Uploading…" : "Attach"}
+						<input
+							type="file"
+							className="composer-file-input"
+							multiple
+							hidden
+							disabled={conversationId === null || uploading}
+							onChange={onFilesSelected}
+						/>
+					</label>
 					<select
 						className="composer-model"
 						value={selectedModel ?? ""}
@@ -257,7 +368,8 @@ export function Composer(props: {
 						disabled={
 							conversationId === null ||
 							sending ||
-							draft.text.trim() === ""
+							(draft.text.trim() === "" &&
+								draft.attachments.length === 0)
 						}
 						onClick={() => void send()}
 					>

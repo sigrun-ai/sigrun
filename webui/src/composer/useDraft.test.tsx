@@ -14,14 +14,14 @@ import type TestRenderer from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createClient, type ConversationMeta, type FetchLike } from "../api";
 import { renderAsync, textContent } from "../test-utils";
-import { useDraft } from "./useDraft";
+import { useDraft, type UseDraftResult } from "./useDraft";
 
-function metaWithDraft(text: string): ConversationMeta {
+function metaWithDraft(text: string, attachments: readonly string[] = []): ConversationMeta {
 	return {
 		pinned: false,
 		tagged: [],
 		archived: false,
-		draft: { text, attachments: [] },
+		draft: { text, attachments },
 		source: "user",
 	};
 }
@@ -49,11 +49,11 @@ function makeHarness() {
 function Host(props: {
 	client: ReturnType<typeof createClient>;
 	conversationId: number;
-	capture: (api: { setText(text: string): void }) => void;
+	capture: (api: UseDraftResult) => void;
 }) {
 	const draft = useDraft(props.client, props.conversationId);
 	useEffect(() => {
-		props.capture({ setText: draft.setText });
+		props.capture(draft);
 	});
 	return <p className="draft-echo">{draft.text}</p>;
 }
@@ -62,8 +62,8 @@ async function renderHost(
 	client: ReturnType<typeof createClient>,
 	initialId: number,
 ) {
-	let api: { setText(text: string): void } | undefined;
-	const capture = (next: { setText(text: string): void }) => {
+	let api: UseDraftResult | undefined;
+	const capture = (next: UseDraftResult) => {
 		api = next;
 	};
 	const renderer = await renderAsync(
@@ -85,7 +85,7 @@ async function renderHost(
 
 async function setText(
 	renderer: TestRenderer.ReactTestRenderer,
-	api: { setText(text: string): void },
+	api: UseDraftResult,
 	text: string,
 ): Promise<void> {
 	await act(async () => {
@@ -176,5 +176,73 @@ describe("useDraft", () => {
 		expect(patches.map((c) => c.body)).toContain(
 			JSON.stringify({ draft: { text: "unsent words" } }),
 		);
+	});
+
+	test("restores the served attachments (the tray survives a reload)", async () => {
+		const { client, metaById } = makeHarness();
+		metaById.set(
+			1,
+			metaWithDraft("", ["uploads/1/a.png", "uploads/1/b.txt"]),
+		);
+		const { getApi } = await renderHost(client, 1);
+		expect(getApi().attachments).toEqual([
+			"uploads/1/a.png",
+			"uploads/1/b.txt",
+		]);
+	});
+
+	test("addAttachment persists IMMEDIATELY (no debounce) and dedups; removeAttachment persists the reduced list", async () => {
+		const { calls, client } = makeHarness();
+		const { renderer, getApi } = await renderHost(client, 1);
+		await act(async () => {
+			getApi().addAttachment("uploads/1/x.png");
+		});
+		// No timer advance — the PATCH has already fired.
+		let patches = calls.filter((c) => c.method === "PATCH");
+		expect(patches).toEqual([
+			{
+				input: "/v1/conversations/1/meta",
+				method: "PATCH",
+				body: JSON.stringify({
+					draft: { attachments: ["uploads/1/x.png"] },
+				}),
+			},
+		]);
+		expect(getApi().attachments).toEqual(["uploads/1/x.png"]);
+
+		// A duplicate add is a no-op (no second PATCH).
+		await act(async () => {
+			getApi().addAttachment("uploads/1/x.png");
+		});
+		patches = calls.filter((c) => c.method === "PATCH");
+		expect(patches).toHaveLength(1);
+
+		await act(async () => {
+			getApi().removeAttachment("uploads/1/x.png");
+		});
+		patches = calls.filter((c) => c.method === "PATCH");
+		expect(patches).toHaveLength(2);
+		expect(patches[1]?.body).toBe(
+			JSON.stringify({ draft: { attachments: [] } }),
+		);
+		expect(getApi().attachments).toEqual([]);
+	});
+
+	test("clear(true) after attach+type persists BOTH fields cleared", async () => {
+		const { calls, client } = makeHarness();
+		const { renderer, getApi } = await renderHost(client, 1);
+		await setText(renderer, getApi(), "words");
+		await act(async () => {
+			getApi().addAttachment("uploads/1/x.png");
+		});
+		await act(async () => {
+			getApi().clear(true);
+		});
+		const patches = calls.filter((c) => c.method === "PATCH");
+		expect(patches.map((c) => c.body)).toContain(
+			JSON.stringify({ draft: { text: "", attachments: [] } }),
+		);
+		expect(getApi().attachments).toEqual([]);
+		expect(textContent(renderer.toJSON())).toBe("");
 	});
 });

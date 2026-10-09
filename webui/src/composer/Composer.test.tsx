@@ -49,6 +49,7 @@ const MODELS: readonly ModelEntry[] = [
 
 function makeHarness(init?: {
 	readonly draftText?: string;
+	readonly draftAttachments?: readonly string[];
 	readonly approvals?: readonly ApprovalWire[];
 }) {
 	const calls: { input: string; method?: string; body?: string }[] = [];
@@ -56,7 +57,10 @@ function makeHarness(init?: {
 		pinned: false,
 		tagged: [],
 		archived: false,
-		draft: { text: init?.draftText ?? "", attachments: [] },
+		draft: {
+			text: init?.draftText ?? "",
+			attachments: init?.draftAttachments ?? [],
+		},
 		source: "user",
 	};
 	let approvals = init?.approvals ?? [];
@@ -66,12 +70,19 @@ function makeHarness(init?: {
 		if (input === "/v1/models") body = { models: MODELS };
 		else if (input.endsWith("/meta")) body = meta;
 		else if (input.endsWith("/approvals")) body = { approvals };
-		else if (input.endsWith("/submissions")) {
+		else if (input.endsWith("/uploads")) {
+			const parsed = JSON.parse(init2?.body as string) as { name: string };
+			body = { path: `uploads/1/${parsed.name}` };
+		} else if (input.endsWith("/submissions")) {
 			body = { id: 9, conversationId: 1, type: "input", status: "done" };
 		} else throw new Error(`unexpected fetch ${input}`);
 		return Promise.resolve({
 			ok: true,
-			status: input.endsWith("/submissions") ? 202 : 200,
+			status: input.endsWith("/submissions")
+				? 202
+				: input.endsWith("/uploads")
+					? 201
+					: 200,
 			json: () => Promise.resolve(body),
 		});
 	};
@@ -317,5 +328,147 @@ describe("Composer", () => {
 		expect(
 			calls.filter((c) => c.input.endsWith("/submissions")),
 		).toEqual([]);
+	});
+
+	describe("attachments (Task 24)", () => {
+		function fileInput(renderer: TestRenderer.ReactTestRenderer) {
+			return renderer.root.findByProps({
+				className: "composer-file-input",
+			});
+		}
+
+		async function attach(
+			renderer: TestRenderer.ReactTestRenderer,
+			files: readonly File[],
+		) {
+			await act(async () => {
+				await fileInput(renderer).props.onChange({
+					target: { files },
+				});
+			});
+		}
+
+		test("attaching a file uploads it and the path lands in draft.attachments (tray + meta PATCH)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await attach(renderer, [
+				new File([new Uint8Array([104, 105])], "pic.png", {
+					type: "image/png",
+				}),
+			]);
+			const uploads = calls.filter((c) => c.input.endsWith("/uploads"));
+			expect(uploads).toEqual([
+				{
+					input: "/v1/conversations/1/uploads",
+					method: "POST",
+					body: JSON.stringify({
+						name: "pic.png",
+						contentBase64: "aGk=",
+					}),
+				},
+			]);
+			// The tray shows the uploaded path's basename.
+			expect(textContent(renderer.toJSON())).toContain("pic.png");
+			// …and the path persisted to session-meta immediately (no debounce):
+			// the tray survives a reload.
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ draft: { attachments: ["uploads/1/pic.png"] } }),
+			);
+		});
+
+		test("submit sends the image path-part + the text part, then clears the tray (persisted)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await attach(renderer, [
+				new File([new Uint8Array([104, 105])], "pic.png", {
+					type: "image/png",
+				}),
+			]);
+			await typeText(renderer, "look at this");
+			await clickSend(renderer);
+			const posts = calls.filter((c) => c.input.endsWith("/submissions"));
+			expect(posts).toEqual([
+				{
+					input: "/v1/conversations/1/submissions",
+					method: "POST",
+					body: JSON.stringify({
+						input: [
+							{
+								type: "image",
+								path: "uploads/1/pic.png",
+								mime: "image/png",
+							},
+							{ type: "text", text: "look at this" },
+						],
+					}),
+				},
+			]);
+			// The tray is empty and the clear persisted BOTH fields.
+			expect(
+				renderer.root.findAllByProps({
+					className: "composer-attachment",
+				}),
+			).toHaveLength(0);
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ draft: { text: "", attachments: [] } }),
+			);
+		});
+
+		test("a non-image attachment submits as a file part (no mime), and attachments alone can send", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await attach(renderer, [
+				new File([new Uint8Array([104, 105])], "notes.txt"),
+			]);
+			await clickSend(renderer);
+			const posts = calls.filter((c) => c.input.endsWith("/submissions"));
+			expect(posts).toEqual([
+				{
+					input: "/v1/conversations/1/submissions",
+					method: "POST",
+					body: JSON.stringify({
+						input: [{ type: "file", path: "uploads/1/notes.txt" }],
+					}),
+				},
+			]);
+		});
+
+		test("the tray restores from meta on reload", async () => {
+			const { client } = makeHarness({
+				draftAttachments: ["uploads/1/old.png"],
+			});
+			const renderer = await renderComposer(client, makeView());
+			const chips = renderer.root.findAllByProps({
+				className: "composer-attachment",
+			});
+			expect(chips).toHaveLength(1);
+			expect(chips[0]?.props["data-path"]).toBe("uploads/1/old.png");
+			expect(textContent(renderer.toJSON())).toContain("old.png");
+		});
+
+		test("removing an attachment PATCHes the reduced list", async () => {
+			const { calls, client } = makeHarness({
+				draftAttachments: ["uploads/1/a.png", "uploads/1/b.png"],
+			});
+			const renderer = await renderComposer(client, makeView());
+			const remove = renderer.root
+				.findAllByProps({ className: "composer-attachment-remove" })
+				.find((b) => b.props["aria-label"] === "remove a.png");
+			await act(async () => {
+				await remove?.props.onClick();
+			});
+			const chips = renderer.root.findAllByProps({
+				className: "composer-attachment",
+			});
+			expect(chips.map((c) => c.props["data-path"])).toEqual([
+				"uploads/1/b.png",
+			]);
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ draft: { attachments: ["uploads/1/b.png"] } }),
+			);
+		});
 	});
 });

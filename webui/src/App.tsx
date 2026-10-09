@@ -9,13 +9,15 @@ import { EntryList } from "./entries/EntryList";
 import { SessionList } from "./sessions/SessionList";
 import type { EventSourceFactory } from "./stream";
 import { useConversationView } from "./useConversationView";
+import { WorkspaceBrowser } from "./workspace/WorkspaceBrowser";
 
 /**
  * The app shell: three panels — SessionList left, the chat center
- * (EntryList over `useConversationView(activeId)`), a right-panel
- * placeholder (T24 replaces it with the details surface) — and the
- * composer footer (Task 23b: textarea, model picker, context-usage ring,
- * send/steer toggle, endpoint-sourced approval strip).
+ * (EntryList over `useConversationView(activeId)`), the WorkspaceBrowser
+ * right panel (Task 24: file tree + read-only preview over the §5 files
+ * endpoints) — and the composer footer (Task 23b: textarea, model picker,
+ * context-usage ring, send/steer toggle, endpoint-sourced approval strip;
+ * Task 24: the attach path).
  *
  * The active conversation id is App state: `SessionList.onSelect` flips it,
  * and the view hook re-drives (a fresh stream opens; the stale one closes —
@@ -97,7 +99,9 @@ export function App(options: AppOptions = {}) {
 					/>
 				</footer>
 			</div>
-			<aside className="right-panel">details</aside>
+			<aside className="right-panel">
+				<WorkspaceBrowser client={client} conversationId={activeId} />
+			</aside>
 		</main>
 	);
 }
