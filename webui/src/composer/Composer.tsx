@@ -349,18 +349,23 @@ export function Composer(props: {
 							onChange={onFilesSelected}
 						/>
 					</label>
-					<select
-						className="composer-model"
-						value={selectedModel ?? ""}
-						disabled={models.length === 0}
-						onChange={(event) => setSelectedModel(event.target.value)}
-					>
-						{models.map((m) => (
-							<option key={m.id} value={m.id}>
-								{m.name}
-							</option>
-						))}
-					</select>
+					{/* THE PICKER CONVENTION (spec §6.1): a picker renders ONLY
+					    when its list has more than one item — a single-model
+					    deployment hides the picker (the single model stays
+					    selected, so the ring still reads its ledger entry). */}
+					{models.length > 1 && (
+						<select
+							className="composer-model"
+							value={selectedModel ?? ""}
+							onChange={(event) => setSelectedModel(event.target.value)}
+						>
+							{models.map((m) => (
+								<option key={m.id} value={m.id}>
+									{m.name}
+								</option>
+							))}
+						</select>
+					)}
 					<UsageRing fraction={fraction} />
 					<button
 						type="button"

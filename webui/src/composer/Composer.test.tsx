@@ -51,6 +51,7 @@ function makeHarness(init?: {
 	readonly draftText?: string;
 	readonly draftAttachments?: readonly string[];
 	readonly approvals?: readonly ApprovalWire[];
+	readonly models?: readonly ModelEntry[];
 }) {
 	const calls: { input: string; method?: string; body?: string }[] = [];
 	const meta: ConversationMeta = {
@@ -67,7 +68,7 @@ function makeHarness(init?: {
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let body: unknown;
-		if (input === "/v1/models") body = { models: MODELS };
+		if (input === "/v1/models") body = { models: init?.models ?? MODELS };
 		else if (input.endsWith("/meta")) body = meta;
 		else if (input.endsWith("/approvals")) body = { approvals };
 		else if (input.endsWith("/uploads")) {
@@ -153,6 +154,36 @@ describe("Composer", () => {
 			"faux/two",
 		]);
 		expect(select.props.value).toBe("faux/one");
+	});
+
+	// THE PICKER CONVENTION (spec §6.1, binding): a picker renders ONLY when
+	// its list has more than one item — a single-model deployment hides the
+	// model picker (the ring still renders; the single model stays selected).
+	test("the picker convention: a single-model catalog hides the picker but keeps the ring on that model", async () => {
+		const { client } = makeHarness({ models: [MODELS[0]!] });
+		const view = makeView({
+			docs: {
+				"pi.usage": {
+					models: {
+						"faux/one": { input: 250, output: 250 },
+					},
+				},
+			},
+		});
+		const renderer = await renderComposer(client, view);
+		expect(
+			renderer.root.findAllByProps({ className: "composer-model" }),
+		).toHaveLength(0);
+		// The single model is still the ring's selection (50% of 1000).
+		expect(textContent(renderer.toJSON())).toContain("50%");
+	});
+
+	test("the picker convention: an empty catalog hides the picker", async () => {
+		const { client } = makeHarness({ models: [] });
+		const renderer = await renderComposer(client, makeView());
+		expect(
+			renderer.root.findAllByProps({ className: "composer-model" }),
+		).toHaveLength(0);
 	});
 
 	test("submitting sends the §5 submission body and clears the composer", async () => {
