@@ -15,7 +15,9 @@ import {
 	type ApprovalWire,
 	type ConversationMeta,
 	type FetchLike,
+	type MetaResponse,
 } from "./api";
+import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import type { EventSourceFactory } from "./stream";
 import {
 	makeEntry,
@@ -28,8 +30,25 @@ import {
 
 type Call = { input: string; method?: string; body?: string };
 
+function makeMeta(init?: {
+	readonly schemaVersion?: string;
+}): MetaResponse {
+	return {
+		harnessVersion: "1.0.2",
+		schemaVersion: init?.schemaVersion ?? PINNED_SCHEMA_VERSION,
+		extensions: [
+			{ name: "memory", status: "ok" },
+			{ name: "approvals", status: "ok" },
+		],
+		health: { backup: "unconfigured", memory: "ok", providers: "ok" },
+		capabilities: { backup: false, channels: ["webui"] },
+	};
+}
+
 function makeHarness(init?: {
 	readonly approvals?: readonly ApprovalWire[];
+	readonly meta?: MetaResponse;
+	readonly metaFails?: boolean;
 }) {
 	const metas: Record<number, ConversationMeta> = {
 		1: {
@@ -51,6 +70,20 @@ function makeHarness(init?: {
 	const calls: Call[] = [];
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
+		if (input === "/v1/meta") {
+			if (init?.metaFails === true) {
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					json: () => Promise.resolve({}),
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve(init?.meta ?? makeMeta()),
+			});
+		}
 		const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(input);
 		let body: unknown;
 		if (metaMatch !== null) body = metas[Number(metaMatch[1])];
@@ -108,6 +141,54 @@ async function clickByClass(
 }
 
 describe("App shell", () => {
+	test("boots past the schema gate on a matching schemaVersion and renders the top bar with the meta badges", async () => {
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const text = textContent(renderer.toJSON());
+		// The TopBar mounts with the meta-fed badges.
+		expect(text).toContain("sigrun");
+		expect(text).toContain("memory");
+		expect(text).toContain("backup: unconfigured");
+		// The shell renders beneath it.
+		expect(text).toContain("Select or create a conversation");
+		expect(
+			renderer.root.findAllByProps({ className: "top-bar" }),
+		).toHaveLength(1);
+	});
+
+	test("a schemaVersion mismatch REFUSES to render (fail loud, spec §5)", async () => {
+		const { client, createEventSource } = makeHarness({
+			meta: makeMeta({ schemaVersion: "0".repeat(64) }),
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("schema");
+		expect(text).toContain(PINNED_SCHEMA_VERSION.slice(0, 12));
+		// The shell does NOT render behind the refusal.
+		expect(
+			renderer.root.findAllByProps({ className: "session-list" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "composer" }),
+		).toHaveLength(0);
+	});
+
+	test("a meta fetch failure refuses to render (unverifiable schema is a mismatch-class failure)", async () => {
+		const { client, createEventSource } = makeHarness({ metaFails: true });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("schema");
+		expect(
+			renderer.root.findAllByProps({ className: "session-list" }),
+		).toHaveLength(0);
+	});
+
 	test("composes sidebar + chat center + workspace right panel + composer slot; no stream until a conversation is selected", async () => {
 		const { client, createEventSource, sources } = makeHarness();
 		const renderer = await renderAsync(
