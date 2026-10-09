@@ -196,10 +196,10 @@ export function Composer(props: {
 				[{ type: "text", text }],
 				busy ? { whenBusy: "steer" } : undefined,
 			);
-			// Cleared WITHOUT persisting: the submitted text must not
-			// resurrect from a late debounce flush. The next view frame shows
-			// the submitted turn.
-			draft.clear();
+			// Cleared WITH persisting: the submitted text must not resurrect from
+			// a late debounce flush OR a reload (the server meta keeps the draft
+			// until it's overwritten — persist the clear).
+			draft.clear(true);
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {

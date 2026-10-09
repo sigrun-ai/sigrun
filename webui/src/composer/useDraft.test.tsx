@@ -169,6 +169,10 @@ describe("useDraft", () => {
 		await setText(renderer, getApi(), "unsent words");
 		await switchTo(2);
 		const patches = calls.filter((c) => c.method === "PATCH");
+		// The flush must target the OLD conversation's URL (the text belongs to
+		// conversation 1, not the just-switched-to 2) — the T23b review's P0:
+		// a render-body-reassigned ref made the cleanup read the NEW id.
+		expect(patches.map((c) => c.input)).toContain("/v1/conversations/1/meta");
 		expect(patches.map((c) => c.body)).toContain(
 			JSON.stringify({ draft: { text: "unsent words" } }),
 		);

@@ -81,3 +81,8 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - Fix round (orchestrator, 5679f17): ConversationMeta corrected to the real server shape; ConversationMetaPatch added (null-clear + draft sub-merge — unblocks T23b's draft work); DEFAULT_META.source fixed; test fixtures corrected. webui 58/58, root 208/208.
 - LESSON LEDGERED: the §5 server type (src/server/session-meta.ts) is the authoritative wire source — never sketch a wire shape inline in a brief. The T22/T23a briefs' inline shapes must be replaced with 'read the server type' pointers.
 - Next: T23b (composer + draft + approval sourcing — brief staged).
+
+## Task 23b — DONE (composer + draft + approval sourcing). Task 23 complete.
+- Implementer (kimi-k3, run 68b67d5a) timed out post-completion (all components built, tests green, report checklist unchecked); orchestrator verified + committed 5df1a9e. webui 77/77 (13 files), root 208/208, webui tsc clean.
+- T22-P1 RESOLVED: approval cards source from client.listApprovals(activeId) refreshed per view frame (Composer.tsx:156-171), NOT the view's tool slots. Verified in the committed code.
+- Next: T24 (uploads + workspace browser).
