@@ -175,3 +175,10 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - Appendix C gains the M2 ship-gate record (C.2): all 11 items pass + the five ship-gate-surfaced fixes (whenBusy dropped, memory binding, the steer-button gate, the files path relativization, the auto-select gap).
 - ALL 12 E2E green (11 items + smoke), webui 114/114, root 212/212, tsc clean both. THE §7 M2 SHIP GATE IS MET.
 - Next: the final T26b-iii review + the M2 whole-branch review, then merge.
+
+## Task 26b-iii + the ship-gate review — DONE. M2 COMPLETE.
+- The T26b-iii worker stalled post-groundwork; orchestrator wrote the four hard specs. The ship-gate review (run fdfad24d → resumed 0722e8d5) was CHANGES-REQUIRED and RIGHT: items 4 + 7 were recorded PASS without exercising their criteria (the gate's value is an honest record).
+- Fix round (orchestrator, 670c5e8): item 4 gained the deny leg (approve one + deny one, both asserted); item 7 now genuinely exercises recall (the memory extension loaded, a real memory_recall tool call, the tool card shows the recalled marker — the T26a binding proven end-to-end). The compaction policy needed keepRecentTokens 2000 (the too-tight policy was eating the tool round — the E2E caught it).
+- P2 fixes: item 11 matches 'unconfigured'; the item-2 dead writeFile removed; the App auto-select clobber race fixed. The steer unit pin already existed (Composer.test.tsx asserts whenBusy:steer).
+- ALL 12 E2E green, GENUINELY. webui 114/114, root 215/215, tsc clean both. THE §7 M2 SHIP GATE IS MET with the record matching the evidence.
+- Next: the M2 whole-branch review, then merge feat/m2-webui to main.
