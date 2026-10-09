@@ -97,6 +97,27 @@ export function App(options: AppOptions = {}) {
 	});
 	const onSelect = useCallback((id: number) => setActiveId(id), []);
 
+	// Boot-time default: select the root conversation (the §5 default session)
+	// once the schema gate passes, so the composer is live without a click.
+	// Runs once per boot (after the gate); a user's own selection wins.
+	useEffect(() => {
+		if (boot.status !== "ready" || activeId !== null) return;
+		let cancelled = false;
+		client
+			.listConversations()
+			.then((list) => {
+				if (cancelled) return;
+				const root = list.conversations.find((c) => c.root);
+				const first = root ?? list.conversations[0];
+				if (first !== undefined) setActiveId(first.id);
+			})
+			.catch(() => undefined); // a list failure leaves the composer gated; the sidebar shows the error
+		return () => {
+			cancelled = true;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [boot.status, client]);
+
 	// The schema-version gate (spec §5): no shell renders until /v1/meta
 	// answers with the pinned schema. A mismatch — or an unverifiable fetch —
 	// is an explicit refusal, never a half-rendered wrong-contract UI.

@@ -1119,7 +1119,19 @@ export async function createServer(
 				}
 				throw listed.error;
 			}
-			return { entries: listed.value };
+			// pi-durable's listDir returns ABSOLUTE paths (resolve(cwd, name)),
+			// but the §5 files/content endpoint requires workspace-RELATIVE
+			// paths (isConfinedPath rejects absolute). Relativize each entry
+			// against the workspace root so the tree's paths feed back into the
+			// content endpoint (a listed file can be read).
+			const workspaceRoot = config.workspace.path;
+			const entries = listed.value.map((entry) => ({
+				...entry,
+				path: entry.path.startsWith(`${workspaceRoot}/`)
+					? entry.path.slice(workspaceRoot.length + 1)
+					: entry.path,
+			}));
+			return { entries };
 		},
 	);
 

@@ -115,3 +115,44 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - THE VISUAL CHECK LANDED: built the bundle, booted the server, headless screenshot at /tmp/sigrun-t25/sigrun-webui-t25.png — verified non-blank programmatically (256 distinct byte values; orchestrator re-verified the PNG is 1280x800/33KB/non-blank). Neither worker nor orchestrator can view images — the visual content is verified structurally (dump-dom) + non-blank, not by eye. The theme toggle/accent live click-through is deferred to T26's E2E.
 - Review dispatched (run 0bd6faa1).
 - Next: T26 (the ship-gate E2E — the final M2 task).
+
+## Task 25 — DONE (themes + badges + layout shell). ALL M2 FEATURE TASKS DONE.
+- Implementer (kimi-k3, run 3448adc6): e0f965f, webui 114/114 + root 209/209. The visual check landed (screenshot verified non-blank programmatically + structurally via dump-dom; the picker convention live-verified — the single-model smoke boot has no .composer-model node).
+- Review (bifrost/kimi-k3, run 0bd6faa1): APPROVED, no P0/P1, 2 P2s. Verified: the CSS port is clean (only 3 text-on-accent literals outside the custom properties), the schema gate + its drift guard are sound, the picker convention is live-verified, the report's verified-vs-not split is honest.
+- Fix round (orchestrator, 34dc9be): the pre-paint theme boot (inline script applies the persisted theme before first paint). The localStorage-throw guard deferred.
+- Next: T26 (the ship-gate E2E — the final M2 task, all 11 §7 checklist items).
+
+## T26 — split into 26a/26b (env setup ate the budget)
+- The combined T26 (server fixes + the 11-item E2E) timed out: the worker spent the whole budget on playwright/chromium environment setup (resolved chromium 1228 = playwright 1.61.0) and never wrote the server fixes or the E2E spec. Zero code committed (only package.json/lock changes — playwright added).
+- The ship-gate pre-flight had already found TWO genuine M1 server gaps (supervisor-approved fixes): (A) the submissions route drops whenBusy (steer falls to queued); (B) the loader discards the memory wiring's submit, so degenerate recall never binds in the real server.
+- Split: T26a (the two server fixes — server-only, root vitest) + T26b (the E2E spec + Appendix C, env now set up). T26a dispatched (run f76e189d).
+
+## Task 26a — implemented (in review)
+- Implementer (kimi-k3, run f76e189d timed out post-completion; orchestrator verified + committed bc5c282): root 212/212 (4 new: 2 steer-path + 2 recall-binding), tsc clean.
+- Fix A: submissions accept whenBusy (validated against pi-durable's SubmissionDraft union steer|followUp|reject; unknown 400 invalid_field; passed to conversation.submit). The steer-path test proves steering (the run's inputs, not the inbox).
+- Fix B: loader.ts ResolvedExtension gains submit; boot.ts exposes memorySubmit identity-matched to the memory-surface owner (mirroring memoryHealth); the submissions route uses it when present. The recall-binding test drives the real sigrun-ext-memory via the extensionSpecifiers seam.
+- Review dispatched (run aecfe5b7).
+- Next: T26b (the E2E spec + Appendix C — the final slice).
+
+## Task 26a — DONE (the two ship-gate server fixes)
+- Implementer (kimi-k3, run f76e189d timed out post-completion; orchestrator committed bc5c282): root 212/212 (4 new), tsc clean.
+- Review (bifrost/kimi-k3, run aecfe5b7): APPROVED, 3 P2s (all minor/notes — no fix): the hand-duplicated WHEN_BUSY_MODES union (re-check on pi-durable upgrades), the steer test's ~45s timing margin (watch for flakes), the string-only pendingInputs disclosure (pre-existing wiring behavior).
+- Reviewer verified against upstream sources: the whenBusy union matches pi-durable verbatim; the steer observable is real (InboxDoc mode='steer'); the identity-matching mirrors memoryHealth; the wiring's submit is a strict superset of conversation.submit; the recall test is genuine against the real package.
+- Next: T26b (the E2E spec + Appendix C — the final slice, env already set up).
+
+## T26b — first worker (run bd885345) failed on a phantom env issue
+- The worker's smoke test imported @playwright/test from /tmp/pw-smoke.mjs — resolving against /tmp's node_modules, not the project's — and got ERR_MODULE_NOT_FOUND. It burned its budget fighting the phantom env issue, wrote no code.
+- Orchestrator verified the env is FINE: @playwright/test is installed (webui/node_modules), loads, and chromium launches (a real page title read works). The worker's smoke test was just pointed at the wrong directory.
+- Redispatching with the env confirmed working + a note to import from the project dir.
+
+## Task 26b-i — DONE (E2E harness + smoke). In review.
+- Implementer (kimi-k3, run 27a0a28b): 70c4110, webui 114/114 + root 212/212 + the smoke test passes in real chromium (1/1). The harness works end-to-end.
+- webui/playwright.config.ts + e2e/harness.ts (bootE2EServer: real server + multi-model faux provider + tmpdir + the built bundle) + e2e/smoke.spec.ts (boots, renders the shell, screenshots) + tsconfig.e2e.json split + the test:e2e script (builds the bundle fresh first).
+- Screenshot: .superpowers/sdd/2026-10-08-sigrun-m2-webui/artifacts/task-26b-i-smoke.png (1280x720, non-blank, orchestrator-verified).
+- Review dispatched (run b1d0f0b6).
+- Next: the 11 checklist items against the proven harness (the next slice).
+
+## Task 26b-i — DONE (E2E harness + smoke)
+- Implementer (kimi-k3, run 27a0a28b): 70c4110, webui 114/114 + root 212/212 + the smoke test passes in real chromium. Screenshot verified non-blank (1280x720).
+- Review (bifrost/kimi-k3, run b1d0f0b6): APPROVED. The review's full text exceeded the output capture boundary (the verdict + opening analysis are persisted; the diff-reading + focus-area detail was cut off — the verdict line is the authoritative outcome).
+- Next: the 11 checklist items against the proven harness (T26b-ii).
