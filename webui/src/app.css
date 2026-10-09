@@ -1,0 +1,123 @@
+/* The M2 app shell layout (Task 23a): sidebar | chat column | right panel.
+   Thin hand-rolled styles — the mockup's direction, no CSS framework. */
+
+:root {
+	color-scheme: dark;
+	font-family: system-ui, sans-serif;
+}
+
+body {
+	margin: 0;
+	background: #141518;
+	color: #e6e6e6;
+}
+
+.app-shell {
+	display: flex;
+	height: 100vh;
+}
+
+/* Sidebar */
+
+.session-list {
+	width: 16rem;
+	flex: none;
+	overflow-y: auto;
+	border-right: 1px solid #2a2c31;
+	padding: 0.75rem;
+}
+
+.session-list ul {
+	list-style: none;
+	margin: 0.75rem 0 0;
+	padding: 0;
+}
+
+.session-new {
+	width: 100%;
+	padding: 0.4rem 0.6rem;
+	border: 1px solid #3a3d44;
+	border-radius: 0.4rem;
+	background: #1d1f24;
+	color: inherit;
+	cursor: pointer;
+}
+
+.session-item {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin: 0.15rem 0;
+	border-radius: 0.35rem;
+}
+
+.session-select {
+	flex: 1;
+	text-align: left;
+	padding: 0.35rem 0.5rem;
+	border: none;
+	border-radius: 0.35rem;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.session-item-active .session-select {
+	background: #2b2f38;
+}
+
+.session-select:hover {
+	background: #23262c;
+}
+
+/* Archived conversations render dimmed. */
+.session-item-archived {
+	opacity: 0.5;
+}
+
+.session-archive {
+	flex: none;
+	padding: 0.2rem 0.45rem;
+	border: 1px solid #3a3d44;
+	border-radius: 0.35rem;
+	background: transparent;
+	color: #9aa0a8;
+	font-size: 0.75rem;
+	cursor: pointer;
+}
+
+/* Chat column (transcript + the T23b composer slot) */
+
+.chat-column {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.chat-center {
+	flex: 1;
+	overflow-y: auto;
+	padding: 1rem 1.25rem;
+}
+
+.chat-empty,
+.chat-loading {
+	color: #9aa0a8;
+}
+
+.composer-slot {
+	flex: none;
+	min-height: 4rem;
+	border-top: 1px solid #2a2c31;
+}
+
+/* Right panel placeholder (T24 replaces it) */
+
+.right-panel {
+	width: 18rem;
+	flex: none;
+	border-left: 1px solid #2a2c31;
+	padding: 1rem;
+	color: #9aa0a8;
+}
