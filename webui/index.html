@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-accent="indigo">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>sigrun</title>
+		<script>
+			// Pre-paint theme boot (T25 review P2): apply the persisted theme
+			// before the stylesheet paints so a persisted light/accent theme
+			// doesn't flash the dark+indigo defaults. Synchronous, tiny, no
+			// dependencies — mirrors useTheme's storage keys + fallback.
+			try {
+				const t = localStorage.getItem("sigrun.theme");
+				const a = localStorage.getItem("sigrun.accent");
+				if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+				if (a) document.documentElement.dataset.accent = a;
+			} catch {}
+		</script>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="/src/main.tsx"></script>
+	</body>
+</html>

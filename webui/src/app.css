@@ -1,0 +1,693 @@
+/* The M2 webui stylesheet (Task 25): a port of the rendering-verified mockup
+   (spikes/webui-transport/mockup.html) onto the app's component class names.
+   The theme system is the mockup's verbatim: CSS custom properties on :root
+   (dark default), [data-theme="light"] and [data-accent="emerald"|"amber"]
+   overrides, switched by useTheme via document.documentElement's dataset.
+   Thin hand-rolled CSS, no framework (the T20 scaffold stance). */
+
+/* ── theme custom properties (the mockup's shape, verbatim) ──────────── */
+
+:root {
+	--bg: #0f1115;
+	--panel: #161a22;
+	--panel-2: #1c212b;
+	--border: #262d3a;
+	--text: #e6e9ef;
+	--text-dim: #8b93a3;
+	--accent: #6366f1;
+	--ok: #34d399;
+	--warn: #fbbf24;
+	--danger: #f87171;
+	--mono: ui-monospace, "SF Mono", Menlo, monospace;
+	color-scheme: dark;
+}
+
+[data-theme="light"] {
+	--bg: #f6f7f9;
+	--panel: #ffffff;
+	--panel-2: #eef1f5;
+	--border: #d8dee8;
+	--text: #1c2330;
+	--text-dim: #5b6474;
+	color-scheme: light;
+}
+
+[data-accent="emerald"] {
+	--accent: #10b981;
+}
+
+[data-accent="amber"] {
+	--accent: #f59e0b;
+}
+
+/* ── base ─────────────────────────────────────────────────────────────── */
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+	background: var(--bg);
+	color: var(--text);
+	overflow: hidden;
+}
+
+#root {
+	height: 100%;
+}
+
+.app-root {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+/* The schema gate's two non-shell states (spec §5 fail-loud). */
+
+.app-boot,
+.app-refused {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	color: var(--text-dim);
+	padding: 2rem;
+	text-align: center;
+}
+
+.app-refused h1 {
+	color: var(--danger);
+	font-size: 1.1rem;
+	margin: 0;
+}
+
+.app-refused p {
+	max-width: 70ch;
+	font-family: var(--mono);
+	font-size: 0.8rem;
+	word-break: break-all;
+}
+
+/* ── top bar (the mockup's header) ───────────────────────────────────── */
+
+.top-bar {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.5rem 0.875rem;
+	background: var(--panel);
+	border-bottom: 1px solid var(--border);
+	flex: none;
+}
+
+.top-bar .brand {
+	font-weight: 650;
+	letter-spacing: 0.2px;
+}
+
+.badge {
+	font-size: 11px;
+	color: var(--text-dim);
+	border: 1px solid var(--border);
+	padding: 0.1rem 0.45rem;
+	border-radius: 999px;
+	font-family: var(--mono);
+	white-space: nowrap;
+}
+
+.badge.badge-degraded {
+	color: var(--warn);
+	border-color: var(--warn);
+}
+
+.top-bar .spacer {
+	flex: 1;
+}
+
+.theme-controls {
+	display: inline-flex;
+	gap: 0.5rem;
+	align-items: center;
+}
+
+.theme-controls select,
+.theme-controls button {
+	background: var(--panel-2);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.3rem 0.55rem;
+	font: inherit;
+	cursor: pointer;
+}
+
+/* ── three-panel body (the mockup's main grid) ───────────────────────── */
+
+.app-shell {
+	flex: 1;
+	display: grid;
+	grid-template-columns: 250px 1fr 300px;
+	min-height: 0;
+}
+
+/* ── sessions sidebar ────────────────────────────────────────────────── */
+
+.session-list {
+	background: var(--panel);
+	border-right: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	padding: 0.4rem;
+}
+
+.session-list ul {
+	list-style: none;
+	margin: 0.5rem 0 0;
+	padding: 0;
+	overflow: auto;
+	flex: 1;
+}
+
+.session-new {
+	width: 100%;
+	padding: 0.4rem 0.6rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--accent);
+	border-color: transparent;
+	color: #fff;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.session-item {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin: 0.15rem 0;
+	border-radius: 7px;
+}
+
+.session-select {
+	flex: 1;
+	text-align: left;
+	padding: 0.5rem 0.6rem;
+	border: none;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--text);
+	cursor: pointer;
+}
+
+.session-select:hover {
+	background: var(--panel-2);
+}
+
+.session-item-active .session-select {
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* Archived conversations render dimmed. */
+.session-item-archived {
+	opacity: 0.5;
+}
+
+.session-archive {
+	flex: none;
+	padding: 0.2rem 0.45rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-dim);
+	font-size: 0.75rem;
+	cursor: pointer;
+}
+
+/* ── chat column (transcript + the T23b composer slot) ───────────────── */
+
+.chat-column {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	background: var(--bg);
+}
+
+.chat-center {
+	flex: 1;
+	overflow-y: auto;
+	padding: 1rem 1.25rem;
+	min-height: 0;
+}
+
+.chat-empty,
+.chat-loading {
+	color: var(--text-dim);
+}
+
+.entry-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.8rem;
+}
+
+/* Message bubbles (the mockup's .msg rules). */
+
+.entry-user-message,
+.entry-assistant-message {
+	max-width: 76ch;
+	padding: 0.65rem 0.9rem;
+	border-radius: 10px;
+}
+
+.entry-user {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+}
+
+.entry-assistant {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+}
+
+.entry-user-message {
+	background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.entry-assistant-message {
+	background: var(--panel);
+	border: 1px solid var(--border);
+}
+
+.entry-assistant-message p,
+.entry-user-message p {
+	margin: 0.25rem 0;
+}
+
+.entry-assistant-message code {
+	font-family: var(--mono);
+	background: var(--panel-2);
+	padding: 0.1em 0.35em;
+	border-radius: 4px;
+}
+
+.entry-system,
+.entry-unknown {
+	color: var(--text-dim);
+	font-size: 0.8rem;
+}
+
+.entry-attachment {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	color: var(--text-dim);
+	margin-left: 0.4rem;
+}
+
+/* Tool cards (the mockup's .tool rules). */
+
+.entry-tool {
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--panel-2);
+	overflow: hidden;
+	align-self: stretch;
+	max-width: 76ch;
+}
+
+.entry-tool-running {
+	border-color: var(--accent);
+}
+
+.tool-card-header {
+	display: flex;
+	width: 100%;
+	gap: 0.5rem;
+	align-items: center;
+	padding: 0.5rem 0.8rem;
+	border: none;
+	background: none;
+	cursor: pointer;
+	font-family: var(--mono);
+	font-size: 12px;
+	color: var(--text-dim);
+	text-align: left;
+}
+
+.tool-card-status {
+	margin-left: auto;
+	font-family: inherit;
+}
+
+.tool-card-output {
+	margin: 0;
+	padding: 0.6rem 0.8rem;
+	border-top: 1px solid var(--border);
+	font-family: var(--mono);
+	font-size: 12px;
+	overflow: auto;
+	max-height: 240px;
+}
+
+/* Approval cards (the mockup's .approval rules). */
+
+.approval-card {
+	border: 1px solid var(--warn);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+	padding: 0.7rem 0.9rem;
+	max-width: 76ch;
+}
+
+.approval-card-title {
+	display: flex;
+	gap: 0.5rem;
+	align-items: center;
+	font-weight: 600;
+}
+
+.approval-card-arguments {
+	margin: 0.5rem 0;
+	padding: 0.5rem 0.7rem;
+	background: var(--panel);
+	border-radius: 6px;
+	font-family: var(--mono);
+	font-size: 12px;
+	overflow: auto;
+}
+
+.approval-card-actions {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.approval-card-actions button {
+	padding: 0.35rem 0.8rem;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	font: inherit;
+	cursor: pointer;
+}
+
+.approval-allow {
+	background: var(--ok);
+	color: #06281c;
+	border-color: transparent;
+	font-weight: 600;
+}
+
+.approval-deny {
+	background: none;
+	color: var(--danger);
+}
+
+.approval-decided {
+	font-size: 0.75rem;
+	color: var(--text-dim);
+}
+
+/* ── composer footer (the mockup's #composer) ────────────────────────── */
+
+.composer-slot {
+	flex: none;
+	border-top: 1px solid var(--border);
+	background: var(--panel);
+}
+
+.composer {
+	padding: 0.7rem 0.9rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.55rem;
+}
+
+.composer-approvals {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.composer-row {
+	display: flex;
+	gap: 0.6rem;
+	align-items: flex-end;
+}
+
+.composer-input {
+	flex: 1;
+	resize: none;
+	min-height: 44px;
+	max-height: 160px;
+	padding: 0.6rem 0.75rem;
+	background: var(--panel-2);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	font: inherit;
+}
+
+.composer-side {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	align-items: stretch;
+}
+
+.composer-model {
+	max-width: 12rem;
+	padding: 0.2rem 0.4rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--panel-2);
+	color: var(--text);
+	font: inherit;
+}
+
+.composer-ring {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	color: var(--text-dim);
+	font-size: 12px;
+	justify-content: center;
+}
+
+.composer-ring-track {
+	fill: none;
+	stroke: var(--border);
+	stroke-width: 3;
+}
+
+.composer-ring-fill {
+	fill: none;
+	stroke: var(--accent);
+	stroke-width: 3;
+	stroke-linecap: round;
+}
+
+.composer-send {
+	background: var(--accent);
+	color: #fff;
+	border: 0;
+	border-radius: 8px;
+	padding: 0.55rem 0.9rem;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.composer-send:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.composer-queued {
+	color: var(--warn);
+	font-size: 12px;
+	text-align: center;
+}
+
+/* Composer attachments (Task 24). */
+
+.composer-attach {
+	background: none;
+	border: 1px dashed var(--border);
+	color: var(--text-dim);
+	border-radius: 6px;
+	padding: 0.25rem 0.5rem;
+	cursor: pointer;
+	font-size: 12px;
+	text-align: center;
+}
+
+.composer-attach[data-uploading] {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.composer-attachments {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+
+.composer-attachment {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	padding: 0.15rem 0.5rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	font-size: 0.78rem;
+	color: var(--text);
+}
+
+.composer-attachment-remove {
+	border: none;
+	background: transparent;
+	color: var(--text-dim);
+	cursor: pointer;
+	padding: 0;
+	font-size: 0.9rem;
+}
+
+/* ── workspace browser (the mockup's right panel) ────────────────────── */
+
+.right-panel {
+	background: var(--panel);
+	border-left: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.workspace-browser {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	height: 100%;
+	padding: 0.6rem 0.8rem;
+}
+
+.workspace-title {
+	margin: 0 0 0.6rem;
+	font-weight: 600;
+	font-size: 12px;
+	color: var(--text-dim);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.workspace-tree,
+.workspace-children {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.workspace-tree {
+	overflow: auto;
+	font-family: var(--mono);
+	font-size: 12px;
+	flex: 1;
+	min-height: 0;
+}
+
+.workspace-dir,
+.workspace-file {
+	display: block;
+	width: 100%;
+	border: none;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	padding: 0.2rem 0.3rem;
+	cursor: pointer;
+	border-radius: 5px;
+	font: inherit;
+}
+
+.workspace-file {
+	color: var(--text-dim);
+}
+
+.workspace-dir:hover,
+.workspace-file:hover {
+	background: var(--panel-2);
+}
+
+.workspace-file:hover {
+	color: var(--text);
+}
+
+.workspace-file[data-selected] {
+	background: var(--panel-2);
+	color: var(--text);
+}
+
+.file-preview {
+	border-top: 1px solid var(--border);
+	padding: 0.6rem 0.8rem;
+	background: var(--panel-2);
+	overflow: auto;
+	max-height: 40%;
+}
+
+.file-preview-path {
+	font-size: 0.75rem;
+	color: var(--text-dim);
+	word-break: break-all;
+	margin: 0 0 0.4rem;
+}
+
+.file-preview-content {
+	margin: 0;
+	font-family: var(--mono);
+	font-size: 11px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow: auto;
+}
+
+.file-preview-binary,
+.file-preview-loading,
+.workspace-empty,
+.workspace-loading {
+	color: var(--text-dim);
+	font-size: 0.8rem;
+}
+
+/* ── narrow viewports (the mockup's media queries) ───────────────────── */
+
+@media (max-width: 1000px) {
+	.app-shell {
+		grid-template-columns: 210px 1fr;
+	}
+	.right-panel {
+		display: none;
+	}
+}
+
+@media (max-width: 680px) {
+	.app-shell {
+		grid-template-columns: 1fr;
+	}
+	.session-list {
+		display: none;
+	}
+}
