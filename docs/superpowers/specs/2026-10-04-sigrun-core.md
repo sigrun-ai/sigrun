@@ -669,14 +669,22 @@ checklist items + the harness smoke test):
 3. Steer a running session — PASS (the composer's busy→Steer toggle sends
    `whenBusy:"steer"`; the T26a server fix made the submissions route honor it).
 4. Approve a write/exec tool; deny a write tool; see the denial reflected —
-   PASS (the approval card from the endpoint, the T22-P1 sourcing).
+   PASS (the approval card from the endpoint, the T22-P1 sourcing; the test
+   approves one gated `load_skill` call AND denies a second, asserting the
+   denial lands in the transcript).
 5. Pick a model from the catalog — PASS (the multi-model harness; the picker
    drives the turn's model).
 6. Read a tool card (expand, see output) — PASS (a `load_skill` toolUse, the
    expandable card).
 7. Ask about something compacted out of the live window; degenerate recall
-   returns it — PASS (a forced small-`reserveTokens` compaction; the
-   T26a-fixed memory binding makes `memory_recall` answer).
+   returns it — PASS (the memory extension loaded, a forced compaction
+   compacts the marker turn out of the live window, and the model's
+   `memory_recall` tool call returns the compacted-out marker — the tool card
+   shows the recalled `[assistant] marker` + `[user]` lines; the T26a-fixed
+   binding makes the recall source the server-driven conversation). The
+   compaction policy needed `keepRecentTokens` large enough not to eat the
+   tool round (the E2E caught the too-tight policy breaking the tool round —
+   the recall is the honest observable).
 8. Open the workspace panel; list a directory; read a file — PASS (the
    workspace browser + read-only preview).
 9. Switch theme — PASS (the theme toggle flips the root `data-theme`).

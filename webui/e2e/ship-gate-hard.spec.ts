@@ -80,18 +80,27 @@ test.describe("item 3: steer", () => {
 test.describe("item 4: approvals", () => {
 	let server: E2EServer;
 	test.beforeAll(async () => {
-		// load_skill is gated by the default approvals policy.
+		// load_skill is gated by the default approvals policy. TWO gated calls:
+		// the first is approved, the second denied.
 		server = await bootE2EServer({
 			extensionSpecifiers: ["sigrun-ext-approvals"],
 			responses: [
 				fauxAssistantMessage(
 					[
 						{ type: "text", text: "let me load the skill" },
-						fauxToolCall("load_skill", { name: "demo" }, { id: "call-gated" }),
+						fauxToolCall("load_skill", { name: "demo" }, { id: "call-approve" }),
 					],
 					{ stopReason: "toolUse" },
 				),
-				fauxAssistantMessage("after the approval"),
+				// After the approval, the model asks for a SECOND gated tool.
+				fauxAssistantMessage(
+					[
+						{ type: "text", text: "now another" },
+						fauxToolCall("load_skill", { name: "demo2" }, { id: "call-deny" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("the denial landed"),
 			],
 		});
 	});
@@ -104,7 +113,7 @@ test.describe("item 4: approvals", () => {
 	}) => {
 		await page.goto(server.url);
 		await expect(page.locator(".composer-input")).toBeEnabled();
-		await page.locator(".composer-input").fill("load the demo skill");
+		await page.locator(".composer-input").pressSequentially("load the demo skill");
 		await page.locator(".composer-send").click();
 		// The approval card appears (the gated load_skill call).
 		const card = page.locator(".approval-card").first();
@@ -112,10 +121,16 @@ test.describe("item 4: approvals", () => {
 		await expect(card.locator(".approval-card-title")).toContainText(
 			"load_skill",
 		);
-		// Approve → the tool runs, the turn completes.
+		// Approve → the tool runs, the turn continues to the second gated call.
 		await card.locator(".approval-allow").click();
+		// The second gated call's approval card appears.
+		const card2 = page.locator(".approval-card").first();
+		await expect(card2).toBeVisible({ timeout: 15_000 });
+		// Deny → the denial is reflected: the tool result is a blocked error
+		// and the turn completes with the denial visible.
+		await card2.locator(".approval-deny").click();
 		await expect(
-			page.locator(".entry-assistant").filter({ hasText: "after the approval" }),
+			page.locator(".entry-assistant").filter({ hasText: "the denial landed" }),
 		).toBeVisible({ timeout: 15_000 });
 	});
 });
@@ -128,19 +143,39 @@ test.describe("item 7: compaction recall", () => {
 	let server: E2EServer;
 	test.beforeAll(async () => {
 		// The forced compaction policy (the mid-compaction battery driver's
-		// thresholds) so a warm-up turn compacts out of the live window.
+		// thresholds) so a warm-up turn compacts out of the live window, AND
+		// the memory extension so memory_recall exists + the recall source is
+		// bound (the T26a fix). The third turn's model call is a memory_recall
+		// tool call — the degenerate recall scans the durable transcript and
+		// returns the compacted-out marker.
+		// The forced compaction policy: tight enough that turn 2 compacts the
+		// marker turn out of the live window, but not so tight it eats the tool
+		// round (keepRecentTokens 1 was dropping the tool round's frames — the
+		// E2E's compaction actually fired on the third turn, interrupting the
+		// tool call). A larger keepRecentTokens keeps the current turn's
+		// messages while compacting the marker turn.
 		server = await bootE2EServer({
+			extensionSpecifiers: ["sigrun-ext-memory"],
 			settings: {
 				compaction: {
 					reserveTokens: 127_300,
-					keepRecentTokens: 1,
+					keepRecentTokens: 2000,
 					backgroundTokens: 400,
 				},
 			},
 			responses: [
 				fauxAssistantMessage("the marker answer: ZEBRA-COMPACTED-OUT"),
 				fauxAssistantMessage("a second turn"),
-				fauxAssistantMessage("recalling the compacted turn"),
+				// The third turn: the model asks memory_recall for the compacted
+				// content. The tool's result carries the recalled marker.
+				fauxAssistantMessage(
+					[
+						{ type: "text", text: "checking memory" },
+						fauxToolCall("memory_recall", { query: "ZEBRA" }, { id: "call-recall" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("the recall returned the marker"),
 			],
 		});
 	});
@@ -154,7 +189,7 @@ test.describe("item 7: compaction recall", () => {
 		await page.goto(server.url);
 		await expect(page.locator(".composer-input")).toBeEnabled();
 		// Turn 1: the content that will compact out.
-		await page.locator(".composer-input").fill("remember ZEBRA");
+		await page.locator(".composer-input").pressSequentially("remember ZEBRA");
 		await page.locator(".composer-send").click();
 		await expect(
 			page
@@ -162,18 +197,23 @@ test.describe("item 7: compaction recall", () => {
 				.filter({ hasText: "ZEBRA-COMPACTED-OUT" }),
 		).toBeVisible({ timeout: 15_000 });
 		// Turn 2: forces the compaction.
-		await page.locator(".composer-input").fill("another turn");
+		await page.locator(".composer-input").pressSequentially("another turn");
 		await page.locator(".composer-send").click();
 		await expect(
 			page.locator(".entry-assistant").filter({ hasText: "a second turn" }),
 		).toBeVisible({ timeout: 15_000 });
-		// The compacted-out turn is recallable (the T26a binding): ask about it.
-		await page.locator(".composer-input").fill("what was the marker?");
+		// Turn 3: the model recalls the compacted-out marker. The memory_recall
+		// tool call's result (a pi.tool-result entry) must carry the marker —
+		// proof the degenerate recall read the durable transcript (the T26a
+		// binding), not the live window.
+		await page.locator(".composer-input").pressSequentially("what was the marker?");
 		await page.locator(".composer-send").click();
+		// The tool card for memory_recall expands to show the recalled content.
+		const card = page.locator(".tool-card-header").filter({ hasText: "memory_recall" }).first();
+		await expect(card).toBeVisible({ timeout: 15_000 });
+		await card.click();
 		await expect(
-			page
-				.locator(".entry-assistant")
-				.filter({ hasText: "recalling the compacted turn" }),
+			page.locator(".tool-card-output").filter({ hasText: "ZEBRA-COMPACTED-OUT" }),
 		).toBeVisible({ timeout: 15_000 });
 	});
 });

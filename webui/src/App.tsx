@@ -109,7 +109,10 @@ export function App(options: AppOptions = {}) {
 				if (cancelled) return;
 				const root = list.conversations.find((c) => c.root);
 				const first = root ?? list.conversations[0];
-				if (first !== undefined) setActiveId(first.id);
+				// Re-check activeId inside the callback: a user click that landed
+				// while the list was in flight wins over the boot default (the
+				// T26b review's clobber race).
+				setActiveId((current) => current ?? first?.id ?? null);
 			})
 			.catch(() => undefined); // a list failure leaves the composer gated; the sidebar shows the error
 		return () => {
