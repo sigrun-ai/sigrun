@@ -1,19 +1,27 @@
 import { useCallback, useState } from "react";
-import { createClient, type SigrunClient } from "./api";
+import {
+	createClient,
+	type ConversationViewWire,
+	type SigrunClient,
+} from "./api";
+import { Composer } from "./composer/Composer";
 import { EntryList } from "./entries/EntryList";
 import { SessionList } from "./sessions/SessionList";
 import type { EventSourceFactory } from "./stream";
 import { useConversationView } from "./useConversationView";
 
 /**
- * The app shell (Task 23a): three panels — SessionList left, the chat
- * center (EntryList over `useConversationView(activeId)`), a right-panel
- * placeholder (T24 replaces it with the details/approvals surface). The
- * composer slot is an EMPTY footer placeholder — T23b adds the composer.
+ * The app shell: three panels — SessionList left, the chat center
+ * (EntryList over `useConversationView(activeId)`), a right-panel
+ * placeholder (T24 replaces it with the details surface) — and the
+ * composer footer (Task 23b: textarea, model picker, context-usage ring,
+ * send/steer toggle, endpoint-sourced approval strip).
  *
  * The active conversation id is App state: `SessionList.onSelect` flips it,
  * and the view hook re-drives (a fresh stream opens; the stale one closes —
- * the hook's cleanup owns that).
+ * the hook's cleanup owns that). The Composer receives the latest view
+ * frame: `steer.busy` flips its send→steer toggle, `docs["pi.usage"]` feeds
+ * the ring, and each new frame reference refreshes the approvals strip.
  *
  * Styling: thin hand-rolled CSS in app.css (the mockup's direction, no
  * framework), continuing the T20 scaffold's no-dependency stance.
@@ -31,13 +39,11 @@ export interface AppOptions {
 
 function ChatCenter(props: {
 	activeId: number | null;
-	createEventSource: EventSourceFactory | undefined;
+	view: ConversationViewWire | null;
+	status: string;
+	error: string | null;
 }) {
-	const { activeId, createEventSource } = props;
-	const { view, status, error } = useConversationView(activeId, {
-		createEventSource,
-	});
-
+	const { activeId, view, status, error } = props;
 	if (activeId === null) {
 		return (
 			<section className="chat-center">
@@ -64,6 +70,9 @@ function ChatCenter(props: {
 export function App(options: AppOptions = {}) {
 	const client = options.client ?? defaultClient;
 	const [activeId, setActiveId] = useState<number | null>(null);
+	const { view, status, error } = useConversationView(activeId, {
+		createEventSource: options.createEventSource,
+	});
 	const onSelect = useCallback((id: number) => setActiveId(id), []);
 
 	return (
@@ -76,10 +85,17 @@ export function App(options: AppOptions = {}) {
 			<div className="chat-column">
 				<ChatCenter
 					activeId={activeId}
-					createEventSource={options.createEventSource}
+					view={view}
+					status={status}
+					error={error}
 				/>
-				{/* Composer arrives in T23b; the slot stays empty for now. */}
-				<footer className="composer-slot" />
+				<footer className="composer-slot">
+					<Composer
+						client={client}
+						conversationId={activeId}
+						view={view}
+					/>
+				</footer>
 			</div>
 			<aside className="right-panel">details</aside>
 		</main>

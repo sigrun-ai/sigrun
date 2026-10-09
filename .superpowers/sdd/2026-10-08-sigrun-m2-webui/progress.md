@@ -74,3 +74,10 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - The worker explicitly flagged the shell as browser-UNVERIFIED (structural via react-test-renderer; visual verification is T25's lane — the T22-endorsed scope call). The reviewer is asked to judge.
 - Review dispatched (run 24038a08).
 - Next: T23b (composer + draft + approval sourcing — brief staged) after the T23a review.
+
+## Task 23a — DONE (sessions sidebar + app shell)
+- Implementer (kimi-k3, run 84d495a3): 8b639da, webui 58/58 + root 208/208. The output-budget split worked.
+- Review (bifrost/kimi-k3, run 24038a08): CHANGES-REQUIRED, 2 P1s (both mine — the T23a brief's inline meta sketch was wrong: tagged/draft as boolean, source as string; the worker mirrored it). Reviewer caught it against src/server/session-meta.ts.
+- Fix round (orchestrator, 5679f17): ConversationMeta corrected to the real server shape; ConversationMetaPatch added (null-clear + draft sub-merge — unblocks T23b's draft work); DEFAULT_META.source fixed; test fixtures corrected. webui 58/58, root 208/208.
+- LESSON LEDGERED: the §5 server type (src/server/session-meta.ts) is the authoritative wire source — never sketch a wire shape inline in a brief. The T22/T23a briefs' inline shapes must be replaced with 'read the server type' pointers.
+- Next: T23b (composer + draft + approval sourcing — brief staged).

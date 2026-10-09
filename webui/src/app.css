@@ -108,8 +108,91 @@ body {
 
 .composer-slot {
 	flex: none;
-	min-height: 4rem;
 	border-top: 1px solid #2a2c31;
+}
+
+/* Composer (T23b) */
+
+.composer {
+	padding: 0.5rem 0.75rem;
+}
+
+.composer-approvals {
+	margin-bottom: 0.5rem;
+}
+
+.composer-row {
+	display: flex;
+	gap: 0.5rem;
+	align-items: flex-end;
+}
+
+.composer-input {
+	flex: 1;
+	resize: vertical;
+	padding: 0.4rem 0.6rem;
+	border: 1px solid #3a3d44;
+	border-radius: 0.4rem;
+	background: #1d1f24;
+	color: inherit;
+	font: inherit;
+}
+
+.composer-side {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	align-items: stretch;
+}
+
+.composer-model {
+	max-width: 12rem;
+	padding: 0.3rem 0.4rem;
+	border: 1px solid #3a3d44;
+	border-radius: 0.35rem;
+	background: #1d1f24;
+	color: inherit;
+}
+
+.composer-ring {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	color: #9aa0a8;
+	font-size: 0.75rem;
+}
+
+.composer-ring-track {
+	fill: none;
+	stroke: #3a3d44;
+	stroke-width: 3;
+}
+
+.composer-ring-fill {
+	fill: none;
+	stroke: #7aa2f7;
+	stroke-width: 3;
+	stroke-linecap: round;
+}
+
+.composer-send {
+	padding: 0.4rem 0.9rem;
+	border: 1px solid #3a3d44;
+	border-radius: 0.4rem;
+	background: #2b2f38;
+	color: inherit;
+	cursor: pointer;
+}
+
+.composer-send:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.composer-queued {
+	color: #9aa0a8;
+	font-size: 0.75rem;
+	text-align: center;
 }
 
 /* Right panel placeholder (T24 replaces it) */

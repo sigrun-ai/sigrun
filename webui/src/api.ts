@@ -219,6 +219,41 @@ export interface ApprovalsResponse {
 /** The §5 approval decision enum (`allow | deny`). */
 export type ApprovalDecision = "allow" | "deny";
 
+/** One content part of a submission input (spec §5: text + workspace-relative path parts). */
+export interface SubmissionInputPart {
+	readonly type: string;
+	readonly text?: string;
+	readonly path?: string;
+	readonly mime?: string;
+}
+
+/**
+ * The settled submission record returned by `POST
+ * /v1/conversations/:id/submissions` (the server waits for settlement
+ * server-side in v1 — mirrors `SubmissionResponse` in
+ * src/server/views.ts).
+ */
+export interface SubmissionResponseWire {
+	readonly id: number;
+	readonly conversationId: number;
+	readonly type: string;
+	readonly status: string;
+	readonly entry?: number;
+	readonly answer?: number;
+	readonly reason?: string;
+}
+
+/** `submit` options (spec §5: `requestId` idempotence; T23b's steer). */
+export interface SubmitOptions {
+	readonly requestId?: string;
+	/**
+	 * `whenBusy: "steer"` injects the input into the running session
+	 * (the composer's steer toggle; pi-durable maps it to the steering
+	 * queue). Omitted = the default busy-queue semantics.
+	 */
+	readonly whenBusy?: "steer";
+}
+
 /** The §5 client surface. */
 export interface SigrunClient {
 	getMeta(): Promise<MetaResponse>;
@@ -236,6 +271,11 @@ export interface SigrunClient {
 		approvalId: string,
 		decision: ApprovalDecision,
 	): Promise<void>;
+	submit(
+		conversationId: number,
+		input: readonly SubmissionInputPart[],
+		options?: SubmitOptions,
+	): Promise<SubmissionResponseWire>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -329,5 +369,15 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				`/v1/conversations/${conversationId}/approvals/${encodeURIComponent(approvalId)}`,
 				{ decision },
 			),
+		submit: (conversationId, input, options) =>
+			send("POST", `/v1/conversations/${conversationId}/submissions`, {
+				input,
+				...(options?.requestId === undefined
+					? {}
+					: { requestId: options.requestId }),
+				...(options?.whenBusy === undefined
+					? {}
+					: { whenBusy: options.whenBusy }),
+			}) as Promise<SubmissionResponseWire>,
 	};
 }

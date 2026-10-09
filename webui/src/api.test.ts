@@ -97,6 +97,45 @@ describe("createClient", () => {
 		await expect(client.getMeta()).rejects.toThrow("/v1/meta");
 	});
 
+	test("submit POSTs the §5 submission body (input parts + requestId + whenBusy) and parses the settled record", async () => {
+		const settled = {
+			id: 7,
+			conversationId: 2,
+			type: "input",
+			status: "done",
+		};
+		const { calls, fetchImpl } = stubFetch(settled, { status: 202 });
+		const client = createClient({ fetch: fetchImpl });
+		const result = await client.submit(
+			2,
+			[{ type: "text", text: "hello there" }],
+			{ requestId: "req-1", whenBusy: "steer" },
+		);
+		expect(result).toEqual(settled);
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/2/submissions",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({
+					input: [{ type: "text", text: "hello there" }],
+					requestId: "req-1",
+					whenBusy: "steer",
+				}),
+			},
+		]);
+	});
+
+	test("submit omits requestId/whenBusy when the options are absent", async () => {
+		const { calls, fetchImpl } = stubFetch({ id: 1 });
+		const client = createClient({ fetch: fetchImpl });
+		await client.submit(3, [{ type: "text", text: "plain" }]);
+		expect(calls[0]?.input).toBe("/v1/conversations/3/submissions");
+		expect(calls[0]?.body).toBe(
+			JSON.stringify({ input: [{ type: "text", text: "plain" }] }),
+		);
+	});
+
 	test("listApprovals GETs the conversation's approvals", async () => {
 		const body: ApprovalsResponse = {
 			approvals: [{ callId: "c1", toolName: "bash", status: "pending" }],
