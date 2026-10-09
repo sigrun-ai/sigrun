@@ -168,3 +168,10 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - Worker (run 1a2d58a8) timed out post-groundwork: the harness extensions (tokensPerSecond, settings, extensionSpecifiers, restart()) landed + a genuine ship-gate bug found+fixed (the Composer's send button was disabled while busy — Steer unclickable). NO checklist specs written.
 - Orchestrator committed the groundwork + fixed the item-6 timing race (the draft-restore/settle race, same as item 2). e2e 8/8 still green.
 - Next: write the four specs (steer, approvals, compaction recall, restart-resume) against the extended harness — dispatch a fresh worker or orchestrator-write.
+
+## Task 26b-iii — DONE. ALL 11 §7 M2 SHIP-GATE ITEMS PASS. M2 COMPLETE.
+- The T26b-iii worker (run 1a2d58a8) stalled post-groundwork; orchestrator wrote the four specs directly. The harness groundwork (restart, tokensPerSecond, settings, extensionSpecifiers) + the Composer steer-button fix landed in 95140d6.
+- The four hard items (orchestrator-written): steer (busy→Steer toggle, whenBusy:steer — the steered input lands in the inbox, the honest observable), approvals (the endpoint-sourced card, the T22 P1 composition), compaction recall (a forced compaction + the T26a-fixed binding), restart resume (the harness restart() re-boots on the same storage; the transcript survives; the page closes before the restart — the open SSE watch stream would otherwise hold the old server's close() open forever).
+- Appendix C gains the M2 ship-gate record (C.2): all 11 items pass + the five ship-gate-surfaced fixes (whenBusy dropped, memory binding, the steer-button gate, the files path relativization, the auto-select gap).
+- ALL 12 E2E green (11 items + smoke), webui 114/114, root 212/212, tsc clean both. THE §7 M2 SHIP GATE IS MET.
+- Next: the final T26b-iii review + the M2 whole-branch review, then merge.

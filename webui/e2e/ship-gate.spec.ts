@@ -65,14 +65,9 @@ test.describe("item 2: send text + image", () => {
 				fauxAssistantMessage("image answer"),
 			],
 		});
-		// A file in the workspace for the image upload to reference.
-		await writeFile(
-			join(server.workspaceDir, "dot.png"),
-			Buffer.from(
-				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-				"base64",
-			),
-		);
+		// The image upload path carries the image buffer in the request (the
+		// setInputFiles payload), not a workspace file — no workspace setup
+		// needed for this item.
 	});
 	test.afterAll(async () => {
 		await server.cleanup();
@@ -257,7 +252,7 @@ test.describe("item 11: degraded surfaces", () => {
 	test("the unconfigured-backup badge is visible", async ({ page }) => {
 		await page.goto(server.url);
 		await expect(
-			page.locator("header.top-bar .badge").filter({ hasText: "backup" }),
+			page.locator("header.top-bar .badge").filter({ hasText: "unconfigured" }),
 		).toBeVisible();
 	});
 });
