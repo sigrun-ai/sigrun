@@ -44,6 +44,7 @@ import type {
 	Conversation,
 	ConversationId,
 	ConversationView,
+	InputSubmissionDraft,
 	ModelRef,
 	ToolSlot,
 } from "@earendil-works/pi-durable";
@@ -57,6 +58,11 @@ import {
 	UnservedModelError,
 } from "../harness/providers/index.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
+import {
+	resolveWebuiBundle,
+	serveWebuiBundle,
+	WEBUI_CHANNEL,
+} from "./static.js";
 import {
 	isConfinedPath,
 	parseSubmissionInput,
@@ -97,6 +103,15 @@ const THINKING_LEVELS: readonly string[] = [
 	"xhigh",
 	"max",
 ];
+
+/**
+ * The `whenBusy` values a submission accepts (pi-durable `SubmissionDraft`'s
+ * full input union, T26a — the §5 client sends "steer"; "followUp" and
+ * "reject" are upstream's other busy semantics).
+ */
+const WHEN_BUSY_MODES: readonly string[] = ["steer", "followUp", "reject"];
+/** The validated `whenBusy` type (pi-durable `InputSubmissionDraft`). */
+type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
 /** Integer path params for `/v1/conversations/:id`. */
 const ID_PARAMS_SCHEMA = {
@@ -304,6 +319,15 @@ export async function createServer(
 	config: SigrunConfig,
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
+	// The webui channel bundle (Task 20, spec §4.1/§6): mount the static
+	// bundle + SPA fallback when it resolves; an explicit-but-missing bundle
+	// rejects here (fail loud, per the deploy entry's boot contract). Explicit
+	// routes win over the static wildcard, so the /v1 API + probes are
+	// unaffected by the mount.
+	const webuiBundle = await resolveWebuiBundle(config);
+	if (webuiBundle !== undefined) {
+		await serveWebuiBundle(app, webuiBundle);
+	}
 	// Conversation ids this server can list: the reserved root (ensured now)
 	// plus this server's own creates. See the module docstring for the
 	// enumeration gap.
@@ -402,7 +426,9 @@ export async function createServer(
 			// configured (Task 11 — the badge, not an error, when absent).
 			capabilities: {
 				backup: config.backup !== undefined,
-				channels: [],
+				// §4.1/§6 channels: "webui" exactly while the channel bundle is
+				// mounted; an API-only deploy reports [].
+				channels: webuiBundle === undefined ? [] : [WEBUI_CHANNEL],
 			},
 		};
 	});
@@ -580,7 +606,8 @@ export async function createServer(
 		},
 	);
 
-	// Submissions: content-part resolution + upstream idempotence (T9b).
+	// Submissions: content-part resolution + upstream idempotence (T9b);
+	// `whenBusy` pass-through + memory-wiring submit (T26a).
 	// Conversation resolution is storage-backed (`harness.conversation`), so
 	// an id that exists in storage works even when the tracked Set forgot it
 	// (restart amnesia — the Set remains listing-only).
@@ -632,6 +659,18 @@ export async function createServer(
 			}
 			const requestId =
 				body.requestId === undefined ? undefined : String(body.requestId);
+			// T26a: `whenBusy` is the steer affordance (spec §7 item 3) — validate
+			// it against pi-durable's union and pass it through; unknown values
+			// are a client error, never a silent default.
+			const whenBusy = body.whenBusy;
+			if (
+				whenBusy !== undefined &&
+				(typeof whenBusy !== "string" || !WHEN_BUSY_MODES.includes(whenBusy))
+			) {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: "whenBusy" });
+			}
 			// Resolve path-parts to inline content NOW, against the live
 			// workspace (Review Focus #1: missing paths become explicit error
 			// parts; other workspace failures throw → Fastify 500, fail-loud).
@@ -641,14 +680,22 @@ export async function createServer(
 				env,
 				BACKGROUND_CONTEXT,
 			);
-			const submission = await conversation.submit(
-				{
-					type: "input",
-					content,
-					...(requestId === undefined ? {} : { requestId }),
-				},
-				BACKGROUND_CONTEXT,
-			);
+			const draft: InputSubmissionDraft = {
+				type: "input",
+				content,
+				...(requestId === undefined ? {} : { requestId }),
+				...(whenBusy === undefined
+					? {}
+					: { whenBusy: whenBusy as WhenBusyMode }),
+			};
+			// T26a Fix B: submit through the memory extension's wiring when one
+			// is loaded — its submit binds the conversation as the memory_recall
+			// source at the submit boundary (degenerate.js). No memory wiring →
+			// submit directly (the no-op default carries no submit).
+			const submission =
+				opened.memorySubmit === undefined
+					? await conversation.submit(draft, BACKGROUND_CONTEXT)
+					: await opened.memorySubmit(conversation, draft, BACKGROUND_CONTEXT);
 			// v1 waits for settlement server-side (the watch stream is T9d);
 			// `wait()` resolves with the settled record either way.
 			const settled = await submission.wait(BACKGROUND_CONTEXT);
@@ -1072,7 +1119,19 @@ export async function createServer(
 				}
 				throw listed.error;
 			}
-			return { entries: listed.value };
+			// pi-durable's listDir returns ABSOLUTE paths (resolve(cwd, name)),
+			// but the §5 files/content endpoint requires workspace-RELATIVE
+			// paths (isConfinedPath rejects absolute). Relativize each entry
+			// against the workspace root so the tree's paths feed back into the
+			// content endpoint (a listed file can be read).
+			const workspaceRoot = config.workspace.path;
+			const entries = listed.value.map((entry) => ({
+				...entry,
+				path: entry.path.startsWith(`${workspaceRoot}/`)
+					? entry.path.slice(workspaceRoot.length + 1)
+					: entry.path,
+			}));
+			return { entries };
 		},
 	);
 

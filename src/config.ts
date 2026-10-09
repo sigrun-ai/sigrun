@@ -49,6 +49,21 @@ export interface SigrunConfig {
 	workspace: LocalWorkspace;
 	backup?: BackupConfig;
 	/**
+	 * The webui channel-bundle directory (spec §4.1/§6, Task 20), parsed from
+	 * `SIGRUN_WEBUI_BUNDLE`. Relative paths resolve against the process cwd
+	 * (the repo/deploy root). The default is `webui/dist`; an absent default
+	 * bundle is a supported API-only deploy, while an explicit-but-missing
+	 * bundle is a boot error (see {@link SigrunConfig.webuiBundleExplicit}).
+	 */
+	webuiBundle: string;
+	/**
+	 * True iff `SIGRUN_WEBUI_BUNDLE` set {@link SigrunConfig.webuiBundle}
+	 * explicitly. The server fails loud when an explicit bundle path has no
+	 * `index.html` (a misconfigured deploy intended the webui), and serves
+	 * API-only when the DEFAULT path is absent (no webui was ever intended).
+	 */
+	webuiBundleExplicit: boolean;
+	/**
 	 * Context-management policy (spec §3.1), parsed from `SIGRUN_COMPACTION_*`
 	 * and passed through `openHarness` into pi-durable's
 	 * `HarnessSettings.compaction`. Defaults equal upstream's
@@ -67,6 +82,8 @@ export const DEFAULT_EXTENSIONS_DIR = "extensions";
 export const DEFAULT_PORT = 3000;
 /** Spec §4.5: core ships `{ defaultWorkspace: { type: "local", path: "/home/sigrun" } }`. */
 export const DEFAULT_WORKSPACE_PATH = "/home/sigrun";
+/** Spec §4.1/§6: the built webui workspace package's output. */
+export const DEFAULT_WEBUI_BUNDLE = "webui/dist";
 
 /**
  * Sigrun's compaction defaults, deliberately equal to pi-durable's
@@ -260,5 +277,8 @@ export function loadConfig(env: Env): SigrunConfig {
 		},
 		backup: parseBackupConfig(env),
 		compaction: parseCompaction(env),
+		webuiBundle: env.SIGRUN_WEBUI_BUNDLE || DEFAULT_WEBUI_BUNDLE,
+		webuiBundleExplicit:
+			env.SIGRUN_WEBUI_BUNDLE !== undefined && env.SIGRUN_WEBUI_BUNDLE !== "",
 	};
 }

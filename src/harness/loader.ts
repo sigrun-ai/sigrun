@@ -15,26 +15,37 @@
  * The sigrun extension-package contract: a package's default export is a
  * factory returning an object with an `extension: Extension` field, plus an
  * optional §3 `health` producer (spec §3 — the memory-backend form; Task
- * 9e retains it for the §5 meta `health.memory` aggregation). The two real
- * packages (`sigrun-ext-memory`, `sigrun-ext-approvals`) predate the settled
- * contract and export named factories (`createMemory` /
+ * 9e retains it for the §5 meta `health.memory` aggregation) and an optional
+ * `submit` pass-through (the memory wiring's submit — Task 26a retains it so
+ * boot can expose it as `OpenedHarness.memorySubmit`; it binds the
+ * conversation as the memory_recall source at the submit boundary). The two
+ * real packages (`sigrun-ext-memory`, `sigrun-ext-approvals`) predate the
+ * settled contract and export named factories (`createMemory` /
  * `createApprovals`) whose results carry the same `.extension` field, so the
  * loader resolves, in order:
  *
  * 1. the default export, if it is a factory returning `{ extension,
- *    health? }` or is itself an `Extension` (named `name`),
+ *    health?, submit? }` or is itself an `Extension` (named `name`),
  * 2. a named `createMemory` / `createApprovals` factory (the bridge for the
  *    two real packages),
  * 3. a named `extension` export.
  *
  * The factories take no arguments; any configuration they need is resolved
  * from their own package context. Only factory results can carry a health
- * producer (the direct-`Extension` forms have no factory result to read one
- * from). A `health` field that is present but not a function is a contract
- * violation — quarantined, never silently ignored.
+ * producer or submit pass-through (the direct-`Extension` forms have no
+ * factory result to read one from). A `health` or `submit` field that is
+ * present but not a function is a contract violation — quarantined, never
+ * silently ignored.
  */
 
-import type { Extension, Registry } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
+import type {
+	Conversation,
+	Extension,
+	Registry,
+	Submission,
+	SubmissionDraft,
+} from "@earendil-works/pi-durable";
 import type { HealthStatus } from "./health.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
@@ -45,6 +56,19 @@ export interface ExtensionOutcome {
 	/** The failure message; present only when `status === "quarantined"`. */
 	readonly error?: string;
 }
+
+/**
+ * A factory-result submit pass-through (the memory wiring's `submit`,
+ * Task 26a): binds the conversation as the memory_recall source at the
+ * submit boundary, then admits the submission. Boot exposes the
+ * memory-surface owner's as `OpenedHarness.memorySubmit`; the §5 server
+ * submits through it when present.
+ */
+export type ExtensionSubmit = (
+	conversation: Conversation,
+	submission: SubmissionDraft,
+	context: Context,
+) => Promise<Submission>;
 
 /**
  * A §3 health producer retained from an extension factory result (Task
@@ -59,6 +83,18 @@ export interface ExtensionHealthProducer {
 	readonly health: () => HealthStatus;
 }
 
+/**
+ * A factory-result submit pass-through retained from an extension factory
+ * result (Task 26a) — paired with the resolved `Extension` exactly like
+ * `ExtensionHealthProducer`, so boot identity-matches it to the
+ * memory-surface owner.
+ */
+export interface ExtensionSubmitBinding {
+	/** The extension the factory result carried the submit for. */
+	readonly extension: Extension;
+	readonly submit: ExtensionSubmit;
+}
+
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -69,6 +105,11 @@ export interface LoadedExtensions {
 	 * contribute none (degenerate ok by absence).
 	 */
 	readonly healthProducers: readonly ExtensionHealthProducer[];
+	/**
+	 * Submit pass-throughs from factory results (Task 26a), one per loaded
+	 * extension that carried one; quarantined extensions contribute none.
+	 */
+	readonly submitBindings: readonly ExtensionSubmitBinding[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -81,13 +122,16 @@ interface ExtensionModule {
 
 /**
  * What the contract resolution yields: the `Extension` plus the optional §3
- * health producer a factory result carried alongside it. Only factory
- * results can carry one; the direct-`Extension` forms resolve without.
+ * health producer / submit pass-through a factory result carried alongside
+ * it. Only factory results can carry one; the direct-`Extension` forms
+ * resolve without.
  */
 export interface ResolvedExtension {
 	readonly extension: Extension;
 	/** Present only when resolution came from a factory result carrying one. */
 	readonly health?: () => HealthStatus;
+	/** Present only when the factory result carried one (the memory wiring's submit). */
+	readonly submit?: ExtensionSubmit;
 }
 
 /** A structural check for "looks like a pi-durable Extension". */
@@ -100,10 +144,11 @@ function isExtension(value: unknown): value is Extension {
 }
 
 /**
- * Call an unknown-typed factory and validate the `{ extension, health? }`
- * result. A `health` field that is present but not a function is a contract
- * violation — thrown, so the loader quarantines the extension (fail-loud:
- * a package that THINKS it reports health must not read as healthy).
+ * Call an unknown-typed factory and validate the `{ extension, health?,
+ * submit? }` result. A `health`/`submit` field that is present but not a
+ * function is a contract violation — thrown, so the loader quarantines the
+ * extension (fail-loud: a package that THINKS it reports health or owns a
+ * submit boundary must not read as healthy / must not lose submissions).
  */
 function resolvedFromFactory(
 	factory: unknown,
@@ -111,19 +156,36 @@ function resolvedFromFactory(
 	if (typeof factory !== "function") return undefined;
 	const result = (factory as () => unknown)();
 	if (typeof result !== "object" || result === null) return undefined;
-	const candidate = result as { extension?: unknown; health?: unknown };
+	const candidate = result as {
+		extension?: unknown;
+		health?: unknown;
+		submit?: unknown;
+	};
 	if (!isExtension(candidate.extension)) return undefined;
-	if (candidate.health === undefined) {
-		return { extension: candidate.extension };
-	}
-	if (typeof candidate.health !== "function") {
+	if (
+		candidate.health !== undefined &&
+		typeof candidate.health !== "function"
+	) {
 		throw new Error(
 			"extension factory returned a health field that is not a function",
 		);
 	}
+	if (
+		candidate.submit !== undefined &&
+		typeof candidate.submit !== "function"
+	) {
+		throw new Error(
+			"extension factory returned a submit field that is not a function",
+		);
+	}
 	return {
 		extension: candidate.extension,
-		health: candidate.health as () => HealthStatus,
+		...(candidate.health === undefined
+			? {}
+			: { health: candidate.health as () => HealthStatus }),
+		...(candidate.submit === undefined
+			? {}
+			: { submit: candidate.submit as ExtensionSubmit }),
 	};
 }
 
@@ -163,8 +225,9 @@ export function resolveExtension(
  * so extensions land before `Harness.open` reads the registry.
  * @returns the outcome list (one entry per specifier, in order — never
  * empty-entry gaps; boot stores this for `GET /v1/meta`, Task 9) plus the
- * §3 health producers retained from factory results, paired with their
- * extensions for identity correlation (Task 9e).
+ * §3 health producers and submit pass-throughs retained from factory
+ * results, paired with their extensions for identity correlation (Task 9e,
+ * Task 26a).
  */
 export async function loadExtensions(
 	specifiers: readonly string[],
@@ -172,6 +235,7 @@ export async function loadExtensions(
 ): Promise<LoadedExtensions> {
 	const outcomes: ExtensionOutcome[] = [];
 	const healthProducers: ExtensionHealthProducer[] = [];
+	const submitBindings: ExtensionSubmitBinding[] = [];
 	for (const specifier of specifiers) {
 		try {
 			const module = (await import(specifier)) as ExtensionModule;
@@ -190,6 +254,12 @@ export async function loadExtensions(
 					health: resolved.health,
 				});
 			}
+			if (resolved.submit !== undefined) {
+				submitBindings.push({
+					extension: resolved.extension,
+					submit: resolved.submit,
+				});
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -200,10 +270,11 @@ export async function loadExtensions(
 				status: "quarantined",
 				error: message,
 			});
-			// A quarantined extension contributes no health producer: the §3
-			// surface is reported through `extensions[].status`, never
-			// double-reported into the §5 health block.
+			// A quarantined extension contributes no health producer and no
+			// submit binding: the §3 surface is reported through
+			// `extensions[].status`, never double-reported into the §5 health
+			// block.
 		}
 	}
-	return { outcomes, healthProducers };
+	return { outcomes, healthProducers, submitBindings };
 }
