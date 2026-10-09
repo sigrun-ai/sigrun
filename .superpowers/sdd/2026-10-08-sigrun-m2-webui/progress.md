@@ -182,3 +182,8 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - P2 fixes: item 11 matches 'unconfigured'; the item-2 dead writeFile removed; the App auto-select clobber race fixed. The steer unit pin already existed (Composer.test.tsx asserts whenBusy:steer).
 - ALL 12 E2E green, GENUINELY. webui 114/114, root 215/215, tsc clean both. THE §7 M2 SHIP GATE IS MET with the record matching the evidence.
 - Next: the M2 whole-branch review, then merge feat/m2-webui to main.
+
+## M2 whole-branch review — APPROVED-FOR-MERGE (run 4d33c487)
+- Verdict APPROVED-FOR-MERGE, no P0/P1 blockers. Reviewer independently verified the five ship-gate fixes against real sources (not just the diff) and stress-tested Appendix C.2's item-7 recall-role claim (resolves via recallFromEntries role-from-entry-kind, not the observe ring).
+- Four P2s; two fixed pre-merge in 5887b22 (dead pendingApprovalsFromView + docstrings; three dbg-*.test.ts drivers deleted). P2.3 (committed PNG/SDD artifacts) deliberate per ledger convention; P2.4 (ConversationMeta.owner unused) is the §5 day-1-schema decision.
+- Review persisted to review-m2-whole-branch.md.
