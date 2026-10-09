@@ -86,3 +86,19 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - Implementer (kimi-k3, run 68b67d5a) timed out post-completion (all components built, tests green, report checklist unchecked); orchestrator verified + committed 5df1a9e. webui 77/77 (13 files), root 208/208, webui tsc clean.
 - T22-P1 RESOLVED: approval cards source from client.listApprovals(activeId) refreshed per view frame (Composer.tsx:156-171), NOT the view's tool slots. Verified in the committed code.
 - Next: T24 (uploads + workspace browser).
+
+## Task 23b — DONE (composer + draft + approval sourcing). Task 23 COMPLETE.
+- Implementer (kimi-k3, run 68b67d5a timed out post-completion; orchestrator committed 5df1a9e). webui 77/77, root 208/208.
+- Review (bifrost/kimi-k3, run 7bd3ac64 → resumed 0ee08307 after an output-length stop; the review diff was 52KB, over the 8.2K budget — resumed with a bullet-points instruction): CHANGES-REQUIRED on a REAL P0.
+- THE P0: useDraft's flush cleanup read saveRef.current.conversationId — reassigned in the render body to the NEW conversation before cleanup — so a fast switch PATCHed the old text to the new id. The test asserted only the PATCH body, never the URL — passed with the bug. Fixed (cleanup uses its own closure's id) + the test now pins the URL.
+- P2s applied: post-submit draft resurrection (clear(true) persists the clear); draft-error surfacing (flush errors route to onError, were swallowed). Deferred: stale-approval flash (cosmetic).
+- Fix round (orchestrator, 7844dbf). webui 77/77, root 208/208, tsc clean.
+- LESSON: the output-length stop hit the REVIEW too (52KB diff over the 8.2K budget). The resume-with-bullet-points instruction recovered it.
+- Next: T24 (uploads + workspace browser).
+
+## Task 24 — implemented (in review)
+- Implementer (kimi-k3, run 5601dda8): 558e2aa, webui 97/97 (21 new) + root 208/208, webui tsc clean.
+- WorkspaceBrowser (file tree, lazy expand, select→preview) + FilePreview (text/binary note, read-only) + the composer attach path (upload → workspace-relative path → draft.attachments → submit path-parts) + api.ts (listFiles/readFile/upload).
+- The worker explicitly flagged visual rendering as UNVERIFIED (no browser tool in its toolset; visual verification is T26's ship-gate E2E lane). The standing scope call the T22/T23 reviewers endorsed.
+- Review dispatched (run 89b0a049).
+- Next: T25 (themes + badges + layout shell — the visual polish task), then T26 (ship-gate E2E).

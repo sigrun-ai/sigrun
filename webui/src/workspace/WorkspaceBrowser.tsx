@@ -151,9 +151,11 @@ export function WorkspaceBrowser(props: {
 			) : (
 				<>
 					{error !== null && <p role="alert">{error}</p>}
-					{root === null ? (
+					{/* After a failed root list, the error owns the panel — suppress
+					    the perpetual "loading…" (it never resolves on its own). */}
+					{root === null && error === null ? (
 						<p className="workspace-loading">loading…</p>
-					) : (
+					) : root === null ? null : (
 						<ul className="workspace-tree">{renderEntries(root, 0)}</ul>
 					)}
 					{selectedPath !== null && (
