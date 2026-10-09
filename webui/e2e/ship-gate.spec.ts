@@ -176,6 +176,9 @@ test.describe("item 6: tool card", () => {
 
 	test("expand a tool card and see the output", async ({ page }) => {
 		await page.goto(server.url);
+		// Wait for the boot-time default selection + the draft restore to
+		// settle (the composer goes live once a conversation is active).
+		await expect(page.locator(".composer-input")).toBeEnabled();
 		await page.locator(".composer-input").fill("read notes.txt");
 		await expect(page.locator(".composer-send")).toBeEnabled();
 		await page.locator(".composer-send").click();

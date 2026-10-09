@@ -256,7 +256,12 @@ export function Composer(props: {
 
 	async function send(): Promise<void> {
 		const text = draft.text.trim();
-		if (conversationId === null || sending) return;
+		// T26b-iii (ship-gate item 3): the submissions route awaits full
+		// settlement server-side, so `sending` stays true for the WHOLE busy
+		// turn — gating on `sending` alone made Steer unclickable exactly while
+		// a session runs. While busy, a click is a STEER (a distinct
+		// submission), never a double-send of the in-flight draft: allow it.
+		if (conversationId === null || (sending && !busy)) return;
 		if (text === "" && draft.attachments.length === 0) return;
 		setSending(true);
 		setError(null);
@@ -372,7 +377,7 @@ export function Composer(props: {
 						className="composer-send"
 						disabled={
 							conversationId === null ||
-							sending ||
+							(sending && !busy) ||
 							(draft.text.trim() === "" &&
 								draft.attachments.length === 0)
 						}

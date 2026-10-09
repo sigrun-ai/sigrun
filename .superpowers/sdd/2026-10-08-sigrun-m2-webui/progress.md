@@ -156,3 +156,10 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - Implementer (kimi-k3, run 27a0a28b): 70c4110, webui 114/114 + root 212/212 + the smoke test passes in real chromium. Screenshot verified non-blank (1280x720).
 - Review (bifrost/kimi-k3, run b1d0f0b6): APPROVED. The review's full text exceeded the output capture boundary (the verdict + opening analysis are persisted; the diff-reading + focus-area detail was cut off — the verdict line is the authoritative outcome).
 - Next: the 11 checklist items against the proven harness (T26b-ii).
+
+## Task 26b-ii — DONE (checklist items 1-2, 5-6, 8-9, 11). Orchestrator-written.
+- The dispatched worker (run bd1d5c8c) burned its whole budget reading the components for selectors — 24 reads, 0 writes. Orchestrator wrote the seven specs directly against the proven harness (grep'd the selectors from the components).
+- All 8 E2E pass (7 items + the smoke) in real chromium.
+- TWO fixes the E2E surfaced (the gate working as intended): (1) App.tsx boot-time default selection of the root conversation (the composer was disabled until a click); (2) the files list endpoint returned ABSOLUTE paths (pi-durable listDir) but files/content requires RELATIVE (isConfinedPath) — a genuine server contract inconsistency; the list endpoint now relativizes.
+- App unit tests updated for the default selection. webui 114/114, root 212/212, e2e 8/8, tsc clean both.
+- Next: T26b-iii (items 3 steer, 4 approvals, 7 compaction recall, 10 restart resume) — the harder four.
