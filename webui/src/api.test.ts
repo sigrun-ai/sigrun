@@ -131,10 +131,10 @@ describe("createClient", () => {
 	test("getConversationMeta GETs the meta shape", async () => {
 		const body: ConversationMeta = {
 			pinned: true,
-			tagged: false,
+			tagged: [],
 			archived: false,
-			draft: false,
-			source: "webui",
+			draft: { text: "", attachments: [] },
+			source: "user",
 			owner: "local",
 		};
 		const { calls, fetchImpl } = stubFetch(body);

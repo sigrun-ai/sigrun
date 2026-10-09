@@ -45,3 +45,32 @@ USER is fixing the bifrost gateway. When a working reviewer model exists, re-dis
 - webui/src/entries/: EntryList (kind dispatch) + UserEntry + AssistantEntry (react-markdown + remark-gfm) + ToolResultEntry (expandable, running state from LiveDoc slots) + SystemEntry + ApprovalCard (pending gated calls; allow/deny POST; clears on next frame).
 - The worker made a scope call the warden challenged: no browser screenshot because the components are NOT mounted yet (App.tsx is still the T20 badge scaffold; composition is T23, theming T25). The verification is structural via react-test-renderer. The reviewer is asked to judge whether that's the right scope call.
 - Review dispatched (run f1a3afa4).
+
+## Task 22 — DONE (entry renderers + tool/approval cards)
+- Implementer (kimi-k3, run 35faf1b4): 55fd077, webui 46/46 (25 new) + root 208/208.
+- Review (bifrost/kimi-k3, run f1a3afa4): APPROVED, 1 P1 + 2 P2s. Reviewer verified the two unpinned wire assumptions against pi-durable dist sources (toolCallId on pi.tool-result entries; ToolSlot lifecycle — a gated parked call presents as a PENDING slot, so the worker's pending-only filter was the correct call over the brief's literal pending+running). Endorsed the worker's no-browser-screenshot scope call (react-test-renderer is the brief's harness; composition is T23).
+- THE P1 (a design correction, lands in T23): approval cards must be sourced from client.listApprovals() refreshed per view frame, NOT from view.live.tools slots — the view can't evaluate the gating policy, and a sequential round marks ungated queued tools pending (spurious cards). The server's approval vocabulary is pending||running AND isGated AND undecided. Baked into the T23 brief.
+- Fix round (orchestrator, f49d6d2): model-less entry guard (ConversationEntryWire.model now optional — pi.reset carries none); report arithmetic corrected.
+- Next: T23 (sessions sidebar + composer — WITH the approval-cards-from-endpoint composition).
+
+## T23 — first worker (kimi-k3, run d2779411) produced ZERO code
+- The run completed with acceptance:rejected and a blank acceptance record — the worker read the brief, did a git check, and the run ended with no files written. No error in the events; the completion fired on a mid-run status line.
+- Resumed (run 275e9cbf) with a pointed nudge: stop reading, write code, ordered steps, do not end until the commit exists + suites pass.
+
+## T23 — split into 23a/23b (output-budget root cause)
+- Two kimi-k3 dispatches on the combined T23 (sidebar + composer + app shell + draft + approval sourcing + api additions) both produced ZERO code: the first ended after a git check (blank acceptance), the second hit a terminal stopReason:length (bifrost/kimi-k3 max-out is 8.2K — too small for the multi-component task).
+- ROOT CAUSE: the task's output budget. T22 succeeded because it was smaller. T23's scope exceeded 8.2K output tokens.
+- Split: T23a (sidebar + app shell, no composer) + T23b (composer + draft + approval sourcing). T23a dispatched (run 84d495a3). The T22-P1 approval-sourcing lands in T23b.
+- LESSON: for kimi-k3 (8.2K max-out via bifrost), keep webui tasks to ~2 components + tests. The 4-component T23 was over budget.
+
+## Task 23a — DONE (sessions sidebar + app shell)
+- Implementer (worker, run 84d495a3): 8b639da `feat: webui sessions sidebar + app shell`. webui 58/58 (11 files), root 208/208, tsc clean both.
+- Shipped: api.ts +ConversationMeta/getConversationMeta/patchConversationMeta/createConversation (post→send refactor); SessionList (pinned-first, archived dimmed, new/switch/archive, meta best-effort fallback); App.tsx rewritten to three-panel shell (SessionList | EntryList over useConversationView | right placeholder), composer = empty footer slot for T23b; app.css (first stylesheet); test-utils renderAsync.
+- Next: T23b (composer + draft + approval sourcing per T22-P1) — needs T23a's composer-slot mount point, view.steer threading decision, and ConversationMeta.draft semantics.
+
+## Task 23a — implemented (in review)
+- Implementer (kimi-k3, run 84d495a3): 8b639da, webui 58/58 + root 208/208, webui tsc clean. The split worked — the smaller slice fit the output budget.
+- SessionList.tsx + App.tsx (three-panel shell: sidebar + EntryList chat center + placeholder right panel) + api.ts additions (patchMeta, createConversation) + App.test.tsx + SessionList.test.tsx.
+- The worker explicitly flagged the shell as browser-UNVERIFIED (structural via react-test-renderer; visual verification is T25's lane — the T22-endorsed scope call). The reviewer is asked to judge.
+- Review dispatched (run 24038a08).
+- Next: T23b (composer + draft + approval sourcing — brief staged) after the T23a review.
