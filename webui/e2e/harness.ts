@@ -57,6 +57,9 @@ export interface E2EServer {
 	readonly opened: OpenedHarness;
 	/** The listening Fastify app. */
 	readonly app: FastifyInstance;
+	/** The per-boot tmpdir — the conversation's workspace root (the checklist
+	 * tests write files here for the workspace-browser + upload items). */
+	readonly workspaceDir: string;
 	/** Idempotent teardown: close the app, the harness, remove the tmpdir. */
 	readonly cleanup: () => Promise<void>;
 }
@@ -121,6 +124,7 @@ export async function bootE2EServer(
 		conversationId: root.id,
 		opened,
 		app,
+		workspaceDir: dir,
 		cleanup,
 	};
 }

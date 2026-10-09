@@ -151,8 +151,10 @@ describe("App shell", () => {
 		expect(text).toContain("sigrun");
 		expect(text).toContain("memory");
 		expect(text).toContain("backup: unconfigured");
-		// The shell renders beneath it.
-		expect(text).toContain("Select or create a conversation");
+		// The shell renders beneath it; the boot-time default selection picks
+		// the root conversation, so the transcript area is live (not the
+		// no-selection placeholder).
+		expect(text).not.toContain("Select or create a conversation");
 		expect(
 			renderer.root.findAllByProps({ className: "top-bar" }),
 		).toHaveLength(1);
@@ -189,7 +191,7 @@ describe("App shell", () => {
 		).toHaveLength(0);
 	});
 
-	test("composes sidebar + chat center + workspace right panel + composer slot; no stream until a conversation is selected", async () => {
+	test("composes sidebar + chat center + workspace right panel + composer slot; the boot-time default selects the root conversation and opens its stream", async () => {
 		const { client, createEventSource, sources } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
@@ -198,19 +200,16 @@ describe("App shell", () => {
 		// Sidebar conversations rendered.
 		expect(text).toContain("#1");
 		expect(text).toContain("#2");
-		// Empty chat state + the workspace browser's no-selection state; the
-		// composer slot renders the idle (no-conversation) Composer, which
-		// submits nothing until a conversation is active.
-		expect(text).toContain("Select or create a conversation");
-		expect(text).toContain("Select a conversation to browse its workspace");
+		// The boot-time default selection picked the root conversation (id 1)
+		// and opened its stream — the composer is live without a click.
+		expect(text).not.toContain("Select or create a conversation");
 		const composer = renderer.root.findByProps({
 			className: "composer-slot",
 		});
 		expect(composer.findAllByProps({ className: "composer" })).toHaveLength(
 			1,
 		);
-		// No stream without an active conversation.
-		expect(sources).toEqual([]);
+		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
 	});
 
 	test("selecting a conversation drives the view hook and renders the transcript + the workspace browser", async () => {
@@ -218,10 +217,16 @@ describe("App shell", () => {
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
+		// The boot default selected the root (id 1) and opened its stream.
+		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
 		await clickByClass(renderer, "session-select", "#2");
-		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/2/stream"]);
+		expect(sources.map((s) => s.url)).toEqual([
+			"/v1/conversations/1/stream",
+			"/v1/conversations/2/stream",
+		]);
+		// sources[1] is conversation 2's stream (sources[0] is the boot-selected root).
 		act(() => {
-			sources[0]?.source.emit(
+			sources[1]?.source.emit(
 				"snapshot",
 				JSON.stringify(
 					makeView({
