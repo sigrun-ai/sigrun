@@ -30,11 +30,12 @@ export interface UseDraftResult {
 	/** User edit: updates the composer text and schedules the save. */
 	readonly setText: (text: string) => void;
 	/**
-	 * Drop the text WITHOUT persisting (post-submit). The pending
-	 * debounced save is cancelled so the just-sent text cannot resurrect
-	 * from a late flush.
+	 * Drop the text. The pending debounced save is cancelled so the just-sent
+	 * text cannot resurrect from a late flush. `persist: true` (post-submit)
+	 * also writes the empty draft to the server so a reload doesn't restore
+	 * the submitted message; the default (switch/reset) doesn't persist.
 	 */
-	readonly clear: () => void;
+	readonly clear: (persist?: boolean) => void;
 }
 
 export function useDraft(
@@ -93,15 +94,25 @@ export function useDraft(
 			cancelled = true;
 			// Flush a pending save on switch/unmount: the text the user typed
 			// belongs to THIS conversation, and the debounce window must not
-			// strand it.
+			// strand it. Use THIS effect's closure (conversationId/client — the
+			// OLD values at cleanup), NOT saveRef.current (reassigned in the
+			// render body to the NEW conversation before this cleanup runs —
+			// reading the ref would flush the old text to the new id). The
+			// closure's conversationId is non-null here (the early return above
+			// covers the null case).
 			if (debounceRef.current !== null) {
 				clearTimeout(debounceRef.current);
 				debounceRef.current = null;
 				if (dirtyRef.current) {
-					saveRef.current.client.patchConversationMeta(
-						saveRef.current.conversationId as number,
-						{ draft: { text: textRef.current } },
-					).catch(() => undefined);
+					client
+						.patchConversationMeta(conversationId, {
+							draft: { text: textRef.current },
+						})
+						.catch((cause: unknown) => {
+							onErrorRef.current?.(
+								cause instanceof Error ? cause.message : String(cause),
+							);
+						});
 				}
 			}
 		};
@@ -125,15 +136,26 @@ export function useDraft(
 		[conversationId, debounceMs, save],
 	);
 
-	const clear = useCallback(() => {
-		setTextState("");
-		textRef.current = "";
-		dirtyRef.current = false;
-		if (debounceRef.current !== null) {
-			clearTimeout(debounceRef.current);
-			debounceRef.current = null;
-		}
-	}, []);
+	const clear = useCallback(
+		(persist = false) => {
+			setTextState("");
+			textRef.current = "";
+			dirtyRef.current = false;
+			if (debounceRef.current !== null) {
+				clearTimeout(debounceRef.current);
+				debounceRef.current = null;
+			}
+			// A post-submit clear must persist (the server meta keeps the
+			// submitted text otherwise, and a reload resurrects it into the
+			// composer). Default false for the switch/reset paths (the restore
+			// effect owns those).
+			if (persist) {
+				const id = saveRef.current.conversationId;
+				if (id !== null) save(id, "");
+			}
+		},
+		[save],
+	);
 
 	return { text, setText, clear };
 }
