@@ -30,6 +30,7 @@ import {
 	fauxProvider,
 	type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { HarnessSettings } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../../src/config.js";
 import { openHarness, type OpenedHarness } from "../../src/harness/boot.js";
@@ -46,6 +47,24 @@ export interface E2EServerOptions {
 	 * their own scripts (tool calls, errors, deferred handles).
 	 */
 	readonly responses?: readonly FauxResponseStep[];
+	/**
+	 * T26b-iii item 3: the faux provider's stream pacing. A low
+	 * `tokensPerSecond` keeps a turn busy long enough for the steer
+	 * observation (the server-submissions.test.ts pattern).
+	 */
+	readonly tokensPerSecond?: number;
+	/**
+	 * T26b-iii item 7: harness settings (the `OpenHarnessOptions.settings`
+	 * seam) — the forced compaction policy, per the mid-compaction driver.
+	 */
+	readonly settings?: HarnessSettings;
+	/**
+	 * T26b-iii items 4 + 7: extension package specifiers to load (the
+	 * `OpenHarnessOptions.extensionSpecifiers` seam — "sigrun-ext-approvals",
+	 * "sigrun-ext-memory"). Defaults to the parsed config's list (empty in
+	 * this hermetic boot).
+	 */
+	readonly extensionSpecifiers?: readonly string[];
 }
 
 export interface E2EServer {
@@ -62,6 +81,17 @@ export interface E2EServer {
 	readonly workspaceDir: string;
 	/** Idempotent teardown: close the app, the harness, remove the tmpdir. */
 	readonly cleanup: () => Promise<void>;
+	/**
+	 * T26b-iii item 10 (restart resume): close this server and re-boot on the
+	 * SAME tmpdir + storage file (the transcript survives; the reserved root
+	 * conversation resumes with the same id). The re-booted server listens on
+	 * a NEW ephemeral port (navigate to its `url`) and takes over tmpdir
+	 * cleanup ownership — this server is dead afterwards and its `cleanup`
+	 * no-ops on the (still-alive) dir. Options merge over the original boot's
+	 * (pass fresh `responses` for post-restart turns — the faux queue is a
+	 * per-boot provider, re-created on every boot).
+	 */
+	readonly restart: (options?: E2EServerOptions) => Promise<E2EServer>;
 }
 
 /** Boot a hermetic E2E server on an ephemeral loopback port. */
@@ -69,12 +99,26 @@ export async function bootE2EServer(
 	options: E2EServerOptions = {},
 ): Promise<E2EServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-e2e-"));
+	return await bootOnDir(dir, options);
+}
+
+/**
+ * Boot the E2E server onto `dir` (fresh or existing — an existing dir is the
+ * restart-resume leg: storage + workspace persist across boots).
+ */
+async function bootOnDir(
+	dir: string,
+	options: E2EServerOptions,
+): Promise<E2EServer> {
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [
 			{ id: "m", contextWindow: 128_000 },
 			{ id: "m2", contextWindow: 64_000 },
 		],
+		...(options.tokensPerSecond === undefined
+			? {}
+			: { tokensPerSecond: options.tokensPerSecond }),
 	});
 	faux.setResponses([
 		...(options.responses ?? [fauxAssistantMessage("e2e answer")]),
@@ -95,25 +139,35 @@ export async function bootE2EServer(
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		...(options.extensionSpecifiers === undefined
+			? {}
+			: { extensionSpecifiers: options.extensionSpecifiers }),
+		...(options.settings === undefined
+			? {}
+			: { settings: options.settings }),
 	});
 	const app = await createServer(opened, config);
-	let cleaned = false;
-	const cleanup = async () => {
-		if (cleaned) return;
-		cleaned = true;
+	let closed = false;
+	let ownsDir = true;
+	// Close the listener + harness WITHOUT removing the tmpdir (the restart
+	// leg leaves the storage in place for the next boot).
+	const close = async () => {
+		if (closed) return;
+		closed = true;
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
-		await rm(dir, { recursive: true, force: true });
 	};
 	try {
 		await app.listen({ port: 0, host: "127.0.0.1" });
 	} catch (cause) {
-		await cleanup();
+		await close();
+		await rm(dir, { recursive: true, force: true });
 		throw cause;
 	}
 	const address = app.server.address();
 	if (address === null || typeof address === "string") {
-		await cleanup();
+		await close();
+		await rm(dir, { recursive: true, force: true });
 		throw new Error("e2e harness: app.listen returned no address");
 	}
 	const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -125,6 +179,17 @@ export async function bootE2EServer(
 		opened,
 		app,
 		workspaceDir: dir,
-		cleanup,
+		cleanup: async () => {
+			await close();
+			if (!ownsDir) return;
+			ownsDir = false;
+			await rm(dir, { recursive: true, force: true });
+		},
+		restart: async (restartOptions: E2EServerOptions = {}) => {
+			await close();
+			// The re-booted server owns the dir from here.
+			ownsDir = false;
+			return await bootOnDir(dir, { ...options, ...restartOptions });
+		},
 	};
 }
