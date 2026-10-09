@@ -19,7 +19,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
-import { loadExtensions, type ExtensionOutcome } from "./loader.js";
+import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit } from "./loader.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { skillsExtension } from "../skills/index.js";
@@ -75,6 +75,16 @@ export interface OpenedHarness {
 	 * `extensionOutcomes`; no double-report).
 	 */
 	readonly memoryHealth: (() => HealthStatus) | undefined;
+	/**
+	 * The loaded memory extension's factory-result submit pass-through
+	 * (Task 26a), identity-matched to the memory-surface owner exactly like
+	 * `memoryHealth`. The §5 submissions route submits through it when
+	 * present — the memory wiring's submit binds the conversation as the
+	 * memory_recall source at the submit boundary (degenerate.js) — and
+	 * submits directly when `undefined` (the no-op memory default, a
+	 * quarantined memory extension, or a submit-less memory extension).
+	 */
+	readonly memorySubmit: ExtensionSubmit | undefined;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -122,7 +132,9 @@ export interface OpenHarnessOptions {
  * producers are retained at boot — contributor producers on
  * `providerHealth`, the memory extension's producer on `memoryHealth` — for
  * the §5 meta `health` aggregation (Task 9e), a pure synchronous derivation
- * over this state.
+ * over this state; the memory extension's factory-result submit pass-through
+ * is likewise retained on `memorySubmit` (Task 26a), identity-matched to the
+ * memory-surface owner, for the §5 submissions route.
  */
 export async function openHarness(
 	config: SigrunConfig,
@@ -140,12 +152,16 @@ export async function openHarness(
 	registry.install(skillsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
-	// factory-result producers are retained alongside the outcomes (Task 9e).
-	const { outcomes: extensionOutcomes, healthProducers: extensionHealth } =
-		await loadExtensions(
-			options.extensionSpecifiers ?? config.extensions,
-			registry,
-		);
+	// factory-result producers are retained alongside the outcomes (Task 9e);
+	// factory-result submit pass-throughs likewise (Task 26a).
+	const {
+		outcomes: extensionOutcomes,
+		healthProducers: extensionHealth,
+		submitBindings: extensionSubmits,
+	} = await loadExtensions(
+		options.extensionSpecifiers ?? config.extensions,
+		registry,
+	);
 	// The memory-surface owner: the installed extension whose sections
 	// include the long-term-memory key. None → the no-op default installs
 	// (the zero-extensions guarantee); a quarantined memory extension also
@@ -164,6 +180,12 @@ export async function openHarness(
 	const memoryHealth = extensionHealth.find(
 		(producer) => producer.extension === memoryOwner,
 	)?.health;
+	// §5 memory submit (Task 26a): the memory extension's retained submit
+	// pass-through — the same identity-matching as memoryHealth. No match →
+	// undefined → the server submits directly.
+	const memorySubmit = extensionSubmits.find(
+		(binding) => binding.extension === memoryOwner,
+	)?.submit;
 	const sink = createProviderMergeSink();
 	const env = options.env ?? process.env;
 	// `config.models` is the already-validated parse of SIGRUN_MODEL (loadConfig
@@ -211,5 +233,6 @@ export async function openHarness(
 		extensionOutcomes,
 		providerHealth,
 		memoryHealth,
+		memorySubmit,
 	};
 }

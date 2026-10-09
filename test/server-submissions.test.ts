@@ -29,6 +29,7 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
+import { InboxDoc } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -75,6 +76,48 @@ async function bootServer(): Promise<TestServer> {
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
+	});
+	const app = await createServer(opened, config);
+	const teardown = async () => {
+		await app.close();
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await rm(dir, { recursive: true, force: true });
+	};
+	cleanups.push(teardown);
+	return { app, opened, workspace: dir, faux };
+}
+
+/**
+ * Boot a hermetic server with extension packages loaded (T26a: the memory
+ * extension's wiring) and the faux provider streaming at `tokensPerSecond`
+ * (a slow stream keeps the first turn busy for the steer observation). The
+ * faux queue starts EMPTY — each test scripts its own responses.
+ */
+async function bootExtendedServer(options: {
+	extensionSpecifiers: readonly string[];
+	tokensPerSecond?: number;
+}): Promise<TestServer> {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-subm-"));
+	const faux = fauxProvider({
+		provider: "faux",
+		models: [{ id: "m", contextWindow: 128_000 }],
+		...(options.tokensPerSecond === undefined
+			? {}
+			: { tokensPerSecond: options.tokensPerSecond }),
+	});
+	const contributor: ProviderContributor = {
+		name: "ext-faux",
+		providers: [{ provider: faux.provider }],
+	};
+	const config = loadConfig({
+		SIGRUN_MODEL: "faux/m",
+		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_WORKSPACE_PATH: dir,
+	});
+	const opened = await openHarness(config, {
+		extensions: [contributor],
+		env: {},
+		extensionSpecifiers: options.extensionSpecifiers,
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {
@@ -354,6 +397,154 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		expect(response.statusCode).toBe(404);
 		expect(response.json()).toEqual({ error: "conversation_not_found" });
 	});
+
+	test("rejects an unknown whenBusy value fail-loud (400 invalid_field)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		for (const whenBusy of ["interrupt", "STEER", 42, null]) {
+			const response = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${root.id}/submissions`,
+				payload: { input: "hello", whenBusy },
+				headers: { "content-type": "application/json" },
+			});
+			expect(response.statusCode).toBe(400);
+			expect(response.json()).toEqual({
+				error: "invalid_field",
+				field: "whenBusy",
+			});
+		}
+		// A rejected whenBusy never admitted anything: no user entries.
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		expect(
+			view.entries.filter((e: { kind: string }) => e.kind === "pi.user"),
+		).toEqual([]);
+	});
+
+	test(
+		'submit while busy with whenBusy:"steer" queues the inbox item in steer mode',
+		{ timeout: 60_000 },
+		async () => {
+			// T26a Fix A: the route must pass body.whenBusy through to
+			// conversation.submit. The discriminating observable (the T12b
+			// battery's): upstream queues a busy-conversation input in pi.inbox
+			// with mode "steer" for an explicit steer, "followUp" otherwise
+			// (submissions.js: `draft.whenBusy === "steer" ? "steer" :
+			// "followUp"`) — a DROPPED whenBusy lands in followUp mode.
+			const { app, opened, faux } = await bootExtendedServer({
+				extensionSpecifiers: [],
+				tokensPerSecond: 4,
+			});
+			// Turn 1 streams a long answer slowly (the busy lever); turn 2 is the
+			// steered input's answer (served at the next boundary).
+			faux.setResponses([
+				fauxAssistantMessage("slow streaming first answer ".repeat(30)),
+				fauxAssistantMessage("steered answer"),
+			]);
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			// Start the busy turn directly through the harness — the server route
+			// waits for settlement, which would serialize the observation.
+			const first = await root.submit(
+				{ type: "input", content: "first turn (busy lever)" },
+				BACKGROUND_CONTEXT,
+			);
+			// The server-driven steer submit: admitted (queued) at once; the
+			// route's settlement wait resolves after the steered round answers.
+			const pending = app.inject({
+				method: "POST",
+				url: `/v1/conversations/${root.id}/submissions`,
+				payload: { input: "steer me", whenBusy: "steer" },
+				headers: { "content-type": "application/json" },
+			});
+			// Observe the inbox BEFORE the busy turn ends (the steer item is
+			// consumed at the boundary when the first answer completes).
+			const observedModes: string[] = [];
+			const deadline = Date.now() + 20_000;
+			for (;;) {
+				const inbox = await opened.harness.snapshot(
+					InboxDoc,
+					root.id,
+					BACKGROUND_CONTEXT,
+				);
+				for (const item of inbox?.items ?? []) {
+					if (item.mode !== "write" && !observedModes.includes(item.mode)) {
+						observedModes.push(item.mode);
+					}
+				}
+				if (observedModes.includes("steer")) break;
+				const firstStatus = await first.status(BACKGROUND_CONTEXT);
+				if (
+					(firstStatus.status === "done" ||
+						firstStatus.status === "unanswered") &&
+					Date.now() > deadline
+				) {
+					break;
+				}
+				if (Date.now() > deadline) break;
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			// The steer item MUST have been observed — a followUp-mode sighting
+			// means the route dropped whenBusy (the pre-fix behavior).
+			expect(observedModes).toContain("steer");
+			const response = await pending;
+			expect(response.statusCode).toBe(202);
+			expect(response.json().status).toBe("done");
+		},
+	);
+
+	test(
+		"a server-driven submit binds the memory recall source (memory_recall answers)",
+		{ timeout: 60_000 },
+		async () => {
+			// T26a Fix B: sigrun-ext-memory's wiring submit binds the
+			// conversation as the recall source at the submit boundary
+			// (degenerate.js: hosts submit through the wiring's submit()). The
+			// server must route submissions through it (OpenedHarness.memorySubmit,
+			// identity-matched to the section owner like memoryHealth) — else the
+			// memory_recall tool answers "No conversation bound to memory recall
+			// yet." on every call.
+			const { app, opened, faux } = await bootExtendedServer({
+				extensionSpecifiers: ["sigrun-ext-memory"],
+			});
+			// Boot exposed the memory wiring's submit (identity-matched).
+			expect(opened.memorySubmit).toBeDefined();
+			faux.setResponses([
+				fauxAssistantMessage("an unremarkable answer"),
+			]);
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			const response = await submit(app, root.id, "hello");
+			expect(response.statusCode).toBe(202);
+			expect(response.json().status).toBe("done");
+			// Drive the registered memory_recall tool directly: its execute
+			// ignores the api/context params (degenerate.js recallTool: `_api`,
+			// `_context`), so a direct call exercises exactly the binding gate
+			// plus the transcript scan — the user entry the server submit wrote.
+			const tool = opened.registry
+				.snapshot()
+				.tools()
+				.find((entry) => entry.tool.name === "memory_recall")?.tool;
+			expect(tool).toBeDefined();
+			const result = await tool!.execute(
+				{ query: "hello" },
+				undefined as never,
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.isError).toBeUndefined();
+			const text = (result.content ?? [])
+				.map((block) => (block.type === "text" ? block.text : ""))
+				.join("");
+			expect(text).toContain("hello");
+			expect(text).not.toContain("No conversation bound");
+		},
+	);
 
 	test("rejects a malformed input (fail-loud): not an array, bad part shape", async () => {
 		const { app, opened } = await bootServer();
