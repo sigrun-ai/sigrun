@@ -155,7 +155,7 @@ test.describe("item 7: compaction recall", () => {
 		// tool call). A larger keepRecentTokens keeps the current turn's
 		// messages while compacting the marker turn.
 		server = await bootE2EServer({
-			extensionSpecifiers: ["sigrun-ext-memory"],
+			extensionSpecifiers: ["sigrun-ext-memory-markdown"],
 			settings: {
 				compaction: {
 					reserveTokens: 127_300,

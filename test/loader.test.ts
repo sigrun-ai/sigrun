@@ -25,7 +25,7 @@ const FIXTURE_SPECIFIER = pathToFileURL(
 ).href;
 
 /** The real extension package under test, linked as a devDependency. */
-const MEMORY_SPECIFIER = "sigrun-ext-memory";
+const MEMORY_SPECIFIER = "sigrun-ext-memory-markdown";
 
 function configWith(dir: string) {
 	return loadConfig({
@@ -38,10 +38,10 @@ function configWith(dir: string) {
 test("SIGRUN_EXTENSIONS parses into config.extensions", () => {
 	const config = loadConfig({
 		SIGRUN_MODEL: "openai/gpt-4o",
-		SIGRUN_EXTENSIONS: "sigrun-ext-memory, sigrun-ext-approvals",
+		SIGRUN_EXTENSIONS: "sigrun-ext-memory-markdown, sigrun-ext-approvals",
 	});
 	expect(config.extensions).toEqual([
-		"sigrun-ext-memory",
+		"sigrun-ext-memory-markdown",
 		"sigrun-ext-approvals",
 	]);
 });
@@ -143,7 +143,7 @@ test("zero extensions: boot succeeds with the no-op memory section present", asy
 	}
 });
 
-test("the real sigrun-ext-memory loads: memory_recall tool + long-term-memory section", async () => {
+test("the real sigrun-ext-memory-markdown loads: memory_recall tool + long-term-memory section", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
 		const opened = await openHarness(configWith(dir), {

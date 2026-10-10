@@ -19,7 +19,7 @@
  * `submit` pass-through (the memory wiring's submit — Task 26a retains it so
  * boot can expose it as `OpenedHarness.memorySubmit`; it binds the
  * conversation as the memory_recall source at the submit boundary). The two
- * real packages (`sigrun-ext-memory`, `sigrun-ext-approvals`) predate the
+ * real packages (`sigrun-ext-memory-markdown`, `sigrun-ext-approvals`) predate the
  * settled contract and export named factories (`createMemory` /
  * `createApprovals`) whose results carry the same `.extension` field, so the
  * loader resolves, in order:
