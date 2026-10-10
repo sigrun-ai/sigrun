@@ -502,7 +502,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		"a server-driven submit binds the memory recall source (memory_recall answers)",
 		{ timeout: 60_000 },
 		async () => {
-			// T26a Fix B: sigrun-ext-memory's wiring submit binds the
+			// T26a Fix B: sigrun-ext-memory-markdown's wiring submit binds the
 			// conversation as the recall source at the submit boundary
 			// (degenerate.js: hosts submit through the wiring's submit()). The
 			// server must route submissions through it (OpenedHarness.memorySubmit,
@@ -510,7 +510,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			// memory_recall tool answers "No conversation bound to memory recall
 			// yet." on every call.
 			const { app, opened, faux } = await bootExtendedServer({
-				extensionSpecifiers: ["sigrun-ext-memory"],
+				extensionSpecifiers: ["sigrun-ext-memory-markdown"],
 			});
 			// Boot exposed the memory wiring's submit (identity-matched).
 			expect(opened.memorySubmit).toBeDefined();

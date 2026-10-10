@@ -1,37 +1,37 @@
 {
-  "name": "sigrun",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Durable personal assistant on pi-durable",
-  "type": "module",
-  "workspaces": [
-    "webui"
-  ],
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "scripts": {
-    "start": "tsx src/index.ts",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "build:webui": "npm --workspace @sigrun/webui run build",
-    "typecheck:webui": "npm --workspace @sigrun/webui run typecheck",
-    "test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e"
-  },
-  "dependencies": {
-    "@earendil-works/chord": "^1.0.4",
-    "@fastify/static": "^9.1.0",
-    "@earendil-works/pi-ai": "^1.0.4",
-    "@earendil-works/pi-durable": "1.0.2",
-    "fastify": "^5.12.5"
-  },
-  "devDependencies": {
-    "@types/node": "^26.6.4",
-    "sigrun-ext-approvals": "git+file:///home/user/repos/sigrun-approvals#c207938da9",
-    "sigrun-ext-memory": "git+file:///home/user/repos/sigrun-memory#2fe1ac9ebc",
-    "tsx": "^4.23.15",
-    "typescript": "^7.0.2",
-    "vitest": "^5.0.3",
-    "yaml": "^2.9.1"
-  }
+	"name": "sigrun",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Durable personal assistant on pi-durable",
+	"type": "module",
+	"workspaces": [
+		"webui"
+	],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"start": "tsx src/index.ts",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"build:webui": "npm --workspace @sigrun/webui run build",
+		"typecheck:webui": "npm --workspace @sigrun/webui run typecheck",
+		"test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e"
+	},
+	"dependencies": {
+		"@earendil-works/chord": "^1.0.4",
+		"@fastify/static": "^9.1.0",
+		"@earendil-works/pi-ai": "^1.0.4",
+		"@earendil-works/pi-durable": "1.0.2",
+		"fastify": "^5.12.5"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.4",
+		"sigrun-ext-approvals": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-approvals.git#c207938da9",
+		"tsx": "^4.23.15",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.3",
+		"yaml": "^2.9.1",
+		"sigrun-ext-memory-markdown": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-memory-markdown.git#9d71be1"
+	}
 }
