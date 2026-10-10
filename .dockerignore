@@ -1,0 +1,14 @@
+.git
+.superpowers
+node_modules
+webui/node_modules
+webui/dist
+.worktrees
+*.log
+dist
+test-results
+.playwright
+.env
+.env.*
+!.env.example
+.docker-ext/*/.git
