@@ -30,6 +30,7 @@ function stubFetch(init?: { status?: number }) {
 			ok: status >= 200 && status < 300,
 			status,
 			json: () => Promise.resolve({}),
+			text: () => Promise.resolve(String({})),
 		});
 	};
 	return { calls, fetchImpl };
@@ -161,6 +162,7 @@ describe("approval lifecycle across parent re-lists", () => {
 			ok: true,
 			status: 200,
 			json: () => Promise.resolve({}),
+			text: () => Promise.resolve(String({})),
 		});
 	};
 

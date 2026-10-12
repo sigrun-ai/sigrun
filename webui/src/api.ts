@@ -278,6 +278,42 @@ export interface CompactResponseWire {
 }
 
 /**
+ * The create-family response (`POST /v1/conversations`, `.../fork`,
+ * `/v1/conversations/import` — mirrors `ConversationCreateResponse`): the
+ * new conversation id plus its first view frame. `root`/`entryCount` are
+ * list-projections the create routes never send, so this is its own shape.
+ */
+export interface ConversationCreatedWire {
+	readonly id: number;
+	readonly view: ConversationViewWire;
+}
+
+/** One `GET /v1/commands` entry (mirrors `SlashCommand` in src/server/commands.ts). */
+export interface CommandWire {
+	readonly name: string;
+	readonly description: string;
+	readonly argsHint?: string;
+	readonly endpoint: { readonly method: string; readonly path: string };
+}
+
+/** The response of `GET /v1/commands`. */
+export interface CommandsResponseWire {
+	readonly commands: readonly CommandWire[];
+}
+
+/** The configure body (`POST .../configure`): exactly one field per call. */
+export interface ConfigureInput {
+	readonly model?: string;
+	readonly thinking?: string;
+}
+
+/** The response of `POST .../configure` (mirrors `ConfigureResponse`). */
+export interface ConfigureResponseWire {
+	readonly model?: string;
+	readonly thinkingLevel: string;
+}
+
+/**
  * The minimal file surface `upload` consumes — the browser's `File`/`Blob`
  * satisfy this structurally; tests pass a plain object.
  */
@@ -364,9 +400,26 @@ export interface SigrunClient {
 	/**
 	 * Admit a manual compaction (`POST .../compact`): resolves with the
 	 * durable task's id once the server admits it (202); the summary entry
-	 * arrives later as a view revision.
+	 * arrives later as a view revision. `instructions` (the `/compact`
+	 * command's arg) rides the optional body field.
 	 */
-	compact(conversationId: number): Promise<CompactResponseWire>;
+	compact(
+		conversationId: number,
+		instructions?: string,
+	): Promise<CompactResponseWire>;
+	/** The slash-command catalog (`GET /v1/commands` — a boot constant). */
+	listCommands(): Promise<CommandsResponseWire>;
+	/** Fork at an entry (`POST .../fork`; absent `at` = the newest entry). */
+	fork(conversationId: number, at?: number): Promise<ConversationCreatedWire>;
+	/** The whole history as JSONL text (`GET .../export`). */
+	exportConversation(conversationId: number): Promise<string>;
+	/** Create a conversation from raw JSONL (`POST /v1/conversations/import`). */
+	importConversation(jsonl: string): Promise<ConversationCreatedWire>;
+	/** Change the model and/or thinking level (`POST .../configure`). */
+	configure(
+		conversationId: number,
+		input: ConfigureInput,
+	): Promise<ConfigureResponseWire>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -381,6 +434,8 @@ export type FetchLike = (
 	readonly ok: boolean;
 	readonly status: number;
 	json(): Promise<unknown>;
+	/** The JSONL export path needs raw text (the ambient fetch has it). */
+	text(): Promise<string>;
 }>;
 
 export interface SigrunClientOptions {
@@ -455,6 +510,41 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		return send("POST", path, body).then(() => undefined);
 	}
 
+	/** GET a non-JSON body (the JSONL export); fail-loud on non-2xx. */
+	async function getText(path: string): Promise<string> {
+		const response = await fetchImpl(`${baseUrl}${path}`, {
+			method: "GET",
+			headers: { accept: "application/x-ndjson" },
+		});
+		if (!response.ok) {
+			throw new Error(
+				`sigrun api: GET ${path} failed with status ${response.status}`,
+			);
+		}
+		return await response.text();
+	}
+
+	/**
+	 * POST a RAW-TEXT body (the JSONL import — the server's own content-type
+	 * parser hands the route the unparsed string); fail-loud on non-2xx.
+	 */
+	async function postText(path: string, body: string): Promise<unknown> {
+		const response = await fetchImpl(`${baseUrl}${path}`, {
+			method: "POST",
+			headers: {
+				accept: "application/json",
+				"content-type": "application/x-ndjson",
+			},
+			body,
+		});
+		if (!response.ok) {
+			throw new Error(
+				`sigrun api: POST ${path} failed with status ${response.status}`,
+			);
+		}
+		return response.json();
+	}
+
 	return {
 		getMeta: () => get<MetaResponse>("/v1/meta"),
 		listConversations: () => get<ConversationList>("/v1/conversations"),
@@ -499,7 +589,24 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				contentBase64: bytesToBase64(bytes),
 			})) as UploadResponseWire;
 		},
-		compact: (conversationId) =>
-			send("POST", `/v1/conversations/${conversationId}/compact`, {}) as Promise<CompactResponseWire>,
+		compact: (conversationId, instructions) =>
+			send("POST", `/v1/conversations/${conversationId}/compact`, {
+				...(instructions === undefined || instructions === ""
+					? {}
+					: { instructions }),
+			}) as Promise<CompactResponseWire>,
+		listCommands: () => get<CommandsResponseWire>("/v1/commands"),
+		fork: (conversationId, at) =>
+			send("POST", `/v1/conversations/${conversationId}/fork`, {
+				...(at === undefined ? {} : { at }),
+			}) as Promise<ConversationCreatedWire>,
+		exportConversation: (conversationId) =>
+			getText(`/v1/conversations/${conversationId}/export`),
+		importConversation: (jsonl) =>
+			postText("/v1/conversations/import", jsonl) as Promise<ConversationCreatedWire>,
+		configure: (conversationId, input) =>
+			send("POST", `/v1/conversations/${conversationId}/configure`, input) as Promise<
+				ConfigureResponseWire
+			>,
 	};
 }

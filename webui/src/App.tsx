@@ -195,6 +195,7 @@ export function App(options: AppOptions = {}) {
 							client={client}
 							conversationId={activeId}
 							view={view}
+							onNavigate={onSelect}
 						/>
 					</footer>
 				</div>

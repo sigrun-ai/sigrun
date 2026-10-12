@@ -46,6 +46,7 @@ function makeHarness(init?: {
 					ok: false,
 					status: 404,
 					json: () => Promise.resolve({ error: "not_found" }),
+					text: () => Promise.resolve(String({ error: "not_found" })),
 				});
 			}
 		} else {
@@ -55,6 +56,7 @@ function makeHarness(init?: {
 			ok: true,
 			status: 200,
 			json: () => Promise.resolve(body),
+			text: () => Promise.resolve(String(body)),
 		});
 	};
 	const client = createClient({ fetch: fetchImpl });

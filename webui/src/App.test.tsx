@@ -76,12 +76,14 @@ function makeHarness(init?: {
 					ok: false,
 					status: 500,
 					json: () => Promise.resolve({}),
+				text: () => Promise.resolve(String({})),
 				});
 			}
 			return Promise.resolve({
 				ok: true,
 				status: 200,
 				json: () => Promise.resolve(init?.meta ?? makeMeta()),
+				text: () => Promise.resolve(String(init?.meta ?? makeMeta())),
 			});
 		}
 		const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(input);
@@ -104,6 +106,7 @@ function makeHarness(init?: {
 			ok: true,
 			status: 200,
 			json: () => Promise.resolve(body),
+			text: () => Promise.resolve(String(body)),
 		});
 	};
 	const sources: { url: string; source: StubEventSource }[] = [];

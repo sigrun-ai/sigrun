@@ -743,3 +743,48 @@ body {
 		display: none;
 	}
 }
+
+/* ── slash-command menu (Task 7, pi parity) ──────────────────────────── */
+
+.composer-notice {
+	margin: 0.25rem 0.75rem;
+	font-size: 0.8rem;
+	color: var(--text-dim);
+}
+
+.composer-command-menu {
+	list-style: none;
+	margin: 0 0.75rem;
+	padding: 0.25rem 0;
+	max-height: 12rem;
+	overflow: auto;
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	background: var(--panel-2);
+	font-size: 0.8rem;
+}
+
+.composer-command-menu li {
+	display: flex;
+	gap: 0.5rem;
+	align-items: baseline;
+	padding: 0.3rem 0.6rem;
+	cursor: pointer;
+}
+
+.composer-command-menu li[data-highlighted] {
+	background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.composer-command-name {
+	font-weight: 600;
+}
+
+.composer-command-args {
+	color: var(--text-dim);
+	font-family: var(--mono, monospace);
+}
+
+.composer-command-description {
+	color: var(--text-dim);
+}
