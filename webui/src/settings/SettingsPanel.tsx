@@ -13,7 +13,13 @@
  *   field; the retry/stream TIMING knobs stay file-only in v1).
  * - `defaultTools`: checkboxes over the 7 core tool names (read, bash,
  *   edit, write, find, grep, ls). All-checked clears the filter (absent
- *   key = every installed tool).
+ *   key = every installed tool); NONE-checked also clears it — the
+ *   filter hides listed tools and can never disable them all, so the
+ *   fieldset carries a note saying so.
+ *
+ * Save semantics: only changed fields ride the PATCH. A save with every
+ * control at its baseline sends an empty patch and reports "no changes
+ * to save" — a correct no-op, not a failure.
  * - `perModelThinking`: a raw JSON textarea (keys "provider/modelId" → a
  *   pi-ai thinking level). Raw JSON is the documented v1 surface — an
  *   invalid document refuses to save locally (no 400 round-trip).
@@ -211,7 +217,10 @@ export function SettingsPanel(props: {
 			const saved = await client.patchSettings(patch);
 			setLoad({ status: "ready", settings: saved });
 			if (Object.keys(patch).length === 0) {
-				setSaveState({ status: "saved", message: "no changes" });
+				// An empty patch means every control matched the baseline —
+				// nothing was sent, and that's a correct outcome, not a
+				// failure. Say so honestly instead of "saved".
+				setSaveState({ status: "saved", message: "no changes to save" });
 			} else {
 				setSaveState({ status: "saved", message: "saved" });
 			}
@@ -321,7 +330,9 @@ export function SettingsPanel(props: {
 								</label>
 							))}
 							<p className="settings-note">
-								all checked = no filter (every installed tool)
+								all checked = no filter (every installed tool); unchecking
+								every box also leaves every tool enabled — the filter only
+								hides listed tools, it can never disable them all
 							</p>
 						</fieldset>
 						<label className="settings-field">

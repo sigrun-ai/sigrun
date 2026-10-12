@@ -5,8 +5,8 @@
  * it in a real browser, and asserts the T25 app shell renders: the schema
  * gate PASSES (no `.app-refused` — the served schemaVersion matches the
  * bundle's pin), the top bar shows the brand, and the sessions sidebar
- * lists the root conversation. Screenshots to a known path the task report
- * references.
+ * lists the root conversation. Screenshots to the gitignored
+ * webui/test-results/ directory (local evidence, not committed).
  *
  * The checklist items (spec §7) land in follow-on slices against this
  * proven harness.
@@ -18,12 +18,9 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { bootE2EServer, type E2EServer } from "./harness.js";
 
-/** The known screenshot path (repo-root .superpowers dir), committed as evidence. */
+/** The screenshot path (gitignored webui/test-results/). */
 const SCREENSHOT_PATH = fileURLToPath(
-	new URL(
-		"../../.superpowers/sdd/2026-10-08-sigrun-m2-webui/artifacts/task-26b-i-smoke.png",
-		import.meta.url,
-	),
+	new URL("../test-results/task-26b-i-smoke.png", import.meta.url),
 );
 
 let server: E2EServer;
