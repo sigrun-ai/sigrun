@@ -23,6 +23,7 @@ import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit } from "./l
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { skillsExtension } from "../skills/index.js";
+import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
 	createProviderMergeSink,
@@ -142,14 +143,17 @@ export async function openHarness(
 ): Promise<OpenedHarness> {
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
-	// Context-file sections (SOUL.md persona, AGENTS.md instructions) and the
-	// skills convention (skills/ scan, skills section, load_skill) are both
+	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
+	// skills convention, and the core tool surface (plan Task 1: coding
+	// tools read/write/edit/bash + search tools find/grep/ls) are all
 	// core-owned surfaces (spec §3): every conversation gets them, so they
 	// install before `Harness.open` reads the registry — never through the
 	// extension loader, never quarantined. install() publishes at once and
 	// replaces any same-name extension in place.
 	registry.install(contextFilesExtension);
 	registry.install(skillsExtension);
+	registry.install(codingToolsExtension);
+	registry.install(searchToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
 	// factory-result producers are retained alongside the outcomes (Task 9e);
