@@ -3,3 +3,4 @@ node_modules/
 dist/
 data/
 webui/test-results/
+.docker-ext/
