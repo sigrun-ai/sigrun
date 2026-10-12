@@ -6,9 +6,11 @@
  * and the theme controls (toggle + accent picker).
  */
 
+import { act } from "react";
 import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
-import type { MetaResponse } from "../api";
+import type { FetchLike, MetaResponse, SettingsWire } from "../api";
+import { createClient } from "../api";
 import { render, textContent } from "../test-utils";
 import type { ThemeState } from "../theme/useTheme";
 import { TopBar } from "./TopBar";
@@ -52,14 +54,27 @@ function fakeTheme(init?: Partial<ThemeState>): ThemeState {
 	};
 }
 
+/** A client over a fetch stub that serves `{}` for every settings GET. */
+function fakeClient(settings: SettingsWire = {}) {
+	const fetchImpl: FetchLike = (input) =>
+		Promise.resolve({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve(input === "/v1/settings" ? settings : {}),
+			text: () => Promise.resolve(""),
+		});
+	return createClient({ fetch: fetchImpl });
+}
+
 describe("TopBar", () => {
 	test("renders the sigrun brand", () => {
-		const renderer = render(<TopBar meta={makeMeta()} theme={fakeTheme()} />);
+		const renderer = render(<TopBar meta={makeMeta()} theme={fakeTheme()} client={fakeClient()} />);
 		expect(textContent(renderer.toJSON())).toContain("sigrun");
 	});
 
 	test("the extension badge lists the installed extensions", () => {
-		const renderer = render(<TopBar meta={makeMeta()} theme={fakeTheme()} />);
+		const renderer = render(<TopBar meta={makeMeta()} theme={fakeTheme()} client={fakeClient()} />);
 		const badge = renderer.root.findByProps({ className: "badge badge-extensions" });
 		expect(instanceText(badge)).toContain("memory");
 		expect(instanceText(badge)).toContain("approvals");
@@ -75,6 +90,7 @@ describe("TopBar", () => {
 					],
 				})}
 				theme={fakeTheme()}
+				client={fakeClient()}
 			/>,
 		);
 		const badges = renderer.root.findAllByProps({
@@ -93,11 +109,12 @@ describe("TopBar", () => {
 					health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 				})}
 				theme={fakeTheme()}
+				client={fakeClient()}
 			/>,
 		);
 		expect(textContent(unconfigured.toJSON())).toContain("backup: unconfigured");
 
-		const configured = render(<TopBar meta={makeMeta()} theme={fakeTheme()} />);
+		const configured = render(<TopBar meta={makeMeta()} theme={fakeTheme()} client={fakeClient()} />);
 		expect(textContent(configured.toJSON())).not.toContain("backup:");
 	});
 
@@ -108,19 +125,20 @@ describe("TopBar", () => {
 					health: { backup: "configured", memory: "degraded", providers: "degraded" },
 				})}
 				theme={fakeTheme()}
+				client={fakeClient()}
 			/>,
 		);
 		const text = textContent(degraded.toJSON());
 		expect(text).toContain("memory: degraded");
 		expect(text).toContain("providers: degraded");
 
-		const ok = render(<TopBar meta={makeMeta()} theme={fakeTheme()} />);
+		const ok = render(<TopBar meta={makeMeta()} theme={fakeTheme()} client={fakeClient()} />);
 		expect(textContent(ok.toJSON())).not.toContain("degraded");
 	});
 
 	test("the theme toggle + accent picker forward to the theme state", () => {
 		const theme = fakeTheme();
-		const renderer = render(<TopBar meta={makeMeta()} theme={theme} />);
+		const renderer = render(<TopBar meta={makeMeta()} theme={theme} client={fakeClient()} />);
 		const toggle = renderer.root.findByProps({ className: "theme-toggle" });
 		(toggle.props as { onClick: () => void }).onClick();
 		expect(theme.toggleTheme).toHaveBeenCalledTimes(1);
@@ -129,5 +147,30 @@ describe("TopBar", () => {
 			target: { value: "emerald" },
 		});
 		expect(theme.setAccent).toHaveBeenCalledWith("emerald");
+	});
+
+	test("the gear opens the settings panel; the close button closes it", async () => {
+		const renderer = render(
+			<TopBar
+				meta={makeMeta()}
+				theme={fakeTheme()}
+				client={fakeClient({ steeringMode: "all" })}
+			/>,
+		);
+		const gear = renderer.root.findByProps({ className: "settings-gear" });
+		expect(renderer.root.findAllByProps({ className: "settings-overlay" })).toHaveLength(0);
+		await act(async () => {
+			(gear.props as { onClick: () => void }).onClick();
+		});
+		// The panel opened and rendered the served settings.
+		const overlay = renderer.root.findByProps({ className: "settings-overlay" });
+		expect(instanceText(overlay)).toContain("settings");
+		const select = overlay.findByProps({ className: "settings-steering" });
+		expect(select.props.value).toBe("all");
+		await act(async () => {
+			(overlay.findByProps({ className: "settings-close" })
+				.props as { onClick: () => void }).onClick();
+		});
+		expect(renderer.root.findAllByProps({ className: "settings-overlay" })).toHaveLength(0);
 	});
 });

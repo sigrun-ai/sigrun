@@ -11,9 +11,13 @@
  *   renders `backup: <status>` (the unconfigured-backup badge, core spec
  *   §4.3); `memory` / `providers` render when `degraded`.
  * - The theme controls (toggle + accent picker) on the right.
+ * - The settings gear (Task 8c): opens the SettingsPanel over
+ *   `GET/PATCH /v1/settings`.
  */
 
-import type { MetaResponse } from "../api";
+import { useState } from "react";
+import type { MetaResponse, SigrunClient } from "../api";
+import { SettingsPanel } from "../settings/SettingsPanel";
 import { ThemeControls } from "../theme/ThemeControls";
 import type { ThemeState } from "../theme/useTheme";
 
@@ -37,8 +41,13 @@ function healthBadges(meta: MetaResponse): readonly HealthBadge[] {
 	return badges;
 }
 
-export function TopBar(props: { meta: MetaResponse; theme: ThemeState }) {
-	const { meta, theme } = props;
+export function TopBar(props: {
+	meta: MetaResponse;
+	theme: ThemeState;
+	client: SigrunClient;
+}) {
+	const { meta, theme, client } = props;
+	const [settingsOpen, setSettingsOpen] = useState(false);
 	const quarantined = meta.extensions.filter(
 		(extension) => extension.status !== "ok",
 	);
@@ -79,6 +88,21 @@ export function TopBar(props: { meta: MetaResponse; theme: ThemeState }) {
 			))}
 			<span className="spacer" />
 			<ThemeControls theme={theme} />
+			<button
+				type="button"
+				className="settings-gear"
+				title="settings"
+				aria-label="settings"
+				onClick={() => setSettingsOpen(true)}
+			>
+				⚙
+			</button>
+			{settingsOpen && (
+				<SettingsPanel
+					client={client}
+					onClose={() => setSettingsOpen(false)}
+				/>
+			)}
 		</header>
 	);
 }

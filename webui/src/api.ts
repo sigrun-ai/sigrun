@@ -110,6 +110,45 @@ export interface ModelsResponse {
 }
 
 /* -------------------------------------------------------------------------
+ * Settings wire types (Task 8c) — mirror `SettingsFile` in
+ * src/harness/settings.ts: GET /v1/settings serves the effective file
+ * (absent file = `{}` — every default), PATCH /v1/settings merges (an
+ * explicit null clears a key). Keep in sync by hand, same discipline as
+ * the shapes above.
+ * ---------------------------------------------------------------------- */
+
+/** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
+export type QueueModeWire = "all" | "one-at-a-time";
+
+/** The `/v1/settings` payload (mirrors `SettingsFile`). */
+export interface SettingsWire {
+	readonly steeringMode?: QueueModeWire;
+	readonly followUpMode?: QueueModeWire;
+	readonly retry?: {
+		readonly enabled?: boolean;
+		readonly maxRetries?: number;
+		readonly baseDelayMs?: number;
+		readonly maxAgentDelayMs?: number;
+	};
+	readonly stream?: {
+		readonly timeoutMs?: number;
+		readonly maxRetries?: number;
+		readonly maxRetryDelayMs?: number;
+	};
+	readonly defaultTools?: readonly string[];
+	readonly perModelThinking?: Readonly<Record<string, string>>;
+}
+
+/**
+ * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
+ * the key. The server validates per key (unknown key / wrong type → 400
+ * `invalid_field`).
+ */
+export type SettingsPatchWire = {
+	readonly [K in keyof SettingsWire]?: SettingsWire[K] | null;
+};
+
+/* -------------------------------------------------------------------------
  * Conversation view stream wire types (Task 21) — same hand-mirror discipline
  * as the shapes above: they mirror the server's view serializer consumed by
  * `GET /v1/conversations/:id/stream` (`snapshot` + `view` frames). Keep in
@@ -420,6 +459,13 @@ export interface SigrunClient {
 		conversationId: number,
 		input: ConfigureInput,
 	): Promise<ConfigureResponseWire>;
+	/** The effective settings (`GET /v1/settings`; absent file = `{}`). */
+	getSettings(): Promise<SettingsWire>;
+	/**
+	 * Merge a settings patch (`PATCH /v1/settings`); an explicit `null`
+	 * clears a key. Resolves to the new effective settings.
+	 */
+	patchSettings(patch: SettingsPatchWire): Promise<SettingsWire>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -608,5 +654,8 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			send("POST", `/v1/conversations/${conversationId}/configure`, input) as Promise<
 				ConfigureResponseWire
 			>,
+		getSettings: () => get<SettingsWire>("/v1/settings"),
+		patchSettings: (patch) =>
+			send("PATCH", "/v1/settings", patch) as Promise<SettingsWire>,
 	};
 }

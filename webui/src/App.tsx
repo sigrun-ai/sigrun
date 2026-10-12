@@ -176,7 +176,7 @@ export function App(options: AppOptions = {}) {
 
 	return (
 		<div className="app-root">
-			<TopBar meta={boot.meta} theme={theme} />
+			<TopBar meta={boot.meta} theme={theme} client={client} />
 			<main className="app-shell">
 				<SessionList
 					client={client}
