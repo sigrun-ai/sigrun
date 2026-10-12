@@ -53,6 +53,7 @@ import type {
 	EntryId,
 	InputSubmissionDraft,
 	ModelRef,
+	ToolRegistration,
 	ToolSlot,
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -150,15 +151,29 @@ function storeAgentChange(
 	// applyChange maps `item.name`), so resolve the store's names against
 	// the registry snapshot's composed tool set. An unregistered name in
 	// the filter is a config drift: dropped here (resolveAgent's own
-	// behavior for an unknown stored name), never a boot failure.
-	const tools =
-		modelTools === undefined
-			? undefined
-			: opened.registry
-					.snapshot()
-					.tools()
-					.filter((entry) => modelTools.includes(entry.tool.name))
-					.map((entry) => entry.tool);
+	// behavior for an unknown stored name), never a boot failure — but
+	// dropped LOUDLY: a user writing `"my-ext-tool"` into the settings
+	// file deserves to know the name resolved to nothing.
+	let tools: ToolRegistration[] | undefined;
+	if (modelTools !== undefined) {
+		const registered = new Set(
+			opened.registry
+				.snapshot()
+				.tools()
+				.map((entry) => entry.tool.name),
+		);
+		const dropped = modelTools.filter((name) => !registered.has(name));
+		if (dropped.length > 0) {
+			console.warn(
+				`settings: dropping unregistered defaultTools name(s): ${dropped.join(", ")} (not in the composed tool set)`,
+			);
+		}
+		tools = opened.registry
+			.snapshot()
+			.tools()
+			.filter((entry) => modelTools.includes(entry.tool.name))
+			.map((entry) => entry.tool);
+	}
 	const thinking =
 		model !== undefined
 			? settings.perModelThinking?.[`${model.provider}/${model.modelId}`]

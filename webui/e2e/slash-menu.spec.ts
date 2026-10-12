@@ -3,9 +3,11 @@
  * composer's slash-command menu — typing `/` opens the menu listing the
  * GET /v1/commands catalog, filtering narrows it, and executing `/name`
  * names the session. Not a ship-gate item; this exists to verify the
- * composer change visually and to produce committed evidence. Run with the
- * repo-root `npm run test:e2e` (the script builds the bundle first), or
- * `npx playwright test e2e/slash-menu.spec.ts` from webui/ after a build.
+ * composer change visually. The screenshot lands in the gitignored
+ * webui/test-results/ directory (local evidence, not committed). Run
+ * with the repo-root `npm run test:e2e` (the script builds the bundle
+ * first), or `npx playwright test e2e/slash-menu.spec.ts` from webui/
+ * after a build.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -15,10 +17,7 @@ import { expect, test } from "@playwright/test";
 import { bootE2EServer, type E2EServer } from "./harness.js";
 
 const SCREENSHOT_PATH = fileURLToPath(
-	new URL(
-		"../../.superpowers/sdd/2026-10-12-sigrun-pi-parity/artifacts/task-7-slash-menu.png",
-		import.meta.url,
-	),
+	new URL("../test-results/task-7-slash-menu.png", import.meta.url),
 );
 
 let server: E2EServer;

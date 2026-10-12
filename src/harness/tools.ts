@@ -452,11 +452,21 @@ export const findTool = defineTool({
 /** Strict UTF-8 decode: `undefined` marks the binary files grep skips. */
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
-/** The `grep` tool: regex over file contents, gitignore-filtered. */
+/**
+ * The largest file grep will read whole into memory. Bigger files are
+ * skipped like binary files (a whole-file regex read on a huge file is a
+ * memory cliff; the chunked-read refactor is a follow-up).
+ */
+export const GREP_MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The `grep` tool: regex over file contents, gitignore-filtered. Files over
+ * `GREP_MAX_FILE_BYTES` are skipped with a note, same as binary files.
+ */
 export const grepTool = defineTool({
 	name: "grep",
 	description:
-		"Search file contents with a regular expression (JavaScript syntax). Returns matching lines as path:line:text. Skips binary (non-UTF-8) files and honors .gitignore.",
+		"Search file contents with a regular expression (JavaScript syntax). Returns matching lines as path:line:text. Skips binary (non-UTF-8) files and files over 10 MB, and honors .gitignore.",
 	parameters: Type.Object({
 		pattern: Type.String({
 			description: "Regular expression to search for, e.g. TODO|FIXME",
@@ -483,9 +493,16 @@ export const grepTool = defineTool({
 		if ("error" in root) return searchError(`grep: ${root.error}.`);
 		const matches: string[] = [];
 		let binarySkipped = 0;
+		let oversizedSkipped = 0;
 		let capped = false;
 		await walkTree(root.env, root.dir, root.rules, context, async (entry) => {
 			if (entry.info.kind === "directory") return true;
+			// Size cap before the whole-file read: over the cap, skip with a
+			// note (same reporting slot as binary skips).
+			if (entry.info.size > GREP_MAX_FILE_BYTES) {
+				oversizedSkipped += 1;
+				return true;
+			}
 			// Binary read + strict decode: non-UTF-8 files are skipped, not
 			// searched as mojibake.
 			const read = await root.env.readBinaryFile(entry.info.path, context);
@@ -523,6 +540,7 @@ export const grepTool = defineTool({
 			matches.length === 0 ? "No matches found." : matches.join("\n");
 		const note =
 			`${binarySkipped > 0 ? ` (${binarySkipped} binary file(s) skipped)` : ""}` +
+			`${oversizedSkipped > 0 ? ` (${oversizedSkipped} file(s) over ${GREP_MAX_FILE_BYTES / (1024 * 1024)} MB skipped)` : ""}` +
 			`${capped ? ` (capped at ${MAX_RESULTS} matches)` : ""}`;
 		return {
 			content: [{ type: "text", text: note === "" ? summary : `${summary}${note}` }],
