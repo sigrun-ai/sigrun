@@ -129,6 +129,23 @@ describe("SessionList", () => {
 		expect(labels[2]).toContain("archived");
 	});
 
+	test("a named session renders its name in place of the fallback title", async () => {
+		const { metas, props } = makeHarness();
+		// Give #1 a name BEFORE the first load (the stub fetch reads the
+		// same mutable record the component's meta GETs hit).
+		metas[1] = { ...metas[1]!, name: "Debugging the fork" };
+		const renderer = await renderAsync(<SessionList {...props} />);
+		const labels = renderer.root
+			.findAllByProps({ className: "session-select" })
+			.map((button) => button.children.join(""));
+		// Pinned #2 sorts first, so #1 is the second row: named.
+		expect(labels[1]).toContain("Debugging the fork");
+		expect(labels[1]).not.toContain("#1");
+		// Unnamed sessions render the fallback title as before.
+		expect(labels[0]).toContain("#2");
+		expect(labels[2]).toContain("#3");
+	});
+
 	test("marks the active conversation", async () => {
 		const { props } = makeHarness();
 		const renderer = await renderAsync(

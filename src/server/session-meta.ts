@@ -4,9 +4,9 @@
  * One latest-only singleton doc per conversation (kind
  * `"sigrun.session-meta"`): pin/tag/archive flags, the composer draft
  * (survives reloads — `draft.attachments` are workspace-relative paths from
- * the uploads endpoint), the session source, and the multi-user `owner`
- * seam (spec §5: "exists in schema from day 1; the flow does not" —
- * present, unused in v1).
+ * the uploads endpoint), the session source, the user-facing session name
+ * (T5d), and the multi-user `owner` seam (spec §5: "exists in schema from
+ * day 1; the flow does not" — present, unused in v1).
  *
  * Docs are standalone tokens: `defineDoc` needs no registry install (the
  * approvals policy doc in `sigrun-approvals-work/src/approvals.ts` is the
@@ -43,6 +43,8 @@ export type SessionMeta = {
 	 * GET serves it, nothing reads it.
 	 */
 	owner?: string;
+	/** The user-facing session name; absent = unnamed (T5d). */
+	name?: string;
 };
 
 /** What a never-written doc — and every explicit `null` clear — means. */
@@ -85,6 +87,7 @@ export interface SessionMetaPatch {
 	} | null;
 	readonly source?: "user" | "cron" | null;
 	readonly owner?: string | null;
+	readonly name?: string | null;
 }
 
 /** Why a PATCH body was rejected (the configure endpoint's error contract). */
@@ -127,6 +130,7 @@ export function validateSessionMetaPatch(
 		} | null;
 		source?: "user" | "cron" | null;
 		owner?: string | null;
+		name?: string | null;
 	} = {};
 	for (const key of Object.keys(record)) {
 		const value = record[key];
@@ -216,6 +220,13 @@ export function validateSessionMetaPatch(
 				patch.owner = value;
 				break;
 			}
+			case "name": {
+				if (value !== null && typeof value !== "string") {
+					return { error: "invalid_body" };
+				}
+				patch.name = value;
+				break;
+			}
 			default:
 				return { error: "invalid_field", field: key };
 		}
@@ -249,6 +260,12 @@ export function applySessionMetaPatch(
 	if (patch.owner !== undefined) {
 		if (patch.owner === null) delete draft.owner;
 		else draft.owner = patch.owner;
+	}
+	// `name` clears the same way as `owner`: absent = unnamed, and it is not
+	// in DEFAULT_SESSION_META, so the clear target is key removal.
+	if (patch.name !== undefined) {
+		if (patch.name === null) delete draft.name;
+		else draft.name = patch.name;
 	}
 	if (patch.draft !== undefined) {
 		if (patch.draft === null) {

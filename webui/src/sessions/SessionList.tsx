@@ -34,7 +34,7 @@ const DEFAULT_META: ConversationMeta = {
 	source: "user",
 };
 
-/** Title placeholder until a titling task lands: `Conversation #<id>`. */
+/** Fallback title when the session has no name: `Conversation #<id>`. */
 function titleOf(id: number): string {
 	return `Conversation #${id}`;
 }
@@ -137,7 +137,7 @@ export function SessionList(props: {
 							className="session-select"
 							onClick={() => onSelect(item.summary.id)}
 						>
-							{titleOf(item.summary.id)}
+							{item.meta.name ?? titleOf(item.summary.id)}
 							{badgesOf(item)}
 						</button>
 						{item.meta.archived ? null : (

@@ -290,6 +290,39 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		expect(cleared.json()).not.toHaveProperty("owner");
 	});
 
+	test("name round-trips: PATCH sets it, GET serves it, null removes it", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const named = await patchMeta(app, root.id, { name: "Debugging the fork" });
+		expect(named.statusCode).toBe(200);
+		expect(named.json().name).toBe("Debugging the fork");
+		// A fresh GET (not the PATCH echo) serves the stored name.
+		const served = await getMeta(app, root.id);
+		expect(served.statusCode).toBe(200);
+		expect(served.json().name).toBe("Debugging the fork");
+		const cleared = await patchMeta(app, root.id, { name: null });
+		expect(cleared.statusCode).toBe(200);
+		// Cleared = ABSENT (name is optional-only, not a defaulted field).
+		expect(cleared.json()).not.toHaveProperty("name");
+		const after = await getMeta(app, root.id);
+		expect(after.json()).toEqual(DEFAULT_BODY);
+	});
+
+	test("rejects name: 42 (400, the owner-type rule: wrong type = invalid_body)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const bad = await patchMeta(app, root.id, { name: 42 });
+		expect(bad.statusCode).toBe(400);
+		expect(bad.json()).toEqual({ error: "invalid_body" });
+		// The rejected patch never touched the doc.
+		const final = await getMeta(app, root.id);
+		expect(final.json()).toEqual(DEFAULT_BODY);
+	});
+
 	test("rejects source: bogus (400), unknown field (invalid_field), wrong type (invalid_body)", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {

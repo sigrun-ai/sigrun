@@ -1244,6 +1244,7 @@ export async function createServer(
 						attachments: [...draft.draft.attachments],
 					},
 					...(draft.owner === undefined ? {} : { owner: draft.owner }),
+					...(draft.name === undefined ? {} : { name: draft.name }),
 				};
 			}, BACKGROUND_CONTEXT);
 		},
