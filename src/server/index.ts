@@ -17,7 +17,8 @@
  * .../meta` — the session-meta sidebar resource (T10); `GET /healthz` +
  * `GET /readyz` — the deploy probes, liveness vs readiness (T13);
  * `GET /v1/auth/check` — the secret-free per-provider auth readiness
- * report (T6).
+ * report (T6); `GET /v1/commands` — the slash-command catalog (Task 7,
+ * pi parity: thin metadata over the endpoints Tasks 4–6 built).
  *
  * NOTE (T9d): the SSE endpoint is exercised over a REAL socket — it hijacks
  * the reply and writes raw frames, which `app.inject()` cannot observe
@@ -63,6 +64,7 @@ import {
 	requireServedModel,
 	UnservedModelError,
 } from "../harness/providers/index.js";
+import { SLASH_COMMANDS, type CommandsResponse } from "./commands.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
 	resolveWebuiBundle,
@@ -454,6 +456,14 @@ export async function createServer(
 				channels: webuiBundle === undefined ? [] : [WEBUI_CHANNEL],
 			},
 		};
+	});
+
+	// The slash-command catalog (Task 7): the thin metadata list the
+	// composer's `/` menu consumes — name, description, args hint, and the
+	// endpoint each command drives. A boot constant (like /v1/models), so a
+	// client may cache it. See `commands.ts` for the scope rulings.
+	app.get("/v1/commands", async (): Promise<CommandsResponse> => {
+		return { commands: [...SLASH_COMMANDS.values()] };
 	});
 
 	app.post(
