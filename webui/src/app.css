@@ -362,6 +362,31 @@ body {
 	max-height: 240px;
 }
 
+/* Diff view of an edit result's details.diff (Task 1d). */
+
+.tool-card-diff {
+	margin: 0;
+	padding: 0.6rem 0.8rem;
+	border-top: 1px solid var(--border);
+	font-family: var(--mono);
+	font-size: 12px;
+	overflow: auto;
+	max-height: 240px;
+	white-space: pre;
+}
+
+.tool-card-diff .diff-line-add {
+	color: var(--ok);
+}
+
+.tool-card-diff .diff-line-del {
+	color: var(--danger);
+}
+
+.tool-card-diff .diff-line-ctx {
+	color: var(--text-dim);
+}
+
 /* Approval cards (the mockup's .approval rules). */
 
 .approval-card {
