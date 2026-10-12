@@ -44,6 +44,9 @@ import type {
 	Conversation,
 	ConversationId,
 	ConversationView,
+	Cursor,
+	EntryDraft,
+	EntryId,
 	InputSubmissionDraft,
 	ModelRef,
 	ToolSlot,
@@ -82,12 +85,14 @@ import {
 	type ApprovalList,
 	type ApprovalSummary,
 	type ConversationCreateResponse,
+	type ConversationImportResponse,
 	type ConversationList,
 	type ConversationViewWire,
 	type ConfigureResponse,
 	type CompactResponse,
 	type FileContentResponse,
 	type FileListResponse,
+	JSONL_CONTENT_TYPE,
 	type ModelEntry,
 	type ModelsResponse,
 	type SubmissionResponse,
@@ -931,6 +936,244 @@ export async function createServer(
 			return await reply.code(202).send({ taskId });
 		},
 	);
+
+	// Fork: a history fork at one visible entry (Task 5a, spec §5 session
+	// management). `at` is the LAST entry id the fork keeps; absent = the
+	// newest entry (resolved through the entries query — never 0, which is
+	// not a real entry id). The fork inherits the parent's agent model and
+	// the same ownerless ownership the create route uses; the response is
+	// the create shape: 201 `{id, view}`.
+	app.post(
+		"/v1/conversations/:id/fork",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (
+			request,
+			reply,
+		): Promise<ConversationCreateResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			// Absent body is valid (`at` defaults to the newest entry); the
+		// object may carry ONLY `at` — the compact/configure convention.
+			const body: unknown = request.body;
+			let at: number | undefined;
+			if (body !== undefined && body !== null) {
+				if (typeof body !== "object" || Array.isArray(body)) {
+					return await reply.code(400).send({ error: "invalid_body" });
+				}
+				const record = body as Record<string, unknown>;
+				const unknownKey = Object.keys(record).find((key) => key !== "at");
+				if (unknownKey !== undefined) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: unknownKey });
+				}
+				if (
+					record.at !== undefined &&
+					typeof record.at !== "number"
+				) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: "at" });
+				}
+				at = record.at;
+			}
+			if (at === undefined) {
+				// The entries query is newest-first: the first item of the first
+				// page is the newest entry. An empty page means there is nothing
+				// to fork — the parent conversation has no history at all.
+				const page = await conversation.entries(
+					{},
+					1,
+					undefined,
+					BACKGROUND_CONTEXT,
+				);
+				if (page.items.length === 0) {
+					return await reply.code(400).send({ error: "empty_conversation" });
+				}
+				at = page.items[0].id;
+			} else {
+				// Validate `at` against the parent's own history: `fork()` accepts
+				// any EntryId, but an id this conversation never had is a client
+				// error, not a silent empty fork.
+				const page = await conversation.entries(
+					{ maxEntryId: at as EntryId },
+					1,
+					undefined,
+					BACKGROUND_CONTEXT,
+				);
+				const newest = page.items[0];
+				if (newest === undefined || newest.id !== at) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: "at" });
+				}
+			}
+			// The fork inherits the parent's agent model — read the resolved
+			// agent, fall back to the boot default like create.
+			const agent = await conversation.agent(BACKGROUND_CONTEXT);
+			const fork = await conversation.fork(
+				at as EntryId,
+				{
+					ownership: { kind: "ownerless" },
+					agent: { model: agent.model ?? opened.defaultModel },
+				},
+				BACKGROUND_CONTEXT,
+			);
+			trackedConversations.add(fork.id);
+			const view = await readView(fork);
+			return await reply.code(201).send({ id: fork.id, view });
+		},
+	);
+
+	// Export: the conversation's history as JSONL (Task 5b) — pi's portable
+	// format. One entry JSON object per line (the same per-entry
+	// serialization the view serves), OLDEST-first (the reverse of the
+	// newest-first entries query), so an import replays the transcript in
+	// order. All history pages, not just the active view.
+	app.get(
+		"/v1/conversations/:id/export",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply) => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			const lines: string[] = [];
+			let cursor: Cursor | undefined;
+			// Newest-first pages accumulate reversed; emit oldest-first.
+			const collected: unknown[] = [];
+			do {
+				const page = await conversation.entries(
+					{},
+					200,
+					cursor,
+					BACKGROUND_CONTEXT,
+				);
+				collected.push(...page.items);
+				cursor = page.next;
+			} while (cursor !== undefined);
+			for (let i = collected.length - 1; i >= 0; i--) {
+				lines.push(JSON.stringify(collected[i]));
+			}
+			return await reply
+				.header("content-type", JSONL_CONTENT_TYPE)
+				.send(lines.join("\n") + "\n");
+		},
+	);
+
+	// Import: create a new conversation from JSONL (Task 5c). The body is
+	// the RAW JSONL text (the export format, round-tripped); parse line by
+	// line, create the conversation the create-route way, then append each
+	// parsed entry IN ORDER (oldest-first) inside one commit — fresh entry
+	// ids are assigned by storage (`EntryDraft` carries no id).
+	app.post(
+		"/v1/conversations/import",
+		async (
+			request,
+			reply,
+		): Promise<ConversationImportResponse> => {
+			const raw = request.body;
+			if (typeof raw !== "string") {
+				return await reply.code(400).send({ error: "invalid_body" });
+			}
+			const textLines = raw.split("\n");
+			// A trailing newline is the export terminator, not an empty line.
+			const lines =
+				textLines[textLines.length - 1] === ""
+					? textLines.slice(0, -1)
+					: textLines;
+			if (lines.length === 0) {
+					return await reply.code(400).send({ error: "invalid_body" });
+			}
+			const drafts: EntryDraft[] = [];
+			for (const [index, line] of lines.entries()) {
+				if (line.trim() === "") {
+					return await reply.code(400).send({ error: "invalid_body" });
+				}
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(line);
+				} catch {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_body", line: index + 1 });
+				}
+				if (typeof parsed !== "object" || parsed === null) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_body", line: index + 1 });
+			}
+				const record = parsed as Record<string, unknown>;
+				// An entry line carries `kind` plus the optional model/data/
+				// edits payloads — the EntryDraft shape. Stale identity fields
+				// (id/conversationId/byTaskId) are dropped: storage assigns
+				// fresh ones. A stale `head` EntryId would point at the OLD
+				// numbering — drop it too; the default active-context pointer
+				// starts at the newest appended entry.
+				const draft: EntryDraft = {
+					kind: String(record.kind),
+					...(Array.isArray(record.model)
+						? { model: record.model as EntryDraft["model"] }
+						: {}),
+					...("data" in record
+						? { data: record.data as EntryDraft["data"] }
+						: {}),
+					...(Array.isArray(record.edits)
+						? { edits: record.edits as EntryDraft["edits"] }
+						: {}),
+			};
+				if (draft.kind === "") {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_body", line: index + 1 });
+				}
+				drafts.push(draft);
+			}
+			const conversation = await opened.harness.createConversation(
+				{
+					ownership: { kind: "ownerless" },
+					agent: { model: opened.defaultModel },
+				},
+				BACKGROUND_CONTEXT,
+			);
+			trackedConversations.add(conversation.id);
+			// One commit appends every entry in order; the conversation's own
+			// commit binds the transaction to this conversation.
+			await conversation.commit(async (tx) => {
+				for (const draft of drafts) {
+					await tx.appendEntry(conversation.id, draft);
+				}
+			}, BACKGROUND_CONTEXT);
+			const view = await readView(conversation);
+			return await reply.code(201).send({ id: conversation.id, view });
+		},
+	);
+
+	// JSONL bodies (the import route above): raw text, never JSON-parsed —
+	// the route itself parses line by line so a bad line is a 400
+	// invalid_body, not Fastify's 415 Unsupported Media Type. Content-type-
+	// only: onRequest hooks (deploy auth etc.) keep their hook semantics.
+	for (const type of [JSONL_CONTENT_TYPE, "text/plain"]) {
+		app.addContentTypeParser(
+			type,
+			{ parseAs: "string" },
+			(_request, body, done) => done(null, body),
+		);
+	}
 
 	// Session meta: the conversation-scoped sidebar resource (T10, spec §5).
 	// GET serves the doc — or the defaults when it was never written; a read
