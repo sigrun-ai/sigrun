@@ -103,6 +103,22 @@ export interface ConversationCreateResponse {
 	readonly view: ConversationViewWire;
 }
 
+/** The `Content-Type` of the JSONL export/import wire (Task 5b/5c). */
+export const JSONL_CONTENT_TYPE = "application/x-ndjson";
+
+/**
+ * The fork response of `POST /v1/conversations/:id/fork` (Task 5a): the
+ * create shape — a NEW conversation id plus its first view frame.
+ */
+export type ConversationForkResponse = ConversationCreateResponse;
+
+/**
+ * The import response of `POST /v1/conversations/import` (Task 5c): the
+ * create shape — the new conversation id plus its view with the appended
+ * entries in order.
+ */
+export type ConversationImportResponse = ConversationCreateResponse;
+
 /**
  * The admit response of `POST /v1/conversations/:id/submissions` (Task 9b):
  * the durable submission record (`SubmissionRecord` — id, conversationId,
