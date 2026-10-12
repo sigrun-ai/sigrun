@@ -15,7 +15,9 @@
  * .../approvals/:approvalId` (T9c-ii); `GET .../stream` — the SSE view
  * stream (T9d); `GET /v1/meta` real health aggregation (T9e); `GET/PATCH
  * .../meta` — the session-meta sidebar resource (T10); `GET /healthz` +
- * `GET /readyz` — the deploy probes, liveness vs readiness (T13).
+ * `GET /readyz` — the deploy probes, liveness vs readiness (T13);
+ * `GET /v1/auth/check` — the secret-free per-provider auth readiness
+ * report (T6).
  *
  * NOTE (T9d): the SSE endpoint is exercised over a REAL socket — it hijacks
  * the reply and writes raw frames, which `app.inject()` cannot observe
@@ -57,6 +59,7 @@ import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { aggregateHealth, type HealthStatus } from "../harness/health.js";
 import {
+	OPENAI_API_KEY_ENV,
 	requireServedModel,
 	UnservedModelError,
 } from "../harness/providers/index.js";
@@ -157,6 +160,20 @@ interface MetaResponse {
 		readonly backup: boolean;
 		readonly channels: readonly string[];
 	};
+}
+
+/** Provider auth readiness (Task 6, spec §6.4): statuses only. */
+type AuthStatus = "ready" | "not_ready" | "invalid";
+
+/** One `GET /v1/auth/check` provider entry — provider id + status, nothing else. */
+interface AuthCheckProvider {
+	readonly provider: string;
+	readonly status: AuthStatus;
+}
+
+/** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */
+interface AuthCheckResponse {
+	readonly providers: readonly AuthCheckProvider[];
 }
 
 /** Re-brand a route id as a ConversationId (the branded Id type is a number). */
@@ -468,6 +485,53 @@ export async function createServer(
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
 	);
+
+	// Auth readiness (T6, spec §6.4: "The API never accepts or returns
+	// credentials"): a SECRET-FREE report. The response carries ONLY a
+	// per-provider status — no env values, no key material, no hints beyond
+	// the status itself. The status is a pure synchronous derivation over
+	// boot-retained state (same discipline as /v1/meta), per provider in
+	// catalog order:
+	//  - env-degenerate provider (no contributor owns it — the collector's
+	//    ownership map has no entry): `ready` iff `OPENAI_API_KEY` is set
+	//    non-empty in the boot-retained provider env, else `not_ready`. (The
+	//    degenerate provider reports §3 health "ok" by absence, so env
+	//    presence is the honest readiness check for it.)
+	//  - contributor-owned provider: its contributor's retained §3 health
+	//    producer decides — "ok" → `ready`, "degraded" → `invalid`. The §3
+	//    union is exactly ok | degraded (health.ts); "degraded" is the
+	//    known-bad signal and maps to `invalid`. A producer is per-
+	//    contributor, not per-provider, so every provider a contributor owns
+	//    shares its status. No producer → `not_ready` (nothing to verify).
+	app.get("/v1/auth/check", async (): Promise<AuthCheckResponse> => {
+		const producersByName = new Map(
+			opened.providerHealth.map((producer) => [producer.name, producer]),
+		);
+		const providers: AuthCheckProvider[] = [];
+		const seen = new Set<string>();
+		for (const model of opened.models.getModels()) {
+			if (seen.has(model.provider)) continue;
+			seen.add(model.provider);
+			let status: AuthStatus;
+			const owner = opened.providerOwnership.get(model.provider);
+			if (owner !== undefined) {
+				const producer = producersByName.get(owner);
+				status =
+					producer === undefined
+						? "not_ready"
+						: producer.health() === "ok"
+							? "ready"
+							: "invalid";
+			} else {
+				status =
+					(opened.providerEnv[OPENAI_API_KEY_ENV] ?? "").trim() !== ""
+						? "ready"
+						: "not_ready";
+			}
+			providers.push({ provider: model.provider, status });
+		}
+		return { providers };
+	});
 
 	app.get("/v1/conversations", async (): Promise<ConversationList> => {
 		const conversations: {
