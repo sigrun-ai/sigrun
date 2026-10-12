@@ -149,6 +149,12 @@ export interface MessageWire {
 	/** Tool correlation — present on `toolResult`-role messages. */
 	readonly toolName?: string;
 	readonly toolCallId?: string;
+	/**
+	 * Tool execution details (`ToolResultMessage.details`), when the tool
+	 * reported any — e.g. the edit tool's `{ diff, patch }`. Narrowed by the
+	 * consumers that read it (ToolResultEntry's diff view).
+	 */
+	readonly details?: unknown;
 }
 
 /**
