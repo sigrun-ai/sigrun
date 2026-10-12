@@ -69,6 +69,20 @@ export interface OpenedHarness {
 	 */
 	readonly providerHealth: readonly HealthProducer[];
 	/**
+	 * Provider id → owning contributor name (Task 6), straight from the
+	 * collector's ownership map. Env-degenerate providers have NO entry —
+	 * the discriminator `GET /v1/auth/check` uses to pick which readiness
+	 * derivation applies per provider.
+	 */
+	readonly providerOwnership: ReadonlyMap<string, string>;
+	/**
+	 * The environment the provider collector resolved (Task 6): the boot env
+	 * with `SIGRUN_MODEL` restated from config. The §5 auth-check route reads
+	 * `OPENAI_API_KEY` presence from it for env-degenerate providers — the
+	 * hermetic seam that keeps the route off `process.env`.
+	 */
+	readonly providerEnv: Env;
+	/**
 	 * The loaded memory extension's §3 producer (Task 9e), when its factory
 	 * result carried one; `undefined` for the no-op memory default, a
 	 * quarantined memory extension, or a producer-less memory extension —
@@ -199,7 +213,7 @@ export async function openHarness(
 		...env,
 		SIGRUN_MODEL: `${config.models.provider}/${config.models.modelId}`,
 	};
-	const { models, defaultModel, healthProducers: providerHealth } =
+	const { models, defaultModel, healthProducers: providerHealth, providerOwnership } =
 		collectProviders(options.extensions ?? [], effectiveEnv, sink);
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so the the-work-fabric-scrubbed swap changes this wiring's inputs and
@@ -236,6 +250,8 @@ export async function openHarness(
 		envBuilder,
 		extensionOutcomes,
 		providerHealth,
+		providerOwnership,
+		providerEnv: effectiveEnv,
 		memoryHealth,
 		memorySubmit,
 	};

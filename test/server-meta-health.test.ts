@@ -19,6 +19,11 @@
  * in a tmpdir; `createServer` builds the Fastify app; `app.inject()`
  * exercises the meta route in-process. Memory-extension fixtures drive the
  * loader seam (`extensionSpecifiers`).
+ *
+ * Task 6 extends the same harness to `GET /v1/auth/check`: the secret-free
+ * per-provider readiness report (env-degenerate `OPENAI_API_KEY` presence;
+ * contributor-owned producer status), asserting the response never carries
+ * credential material (spec §6.4).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -85,11 +90,18 @@ async function getMeta(app: FastifyInstance): Promise<{
  * Boot a hermetic harness + server in a tmpdir; registers cleanup. The faux
  * contributor carries a PRESENT-healthy producer by default (covers the
  * "producer retained, reports ok" path); the degraded test overrides it.
+ * Task 6 options: `contributors` (default: the faux contributor with its
+ * producer), `model` (default `faux/m`), and `env` (default `{}`) — the
+ * auth-check inputs (env-degenerate registration, `OPENAI_API_KEY`
+ * presence).
  */
 async function bootServer(options?: {
 	extensionSpecifiers?: readonly string[];
 	contributorHealth?: () => HealthStatus;
 	backup?: BackupConfig;
+	contributors?: (faux: ReturnType<typeof fauxProvider>) => readonly ProviderContributor[];
+	model?: string;
+	env?: Record<string, string | undefined>;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-meta-"));
 	const faux = fauxProvider({
@@ -97,19 +109,22 @@ async function bootServer(options?: {
 		models: [{ id: "m", contextWindow: 128_000 }],
 	});
 	faux.setResponses([fauxAssistantMessage("ok")]);
-	const contributor: ProviderContributor = {
-		name: "ext-faux",
-		providers: [{ provider: faux.provider }],
-		health: options?.contributorHealth ?? (() => "ok"),
-	};
+	const contributors =
+		options?.contributors?.(faux) ?? [
+			{
+				name: "ext-faux",
+				providers: [{ provider: faux.provider }],
+				health: options?.contributorHealth ?? (() => "ok"),
+			},
+		];
 	const config = loadConfig({
-		SIGRUN_MODEL: "faux/m",
+		SIGRUN_MODEL: options?.model ?? "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
-		extensions: [contributor],
-		env: {},
+		extensions: contributors,
+		env: options?.env ?? {},
 		extensionSpecifiers: options?.extensionSpecifiers,
 	});
 	// `config.backup` has no env parsing yet (T11); hand-set it to exercise
@@ -130,6 +145,126 @@ async function bootServer(options?: {
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
+});
+
+// ---------------------------------------------------------------------------
+// GET /v1/auth/check (T6: secret-free per-provider readiness)
+// ---------------------------------------------------------------------------
+
+/** Dummy key fixture — asserted ABSENT from every auth-check response (§6.4). */
+const DUMMY_OPENAI_KEY = "sigrun-dummy-key-fixture";
+
+/** GET /v1/auth/check as an inject response (raw body kept for §6.4 assertions). */
+async function getAuthCheck(app: FastifyInstance) {
+	return app.inject({ method: "GET", url: "/v1/auth/check" });
+}
+
+describe("GET /v1/auth/check", () => {
+	test("env-degenerate provider: OPENAI_API_KEY set non-empty → ready", async () => {
+		const { app } = await bootServer({
+			contributors: () => [],
+			model: "openai/gpt-test",
+			env: { OPENAI_API_KEY: DUMMY_OPENAI_KEY },
+		});
+		const response = await getAuthCheck(app);
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({
+			providers: [{ provider: "openai", status: "ready" }],
+		});
+		// §6.4: statuses only — the key material never appears.
+		expect(response.body).not.toContain(DUMMY_OPENAI_KEY);
+	});
+
+	test("env-degenerate provider: key absent → not_ready", async () => {
+		const { app } = await bootServer({
+			contributors: () => [],
+			model: "openai/gpt-test",
+			env: {},
+		});
+		const response = await getAuthCheck(app);
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({
+			providers: [{ provider: "openai", status: "not_ready" }],
+		});
+	});
+
+	test("env-degenerate provider: empty-string key → not_ready (non-empty ruling)", async () => {
+		const { app } = await bootServer({
+			contributors: () => [],
+			model: "openai/gpt-test",
+			env: { OPENAI_API_KEY: "" },
+		});
+		const response = await getAuthCheck(app);
+		expect(response.json()).toEqual({
+			providers: [{ provider: "openai", status: "not_ready" }],
+		});
+	});
+
+	test("contributor-owned provider: ok producer → ready", async () => {
+		const { app } = await bootServer();
+		const response = await getAuthCheck(app);
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({
+			providers: [{ provider: "faux", status: "ready" }],
+		});
+	});
+
+	test("contributor-owned provider: degraded producer → invalid", async () => {
+		const { app } = await bootServer({
+			contributorHealth: () => "degraded",
+		});
+		const response = await getAuthCheck(app);
+		expect(response.json()).toEqual({
+			providers: [{ provider: "faux", status: "invalid" }],
+		});
+	});
+
+	test("contributor-owned provider without a producer → not_ready (nothing to verify)", async () => {
+		const { app } = await bootServer({
+			contributors: (faux) => [
+				{ name: "ext-faux", providers: [{ provider: faux.provider }] },
+			],
+		});
+		const response = await getAuthCheck(app);
+		expect(response.json()).toEqual({
+			providers: [{ provider: "faux", status: "not_ready" }],
+		});
+	});
+
+	test("mixed catalog: contributor and env-degenerate providers report independently", async () => {
+		const { app } = await bootServer({
+			model: "openai/gpt-test",
+			env: { OPENAI_API_KEY: DUMMY_OPENAI_KEY },
+		});
+		// Default ext-faux (ok producer) contributed first, then the
+		// env-degenerate openai fallback registered for the SIGRUN_MODEL pin.
+		const response = await getAuthCheck(app);
+		expect(response.json()).toEqual({
+			providers: [
+				{ provider: "faux", status: "ready" },
+				{ provider: "openai", status: "ready" },
+			],
+		});
+	});
+
+	test("response carries only provider+status — no credential material (§6.4)", async () => {
+		const { app } = await bootServer({
+			contributors: () => [],
+			model: "openai/gpt-test",
+			env: {
+				OPENAI_API_KEY: DUMMY_OPENAI_KEY,
+				OPENAI_BASE_URL: "https://auth-check-fixture.invalid/v1",
+			},
+		});
+		const response = await getAuthCheck(app);
+		const body = response.json();
+		expect(Object.keys(body)).toEqual(["providers"]);
+		for (const entry of body.providers) {
+			expect(Object.keys(entry).sort()).toEqual(["provider", "status"]);
+		}
+		expect(response.body).not.toContain(DUMMY_OPENAI_KEY);
+		expect(response.body).not.toContain("auth-check-fixture.invalid");
+	});
 });
 
 // ---------------------------------------------------------------------------

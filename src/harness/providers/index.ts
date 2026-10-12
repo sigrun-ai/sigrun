@@ -112,6 +112,15 @@ export interface CollectedProviders {
 	 * reports `"ok"` by absence: no synthetic producer is added for it.
 	 */
 	readonly healthProducers: readonly HealthProducer[];
+	/**
+	 * Provider id → owning contributor name (Task 6): every provider a
+	 * contributor registered, keyed by `ProviderContribution.provider.id`.
+	 * Providers installed by the env-driven degenerate fallback have NO
+	 * entry — the discriminator `GET /v1/auth/check` uses to pick
+	 * env-presence readiness (degenerate) over producer-status readiness
+	 * (contributor-owned).
+	 */
+	readonly providerOwnership: ReadonlyMap<string, string>;
 }
 
 /** Environment keys the degenerate env provider reads. */
@@ -211,7 +220,12 @@ export function collectProviders(
 		);
 	}
 
-	return { models, defaultModel, healthProducers };
+	return {
+		models,
+		defaultModel,
+		healthProducers,
+		providerOwnership: ownership,
+	};
 }
 
 function modelIdsOf(models: Models, providerId: string): string[] {
