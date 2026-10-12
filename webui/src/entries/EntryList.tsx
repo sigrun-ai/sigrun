@@ -9,6 +9,7 @@
 import type { ConversationEntryWire, ConversationViewWire } from "../api";
 import { messageText } from "./content";
 import { AssistantEntry } from "./AssistantEntry";
+import { CompactionEntry } from "./CompactionEntry";
 import { liveToolSlots, slotForEntry } from "./liveDoc";
 import { SystemEntry } from "./SystemEntry";
 import { ToolResultEntry } from "./ToolResultEntry";
@@ -33,6 +34,8 @@ function Entry(props: {
 			);
 		case "pi.system":
 			return <SystemEntry entry={entry} />;
+		case "pi.compaction":
+			return <CompactionEntry entry={entry} />;
 		default:
 			return (
 				<div className="entry entry-unknown">

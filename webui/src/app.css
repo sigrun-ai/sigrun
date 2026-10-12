@@ -305,9 +305,17 @@ body {
 }
 
 .entry-system,
+.entry-compaction,
 .entry-unknown {
 	color: var(--text-dim);
 	font-size: 0.8rem;
+}
+
+.entry-compaction-label {
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	font-size: 0.72rem;
 }
 
 .entry-attachment {
@@ -521,6 +529,25 @@ body {
 	stroke: var(--accent);
 	stroke-width: 3;
 	stroke-linecap: round;
+}
+
+.composer-compact {
+	background: var(--panel-2);
+	color: var(--text-dim);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.45rem 0.7rem;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.composer-compact:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.composer-compact[data-compacting] {
+	color: var(--accent);
 }
 
 .composer-send {

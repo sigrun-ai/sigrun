@@ -167,6 +167,13 @@ export interface ConversationEntryWire {
 	readonly conversationId: number;
 	readonly kind: string;
 	/**
+	 * The entry's kind-specific JSON payload (`EntryRecord.data` — e.g.
+	 * `pi.compaction`'s `{ reason }`, `pi.tool-result`'s diagnostics).
+	 * Absent on kinds that carry none; narrowed by the renderers that read
+	 * it.
+	 */
+	readonly data?: unknown;
+	/**
 	 * The entry's message payload. ABSENT on some kinds (pi-durable's
 	 * `pi.reset` carries no model — dist/entries.d.ts:20-22), so optional,
 	 * never assumed.
@@ -258,6 +265,16 @@ export interface UploadResponseWire {
 }
 
 /**
+ * The admit response of `POST /v1/conversations/:id/compact` (manual
+ * compaction): the durable task's id. The task is conversation-owned — it
+ * compacts even when idle — and its `pi.compaction` summary entry lands as
+ * a view revision (the SSE stream carries it).
+ */
+export interface CompactResponseWire {
+	readonly taskId: number;
+}
+
+/**
  * The minimal file surface `upload` consumes — the browser's `File`/`Blob`
  * satisfy this structurally; tests pass a plain object.
  */
@@ -341,6 +358,12 @@ export interface SigrunClient {
 		conversationId: number,
 		file: UploadFileInput,
 	): Promise<UploadResponseWire>;
+	/**
+	 * Admit a manual compaction (`POST .../compact`): resolves with the
+	 * durable task's id once the server admits it (202); the summary entry
+	 * arrives later as a view revision.
+	 */
+	compact(conversationId: number): Promise<CompactResponseWire>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -473,5 +496,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				contentBase64: bytesToBase64(bytes),
 			})) as UploadResponseWire;
 		},
+		compact: (conversationId) =>
+			send("POST", `/v1/conversations/${conversationId}/compact`, {}) as Promise<CompactResponseWire>,
 	};
 }

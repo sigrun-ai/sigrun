@@ -65,6 +65,8 @@ function makeHarness(init?: {
 		source: "user",
 	};
 	let approvals = init?.approvals ?? [];
+	/** Test seam: invoked when the compact POST fires (pending-state test). */
+	let compactionSawRequest: () => void = () => {};
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let body: unknown;
@@ -76,6 +78,9 @@ function makeHarness(init?: {
 			body = { path: `uploads/1/${parsed.name}` };
 		} else if (input.endsWith("/submissions")) {
 			body = { id: 9, conversationId: 1, type: "input", status: "done" };
+		} else if (input.endsWith("/compact")) {
+			body = { taskId: 42 };
+			compactionSawRequest();
 		} else throw new Error(`unexpected fetch ${input}`);
 		return Promise.resolve({
 			ok: true,
@@ -83,7 +88,9 @@ function makeHarness(init?: {
 				? 202
 				: input.endsWith("/uploads")
 					? 201
-					: 200,
+					: input.endsWith("/compact")
+						? 202
+						: 200,
 			json: () => Promise.resolve(body),
 		});
 	};
@@ -93,6 +100,9 @@ function makeHarness(init?: {
 		client,
 		setApprovals(next: readonly ApprovalWire[]) {
 			approvals = next;
+		},
+		onCompactRequest(callback: () => void) {
+			compactionSawRequest = callback;
 		},
 	};
 }
@@ -500,6 +510,78 @@ describe("Composer", () => {
 			expect(patches.map((c) => c.body)).toContain(
 				JSON.stringify({ draft: { attachments: ["uploads/1/b.png"] } }),
 			);
+		});
+
+		// Manual compaction (Task 4, pi parity): the Compact button next to
+		// the usage ring POSTs the compact endpoint on click, shows the
+		// pending state while the POST is in flight, and returns to idle.
+		test("the Compact button POSTs the compact endpoint and returns to idle", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			const button = renderer.root.findByProps({
+				className: "composer-compact",
+			});
+			expect(textContent(renderer.toJSON())).toContain("Compact");
+			await act(async () => {
+				await button.props.onClick();
+			});
+			const compactCall = calls.find(
+				(c: { input: string; method?: string }) =>
+					c.method === "POST" && c.input.endsWith("/compact"),
+			);
+			expect(compactCall).toBeDefined();
+			expect(compactCall?.body).toBe(JSON.stringify({}));
+			// Back to idle after the 202 resolves.
+			expect(
+				renderer.root.findByProps({ className: "composer-compact" })
+					.props.disabled,
+			).toBe(false);
+		});
+
+		test("the Compact button shows the pending state while the POST is in flight", async () => {
+			// Gate the compact POST: the harness seam resolves it only when
+			// the test releases, so the in-flight render is observable.
+			const { client } = makeHarness();
+			let release!: () => void;
+			client.compact = (conversationId: number) => {
+				void conversationId;
+				return new Promise((resolve) => {
+					release = () => resolve({ taskId: 1 });
+				});
+			};
+			const renderer = await renderComposer(client, makeView());
+			const button = renderer.root.findByProps({
+				className: "composer-compact",
+			});
+			await act(async () => {
+				void button.props.onClick();
+			});
+			// In flight: disabled + the Compacting… label.
+			expect(button.props.disabled).toBe(true);
+			expect(
+				renderer.root.findByProps({ className: "composer-compact" }).props[
+					"data-compacting"
+				],
+			).toBe(true);
+			expect(textContent(renderer.toJSON())).toContain("Compacting…");
+			await act(async () => {
+				release();
+			});
+			// Settled: back to idle.
+			expect(
+				renderer.root.findByProps({ className: "composer-compact" })
+					.props.disabled,
+			).toBe(false);
+			expect(textContent(renderer.toJSON())).toContain("Compact");
+		});
+
+		test("the Compact button is disabled with no conversation selected", async () => {
+			const { client } = makeHarness();
+			const renderer = await renderComposer(client, makeView(), null);
+			const button = renderer.root.findByProps({
+				className: "composer-compact",
+			});
+			expect(button.props.disabled).toBe(true);
 		});
 	});
 });
