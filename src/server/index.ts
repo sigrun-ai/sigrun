@@ -44,6 +44,7 @@ import {
 	isGated,
 } from "sigrun-ext-approvals";
 import type {
+	AgentChange,
 	Conversation,
 	ConversationId,
 	ConversationView,
@@ -59,6 +60,11 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { aggregateHealth, type HealthStatus } from "../harness/health.js";
+import {
+	SettingsStore,
+	SettingsValidationError,
+	type SettingsFile,
+} from "../harness/settings.js";
 import {
 	OPENAI_API_KEY_ENV,
 	requireServedModel,
@@ -124,6 +130,50 @@ const WHEN_BUSY_MODES: readonly string[] = ["steer", "followUp", "reject"];
 /** The validated `whenBusy` type (pi-durable `InputSubmissionDraft`). */
 type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
+/**
+ * The agent change every server-side conversation create applies (Task 8b):
+ * the boot default model, plus the settings store's sigrun-resolved fields —
+ * `defaultTools` (a tool-NAME filter; pi-durable's `AgentChange.tools`
+ * accepts names and resolves them against the composed selection) and
+ * `perModelThinking`'s override for THAT model (applied at create because
+ * the model is known here; configure re-applies on every model change).
+ * Both come from the STORE (re-read here), so a PATCHed settings file
+ * reaches conversations created afterwards without a restart.
+ */
+function storeAgentChange(
+	opened: OpenedHarness,
+	model: ModelRef | undefined,
+): AgentChange {
+	const settings = opened.settings.read();
+	const modelTools = settings.defaultTools;
+	// `AgentChange.tools` takes ToolRegistration OBJECTS (pi-durable's
+	// applyChange maps `item.name`), so resolve the store's names against
+	// the registry snapshot's composed tool set. An unregistered name in
+	// the filter is a config drift: dropped here (resolveAgent's own
+	// behavior for an unknown stored name), never a boot failure.
+	const tools =
+		modelTools === undefined
+			? undefined
+			: opened.registry
+					.snapshot()
+					.tools()
+					.filter((entry) => modelTools.includes(entry.tool.name))
+					.map((entry) => entry.tool);
+	const thinking =
+		model !== undefined
+			? settings.perModelThinking?.[`${model.provider}/${model.modelId}`]
+			: undefined;
+	return {
+		...(model === undefined ? {} : { model }),
+		...(tools === undefined || tools.length === 0 ? {} : { tools }),
+		// The store validates every level against pi-ai's union, so this
+		// unsound-looking cast is checked at every write.
+		...(thinking === undefined
+			? {}
+			: { thinkingLevel: thinking as ModelThinkingLevel }),
+	};
+}
+
 /** Integer path params for `/v1/conversations/:id`. */
 const ID_PARAMS_SCHEMA = {
 	type: "object",
@@ -131,6 +181,13 @@ const ID_PARAMS_SCHEMA = {
 	required: ["id"],
 	additionalProperties: false,
 } as const;
+
+/**
+ * The `GET/PATCH /v1/settings` payload (Task 8b): the settings file's
+ * effective contents — the `HarnessSettings` pass-throughs plus the
+ * sigrun-resolved fields. Absent file = `{}` (every default).
+ */
+export type SettingsResponse = SettingsFile;
 
 /** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
 interface MetaResponse {
@@ -356,8 +413,12 @@ export async function createServer(
 	// Conversation ids this server can list: the reserved root (ensured now)
 	// plus this server's own creates. See the module docstring for the
 	// enumeration gap.
+	// The root conversation's agent carries the settings store's
+	// sigrun-resolved fields too (Task 8b): the root is created once, so its
+	// tool filter / thinking override snapshot at factory time — later
+	// creates re-read the store.
 	const root = await opened.harness.root(BACKGROUND_CONTEXT, {
-		agent: { model: opened.defaultModel },
+		agent: storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
 	const trackedConversations = new Set<number>([rootId]);
@@ -485,8 +546,11 @@ export async function createServer(
 					ownership: { kind: "ownerless" },
 					// A conversation with no agent model cannot generate
 					// (no_model): server-created conversations start on the
-					// boot default model, like the root conversation.
-					agent: { model: opened.defaultModel },
+					// boot default model, like the root conversation, and
+					// carry the store's defaultTools/perModelThinking (Task
+					// 8b) — re-read per create, so PATCHes reach new
+					// conversations without a restart.
+					agent: storeAgentChange(opened, opened.defaultModel),
 				},
 				BACKGROUND_CONTEXT,
 			);
@@ -851,12 +915,24 @@ export async function createServer(
 					.code(400)
 					.send({ error: "invalid_field", field: "thinking" });
 			}
+			// perModelThinking (Task 8b): a model change re-applies the store's
+			// override for the NEW model unless the request pins `thinking` —
+			// the map is the deployment default, the explicit field the caller's
+			// win. Read from the store here, so a PATCH reaches later configures.
+			const storeThinking =
+				parsedModel === undefined
+					? undefined
+					: opened.settings.read().perModelThinking?.[
+							`${parsedModel.provider}/${parsedModel.modelId}`
+					];
 			await conversation.configure(
 				{
 					...(parsedModel === undefined ? {} : { model: parsedModel }),
-					...(thinking === undefined
-						? {}
-						: { thinkingLevel: thinking as ModelThinkingLevel }),
+					...(thinking !== undefined
+						? { thinkingLevel: thinking as ModelThinkingLevel }
+						: storeThinking === undefined
+							? {}
+							: { thinkingLevel: storeThinking as ModelThinkingLevel }),
 				},
 				BACKGROUND_CONTEXT,
 			);
@@ -1220,7 +1296,7 @@ export async function createServer(
 			const conversation = await opened.harness.createConversation(
 				{
 					ownership: { kind: "ownerless" },
-					agent: { model: opened.defaultModel },
+					agent: storeAgentChange(opened, opened.defaultModel),
 				},
 				BACKGROUND_CONTEXT,
 			);
@@ -1605,6 +1681,40 @@ export async function createServer(
 			},
 		}));
 		return { models };
+	});
+
+	// Settings: the file-backed store over the harness's live settings
+	// (Task 8b, pi parity). GET serves the current effective settings
+	// (absent file = `{}` — every default); PATCH validates + merges +
+	// persists through the store, and the harness picks the change up on
+	// the next resolution (steeringMode on the next submission's admission,
+	// because pi-durable re-reads `HarnessSettings` per boundary). Errors
+	// follow the repo's PATCH conventions: 400 `invalid_field` naming the
+	// key (unknown key, wrong type), 400 `invalid_body` for a non-object.
+	app.get("/v1/settings", async (): Promise<SettingsResponse> => {
+		return opened.settings.read();
+	});
+
+	app.patch("/v1/settings", async (request, reply): Promise<SettingsResponse> => {
+		const body = request.body as Record<string, unknown> | undefined;
+		if (
+			body === undefined ||
+			body === null ||
+			typeof body !== "object" ||
+			Array.isArray(body)
+		) {
+			return await reply.code(400).send({ error: "invalid_body" });
+		}
+		try {
+			return opened.settings.update(body);
+		} catch (error) {
+			if (error instanceof SettingsValidationError) {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: error.field });
+			}
+			throw error;
+		}
 	});
 
 	return app;
