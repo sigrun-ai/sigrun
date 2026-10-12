@@ -16,7 +16,7 @@ Goal: sigrun core matches base pi's surface. Extensions come after.
 ### Slice 1: Built-in tools (the agent's hands)
 pi: `read`, `bash`, `edit`, `write`, `find`, `grep`, `ls` + file mutation queue + output accumulator + renderers.
 
-sigrun: zero built-in tools. The harness's tool surface is extension-provided only.
+sigrun: no coding/file tools. The harness's tool surface is extension-provided only (`load_skill` is the sole core-installed tool).
 
 **Work:** port pi's tool implementations to sigrun as core tools. The tools operate on the conversation's workspace env (the `conversationEnv` seam), so they inherit sigrun's workspace resolution. **Trust posture:** the tools are NOT confined — `isConfinedPath` is HTTP-layer only; a tool call's `bash` runs unconfined in the pod. This matches pi's trust model (pi's tools are equally unconfined). The spec must name this explicitly: sigrun's security model is policy-gated (approvals extension, when installed), not filesystem-gated. The core tools themselves carry no gating — they're the same tools pi ships, adapted to the ExecutionEnv.
 
@@ -24,7 +24,7 @@ sigrun: zero built-in tools. The harness's tool surface is extension-provided on
 
 **Default selection:** pi's default is `read`, `bash`, `edit`, `write` (grep/find/ls available, not default). Sigrun's default should match.
 
-**Testable:** a conversation can read/write a workspace file, run a bash command, edit a file, and the webui's tool cards render the results.
+**Testable:** a conversation can read/write a workspace file, run a bash command, edit a file, and the webui's tool cards render the results. find/grep/ls return results honoring `.gitignore`.
 
 ### Slice 2: Skills convention alignment (NOT a move to core — skills are already core)
 pi: `skills.js` core — skill discovery, loading. The model loads skills via the ordinary `read` tool (no `load_skill` tool exists in pi).
@@ -36,7 +36,7 @@ sigrun: `skillsExtension` is already core (installed unconditionally in `openHar
 - pi's collision rule is first-wins + warn; sigrun is last-wins. Align.
 - pi ignores `disable-model-invocation` frontmatter; sigrun ignores all other frontmatter. Align.
 - pi has `/skill:name` (the slash command surfaces skills); sigrun has no slash commands (slice 7).
-- The skill path is `skills/` not `.sigrun/skills/`.
+- The skill path is `skills/` (sigrun already scans this — `SKILLS_DIRECTORY = "skills"`, `src/skills/index.ts:52`).
 
 **Decision:** keep `load_skill` as a sigrun convenience (the model may not have `read` yet in a zero-tool boot), but the section must tell the model the path so `read`-based loading works when the tools slice lands.
 
@@ -53,12 +53,12 @@ sigrun: no MCP.
 
 **Testable:** an MCP server connects, its tools appear in the harness, and a tool call through the MCP server works end-to-end.
 
-### Slice 4: Manual compaction + per-model overrides (NOT branch summarization)
-pi: `/compact` (manual compaction) + `compaction.modelOverrides` (per-model compaction policy).
+### Slice 4: Manual compaction (NOT branch summarization, NOT per-model overrides)
+pi: `/compact` (manual compaction). Per-model compaction is NOT a pi core feature — it comes from the pi-vcc extension (`overrideDefaultCompaction: true` + `modelThresholds`). The pi-durable `CompactionPolicy` type has no strategy field and no per-model map; the only seam is `CompactionHooks.beforeCompact` (decline or return a summary string — it cannot rewrite the summarizer model, which is pinned to `agent.model`).
 
 sigrun: threshold-based only; summarizer pinned to the conversation's own model.
 
-**Work:** expose `Conversation.compact(instructions)` (the pi-durable API exists — `types.d.ts:448`) as a `/v1/conversations/:id/compact` endpoint + a webui affordance (a "Compact" button in the conversation header). Add per-model compaction overrides to the config (the seam is `CompactionPolicy` in the config; the override is a per-model map).
+**Work:** expose `Conversation.compact(instructions)` (the pi-durable API exists — `types.d.ts:448`) as a `POST /v1/conversations/:id/compact` endpoint + a webui affordance (a "Compact" button in the conversation header). Per-model compaction is a sigrun-side extension concern (a `beforeCompact` hook that self-summarizes with a configured summarizer — pi-vcc style), not a core slice.
 
 **Testable:** a manual compact via the endpoint produces a summary entry; the webui shows the compaction.
 
@@ -67,9 +67,9 @@ pi: fork (duplicate a session), export (HTML or JSONL), picker, resume by id/nam
 
 sigrun: conversation records in SQLite; resume already works (the M1 battery verified kill-9 → resume → continue).
 
-**Work:** fork (`Conversation.fork(at, options)` — pi-durable's API) as a `POST /v1/conversations/:id/fork` endpoint + a webui affordance. Export to JSONL (pi's portable format; HTML is a pi-CLI convenience, not parity). The picker is the webui's session list (already built).
+**Work:** fork (`Conversation.fork(at, options)` — pi-durable's API) as a `POST /v1/conversations/:id/fork` endpoint + a webui affordance. Export to JSONL (pi's portable format; HTML is a pi-CLI convenience, not parity). Import the JSONL back (export without import is one-way). The picker is the webui's session list (already built).
 
-**Testable:** fork a conversation, export it, resume the forked copy.
+**Testable:** fork a conversation, export it to JSONL, import the export, continue the imported copy.
 
 ### Slice 6: Auth readiness check (secret-free, NOT a credential store)
 pi: `pi auth` — per-provider auth storage, credential print, readiness checks.
@@ -87,9 +87,9 @@ sigrun: none.
 
 **Work:** a command registry that maps command names to endpoint calls. The commands are a thin catalog over the other slices' endpoints (`/fork` → the fork endpoint, `/compact` → the compact endpoint, etc.). The webui's composer gets a `/` menu.
 
-**Scope:** only the server-reachable commands. TUI-only commands (`/tree`, `/hotkeys`, `/reload`, `/trust`, `/changelog`, `/quit`, `/copy`, `/bug`, `/share`, `/llama`, `/scoped-models`) are pi-CLI artifacts with no sigrun surface.
+**Scope:** only the server-reachable commands. TUI-only commands (`/tree`, `/hotkeys`, `/reload`, `/trust`, `/changelog`, `/quit`, `/copy`, `/bug`, `/share`, `/llama`, `/scoped-models`) are pi-CLI artifacts with no sigrun surface. `/login` and `/logout` are NOT in the core catalog — core §6.4: "The API never accepts or returns credentials." They appear only when a provider-auth extension ships (pi's `pi auth` is the CLI surface; sigrun's equivalent is the extension's own tooling).
 
-**Testable:** `/fork` in the composer creates a fork; `/compact` compacts.
+**Testable:** `/fork` in the composer creates a fork; `/compact` compacts; an unknown command produces a clear error.
 
 ### Slice 8: Settings endpoint + webui panel (split: server store + webui preferences)
 pi: `settings-manager.js`, `keybindings.js`, `model-config.js` — interactive config TUI.
@@ -97,18 +97,18 @@ pi: `settings-manager.js`, `keybindings.js`, `model-config.js` — interactive c
 sigrun: env-var config only.
 
 **Work:** split into two parts:
-- **8a (server):** a settings store (file-backed, read at every resolution — pi-durable's `HarnessSettings` is "read at every resolution and never copied; getters are fine") + a `/v1/settings` endpoint. The settings: `defaultTools` (+/- selection), `steeringMode`/`followUpMode`, `retry`/`stream`, per-model thinking levels, `compaction.modelOverrides`. The boot refactor: `openHarness` currently builds a frozen settings literal; the store makes it live.
+- **8a (server):** a settings store (file-backed, read at every resolution — pi-durable's `HarnessSettings` is "read at every resolution and never copied; getters are fine") + a `/v1/settings` endpoint. The settings that flow through `HarnessSettings` unmodified: `steeringMode`/`followUpMode`, `retry`, `stream`. The settings sigrun resolves itself (not `HarnessSettings` fields): `defaultTools` (a tool-selection filter applied at agent creation), per-model thinking levels (an `AgentChange` field). The boot refactor: `openHarness` currently builds a frozen settings literal; the store makes it live.
 - **8b (webui):** a settings panel in the webui (the webui is the primary surface, CONTEXT §3.4). Keybindings are terminal-only (pi's `keybindings.js` maps `tui.*` actions to key sequences); browser shortcuts are webui-local, not a server endpoint.
 
-**Testable:** change a setting via the webui, it persists and takes effect.
+**Testable:** change `steeringMode` via the webui, it persists and the next submission steers instead of queuing.
 
 ## Missing from pi's core surface (caught by review)
 
-1. **Prompt templates** — a first-class pi core resource (templates appear as commands). sigrun has none. Add to slice 7 (the command registry) or a separate slice.
-2. **Session name** — pi's `/name`. sigrun's `SessionMeta` has no name field (`pinned|tagged|archived|draft|source|owner`). Add `name` to the session meta schema.
-3. **Session import** — pi's `/import <path>`. Export without import is one-way. Add an import endpoint (JSONL).
-4. **Image reads** — pi's `read` returns image content to the model; pi-durable's `read` hard-errors. Add image content to the read tool (the webui already handles image uploads).
-5. **Tool `details` / diff rendering** — pi's tools return details (truncation, edit diff); sigrun's card renders name + status + raw output only. Add a diff view to the tool card.
+1. **Prompt templates** — a first-class pi core resource (`dist/core/prompt-templates.js` — `loadPromptTemplates`, `expandPromptTemplate`, `parseCommandArgs`; the resource-loader wires them). sigrun has none. Add to slice 7 (the command registry) or a separate slice.
+2. **Session name** — pi's `/name`. sigrun's `SessionMeta` has no name field (`pinned|tagged|archived|draft|source|owner`). Add `name` to the session meta schema (slice 5).
+3. **Session import** — pi's `/import <path>`. Export without import is one-way. Add an import endpoint (JSONL) to slice 5.
+4. **Image reads** — pi's `read` returns image content to the model; pi-durable's `read` hard-errors. Add image content to the read tool (slice 1).
+5. **Tool `details` / diff rendering** — pi's tools return details (truncation, edit diff); sigrun's card renders name + status + raw output only. Add a diff view to the tool card (slice 1).
 
 ## Ordering
 
@@ -116,7 +116,7 @@ sigrun: env-var config only.
 2. **Skills convention alignment** (cheap; the section path fix unblocks `read`-based loading)
 3. **MCP** (extension; self-contained)
 4. **Manual compaction + overrides** (the seam exists)
-5. **Session management** (fork/export/import)
+5. **Session management** (fork/export/import + session name)
 6. **Auth readiness** (secret-free check only)
 7. **Slash commands** (the catalog over the endpoints)
 8. **Settings** (the store + the endpoint + the webui panel)
