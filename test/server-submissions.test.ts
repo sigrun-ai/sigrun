@@ -54,8 +54,12 @@ interface TestServer {
 /**
  * Boot a hermetic server whose workspace already contains the fixture files:
  * `notes.txt` (text), `dot.png` (binary PNG bytes), plus an `empty/` dir.
+ * `env` appends config overrides (e.g. the forced compaction thresholds
+ * the compact-endpoint test needs).
  */
-async function bootServer(): Promise<TestServer> {
+async function bootServer(
+	env: Record<string, string> = {},
+): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-subm-"));
 	await writeFile(join(dir, "notes.txt"), "workspace notes", "utf8");
 	await writeFile(join(dir, "dot.png"), Buffer.from(PNG_BASE64, "base64"));
@@ -72,6 +76,7 @@ async function bootServer(): Promise<TestServer> {
 		SIGRUN_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
+		...env,
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],
@@ -806,4 +811,118 @@ describe("GET /v1/models", () => {
 		expect(model.baseUrl).toBeUndefined();
 		expect(model.headers).toBeUndefined();
 	});
+});
+
+// ---------------------------------------------------------------------------
+// POST /v1/conversations/:id/compact — manual compaction (Task 4, pi parity)
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/conversations/:id/compact", () => {
+	// The manual path needs a real transcript worth cutting: a turn first
+	// (the faux answer), then the compact POST. Upstream's `selectCut` walks
+	// back `keepRecentTokens`; forced to `1` the cut falls right before the
+	// newest entry, so the whole first turn is summarized — the same forced-
+	// thresholds pattern as test/compaction.test.ts, proving the config
+	// knobs reach the policy the manual path reads. `backgroundTokens: 0`
+	// keeps the faux queue deterministic for the turn itself; the manual
+	// path ignores `enabled` and the thresholds (upstream doc), but its
+	// SELECT phase still reads `keepRecentTokens` from the live policy.
+	async function bootCompactionServer() {
+		return await bootServer({
+			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
+			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+		});
+	}
+
+	test("404s for an unknown conversation id", async () => {
+		const { app } = await bootServer();
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/conversations/999999/compact",
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(response.statusCode).toBe(404);
+		expect(response.json()).toEqual({ error: "conversation_not_found" });
+	});
+
+	test("rejects invalid bodies fail-loud (unknown keys, non-string instructions)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		for (const [payload, field] of [
+			[42, null],
+			[{ instructions: "summarize", extra: true }, "extra"],
+			[{ instructions: 42 }, "instructions"],
+		] as const) {
+			const response = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${root.id}/compact`,
+				payload: payload as unknown as Record<string, unknown>,
+				headers: { "content-type": "application/json" },
+			});
+			expect(response.statusCode).toBe(400);
+			const body = response.json() as { error?: string; field?: string };
+			if (field === null) {
+				expect(body).toEqual({ error: "invalid_body" });
+			} else {
+				expect(body).toEqual({ error: "invalid_field", field });
+			}
+		}
+		// A rejected compact never admitted a task: no compaction entries.
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		expect(
+			view.entries.filter((e: { kind: string }) => e.kind === "pi.compaction"),
+		).toEqual([]);
+	});
+
+	test("a manual compact produces a summary entry with reason manual", async () => {
+		const { app, opened, faux } = await bootCompactionServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		// One long turn so the compaction has a prefix worth cutting. The
+		// faux queue serves the turn's answer (set at boot); the manual
+		// compaction consumes the NEXT response (the summary).
+		faux.appendResponses([fauxAssistantMessage("turn one answer")]);
+		const first = await root.submit(
+			{ type: "input", content: `hello ${"filler ".repeat(200)}` },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await first.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		faux.appendResponses([fauxAssistantMessage("manual compaction summary")]);
+
+		const response = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/compact`,
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(response.statusCode).toBe(202);
+		const { taskId } = response.json() as { taskId: number };
+		expect(typeof taskId).toBe("number");
+
+		// Conversation-owned manual compaction settles with the idle scope:
+		// its write submission places the summary at the next boundary.
+		await root.waitForIdle(BACKGROUND_CONTEXT);
+		let compaction: { kind: string; data?: { reason?: string } } | undefined;
+		for (let attempt = 0; attempt < 100 && compaction === undefined; attempt++) {
+			const view = (
+				await app.inject({
+					method: "GET",
+					url: `/v1/conversations/${root.id}`,
+				})
+			).json();
+			compaction = view.entries.find(
+				(e: { kind: string }) => e.kind === "pi.compaction",
+			);
+			if (compaction === undefined)
+				await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		expect(compaction).toBeDefined();
+		expect(compaction?.data?.reason).toBe("manual");
+	}, 60_000);
 });

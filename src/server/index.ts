@@ -85,6 +85,7 @@ import {
 	type ConversationList,
 	type ConversationViewWire,
 	type ConfigureResponse,
+	type CompactResponse,
 	type FileContentResponse,
 	type FileListResponse,
 	type ModelEntry,
@@ -861,6 +862,73 @@ export async function createServer(
 			// `already_placed`/`settled` are still 200: abort is idempotent and
 			// the body reports which state the submission was found in.
 			return { result, submissionId: active.id };
+		},
+	);
+
+	// Manual compaction: `POST .../compact` (Task 4, pi parity).
+	// `Conversation.compact(instructions)` (pi-durable's own manual-
+	// compaction admission, dist/harness/types.d.ts) creates a
+	// conversation-owned durable compaction task with `reason: "manual"`:
+	// it compacts even when the conversation is idle — a user's explicit
+	// intent — and places its summary through a write submission (at the
+	// next boundary when busy). Manual compaction ignores the policy's
+	// `enabled` (upstream doc: "manual compaction ignores `enabled`");
+	// `compact()` resumes the scheduler itself. The task id is handed back —
+	// the SSE stream carries the `pi.compaction` entry when the summary
+	// lands.
+	app.post(
+		"/v1/conversations/:id/compact",
+		{ schema: { params: ID_PARAMS_SCHEMA } },
+		async (request, reply): Promise<CompactResponse> => {
+			const { id } = request.params as { id: number };
+			const conversation = await opened.harness.conversation(
+				conversationId(id),
+				BACKGROUND_CONTEXT,
+			);
+			if (conversation === undefined) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
+			// Absent body is valid (no instructions); an object may carry
+			// ONLY `instructions` — any other key is a fail-loud 400, the
+			// configure convention.
+			const body: unknown = request.body;
+			let instructions: string | undefined;
+			if (body !== undefined && body !== null) {
+				if (typeof body !== "object" || Array.isArray(body)) {
+					return await reply.code(400).send({ error: "invalid_body" });
+				}
+				const record = body as Record<string, unknown>;
+				const unknownKey = Object.keys(record).find(
+					(key) => key !== "instructions",
+				);
+				if (unknownKey !== undefined) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: unknownKey });
+				}
+				if (
+					record.instructions !== undefined &&
+					typeof record.instructions !== "string"
+				) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: "instructions" });
+				}
+				instructions =
+					record.instructions === undefined || record.instructions === ""
+						? undefined
+						: record.instructions;
+			}
+			const taskId = await conversation.compact(
+				instructions,
+				BACKGROUND_CONTEXT,
+			);
+			// 202: like submissions, the compaction is admitted, not settled —
+			// the task runs asynchronously and its summary lands as a view
+			// revision (the SSE stream).
+			return await reply.code(202).send({ taskId });
 		},
 	);
 

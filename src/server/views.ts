@@ -187,6 +187,16 @@ export type AbortResponse =
 	| { readonly result: "settled"; readonly submissionId: number };
 
 /**
+ * The admit response of `POST /v1/conversations/:id/compact` (Task 4, pi
+ * parity): the durable compaction task's id. The task is conversation-owned
+ * (manual): it compacts even when idle and places its summary through a
+ * write submission; the SSE stream carries the `pi.compaction` entry.
+ */
+export interface CompactResponse {
+	readonly taskId: number;
+}
+
+/**
  * One pending approval in `GET /v1/conversations/:id/approvals` (T9c-ii),
  * joined from the LiveDoc tool slot (callId, toolName) and the
  * `ApprovalsDoc[callId]` record (status, arguments, requestedAt). A slot
