@@ -33,6 +33,7 @@ function makeFetch(routes: Record<string, (call: Call) => unknown>): {
 					ok: true,
 					status: 200,
 					json: () => Promise.resolve(handler(call)),
+					text: () => Promise.resolve(String(handler(call))),
 				});
 			}
 		}
@@ -40,6 +41,7 @@ function makeFetch(routes: Record<string, (call: Call) => unknown>): {
 			ok: false,
 			status: 404,
 			json: () => Promise.resolve({ error: "no route" }),
+			text: () => Promise.resolve(String({ error: "no route" })),
 		});
 	};
 	return { calls, fetchImpl };

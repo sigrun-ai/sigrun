@@ -37,6 +37,7 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 			ok: (init?.status ?? 200) >= 200 && (init?.status ?? 200) < 300,
 			status: init?.status ?? 200,
 			json: () => Promise.resolve(body),
+			text: () => Promise.resolve(String(body)),
 		});
 	};
 	return { calls, fetchImpl };

@@ -47,6 +47,18 @@ const MODELS: readonly ModelEntry[] = [
 	},
 ];
 
+/** The `/` menu's catalog fixture (the Task 7 server set, metadata only). */
+const COMMANDS = [
+	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
+	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
+	{ name: "compact", description: "Compact", argsHint: "[instructions]", endpoint: { method: "POST", path: "/v1/conversations/:id/compact" } },
+	{ name: "export", description: "Download JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
+	{ name: "import", description: "Import JSONL", argsHint: "<jsonl>", endpoint: { method: "POST", path: "/v1/conversations/import" } },
+	{ name: "name", description: "Name", argsHint: "<name>", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+	{ name: "model", description: "Switch model", argsHint: "<provider/model>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
+	{ name: "thinking", description: "Set thinking level", argsHint: "<level>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
+];
+
 function makeHarness(init?: {
 	readonly draftText?: string;
 	readonly draftAttachments?: readonly string[];
@@ -71,6 +83,7 @@ function makeHarness(init?: {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let body: unknown;
 		if (input === "/v1/models") body = { models: init?.models ?? MODELS };
+		else if (input === "/v1/commands") body = { commands: COMMANDS };
 		else if (input.endsWith("/meta")) body = meta;
 		else if (input.endsWith("/approvals")) body = { approvals };
 		else if (input.endsWith("/uploads")) {
@@ -81,6 +94,24 @@ function makeHarness(init?: {
 		} else if (input.endsWith("/compact")) {
 			body = { taskId: 42 };
 			compactionSawRequest();
+		} else if (input.endsWith("/export")) {
+			// text(), not json(): the export route serves raw JSONL.
+			const jsonl =
+					'{"id":1,"conversationId":1,"kind":"pi.user"}\n{"id":2,"conversationId":1,"kind":"pi.assistant"}\n';
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({}),
+				text: () => Promise.resolve(jsonl),
+			});
+		} else if (input.endsWith("/fork") || input === "/v1/conversations" || input === "/v1/conversations/import") {
+			// The create-family shape; ids differentiate the routes for asserts.
+			body = {
+				id: input.endsWith("/fork") ? 7 : input === "/v1/conversations" ? 3 : 8,
+				view: makeView(),
+			};
+		} else if (input.endsWith("/configure")) {
+			body = { model: "faux/one", thinkingLevel: "off" };
 		} else throw new Error(`unexpected fetch ${input}`);
 		return Promise.resolve({
 			ok: true,
@@ -88,10 +119,11 @@ function makeHarness(init?: {
 				? 202
 				: input.endsWith("/uploads")
 					? 201
-					: input.endsWith("/compact")
+				: input.endsWith("/compact")
 						? 202
 						: 200,
 			json: () => Promise.resolve(body),
+			text: () => Promise.resolve(String(body)),
 		});
 	};
 	const client = createClient({ fetch: fetchImpl });
@@ -582,6 +614,216 @@ describe("Composer", () => {
 				className: "composer-compact",
 			});
 			expect(button.props.disabled).toBe(true);
+		});
+	});
+
+	describe("slash commands (Task 7)", () => {
+		/** The open menu's option list, by name (or [] when closed). */
+		function menuNames(renderer: TestRenderer.ReactTestRenderer): string[] {
+			const items = renderer.root.findAllByProps({
+				className: "composer-command-name",
+			});
+			// The span's children are ["/", name] — join, don't take [0].
+			return items.map((item) => item.children.join(""));
+		}
+
+		async function submitLine(
+			renderer: TestRenderer.ReactTestRenderer,
+			text: string,
+		) {
+			await typeText(renderer, text);
+			await clickSend(renderer);
+		}
+
+		test("typing / as the first character opens the menu with the fetched commands", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/");
+			// The catalog was fetched once per mount from GET /v1/commands.
+			expect(
+				calls.filter((c) => c.input === "/v1/commands" && c.method === "GET"),
+			).toHaveLength(1);
+			expect(menuNames(renderer)).toEqual([
+				"/new",
+				"/fork",
+				"/compact",
+				"/export",
+				"/import",
+				"/name",
+				"/model",
+				"/thinking",
+			]);
+		});
+
+		test("typing filter: `/na` narrows the menu to /name; a plain text line keeps it closed", async () => {
+			const { client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/na");
+			expect(menuNames(renderer)).toEqual(["/name"]);
+			await typeText(renderer, "plain message text");
+			expect(menuNames(renderer)).toEqual([]);
+		});
+
+		test("selecting an arg-taking command from the menu inserts `/name ` for its args", async () => {
+			const { client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/na");
+			const option = renderer.root.findByProps({
+				className: "composer-command-name",
+			});
+			await act(async () => {
+				option.parent!.props.onClick();
+			});
+			expect(composerTextarea(renderer).props.value).toBe("/name ");
+		});
+
+		test("`/name foo` submits the session-meta PATCH with {name: 'foo'}", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/name foo");
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ name: "foo" }),
+			);
+			// The command line cleared from the composer.
+			expect(composerTextarea(renderer).props.value).toBe("");
+		});
+
+		test("an unknown /command on submit is a CLEAR alert-strip error, not a submission", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/bogus now");
+			// Nothing submitted; the alert strip names the unknown command.
+			expect(
+				calls.filter((c) => c.input.endsWith("/submissions")),
+			).toEqual([]);
+			expect(textContent(renderer.toJSON())).toContain("unknown command: /bogus");
+			expect(
+				renderer.root.findByProps({ role: "alert" }),
+			).toBeDefined();
+		});
+
+		test("selecting `/compact` from the menu inserts `/compact ` (it takes optional instructions), and submitting executes the POST", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/com");
+			const option = renderer.root.findByProps({
+				className: "composer-command-name",
+			});
+			await act(async () => {
+				option.parent!.props.onClick();
+			});
+			// Arg-taking commands INSERT for their args…
+			expect(composerTextarea(renderer).props.value).toBe("/compact ");
+			// …and an immediate submit executes the compact call ({} body — the
+			// trailing space is an empty optional arg).
+			await clickSend(renderer);
+			const compactCall = calls.find(
+				(c: { input: string; method?: string }) =>
+					c.method === "POST" && c.input.endsWith("/compact"),
+			);
+			expect(compactCall).toBeDefined();
+			expect(compactCall?.body).toBe(JSON.stringify({}));
+		});
+
+		test("selecting an ARGLESS command from the menu executes immediately (`/export`)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/exp");
+			const option = renderer.root.findByProps({
+				className: "composer-command-name",
+			});
+			await act(async () => {
+				option.parent!.props.onClick();
+			});
+			const exportCall = calls.find((c) => c.input.endsWith("/export"));
+			expect(exportCall?.method).toBe("GET");
+		});
+
+		test("`/compact instructions` passes the instructions in the body", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/compact keep the plan");
+			const compactCall = calls.find(
+				(c: { input: string; method?: string }) =>
+					c.method === "POST" && c.input.endsWith("/compact"),
+			);
+			expect(compactCall?.body).toBe(
+				JSON.stringify({ instructions: "keep the plan" }),
+			);
+		});
+
+		test("`/fork 5` POSTs the fork endpoint with {at: 5} and navigates", async () => {
+			const { calls, client } = makeHarness();
+			const navigated: number[] = [];
+			const renderer = await renderAsync(
+				<Composer
+					client={client}
+					conversationId={1}
+					view={makeView()}
+					onNavigate={(id) => navigated.push(id)}
+				/>,
+			);
+			await submitLine(renderer, "/fork 5");
+			const forkCall = calls.find(
+				(c: { input: string; method?: string }) =>
+					c.method === "POST" && c.input.endsWith("/fork"),
+			);
+			expect(forkCall?.body).toBe(JSON.stringify({ at: 5 }));
+			expect(navigated).toEqual([7]);
+		});
+
+		test("`/export` GETs the export route and reports the entry count", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/export");
+			const exportCall = calls.find((c) => c.input.endsWith("/export"));
+			expect(exportCall?.method).toBe("GET");
+			expect(textContent(renderer.toJSON())).toContain("exported 2 entries");
+		});
+
+		test("`/import` POSTs the raw JSONL to the import route and navigates", async () => {
+			const { calls, client } = makeHarness();
+			const navigated: number[] = [];
+			const renderer = await renderAsync(
+				<Composer
+					client={client}
+					conversationId={1}
+					view={makeView()}
+					onNavigate={(id) => navigated.push(id)}
+				/>,
+			);
+			const jsonl = '{"kind":"pi.user"}';
+			await submitLine(renderer, `/import ${jsonl}`);
+			const importCall = calls.find(
+				(c: { input: string; method?: string }) =>
+					c.method === "POST" && c.input === "/v1/conversations/import",
+			);
+			expect(importCall?.body).toBe(jsonl); // RAW text, not JSON-encoded
+			expect(navigated).toEqual([8]);
+		});
+
+		test("`/name` with no args is a usage error in the alert strip", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/name");
+			expect(
+				calls.filter((c) => c.method === "PATCH"),
+			).toEqual([]);
+			expect(textContent(renderer.toJSON())).toContain("usage: /name <name>");
+		});
+
+		test("a failed command call surfaces the client error in the alert strip", async () => {
+			const { client } = makeHarness();
+			client.configure = () =>
+				Promise.reject(
+					new Error("sigrun api: POST /v1/conversations/1/configure failed with status 400"),
+			);
+			const renderer = await renderComposer(client, makeView());
+			// /thinking is a configure command — a level outside the enum is a
+			// USAGE error (client-side); a VALID level reaches the failing call.
+			await submitLine(renderer, "/thinking high");
+			expect(textContent(renderer.toJSON())).toContain("failed with status 400");
 		});
 	});
 });

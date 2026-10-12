@@ -32,6 +32,7 @@ function makeHarness(
 				ok: false,
 				status: 404,
 				json: () => Promise.resolve({ error: "not_found" }),
+				text: () => Promise.resolve(String({ error: "not_found" })),
 			});
 		}
 		const status = init?.status ?? 200;
@@ -39,6 +40,7 @@ function makeHarness(
 			ok: status >= 200 && status < 300,
 			status,
 			json: () => Promise.resolve(body),
+			text: () => Promise.resolve(String(body)),
 		});
 	};
 	const client = createClient({ fetch: fetchImpl });

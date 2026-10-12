@@ -39,6 +39,7 @@ function makeHarness() {
 			ok: true,
 			status: 200,
 			json: () => Promise.resolve(body),
+			text: () => Promise.resolve(String(body)),
 		});
 	};
 	const client = createClient({ fetch: fetchImpl });

@@ -23,6 +23,15 @@
  *   SVG ring + percent.
  * - Send/steer toggle: `view.steer.busy` flips the button and the submit
  *   carries `whenBusy: "steer"`; queued depth shows next to the button.
+ * - Slash commands (Task 7, pi parity): typing `/` as the first character
+ *   opens a menu over `GET /v1/commands` (fetched once per mount — the
+ *   catalog is a server boot constant, cache-friendly); typing filters by
+ *   name prefix; Enter/click selects — an argless command executes
+ *   immediately, an arg-taking command inserts `/name ` for its args.
+ *   Submitting a `/command args` line performs the corresponding client
+ *   call; an UNKNOWN command is a clear alert-strip error, never a silent
+ *   no-op. `/new` and `/fork` navigate to the created conversation via the
+ *   optional `onNavigate` prop (App wires it to the active-id flip).
  * - Approval strip: `client.listApprovals(conversationId)` refreshed per
  *   view frame (the stream drives the cadence — this component refetches on
  *   every new `view` object reference). THE T22 P1 CORRECTION: the cards
@@ -32,9 +41,10 @@
  *   card would render for an ungated tool and 404 on click).
  */
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
 	type ApprovalWire,
+	type CommandWire,
 	type ConversationViewWire,
 	type ModelEntry,
 	type SigrunClient,
@@ -93,6 +103,62 @@ const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
 function basename(path: string): string {
 	const slash = path.lastIndexOf("/");
 	return slash === -1 ? path : path.slice(slash + 1);
+}
+
+/**
+ * The `thinking` values `/thinking` accepts (mirrors the server's
+ * THINKING_LEVELS — itself pi-ai `ModelThinkingLevel`; the webui cannot
+ * import server sources). Duplicated so an invalid level errors CLEARLY in
+ * the composer instead of the generic non-2xx message.
+ */
+const THINKING_LEVELS: readonly string[] = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
+/**
+ * Parse a submitted composer line into `(name, args)` — `args` is
+ * EVERYTHING after the command word (spaces and newlines intact, so
+ * `/import` takes multi-line pasted JSONL); both are "" for a non-command
+ * line.
+ */
+function parseCommandLine(text: string): { name: string; args: string } {
+	if (!text.startsWith("/")) return { name: "", args: "" };
+	const rest = text.slice(1);
+	const cut = rest.search(/\s/);
+	if (cut === -1) return { name: rest, args: "" };
+	return { name: rest.slice(0, cut), args: rest.slice(cut + 1).trim() };
+}
+
+/**
+ * Trigger the browser download of an `/export` body as
+ * `conversation-<id>.jsonl` (the anchor + object-URL dance; a no-op outside
+ * a DOM — tests assert the fetch, not the download). This is the cheapest
+ * honest `/export` UX over the existing endpoints: the download IS the
+ * endpoint result.
+ */
+function downloadJsonl(conversationId: number, jsonl: string): void {
+	const document_ = globalThis.document;
+	if (document_ === undefined || typeof document_.createElement !== "function") {
+		return;
+	}
+	const anchor = document_.createElement("a");
+	anchor.href = URL.createObjectURL(new Blob([jsonl], { type: "application/x-ndjson" }));
+	anchor.download = `conversation-${conversationId}.jsonl`;
+	anchor.click();
+	URL.revokeObjectURL(anchor.href);
+}
+
+/** Entry count of an export body — one JSON object per line (trailing newline tolerated). */
+function countJsonlLines(jsonl: string): number | null {
+	const lines = jsonl.split("\n");
+	const trimmed = lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
+	return trimmed.length;
 }
 
 /**
@@ -160,16 +226,43 @@ export function Composer(props: {
 	 * approvals refetch (the stream's cadence).
 	 */
 	view: ConversationViewWire | null;
+	/**
+	 * Navigate to a conversation id — App wires this to the active-id flip;
+	 * `/new`, `/fork`, and `/import` call it with the created id. Optional so
+	 * a bare embed (tests) can omit it.
+	 */
+	onNavigate?: (id: number) => void;
 }) {
-	const { client, conversationId, view } = props;
+	const { client, conversationId, view, onNavigate } = props;
 	const draft = useDraft(client, conversationId);
 	const [models, setModels] = useState<readonly ModelEntry[]>([]);
 	const [selectedModel, setSelectedModel] = useState<string | null>(null);
 	const [approvals, setApprovals] = useState<readonly ApprovalWire[]>([]);
 	const [error, setError] = useState<string | null>(null);
+	const [notice, setNotice] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
 	const [uploading, setUploading] = useState(false);
 	const [compacting, setCompacting] = useState(false);
+	const [commands, setCommands] = useState<readonly CommandWire[]>([]);
+	const [highlight, setHighlight] = useState(0);
+
+	// The slash-command catalog: fetched once per mount (a server boot
+	// constant, like the model catalog). A fetch failure leaves the menu
+	// empty — TYPED commands still execute (the menu is an affordance, not
+	// the gate) — so the failure is swallowed at the menu level, not surfaced
+	// as a boot error.
+	useEffect(() => {
+		let cancelled = false;
+		client
+			.listCommands()
+			.then((response) => {
+				if (!cancelled) setCommands(response.commands);
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [client]);
 
 	// The model catalog: fetched once per mount (the §5 catalog is a server
 	// boot constant for M2's purposes).
@@ -255,8 +348,159 @@ export function Composer(props: {
 		return attach(picked);
 	}
 
+	/**
+	 * The slash menu state: OPEN while the draft is exactly a `/query` (a
+	 * leading slash, no whitespace yet — the first space ends the query
+	 * phase and the args phase begins). Derived from the text, so it can
+	 * never drift; `highlight` is the arrow-key index into `filtered`.
+	 */
+	const slashQuery = /^\/\S*$/.test(draft.text) ? draft.text.slice(1) : null;
+	const filteredCommands =
+		slashQuery === null
+			? []
+			: commands.filter((command) => command.name.startsWith(slashQuery));
+	const menuOpen = slashQuery !== null && commands.length > 0;
+	const clampedHighlight = Math.min(highlight, Math.max(0, filteredCommands.length - 1));
+
+	/** Menu selection (click or menu-Enter): argless → execute; else insert. */
+	function selectCommand(command: CommandWire): void {
+		if (command.argsHint === undefined) {
+			void executeCommand(command.name, "");
+			return;
+		}
+		setHighlight(0);
+		draft.setText(`/${command.name} `);
+	}
+
+	/**
+	 * Execute one slash command line. The composer owns the client calls —
+	 * the catalog is metadata only (the registry's own doc). Every outcome
+	 * is LOUD: success sets a notice, failure sets the alert strip; an
+	 * unknown command or missing args is a usage error, never a silent
+	 * no-op. The draft clears (persisted) once the call resolves.
+	 */
+	async function executeCommand(name: string, args: string): Promise<void> {
+		const command = commands.find((c) => c.name === name);
+		if (command === undefined) {
+			setError(`unknown command: /${name}`);
+			setNotice(null);
+			return;
+		}
+		const usage = (hint: string): void => {
+			setError(`usage: /${command.name} ${hint}`);
+			setNotice(null);
+		};
+		if (conversationId === null) return;
+		// Arg validation FIRST (client-side where the shape is known — clear
+		// errors without a round trip; the server re-validates anyway).
+		switch (command.name) {
+			case "name":
+				if (args === "") return usage(command.argsHint ?? "<name>");
+				break;
+			case "import":
+				if (args === "") return usage(command.argsHint ?? "<jsonl>");
+				break;
+			case "model":
+				if (args === "" || !args.includes("/")) {
+						return usage(command.argsHint ?? "<provider/model>");
+					}
+				break;
+			case "thinking":
+				if (args === "" || !THINKING_LEVELS.includes(args)) {
+						return usage(
+							`<level: ${THINKING_LEVELS.join(" | ")}>`,
+						);
+					}
+				break;
+			case "fork":
+				if (args !== "" && Number.isNaN(Number(args))) {
+						return usage("[at] — an entry id number");
+					}
+				break;
+			default:
+				break;
+		}
+		setSending(true);
+		setError(null);
+		setNotice(null);
+		try {
+			switch (command.name) {
+				case "new": {
+					const created = await client.createConversation();
+					onNavigate?.(created.id);
+					setNotice(`started conversation ${created.id}`);
+					break;
+				}
+				case "fork": {
+					const forked = await client.fork(
+						conversationId,
+						args === "" ? undefined : Number(args),
+					);
+					onNavigate?.(forked.id);
+					setNotice(`forked to conversation ${forked.id}`);
+					break;
+				}
+				case "compact": {
+					await client.compact(
+						conversationId,
+						args === "" ? undefined : args,
+					);
+					setNotice("compaction admitted");
+					break;
+				}
+				case "export": {
+					const jsonl = await client.exportConversation(conversationId);
+					downloadJsonl(conversationId, jsonl);
+					const count = countJsonlLines(jsonl);
+					setNotice(
+						typeof count === "number"
+							? `exported ${count} entries`
+							: "exported",
+					);
+					break;
+				}
+				case "import": {
+					const imported = await client.importConversation(args);
+					onNavigate?.(imported.id);
+					setNotice(`imported conversation ${imported.id}`);
+					break;
+				}
+				case "name": {
+					await client.patchConversationMeta(conversationId, { name: args });
+					setNotice(`named “${args}”`);
+					break;
+				}
+				case "model": {
+					await client.configure(conversationId, { model: args });
+					setNotice(`model set to ${args}`);
+					break;
+				}
+				case "thinking": {
+					await client.configure(conversationId, { thinking: args });
+					setNotice(`thinking set to ${args}`);
+					break;
+				}
+			}
+			// Like a sent message: the command line must not resurrect from a
+			// late debounce flush or a reload.
+			draft.clear(true);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setSending(false);
+		}
+	}
+
 	async function send(): Promise<void> {
 		const text = draft.text.trim();
+		// A `/command args` line is a COMMAND, not a submission (Task 7): the
+		// slash path owns the Send button too — an unknown command errors
+		// visibly instead of being submitted as message text.
+		if (text.startsWith("/")) {
+			const { name, args } = parseCommandLine(draft.text);
+			await executeCommand(name, args);
+			return;
+		}
 		// T26b-iii (ship-gate item 3): the submissions route awaits full
 		// settlement server-side, so `sending` stays true for the WHOLE busy
 		// turn — gating on `sending` alone made Steer unclickable exactly while
@@ -321,6 +565,36 @@ export function Composer(props: {
 				</div>
 			)}
 			{error !== null && <p role="alert">{error}</p>}
+			{notice !== null && (
+				<p className="composer-notice" role="status">
+					{notice}
+				</p>
+			)}
+			{menuOpen && (
+				<ul className="composer-command-menu" role="listbox">
+					{filteredCommands.map((command, index) => (
+						<li
+							key={command.name}
+							role="option"
+							aria-selected={index === clampedHighlight}
+							data-highlighted={index === clampedHighlight || undefined}
+							onMouseDown={(event) => {
+								// Prevent the textarea's blur before the click lands.
+								event.preventDefault();
+							}}
+							onClick={() => selectCommand(command)}
+						>
+							<span className="composer-command-name">/{command.name}</span>
+							{command.argsHint !== undefined && (
+								<span className="composer-command-args">{command.argsHint}</span>
+							)}
+							<span className="composer-command-description">
+								{command.description}
+							</span>
+						</li>
+					))}
+				</ul>
+			)}
 			{draft.attachments.length > 0 && (
 				<ul className="composer-attachments">
 					{draft.attachments.map((path) => (
@@ -358,6 +632,32 @@ export function Composer(props: {
 					value={draft.text}
 					disabled={conversationId === null}
 					onChange={(event) => draft.setText(event.target.value)}
+					onKeyDown={(event) => {
+						if (!menuOpen) return;
+						const key = event.key;
+						if (
+							key === "ArrowDown" ||
+							key === "ArrowUp" ||
+							(key === "Enter" && filteredCommands.length > 0) ||
+							key === "Escape"
+						) {
+							event.preventDefault();
+							if (key === "Escape") {
+								draft.setText("");
+							} else if (key === "ArrowDown") {
+								setHighlight(
+									(clampedHighlight + 1) % filteredCommands.length,
+								);
+							} else if (key === "ArrowUp") {
+								setHighlight(
+									(clampedHighlight - 1 + filteredCommands.length) %
+										filteredCommands.length,
+								);
+							} else {
+								selectCommand(filteredCommands[clampedHighlight]!);
+							}
+						}
+					}}
 				/>
 				<div className="composer-side">
 					<label
