@@ -788,3 +788,134 @@ body {
 .composer-command-description {
 	color: var(--text-dim);
 }
+
+/* ── settings panel (Task 8c: the gear-opened /v1/settings editor) ───── */
+
+.settings-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgb(0 0 0 / 40%);
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding-top: 6vh;
+	z-index: 100;
+}
+
+.settings-panel {
+	width: min(26rem, 92vw);
+	max-height: 82vh;
+	overflow-y: auto;
+	background: var(--panel);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.75rem 0.875rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.625rem;
+}
+
+.settings-head {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.settings-title {
+	font-weight: 650;
+	letter-spacing: 0.2px;
+}
+
+.settings-head .spacer {
+	flex: 1;
+}
+
+.settings-close {
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 13px;
+}
+
+.settings-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.625rem;
+}
+
+.settings-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	border: none;
+	padding: 0;
+	margin: 0;
+}
+
+.settings-label {
+	font-size: 11px;
+	color: var(--text-dim);
+	font-family: var(--mono);
+}
+
+.settings-checkbox {
+	flex-direction: row;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 13px;
+}
+
+.settings-tools {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 0.75rem;
+}
+
+.settings-tools .settings-note {
+	flex-basis: 100%;
+}
+
+.settings-note {
+	font-size: 11px;
+	color: var(--text-dim);
+	margin: 0;
+}
+
+.settings-thinking {
+	font-family: var(--mono);
+	font-size: 12px;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.4rem;
+	resize: vertical;
+}
+
+.settings-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.625rem;
+}
+
+.settings-save {
+	background: var(--accent, indigo);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.3rem 0.9rem;
+	cursor: pointer;
+}
+
+.settings-save:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.settings-gear {
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 15px;
+}
