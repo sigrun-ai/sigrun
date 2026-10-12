@@ -38,7 +38,7 @@ sigrun: `skillsExtension` is already core (installed unconditionally in `openHar
 - pi has `/skill:name` (the slash command surfaces skills); sigrun has no slash commands (slice 7).
 - The skill path is `skills/` (sigrun already scans this — `SKILLS_DIRECTORY = "skills"`, `src/skills/index.ts:52`).
 
-**Decision:** keep `load_skill` as a sigrun convenience (the model may not have `read` yet in a zero-tool boot), but the section must tell the model the path so `read`-based loading works when the tools slice lands.
+**Decision:** keep `load_skill` as the primary mechanism (it's the only core tool; the model always has it). The section path addition enables pi's convention for models that have `read` — the model can load a skill by reading its file directly when the tools slice lands. `load_skill` is not deprecated; it's the guaranteed-available path.
 
 **Testable:** a skill in `skills/` is discoverable, loadable via `load_skill`, and the section lists the path.
 
@@ -115,7 +115,7 @@ sigrun: env-var config only.
 1. **Tools** (nothing works without them; the trust-posture decision is here)
 2. **Skills convention alignment** (cheap; the section path fix unblocks `read`-based loading)
 3. **MCP** (extension; self-contained)
-4. **Manual compaction + overrides** (the seam exists)
+4. **Manual compaction** (the seam exists)
 5. **Session management** (fork/export/import + session name)
 6. **Auth readiness** (secret-free check only)
 7. **Slash commands** (the catalog over the endpoints)
