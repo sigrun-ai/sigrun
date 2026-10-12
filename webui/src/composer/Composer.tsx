@@ -169,6 +169,7 @@ export function Composer(props: {
 	const [error, setError] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
 	const [uploading, setUploading] = useState(false);
+	const [compacting, setCompacting] = useState(false);
 
 	// The model catalog: fetched once per mount (the §5 catalog is a server
 	// boot constant for M2's purposes).
@@ -286,6 +287,25 @@ export function Composer(props: {
 		}
 	}
 
+	/**
+	 * Manual compaction (Task 4, pi parity): POST the compact endpoint —
+	 * the task is admitted server-side and its `pi.compaction` summary
+	 * entry arrives as a view revision (the stream refreshes the ring).
+	 * Pending state until the POST resolves; errors surface in the strip.
+	 */
+	async function compact(): Promise<void> {
+		if (conversationId === null || compacting) return;
+		setCompacting(true);
+		setError(null);
+		try {
+			await client.compact(conversationId);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setCompacting(false);
+		}
+	}
+
 	return (
 		<div className="composer">
 			{approvals.length > 0 && (
@@ -372,6 +392,15 @@ export function Composer(props: {
 						</select>
 					)}
 					<UsageRing fraction={fraction} />
+					<button
+						type="button"
+						className="composer-compact"
+						disabled={conversationId === null || compacting}
+						data-compacting={compacting || undefined}
+						onClick={() => void compact()}
+					>
+						{compacting ? "Compacting…" : "Compact"}
+					</button>
 					<button
 						type="button"
 						className="composer-send"

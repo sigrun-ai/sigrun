@@ -298,6 +298,30 @@ describe("createClient", () => {
 		]);
 	});
 
+	test("compact POSTs the compact endpoint and parses the task id", async () => {
+		const { calls, fetchImpl } = stubFetch({ taskId: 12 }, { status: 202 });
+		const client = createClient({ fetch: fetchImpl });
+		const admitted = await client.compact(7);
+		expect(admitted).toEqual({ taskId: 12 });
+		expect(calls).toEqual([
+			{
+				input: "/v1/conversations/7/compact",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({}),
+			},
+		]);
+	});
+
+	test("compact is fail-loud on a non-2xx response", async () => {
+		const { fetchImpl } = stubFetch(
+			{ error: "conversation_not_found" },
+			{ status: 404 },
+		);
+		const client = createClient({ fetch: fetchImpl });
+		await expect(client.compact(999)).rejects.toThrow("404");
+	});
+
 	test("readFile is fail-loud on a non-2xx response (e.g. 413 file_too_large)", async () => {
 		const { fetchImpl } = stubFetch(
 			{ error: "file_too_large", maxBytes: 1048576 },
