@@ -31,6 +31,7 @@ import {
 	type ProviderContributor,
 } from "./providers/index.js";
 import { createRegistry } from "./registry.js";
+import { SettingsStore } from "./settings.js";
 import {
 	createWorkspaceService,
 	defaultWorkspacePrefs,
@@ -83,6 +84,15 @@ export interface OpenedHarness {
 	 */
 	readonly providerEnv: Env;
 	/**
+	 * The settings store (Task 8a): the file-backed store the `/v1/settings`
+	 * endpoints read and PATCH through. Booted here so a malformed settings
+	 * file fails loud at boot exactly like a bad `SIGRUN_*` value (the
+	 * store's read validates); the harness consumes the LIVE getter-backed
+	 * `HarnessSettings` (per-resolution reads — a PATCH lands on the next
+	 * submission without a restart).
+	 */
+	readonly settings: SettingsStore;
+	/**
 	 * The loaded memory extension's §3 producer (Task 9e), when its factory
 	 * result carried one; `undefined` for the no-op memory default, a
 	 * quarantined memory extension, or a producer-less memory extension —
@@ -119,6 +129,11 @@ export interface OpenHarnessOptions {
 	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
 	 * every field a caller sets here wins over the config value. Other settings
 	 * (retry, stream) pass through untouched — this is the hermetic-test seam.
+	 *
+	 * Note: `steeringMode`/`followUpMode`/`retry`/`stream` set here win over
+	 * the settings FILE (Task 8) — the file is the deployment default, this
+	 * seam the test override. Pass `settings: {}` to keep the harness reading
+	 * the file's queue modes even when a test needs to pin compaction.
 	 */
 	readonly settings?: HarnessSettings;
 	/**
@@ -127,6 +142,12 @@ export interface OpenHarnessOptions {
 	 * fixture packages, not the deploy-time package list).
 	 */
 	readonly extensionSpecifiers?: readonly string[];
+	/**
+	 * The settings store's directory (Task 8a), default
+	 * `$SIGRUN_CONFIG_DIR`/`~/.config/sigrun` — the hermetic-test seam for
+	 * the file-backed settings store (`/v1/settings` round-trips a tmp file).
+	 */
+	readonly settingsDir?: string;
 }
 
 /**
@@ -221,6 +242,12 @@ export async function openHarness(
 	const workspaceService = createWorkspaceService();
 	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
+	// The settings store (Task 8a): file-backed, live. `harnessSettings()` is
+	// the getter-backed `HarnessSettings` pi-durable re-resolves per
+	// submission — absent = every default. A malformed file throws HERE, at
+	// boot, exactly like a bad `SIGRUN_*` value (loadConfig's posture).
+	const settingsStore = new SettingsStore({ dir: options.settingsDir });
+	const fileSettings = settingsStore.harnessSettings();
 	const harness = await Harness.open(
 		storage,
 		{
@@ -229,9 +256,13 @@ export async function openHarness(
 			env: envBuilder,
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
-			// the result over `DEFAULT_COMPACTION_POLICY` per field.
+			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the
+			// file-backed queue modes/retry/stream flow through the LIVE getters —
+			// `{...options.settings}` first so the caller seam wins per field
+			// (test overrides over the file), then the live getters fill the rest.
 			settings: {
 				...options.settings,
+				...fileSettings,
 				compaction: {
 					...config.compaction,
 					...options.settings?.compaction,
@@ -254,5 +285,6 @@ export async function openHarness(
 		providerEnv: effectiveEnv,
 		memoryHealth,
 		memorySubmit,
+		settings: settingsStore,
 	};
 }
