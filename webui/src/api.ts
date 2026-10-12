@@ -64,6 +64,8 @@ export interface ConversationMeta {
 	readonly draft: { readonly text: string; readonly attachments: readonly string[] };
 	readonly source: "user" | "cron";
 	readonly owner?: string;
+	/** The user-facing session name; absent = unnamed (T5d). */
+	readonly name?: string;
 }
 
 /**
@@ -81,6 +83,7 @@ export type ConversationMetaPatch = {
 		| null;
 	readonly source?: "user" | "cron" | null;
 	readonly owner?: string | null;
+	readonly name?: string | null;
 };
 
 /** One `GET /v1/models` entry (mirrors `ModelEntry`). */
