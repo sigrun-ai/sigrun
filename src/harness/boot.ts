@@ -127,13 +127,14 @@ export interface OpenHarnessOptions {
 	/**
 	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
 	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
-	 * every field a caller sets here wins over the config value. Other settings
-	 * (retry, stream) pass through untouched — this is the hermetic-test seam.
-	 *
-	 * Note: `steeringMode`/`followUpMode`/`retry`/`stream` set here win over
-	 * the settings FILE (Task 8) — the file is the deployment default, this
-	 * seam the test override. Pass `settings: {}` to keep the harness reading
-	 * the file's queue modes even when a test needs to pin compaction.
+	 * every field a caller sets here wins over the config value. The four
+	 * file-backed fields (steeringMode/followUpMode/retry/stream) resolve per
+	 * access — caller-set first, then the settings FILE's live getter (Task 8a):
+	 * the file is the deployment default, this seam the test override, and an
+	 * unset field here keeps the harness reading the file's CURRENT value (a
+	 * PATCH becomes effective on the next admission without a restart).
+	 * Pass `settings: {}` (or only `compaction`) to keep the file in charge of
+	 * the queue modes while pinning compaction.
 	 */
 	readonly settings?: HarnessSettings;
 	/**
@@ -248,6 +249,7 @@ export async function openHarness(
 	// boot, exactly like a bad `SIGRUN_*` value (loadConfig's posture).
 	const settingsStore = new SettingsStore({ dir: options.settingsDir });
 	const fileSettings = settingsStore.harnessSettings();
+	const callerSettings = options.settings;
 	const harness = await Harness.open(
 		storage,
 		{
@@ -257,15 +259,32 @@ export async function openHarness(
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
 			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the
-			// file-backed queue modes/retry/stream flow through the LIVE getters —
-			// `{...options.settings}` first so the caller seam wins per field
-			// (test overrides over the file), then the live getters fill the rest.
+			// four file-backed keys resolve PER ACCESS through getters — caller
+			// seam first (test override over the file), then the file's LIVE
+			// getter. pi-durable re-resolves `settings` at every boundary, so a
+			// file PATCH becomes effective on the next admission without a
+			// restart. NEVER spread the getters into this object: a spread
+			// snapshots the file's boot-time values, silently freezing the
+			// queue modes and clobbering the caller seam (the round-1 defects).
+			// `extensions`/`toolExecution` have no file backing — plain passthrough.
 			settings: {
-				...options.settings,
-				...fileSettings,
+				get steeringMode() {
+					return callerSettings?.steeringMode ?? fileSettings.steeringMode;
+				},
+				get followUpMode() {
+					return callerSettings?.followUpMode ?? fileSettings.followUpMode;
+				},
+				get retry() {
+					return callerSettings?.retry ?? fileSettings.retry;
+				},
+				get stream() {
+					return callerSettings?.stream ?? fileSettings.stream;
+				},
+				extensions: callerSettings?.extensions,
+				toolExecution: callerSettings?.toolExecution,
 				compaction: {
 					...config.compaction,
-					...options.settings?.compaction,
+					...callerSettings?.compaction,
 				},
 			},
 		},

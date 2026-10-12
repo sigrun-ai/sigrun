@@ -26,7 +26,7 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { InboxDoc, type ConversationId } from "@earendil-works/pi-durable";
+import { InboxDoc, type ConversationId, type HarnessSettings } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { settingsPath } from "../src/harness/settings.js";
@@ -46,12 +46,20 @@ interface TestServer {
 
 /**
  * Boot a hermetic server with its settings store over a fresh tmp dir
- * (the `settingsDir` seam — no `~/.config/sigrun` write).
+ * (the `settingsDir` seam — no `~/.config/sigrun` write). `opts.file`
+ * writes the settings file BEFORE boot (the deployment default the
+ * harness must read); `opts.settings` is the openHarness caller seam
+ * (the test override, which must WIN over the file per field — the
+ * round-1 pinning seam).
  */
 async function bootServer(
 	env: Record<string, string> = {},
+	opts: { file?: string; settings?: HarnessSettings } = {},
 ): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-sett-"));
+	if (opts.file !== undefined) {
+		await writeFile(settingsPath(dir), opts.file, "utf8");
+	}
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
@@ -73,6 +81,7 @@ async function bootServer(
 		extensions: [contributor],
 		env: {},
 		settingsDir: dir,
+		settings: opts.settings,
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {
@@ -348,8 +357,28 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 				(sample) => sample.answers > 0 && sample.queued > 0,
 			);
 			expect(leftover).toEqual([]);
-			// And the steers really did run (both answers placed).
-			expect(samples[samples.length - 1].answers).toBe(2);
+			// The DISCRIMINATING shape (round 1): under one-at-a-time the
+			// first boundary admits only steer 0 and holds steer 1 queued —
+			// a `queued=1, answers=0` sample spanning the whole slow first
+			// steered round (probe-observed 2026-10-12); under "all" the
+			// queue drops 2→0 at the single boundary, so no such sample can
+			// form. (The leftover check alone is vacuous: the view serializer
+			// lags the inbox by hundreds of poll cycles — see the
+			// default-mode test's comment — so answers-while-queued is never
+			// observed even when one-at-a-time held the second steer back;
+			// the pre-fix composition passed it with the PATCH inert.)
+			const heldBack = samples.filter(
+				(sample) => sample.queued === 1 && sample.answers === 0,
+			);
+			expect(heldBack).toEqual([]);
+			// Under true "all" the single boundary merges BOTH steers into ONE
+			// assistant round — exactly one steered answer is placed (the
+			// second queued faux response is never consumed) and the inbox
+			// drains. (The pre-fix `answers === 2` encoding passed only
+			// because the PATCH was inert and the harness ran one-at-a-time,
+			// one answer per steer.)
+			expect(samples[samples.length - 1].answers).toBe(1);
+			expect(samples[samples.length - 1].queued).toBe(0);
 		},
 	);
 
@@ -384,6 +413,40 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 			expect(holdback).toBeGreaterThan(0);
 			// Both ran eventually (the routes settled done).
 			expect(samples[samples.length - 1].answers).toBe(2);
+			expect(samples[samples.length - 1].queued).toBe(0);
+		},
+	);
+
+	test(
+		'the openHarness caller seam wins over the settings file: file "one-at-a-time" + options.settings "all" admits "all"',
+		{ timeout: 90_000 },
+		async () => {
+			const server = await bootServer(
+				{},
+				{
+					file: '{"steeringMode": "one-at-a-time"}',
+					settings: { steeringMode: "all" },
+				},
+			);
+			// The file really says one-at-a-time (the store serves it back) —
+			// the harness must NOT obey it where the seam overrides the field.
+			const fileView = await server.app.inject({
+				method: "GET",
+				url: "/v1/settings",
+			});
+			expect(fileView.json()).toEqual({ steeringMode: "one-at-a-time" });
+			const samples = await steerSamples(server, 2);
+			// "all" admission: both steers admitted at the single boundary —
+			// no held-back sample (queued=1 while answers=0, the
+			// one-at-a-time signature this file would otherwise impose).
+			const heldBack = samples.filter(
+				(sample) => sample.queued === 1 && sample.answers === 0,
+			);
+			expect(heldBack).toEqual([]);
+			// True "all" end-state: both steers merged into ONE assistant round
+			// (one steered answer), inbox drained — versus this file's
+			// one-at-a-time, which would hold a steer back AND run two rounds.
+			expect(samples[samples.length - 1].answers).toBe(1);
 			expect(samples[samples.length - 1].queued).toBe(0);
 		},
 	);

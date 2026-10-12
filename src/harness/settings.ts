@@ -343,7 +343,9 @@ export class SettingsStore {
 	 * reads the file AT ACCESS TIME, so pi-durable's per-resolution
 	 * `resolveSettings()` observes PATCHed changes without a restart.
 	 * Called once per harness boot; the returned object must never be
-	 * copied or snapshotted (pi-durable's contract).
+	 * copied or snapshotted (pi-durable's contract) — `openHarness`
+	 * composes it getter-preserving (caller seam first, file second),
+	 * never via a spread, which would freeze the boot values.
 	 */
 	harnessSettings(): {
 		readonly steeringMode?: "all" | "one-at-a-time";
@@ -352,6 +354,10 @@ export class SettingsStore {
 		readonly stream?: SettingsFile["stream"];
 	} {
 		const store = this;
+		// Eager validation: a malformed file throws HERE, at boot (the
+		// fail-loud posture), even though the getters below defer their
+		// first read to pi-durable's first resolution.
+		store.read();
 		return {
 			get steeringMode() {
 				return store.read().steeringMode;
