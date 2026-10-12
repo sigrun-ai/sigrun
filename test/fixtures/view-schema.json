@@ -165,7 +165,366 @@
 																"properties": {
 																	"kind": "object",
 																	"fields": {
+																		"command": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"timeout": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"path": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"content": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"path": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"edits": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"items": {
+																					"kind": "object",
+																					"fields": {
+																						"type": {
+																							"kind": "string"
+																						},
+																						"required": {
+																							"kind": "array",
+																							"variants": [
+																								{
+																									"kind": "string"
+																								}
+																							]
+																						},
+																						"properties": {
+																							"kind": "object",
+																							"fields": {
+																								"oldText": {
+																									"kind": "object",
+																									"fields": {
+																										"type": {
+																											"kind": "string"
+																										},
+																										"description": {
+																											"kind": "string"
+																										}
+																									}
+																								},
+																								"newText": {
+																									"kind": "object",
+																									"fields": {
+																										"type": {
+																											"kind": "string"
+																										},
+																										"description": {
+																											"kind": "string"
+																										}
+																									}
+																								}
+																							}
+																						}
+																					}
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"path": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"offset": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"limit": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
 																		"name": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"pattern": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"path": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"path": {
 																			"kind": "object",
 																			"fields": {
 																				"type": {
