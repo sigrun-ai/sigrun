@@ -18,12 +18,16 @@
  *
  * - Discovery: `skills/<dir>/SKILL.md` only; other files ignored.
  * - Frontmatter `name` and `description` required (single-line values,
- *   matching quotes stripped); all other fields ignored. A SKILL.md missing
- *   either field — or the `---` block entirely — is skipped with a log.
- * - Duplicate names resolve last-wins (the later directory in sorted order)
- *   with a log.
- * - The section lists `- name: description` per skill, capped at 4KB total
- *   with a truncation notice when capped; zero skills render no section.
+ *   matching quotes stripped); `disable-model-invocation: true` hides the
+ *   skill from the model entirely — absent from the section, unknown to
+ *   `load_skill` (pi's convention); all other fields ignored. A SKILL.md
+ *   missing either required field — or the `---` block entirely — is
+ *   skipped with a log.
+ * - Duplicate names resolve first-wins (the earlier directory in sorted
+ *   order) with a log.
+ * - The section lists `- name: description (skills/<dir>)` per skill,
+ *   capped at 4KB total with a truncation notice when capped; zero skills
+ *   render no section.
  * - `load_skill(name)` returns the SKILL.md body (everything after the
  *   frontmatter block); an unknown name is an explicit error listing the
  *   available skills.
@@ -54,7 +58,7 @@ const SKILL_FILE = "SKILL.md";
 const FRONTMATTER_DELIMITER = "---";
 
 const SKILLS_SECTION_HEADER =
-	"Workspace skills. Call the load_skill tool with a skill's name to read its full instructions.";
+	"Workspace skills. Call the load_skill tool with a skill's name to read its full instructions; each entry shows the skill's path, so you can also read its SKILL.md directly.";
 
 /** One discovered workspace skill. */
 export interface WorkspaceSkill {
@@ -66,12 +70,16 @@ export interface WorkspaceSkill {
 	readonly body: string;
 	/** The skill directory relative to the workspace root (`skills/<dir>`). */
 	readonly dir: string;
+	/** Frontmatter `disable-model-invocation: true` — hidden from the model. */
+	readonly disableModelInvocation: boolean;
 }
 
 /** Parsed frontmatter: required fields absent when missing or empty. */
 interface ParsedSkillFile {
 	readonly name?: string;
 	readonly description?: string;
+	/** Frontmatter `disable-model-invocation: true` — the skill is hidden. */
+	readonly disableModelInvocation: boolean;
 	readonly body: string;
 }
 
@@ -121,6 +129,8 @@ function parseSkillFile(text: string): ParsedSkillFile | undefined {
 	return {
 		name: fields.name,
 		description: fields.description,
+		disableModelInvocation:
+			fields["disable-model-invocation"] === "true",
 		body: lines
 			.slice(close + 1)
 			.join("\n")
@@ -187,6 +197,7 @@ async function readSkill(
 		description: parsed.description,
 		body: parsed.body,
 		dir: `${SKILLS_DIRECTORY}/${dir.name}`,
+		disableModelInvocation: parsed.disableModelInvocation,
 	};
 }
 
@@ -194,7 +205,9 @@ async function readSkill(
  * Scan the workspace's skills through the conversation `ExecutionEnv`.
  * An absent `skills/` directory is the designed empty case; any other read
  * failure fails loud. Directories are visited in sorted name order so
- * duplicate frontmatter names resolve deterministically last-wins.
+ * duplicate frontmatter names resolve deterministically first-wins. A
+ * skill with `disable-model-invocation: true` doesn't exist as far as the
+ * model is concerned: it never reaches the section or `load_skill`.
  */
 export async function scanSkills(
 	env: ExecutionEnv,
@@ -215,21 +228,30 @@ export async function scanSkills(
 	for (const entry of directories) {
 		const skill = await readSkill(env, entry, context);
 		if (skill === undefined) continue;
-		const previous = byName.get(skill.name);
-		if (previous !== undefined) {
+		if (skill.disableModelInvocation) {
 			console.warn(
-				`skills: duplicate name "${skill.name}" (${skill.dir} replaces ${previous.dir}); the later directory wins`,
+				`skills: hiding ${skill.dir} (disable-model-invocation)`,
+			);
+			continue;
+		}
+		if (!byName.has(skill.name)) {
+			byName.set(skill.name, skill);
+		} else {
+			const winner = byName.get(skill.name) as WorkspaceSkill;
+			console.warn(
+				`skills: duplicate name "${skill.name}" (${skill.dir} ignored; ${winner.dir} wins)`,
 			);
 		}
-		byName.set(skill.name, skill);
 	}
 	return [...byName.values()].sort(bySkillName);
 }
 
 /**
- * Assemble the section text: the header plus one `- name: description`
- * line per skill, capped at {@link SKILLS_SECTION_LIMIT_BYTES} bytes
- * including the truncation notice. Whole lines drop from the end until the
+ * Assemble the section text: the header plus one `- name: description
+ * (path)` line per skill, capped at {@link SKILLS_SECTION_LIMIT_BYTES}
+ * bytes including the truncation notice. The path lets the model read the
+ * SKILL.md directly (and resolve bundled references) via the read tool,
+ * complementing `load_skill`. Whole lines drop from the end until the
  * text fits; the notice names how many skills were cut. Zero skills render
  * no section at all.
  */
@@ -238,7 +260,9 @@ export function renderSkillList(
 ): string | undefined {
 	if (skills.length === 0) return undefined;
 	const header = `${SKILLS_SECTION_HEADER}\n\n`;
-	const lines = skills.map((skill) => `- ${skill.name}: ${skill.description}`);
+	const lines = skills.map(
+		(skill) => `- ${skill.name}: ${skill.description} (${skill.dir})`,
+	);
 	const full = header + lines.join("\n");
 	if (byteLength(full) <= SKILLS_SECTION_LIMIT_BYTES) return full;
 	let kept = lines.length - 1;

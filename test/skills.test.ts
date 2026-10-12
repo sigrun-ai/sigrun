@@ -10,7 +10,10 @@
  * absent or empty `skills/` directory is the designed empty case (no
  * section, no error). Frontmatter `name` and `description` are required —
  * a SKILL.md missing either (or the frontmatter block) is skipped with a
- * log; duplicate names resolve last-wins with a log.
+ * log; duplicate names resolve first-wins with a log; a skill with
+ * `disable-model-invocation: true` is hidden from the model entirely
+ * (not listed, unknown to load_skill). Each entry carries the skill's
+ * path so the model can also read the SKILL.md directly.
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -160,6 +163,8 @@ test("a valid skill lists its name and description in the section", async () => 
 		);
 		expect(text).toBeDefined();
 		expect(text).toContain("- deploy: Run the deployment checklist end to end.");
+		// The entry carries the skill's path (T2a).
+		expect(text).toContain("(skills/deploy)");
 		// The header tells the model how to load a skill.
 		expect(text).toContain("load_skill");
 	} finally {
@@ -269,11 +274,12 @@ test("a SKILL.md missing name, description, or the frontmatter block is skipped 
 	}
 });
 
-test("duplicate skill names resolve last-wins with a collision log", async () => {
+test("duplicate skill names resolve first-wins with a collision log", async () => {
 	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-skills-"));
 	try {
-		// Directories sort alphabetically, so "zeta" is the later entry: its
-		// content must win both the section and load_skill.
+		// Directories sort alphabetically, so "alpha" is the earlier entry: its
+		// content must win both the section and load_skill (first-wins, pi's
+		// convention) and the later duplicate is logged.
 		await writeSkill(
 			workspacePath,
 			"alpha",
@@ -291,22 +297,102 @@ test("duplicate skill names resolve last-wins with a collision log", async () =>
 			const env = await workspaceEnv(workspacePath);
 			const skills = sectionByKey(SKILLS_SECTION_KEY);
 			const text = await skills.render(promptInput(env), BACKGROUND_CONTEXT);
-			expect(text).toContain("- demo: second description");
-			expect(text).not.toContain("first description");
+			expect(text).toContain("- demo: first description");
+			expect(text).not.toContain("second description");
 
 			const tool = loadSkillTool();
 			const { api, chunks } = toolApi(env);
 			const result = await tool.execute({ name: "demo" }, api, BACKGROUND_CONTEXT);
 			expect(result.isError).toBeUndefined();
-			expect(chunks.join("")).toBe("# Zeta body\n");
+			expect(chunks.join("")).toBe("# Alpha body\n");
 
 			const logged = warn.mock.calls.map((call) => String(call[0]));
 			expect(
-				logged.some((line) => line.includes("demo") && line.includes("zeta")),
+				logged.some(
+					(line) =>
+						line.includes("demo") &&
+					line.includes("alpha") &&
+					line.includes("zeta"),
+				),
 			).toBe(true);
 		} finally {
 			warn.mockRestore();
 		}
+	} finally {
+		await rm(workspacePath, { recursive: true, force: true });
+	}
+});
+
+test("disable-model-invocation: true hides the skill from the section and load_skill", async () => {
+	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-skills-"));
+	try {
+		await writeSkill(
+			workspacePath,
+			"hidden",
+			"name: secret\ndescription: Must never reach the model.\ndisable-model-invocation: true",
+		);
+		await writeSkill(
+			workspacePath,
+			"visible",
+			"name: deploy\ndescription: Run the deployment checklist.",
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const env = await workspaceEnv(workspacePath);
+			const skills = sectionByKey(SKILLS_SECTION_KEY);
+			const text = await skills.render(promptInput(env), BACKGROUND_CONTEXT);
+			expect(text).toContain("- deploy:");
+			expect(text).not.toContain("secret");
+			expect(text).not.toContain("Must never reach the model.");
+
+			// The hidden skill is unknown to load_skill — the explicit
+			// unknown-skill error path, with the hidden name absent from the
+			// available list.
+			const tool = loadSkillTool();
+			const { api } = toolApi(env);
+			const result = await tool.execute(
+				{ name: "secret" },
+				api,
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.isError).toBe(true);
+			const errorText = (result.content ?? [])
+				.map((block) => (block.type === "text" ? block.text : ""))
+				.join("");
+			expect(errorText).toContain("secret");
+			expect(errorText).toContain("deploy");
+			expect(errorText).not.toContain("hidden");
+
+			const logged = warn.mock.calls.map((call) => String(call[0]));
+			expect(logged.some((line) => line.includes("skills/hidden"))).toBe(true);
+		} finally {
+			warn.mockRestore();
+		}
+	} finally {
+		await rm(workspacePath, { recursive: true, force: true });
+	}
+});
+
+test("disable-model-invocation: false (or absent) keeps the skill listed and loadable", async () => {
+	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-skills-"));
+	try {
+		// Explicit false — the common case must not regress.
+		await writeSkill(
+			workspacePath,
+			"explicit-false",
+			"name: deploy\ndescription: Run the deployment checklist.\ndisable-model-invocation: false",
+			"# Explicit body\n",
+		);
+		const env = await workspaceEnv(workspacePath);
+		const skills = sectionByKey(SKILLS_SECTION_KEY);
+		const text = await skills.render(promptInput(env), BACKGROUND_CONTEXT);
+		expect(text).toContain("- deploy: Run the deployment checklist.");
+
+		const tool = loadSkillTool();
+		const { api, chunks } = toolApi(env);
+		const result = await tool.execute({ name: "deploy" }, api, BACKGROUND_CONTEXT);
+		expect(result.isError).toBeUndefined();
+		expect(chunks.join("")).toBe("# Explicit body\n");
 	} finally {
 		await rm(workspacePath, { recursive: true, force: true });
 	}
