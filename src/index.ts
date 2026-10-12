@@ -48,6 +48,12 @@ async function shutdown(
 
 async function main(): Promise<void> {
 	const config = loadConfig(process.env);
+	// The workspace directory must exist before any files endpoint or tool
+	// call touches it. The deploy manifest mounts a volume at /data; the
+	// workspace is /data/workspace. Without this, the first files request
+	// 404s forever (the directory was never created).
+	const { mkdir } = await import("node:fs/promises");
+	await mkdir(config.workspace.path, { recursive: true });
 	const opened = await openHarness(config);
 	const app = await createServer(opened, config);
 	// 0.0.0.0: the container's address (loopback-only would be unreachable
