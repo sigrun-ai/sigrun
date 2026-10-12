@@ -8,13 +8,15 @@
  * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider slowed
  *    deterministically (`tokensPerSecond: 2`, `tokenSize` pinned) and the
  *    compaction policy forced through the OpenHarnessOptions.settings seam
- *    to the EXACT thresholds of the green background-compaction test
- *    (`test/compaction.test.ts`): blocking threshold 700
- *    (`contextWindow - reserveTokens`), background band from 300
- *    (`blocking - backgroundTokens`), `keepRecentTokens: 1`. A short warm-up
- *    turn stays under the band; turn 2's preparation (~550 estimated tokens)
- *    lands inside it, so upstream creates a conversation-owned BACKGROUND
- *    compaction task while turn 2's generation proceeds.
+ *    to thresholds calibrated for the core-tools era: the seven core tool
+ *    schemas (pi parity) ride in every request, so the warm-up turn and
+ *    turn 2 both start from a tools-sized baseline. Blocking threshold
+ *    4000 (`contextWindow - reserveTokens`), background band from 2000
+ *    (`blocking - backgroundTokens`), `keepRecentTokens: 1`. A short
+ *    warm-up turn stays under the band; turn 2's preparation (thousands of
+ *    estimated tokens, baseline plus filler) lands inside it, so upstream
+ *    creates a conversation-owned BACKGROUND compaction task while turn
+ *    2's generation proceeds.
  * 2. All faux responses are content-discriminating factories: the
  *    summarizer's request serializes the pre-cut transcript (it contains the
  *    warm-up ANSWER text but never turn 2's marker), so routing needs no
@@ -188,12 +190,14 @@ async function main(): Promise<never> {
 			routingResponses(dir, mode),
 			{ tokensPerSecond: 2, tokenSize: { min: 8, max: 8 } },
 			{
-				// The T8 settings seam (OpenHarnessOptions.settings): the exact
-				// forced thresholds of the green background-compaction test.
+			// The T8 settings seam (OpenHarnessOptions.settings): forced
+			// thresholds calibrated for the core-tools era (see header) —
+			// the seven core tool schemas ride in every request, so the
+			// old 700/300 band no longer brackets turn 2's estimate.
 				compaction: {
-					reserveTokens: 127_300,
+					reserveTokens: 124_000,
 					keepRecentTokens: 1,
-					backgroundTokens: 400,
+					backgroundTokens: 2000,
 				},
 			},
 		);
