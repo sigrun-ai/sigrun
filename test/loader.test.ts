@@ -14,7 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
@@ -22,6 +22,16 @@ import { openHarness } from "../src/harness/boot.js";
 /** The test fixture package's entry, imported by specifier (contract: default factory). */
 const FIXTURE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),
+).href;
+
+/** The collision fixture package: registers `fixture_marker` under a second extension. */
+const COLLISION_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-ext-collision",
+		"index.js",
+	),
 ).href;
 
 /** The real extension package under test, linked as a devDependency. */
@@ -139,6 +149,67 @@ test("zero extensions: boot succeeds with the no-op memory section present", asy
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
 	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("two extensions registering the same tool name: console.warn names the pair (last-wins unchanged)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [FIXTURE_SPECIFIER, COLLISION_SPECIFIER],
+		});
+		try {
+			// Both extensions installed (quarantine is for load failures, not collisions).
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "sigrun.fixture-ext", status: "ok" },
+				{ name: "sigrun.fixture-ext-collision", status: "ok" },
+			]);
+			// The warning names BOTH extension names and the colliding tool name.
+			const warnings = warn.mock.calls.map((call) => String(call[0]));
+			const collisionWarning = warnings.find((text) =>
+				text.includes("fixture_marker"),
+			);
+			expect(collisionWarning).toBeDefined();
+			expect(collisionWarning).toContain("sigrun.fixture-ext");
+			expect(collisionWarning).toContain("sigrun.fixture-ext-collision");
+			// And it states the resolution semantics (pi-durable's, unchanged).
+			expect(collisionWarning).toContain("last");
+			// No duplicate warning for the non-colliding installs.
+			expect(warnings.filter((text) => text.includes("fixture_marker"))).toHaveLength(1);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		warn.mockRestore();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("no collision: distinct tool names install silently", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [FIXTURE_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "sigrun.fixture-ext", status: "ok" },
+			]);
+			expect(
+				warn.mock.calls.some((call) =>
+					String(call[0]).includes("duplicate tool name"),
+				),
+			).toBe(false);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		warn.mockRestore();
 		await rm(dir, { recursive: true, force: true });
 	}
 });
