@@ -1,0 +1,53 @@
+{{/*
+Sigrun PrometheusRule — hand template.
+
+The bjw-s common library (5.2.1) has ServiceMonitor/PodMonitor classes but
+NO PrometheusRule class, so the alert rules stay a small hand template,
+gated on monitoring.prometheusRule.enabled (independent of the
+ServiceMonitor toggle — a consumer may alert on a scrape target the chart
+did not create, or vice versa).
+*/}}
+{{- if .Values.monitoring.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "bjw-s.common.lib.chart.names.fullname" . }}
+  labels:
+    {{- include "bjw-s.common.lib.metadata.allLabels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: sigrun
+      rules:
+        - alert: SigrunNotReady
+          # Degraded T9e health ⇒ /readyz 503 ⇒ up == 0, so
+          # "meta-degraded" folds into SigrunNotReady: process down OR
+          # harness not ready (storage unreachable, memory/provider health
+          # degraded).
+          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: sigrun scrape failing (process down or harness not ready)
+            description: >-
+              The sigrun /readyz scrape has failed for 10m — the process is
+              down, or readiness is failing (storage read, memory/provider
+              health). Check the pod and GET /v1/meta for the health block.
+        - alert: SigrunNoScrape
+          # The series is absent for 30m — the ServiceMonitor/Prometheus
+          # wiring itself broke (SigrunNotReady cannot fire when nothing
+          # scrapes the target, so the absence needs its own signal).
+          expr: absent(up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"})
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: sigrun is not being scraped
+            description: >-
+              No up{job="sigrun"} series for 30m — the ServiceMonitor or
+              Prometheus discovery wiring broke (SigrunNotReady cannot
+              fire when nothing scrapes the target).
+{{- end }}

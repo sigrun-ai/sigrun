@@ -14,3 +14,7 @@ keywords:
   - llm
 maintainers:
   - name: sigrun-ai
+dependencies:
+  - name: common
+    version: 5.2.1
+    repository: https://bjw-s-labs.github.io/helm-charts/
