@@ -1,0 +1,4 @@
+{{/* bjw-s common loader (5.2.1): renders controllers, service,
+     persistence, serviceMonitor, etc. from values.yaml. */}}
+{{- include "bjw-s.common.loader.init" . }}
+{{- include "bjw-s.common.loader.generate" . }}
