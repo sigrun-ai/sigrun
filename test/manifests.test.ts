@@ -188,6 +188,33 @@ describe("deployment.yaml", () => {
 			envFrom.some((e) => e.secretRef.name === "sigrun-env"),
 		).toBe(true);
 	});
+
+	test("memory sized for the codemode sandbox (Task 8: 512Mi / 1Gi)", () => {
+		// The QuickJS sandbox runs wasm in-process; the bump gives model
+		// scripts guest-heap headroom. Observed in-image canary footprint
+		// ~110 MiB rss — the canary is the floor, not the workload.
+		const resources = (
+			container as unknown as {
+				resources?: {
+					requests?: { memory?: string };
+					limits?: { memory?: string };
+				};
+			}
+		).resources;
+		expect(resources?.requests?.memory).toBe("512Mi");
+		expect(resources?.limits?.memory).toBe("1Gi");
+	});
+
+	test("command routes through the boot-canary entry script (Task 8)", () => {
+		// The image ENTRYPOINT (docker-entry.sh) runs the codemode boot
+		// canary, fail loud, before exec'ing the real command — the k8s
+		// command field REPLACES ENTRYPOINT, so the manifest must route
+		// through it explicitly or the runtime canary never runs.
+		const command = (
+			container as unknown as { command?: string[]; args?: string[] }
+		).command;
+		expect(command).toEqual(["/bin/sh", "/app/scripts/docker-entry.sh"]);
+	});
 });
 
 // ---------------------------------------------------------------------------

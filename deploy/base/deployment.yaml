@@ -40,11 +40,19 @@ spec:
       containers:
         - name: sigrun
           image: REPLACEME-node22-sigrun-image
+          # Boot canary pre-step (Task 8): the image's ENTRYPOINT runs the
+          # codemode boot canary against the vendored dists (fail loud, exit 1,
+          # on missing quickjs wasm/worker) before exec'ing the real command.
           # The deploy entry (src/index.ts), run exactly as `npm start` does
           # (package.json "start": "tsx src/index.ts"). Direct tsx — not
           # `npm start` — so SIGTERM reaches the entry with no npm in the
-          # signal path (graceful close of server + harness, exit 0).
+          # signal path (graceful close of server + harness, exit 0); the
+          # entry script `exec`s it, so the chain stays signal-direct.
+          # args are explicit — image CMD (npm start) must not leak into argv.
           command:
+            - /bin/sh
+            - /app/scripts/docker-entry.sh
+          args:
             - npx
             - tsx
             - src/index.ts
@@ -91,13 +99,16 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           resources:
-            # Placeholder requests/limits — the apply step tunes these
-            # against observed usage; nothing in the base depends on them.
+            # Sized for the codemode sandbox (Task 8 bump): the QuickJS
+            # sandbox runs wasm in-process, and model scripts grow the guest
+            # heap. requests 256Mi→512Mi, limits 512Mi→1Gi. Observed in-image
+            # canary footprint (sigrun:codemode-parity, `return 1+1`):
+            # ~110 MiB rss — the canary is the floor, not the workload.
             requests:
               cpu: 100m
-              memory: 256Mi
-            limits:
               memory: 512Mi
+            limits:
+              memory: 1Gi
           volumeMounts:
             - name: data
               mountPath: /data
