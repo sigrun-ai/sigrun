@@ -14,7 +14,7 @@
 
 ## 1. What sigrun replaces, and why
 
-user has run `hermes-agent` (in-cluster, via the `hermes-pantheon`
+The user has run `hermes-agent` (in-cluster, via the `hermes-pantheon`
 chart) plus `hermes-webui` as a personal assistant. The assistant is genuinely
 useful — the memory system especially — but the software has become a bad fit:
 
