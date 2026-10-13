@@ -95,7 +95,7 @@ Expected per repo: typecheck clean, suite green. The memory repo's `contentText`
 
 - [ ] **Step 2: The load-order integration check**
 
-Run sigrun's own suite with the three repos' built dists (the devDependencies git-pins pick up the working trees per the existing dev setup): `cd /home/user/repos/sigrun && npm test`.
+Run sigrun's own suite with the three repos' built dists (the devDependencies git-pins pick up the working trees per the existing dev setup): `cd ~/repos/sigrun && npm test`.
 Expected: green — the extensions' tool results still publish non-empty output (the silent-empty break the spec warns about would show here as a skills/tools test failure).
 
 ### Task 3: `defaultTools` → `modelTools` remap + the re-apply hazard

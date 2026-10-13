@@ -4,4 +4,15 @@ dist/
 data/
 webui/test-results/
 .docker-ext/
-\n# agent/dev artifacts\n.superpowers/\nREPORT.md\n.vitest/\n*.tgz\n.pi/\ncoverage/\n.env\n.vcc/\n*.pem\n
+
+# agent/dev artifacts
+.superpowers/
+REPORT.md
+.vitest/
+*.tgz
+.pi/
+coverage/
+.env
+.vcc/
+*.pem
+docs/private.md
