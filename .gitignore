@@ -16,3 +16,4 @@ coverage/
 .vcc/
 *.pem
 docs/private.md
+*.tgz
