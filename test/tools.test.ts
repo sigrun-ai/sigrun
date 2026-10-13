@@ -52,6 +52,24 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 const PNG_1X1_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
+/**
+ * A minimal 24-bit 1×1 BMP: the 54-byte header (BITMAPINFOHEADER, planes 1,
+ * bpp 24) plus one 4-byte BGR pixel row. Upstream sniffs it as image/bmp but
+ * has no inline support for BMP, so the wrapper's rescue path carries it.
+ */
+const BMP_1X1 = (() => {
+	const header = Buffer.alloc(54);
+	header.write("BM", 0, "ascii"); // 0-1: signature
+	header.writeUInt32LE(58, 2); // 2-5: file size (header + one pixel)
+	header.writeUInt32LE(54, 10); // 10-13: pixel data offset
+	header.writeUInt32LE(40, 14); // 14-17: BITMAPINFOHEADER size
+	header.writeInt32LE(1, 18); // 18-21: width
+	header.writeInt32LE(1, 22); // 22-25: height
+	header.writeUInt16LE(1, 26); // 26-27: color planes
+	header.writeUInt16LE(24, 28); // 28-29: bits per pixel
+	return Buffer.concat([header, Buffer.from([0x00, 0x00, 0xff, 0x00])]); // BGR + pad
+})();
+
 /** One hermetic boot: harness + faux provider + server + real temp workspace. */
 interface TestServer {
 	app: FastifyInstance;
@@ -298,6 +316,28 @@ describe("coding tools end-to-end", () => {
 		expect(image).toBeDefined();
 		expect(image?.mimeType).toBe("image/png");
 		expect(Buffer.from(image?.data ?? "", "base64")).toEqual(png);
+	});
+
+	test("reading a BMP returns inline image content via the wrapper's rescue (T1c)", async () => {
+		const bmp = BMP_1X1;
+		const { app, opened, workspace } = await bootToolsServer([
+			toolRound({ name: "read", args: { path: "pic.bmp" } }),
+			fauxAssistantMessage("seen it"),
+		]);
+		await writeFile(join(workspace, "pic.bmp"), bmp);
+		const id = await runTurn(opened, "read the picture");
+		const view = await getView(app, id);
+		const read = toolResult(view, "read");
+		expect(read.isError).not.toBe(true);
+		const image = read.content.find((block) => block.type === "image") as
+			| { type: "image"; data: string; mimeType: string }
+			| undefined;
+		expect(image).toBeDefined();
+		// Upstream's sniff of the BMP header yields image/bmp; the wrapper's
+		// advertised contract rescues upstream's unsupported_image error and
+		// returns the bytes as inline image content (Ruling X pins the wrapper).
+		expect(image?.mimeType).toBe("image/bmp");
+		expect(Buffer.from(image?.data ?? "", "base64")).toEqual(bmp);
 	});
 });
 
