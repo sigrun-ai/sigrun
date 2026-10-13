@@ -1,0 +1,137 @@
+{{/*
+Sigrun Deployment (spec §4.4) — the reference deployment's portable core.
+
+Fixed by contract (NOT values):
+- single replica (values-reachable but the chart is single-instance; sqlite
+  is one process's live database)
+- Recreate strategy: the sqlite PVC is ReadWriteOnce — a RollingUpdate starts
+  the replacement while the old pod still holds the volume, and two pods
+  deadlock on one RWO PVC
+- entrypoint `npx tsx src/index.ts`, workingDir /app — the deploy entry run
+  exactly as `npm start` does; direct tsx (not `npm start`) so SIGTERM
+  reaches the entry with no npm in the signal path
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sigrun.fullname" . }}
+  labels:
+    {{- include "sigrun.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "sigrun.componentLabels" (dict "Chart" .Chart "Values" .Values "Release" .Release "component" "server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sigrun.componentLabels" (dict "Chart" .Chart "Values" .Values "Release" .Release "component" "server") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: sigrun
+          image: "{{ .Values.image.repository }}{{ if .Values.image.tag }}:{{ .Values.image.tag }}{{ else }}:{{ .Chart.AppVersion }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # The deploy entry (src/index.ts), run exactly as `npm start` does
+          # (package.json "start": "tsx src/index.ts"). Direct tsx — not
+          # `npm start` — so SIGTERM reaches the entry with no npm in the
+          # signal path (graceful close of server + harness, exit 0).
+          command:
+            - npx
+            - tsx
+            - src/index.ts
+          # The relative `src/index.ts` resolves against this directory, not
+          # the image's WORKDIR convention — pin it so the contract is in the
+          # manifest, not the image.
+          workingDir: /app
+          ports:
+            - name: http
+              containerPort: {{ .Values.sigrun.port }}
+              protocol: TCP
+          env:
+            # Wired to the chart's own volume: the db lives on the PVC.
+            - name: SIGRUN_STORAGE_PATH
+              value: {{ .Values.sigrun.storage.path | quote }}
+            # The static workspace root (spec §4.5): on the same PVC in the
+            # base shape (a separate artifacts volume is a values choice —
+            # §4.4 "workspace artifacts volume optional").
+            - name: SIGRUN_WORKSPACE_PATH
+              value: {{ .Values.sigrun.workspace.path | quote }}
+            # Must match the Service port.
+            - name: SIGRUN_PORT
+              value: {{ .Values.sigrun.port | quote }}
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $name, $value := .Values.sigrun.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          # Everything else config-shaped comes from the Secret
+          # (envFrom): SIGRUN_MODEL (required), OPENAI_API_KEY /
+          # OPENAI_BASE_URL (the degenerate env provider) or extension
+          # provider creds, and the SIGRUN_EXTENSIONS package list (§4.1).
+          # All extension env lives there too — extensions read the whole
+          # environment (§4.4: "every enabled extension can read every env
+          # secret").
+          envFrom:
+            - secretRef:
+                name: {{ .Values.secret.envName }}
+            {{- with .Values.envFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            # /healthz: process-up, always 200 once listening.
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            # /readyz: harness-ready — T9e health not degraded + a real
+            # storage read; 503 otherwise (see src/server/index.ts).
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # Mounted read-write: WAL mode writes -wal/-shm sidecar files
+            # continuously.
+            - name: {{ .Values.persistence.name }}
+              mountPath: /data
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        # The sqlite PVC (RWO, block-like storage — see pvc.yaml).
+        - name: {{ .Values.persistence.name }}
+          persistentVolumeClaim:
+            claimName: {{ include "sigrun.dataPVCName" . }}
+      {{- else }}
+      volumes:
+        # persistence disabled: the sqlite db must live somewhere writable.
+        # An emptyDir at /data keeps the shape renderable (data is LOST on
+        # pod restart — dev/test only; the chart says so here rather than
+        # rendering a Deployment that cannot boot).
+        - name: {{ .Values.persistence.name }}
+          emptyDir: {}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
