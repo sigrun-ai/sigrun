@@ -157,7 +157,7 @@
         </div>
         <div class="meta-row">
           <select id="modelSel" title="model picker (from GET /v1/models)">
-            <option>faux/m</option><option>gateway/glm-5.3-flash</option><option>gateway/kimi-k3</option>
+            <option>faux/m</option><option>acme/model-1</option><option>acme/model-2</option>
           </select>
           <span class="ring-wrap" title="context usage (pi.usage)"><span class="ring" id="ring" style="--p:38"></span><span id="ringLabel">38%</span></span>
           <button class="attach" title="uploads">📎 attach</button>
@@ -179,8 +179,8 @@
 <script>
   // ── demo state (no server) ─────────────────────────────────────────────
   const sessions = [
-    { id: 1, title: "backup retention follow-up", sub: "gateway/glm-5.3-flash · active", active: true, busy: true },
-    { id: 2, title: "crash battery review", sub: "gateway/kimi-k3 · idle" },
+    { id: 1, title: "backup retention follow-up", sub: "acme/model-1 · active", active: true, busy: true },
+    { id: 2, title: "crash battery review", sub: "acme/model-2 · idle" },
     { id: 3, title: "webui layout pass", sub: "faux/m · idle" },
     { id: 4, title: "old onboarding notes", sub: "archived", archived: true },
   ];
