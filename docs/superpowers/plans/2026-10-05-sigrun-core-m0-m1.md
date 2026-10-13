@@ -47,7 +47,7 @@ Greenfield `package.json` in the worktree root; sources under `src/`.
 | `package.json`, `tsconfig.json`, `vitest.config.ts` | tooling; exact pi-durable pin |
 | `src/harness/boot.ts` | boot order: load extensions → collect provider contributions → `Harness.open` → `resume()`; quarantine on boot failure |
 | `src/harness/registry.ts` | the pi-durable `Registry` (`createRegistry()`), degenerate extensions installed |
-| `src/harness/workspace.ts` | `workspaceService.forConversation()` → static `ExecutionEnv` (local path); the the-work-fabric-scrubbed-swap seam |
+| `src/harness/workspace.ts` | `workspaceService.forConversation()` → static `ExecutionEnv` (local path); the workspace-swap seam |
 | `src/harness/providers/index.ts` | provider-contributor contract: collect `createProvider()` results + defaults, merge into one `Models`, env-driven OpenAI-compat degenerate provider |
 | `src/harness/sections/context-files.ts` | `SOUL.md`/`AGENTS.md` → prompt sections via conversation ExecutionEnv; missing file = empty section |
 | `src/harness/loader.ts` | the extension loader: parse `SIGRUN_EXTENSIONS`, dynamic-import each package, `registry.install` with boot-failure quarantine (never abort `Harness.open`), expose outcomes for `GET /v1/meta` |
@@ -141,7 +141,7 @@ test("SIGRUN_MODEL overrides any contributor default", ...);
 
 **Interfaces:**
 - Consumes: `openHarness` (T1).
-- Produces: `workspaceService.forConversation(conversation, prefs): Promise<ExecutionEnv>`; the wrapper signature is the the-work-fabric-scrubbed-swap seam (spec §4.5). v1 returns a local-path env rooted at the configured workspace dir.
+- Produces: `workspaceService.forConversation(conversation, prefs): Promise<ExecutionEnv>`; the wrapper signature is the workspace-swap seam (spec §4.5). v1 returns a local-path env rooted at the configured workspace dir.
 
 - [ ] **Step 1: Failing test** — `HarnessOptions.env(target, ctx)` is called per tool call (verified App C); assert the builder returns an env whose `FileSystem.id` is stable and `cwd` is the configured workspace root.
 - [ ] **Step 2: Run, expect FAIL.**

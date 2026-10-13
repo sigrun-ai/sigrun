@@ -4,8 +4,7 @@
 **Date:** 2026-10-04
 **Consumes:** the core spec (`2026-10-04-sigrun-core.md`) and, for C3, the hermes-replacement
 spec's landed state. No core-contract changes without a core revision (C6b names one).
-**Goal:** the capabilities CONTEXT.md names that hermes does not provide today, plus the
-the-work-fabric-scrubbed integration that makes sigrun's extensions reusable by other agents. This spec runs
+**Goal:** the capabilities CONTEXT.md names that hermes does not provide today. This spec runs
 **after** (or alongside) the cutover; nothing here blocks hermes retirement.
 
 ---
@@ -28,7 +27,7 @@ to pi."
   API.
 - Flow: "turn this into a ticket" from the composer → Forgejo issue with the research
   findings attached → the pi side picks it up (existing herdr/forgejo workflows).
-- **No the-work-fabric-scrubbed dependency.** This is a pure tool extension on the core's tools surface.
+- **No card-system dependency.** This is a pure tool extension on the core's tools surface.
 - **Exit:** "find out about X, then open a ticket for it" completes in one conversation.
 
 ### C2 — Away-from-desk attention (completion notifications)
@@ -65,24 +64,24 @@ that hermes never had. Spec B correctly deferred them here.
   the seam is the core's document model; shape decided when this lane starts.
 - **Exit:** "what's on the calendar this weekend" works.
 
-### C5 — Twill integration (the fabric consumer phase)
+### C5 — Dynamic workspaces + cards/kanban
 
-Two decoupled pieces, both gated on the-work-fabric-scrubbed's own milestones:
+Two decoupled pieces, both unscheduled future work:
 
-- **C5a — Workspace swap** (gated on the-work-fabric-scrubbed T1: registry + resolve + Workspace kind): the
-  core's `workspaceService` swaps static config for `registry.resolve(name,
-  agentLocation)`; the wrapper signature is unchanged (core §4.5). Skill discovery extends
+- **C5a — Workspace swap:** the
+  core's `workspaceService` swaps static config for a dynamic resolver; the wrapper
+  signature is unchanged (core §4.5). Skill discovery extends
   to remote workspaces once the workspace is remote — this is where the core's skills v1
   scope lifts.
-- **C5b — Cards/kanban** (`sigrun-ext-kanban`, gated on the-work-fabric-scrubbed's Card kind — currently
-  deferred to the-work-fabric-scrubbed T5, **not** T1): claim/create/update cards; the "idea → repo + spec +
-  card" demo; sigrun surfaces a pi session's Card `claimed_by` link so the assistant can
+- **C5b — Cards/kanban** (`sigrun-ext-kanban`):
+  claim/create/update cards; the "idea → repo + spec +
+  card" demo; sigrun surfaces a pi session's card `claimed_by` link so the assistant can
   point at ongoing coding work. Core App A's away-from-desk steering link lives here.
-- Corrections inherited from review: sigrun's core/B extensions exercise **no** the-work-fabric-scrubbed
-  object kinds today (the earlier "every kind except AgentProfiles" claim was false);
-  Card consumption waits for the-work-fabric-scrubbed's Card revival.
-- **Exit:** workspace resolves through the registry (C5a); a card created from the composer
-  appears in the-work-fabric-scrubbed and is claimable by pi (C5b).
+- Corrections inherited from review: sigrun's core/B extensions exercise **no** card-
+  system object kinds today (the earlier "every kind except AgentProfiles" claim was false);
+  card consumption waits for a card system to exist.
+- **Exit:** workspace resolves dynamically (C5a); a card created from the composer
+  is claimable by pi (C5b).
 
 ### C6 — Persona selection (per-conversation)
 
@@ -123,13 +122,13 @@ Lands with the extension-selection lane (C6b) or independently.
 ## 3. Sequencing
 
 C1 and C2 have no external gates — they can start any time after the core ships.
-C3 needs honcho (spec B1). C4 is independent. C5 tracks the-work-fabric-scrubbed's milestones (T1 for C5a, T5
-for C5b). C6/C7/C8 are small, unscheduled fillers.
+C3 needs honcho (spec B1). C4 is independent. C5 is unscheduled future work (C5a then
+C5b). C6/C7/C8 are small, unscheduled fillers.
 
 ## 4. What this spec does not do
 
 - Anything that blocks the cutover (spec B owns hermes retirement).
 - Multi-user/household auth (a separate future spec if wanted).
-- Generalized "honcho-for-things" object memory (seam noted in the the-work-fabric-scrubbed spec; separate
-  project).
+- Generalized "honcho-for-things" object memory (seam noted in the improvements spec;
+  separate project).
 - Write-side Discord (inbound ingestion only, C3).

@@ -262,8 +262,8 @@ export async function openHarness(
 	const { models, defaultModel, healthProducers: providerHealth, providerOwnership } =
 		collectProviders(options.extensions ?? [], effectiveEnv, sink);
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
-	// resolves through it, so the the-work-fabric-scrubbed swap changes this wiring's inputs and
-	// nothing downstream.
+	// resolves through it, so a future resolver swap changes this wiring's
+	// inputs and nothing downstream.
 	const workspaceService = createWorkspaceService();
 	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);

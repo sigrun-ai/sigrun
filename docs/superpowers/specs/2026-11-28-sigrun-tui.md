@@ -127,7 +127,7 @@ Single screen. Sidebar left, conversation right, composer bottom.
 │ CONVERSATIONS  │                                          │
 │                │   [assistant] Here's what I found…       │
 │ * research     │   [tool] web_search · 4 results          │
-│   media-tools-cleanup │   [thinking] let me cross-check…         │
+│   media-cleanup │   [thinking] let me cross-check…         │
 │ + new          │                                          │
 │                │                                          │
 │                │                                          │

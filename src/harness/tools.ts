@@ -18,8 +18,8 @@
  *   them — the same inline `ImageContent` the §5 submission path produces).
  * - `sigrun.search-tools`: `find`, `grep`, `ls` — hand-written in TypeScript
  *   against `ExecutionEnv` primitives (no shell-out to fd/rg), so remote
- *   workspaces stay correct after the the-work-fabric-scrubbed swap (the env seam is the only
- *   filesystem access path; see workspace.ts).
+ *   workspaces stay correct regardless of the resolver (the env seam is the
+ *   only filesystem access path; see workspace.ts).
  *
  * Everything resolves through `ToolExecutionApi.env` — the per-call env the
  * harness builds — so paths are conversation-relative exactly like the

@@ -4,14 +4,13 @@
  *
  * Both files are read through `PromptInput.env` — the same `ExecutionEnv`
  * the harness builds per request — so the sections follow the workspace the
- * conversation actually resolves (today the static local workspace, later
- * the the-work-fabric-scrubbed registry) without this module knowing which. The bare file
- * names resolve against the env's `cwd`: the workspace root unless the
+ * conversation actually resolves without this module knowing which. The
+ * bare file names resolve against the env's `cwd`: the workspace root unless the
  * conversation narrowed its working directory (`agent.cwd`, T3), in which
  * case the convention follows that directory — the same cwd-anchored
  * `AGENTS.md` convention pi itself uses, and the only anchor upstream's
  * `FileSystem` offers (there is no workspace-root accessor; a path
- * hard-coded here would break remote/container envs after the the-work-fabric-scrubbed swap).
+ * hard-coded here would break remote/container envs).
  *
  * A *missing* file is the designed empty case: `render` returns
  * `undefined` and pi-durable omits the section from the request. Any other

@@ -276,8 +276,8 @@ async function readView(conversation: Conversation) {
  * `Harness.buildEnv` does for tool calls (dist/harness/harness.js:133-139):
  * resolve the committed `agent.cwd` and hand it, with the harness as the
  * doc `read` line, to the boot `envBuilder`. The §5 file/upload/submission
- * endpoints resolve through this — one seam, so a the-work-fabric-scrubbed-swap of the
- * workspace service moves them all at once.
+ * endpoints resolve through this — one seam, so a workspace-service swap
+ * moves them all at once.
  */
 async function conversationEnv(
 	opened: OpenedHarness,

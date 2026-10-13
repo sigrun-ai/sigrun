@@ -7,7 +7,7 @@
  * `UserInput` content pi-durable stores (`TextContent` / base64
  * `ImageContent`) at SUBMIT time, through the conversation's `ExecutionEnv`
  * (the same `envBuilder` seam tool calls use, so remote workspaces stay
- * correct after the the-work-fabric-scrubbed swap, spec §3.4/§4.5).
+ * correct, spec §3.4/§4.5).
  *
  * Resolution never silently drops a part: a `not_found` path becomes an
  * explicit error text part addressed to the model (it stays visible in the

@@ -7,7 +7,7 @@ service dependencies.** A stranger with Node and one OpenAI-compatible endpoint 
 and it is worth releasing publicly.
 **Sibling specs:** `2026-10-04-sigrun-hermes-replacement.md` (extensions that restore hermes
 parity and scale hermes to 0), `2026-10-04-sigrun-improvements.md` (capabilities hermes never
-had, incl. the-work-fabric-scrubbed).
+had).
 **Context:** `CONTEXT.md` explains why sigrun exists; this spec is the *what* for the core.
 
 ---
@@ -103,7 +103,7 @@ extension at boot is **quarantined** (logged, surfaced as a degraded surface via
 ### 3.2 Skills convention (v1 scope, exact)
 
 - Discovery: local workspace root only (`skills/`); remote-workspace skill discovery is
-  post-the-work-fabric-scrubbed (spec C).
+  deferred (spec C).
 - Frontmatter: `name`, `description` required; all other fields ignored in v1.
 - Section: name + description only, capped at 4KB total with truncation notice.
 - `load_skill(name)` returns the SKILL.md body; unknown name = explicit error.
@@ -200,7 +200,7 @@ const env = await workspaceService.forConversation(conversation, defaultPrefs);
 ```
 
 Core ships the static version (`{ defaultWorkspace: { type: "local", path: "/home/sigrun" } }`).
-Dynamic resolution through the the-work-fabric-scrubbed registry is a wrapper swap (spec C); the signature
+Dynamic resolution is a wrapper swap (spec C); the signature
 doesn't change.
 
 ---
@@ -301,7 +301,8 @@ shamelessly, rebuilt as a thin client.**
   trail).
 - Composer footer: model picker, context-usage ring. **Picker convention: a picker renders
   only when its list has more than one item** — applies to workspace (and later persona)
-  pickers, so day-1 single-workspace deployments hide it and the the-work-fabric-scrubbed era shows it.
+  pickers, so day-1 single-workspace deployments hide it and the persona picker appears
+  only with multiple personas.
 - Tool-call cards, expandable, streamed; **approval cards** for write/exec tool calls.
 - Image/file uploads (composer attachment path).
 - Light/dark + accent theme system.
@@ -319,7 +320,7 @@ shamelessly, rebuilt as a thin client.**
 - The backend entirely (no Python, no second agent loop).
 - Provider/credential management UI (provider extensions own that; the surface is the model
   picker).
-- Profile `.env` management (hermes-profile commedia-toolsity — dead).
+- Profile `.env` management (hermes's profile-config cruft — dead).
 - Runtime plugin management UI (deploy-time extension list).
 - Persona/profile picker (v1: single `SOUL.md` persona; per-conversation selection is spec C).
 - Notification service-worker and settings.
@@ -453,7 +454,7 @@ hermes's used functionality on top of these contracts and retires hermes. Spec C
 - Scheduled jobs must be crash-durable.
 - Keep pi's philosophy: minimal core, well-defined interfaces, extension ecosystem.
 - Away-from-desk steering of *coding* sessions already works via `herdr --remote`; sigrun's
-  job there is only to surface the link (spec C, the-work-fabric-scrubbed-dependent).
+  job there is only to surface the link (spec C).
 
 ## Appendix B — decision record (inherited from rev 2/3 + restructure)
 
@@ -462,7 +463,7 @@ The full numbered decision record lives in `2026-10-02-sigrun.md` Appendix B (de
 
 24. **Three-spec split** (user): core (this spec, publicly releasable, zero external
     deps) / hermes-replacement (parity extensions + cutover) / improvements (post-hermes
-    capabilities incl. the-work-fabric-scrubbed). The 2026-10-02 spec is superseded by the three.
+    capabilities). The 2026-10-02 spec is superseded by the three.
 25. **Workspace browser kept at the ship gate** (user): read-only v1 (list/read via
     ExecutionEnv); hermes's edit/save path deliberately out of scope. LoE ~0.5–1 day.
 26. **Picker convention** (user): hide when the list has one item, show when more —

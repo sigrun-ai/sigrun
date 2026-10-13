@@ -16,7 +16,7 @@ The core (spec A) ships a working assistant with degenerate defaults. This spec 
 extension packages that turn it into *the user's* assistant — the ones matching
 hermes's used functionality — and defines the gate at which hermes is retired.
 
-Non-goals: improvements hermes never had (spec C), the-work-fabric-scrubbed integration (spec C), multi-user
+Non-goals: improvements hermes never had (spec C), kanban/card integration (spec C), multi-user
 (spec C).
 
 ## 2. Extensions
@@ -27,7 +27,10 @@ Non-goals: improvements hermes never had (spec C), the-work-fabric-scrubbed inte
 | `sigrun-ext-honcho` | MemoryBackend | Peer config for the existing hermes honcho workspace: observe user+assistant, dialectic recall, injection | hermes honcho block (same workspace, same observation policy) |
 | `sigrun-ext-web-research` | tools | searxng + crawl4ai via their HTTP APIs | hermes web tools |
 | `sigrun-ext-cron` | scheduled jobs | Port of the hermes crontasks actually in use | hermes crontasks |
-| `sigrun-ext-agentic-maintenance` | tools | media-tools/agentic-maintenance/agentic-maintenance/agentic-maintenance/agentic-maintenance | hermes toolsets, 1:1 |
+
+(Generalized agentic-maintenance tooling — self-hosted service upkeep and similar
+assistant chores run as cron jobs — is future work, spec C territory; no such
+extension is planned in this spec.)
 
 Notes:
 
@@ -48,7 +51,7 @@ Notes:
   the model. `section()` is cached per conversation with a TTL (dialectic latency is
   8–20s at medium — a per-request re-render without a cache is unacceptable) and a hard
   timeout beyond which the placeholder serves.
-- **Servarr safety:** all mutating agentic-maintenance tools declare `replay: "unsafe"`; the core's
+- **Maintenance-task safety:** all mutating maintenance tools declare `replay: "unsafe"`; the core's
   M1 crash battery establishes the replay semantics before any of these ship.
 - **Web research:** searxng (keenable + braveapi engines) and crawl4ai as tools, not MCP —
   thin HTTP clients in the extension.
@@ -77,16 +80,17 @@ lane set, not any single lane.
 - searxng + crawl4ai tools.
 - **Exit:** "go find out about X" works from the composer.
 
-### Lane B3 — Cron + agentic-maintenance (2 days)
+### Lane B3 — Cron + agentic maintenance (2 days)
 - `sigrun-ext-cron`: port the crontasks actually used (durable by construction); webui cron
   panel reading the read-only `GET /v1/jobs` enumeration added with this lane (per core §5).
   **The shape of `GET /v1/jobs` is owned by this lane and pinned in the core's
   captured-schema fixture when it ships** (`[{name, schedule, lastRun, nextRun, state,
   lastError}]`).
-- `sigrun-ext-agentic-maintenance`: 1:1 port of hermes toolset logic; unsafe-replay semantics verified
-  against a side-effect-free dummy before any agentic-maintenance tool ships.
+- Agentic maintenance tasks (self-hosted service upkeep and similar assistant
+  chores) run as scheduled jobs; unsafe-replay semantics verified
+  against a side-effect-free dummy before any mutating maintenance tool ships.
 - **Exit:** one concrete scheduled job runs on schedule and survives a pod restart; one
-  concrete agentic-maintenance action works end-to-end (observation, not a parity vibe).
+  concrete maintenance action works end-to-end (observation, not a parity vibe).
 
 ### Lane B4 — Bifrost provider (~½ day)
 - Small; can land any time after the core's contributor contract exists (it is the
@@ -117,5 +121,5 @@ When it passes:
 - Improvements over hermes (spec C) — including discord ingestion, forgejo/cards, calendar,
   household context. Calendar access and household-context tools are named in CONTEXT §2 as
   wanted-but-not-yet; they are **spec C** items (documented deferral, not silent drops).
-- Twill/kanban integration (spec C).
+- Kanban/card integration (spec C).
 - Multi-user (spec C).
