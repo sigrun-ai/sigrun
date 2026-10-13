@@ -436,7 +436,7 @@ describe("runBackup (s3 target, stubbed aws)", () => {
 			SIGRUN_BACKUP_S3_PREFIX: "nightly/",
 			// The S3-compatible-store leg (spec §4.3's pluggable target):
 			// the endpoint lands as aws's --endpoint-url.
-			SIGRUN_BACKUP_S3_ENDPOINT: "https://RUSTFS-ENDPOINT-REMOVED.example.invalid:3900",
+			SIGRUN_BACKUP_S3_ENDPOINT: "https://s3.example.test:3900",
 			// The stub dir PREPENDS to PATH: `aws` resolves to the stub while
 			// sqlite3 still resolves through the parent PATH.
 			PATH: `${binDir}:${process.env.PATH}`,
@@ -447,7 +447,7 @@ describe("runBackup (s3 target, stubbed aws)", () => {
 		const argv = (await fs.readFile(logFile, "utf8")).trim();
 		expect(argv).toContain("s3 cp");
 		expect(argv).toContain("s3://sigrun-backups/nightly/sigrun-");
-		expect(argv).toContain("--endpoint-url https://RUSTFS-ENDPOINT-REMOVED.example.invalid:3900");
+		expect(argv).toContain("--endpoint-url https://s3.example.test:3900");
 
 		// And the fail-loud leg: aws exits non-zero → script fails, no
 		// silent success.
