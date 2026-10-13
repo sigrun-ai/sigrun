@@ -27,8 +27,8 @@
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",
-		"sigrun-ext-approvals": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-approvals.git#c207938da9",
-		"sigrun-ext-memory-markdown": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-memory-markdown.git#9d71be1",
+		"sigrun-ext-approvals": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-approvals.git#3942a605",
+		"sigrun-ext-memory-markdown": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-memory-markdown.git#5fa3c404",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3",
