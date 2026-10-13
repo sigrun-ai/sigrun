@@ -35,6 +35,12 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
+import { pathToFileURL } from "node:url";
+
+/** The fixture memory extension (the memory-surface stand-in — publish prep 2.2). */
+const MEMORY_FIXTURE_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
+).href;
 
 /** A 1x1 red PNG (base64), for the image round-trip. */
 const PNG_BASE64 =
@@ -507,7 +513,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		"a server-driven submit binds the memory recall source (memory_recall answers)",
 		{ timeout: 60_000 },
 		async () => {
-			// T26a Fix B: sigrun-ext-memory-markdown's wiring submit binds the
+			// T26a Fix B: the memory extension's wiring submit binds the
 			// conversation as the recall source at the submit boundary
 			// (degenerate.js: hosts submit through the wiring's submit()). The
 			// server must route submissions through it (OpenedHarness.memorySubmit,
@@ -515,7 +521,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			// memory_recall tool answers "No conversation bound to memory recall
 			// yet." on every call.
 			const { app, opened, faux } = await bootExtendedServer({
-				extensionSpecifiers: ["sigrun-ext-memory-markdown"],
+				extensionSpecifiers: [MEMORY_FIXTURE_SPECIFIER],
 			});
 			// Boot exposed the memory wiring's submit (identity-matched).
 			expect(opened.memorySubmit).toBeDefined();

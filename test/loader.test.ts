@@ -3,11 +3,16 @@
  *
  * Extensions are external packages. The loader dynamic-imports each
  * configured specifier, resolves the package contract (default export = a
- * factory returning `{ extension }`, with a bridge for the two real
- * packages' named factory exports), installs the extension, and quarantines
+ * factory returning `{ extension }`, with a bridge for the named factory
+ * exports of pre-contract packages), installs the extension, and quarantines
  * any failure — boot never aborts. The no-op memory default guarantees a
  * bare core (zero extensions) still renders the stable `long-term-memory`
  * prompt section.
+ *
+ * CHANGED (publish prep 2.2): the personal git-pinned packages are no
+ * longer devDependencies — the fixture extensions under test/fixtures/
+ * (fixture-ext, fixture-memory, fixture-approvals) speak the same contract
+ * and stand in for real packages.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -24,8 +29,10 @@ const FIXTURE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),
 ).href;
 
-/** The real extension package under test, linked as a devDependency. */
-const MEMORY_SPECIFIER = "sigrun-ext-memory-markdown";
+/** The fixture memory extension, imported by specifier (contract: factory + submit). */
+const MEMORY_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
+).href;
 
 function configWith(dir: string) {
 	return loadConfig({
@@ -38,12 +45,9 @@ function configWith(dir: string) {
 test("SIGRUN_EXTENSIONS parses into config.extensions", () => {
 	const config = loadConfig({
 		SIGRUN_MODEL: "openai/gpt-4o",
-		SIGRUN_EXTENSIONS: "sigrun-ext-memory-markdown, sigrun-ext-approvals",
+		SIGRUN_EXTENSIONS: "some-ext-package, ./local/extension",
 	});
-	expect(config.extensions).toEqual([
-		"sigrun-ext-memory-markdown",
-		"sigrun-ext-approvals",
-	]);
+	expect(config.extensions).toEqual(["some-ext-package", "./local/extension"]);
 });
 
 test("SIGRUN_EXTENSIONS empty or unset means no extensions", () => {
@@ -143,7 +147,7 @@ test("zero extensions: boot succeeds with the no-op memory section present", asy
 	}
 });
 
-test("the real sigrun-ext-memory-markdown loads: memory_recall tool + long-term-memory section", async () => {
+test("a memory extension loads: memory_recall tool + long-term-memory section", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
@@ -161,6 +165,8 @@ test("the real sigrun-ext-memory-markdown loads: memory_recall tool + long-term-
 					(entry) => entry.section.key === "long-term-memory",
 				),
 			).toBe(true);
+			// The factory result carried a submit pass-through: boot retains it.
+			expect(opened.memorySubmit).toBeDefined();
 			// A memory extension owns the section: the no-op default must NOT be installed.
 			expect(
 				snapshot

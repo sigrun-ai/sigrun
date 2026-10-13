@@ -37,12 +37,7 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import {
-	ApprovalsDoc,
-	ApprovalsPolicyDoc,
-	DEFAULT_APPROVAL_POLICY,
-	isGated,
-} from "sigrun-ext-approvals";
+import type { ExtensionApprovals } from "./approvals.js";
 import type {
 	AgentChange,
 	Conversation,
@@ -255,91 +250,17 @@ function conversationId(id: number): ConversationId {
 	return id as ConversationId;
 }
 
-/** The extension name the approvals package contributes (loader-install name). */
-const APPROVALS_EXTENSION_NAME = "sigrun.approvals";
-
-/** Whether the approvals package is installed in the harness registry. */
-function approvalsInstalled(opened: OpenedHarness): boolean {
-	return (
-		opened.registry.snapshot().extension(APPROVALS_EXTENSION_NAME) !== undefined
-	);
-}
-
 /**
- * Read the conversation's LiveDoc tool slots from the view. `view.docs` is an
- * untyped `Record<string, JsonObject>`; the slots are narrowed structurally
- * (fail-soft on any unexpected shape, which upstream schema-drift would
- * surface in the schema fixture first). Absent doc / absent tools → no slots.
+ * Whether the approvals surface is available: the approvals extension is
+ * installed AND its factory result carried the structural capability
+ * (publish prep 2.1 — see server/approvals.ts for the contract; core never
+ * imports the extension package; the extension's doc-family tokens are its
+ * own). The routes degrade when this is `undefined`.
  */
-function liveToolSlots(view: ConversationView): readonly ToolSlot[] {
-	const live = view.docs["pi.live"];
-	if (typeof live !== "object" || live === null) return [];
-	const tools = (live as { tools?: unknown }).tools;
-	if (!Array.isArray(tools)) return [];
-	const slots: ToolSlot[] = [];
-	for (const candidate of tools) {
-		if (
-			typeof candidate === "object" &&
-			candidate !== null &&
-			typeof (candidate as { callId?: unknown }).callId === "string" &&
-			typeof (candidate as { name?: unknown }).name === "string" &&
-			typeof (candidate as { status?: unknown }).status === "string"
-		) {
-			slots.push(candidate as ToolSlot);
-		}
-	}
-	return slots;
-}
-
-/**
- * Join the conversation's LiveDoc tool slots to their `ApprovalsDoc[callId]`
- * records: a slot that is pending/running AND gated (per the policy doc /
- * default policy) is a pending approval. The record's status wins when one
- * exists; a slot live with no record yet (the loader wires no `onPending`
- * sink, so no record exists before the first decide) is `pending` with no
- * arguments. Fail-loud: the caller checks package presence first, so the doc
- * read here always resolves.
- */
-async function listPendingApprovals(
+function approvalsCapability(
 	opened: OpenedHarness,
-	conversation: Conversation,
-): Promise<ApprovalSummary[]> {
-	const view = await readView(conversation);
-	const slots = liveToolSlots(view).filter(
-		(slot) => slot.status === "pending" || slot.status === "running",
-	);
-	if (slots.length === 0) return [];
-	const policy =
-		(await opened.harness.snapshot(
-			ApprovalsPolicyDoc,
-			conversation.id,
-			BACKGROUND_CONTEXT,
-		)) ?? DEFAULT_APPROVAL_POLICY;
-	const approvals: ApprovalSummary[] = [];
-	for (const slot of slots) {
-		if (!isGated(slot.name, policy)) continue;
-		const record = await opened.harness.snapshot(
-			ApprovalsDoc,
-			conversation.id,
-			slot.callId,
-			BACKGROUND_CONTEXT,
-		);
-		// A decided record drops from the list (the slot is about to clear); a
-		// missing record is a not-yet-recorded pending gate.
-		if (record !== undefined && record.status !== "pending") continue;
-		approvals.push({
-			callId: slot.callId,
-			toolName: slot.name,
-			status: "pending",
-			...(record?.arguments === undefined
-				? {}
-				: { arguments: record.arguments }),
-			...(record?.requestedAt === undefined
-				? {}
-				: { requestedAt: record.requestedAt }),
-		});
-	}
-	return approvals;
+): ExtensionApprovals | undefined {
+	return opened.approvals;
 }
 
 /** Read one conversation's current view frame; disposes the state handle. */
@@ -998,22 +919,24 @@ export async function createServer(
 			}
 			// Auto-deny pending approvals BEFORE aborting (spec: abort auto-denies
 			// pending approvals) so the cancelled gate hook unwinds onto an
-			// already-denied durable record. Only when the package is installed.
-			if (approvalsInstalled(opened)) {
-				const pending = await listPendingApprovals(opened, conversation);
+			// already-denied durable record. Only when the approvals capability is
+			// present (publish prep 2.1: core speaks the structural contract;
+			// which records exist and how a deny writes them is extension-owned).
+			const approvals = approvalsCapability(opened);
+			if (approvals !== undefined) {
+				const pending = await approvals.listPending(
+					opened.harness,
+					conversation,
+					BACKGROUND_CONTEXT,
+				);
 				for (const approval of pending) {
-					await conversation.commit(async (tx) => {
-						const draft = await tx.doc(
-							ApprovalsDoc,
-							conversation.id,
-							approval.callId,
-							approval.callId,
-						);
-						if (draft.status !== "pending") return; // first decision wins
-						draft.status = "deny";
-						draft.reason = "aborted";
-						draft.decidedAt = Date.now();
-					}, BACKGROUND_CONTEXT);
+					await approvals.decide(
+						conversation,
+						approval.callId,
+						"deny",
+						BACKGROUND_CONTEXT,
+						"aborted",
+					);
 				}
 			}
 			const result = await opened.harness.abortSubmission(
@@ -1415,10 +1338,10 @@ export async function createServer(
 		},
 	);
 
-	// Approvals: list pending gated calls (T9c-ii). The locked design joins
-	// the conversation's LiveDoc tool slots (the enumerable pending/running
-	// gated calls) to each callId's `ApprovalsDoc[callId]` record (the
-	// approval status). Empty list when the package is absent.
+	// Approvals: list pending gated calls (T9c-ii). WHICH calls are gated and
+	// pending is extension-owned semantics (publish prep 2.1: core speaks the
+	// structural capability — server/approvals.ts — never the package). Empty
+	// list when the capability is absent.
 	app.get(
 		"/v1/conversations/:id/approvals",
 		{ schema: { params: ID_PARAMS_SCHEMA } },
@@ -1433,17 +1356,25 @@ export async function createServer(
 					.code(404)
 					.send({ error: "conversation_not_found" });
 			}
-			if (!approvalsInstalled(opened)) {
+			const approvals = approvalsCapability(opened);
+			if (approvals === undefined) {
 				return { approvals: [] };
 			}
-			return { approvals: await listPendingApprovals(opened, conversation) };
+			return {
+				approvals: await approvals.listPending(
+					opened.harness,
+					conversation,
+					BACKGROUND_CONTEXT,
+				),
+			};
 		},
 	);
 
 	// Approvals: decide a pending approval (T9c-ii). approvalId IS the gated
-	// tool call id; the decision commits to `ApprovalsDoc[callId]` exactly as
-	// the package's `decide()` does (first decision wins). 404 when the
-	// approval is unknown / not pending; 503 when the package is absent.
+	// tool call id; the decision routes through the structural capability
+	// (publish prep 2.1 — the extension's `decide` commits to its own doc
+	// family, first decision wins inside the commit). 404 when the approval
+	// is unknown / not pending; 503 when the capability is absent.
 	app.post(
 		"/v1/conversations/:id/approvals/:approvalId",
 		async (request, reply): Promise<ApprovalDecideResponse> => {
@@ -1457,10 +1388,11 @@ export async function createServer(
 			);
 			if (conversation === undefined) {
 				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
+				.code(404)
+				.send({ error: "conversation_not_found" });
 			}
-			if (!approvalsInstalled(opened)) {
+			const approvals = approvalsCapability(opened);
+			if (approvals === undefined) {
 				return await reply
 					.code(503)
 					.send({ error: "approvals_unavailable" });
@@ -1476,34 +1408,31 @@ export async function createServer(
 			}
 			// The callId must be a currently-gated (pending) call in this
 			// conversation — otherwise the approval is unknown / not pending.
-			const pending = await listPendingApprovals(opened, conversation);
+			// The pre-check stays in the route: the extension's `decide` writes
+			// through a doc-family draft that would CREATE an unknown callId, so
+			// the list is what makes an unknown approval 404. The capability's
+			// in-commit first-decision-wins guard still arbitrates concurrency.
+			const pending = await approvals.listPending(
+				opened.harness,
+				conversation,
+				BACKGROUND_CONTEXT,
+			);
 			if (!pending.some((a) => a.callId === approvalId)) {
 				return await reply
-					.code(404)
-					.send({ error: "approval_not_pending" });
+				.code(404)
+				.send({ error: "approval_not_pending" });
 			}
-			// Commit the decision (first decision wins). This also records the
-			// pending approval durably when the loader wired no `onPending` sink.
-			// The guard runs INSIDE the commit, so a concurrent decide that
-			// landed between the pre-check above and this commit still wins —
-			// and the loser gets an honest 404.
-			const applied = await conversation.commit(async (tx) => {
-				const draft = await tx.doc(
-					ApprovalsDoc,
-					conversation.id,
-					approvalId,
-					approvalId,
-				);
-				if (draft.status !== "pending") return false; // first decision wins
-				draft.status = decision;
-				if (reason !== undefined) draft.reason = reason;
-				draft.decidedAt = Date.now();
-				return true;
-			}, BACKGROUND_CONTEXT);
+			const applied = await approvals.decide(
+				conversation,
+				approvalId,
+				decision,
+				BACKGROUND_CONTEXT,
+				reason,
+			);
 			if (!applied) {
 				return await reply
 					.code(404)
-					.send({ error: "approval_not_pending" });
+				.send({ error: "approval_not_pending" });
 			}
 			return { callId: approvalId, status: decision };
 		},

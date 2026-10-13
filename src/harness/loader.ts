@@ -15,26 +15,30 @@
  * The sigrun extension-package contract: a package's default export is a
  * factory returning an object with an `extension: Extension` field, plus an
  * optional §3 `health` producer (spec §3 — the memory-backend form; Task
- * 9e retains it for the §5 meta `health.memory` aggregation) and an optional
+ * 9e retains it for the §5 meta `health.memory` aggregation), an optional
  * `submit` pass-through (the memory wiring's submit — Task 26a retains it so
  * boot can expose it as `OpenedHarness.memorySubmit`; it binds the
- * conversation as the memory_recall source at the submit boundary). The two
- * real packages (`sigrun-ext-memory-markdown`, `sigrun-ext-approvals`) predate the
- * settled contract and export named factories (`createMemory` /
+ * conversation as the memory_recall source at the submit boundary), and an
+ * optional `approvals` capability (the approvals surface's structural
+ * contract, publish prep 2.1 — the §5 approvals routes call through it, so
+ * core imports nothing from any approvals package). Packages that predate
+ * the settled contract export named factories (`createMemory` /
  * `createApprovals`) whose results carry the same `.extension` field, so the
  * loader resolves, in order:
  *
  * 1. the default export, if it is a factory returning `{ extension,
- *    health?, submit? }` or is itself an `Extension` (named `name`),
+ *    health?, submit?, approvals? }` or is itself an `Extension` (named
+ *    `name`),
  * 2. a named `createMemory` / `createApprovals` factory (the bridge for the
  *    two real packages),
  * 3. a named `extension` export.
  *
  * The factories take no arguments; any configuration they need is resolved
  * from their own package context. Only factory results can carry a health
- * producer or submit pass-through (the direct-`Extension` forms have no
- * factory result to read one from). A `health` or `submit` field that is
- * present but not a function is a contract violation — quarantined, never
+ * producer, submit pass-through, or approvals capability (the
+ * direct-`Extension` forms have no factory result to read one from). A
+ * `health`, `submit`, or `approvals` field that is present but not the
+ * expected shape is a contract violation — quarantined, never
  * silently ignored.
  */
 
@@ -47,6 +51,9 @@ import type {
 	SubmissionDraft,
 } from "@earendil-works/pi-durable";
 import type { HealthStatus } from "./health.js";
+import type {
+	ExtensionApprovals,
+} from "../server/approvals.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
 export interface ExtensionOutcome {
@@ -95,6 +102,18 @@ export interface ExtensionSubmitBinding {
 	readonly submit: ExtensionSubmit;
 }
 
+/**
+ * A factory-result approvals capability (publish prep 2.1): the approvals
+ * surface's structural contract, paired with the resolved `Extension` so
+ * boot identity-matches it to the extension installed under the approvals
+ * name — exactly like `ExtensionHealthProducer`/`ExtensionSubmitBinding`.
+ */
+export interface ExtensionApprovalsBinding {
+	/** The extension the factory result carried the capability for. */
+	readonly extension: Extension;
+	readonly approvals: ExtensionApprovals;
+}
+
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -110,6 +129,12 @@ export interface LoadedExtensions {
 	 * extension that carried one; quarantined extensions contribute none.
 	 */
 	readonly submitBindings: readonly ExtensionSubmitBinding[];
+	/**
+	 * Approvals capabilities from factory results (publish prep 2.1), one
+	 * per loaded extension that carried one; quarantined extensions
+	 * contribute none.
+	 */
+	readonly approvalsBindings: readonly ExtensionApprovalsBinding[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -122,9 +147,9 @@ interface ExtensionModule {
 
 /**
  * What the contract resolution yields: the `Extension` plus the optional §3
- * health producer / submit pass-through a factory result carried alongside
- * it. Only factory results can carry one; the direct-`Extension` forms
- * resolve without.
+ * health producer / submit pass-through / approvals capability a factory
+ * result carried alongside it. Only factory results can carry one; the
+ * direct-`Extension` forms resolve without.
  */
 export interface ResolvedExtension {
 	readonly extension: Extension;
@@ -132,6 +157,8 @@ export interface ResolvedExtension {
 	readonly health?: () => HealthStatus;
 	/** Present only when the factory result carried one (the memory wiring's submit). */
 	readonly submit?: ExtensionSubmit;
+	/** Present only when the factory result carried one (the approvals surface). */
+	readonly approvals?: ExtensionApprovals;
 }
 
 /** A structural check for "looks like a pi-durable Extension". */
@@ -144,11 +171,29 @@ function isExtension(value: unknown): value is Extension {
 }
 
 /**
+ * Whether a factory result's `approvals` field satisfies the structural
+ * capability: both members must be functions.
+ */
+function isApprovalsCapability(value: unknown): value is ExtensionApprovals {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as {
+		listPending?: unknown;
+		decide?: unknown;
+	};
+	return (
+		typeof candidate.listPending === "function" &&
+		typeof candidate.decide === "function"
+	);
+}
+
+/**
  * Call an unknown-typed factory and validate the `{ extension, health?,
- * submit? }` result. A `health`/`submit` field that is present but not a
- * function is a contract violation — thrown, so the loader quarantines the
- * extension (fail-loud: a package that THINKS it reports health or owns a
- * submit boundary must not read as healthy / must not lose submissions).
+ * submit?, approvals? }` result. A `health`/`submit`/`approvals` field that
+ * is present but not the expected shape is a contract violation — thrown,
+ * so the loader quarantines the extension (fail-loud: a package that THINKS
+ * it reports health, owns a submit boundary, or speaks the approvals
+ * surface must not read as healthy, lose submissions, or serve approvals
+ * from a broken capability).
  */
 function resolvedFromFactory(
 	factory: unknown,
@@ -160,6 +205,7 @@ function resolvedFromFactory(
 		extension?: unknown;
 		health?: unknown;
 		submit?: unknown;
+		approvals?: unknown;
 	};
 	if (!isExtension(candidate.extension)) return undefined;
 	if (
@@ -178,6 +224,15 @@ function resolvedFromFactory(
 			"extension factory returned a submit field that is not a function",
 		);
 	}
+	if (
+		candidate.approvals !== undefined &&
+		!isApprovalsCapability(candidate.approvals)
+	) {
+		throw new Error(
+			"extension factory returned an approvals field that is not the " +
+				"approvals capability (expected listPending/decide functions)",
+		);
+	}
 	return {
 		extension: candidate.extension,
 		...(candidate.health === undefined
@@ -186,6 +241,9 @@ function resolvedFromFactory(
 		...(candidate.submit === undefined
 			? {}
 			: { submit: candidate.submit as ExtensionSubmit }),
+		...(candidate.approvals === undefined
+			? {}
+			: { approvals: candidate.approvals }),
 	};
 }
 
@@ -233,9 +291,10 @@ export async function loadExtensions(
 	specifiers: readonly string[],
 	registry: Registry,
 ): Promise<LoadedExtensions> {
-	const outcomes: ExtensionOutcome[] = [];
+		const outcomes: ExtensionOutcome[] = [];
 	const healthProducers: ExtensionHealthProducer[] = [];
 	const submitBindings: ExtensionSubmitBinding[] = [];
+	const approvalsBindings: ExtensionApprovalsBinding[] = [];
 	for (const specifier of specifiers) {
 		try {
 			const module = (await import(specifier)) as ExtensionModule;
@@ -260,6 +319,12 @@ export async function loadExtensions(
 					submit: resolved.submit,
 				});
 			}
+			if (resolved.approvals !== undefined) {
+					approvalsBindings.push({
+						extension: resolved.extension,
+					approvals: resolved.approvals,
+				});
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -270,11 +335,10 @@ export async function loadExtensions(
 				status: "quarantined",
 				error: message,
 			});
-			// A quarantined extension contributes no health producer and no
-			// submit binding: the §3 surface is reported through
-			// `extensions[].status`, never double-reported into the §5 health
-			// block.
+			// A quarantined extension contributes no health producer, submit
+			// binding, or approvals capability: the §3/§5 surfaces are reported
+			// through `extensions[].status`, never double-reported.
 		}
 	}
-	return { outcomes, healthProducers, submitBindings };
+	return { outcomes, healthProducers, submitBindings, approvalsBindings };
 }

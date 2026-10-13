@@ -27,12 +27,10 @@
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",
-		"sigrun-ext-approvals": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-approvals.git#c207938da9",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3",
-		"yaml": "^2.9.1",
-		"sigrun-ext-memory-markdown": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-memory-markdown.git#9d71be1"
+		"yaml": "^2.9.1"
 	},
 	"license": "MIT",
 	"repository": {
