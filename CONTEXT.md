@@ -33,9 +33,9 @@ useful — the memory system especially — but the software has become a bad fi
 - **It is not a good coding agent.** Attempts to use it as one produced poor
   results. Coding stays in pi.
 
-Sigrun keeps the parts that earn their place (memory, scheduled jobs, the
-agentic-maintenance/media-tools tools, web research, the webui as the primary surface) and discards
-the rest by construction.
+Sigrun keeps the parts that earn their place (memory, scheduled jobs,
+agentic maintenance tools, web research, the webui as the primary surface)
+and discards the rest by construction.
 
 ---
 
@@ -51,9 +51,10 @@ Stated by the user, in their words:
 - **Steering coding work from away from the desk.** Not doing the work, but
   being able to answer a pi session's questions or prompt it to continue while
   on a phone or laptop. Heavy lifting stays in pi inside herdr.
-- **Routine maintenance.** Existing cron jobs against the media-tools/agentic-maintenance/agentic-maintenance
-  ecosystem. The user wants *more* of this and keeps not getting to it —
-  calendar access, household context, and similar assistant-ish chores.
+- **Routine maintenance.** Existing cron jobs performing household and
+  self-hosted-service maintenance. The user wants *more* of this and keeps
+  not getting to it — calendar access, household context, and similar
+  assistant-ish chores.
 - **Ambient awareness.** Ingesting data sources such as Discord logs so the user
   can catch up on what they missed, gauge community impressions of new models,
   and track events. Read-only to start.
@@ -76,8 +77,8 @@ and the assistant should not.
 
 Resolution: the assistant's *core* lives in-cluster (always on, durable), and the
 *workspace* is resolved rather than fixed. Day one uses a static workspace
-configuration; the swap to dynamic resolution through the `the-work-fabric-scrubbed` registry is a
-wrapper change, not a rewrite. The interaction surfaces (webui now, TUI and
+configuration; the swap to dynamic resolution is a wrapper change, not a
+rewrite. The interaction surfaces (webui now, TUI and
 audio later) attach to the in-cluster core from anywhere over the tailnet.
 
 Precedent the user liked and lost: `opencode serve` on the workstation with
@@ -129,16 +130,15 @@ while replacing everything beneath it with thin client calls to the harness API
 
 Hard-won: the assistant needs a work ledger that spans repositories and
 outlives any particular agent. If the kanban is a hermes plugin, moving to a
-different assistant means re-doing the integration. So cards live in `the-work-fabric-scrubbed`
-(skuld), and sigrun is just a client — as pi will be, as anything else will be.
+different assistant means re-doing the integration. So cards live in the
+fabric's card system (skuld), and sigrun is just a client — as pi will be, as
+anything else will be.
 
 ---
 
 ## 4. What sigrun deliberately does not do
 
 - **Coding.** pi + herdr own that. Sigrun creates the ticket and the card.
-- **Reinvent remote shells.** Workspace sharing is the-work-fabric-scrubbed's job; sigrun consumes
-  it.
 - **Provider management.** Bifrost already routes models with virtual keys,
   budgets, and failover chains. Sigrun points at one VK.
 - **Multi-user UI in v1.** The `owner` field exists; the auth flow does not.
@@ -147,22 +147,7 @@ different assistant means re-doing the integration. So cards live in `the-work-f
 
 ---
 
-## 5. Relationship to the-work-fabric-scrubbed
-
-Two projects, deliberately separate repos:
-
-- **the-work-fabric-scrubbed** — the agent-agnostic fabric (registry, resolve/route protocol,
-  adapters, cards).
-- **sigrun** — an assistant that happens to be the fabric's first large
-  consumer.
-
-The decoupling test: if the-work-fabric-scrubbed disappeared, sigrun would still run, with static
-workspace config. If sigrun disappeared, the-work-fabric-scrubbed would still be a coherent
-product for pi and the workplace scenario. Neither is a feature of the other.
-
----
-
-## 6. Names
+## 5. Names
 
 **sigrun** — a Norse valkyrie; a messenger/attendant figure. Chosen over:
 

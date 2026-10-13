@@ -1,12 +1,12 @@
 /**
- * Static workspace resolution (spec §4.5) — the the-work-fabric-scrubbed-swap seam.
+ * Static workspace resolution (spec §4.5).
  *
  * pi-durable calls `HarnessOptions.env` per tool call to build the
  * conversation's `ExecutionEnv`. sigrun routes that through
  * `workspaceService.forConversation(conversation, prefs)`, a thin wrapper
- * whose signature survives the swap from static config to dynamic the-work-fabric-scrubbed
- * resolution: v1 answers from the static local workspace path carried in
- * `prefs`; the the-work-fabric-scrubbed era replaces the *implementation* (`registry.resolve`)
+ * whose signature survives a swap from static config to a dynamic
+ * resolver: v1 answers from the static local workspace path carried in
+ * `prefs`; a future resolver replaces the *implementation*
  * and nothing downstream changes.
  *
  * v1 is deliberately static: every conversation resolves to the same local
@@ -27,8 +27,9 @@ import type { LocalWorkspace } from "../config.js";
 
 /**
  * What `forConversation` resolves a workspace from: the spec's static
- * `{ defaultWorkspace: { type: "local", path } }` shape. The the-work-fabric-scrubbed era swaps
- * this for registry-backed preferences without changing the method signature.
+ * `{ defaultWorkspace: { type: "local", path } }` shape. A future
+ * dynamic-resolver swap would replace this without changing the method
+ * signature.
  */
 export interface WorkspacePreferences {
 	readonly defaultWorkspace: LocalWorkspace;
@@ -44,13 +45,13 @@ export interface WorkspaceConversation {
 	readonly id: ConversationId;
 }
 
-/** The workspace-resolution surface (spec §4.5); the the-work-fabric-scrubbed swap lands here. */
+/** The workspace-resolution surface (spec §4.5). */
 export interface WorkspaceService {
 	/**
 	 * Resolve the conversation's `ExecutionEnv`. Called per tool call by the
 	 * harness env builder, and directly by core surfaces that read workspace
 	 * files (context files, skills, file endpoints) so remote workspaces stay
-	 * correct after the swap.
+	 * correct regardless of which resolver is wired in.
 	 */
 	forConversation(
 		conversation: WorkspaceConversation,

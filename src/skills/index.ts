@@ -11,8 +11,7 @@
  * Both surfaces read the workspace through the conversation `ExecutionEnv`
  * — the section through `PromptInput.env`, the tool through
  * `ToolExecutionApi.env` — so discovery follows the resolved workspace
- * (today the static local workspace, later the-work-fabric-scrubbed) without this module
- * knowing which.
+ * without this module knowing which.
  *
  * v1 semantics (spec §3.2, exact):
  *
