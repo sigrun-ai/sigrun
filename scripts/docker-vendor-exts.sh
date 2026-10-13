@@ -10,7 +10,7 @@ mkdir -p .docker-ext
 
 for repo in sigrun-memory-markdown sigrun-approvals; do
   echo "cloning $repo..."
-  git clone --depth 1 "ssh://git@git.example.invalid/sigrun-ai/$repo.git" ".docker-ext/$repo"
+  git clone --depth 1 "${SIGRUN_VENDOR_GIT_URL:-ssh://git@git.example.invalid/sigrun-ai}/$repo.git" ".docker-ext/$repo"
 done
 
 # The package names in the extension repos must match what sigrun's
