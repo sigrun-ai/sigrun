@@ -183,6 +183,65 @@ describe("SettingsPanel", () => {
 		});
 	});
 
+	test("the served toolRoster drives the checkboxes (extension tools render and PATCH)", async () => {
+		// A roster with an extension tool beyond the bundled core list —
+		// the registry-driven surface Tasks 5-7 rely on (codemode's tools
+		// appear in the panel without a panel change).
+		const roster = [
+			"read",
+			"bash",
+			"edit",
+			"write",
+			"find",
+			"grep",
+			"ls",
+			"load_skill",
+			"codemode_eval",
+		];
+		const { calls, client } = makeHarness({
+			settings: { toolRoster: roster },
+		});
+		const renderer = await renderPanel(client);
+		const boxes = renderer.root
+			.findAllByType("input")
+			.filter((node) => node.props.type === "checkbox");
+		// retry + the 9 roster names (both non-core entries render).
+		expect(boxes.length).toBe(10);
+		const byLabel = (name: string) =>
+			renderer.root
+				.findAllByType("input")
+				.find((node) =>
+					node.parent?.children.some(
+						(child) => typeof child === "string" && child === name,
+					),
+				);
+		expect(byLabel("load_skill")?.props.checked).toBe(true);
+		expect(byLabel("codemode_eval")?.props.checked).toBe(true);
+		// Unchecking a roster-only name PATCHes the reduced ROSTER list
+		// (not the core list) — every other roster name stays selected.
+		await act(async () => {
+			byLabel("codemode_eval")!.props.onChange({ target: { checked: false } });
+		});
+		await act(async () => {
+			await find(renderer, "settings-save").props.onClick();
+		});
+		const patchCall = calls.find(
+			(call) => call.input === "/v1/settings" && call.method === "PATCH",
+		);
+		expect(JSON.parse(patchCall!.body as string)).toEqual({
+			defaultTools: [
+				"read",
+			"bash",
+			"edit",
+			"write",
+			"find",
+			"grep",
+			"ls",
+			"load_skill",
+			],
+		});
+	});
+
 	test("all tools checked clears the filter (PATCH null) when one was set", async () => {
 		const { calls, client } = makeHarness({
 			settings: { defaultTools: ["read"] },
