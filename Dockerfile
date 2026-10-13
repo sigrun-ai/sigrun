@@ -19,12 +19,19 @@ COPY package.json package-lock.json ./
 COPY webui/package.json webui/package.json
 # If the extensions are vendored locally, rewrite the git+ssh URLs to file:
 # paths before npm ci. Otherwise npm ci needs SSH access to forgejo.
+# All five vendor-wired packages (memory + approvals are sigrun dev-time
+# pins rewritten to file:; mcp + codemode + tool-search are runtime-only
+# deps — not in package.json — so the injection ADDS them; the image
+# supports all five, SIGRUN_EXTENSIONS decides which load).
 COPY .docker-ext/ .docker-ext/
-RUN if [ -d .docker-ext/sigrun-ext-memory-markdown ] && [ -d .docker-ext/sigrun-ext-approvals ]; then \
+RUN if [ -d .docker-ext/sigrun-ext-memory-markdown ] && [ -d .docker-ext/sigrun-ext-approvals ] && [ -d .docker-ext/sigrun-ext-mcp ] && [ -d .docker-ext/sigrun-ext-codemode ] && [ -d .docker-ext/sigrun-ext-tool-search ]; then \
       node -e "\
 const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json')); \
 p.devDependencies['sigrun-ext-memory-markdown'] = 'file:.docker-ext/sigrun-ext-memory-markdown'; \
 p.devDependencies['sigrun-ext-approvals'] = 'file:.docker-ext/sigrun-ext-approvals'; \
+p.devDependencies['sigrun-ext-mcp'] = 'file:.docker-ext/sigrun-ext-mcp'; \
+p.devDependencies['sigrun-ext-codemode'] = 'file:.docker-ext/sigrun-ext-codemode'; \
+p.devDependencies['sigrun-ext-tool-search'] = 'file:.docker-ext/sigrun-ext-tool-search'; \
 fs.writeFileSync('package.json', JSON.stringify(p, null, '\t') + '\n')" \
       && npm install --package-lock-only \
       && npm ci; \
