@@ -48,5 +48,10 @@ RUN npm run build:webui
 FROM base
 ENV NODE_ENV=production
 COPY --from=build /app /app
+# Boot canary pre-step (Task 8): the entry script runs the vendored codemode
+# extension's scripts/canary.mjs (fail loud, exit 1, on missing quickjs
+# wasm/worker) before exec'ing the command. sh-form ENTRYPOINT: no chmod
+# layer, and the deploy manifest routes through it explicitly.
+ENTRYPOINT ["/bin/sh", "/app/scripts/docker-entry.sh"]
 EXPOSE 3000
 CMD ["npm", "start"]
