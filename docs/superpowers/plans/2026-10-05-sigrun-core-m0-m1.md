@@ -344,7 +344,7 @@ The §7 M1 exit criteria, each an automated spawn-and-kill integration test, out
 ## Task 13: Reference deployment manifests (chart values)
 
 **Files:**
-- Create: `deploy/` (or `chart/`) — Deployment (single replica, Recreate, RWO), Service (ClusterIP), backup CronJob, ServiceMonitor/PrometheusRule per spec §4.4; `deploy/values.homelab.yaml` carrying Appendix D (iSCSI class, Tailscale LB `sigrun.tailnet.example.test`, RustFS target, worker nodeSelector + toleration)
+- Create: `deploy/` (or `chart/`) — Deployment (single replica, Recreate, RWO), Service (ClusterIP), backup CronJob, ServiceMonitor/PrometheusRule per spec §4.4; `deploy/values.homelab.yaml` carrying Appendix D (iSCSI class, Tailscale LB `sigrun.tailnet.example.test`, RustFS target, worker nodeSelector + toleration — deployment instantiation details now recorded in `docs/private.md`, gitignored)
 - Test: `test/manifests.test.ts` (optional: `helm template`/`kustomize build` renders without error)
 
 **Interfaces:**

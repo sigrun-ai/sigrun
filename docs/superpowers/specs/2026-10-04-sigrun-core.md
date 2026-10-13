@@ -715,27 +715,9 @@ over the durable harness.**
 
 ---
 
-## Appendix D — homelab deployment instantiation (user's cluster)
+## Appendix D — homelab deployment instantiation
 
-The concrete values this deployment uses against §4.4. Kept here so the core sections
-stay portable — nothing in §1–§7 or App A–C depends on these specifics.
-
-- **Chart:** `sigrun` in `~/repos/helm-charts`, modeled on `hermes-pantheon` (~⅓ the size).
-- **Storage class:** iSCSI-backed block PVC for the sqlite (block semantics, safe for WAL);
-  workspace artifacts on `REPLACE-nfs-node` if a separate volume is wanted. (The cluster's
-  local-path provisioner also exists and satisfies §4.3, but iSCSI block is preferred — and
-  the DR runbook explicitly does not preserve local-path PVCs, whereas the backup below is
-  target-agnostic.)
-- **Node placement:** worker nodeSelector + `dedicated=workload` toleration (both pools are
-  tainted). With the iSCSI PVC the backup CronJob has no node-binding constraint; the
-  placement stays for consistency.
-- **Service:** ClusterIP + Tailscale LB (`tailscale` class) at
-  `sigrun.tailnet.example.test`.
-- **Backup target:** RustFS S3 at `RUSTFS-ENDPOINT-REMOVED.example.invalid:3900` (the CNPG barman
-  precedent); retention is enforced by a retention step in the backup CronJob unless
-  RustFS bucket-lifecycle behavior is verified in M1 (added to App C's named
-  verifications); credentials in a core SealedSecret. **This is the only disaster copy of
-  transcripts** — the DR runbook does not preserve local-path PVCs, and the iSCSI volume's
-  own replication is not a transcript backup. Unconfigured backup (allowed by §4.3) means
-  zero disaster copies; this deployment does not make that choice.
-- **Monitoring:** ServiceMonitor + PrometheusRule as §4.4 describes.
+<!-- deployment instantiation details: docs/private.md — gitignored -->
+Moved to `docs/private.md` (gitignored) per the 2026-10-13 PII policy: the concrete
+storage classes, node placement, Tailscale hostname, and backup endpoint of the
+actual deployment. Nothing in §1–§7 or App A–C depends on these specifics.

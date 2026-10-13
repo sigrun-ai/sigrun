@@ -3,8 +3,8 @@
 **Date:** 2026-10-08
 **Spec:** `docs/superpowers/specs/2026-10-04-sigrun-core.md` §6.3 (gate), §5 (wire contract), §6.1/§6.2 (feature list / drops)
 **Sources audited (read-only):**
-- `/home/user/repos/hermes-webui/static/` (vanilla JS + HTML + CSS; no Python counted)
-- `/home/user/repos/sigrun/test/fixtures/view-schema.json` (captured §5 ConversationView wire shape)
+- `~/repos/hermes-webui/static/` (vanilla JS + HTML + CSS; no Python counted)
+- `~/repos/sigrun/test/fixtures/view-schema.json` (captured §5 ConversationView wire shape)
 - `docs/superpowers/specs/2026-10-04-sigrun-core.md` §5/§6/App C.1
 
 ---

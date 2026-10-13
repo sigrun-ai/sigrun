@@ -64,7 +64,7 @@ I have everything I need. The repo is spec-only (no code, no node_modules), `pi-
 - **Restore ownership:** M1's exit says "a restored-from-backup file must resume" but no procedure exists anywhere (scale Deployment to 0 → replace file via a job/kubectl cp → scale up — owned by chart docs? a repo runbook?). This matters double because of a fact the spec doesn't surface: the cluster's DR posture **explicitly does not preserve local-path PVCs** (`flux-cluster/docs/runbooks/pre-disaster-pvc-inventory.md`: "CNPG local-path WAL (not preserved — recreated fresh)") — the nightly backup is the *only* disaster copy of sigrun's transcripts, so the restore path is not optional plumbing, it is the DR story.
 - **Capacity context (minor):** the local-path partition has a historical fill incident (`flux-infrastructure/cnpg-system/catalog-trixie.yaml` comment: "the local-path partition filled") — sqlite is small, but the PVC size and the backup target's quota are unspecified.
 
-**Decision:** name the target (recommend RustFS `s3://` per the CNPG barman precedent at `RUSTFS-ENDPOINT-REMOVED.example.invalid:3900`, or NFS for simplicity), the secret, the retention mechanism, the node co-scheduling, and the restore runbook owner. Half a page in §6.1/§6.2.
+**Decision:** name the target (recommend RustFS `s3://` per the CNPG barman precedent (the deployment's existing RustFS endpoint, now recorded in `docs/private.md`), or NFS for simplicity), the secret, the retention mechanism, the node co-scheduling, and the restore runbook owner. Half a page in §6.1/§6.2.
 
 #### P1-5. Crash battery items #2 and #3 lack success criteria — "documented by observation" and "transcript consistent" are not pass conditions
 

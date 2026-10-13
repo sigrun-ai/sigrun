@@ -13,7 +13,7 @@ milestones. Nothing here may change a core contract; extensions consume as-is.
 ## 1. What this spec is
 
 The core (spec A) ships a working assistant with degenerate defaults. This spec builds the
-extension packages that turn it into *user's* assistant — the ones matching
+extension packages that turn it into *the user's* assistant — the ones matching
 hermes's used functionality — and defines the gate at which hermes is retired.
 
 Non-goals: improvements hermes never had (spec C), the-work-fabric-scrubbed integration (spec C), multi-user
@@ -24,7 +24,7 @@ Non-goals: improvements hermes never had (spec C), the-work-fabric-scrubbed inte
 | Extension | Core surface | Purpose | Parity source |
 |---|---|---|---|
 | `sigrun-ext-bifrost` | provider-contributor | Gateway routing, VK, chain catalog as the model list; default model `glm-5.3-flash` | hermes gateway config (2026-09-25 migration) |
-| `sigrun-ext-honcho` | MemoryBackend | User peer config: observe user+assistant, dialectic recall, injection | hermes honcho block (same workspace `user`, same observation policy) |
+| `sigrun-ext-honcho` | MemoryBackend | Peer config for the existing hermes honcho workspace: observe user+assistant, dialectic recall, injection | hermes honcho block (same workspace, same observation policy) |
 | `sigrun-ext-web-research` | tools | searxng + crawl4ai via their HTTP APIs | hermes web tools |
 | `sigrun-ext-cron` | scheduled jobs | Port of the hermes crontasks actually in use | hermes crontasks |
 | `sigrun-ext-agentic-maintenance` | tools | media-tools/agentic-maintenance/agentic-maintenance/agentic-maintenance/agentic-maintenance | hermes toolsets, 1:1 |
@@ -32,9 +32,10 @@ Non-goals: improvements hermes never had (spec C), the-work-fabric-scrubbed inte
 Notes:
 
 - **Memory:** each user = a honcho peer; sigrun = a honcho AI peer. **Peer continuity
-  decision:** sigrun reuses hermes's exact peer ids (same workspace `user`, same peer
-  naming), so hermes's honcho memory carries over with no migration (§5). The id strings
-  are pinned in the extension's config, not derived. Observe rides the `afterResponse`
+  decision:** sigrun reuses hermes's exact peer ids (same honcho workspace, same peer
+  naming), so hermes's honcho memory carries over with no migration (§5). The id
+  strings — including the workspace name — are pinned in the extension's config, not
+  derived. Observe rides the `afterResponse`
   hook per the core contract; the observe-record schema is fixed by the core's degenerate
   implementation, so this extension maps records → honcho observations.
   Recall = honcho dialectic/hybrid query; `section()` = the dialectic injection hermes
