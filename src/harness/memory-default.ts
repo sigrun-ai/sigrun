@@ -4,7 +4,7 @@
  * Bare sigrun core (zero extensions) boots a NO-OP memory surface: the same
  * stable `long-term-memory` placeholder section the real degenerate backend
  * renders (`"long-term memory backend not configured"` — the string
- * `sigrun-ext-memory-markdown`'s `MEMORY_PLACEHOLDER` defines), no recall tool, no
+ * the memory extension's `MEMORY_PLACEHOLDER` defines), no recall tool, no
  * hooks. Memory features appear only when a memory extension is installed;
  * until then every conversation still sees a stable prompt surface — the
  * zero-extensions guarantee holds via no-op defaults, not bundled
@@ -21,7 +21,7 @@ import { defineExtension, section } from "@earendil-works/pi-durable";
 export const MEMORY_SECTION_KEY = "long-term-memory";
 
 /**
- * The stable placeholder text — byte-identical to sigrun-ext-memory-markdown's
+ * The stable placeholder text — byte-identical to the memory extension's
  * `MEMORY_PLACEHOLDER` ("long-term memory backend not configured").
  */
 export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
