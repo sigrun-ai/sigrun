@@ -1,0 +1,5 @@
+# sigrun chart — bjw-s common 5.2.1
+
+# Dependency tarballs (charts/common-5.2.1.tgz) are fetched by
+# `helm dependency update`, never committed.
+charts/*/charts/*.tgz

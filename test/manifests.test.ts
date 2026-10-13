@@ -1,27 +1,32 @@
 /**
- * charts/sigrun — the Helm chart that replaced deploy/ (publish prep 2.5).
+ * charts/sigrun — the bjw-s common (5.2.1) wrapper chart.
  *
- * The chart is the reference deployment (spec §4.4): "correct" here means
- * (a) `helm lint` passes, (b) the default render carries the §4.4 portable
- * invariants (Recreate + single replica + RWO PVC mounted at the storage
- * path + probes wired to /healthz//readyz + envFrom the sigrun Secret +
- * backup CronJob on the same PVC + ServiceMonitor/PrometheusRule scraping
- * /readyz), and (c) the values toggles actually toggle (backup off, tailscale
- * LB on with a distinct component label, monitoring off, storage class
- * override).
+ * "Correct" here means (a) `helm lint` passes, (b) the render carries the
+ * §4.4 portable invariants (single replica + Recreate + RWO PVC mounted
+ * at the storage path + probes wired to /healthz//readyz + envFrom the
+ * sigrun Secret + backup CronJob on the same PVC + ServiceMonitor
+ * scraping /readyz + PrometheusRule alerts), and (c) the values toggles
+ * actually toggle (backup off by default, monitoring off by default,
+ * storage class override).
  *
- * The homelab instantiation (iSCSI class, RustFS endpoint, worker placement,
- * kube-prometheus-stack release label) lives in the CONSUMER's GitOps repo
- * (flux-app-llm/sigrun) as values — deliberately NOT asserted here; the
+ * The chart delegates Deployment/Service/PVC/CronJob/ServiceMonitor
+ * rendering to the bjw-s common library (charts/common-5.2.1.tgz, fetched
+ * by `helm dependency update`, gitignored); the PrometheusRule is the one
+ * hand template (the library has no PrometheusRule class).
+ *
+ * The homelab instantiation (iSCSI class, RustFS endpoint, worker
+ * placement, kube-prometheus-stack release label) lives in the CONSUMER's
+ * GitOps repo as values — deliberately NOT asserted here; the
  * toggle-capability tests use neutral --set values to prove the chart
  * expresses them.
  *
  * Render engine: `helm` (checked once; a missing helm fails loud — the
- * chart IS the manifest since deploy/ was removed, there is no structural
- * fallback).
+ * chart IS the manifest, there is no structural fallback).
  */
 
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
@@ -31,8 +36,15 @@ const execFileAsync = promisify(execFile);
 
 const CHART_DIR = join(import.meta.dirname, "..", "charts", "sigrun");
 
+/** The image tags are values-shaped (REPLACEME repos, empty tags) — every
+ * render passes explicit tags so the library's image validation passes. */
+const TAGS = [
+	"controllers.main.containers.main.image.tag=v0.1.0-test",
+	"controllers.backup.containers.backup.image.tag=v0.1.0-test",
+];
+
 /** helm presence — a hard env requirement (no kubectl/kustomize fallback
- * exists anymore: the manifests are templates, not static yaml). */
+ * exists: the manifests are templates, not static yaml). */
 let helmAvailable: boolean | undefined;
 async function haveHelm(): Promise<boolean> {
 	if (helmAvailable !== undefined) return helmAvailable;
@@ -46,21 +58,20 @@ async function haveHelm(): Promise<boolean> {
 }
 
 /** `helm template` the chart; `set` entries become --set flags (argv, not
- * shell — no string interpolation of values). */
+ * shell — no string interpolation of values). `valuesFile` (optional) is
+ * written to a temp file and passed as -f — used where --set cannot express
+ * the override (helm's `--set env[i]=x` REPLACES the list with a sparse
+ * array, nulling the chart's own env entries). */
 async function render(
 	set: string[] = [],
+	valuesFile?: string,
 ): Promise<Record<string, unknown>[]> {
 	expect(await haveHelm(), "helm is required to render charts/sigrun").toBe(
 		true,
 	);
-	const args = [
-		"template",
-		"sigrun",
-		CHART_DIR,
-		"--namespace",
-		"sigrun",
-	];
-	for (const flag of set) args.push("--set", flag);
+	const args = ["template", "sigrun", CHART_DIR, "--namespace", "sigrun"];
+	for (const flag of [...TAGS, ...set]) args.push("--set", flag);
+	if (valuesFile) args.push("-f", valuesFile);
 	const { stdout } = await execFileAsync("helm", args, {
 		maxBuffer: 16 * 1024 * 1024,
 		timeout: 30_000,
@@ -70,6 +81,20 @@ async function render(
 		.map((chunk) => chunk.trim())
 		.filter((chunk) => chunk.length > 0)
 		.map((chunk) => YAML.parse(chunk) as Record<string, unknown>);
+}
+
+/** `helm template` with a values overlay written to a temp file. */
+async function renderWith(
+	overlay: Record<string, unknown>,
+): Promise<Record<string, unknown>[]> {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-chart-"));
+	try {
+		const file = join(dir, "overlay.yaml");
+		await writeFile(file, YAML.stringify(overlay));
+		return await render([], file);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 }
 
 /** First doc of a kind from a render. */
@@ -107,16 +132,18 @@ describe("charts/sigrun lint + default render", () => {
 		expect(`${stdout}${stderr}`).toMatch(/1 chart\(s\) linted, 0 chart\(s\) failed/);
 	});
 
-	test("default render produces exactly the six §4.4 kinds", async () => {
+	test("default render: backup + monitoring off, core five kinds", async () => {
 		const docs = await render();
 		const kinds = docs.map((d) => d.kind).sort();
+		// The portable public default: the server + its PVC + service +
+		// serviceaccount. The backup CronJob and ServiceMonitor/
+		// PrometheusRule are opt-in (the backup needs an image carrying
+		// sqlite3+awscli+tsx; the monitor needs a Prometheus to scrape).
 		expect(kinds).toEqual([
-			"CronJob",
 			"Deployment",
 			"PersistentVolumeClaim",
-			"PrometheusRule",
 			"Service",
-			"ServiceMonitor",
+			"ServiceAccount",
 		]);
 		for (const doc of docs) {
 			expect(doc.apiVersion).toBeTruthy();
@@ -162,7 +189,7 @@ describe("chart Deployment", () => {
 								claimName: string;
 								readOnly?: boolean;
 							};
-						}[];
+					}[];
 				};
 			};
 		};
@@ -174,7 +201,7 @@ describe("chart Deployment", () => {
 	beforeAll(async () => {
 		deployment = docOf(await render(), "Deployment") as DeploymentDoc;
 		container = deployment.spec.template.spec.containers.find(
-				(c) => c.name === "sigrun",
+				(c) => c.name === "main",
 		) as DeploymentDoc["spec"]["template"]["spec"]["containers"][number];
 		expect(container).toBeDefined();
 	});
@@ -227,9 +254,9 @@ describe("chart Deployment", () => {
 		).toBe(true);
 	});
 
-	test("resources: 512Mi memory limit (requests/limits present)", () => {
-		expect(container.resources.requests.memory).toBe("256Mi");
-		expect(container.resources.limits.memory).toBe("512Mi");
+	test("resources: 1Gi memory limit (requests/limits present)", () => {
+		expect(container.resources.requests.memory).toBe("512Mi");
+		expect(container.resources.limits.memory).toBe("1Gi");
 	});
 });
 
@@ -258,13 +285,14 @@ describe("chart Service + PVC", () => {
 		expect(service.spec.ports[0].name).toBe("http");
 		expect(service.spec.ports[0].port).toBe(3000);
 		expect(service.spec.ports[0].targetPort).toBe("http");
-		// The ServiceMonitor selects THIS label pair.
-		expect(service.metadata.labels["app.kubernetes.io/component"]).toBe(
-			"server",
+		// The ServiceMonitor selects this Service's
+		// app.kubernetes.io/service label.
+		expect(service.metadata.labels["app.kubernetes.io/service"]).toBe(
+			"sigrun",
 		);
 	});
 
-	test("PVC is RWO, 2Gi, and default render omits the storage class (cluster default)", () => {
+	test("PVC is RWO, 5Gi, and default render omits the storage class (cluster default)", () => {
 		const pvc = docOf(docs, "PersistentVolumeClaim") as {
 			metadata: { name: string };
 			spec: {
@@ -274,14 +302,14 @@ describe("chart Service + PVC", () => {
 			};
 		};
 		expect(pvc.spec.accessModes).toEqual(["ReadWriteOnce"]);
-		expect(pvc.spec.resources.requests.storage).toBe("2Gi");
+		expect(pvc.spec.resources.requests.storage).toBe("5Gi");
 		expect(pvc.spec.storageClassName).toBeUndefined();
 		expect(pvc.metadata.name).toBe("sigrun-data");
 	});
 });
 
 // ---------------------------------------------------------------------------
-// CronJob (§4.3): nightly backup on the same PVC
+// CronJob (§4.3): nightly backup on the same PVC (opt-in)
 // ---------------------------------------------------------------------------
 
 describe("chart backup CronJob", () => {
@@ -290,10 +318,14 @@ describe("chart backup CronJob", () => {
 		spec: {
 			schedule: string;
 			concurrencyPolicy: string;
+			successfulJobsHistoryLimit: number;
+			failedJobsHistoryLimit: number;
 			jobTemplate: {
 				spec: {
+					backoffLimit: number;
 					template: {
 						spec: {
+							restartPolicy: string;
 							containers: {
 								name: string;
 								command: string[];
@@ -315,12 +347,21 @@ describe("chart backup CronJob", () => {
 	let cronjob!: CronJobDoc;
 
 	beforeAll(async () => {
-		cronjob = docOf(await render(), "CronJob") as CronJobDoc;
+		cronjob = docOf(
+			await render(["controllers.backup.enabled=true"]),
+			"CronJob",
+		) as CronJobDoc;
 	});
 
 	test("nightly schedule, one run at a time (Forbid)", () => {
-		expect(cronjob.spec.schedule).toBe("0 3 * * *");
+		expect(cronjob.spec.schedule).toBe("0 4 * * *");
 		expect(cronjob.spec.concurrencyPolicy).toBe("Forbid");
+		expect(cronjob.spec.successfulJobsHistoryLimit).toBe(3);
+		expect(cronjob.spec.failedJobsHistoryLimit).toBe(7);
+		expect(cronjob.spec.jobTemplate.spec.backoffLimit).toBe(1);
+		expect(cronjob.spec.jobTemplate.spec.template.spec.restartPolicy).toBe(
+			"Never",
+		);
 	});
 
 	test("backup script runs via tsx against the live db on the shared PVC", () => {
@@ -357,10 +398,11 @@ describe("chart backup CronJob", () => {
 // ---------------------------------------------------------------------------
 
 describe("chart ServiceMonitor + PrometheusRule", () => {
+	const ENABLED = ["serviceMonitor.main.enabled=true", "monitoring.prometheusRule.enabled=true"];
 	let docs: Record<string, unknown>[] = [];
 
 	beforeAll(async () => {
-		docs = await render();
+		docs = await render(ENABLED);
 	});
 
 	test("ServiceMonitor scrapes /readyz on the http port of Service sigrun", () => {
@@ -372,14 +414,12 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 			};
 		};
 		expect(monitor.spec.jobLabel).toBe("app.kubernetes.io/name");
-		expect(monitor.spec.selector.matchLabels["app.kubernetes.io/name"]).toBe(
+		expect(monitor.spec.selector.matchLabels["app.kubernetes.io/service"]).toBe(
 			"sigrun",
-		);
-		expect(monitor.spec.selector.matchLabels["app.kubernetes.io/component"]).toBe(
-			"server",
 		);
 		expect(monitor.spec.endpoints[0].port).toBe("http");
 		expect(monitor.spec.endpoints[0].path).toBe("/readyz");
+		expect(monitor.spec.endpoints[0].interval).toBe("30s");
 	});
 
 	test("PrometheusRule alerts on scrape failure (readiness 503 ⇒ up=0)", () => {
@@ -393,6 +433,17 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(alerts.map((r) => r.alert)).toContain("SigrunNoScrape");
 		expect(alerts[0].expr).toMatch(/up\{job="sigrun"\}/);
 	});
+
+	test("the ServiceMonitor + PrometheusRule are independently gated", async () => {
+		// ServiceMonitor only
+		const smOnly = await render(["serviceMonitor.main.enabled=true"]);
+		expect(smOnly.some((d) => d.kind === "ServiceMonitor")).toBe(true);
+		expect(smOnly.some((d) => d.kind === "PrometheusRule")).toBe(false);
+		// PrometheusRule only
+		const ruleOnly = await render(["monitoring.prometheusRule.enabled=true"]);
+		expect(ruleOnly.some((d) => d.kind === "ServiceMonitor")).toBe(false);
+		expect(ruleOnly.some((d) => d.kind === "PrometheusRule")).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -401,57 +452,36 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 // ---------------------------------------------------------------------------
 
 describe("values toggles", () => {
-	test("backup.enabled=false drops the CronJob", async () => {
-		const docs = await render(["backup.enabled=false"]);
-		expect(docs.some((d) => d.kind === "CronJob")).toBe(false);
-	});
-
-	test("monitoring.enabled=false drops ServiceMonitor + PrometheusRule", async () => {
-		const docs = await render(["monitoring.enabled=false"]);
-		expect(docs.some((d) => d.kind === "ServiceMonitor")).toBe(false);
-		expect(docs.some((d) => d.kind === "PrometheusRule")).toBe(false);
+	test("backup is opt-in: default render drops the CronJob, enable renders it", async () => {
+		const off = await render();
+		expect(off.some((d) => d.kind === "CronJob")).toBe(false);
+		const on = await render(["controllers.backup.enabled=true"]);
+		expect(on.some((d) => d.kind === "CronJob")).toBe(true);
 	});
 
 	test("storage class override lands on the PVC", async () => {
-		const docs = await render(["persistence.storageClassName=example-class"]);
+		const docs = await render(["persistence.data.storageClass=example-class"]);
 		const pvc = docOf(docs, "PersistentVolumeClaim") as {
 			spec: { storageClassName: string };
 		};
 		expect(pvc.spec.storageClassName).toBe("example-class");
 	});
 
-	test("tailscale LB Service: distinct component label, class tailscale, same pod selector", async () => {
-		const docs = await render(["service.tailscale.enabled=true"]);
-		const services = docs.filter((d) => d.kind === "Service") as {
-			metadata: {
-				name: string;
-				labels: Record<string, string>;
-				annotations: Record<string, string>;
-			};
-			spec: {
-				type: string;
-				loadBalancerClass?: string;
-				selector: Record<string, string>;
-			};
-		}[];
-		expect(services).toHaveLength(2);
-		const lb = services.find((s) => s.spec.type === "LoadBalancer");
-		expect(lb?.metadata.name).toBe("sigrun-tailscale");
-		expect(lb?.spec.loadBalancerClass).toBe("tailscale");
-		expect(lb?.metadata.annotations["tailscale.com/hostname"]).toBe("sigrun");
-		// The ServiceMonitor's matchLabels ({name, component: server}) must
-		// NOT match the LB Service (double-scrape guard).
-		expect(lb?.metadata.labels["app.kubernetes.io/component"]).toBe(
-			"tailscale-lb",
-		);
-		expect(lb?.spec.selector["app.kubernetes.io/component"]).toBe("server");
-	});
-
-	test("extra env passthrough: sigrun.env + backup.env land on the containers", async () => {
-		const docs = await render([
-			"sigrun.env.SIGRUN_EXAMPLE=from-values",
-			"backup.env.SIGRUN_BACKUP_S3_ENDPOINT=https://example.invalid:3900",
-		]);
+	test("extra env passthrough lands on the main container", async () => {
+		// A values-file overlay (helm --set env[i] would replace the chart's
+		// own env list with a sparse array — values merging is the documented
+		// way to append).
+		const docs = await renderWith({
+			controllers: {
+				main: {
+					containers: {
+						main: {
+							env: [{ name: "SIGRUN_EXAMPLE", value: "from-values" }],
+						},
+					},
+				},
+			},
+		});
 		const deployment = docOf(docs, "Deployment") as {
 			spec: { template: { spec: { containers: { env: { name: string; value?: string }[] }[] } } };
 		};
@@ -460,77 +490,15 @@ describe("values toggles", () => {
 				(e) => e.name === "SIGRUN_EXAMPLE",
 			)?.value,
 		).toBe("from-values");
-		const cronjob = docOf(docs, "CronJob") as {
-			spec: {
-				jobTemplate: {
-					spec: {
-						template: {
-							spec: { containers: { env: { name: string; value?: string }[] }[] };
-						};
-					};
-				};
-			};
-		};
-		expect(
-			cronjob.spec.jobTemplate.spec.template.spec.containers[0].env.find(
-				(e) => e.name === "SIGRUN_BACKUP_S3_ENDPOINT",
-			)?.value,
-		).toBe("https://example.invalid:3900");
-	});
-
-	test("secret names are configurable (sigrun-env / sigrun-backup)", async () => {
-		const docs = await render([
-			"secret.envName=custom-env",
-			"backup.secret.envName=custom-backup",
-		]);
-		const deployment = docOf(docs, "Deployment") as {
-			spec: { template: { spec: { containers: { envFrom: { secretRef: { name: string } }[] }[] } } };
-		};
-		expect(
-			deployment.spec.template.spec.containers[0].envFrom.some(
-				(e) => e.secretRef.name === "custom-env",
-			),
-		).toBe(true);
-		const cronjob = docOf(docs, "CronJob") as {
-			spec: {
-				jobTemplate: {
-					spec: {
-						template: {
-							spec: {
-								containers: { envFrom: { secretRef: { name: string } }[] }[];
-							};
-						};
-					};
-				};
-			};
-		};
-		expect(
-			cronjob.spec.jobTemplate.spec.template.spec.containers[0].envFrom.some(
-				(e) => e.secretRef.name === "custom-backup",
-			),
-		).toBe(true);
-	});
-
-	test("monitoring.labels passthrough lands on both monitoring objects", async () => {
-		const docs = await render(["monitoring.labels.release=example-stack"]);
-		const monitor = docOf(docs, "ServiceMonitor") as {
-			metadata: { labels: Record<string, string> };
-		};
-		const rule = docOf(docs, "PrometheusRule") as {
-			metadata: { labels: Record<string, string> };
-		};
-		expect(monitor.metadata.labels.release).toBe("example-stack");
-		expect(rule.metadata.labels.release).toBe("example-stack");
 	});
 
 	test("worker placement passthrough lands on the server pods", async () => {
 		const docs = await render([
-			"nodeSelector.example-node=worker",
-			"tolerations[0].key=example-taint",
-			"tolerations[0].operator=Equal",
-			"tolerations[0].value=workload",
-			"tolerations[0].effect=NoSchedule",
-			"backup.nodeSelector.example-node=worker",
+			"controllers.main.pod.nodeSelector.example-node=worker",
+			"controllers.main.pod.tolerations[0].key=example-taint",
+			"controllers.main.pod.tolerations[0].operator=Equal",
+			"controllers.main.pod.tolerations[0].value=workload",
+			"controllers.main.pod.tolerations[0].effect=NoSchedule",
 		]);
 		const deployment = docOf(docs, "Deployment") as {
 			spec: {
@@ -548,21 +516,34 @@ describe("values toggles", () => {
 		expect(
 			deployment.spec.template.spec.tolerations[0].key,
 		).toBe("example-taint");
-		const cronjob = docOf(docs, "CronJob") as {
-			spec: {
-				jobTemplate: {
-					spec: {
-						template: {
-							spec: { nodeSelector: Record<string, string> };
-						};
-					};
-				};
-			};
+	});
+
+	test("monitoring labels passthrough lands on the ServiceMonitor + PrometheusRule", async () => {
+		const docs = await render([
+			"serviceMonitor.main.enabled=true",
+			"monitoring.prometheusRule.enabled=true",
+			"serviceMonitor.main.labels.release=example-stack",
+			"monitoring.prometheusRule.labels.release=example-stack",
+		]);
+		const monitor = docOf(docs, "ServiceMonitor") as {
+			metadata: { labels: Record<string, string> };
 		};
-		expect(
-			cronjob.spec.jobTemplate.spec.template.spec.nodeSelector?.[
-				"example-node"
-			],
-		).toBe("worker");
+		const rule = docOf(docs, "PrometheusRule") as {
+			metadata: { labels: Record<string, string> };
+		};
+		expect(monitor.metadata.labels.release).toBe("example-stack");
+		expect(rule.metadata.labels.release).toBe("example-stack");
+	});
+
+	test("Service annotations passthrough lands on the Service", async () => {
+		const docs = await render([
+			"service.main.annotations.example-annotation=example-value",
+		]);
+		const service = docOf(docs, "Service") as {
+			metadata: { annotations: Record<string, string> };
+		};
+		expect(service.metadata.annotations["example-annotation"]).toBe(
+			"example-value",
+		);
 	});
 });

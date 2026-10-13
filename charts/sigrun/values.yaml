@@ -1,4 +1,4 @@
-# Default values for the sigrun chart.
+# Default values for the sigrun chart (bjw-s common 5.2.1 wrapper).
 #
 # These are the PORTABLE defaults (spec §4.4): a public-release user renders
 # this chart with only a Secret and an image and gets a working deployment.
@@ -6,187 +6,242 @@
 # endpoint, worker placement) are values OVERRIDES — see the consumer's
 # GitOps repo (flux-app-llm/sigrun), not this file.
 
-# -- Global image pull secrets (applied to every pod the chart renders).
-imagePullSecrets: []
+# -- Chart-wide settings (propagated by the bjw-s loader).
+global:
+  # -- (string) Set the chart name
+  nameOverride: null
+  # -- (string) Set the chart fullname definition
+  fullnameOverride: null
+
 # -- Overrides the chart name in resource names.
 nameOverride: ""
 # -- Overrides the full resource name (release-chart otherwise).
 fullnameOverride: ""
 
-image:
-  # The sigrun image: must carry Node >= 22.19 (node:sqlite), the repo at
-  # /app with node_modules, and tsx (internal imports use .js specifiers
-  # resolving to .ts sources — stock node cannot resolve them).
-  repository: REPLACEME-node22-sigrun-image
-  tag: ""
-  # -- Image pull policy.
-  pullPolicy: IfNotPresent
+controllers:
+  main:
+    # -- Controller type.
+    type: deployment
+    # -- Single replica — sqlite is one process's live database.
+    replicas: 1
+    # Recreate is forced (not a value): the sqlite PVC is ReadWriteOnce —
+    # a RollingUpdate starts the replacement while the old pod still holds
+    # the volume, and two pods deadlock on one RWO PVC (spec §4.4).
+    strategy: Recreate
+    # -- (optional) PodDisruptionBudget for the server controller.
+    podDisruptionBudget: null
+    containers:
+      main:
+        image:
+          # The sigrun image: must carry Node >= 22.19 (node:sqlite), the
+          # repo at /app with node_modules, and tsx (internal imports use
+          # .js specifiers resolving to .ts sources — stock node cannot
+          # resolve them).
+          repository: REPLACEME-node22-sigrun-image
+          # -- Image tag (defaults to the chart appVersion).
+          tag: ""
+          # -- Image pull policy.
+          pullPolicy: IfNotPresent
+        # The deploy entry (src/index.ts), run exactly as `npm start` does
+        # (package.json "start": "tsx src/index.ts"). Direct tsx — not
+        # `npm start` — so SIGTERM reaches the entry with no npm in the
+        # signal path (graceful close of server + harness, exit 0).
+        command:
+          - npx
+          - tsx
+          - src/index.ts
+        # The relative `src/index.ts` resolves against this directory, not
+        # the image's WORKDIR convention — pin it so the contract is in the
+        # manifest, not the image.
+        workingDir: /app
+        env:
+          # Wired to the chart's own volume: the db lives on the PVC.
+          - name: SIGRUN_STORAGE_PATH
+            value: /data/sigrun.db
+          # The static workspace root (spec §4.5): on the same PVC in the
+          # base shape (a separate artifacts volume is a values choice).
+          - name: SIGRUN_WORKSPACE_PATH
+            value: /data/workspace
+          # Must match the service.main port.
+          - name: SIGRUN_PORT
+            value: "3000"
+        envFrom:
+          # Everything else config-shaped comes from the Secret
+          # (envFrom): SIGRUN_MODEL (required), OPENAI_API_KEY /
+          # OPENAI_BASE_URL (the degenerate env provider) or extension
+          # provider creds, and the SIGRUN_EXTENSIONS package list (§4.1).
+          # All extension env lives there too — extensions read the whole
+          # environment (§4.4: "every enabled extension can read every env
+          # secret").
+          - secretRef:
+              name: sigrun-env
+        ports:
+          - name: http
+            containerPort: 3000
+            protocol: TCP
+        probes:
+          # /healthz: process-up, always 200 once listening; /readyz:
+          # harness-ready — T9e health not degraded + a real storage read;
+          # 503 otherwise (spec §4.4 observability).
+          liveness:
+            enabled: true
+            type: HTTP
+            path: /healthz
+            port: http
+            spec:
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+          readiness:
+            enabled: true
+            type: HTTP
+            path: /readyz
+            port: http
+            spec:
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+        resources:
+          # Placeholder requests/limits — tune against observed usage;
+          # nothing in the chart depends on them.
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
 
-# The container entrypoint is FIXED (not values): `npx tsx src/index.ts`
-# with workingDir /app — the deploy entry (src/index.ts), run exactly as
-# `npm start` does so SIGTERM reaches the entry with no npm in the signal
-# path (graceful close of server + harness, exit 0).
-
-replicaCount: 1
-# Recreate is FORCED (not values): the sqlite PVC is ReadWriteOnce — a
-# RollingUpdate starts the replacement while the old pod still holds the
-# volume, and two pods deadlock on one RWO PVC (spec §4.4).
-
-# -- Extra env on the sigrun container (plain key/value map).
-env: {}
-# -- Extra envFrom sources on the sigrun container (e.g. configMapRef).
-envFrom: []
-# - configMapRef:
-#     name: my-config
-
-resources:
-  # Placeholder requests/limits — tune against observed usage; nothing in
-  # the chart depends on them.
-  requests:
-    cpu: 100m
-    memory: 256Mi
-  limits:
-    memory: 512Mi
+  backup:
+    # -- Nightly backup CronJob (spec §4.3). Disabled by default in the
+    # public shape (an image carrying sqlite3 + the target client + tsx is
+    # a deliberate choice; a deployment that skips backup has ZERO disaster
+    # copies of transcripts — accepted choice, not a supported recovery
+    # posture §4.4). The homelab instantiation enables it.
+    enabled: false
+    type: cronjob
+    cronjob:
+      # -- Cron schedule (cluster local time).
+      schedule: "0 4 * * *"
+      # One run at a time; skip if the previous is still running (a slow
+      # upload must not stack a second sqlite pass on the same target).
+      concurrencyPolicy: Forbid
+      successfulJobsHistory: 3
+      failedJobsHistory: 7
+      backoffLimit: 1
+    containers:
+      backup:
+        image:
+          # Must carry sqlite3 + awscli (the target's client) AND tsx (the
+          # script's runtime — internal imports use .js specifiers
+          # resolving to .ts files, which stock node does not resolve).
+          repository: REPLACEME-sqlite3-awscli-tsx-image
+          tag: ""
+          pullPolicy: IfNotPresent
+        # Nightly `sqlite3 .backup` against the LIVE harness database —
+        # the online-safe backup API (consistent while the harness holds
+        # the db in WAL mode, verified live by test/backup.test.ts's
+        # restore drill, App C). Retention (30 days, path target) and
+        # fail-loud exit codes live in the script itself.
+        command:
+          - npx
+          - tsx
+          - /app/src/backup/run-backup.ts
+        env:
+          # The db under backup: the same PVC the Deployment mounts.
+          - name: SIGRUN_STORAGE_PATH
+            value: /data/sigrun.db
+        envFrom:
+          # Core backup secret (spec §4.3): SIGRUN_BACKUP_PATH or
+          # SIGRUN_BACKUP_S3_BUCKET/PREFIX, AWS_* credentials, and
+          # SIGRUN_BACKUP_S3_ENDPOINT for an S3-compatible store.
+          - secretRef:
+              name: sigrun-backup
+        resources:
+          # Modest — a nightly sqlite copy + one upload.
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
 
 service:
-  # -- Service type. The base contract is the in-cluster ClusterIP (what
-  # the ServiceMonitor scrapes); external reach (ingress, Tailscale LB,
-  # port-forward) is a values choice, not a core contract.
-  type: ClusterIP
-  # -- Service port (must match SIGRUN_PORT below).
-  port: 3000
-  tailscale:
-    # -- Additional Tailscale LoadBalancer Service (the operator publishes
-    # <hostname>.<tailnet-domain>). The ClusterIP Service stays alongside
-    # it for in-cluster traffic and the ServiceMonitor.
+  main:
+    # -- The controller this Service fronts (two controllers exist: main +
+    # backup; automatic detection cannot pick).
+    controller: main
+    # -- Service type. The base contract is the in-cluster ClusterIP (what
+    # the ServiceMonitor scrapes); external reach (ingress, Tailscale LB,
+    # port-forward) is a values choice, not a core contract.
+    type: ClusterIP
+    # -- Annotations passthrough on the Service (e.g. Tailscale LB class
+    # via a second Service entry — homelab concern).
+    annotations: {}
+    ports:
+      http:
+        # -- Service port (must match SIGRUN_PORT).
+        port: 3000
+        targetPort: http
+
+ingress:
+  # Ingress disabled by default — the homelab reaches sigrun via a
+  # Tailscale LoadBalancer Service (a values-added Service entry), not
+  # ingress.
+  main:
     enabled: false
-    # -- tailscale.com/hostname annotation value.
-    hostname: sigrun
 
 persistence:
-  # -- Create the sqlite PVC. sqlite on block-like storage (spec §4.3) —
-  # the class must provide block semantics (safe for WAL); a local-path
-  # provisioner satisfies §4.3 but binds the pod to one node.
-  enabled: true
-  # -- PVC name (uniqued per release by the chart).
-  name: data
-  # -- Storage request.
-  size: 2Gi
-  # -- Storage class ("" = cluster default). Must be block-like for WAL.
-  storageClassName: ""
-  # -- Access mode — RWO, and the Deployment pins Recreate for it.
-  accessModes:
-    - ReadWriteOnce
+  data:
+    # -- Create the sqlite PVC. sqlite on block-like storage (spec §4.3) —
+    # the class must provide block semantics (safe for WAL); a local-path
+    # provisioner satisfies §4.3 but binds the pod to one node.
+    enabled: true
+    type: persistentVolumeClaim
+    # -- Storage request.
+    size: 5Gi
+    # -- Storage class ("" = cluster default). Must be block-like for WAL.
+    storageClass: ""
+    # -- Access mode — RWO, and the Deployment pins Recreate for it.
+    accessMode: ReadWriteOnce
+    # -- Name suffix: the single persistence item would otherwise drop its
+    # identifier suffix and name the PVC plain "sigrun" — keep the old
+    # chart's sigrun-data name (the Deployment + CronJob both reference
+    # claimName sigrun-data).
+    suffix: data
+    # Mounted at /data in every container (main + backup — the backup job
+    # needs lock access to the -shm/-wal sidecar files).
+    globalMounts:
+      - path: /data
 
-# Core config-shaped env (spec §4.4). The values below are chart-rendered
-# plain env; everything SECRET-shaped (SIGRUN_MODEL provider credentials,
-# extension creds, SIGRUN_EXTENSIONS package list) comes from the sigrun-env
-# Secret via envFrom — extensions read the whole environment, so all
-# extension env lives in that Secret.
-secret:
-  # -- Name of the Secret envFrom'd into the sigrun container.
-  # Required: carries SIGRUN_MODEL + provider credentials + extension env.
-  envName: sigrun-env
-
-# Sigrun runtime env (the SIGRUN_* subset the manifest wires).
-sigrun:
-  storage:
-    # -- sqlite database path — MUST live inside the mounted PVC.
-    path: /data/sigrun.db
-  workspace:
-    # -- Static workspace root (spec §4.5). Base shape keeps it on the
-    # same PVC (a separate artifacts volume is a values choice).
-    path: /data/workspace
-  # -- SIGRUN_PORT (must match service.port).
-  port: 3000
-  # -- Extra SIGRUN_*/provider env on the sigrun container (non-secret
-  # only — secrets go in the sigrun-env Secret).
-  env: {}
-
-# Probes (spec §4.4 observability): /healthz is process-up (always 200
-# once listening); /readyz is harness-ready (T9e health not degraded + a
-# real storage read; 503 otherwise). Readiness IS the M1 scrape surface
-# (see monitoring below).
-probes:
-  liveness:
-    httpGet:
-      path: /healthz
-      port: http
-    periodSeconds: 30
-    timeoutSeconds: 5
-    failureThreshold: 3
-  readiness:
-    httpGet:
-      path: /readyz
-      port: http
-    periodSeconds: 10
-    timeoutSeconds: 5
-    failureThreshold: 3
-
-backup:
-  # -- Nightly backup CronJob (spec §4.3). The image must carry sqlite3 +
-  # the target's client + tsx. A deployment that skips backup has ZERO
-  # disaster copies of transcripts — accepted choice, not a supported
-  # recovery posture (§4.4).
-  enabled: true
-  # -- Cron schedule (cluster local time).
-  schedule: "0 3 * * *"
-  # One run at a time; skip if the previous is still running.
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 7
-  backoffLimit: 1
-  restartPolicy: Never
-  image:
-    # Must carry sqlite3 + awscli (the target's client) AND tsx (the
-    # script's runtime — internal imports use .js specifiers resolving to
-    # .ts files, which stock node does not resolve).
-    repository: REPLACEME-sqlite3-awscli-tsx-image
-    tag: ""
-    pullPolicy: IfNotPresent
-  resources: {}
-  secret:
-    # -- Name of the Secret envFrom'd into the backup container. Core
-    # backup credentials: SIGRUN_BACKUP_PATH or
-    # SIGRUN_BACKUP_S3_BUCKET/PREFIX, AWS_* credentials, and
-    # SIGRUN_BACKUP_S3_ENDPOINT for an S3-compatible store.
-    envName: sigrun-backup
-  # -- Non-secret backup env (e.g. the S3 target endpoint). Credentials
-  # stay in the backup Secret.
-  env: {}
-  # -- Pod-level placement for the backup job. A node-bound local-path PVC
-  # hangs a naive CronJob in Pending (unschedulable: the one node holding
-  # the volume may be cordoned) — match the Deployment's placement while
-  # the PVC is node-bound; block-backed PVCs carry no node binding.
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
+serviceMonitor:
+  # -- M1 observability (spec §4.4). In M1 the readiness probe IS the
+  # scrape target: GET /readyz answers 200 with a single
+  # Prometheus-exposition gauge line when ready, 503 when not — a degraded
+  # harness or an unreachable storage line collapses into a failed scrape
+  # (up == 0), which the PrometheusRule alerts on.
+  main:
+    enabled: false
+    # -- Extra labels on the ServiceMonitor (e.g. release:
+    # kube-prometheus-stack — what a kube-prometheus-stack Prometheus
+    # selects monitors by; a consumer concern).
+    labels: {}
+    # -- Selector for the Service(s) to scrape. Defaults to the chart's own
+    # main Service.
+    selector: {}
+    # -- The /readyz scrape endpoint.
+    endpoints:
+      - port: http
+        path: /readyz
+        interval: 30s
+        scrapeTimeout: 10s
 
 monitoring:
-  # -- ServiceMonitor + PrometheusRule (spec §4.4 M1 observability). In M1
-  # the readiness probe IS the scrape target: GET /readyz answers 200 with
-  # a single Prometheus-exposition gauge line when ready, 503 when not —
-  # a degraded harness (T9e memory/provider health) or an unreachable
-  # storage line collapses into a failed scrape (up == 0), which the
-  # PrometheusRule alerts on.
-  enabled: true
-  # -- Extra labels on the ServiceMonitor + PrometheusRule (e.g.
-  # release: kube-prometheus-stack — what a kube-prometheus-stack
-  # Prometheus selects monitors/rules by; a consumer concern).
-  labels: {}
-  # -- Scrape interval for the /readyz endpoint.
-  interval: 30s
-  # -- Scrape timeout for the /readyz endpoint.
-  scrapeTimeout: 10s
+  # -- Hand-rendered PrometheusRule (bjw-s 5.2.1 has no PrometheusRule
+  # class). Gated independently of serviceMonitor.
+  prometheusRule:
+    enabled: false
+    # -- Extra labels on the PrometheusRule (e.g. release:
+    # kube-prometheus-stack; a consumer concern).
+    labels: {}
 
-# -- Pod annotations for the sigrun Deployment.
-podAnnotations: {}
-# -- Pod labels for the sigrun Deployment.
-podLabels: {}
-
-# -- Deployment-level node placement (sigrun server pods).
-nodeSelector: {}
-# -- Deployment-level tolerations.
-tolerations: []
-# -- Deployment-level affinity.
-affinity: {}
+# Topology/tolerations/nodeSelector: leave at bjw-s app-template defaults —
+# placement is a values override at the consumer
+# (controllers.main.pod / controllers.backup.pod in the homelab repo).
