@@ -113,9 +113,10 @@ file. The TUI's config file joins that same directory — the convention is
 formalized, not invented, and no parallel root gets created.
 
 **Seam for later:** the subcommand dispatch is a thin switch at the process
-boundary. opencode's `opencode serve` / `opencode attach` is the precedent
-(CONTEXT §3.1 names it explicitly). The workstation-mode `sigrun` is the
-new one, and it's the one that pairs the two.
+boundary. The `serve`/`attach` split is a familiar shape (opencode's pair is
+the one CONTEXT §3.1 names), but sigrun's is justified by what sigrun is —
+a headless harness plus thin clients — not by precedent. The workstation-mode
+`sigrun` is the new one, and it's the one that pairs the two:
 
 ### 3.2 The TUI layout
 
