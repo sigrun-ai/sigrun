@@ -223,7 +223,7 @@ test("load_skill with an unknown name is an explicit error listing the available
 		const { api } = toolApi(await workspaceEnv(workspacePath));
 		const result = await tool.execute({ name: "nope" }, api, BACKGROUND_CONTEXT);
 		expect(result.isError).toBe(true);
-		const text = (result.content ?? [])
+		const text = (result.output ?? [])
 			.map((block) => (block.type === "text" ? block.text : ""))
 			.join("");
 		expect(text).toContain("nope");
@@ -356,7 +356,7 @@ test("disable-model-invocation: true hides the skill from the section and load_s
 				BACKGROUND_CONTEXT,
 			);
 			expect(result.isError).toBe(true);
-			const errorText = (result.content ?? [])
+			const errorText = (result.output ?? [])
 				.map((block) => (block.type === "text" ? block.text : ""))
 				.join("");
 			expect(errorText).toContain("secret");

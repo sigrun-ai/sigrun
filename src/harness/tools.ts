@@ -86,7 +86,7 @@ export const imageReadTool = defineTool({
 			data: Buffer.from(bytes.value).toString("base64"),
 			mimeType,
 		};
-		return { content: [image] };
+		return { output: [image] };
 	},
 });
 
@@ -111,7 +111,7 @@ const GIT_DIRECTORY = ".git";
 
 /** An explicit tool error: text content the model can read and recover from. */
 function searchError(message: string): ToolExecutionResult {
-	return { content: [{ type: "text", text: message }], isError: true };
+	return { output: [{ type: "text", text: message }], isError: true };
 }
 
 /**
@@ -431,7 +431,7 @@ export const findTool = defineTool({
 			matches.length === 0 ? "No matches found." : matches.join("\n");
 		return capped
 			? {
-					content: [
+					output: [
 						{
 							type: "text",
 							text: `${text}\n…(capped at ${MAX_RESULTS} results)`,
@@ -445,7 +445,7 @@ export const findTool = defineTool({
 						},
 					],
 				}
-			: { content: [{ type: "text", text }] };
+			: { output: [{ type: "text", text }] };
 	},
 });
 
@@ -543,7 +543,7 @@ export const grepTool = defineTool({
 			`${oversizedSkipped > 0 ? ` (${oversizedSkipped} file(s) over ${GREP_MAX_FILE_BYTES / (1024 * 1024)} MB skipped)` : ""}` +
 			`${capped ? ` (capped at ${MAX_RESULTS} matches)` : ""}`;
 		return {
-			content: [{ type: "text", text: note === "" ? summary : `${summary}${note}` }],
+			output: [{ type: "text", text: note === "" ? summary : `${summary}${note}` }],
 			...(capped
 				? {
 						diagnostics: [
@@ -599,7 +599,7 @@ export const lsTool = defineTool({
 			)
 			.map((info) => `${info.kind}\t${info.name}`);
 		return {
-			content: [
+			output: [
 				{
 					type: "text",
 					text: lines.length === 0 ? "(empty)" : lines.join("\n"),
