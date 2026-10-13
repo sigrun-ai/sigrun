@@ -1,0 +1,192 @@
+# Default values for the sigrun chart.
+#
+# These are the PORTABLE defaults (spec §4.4): a public-release user renders
+# this chart with only a Secret and an image and gets a working deployment.
+# Homelab specifics (Tailscale LB, iSCSI storage class, RustFS backup
+# endpoint, worker placement) are values OVERRIDES — see the consumer's
+# GitOps repo (flux-app-llm/sigrun), not this file.
+
+# -- Global image pull secrets (applied to every pod the chart renders).
+imagePullSecrets: []
+# -- Overrides the chart name in resource names.
+nameOverride: ""
+# -- Overrides the full resource name (release-chart otherwise).
+fullnameOverride: ""
+
+image:
+  # The sigrun image: must carry Node >= 22.19 (node:sqlite), the repo at
+  # /app with node_modules, and tsx (internal imports use .js specifiers
+  # resolving to .ts sources — stock node cannot resolve them).
+  repository: REPLACEME-node22-sigrun-image
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# The container entrypoint is FIXED (not values): `npx tsx src/index.ts`
+# with workingDir /app — the deploy entry (src/index.ts), run exactly as
+# `npm start` does so SIGTERM reaches the entry with no npm in the signal
+# path (graceful close of server + harness, exit 0).
+
+replicaCount: 1
+# Recreate is FORCED (not values): the sqlite PVC is ReadWriteOnce — a
+# RollingUpdate starts the replacement while the old pod still holds the
+# volume, and two pods deadlock on one RWO PVC (spec §4.4).
+
+# -- Extra env on the sigrun container (plain key/value map).
+env: {}
+# -- Extra envFrom sources on the sigrun container (e.g. configMapRef).
+envFrom: []
+# - configMapRef:
+#     name: my-config
+
+resources:
+  # Placeholder requests/limits — tune against observed usage; nothing in
+  # the chart depends on them.
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+service:
+  # -- Service type. The base contract is the in-cluster ClusterIP (what
+  # the ServiceMonitor scrapes); external reach (ingress, Tailscale LB,
+  # port-forward) is a values choice, not a core contract.
+  type: ClusterIP
+  # -- Service port (must match SIGRUN_PORT below).
+  port: 3000
+  tailscale:
+    # -- Additional Tailscale LoadBalancer Service (the operator publishes
+    # <hostname>.<tailnet-domain>). The ClusterIP Service stays alongside
+    # it for in-cluster traffic and the ServiceMonitor.
+    enabled: false
+    # -- tailscale.com/hostname annotation value.
+    hostname: sigrun
+
+persistence:
+  # -- Create the sqlite PVC. sqlite on block-like storage (spec §4.3) —
+  # the class must provide block semantics (safe for WAL); a local-path
+  # provisioner satisfies §4.3 but binds the pod to one node.
+  enabled: true
+  # -- PVC name (uniqued per release by the chart).
+  name: data
+  # -- Storage request.
+  size: 2Gi
+  # -- Storage class ("" = cluster default). Must be block-like for WAL.
+  storageClassName: ""
+  # -- Access mode — RWO, and the Deployment pins Recreate for it.
+  accessModes:
+    - ReadWriteOnce
+
+# Core config-shaped env (spec §4.4). The values below are chart-rendered
+# plain env; everything SECRET-shaped (SIGRUN_MODEL provider credentials,
+# extension creds, SIGRUN_EXTENSIONS package list) comes from the sigrun-env
+# Secret via envFrom — extensions read the whole environment, so all
+# extension env lives in that Secret.
+secret:
+  # -- Name of the Secret envFrom'd into the sigrun container.
+  # Required: carries SIGRUN_MODEL + provider credentials + extension env.
+  envName: sigrun-env
+
+# Sigrun runtime env (the SIGRUN_* subset the manifest wires).
+sigrun:
+  storage:
+    # -- sqlite database path — MUST live inside the mounted PVC.
+    path: /data/sigrun.db
+  workspace:
+    # -- Static workspace root (spec §4.5). Base shape keeps it on the
+    # same PVC (a separate artifacts volume is a values choice).
+    path: /data/workspace
+  # -- SIGRUN_PORT (must match service.port).
+  port: 3000
+  # -- Extra SIGRUN_*/provider env on the sigrun container (non-secret
+  # only — secrets go in the sigrun-env Secret).
+  env: {}
+
+# Probes (spec §4.4 observability): /healthz is process-up (always 200
+# once listening); /readyz is harness-ready (T9e health not degraded + a
+# real storage read; 503 otherwise). Readiness IS the M1 scrape surface
+# (see monitoring below).
+probes:
+  liveness:
+    httpGet:
+      path: /healthz
+      port: http
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /readyz
+      port: http
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+backup:
+  # -- Nightly backup CronJob (spec §4.3). The image must carry sqlite3 +
+  # the target's client + tsx. A deployment that skips backup has ZERO
+  # disaster copies of transcripts — accepted choice, not a supported
+  # recovery posture (§4.4).
+  enabled: true
+  # -- Cron schedule (cluster local time).
+  schedule: "0 3 * * *"
+  # One run at a time; skip if the previous is still running.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 7
+  backoffLimit: 1
+  restartPolicy: Never
+  image:
+    # Must carry sqlite3 + awscli (the target's client) AND tsx (the
+    # script's runtime — internal imports use .js specifiers resolving to
+    # .ts files, which stock node does not resolve).
+    repository: REPLACEME-sqlite3-awscli-tsx-image
+    tag: ""
+    pullPolicy: IfNotPresent
+  resources: {}
+  secret:
+    # -- Name of the Secret envFrom'd into the backup container. Core
+    # backup credentials: SIGRUN_BACKUP_PATH or
+    # SIGRUN_BACKUP_S3_BUCKET/PREFIX, AWS_* credentials, and
+    # SIGRUN_BACKUP_S3_ENDPOINT for an S3-compatible store.
+    envName: sigrun-backup
+  # -- Non-secret backup env (e.g. the S3 target endpoint). Credentials
+  # stay in the backup Secret.
+  env: {}
+  # -- Pod-level placement for the backup job. A node-bound local-path PVC
+  # hangs a naive CronJob in Pending (unschedulable: the one node holding
+  # the volume may be cordoned) — match the Deployment's placement while
+  # the PVC is node-bound; block-backed PVCs carry no node binding.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+monitoring:
+  # -- ServiceMonitor + PrometheusRule (spec §4.4 M1 observability). In M1
+  # the readiness probe IS the scrape target: GET /readyz answers 200 with
+  # a single Prometheus-exposition gauge line when ready, 503 when not —
+  # a degraded harness (T9e memory/provider health) or an unreachable
+  # storage line collapses into a failed scrape (up == 0), which the
+  # PrometheusRule alerts on.
+  enabled: true
+  # -- Extra labels on the ServiceMonitor + PrometheusRule (e.g.
+  # release: kube-prometheus-stack — what a kube-prometheus-stack
+  # Prometheus selects monitors/rules by; a consumer concern).
+  labels: {}
+  # -- Scrape interval for the /readyz endpoint.
+  interval: 30s
+  # -- Scrape timeout for the /readyz endpoint.
+  scrapeTimeout: 10s
+
+# -- Pod annotations for the sigrun Deployment.
+podAnnotations: {}
+# -- Pod labels for the sigrun Deployment.
+podLabels: {}
+
+# -- Deployment-level node placement (sigrun server pods).
+nodeSelector: {}
+# -- Deployment-level tolerations.
+tolerations: []
+# -- Deployment-level affinity.
+affinity: {}
