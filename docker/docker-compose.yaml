@@ -1,0 +1,60 @@
+# Sigrun — example single-node compose deployment (publish prep 2.6).
+#
+# Mirrors what deploy/base/*.yaml expresses (deployment.yaml: one container,
+# /healthz liveness, sqlite + workspace on one data volume; the pvc.yaml RWO
+# shape becomes a single named volume here) but compose-shaped and env-driven
+# via a .env file next to this one — see docker/README.md.
+#
+# This is the smoke / deploy-in-one-node path, not the production one: for a
+# durable/persistent deployment use the Helm chart in charts/ (Helm chart)
+# once the deploy/ base migration lands, or your own manifests. The
+# historical deploy/ base manifests are in the middle of that migration.
+
+services:
+  sigrun:
+    # Either build here or pull/build the tagged image first:
+    #   bash scripts/docker-vendor-exts.sh && docker build -t sigrun:local ..
+    # (run both from the repo root; the vendor script fetches the git+ssh
+    # extension deps into .docker-ext/ so the build needs no SSH reach)
+    # image: sigrun:local
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # Run the deploy entry exactly as `npm start` does (package.json:
+    # "start": "tsx src/index.ts"), direct tsx so SIGTERM reaches it with no
+    # npm in the signal path — same rule as deploy/base/deployment.yaml.
+    command: ["npx", "tsx", "src/index.ts"]
+    working_dir: /app
+    environment:
+      # Required. An OpenAI-model id against the endpoint below, e.g.
+      # openai/gpt-4o-mini — or a private gateway's own model id.
+      SIGRUN_MODEL: ${SIGRUN_MODEL:?set SIGRUN_MODEL in docker/.env (see README)}
+      SIGRUN_PORT: "3000"
+      # sqlite db + static workspace root on the data volume — mirrors the
+      # deployment.yaml env block (WAL writes -wal/-shm sidecar files, so
+      # the volume is mounted read-write).
+      SIGRUN_STORAGE_PATH: /data/sigrun.db
+      SIGRUN_WORKSPACE_PATH: /data/workspace
+      # The degenerate env-provider path (spec §4.1): enough to run against
+      # ANY OpenAI-compatible endpoint — OpenAI itself, a local
+      # ramalama/ollama, or a remote/private gateway.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    ports:
+      - "${SIGRUN_PORT:-3000}:3000"
+    volumes:
+      - sigrun-data:/data
+    healthcheck:
+      # Same /healthz liveness probe as deploy/base/deployment.yaml. The
+      # node:22-slim image ships no curl/wget, so a node one-liner fetch.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+volumes:
+  # The sqlite + workspace data — the compose analogue of the sigrun-data PVC.
+  sigrun-data:
