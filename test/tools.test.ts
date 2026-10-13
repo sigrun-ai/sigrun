@@ -176,6 +176,19 @@ function resultText(message: { content: { type: string; text?: string }[] }) {
 		.join("");
 }
 
+/**
+ * The text output of a DIRECT execution result (`ToolExecutionResult`,
+ * whose model-facing field is `output` since pi-durable 1.2.0).
+ */
+function resultOutput(result: {
+	output?: { type: string; text?: string }[];
+}) {
+	return (result.output ?? [])
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
+
 // ---------------------------------------------------------------------------
 // Registration (T1a/T1b install)
 // ---------------------------------------------------------------------------
@@ -381,7 +394,7 @@ describe("search tool edges (direct execution)", () => {
 				api,
 				BACKGROUND_CONTEXT,
 			);
-			const text = resultText(result as never);
+			const text = resultOutput(result);
 			expect(text).toContain("capped at 200 results");
 			expect((text.match(/\.txt/g) ?? []).length).toBe(200);
 		} finally {
@@ -400,7 +413,7 @@ describe("search tool edges (direct execution)", () => {
 				api,
 				BACKGROUND_CONTEXT,
 			);
-			const text = resultText(result as never);
+			const text = resultOutput(result);
 			expect(text).toContain("src/a.ts");
 			expect(text).not.toContain("top.ts");
 		} finally {
@@ -432,7 +445,7 @@ describe("search tool edges (direct execution)", () => {
 				BACKGROUND_CONTEXT,
 			);
 			expect(result.isError).toBe(true);
-			expect(resultText(result as never)).toContain("invalid pattern");
+			expect(resultOutput(result)).toContain("invalid pattern");
 		} finally {
 			await cleanup();
 		}
@@ -453,7 +466,7 @@ describe("search tool edges (direct execution)", () => {
 				api,
 				BACKGROUND_CONTEXT,
 			);
-			const text = resultText(result as never);
+			const text = resultOutput(result);
 			expect(text).toContain("capped at 200 matches");
 			expect((text.match(/hit/g) ?? []).length).toBeLessThanOrEqual(202); // 200 hits + the note
 			expect(text).toContain("…");
@@ -469,7 +482,7 @@ describe("search tool edges (direct execution)", () => {
 			await writeFile(join(dir, ".git", "config"), "x");
 			await writeFile(join(dir, "plain.txt"), "x");
 			const result = await lsTool.execute({}, api, BACKGROUND_CONTEXT);
-			const text = resultText(result as never);
+			const text = resultOutput(result);
 			expect(text).toContain("file\tplain.txt");
 			expect(text).not.toContain("config");
 		} finally {

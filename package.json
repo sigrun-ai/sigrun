@@ -20,18 +20,18 @@
 	},
 	"dependencies": {
 		"@earendil-works/chord": "^1.0.4",
-		"@fastify/static": "^9.1.0",
 		"@earendil-works/pi-ai": "^1.0.4",
-		"@earendil-works/pi-durable": "1.0.2",
+		"@earendil-works/pi-durable": "1.2.0",
+		"@fastify/static": "^9.1.0",
 		"fastify": "^5.12.5"
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",
 		"sigrun-ext-approvals": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-approvals.git#c207938da9",
+		"sigrun-ext-memory-markdown": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-memory-markdown.git#9d71be1",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3",
-		"yaml": "^2.9.1",
-		"sigrun-ext-memory-markdown": "git+ssh://git@git.example.invalid/sigrun-ai/sigrun-memory-markdown.git#9d71be1"
+		"yaml": "^2.9.1"
 	}
 }

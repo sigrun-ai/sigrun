@@ -106,7 +106,7 @@ function scenarioTools(dir: string, mode: "setup" | "verify") {
 			countExecution(dir, UNSAFE_TOOL, args.note);
 			await blockOrReturn(UNSAFE_TOOL);
 			return {
-				content: [{ type: "text", text: `${UNSAFE_TOOL} executed (${mode}) with ${args.note}` }],
+				output: [{ type: "text", text: `${UNSAFE_TOOL} executed (${mode}) with ${args.note}` }],
 			};
 		},
 	});
@@ -119,7 +119,7 @@ function scenarioTools(dir: string, mode: "setup" | "verify") {
 			countExecution(dir, SAFE_TOOL, args.note);
 			await blockOrReturn(SAFE_TOOL);
 			return {
-				content: [{ type: "text", text: `${SAFE_TOOL} executed (${mode}) with ${args.note}` }],
+				output: [{ type: "text", text: `${SAFE_TOOL} executed (${mode}) with ${args.note}` }],
 			};
 		},
 	});

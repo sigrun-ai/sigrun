@@ -105,7 +105,7 @@ const writeFileTool = defineTool({
 	parameters: Type.Object({ path: Type.String(), content: Type.String() }),
 	async execute(args) {
 		return {
-			content: [{ type: "text", text: `wrote ${args.path}` }],
+			output: [{ type: "text", text: `wrote ${args.path}` }],
 			details: { wrote: args.path },
 		};
 	},
