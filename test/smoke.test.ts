@@ -5,8 +5,8 @@ test("loadConfig requires SIGRUN_MODEL", () => {
 });
 
 test("SIGRUN_MODEL provider/model pins both parts (first slash splits)", () => {
-  const config = loadConfig({ SIGRUN_MODEL: "gateway/glm-5.3-flash" });
-  expect(config.models).toEqual({ provider: "gateway", modelId: "glm-5.3-flash" });
+  const config = loadConfig({ SIGRUN_MODEL: "acme/model-1" });
+  expect(config.models).toEqual({ provider: "acme", modelId: "model-1" });
 });
 
 test("bare SIGRUN_MODEL defaults to the env OpenAI-compat provider", () => {
