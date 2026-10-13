@@ -1,0 +1,17 @@
+Sigrun is deployed.
+
+1. Ensure the {{ .Values.secret.envName }} Secret exists in namespace
+   {{ .Release.Namespace }} (SIGRUN_MODEL + provider credentials +
+   SIGRUN_EXTENSIONS + extension env — extensions read the whole
+   environment).
+{{- if .Values.backup.enabled }}
+2. Ensure the {{ .Values.backup.secret.envName }} Secret exists (backup
+   target + AWS_* credentials).
+{{- end }}
+{{- if .Values.monitoring.enabled }}
+3. If Prometheus selects ServiceMonitors by a release label, add it via
+   monitoring.labels (e.g. release: kube-prometheus-stack).
+{{- end }}
+
+Check readiness: kubectl get pods; the /readyz scrape surfaces in
+up{job="sigrun"}.

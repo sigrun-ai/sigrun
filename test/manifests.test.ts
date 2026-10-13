@@ -1,355 +1,114 @@
 /**
- * Task 13: deploy manifests — parse every deploy/ yaml and assert the
- * render-critical fields; render via `kubectl kustomize` when available.
+ * charts/sigrun — the Helm chart that replaced deploy/ (publish prep 2.5).
  *
- * The manifests are reference material (render-only; no cluster apply in
- * M1), so "correct" here means: (a) every file parses as YAML, (b) the
- * §4.4 portable invariants are structurally present (Recreate + single
- * replica + RWO PVC mounted at the storage path + probes wired to the right
- * paths + CronJob node placement + ServiceMonitor/PrometheusRule wired to
- * the readiness probe), (c) the BASE renders cleanly, and (d) the homelab
- * OVERLAY renders AND carries the Appendix D instantiation (iSCSI class,
- * Tailscale LB, RustFS backup env, worker placement).
+ * The chart is the reference deployment (spec §4.4): "correct" here means
+ * (a) `helm lint` passes, (b) the default render carries the §4.4 portable
+ * invariants (Recreate + single replica + RWO PVC mounted at the storage
+ * path + probes wired to /healthz//readyz + envFrom the sigrun Secret +
+ * backup CronJob on the same PVC + ServiceMonitor/PrometheusRule scraping
+ * /readyz), and (c) the values toggles actually toggle (backup off, tailscale
+ * LB on with a distinct component label, monitoring off, storage class
+ * override).
  *
- * Render check: `kubectl kustomize <dir>` (kubectl v1.37 ships kustomize
- * v5.8.1). When kubectl is absent, the suite falls back to structural
- * validation only AND SAYS SO (a skipped render is reported, never silent).
+ * The homelab instantiation (iSCSI class, RustFS endpoint, worker placement,
+ * kube-prometheus-stack release label) lives in the CONSUMER's GitOps repo
+ * (flux-app-llm/sigrun) as values — deliberately NOT asserted here; the
+ * toggle-capability tests use neutral --set values to prove the chart
+ * expresses them.
+ *
+ * Render engine: `helm` (checked once; a missing helm fails loud — the
+ * chart IS the manifest since deploy/ was removed, there is no structural
+ * fallback).
  */
 
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
-import { describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test } from "vitest";
 
 const execFileAsync = promisify(execFile);
 
-const DEPLOY_DIR = join(import.meta.dirname, "..", "deploy");
-const BASE_DIR = join(DEPLOY_DIR, "base");
-const OVERLAY_DIR = join(DEPLOY_DIR, "overlays", "homelab");
+const CHART_DIR = join(import.meta.dirname, "..", "charts", "sigrun");
 
-/** Every yaml file under deploy/ (base + overlay), parsed. */
-async function loadManifests(dir: string): Promise<Map<string, unknown>> {
-	const parsed = new Map<string, unknown>();
-	const entries = await readdir(dir, { withFileTypes: true });
-	for (const entry of entries) {
-		if (entry.isDirectory()) {
-			const nested = await loadManifests(join(dir, entry.name));
-			for (const [path, doc] of nested) {
-				parsed.set(`${entry.name}/${path}`, doc);
-			}
-			continue;
-		}
-		if (!entry.name.endsWith(".yaml")) continue;
-		const text = await readFile(join(dir, entry.name), "utf-8");
-		parsed.set(entry.name, YAML.parse(text));
-	}
-	return parsed;
-}
-
-/** The kustomization resources must all parse as k8s docs. */
-async function kustomization(dir: string): Promise<{ resources: string[] }> {
-	const text = await readFile(join(dir, "kustomization.yaml"), "utf-8");
-	return YAML.parse(text) as { resources: string[] };
-}
-
-/** kubectl presence (checked once; cached). */
-let kubectlAvailable: boolean | undefined;
-async function haveKubectl(): Promise<boolean> {
-	if (kubectlAvailable !== undefined) return kubectlAvailable;
+/** helm presence — a hard env requirement (no kubectl/kustomize fallback
+ * exists anymore: the manifests are templates, not static yaml). */
+let helmAvailable: boolean | undefined;
+async function haveHelm(): Promise<boolean> {
+	if (helmAvailable !== undefined) return helmAvailable;
 	try {
-		await execFileAsync("kubectl", ["version", "--client"], {
-			timeout: 10_000,
-		});
-		kubectlAvailable = true;
+		await execFileAsync("helm", ["version"], { timeout: 10_000 });
+		helmAvailable = true;
 	} catch {
-		kubectlAvailable = false;
+		helmAvailable = false;
 	}
-	return kubectlAvailable;
+	return helmAvailable;
 }
 
-/** Render a kustomize dir; returns rendered yaml or undefined when no kubectl. */
-async function render(dir: string): Promise<string | undefined> {
-	if (!(await haveKubectl())) return undefined;
-	const { stdout } = await execFileAsync("kubectl", ["kustomize", dir], {
+/** `helm template` the chart; `set` entries become --set flags (argv, not
+ * shell — no string interpolation of values). */
+async function render(
+	set: string[] = [],
+): Promise<Record<string, unknown>[]> {
+	expect(await haveHelm(), "helm is required to render charts/sigrun").toBe(
+		true,
+	);
+	const args = [
+		"template",
+		"sigrun",
+		CHART_DIR,
+		"--namespace",
+		"sigrun",
+	];
+	for (const flag of set) args.push("--set", flag);
+	const { stdout } = await execFileAsync("helm", args, {
 		maxBuffer: 16 * 1024 * 1024,
 		timeout: 30_000,
 	});
-	return stdout;
-}
-
-/** Collect resource docs from a rendered stream. */
-function docsOf(rendered: string): Record<string, unknown>[] {
-	return rendered
+	return stdout
 		.split(/^---\s*$/m)
 		.map((chunk) => chunk.trim())
 		.filter((chunk) => chunk.length > 0)
 		.map((chunk) => YAML.parse(chunk) as Record<string, unknown>);
 }
 
-const baseManifests = await loadManifests(BASE_DIR);
-const overlayManifests = await loadManifests(OVERLAY_DIR);
+/** First doc of a kind from a render. */
+function docOf(
+	docs: Record<string, unknown>[],
+	kind: string,
+): Record<string, unknown> {
+	const doc = docs.find((d) => d.kind === kind);
+	expect(doc, `rendered chart must contain a ${kind}`).toBeDefined();
+	return doc as Record<string, unknown>;
+}
 
-// ---------------------------------------------------------------------------
-// Base: every manifest parses + kustomization references all of them
-// ---------------------------------------------------------------------------
-
-describe("deploy base", () => {
-	test("every yaml parses and carries app.kubernetes.io/name: sigrun", () => {
-		expect(baseManifests.size).toBeGreaterThan(0);
-		for (const [path, doc] of baseManifests) {
-			if (path === "kustomization.yaml") continue;
-			const labels = (doc as { metadata?: { labels?: Record<string, string> } })
-				.metadata?.labels;
-			expect(labels?.["app.kubernetes.io/name"], path).toBe("sigrun");
-		}
-	});
-
-	test("kustomization resources reference exactly the manifest files", async () => {
-		const k = await kustomization(BASE_DIR);
-		const files = [...baseManifests.keys()].filter(
-			(name) => name !== "kustomization.yaml",
-		);
-		expect([...k.resources].sort()).toEqual(files.sort());
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Deployment (§4.4): single replica, Recreate, RWO PVC at storage path,
-// probes wired, backup env from Secret
-// ---------------------------------------------------------------------------
-
-describe("deployment.yaml", () => {
-	const deployment = baseManifests.get("deployment.yaml") as {
-		spec: {
-			replicas: number;
-			strategy: { type: string };
-			template: {
-				spec: {
-					containers: {
-						name: string;
-						env: { name: string; value?: string; valueFrom?: unknown }[];
-						probe1?: unknown;
-						livenessProbe?: { httpGet: { path: string; port: unknown } };
-						readinessProbe?: { httpGet: { path: string; port: unknown } };
-						volumeMounts: { name: string; mountPath: string }[];
-					}[];
-					volumes: {
-						name: string;
-						persistentVolumeClaim?: { claimName: string; readOnly?: boolean };
-					}[];
-				};
-			};
-		};
-	};
-	const container = deployment?.spec?.template?.spec?.containers?.find(
-		(c: { name: string }) => c.name === "sigrun",
+beforeAll(async () => {
+	// Fail loud + early (before every describe asserts against undefined).
+	expect(await haveHelm(), "helm must be installed (env requirement)").toBe(
+		true,
 	);
-	// A missing container is itself a render-critical failure — assert
-	// presence once so every field assertion below is non-null.
-	expect(container).toBeDefined();
-	if (container === undefined) throw new Error("sigrun container missing");
+});
 
-	test("single replica with Recreate strategy (RWO PVC — RollingUpdate deadlocks)", () => {
-		expect(deployment.spec.replicas).toBe(1);
-		expect(deployment.spec.strategy.type).toBe("Recreate");
-	});
+// ---------------------------------------------------------------------------
+// lint + default render shape
+// ---------------------------------------------------------------------------
 
-	test("probes wired to /healthz (liveness) and /readyz (readiness)", () => {
-		expect(container.livenessProbe?.httpGet?.path).toBe("/healthz");
-		expect(container.readinessProbe?.httpGet?.path).toBe("/readyz");
-	});
-
-	test("the sqlite PVC mounts at the storage path", () => {
-		const dataMount = container.volumeMounts.find(
-			(m) => m.name === "data",
+describe("charts/sigrun lint + default render", () => {
+	test("helm lint passes", async () => {
+		expect(await haveHelm()).toBe(true);
+		const { stdout, stderr } = await execFileAsync(
+			"helm",
+			["lint", CHART_DIR],
+			{ timeout: 30_000 },
 		);
-		expect(dataMount?.mountPath).toBe("/data");
-		const dataVolume = deployment.spec.template.spec.volumes.find(
-			(v) => v.name === "data",
-		);
-		expect(dataVolume?.persistentVolumeClaim?.claimName).toBe("sigrun-data");
-		expect(dataVolume?.persistentVolumeClaim?.readOnly).toBeUndefined();
+		// helm's success line is "1 chart(s) linted, 0 chart(s) failed";
+		// "0 ... failed" is the PASS shape, so assert it positively (a
+		// not.match(/failed/i) would match the zero-count success line).
+		expect(`${stdout}${stderr}`).toMatch(/1 chart\(s\) linted, 0 chart\(s\) failed/);
 	});
 
-	test("SIGRUN_STORAGE_PATH points inside the mounted volume", () => {
-		const storage = container.env.find((e) => e.name === "SIGRUN_STORAGE_PATH");
-		expect(storage?.value).toBe("/data/sigrun.db");
-	});
-
-	test("env comes from the sigrun-env Secret (extension secrets)", () => {
-		const envFrom = (
-			container as unknown as {
-				envFrom: { secretRef: { name: string } }[];
-			}
-		).envFrom;
-		expect(
-			envFrom.some((e) => e.secretRef.name === "sigrun-env"),
-		).toBe(true);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Service + PVC + probes' port target
-// ---------------------------------------------------------------------------
-
-describe("service.yaml + pvc.yaml", () => {
-	test("ClusterIP service named sigrun on the http port", () => {
-		const service = baseManifests.get("service.yaml") as {
-			spec: { type: string; ports: { name: string; port: number }[] };
-		};
-		expect(service.spec.type).toBe("ClusterIP");
-		expect(service.spec.ports[0].name).toBe("http");
-		expect(service.spec.ports[0].port).toBe(3000);
-	});
-
-	test("PVC is RWO with a parameterized storage class", () => {
-		const pvc = baseManifests.get("pvc.yaml") as {
-			spec: {
-				accessModes: string[];
-				storageClassName: string;
-				resources: { requests: { storage: string } };
-			};
-		};
-		expect(pvc.spec.accessModes).toEqual(["ReadWriteOnce"]);
-		expect(pvc.spec.storageClassName).toBeTruthy();
-		expect(pvc.spec.resources.requests.storage).toBeTruthy();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// CronJob (T11): node placement carried, image placeholder documented
-// ---------------------------------------------------------------------------
-
-describe("cronjob-backup.yaml", () => {
-	const cronjob = baseManifests.get("cronjob-backup.yaml") as {
-		metadata: { annotations?: Record<string, string> };
-		spec: {
-			jobTemplate: {
-				spec: {
-					template: {
-						spec: {
-							nodeSelector: Record<string, string>;
-							containers: {
-								name: string;
-								image: string;
-							}[];
-						};
-					};
-				};
-			};
-		};
-	};
-
-	test("carries a nodeSelector key (node-bound-PVC placement constraint)", () => {
-		// The render-critical requirement (plan Task 13 step 2): the CronJob
-		// carries the Deployment's node placement. Base keeps it EMPTY (portable
-		// — block-backed PVCs have no node binding); the homelab overlay fills
-		// it. Structural presence of the key is what must hold in base.
-		expect(
-			cronjob.spec.jobTemplate.spec.template.spec,
-		).toHaveProperty("nodeSelector");
-	});
-
-	test("image placeholder names the required contents (sqlite3 + awscli + tsx)", () => {
-		const image = cronjob.spec.jobTemplate.spec.template.spec.containers[0].image;
-		expect(image).toMatch(/sqlite3/);
-		expect(image).toMatch(/awscli/);
-		expect(image).toMatch(/tsx/);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// ServiceMonitor + PrometheusRule (metrics scoping: scrape /readyz)
-// ---------------------------------------------------------------------------
-
-describe("servicemonitor.yaml + prometheusrule.yaml", () => {
-	test("ServiceMonitor scrapes /readyz on the http port of Service sigrun", () => {
-		const monitor = baseManifests.get("servicemonitor.yaml") as {
-			spec: {
-				selector: { matchLabels: Record<string, string> };
-				endpoints: { port: string; path: string }[];
-			};
-		};
-		expect(monitor.spec.selector.matchLabels["app.kubernetes.io/name"]).toBe(
-			"sigrun",
-		);
-		const endpoint = monitor.spec.endpoints[0];
-		expect(endpoint.port).toBe("http");
-		expect(endpoint.path).toBe("/readyz");
-	});
-
-	test("PrometheusRule alerts on scrape failure (readiness 503 ⇒ up=0)", () => {
-		const rule = baseManifests.get("prometheusrule.yaml") as {
-			spec: { groups: { name: string; rules: { alert: string }[] }[] };
-		};
-		const alerts = rule.spec.groups
-			.flatMap((g) => g.rules.map((r) => r.alert))
-			.sort();
-		expect(alerts).toContain("SigrunNotReady");
-		expect(alerts).toContain("SigrunNoScrape");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Homelab overlay (Appendix D)
-// ---------------------------------------------------------------------------
-
-describe("overlays/homelab", () => {
-	test("kustomization references the base + the tailscale Service", async () => {
-		const k = await kustomization(OVERLAY_DIR);
-		expect(k.resources).toContain("../../base");
-		const names = [...overlayManifests.keys()];
-		expect(names).toContain("service-tailscale.yaml");
-	});
-
-	test("Tailscale LB Service: class tailscale + hostname sigrun → sigrun.tailnet.example.test", () => {
-		const svc = overlayManifests.get("service-tailscale.yaml") as {
-			spec: { type: string; loadBalancerClass: string };
-			metadata: { annotations: Record<string, string> };
-		};
-		expect(svc.spec.type).toBe("LoadBalancer");
-		expect(svc.spec.loadBalancerClass).toBe("tailscale");
-		expect(svc.metadata.annotations["tailscale.com/hostname"]).toBe("sigrun");
-	});
-
-	test("rendered overlay carries every Appendix D field", async () => {
-		const rendered = await render(OVERLAY_DIR);
-		if (rendered === undefined) {
-			console.warn(
-				"[manifests] kubectl absent — overlay render SKIPPED; structural assertions below are the gate",
-			);
-		}
-		const source =
-			rendered === undefined
-				? YAML.stringify([...overlayManifests.values()])
-				: rendered;
-		// Appendix D: iSCSI storage class on the PVC.
-		expect(source).toContain("REPLACE-storage-class");
-		// Appendix D: RustFS S3 backup target env (Deployment + CronJob).
-		expect(source).toContain("SIGRUN_BACKUP_S3_BUCKET");
-		expect(source).toContain("RUSTFS-ENDPOINT-REMOVED.example.invalid:3900");
-		// Appendix D: worker nodeSelector + dedicated=workload toleration.
-		expect(source).toContain("node-role.kubernetes.io/worker");
-		expect(source).toContain("workload");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Render check (base) — the plan's step 2
-// ---------------------------------------------------------------------------
-
-describe("render check", () => {
-	test("kubectl kustomize deploy/base renders without error", async () => {
-		const rendered = await render(BASE_DIR);
-		if (rendered === undefined) {
-			console.warn(
-				"[manifests] kubectl absent — base render check SKIPPED (structural validation above is the gate)",
-			);
-			return;
-		}
-		const docs = docsOf(rendered);
+	test("default render produces exactly the six §4.4 kinds", async () => {
+		const docs = await render();
 		const kinds = docs.map((d) => d.kind).sort();
 		expect(kinds).toEqual([
 			"CronJob",
@@ -359,10 +118,451 @@ describe("render check", () => {
 			"Service",
 			"ServiceMonitor",
 		]);
-		// The render must be multi-doc and every doc must have apiVersion+kind.
 		for (const doc of docs) {
 			expect(doc.apiVersion).toBeTruthy();
 			expect(doc.kind).toBeTruthy();
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Deployment (§4.4): single replica, Recreate, RWO PVC at storage path,
+// probes wired, envFrom the sigrun-env Secret
+// ---------------------------------------------------------------------------
+
+describe("chart Deployment", () => {
+	type DeploymentDoc = {
+		metadata: { name: string };
+		spec: {
+			replicas: number;
+			strategy: { type: string };
+			template: {
+				spec: {
+					containers: {
+						name: string;
+						command?: string[];
+						workingDir?: string;
+						env: { name: string; value?: string }[];
+						envFrom: { secretRef: { name: string } }[];
+						livenessProbe: { httpGet: { path: string; port: string } };
+						readinessProbe: { httpGet: { path: string; port: string } };
+						resources: {
+							requests: { memory: string };
+							limits: { memory: string };
+						};
+						volumeMounts: {
+							name: string;
+							mountPath: string;
+							readOnly?: boolean;
+						}[];
+					}[];
+					volumes: {
+						name: string;
+						persistentVolumeClaim?: {
+								claimName: string;
+								readOnly?: boolean;
+							};
+						}[];
+				};
+			};
+		};
+	};
+
+	let deployment!: DeploymentDoc;
+	let container!: DeploymentDoc["spec"]["template"]["spec"]["containers"][number];
+
+	beforeAll(async () => {
+		deployment = docOf(await render(), "Deployment") as DeploymentDoc;
+		container = deployment.spec.template.spec.containers.find(
+				(c) => c.name === "sigrun",
+		) as DeploymentDoc["spec"]["template"]["spec"]["containers"][number];
+		expect(container).toBeDefined();
+	});
+
+	test("single replica with Recreate strategy (RWO PVC — RollingUpdate deadlocks)", () => {
+		expect(deployment.spec.replicas).toBe(1);
+		expect(deployment.spec.strategy.type).toBe("Recreate");
+	});
+
+	test("entrypoint is the deploy entry: npx tsx src/index.ts at /app", () => {
+		expect(container.command).toEqual(["npx", "tsx", "src/index.ts"]);
+		expect(container.workingDir).toBe("/app");
+	});
+
+	test("probes wired to /healthz (liveness) and /readyz (readiness)", () => {
+		expect(container.livenessProbe.httpGet.path).toBe("/healthz");
+		expect(container.livenessProbe.httpGet.port).toBe("http");
+		expect(container.readinessProbe.httpGet.path).toBe("/readyz");
+		expect(container.readinessProbe.httpGet.port).toBe("http");
+	});
+
+	test("the sqlite PVC mounts at /data", () => {
+		const dataMount = container.volumeMounts.find(
+			(m) => m.mountPath === "/data",
+		);
+		expect(dataMount?.readOnly).toBeUndefined();
+		const dataVolume = deployment.spec.template.spec.volumes.find(
+			(v) => v.name === dataMount?.name,
+		);
+		expect(dataVolume?.persistentVolumeClaim?.claimName).toBe("sigrun-data");
+		expect(dataVolume?.persistentVolumeClaim?.readOnly).toBeUndefined();
+	});
+
+	test("SIGRUN_STORAGE_PATH points inside the mounted volume", () => {
+		const storage = container.env.find(
+			(e) => e.name === "SIGRUN_STORAGE_PATH",
+		);
+		expect(storage?.value).toBe("/data/sigrun.db");
+	});
+
+	test("SIGRUN_PORT matches the Service port", () => {
+		expect(container.env.find((e) => e.name === "SIGRUN_PORT")?.value).toBe(
+			"3000",
+		);
+	});
+
+	test("env comes from the sigrun-env Secret (extension secrets)", () => {
+		expect(
+			container.envFrom.some((e) => e.secretRef.name === "sigrun-env"),
+		).toBe(true);
+	});
+
+	test("resources: 512Mi memory limit (requests/limits present)", () => {
+		expect(container.resources.requests.memory).toBe("256Mi");
+		expect(container.resources.limits.memory).toBe("512Mi");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Service + PVC
+// ---------------------------------------------------------------------------
+
+describe("chart Service + PVC", () => {
+	let docs: Record<string, unknown>[] = [];
+
+	beforeAll(async () => {
+		docs = await render();
+	});
+
+	test("ClusterIP service named sigrun on the http port 3000", () => {
+		const service = docOf(docs, "Service") as {
+			metadata: { name: string; labels: Record<string, string> };
+			spec: {
+				type: string;
+				ports: { name: string; port: number; targetPort: string }[];
+				selector: Record<string, string>;
+			};
+		};
+		expect(service.metadata.name).toBe("sigrun");
+		expect(service.spec.type).toBe("ClusterIP");
+		expect(service.spec.ports[0].name).toBe("http");
+		expect(service.spec.ports[0].port).toBe(3000);
+		expect(service.spec.ports[0].targetPort).toBe("http");
+		// The ServiceMonitor selects THIS label pair.
+		expect(service.metadata.labels["app.kubernetes.io/component"]).toBe(
+			"server",
+		);
+	});
+
+	test("PVC is RWO, 2Gi, and default render omits the storage class (cluster default)", () => {
+		const pvc = docOf(docs, "PersistentVolumeClaim") as {
+			metadata: { name: string };
+			spec: {
+				accessModes: string[];
+				storageClassName?: string;
+				resources: { requests: { storage: string } };
+			};
+		};
+		expect(pvc.spec.accessModes).toEqual(["ReadWriteOnce"]);
+		expect(pvc.spec.resources.requests.storage).toBe("2Gi");
+		expect(pvc.spec.storageClassName).toBeUndefined();
+		expect(pvc.metadata.name).toBe("sigrun-data");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// CronJob (§4.3): nightly backup on the same PVC
+// ---------------------------------------------------------------------------
+
+describe("chart backup CronJob", () => {
+	type CronJobDoc = {
+		metadata: { name: string };
+		spec: {
+			schedule: string;
+			concurrencyPolicy: string;
+			jobTemplate: {
+				spec: {
+					template: {
+						spec: {
+							containers: {
+								name: string;
+								command: string[];
+								env: { name: string; value?: string }[];
+								envFrom: { secretRef: { name: string } }[];
+								volumeMounts: { name: string; mountPath: string }[];
+							}[];
+							volumes: {
+								name: string;
+								persistentVolumeClaim?: { claimName: string };
+							}[];
+						};
+					};
+				};
+			};
+		};
+	};
+
+	let cronjob!: CronJobDoc;
+
+	beforeAll(async () => {
+		cronjob = docOf(await render(), "CronJob") as CronJobDoc;
+	});
+
+	test("nightly schedule, one run at a time (Forbid)", () => {
+		expect(cronjob.spec.schedule).toBe("0 3 * * *");
+		expect(cronjob.spec.concurrencyPolicy).toBe("Forbid");
+	});
+
+	test("backup script runs via tsx against the live db on the shared PVC", () => {
+		const pod = cronjob.spec.jobTemplate.spec.template.spec;
+		const backup = pod.containers[0];
+		expect(backup.command).toEqual([
+			"npx",
+			"tsx",
+			"/app/src/backup/run-backup.ts",
+		]);
+		expect(
+			backup.env.find((e) => e.name === "SIGRUN_STORAGE_PATH")?.value,
+		).toBe("/data/sigrun.db");
+		const mount = backup.volumeMounts.find((m) => m.mountPath === "/data");
+		expect(mount).toBeDefined();
+		// The Deployment's own PVC — the second process touching the sqlite
+		// file (App C's named verification class).
+		expect(pod.volumes[0]?.persistentVolumeClaim?.claimName).toBe(
+			"sigrun-data",
+		);
+	});
+
+	test("credentials come from the backup Secret", () => {
+		const backup =
+			cronjob.spec.jobTemplate.spec.template.spec.containers[0];
+		expect(
+			backup.envFrom.some((e) => e.secretRef.name === "sigrun-backup"),
+		).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ServiceMonitor + PrometheusRule (metrics scoping: scrape /readyz)
+// ---------------------------------------------------------------------------
+
+describe("chart ServiceMonitor + PrometheusRule", () => {
+	let docs: Record<string, unknown>[] = [];
+
+	beforeAll(async () => {
+		docs = await render();
+	});
+
+	test("ServiceMonitor scrapes /readyz on the http port of Service sigrun", () => {
+		const monitor = docOf(docs, "ServiceMonitor") as {
+			spec: {
+				jobLabel: string;
+				selector: { matchLabels: Record<string, string> };
+				endpoints: { port: string; path: string; interval: string }[];
+			};
+		};
+		expect(monitor.spec.jobLabel).toBe("app.kubernetes.io/name");
+		expect(monitor.spec.selector.matchLabels["app.kubernetes.io/name"]).toBe(
+			"sigrun",
+		);
+		expect(monitor.spec.selector.matchLabels["app.kubernetes.io/component"]).toBe(
+			"server",
+		);
+		expect(monitor.spec.endpoints[0].port).toBe("http");
+		expect(monitor.spec.endpoints[0].path).toBe("/readyz");
+	});
+
+	test("PrometheusRule alerts on scrape failure (readiness 503 ⇒ up=0)", () => {
+		const rule = docOf(docs, "PrometheusRule") as {
+			spec: { groups: { name: string; rules: { alert: string; expr: string }[] }[] };
+		};
+		const alerts = rule.spec.groups
+			.flatMap((g) => g.rules.map((r) => r))
+			.sort((a, b) => a.alert.localeCompare(b.alert));
+		expect(alerts.map((r) => r.alert)).toContain("SigrunNotReady");
+		expect(alerts.map((r) => r.alert)).toContain("SigrunNoScrape");
+		expect(alerts[0].expr).toMatch(/up\{job="sigrun"\}/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Values toggles (neutral --set overrides; the personal homelab values live
+// in the consumer repo, flux-app-llm/sigrun)
+// ---------------------------------------------------------------------------
+
+describe("values toggles", () => {
+	test("backup.enabled=false drops the CronJob", async () => {
+		const docs = await render(["backup.enabled=false"]);
+		expect(docs.some((d) => d.kind === "CronJob")).toBe(false);
+	});
+
+	test("monitoring.enabled=false drops ServiceMonitor + PrometheusRule", async () => {
+		const docs = await render(["monitoring.enabled=false"]);
+		expect(docs.some((d) => d.kind === "ServiceMonitor")).toBe(false);
+		expect(docs.some((d) => d.kind === "PrometheusRule")).toBe(false);
+	});
+
+	test("storage class override lands on the PVC", async () => {
+		const docs = await render(["persistence.storageClassName=example-class"]);
+		const pvc = docOf(docs, "PersistentVolumeClaim") as {
+			spec: { storageClassName: string };
+		};
+		expect(pvc.spec.storageClassName).toBe("example-class");
+	});
+
+	test("tailscale LB Service: distinct component label, class tailscale, same pod selector", async () => {
+		const docs = await render(["service.tailscale.enabled=true"]);
+		const services = docs.filter((d) => d.kind === "Service") as {
+			metadata: {
+				name: string;
+				labels: Record<string, string>;
+				annotations: Record<string, string>;
+			};
+			spec: {
+				type: string;
+				loadBalancerClass?: string;
+				selector: Record<string, string>;
+			};
+		}[];
+		expect(services).toHaveLength(2);
+		const lb = services.find((s) => s.spec.type === "LoadBalancer");
+		expect(lb?.metadata.name).toBe("sigrun-tailscale");
+		expect(lb?.spec.loadBalancerClass).toBe("tailscale");
+		expect(lb?.metadata.annotations["tailscale.com/hostname"]).toBe("sigrun");
+		// The ServiceMonitor's matchLabels ({name, component: server}) must
+		// NOT match the LB Service (double-scrape guard).
+		expect(lb?.metadata.labels["app.kubernetes.io/component"]).toBe(
+			"tailscale-lb",
+		);
+		expect(lb?.spec.selector["app.kubernetes.io/component"]).toBe("server");
+	});
+
+	test("extra env passthrough: sigrun.env + backup.env land on the containers", async () => {
+		const docs = await render([
+			"sigrun.env.SIGRUN_EXAMPLE=from-values",
+			"backup.env.SIGRUN_BACKUP_S3_ENDPOINT=https://example.invalid:3900",
+		]);
+		const deployment = docOf(docs, "Deployment") as {
+			spec: { template: { spec: { containers: { env: { name: string; value?: string }[] }[] } } };
+		};
+		expect(
+			deployment.spec.template.spec.containers[0].env.find(
+				(e) => e.name === "SIGRUN_EXAMPLE",
+			)?.value,
+		).toBe("from-values");
+		const cronjob = docOf(docs, "CronJob") as {
+			spec: {
+				jobTemplate: {
+					spec: {
+						template: {
+							spec: { containers: { env: { name: string; value?: string }[] }[] };
+						};
+					};
+				};
+			};
+		};
+		expect(
+			cronjob.spec.jobTemplate.spec.template.spec.containers[0].env.find(
+				(e) => e.name === "SIGRUN_BACKUP_S3_ENDPOINT",
+			)?.value,
+		).toBe("https://example.invalid:3900");
+	});
+
+	test("secret names are configurable (sigrun-env / sigrun-backup)", async () => {
+		const docs = await render([
+			"secret.envName=custom-env",
+			"backup.secret.envName=custom-backup",
+		]);
+		const deployment = docOf(docs, "Deployment") as {
+			spec: { template: { spec: { containers: { envFrom: { secretRef: { name: string } }[] }[] } } };
+		};
+		expect(
+			deployment.spec.template.spec.containers[0].envFrom.some(
+				(e) => e.secretRef.name === "custom-env",
+			),
+		).toBe(true);
+		const cronjob = docOf(docs, "CronJob") as {
+			spec: {
+				jobTemplate: {
+					spec: {
+						template: {
+							spec: {
+								containers: { envFrom: { secretRef: { name: string } }[] }[];
+							};
+						};
+					};
+				};
+			};
+		};
+		expect(
+			cronjob.spec.jobTemplate.spec.template.spec.containers[0].envFrom.some(
+				(e) => e.secretRef.name === "custom-backup",
+			),
+		).toBe(true);
+	});
+
+	test("monitoring.labels passthrough lands on both monitoring objects", async () => {
+		const docs = await render(["monitoring.labels.release=example-stack"]);
+		const monitor = docOf(docs, "ServiceMonitor") as {
+			metadata: { labels: Record<string, string> };
+		};
+		const rule = docOf(docs, "PrometheusRule") as {
+			metadata: { labels: Record<string, string> };
+		};
+		expect(monitor.metadata.labels.release).toBe("example-stack");
+		expect(rule.metadata.labels.release).toBe("example-stack");
+	});
+
+	test("worker placement passthrough lands on the server pods", async () => {
+		const docs = await render([
+			"nodeSelector.example-node=worker",
+			"tolerations[0].key=example-taint",
+			"tolerations[0].operator=Equal",
+			"tolerations[0].value=workload",
+			"tolerations[0].effect=NoSchedule",
+			"backup.nodeSelector.example-node=worker",
+		]);
+		const deployment = docOf(docs, "Deployment") as {
+			spec: {
+				template: {
+					spec: {
+						nodeSelector: Record<string, string>;
+						tolerations: { key: string; effect: string }[];
+					};
+				};
+			};
+		};
+		expect(deployment.spec.template.spec.nodeSelector["example-node"]).toBe(
+			"worker",
+		);
+		expect(
+			deployment.spec.template.spec.tolerations[0].key,
+		).toBe("example-taint");
+		const cronjob = docOf(docs, "CronJob") as {
+			spec: {
+				jobTemplate: {
+					spec: {
+						template: {
+							spec: { nodeSelector: Record<string, string> };
+						};
+					};
+				};
+			};
+		};
+		expect(
+			cronjob.spec.jobTemplate.spec.template.spec.nodeSelector?.[
+				"example-node"
+			],
+		).toBe("worker");
 	});
 });
