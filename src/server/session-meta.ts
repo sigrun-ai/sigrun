@@ -9,7 +9,7 @@
  * day 1; the flow does not" — present, unused in v1).
  *
  * Docs are standalone tokens: `defineDoc` needs no registry install (the
- * approvals policy doc in `sigrun-approvals-work/src/approvals.ts` is the
+ * approvals policy doc in `sigrun-ext-approvals/src/approvals.ts` is the
  * reference pattern). Reads serve `DEFAULT_SESSION_META` when the doc was
  * never written; only a PATCH materializes it — a read that wrote would
  * churn a doc revision on every sidebar poll, and defaults are free.

@@ -11,8 +11,8 @@
  * dynamic-import path the loader uses for installed packages. Contract: the
  * default export is a factory returning `{ extension, approvals }`.
  *
- * Mirrors: ~/sigrun-approvals-work/src/approvals.ts (keep the two in lockstep
- * when the real package's semantics change).
+ * Mirrors: ~/repos/sigrun-ext-approvals/src/approvals.ts (keep the two in
+ * lockstep when the real package's semantics change).
  */
 
 import { awaitWithContext } from "@earendil-works/chord/context";
