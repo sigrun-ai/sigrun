@@ -393,9 +393,16 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
 		// next; empty otherwise.
-		extensions: parseExtensionList(env.SIGRUN_EXTENSIONS) ?? [
-			...(settingsFile?.extensions ?? []),
-		],
+		// Ruling 1: env CSV wins; the file's top-level `extensions` array
+		// next; empty otherwise. The env path yields LOAD strings; the file
+		// path may carry object entries — flatten to LOAD sources here (the
+		// enabled:false filter happens at the loader, which owns load
+		// decisions; the sync step consumed the full specs already).
+		extensions:
+			parseExtensionList(env.SIGRUN_EXTENSIONS) ??
+			(settingsFile?.extensions ?? []).map((entry) =>
+				typeof entry === "string" ? entry : entry.source,
+			),
 		port,
 		workspace: {
 			type: "local",
