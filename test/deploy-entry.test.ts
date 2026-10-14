@@ -260,11 +260,10 @@ test(
 		await writeFile(
 			join(configDir, "settings.json"),
 			JSON.stringify({
-				packages: [`file:${tarball}`],
-				extensions: ["fixture-pkg"],
+				extensions: [`file:${tarball}`],
 			}) + "\n",
 			"utf8",
-		);
+			);
 		const entry = spawnEntry(
 			childEnv({
 				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
@@ -307,14 +306,14 @@ test(
 	120_000,
 );
 
-test("deploy entry fails loud when a declared packages[] package cannot install", async () => {
+test("deploy entry fails loud when a declared extension cannot install", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-pkgfail-"));
 	const configDir = join(dir, "config");
 	await mkdir(configDir, { recursive: true });
 	await writeFile(
 		join(configDir, "settings.json"),
 		JSON.stringify({
-			packages: ["file:/nonexistent/definitely-not-a-package"],
+			extensions: ["file:/nonexistent/definitely-not-a-package"],
 		}) + "\n",
 		"utf8",
 	);
@@ -339,7 +338,7 @@ test("deploy entry fails loud when a declared packages[] package cannot install"
 	try {
 		expect(exit.code).toBe(1);
 		// Fail-loud, naming the specifier (PackageSyncError → boot catch).
-		expect(stderr).toMatch(/packages:/);
+		expect(stderr).toMatch(/extensions:|packages:/);
 		expect(stderr).toMatch(/definitely-not-a-package/);
 	} finally {
 		await rm(dir, { recursive: true, force: true });

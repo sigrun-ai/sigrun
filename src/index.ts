@@ -83,7 +83,7 @@ async function main(): Promise<void> {
 	// (the dir already matches) costs one manifest read, no subprocess.
 	const settingsFile = settingsStore.read();
 	const packagesDir = packagesDirOf(defaultSettingsDir());
-	await syncPackages(settingsFile.packages ?? [], packagesDir);
+	await syncPackages(settingsFile.extensions ?? [], packagesDir);
 	// The workspace directory must exist before any files endpoint or tool
 	// call touches it. The deploy manifest mounts a volume at /data; the
 	// workspace is /data/workspace. Without this, the first files request

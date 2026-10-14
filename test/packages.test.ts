@@ -26,6 +26,7 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { SettingsValidationError } from "../src/harness/settings.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
 import {
@@ -341,41 +342,35 @@ describe("loader + packages dir integration", () => {
 	}, 60_000);
 });
 
-describe("settings.packages validation", () => {
-	// The settings-level assertions live with the store tests in
-	// test/settings.test.ts style: parse-through SettingsStore.
-	test("packages must be an array of non-empty strings", async () => {
-		const { SettingsStore, SettingsValidationError } = await import(
-			"../src/harness/settings.js"
-		);
+describe("the unified extensions list (settings surface)", () => {
+	// Validation lives in settings.ts's own tests too; here the STORE
+	// round-trip of the object form (the grammar the packages/git sync
+	// consumes).
+	test("object entries round-trip and PATCH clears; packages[] is gone", async () => {
+		const { SettingsStore } = await import("../src/harness/settings.js");
 		const dir = freshDir("sigrun-settings-");
 		const store = new SettingsStore({ dir });
-		writeFileSync(
-			join(dir, "settings.json"),
-			'{"packages": "sigrun-ext-approvals"}',
-			"utf8",
+		store.update({
+			extensions: [
+				"sigrun-ext-approvals@^0.1.0",
+				{ source: "git:github.com/obra/superpowers", ref: "main" },
+				{ source: "/opt/dev/my-ext", enabled: false },
+			],
+		});
+		const read = store.read().extensions ?? [];
+		expect(read[0]).toBe("sigrun-ext-approvals@^0.1.0");
+		expect(read[1]).toEqual({
+			source: "git:github.com/obra/superpowers",
+			ref: "main",
+		});
+		expect(read[2]).toEqual({ source: "/opt/dev/my-ext", enabled: false });
+		store.update({ extensions: null });
+		expect(store.read().extensions).toBeUndefined();
+		// The two-list era is over: a packages key now fails PATCH
+		// validation (unknown field).
+		expect(() => store.update({ packages: ["x@^1"] as never })).toThrow(
+			SettingsValidationError,
 		);
-		expect(() => store.read()).toThrow(SettingsValidationError);
-		writeFileSync(
-			join(dir, "settings.json"),
-			'{"packages": ["ok", ""]}',
-			"utf8",
-		);
-		expect(() => store.read()).toThrow(/packages/);
-		writeFileSync(
-			join(dir, "settings.json"),
-			'{"packages": ["sigrun-ext-approvals@^0.1.0"]}',
-			"utf8",
-		);
-		expect(store.read().packages).toEqual(["sigrun-ext-approvals@^0.1.0"]);
-		// PATCH round-trips wholesale (arrays replace, null clears), and the
-		// bootstrap never seeds the key.
-		store.update({ packages: ["a@^1", "@scope/b"] });
-		expect(store.read().packages).toEqual(["a@^1", "@scope/b"]);
-		store.update({ packages: ["c"] });
-		expect(store.read().packages).toEqual(["c"]);
-		store.update({ packages: null });
-		expect(store.read().packages).toBeUndefined();
 	});
 });
 

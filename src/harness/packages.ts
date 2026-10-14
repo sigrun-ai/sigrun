@@ -51,6 +51,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { ExtensionSpec } from "./settings.js";
 
 /** The npm install/uninstall timeout (ms) — one subprocess invocation. */
 export const NPM_TIMEOUT_MS = 120_000;
@@ -266,6 +267,61 @@ export function identifySpecifier(specifier: string): SpecifierIdentity {
 }
 
 /**
+ * One normalized name-bearing entry derived from a settings `extensions`
+ * value: what should be installed/loaded and whether it is enabled.
+ */
+export interface NormalizedExtSpec {
+	/** The source specifier (string shorthand resolves to `source`). */
+	readonly source: string;
+	/** Entry-point override from the object form, when present. */
+	readonly entry?: string;
+	/** Git ref from the object form or the `@ref` suffix, when present. */
+	readonly ref?: string;
+	/** Default true. */
+	readonly enabled: boolean;
+}
+
+/**
+ * Normalize one settings `extensions` entry (string or object form) into
+ * the install/load stem. Exported for the unit tests.
+ */
+export function normalizeExtSpec(entry: ExtensionSpec): NormalizedExtSpec {
+	if (typeof entry === "string") {
+		return { source: entry, enabled: true };
+	}
+	return {
+		source: entry.source,
+		...(entry.entry === undefined ? {} : { entry: entry.entry }),
+		...(entry.ref === undefined ? {} : { ref: entry.ref }),
+		enabled: entry.enabled ?? true,
+	};
+}
+
+/**
+ * The kind of source a normalized spec points at, deciding which boot
+ * tree gets it (packages dir, git dir, or load-in-place).
+ */
+export function sourceKind(source: string): "npm" | "git" | "path" | "bare" {
+	if (source.startsWith("git:") || /^https?:\/\/.*\.git/.test(source)) {
+		return "git";
+	}
+	// `file:` is an INSTALLABLE npm specifier (npm records it in the
+	// packages manifest and loads the symlinked source — the dev-checkout
+	// shape). Bare ./ ../ / paths are LOAD-IN-PLACE (nothing installed).
+	if (
+		((source.startsWith("./") || source.startsWith("../")) &&
+			!source.startsWith("file:")) ||
+		(source.startsWith("/") && !source.startsWith("file:/"))
+	) {
+		return "path";
+	}
+	// A git https/shp URL without a .git suffix would collide with the
+	// npm "name" grammar: only definite .git URLs are git here; everything
+	// else is a registry/bare name.
+	return "npm";
+}
+
+/**
  * Diff the wanted specifiers against the installed dependencies map.
  * Wanted-but-missing or range/path-changed → install; installed-but-
  * unwanted → uninstall. Exported for the unit tests (the diff rules are
@@ -342,6 +398,28 @@ export interface SyncPackagesOptions {
  *   a declared specifier that does not resolve afterward.
  */
 export async function syncPackages(
+	extensions: readonly ExtensionSpec[],
+	packagesDir: string,
+	options: SyncPackagesOptions = {},
+): Promise<void> {
+	// Normalize + split by source kind: npm-shaped entries install into
+	// the packages dir; git entries reconcile into the git dir (their
+	// sync lives in the git module); path entries and disabled entries
+	// are no-ops here (loaded in place / retained-but-not-installed).
+	const normalized = extensions.map(normalizeExtSpec);
+	const npmSpecs: string[] = [];
+	for (const spec of normalized) {
+		if (!spec.enabled) continue;
+		const kind = sourceKind(spec.source);
+		if (kind === "npm") npmSpecs.push(spec.source);
+		// git/path handled by their own layers (git sync below the npm
+		// steps; path needs nothing installed).
+	}
+	await syncPackagesFlat(npmSpecs, packagesDir, options);
+}
+
+/** The pre-existing flat npm synchronizer (now an internal step). */
+async function syncPackagesFlat(
 	packages: readonly string[],
 	packagesDir: string,
 	options: SyncPackagesOptions = {},
@@ -418,26 +496,42 @@ export function resolveExtensionEntry(
 	specifier: string,
 	packagesDir: string,
 ): string | undefined {
-	// Paths and URLs are never packages-dir entries — they import
-	// verbatim (the pre-packages loader behavior).
+	// Bare ./ ../ / relative paths are load-in-place (never packages-dir
+	// entries; the pre-packages behavior). NOTE: `file:` is NOT here —
+	// a `file:` LOAD specifier may name a package the packages dir
+	// installed under its own manifest name (via a file: INSTALL
+	// specifier — the npm symlinked checkout); resolve through the
+	// manifest first, then fall through to bare resolution.
 	if (
-		specifier.startsWith("file:") ||
-		specifier.startsWith("./") ||
-		specifier.startsWith("../") ||
-		specifier.startsWith("/")
+		(specifier.startsWith("./") || specifier.startsWith("../")) &&
+		!specifier.startsWith("file:")
 	) {
+		return specifier;
+	}
+	if (specifier.startsWith("/") || specifier.startsWith("file://")) {
 		return specifier;
 	}
 	// A file:-installed package LOADS under its own manifest name, which
 	// resolves from the packages dir to the real (symlinked) source —
-	// exactly pi's "symlink a dev checkout" shape.
+	// exactly pi's "symlink a dev checkout" shape. For a file:-SHAPE load
+	// specifier, the manifest name is looked up BY PATH identity (npm
+	// records the dep under the target's own manifest name, not the
+	// specifier): find the dependency entry whose canonical path matches
+	// this specifier's.
 	const manifest = packagesManifestPath(packagesDir);
 	if (existsSync(manifest)) {
-		try {
-			return importableEntry(createRequire(manifest).resolve(specifier));
-		} catch {
-			// Not installed in the packages dir — fall through to bare
-			// resolution.
+		if (specifier.startsWith("file:") || specifier.startsWith("/")) {
+			const id = identifySpecifier(specifier);
+			const name = readPackageName(id.pathShaped ? id.range : specifier) ?? id.name;
+			const pkgDir = join(packagesDir, "node_modules", ...name.split("/"));
+				if (existsSync(pkgDir)) return importableEntry(pkgDir);
+		} else {
+			try {
+				return importableEntry(createRequire(manifest).resolve(specifier));
+			} catch {
+				// Not installed in the packages dir — fall through to bare
+				// resolution.
+			}
 		}
 	}
 	try {
