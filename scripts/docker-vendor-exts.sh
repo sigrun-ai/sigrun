@@ -8,14 +8,14 @@ cd "$(dirname "$0")/.."
 rm -rf .docker-ext
 mkdir -p .docker-ext
 
-for repo in sigrun-memory-markdown sigrun-approvals; do
+for repo in sigrun-ext-memory-markdown sigrun-ext-approvals; do
   echo "cloning $repo..."
   git clone --depth 1 "${SIGRUN_VENDOR_GIT_URL:-ssh://git@git.example.invalid/sigrun-ai}/$repo.git" ".docker-ext/$repo"
 done
 
-# The package names in the extension repos must match what sigrun's
-# package.json expects (sigrun-ext-memory-markdown, sigrun-ext-approvals).
-# The clone dirs match the repo names; rename to package names.
+# The package names match the repo names (sigrun-ext-memory-markdown,
+# sigrun-ext-approvals) — the clone dirs already carry the right names.
+# The rename below stays as a no-op safety net if that ever drifts.
 for dir in .docker-ext/*/; do
   name=$(basename "$dir")
   pkg=$(python3 -c "import json; print(json.load(open('$dir/package.json'))['name'])")
