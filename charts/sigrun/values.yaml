@@ -62,6 +62,17 @@ controllers:
           # base shape (a separate artifacts volume is a values choice).
           - name: SIGRUN_WORKSPACE_PATH
             value: /data/workspace
+          # The config dir (settings.json + auth.json + the packages dir)
+          # on the SAME PVC: extensions are declared in settings.json
+          # (packages[] installs, extensions[] loads) and boot installs
+          # them into /data/config/packages — no image rebuild to add an
+          # extension, and the chart bakes none. Change flow: edit the
+          # file (kubectl exec into the pod, or your own PVC seeding),
+          # then rollout restart. (An initContainer seeding a first-boot
+          # settings.json from a ConfigMap is a deployment choice — the
+          # chart deliberately does not implement one.)
+          - name: SIGRUN_CONFIG_DIR
+            value: /data/config
           # Must match the service.main port.
           - name: SIGRUN_PORT
             value: "3000"

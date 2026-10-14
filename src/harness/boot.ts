@@ -32,8 +32,9 @@ import {
 	type ProviderCollision,
 	type ProviderContributor,
 } from "./providers/index.js";
+import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
-import { SettingsStore } from "./settings.js";
+import { defaultSettingsDir, SettingsStore } from "./settings.js";
 import {
 	createWorkspaceService,
 	defaultWorkspacePrefs,
@@ -104,6 +105,13 @@ export interface OpenedHarness {
 	 */
 	readonly settings: SettingsStore;
 	/**
+	 * The packages dir (`<config-dir>/packages`) the loader resolved
+	 * extension specifiers against — where `syncPackages` installs the
+	 * settings file's `packages` declarations. Exposed for the §5 meta
+	 * surface and for tests.
+	 */
+	readonly packagesDir: string;
+	/**
 	 * The loaded memory extension's §3 producer (Task 9e), when its factory
 	 * result carried one; `undefined` for the no-op memory default, a
 	 * quarantined memory extension, or a producer-less memory extension —
@@ -170,6 +178,13 @@ export interface OpenHarnessOptions {
 	 * the file-backed settings store (`/v1/settings` round-trips a tmp file).
 	 */
 	readonly settingsDir?: string;
+	/**
+	 * The packages dir the loader resolves extension specifiers against
+	 * (the settings-file `packages` install root), default
+	 * `<settingsDir>/packages`. The hermetic-test seam for packages-dir
+	 * resolution (a tmp dir with a fixture package installed).
+	 */
+	readonly packagesDir?: string;
 }
 
 /**
@@ -215,6 +230,11 @@ export async function openHarness(
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
 	// factory-result producers are retained alongside the outcomes (Task 9e);
 	// factory-result submit pass-throughs likewise (Task 26a).
+	// The packages dir: the deployment-installed extension root the
+	// loader resolves against FIRST (the settings file's `packages`
+	// declarations install here — see src/harness/packages.ts).
+	const packagesDir =
+		options.packagesDir ?? packagesDirOf(options.settingsDir ?? defaultSettingsDir());
 	const {
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
@@ -223,6 +243,7 @@ export async function openHarness(
 	} = await loadExtensions(
 		options.extensionSpecifiers ?? config.extensions,
 		registry,
+		{ packagesDir },
 	);
 	// The memory-surface owner: the installed extension whose sections
 	// include the long-term-memory key. None → the no-op default installs
@@ -351,5 +372,6 @@ export async function openHarness(
 		memorySubmit,
 		approvals,
 		settings: settingsStore,
+		packagesDir,
 	};
 }

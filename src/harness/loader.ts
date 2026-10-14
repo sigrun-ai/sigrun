@@ -51,6 +51,7 @@ import type {
 	SubmissionDraft,
 } from "@earendil-works/pi-durable";
 import type { HealthStatus } from "./health.js";
+import { resolveExtensionEntry } from "./packages.js";
 import type {
 	ExtensionApprovals,
 } from "../server/approvals.js";
@@ -273,6 +274,18 @@ export function resolveExtension(
 	return undefined;
 }
 
+/** Optional `loadExtensions` inputs. */
+export interface LoadExtensionsOptions {
+	/**
+	 * The deployment's packages dir (`<config-dir>/packages`), consulted
+	 * FIRST for every specifier — what the settings file's `packages`
+	 * array installed wins over anything resolvable from the app tree.
+	 * Undefined keeps bare-specifier resolution (the pre-packages boot
+	 * shape; tests that never touch a packages dir).
+	 */
+	readonly packagesDir?: string;
+}
+
 /**
  * Load and install every configured extension, quarantining failures.
  *
@@ -288,16 +301,29 @@ export function resolveExtension(
  * Task 26a).
  */
 export async function loadExtensions(
-	specifiers: readonly string[],
-	registry: Registry,
+		specifiers: readonly string[],
+		registry: Registry,
+		options: LoadExtensionsOptions = {},
 ): Promise<LoadedExtensions> {
 		const outcomes: ExtensionOutcome[] = [];
-	const healthProducers: ExtensionHealthProducer[] = [];
-	const submitBindings: ExtensionSubmitBinding[] = [];
-	const approvalsBindings: ExtensionApprovalsBinding[] = [];
-	for (const specifier of specifiers) {
-		try {
-			const module = (await import(specifier)) as ExtensionModule;
+		const healthProducers: ExtensionHealthProducer[] = [];
+		const submitBindings: ExtensionSubmitBinding[] = [];
+		const approvalsBindings: ExtensionApprovalsBinding[] = [];
+		for (const specifier of specifiers) {
+				try {
+						// Resolution order (the packages-dir ruling): the deployment's
+						// packages dir FIRST (what `packages[]` installed wins over
+						// anything the image bundles), then bare import resolution
+						// (paths, file:// URLs, dev checkouts, app-tree packages). The
+						// packages dir is an unrelated node_modules tree — Node's
+						// upward walk never finds it from sigrun's own imports, so it
+						// must be consulted explicitly.
+						const entry =
+								options.packagesDir === undefined
+										? specifier
+										: (resolveExtensionEntry(specifier, options.packagesDir) ??
+												specifier);
+						const module = (await import(entry)) as ExtensionModule;
 			const resolved = resolveExtension(module);
 			if (resolved === undefined) {
 				throw new Error(
