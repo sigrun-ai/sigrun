@@ -117,6 +117,7 @@ interface ExtensionModule {
 	readonly default?: unknown;
 	readonly extension?: unknown;
 	readonly createMemory?: unknown;
+	readonly createApprovals?: unknown;
 }
 
 /**
@@ -203,9 +204,14 @@ export function resolveExtension(
 	const fromDefault = resolvedFromFactory(defaultExport);
 	if (fromDefault !== undefined) return fromDefault;
 
-	// 2. Named real-package factories (bridge for the pre-contract memory package).
+	// 2. Named real-package factories (bridge for the pre-contract packages).
+	// A package whose factory result carries extra capabilities (approvals,
+	// future insight/seam fields) resolves fine: only health and submit are
+	// validated and retained; everything else is the extension's own business.
 	const fromMemory = resolvedFromFactory(module.createMemory);
 	if (fromMemory !== undefined) return fromMemory;
+	const fromApprovals = resolvedFromFactory(module.createApprovals);
+	if (fromApprovals !== undefined) return fromApprovals;
 
 	// 3. Named `extension` export.
 	if (isExtension(module.extension)) return { extension: module.extension };
