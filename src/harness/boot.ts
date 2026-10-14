@@ -19,7 +19,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
-import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit } from "./loader.js";
+import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { APPROVALS_EXTENSION_NAME, type ExtensionApprovals } from "../server/approvals.js";
 import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
@@ -173,6 +173,14 @@ export interface OpenHarnessOptions {
 	 */
 	readonly extensionSpecifiers?: readonly string[];
 	/**
+	 * Pre-resolved extension load entries (the deploy-time boot flow):
+	 * `syncPackages`'s output — absolute `file://` entries or specifiers —
+	 * consumed verbatim by the loader. Takes precedence over
+	 * `extensionSpecifiers`; the sync has already failed loud on sync
+	 * errors by the time these exist.
+	 */
+	readonly extensionEntries?: readonly ResolvedExtensionInput[];
+	/**
 	 * The settings store's directory (Task 8a), default
 	 * `$SIGRUN_CONFIG_DIR`/`~/.config/sigrun` — the hermetic-test seam for
 	 * the file-backed settings store (`/v1/settings` round-trips a tmp file).
@@ -241,7 +249,7 @@ export async function openHarness(
 		submitBindings: extensionSubmits,
 		approvalsBindings: extensionApprovals,
 	} = await loadExtensions(
-		options.extensionSpecifiers ?? config.extensions,
+		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
 		{ packagesDir },
 	);

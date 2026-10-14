@@ -49,7 +49,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionSpec } from "./settings.js";
 
@@ -386,6 +386,20 @@ export interface SyncPackagesOptions {
 	readonly log?: boolean;
 	/** Log npm's own stderr on successful installs (default false). */
 	readonly verbose?: boolean;
+	/** The config dir (git dir parent); derived from the packages dir's parent when omitted. */
+	readonly configDir?: string;
+}
+
+/**
+ * One loadable extension resolution from the sync: the `entry` is an
+ * absolute `file://` URL (npm/bare/path packages, discovered git
+ * checkouts) or the original load specifier (paths changed nothing);
+ * `enabled` mirrors the source spec (always true from the sync —
+ * disabled entries never reach the loader).
+ */
+export interface ExtensionResolution {
+	readonly entry: string;
+	readonly enabled: boolean;
 }
 
 /**
@@ -401,21 +415,78 @@ export async function syncPackages(
 	extensions: readonly ExtensionSpec[],
 	packagesDir: string,
 	options: SyncPackagesOptions = {},
-): Promise<void> {
+): Promise<ExtensionResolution[]> {
 	// Normalize + split by source kind: npm-shaped entries install into
-	// the packages dir; git entries reconcile into the git dir (their
-	// sync lives in the git module); path entries and disabled entries
-	// are no-ops here (loaded in place / retained-but-not-installed).
+	// the packages dir; git entries clone/fetch into the git dir; path
+	// entries load in place; disabled entries keep their directory state
+	// but produce no loadable resolution.
 	const normalized = extensions.map(normalizeExtSpec);
+	const resolutions: ExtensionResolution[] = [];
+	const gitDir = gitDirOf(
+		options.configDir ?? resolve(dirname(packagesDir)),
+	);
 	const npmSpecs: string[] = [];
 	for (const spec of normalized) {
 		if (!spec.enabled) continue;
 		const kind = sourceKind(spec.source);
-		if (kind === "npm") npmSpecs.push(spec.source);
-		// git/path handled by their own layers (git sync below the npm
-		// steps; path needs nothing installed).
+		if (kind === "npm") {
+			npmSpecs.push(spec.source);
+			continue;
+		}
+		if (kind === "git") {
+			const { source, ref } = splitGitRef(spec.source, spec.ref);
+			const repoDir = await syncGit(source, ref, gitDir, options);
+			let entry: string;
+			try {
+				entry = findExtEntry(repoDir, spec.entry);
+			} catch (cause) {
+				throw cause instanceof GitSyncError
+					? new GitSyncError(
+							`git extension ${sanitizeUrl(spec.source)}: ${cause.message}`,
+						)
+					: cause;
+			}
+			resolutions.push({ entry: pathToFileURL(entry).href, enabled: true });
+			continue;
+		}
+		// path kind: load in place (nothing installed)
+		resolutions.push({ entry: spec.source, enabled: true });
 	}
 	await syncPackagesFlat(npmSpecs, packagesDir, options);
+	// npm-path resolutions (bare names, file: forms): resolved through the
+	// packages dir then the app tree — the loader's resolution seam, kept.
+	for (const spec of normalized) {
+		if (!spec.enabled) continue;
+		if (sourceKind(spec.source) !== "npm") continue;
+		const explicitEntry = spec.entry;
+		const resolved = resolveExtensionEntry(spec.source, packagesDir);
+		if (resolved === undefined) {
+			if (spec.source.includes("/") && !spec.source.startsWith("@")) {
+				// A scoped/bare name the trees can't produce — fail loud now
+				// (install claimed success earlier or it's a vendor name).
+			}
+			resolutions.push({ entry: spec.source, enabled: true });
+			continue;
+		}
+		resolutions.push({
+			entry: explicitEntry === undefined
+				? resolved
+				: pathToFileURL(join(dirname(resolved), explicitEntry)).href,
+			enabled: true,
+		});
+	}
+	return resolutions;
+}
+
+/** Split a git source into its fetch URL + declared ref. */
+function splitGitRef(source: string, objectRef?: string): { source: string; ref?: string } {
+	if (objectRef !== undefined) return { source, ref: objectRef };
+	// The @ref suffix: only treat the segment AFTER the last slash (a
+	// scoped/URL @ in the host part is not a ref).
+	const slash = source.lastIndexOf("/");
+	const at = source.lastIndexOf("@");
+	if (at > slash + 1) return { source: source.slice(0, at), ref: source.slice(at + 1) };
+	return { source };
 }
 
 /** The pre-existing flat npm synchronizer (now an internal step). */
@@ -548,4 +619,159 @@ export function resolveExtensionEntry(
  */
 function importableEntry(absolutePath: string): string {
 	return pathToFileURL(absolutePath).href;
+}
+
+// ---------------------------------------------------------------------------
+// Git sources — the non-npm half of the unified extensions list
+// ---------------------------------------------------------------------------
+
+/** A git-source sync failure (clone, fetch, ref, or entry discovery). */
+export class GitSyncError extends Error {}
+
+/**
+ * Strip userinfo credentials from a URL surfaced in an error or log:
+ * `https://user:token@host/path` renders as `https://<sanitized>@host/path`.
+ * Never echoes secret material.
+ */
+export function sanitizeUrl(url: string): string {
+	return url.replace(
+		/^(https?|ssh):\/\/([^/@]+)@/,
+		(_match, scheme: string) => `${scheme}://<sanitized>@`,
+	);
+}
+
+/**
+ * The git checkout dir under the config dir: `<configDir>/git` (pi's
+ * package-manager layout — host/path segments, one dir per repo).
+ */
+export function gitDirOf(configDir: string): string {
+	return join(configDir, "git");
+}
+
+/**
+ * The clone target for one git source: `<gitDir>/<host>/<path>…`.
+ * Rejects any resulting path that escapes `gitDir` (the traversal guard).
+ */
+export function gitTargetDir(gitDir: string, source: string): string {
+	const stripped = source
+		.replace(/^(git:|https?:|ssh:)/, "")
+		.replace(/^\/\//, "")
+		.replace(/\.git$/, "")
+		.split("@")[0];
+	const segments = stripped.split("/").filter((s) => s !== "");
+	const target = join(gitDir, ...segments);
+	if (!target.startsWith(gitDir)) {
+		throw new GitSyncError(
+			`git source ${sanitizeUrl(source)} resolves outside the git dir`,
+		);
+	}
+	return target;
+}
+
+async function runGit(args: readonly string[], cwd: string): Promise<string> {
+	return new Promise((resolveResult, rejectResult) => {
+		execFile(
+			"git",
+			args,
+			{ cwd, timeout: NPM_TIMEOUT_MS, encoding: "utf8" },
+			(error, stdout) =>
+				error === null
+					? resolveResult(stdout)
+					: rejectResult(
+							new GitSyncError(
+								`git ${args[0]} failed: ${sanitizeUrl(String(stderrTail(error)))}`,
+							),
+						),
+		);
+	});
+}
+
+/** The last stderr line of a child failure (concise context, no spam). */
+function stderrTail(error: Error & { stderr?: unknown }): string {
+	const raw = typeof error.stderr === "string" ? error.stderr : error.message;
+	const lines = raw.trim().split("\n").filter((l) => l !== "");
+	return lines.at(-1) ?? error.message;
+}
+
+/**
+ * Clone-or-reconcile one git source into `gitDir`. Absent → clone.
+ * Present + `ref` → fetch + checkout FETCH_HEAD (pi's ensureGitRef
+ * pattern). Present + no ref → plain fetch only (the checkout stays
+ * where the user left it — no silent rebases).
+ */
+export async function syncGit(
+	source: string,
+	ref: string | undefined,
+	gitDir: string,
+	options: { log?: boolean } = {},
+): Promise<string> {
+	const log = options.log !== false;
+	mkdirSync(gitDir, { recursive: true });
+	const target = gitTargetDir(gitDir, source);
+	const url = source.startsWith("git:")
+		? `https://${source.slice(4)}${ref === undefined ? "" : ""}`.replace(/@[^/]*$/, "")
+		: source.replace(/@[^/]*$/, "");
+	if (!existsSync(target)) {
+		if (log) console.log(`git: cloning ${sanitizeUrl(url)} → ${target}`);
+		await runGit(["clone", url, target], gitDir);
+	} else if (ref !== undefined) {
+		if (log) console.log(`git: fetching ${sanitizeUrl(url)} @ ${ref}`);
+		await runGit(["fetch", "origin", ref], target);
+		await runGit(["checkout", "FETCH_HEAD"], target);
+	} else {
+		if (log) console.log(`git: fetching ${sanitizeUrl(url)} (no ref change)`);
+		await runGit(["fetch", "origin"], target);
+	}
+	return target;
+}
+
+/**
+ * Entry discovery for a synced git checkout, in priority order: the
+ * object form's explicit `entry`, a `sigrun` manifest
+	 * (`{"sigrun": {"extension": "./x.js"}}`), a pi-compat manifest
+	 * (`"pi": {"extensions": [...]}` — first entry, warned), `dist/index.js`,
+	 * `index.ts`.
+ */
+export function findExtEntry(
+	repoDir: string,
+	explicitEntry: string | undefined,
+): string {
+	if (explicitEntry !== undefined) {
+		const entry = join(repoDir, explicitEntry);
+		if (!existsSync(entry)) {
+			throw new GitSyncError(
+				`git source entry ${explicitEntry} does not exist in the checkout`,
+			);
+		}
+		return entry;
+	}
+	const manifestPath = join(repoDir, "package.json");
+	if (existsSync(manifestPath)) {
+		try {
+			const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+				sigrun?: { extension?: unknown };
+				pi?: { extensions?: unknown };
+			};
+			const sigrunEntry = manifest.sigrun?.extension;
+			if (typeof sigrunEntry === "string") {
+				return join(repoDir, sigrunEntry);
+			}
+			const piEntries = manifest.pi?.extensions;
+			if (Array.isArray(piEntries) && typeof piEntries[0] === "string") {
+				console.warn(
+					"git: pi-compat manifest — using the first pi entry as the extension",
+				);
+				return join(repoDir, piEntries[0]);
+			}
+		} catch {
+			// Unreadable manifest — fall through to the dist/root conventions.
+		}
+	}
+	const dist = join(repoDir, "dist", "index.js");
+	if (existsSync(dist)) return dist;
+	const rootTs = join(repoDir, "index.ts");
+	if (existsSync(rootTs)) return rootTs;
+	throw new GitSyncError(
+		"git source has no loadable entry (no sigrun manifest, no dist/index.js, no index.ts)",
+	);
 }
