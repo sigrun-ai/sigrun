@@ -8,12 +8,15 @@
  * collision is recorded in a {@link ProviderMergeSink} — never silent — so
  * `GET /v1/meta` (Task 9) can surface it.
  *
- * `SIGRUN_MODEL` overrides any contributor default. When no extension
- * contributes the `openai` provider, the env-driven OpenAI-compat
- * degenerate provider (the design test's three env vars) serves it. Each
- * contributor's §3 `health()` producer is retained on the collected result
- * for the §5 meta `health.providers` aggregation (Task 9e); the degenerate
- * env provider reports `"ok"` by absence.
+ * `SIGRUN_DEFAULT_MODEL` (or the file's `defaultModel`) overrides any
+ * contributor default. When no extension contributes a provider for the
+ * pinned namespace, the env-driven OpenAI-compat degenerate provider
+ * serves it — its credentials resolve from `auth.json` (the `"default"`
+ * key, or the resolved provider's own entry) with `OPENAI_API_KEY` as
+ * the compat fallback. Each contributor's §3 `health()` producer is
+ * retained on the collected result for the §5 meta `health.providers`
+ * aggregation (Task 9e); the degenerate provider reports `"ok"` by
+ * absence.
  */
 
 import {
@@ -27,6 +30,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { DEFAULT_PROVIDER, parseModelSpec, type Env } from "../../config.js";
+import { AuthStore, DEFAULT_AUTH_KEY } from "../auth.js";
 import type { HealthProducer, HealthStatus } from "../health.js";
 
 /** One provider two or more contributors both claimed; the later one won. */
@@ -75,8 +79,9 @@ export function createProviderMergeSink(): ProviderMergeSink {
 export interface ProviderContribution {
 	readonly provider: Provider;
 	/**
-	 * This contributor's proposed default model. Ignored when `SIGRUN_MODEL`
-	 * is set; the last contributor to propose one wins otherwise.
+	 * This contributor's proposed default model. Ignored when the default
+	 * model is configured (`SIGRUN_DEFAULT_MODEL` env or the file's
+	 * `defaultModel`); the last contributor to propose one wins otherwise.
 	 */
 	readonly defaultModel?: ModelRef;
 }
@@ -103,7 +108,7 @@ export interface ProviderContributor {
 
 export interface CollectedProviders {
 	readonly models: Models;
-	/** The boot default model: `SIGRUN_MODEL` if set, else the last contributor default. */
+	/** The boot default model: the configured one (env/file) if set, else the last contributor default. */
 	readonly defaultModel: ModelRef;
 	/**
 	 * §3 health producers from contributors that define one (spec §5):
@@ -145,18 +150,24 @@ export const DEFAULT_OPENAI_MAX_TOKENS = 16_384;
  * upserting by id (last-registered-wins), then the env default — a designed
  * fallback, never a collision.
  *
- * @param env raw environment (`process.env`); a set `SIGRUN_MODEL` overrides
- * every contributor default and names the model the env provider serves.
+ * @param env raw environment (`process.env`); a set `SIGRUN_DEFAULT_MODEL`
+ * overrides every contributor default and names the model the env provider
+ * serves.
  * @param sink receives collisions; defaults to a fresh sink. Boot passes the
  * sink it returns so `GET /v1/meta` reads the same list.
  *
- * @throws Error naming `SIGRUN_MODEL` when it is unset and no contributor
- * proposed a default model — there would be no boot default at all.
+ * @throws Error naming `SIGRUN_DEFAULT_MODEL` when no default model is
+ * configured and no contributor proposed one — there would be no boot
+ * default at all.
  */
 export function collectProviders(
 	extensions: readonly ProviderContributor[],
 	env: Env,
 	sink: ProviderMergeSink = createProviderMergeSink(),
+	options?: {
+		readonly auth?: AuthStore;
+		readonly baseUrl?: string;
+	},
 ): CollectedProviders {
 	const models: MutableModels = createModels();
 	let defaultModel: ModelRef | undefined;
@@ -197,15 +208,19 @@ export function collectProviders(
 		}
 	}
 
-	// `SIGRUN_MODEL` overrides any contributor default.
-	const envSpec = env.SIGRUN_MODEL?.trim();
+	// A configured default model (env `SIGRUN_DEFAULT_MODEL` / deprecated
+	// alias `SIGRUN_MODEL`, or the file's `defaultModel` — the caller
+	// restates the resolution into the env seam) overrides any contributor
+	// default.
+	const envSpec =
+		env.SIGRUN_DEFAULT_MODEL?.trim() || env.SIGRUN_MODEL?.trim();
 	if (envSpec) {
 		defaultModel = parseModelSpec(envSpec);
 	}
 
 	if (defaultModel === undefined) {
 		throw new Error(
-			"SIGRUN_MODEL is required when no provider contributor proposes a default model " +
+			"SIGRUN_DEFAULT_MODEL or settings.json defaultModel is required when no provider contributor proposes a default model " +
 				"(format: provider/model-id, e.g. openai/gpt-4o)",
 		);
 	}
@@ -216,7 +231,12 @@ export function collectProviders(
 	// pin instead of leaving the catalog empty and failing loud at submit.
 	if (!models.getProvider(defaultModel.provider)) {
 		models.setProvider(
-			envDegenerateProvider(env, defaultModel.provider, defaultModel.modelId),
+			envDegenerateProvider(
+				env,
+				defaultModel.provider,
+				defaultModel.modelId,
+				options,
+			),
 		);
 	}
 
@@ -226,6 +246,28 @@ export function collectProviders(
 		healthProducers,
 		providerOwnership: ownership,
 	};
+}
+
+/**
+ * Resolve the env-driven degenerate provider's API key (ruling 6). Order:
+ * auth.json `"default".apiKey`, then the resolved provider's own auth.json
+ * entry, then the `OPENAI_API_KEY` env var (compat fallback, still
+ * honored). Key material is never logged — this function returns it
+ * opaquely.
+ */
+function resolveDegenerateApiKey(
+	env: Env,
+	providerId: string,
+	auth?: AuthStore,
+): string | undefined {
+	if (auth !== undefined) {
+		const file = auth.read();
+		const fromDefault = file[DEFAULT_AUTH_KEY]?.apiKey;
+		if (fromDefault !== undefined) return fromDefault;
+		const fromProvider = file[providerId]?.apiKey;
+		if (fromProvider !== undefined) return fromProvider;
+	}
+	return env[OPENAI_API_KEY_ENV]?.trim() || undefined;
 }
 
 function modelIdsOf(models: Models, providerId: string): string[] {
@@ -243,11 +285,15 @@ function modelIdsOfProvider(provider: Provider): string[] {
 
 /**
  * The degenerate env-driven OpenAI-compat provider: exactly one model — the
- * id `SIGRUN_MODEL` selected — streamed over `openai-completions`, with auth
- * resolved from `OPENAI_API_KEY`/`OPENAI_BASE_URL` (verified shape, App C:
- * `{ auth: { apiKey, baseUrl } }`). Credentials resolve to `undefined` when
- * the key is absent, so the provider registers unconfigured and requests
- * fail loud instead of boot failing.
+ * id the default-model spec selected — streamed over `openai-completions`,
+ * with auth resolved from `auth.json` (`"default"` key or the provider's
+ * own entry) falling back to `OPENAI_API_KEY`, and the endpoint from
+ * `OPENAI_BASE_URL` over `options.baseUrl` (the file's
+ * `defaultProvider.baseUrl`, projected by `openHarness`) over the OpenAI
+ * public default (verified shape, App C: `{ auth: { apiKey, baseUrl } }`).
+ * Credentials resolve to `undefined` when no key exists anywhere, so the
+ * provider registers unconfigured and requests fail loud instead of boot
+ * failing.
  *
  * `cost` is required by the `Model` shape but unknown for an arbitrary
  * gateway model, so it is zeroed; usage tracking stays structural.
@@ -256,9 +302,16 @@ export function envDegenerateProvider(
 	env: Env,
 	providerId: string,
 	modelId: string,
+	options?: {
+		readonly auth?: AuthStore;
+		readonly baseUrl?: string;
+	},
 ): Provider {
-	const apiKey = env[OPENAI_API_KEY_ENV]?.trim() || undefined;
-	const baseUrl = env[OPENAI_BASE_URL_ENV]?.trim() || DEFAULT_OPENAI_BASE_URL;
+	const apiKey = resolveDegenerateApiKey(env, providerId, options?.auth);
+	const baseUrl =
+		env[OPENAI_BASE_URL_ENV]?.trim() ||
+		options?.baseUrl ||
+		DEFAULT_OPENAI_BASE_URL;
 
 	const model: Model<"openai-completions"> = {
 		id: modelId,
@@ -279,7 +332,7 @@ export function envDegenerateProvider(
 		baseUrl,
 		auth: {
 			apiKey: {
-				name: "OpenAI-compatible API key (OPENAI_API_KEY)",
+				name: "OpenAI-compatible API key (auth.json or OPENAI_API_KEY)",
 				resolve: async () =>
 					apiKey === undefined
 						? undefined

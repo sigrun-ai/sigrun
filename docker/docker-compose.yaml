@@ -28,7 +28,8 @@ services:
     environment:
       # Required. An OpenAI-model id against the endpoint below, e.g.
       # openai/gpt-4o-mini — or a private gateway's own model id.
-      SIGRUN_MODEL: ${SIGRUN_MODEL:?set SIGRUN_MODEL in docker/.env (see README)}
+      # (SIGRUN_MODEL is the deprecated alias for one release cycle.)
+      SIGRUN_DEFAULT_MODEL: ${SIGRUN_DEFAULT_MODEL:-${SIGRUN_MODEL:?set SIGRUN_DEFAULT_MODEL in docker/.env (see README)}}
       SIGRUN_PORT: "3000"
       # sqlite db + static workspace root on the data volume — mirrors the
       # deployment.yaml env block (WAL writes -wal/-shm sidecar files, so

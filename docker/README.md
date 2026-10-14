@@ -33,16 +33,18 @@ everything else comes from the env file.
 Create `docker/.env` (next to this README). The minimum is:
 
 ```sh
-SIGRUN_MODEL=openai/gpt-4o-mini
+SIGRUN_DEFAULT_MODEL=openai/gpt-4o-mini
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-`SIGRUN_MODEL` is required. `OPENAI_API_KEY` / `OPENAI_BASE_URL` are the
-degenerate env-provider path — enough to run against any
-OpenAI-compatible endpoint (OpenAI itself, a local ramalama/ollama
-exposing an OpenAI-shaped API, or a remote/private gateway; point
-`OPENAI_BASE_URL` at it and set the model id it serves).
+`SIGRUN_DEFAULT_MODEL` is required (`SIGRUN_MODEL` still works as a
+deprecated alias for one release cycle, with a boot warning).
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` are the degenerate env-provider
+path — enough to run against any OpenAI-compatible endpoint (OpenAI
+itself, a local ramalama/ollama exposing an OpenAI-shaped API, or a
+remote/private gateway; point `OPENAI_BASE_URL` at it and set the model
+id it serves).
 
 ## Data
 

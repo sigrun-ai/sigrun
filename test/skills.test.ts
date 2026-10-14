@@ -506,7 +506,7 @@ test("openHarness installs the skills section and load_skill tool", async () => 
 	try {
 		await mkdir(workspacePath, { recursive: true });
 		const config = loadConfig({
-			SIGRUN_MODEL: "openai/gpt-4o",
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: workspacePath,
 		});
@@ -542,7 +542,7 @@ test("harness generation includes the skills section from the workspace", async 
 			"name: deploy\ndescription: Run the deployment checklist end to end.",
 		);
 		const config = loadConfig({
-			SIGRUN_MODEL: "openai/gpt-4o",
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: workspacePath,
 		});
