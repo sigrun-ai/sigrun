@@ -13,9 +13,17 @@
  * - `perModelThinking` — per-model thinking-level overrides (`"provider/
  *   modelId": level`), applied by the server at conversation create and
  *   configure.
+ * - `server` — the static boot configuration (port, workspace/storage/
+ *   extensions paths, compaction policy, backup target). The file is the
+ *   deployment default UNDER env: `loadConfig(env, file)` applies a
+ *   `server.*` field only where the corresponding `SIGRUN_*` variable is
+ *   absent. Changes to `server.*` require a restart (they resolve at
+ *   boot, unlike the live steeringMode/retry/etc. pass-throughs).
  *
- * `compaction` is deliberately NOT here: it already flows from
- * `SIGRUN_COMPACTION_*` env through `openHarness`.
+ * Deliberately NOT in the file (env-only by ruling): `webuiBundle`
+ * (`SIGRUN_WEBUI_BUNDLE`), the extension package list
+ * (`SIGRUN_EXTENSIONS`), the model (`SIGRUN_MODEL` — required at every
+ * boot), and the file's own location (`SIGRUN_CONFIG_DIR`).
  *
  * Contract (pi-durable's own): "HarnessSettings is read at every
  * resolution and never copied." So the store is a GETTER, not a snapshot:
@@ -60,6 +68,44 @@ const THINKING_LEVELS: readonly string[] = [
 	"max",
 ];
 
+/**
+ * The `server` section: static boot configuration mirrored from the
+ * `SIGRUN_*` env knobs of `src/config.ts`. Every field is optional; a
+ * present field is the deployment default applied when the corresponding
+ * env var is ABSENT (env always wins, validated first). Not here:
+ * `webuiBundle`, the extensions list, and the model (all env-only).
+ */
+export interface ServerSettings {
+	/** `SIGRUN_PORT` — a positive integer. */
+	readonly port?: number;
+	/** `SIGRUN_WORKSPACE_PATH` — a non-empty path. */
+	readonly workspacePath?: string;
+	/** `SIGRUN_STORAGE_PATH` — a non-empty path. */
+	readonly storagePath?: string;
+	/** `SIGRUN_EXTENSIONS_DIR` — a non-empty path. */
+	readonly extensionsDir?: string;
+	/** The `SIGRUN_COMPACTION_*` policy knobs. */
+	readonly compaction?: {
+		readonly enabled?: boolean;
+		readonly reserveTokens?: number;
+		readonly keepRecentTokens?: number;
+		readonly backgroundTokens?: number;
+	};
+	/**
+	 * The backup target — exactly one of the two shapes (mirroring the
+	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`).
+	 */
+	readonly backup?:
+		| { readonly path?: string }
+		| {
+				readonly s3?: {
+					readonly bucket?: string;
+					readonly prefix?: string;
+					readonly endpoint?: string;
+				};
+		  };
+}
+
 /** The persisted shape: HarnessSettings pass-throughs + sigrun fields. */
 export interface SettingsFile {
 	/** pi-durable `HarnessSettings.steeringMode`. */
@@ -86,6 +132,11 @@ export interface SettingsFile {
 	 * `"provider/modelId"`.
 	 */
 	readonly perModelThinking?: Readonly<Record<string, string>>;
+	/**
+	 * Sigrun: the static boot configuration (see {@link ServerSettings}).
+	 * Deployment defaults under env — changes require a restart.
+	 */
+	readonly server?: ServerSettings;
 }
 
 /** Every settable key (PATCH validation + GET projection). */
@@ -96,6 +147,7 @@ const SETTING_KEYS = [
 	"stream",
 	"defaultTools",
 	"perModelThinking",
+	"server",
 ] as const;
 
 /** Default settings directory (`~/.config/sigrun`). */
@@ -207,6 +259,105 @@ function validate(value: Record<string, unknown>): void {
 			}
 		}
 	}
+	if (value.server !== undefined) {
+		validateServer(value.server);
+	}
+}
+
+/**
+ * Validate the `server` section in place (the rules mirror `src/config.ts`'s
+ * env parsing exactly: port a positive integer, paths non-empty strings,
+ * compaction token counts integers with the same minimums —
+ * `backgroundTokens` keeps its designed "0 = background off" minimum —
+ * backup exactly one of the two target shapes, like the env XOR rule).
+ */
+function validateServer(server: unknown): void {
+	const record = asRecord(server);
+	if (record === undefined) {
+		throw new SettingsValidationError("server", "must be an object");
+	}
+	checkKeys("server.", record, [
+		"port",
+		"workspacePath",
+		"storagePath",
+		"extensionsDir",
+		"compaction",
+		"backup",
+	]);
+	if (record.port !== undefined && !isPositiveInt(record.port)) {
+		throw new SettingsValidationError("server.port", "must be a positive integer");
+	}
+	for (const key of ["workspacePath", "storagePath", "extensionsDir"]) {
+		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
+			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
+		}
+	}
+	if (record.compaction !== undefined) {
+		const compaction = asRecord(record.compaction);
+		if (compaction === undefined) {
+			throw new SettingsValidationError("server.compaction", "must be an object");
+		}
+		checkKeys("server.compaction.", compaction, [
+			"enabled",
+			"reserveTokens",
+			"keepRecentTokens",
+			"backgroundTokens",
+		]);
+		if (compaction.enabled !== undefined && typeof compaction.enabled !== "boolean") {
+			throw new SettingsValidationError("server.compaction.enabled", "must be a boolean");
+		}
+		for (const key of ["reserveTokens", "keepRecentTokens", "backgroundTokens"] as const) {
+			const v = compaction[key];
+			if (v === undefined) continue;
+			// backgroundTokens' minimum is 0 — the designed "background off"
+			// value, same as `SIGRUN_COMPACTION_BACKGROUND_TOKENS`.
+			const minimum = key === "backgroundTokens" ? 0 : 1;
+			if (
+				typeof v !== "number" ||
+				!Number.isInteger(v) ||
+				v < minimum
+			) {
+				throw new SettingsValidationError(
+					`server.compaction.${key}`,
+					minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
+				);
+			}
+		}
+	}
+	if (record.backup !== undefined) {
+		const backup = asRecord(record.backup);
+		if (backup === undefined) {
+			throw new SettingsValidationError("server.backup", "must be an object");
+		}
+		checkKeys("server.backup.", backup, ["path", "s3"]);
+		if (backup.path !== undefined && backup.s3 !== undefined) {
+			throw new SettingsValidationError(
+				"server.backup",
+				"must carry exactly one target (path or s3, not both)",
+			);
+		}
+		if (backup.path !== undefined && !isNonEmptyString(backup.path)) {
+			throw new SettingsValidationError("server.backup.path", "must be a non-empty string");
+		}
+		if (backup.s3 !== undefined) {
+			const s3 = asRecord(backup.s3);
+			if (s3 === undefined) {
+				throw new SettingsValidationError("server.backup.s3", "must be an object");
+			}
+			checkKeys("server.backup.s3.", s3, ["bucket", "prefix", "endpoint"]);
+			if (!isNonEmptyString(s3.bucket)) {
+				throw new SettingsValidationError(
+					"server.backup.s3.bucket",
+					"is required (and must be a non-empty string) when server.backup.s3 is set",
+				);
+			}
+			for (const key of ["prefix", "endpoint"]) {
+				if (s3[key] !== undefined && !isNonEmptyString(s3[key])) {
+					throw new SettingsValidationError(`server.backup.s3.${key}`, "must be a non-empty string");
+				}
+			}
+		}
+	}
 }
 
 function isNonNegativeInt(value: unknown): boolean {
@@ -217,8 +368,40 @@ function isNonNegativeInt(value: unknown): boolean {
 	);
 }
 
-/** Deep copy through JSON (the file is JSON-shaped data only). */
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+/** A positive integer (the `server.port` rule, mirroring `SIGRUN_PORT`). */
+function isPositiveInt(value: unknown): boolean {
+	return (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value > 0
+	);
+}
+
+/** A non-empty string (the file's path/string fields). */
+function isNonEmptyString(value: unknown): boolean {
+	return typeof value === "string" && value !== "";
+}
+
+/** An enumerable record (not null, not an array). */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+/** Every key not in `allowed` → a `SettingsValidationError` naming it. */
+function checkKeys(
+	prefix: string,
+	record: Record<string, unknown>,
+	allowed: readonly string[],
+	reason = "is not a settable field",
+): void {
+	for (const key of Object.keys(record)) {
+		if (!allowed.includes(key)) {
+			throw new SettingsValidationError(`${prefix}${key}`, reason);
+		}
+	}
+}
 
 /**
  * A file-backed settings store. All reads go through `read()` — fresh
@@ -237,6 +420,25 @@ export class SettingsStore {
 		if (!existsSync(this.path)) return {};
 		const raw = readFileSync(this.path, "utf8");
 		return this.parse(raw);
+	}
+
+	/**
+	 * First-boot initialization (the settings bootstrap): when the file is
+	 * ABSENT, write `{ server: resolvedServer }` — the server section
+	 * `loadConfig` resolved from env + code defaults — so the file exists
+	 * from boot one as an operator-visible, hand-editable record of the
+	 * effective configuration. When the file already exists (any content),
+	 * bootstrap is a no-op: the file is never overwritten, and env vars
+	 * continue to win over it on the next boot (env-over-file precedence).
+	 * Idempotent: bootstrapping twice leaves the file byte-identical.
+	 */
+	bootstrap(resolvedServer: ServerSettings): void {
+		if (existsSync(this.path)) return;
+		mkdirSync(dirname(this.path), { recursive: true });
+		writeFileSync(
+			this.path,
+			`${JSON.stringify({ server: resolvedServer }, null, "\t")}\n`,
+		);
 	}
 
 	/**
@@ -277,7 +479,7 @@ export class SettingsStore {
 	 *
 	 * @throws SettingsValidationError naming the offending field.
 	 */
-	update(patch: Record<string, unknown>): SettingsFile {
+		update(patch: Record<string, unknown>): SettingsFile {
 		const merged: Record<string, unknown> = {
 			...this.read(),
 		} as Record<string, unknown>;
@@ -307,6 +509,46 @@ export class SettingsStore {
 				}
 				if (Object.keys(sub).length === 0) delete merged[key];
 				else merged[key] = sub;
+				continue;
+			}
+			if (
+				key === "server" &&
+				typeof value === "object" &&
+				value !== null
+			) {
+				// Server sub-merge: PATCH {server: {port: 4080}} preserves the
+				// rest of the section (including the bootstrap-written fields);
+				// `compaction` sub-merges one level deeper; `backup` replaces
+				// wholesale (it is a discriminated union — a partial union merge
+				// could mix a path target with an s3 one).
+				const incoming = asRecord(value);
+				if (incoming === undefined) {
+					throw new SettingsValidationError("server", "must be an object");
+				}
+				const sub: Record<string, unknown> = {
+					...((merged.server as Record<string, unknown>) ?? {}),
+				};
+				for (const [subKey, subValue] of Object.entries(incoming)) {
+					if (subValue === null) delete sub[subKey];
+					else if (
+						subKey === "compaction" &&
+						typeof subValue === "object"
+					) {
+						const mergedCompaction: Record<string, unknown> = {
+							...((sub.compaction as Record<string, unknown>) ?? {}),
+						};
+						for (const [compKey, compValue] of Object.entries(
+							subValue as Record<string, unknown>,
+						)) {
+							if (compValue === null) delete mergedCompaction[compKey];
+							else mergedCompaction[compKey] = compValue;
+						}
+						if (Object.keys(mergedCompaction).length === 0) delete sub.compaction;
+						else sub.compaction = mergedCompaction;
+					} else sub[subKey] = subValue;
+				}
+				if (Object.keys(sub).length === 0) delete merged.server;
+				else merged.server = sub;
 				continue;
 			}
 			if (
