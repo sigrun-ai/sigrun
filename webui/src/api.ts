@@ -32,6 +32,170 @@ export interface MetaResponse {
 		readonly backup: boolean;
 		readonly channels: readonly string[];
 	};
+	/** The seam inventory (mirrors the server's `seam` field). */
+	readonly seam: {
+		readonly interactions: readonly {
+			readonly extension: string;
+			readonly kinds: readonly string[];
+		}[];
+		readonly ambient: readonly {
+			readonly extension: string;
+			readonly keys: readonly string[];
+		}[];
+	};
+}
+
+// ─── Interaction seam wire types (mirror src/harness/interactions.ts) ─────
+
+/** Lifecycle of one interaction record. */
+export type InteractionStatus =
+	| "pending"
+	| "answered"
+	| "skipped"
+	| "expired"
+	| "cancelled";
+
+/** One choice button. */
+export interface InteractionOptionWire {
+	readonly id: string;
+	readonly label: string;
+	readonly description?: string;
+	readonly tone?: "danger" | "warn" | "ok" | "neutral";
+	readonly recommended?: boolean;
+}
+
+/** One light-form field. */
+export interface InteractionFieldWire {
+	readonly name: string;
+	readonly type: "string" | "number" | "boolean" | "secret";
+	readonly label?: string;
+	readonly required?: boolean;
+}
+
+/** The diff primitive. */
+export interface InteractionDiffWire {
+	readonly before: string;
+	readonly after: string;
+	readonly path?: string;
+	readonly lang?: string;
+}
+
+/** The body: only the closed primitives. */
+export interface InteractionBodyWire {
+	readonly text?: string;
+	readonly options?: readonly InteractionOptionWire[];
+	readonly fields?: readonly InteractionFieldWire[];
+	readonly diff?: InteractionDiffWire;
+}
+
+/** One interaction record on the wire (envelope + body + details). */
+export interface InteractionWire {
+	readonly kind: string;
+	readonly callId: string;
+	readonly status: InteractionStatus;
+	readonly createdAt: number;
+	readonly expiresAt?: number;
+	readonly settledAt?: number;
+	readonly answer?: {
+		readonly ids?: readonly string[];
+		readonly values?: Readonly<Record<string, string | number | boolean>>;
+		readonly text?: string;
+	};
+	readonly answeredBy?: "human" | "extension";
+	readonly body?: InteractionBodyWire;
+	readonly details?: unknown;
+}
+
+/** `GET /v1/conversations/:id/interactions`. */
+export interface InteractionListWire {
+	readonly interactions: readonly InteractionWire[];
+}
+
+/** `POST .../interactions/:callId/answer`. */
+export interface InteractionAnsweredWire {
+	readonly callId: string;
+	readonly status: "answered";
+	readonly answer: {
+		readonly ids?: readonly string[];
+		readonly values?: Readonly<Record<string, string | number | boolean>>;
+		readonly text?: string;
+	};
+}
+
+// ─── Ambient seam wire types (mirror src/harness/ambient.ts) ──────────────
+
+export interface AmbientMetricsWire {
+	readonly tokens?: number;
+	readonly cost?: number;
+	readonly current?: number;
+	readonly total?: number;
+	readonly completed?: number;
+	readonly format?: "compact" | "usd" | "percent";
+}
+
+export interface AmbientRowWire {
+	readonly id: string;
+	readonly label: string;
+	readonly status?: string;
+	readonly severity?: 0 | 1 | 2;
+	readonly quiet?: boolean;
+	readonly detail?: string;
+	readonly depth?: number;
+	readonly deps?: readonly string[];
+	readonly spinnerLabel?: string;
+	readonly metrics?: AmbientMetricsWire;
+}
+
+export interface AmbientLineWire {
+	readonly text: string;
+	readonly segments?: readonly {
+		readonly id: string;
+		readonly text: string;
+		readonly place?: "left" | "middle" | "right";
+	}[];
+}
+
+export interface AmbientGaugeWire {
+	readonly label: string;
+	readonly percent?: number;
+	readonly phase?: string;
+	readonly elapsedMs?: number;
+	readonly recentOutput?: readonly string[];
+	readonly checks?: readonly AmbientRowWire[];
+}
+
+export interface AmbientLedgerEntryWire {
+	readonly id: string;
+	readonly at: number;
+	readonly kind: string;
+	readonly summary: string;
+	readonly detail?: readonly string[];
+}
+
+export interface AmbientBodyWire {
+	readonly line?: AmbientLineWire;
+	readonly rows?: readonly AmbientRowWire[];
+	readonly gauge?: AmbientGaugeWire;
+	readonly ledger?: readonly AmbientLedgerEntryWire[];
+}
+
+/** One ambient surface on the wire. */
+export interface AmbientWire {
+	readonly key: string;
+	readonly owner: string;
+	readonly place: "status" | "footer" | "panel";
+	readonly maxRows?: number;
+	readonly overflow?: "drop" | "wrap" | "summarize";
+	readonly refreshMs?: number;
+	readonly expires: "never" | "idle";
+	readonly updatedAt: number;
+	readonly body?: AmbientBodyWire;
+	readonly details?: unknown;
+}
+
+/** `GET /v1/conversations/:id/ambient`. */
+export interface AmbientListWire {
+	readonly ambient: readonly AmbientWire[];
 }
 
 /** One list item of `GET /v1/conversations` (mirrors `ConversationSummary`). */
@@ -437,6 +601,23 @@ export interface SigrunClient {
 		conversationId: number,
 		input: ConfigureInput,
 	): Promise<ConfigureResponseWire>;
+	/** Pending interactions for a conversation (`GET .../interactions`). */
+	listInteractions(conversationId: number): Promise<InteractionListWire>;
+	/**
+	 * Answer a pending interaction (the ONE generic route). `answer` is
+	 * `{ids?, values?, text?}`; resolution semantics stay extension-owned.
+	 */
+	answerInteraction(
+		conversationId: number,
+		callId: string,
+		answer: {
+			readonly ids?: readonly string[];
+			readonly values?: Readonly<Record<string, string | number | boolean>>;
+			readonly text?: string;
+		},
+	): Promise<InteractionAnsweredWire>;
+	/** The conversation's ambient surfaces (`GET .../ambient`). */
+	listAmbient(conversationId: number): Promise<AmbientListWire>;
 	/** The effective settings (`GET /v1/settings`; absent file = `{}`). */
 	getSettings(): Promise<SettingsWire>;
 	/**
@@ -625,6 +806,18 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			send("POST", `/v1/conversations/${conversationId}/configure`, input) as Promise<
 				ConfigureResponseWire
 			>,
+		listInteractions: (conversationId) =>
+			get<InteractionListWire>(
+				`/v1/conversations/${conversationId}/interactions`,
+			),
+		answerInteraction: (conversationId, callId, answer) =>
+			send(
+				"POST",
+				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}/answer`,
+				answer,
+			) as Promise<InteractionAnsweredWire>,
+		listAmbient: (conversationId) =>
+			get<AmbientListWire>(`/v1/conversations/${conversationId}/ambient`),
 		getSettings: () => get<SettingsWire>("/v1/settings"),
 		patchSettings: (patch) =>
 			send("PATCH", "/v1/settings", patch) as Promise<SettingsWire>,

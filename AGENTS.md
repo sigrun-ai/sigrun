@@ -43,6 +43,14 @@ npm start              # tsx src/index.ts
 - Tests own their literals: fixtures use synthetic hosts (`.example`,
   `example.invalid`), `acme/` names, no tailscale/forgejo values.
 
+## Extension seams
+
+Interaction records (pending human decisions) and ambient surfaces
+(statusline/panel state) are core-owned channel-neutral records
+extensions write through the factory's host context — see
+`src/harness/seam-host.ts` and `docs/approval-ux-seams.md`. The chord
+draft rule: never re-read a mutated doc draft inside a commit callback.
+
 ## Package surface
 
 `package.json` `files` is a whitelist (src, webui source, deploy assets).
