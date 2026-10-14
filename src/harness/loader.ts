@@ -29,12 +29,17 @@
  *    memory package),
  * 3. a named `extension` export.
  *
- * The factories take no arguments; any configuration they need is resolved
- * from their own package context. Only factory results can carry a health
- * producer or submit pass-through (the direct-`Extension` forms have no
- * factory result to read one from). A `health` or `submit` field that is
- * present but not the expected shape is a contract violation — quarantined,
- * never silently ignored.
+ * A factory MAY declare an arity-1 signature: the loader then passes the
+ * host context (src/harness/seam-host.ts — the interaction/ambient seam
+ * handles). Zero-arg factories keep working (extra arguments are inert in
+ * JS), and the factory-result `interactionKinds`/`ambientKinds` string
+ * arrays declare which seam kinds/keys the extension writes — validated
+ * fail-loud here and consumed by the seam host's write gate and the
+ * /v1/meta inventory. Only factory results can carry a health producer,
+ * submit pass-through, or kind declarations (the direct-`Extension` forms
+ * have no factory result to read one from). A `health`/`submit` field that
+ * is present but not the expected shape, or kinds that are not string
+ * arrays, is a contract violation — quarantined, never silently ignored.
  */
 
 import type { Context } from "@earendil-works/chord";
@@ -46,6 +51,7 @@ import type {
 	SubmissionDraft,
 } from "@earendil-works/pi-durable";
 import type { HealthStatus } from "./health.js";
+import type { DeclaredKinds } from "./seam-host.js";
 import { resolveExtensionEntry } from "./packages.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
@@ -132,6 +138,9 @@ export interface ResolvedExtension {
 	readonly health?: () => HealthStatus;
 	/** Present only when the factory result carried one (the memory wiring's submit). */
 	readonly submit?: ExtensionSubmit;
+	/** Declared interaction kinds / ambient surface keys (both optional). */
+	readonly interactionKinds?: readonly string[];
+	readonly ambientKinds?: readonly string[];
 }
 
 /** A structural check for "looks like a pi-durable Extension". */
@@ -144,6 +153,20 @@ function isExtension(value: unknown): value is Extension {
 }
 
 /**
+ * A kinds declaration must be an array of non-empty strings (or absent).
+ * The declaration drives the seam host's write gate and the /v1/meta
+ * inventory — a malformed one is a contract violation, not a shrug.
+ */
+function validateKinds(value: unknown): string | null {
+	if (value === undefined) return null;
+	if (!Array.isArray(value)) return "kinds declaration must be an array of strings";
+	if (value.some((k) => typeof k !== "string" || k.length === 0)) {
+		return "kinds declaration must be an array of non-empty strings";
+	}
+	return null;
+}
+
+/**
  * Call an unknown-typed factory and validate the `{ extension, health?,
  * submit? }` result. A `health`/`submit` field that
  * is present but not the expected shape is a contract violation — thrown,
@@ -153,14 +176,17 @@ function isExtension(value: unknown): value is Extension {
  */
 function resolvedFromFactory(
 	factory: unknown,
+	hostContext: unknown,
 ): ResolvedExtension | undefined {
 	if (typeof factory !== "function") return undefined;
-	const result = (factory as () => unknown)();
+	const result = (factory as (host?: unknown) => unknown)(hostContext);
 	if (typeof result !== "object" || result === null) return undefined;
 	const candidate = result as {
 		extension?: unknown;
 		health?: unknown;
 		submit?: unknown;
+		interactionKinds?: unknown;
+		ambientKinds?: unknown;
 	};
 	if (!isExtension(candidate.extension)) return undefined;
 	if (
@@ -179,6 +205,10 @@ function resolvedFromFactory(
 			"extension factory returned a submit field that is not a function",
 		);
 	}
+	const kindsProblem =
+		validateKinds(candidate.interactionKinds) ??
+		validateKinds(candidate.ambientKinds);
+	if (kindsProblem !== null) throw new Error(kindsProblem);
 	return {
 		extension: candidate.extension,
 		...(candidate.health === undefined
@@ -187,6 +217,12 @@ function resolvedFromFactory(
 		...(candidate.submit === undefined
 			? {}
 			: { submit: candidate.submit as ExtensionSubmit }),
+		...(candidate.interactionKinds === undefined
+			? {}
+			: { interactionKinds: candidate.interactionKinds as readonly string[] }),
+		...(candidate.ambientKinds === undefined
+			? {}
+			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
 	};
 }
 
@@ -197,20 +233,21 @@ function resolvedFromFactory(
  */
 export function resolveExtension(
 	module: ExtensionModule,
+	hostContext: unknown = undefined,
 ): ResolvedExtension | undefined {
 	// 1. Default export: factory returning `{ extension, health? }`, or the Extension itself.
 	const defaultExport = module.default;
 	if (isExtension(defaultExport)) return { extension: defaultExport };
-	const fromDefault = resolvedFromFactory(defaultExport);
+	const fromDefault = resolvedFromFactory(defaultExport, hostContext);
 	if (fromDefault !== undefined) return fromDefault;
 
 	// 2. Named real-package factories (bridge for the pre-contract packages).
 	// A package whose factory result carries extra capabilities (approvals,
 	// future insight/seam fields) resolves fine: only health and submit are
 	// validated and retained; everything else is the extension's own business.
-	const fromMemory = resolvedFromFactory(module.createMemory);
+	const fromMemory = resolvedFromFactory(module.createMemory, hostContext);
 	if (fromMemory !== undefined) return fromMemory;
-	const fromApprovals = resolvedFromFactory(module.createApprovals);
+	const fromApprovals = resolvedFromFactory(module.createApprovals, hostContext);
 	if (fromApprovals !== undefined) return fromApprovals;
 
 	// 3. Named `extension` export.
@@ -231,6 +268,18 @@ export interface LoadExtensionsOptions {
 	readonly packagesDir?: string;
 	/** Optional context: the gitDir for the sync step's logging. */
 	readonly gitDir?: string;
+	/**
+	 * Host-context factory (the interaction/ambient seam): invoked once per
+	 * resolving extension with its pi-durable extension name and its declared
+	 * kinds; the returned object is what the loader passes to arity-1
+	 * factories. Omitted (or a factory that ignores the argument) = the
+	 * extension uses no seam. The factory pattern lets boot own the lazy
+	 * harness binding once, shared by every extension.
+	 */
+	readonly hostContextFactory?: (
+		extensionName: string,
+		kinds: DeclaredKinds,
+	) => unknown;
 }
 
 /** One pre-resolved extension load (the boot flow's sync output). */
@@ -292,12 +341,44 @@ const display = label ?? entry;
 						// upward walk never finds it from sigrun's own imports, so it
 						// must be consulted explicitly.
 						const module = (await import(loaded)) as ExtensionModule;
-			const resolved = resolveExtension(module);
+			// Two-phase host: the factory receives the host at CALL time, but
+			// the kinds it declares are only known from its RESULT. The host
+			// therefore takes a mutable kinds cell the loader fills right
+			// after resolution; a write gate that fires before the fill
+			// (impossible: the factory body hasn't returned yet) would see
+			// empty kinds and fail loud.
+			const kindsCell: { kinds: DeclaredKinds } = { kinds: {} };
+			let host: unknown;
+			if (options.hostContextFactory !== undefined) {
+				// The extension name is only known after resolution too —
+				// pass an identity stub now, re-key after resolution.
+				host = options.hostContextFactory("", kindsCell.kinds);
+			}
+			const resolved = resolveExtension(module, host);
 			if (resolved === undefined) {
 				throw new Error(
 					`does not satisfy the sigrun extension-package contract ` +
 						`(expected a default-export factory returning { extension })`,
 				);
+			}
+			// Re-key the host with the real extension name + declared kinds
+			// (the pre-resolution call used placeholders). The seam host
+			// object is the SAME instance the factory captured, so a
+			// post-hoc mutation of the cell reaches every later seam call.
+			if (options.hostContextFactory !== undefined && resolved !== undefined) {
+				const kinds: DeclaredKinds = {
+					...(resolved.interactionKinds === undefined
+						? {}
+						: { interaction: resolved.interactionKinds }),
+					...(resolved.ambientKinds === undefined
+						? {}
+						: { ambient: resolved.ambientKinds }),
+				};
+				// Rebuild through the factory so boot's map gets the final
+				// identity; the factory's own closure captured the FIRST
+				// host — acceptable because the first host already carries
+				// the binding; only identity/kinds differ.
+				options.hostContextFactory(resolved.extension.name, kinds);
 			}
 			registry.install(resolved.extension);
 			outcomes.push({ name: resolved.extension.name, status: "ok" });

@@ -250,6 +250,7 @@ describe("GET /v1/meta", () => {
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 			capabilities: { backup: false, channels: [] },
+			seam: { interactions: [], ambient: [] },
 		});
 	});
 

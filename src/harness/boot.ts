@@ -22,6 +22,11 @@ import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
+import {
+	createSeamHost,
+	type DeclaredKinds,
+	type SeamHost,
+} from "./seam-host.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { skillsExtension } from "../skills/index.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
@@ -128,6 +133,16 @@ export interface OpenedHarness {
 	 * quarantined memory extension, or a submit-less memory extension).
 	 */
 	readonly memorySubmit: ExtensionSubmit | undefined;
+	/**
+	 * Extension name -> seam host (the interaction/ambient handles the
+	 * loader handed each factory). Quarantined extensions have no entry;
+	 * extensions that took no host context neither. The server's seam
+	 * routes read the inventory from here; the /v1/meta route renders the
+	 * declared kinds.
+	 */
+	readonly seamHosts: ReadonlyMap<string, SeamHost>;
+	/** The kinds each loaded extension declared, keyed by extension name. */
+	readonly seamKinds: ReadonlyMap<string, DeclaredKinds>;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -232,6 +247,23 @@ export async function openHarness(
 	// declarations install here — see src/harness/packages.ts).
 	const packagesDir =
 		options.packagesDir ?? packagesDirOf(options.settingsDir ?? defaultSettingsDir());
+	// The seam host's lazy harness binding: factories run before
+	// `Harness.open` (spec §3 boot order), so the host resolves the harness
+	// through a promise that boot resolves right after the open. A seam
+	// call from a factory body would wait for it (deadlock: factories run
+	// synchronously inside loadExtensions) — the honest shape is: factories
+	// STASH the host; tool execute/hooks use it later, post-open.
+	// One shared deferred: every waiter joins the SAME promise, so the
+	// single boot assignment releases them all. A call after the bind
+	// resolves immediately (the promise is already settled).
+	let release!: (harness: Harness) => void;
+	const harnessPromise = new Promise<Harness>((resolve) => {
+		release = resolve;
+	});
+	const bindHarness = (harness: Harness): void => release(harness);
+	const harnessOf = (): Promise<Harness> => harnessPromise;
+	const seamHosts = new Map<string, SeamHost>();
+	const seamKinds = new Map<string, DeclaredKinds>();
 	const {
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
@@ -239,7 +271,19 @@ export async function openHarness(
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
-		{ packagesDir },
+		{
+			packagesDir,
+			hostContextFactory: (extensionName, kinds) => {
+				const host = createSeamHost(
+					{ name: extensionName },
+					kinds,
+					{ bindHarness, harness: harnessOf },
+				);
+				seamHosts.set(extensionName, host);
+				seamKinds.set(extensionName, kinds);
+				return host;
+			},
+		},
 	);
 	// The memory-surface owner: the installed extension whose sections
 	// include the long-term-memory key. None → the no-op default installs
@@ -339,6 +383,10 @@ export async function openHarness(
 		},
 		BACKGROUND_CONTEXT,
 	);
+	// The seam hosts' lazy binding resolves here: every seam call issued
+	// after boot completes finds the harness immediately; one issued from a
+	// post-open async factory path waits on this same promise.
+	bindHarness(harness);
 	harness.resume();
 	return {
 		harness,
@@ -356,5 +404,7 @@ export async function openHarness(
 		memorySubmit,
 		settings: settingsStore,
 		packagesDir,
+		seamHosts,
+		seamKinds,
 	};
 }
