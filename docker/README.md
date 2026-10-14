@@ -8,8 +8,13 @@ option; for a durable/persistent deployment prefer the Helm chart
 
 ## Build the image
 
-The extension deps are git+ssh URLs, so first vendor them where `docker
-build` can see them, then build from the repo root:
+The image is a COMMON CORE — sigrun plus its built-ins only. Extensions
+are NOT baked in: declare them in `settings.json` (`packages` +
+`extensions`) and restart; boot installs them into the packages dir on
+the data volume (see **Configuration** below and the repo README's
+Extensions section). The vendoring step below only matters for building
+the core image itself from a checkout whose dev dependencies are git+ssh
+URLs:
 
 ```sh
 bash scripts/docker-vendor-exts.sh
@@ -50,10 +55,34 @@ id it serves).
 
 Everything durable lives on the `sigrun-data` named volume, mounted at
 `/data`: the sqlite db at `/data/sigrun.db` (WAL mode, so the `-wal` /
-`-shm` sidecar files sit beside it) and the static workspace root at
-`/data/workspace`. `docker volume inspect sigrun_sigrun-data` shows where
-that lands on the host. Back up the volume (or stop the container first)
-— see the backup CronJob in the k8s manifests for the durable setup.
+`-shm` sidecar files sit beside it), the static workspace root at
+`/data/workspace`, and the config dir at `/data/config`
+(`SIGRUN_CONFIG_DIR`) — `settings.json`, `auth.json`, and the packages
+dir (`/data/config/packages/`) that boot installs the settings file's
+`packages` declarations into. `docker volume inspect
+sigrun_sigrun-data` shows where that lands on the host. Back up the
+volume (or stop the container first) — see the backup CronJob in the
+k8s manifests for the durable setup.
+
+### Adding an extension
+
+Edit `/data/config/settings.json` in the volume (from the host path the
+volume inspects to, or `docker compose exec sigrun ...`), listing the
+package to install and to load:
+
+```jsonc
+{
+  "packages": ["sigrun-ext-approvals@^0.1.0"],
+  "extensions": ["sigrun-ext-approvals"]
+}
+```
+
+Then `docker compose restart`. Boot runs `npm install` into
+`/data/config/packages` (first install needs registry access from the
+container; later boots are a no-op fast path unless the list changed).
+Removing a name from `packages` uninstalls it on the next boot. A
+failed install fails the boot, naming the specifier — the container
+log says why. No image rebuild, ever.
 
 ## Production
 

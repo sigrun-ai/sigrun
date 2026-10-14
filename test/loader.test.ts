@@ -13,6 +13,11 @@
  * longer devDependencies — the fixture extensions under test/fixtures/
  * (fixture-ext, fixture-memory, fixture-approvals) speak the same contract
  * and stand in for real packages.
+ *
+ * The packages-dir resolution order (deployment-installed wins, then bare
+ * import) and the boot-time install of the settings file's `packages`
+ * declarations are covered by test/packages.test.ts (npm `file:`/tarball
+ * fixtures — no network).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";

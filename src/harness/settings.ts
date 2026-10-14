@@ -153,11 +153,25 @@ export interface SettingsFile {
 	 */
 	readonly perModelThinking?: Readonly<Record<string, string>>;
 	/**
-	 * Sigrun: the extension package list (ruling 1) — non-empty package
+	 * Sigrun: the extension LOAD list (ruling 1) — non-empty package
 	 * specifiers, applied when `SIGRUN_EXTENSIONS` is absent. Changes
-	 * require a restart (packages load at boot).
+	 * require a restart (extensions load at boot).
 	 */
 	readonly extensions?: readonly string[];
+	/**
+	 * Sigrun: the extension INSTALL list — non-empty npm package
+	 * specifiers (`"name"`, `"name@range"`, `"@scope/name@range"`, a
+	 * `file:` path) installed into the packages dir
+	 * (`<config-dir>/packages/`) at boot by `syncPackages`. FILE-ONLY
+	 * (installing is not an env-shaped act — there is no
+	 * `SIGRUN_PACKAGES`) and never written by the settings bootstrap
+	 * (the package dir's own `package.json` is the resolved state).
+	 * Distinct from `extensions` (the LOAD list): a package may be
+	 * installed-but-not-loaded, and a loaded extension may come from
+	 * somewhere else (a dev checkout, an image-bundled package).
+	 * Changes require a restart.
+	 */
+	readonly packages?: readonly string[];
 	/**
 	 * Sigrun: the boot default model (ruling 3), a non-empty
 	 * `provider/model-id` spec parsed exactly like `SIGRUN_DEFAULT_MODEL`
@@ -187,6 +201,7 @@ const SETTING_KEYS = [
 	"defaultTools",
 	"perModelThinking",
 	"extensions",
+	"packages",
 	"defaultModel",
 	"defaultProvider",
 	"server",
@@ -311,6 +326,20 @@ function validate(value: Record<string, unknown>): void {
 		) {
 			throw new SettingsValidationError(
 				"extensions",
+				"must be an array of non-empty package specifiers",
+			);
+		}
+	}
+	if (value.packages !== undefined) {
+		const packages = value.packages;
+		if (
+			!Array.isArray(packages) ||
+			packages.some(
+				(entry) => typeof entry !== "string" || entry === "",
+			)
+		) {
+			throw new SettingsValidationError(
+				"packages",
 				"must be an array of non-empty package specifiers",
 			);
 		}

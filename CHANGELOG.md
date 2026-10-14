@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- pi-style extension packages: the settings file's top-level `packages`
+  array (file-only — no `SIGRUN_PACKAGES`) declares npm specifiers boot
+  installs into `<config-dir>/packages/` (a real npm root: synthetic
+  private `package.json` + `node_modules/`, pi's `~/.pi/agent/npm` shape),
+  pruning undeclared entries, with a no-subprocess fast path when the dir
+  already matches. The loader resolves each `extensions` name against the
+  packages dir FIRST (deployment-installed wins), then bare import
+  resolution (paths, `file://` URLs, dev checkouts, image-bundled
+  packages). Install failure/timeout (120s) fails the boot naming the
+  specifier. Deployments declare extensions in `settings.json` and
+  restart — no image rebuild. Compose mounts the config dir on the data
+  volume (`SIGRUN_CONFIG_DIR=/data/config`); the chart defaults
+  `SIGRUN_CONFIG_DIR=/data/config` onto the same PVC as the database.
+
 ### Changed
 - `charts/sigrun` is rewritten as a bjw-s common library (app-template
   5.2.1) wrapper: the hand-written Deployment/Service/PVC/CronJob/
