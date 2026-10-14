@@ -14,3 +14,11 @@ evidence").
 (line/rows/gauge/ledger): pi-goal-x, rpiv-todo, pi-fabric, pi-warden,
 plannotator, pi-advisor, pi-goal (schovest), pi-interview-tool.
 Summarized in ../approval-ux-seams.md ("Ambient surfaces" section).
+
+## Ambient wave 3 (2026-10-14, `ambient-pi-powerline/usage/zentui`)
+
+3 more ambient inspections: pi-powerline-footer (segmented footer —
+forced line `segments[]` composition + derived metrics hint),
+pi-usage (countdown statusline — forced envelope `refresh`),
+pi-zentui (chrome-skin ownership/allocation + styled-segment
+budgets). Summarized in ../approval-ux-seams.md.
