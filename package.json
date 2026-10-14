@@ -44,6 +44,9 @@
 	"files": [
 		"src",
 		"webui/src",
+		"!webui/src/**/*.test.ts",
+		"!webui/src/**/*.test.tsx",
+		"!webui/src/test-utils.ts",
 		"webui/index.html",
 		"webui/package.json",
 		"webui/tsconfig.json",
