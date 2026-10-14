@@ -41,6 +41,7 @@ function makeMeta(init?: {
 			providers: "ok",
 		},
 		capabilities: { backup: true, channels: ["webui"] },
+		seam: { interactions: [], ambient: [] },
 	};
 }
 

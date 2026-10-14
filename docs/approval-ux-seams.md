@@ -282,23 +282,38 @@ repeatedly and never blocks. Channels get one rendering discipline for
 both: a pending card stack and a persistent panel zone, each fed by
 replacement-safe state snapshots.
 
+## Implementation status (2026-10-14)
+
+Shipped in core + webui (commits bcd4423 + webui commit):
+
+- `src/harness/interactions.ts` + `src/harness/ambient.ts`: the records,
+  doc families, validators.
+- `src/harness/seam-host.ts`: the host context (factory arity-1, kinds
+  write gate, owner allocation).
+- Server: `GET/POST /v1/conversations/:id/interactions(/:callId/answer)`,
+  `GET .../ambient`, `/v1/meta seam`.
+- Webui: `InteractionCards` (pending stack: toned options, multi via
+  `details.multi`, fields with secret masking, diff panes, collapsed
+  details) + `AmbientPanels` (segmented lines, severity-sorted quiet-
+  folding rows with deps/spinner/metrics, gauges, newest-first ledgers),
+  both refreshed per stream frame.
+- ACHORD LESSON, pinned: never re-read a mutated draft field inside a
+  commit callback (`Cannot use a settled overlay`); responses project
+  the input answer instead.
+
+Deferred to implementation follow-ups: timer-driven `refresh` in the
+webui (the envelope hint is carried; channels may honor it later);
+`ledger` per-entry amend transport (v1 seeds whole replacement ledgers);
+ambient surfaces whose state outlives one conversation (session-scoped
+status slots).
+
 ## What this asks of core
 
 
-1. The `sigrun.interaction` doc-family definition + view mounting.
-2. The one generic answer route.
-3. `interactionKinds` declared on factory results — validated
-   fail-loud exactly like `health`/`submit`, listed in `/v1/meta`.
-4. The ambient-surface seam: an extension-owned state doc per
-   surface (or a session-meta-style side resource — sized at
-   implementation), view projection through the same conversation
-   lifecycle, and allocation of channel real-estate (statusline slots,
-   the panel zone) by the channel, rendered from the record.
-   Interaction records correspondingly unblock the pending-card stack.
-5. Nothing else. Warden/questions remain pure extensions; competing
-   implementations stay possible; a deploy with neither installed
-   still boots, ungated, fail-open — with no ambient surface claimed
-   either.
+All four asks shipped (see Implementation status above). What remains
+true: warden/questions stay pure extensions; competing implementations
+stay possible; a deploy with neither installed still boots, ungated,
+fail-open, with no ambient surface claimed.
 
 ## What webui lost in the 2026-10-14 strip
 

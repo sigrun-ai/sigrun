@@ -21,6 +21,8 @@
  *   ledger entry (input+output+cacheRead+cacheWrite — `totalTokens` is
  *   upstream-drift-prone) over its `contextWindow`, rendered as a compact
  *   SVG ring + percent.
+ * - Interaction cards + ambient panels: the seam surfaces (docs/
+ *   approval-ux-seams.md), endpoint-sourced, refreshed per view frame.
  * - Send/steer toggle: `view.steer.busy` flips the button and the submit
  *   carries `whenBusy: "steer"`; queued depth shows next to the button.
  * - Slash commands (Task 7, pi parity): typing `/` as the first character
@@ -41,6 +43,12 @@ import {
 	type ModelEntry,
 	type SigrunClient,
 	type SubmissionInputPart,
+} from "../api";
+import { AmbientPanels } from "../entries/AmbientPanels";
+import { InteractionCards } from "../entries/InteractionCards";
+import type {
+	AmbientWire,
+	InteractionWire,
 } from "../api";
 import { useDraft } from "./useDraft";
 
@@ -232,6 +240,8 @@ export function Composer(props: {
 	const [compacting, setCompacting] = useState(false);
 	const [commands, setCommands] = useState<readonly CommandWire[]>([]);
 	const [highlight, setHighlight] = useState(0);
+	const [interactions, setInteractions] = useState<readonly InteractionWire[]>([]);
+	const [ambient, setAmbient] = useState<readonly AmbientWire[]>([]);
 
 	// The slash-command catalog: fetched once per mount (a server boot
 	// constant, like the model catalog). A fetch failure leaves the menu
@@ -250,6 +260,48 @@ export function Composer(props: {
 			cancelled = true;
 		};
 	}, [client]);
+
+	// THE SEAM SOURCING: interactions + ambient come from their endpoints,
+	// refreshed per view frame (a fresh immutable object per accepted frame
+	// is the refetch cadence). Ambient is conversation-scoped, so a new
+	// conversation id also refetches; both clear with the conversation.
+	useEffect(() => {
+		if (conversationId === null) {
+			setInteractions([]);
+			return;
+		}
+		let cancelled = false;
+		client
+			.listInteractions(conversationId)
+			.then((response) => {
+				if (cancelled) return;
+				setInteractions(
+					(response.interactions ?? []).filter((i) => i.status === "pending"),
+				);
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [client, conversationId, view]);
+
+	useEffect(() => {
+		if (conversationId === null) {
+			setAmbient([]);
+			return;
+		}
+		let cancelled = false;
+		client
+			.listAmbient(conversationId)
+			.then((response) => {
+				if (cancelled) return;
+				setAmbient(response.ambient ?? []);
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [client, conversationId, view]);
 
 	// The model catalog: fetched once per mount (the §5 catalog is a server
 	// boot constant for M2's purposes).
@@ -512,6 +564,13 @@ export function Composer(props: {
 
 	return (
 		<div className="composer">
+			<AmbientPanels surfaces={ambient} />
+			<InteractionCards
+				conversationId={conversationId}
+				interactions={interactions}
+				client={client}
+				onError={(message) => setError(message)}
+			/>
 			{error !== null && <p role="alert">{error}</p>}
 			{notice !== null && (
 				<p className="composer-notice" role="status">

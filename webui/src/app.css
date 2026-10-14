@@ -856,3 +856,343 @@ body {
 	cursor: pointer;
 	font-size: 15px;
 }
+
+
+/* ── interaction cards (the seam's pending stack) ───────────────────── */
+
+.interaction-cards {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.interaction-card {
+	border: 1px solid var(--warn);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+	padding: 0.7rem 0.9rem;
+	max-width: 76ch;
+}
+
+.interaction-card-title {
+	display: flex;
+	gap: 0.5rem;
+	align-items: center;
+	margin-bottom: 0.35rem;
+}
+
+.interaction-kind {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--text-dim);
+	background: color-mix(in srgb, var(--warn) 14%, transparent);
+	padding: 0.1rem 0.45rem;
+	border-radius: 4px;
+}
+
+.interaction-expiry {
+	font-size: 0.75rem;
+	color: var(--text-dim);
+}
+
+.interaction-text {
+	margin: 0.35rem 0;
+	white-space: pre-wrap;
+}
+
+.interaction-diff {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0.5rem;
+	margin: 0.5rem 0;
+}
+
+.interaction-diff pre {
+	margin: 0;
+	padding: 0.5rem;
+	border-radius: 6px;
+	background: var(--panel);
+	font-family: var(--mono);
+	font-size: 12px;
+	overflow: auto;
+	max-height: 16rem;
+}
+
+.interaction-diff-before {
+	color: var(--danger);
+}
+
+.interaction-diff-after {
+	color: var(--ok);
+}
+
+.interaction-options,
+.interaction-fields {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	margin: 0.5rem 0;
+}
+
+.interaction-option {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 0.4rem;
+	align-items: baseline;
+	padding: 0.4rem 0.6rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.interaction-option input {
+	align-self: center;
+}
+
+.interaction-option-label {
+	font-weight: 500;
+}
+
+.interaction-option-danger {
+	border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.interaction-option-warn {
+	border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+
+.interaction-option-ok {
+	border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.interaction-option-description {
+	grid-column: 2;
+	font-size: 0.8rem;
+	color: var(--text-dim);
+}
+
+.interaction-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.interaction-field-label {
+	font-size: 0.8rem;
+	color: var(--text-dim);
+}
+
+.interaction-field input {
+	padding: 0.4rem 0.6rem;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: var(--panel);
+	color: var(--text);
+	font: inherit;
+}
+
+.interaction-submit {
+	align-self: flex-start;
+	padding: 0.35rem 0.9rem;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: var(--ok);
+	color: #06281c;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.interaction-submit:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.interaction-details,
+.ambient-details {
+	margin-top: 0.4rem;
+	font-size: 0.75rem;
+	color: var(--text-dim);
+}
+
+.interaction-details pre,
+.ambient-details pre {
+	margin: 0.3rem 0 0;
+	max-height: 12rem;
+	overflow: auto;
+	background: var(--panel);
+	border-radius: 6px;
+	padding: 0.5rem;
+}
+
+/* ── ambient panels (the seam's persistent zone) ─────────────────────── */
+
+.ambient-panels {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.ambient-surface {
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--panel);
+	padding: 0.5rem 0.7rem;
+	max-width: 76ch;
+}
+
+.ambient-surface-title {
+	display: flex;
+	justify-content: space-between;
+	font-size: 0.72rem;
+	color: var(--text-dim);
+	margin-bottom: 0.3rem;
+}
+
+.ambient-key {
+	font-family: var(--mono);
+}
+
+.ambient-line {
+	font-family: var(--mono);
+	font-size: 12px;
+	white-space: pre-wrap;
+	display: flex;
+	gap: 0.75rem;
+	flex-wrap: wrap;
+}
+
+.ambient-segment-right {
+	margin-left: auto;
+}
+
+.ambient-rows {
+	list-style: none;
+	margin: 0.25rem 0 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+}
+
+.ambient-row {
+	display: flex;
+	gap: 0.45rem;
+	align-items: baseline;
+	font-size: 0.85rem;
+}
+
+.ambient-row[data-status="running"] .ambient-row-glyph {
+	color: var(--warn);
+}
+
+.ambient-row[data-status="completed"],
+.ambient-row[data-status="complete"],
+.ambient-row[data-status="passed"] {
+	color: var(--text-dim);
+	text-decoration: line-through;
+	text-decoration-color: color-mix(in srgb, var(--text-dim) 60%, transparent);
+}
+
+.ambient-row[data-status="failed"],
+.ambient-row[data-status="blocked"] {
+	color: var(--danger);
+}
+
+.ambient-row-glyph {
+	font-family: var(--mono);
+	flex: none;
+}
+
+.ambient-row-spinner {
+	color: var(--text-dim);
+	font-style: italic;
+	font-size: 0.78rem;
+}
+
+.ambient-row-detail {
+	color: var(--text-dim);
+	font-size: 0.8rem;
+}
+
+.ambient-row-deps {
+	color: var(--text-dim);
+	font-family: var(--mono);
+	font-size: 0.72rem;
+}
+
+.ambient-metrics {
+	color: var(--text-dim);
+	font-family: var(--mono);
+	font-size: 0.72rem;
+	margin-left: auto;
+}
+
+.ambient-quiet-summary {
+	color: var(--text-dim);
+	font-size: 0.75rem;
+}
+
+.ambient-gauge {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+
+.ambient-gauge-label {
+	font-size: 0.8rem;
+	color: var(--text-dim);
+}
+
+.ambient-gauge-bar {
+	height: 6px;
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--text-dim) 25%, transparent);
+	overflow: hidden;
+}
+
+.ambient-gauge-fill {
+	height: 100%;
+	background: var(--ok);
+	transition: width 0.3s ease;
+}
+
+.ambient-recent-output {
+	margin: 0;
+	padding: 0.4rem;
+	background: color-mix(in srgb, var(--border) 40%, transparent);
+	border-radius: 6px;
+	font-family: var(--mono);
+	font-size: 11px;
+	max-height: 8rem;
+	overflow: auto;
+}
+
+.ambient-ledger {
+	list-style: none;
+	margin: 0.25rem 0 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+	max-height: 10rem;
+	overflow: auto;
+}
+
+.ambient-ledger-entry {
+	display: flex;
+	gap: 0.45rem;
+	align-items: baseline;
+	font-size: 0.8rem;
+}
+
+.ambient-ledger-kind {
+	font-family: var(--mono);
+	font-size: 0.7rem;
+	color: var(--text-dim);
+	flex: none;
+}
+
+.ambient-ledger-detail {
+	color: var(--text-dim);
+	font-size: 0.75rem;
+}
