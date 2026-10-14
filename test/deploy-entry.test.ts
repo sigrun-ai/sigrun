@@ -19,8 +19,8 @@
  * serves broken.
  */
 
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
@@ -224,3 +224,124 @@ test("deploy entry still honors the deprecated SIGRUN_MODEL alias (one release c
 		await rm(dir, { recursive: true, force: true });
 	}
 }, 60_000);
+
+test(
+	"deploy entry installs a declared packages[] extension and LOADS it (boot-time install)",
+	async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-pkg-"));
+		const port = await freePort();
+		const configDir = join(dir, "config");
+		await mkdir(configDir, { recursive: true });
+		// The operator flow, end to end: settings.json declares the package
+		// (install list + load list), the container restarts, boot installs
+		// and loads it. The specifier is a packed TARBALL (npm pack of the
+		// fixture), not the fixture dir itself: a registry install lands a
+		// real copy, while a file:-directory install SYMLINKS — and a
+		// symlinked fixture's imports resolve through the repo's own
+		// node_modules, which hits a chord-package exports quirk under tsx
+		// that is unrelated to this feature (covered live in
+		// packages.test.ts, where import() still succeeds under vitest).
+		const { stdout: packOut } = await new Promise<{
+			stdout: string;
+		}>((resolvePack, rejectPack) => {
+			execFile(
+				"npm",
+				[
+					"pack",
+					"--pack-destination",
+					dir,
+					join(REPO_ROOT, "test", "fixtures", "fixture-pkg"),
+				],
+				(error: Error | null, stdout: string) =>
+					error === null ? resolvePack({ stdout }) : rejectPack(error),
+			);
+		});
+		const tarball = join(dir, packOut.trim().split("\n").pop() ?? "");
+		await writeFile(
+			join(configDir, "settings.json"),
+			JSON.stringify({
+				packages: [`file:${tarball}`],
+				extensions: ["fixture-pkg"],
+			}) + "\n",
+			"utf8",
+		);
+		const entry = spawnEntry(
+			childEnv({
+				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+				OPENAI_API_KEY: "smoke-test-key-never-sent",
+				OPENAI_BASE_URL: "http://127.0.0.1:9",
+				SIGRUN_PORT: String(port),
+				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+				SIGRUN_WORKSPACE_PATH: dir,
+				SIGRUN_CONFIG_DIR: configDir,
+			}),
+		);
+		try {
+			expect(await entry.listening).toBe(port);
+			// The package was installed into the packages dir…
+			const installed = JSON.parse(
+				await readFile(
+					join(configDir, "packages", "package.json"),
+					"utf8",
+				),
+			) as { dependencies?: Record<string, string> };
+			expect(installed.dependencies?.["fixture-pkg"]).toBeDefined();
+			// …and the extension LOADED — outcome ok (not quarantined). The
+			// entry's own generation needs a provider, so the assertion is the
+			// outcome record + the install, not a /v1/meta equality (a symlinked
+			// fixture's import chain is a tsx-invocation detail, not the
+			// feature under test).
+			const meta = (await (
+				await fetch(`http://127.0.0.1:${port}/v1/meta`)
+			).json()) as { extensions?: readonly { name: string; status: string }[] };
+			expect(meta.extensions).toEqual([
+				{ name: "sigrun.fixture-ext", status: "ok" },
+			]);
+		} finally {
+			entry.child.kill("SIGTERM");
+			const exit = await entry.exited;
+			expect(exit.code).toBe(0);
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+	120_000,
+);
+
+test("deploy entry fails loud when a declared packages[] package cannot install", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-pkgfail-"));
+	const configDir = join(dir, "config");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(
+		join(configDir, "settings.json"),
+		JSON.stringify({
+			packages: ["file:/nonexistent/definitely-not-a-package"],
+		}) + "\n",
+		"utf8",
+	);
+	const child = spawn(TSX, ["src/index.ts"], {
+		cwd: REPO_ROOT,
+		env: childEnv({
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+			OPENAI_API_KEY: "x",
+			SIGRUN_CONFIG_DIR: configDir,
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+		}),
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let stderr = "";
+	child.stderr.on("data", (chunk: Buffer) => {
+		stderr += chunk.toString("utf-8");
+	});
+	const exit = await new Promise<{ code: number | null }>((resolve) => {
+		child.on("exit", (code) => resolve({ code }));
+	});
+	try {
+		expect(exit.code).toBe(1);
+		// Fail-loud, naming the specifier (PackageSyncError → boot catch).
+		expect(stderr).toMatch(/packages:/);
+		expect(stderr).toMatch(/definitely-not-a-package/);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+}, 120_000);

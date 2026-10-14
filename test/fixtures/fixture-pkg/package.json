@@ -1,0 +1,12 @@
+{
+	"name": "fixture-pkg",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension package installed via npm file: by the packages-dir tests.",
+	"main": "index.js",
+	"exports": "./index.js",
+	"dependencies": {
+		"@earendil-works/pi-durable": "*",
+		"@earendil-works/pi-ai": "*"
+	}
+}
