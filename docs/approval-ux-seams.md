@@ -45,10 +45,9 @@ channel UI.
    extension-status chips from `/v1/meta`. Extension-contributed
    sections render; installed/quarantined states are visible.
 
-4. **Ambient status surfaces** (out of scope here, named for honesty):
-   pi's `setWidget`/`setStatus` (dashboards, todo/goal overlays,
-   trace sidebars) are a *different* seam from pending decisions and
-   deliberately not covered by the interaction record.
+4. **Ambient surfaces** (specified in the next section): widgets,
+   statuslines, banners — persistent read-mostly state panels,
+   a *different* seam from pending decisions.
 
 ## The interaction record: envelope / primitives / details
 
@@ -176,15 +175,104 @@ No per-extension UI code paths. A `uiHint`-style bespoke-render
 pointer (factory-result-declared, extension-owned code) is the
 documented future escape route but is deliberately out of v1.
 
+## Ambient surfaces: the same envelope discipline, four primitives
+
+2026-10-14 second survey (8 extensions: pi-goal-x, rpiv-todo, pi-fabric,
+pi-warden, plannotator, pi-advisor, pi-goal-schovest, pi-interview-tool;
+reports preserved in `docs/interaction-seam-survey/ambient-*`): the
+widget/statusline family is persistent, keyed, state-replacement
+rendering — a different lifecycle from interactions (no answer, no
+pending join, update-cadence foreign to the conversation stream) but
+structurally the same tension. Same resolution: strict envelope +
+closed primitives + opaque fallback.
+
+```
+AmbientSurface (limited vocabulary; write = full replacement of surface state)
+
+  envelope — strict:
+    key       unique keyed slot id (e.g. "goal", "fabric", "rpiv-todos")
+    place     "status" (one keyed statusline line) | "panel" (above-editor
+              list surface)
+    kinds[]   the surface kinds this record uses (mirror of interactionKinds;
+              validated fail-loud at factory time)
+    budget    "line" | maxRows? | panel mode defaults (collapse policy rides here)
+    expires   auto-clear/degrade rule ("never" | "idle" | explicit timeout)
+                 — covers `setWidget(key, undefined)`-on-empty and
+                   fixed-time status clears
+
+  body — composed ONLY from the closed ambient primitives:
+    line      {text} — the statusline primitive: prose for a keyed slot;
+              everything pre-flat today (goal, advisor-usage, plannotator
+              phase) is exactly this
+    rows[]    {id, label, status: enum, severity?, quiet?, detail?, depth?,
+               deps?: ids[], spinnerLabel?, metrics?: {tokens?, cost?,
+               current?, total?, completed?}}
+    gauge     {label, percent?, phase?, elapsed?, recentOutput?: string[],
+               checks?: rows[]-shaped}
+    ledger[]  {at, kind, summary, detail?: string[]} — append-style event
+              feed for trace/audit/history surfaces (amendable per entry,
+              the one stateful non-replacement case)
+
+  details       opaque JSON, extension-owned; channels render collapsed.
+```
+
+Evidence-sizing (decision-coverage of each surface class, by extension):
+
+| Extension | Coverage | Mechanism of note |
+|---|---|---|
+| pi-goal (schovest) | ~100% by `line` | keyed status slots are exactly this |
+| plannotator | ~100% by `line`+`rows` | checklist widget = rows; statusline = line |
+| pi-advisor | ~95–100% | 3 keyed slots + usage counters = line; gauge unused |
+| pi-interview-tool | ~95% | countdown badge = gauge; queue switcher = rows |
+| rpiv-todo | ~95% | task graph = rows+deps; budget/overflow policy rides envelope |
+| pi-warden | ~85–90% | verdict stack = rows w/ severity + quiet-fold; needs the row affordances above |
+| pi-goal-x | ~70–75% | dashboard is line+rows+gauge+tree-deps; result card needs a transient note class |
+| pi-fabric | ~70% | always-on widget = rows+metrics; **live-tail activity pane** is the one structural gap |
+
+The `rows` primitive carries three extensions warden/todo/goal-x forced
+(the same shape three different ways): `status` as an *enumerated,
+channel-schemed* glyph state (`severity: 0..2` for ordering/color, `quiet?`
+for fold-under-defaults, `spinnerLabel?` for live activity labeling),
+`deps?: ids[]` for dependency markers, `metrics` for token/cost/counters.
+Full-replacement writes (state snapshot, never delta) keep every channel
+implementation trivial and reconcile the amendable ledger by giving it
+its own append-shaped primitive.
+
+Deferred (evidence noted, not spec'd): a live-tail/log-pane element
+(pi-fabric's expanded activity pane), interactive row actions
+(interview-tool's "open this queued session", warden's config panel) —
+ambient surfaces stay read-only v1; actions re-route through the
+interaction seam (a click may *seed an interaction record*, not embed
+editing). Bespoke dashboards (pi-fabric dashboard modal, goal-x expanded
+mode) legitimately degrade to `details`.
+
+### Why this is one seam, not two halves
+
+Both records share the transport (durable doc-family write channels,
+viewed through the conversation lifecycle) and the same factory-time
+declaration (validated kinds). They differ only in lifecycle: an
+interaction record awaits one answer; an ambient surface is replaced
+repeatedly and never blocks. Channels get one rendering discipline for
+both: a pending card stack and a persistent panel zone, each fed by
+replacement-safe state snapshots.
+
 ## What this asks of core
+
 
 1. The `sigrun.interaction` doc-family definition + view mounting.
 2. The one generic answer route.
 3. `interactionKinds` declared on factory results — validated
    fail-loud exactly like `health`/`submit`, listed in `/v1/meta`.
-4. Nothing else. Warden/questions remain pure extensions; competing
+4. The ambient-surface seam: an extension-owned state doc per
+   surface (or a session-meta-style side resource — sized at
+   implementation), view projection through the same conversation
+   lifecycle, and allocation of channel real-estate (statusline slots,
+   the panel zone) by the channel, rendered from the record.
+   Interaction records correspondingly unblock the pending-card stack.
+5. Nothing else. Warden/questions remain pure extensions; competing
    implementations stay possible; a deploy with neither installed
-   still boots, ungated, fail-open.
+   still boots, ungated, fail-open — with no ambient surface claimed
+   either.
 
 ## What webui lost in the 2026-10-14 strip
 

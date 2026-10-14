@@ -7,3 +7,10 @@ channel-neutral interaction record. Method: shallow source clones to
 cases included (pi-btw, pi-fabric ambient stack). Summarized in
 ../approval-ux-seams.md ("The closed primitive set, sized by
 evidence").
+
+## Ambient-surface second wave (2026-10-14, `ambient-*`)
+
+8 additional inspections sizing the ambient/widget seam primitives
+(line/rows/gauge/ledger): pi-goal-x, rpiv-todo, pi-fabric, pi-warden,
+plannotator, pi-advisor, pi-goal (schovest), pi-interview-tool.
+Summarized in ../approval-ux-seams.md ("Ambient surfaces" section).
