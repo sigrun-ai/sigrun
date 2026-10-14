@@ -72,7 +72,7 @@ async function bootServer(options?: {
 		health: options?.contributorHealth ?? (() => "ok"),
 	};
 	const config = loadConfig({
-		SIGRUN_MODEL: "faux/m",
+		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});

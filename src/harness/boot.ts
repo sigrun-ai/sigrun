@@ -21,6 +21,7 @@ import type { Env, SigrunConfig } from "../config.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit } from "./loader.js";
 import { APPROVALS_EXTENSION_NAME, type ExtensionApprovals } from "../server/approvals.js";
+import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { skillsExtension } from "../skills/index.js";
@@ -46,7 +47,7 @@ export interface OpenedHarness {
 	readonly registry: Registry;
 	/** The merged `Models` store generation dispatches through. */
 	readonly models: Models;
-	/** Boot default model (`SIGRUN_MODEL` wins over contributor defaults). */
+	/** Boot default model (env/file config wins over contributor defaults). */
 	readonly defaultModel: ModelRef;
 	/** Provider-merge collisions; the sink `GET /v1/meta` reads (Task 9). */
 	readonly providerCollisions: readonly ProviderCollision[];
@@ -79,11 +80,20 @@ export interface OpenedHarness {
 	readonly providerOwnership: ReadonlyMap<string, string>;
 	/**
 	 * The environment the provider collector resolved (Task 6): the boot env
-	 * with `SIGRUN_MODEL` restated from config. The §5 auth-check route reads
+	 * with the default model restated from config (both env var spellings —
+	 * `SIGRUN_DEFAULT_MODEL` and the deprecated `SIGRUN_MODEL` alias, which
+	 * the collector also reads). The §5 auth-check route reads
 	 * `OPENAI_API_KEY` presence from it for env-degenerate providers — the
 	 * hermetic seam that keeps the route off `process.env`.
 	 */
 	readonly providerEnv: Env;
+	/**
+	 * The auth store (ruling 6) backing the env-driven degenerate provider's
+	 * credential resolution: `<config-dir>/auth.json`, created 0o600 when
+	 * written. The §5 auth-check route reads key PRESENCE from it (never
+	 * key material).
+	 */
+	readonly auth: AuthStore;
 	/**
 	 * The settings store (Task 8a): the file-backed store the `/v1/settings`
 	 * endpoints read and PATCH through. Booted here so a malformed settings
@@ -252,15 +262,25 @@ export async function openHarness(
 			)?.approvals;
 	const sink = createProviderMergeSink();
 	const env = options.env ?? process.env;
-	// `config.models` is the already-validated parse of SIGRUN_MODEL (loadConfig
-	// refuses to boot without it); restating it for the collector keeps a
-	// hand-built config authoritative over a stale or absent runtime env var.
+	// `config.models` is the already-validated default-model resolution
+	// (loadConfig refuses to boot without env or file); restating it for
+	// the collector under BOTH env spellings keeps a hand-built config
+	// authoritative over a stale or absent runtime env var — the collector
+	// reads SIGRUN_DEFAULT_MODEL first, then the deprecated SIGRUN_MODEL.
 	const effectiveEnv = {
 		...env,
+		SIGRUN_DEFAULT_MODEL: `${config.models.provider}/${config.models.modelId}`,
 		SIGRUN_MODEL: `${config.models.provider}/${config.models.modelId}`,
 	};
+	// The auth store (ruling 6) — the same config dir the settings store
+	// uses. Passed to the collector so the degenerate provider resolves
+	// credentials from `auth.json` before the OPENAI_API_KEY fallback.
+	const authStore = new AuthStore({ dir: options.settingsDir });
 	const { models, defaultModel, healthProducers: providerHealth, providerOwnership } =
-		collectProviders(options.extensions ?? [], effectiveEnv, sink);
+		collectProviders(options.extensions ?? [], effectiveEnv, sink, {
+			auth: authStore,
+			baseUrl: config.defaultProviderBaseUrl,
+		});
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so a future resolver swap changes this wiring's
 	// inputs and nothing downstream.
@@ -326,6 +346,7 @@ export async function openHarness(
 		providerHealth,
 		providerOwnership,
 		providerEnv: effectiveEnv,
+		auth: authStore,
 		memoryHealth,
 		memorySubmit,
 		approvals,

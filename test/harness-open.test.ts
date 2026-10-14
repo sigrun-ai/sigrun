@@ -10,7 +10,7 @@ test("harness reopens persisted root conversation", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-harness-"));
 	try {
 		const config = loadConfig({
-			SIGRUN_MODEL: "openai/gpt-4o",
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		});
 

@@ -4,15 +4,27 @@ import type { SettingsFile, ServerSettings } from "./harness/settings.js";
 /**
  * Sigrun configuration.
  *
- * Sigrun is configured entirely through environment variables. The three
- * variables of the spec's design test are `OPENAI_BASE_URL`,
- * `OPENAI_API_KEY`, and `SIGRUN_MODEL` — but only `SIGRUN_MODEL` is read
+ * Sigrun resolves configuration from environment variables over
+ * `settings.json` over code defaults (env wins per setting). The three
+ * knobs of the spec's design test are `SIGRUN_DEFAULT_MODEL`,
+ * `OPENAI_BASE_URL`, and `OPENAI_API_KEY` — but only the model is read
  * here: the OpenAI-compat credentials are consumed by the env-driven
- * degenerate provider (Task 2), which may be replaced entirely by an
- * extension-contributed provider that needs no OpenAI credentials at all.
+ * degenerate provider (`src/harness/providers`), which may be replaced
+ * entirely by an extension-contributed provider that needs no OpenAI
+ * credentials at all. `SIGRUN_MODEL` remains as a deprecated alias for
+ * `SIGRUN_DEFAULT_MODEL` (one release cycle; a boot warning when used).
  */
 
-/** The default model, parsed from `SIGRUN_MODEL`. */
+/** The env var carrying the boot default model spec. */
+export const DEFAULT_MODEL_ENV = "SIGRUN_DEFAULT_MODEL";
+
+/** Deprecated alias for {@link DEFAULT_MODEL_ENV} (warns once per boot). */
+export const DEPRECATED_MODEL_ENV = "SIGRUN_MODEL";
+
+/**
+ * The default model, parsed from `SIGRUN_DEFAULT_MODEL` (or the file's
+ * top-level `defaultModel`).
+ */
 export interface SigrunModels {
 	provider: string;
 	modelId: string;
@@ -43,27 +55,37 @@ export interface SigrunConfig {
 	storagePath: string;
 	models: SigrunModels;
 	extensionsDir: string;
-	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS`. */
+	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS` or the file's top-level `extensions`. */
 	extensions: readonly string[];
 	port: number;
 	/** Root of the static local workspace (spec §4.5 `defaultWorkspace`). */
 	workspace: LocalWorkspace;
 	backup?: BackupConfig;
 	/**
-	 * The webui channel-bundle directory (spec §4.1/§6, Task 20), parsed from
-	 * `SIGRUN_WEBUI_BUNDLE`. Relative paths resolve against the process cwd
-	 * (the repo/deploy root). The default is `webui/dist`; an absent default
-	 * bundle is a supported API-only deploy, while an explicit-but-missing
-	 * bundle is a boot error (see {@link SigrunConfig.webuiBundleExplicit}).
+	 * The webui channel-bundle directory (spec §4.1/§6, Task 20), resolved
+	 * from `SIGRUN_WEBUI_BUNDLE` over the file's `server.webuiBundle` over
+	 * the default `webui/dist`. Relative paths resolve against the process
+	 * cwd (the repo/deploy root). An absent default bundle is a supported
+	 * API-only deploy, while an explicit-but-missing bundle is a boot
+	 * error (see {@link SigrunConfig.webuiBundleExplicit}).
 	 */
 	webuiBundle: string;
 	/**
-	 * True iff `SIGRUN_WEBUI_BUNDLE` set {@link SigrunConfig.webuiBundle}
-	 * explicitly. The server fails loud when an explicit bundle path has no
-	 * `index.html` (a misconfigured deploy intended the webui), and serves
-	 * API-only when the DEFAULT path is absent (no webui was ever intended).
+	 * True iff {@link SigrunConfig.webuiBundle} was configured EXPLICITLY
+	 * (the env var or the file's `server.webuiBundle` — both count). The
+	 * server fails loud when an explicit bundle path has no `index.html`
+	 * (a misconfigured deploy intended the webui), and serves API-only
+	 * when the DEFAULT path is absent (no webui was ever intended).
 	 */
 	webuiBundleExplicit: boolean;
+	/**
+	 * The env-driven OpenAI-compatible provider's endpoint (ruling 7):
+	 * `OPENAI_BASE_URL` over the file's `defaultProvider.baseUrl` over
+	 * OpenAI's public API. Consumed by the degenerate provider
+	 * (`src/harness/providers`), which falls back to its own code default
+	 * when this is `undefined` (env unset + file unset).
+	 */
+	defaultProviderBaseUrl?: string;
 	/**
 	 * Context-management policy (spec §3.1), parsed from `SIGRUN_COMPACTION_*`
 	 * and passed through `openHarness` into pi-durable's
@@ -75,7 +97,7 @@ export interface SigrunConfig {
 	compaction: CompactionPolicy;
 }
 
-/** The provider id used when `SIGRUN_MODEL` carries no `provider/` prefix. */
+/** The provider id used when the model spec carries no `provider/` prefix. */
 export const DEFAULT_PROVIDER = "openai";
 
 export const DEFAULT_STORAGE_PATH = "data/sigrun.db";
@@ -116,14 +138,17 @@ export type Env = Record<string, string | undefined>;
  * Shared by `loadConfig` and the provider collector so both parse
  * identically.
  *
- * @throws Error naming `SIGRUN_MODEL` when the spec is empty or has an
- * empty provider or model id.
+ * @throws Error naming `source` (the env var or the file key) when the
+ * spec is empty or has an empty provider or model id.
  */
-export function parseModelSpec(spec: string): SigrunModels {
+export function parseModelSpec(
+	spec: string,
+	source = DEFAULT_MODEL_ENV,
+): SigrunModels {
 	const trimmed = spec.trim();
 	if (!trimmed) {
 		throw new Error(
-			"SIGRUN_MODEL must be a non-empty model spec, e.g. openai/gpt-4o",
+			`${source} must be a non-empty model spec, e.g. openai/gpt-4o`,
 		);
 	}
 	const slash = trimmed.indexOf("/");
@@ -134,35 +159,52 @@ export function parseModelSpec(spec: string): SigrunModels {
 	const modelId = trimmed.slice(slash + 1);
 	if (!provider || !modelId) {
 		throw new Error(
-			`SIGRUN_MODEL must have a non-empty provider and model id, got ${JSON.stringify(trimmed)}`,
+			`${source} must have a non-empty provider and model id, got ${JSON.stringify(trimmed)}`,
 		);
 	}
 	return { provider, modelId };
 }
 
 /**
- * Parse sigrun configuration from an environment (usually `process.env`).
+ * Parse sigrun configuration from an environment (usually `process.env`),
+ * over the settings file, over code defaults (env wins per setting).
  *
- * `SIGRUN_MODEL` is required and selects the default model (see
- * `parseModelSpec` for the format). Optional overrides:
- * `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`, `SIGRUN_EXTENSIONS`,
- * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`, the `SIGRUN_COMPACTION_*`
+ * The default model is REQUIRED: `SIGRUN_DEFAULT_MODEL` (deprecated alias
+ * `SIGRUN_MODEL`) wins, then the file's top-level `defaultModel` — with
+ * neither, boot fails loud (see {@link parseModelSpec} for the format).
+ * Optional overrides: `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`,
+ * `SIGRUN_EXTENSIONS`, `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`,
+ * `SIGRUN_WEBUI_BUNDLE`, `OPENAI_BASE_URL`, the `SIGRUN_COMPACTION_*`
  * knobs of the context-management policy, and the backup target variables
  * (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+
  * `SIGRUN_BACKUP_S3_PREFIX`; see {@link parseBackupConfig}).
  *
- * @throws Error naming `SIGRUN_MODEL` when it is missing or empty, naming
- * `SIGRUN_PORT` when it is set but not a positive integer, naming the
- * offending `SIGRUN_COMPACTION_*` variable when set to an invalid value,
- * and naming both backup variables when they are both set (ambiguous
- * backup target).
+ * @throws Error naming `SIGRUN_DEFAULT_MODEL` when the model is missing
+ * from both env and file, naming `SIGRUN_PORT` when it is set but not a
+ * positive integer, naming the offending `SIGRUN_COMPACTION_*` variable
+ * when set to an invalid value, and naming both backup variables when
+ * they are both set (ambiguous backup target).
  */
-export function parseExtensionList(raw: string | undefined): string[] {
-	if (raw === undefined || raw.trim() === "") return [];
+export function parseExtensionList(raw: string | undefined): string[] | undefined {
+	if (raw === undefined) return undefined;
 	return raw
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry !== "");
+}
+
+/**
+ * Warn once per process when the deprecated `SIGRUN_MODEL` alias supplied
+ * the model. Module-level so repeated `loadConfig` calls in one boot (the
+ * deploy entry resolves twice: bootstrap + final) print the warning once.
+ */
+let deprecatedModelWarned = false;
+function warnDeprecatedModelEnv(): void {
+	if (deprecatedModelWarned) return;
+	deprecatedModelWarned = true;
+	console.warn(
+		"SIGRUN_MODEL is deprecated, use SIGRUN_DEFAULT_MODEL",
+	);
 }
 
 /** Parse `SIGRUN_COMPACTION_ENABLED` ("true"/"false", case-insensitive). */
@@ -293,6 +335,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		workspacePath: config.workspace.path,
 		storagePath: config.storagePath,
 		extensionsDir: config.extensionsDir,
+		webuiBundle: config.webuiBundle,
 		compaction: { ...config.compaction },
 		...(backup === undefined ? {} : { backup }),
 	};
@@ -300,20 +343,38 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 
 export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig {
 	// Env is parsed FIRST (fail-loud on an invalid env value even when the
-	// file carries a valid one) and always WINS: a `server.*` file field
-	// applies only where the corresponding `SIGRUN_*` variable is absent.
-	// Env-only knobs (never file-configurable): `SIGRUN_MODEL`,
-	// `SIGRUN_EXTENSIONS`, `SIGRUN_WEBUI_BUNDLE`, `SIGRUN_CONFIG_DIR` (the
-	// file's own location), and the OpenAI credentials.
+	// file carries a valid one) and always WINS: a file field applies only
+	// where the corresponding env variable is absent. Env-only knobs (never
+	// file-configurable): `SIGRUN_CONFIG_DIR` (the file's own location) and
+	// the OpenAI credentials (`OPENAI_API_KEY`, plus the sibling `auth.json`
+	// the provider layer reads — settings.json never carries key material).
 	const server = settingsFile?.server;
-	const modelSpec = env.SIGRUN_MODEL?.trim();
-	if (!modelSpec) {
+
+	// The boot default model (ruling 3): env wins, the file's top-level
+	// `defaultModel` is next, and there is NO code default — the model is
+	// genuinely required, so neither-source fails loud exactly like the
+	// pre-file behavior. `SIGRUN_MODEL` is the deprecated alias: it reads
+	// the same value (one release cycle) and warns once per boot when it
+	// actually supplied the model.
+	const envSpec =
+		env.SIGRUN_DEFAULT_MODEL?.trim() || env.SIGRUN_MODEL?.trim();
+	if (
+		env.SIGRUN_DEFAULT_MODEL?.trim() === undefined &&
+		env.SIGRUN_MODEL?.trim() !== undefined
+	) {
+		warnDeprecatedModelEnv();
+	}
+	const fileSpec = settingsFile?.defaultModel;
+	if (!envSpec && fileSpec === undefined) {
 		throw new Error(
-			"SIGRUN_MODEL is required (format: provider/model-id, e.g. openai/gpt-4o)",
+			"SIGRUN_DEFAULT_MODEL or settings.json defaultModel is required " +
+				"(format: provider/model-id, e.g. openai/gpt-4o)",
 		);
 	}
-
-	const models = parseModelSpec(modelSpec);
+	const models = parseModelSpec(
+		envSpec ?? (fileSpec as string),
+		envSpec ? DEFAULT_MODEL_ENV : "settings.json defaultModel",
+	);
 
 	let port = server?.port ?? DEFAULT_PORT;
 	if (env.SIGRUN_PORT !== undefined && env.SIGRUN_PORT !== "") {
@@ -324,11 +385,17 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		port = parsed;
 	}
 
+	const envWebui = env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined;
+	const fileWebui = server?.webuiBundle;
 	return {
 		storagePath: env.SIGRUN_STORAGE_PATH || server?.storagePath || DEFAULT_STORAGE_PATH,
 		models,
 		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
-		extensions: parseExtensionList(env.SIGRUN_EXTENSIONS),
+		// Ruling 1: env CSV wins; the file's top-level `extensions` array
+		// next; empty otherwise.
+		extensions: parseExtensionList(env.SIGRUN_EXTENSIONS) ?? [
+			...(settingsFile?.extensions ?? []),
+		],
 		port,
 		workspace: {
 			type: "local",
@@ -336,9 +403,16 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		},
 		backup: parseBackupConfig(env) ?? parseServerBackup(server?.backup),
 		compaction: parseCompaction(env, server?.compaction),
-		webuiBundle: env.SIGRUN_WEBUI_BUNDLE || DEFAULT_WEBUI_BUNDLE,
-		webuiBundleExplicit:
-			env.SIGRUN_WEBUI_BUNDLE !== undefined && env.SIGRUN_WEBUI_BUNDLE !== "",
+		// Ruling 4: env wins; the file's `server.webuiBundle` next; the code
+		// default last. A file value counts as EXPLICIT (missing index.html
+		// is a boot error), exactly like a set env var.
+		webuiBundle: envWebui ?? fileWebui ?? DEFAULT_WEBUI_BUNDLE,
+		webuiBundleExplicit: envWebui !== undefined || fileWebui !== undefined,
+		// Ruling 7: the degenerate provider's endpoint. `undefined` when
+		// neither env nor file sets it — the provider layer applies the
+		// OpenAI public default there.
+		defaultProviderBaseUrl:
+			env.OPENAI_BASE_URL?.trim() || settingsFile?.defaultProvider?.baseUrl,
 	};
 }
 

@@ -178,7 +178,7 @@ test("openHarness installs the context-file sections into the registry", async (
 	try {
 		await mkdir(workspacePath, { recursive: true });
 		const config = loadConfig({
-			SIGRUN_MODEL: "openai/gpt-4o",
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: workspacePath,
 		});
@@ -211,7 +211,7 @@ test("harness generation includes the persona section from SOUL.md", async () =>
 		await mkdir(workspacePath, { recursive: true });
 		await writeFile(join(workspacePath, "SOUL.md"), "generation persona\n");
 		const config = loadConfig({
-			SIGRUN_MODEL: "openai/gpt-4o",
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: workspacePath,
 		});

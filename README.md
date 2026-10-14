@@ -14,23 +14,28 @@ and capabilities at boot.
   steering/follow-up modes, retries, streaming, compaction) come from
   pi-durable; sigrun is the deployable shell around them.
 - **Extensions** — separate npm packages (e.g. the approvals and memory
-  extensions) loaded from `SIGRUN_EXTENSIONS`; a failing extension is
-  quarantined and reported, never a boot abort.
-- **Web UI** — a static bundle served from `SIGRUN_WEBUI_BUNDLE`
-  (default `webui/dist`); API-only deploys simply omit it.
+  extensions) loaded from `SIGRUN_EXTENSIONS` (or the settings file's
+  top-level `extensions` list); a failing extension is quarantined and
+  reported, never a boot abort.
+- **Web UI** — a static bundle served from `SIGRUN_WEBUI_BUNDLE` (or the
+  settings file's `server.webuiBundle`; default `webui/dist`); API-only
+  deploys simply omit it.
 
 ## Quickstart
 
 Minimum configuration is a model plus OpenAI-compatible credentials:
 
 ```bash
-export SIGRUN_MODEL=openai/gpt-4o-mini      # provider/model-id
+export SIGRUN_DEFAULT_MODEL=openai/gpt-4o-mini      # provider/model-id
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1   # any compatible endpoint
 
 npm install
 npm start        # tsx src/index.ts — listens on :3000
 ```
+
+(`SIGRUN_MODEL` still works as a deprecated alias for
+`SIGRUN_DEFAULT_MODEL` — one release cycle, with a boot warning.)
 
 Then open `http://localhost:3000/` (web UI) or drive the API:
 
@@ -42,7 +47,7 @@ curl -X POST localhost:3000/v1/conversations -H 'content-type: application/json'
 Or with Docker: see [`docker/`](docker/README.md) —
 
 ```bash
-cd docker && cp .env.example .env   # set SIGRUN_MODEL + OPENAI_* in .env
+cd docker && cp .env.example .env   # set SIGRUN_DEFAULT_MODEL + OPENAI_* in .env
 docker compose up --build
 ```
 
@@ -52,31 +57,36 @@ For a durable cluster deployment, use the Helm chart in `charts/`.
 
 Sigrun is configured by environment variables and a settings file at
 `~/.config/sigrun/settings.json` (`SIGRUN_CONFIG_DIR` relocates the
-directory). Precedence, per setting:
+directory — `SIGRUN_CONFIG_DIR` itself stays env-only, since it locates
+the file). Precedence, per setting:
 
 1. **Environment variable** (always wins — and an *invalid* env value is
    a boot error even if the file has a valid one).
-2. **`settings.json`** `server.*` field (applies only where the env var
-   is absent).
+2. **`settings.json`** field (applies only where the env var is absent).
 3. **Code default** (listed in the table below).
 
+When an env var and the settings file both set a knob, the env var wins
+— this is documented behavior, not enforced: sigrun never warns about or
+detects env/file conflicts.
+
 On first boot (settings file absent), sigrun writes the resolved
-`server` section — env values plus defaults — into `settings.json`, so
-the effective configuration is visible and hand-editable. On later boots
-the file is never rewritten by bootstrap: edit it, and env vars still
-override it per field.
+configuration — the `server` section (env values plus defaults) plus the
+resolved `extensions` list and `defaultModel` — into `settings.json`, so
+the effective configuration is visible and hand-editable (the file
+records reality). On later boots the file is never rewritten by
+bootstrap: edit it, and env vars still override it per field.
 
 | Variable | Type | Default | File key | Purpose |
 |---|---|---|---|---|
-| `SIGRUN_MODEL` | `provider/model-id` | — (**required**) | *env-only* | Boot default model; bare `model-id` implies the OpenAI-compat provider. |
-| `OPENAI_API_KEY` | string | — | *env-only* | Credential for the env-driven OpenAI-compatible provider. |
-| `OPENAI_BASE_URL` | URL | OpenAI | *env-only* | Endpoint for the env-driven provider (any compatible host). |
+| `SIGRUN_DEFAULT_MODEL` | `provider/model-id` | — (**required**: env or file) | `defaultModel` | Boot default model; bare `model-id` implies the OpenAI-compat provider. `SIGRUN_MODEL` is a deprecated alias (boot warning; one release cycle). |
+| `OPENAI_API_KEY` | string | — | `auth.json` (see below) | Credential for the env-driven OpenAI-compatible provider; the `auth.json` fallback after file entries. |
+| `OPENAI_BASE_URL` | URL | OpenAI | `defaultProvider.baseUrl` | Endpoint for the env-driven provider (any compatible host). |
 | `SIGRUN_PORT` | positive int | `3000` | `server.port` | HTTP listen port. |
 | `SIGRUN_STORAGE_PATH` | path | `data/sigrun.db` | `server.storagePath` | SQLite database location. |
 | `SIGRUN_WORKSPACE_PATH` | path | `/home/sigrun` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. |
 | `SIGRUN_EXTENSIONS_DIR` | path | `extensions` | `server.extensionsDir` | Directory for extension package resolution. |
-| `SIGRUN_EXTENSIONS` | csv | *(none)* | *env-only* | Deploy-time extension package specifiers. |
-| `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | *env-only* | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
+| `SIGRUN_EXTENSIONS` | csv | *(none)* | `extensions` (top-level array) | Deploy-time extension package specifiers. |
+| `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | `server.webuiBundle` | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
 | `SIGRUN_CONFIG_DIR` | path | `~/.config/sigrun` | *env-only* | The settings file's own directory. |
 | `SIGRUN_COMPACTION_ENABLED` | `true`/`false` | `true` | `server.compaction.enabled` | Context compaction on/off. |
 | `SIGRUN_COMPACTION_RESERVE_TOKENS` | positive int | `16384` | `server.compaction.reserveTokens` | Headroom reserved for the model's reply. |
@@ -87,15 +97,21 @@ override it per field.
 | `SIGRUN_BACKUP_S3_PREFIX` | string | *(unset)* | `server.backup.s3.prefix` | Key prefix within the bucket. |
 | `SIGRUN_BACKUP_S3_ENDPOINT` | URL | AWS default | `server.backup.s3.endpoint` | Custom S3 endpoint (S3-compatible stores). |
 
-### settings.json `server` schema
+### settings.json schema
 
 ```jsonc
 {
+  "defaultModel": "openai/gpt-4o-mini", // non-empty provider/model-id; bare id = openai provider
+  "extensions": ["sigrun-ext-approvals"], // non-empty package specifiers
+  "defaultProvider": {
+    "baseUrl": "https://api.openai.com/v1" // non-empty URL
+  },
   "server": {
     "port": 3000,                    // positive integer
     "workspacePath": "/home/sigrun", // non-empty path
     "storagePath": "data/sigrun.db", // non-empty path
     "extensionsDir": "extensions",   // non-empty path
+    "webuiBundle": "webui/dist",     // non-empty path
     "compaction": {
       "enabled": true,
       "reserveTokens": 16384,        // positive integer
@@ -111,20 +127,44 @@ The file also carries the live harness settings (`steeringMode`,
 `followUpMode`, `retry`, `stream`, `defaultTools`, `perModelThinking`)
 and is read fresh at every resolution.
 
-**Restart requirement:** `server.*` changes — whether by hand edit or
-`PATCH /v1/settings` — apply on the **next boot** only; the live
-settings (`steeringMode`, `retry`, `stream`, `defaultTools`,
-`perModelThinking`) take effect immediately on the next submission.
+### auth.json
+
+API keys live in `<config-dir>/auth.json` — the same directory as
+`settings.json` — keyed by provider name, never in `settings.json`:
+
+```jsonc
+{
+  "default": { "apiKey": "sk-..." },  // the resolved default provider's key
+  "openai": { "apiKey": "sk-..." }    // a provider's own entry
+}
+```
+
+The env-driven OpenAI-compatible provider resolves its key in this
+order: `auth.json`'s `"default"` entry → the resolved provider's own
+`auth.json` entry → the `OPENAI_API_KEY` environment variable (compat
+fallback, still honored). With no key anywhere the provider registers
+unconfigured — requests fail loud, boot does not. The file is created
+with mode `0600` (owner-only) whenever sigrun writes it. Key material is
+never logged, echoed, or served by the API (`GET /v1/auth/check` reports
+key *presence* only).
+
+**Restart requirement:** `server.*`, `extensions`, `defaultModel`, and
+`defaultProvider` changes — whether by hand edit or `PATCH /v1/settings`
+— apply on the **next boot** only; the live settings (`steeringMode`,
+`retry`, `stream`, `defaultTools`, `perModelThinking`) take effect
+immediately on the next submission.
 
 ## Extensions
 
 Extensions are separate packages, selected at deploy time via
-`SIGRUN_EXTENSIONS` (comma-separated specifiers) and resolved against
-`SIGRUN_EXTENSIONS_DIR`. A failing extension is quarantined (logged and
-reported in `GET /v1/meta` as `extensions[].status`) and never aborts
-the boot; a bare sigrun (zero extensions) still runs with no-op memory
-and approval surfaces. The MCP extension's own configuration is
-extension-owned at `~/.config/sigrun/mcp.json` — core never reads it.
+`SIGRUN_EXTENSIONS` (comma-separated specifiers) or the settings file's
+top-level `extensions` array (env wins), and resolved against
+`SIGRUN_EXTENSIONS_DIR` (`server.extensionsDir` in the file). A failing
+extension is quarantined (logged and reported in `GET /v1/meta` as
+`extensions[].status`) and never aborts the boot; a bare sigrun (zero
+extensions) still runs with no-op memory and approval surfaces. The MCP
+extension's own configuration is extension-owned at
+`~/.config/sigrun/mcp.json` — core never reads it.
 
 ## API sketch
 

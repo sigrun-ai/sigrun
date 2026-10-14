@@ -61,11 +61,8 @@ import {
 	SettingsValidationError,
 	type SettingsFile,
 } from "../harness/settings.js";
-import {
-	OPENAI_API_KEY_ENV,
-	requireServedModel,
-	UnservedModelError,
-} from "../harness/providers/index.js";
+import { OPENAI_API_KEY_ENV, requireServedModel, UnservedModelError } from "../harness/providers/index.js";
+import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
 import { SLASH_COMMANDS, type CommandsResponse } from "./commands.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
@@ -503,10 +500,11 @@ export async function createServer(
 	// boot-retained state (same discipline as /v1/meta), per provider in
 	// catalog order:
 	//  - env-degenerate provider (no contributor owns it — the collector's
-	//    ownership map has no entry): `ready` iff `OPENAI_API_KEY` is set
-	//    non-empty in the boot-retained provider env, else `not_ready`. (The
-	//    degenerate provider reports §3 health "ok" by absence, so env
-	//    presence is the honest readiness check for it.)
+	//    ownership map has no entry): `ready` iff a key resolves —
+	//    `auth.json` (`"default"` or the provider's own entry) or a
+	//    non-empty `OPENAI_API_KEY` in the boot-retained provider env —
+	//    else `not_ready`. (The degenerate provider reports §3 health "ok"
+	//    by absence, so key presence is the honest readiness check for it.)
 	//  - contributor-owned provider: its contributor's retained §3 health
 	//    producer decides — "ok" → `ready`, "degraded" → `invalid`. The §3
 	//    union is exactly ok | degraded (health.ts); "degraded" is the
@@ -533,7 +531,23 @@ export async function createServer(
 							? "ready"
 							: "invalid";
 			} else {
+				// Ruling 6: the degenerate provider's key resolves auth.json
+				// (the "default" magic key or the provider's own entry) BEFORE
+				// the OPENAI_API_KEY env fallback. Presence only — key material
+				// never leaves the store. A malformed auth file marks the
+				// provider not_ready rather than failing the route (boot-time
+				// fail-loud covers the genuinely-broken deploy).
+				let storedKey = false;
+				try {
+					const authFile = opened.auth.read();
+					storedKey =
+						authFile[DEFAULT_AUTH_KEY]?.apiKey !== undefined ||
+						authFile[model.provider]?.apiKey !== undefined;
+				} catch {
+					storedKey = false;
+				}
 				status =
+					storedKey ||
 					(opened.providerEnv[OPENAI_API_KEY_ENV] ?? "").trim() !== ""
 						? "ready"
 						: "not_ready";

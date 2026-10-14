@@ -68,7 +68,7 @@ async function bootHarness(backupEnv?: Record<string, string>): Promise<TestHarn
 		providers: [{ provider: faux.provider }],
 	};
 	const config = loadConfig({
-		SIGRUN_MODEL: "faux/m",
+		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 		...backupEnv,
@@ -126,13 +126,13 @@ async function runScript(
 
 describe("backup config parsing", () => {
 	test("neither variable set → backup absent", () => {
-		const config = loadConfig({ SIGRUN_MODEL: "faux/m" });
+		const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "faux/m" });
 		expect(config.backup).toBeUndefined();
 	});
 
 	test("SIGRUN_BACKUP_PATH → path target", () => {
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_BACKUP_PATH: "/var/backups/sigrun",
 		});
 		expect(config.backup).toEqual({
@@ -143,7 +143,7 @@ describe("backup config parsing", () => {
 
 	test("SIGRUN_BACKUP_S3_BUCKET → s3 target", () => {
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
 		});
 		expect(config.backup).toEqual({
@@ -154,7 +154,7 @@ describe("backup config parsing", () => {
 
 	test("SIGRUN_BACKUP_S3_PREFIX rides the bucket", () => {
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
 			SIGRUN_BACKUP_S3_PREFIX: "nightly/",
 		});
@@ -168,7 +168,7 @@ describe("backup config parsing", () => {
 	test("both targets set → fail-loud config error", () => {
 		expect(() =>
 			loadConfig({
-				SIGRUN_MODEL: "faux/m",
+				SIGRUN_DEFAULT_MODEL: "faux/m",
 				SIGRUN_BACKUP_PATH: "/var/backups/sigrun",
 				SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
 			}),
@@ -177,7 +177,7 @@ describe("backup config parsing", () => {
 
 	test("empty string is treated as unset", () => {
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_BACKUP_PATH: "",
 		});
 		expect(config.backup).toBeUndefined();
@@ -372,7 +372,7 @@ describe("restore drill: live-harness backup resumes", () => {
 			providers: [{ provider: faux.provider }],
 		};
 		const restoredConfig = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: restoredDb,
 			SIGRUN_WORKSPACE_PATH: scratchDir,
 		});
