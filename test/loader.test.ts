@@ -27,6 +27,7 @@ import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { loadConfig } from "../src/config.js";
+import { resolveExtension } from "../src/harness/loader.js";
 import { openHarness } from "../src/harness/boot.js";
 
 /** The test fixture package's entry, imported by specifier (contract: default factory). */
@@ -46,6 +47,21 @@ function configWith(dir: string) {
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 }
+
+test("a factory result may carry capability fields beyond health/submit — they resolve and are ignored", () => {
+	// The capability-freedom ruling: core retains only health + submit;
+	// an approvals extension may return extra fields (its own doc tooling,
+	// future seams) and those are the extension's business, never core's.
+	const ext = { name: "sigrun.approvals", hooks: [], tools: [] } as never;
+	const result = resolveExtension({
+		createApprovals: () => ({
+			extension: ext,
+			approvals: { listPending: () => {}, decide: () => {} },
+		}),
+	});
+	expect(result?.extension).toBe(ext);
+	expect((result as unknown as Record<string, unknown>).approvals).toBeUndefined();
+});
 
 test("SIGRUN_EXTENSIONS parses into config.extensions", () => {
 	const config = loadConfig({
