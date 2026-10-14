@@ -170,4 +170,109 @@ describe("SettingsStore", () => {
 	test("settingsPath joins the dir", () => {
 		expect(settingsPath("/x/y")).toBe(join("/x/y", "settings.json"));
 	});
+
+	test("bootstrap writes the resolved server section only when the file is absent", async () => {
+		const { store, dir } = freshStore();
+		const section = {
+			port: 3000,
+			workspacePath: "/home/sigrun",
+			storagePath: "data/sigrun.db",
+			extensionsDir: "extensions",
+			compaction: {
+				enabled: true,
+				reserveTokens: 16384,
+				keepRecentTokens: 20000,
+				backgroundTokens: 32768,
+			},
+		};
+		store.bootstrap(section);
+		const first = readFileSync(settingsPath(dir), "utf8");
+		// Pretty JSON + trailing newline, `{ server: ... }` exactly.
+		expect(JSON.parse(first)).toEqual({ server: section });
+		expect(first.endsWith("\n")).toBe(true);
+		// Idempotent: a second bootstrap (even with different values)
+		// leaves the file byte-identical.
+		store.bootstrap({ port: 9999 });
+		expect(readFileSync(settingsPath(dir), "utf8")).toBe(first);
+		// A hand-edited file is never overwritten either.
+		await writeFile(settingsPath(dir), '{"steeringMode": "all"}', "utf8");
+		store.bootstrap(section);
+		expect(readFileSync(settingsPath(dir), "utf8")).toBe(
+			'{"steeringMode": "all"}',
+		);
+	});
+
+	test("the server section validates (read + update)", async () => {
+		const { store, dir } = freshStore();
+		const file = settingsPath(dir);
+		// Good shape round-trips.
+		store.update({
+			server: {
+				port: 4080,
+				compaction: { reserveTokens: 4096, backgroundTokens: 0 },
+				backup: { s3: { bucket: "b", prefix: "p/" } },
+			},
+		});
+		expect(store.read().server?.port).toBe(4080);
+		expect(store.read().server?.backup).toEqual({
+			s3: { bucket: "b", prefix: "p/" },
+		});
+		// Bad shapes throw naming the field (same error class as the rest).
+		const bad: Array<[Record<string, unknown>, RegExp]> = [
+			[{ server: { port: 0 } }, /server\.port/],
+			[{ server: { port: "4080" } }, /server\.port/],
+			[{ server: { workspacePath: 42 } }, /server\.workspacePath/],
+			[{ server: { compaction: { enabled: "yes" } } }, /server\.compaction\.enabled/],
+			[{ server: { compaction: { reserveTokens: 0 } } }, /server\.compaction\.reserveTokens/],
+			[{ server: { compaction: { backgroundTokens: -1 } } }, /server\.compaction\.backgroundTokens/],
+			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, /server\.backup/],
+			[{ server: { backup: { s3: {} } } }, /server\.backup\.s3\.bucket/],
+			[{ server: { model: "openai/gpt-4o" } }, /server\.model/],
+			[{ server: { webuiBundle: "webui/dist" } }, /server\.webuiBundle/],
+			[{ server: { extensions: ["a"] } }, /server\.extensions/],
+		];
+		for (const [patch, pattern] of bad) {
+			expect(() => store.update(patch)).toThrow(pattern);
+		}
+		// Rejected updates persisted nothing; the file on disk fails loud
+		// at read the same way (fail-loud at boot).
+		await writeFile(file, '{"server": {"port": "abc"}}', "utf8");
+		expect(() => store.read()).toThrow(/server\.port/);
+	});
+
+	test("server PATCHes sub-merge: the bootstrap fields survive a port PATCH", () => {
+		const { store } = freshStore();
+		store.bootstrap({
+			port: 3000,
+			workspacePath: "/home/sigrun",
+			storagePath: "data/sigrun.db",
+			extensionsDir: "extensions",
+			compaction: {
+				enabled: true,
+				reserveTokens: 16384,
+				keepRecentTokens: 20000,
+				backgroundTokens: 32768,
+			},
+		});
+		store.update({ server: { port: 4080 } });
+		const server = store.read().server;
+		expect(server?.port).toBe(4080);
+		expect(server?.workspacePath).toBe("/home/sigrun");
+		expect(server?.compaction?.reserveTokens).toBe(16384);
+		// Compaction sub-merge one level deeper.
+		store.update({ server: { compaction: { reserveTokens: 4096 } } });
+		expect(store.read().server?.compaction).toEqual({
+			enabled: true,
+			reserveTokens: 4096,
+			keepRecentTokens: 20000,
+			backgroundTokens: 32768,
+		});
+		// Null clears one server field; the section survives.
+		store.update({ server: { extensionsDir: null } });
+		expect(store.read().server?.extensionsDir).toBeUndefined();
+		expect(store.read().server?.port).toBe(4080);
+		// Clearing every key drops the section itself.
+		store.update({ server: null });
+		expect(store.read().server).toBeUndefined();
+	});
 });
