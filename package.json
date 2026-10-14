@@ -23,11 +23,11 @@
 		"@fastify/static": "^9.1.0",
 		"@earendil-works/pi-ai": "^1.0.4",
 		"@earendil-works/pi-durable": "1.0.2",
-		"fastify": "^5.12.5"
+		"fastify": "^5.12.5",
+		"tsx": "^4.23.15"
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",
-		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3",
 		"yaml": "^2.9.1"
@@ -40,5 +40,24 @@
 	"bugs": {
 		"url": "https://github.com/sigrun-ai/sigrun/issues"
 	},
-	"homepage": "https://github.com/sigrun-ai/sigrun#readme"
+	"homepage": "https://github.com/sigrun-ai/sigrun#readme",
+	"files": [
+		"src",
+		"webui/src",
+		"webui/index.html",
+		"webui/package.json",
+		"webui/tsconfig.json",
+		"webui/tsconfig.e2e.json",
+		"webui/vite.config.ts",
+		"webui/playwright.config.ts",
+		"webui/e2e",
+		"scripts",
+		"docker",
+		"charts",
+		"Dockerfile",
+		"README.md",
+		"LICENSE",
+		"CHANGELOG.md",
+		"CONTEXT.md"
+	]
 }
