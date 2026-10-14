@@ -72,7 +72,7 @@ async function bootServer(
 		providers: [{ provider: faux.provider }],
 	};
 	const config = loadConfig({
-		SIGRUN_MODEL: "faux/m",
+		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 		...env,
@@ -268,6 +268,50 @@ describe("PATCH /v1/settings", () => {
 			[{ server: { port: "abc" } }, "server.port"],
 			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, "server.backup"],
 			[{ server: { model: "openai/gpt-4o" } }, "server.model"],
+			[{ server: { webuiBundle: 42 } }, "server.webuiBundle"],
+		] as const) {
+			const rejected = await patch(app, body);
+			expect(rejected.statusCode).toBe(400);
+			expect(rejected.json()).toEqual({
+				error: "invalid_field",
+				field,
+			});
+		}
+	});
+
+	test("the config-surface sections PATCH, persist, and read back (restart-required)", async () => {
+		const { app, settingsDir } = await bootServer();
+		// Top-level extensions list + defaultModel + defaultProvider, and
+		// server.webuiBundle — all accepted by the same PATCH machinery.
+		const response = await patch(app, {
+			extensions: ["@acme/ext-a"],
+			defaultModel: "faux/m2",
+			defaultProvider: { baseUrl: "https://gw.example/v1" },
+			server: { webuiBundle: "ui/dist" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({
+			extensions: ["@acme/ext-a"],
+			defaultModel: "faux/m2",
+			defaultProvider: { baseUrl: "https://gw.example/v1" },
+			server: { webuiBundle: "ui/dist" },
+		});
+		// Persisted to the file (restart-required: the running boot keeps
+		// its resolved values; these land on the NEXT boot).
+		const file = JSON.parse(
+			await (await import("node:fs/promises")).readFile(
+				settingsPath(settingsDir),
+				"utf8",
+			),
+		);
+		expect(file.defaultModel).toBe("faux/m2");
+		expect(file.extensions).toEqual(["@acme/ext-a"]);
+		expect(file.server.webuiBundle).toBe("ui/dist");
+		// Invalid shapes → 400 invalid_field naming the key.
+		for (const [body, field] of [
+			[{ extensions: ["a", ""] }, "extensions"],
+			[{ defaultModel: "acme/" }, "defaultModel"],
+			[{ defaultProvider: { apiKey: "k" } }, "defaultProvider.apiKey"],
 		] as const) {
 			const rejected = await patch(app, body);
 			expect(rejected.statusCode).toBe(400);

@@ -178,6 +178,7 @@ describe("SettingsStore", () => {
 			workspacePath: "/home/sigrun",
 			storagePath: "data/sigrun.db",
 			extensionsDir: "extensions",
+			webuiBundle: "webui/dist",
 			compaction: {
 				enabled: true,
 				reserveTokens: 16384,
@@ -202,6 +203,39 @@ describe("SettingsStore", () => {
 		);
 	});
 
+	test("bootstrap writes the resolved extensions list and defaultModel (the file records reality)", async () => {
+		const { store, dir } = freshStore();
+		const section = {
+			port: 3000,
+			workspacePath: "/home/sigrun",
+			storagePath: "data/sigrun.db",
+			extensionsDir: "extensions",
+			webuiBundle: "webui/dist",
+			compaction: {
+				enabled: true,
+				reserveTokens: 16384,
+				keepRecentTokens: 20000,
+				backgroundTokens: 32768,
+			},
+		};
+		store.bootstrap(section, {
+			extensions: ["@acme/ext-a"],
+			defaultModel: "openai/gpt-4o",
+		});
+		expect(JSON.parse(readFileSync(settingsPath(dir), "utf8"))).toEqual({
+			extensions: ["@acme/ext-a"],
+			defaultModel: "openai/gpt-4o",
+			server: section,
+		});
+		// A bare boot (no env model, no extensions env) writes the section
+		// alone — the model stays file-required.
+		const bare = freshStore();
+		bare.store.bootstrap(section);
+		expect(
+			JSON.parse(readFileSync(settingsPath(bare.dir), "utf8")),
+		).toEqual({ server: section });
+	});
+
 	test("the server section validates (read + update)", async () => {
 		const { store, dir } = freshStore();
 		const file = settingsPath(dir);
@@ -222,13 +256,15 @@ describe("SettingsStore", () => {
 			[{ server: { port: 0 } }, /server\.port/],
 			[{ server: { port: "4080" } }, /server\.port/],
 			[{ server: { workspacePath: 42 } }, /server\.workspacePath/],
+			[{ server: { webuiBundle: 42 } }, /server\.webuiBundle/],
 			[{ server: { compaction: { enabled: "yes" } } }, /server\.compaction\.enabled/],
 			[{ server: { compaction: { reserveTokens: 0 } } }, /server\.compaction\.reserveTokens/],
 			[{ server: { compaction: { backgroundTokens: -1 } } }, /server\.compaction\.backgroundTokens/],
 			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, /server\.backup/],
 			[{ server: { backup: { s3: {} } } }, /server\.backup\.s3\.bucket/],
+			// The model, extension list, and provider endpoint are NOT
+			// server.* keys (they are top-level file fields / auth.json).
 			[{ server: { model: "openai/gpt-4o" } }, /server\.model/],
-			[{ server: { webuiBundle: "webui/dist" } }, /server\.webuiBundle/],
 			[{ server: { extensions: ["a"] } }, /server\.extensions/],
 		];
 		for (const [patch, pattern] of bad) {
@@ -240,6 +276,61 @@ describe("SettingsStore", () => {
 		expect(() => store.read()).toThrow(/server\.port/);
 	});
 
+	test("the new top-level sections validate (extensions, defaultModel, defaultProvider)", async () => {
+		const { store, dir } = freshStore();
+		// Good shapes round-trip.
+		store.update({
+			extensions: ["@acme/ext-a", "./local-ext"],
+			defaultModel: "acme/model-1",
+			defaultProvider: { baseUrl: "https://gw.example/v1" },
+		});
+		expect(store.read().extensions).toEqual(["@acme/ext-a", "./local-ext"]);
+		expect(store.read().defaultModel).toBe("acme/model-1");
+		expect(store.read().defaultProvider).toEqual({
+			baseUrl: "https://gw.example/v1",
+		});
+		// Bad shapes throw naming the field.
+		const bad: Array<[Record<string, unknown>, RegExp]> = [
+			[{ extensions: "@acme/ext-a" }, /extensions/],
+			[{ extensions: ["a", ""] }, /extensions/],
+			[{ extensions: ["a", 42] }, /extensions/],
+			[{ defaultModel: "" }, /defaultModel/],
+			[{ defaultModel: "  " }, /defaultModel/],
+			[{ defaultModel: 42 }, /defaultModel/],
+			[{ defaultModel: "acme/" }, /defaultModel/],
+			[{ defaultModel: "/m" }, /defaultModel/],
+			[{ defaultProvider: "https://gw.example/v1" }, /defaultProvider/],
+			[{ defaultProvider: { apiKey: "k" } }, /defaultProvider\.apiKey/],
+			[{ defaultProvider: { baseUrl: "" } }, /defaultProvider\.baseUrl/],
+		];
+		for (const [patch, pattern] of bad) {
+			expect(() => store.update(patch)).toThrow(pattern);
+		}
+		// The file on disk fails loud at read the same way.
+		await writeFile(settingsPath(dir), '{"defaultModel": "acme/"}', "utf8");
+		expect(() => store.read()).toThrow(/defaultModel/);
+		await writeFile(settingsPath(dir), '{"extensions": [42]}', "utf8");
+		expect(() => store.read()).toThrow(/extensions/);
+	});
+
+	test("defaultProvider PATCHes sub-merge; null clears a sub-field", () => {
+		const { store } = freshStore();
+		store.update({ defaultProvider: { baseUrl: "https://gw.example/v1" } });
+		expect(store.read().defaultProvider?.baseUrl).toBe(
+			"https://gw.example/v1",
+		);
+		store.update({ defaultProvider: { baseUrl: null } });
+		expect(store.read().defaultProvider).toBeUndefined();
+		// Top-level keys null-clear wholesale, like the other sections.
+		store.update({
+			extensions: ["@acme/ext-a"],
+			defaultModel: "acme/model-1",
+		});
+		store.update({ extensions: null, defaultModel: null });
+		expect(store.read().extensions).toBeUndefined();
+		expect(store.read().defaultModel).toBeUndefined();
+	});
+
 	test("server PATCHes sub-merge: the bootstrap fields survive a port PATCH", () => {
 		const { store } = freshStore();
 		store.bootstrap({
@@ -247,6 +338,7 @@ describe("SettingsStore", () => {
 			workspacePath: "/home/sigrun",
 			storagePath: "data/sigrun.db",
 			extensionsDir: "extensions",
+			webuiBundle: "webui/dist",
 			compaction: {
 				enabled: true,
 				reserveTokens: 16384,

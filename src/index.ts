@@ -60,11 +60,16 @@ async function main(): Promise<void> {
 	// 1. Env-only resolution (the pre-file behavior — fail-loud on a bad
 	//    env value before anything is written).
 	const envConfig = loadConfig(process.env);
-	// 2. First-boot bootstrap: absent settings file → write the resolved
-	//    server section (env + code defaults) as the deployment's visible
-	//    baseline; a present file is never touched.
+	// 2. First-boot bootstrap: absent settings file → write the RESOLVED
+	//    boot configuration (server section incl. webuiBundle, plus the
+	//    resolved extension list, and defaultModel when the env provided
+	//    it) as the deployment's visible baseline — the file records
+	//    reality. A present file is never touched.
 	const settingsStore = new SettingsStore({ dir: defaultSettingsDir() });
-	settingsStore.bootstrap(resolvedServerSection(envConfig));
+	settingsStore.bootstrap(resolvedServerSection(envConfig), {
+		extensions: envConfig.extensions,
+		defaultModel: `${envConfig.models.provider}/${envConfig.models.modelId}`,
+	});
 	// 3. Final resolution: env over the file over code defaults. The file
 	//    re-read picks up whatever bootstrap wrote (or what was already
 	//    there) — env still wins every field it sets.
