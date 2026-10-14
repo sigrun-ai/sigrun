@@ -19,7 +19,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
@@ -120,6 +120,7 @@ test(
 				SIGRUN_PORT: String(port),
 				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 				SIGRUN_WORKSPACE_PATH: dir,
+				SIGRUN_CONFIG_DIR: join(dir, "config"),
 			}),
 		);
 		try {
@@ -134,6 +135,26 @@ test(
 			// The probe endpoints exist on the real listener too.
 			const healthz = await fetch(`http://127.0.0.1:${port}/healthz`);
 			expect(healthz.status).toBe(200);
+			// Settings bootstrap: first boot wrote the resolved server section
+			// (env + code defaults — port/workspace/storage present even at
+			// defaults) under SIGRUN_CONFIG_DIR.
+			const bootstrapped = JSON.parse(
+				await readFile(
+						join(dir, "config", "settings.json"),
+						"utf8",
+				),
+			) as { server: Record<string, unknown> };
+			expect(bootstrapped.server).toMatchObject({
+				port,
+				storagePath: join(dir, "sigrun.db"),
+				workspacePath: dir,
+			});
+			// Defaults are recorded too (extensionsDir/compaction even though no
+			// env set them).
+			expect(bootstrapped.server.extensionsDir).toBe("extensions");
+			expect(bootstrapped.server.compaction).toMatchObject({
+				enabled: true,
+			});
 		} finally {
 			entry.child.kill("SIGTERM");
 			const exit = await entry.exited;

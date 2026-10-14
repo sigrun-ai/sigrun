@@ -2,7 +2,16 @@
  * The deploy entry (Task 13) — the composition the Deployment's container
  * command runs:
  *
- * `loadConfig(process.env)` → `openHarness` → `createServer` → listen.
+ * `loadConfig(process.env)` → settings bootstrap → `openHarness` →
+ * `createServer` → listen.
+ *
+ * The settings bootstrap (the settings-file parity piece): env resolves
+ * the server section ONCE (`loadConfig(env)` — env-only, exactly the
+ * pre-file resolution); the store then writes that resolved section on
+ * first boot only, and the FINAL config re-resolves env over the
+ * (possibly just-written) file (`loadConfig(env, file)`) — env always
+ * wins, the file fills only what env leaves unset. `SIGRUN_CONFIG_DIR`
+ * stays env-only (it locates the file itself).
  *
  * Fail-loud is the contract (the task brief): any boot error rejects the
  * boot promise, is printed, and exits 1 — a wedged deploy must crash, never
@@ -17,8 +26,9 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolvedServerSection } from "./config.js";
 import { openHarness } from "./harness/boot.js";
+import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
 import { createServer } from "./server/index.js";
 
 /** Close server then harness; exit 0 on clean close, 1 on any failure. */
@@ -47,7 +57,18 @@ async function shutdown(
 }
 
 async function main(): Promise<void> {
-	const config = loadConfig(process.env);
+	// 1. Env-only resolution (the pre-file behavior — fail-loud on a bad
+	//    env value before anything is written).
+	const envConfig = loadConfig(process.env);
+	// 2. First-boot bootstrap: absent settings file → write the resolved
+	//    server section (env + code defaults) as the deployment's visible
+	//    baseline; a present file is never touched.
+	const settingsStore = new SettingsStore({ dir: defaultSettingsDir() });
+	settingsStore.bootstrap(resolvedServerSection(envConfig));
+	// 3. Final resolution: env over the file over code defaults. The file
+	//    re-read picks up whatever bootstrap wrote (or what was already
+	//    there) — env still wins every field it sets.
+	const config = loadConfig(process.env, settingsStore.read());
 	// The workspace directory must exist before any files endpoint or tool
 	// call touches it. The deploy manifest mounts a volume at /data; the
 	// workspace is /data/workspace. Without this, the first files request
