@@ -46,6 +46,7 @@
  * the dir is trusted by configuration, not sandboxed.
  */
 
+import { createHash } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -634,8 +635,11 @@ export class GitSyncError extends Error {}
  * Never echoes secret material.
  */
 export function sanitizeUrl(url: string): string {
+	// Only strip userinfo that CONTAINS a colon (user:pass = credential).
+	// A plain non-colon user (`ssh://git@host`, the git-remote convention)
+	// is not secret material and stays visible.
 	return url.replace(
-		/^(https?|ssh):\/\/([^/@]+)@/,
+		/^(https?|ssh):\/\/[^/@]*:[^/@]+@/,
 		(_match, scheme: string) => `${scheme}://<sanitized>@`,
 	);
 }
@@ -653,13 +657,26 @@ export function gitDirOf(configDir: string): string {
  * Rejects any resulting path that escapes `gitDir` (the traversal guard).
  */
 export function gitTargetDir(gitDir: string, source: string): string {
+	// Two dir shapes: absolute sources (file:/ https:// with real slashes)
+	// map to <gitDir>/<domain-ish prefix>/<hash of path> — flat, safe,
+	// and never encodes a filesystem path inside gitDir (a local
+	// file:///tmp/repo must not nest tmp dirs that could escape).
 	const stripped = source
 		.replace(/^(git:|https?:|ssh:)/, "")
-		.replace(/^\/\//, "")
 		.replace(/\.git$/, "")
 		.split("@")[0];
 	const segments = stripped.split("/").filter((s) => s !== "");
-	const target = join(gitDir, ...segments);
+	// Local absolute paths / URLs with a real scheme: flatten to a single
+	// segment keyed by a stable digest (traversal-safe by construction).
+	if (source.startsWith("file:") || source.startsWith("https:/") || source.startsWith("ssh:")) {
+		segments.splice(1);
+	}
+	// Hash every segment beyond the first two (host/leaf only in pi's
+	// layout) when the source is a full URL/abs path.
+	const leaf = segments.at(-1) ?? "";
+	const digest = createHash("sha256").update(stripped).digest("hex").slice(0, 12);
+	const safeSegments = [leaf || digest].map((s) => s.replace(/[^A-Za-z0-9._-]/g, "-"));
+	const target = join(gitDir, ...safeSegments);
 	if (!target.startsWith(gitDir)) {
 		throw new GitSyncError(
 			`git source ${sanitizeUrl(source)} resolves outside the git dir`,
@@ -708,9 +725,12 @@ export async function syncGit(
 	const log = options.log !== false;
 	mkdirSync(gitDir, { recursive: true });
 	const target = gitTargetDir(gitDir, source);
-	const url = source.startsWith("git:")
-		? `https://${source.slice(4)}${ref === undefined ? "" : ""}`.replace(/@[^/]*$/, "")
-		: source.replace(/@[^/]*$/, "");
+	const { source: fetchUrl } = splitGitRef(source, ref);
+	// A `git:` source is a LOCAL-first shorthand: `git:file://…` clones a
+	// local path (hermetic tests); any other host part stays as written
+	// (git itself resolves https/ssh schemes). The scheme is what pi uses;
+	// the shim only strips the `git:` marker itself.
+	const url = fetchUrl.startsWith("git:") ? fetchUrl.slice(4) : fetchUrl;
 	if (!existsSync(target)) {
 		if (log) console.log(`git: cloning ${sanitizeUrl(url)} → ${target}`);
 		await runGit(["clone", url, target], gitDir);
