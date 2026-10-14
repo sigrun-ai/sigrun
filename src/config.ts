@@ -1,4 +1,5 @@
 import type { CompactionPolicy } from "@earendil-works/pi-durable";
+import type { SettingsFile, ServerSettings } from "./harness/settings.js";
 
 /**
  * Sigrun configuration.
@@ -26,7 +27,7 @@ export interface SigrunModels {
  * unconfigured (sigrun runs fine and says so in `/v1/meta`).
  */
 export type BackupConfig =
-	| { target: "s3"; bucket: string; prefix?: string }
+	| { target: "s3"; bucket: string; prefix?: string; endpoint?: string }
 	| { target: "path"; path: string };
 
 /**
@@ -217,6 +218,7 @@ export function parseBackupConfig(env: Env): BackupConfig | undefined {
 	const path = env.SIGRUN_BACKUP_PATH?.trim() || undefined;
 	const bucket = env.SIGRUN_BACKUP_S3_BUCKET?.trim() || undefined;
 	const prefix = env.SIGRUN_BACKUP_S3_PREFIX?.trim() || undefined;
+	const endpoint = env.SIGRUN_BACKUP_S3_ENDPOINT?.trim() || undefined;
 	if (path !== undefined && bucket !== undefined) {
 		throw new Error(
 			"SIGRUN_BACKUP_PATH and SIGRUN_BACKUP_S3_BUCKET are both set — exactly one backup target is allowed",
@@ -224,29 +226,86 @@ export function parseBackupConfig(env: Env): BackupConfig | undefined {
 	}
 	if (path !== undefined) return { target: "path", path };
 	if (bucket !== undefined) {
-		return prefix === undefined
-			? { target: "s3", bucket }
-			: { target: "s3", bucket, prefix };
+		return {
+			target: "s3",
+			bucket,
+			...(prefix === undefined ? {} : { prefix }),
+			...(endpoint === undefined ? {} : { endpoint }),
+		};
 	}
 	return undefined;
 }
 
-function parseCompaction(env: Env): CompactionPolicy {
+function parseCompaction(
+	env: Env,
+	server?: ServerSettings["compaction"],
+): CompactionPolicy {
+	// Env parse first (a bad env value fails loud even when the file's
+	// value is valid); a file field applies only where its env var is
+	// absent; code defaults last.
 	return {
-		enabled: parseCompactionEnabled(env) ?? DEFAULT_COMPACTION.enabled,
+		enabled:
+			parseCompactionEnabled(env) ??
+			server?.enabled ??
+			DEFAULT_COMPACTION.enabled,
 		reserveTokens:
 			parseTokenCount(env, "SIGRUN_COMPACTION_RESERVE_TOKENS", 1) ??
+			server?.reserveTokens ??
 			DEFAULT_COMPACTION.reserveTokens,
 		keepRecentTokens:
 			parseTokenCount(env, "SIGRUN_COMPACTION_KEEP_RECENT_TOKENS", 1) ??
+			server?.keepRecentTokens ??
 			DEFAULT_COMPACTION.keepRecentTokens,
 		backgroundTokens:
 			parseTokenCount(env, "SIGRUN_COMPACTION_BACKGROUND_TOKENS", 0) ??
+			server?.backgroundTokens ??
 			DEFAULT_COMPACTION.backgroundTokens,
 	};
 }
 
-export function loadConfig(env: Env): SigrunConfig {
+/**
+ * Project a resolved config into the settings file's `server` section —
+ * the object `SettingsStore.bootstrap` persists on first boot. Defaults
+ * are included deliberately (the bootstrap file records the full
+ * effective server configuration, not just the overrides); the backup
+ * target maps back to the file's two-shape union (absent target → the
+ * key is omitted, so the file carries no empty `backup: {}`).
+ */
+export function resolvedServerSection(config: SigrunConfig): ServerSettings {
+	const backup: ServerSettings["backup"] =
+		config.backup === undefined
+			? undefined
+			: config.backup.target === "path"
+				? { path: config.backup.path }
+				: {
+						s3: {
+							bucket: config.backup.bucket,
+							...(config.backup.prefix === undefined
+								? {}
+								: { prefix: config.backup.prefix }),
+							...(config.backup.endpoint === undefined
+								? {}
+								: { endpoint: config.backup.endpoint }),
+						},
+					};
+	return {
+		port: config.port,
+		workspacePath: config.workspace.path,
+		storagePath: config.storagePath,
+		extensionsDir: config.extensionsDir,
+		compaction: { ...config.compaction },
+		...(backup === undefined ? {} : { backup }),
+	};
+}
+
+export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig {
+	// Env is parsed FIRST (fail-loud on an invalid env value even when the
+	// file carries a valid one) and always WINS: a `server.*` file field
+	// applies only where the corresponding `SIGRUN_*` variable is absent.
+	// Env-only knobs (never file-configurable): `SIGRUN_MODEL`,
+	// `SIGRUN_EXTENSIONS`, `SIGRUN_WEBUI_BUNDLE`, `SIGRUN_CONFIG_DIR` (the
+	// file's own location), and the OpenAI credentials.
+	const server = settingsFile?.server;
 	const modelSpec = env.SIGRUN_MODEL?.trim();
 	if (!modelSpec) {
 		throw new Error(
@@ -256,7 +315,7 @@ export function loadConfig(env: Env): SigrunConfig {
 
 	const models = parseModelSpec(modelSpec);
 
-	let port = DEFAULT_PORT;
+	let port = server?.port ?? DEFAULT_PORT;
 	if (env.SIGRUN_PORT !== undefined && env.SIGRUN_PORT !== "") {
 		const parsed = Number(env.SIGRUN_PORT);
 		if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -266,19 +325,51 @@ export function loadConfig(env: Env): SigrunConfig {
 	}
 
 	return {
-		storagePath: env.SIGRUN_STORAGE_PATH || DEFAULT_STORAGE_PATH,
+		storagePath: env.SIGRUN_STORAGE_PATH || server?.storagePath || DEFAULT_STORAGE_PATH,
 		models,
-		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || DEFAULT_EXTENSIONS_DIR,
+		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
 		extensions: parseExtensionList(env.SIGRUN_EXTENSIONS),
 		port,
 		workspace: {
 			type: "local",
-			path: env.SIGRUN_WORKSPACE_PATH || DEFAULT_WORKSPACE_PATH,
+			path: env.SIGRUN_WORKSPACE_PATH || server?.workspacePath || DEFAULT_WORKSPACE_PATH,
 		},
-		backup: parseBackupConfig(env),
-		compaction: parseCompaction(env),
+		backup: parseBackupConfig(env) ?? parseServerBackup(server?.backup),
+		compaction: parseCompaction(env, server?.compaction),
 		webuiBundle: env.SIGRUN_WEBUI_BUNDLE || DEFAULT_WEBUI_BUNDLE,
 		webuiBundleExplicit:
 			env.SIGRUN_WEBUI_BUNDLE !== undefined && env.SIGRUN_WEBUI_BUNDLE !== "",
+	};
+}
+
+/**
+ * The backup target from the file's `server.backup` section, applied only
+ * when env configures NO target (env wins — including the env's own
+ * ambiguity error, which throws before this is consulted). The section is
+ * already shape-validated by the settings store; a missing bucket fails
+ * loud here the way the env parse would.
+ */
+function parseServerBackup(
+	backup: ServerSettings["backup"],
+): BackupConfig | undefined {
+	if (backup === undefined) return undefined;
+	// Property-presence narrowing: the union's two shapes are
+	// optional-keyed, so `.path !== undefined` does not discriminate them
+	// for TS — `in` does.
+	if ("path" in backup) {
+		if (backup.path === undefined) return undefined;
+		return { target: "path", path: backup.path };
+	}
+	if (!("s3" in backup)) return undefined;
+	const s3 = backup.s3;
+	if (s3 === undefined) return undefined;
+	if (s3.bucket === undefined) {
+		throw new Error("settings server.backup.s3.bucket is required when server.backup.s3 is set");
+	}
+	return {
+		target: "s3",
+		bucket: s3.bucket,
+		...(s3.prefix === undefined ? {} : { prefix: s3.prefix }),
+		...(s3.endpoint === undefined ? {} : { endpoint: s3.endpoint }),
 	};
 }

@@ -243,6 +243,40 @@ describe("PATCH /v1/settings", () => {
 			),
 		)).toEqual({ steeringMode: "all" });
 	});
+
+	test("server.* PATCHes validate, persist, and read back (restart-required)", async () => {
+		const { app, settingsDir } = await bootServer();
+		const response = await patch(app, { server: { port: 4080 } });
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({ server: { port: 4080 } });
+		// Persisted to the file…
+		const file = JSON.parse(
+			await (await import("node:fs/promises")).readFile(
+				settingsPath(settingsDir),
+				"utf8",
+			),
+		);
+		expect(file).toEqual({ server: { port: 4080 } });
+		// …and GET serves it.
+		const readBack = await app.inject({
+			method: "GET",
+			url: "/v1/settings",
+		});
+		expect(readBack.json()).toEqual({ server: { port: 4080 } });
+		// Invalid server fields → 400 invalid_field naming the key.
+		for (const [body, field] of [
+			[{ server: { port: "abc" } }, "server.port"],
+			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, "server.backup"],
+			[{ server: { model: "openai/gpt-4o" } }, "server.model"],
+		] as const) {
+			const rejected = await patch(app, body);
+			expect(rejected.statusCode).toBe(400);
+			expect(rejected.json()).toEqual({
+				error: "invalid_field",
+				field,
+			});
+		}
+	});
 });
 
 describe("the steering testable: a PATCHed steeringMode changes the next submission's admission", () => {
