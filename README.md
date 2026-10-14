@@ -85,7 +85,8 @@ bootstrap: edit it, and env vars still override it per field.
 | `SIGRUN_STORAGE_PATH` | path | `data/sigrun.db` | `server.storagePath` | SQLite database location. |
 | `SIGRUN_WORKSPACE_PATH` | path | `/home/sigrun` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. |
 | `SIGRUN_EXTENSIONS_DIR` | path | `extensions` | `server.extensionsDir` | Directory for extension package resolution. |
-| `SIGRUN_EXTENSIONS` | csv | *(none)* | `extensions` (top-level array) | Deploy-time extension package specifiers. |
+| `SIGRUN_EXTENSIONS` | csv | *(none)* | `extensions` (top-level array) | Deploy-time extension LOAD list (bare names). |
+| — | — | *(none)* | `packages` (top-level array) | Extension INSTALL list (npm specifiers boot installs into the packages dir). File-only — installing is not an env-shaped act, so there is no `SIGRUN_PACKAGES`. |
 | `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | `server.webuiBundle` | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
 | `SIGRUN_CONFIG_DIR` | path | `~/.config/sigrun` | *env-only* | The settings file's own directory. |
 | `SIGRUN_COMPACTION_ENABLED` | `true`/`false` | `true` | `server.compaction.enabled` | Context compaction on/off. |
@@ -102,7 +103,8 @@ bootstrap: edit it, and env vars still override it per field.
 ```jsonc
 {
   "defaultModel": "openai/gpt-4o-mini", // non-empty provider/model-id; bare id = openai provider
-  "extensions": ["sigrun-ext-approvals"], // non-empty package specifiers
+  "packages": ["sigrun-ext-approvals@^0.1.0"], // non-empty npm specifiers → boot installs into <config-dir>/packages
+  "extensions": ["sigrun-ext-approvals"], // non-empty package names → boot loads
   "defaultProvider": {
     "baseUrl": "https://api.openai.com/v1" // non-empty URL
   },
@@ -148,22 +150,78 @@ with mode `0600` (owner-only) whenever sigrun writes it. Key material is
 never logged, echoed, or served by the API (`GET /v1/auth/check` reports
 key *presence* only).
 
-**Restart requirement:** `server.*`, `extensions`, `defaultModel`, and
-`defaultProvider` changes — whether by hand edit or `PATCH /v1/settings`
-— apply on the **next boot** only; the live settings (`steeringMode`,
-`retry`, `stream`, `defaultTools`, `perModelThinking`) take effect
-immediately on the next submission.
+**Restart requirement:** `server.*`, `extensions`, `packages`,
+`defaultModel`, and `defaultProvider` changes — whether by hand edit or
+`PATCH /v1/settings` — apply on the **next boot** only; the live
+settings (`steeringMode`, `retry`, `stream`, `defaultTools`,
+`perModelThinking`) take effect immediately on the next submission.
 
 ## Extensions
 
-Extensions are separate packages, selected at deploy time via
-`SIGRUN_EXTENSIONS` (comma-separated specifiers) or the settings file's
-top-level `extensions` array (env wins), and resolved against
-`SIGRUN_EXTENSIONS_DIR` (`server.extensionsDir` in the file). A failing
-extension is quarantined (logged and reported in `GET /v1/meta` as
-`extensions[].status`) and never aborts the boot; a bare sigrun (zero
-extensions) still runs with no-op memory and approval surfaces. The MCP
-extension's own configuration is extension-owned at
+Extensions are separate npm packages. Two lists in `settings.json` keep
+the two acts distinct (pi's model):
+
+- **`packages`** — the INSTALL list: npm package specifiers
+  (`"sigrun-ext-approvals@^0.1.0"`, `"@scope/name"`, a `file:` path)
+  that boot installs into the packages dir,
+  **`<config-dir>/packages/`** (a sibling of `settings.json` and
+  `auth.json` — the PVC-backed path in every deployment shape, so
+  installed packages persist across restarts). The directory is a real
+  npm root — a synthetic private `package.json` plus `node_modules/`,
+  exactly pi's `~/.pi/agent/npm` shape. Boot diffs the declared
+  specifiers against the dir's own `package.json` dependencies: missing
+  or range-changed → `npm install`, no-longer-declared → `npm uninstall`,
+  no diff → no subprocess at all. An install that fails or times out
+  (120s) fails the boot, naming the specifier — a declared but
+  uninstallable extension is a config error, like a bad `SIGRUN_*`
+  value. `packages` is file-only (no env var — installing is not an
+  env-shaped act) and the settings bootstrap never writes it (the package
+  dir's manifest is the resolved state).
+- **`extensions`** — the LOAD list: bare package names boot loads and
+  installs into the registry, from `SIGRUN_EXTENSIONS` (env wins) or the
+  top-level `extensions` array. A name is resolved against the packages
+  dir FIRST (what `packages` installed wins over anything the image
+  bundles), then by bare import resolution (paths, `file://` URLs, dev
+  checkouts, image-bundled packages).
+
+The split means a package may be installed-but-not-loaded (disabled
+without uninstalling) and a loaded extension may come from somewhere
+else (a dev checkout) — most deployments list an extension in both.
+Deployments therefore **declare extensions in `settings.json` and
+restart** — no image rebuild, no manual npm:
+
+```jsonc
+{
+  "packages": ["sigrun-ext-approvals@^0.1.0", "sigrun-ext-memory-markdown"],
+  "extensions": ["sigrun-ext-approvals", "sigrun-ext-memory-markdown"]
+}
+```
+
+- **Docker compose** — `SIGRUN_CONFIG_DIR=/data/config` puts the config
+  dir (settings + auth + packages) on the `sigrun-data` volume (see
+  `docker/`); edit `settings.json` in the volume, `docker compose
+  restart`.
+- **Kubernetes** — the chart defaults `SIGRUN_CONFIG_DIR=/data/config`
+  onto the same PVC as the database; edit the file
+  (`kubectl exec` into the pod, or your GitOps seeding of the PVC),
+  `kubectl rollout restart`. (Seeding a first-boot `settings.json` from
+  a ConfigMap via an initContainer is a deployment choice, not something
+  the chart implements.)
+- **Source** — edit `~/.config/sigrun/settings.json` (or
+  `$SIGRUN_CONFIG_DIR`), restart the process.
+
+**Security note:** `npm install` executes the installed packages'
+lifecycle scripts. The packages dir is operator-configured — the
+specifiers you declare carry the same trust level as the extension code
+they name (which runs in the harness with full tool authority).
+Documented, not sandboxed — the same posture pi takes.
+
+A failing extension LOAD is quarantined (logged and reported in
+`GET /v1/meta` as `extensions[].status`) and never aborts the boot; a
+bare sigrun (zero extensions) still runs with no-op memory and approval
+surfaces. Extensions that need credentials read the environment or the
+sibling `auth.json` — they load into the same harness, no separate auth
+path. The MCP extension's own configuration is extension-owned at
 `~/.config/sigrun/mcp.json` — core never reads it.
 
 ## API sketch

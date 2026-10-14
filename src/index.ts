@@ -28,6 +28,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { loadConfig, resolvedServerSection } from "./config.js";
 import { openHarness } from "./harness/boot.js";
+import { packagesDirOf, syncPackages } from "./harness/packages.js";
 import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
 import { createServer } from "./server/index.js";
 
@@ -74,6 +75,15 @@ async function main(): Promise<void> {
 	//    re-read picks up whatever bootstrap wrote (or what was already
 	//    there) — env still wins every field it sets.
 	const config = loadConfig(process.env, settingsStore.read());
+	// Boot-time package install (the pi-style packages dir): the settings
+	// file's top-level `packages` array is the INSTALL intent — install the
+	// declared specifiers into `<config-dir>/packages` and prune the
+	// undeclared BEFORE any extension loads. Fail-loud: an uninstallable
+	// declaration fails the boot here, naming the specifier. Steady state
+	// (the dir already matches) costs one manifest read, no subprocess.
+	const settingsFile = settingsStore.read();
+	const packagesDir = packagesDirOf(defaultSettingsDir());
+	await syncPackages(settingsFile.packages ?? [], packagesDir);
 	// The workspace directory must exist before any files endpoint or tool
 	// call touches it. The deploy manifest mounts a volume at /data; the
 	// workspace is /data/workspace. Without this, the first files request
