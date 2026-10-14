@@ -22,6 +22,11 @@ import type {
 	JsonObject,
 	ModelRef,
 } from "@earendil-works/pi-durable";
+import type { AmbientRecord } from "../harness/ambient.js";
+import type {
+	InteractionAnswer,
+	InteractionRecord,
+} from "../harness/interactions.js";
 
 /**
  * The per-conversation steer field (spec §5: "reflecting submit-while-busy
@@ -212,3 +217,32 @@ export interface CompactResponse {
 	readonly taskId: number;
 }
 
+
+// ─── Interaction seam wire types (docs/approval-ux-seams.md) ─────────────
+// The record rides as-is: envelope + body + details are already JSON-safe
+// by construction (the doc stores JSON). Channels render generically.
+
+/** One interaction record on the wire (the envelope + body + details). */
+export type InteractionWire = InteractionRecord;
+
+/** The response of `GET /v1/conversations/:id/interactions`. */
+export interface InteractionList {
+	readonly interactions: readonly InteractionWire[];
+}
+
+/** The response of `POST .../interactions/:callId/answer`. */
+export interface InteractionAnswered {
+	readonly callId: string;
+	readonly status: "answered";
+	readonly answer: InteractionAnswer;
+}
+
+// ─── Ambient seam wire types ─────────────────────────────────────────────
+
+/** One ambient surface on the wire (envelope + body + details). */
+export type AmbientWire = AmbientRecord;
+
+/** The response of `GET /v1/conversations/:id/ambient`. */
+export interface AmbientList {
+	readonly ambient: readonly AmbientWire[];
+}
