@@ -12,7 +12,6 @@ import { describe, expect, test } from "vitest";
 import { App } from "./App";
 import {
 	createClient,
-	type ApprovalWire,
 	type ConversationMeta,
 	type FetchLike,
 	type MetaResponse,
@@ -46,7 +45,6 @@ function makeMeta(init?: {
 }
 
 function makeHarness(init?: {
-	readonly approvals?: readonly ApprovalWire[];
 	readonly meta?: MetaResponse;
 	readonly metaFails?: boolean;
 }) {
@@ -66,7 +64,6 @@ function makeHarness(init?: {
 			source: "user",
 		},
 	};
-	let approvals = init?.approvals ?? [];
 	const calls: Call[] = [];
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
@@ -92,8 +89,7 @@ function makeHarness(init?: {
 		else if (input === "/v1/models") body = { models: [] };
 		else if (/^\/v1\/conversations\/\d+\/files\?/.test(input)) {
 			body = { entries: [] };
-		} else if (/^\/v1\/conversations\/\d+\/approvals$/.test(input)) {
-			body = { approvals };
+
 		} else {
 			body = {
 				conversations: [
@@ -121,9 +117,7 @@ function makeHarness(init?: {
 		client,
 		createEventSource,
 		sources,
-		setApprovals(next: readonly ApprovalWire[]) {
-			approvals = next;
-		},
+
 	};
 }
 
@@ -267,75 +261,5 @@ describe("App shell", () => {
 		expect(sources[0]?.source.closed).toBe(true);
 		expect(sources[1]?.source.closed).toBe(false);
 	});
-
-	// THE T22 P1 DIVERGENCE (pinned): approval cards are sourced from the
-	// `GET /v1/conversations/:id/approvals` ENDPOINT (which evaluates the
-	// gating join server-side), refreshed per view frame — NEVER from the
-	// view's `docs["pi.live"].tools` slots. pi-durable marks not-yet-started
-	// calls `pending` regardless of gating, so a slot-derived card would
-	// render for an UNGATED tool and 404 on click. These two tests pin both
-	// halves: the endpoint drives the card; the slots do not.
-	test("a pending approval from listApprovals renders a card; a frame that empties the endpoint clears it", async () => {
-		const { client, createEventSource, sources, setApprovals } =
-			makeHarness({
-				approvals: [
-					{
-						callId: "call-1",
-						toolName: "bash",
-						status: "pending",
-						arguments: { command: "echo hi" },
-					},
-				],
-			});
-		const renderer = await renderAsync(
-			<App client={client} createEventSource={createEventSource} />,
-		);
-		await clickByClass(renderer, "session-select", "#1");
-		// First frame: the approval strip refetches and renders the card.
-		await act(async () => {
-			sources[0]?.source.emit("view", JSON.stringify(makeView({ id: 1 })));
-		});
-		expect(
-			renderer.root.findAllByProps({ className: "approval-card" }),
-		).toHaveLength(1);
-		// A decision landed server-side; the next frame refetches an empty
-		// list and the card clears.
-		setApprovals([]);
-		await act(async () => {
-			sources[0]?.source.emit("view", JSON.stringify(makeView({ id: 1 })));
-		});
-		expect(
-			renderer.root.findAllByProps({ className: "approval-card" }),
-		).toHaveLength(0);
-	});
-
-	test("a pending TOOL SLOT in the view does NOT render a card (the slot-derived path is wrong)", async () => {
-		const { client, createEventSource, sources } = makeHarness(); // endpoint: empty
-		const renderer = await renderAsync(
-			<App client={client} createEventSource={createEventSource} />,
-		);
-		await clickByClass(renderer, "session-select", "#1");
-		// The frame carries a pending tool slot (an ungated queued call —
-		// pi-durable marks not-yet-started calls pending regardless of
-		// gating) but the approvals ENDPOINT is empty: no card may render.
-		const viewWithPendingSlot = makeView({
-			id: 1,
-			docs: {
-				"pi.live": {
-					tools: [
-						{ callId: "call-9", name: "bash", status: "pending" },
-					],
-				},
-			},
-		});
-		await act(async () => {
-			sources[0]?.source.emit(
-				"view",
-				JSON.stringify(viewWithPendingSlot),
-			);
-		});
-		expect(
-			renderer.root.findAllByProps({ className: "approval-card" }),
-		).toHaveLength(0);
-	});
 });
+

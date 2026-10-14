@@ -11,8 +11,7 @@
  * /v1/conversations`, `GET /v1/conversations/:id`, `GET /v1/meta` (T9a);
  * `POST .../submissions` (content-part resolution), `POST .../uploads`, `GET
  * .../files`, `GET .../files/content`, `GET /v1/models` (T9b); `POST
- * .../configure`, `POST .../abort` (T9c-i); `GET .../approvals`, `POST
- * .../approvals/:approvalId` (T9c-ii); `GET .../stream` — the SSE view
+ * .../configure`, `POST .../abort` (T9c-i); `GET .../stream` — the SSE view
  * stream (T9d); `GET /v1/meta` real health aggregation (T9e); `GET/PATCH
  * .../meta` — the session-meta sidebar resource (T10); `GET /healthz` +
  * `GET /readyz` — the deploy probes, liveness vs readiness (T13);
@@ -37,7 +36,6 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ExtensionApprovals } from "./approvals.js";
 import type {
 	AgentChange,
 	Conversation,
@@ -85,9 +83,6 @@ import {
 import {
 	serializeConversationView,
 	type AbortResponse,
-	type ApprovalDecideResponse,
-	type ApprovalList,
-	type ApprovalSummary,
 	type ConversationCreateResponse,
 	type ConversationImportResponse,
 	type ConversationList,
@@ -245,19 +240,6 @@ interface AuthCheckResponse {
 /** Re-brand a route id as a ConversationId (the branded Id type is a number). */
 function conversationId(id: number): ConversationId {
 	return id as ConversationId;
-}
-
-/**
- * Whether the approvals surface is available: the approvals extension is
- * installed AND its factory result carried the structural capability
- * (publish prep 2.1 — see server/approvals.ts for the contract; core never
- * imports the extension package; the extension's doc-family tokens are its
- * own). The routes degrade when this is `undefined`.
- */
-function approvalsCapability(
-	opened: OpenedHarness,
-): ExtensionApprovals | undefined {
-	return opened.approvals;
 }
 
 /** Read one conversation's current view frame; disposes the state handle. */
@@ -931,28 +913,6 @@ export async function createServer(
 					.code(404)
 					.send({ error: "no_active_submission" });
 			}
-			// Auto-deny pending approvals BEFORE aborting (spec: abort auto-denies
-			// pending approvals) so the cancelled gate hook unwinds onto an
-			// already-denied durable record. Only when the approvals capability is
-			// present (publish prep 2.1: core speaks the structural contract;
-			// which records exist and how a deny writes them is extension-owned).
-			const approvals = approvalsCapability(opened);
-			if (approvals !== undefined) {
-				const pending = await approvals.listPending(
-					opened.harness,
-					conversation,
-					BACKGROUND_CONTEXT,
-				);
-				for (const approval of pending) {
-					await approvals.decide(
-						conversation,
-						approval.callId,
-						"deny",
-						BACKGROUND_CONTEXT,
-						"aborted",
-					);
-				}
-			}
 			const result = await opened.harness.abortSubmission(
 				active.id,
 				BACKGROUND_CONTEXT,
@@ -1349,106 +1309,6 @@ export async function createServer(
 					...(draft.name === undefined ? {} : { name: draft.name }),
 				};
 			}, BACKGROUND_CONTEXT);
-		},
-	);
-
-	// Approvals: list pending gated calls (T9c-ii). WHICH calls are gated and
-	// pending is extension-owned semantics (publish prep 2.1: core speaks the
-	// structural capability — server/approvals.ts — never the package). Empty
-	// list when the capability is absent.
-	app.get(
-		"/v1/conversations/:id/approvals",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<ApprovalList> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			const approvals = approvalsCapability(opened);
-			if (approvals === undefined) {
-				return { approvals: [] };
-			}
-			return {
-				approvals: await approvals.listPending(
-					opened.harness,
-					conversation,
-					BACKGROUND_CONTEXT,
-				),
-			};
-		},
-	);
-
-	// Approvals: decide a pending approval (T9c-ii). approvalId IS the gated
-	// tool call id; the decision routes through the structural capability
-	// (publish prep 2.1 — the extension's `decide` commits to its own doc
-	// family, first decision wins inside the commit). 404 when the approval
-	// is unknown / not pending; 503 when the capability is absent.
-	app.post(
-		"/v1/conversations/:id/approvals/:approvalId",
-		async (request, reply): Promise<ApprovalDecideResponse> => {
-			const { id, approvalId } = request.params as {
-				id: number;
-				approvalId: string;
-			};
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-				.code(404)
-				.send({ error: "conversation_not_found" });
-			}
-			const approvals = approvalsCapability(opened);
-			if (approvals === undefined) {
-				return await reply
-					.code(503)
-					.send({ error: "approvals_unavailable" });
-			}
-			const body = request.body as Record<string, unknown> | undefined;
-			const decision = body?.decision;
-			const reason = body?.reason;
-			if (decision !== "allow" && decision !== "deny") {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			if (reason !== undefined && typeof reason !== "string") {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			// The callId must be a currently-gated (pending) call in this
-			// conversation — otherwise the approval is unknown / not pending.
-			// The pre-check stays in the route: the extension's `decide` writes
-			// through a doc-family draft that would CREATE an unknown callId, so
-			// the list is what makes an unknown approval 404. The capability's
-			// in-commit first-decision-wins guard still arbitrates concurrency.
-			const pending = await approvals.listPending(
-				opened.harness,
-				conversation,
-				BACKGROUND_CONTEXT,
-			);
-			if (!pending.some((a) => a.callId === approvalId)) {
-				return await reply
-				.code(404)
-				.send({ error: "approval_not_pending" });
-			}
-			const applied = await approvals.decide(
-				conversation,
-				approvalId,
-				decision,
-				BACKGROUND_CONTEXT,
-				reason,
-			);
-			if (!applied) {
-				return await reply
-					.code(404)
-				.send({ error: "approval_not_pending" });
-			}
-			return { callId: approvalId, status: decision };
 		},
 	);
 

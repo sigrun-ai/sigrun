@@ -395,63 +395,6 @@ body {
 	color: var(--text-dim);
 }
 
-/* Approval cards (the mockup's .approval rules). */
-
-.approval-card {
-	border: 1px solid var(--warn);
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--warn) 8%, var(--panel));
-	padding: 0.7rem 0.9rem;
-	max-width: 76ch;
-}
-
-.approval-card-title {
-	display: flex;
-	gap: 0.5rem;
-	align-items: center;
-	font-weight: 600;
-}
-
-.approval-card-arguments {
-	margin: 0.5rem 0;
-	padding: 0.5rem 0.7rem;
-	background: var(--panel);
-	border-radius: 6px;
-	font-family: var(--mono);
-	font-size: 12px;
-	overflow: auto;
-}
-
-.approval-card-actions {
-	display: flex;
-	gap: 0.5rem;
-}
-
-.approval-card-actions button {
-	padding: 0.35rem 0.8rem;
-	border-radius: 6px;
-	border: 1px solid var(--border);
-	font: inherit;
-	cursor: pointer;
-}
-
-.approval-allow {
-	background: var(--ok);
-	color: #06281c;
-	border-color: transparent;
-	font-weight: 600;
-}
-
-.approval-deny {
-	background: none;
-	color: var(--danger);
-}
-
-.approval-decided {
-	font-size: 0.75rem;
-	color: var(--text-dim);
-}
-
 /* ── composer footer (the mockup's #composer) ────────────────────────── */
 
 .composer-slot {
@@ -465,12 +408,6 @@ body {
 	display: flex;
 	flex-direction: column;
 	gap: 0.55rem;
-}
-
-.composer-approvals {
-	display: flex;
-	flex-direction: column;
-	gap: 0.5rem;
 }
 
 .composer-row {

@@ -12,17 +12,8 @@ The image is a COMMON CORE — sigrun plus its built-ins only. Extensions
 are NOT baked in: declare them in `settings.json` (`packages` +
 `extensions`) and restart; boot installs them into the packages dir on
 the data volume (see **Configuration** below and the repo README's
-Extensions section). The vendoring step below only matters for building
-the core image itself from a checkout whose dev dependencies are git+ssh
-URLs:
-
-```sh
-bash scripts/docker-vendor-exts.sh
-docker build -t sigrun:local .
-```
-
-If your network can reach the forgejo host over SSH, the vendor step is
-optional — `npm ci` inside the build resolves them directly.
+Extensions section). Building the image is a plain `docker build -t
+sigrun:local .` — no extension access is needed at build time.
 
 ## Run
 

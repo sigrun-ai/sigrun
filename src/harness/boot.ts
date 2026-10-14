@@ -20,7 +20,6 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import type { Env, SigrunConfig } from "../config.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
-import { APPROVALS_EXTENSION_NAME, type ExtensionApprovals } from "../server/approvals.js";
 import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import { contextFilesExtension } from "./sections/context-files.js";
@@ -129,16 +128,6 @@ export interface OpenedHarness {
 	 * quarantined memory extension, or a submit-less memory extension).
 	 */
 	readonly memorySubmit: ExtensionSubmit | undefined;
-	/**
-	 * The approvals extension's retained capability (publish prep 2.1),
-	 * identity-matched to the extension installed under the approvals name
-	 * (`sigrun.approvals`) exactly like memoryHealth. The §5 approvals routes
-	 * call through it when present; `undefined` (no approvals extension, a
-	 * quarantined one, or a capability-less one) degrades: the list serves
-	 * empty and decide answers 503. Core imports nothing from the package —
-	 * the capability is the structural contract (server/approvals.ts).
-	 */
-	readonly approvals: ExtensionApprovals | undefined;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -247,7 +236,6 @@ export async function openHarness(
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
 		submitBindings: extensionSubmits,
-		approvalsBindings: extensionApprovals,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -277,18 +265,6 @@ export async function openHarness(
 	const memorySubmit = extensionSubmits.find(
 		(binding) => binding.extension === memoryOwner,
 	)?.submit;
-	// §5 approvals (publish prep 2.1): the approvals extension's retained
-	// capability — identity-matched against the extension INSTALLED under the
-	// approvals name (a same-name reinstall cannot mis-attribute it). No match
-	// → undefined → the approvals routes degrade (empty list / 503).
-	const approvalsOwner = registry
-		.snapshot()
-		.extension(APPROVALS_EXTENSION_NAME);
-	const approvals = approvalsOwner === undefined
-		? undefined
-		: extensionApprovals.find(
-				(binding) => binding.extension === approvalsOwner,
-			)?.approvals;
 	const sink = createProviderMergeSink();
 	const env = options.env ?? process.env;
 	// `config.models` is the already-validated default-model resolution
@@ -378,7 +354,6 @@ export async function openHarness(
 		auth: authStore,
 		memoryHealth,
 		memorySubmit,
-		approvals,
 		settings: settingsStore,
 		packagesDir,
 	};
