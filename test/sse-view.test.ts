@@ -102,7 +102,7 @@ async function bootServer(options?: { gate?: Gate }): Promise<TestServer> {
 		providers: [{ provider: faux.provider }],
 	};
 	const config = loadConfig({
-		SIGRUN_MODEL: "faux/m",
+		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});

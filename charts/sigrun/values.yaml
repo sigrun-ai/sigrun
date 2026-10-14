@@ -67,7 +67,7 @@ controllers:
             value: "3000"
         envFrom:
           # Everything else config-shaped comes from the Secret
-          # (envFrom): SIGRUN_MODEL (required), OPENAI_API_KEY /
+          # (envFrom): SIGRUN_DEFAULT_MODEL (required; SIGRUN_MODEL deprecated), OPENAI_API_KEY /
           # OPENAI_BASE_URL (the degenerate env provider) or extension
           # provider creds, and the SIGRUN_EXTENSIONS package list (§4.1).
           # All extension env lives there too — extensions read the whole

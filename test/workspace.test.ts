@@ -141,7 +141,7 @@ test("openHarness wires the workspace env builder into HarnessOptions", async ()
 	try {
 		await mkdir(workspacePath);
 		const config = loadConfig({
-			SIGRUN_MODEL: "openai/gpt-4o",
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: workspacePath,
 		});

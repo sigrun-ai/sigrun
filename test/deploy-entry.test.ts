@@ -5,9 +5,9 @@
  *
  * This spawns the REAL entry as a subprocess (tsx, exactly the `"start"`
  * script's invocation) in a hermetic env:
- * - `SIGRUN_MODEL=openai/gpt-4o` + a never-called `OPENAI_BASE_URL` — boot
- *   only CONSTRUCTS the degenerate provider; no generation is submitted, so
- *   no real provider is ever contacted.
+ * - `SIGRUN_DEFAULT_MODEL=openai/gpt-4o` + a never-called `OPENAI_BASE_URL`
+ *   — boot only CONSTRUCTS the degenerate provider; no generation is
+ *   submitted, so no real provider is ever contacted.
  * - `SIGRUN_STORAGE_PATH`/`SIGRUN_WORKSPACE_PATH` in a tmpdir; a reserved
  *   free port for `SIGRUN_PORT` (loadConfig refuses 0, so the test reserves
  *   an OS-ephemeral port itself and passes the number).
@@ -15,7 +15,8 @@
  * Assertions: the entry prints its listening line (with the actual port),
  * `GET /v1/meta` answers 200 over the real socket, and SIGTERM exits 0
  * (the kubelet stop path). The boot-failure leg asserts fail-loud: a missing
- * SIGRUN_MODEL crashes the process with exit 1, never serves broken.
+ * default model (env AND file) crashes the process with exit 1, never
+ * serves broken.
  */
 
 import { spawn } from "node:child_process";
@@ -114,7 +115,7 @@ test(
 		const port = await freePort();
 		const entry = spawnEntry(
 			childEnv({
-				SIGRUN_MODEL: "openai/gpt-4o",
+				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 				OPENAI_API_KEY: "smoke-test-key-never-sent",
 				OPENAI_BASE_URL: "http://127.0.0.1:9",
 				SIGRUN_PORT: String(port),
@@ -135,26 +136,35 @@ test(
 			// The probe endpoints exist on the real listener too.
 			const healthz = await fetch(`http://127.0.0.1:${port}/healthz`);
 			expect(healthz.status).toBe(200);
-			// Settings bootstrap: first boot wrote the resolved server section
-			// (env + code defaults — port/workspace/storage present even at
-			// defaults) under SIGRUN_CONFIG_DIR.
+			// Settings bootstrap: first boot wrote the resolved boot
+			// configuration (server section — env + code defaults — plus the
+			// resolved extension list and defaultModel: the file records
+			// reality) under SIGRUN_CONFIG_DIR.
 			const bootstrapped = JSON.parse(
 				await readFile(
 						join(dir, "config", "settings.json"),
 						"utf8",
 				),
-			) as { server: Record<string, unknown> };
+			) as {
+				server: Record<string, unknown>;
+				defaultModel?: string;
+				extensions?: string[];
+			};
 			expect(bootstrapped.server).toMatchObject({
 				port,
 				storagePath: join(dir, "sigrun.db"),
 				workspacePath: dir,
+				webuiBundle: "webui/dist",
 			});
 			// Defaults are recorded too (extensionsDir/compaction even though no
-			// env set them).
+			// env set them), plus the env-provided model and the resolved
+			// (empty) extension list.
 			expect(bootstrapped.server.extensionsDir).toBe("extensions");
 			expect(bootstrapped.server.compaction).toMatchObject({
 				enabled: true,
 			});
+			expect(bootstrapped.defaultModel).toBe("openai/gpt-4o");
+			expect(bootstrapped.extensions).toEqual([]);
 		} finally {
 			entry.child.kill("SIGTERM");
 			const exit = await entry.exited;
@@ -165,7 +175,7 @@ test(
 	60_000,
 );
 
-test("deploy entry fails loud on boot error: missing SIGRUN_MODEL exits 1", async () => {
+test("deploy entry fails loud on boot error: no default model (env or file) exits 1", async () => {
 	const child = spawn(TSX, ["src/index.ts"], {
 		cwd: REPO_ROOT,
 		env: childEnv({ OPENAI_API_KEY: "x" }),
@@ -179,5 +189,38 @@ test("deploy entry fails loud on boot error: missing SIGRUN_MODEL exits 1", asyn
 		child.on("exit", (code) => resolve({ code }));
 	});
 	expect(exit.code).toBe(1);
-	expect(stderr).toMatch(/SIGRUN_MODEL/);
+	expect(stderr).toMatch(/SIGRUN_DEFAULT_MODEL/);
 });
+
+test("deploy entry still honors the deprecated SIGRUN_MODEL alias (one release cycle)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-alias-"));
+	const port = await freePort();
+	const entry = spawnEntry(
+		childEnv({
+			SIGRUN_MODEL: "openai/gpt-4o",
+			OPENAI_API_KEY: "smoke-test-key-never-sent",
+			OPENAI_BASE_URL: "http://127.0.0.1:9",
+			SIGRUN_PORT: String(port),
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_CONFIG_DIR: join(dir, "config"),
+		}),
+	);
+	try {
+		expect(await entry.listening).toBe(port);
+		// The deprecation warning was printed (stderr), boot succeeded.
+		expect(entry.getStderr()).toMatch(
+			/SIGRUN_MODEL is deprecated, use SIGRUN_DEFAULT_MODEL/,
+		);
+		// The env-provided model landed in the bootstrapped file.
+		const bootstrapped = JSON.parse(
+			await readFile(join(dir, "config", "settings.json"), "utf8"),
+		) as { defaultModel?: string };
+		expect(bootstrapped.defaultModel).toBe("openai/gpt-4o");
+	} finally {
+		entry.child.kill("SIGTERM");
+		const exit = await entry.exited;
+		expect(exit.code).toBe(0);
+		await rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);

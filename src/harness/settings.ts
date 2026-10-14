@@ -20,10 +20,14 @@
  *   absent. Changes to `server.*` require a restart (they resolve at
  *   boot, unlike the live steeringMode/retry/etc. pass-throughs).
  *
- * Deliberately NOT in the file (env-only by ruling): `webuiBundle`
- * (`SIGRUN_WEBUI_BUNDLE`), the extension package list
- * (`SIGRUN_EXTENSIONS`), the model (`SIGRUN_MODEL` — required at every
- * boot), and the file's own location (`SIGRUN_CONFIG_DIR`).
+ * The remaining boot knobs are file-configurable too (the 2026-10-13
+ * config-surface rulings): top-level `extensions` (the extension package
+ * list), top-level `defaultModel` (the boot default model — env or file,
+ * one is REQUIRED, no code default), `server.webuiBundle`, and
+ * `defaultProvider.baseUrl` (the env-driven OpenAI-compatible provider's
+ * endpoint). Env still wins per setting. Credentials live in the sibling
+ * `auth.json` (see src/harness/auth.ts), never in this file. The file's
+ * own location stays env-only (`SIGRUN_CONFIG_DIR`).
  *
  * Contract (pi-durable's own): "HarnessSettings is read at every
  * resolution and never copied." So the store is a GETTER, not a snapshot:
@@ -84,6 +88,13 @@ export interface ServerSettings {
 	readonly storagePath?: string;
 	/** `SIGRUN_EXTENSIONS_DIR` — a non-empty path. */
 	readonly extensionsDir?: string;
+	/**
+	 * `SIGRUN_WEBUI_BUNDLE` — a non-empty path. Relative paths resolve
+	 * against the process cwd, like the env var. A present value counts as
+	 * an EXPLICIT bundle (missing `index.html` is a boot error), exactly
+	 * like a set env var.
+	 */
+	readonly webuiBundle?: string;
 	/** The `SIGRUN_COMPACTION_*` policy knobs. */
 	readonly compaction?: {
 		readonly enabled?: boolean;
@@ -104,6 +115,15 @@ export interface ServerSettings {
 					readonly endpoint?: string;
 				};
 		  };
+}
+
+/**
+ * The degenerate env-driven provider's static configuration (ruling 7).
+ * Only the endpoint is here — credentials live in `auth.json`.
+ */
+export interface DefaultProviderSettings {
+	/** `OPENAI_BASE_URL` — a non-empty URL. */
+	readonly baseUrl?: string;
 }
 
 /** The persisted shape: HarnessSettings pass-throughs + sigrun fields. */
@@ -133,6 +153,25 @@ export interface SettingsFile {
 	 */
 	readonly perModelThinking?: Readonly<Record<string, string>>;
 	/**
+	 * Sigrun: the extension package list (ruling 1) — non-empty package
+	 * specifiers, applied when `SIGRUN_EXTENSIONS` is absent. Changes
+	 * require a restart (packages load at boot).
+	 */
+	readonly extensions?: readonly string[];
+	/**
+	 * Sigrun: the boot default model (ruling 3), a non-empty
+	 * `provider/model-id` spec parsed exactly like `SIGRUN_DEFAULT_MODEL`
+	 * (bare id implies the `openai` provider). Applied when the env var is
+	 * absent; REQUIRED overall — neither env nor file is a fail-loud boot
+	 * error, no code default.
+	 */
+	readonly defaultModel?: string;
+	/**
+	 * Sigrun: the env-driven OpenAI-compatible provider's endpoint
+	 * (ruling 7), applied when `OPENAI_BASE_URL` is absent.
+	 */
+	readonly defaultProvider?: DefaultProviderSettings;
+	/**
 	 * Sigrun: the static boot configuration (see {@link ServerSettings}).
 	 * Deployment defaults under env — changes require a restart.
 	 */
@@ -147,6 +186,9 @@ const SETTING_KEYS = [
 	"stream",
 	"defaultTools",
 	"perModelThinking",
+	"extensions",
+	"defaultModel",
+	"defaultProvider",
 	"server",
 ] as const;
 
@@ -259,6 +301,55 @@ function validate(value: Record<string, unknown>): void {
 			}
 		}
 	}
+	if (value.extensions !== undefined) {
+		const extensions = value.extensions;
+		if (
+			!Array.isArray(extensions) ||
+			extensions.some(
+				(entry) => typeof entry !== "string" || entry === "",
+			)
+		) {
+			throw new SettingsValidationError(
+				"extensions",
+				"must be an array of non-empty package specifiers",
+			);
+		}
+	}
+	if (value.defaultModel !== undefined) {
+		const spec = value.defaultModel;
+		if (typeof spec !== "string" || spec.trim() === "") {
+			throw new SettingsValidationError(
+				"defaultModel",
+				"must be a non-empty provider/model-id string",
+			);
+		}
+		// Same fail-loud spec rules as SIGRUN_DEFAULT_MODEL
+		// (config.parseModelSpec), with the file key named in the error.
+		const trimmed = spec.trim();
+		const slash = trimmed.indexOf("/");
+		if (
+			slash !== -1 &&
+			(trimmed.slice(0, slash) === "" || trimmed.slice(slash + 1) === "")
+		) {
+			throw new SettingsValidationError(
+				"defaultModel",
+				"must have a non-empty provider and model id",
+			);
+		}
+	}
+	if (value.defaultProvider !== undefined) {
+		const provider = asRecord(value.defaultProvider);
+		if (provider === undefined) {
+			throw new SettingsValidationError("defaultProvider", "must be an object");
+		}
+		checkKeys("defaultProvider.", provider, ["baseUrl"]);
+		if (provider.baseUrl !== undefined && !isNonEmptyString(provider.baseUrl)) {
+			throw new SettingsValidationError(
+				"defaultProvider.baseUrl",
+				"must be a non-empty string",
+			);
+		}
+	}
 	if (value.server !== undefined) {
 		validateServer(value.server);
 	}
@@ -281,13 +372,14 @@ function validateServer(server: unknown): void {
 		"workspacePath",
 		"storagePath",
 		"extensionsDir",
+		"webuiBundle",
 		"compaction",
 		"backup",
 	]);
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
 		throw new SettingsValidationError("server.port", "must be a positive integer");
 	}
-	for (const key of ["workspacePath", "storagePath", "extensionsDir"]) {
+	for (const key of ["workspacePath", "storagePath", "extensionsDir", "webuiBundle"]) {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
 		}
@@ -424,20 +516,38 @@ export class SettingsStore {
 
 	/**
 	 * First-boot initialization (the settings bootstrap): when the file is
-	 * ABSENT, write `{ server: resolvedServer }` — the server section
-	 * `loadConfig` resolved from env + code defaults — so the file exists
-	 * from boot one as an operator-visible, hand-editable record of the
-	 * effective configuration. When the file already exists (any content),
-	 * bootstrap is a no-op: the file is never overwritten, and env vars
-	 * continue to win over it on the next boot (env-over-file precedence).
-	 * Idempotent: bootstrapping twice leaves the file byte-identical.
+	 * ABSENT, write the RESOLVED boot configuration — `server` (the
+	 * section `loadConfig` resolved from env + code defaults), plus the
+	 * top-level `extensions` list and `defaultModel` when the env provided
+	 * them — so the file exists from boot one as an operator-visible,
+	 * hand-editable record of reality (ruling 9: the file records what
+	 * boot actually resolved, env-provided or defaulted). When the file
+	 * already exists (any content), bootstrap is a no-op: the file is
+	 * never overwritten, and env vars continue to win over it on the next
+	 * boot (env-over-file precedence). Idempotent: bootstrapping twice
+	 * leaves the file byte-identical.
 	 */
-	bootstrap(resolvedServer: ServerSettings): void {
+	bootstrap(
+		resolvedServer: ServerSettings,
+		resolved?: {
+			readonly extensions?: readonly string[];
+			readonly defaultModel?: string;
+		},
+	): void {
 		if (existsSync(this.path)) return;
 		mkdirSync(dirname(this.path), { recursive: true });
+		const file: SettingsFile = {
+			...(resolved?.extensions !== undefined
+				? { extensions: resolved.extensions }
+				: {}),
+			...(resolved?.defaultModel !== undefined
+				? { defaultModel: resolved.defaultModel }
+				: {}),
+			server: resolvedServer,
+		};
 		writeFileSync(
 			this.path,
-			`${JSON.stringify({ server: resolvedServer }, null, "\t")}\n`,
+			`${JSON.stringify(file, null, "\t")}\n`,
 		);
 	}
 
@@ -549,6 +659,26 @@ export class SettingsStore {
 				}
 				if (Object.keys(sub).length === 0) delete merged.server;
 				else merged.server = sub;
+				continue;
+			}
+			if (
+				key === "defaultProvider" &&
+				typeof value === "object" &&
+				value !== null
+			) {
+				// Same sub-merge as retry/stream: a null sub-field clears just
+				// that field of the provider section.
+				const sub: Record<string, unknown> = {
+					...((merged[key] as Record<string, unknown>) ?? {}),
+				};
+				for (const [subKey, subValue] of Object.entries(
+					value as Record<string, unknown>,
+				)) {
+					if (subValue === null) delete sub[subKey];
+					else sub[subKey] = subValue;
+				}
+				if (Object.keys(sub).length === 0) delete merged[key];
+				else merged[key] = sub;
 				continue;
 			}
 			if (

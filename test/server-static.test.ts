@@ -65,7 +65,7 @@ async function bootServer(options?: {
 		health: () => "ok",
 	};
 	const env: Record<string, string> = {
-		SIGRUN_MODEL: "faux/m",
+		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	};
@@ -104,14 +104,14 @@ afterAll(async () => {
 
 describe("SIGRUN_WEBUI_BUNDLE config", () => {
 	test("defaults to webui/dist and marks itself non-explicit", () => {
-		const config = loadConfig({ SIGRUN_MODEL: "faux/m" });
+		const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "faux/m" });
 		expect(config.webuiBundle).toBe("webui/dist");
 		expect(config.webuiBundleExplicit).toBe(false);
 	});
 
 	test("an explicit env value wins and marks itself explicit", () => {
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_WEBUI_BUNDLE: "/srv/sigrun/webui",
 		});
 		expect(config.webuiBundle).toBe("/srv/sigrun/webui");
@@ -120,7 +120,7 @@ describe("SIGRUN_WEBUI_BUNDLE config", () => {
 
 	test("an empty env value falls back to the default (the shell's unset-adjacent value)", () => {
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_WEBUI_BUNDLE: "",
 		});
 		expect(config.webuiBundle).toBe("webui/dist");
@@ -282,7 +282,7 @@ describe("SIGRUN_WEBUI_BUNDLE set but missing", () => {
 			health: () => "ok",
 		};
 		const config: SigrunConfig = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: dir,
 			SIGRUN_WEBUI_BUNDLE: join(dir, "no-such-bundle"),

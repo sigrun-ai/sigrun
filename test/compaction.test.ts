@@ -79,13 +79,13 @@ function fauxContributor(
 test("defaults match upstream DEFAULT_COMPACTION_POLICY", () => {
 	// The shipped defaults must not drift from upstream's: sigrun tunes the
 	// policy, it does not silently redefine it.
-	const config = loadConfig({ SIGRUN_MODEL: "openai/gpt-4o" });
+	const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" });
 	expect(config.compaction).toEqual(DEFAULT_COMPACTION_POLICY);
 });
 
 test("SIGRUN_COMPACTION_* env overrides apply", () => {
 	const config = loadConfig({
-		SIGRUN_MODEL: "openai/gpt-4o",
+		SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 		SIGRUN_COMPACTION_ENABLED: "false",
 		SIGRUN_COMPACTION_RESERVE_TOKENS: "1000",
 		SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "2000",
@@ -102,13 +102,13 @@ test("SIGRUN_COMPACTION_* env overrides apply", () => {
 test("SIGRUN_COMPACTION_ENABLED accepts only true/false", () => {
 	expect(() =>
 		loadConfig({
-			SIGRUN_MODEL: "m",
+			SIGRUN_DEFAULT_MODEL: "m",
 			SIGRUN_COMPACTION_ENABLED: "yes",
 		}),
 	).toThrow(/SIGRUN_COMPACTION_ENABLED/);
 	expect(
 		loadConfig({
-			SIGRUN_MODEL: "m",
+			SIGRUN_DEFAULT_MODEL: "m",
 			SIGRUN_COMPACTION_ENABLED: "TRUE",
 		}).compaction.enabled,
 	).toBe(true);
@@ -125,13 +125,13 @@ test("SIGRUN_COMPACTION_* rejects non-positive or non-integer token counts", () 
 		["SIGRUN_COMPACTION_BACKGROUND_TOKENS", "-1"],
 	] as const) {
 		expect(() =>
-			loadConfig({ SIGRUN_MODEL: "m", [key]: value }),
+			loadConfig({ SIGRUN_DEFAULT_MODEL: "m", [key]: value }),
 		).toThrow(new RegExp(key));
 	}
 	// backgroundTokens: 0 is the designed "background off" value, not an error.
 	expect(
 		loadConfig({
-			SIGRUN_MODEL: "m",
+			SIGRUN_DEFAULT_MODEL: "m",
 			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
 		}).compaction.backgroundTokens,
 	).toBe(0);
@@ -155,7 +155,7 @@ test("an overflowing conversation compacts and places a summary entry", async ()
 			fauxAssistantMessage("first answer"),
 		]);
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
 			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
@@ -251,7 +251,7 @@ test("SIGRUN_COMPACTION_BACKGROUND_TOKENS > 0 starts a background compaction", a
 			fauxAssistantMessage("second answer"),
 		]);
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_COMPACTION_RESERVE_TOKENS: "127300",
 			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
@@ -329,7 +329,7 @@ test("caller settings.compaction wins over config-provided policy", async () => 
 			fauxAssistantMessage("second answer"),
 		]);
 		const config = loadConfig({
-			SIGRUN_MODEL: "faux/m",
+			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
 			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",

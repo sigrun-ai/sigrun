@@ -1,14 +1,18 @@
 /**
  * The settings bootstrap: `loadConfig(env, settingsFile)` precedence.
  *
- * The binding rulings (the publish/settings-bootstrap brief):
+ * The binding rulings (the publish/settings-bootstrap brief + the
+ * 2026-10-13 config-surface rulings):
  * - env is parsed FIRST — an invalid env value fails loud even when the
  *   file carries a valid value for the same knob;
- * - env WINS: a `server.*` file field applies only where the
- *   corresponding `SIGRUN_*` variable is absent;
- * - `SIGRUN_MODEL`/`SIGRUN_EXTENSIONS`/`SIGRUN_WEBUI_BUNDLE`/
- *   `SIGRUN_CONFIG_DIR` stay env-only (no file fallback) — and
- *   `SIGRUN_MODEL` remains REQUIRED;
+ * - env WINS: a file field applies only where the corresponding env
+ *   variable is absent;
+ * - the default model is REQUIRED from env (`SIGRUN_DEFAULT_MODEL`,
+ *   deprecated alias `SIGRUN_MODEL`) OR the file's top-level
+ *   `defaultModel` — no code default;
+ * - extensions, webuiBundle, and the degenerate provider's baseUrl are
+ *   file-configurable (top-level `extensions`, `server.webuiBundle`,
+ *   `defaultProvider.baseUrl`) under env;
  * - `resolvedServerSection` projects a resolved config (defaults
  *   included) into the file's `server` shape — what the first-boot
  *   bootstrap persists.
@@ -27,7 +31,7 @@ import {
 } from "../src/config.js";
 import type { SettingsFile } from "../src/harness/settings.js";
 
-const MODEL_ENV = { SIGRUN_MODEL: "openai/gpt-4o" };
+const MODEL_ENV = { SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" };
 
 describe("loadConfig with a settings file (env over file over defaults)", () => {
 	test("file server.port applies when SIGRUN_PORT is absent", () => {
@@ -52,11 +56,44 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		).toThrow(/SIGRUN_PORT/);
 	});
 
-	test("SIGRUN_MODEL stays required (no file fallback)", () => {
+	test("the default model is required from env or file (no code default)", () => {
+		// Neither env nor file → fail loud, naming the env var.
 		expect(() => loadConfig({}, { server: { port: 4080 } })).toThrow(
-			/SIGRUN_MODEL/,
+			/SIGRUN_DEFAULT_MODEL/,
 		);
-		expect(() => loadConfig({})).toThrow(/SIGRUN_MODEL/);
+		expect(() => loadConfig({})).toThrow(/SIGRUN_DEFAULT_MODEL/);
+		// The file's top-level defaultModel satisfies the requirement.
+		const fromFile = loadConfig({}, { defaultModel: "acme/model-1" });
+		expect(fromFile.models).toEqual({
+			provider: "acme",
+			modelId: "model-1",
+		});
+		// Env wins over the file.
+		const fromEnv = loadConfig(
+			{ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" },
+			{ defaultModel: "acme/model-1" },
+		);
+		expect(fromEnv.models).toEqual({
+			provider: "openai",
+			modelId: "gpt-4o",
+		});
+		// A malformed file spec fails loud, naming the file key.
+		expect(() =>
+			loadConfig({}, { defaultModel: "acme/" }),
+		).toThrow(/settings\.json defaultModel/);
+	});
+
+	test("deprecated alias SIGRUN_MODEL reads the model; SIGRUN_DEFAULT_MODEL wins over it", () => {
+		const viaAlias = loadConfig({ SIGRUN_MODEL: "acme/model-1" });
+		expect(viaAlias.models).toEqual({
+			provider: "acme",
+			modelId: "model-1",
+		});
+		const both = loadConfig({
+			SIGRUN_MODEL: "acme/model-1",
+			SIGRUN_DEFAULT_MODEL: "acme/model-2",
+		});
+		expect(both.models.modelId).toBe("model-2");
 	});
 
 	test("paths: file applies where env is absent; env wins per field", () => {
@@ -160,13 +197,74 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		});
 	});
 
+	test("extensions: env CSV wins over the file's top-level array", () => {
+		// File applies where env is absent.
+		const fromFile = loadConfig(
+			{ ...MODEL_ENV },
+			{ extensions: ["@acme/ext-a", "@acme/ext-b"] },
+		);
+		expect(fromFile.extensions).toEqual(["@acme/ext-a", "@acme/ext-b"]);
+		// Env wins over the file.
+		const mixed = loadConfig(
+			{ ...MODEL_ENV, SIGRUN_EXTENSIONS: "@acme/env-ext" },
+			{ extensions: ["@acme/ext-a"] },
+		);
+		expect(mixed.extensions).toEqual(["@acme/env-ext"]);
+		// A set-but-empty env still wins (empty list, not the file's list).
+		const emptied = loadConfig(
+			{ ...MODEL_ENV, SIGRUN_EXTENSIONS: "" },
+			{ extensions: ["@acme/ext-a"] },
+		);
+		expect(emptied.extensions).toEqual([]);
+		// Neither: empty.
+		expect(loadConfig({ ...MODEL_ENV }).extensions).toEqual([]);
+	});
+
+	test("webuiBundle: env over file over default; file value is explicit", () => {
+		// File applies where env is absent — and counts as EXPLICIT (a
+		// missing bundle is a boot error, not API-only).
+		const fromFile = loadConfig(
+			{ ...MODEL_ENV },
+			{ server: { webuiBundle: "ui/dist" } },
+		);
+		expect(fromFile.webuiBundle).toBe("ui/dist");
+		expect(fromFile.webuiBundleExplicit).toBe(true);
+		// Env wins and is also explicit.
+		const mixed = loadConfig(
+			{ ...MODEL_ENV, SIGRUN_WEBUI_BUNDLE: "env/ui" },
+			{ server: { webuiBundle: "ui/dist" } },
+		);
+		expect(mixed.webuiBundle).toBe("env/ui");
+		expect(mixed.webuiBundleExplicit).toBe(true);
+		// Neither: the code default, implicit (default-missing = API-only).
+		const bare = loadConfig({ ...MODEL_ENV });
+		expect(bare.webuiBundle).toBe("webui/dist");
+		expect(bare.webuiBundleExplicit).toBe(false);
+	});
+
+	test("defaultProvider.baseUrl: env over file over undefined", () => {
+		// File applies where env is absent.
+		const fromFile = loadConfig(
+			{ ...MODEL_ENV },
+			{ defaultProvider: { baseUrl: "https://file.example/v1" } },
+		);
+		expect(fromFile.defaultProviderBaseUrl).toBe("https://file.example/v1");
+		// Env wins over the file.
+		const mixed = loadConfig(
+			{ ...MODEL_ENV, OPENAI_BASE_URL: "https://env.example/v1" },
+			{ defaultProvider: { baseUrl: "https://file.example/v1" } },
+		);
+		expect(mixed.defaultProviderBaseUrl).toBe("https://env.example/v1");
+		// Neither: undefined (the provider layer applies the OpenAI default).
+		expect(loadConfig({ ...MODEL_ENV }).defaultProviderBaseUrl).toBeUndefined();
+	});
+
 	test("env-only knobs have no file fallback", () => {
 		const file: SettingsFile = { server: { port: 4080 } };
 		const config = loadConfig({ ...MODEL_ENV }, file);
-		// The file's server section carries no model/extensions/webui keys
-		// at all — and the resolution ignores any it would hypothetically
-		// find elsewhere in the file (validation rejects unknown keys, but
-		// loadConfig never consults anything but `server`).
+		// The file's server section carries no model/extensions keys at all
+		// (the model and the extension list are TOP-LEVEL file keys; the
+		// server section never carries them — validation rejects them).
 		expect(config.extensions).toEqual([]);
 		expect(config.webuiBundle).toBe("webui/dist");
 		expect(config.webuiBundleExplicit).toBe(false);
@@ -185,6 +283,7 @@ describe("resolvedServerSection (the bootstrap projection)", () => {
 			workspacePath: DEFAULT_WORKSPACE_PATH,
 			storagePath: DEFAULT_STORAGE_PATH,
 			extensionsDir: DEFAULT_EXTENSIONS_DIR,
+			webuiBundle: "webui/dist",
 			compaction: { ...DEFAULT_COMPACTION },
 		});
 	});
@@ -197,9 +296,14 @@ describe("resolvedServerSection (the bootstrap projection)", () => {
 		};
 		const first = loadConfig(env);
 		const section = resolvedServerSection(first);
-		// Second boot: env over the bootstrapped file resolves the same.
+		// Second boot: env over the bootstrapped file resolves the same,
+		// EXCEPT webuiBundleExplicit — the bootstrap records the resolved
+		// (default) webuiBundle in the file, and a file value counts as
+		// explicit by design (ruling 4: the file records reality; recording
+		// the default path makes the API-only fallback unreachable while
+		// the file carries it — the documented bootstrap behavior).
 		const second = loadConfig(env, { server: section });
-		expect(second).toEqual(first);
+		expect(second).toEqual({ ...first, webuiBundleExplicit: true });
 		// Env dropped: the bootstrapped file alone reproduces the section.
 		const fromFile = loadConfig({ ...MODEL_ENV }, { server: section });
 		expect(fromFile.port).toBe(4080);

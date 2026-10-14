@@ -18,9 +18,10 @@
  *
  * Presence policy (documented in the task-20 report): an ABSENT default-path
  * bundle is a supported API-only deploy (no mount, `capabilities.channels`
- * []); an EXPLICIT `SIGRUN_WEBUI_BUNDLE` whose directory has no `index.html`
- * is a boot error — a misconfigured deploy intended the webui and must not
- * boot API-only silently.
+ * []); an EXPLICIT bundle path (`SIGRUN_WEBUI_BUNDLE` or the file's
+ * `server.webuiBundle`) whose directory has no `index.html` is a boot error
+ * — a misconfigured deploy intended the webui and must not boot API-only
+ * silently.
  */
 
 import { existsSync } from "node:fs";
@@ -43,8 +44,8 @@ export interface WebuiBundle {
 
 /**
  * Resolve the configured bundle. Returns `undefined` for an absent
- * default-path bundle (API-only deploy); throws when an explicit
- * `SIGRUN_WEBUI_BUNDLE` has no `index.html`.
+ * default-path bundle (API-only deploy); throws when an explicit bundle
+ * path (env or file) has no `index.html`.
  */
 export async function resolveWebuiBundle(
 	config: SigrunConfig,
@@ -54,7 +55,7 @@ export async function resolveWebuiBundle(
 	if (!existsSync(indexPath)) {
 		if (config.webuiBundleExplicit) {
 			throw new Error(
-				`SIGRUN_WEBUI_BUNDLE=${config.webuiBundle} has no index.html — the configured webui bundle is missing (build it, or unset SIGRUN_WEBUI_BUNDLE for an API-only deploy)`,
+				`webui bundle ${config.webuiBundle} has no index.html — the configured webui bundle is missing (build it, or unset SIGRUN_WEBUI_BUNDLE / server.webuiBundle for an API-only deploy)`,
 			);
 		}
 		return undefined;

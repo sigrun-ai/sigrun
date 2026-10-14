@@ -118,7 +118,7 @@ async function bootServer(options?: {
 			},
 		];
 	const config = loadConfig({
-		SIGRUN_MODEL: options?.model ?? "faux/m",
+		SIGRUN_DEFAULT_MODEL: options?.model ?? "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
