@@ -199,11 +199,21 @@ AmbientSurface (limited vocabulary; write = full replacement of surface state)
     expires   auto-clear/degrade rule ("never" | "idle" | explicit timeout)
                  — covers `setWidget(key, undefined)`-on-empty and
                    fixed-time status clears
+    refresh?  channel re-render hint between data writes
+                 — timer-driven slots (countdowns, clocks) request
+                   scheduled repaints (pi-usage's 60s countdown line)
 
   body — composed ONLY from the closed ambient primitives:
     line      {text} — the statusline primitive: prose for a keyed slot;
               everything pre-flat today (goal, advisor-usage, plannotator
-              phase) is exactly this
+              phase) is exactly this. Composition: a slot may carry
+              `segments[]` ({id, text, place?: left|middle|right}) with
+              envelope `overflow: drop|wrap` — the segmented-footer
+              shape (pi-powerline's ~20 segments, pi-zentui's L/M/R
+              zones) without a second primitive.
+    derived   metrics may carry a `format` hint ("2.5k", currency,
+              smart-token formatting) so hosts stop re-implementing
+              formatters — every footer extension hand-rolls them.
     rows[]    {id, label, status: enum, severity?, quiet?, detail?, depth?,
                deps?: ids[], spinnerLabel?, metrics?: {tokens?, cost?,
                current?, total?, completed?}}
@@ -228,6 +238,9 @@ Evidence-sizing (decision-coverage of each surface class, by extension):
 | pi-warden | ~85–90% | verdict stack = rows w/ severity + quiet-fold; needs the row affordances above |
 | pi-goal-x | ~70–75% | dashboard is line+rows+gauge+tree-deps; result card needs a transient note class |
 | pi-fabric | ~70% | always-on widget = rows+metrics; **live-tail activity pane** is the one structural gap |
+| pi-powerline-footer | ~95% | segmented composition = line `segments[]`; metric formatters forced the derived hint |
+| pi-usage | ~100% by line | countdown slot forced envelope `refresh`; statusline = single nested line contract |
+| pi-zentui | ~85–90% | chrome-skin case: OWNS the footer working line; pre-styled segments + truncation budgets = envelope policies, no new shape |
 
 The `rows` primitive carries three extensions warden/todo/goal-x forced
 (the same shape three different ways): `status` as an *enumerated,
@@ -245,6 +258,19 @@ ambient surfaces stay read-only v1; actions re-route through the
 interaction seam (a click may *seed an interaction record*, not embed
 editing). Bespoke dashboards (pi-fabric dashboard modal, goal-x expanded
 mode) legitimately degrade to `details`.
+
+### Allocation: one owner per slot
+
+pi-zentui is the proof-by-conflict: it *replaces* pi's own chrome
+(footer, working line) rather than adding surfaces. The seam therefore
+allocates, it does not compose silently: a slot key is owned by exactly
+one installed extension (later installation wins or fails loud by
+config), and a channel may style but not merge. Exact-text-segment
+payloads with per-zone budget/truncation policies (zentui's
+responsive/compact rules, 50ms throttle cadences) are envelope policy,
+not channel inference. Turn summaries (settle-to-persistent history)
+are conversation entries, not ambient state — mitigated by `ledger`
+when an extension wants them as a feed.
 
 ### Why this is one seam, not two halves
 
