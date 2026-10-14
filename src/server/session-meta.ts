@@ -9,7 +9,7 @@
  * day 1; the flow does not" — present, unused in v1).
  *
  * Docs are standalone tokens: `defineDoc` needs no registry install (the
- * approvals policy doc in `sigrun-ext-approvals/src/approvals.ts` is the
+ * approvals extension's policy doc (sigrun-ext-approvals) is the
  * reference pattern). Reads serve `DEFAULT_SESSION_META` when the doc was
  * never written; only a PATCH materializes it — a read that wrote would
  * churn a doc revision on every sidebar poll, and defaults are free.
@@ -63,7 +63,7 @@ export const SessionMetaDoc = defineDoc<SessionMeta>({
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
-	// Defensive copy (the approvals-policy pattern): the tracker takes
+	// Defensive copy (the alias-free-ownership pattern): the tracker takes
 	// alias-free ownership of the root, so the shared DEFAULT constant must
 	// never become a tracked value.
 	initial: () => ({

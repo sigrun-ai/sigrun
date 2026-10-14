@@ -257,22 +257,6 @@ export interface LiveDocWire {
 	readonly compactions?: unknown;
 }
 
-/** A pending approval (`GET /v1/conversations/:id/approvals` item). */
-export interface ApprovalWire {
-	readonly callId: string;
-	readonly toolName: string;
-	readonly status: string;
-	readonly arguments?: unknown;
-	readonly requestedAt?: number;
-}
-
-/** The response of `GET /v1/conversations/:id/approvals`. */
-export interface ApprovalsResponse {
-	readonly approvals: readonly ApprovalWire[];
-}
-
-/** The §5 approval decision enum (`allow | deny`). */
-export type ApprovalDecision = "allow" | "deny";
 
 /** One `GET /v1/conversations/:id/files` entry (mirrors `FileEntry`). */
 export interface FileEntryWire {
@@ -407,12 +391,6 @@ export interface SigrunClient {
 		patch: ConversationMetaPatch,
 	): Promise<void>;
 	createConversation(): Promise<ConversationSummary>;
-	listApprovals(conversationId: number): Promise<ApprovalsResponse>;
-	decideApproval(
-		conversationId: number,
-		approvalId: string,
-		decision: ApprovalDecision,
-	): Promise<void>;
 	submit(
 		conversationId: number,
 		input: readonly SubmissionInputPart[],
@@ -603,13 +581,6 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			),
 		createConversation: async () =>
 			(await send("POST", "/v1/conversations", {})) as ConversationSummary,
-		listApprovals: (conversationId) =>
-			get<ApprovalsResponse>(`/v1/conversations/${conversationId}/approvals`),
-		decideApproval: (conversationId, approvalId, decision) =>
-			post(
-				`/v1/conversations/${conversationId}/approvals/${encodeURIComponent(approvalId)}`,
-				{ decision },
-			),
 		submit: (conversationId, input, options) =>
 			send("POST", `/v1/conversations/${conversationId}/submissions`, {
 				input,

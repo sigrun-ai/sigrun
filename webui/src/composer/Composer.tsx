@@ -32,25 +32,16 @@
  *   call; an UNKNOWN command is a clear alert-strip error, never a silent
  *   no-op. `/new` and `/fork` navigate to the created conversation via the
  *   optional `onNavigate` prop (App wires it to the active-id flip).
- * - Approval strip: `client.listApprovals(conversationId)` refreshed per
- *   view frame (the stream drives the cadence — this component refetches on
- *   every new `view` object reference). THE T22 P1 CORRECTION: the cards
- *   come from the ENDPOINT, which evaluates the gating join server-side —
- *   NOT from `view.docs["pi.live"].tools` slots (pi-durable marks
- *   not-yet-started calls `pending` regardless of gating; a slot-derived
- *   card would render for an ungated tool and 404 on click).
  */
 
 import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
-	type ApprovalWire,
 	type CommandWire,
 	type ConversationViewWire,
 	type ModelEntry,
 	type SigrunClient,
 	type SubmissionInputPart,
 } from "../api";
-import { ApprovalCard } from "../entries/ApprovalCard";
 import { useDraft } from "./useDraft";
 
 /** The `pi.usage` doc (pi-durable's UsageState), narrowed to what the ring reads. */
@@ -220,11 +211,8 @@ function UsageRing(props: { fraction: number | null }) {
 export function Composer(props: {
 	conversationId: number | null;
 	client: SigrunClient;
-	/**
-	 * The latest view frame — or null when no conversation is active or the
-	 * stream has not delivered yet. A new object REFERENCE drives the
-	 * approvals refetch (the stream's cadence).
-	 */
+	/** The latest view frame — or null when no conversation is active or the
+	 *  stream has not delivered yet. */
 	view: ConversationViewWire | null;
 	/**
 	 * Navigate to a conversation id — App wires this to the active-id flip;
@@ -237,7 +225,6 @@ export function Composer(props: {
 	const draft = useDraft(client, conversationId);
 	const [models, setModels] = useState<readonly ModelEntry[]>([]);
 	const [selectedModel, setSelectedModel] = useState<string | null>(null);
-	const [approvals, setApprovals] = useState<readonly ApprovalWire[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
@@ -288,33 +275,6 @@ export function Composer(props: {
 			cancelled = true;
 		};
 	}, [client]);
-
-	// THE T22 P1 SOURCING: approvals come from the endpoint, refreshed per
-	// view frame. `view` is a fresh immutable object per accepted frame, so
-	// it is the refetch cadence. A clear frame (endpoint empty) clears the
-	// strip; the view's pi.live tool slots NEVER feed this list.
-	useEffect(() => {
-		if (conversationId === null) {
-			setApprovals([]);
-			return;
-		}
-		let cancelled = false;
-		client
-			.listApprovals(conversationId)
-			.then((response) => {
-				if (cancelled) return;
-				setApprovals(
-					response.approvals.filter((a) => a.status === "pending"),
-				);
-			})
-			.catch((cause: unknown) => {
-				if (cancelled) return;
-				setError(cause instanceof Error ? cause.message : String(cause));
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [client, conversationId, view]);
 
 	const busy = view?.steer.busy ?? false;
 	const queued = view?.steer.queued ?? 0;
@@ -552,18 +512,6 @@ export function Composer(props: {
 
 	return (
 		<div className="composer">
-			{approvals.length > 0 && (
-				<div className="composer-approvals">
-					{approvals.map((approval) => (
-						<ApprovalCard
-							key={approval.callId}
-							conversationId={conversationId as number}
-							approval={approval}
-							client={client}
-						/>
-					))}
-				</div>
-			)}
 			{error !== null && <p role="alert">{error}</p>}
 			{notice !== null && (
 				<p className="composer-notice" role="status">

@@ -1,11 +1,11 @@
 /**
  * Composer (Task 23b): the footer — textarea, model picker, context-usage
- * ring, send/steer toggle, and the approval strip (endpoint-sourced — the
+ * ring, and send/steer toggle.
  * T22 P1 correction; see the App-level test for the pinned divergence).
  *
  * The stub fetch routes every §5 path the composer touches: the model
  * catalog, the meta GET/PATCH (the draft), the submissions POST, and the
- * approvals list. Fake timers control the draft debounce window.
+ * Fake timers control the draft debounce window.
  */
 
 import { act } from "react";
@@ -13,7 +13,6 @@ import type TestRenderer from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	createClient,
-	type ApprovalWire,
 	type ConversationMeta,
 	type ConversationViewWire,
 	type FetchLike,
@@ -62,7 +61,6 @@ const COMMANDS = [
 function makeHarness(init?: {
 	readonly draftText?: string;
 	readonly draftAttachments?: readonly string[];
-	readonly approvals?: readonly ApprovalWire[];
 	readonly models?: readonly ModelEntry[];
 }) {
 	const calls: { input: string; method?: string; body?: string }[] = [];
@@ -76,7 +74,6 @@ function makeHarness(init?: {
 		},
 		source: "user",
 	};
-	let approvals = init?.approvals ?? [];
 	/** Test seam: invoked when the compact POST fires (pending-state test). */
 	let compactionSawRequest: () => void = () => {};
 	const fetchImpl: FetchLike = (input, init2) => {
@@ -85,7 +82,7 @@ function makeHarness(init?: {
 		if (input === "/v1/models") body = { models: init?.models ?? MODELS };
 		else if (input === "/v1/commands") body = { commands: COMMANDS };
 		else if (input.endsWith("/meta")) body = meta;
-		else if (input.endsWith("/approvals")) body = { approvals };
+
 		else if (input.endsWith("/uploads")) {
 			const parsed = JSON.parse(init2?.body as string) as { name: string };
 			body = { path: `uploads/1/${parsed.name}` };
@@ -130,9 +127,7 @@ function makeHarness(init?: {
 	return {
 		calls,
 		client,
-		setApprovals(next: readonly ApprovalWire[]) {
-			approvals = next;
-		},
+
 		onCompactRequest(callback: () => void) {
 			compactionSawRequest = callback;
 		},
@@ -331,52 +326,6 @@ describe("Composer", () => {
 		});
 		const ring = renderer.root.findByProps({ className: "composer-ring" });
 		expect(ring.props["data-usage-percent"]).toBe(25);
-	});
-
-	test("a pending approval from listApprovals renders an ApprovalCard", async () => {
-		const { client } = makeHarness({
-			approvals: [
-				{
-					callId: "call-1",
-					toolName: "bash",
-					status: "pending",
-					arguments: { command: "rm -rf /" },
-				},
-			],
-		});
-		const renderer = await renderComposer(client, makeView());
-		const cards = renderer.root.findAllByProps({
-			className: "approval-card",
-		});
-		expect(cards).toHaveLength(1);
-		expect(textContent(renderer.toJSON())).toContain("bash");
-	});
-
-	test("a view frame clears the card when the endpoint list goes empty", async () => {
-		const harness = makeHarness({
-			approvals: [
-				{ callId: "call-1", toolName: "bash", status: "pending" },
-			],
-		});
-		const renderer = await renderComposer(harness.client, makeView());
-		expect(
-			renderer.root.findAllByProps({ className: "approval-card" }),
-		).toHaveLength(1);
-		// The endpoint now serves an empty list (a decision landed); the next
-		// view frame refreshes the strip.
-		harness.setApprovals([]);
-		await act(async () => {
-			renderer.update(
-				<Composer
-					client={harness.client}
-					conversationId={1}
-					view={makeView()}
-				/>,
-			);
-		});
-		expect(
-			renderer.root.findAllByProps({ className: "approval-card" }),
-		).toHaveLength(0);
 	});
 
 	test("the draft restores from meta and saves debounced", async () => {

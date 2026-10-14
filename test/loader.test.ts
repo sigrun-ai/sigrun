@@ -11,7 +11,7 @@
  *
  * CHANGED (publish prep 2.2): the personal git-pinned packages are no
  * longer devDependencies — the fixture extensions under test/fixtures/
- * (fixture-ext, fixture-memory, fixture-approvals) speak the same contract
+ * (fixture-ext, fixture-memory) speak the same contract
  * and stand in for real packages.
  *
  * The packages-dir resolution order (deployment-installed wins, then bare

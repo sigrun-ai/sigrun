@@ -13,9 +13,7 @@
 services:
   sigrun:
     # Either build here or pull/build the tagged image first:
-    #   bash scripts/docker-vendor-exts.sh && docker build -t sigrun:local ..
-    # (run both from the repo root; the vendor script fetches the git+ssh
-    # extension deps into .docker-ext/ so the build needs no SSH reach)
+    #   docker build -t sigrun:local .
     # image: sigrun:local
     build:
       context: ..

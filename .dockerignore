@@ -11,4 +11,3 @@ test-results
 .env
 .env.*
 !.env.example
-.docker-ext/*/.git
