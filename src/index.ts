@@ -83,14 +83,17 @@ async function main(): Promise<void> {
 	// (the dir already matches) costs one manifest read, no subprocess.
 	const settingsFile = settingsStore.read();
 	const packagesDir = packagesDirOf(defaultSettingsDir());
-	await syncPackages(settingsFile.packages ?? [], packagesDir);
+	const extensionResolutions = await syncPackages(
+		settingsFile.extensions ?? [],
+		packagesDir,
+	);
 	// The workspace directory must exist before any files endpoint or tool
 	// call touches it. The deploy manifest mounts a volume at /data; the
 	// workspace is /data/workspace. Without this, the first files request
 	// 404s forever (the directory was never created).
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(config.workspace.path, { recursive: true });
-	const opened = await openHarness(config);
+	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
 	const app = await createServer(opened, config);
 	// 0.0.0.0: the container's address (loopback-only would be unreachable
 	// behind the Service). The port is SIGRUN_PORT (config default 3000) —

@@ -20,21 +20,27 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { SettingsValidationError } from "../src/harness/settings.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
 import {
+	GitSyncError,
 	PackageSyncError,
+	findExtEntry,
+	gitDirOf,
+	gitTargetDir,
 	packagesDirOf,
 	packagesManifestPath,
 	parsePackageSpecifier,
 	planSync,
 	resolveExtensionEntry,
+	sanitizeUrl,
 	syncPackages,
 } from "../src/harness/packages.js";
 
@@ -341,41 +347,201 @@ describe("loader + packages dir integration", () => {
 	}, 60_000);
 });
 
-describe("settings.packages validation", () => {
-	// The settings-level assertions live with the store tests in
-	// test/settings.test.ts style: parse-through SettingsStore.
-	test("packages must be an array of non-empty strings", async () => {
-		const { SettingsStore, SettingsValidationError } = await import(
-			"../src/harness/settings.js"
+/** The git fixture's extension tool (the load assertion's probe). */
+const GIT_MARKER = "git_fixture_marker";
+
+/**
+ * Build the hermetic git-source fixture: a real repo (git init + two
+ * commits) with a `sigrun` manifest naming its extension entry. District
+ * of its own: clone via a `git:`-shaped URL of the local path.
+ */
+function createGitFixture(): { dir: string; url: string; firstSha: string; secondSha: string } {
+	const dir = freshDir("sigrun-gitrepo-");
+	const git = (args: string[]): string =>
+		execFileSync(
+			"git",
+			[...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])],
+			{
+				cwd: dir,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+					GIT_COMMITTER_NAME: "fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+			},
 		);
+	git(["init", "-q", "-b", "main", dir]);
+	const extension = (text: string): string =>
+		`import { defineExtension, defineTool } from "@earendil-works/pi-durable";\nconst marker = defineTool({\n\tname: "${GIT_MARKER}",\n\tdescription: "${text}",\n\tparameters: undefined,\n\tasync execute() {\n\t\treturn { result: { output: [{ type: "text", text: "git-fixture" }] } };\n\t},\n});\nexport default function create() {\n\treturn defineExtension({ name: "sigrun.git-fixture-ext", tools: [marker], sections: [] });\n}\n`;
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "git-fixture-ext", version: "0.1.0", sigrun: { extension: "./ext.js" } }, null, "\t") + "\n");
+	writeFileSync(join(dir, "ext.js"), extension("first"));
+	git(["add", "."]);
+	git(["commit", "-q", "-m", "first"]);
+	const firstSha = git(["rev-parse", "HEAD"]).trim();
+	writeFileSync(join(dir, "ext.js"), extension("second"));
+	git(["add", "."]);
+	git(["commit", "-q", "-m", "second"]);
+	const secondSha = git(["rev-parse", "HEAD"]).trim();
+	return { dir, url: `git:file://${dir}`, firstSha, secondSha };
+}
+
+describe("git sources in the unified extensions list", () => {
+	let fixture: ReturnType<typeof createGitFixture>;
+	let configDir: string;
+	let gitDir: string;
+	beforeAll(() => {
+		fixture = createGitFixture();
+		configDir = freshDir("sigrun-gitcfg-");
+		gitDir = gitDirOf(configDir);
+	});
+
+	test("an absent git source is cloned and its manifest entry discovered", async () => {
+		const resolutions = await syncPackages(
+			[fixture.url],
+			packagesDirOf(configDir),
+			{ log: false, configDir },
+		);
+		expect(resolutions).toHaveLength(1);
+		expect(resolutions[0].enabled).toBe(true);
+		// The discovered entry lives INSIDE the clone (host/path layout).
+		expect(resolutions[0].entry).toContain("/git/");
+		expect(existsSync(new URL(resolutions[0].entry)));
+		// The manifest's sigrun entry was the source.
+		expect(resolutions[0].entry.endsWith("ext.js")).toBe(true);
+	});
+
+	test("a declared ref checks out to that commit on re-sync", async () => {
+		const resolutions = await syncPackages(
+			[{ source: fixture.url, ref: fixture.firstSha }],
+			packagesDirOf(configDir),
+			{ log: false, configDir },
+		);
+		// The clone target mirrors the pi layout: <gitDir>/file:/<abs path>.
+		const cloneDir = gitTargetDir(gitDir, fixture.url);
+		const checkedOut = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: cloneDir,
+			encoding: "utf8",
+		});
+		expect(checkedOut.trim()).toBe(fixture.firstSha);
+		expect(resolutions[0].entry).toContain("ext.js");
+	}, 60_000);
+
+	test("re-sync without a ref makes no checkout change (fetch only)", async () => {
+		const before = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: gitTargetDir(gitDir, fixture.url),
+			encoding: "utf8",
+		}).trim();
+		await syncPackages(
+			[fixture.url],
+			packagesDirOf(configDir),
+			{ log: false, configDir },
+		);
+		const after = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: gitTargetDir(gitDir, fixture.url),
+			encoding: "utf8",
+		}).trim();
+		expect(after).toBe(before);
+	});
+
+	test("a disabled git entry produces no resolution", async () => {
+		const resolutions = await syncPackages(
+			[{ source: fixture.url, enabled: false }],
+			packagesDirOf(configDir),
+			{ log: false, configDir },
+		);
+		// Disabled = intent recorded, nothing sync'd, nothing loaded.
+		expect(resolutions).toHaveLength(0);
+	});
+
+	test("an explicit entry override beats the manifest", () => {
+		expect(() =>
+			findExtEntry(fixture.dir, "./definitely-not-here.js"),
+		).toThrow(GitSyncError);
+		expect(findExtEntry(fixture.dir, "./ext.js")).toBe(
+			join(fixture.dir, "ext.js"),
+		);
+	});
+
+	test("entry discovery order: manifest > dist/index.js > index.ts", () => {
+		// The fixture's manifest names ./ext.js — discover without explicit.
+		expect(findExtEntry(fixture.dir, undefined)).toBe(join(fixture.dir, "ext.js"));
+		// dist/index.js beats index.ts when both exist and no manifest.
+		const bare = freshDir("sigrun-baregit-");
+		writeFileSync(join(bare, "index.ts"), "// ts entry\n");
+		mkdirSync(join(bare, "dist"), { recursive: true });
+		writeFileSync(join(bare, "dist", "index.js"), "// js entry\n");
+		expect(findExtEntry(bare, undefined)).toBe(join(bare, "dist", "index.js"));
+		// index.ts alone.
+		rmSync(join(bare, "dist"), { recursive: true });
+		expect(findExtEntry(bare, undefined)).toBe(join(bare, "index.ts"));
+		// Nothing → fail loud.
+		rmSync(join(bare, "index.ts"));
+		expect(() => findExtEntry(bare, undefined)).toThrow(GitSyncError);
+	});
+
+	test("sanitizeUrl strips userinfo credentials (and leaves plain ssh)", () => {
+		expect(sanitizeUrl("https://user:ghs_token@github.com/x/y")).toBe(
+			"https://<sanitized>@github.com/x/y",
+		);
+		// `ssh://git@host` is NOT a credential — git@ is the standard ssh
+		// user for git remotes; the sanitizer only fires on userinfo that
+		// contains a colon (user:pass).
+		expect(sanitizeUrl("ssh://git@github.com/x/y")).toBe("ssh://git@github.com/x/y");
+		expect(sanitizeUrl("ssh://bob:secret@github.com/x/y")).toBe(
+			"ssh://<sanitized>@github.com/x/y",
+		);
+	});
+
+	test("a git clone failure fails loud naming the source (no token echo)", async () => {
+		await expect(
+			syncPackages(
+				["git:file:///nonexistent/definitely-not-a-repo"],
+				packagesDirOf(configDir),
+				{ log: false, configDir },
+			),
+		).rejects.toThrow(/git/);
+	});
+
+	test("gitTargetDir entries stay inside the git dir (traversal-safe)", () => {
+		const gitDir = gitDirOf("/tmp/x");
+		const target = gitTargetDir(gitDir, "git:github.com/a/b");
+		expect(target.startsWith(gitDir + "/")).toBe(true);
+	});
+});
+
+describe("the unified extensions list (settings surface)", () => {
+	// Validation lives in settings.ts's own tests too; here the STORE
+	// round-trip of the object form (the grammar the packages/git sync
+	// consumes).
+	test("object entries round-trip and PATCH clears; packages[] is gone", async () => {
+		const { SettingsStore } = await import("../src/harness/settings.js");
 		const dir = freshDir("sigrun-settings-");
 		const store = new SettingsStore({ dir });
-		writeFileSync(
-			join(dir, "settings.json"),
-			'{"packages": "sigrun-ext-approvals"}',
-			"utf8",
+		store.update({
+			extensions: [
+				"sigrun-ext-approvals@^0.1.0",
+				{ source: "git:github.com/obra/superpowers", ref: "main" },
+				{ source: "/opt/dev/my-ext", enabled: false },
+			],
+		});
+		const read = store.read().extensions ?? [];
+		expect(read[0]).toBe("sigrun-ext-approvals@^0.1.0");
+		expect(read[1]).toEqual({
+			source: "git:github.com/obra/superpowers",
+			ref: "main",
+		});
+		expect(read[2]).toEqual({ source: "/opt/dev/my-ext", enabled: false });
+		store.update({ extensions: null });
+		expect(store.read().extensions).toBeUndefined();
+		// The two-list era is over: a packages key now fails PATCH
+		// validation (unknown field).
+		expect(() => store.update({ packages: ["x@^1"] as never })).toThrow(
+			SettingsValidationError,
 		);
-		expect(() => store.read()).toThrow(SettingsValidationError);
-		writeFileSync(
-			join(dir, "settings.json"),
-			'{"packages": ["ok", ""]}',
-			"utf8",
-		);
-		expect(() => store.read()).toThrow(/packages/);
-		writeFileSync(
-			join(dir, "settings.json"),
-			'{"packages": ["sigrun-ext-approvals@^0.1.0"]}',
-			"utf8",
-		);
-		expect(store.read().packages).toEqual(["sigrun-ext-approvals@^0.1.0"]);
-		// PATCH round-trips wholesale (arrays replace, null clears), and the
-		// bootstrap never seeds the key.
-		store.update({ packages: ["a@^1", "@scope/b"] });
-		expect(store.read().packages).toEqual(["a@^1", "@scope/b"]);
-		store.update({ packages: ["c"] });
-		expect(store.read().packages).toEqual(["c"]);
-		store.update({ packages: null });
-		expect(store.read().packages).toBeUndefined();
 	});
 });
 

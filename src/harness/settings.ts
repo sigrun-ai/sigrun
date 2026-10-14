@@ -41,6 +41,25 @@
  * JSON object carrying wrong-shaped or unknown fields.
  */
 
+/**
+ * One entry of the unified `extensions` list: an install-and-load
+ * declaration. The string form is shorthand for `{source}`; the object
+ * form adds the git/entry/enabled knobs. See the `extensions` field
+ * docblock for the full grammar.
+ */
+export type ExtensionSpec =
+	| string
+	| {
+			/** The source: npm specifier, bare name, file:/path, or git source. */
+			readonly source: string;
+			/** Entry-point override (path relative to the resolved source root). */
+			readonly entry?: string;
+			/** Git ref (same as the `@ref` suffix, spelled out). */
+			readonly ref?: string;
+			/** Default true; `false` = directory state retained, not loaded. */
+			readonly enabled?: boolean;
+	  };
+
 import {
 	existsSync,
 	mkdirSync,
@@ -153,25 +172,27 @@ export interface SettingsFile {
 	 */
 	readonly perModelThinking?: Readonly<Record<string, string>>;
 	/**
-	 * Sigrun: the extension LOAD list (ruling 1) — non-empty package
-	 * specifiers, applied when `SIGRUN_EXTENSIONS` is absent. Changes
-	 * require a restart (extensions load at boot).
-	 */
-	readonly extensions?: readonly string[];
-	/**
-	 * Sigrun: the extension INSTALL list — non-empty npm package
-	 * specifiers (`"name"`, `"name@range"`, `"@scope/name@range"`, a
-	 * `file:` path) installed into the packages dir
-	 * (`<config-dir>/packages/`) at boot by `syncPackages`. FILE-ONLY
-	 * (installing is not an env-shaped act — there is no
-	 * `SIGRUN_PACKAGES`) and never written by the settings bootstrap
-	 * (the package dir's own `package.json` is the resolved state).
-	 * Distinct from `extensions` (the LOAD list): a package may be
-	 * installed-but-not-loaded, and a loaded extension may come from
-	 * somewhere else (a dev checkout, an image-bundled package).
+	 * Sigrun: the unified extension list — each entry is the DESIRED
+	 * INSTALL+LOAD state (one list, no install/load split). Entry forms:
+	 *
+	 * - a string: an npm specifier ("name", "name@range",
+	 *   "@scope/name@range"), a bare name (app-tree/vendor shorthand,
+	 *   load-only), a `file:`/absolute path (loaded in place, nothing
+	 *   installed), or a git source ("git:host/path" or an https git
+	 *   URL, with an optional `@ref` suffix) — cloned into
+	 *   `<config-dir>/git/` and loaded after entry discovery.
+	 * - an object: `{ source, entry?, ref?, enabled? }` — the explicit
+	 *   form. `entry` overrides entry discovery (path relative to the
+	 *   resolved source root); `ref` is the git ref (same as the `@ref`
+	 *   suffix, spelled out); `enabled: false` keeps the directory
+	 *   state but does not load (the installed-but-disabled case).
+	 *
+	 * npm + git entries are installed/fetched at boot by `syncPackages`
+	 * into the packages/git dirs under the config dir; REMOVING an entry
+	 * uninstalls it. Applied when `SIGRUN_EXTENSIONS` is absent.
 	 * Changes require a restart.
 	 */
-	readonly packages?: readonly string[];
+	readonly extensions?: readonly ExtensionSpec[];
 	/**
 	 * Sigrun: the boot default model (ruling 3), a non-empty
 	 * `provider/model-id` spec parsed exactly like `SIGRUN_DEFAULT_MODEL`
@@ -201,7 +222,6 @@ const SETTING_KEYS = [
 	"defaultTools",
 	"perModelThinking",
 	"extensions",
-	"packages",
 	"defaultModel",
 	"defaultProvider",
 	"server",
@@ -318,30 +338,62 @@ function validate(value: Record<string, unknown>): void {
 	}
 	if (value.extensions !== undefined) {
 		const extensions = value.extensions;
-		if (
-			!Array.isArray(extensions) ||
-			extensions.some(
-				(entry) => typeof entry !== "string" || entry === "",
-			)
-		) {
+		if (!Array.isArray(extensions)) {
 			throw new SettingsValidationError(
 				"extensions",
-				"must be an array of non-empty package specifiers",
+				"must be an array of extension specifiers",
 			);
 		}
-	}
-	if (value.packages !== undefined) {
-		const packages = value.packages;
-		if (
-			!Array.isArray(packages) ||
-			packages.some(
-				(entry) => typeof entry !== "string" || entry === "",
-			)
-		) {
-			throw new SettingsValidationError(
-				"packages",
-				"must be an array of non-empty package specifiers",
-			);
+		for (const entry of extensions) {
+			if (typeof entry === "string") {
+				if (entry === "") {
+					throw new SettingsValidationError(
+						"extensions",
+						"must not contain an empty specifier",
+					);
+				}
+				continue;
+			}
+			if (typeof entry !== "object" || entry === null) {
+				throw new SettingsValidationError(
+					"extensions",
+					"each entry must be a string or an object",
+				);
+			}
+			const spec = entry as Record<string, unknown>;
+			if (typeof spec.source !== "string" || spec.source === "") {
+				throw new SettingsValidationError(
+					"extensions",
+					"object entries need a non-empty source",
+				);
+			}
+			for (const key of ["entry", "ref"] as const) {
+				const v = spec[key];
+				if (v !== undefined && (typeof v !== "string" || v === "")) {
+					throw new SettingsValidationError(
+						"extensions",
+						`object entry ${key} must be a non-empty string when present`,
+					);
+				}
+			}
+			if (
+				spec.enabled !== undefined &&
+				typeof spec.enabled !== "boolean"
+			) {
+				throw new SettingsValidationError(
+					"extensions",
+					"object entry enabled must be a boolean",
+				);
+			}
+			const known = new Set(["source", "entry", "ref", "enabled"]);
+			for (const key of Object.keys(spec)) {
+				if (!known.has(key)) {
+					throw new SettingsValidationError(
+						"extensions",
+						`unknown object-entry key: ${key}`,
+					);
+				}
+			}
 		}
 	}
 	if (value.defaultModel !== undefined) {
