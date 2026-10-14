@@ -284,6 +284,16 @@ export interface LoadExtensionsOptions {
 	 * shape; tests that never touch a packages dir).
 	 */
 	readonly packagesDir?: string;
+	/** Optional context: the gitDir for the sync step's logging. */
+	readonly gitDir?: string;
+}
+
+/** One pre-resolved extension load (the boot flow's sync output). */
+export interface ResolvedExtensionInput {
+	/** Optional display name (the source specifier; drives quarantine names). */
+	readonly name?: string;
+	/** The module entry: an absolute `file://` URL or any import() specifier. */
+	readonly entry: string;
 }
 
 /**
@@ -301,16 +311,35 @@ export interface LoadExtensionsOptions {
  * Task 26a).
  */
 export async function loadExtensions(
-		specifiers: readonly string[],
-		registry: Registry,
-		options: LoadExtensionsOptions = {},
+specifiers: readonly string[] | readonly ResolvedExtensionInput[],
+registry: Registry,
+options: LoadExtensionsOptions = {},
 ): Promise<LoadedExtensions> {
-		const outcomes: ExtensionOutcome[] = [];
-		const healthProducers: ExtensionHealthProducer[] = [];
-		const submitBindings: ExtensionSubmitBinding[] = [];
-		const approvalsBindings: ExtensionApprovalsBinding[] = [];
-		for (const specifier of specifiers) {
+// Normalize: the caller may hand pre-resolved entries (the boot flow,
+// syncPackages consumer) or raw specifiers (the test seam, env-only
+// deploys). Each becomes {entry, label} — label drives the warning
+// name exactly as specifiers did.
+const entries = specifiers.map((spec) =>
+typeof spec === "string"
+? { name: undefined as string | undefined, entry: spec }
+: { name: spec.name, entry: spec.entry },
+);
+const outcomes: ExtensionOutcome[] = [];
+const healthProducers: ExtensionHealthProducer[] = [];
+const submitBindings: ExtensionSubmitBinding[] = [];
+const approvalsBindings: ExtensionApprovalsBinding[] = [];
+for (const { name: label, entry } of entries) {
+const display = label ?? entry;
 				try {
+						// Pre-resolved entries (the boot flow) import verbatim;
+						// raw specifiers (the test seam) resolve through the
+						// packages dir first, then bare import resolution.
+						const loaded =
+								label !== undefined
+										? entry
+										: (options.packagesDir === undefined
+												? entry
+												: (resolveExtensionEntry(entry, options.packagesDir) ?? entry));
 						// Resolution order (the packages-dir ruling): the deployment's
 						// packages dir FIRST (what `packages[]` installed wins over
 						// anything the image bundles), then bare import resolution
@@ -318,12 +347,7 @@ export async function loadExtensions(
 						// packages dir is an unrelated node_modules tree — Node's
 						// upward walk never finds it from sigrun's own imports, so it
 						// must be consulted explicitly.
-						const entry =
-								options.packagesDir === undefined
-										? specifier
-										: (resolveExtensionEntry(specifier, options.packagesDir) ??
-												specifier);
-						const module = (await import(entry)) as ExtensionModule;
+						const module = (await import(loaded)) as ExtensionModule;
 			const resolved = resolveExtension(module);
 			if (resolved === undefined) {
 				throw new Error(
@@ -354,10 +378,10 @@ export async function loadExtensions(
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
-				`extension quarantined: ${specifier} failed to load: ${message}`,
+				`extension quarantined: ${display} failed to load: ${message}`,
 			);
 			outcomes.push({
-				name: specifier,
+				name: display,
 				status: "quarantined",
 				error: message,
 			});
