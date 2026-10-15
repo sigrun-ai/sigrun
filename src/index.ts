@@ -32,10 +32,22 @@ import { packagesDirOf, syncPackages } from "./harness/packages.js";
 import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
 import { createServer } from "./server/index.js";
 
-/** Close server then harness; exit 0 on clean close, 1 on any failure. */
+/**
+ * The ordered shutdown (spec §2, memory-seam Task 4): close the server
+ * (drain in-flight requests), run the event bus's shutdown sequence
+ * (drain pending settles, then deliver `harnessShutdown` — handlers may
+ * commit, admission is still open), THEN close the harness (joins tasks,
+ * seals storage — the seal every shutdown flush races ahead of by design).
+ * Exit 0 on a clean close, 1 on any failure.
+ */
 async function shutdown(
 	app: Awaited<ReturnType<typeof createServer>>,
-	harness: { close(context: typeof BACKGROUND_CONTEXT): Promise<unknown> },
+	opened: {
+		readonly eventBus: {
+			shutdownSequence(context: typeof BACKGROUND_CONTEXT): Promise<void>;
+		};
+		readonly harness: { close(context: typeof BACKGROUND_CONTEXT): Promise<unknown> };
+	},
 ): Promise<never> {
 	const failures: unknown[] = [];
 	try {
@@ -44,7 +56,12 @@ async function shutdown(
 		failures.push(error);
 	}
 	try {
-		await harness.close(BACKGROUND_CONTEXT);
+		await opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT);
+	} catch (error) {
+		failures.push(error);
+	}
+	try {
+		await opened.harness.close(BACKGROUND_CONTEXT);
 	} catch (error) {
 		failures.push(error);
 	}
@@ -110,7 +127,7 @@ async function main(): Promise<void> {
 	const stop = (): void => {
 		if (stopping) return;
 		stopping = true;
-		void shutdown(app, opened.harness);
+		void shutdown(app, opened);
 	};
 	process.on("SIGTERM", stop);
 	process.on("SIGINT", stop);

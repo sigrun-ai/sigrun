@@ -50,7 +50,11 @@ import type {
 	Submission,
 	SubmissionDraft,
 } from "@earendil-works/pi-durable";
-import type { ExtensionRunSettledHandler } from "./event-bus.js";
+import type {
+	ExtensionEventHandlers,
+	ExtensionLifecycleHandler,
+	ExtensionRunSettledHandler,
+} from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { DeclaredKinds } from "./seam-host.js";
 import { resolveExtensionEntry } from "./packages.js";
@@ -114,6 +118,34 @@ export interface ExtensionRunSettledBinding {
 	readonly runSettled: ExtensionRunSettledHandler;
 }
 
+/** The lifecycle handler fields a factory result may carry (memory-seam Task 4). */
+export type ExtensionLifecycleHandlers = Pick<
+	ExtensionEventHandlers,
+	"conversationCreated" | "conversationForked" | "conversationArchived" | "conversationIdle" | "harnessShutdown"
+>;
+
+/** Every lifecycle field name, in validation order (mirrors the contract doc). */
+const LIFECYCLE_FIELDS = [
+	"conversationCreated",
+	"conversationForked",
+	"conversationArchived",
+	"conversationIdle",
+	"harnessShutdown",
+] as const;
+
+/**
+ * The lifecycle handlers retained from one extension factory result
+ * (memory-seam Task 4) — paired with the resolved `Extension` like the
+ * runSettled binding; boot merges the two lists per extension name before
+ * registering on the event bus (a same-name `registerExtension` call
+ * REPLACES, so the merge must happen boot-side).
+ */
+export interface ExtensionLifecycleBinding {
+	/** The extension the factory result carried the handlers for. */
+	readonly extension: Extension;
+	readonly handlers: ExtensionLifecycleHandlers;
+}
+
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -136,6 +168,13 @@ export interface LoadedExtensions {
 	 * extension's final name.
 	 */
 	readonly runSettledBindings: readonly ExtensionRunSettledBinding[];
+	/**
+	 * Lifecycle handlers from factory results (memory-seam Task 4), one per
+	 * loaded extension that carried ANY of the five fields; quarantined
+	 * extensions contribute none. Boot merges these with the runSettled
+	 * bindings per extension name and registers the result on the bus.
+	 */
+	readonly lifecycleBindings: readonly ExtensionLifecycleBinding[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -160,6 +199,8 @@ export interface ResolvedExtension {
 	readonly submit?: ExtensionSubmit;
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
+	/** Present only when the factory result carried any of them (memory-seam Task 4). */
+	readonly lifecycle?: ExtensionLifecycleHandlers;
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -219,6 +260,11 @@ function resolvedFromFactory(
 		health?: unknown;
 		submit?: unknown;
 		runSettled?: unknown;
+		conversationCreated?: unknown;
+		conversationForked?: unknown;
+		conversationArchived?: unknown;
+		conversationIdle?: unknown;
+		harnessShutdown?: unknown;
 		interactionKinds?: unknown;
 		ambientKinds?: unknown;
 	};
@@ -247,6 +293,22 @@ function resolvedFromFactory(
 			"extension factory returned a runSettled field that is not a function",
 		);
 	}
+	// The five lifecycle fields (memory-seam Task 4) validate identically:
+	// present-but-not-a-function is a contract violation — the extension
+	// THINKS it listens to lifecycle events and must not silently miss them.
+	const lifecycle = {} as Record<string, unknown>;
+	let anyLifecycle = false;
+	for (const field of LIFECYCLE_FIELDS) {
+		const value = candidate[field];
+		if (value === undefined) continue;
+		if (typeof value !== "function") {
+			throw new Error(
+				`extension factory returned a ${field} field that is not a function`,
+			);
+		}
+		lifecycle[field] = value;
+		anyLifecycle = true;
+	}
 	const kindsProblem =
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
@@ -262,6 +324,14 @@ function resolvedFromFactory(
 		...(candidate.runSettled === undefined
 			? {}
 			: { runSettled: candidate.runSettled as ExtensionRunSettledHandler }),
+		...(anyLifecycle
+			? {
+					// SAFETY: every value under `lifecycle` passed `typeof === "function"`
+					// against its LIFECYCLE_FIELDS key above, so the object matches
+					// ExtensionLifecycleHandlers key-for-key and value-for-value.
+					lifecycle: lifecycle as unknown as ExtensionLifecycleHandlers,
+				}
+			: {}),
 		...(candidate.interactionKinds === undefined
 			? {}
 			: { interactionKinds: candidate.interactionKinds as readonly string[] }),
@@ -397,6 +467,7 @@ const outcomes: ExtensionOutcome[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
 const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
+const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 for (const { name: label, entry } of entries) {
 const display = label ?? entry;
 				try {
@@ -473,6 +544,12 @@ const display = label ?? entry;
 					runSettled: resolved.runSettled,
 				});
 			}
+			if (resolved.lifecycle !== undefined) {
+				lifecycleBindings.push({
+					extension: resolved.extension,
+					handlers: resolved.lifecycle,
+				});
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -491,5 +568,11 @@ const display = label ?? entry;
 	// After all installs: surface tool-name collisions across extensions
 	// (last-wins is pi-durable's resolution — unchanged, only warned).
 	warnToolNameCollisions(registry);
-	return { outcomes, healthProducers, submitBindings, runSettledBindings };
+return {
+	outcomes,
+	healthProducers,
+	submitBindings,
+	runSettledBindings,
+	lifecycleBindings,
+};
 }
