@@ -54,6 +54,7 @@ import type {
 	ExtensionEventHandlers,
 	ExtensionLifecycleHandler,
 	ExtensionRunSettledHandler,
+	ExtensionWorker,
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { DeclaredKinds } from "./seam-host.js";
@@ -146,6 +147,18 @@ export interface ExtensionLifecycleBinding {
 	readonly handlers: ExtensionLifecycleHandlers;
 }
 
+/**
+ * A factory-result `workers` declaration retained from an extension factory
+ * result (memory-seam Task 5 — the curator contract) — paired with the
+ * resolved `Extension` like the other bindings; boot merges the workers into
+ * the extension's bus registration (timers + wake fan-out are host-owned).
+ */
+export interface ExtensionWorkerBinding {
+	/** The extension the factory result carried the workers for. */
+	readonly extension: Extension;
+	readonly workers: readonly ExtensionWorker[];
+}
+
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -175,6 +188,12 @@ export interface LoadedExtensions {
 	 * bindings per extension name and registers the result on the bus.
 	 */
 	readonly lifecycleBindings: readonly ExtensionLifecycleBinding[];
+	/**
+	 * `workers` declarations from factory results (memory-seam Task 5), one
+	 * per loaded extension that carried one; quarantined extensions
+	 * contribute none. Boot merges them into the bus registration.
+	 */
+	readonly workerBindings: readonly ExtensionWorkerBinding[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -201,6 +220,8 @@ export interface ResolvedExtension {
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
 	readonly lifecycle?: ExtensionLifecycleHandlers;
+	/** Present only when the factory result carried one (memory-seam Task 5). */
+	readonly workers?: readonly ExtensionWorker[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -227,6 +248,85 @@ function validateKinds(value: unknown): string | null {
 		return "kinds declaration must be an array of non-empty strings";
 	}
 	return null;
+}
+
+/**
+ * The lifecycle event names a worker's `wakeOn` may declare (memory-seam
+ * Task 5): `harnessShutdown` is excluded — workers stop BEFORE the shutdown
+ * handlers run (spec §3 shutdown ordering), so waking on it is meaningless.
+ */
+const WAKE_EVENTS = new Set([
+	"conversationCreated",
+	"conversationForked",
+	"conversationArchived",
+	"conversationIdle",
+]);
+
+/**
+ * Validate a factory result's `workers` declaration (memory-seam Task 5,
+ * the curator contract). Absent → undefined (no workers). Present but
+ * malformed → throw; the loader quarantines the extension with the thrown
+ * message (fail-loud: an extension that THINKS it declared a curator must
+ * not silently lose it). Validation order per worker: name, duplicate,
+ * run, every, wakeOn, at-least-one-trigger.
+ */
+function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a workers field that is not an array",
+		);
+	}
+	const seen = new Set<string>();
+	for (const entry of value) {
+		const worker = entry as {
+			name?: unknown;
+			every?: unknown;
+			wakeOn?: unknown;
+			run?: unknown;
+		} | null;
+		const name = worker?.name;
+		if (typeof name !== "string" || name.length === 0) {
+			throw new Error("extension factory returned a worker without a name");
+		}
+		if (seen.has(name)) {
+			throw new Error(
+				`extension factory returned a worker with a duplicate worker name "${name}"`,
+			);
+		}
+		seen.add(name);
+		if (typeof worker?.run !== "function") {
+			throw new Error(
+				`extension factory returned a worker whose worker "${name}" has a run field that is not a function`,
+			);
+		}
+		const every = worker?.every as { ms?: unknown } | undefined;
+		if (
+			every !== undefined &&
+			!(typeof every?.ms === "number" && every.ms > 0)
+		) {
+			throw new Error(
+				`extension factory returned a worker whose worker "${name}" has every.ms <= 0`,
+			);
+		}
+		if (
+			worker?.wakeOn !== undefined &&
+			(!Array.isArray(worker.wakeOn) ||
+				worker.wakeOn.some(
+					(event) => typeof event !== "string" || !WAKE_EVENTS.has(event),
+				))
+		) {
+			throw new Error(
+				`extension factory returned a worker whose worker "${name}" has an invalid wakeOn entry`,
+			);
+		}
+		if (every === undefined && worker?.wakeOn === undefined) {
+			throw new Error(
+				"extension factory returned a worker that declares a worker with neither every nor wakeOn",
+			);
+		}
+	}
+	return value as readonly ExtensionWorker[];
 }
 
 /**
@@ -313,6 +413,9 @@ function resolvedFromFactory(
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
 	if (kindsProblem !== null) throw new Error(kindsProblem);
+	const workers = validateWorkers(
+		(candidate as { workers?: unknown }).workers,
+	);
 	return {
 		extension: candidate.extension,
 		...(candidate.health === undefined
@@ -338,6 +441,7 @@ function resolvedFromFactory(
 		...(candidate.ambientKinds === undefined
 			? {}
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
+		...(workers === undefined ? {} : { workers }),
 	};
 }
 
@@ -468,6 +572,7 @@ const healthProducers: ExtensionHealthProducer[] = [];
 const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
+const workerBindings: ExtensionWorkerBinding[] = [];
 for (const { name: label, entry } of entries) {
 const display = label ?? entry;
 				try {
@@ -550,6 +655,12 @@ const display = label ?? entry;
 					handlers: resolved.lifecycle,
 				});
 			}
+			if (resolved.workers !== undefined) {
+				workerBindings.push({
+					extension: resolved.extension,
+					workers: resolved.workers,
+				});
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -574,5 +685,6 @@ const display = label ?? entry;
 		submitBindings,
 		runSettledBindings,
 		lifecycleBindings,
+		workerBindings,
 	};
 }
