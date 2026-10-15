@@ -137,6 +137,17 @@ const WHEN_BUSY_MODES: readonly string[] = ["steer", "followUp", "reject"];
 /** The validated `whenBusy` type (pi-durable `InputSubmissionDraft`). */
 type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
+declare module "fastify" {
+	interface FastifyRequest {
+		/**
+		 * The resolved caller identity (spec §5 owner seam): the trimmed
+		 * `X-Sigrun-User` header, or `undefined` when absent/empty. Naive
+		 * mode — nothing is verified (trusted-network posture, v1).
+		 */
+		sigrunUser: string | undefined;
+	}
+}
+
 /**
  * The agent change every server-side conversation create applies (Task 8b):
  * the boot default model, plus the settings store's sigrun-resolved fields —
@@ -327,6 +338,26 @@ async function readView(conversation: Conversation) {
 }
 
 /**
+ * Stamp the resolved caller identity onto a fresh conversation's
+ * session-meta doc as `owner` (spec §5 seam; the auth hook's only writer).
+ * Undefined (naive mode — no header) is a NO-OP: the doc stays
+ * unmaterialized and reads serve the defaults (defaults are free; only a
+ * PATCH or a stamped owner writes). A fork's doc carries the parent's
+ * copied state (`fork: "current"`), so the caller's identity OVERWRITES
+ * the source's.
+ */
+async function stampSessionOwner(
+	conversation: Conversation,
+	owner: string | undefined,
+): Promise<void> {
+	if (owner === undefined) return;
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		draft.owner = owner;
+	}, BACKGROUND_CONTEXT);
+}
+
+/**
  * Build the conversation's workspace `ExecutionEnv` the same way
  * `Harness.buildEnv` does for tool calls (dist/harness/harness.js:133-139):
  * resolve the committed `agent.cwd` and hand it, with the harness as the
@@ -384,7 +415,9 @@ function decodeBase64Strict(value: string): Buffer | undefined {
  * @param config parsed sigrun config; the listen entry consumes
  * `config.port`, the meta route derives `health.backup` from
  * `config.backup` presence, and `capabilities.backup` from the same
- * presence (the §5 backup affordance gate). Auth arrives with a later
+ * presence (the §5 backup affordance gate). Identity is the naive seam —
+ * `X-Sigrun-User` resolves per request and stamps `SessionMeta.owner` at
+ * create/fork/import; VERIFICATION (actual auth) arrives with a later
  * slice.
  */
 export async function createServer(
@@ -392,6 +425,19 @@ export async function createServer(
 	config: SigrunConfig,
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
+	// The identity seam (spec §5 / TUI plan): resolve the caller on EVERY
+	// request — the trimmed `X-Sigrun-User` header, `undefined` when absent
+	// or empty. Naive mode: the hook VERIFIES nothing (trusted-network
+	// posture; no auth flow in v1) — an absent header is not an error, the
+	// request proceeds exactly as before. Registered first, before any
+	// route, so every handler sees the resolved identity; it only reads a
+	// header, so content-type parsing (the JSONL parser below) and any later
+	// deploy-auth onRequest hook keep their semantics.
+	app.addHook("onRequest", async (request) => {
+		const header = request.headers["x-sigrun-user"];
+		const value = Array.isArray(header) ? header[0] : header;
+		request.sigrunUser = value?.trim() || undefined;
+	});
 	// The webui channel bundle (Task 20, spec §4.1/§6): mount the static
 	// bundle + SPA fallback when it resolves; an explicit-but-missing bundle
 	// rejects here (fail loud, per the deploy entry's boot contract). Explicit
@@ -571,6 +617,9 @@ export async function createServer(
 				BACKGROUND_CONTEXT,
 			);
 			trackedConversations.add(conversation.id);
+			// The identity seam: stamp the caller as owner when the request
+			// carried one (naive mode — no header, no write).
+			await stampSessionOwner(conversation, request.sigrunUser);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
@@ -1379,6 +1428,10 @@ export async function createServer(
 				BACKGROUND_CONTEXT,
 			);
 			trackedConversations.add(fork.id);
+			// The fork's identity is the CALLER's, not the source's: the doc
+			// copied the parent's owner ("current" fork semantics), the stamp
+			// overwrites it; no header → the copy stands.
+			await stampSessionOwner(fork, request.sigrunUser);
 			const view = await readView(fork);
 			return await reply.code(201).send({ id: fork.id, view });
 		},
@@ -1509,6 +1562,9 @@ export async function createServer(
 					await tx.appendEntry(conversation.id, draft);
 				}
 			}, BACKGROUND_CONTEXT);
+			// The imported conversation is the IMPORTER's, not the source's
+			// (the JSONL never carries meta — the stamp is the only owner).
+			await stampSessionOwner(conversation, request.sigrunUser);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
