@@ -1,0 +1,266 @@
+/**
+ * The TUI's typed §5 HTTP client (Task 4).
+ *
+ * Wire shapes are the server's own serializers — imported from
+ * `src/server/views.ts` (plus `SessionMeta`/`SlashCommand` siblings), the
+ * controller-ruled single source of truth; the tui workspace is NodeNext
+ * like the server, so unlike the webui it can share the types directly.
+ *
+ * Identity seam (Task 2): the configured `user` rides EVERY request as the
+ * `X-Sigrun-User` header; absent/empty user omits it entirely — the
+ * server's naive mode.
+ *
+ * Fail-loud: a non-2xx rejects with a {@link SigrunApiError} carrying the
+ * status and the server's parsed error body (`{error: ...}`), never a
+ * silent `undefined` the UI could misrender as empty state.
+ */
+
+import type { CommandsResponse } from "../../src/server/commands.js";
+import type { SessionMeta, SessionMetaPatch } from "../../src/server/session-meta.js";
+import type {
+	AbortResponse,
+	AmbientList,
+	CompactResponse,
+	ConversationCreateResponse,
+	ConversationForkResponse,
+	ConversationList,
+	ConversationViewWire,
+	InteractionAnswered,
+	InteractionList,
+	SubmissionResponse,
+} from "../../src/server/views.js";
+
+export type {
+	AbortResponse,
+	AmbientList,
+	AmbientWire,
+	CompactResponse,
+	ConversationCreateResponse,
+	ConversationForkResponse,
+	ConversationList,
+	ConversationSummary,
+	ConversationViewWire,
+	InteractionAnswered,
+	InteractionList,
+	InteractionWire,
+	SubmissionResponse,
+} from "../../src/server/views.js";
+export type { CommandsResponse, SlashCommand } from "../../src/server/commands.js";
+export type { SessionMeta, SessionMetaPatch } from "../../src/server/session-meta.js";
+
+/** One answer to a pending interaction (the ONE generic route's body). */
+export interface InteractionAnswerInput {
+	readonly ids?: readonly string[];
+	readonly values?: Readonly<Record<string, string | number | boolean>>;
+	readonly text?: string;
+}
+
+/** The `whenBusy` admission modes the server accepts (spec §7 item 3). */
+export type WhenBusyMode = "steer" | "followUp" | "reject";
+
+/**
+ * The `/v1/settings` payload: `SettingsFile` + the server-computed
+ * `toolRoster`. The server's `SettingsResponse` lives in
+ * `src/server/index.ts` (the route module) rather than views.ts — mirrored
+ * here, same hand-mirror discipline as the webui.
+ */
+export interface SettingsResponseWire {
+	readonly steeringMode?: "all" | "one-at-a-time";
+	readonly followUpMode?: "all" | "one-at-a-time";
+	readonly retry?: {
+		readonly enabled?: boolean;
+		readonly maxRetries?: number;
+		readonly baseDelayMs?: number;
+		readonly maxAgentDelayMs?: number;
+	};
+	readonly stream?: {
+		readonly timeoutMs?: number;
+		readonly maxRetries?: number;
+		readonly maxRetryDelayMs?: number;
+	};
+	readonly defaultTools?: readonly string[];
+	readonly perModelThinking?: Readonly<Record<string, string>>;
+	/** The live registry's tool names (server-computed, never persisted). */
+	readonly toolRoster?: readonly string[];
+}
+
+/** A non-2xx response: status + the server's parsed error body. */
+export class SigrunApiError extends Error {
+	readonly status: number;
+	readonly body: unknown;
+	constructor(method: string, path: string, status: number, body: unknown) {
+		super(`sigrun api: ${method} ${path} failed with status ${status}`);
+		this.name = "SigrunApiError";
+		this.status = status;
+		this.body = body;
+	}
+}
+
+/** The fetch surface the client needs (the real thing or a test stub). */
+export type FetchLike = (
+	input: string,
+	init?: {
+		readonly method?: string;
+		readonly headers?: Record<string, string>;
+		readonly body?: string;
+	},
+) => Promise<{
+	readonly ok: boolean;
+	readonly status: number;
+	json(): Promise<unknown>;
+	text(): Promise<string>;
+}>;
+
+export interface SigrunClientOptions {
+	/**
+	 * The server's origin (e.g. `http://127.0.0.1:PORT`) — the TUI is a
+	 * remote client, so unlike the webui there is no same-origin default.
+	 */
+	readonly baseUrl: string;
+	/**
+	 * The `X-Sigrun-User` identity (Task 2). Absent/empty/whitespace → the
+	 * header is omitted entirely (the server's naive mode).
+	 */
+	readonly user?: string;
+	/** Injected for tests; defaults to the ambient `fetch`. */
+	readonly fetch?: FetchLike;
+}
+
+/** The typed §5 client. See {@link SigrunClientOptions} for the seams. */
+export class SigrunClient {
+	readonly #baseUrl: string;
+	readonly #fetch: FetchLike;
+	readonly #headers: Record<string, string>;
+
+	constructor(options: SigrunClientOptions) {
+		this.#baseUrl = options.baseUrl;
+		this.#fetch =
+			options.fetch ??
+			(((input, init) => globalThis.fetch(input, init)) as FetchLike);
+		const user = options.user?.trim();
+		this.#headers =
+			user === undefined || user === ""
+				? { accept: "application/json" }
+				: { accept: "application/json", "x-sigrun-user": user };
+	}
+
+	async #get<T>(path: string): Promise<T> {
+		const response = await this.#fetch(`${this.#baseUrl}${path}`, {
+			method: "GET",
+			headers: this.#headers,
+		});
+		if (!response.ok) {
+			throw new SigrunApiError("GET", path, response.status, await response.json().catch(() => undefined));
+		}
+		return (await response.json()) as T;
+	}
+
+	async #send<T>(method: "POST" | "PATCH", path: string, body: unknown): Promise<T> {
+		const response = await this.#fetch(`${this.#baseUrl}${path}`, {
+			method,
+			headers: { ...this.#headers, "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+		if (!response.ok) {
+			throw new SigrunApiError(method, path, response.status, await response.json().catch(() => undefined));
+		}
+		return (await response.json()) as T;
+	}
+
+	/** `GET /v1/conversations` — all durable conversations (Task 3). */
+	listConversations(): Promise<ConversationList> {
+		return this.#get("/v1/conversations");
+	}
+
+	/** `GET /v1/conversations/:id` — the full wire view (one frame). */
+	getConversation(id: number): Promise<ConversationViewWire> {
+		return this.#get(`/v1/conversations/${id}`);
+	}
+
+	/** `POST /v1/conversations` — the new id plus its first view frame. */
+	createConversation(): Promise<ConversationCreateResponse> {
+		return this.#send("POST", "/v1/conversations", {});
+	}
+
+	/** `POST /v1/conversations/:id/fork` (absent `at` = the newest entry). */
+	forkConversation(id: number, at?: number): Promise<ConversationForkResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/fork`, {
+			...(at === undefined ? {} : { at }),
+		});
+	}
+
+	/**
+	 * `POST /v1/conversations/:id/submissions` — plain text input; the
+	 * server waits for settlement server-side (202 + the settled record).
+	 */
+	submit(
+		id: number,
+		text: string,
+		whenBusy?: WhenBusyMode,
+	): Promise<SubmissionResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/submissions`, {
+			input: [{ type: "text", text }],
+			...(whenBusy === undefined ? {} : { whenBusy }),
+		});
+	}
+
+	/** `POST /v1/conversations/:id/abort`. */
+	abort(id: number): Promise<AbortResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/abort`, {});
+	}
+
+	/**
+	 * `POST /v1/conversations/:id/compact` — admits a manual compaction;
+	 * the summary entry arrives later as a view revision on the stream.
+	 */
+	compact(id: number, instructions?: string): Promise<CompactResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/compact`, {
+			...(instructions === undefined || instructions === ""
+				? {}
+				: { instructions }),
+		});
+	}
+
+	/** `GET /v1/conversations/:id/meta`. */
+	getMeta(id: number): Promise<SessionMeta> {
+		return this.#get(`/v1/conversations/${id}/meta`);
+	}
+
+	/** `PATCH /v1/conversations/:id/meta` — merges; resolves to the new meta. */
+	patchMeta(id: number, patch: SessionMetaPatch): Promise<SessionMeta> {
+		return this.#send("PATCH", `/v1/conversations/${id}/meta`, patch);
+	}
+
+	/** `GET /v1/conversations/:id/interactions` — pending interactions. */
+	listInteractions(id: number): Promise<InteractionList> {
+		return this.#get(`/v1/conversations/${id}/interactions`);
+	}
+
+	/** `POST .../interactions/:callId/answer` — the ONE generic answer route. */
+	answerInteraction(
+		id: number,
+		callId: string,
+		answer: InteractionAnswerInput,
+	): Promise<InteractionAnswered> {
+		return this.#send(
+			"POST",
+			`/v1/conversations/${id}/interactions/${encodeURIComponent(callId)}/answer`,
+			answer,
+		);
+	}
+
+	/** `GET /v1/conversations/:id/ambient`. */
+	getAmbient(id: number): Promise<AmbientList> {
+		return this.#get(`/v1/conversations/${id}/ambient`);
+	}
+
+	/** `GET /v1/commands` — the slash-command catalog (a boot constant). */
+	getCommands(): Promise<CommandsResponse> {
+		return this.#get("/v1/commands");
+	}
+
+	/** `GET /v1/settings` — the effective settings (absent file = `{}`). */
+	getSettings(): Promise<SettingsResponseWire> {
+		return this.#get("/v1/settings");
+	}
+}
