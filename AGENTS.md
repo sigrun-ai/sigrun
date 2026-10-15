@@ -33,9 +33,6 @@ npm start              # tsx src/index.ts
   directly (no build step runs in clones); extension repos commit their
   built `dist/` for that shape. This core repo runs from `src/` via tsx —
   it does NOT commit `dist/`.
-- **Identity**: commits use the maintainer-configured signing key and email
-  `the maintainer commit email`. This repo's git config
-  carries it (the global includeIf only fires on matching remote URLs).
 - **Verification before completion**: run `npm test` + `npm run typecheck`
   before claiming done; the webui adds `build:webui` when its source moved.
 - **Private artifacts**: never commit real hostnames, tokens, or session
