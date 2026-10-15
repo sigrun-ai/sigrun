@@ -1,9 +1,11 @@
 /**
- * Memory-seam Task 3: the extension-facing `runSettled` contract — boot
- * wiring (bus open before resume, extension registration under final
- * names, scheduled drains), inputTexts resolution (position-preserving,
- * "" on unresolvable), the loader's factory-result validation, handler
- * isolation, and the narrowed api.
+ * Memory-seam Task 3 (`runSettled`) + Task 4 (conversation lifecycle
+ * events, `conversationIdle` detection, `harnessShutdown`): the
+ * extension-facing event contract — boot wiring (bus open before resume,
+ * extension registration under final names, scheduled drains), inputTexts
+ * resolution (position-preserving, "" on unresolvable), the loader's
+ * factory-result validation (runSettled + the five lifecycle fields),
+ * handler isolation, the narrowed api, and the idle/shutdown machinery.
  *
  * Hermetic pattern (event-bus.test.ts / seam.test.ts): faux provider +
  * tmpdir + `openHarness` — real `node:sqlite` storage, real run loop, no
@@ -11,7 +13,9 @@
  * the test imports the FIXTURE MODULE through the same `file://` URL the
  * loader imported, so both hold one module instance (the fixture-memory
  * pattern). Delivery here rides the BOOT-scheduled drain (no manual
- * `drain()` call) — the production path this task wires.
+ * `drain()` call) — the production path this task wires. Idle tests pass a
+ * small `idleThresholdMs`/`idleSweepMs` through the boot seam (real
+ * timers, short waits — the repo's convention) rather than fake timers.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -27,11 +31,15 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
+	Conversation,
 	HarnessSettings,
 } from "@earendil-works/pi-durable";
 import type { ResolvedExtensionInput } from "../src/harness/loader.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { AmbientDoc } from "../src/harness/ambient.js";
+import { SessionMetaDoc } from "../src/server/session-meta.js";
+import { resolveExtension } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 
 /** The fixture-memory-events entry, imported by specifier (contract: factory + runSettled). */
@@ -44,7 +52,7 @@ const BAD_RUNSETTLED_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-bad-runsettled", "index.js"),
 ).href;
 
-/** The fixture module's exports (events record + state flips). */
+/** The fixture module's exports (events record + lifecycle record + state flips). */
 type FixtureModule = {
 	readonly events: {
 		conversationId: number;
@@ -55,6 +63,18 @@ type FixtureModule = {
 			| { status: "unanswered"; reason: string };
 		apiKeys: string[];
 	}[];
+	/** Lifecycle deliveries (Task 4): `{handler, ...event}` in delivery order. */
+	readonly lifecycle: {
+		readonly handler: string;
+		readonly conversationId?: number;
+		readonly childId?: number;
+		readonly parentId?: number;
+		readonly at?: number;
+		readonly archived?: boolean;
+		readonly idleMs?: number;
+	}[];
+	/** harnessShutdown deliveries (Task 4): one record per shutdown event. */
+	readonly shutdowns: readonly { at: number }[];
 	readonly resetEvents: () => void;
 	readonly setThrowOnRunSettled: (value: boolean) => void;
 };
@@ -85,6 +105,8 @@ interface Boot {
 async function bootFixture(options: {
 	responses?: readonly AssistantMessage[];
 	settings?: HarnessSettings;
+	/** Task 4's test seam: shrink the idle threshold + sweep cadence. */
+	eventBus?: { idleThresholdMs?: number; idleSweepMs?: number };
 } = {}): Promise<Boot> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-seam-"));
 	dirs.push(dir);
@@ -107,6 +129,7 @@ async function bootFixture(options: {
 		env: {},
 		settings: options.settings,
 		extensionSpecifiers: [MEMORY_EVENTS_SPECIFIER],
+		eventBus: options.eventBus,
 	});
 	closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
 	const fixture = await fixtureModule();
@@ -135,6 +158,34 @@ async function nextDelivered(fixture: FixtureModule, count = 1) {
 		interval: 100,
 	});
 	return fixture.events.slice(-count);
+}
+
+/** The fixture's `conversationIdle` deliveries. */
+function idleEvents(fixture: FixtureModule) {
+	return fixture.lifecycle.filter((one) => one.handler === "conversationIdle");
+}
+
+/** Patch one conversation's session-meta doc through a direct commit. */
+async function patchMeta(
+	conversation: Conversation,
+	mutate: (draft: {
+		pinned: boolean;
+		archived: boolean;
+		tagged: string[];
+	}) => void,
+): Promise<void> {
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		mutate(draft);
+	}, BACKGROUND_CONTEXT);
+}
+
+/** The newest entry id of a conversation (a fork point). */
+async function newestEntryId(conversation: Conversation) {
+	const page = await conversation.entries({}, 1, undefined, BACKGROUND_CONTEXT);
+	const entry = page.items[0];
+	if (entry === undefined) throw new Error("conversation has no entries");
+	return entry.id;
 }
 
 // ─── The contract ─────────────────────────────────────────────────────────
@@ -343,5 +394,229 @@ describe("runSettled contract", () => {
 			status: "answered",
 			answerText: "merged answer",
 		});
+	});
+});
+
+// ─── Task 4: lifecycle handlers + conversationIdle + harnessShutdown ──────
+
+describe("conversation lifecycle contract", () => {
+	test("the fixture extension receives conversationCreated/Forked and NOT archived for an inherited-archive fork", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("turn one")],
+		});
+		const { root } = await runTurn(opened, "hello");
+		await nextDelivered(fixture);
+
+		// Materialize the meta doc (seeds the flip baseline), then archive the
+		// parent: a REAL flip fires for the parent only.
+		await patchMeta(root, (draft) => {
+			draft.pinned = true;
+		});
+		await patchMeta(root, (draft) => {
+			draft.archived = true;
+		});
+		// The fork child is born archived (fork: "current") — created + forked,
+		// NEVER an inherited archive event.
+		const at = await newestEntryId(root);
+		const child = await root.fork(
+			at,
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+
+		// Four deliveries in order: created(root) [root() in runTurn],
+		// archived(root, true), created(child), forked(child, root, at).
+		await vi.waitFor(
+			() => expect(fixture.lifecycle).toHaveLength(4),
+			{ timeout: 5_000, interval: 100 },
+		);
+		expect(fixture.lifecycle.map((one) => one.handler)).toEqual([
+			"conversationCreated",
+			"conversationArchived",
+			"conversationCreated",
+			"conversationForked",
+		]);
+		expect(fixture.lifecycle[0]).toMatchObject({
+			handler: "conversationCreated",
+			conversationId: root.id,
+		});
+		expect(fixture.lifecycle[1]).toMatchObject({
+			handler: "conversationArchived",
+			conversationId: root.id,
+			archived: true,
+		});
+		expect(fixture.lifecycle[2]).toMatchObject({
+			handler: "conversationCreated",
+			conversationId: child.id,
+		});
+		expect(fixture.lifecycle[3]).toEqual({
+			handler: "conversationForked",
+			childId: child.id,
+			parentId: root.id,
+			at,
+		});
+		// The inherited archive NEVER fired for the child.
+		const archivedForChild = fixture.lifecycle.filter(
+			(one) =>
+				one.handler === "conversationArchived" &&
+				one.conversationId === child.id,
+		);
+		expect(archivedForChild).toHaveLength(0);
+	});
+
+	test("conversationIdle fires after the threshold of quiet (idleMs >= threshold)", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [
+				fauxAssistantMessage("the answer"),
+				fauxAssistantMessage("the second answer"),
+			],
+			eventBus: { idleThresholdMs: 300, idleSweepMs: 50 },
+		});
+		const { root, record } = await runTurn(opened, "hello");
+		expect(record.status).toBe("done");
+
+		// Quiet for the threshold: exactly one idle event, idleMs measured
+		// from the LAST input admission.
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(1), {
+			timeout: 5_000,
+			interval: 50,
+		});
+		expect(idleEvents(fixture)[0]).toMatchObject({
+			handler: "conversationIdle",
+			conversationId: root.id,
+		});
+		expect(idleEvents(fixture)[0]!.idleMs).toBeGreaterThanOrEqual(300);
+
+		// Once per quiet period: continued quiet does not fire again.
+		await new Promise((resolve) => setTimeout(resolve, 450));
+		expect(idleEvents(fixture)).toHaveLength(1);
+
+		// Re-arm: a new admission starts a new quiet period that fires again.
+		const second = await runTurn(opened, "again");
+		expect(second.record.status).toBe("done");
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(2), {
+			timeout: 5_000,
+			interval: 50,
+		});
+		expect(idleEvents(fixture)[1]).toMatchObject({
+			conversationId: root.id,
+		});
+		expect(idleEvents(fixture)[1]!.idleMs).toBeGreaterThanOrEqual(300);
+	});
+
+	test("idle does NOT fire while a run is live, even past the threshold", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [
+				// A tool round keeps the run live ~1s — well past the 300ms
+				// threshold and several sweep ticks.
+				fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done after tools"),
+			],
+			eventBus: { idleThresholdMs: 300, idleSweepMs: 50 },
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const submission = await root.submit(
+			{ type: "input", content: "long running" },
+			BACKGROUND_CONTEXT,
+		);
+		// Mid-run checkpoint: the threshold AND ~9 sweep ticks have elapsed
+		// while the run is live — no idle (Review Focus 6).
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(idleEvents(fixture)).toHaveLength(0);
+
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+		// The run ends; the next sweep fires idle with idleMs past threshold.
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(1), {
+			timeout: 5_000,
+			interval: 50,
+		});
+		expect(idleEvents(fixture)[0]!.idleMs).toBeGreaterThanOrEqual(300);
+	});
+
+	test("write-type submissions do not reset the idle clock", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("the answer")],
+			eventBus: { idleThresholdMs: 250, idleSweepMs: 50 },
+		});
+		const { root, record } = await runTurn(opened, "hello");
+		expect(record.status).toBe("done");
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(1), {
+			timeout: 5_000,
+			interval: 50,
+		});
+
+		// A passive write lands at once (display-only: kind + data, no run)...
+		const write = await root.submit(
+			{ type: "write", entry: { kind: "fixture.heartbeat", data: { n: 1 } } },
+			BACKGROUND_CONTEXT,
+		);
+		const writeRecord = await write.wait(BACKGROUND_CONTEXT);
+		expect(writeRecord.status).toBe("done");
+		expect(writeRecord.type).toBe("write");
+
+		// ...and does NOT re-arm the clock: waiting well past another full
+		// threshold fires nothing more (a write counted as an admission would
+		// re-arm and fire a second idle here).
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		expect(idleEvents(fixture)).toHaveLength(1);
+	});
+
+	test("harnessShutdown fires during shutdown; the handler's commit lands", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const { root, record } = await runTurn(opened, "hello");
+		expect(record.status).toBe("done");
+		await nextDelivered(fixture);
+		expect(fixture.shutdowns).toHaveLength(0);
+
+		// The shutdown sequence (what src/index.ts runs between app.close and
+		// harness.close): pending settles drain first, then harnessShutdown.
+		await opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT);
+		expect(fixture.shutdowns).toHaveLength(1);
+
+		// The handler's commit LANDED — admission was still open (the seal is
+		// Harness.close, which has not run yet): the ambient doc the fixture
+		// writes through its captured host is readable post-sequence.
+		const doc = await opened.harness.snapshot(
+			AmbientDoc,
+			root.id,
+			"fixture-flush",
+			BACKGROUND_CONTEXT,
+		);
+		expect(doc?.body?.line?.text).toBe("flushed at shutdown");
+	});
+
+	test("a factory lifecycle field that is not a function is quarantined with the reason", () => {
+		// The five validation branches mirror runSettled's fail-loud pattern,
+		// each naming its own field.
+		const extension = { name: "sigrun.fixture-bad-lifecycle" } as never;
+		const fields = [
+			"conversationCreated",
+			"conversationForked",
+			"conversationArchived",
+			"conversationIdle",
+			"harnessShutdown",
+		] as const;
+		for (const field of fields) {
+			// The throw propagates out of resolveExtension and surfaces through
+			// the loader as the quarantine reason; assert the message exactly.
+			let message = "";
+			try {
+				resolveExtension({
+					default: () => ({ extension, [field]: 42 }),
+				});
+			} catch (error) {
+				message = error instanceof Error ? error.message : String(error);
+			}
+			expect(message).toBe(
+				`extension factory returned a ${field} field that is not a function`,
+			);
+		}
 	});
 });

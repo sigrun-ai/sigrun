@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
-import { EventBus } from "./event-bus.js";
+import { EventBus, type ExtensionEventHandlers } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { AuthStore } from "./auth.js";
@@ -49,10 +49,19 @@ import {
 
 /**
  * Memory-seam bus bounds (Task 6 lifts these into `SIGRUN_*` config
- * knobs: `SIGRUN_QUEUE_MAX`, `SIGRUN_HOOK_DEADLINE`).
+ * knobs: `SIGRUN_QUEUE_MAX`, `SIGRUN_HOOK_DEADLINE`,
+ * `SIGRUN_IDLE_THRESHOLD`).
  */
 const EVENT_QUEUE_MAX = 1_000;
 const HOOK_DEADLINE_MS = 30_000;
+/**
+ * The idle threshold's temporary hardcoded default (spec §2: 10 minutes).
+ * Task 6 replaces this with the `SIGRUN_IDLE_THRESHOLD` config knob —
+ * thread the config value into `OpenHarnessOptions.eventBus.idleThresholdMs`.
+ */
+const IDLE_THRESHOLD_MS = 600_000;
+/** The idle sweep cadence (spec §2: ONE host-owned 1s interval). */
+const IDLE_SWEEP_MS = 1_000;
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
@@ -152,11 +161,15 @@ export interface OpenedHarness {
 	/** The kinds each loaded extension declared, keyed by extension name. */
 	readonly seamKinds: ReadonlyMap<string, DeclaredKinds>;
 	/**
-	 * The memory-seam event bus (Tasks 2-3): opened on the booted harness
+	 * The memory-seam event bus (Tasks 2-4): opened on the booted harness
 	 * BEFORE `resume()` (recovery settles are observed), with each loaded
-	 * extension's `runSettled` registered under its final name. Delivery
-	 * is boot-scheduled: every commit schedules a debounced drain on the
-	 * next macrotask. Task 4 adds lifecycle handlers beside it.
+	 * extension's `runSettled` + lifecycle handlers registered under its
+	 * final name, and the host-owned idle sweep running. Delivery is
+	 * boot-scheduled: every commit schedules a debounced drain on the next
+	 * macrotask. The shutdown path (`src/index.ts`) runs
+	 * `eventBus.shutdownSequence()` between `app.close()` and
+	 * `harness.close()`; a failed-session teardown closes the bus through
+	 * boot's `subscribeClose` wiring. Task 5 stops idle workers before it.
 	 */
 	readonly eventBus: EventBus;
 }
@@ -213,6 +226,17 @@ export interface OpenHarnessOptions {
 	 * resolution (a tmp dir with a fixture package installed).
 	 */
 	readonly packagesDir?: string;
+	/**
+	 * The memory-seam event-bus tuning (Task 4's test seam; Task 6 threads
+	 * the config knobs here): `idleThresholdMs` defaults to the hardcoded
+	 * 600000ms (`SIGRUN_IDLE_THRESHOLD` arrives in Task 6) and
+	 * `idleSweepMs` to the spec's 1s sweep. Passing `idleThresholdMs: 0`
+	 * would fire idle on every sweep — tests always pass a real value.
+	 */
+	readonly eventBus?: {
+		readonly idleThresholdMs?: number;
+		readonly idleSweepMs?: number;
+	};
 }
 
 /**
@@ -285,6 +309,7 @@ export async function openHarness(
 		healthProducers: extensionHealth,
 		submitBindings: extensionSubmits,
 		runSettledBindings,
+		lifecycleBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -417,19 +442,36 @@ export async function openHarness(
 	// after boot completes finds the harness immediately; one issued from a
 	// post-open async factory path waits on this same promise.
 	bindHarness(harness);
-	// The memory-seam event bus (Tasks 2-3): subscribe BEFORE `resume()` so
+	// The memory-seam event bus (Tasks 2-4): subscribe BEFORE `resume()` so
 	// recovery settles (faulted/orphaned submissions the scheduler drains)
-	// are observed like any other commit. Extension `runSettled` handlers
-	// register under their final resolved names — the loader retained the
-	// bindings paired with the installed extensions.
+	// are observed like any other commit. Extension handlers register under
+	// their final resolved names — the loader retained the bindings paired
+	// with the installed extensions, and registerExtension REPLACES a
+	// same-name entry, so the runSettled + lifecycle bindings MERGE here into
+	// one object per extension. The idle sweep rides the same open (the
+	// bus owns the 1s interval; `idleThresholdMs` is Task 6's config knob,
+	// currently the hardcoded IDLE_THRESHOLD_MS).
 	const eventBus = EventBus.open(harness, {
 		queueMax: EVENT_QUEUE_MAX,
 		hookDeadlineMs: HOOK_DEADLINE_MS,
+		idleThresholdMs: options.eventBus?.idleThresholdMs ?? IDLE_THRESHOLD_MS,
+		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 	});
+	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
-		eventBus.registerExtension(binding.extension.name, {
+		handlersByName.set(binding.extension.name, {
+			...handlersByName.get(binding.extension.name),
 			runSettled: binding.runSettled,
 		});
+	}
+	for (const binding of lifecycleBindings) {
+		handlersByName.set(binding.extension.name, {
+			...handlersByName.get(binding.extension.name),
+			...binding.handlers,
+		});
+	}
+	for (const [name, handlers] of handlersByName) {
+		eventBus.registerExtension(name, handlers);
 	}
 	// Delivery scheduling: the bus itself stays passive (Task 2's
 	// contract — `drain()` is the only pump); boot owns when drains run.
@@ -446,6 +488,11 @@ export async function openHarness(
 		});
 		drainTimer.unref?.();
 	});
+	// A failed Session closes itself (the upstream contract): the bus's
+	// sweep + subscription must not outlive it. shutdownSequence (the
+	// ordered path src/index.ts runs) closes the bus first, making this a
+	// no-op on the normal path.
+	harness.subscribeClose(() => eventBus.close());
 	harness.resume();
 	return {
 		harness,

@@ -1,6 +1,7 @@
 /**
- * The event bus (memory-seam Task 2): commit observation + bounded side
- * lane. See docs/superpowers/specs/2026-10-15-sigrun-memory-seam.md §"Design".
+ * The event bus (memory-seam Tasks 2 + 4): commit observation + bounded
+ * side lane + idle detection + shutdown sequencing. See
+ * docs/superpowers/specs/2026-10-15-sigrun-memory-seam.md §"Design".
  *
  * The bus subscribes to pi-durable's `Session.subscribeCommits` (sigrun's
  * harness IS a Session) and reduces each `CommitPublication` into the
@@ -37,8 +38,25 @@
  *   via `conversationForked`). A doc change with no baseline (the doc
  *   predates this process) compares against the materialization default
  *   `false` — archive detection stays commit-driven, nothing to re-arm.
+ *
+ * Idle detection (Task 4, spec §2's corrected ruling): idle = NO input
+ * admission AND no live run. The listener records admissions (`submission`
+ * writes with `type === "input"` + `status === "placed"` — a placement
+ * both stamps the admission clock and marks the run live; write-type
+ * submissions never touch either) and run ends (the settle statuses
+ * decrement the live-run count). A host-owned sweep interval (`idleSweepMs`,
+ * default 1s) then fires `conversationIdle` for every conversation whose
+ * last admission is at least `idleThresholdMs` old, has no live run, and
+ * has not already fired for its current quiet period (one fire per quiet
+ * period; a later admission re-arms). The sweep NEVER fires mid-run — the
+ * live-run gate holds even far past the threshold (review focus 6).
+ * Never-run conversations (created, never admitted — no durable anchor)
+ * stay non-idle; documented and accepted in the spec. All idle state is
+ * in-process: a restart forgets prior quiet periods (missed idle events
+ * are acceptable per the spec's at-least-once posture).
  */
 
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -70,20 +88,35 @@ export type SettleGroup = {
 	}[];
 };
 
-/** Conversation lifecycle reduced from commit publications. */
-export type LifecycleEvent =
-	| { readonly type: "conversationCreated"; readonly conversationId: ConversationId }
-	| {
-			readonly type: "conversationForked";
-			readonly childId: ConversationId;
-			readonly parentId: ConversationId;
-			readonly at: EntryId;
-	  }
-	| {
-			readonly type: "conversationArchived";
-			readonly conversationId: ConversationId;
-			readonly archived: boolean;
-	  };
+/**
+ * The extension-facing payloads of the lifecycle events (Task 4): the
+ * handler NAME discriminates (like pi-durable hooks), so the payloads
+ * carry no `type` field — one source of truth for the internal events
+ * (which add `type`), the dispatch fan-out, and the loader's contract.
+ */
+export type ExtensionLifecyclePayload = {
+	conversationCreated: { readonly conversationId: ConversationId };
+	conversationForked: {
+		readonly childId: ConversationId;
+		readonly parentId: ConversationId;
+		readonly at: EntryId;
+	};
+	conversationArchived: {
+		readonly conversationId: ConversationId;
+		readonly archived: boolean;
+	};
+	conversationIdle: {
+		readonly conversationId: ConversationId;
+		readonly idleMs: number;
+	};
+};
+
+/** Conversation lifecycle reduced from commit publications (+ the timer-driven idle event). */
+export type LifecycleEvent = {
+	readonly [K in keyof ExtensionLifecyclePayload]: {
+		readonly type: K;
+	} & ExtensionLifecyclePayload[K];
+}[keyof ExtensionLifecyclePayload];
 
 /**
  * The extension-facing settled-run event (memory-seam Task 3): one per
@@ -141,21 +174,62 @@ export type ExtensionRunSettledHandler = (
 	context: Context,
 ) => void | Promise<void>;
 
+/** A loaded extension's lifecycle handler for one event, as the loader validated it. */
+export type ExtensionLifecycleHandler<K extends keyof ExtensionLifecyclePayload> = (
+	event: ExtensionLifecyclePayload[K],
+	api: MemoryEventApi,
+	context: Context,
+) => void | Promise<void>;
+
+/** A loaded extension's `harnessShutdown` handler (no event payload — shutdown is conversation-less). */
+export type ExtensionHarnessShutdownHandler = (
+	api: MemoryEventApi,
+	context: Context,
+) => void | Promise<void>;
+
+/**
+ * Everything one loaded extension may register on the bus (the loader's
+ * validated factory-result fields, registered by boot under the
+ * extension's final resolved name).
+ */
+export interface ExtensionEventHandlers {
+	readonly runSettled?: ExtensionRunSettledHandler;
+	readonly conversationCreated?: ExtensionLifecycleHandler<"conversationCreated">;
+	readonly conversationForked?: ExtensionLifecycleHandler<"conversationForked">;
+	readonly conversationArchived?: ExtensionLifecycleHandler<"conversationArchived">;
+	readonly conversationIdle?: ExtensionLifecycleHandler<"conversationIdle">;
+	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
+}
+
 /** Internal queue item: which handler list an event dispatches through. */
 type BusEvent =
 	| { readonly kind: "settled"; readonly event: SettleGroup }
 	| { readonly kind: "lifecycle"; readonly event: LifecycleEvent };
 
+/** Options of `EventBus.open` (Task 6 lifts the idle pair into `SIGRUN_*` config). */
+export interface EventBusOptions {
+	/** Bounds the queue (Task 6: `SIGRUN_QUEUE_MAX`). */
+	readonly queueMax: number;
+	/** Bounds each handler call (Task 6: `SIGRUN_HOOK_DEADLINE`). */
+	readonly hookDeadlineMs: number;
+	/**
+	 * The idle threshold (Task 6: `SIGRUN_IDLE_THRESHOLD`); omitted = no
+	 * idle detection (the Task 2 substrate shape — tests that never sweep).
+	 */
+	readonly idleThresholdMs?: number;
+	/** The idle sweep cadence (spec §2: one host-owned 1s interval). */
+	readonly idleSweepMs?: number;
+}
+
 /**
  * The commit-observation side lane. One instance per harness; open after
- * boot, close before the harness closes.
+ * boot, close before the harness closes (`shutdownSequence` for the
+ * ordered path, `close` otherwise — boot also wires `subscribeClose` to
+ * `close` so a failed-session teardown cannot leak the sweep timer).
  */
 export class EventBus {
-	/** Subscribe `harness`'s commit stream; `queueMax` bounds the queue, `hookDeadlineMs` bounds each handler call. */
-	public static open(
-		harness: Harness,
-		options: { queueMax: number; hookDeadlineMs: number },
-	): EventBus {
+	/** Subscribe `harness`'s commit stream + start the idle sweep when idle options are given. */
+	public static open(harness: Harness, options: EventBusOptions): EventBus {
 		return new EventBus(harness, options);
 	}
 
@@ -163,30 +237,50 @@ export class EventBus {
 	#harness: Harness;
 	#queueMax: number;
 	#hookDeadlineMs: number;
+	#idleThresholdMs: number | undefined;
 	#queue: BusEvent[] = [];
 	#settleHandlers: ((event: SettleGroup) => void | Promise<void>)[] = [];
 	#lifecycleHandlers: ((event: LifecycleEvent) => void | Promise<void>)[] = [];
 	/** Extension name → its handlers (the loader-validated factory-result fields). */
-	#extensions = new Map<
-		string,
-		{ readonly runSettled?: ExtensionRunSettledHandler }
-	>();
+	#extensions = new Map<string, ExtensionEventHandlers>();
 	/** Per-conversation `archived` flip baseline (the last value a change was measured against). */
 	#archivedBasis = new Map<ConversationId, boolean>();
+	/** Per-conversation wall clock of the last input admission (the idle clock's anchor). */
+	#lastAdmission = new Map<ConversationId, number>();
+	/** Per-conversation count of placed-but-unsettled inputs (live runs). */
+	#liveInputs = new Map<ConversationId, number>();
+	/** Per-conversation time of the last idle fire (one fire per quiet period). */
+	#idleFiredAt = new Map<ConversationId, number>();
+	/** The host-owned idle sweep, when idle detection is on. */
+	#sweep: ReturnType<typeof setInterval> | undefined;
 	/** The single drain loop, when one is running. */
 	#loop: Promise<void> | undefined;
 	#closed = false;
 
-	private constructor(
-		harness: Harness,
-		options: { queueMax: number; hookDeadlineMs: number },
-	) {
+	private constructor(harness: Harness, options: EventBusOptions) {
 		this.#harness = harness;
 		this.#queueMax = options.queueMax;
 		this.#hookDeadlineMs = options.hookDeadlineMs;
+		this.#idleThresholdMs = options.idleThresholdMs;
 		this.#unsubscribe = harness.subscribeCommits((publication) => {
 			this.observe(publication);
 		});
+		// The idle sweep is host-owned machinery (never an extension factory
+		// concern — the twill lesson) and binds to THIS bus's lifetime: close
+		// and shutdownSequence both clear it. Unref'd so a booted-but-idle
+		// process never hangs on it.
+		if (
+			this.#idleThresholdMs !== undefined &&
+			options.idleSweepMs !== undefined &&
+			options.idleSweepMs > 0
+		) {
+			this.#sweep = setInterval(() => {
+				if (this.sweepIdle() > 0) {
+					void this.drain(this.#hookDeadlineMs, BACKGROUND_CONTEXT);
+				}
+			}, options.idleSweepMs);
+			this.#sweep.unref?.();
+		}
 	}
 
 	/** Register a settled-run handler (install order = run order); returns its unsubscribe. */
@@ -215,18 +309,80 @@ export class EventBus {
 	 * Register one loaded extension's handlers under its FINAL resolved
 	 * name (boot calls this per loaded extension after `Harness.open`).
 	 * A same-name registration replaces the previous one (the reinstall
-	 * path). Returns its unsubscribe.
+	 * path); boot merges the loader's runSettled + lifecycle bindings into
+	 * ONE object per name before registering. Returns its unsubscribe.
 	 */
-	public registerExtension(
-		name: string,
-		handlers: { readonly runSettled?: ExtensionRunSettledHandler },
-	): () => void {
+	public registerExtension(name: string, handlers: ExtensionEventHandlers): () => void {
 		this.#extensions.set(name, handlers);
 		return () => {
 			if (this.#extensions.get(name) === handlers) {
 				this.#extensions.delete(name);
 			}
 		};
+	}
+
+	/**
+	 * One idle sweep (spec §2): enqueue a `conversationIdle` event for every
+	 * conversation whose last input admission is at least the threshold old,
+	 * that has NO live run (the gate that holds even far past the threshold —
+	 * review focus 6), and that has not already fired for its current quiet
+	 * period (a later admission re-arms). Never-run conversations have no
+	 * admission recorded and stay non-idle. Returns how many events were
+	 * enqueued (the sweep's own drain call is skipped when zero).
+	 */
+	public sweepIdle(now: number = Date.now()): number {
+		if (this.#closed || this.#idleThresholdMs === undefined) return 0;
+		let enqueued = 0;
+		for (const [conversationId, admittedAt] of this.#lastAdmission) {
+			if ((this.#liveInputs.get(conversationId) ?? 0) > 0) continue;
+			if ((this.#idleFiredAt.get(conversationId) ?? -Infinity) >= admittedAt) {
+				continue;
+			}
+			const idleMs = now - admittedAt;
+			if (idleMs < this.#idleThresholdMs) continue;
+			this.#idleFiredAt.set(conversationId, now);
+			this.#enqueue({
+				kind: "lifecycle",
+				event: { type: "conversationIdle", conversationId, idleMs },
+			});
+			enqueued += 1;
+		}
+		return enqueued;
+	}
+
+	/**
+	 * The ordered shutdown sequence (Task 4; src/index.ts runs it between
+	 * `app.close()` and `harness.close()`):
+	 *
+	 * 1. stop the idle sweep (no new events from here on);
+	 * 2. drain pending settles FIRST — a run that settled just before
+	 *    shutdown delivers before the shutdown flush (the ordering
+	 *    constraint; Task 5 additionally stops idle workers before this);
+	 * 3. deliver `harnessShutdown` to every extension in install order,
+	 *    each deadline-bounded. Handlers may commit — admission is still
+	 *    open in this window (the seal is `Harness.close`, the caller's
+	 *    next step), which is exactly the flush window the spec promises;
+	 * 4. close the bus (idempotent; boot's `subscribeClose` wiring makes a
+	 *    later `harness.close` a no-op here).
+	 */
+	public async shutdownSequence(context: Context): Promise<void> {
+		if (this.#closed) return;
+		if (this.#sweep !== undefined) {
+			clearInterval(this.#sweep);
+			this.#sweep = undefined;
+		}
+		await this.drain(this.#hookDeadlineMs, context);
+		// harnessShutdown carries no conversation: the conversation-scoped
+		// reads resolve empty and `document` serves any conversation.
+		const api = this.#apiFor(undefined);
+		for (const [name, handlers] of this.#extensions) {
+			const handler = handlers.harnessShutdown;
+			if (handler === undefined) continue;
+			await this.#bounded(`extension ${name} harnessShutdown`, () =>
+				handler(api, context),
+			);
+		}
+		this.close();
 	}
 
 	/**
@@ -261,12 +417,16 @@ export class EventBus {
 		});
 	}
 
-	/** Stop everything: unsubscribe, empty the queue, and let a running loop exit. */
+	/** Stop everything: unsubscribe, empty the queue, stop the sweep, and let a running loop exit. */
 	public close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#unsubscribe();
 		this.#queue.length = 0;
+		if (this.#sweep !== undefined) {
+			clearInterval(this.#sweep);
+			this.#sweep = undefined;
+		}
 		// A running pump observes `#closed` at its next iteration and exits;
 		// its in-flight handler call is abandoned at the hook deadline at
 		// the latest, so pending drains always resolve.
@@ -347,6 +507,28 @@ export class EventBus {
 				if (change.type !== "submission") continue;
 				const value = change.value;
 				if (value.type !== "input") continue;
+				// Idle bookkeeping (Task 4): a PLACED input both stamps the
+				// admission clock and marks the run live; a terminal input marks
+				// the run end. Write-type submissions never touch either — a
+				// passive write must not reset the idle clock (spec §2). Queued
+				// inputs are not admissions (they have not placed an entry).
+				if (value.status === "placed") {
+					this.#lastAdmission.set(value.conversationId, Date.now());
+					this.#liveInputs.set(
+						value.conversationId,
+						(this.#liveInputs.get(value.conversationId) ?? 0) + 1,
+					);
+				} else if (
+					value.status === "done" ||
+					value.status === "unanswered"
+				) {
+					// Recovery may settle a placement this process never observed
+					// (the bus opened after it) — floor the count at zero.
+					this.#liveInputs.set(
+						value.conversationId,
+						Math.max(0, (this.#liveInputs.get(value.conversationId) ?? 0) - 1),
+					);
+				}
 				if (value.status !== "done" && value.status !== "unanswered")
 					continue;
 				const list = groups.get(value.conversationId) ?? [];
@@ -412,7 +594,56 @@ export class EventBus {
 				const handlerRef = handler;
 				await this.#bounded("lifecycle", () => handlerRef(item.event));
 			}
+			await this.#dispatchLifecycle(item.event, context);
 		}
+	}
+
+	/**
+	 * Fan one lifecycle event out to every registered extension's matching
+	 * handler (the handler NAME discriminates — the extension-facing payload
+	 * carries no `type`). The api is scoped to the event's conversation
+	 * (the fork child for `conversationForked`).
+	 */
+	async #dispatchLifecycle(event: LifecycleEvent, context: Context): Promise<void> {
+		const type = event.type;
+		const registered = [...this.#extensions.entries()].filter(
+			([, handlers]) => handlers[type] !== undefined,
+		);
+		if (registered.length === 0) return;
+		const payload = this.#lifecyclePayload(event);
+		const api = this.#apiFor(this.#lifecycleConversation(event));
+		for (const [name, handlers] of registered) {
+			const handler = handlers[type]!;
+			// One localized cast: the payload union cannot be correlated to the
+			// dynamically-keyed handler at the type level, but both sides come
+			// from the same `ExtensionLifecyclePayload` map.
+			await this.#bounded(`extension ${name} ${type}`, () =>
+				(handler as (event: typeof payload, api: MemoryEventApi, ctx: Context) => void | Promise<void>)(
+					payload,
+					api,
+					context,
+				),
+			);
+		}
+	}
+
+	/** The extension-facing payload of one lifecycle event (the `type` discriminator stripped). */
+	#lifecyclePayload(event: LifecycleEvent): ExtensionLifecyclePayload[keyof ExtensionLifecyclePayload] {
+		switch (event.type) {
+			case "conversationCreated":
+				return { conversationId: event.conversationId };
+			case "conversationForked":
+				return { childId: event.childId, parentId: event.parentId, at: event.at };
+			case "conversationArchived":
+				return { conversationId: event.conversationId, archived: event.archived };
+			case "conversationIdle":
+				return { conversationId: event.conversationId, idleMs: event.idleMs };
+		}
+	}
+
+	/** The conversation a lifecycle event's api scopes to (the fork child on forks). */
+	#lifecycleConversation(event: LifecycleEvent): ConversationId {
+		return event.type === "conversationForked" ? event.childId : event.conversationId;
 	}
 
 	/**
@@ -547,9 +778,26 @@ export class EventBus {
 			.join("");
 	}
 
-	/** The narrowed read surface handed to `runSettled` handlers. */
-	#apiFor(conversationId: ConversationId): MemoryEventApi {
+	/**
+	 * The narrowed read surface handed to event handlers. `conversationId`
+	 * `undefined` (only `harnessShutdown`) scopes the conversation-bound
+	 * reads to no conversation: `entry` resolves `undefined`, `entries`
+	 * resolves empty, and `document` — which names its conversation per call
+	 * — keeps serving any conversation.
+	 */
+	#apiFor(conversationId: ConversationId | undefined): MemoryEventApi {
 		const harness = this.#harness;
+		if (conversationId === undefined) {
+			return {
+				entry: async () => undefined,
+				entries: async () => ({ items: [] }),
+				document: ((
+					token: ConversationDocToken<JsonObject>,
+					id: ConversationId,
+					context: Context,
+				) => harness.snapshot(token, id, context)) as MemoryEventApi["document"],
+			};
+		}
 		return {
 			entry: (id, context) => this.#readEntry(conversationId, id, context),
 			entries: (query, limit, cursor, context) =>
