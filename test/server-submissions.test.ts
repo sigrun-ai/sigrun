@@ -381,10 +381,12 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		expect(users.length).toBe(1);
 	});
 
-	test("submits against an untracked stored conversation (restart amnesia)", async () => {
+	test("submits against a harness-created conversation (durable enumeration)", async () => {
 		const { app, opened } = await bootServer();
-		// A conversation created directly through the harness — never added to
-		// the server's tracked Set (the post-restart situation).
+		// A conversation created directly through the harness — never created
+		// by a route. Since Task 3 the listing is the durable scan, so it DOES
+		// list (the old tracked-set amnesia was the bug); the submission path
+		// must keep working regardless of how the conversation came to be.
 		const conversation = await opened.harness.createConversation(
 			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
 			BACKGROUND_CONTEXT,
@@ -396,7 +398,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			listed.conversations.some(
 				(c: { id: number }) => c.id === conversation.id,
 			),
-		).toBe(false);
+		).toBe(true);
 		const response = await submit(app, conversation.id, "still works");
 		expect(response.statusCode).toBe(202);
 		expect(response.json().status).toBe("done");
