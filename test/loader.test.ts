@@ -40,6 +40,11 @@ const MEMORY_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
 ).href;
 
+/** The seam fixture extension (host-context contract): for the re-key identity test. */
+const SEAM_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-seam", "index.js"),
+).href;
+
 /** The zero-arg fixture (contract: a length-0 factory is invoked with NO arguments). */
 const ZEROARG_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-zeroarg", "index.js"),
@@ -302,6 +307,36 @@ test("a zero-arg factory is invoked with NO arguments (no host leak into default
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("the factory-captured host is the final host (re-key mutates in place)", async () => {
+	// The factory captures the host instance it receives; after load, the
+	// host boot holds (seamHosts map) must be the SAME instance the fixture
+	// factory captured — else inbound handlers registered on the factory's
+	// host are unreachable (review M2). The fixture stashes its host on
+	// globalThis.__fixtureSeamHost for the identity comparison.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-rekey-"));
+	try {
+		(globalThis as { __fixtureSeamHost?: unknown }).__fixtureSeamHost = undefined;
+		let opened: Awaited<ReturnType<typeof openHarness>> | undefined;
+		try {
+			opened = await openHarness(configWith(dir), {
+				env: {},
+				extensionSpecifiers: [SEAM_SPECIFIER],
+			});
+			const captured = (globalThis as { __fixtureSeamHost?: unknown })
+				.__fixtureSeamHost;
+			const booted = opened.seamHosts.get("sigrun.fixture-seam");
+			expect(booted).toBeDefined();
+			expect(captured).toBeDefined();
+			expect(captured).toBe(booted);
+		} finally {
+			await opened?.harness.close(BACKGROUND_CONTEXT);
+			(globalThis as { __fixtureSeamHost?: unknown }).__fixtureSeamHost = undefined;
 		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });
