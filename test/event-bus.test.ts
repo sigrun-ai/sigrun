@@ -93,6 +93,9 @@ async function bootBus(
 	const bus = EventBus.open(opened.harness, {
 		queueMax: options.queueMax ?? 1000,
 		hookDeadlineMs: options.hookDeadlineMs ?? 5_000,
+		// Required since the post-ship follow-ups (no bus-side default —
+		// config.ts owns the 600_000 production value; tests pick their own).
+		workerDeadlineMs: 10_000,
 	});
 	cleanups.push(async () => {
 		bus.close();

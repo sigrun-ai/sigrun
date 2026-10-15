@@ -566,6 +566,169 @@ describe("conversation lifecycle contract", () => {
 		expect(idleEvents(fixture)).toHaveLength(1);
 	});
 
+	test("a run live in an archived conversation still settles (settle emission untouched)", async () => {
+		// Post-ship review item: the idle-map prune on archive touches ONLY
+		// idle bookkeeping — a run admitted BEFORE the archive settles
+		// normally (runSettled fires) and the live-run decrement does not
+		// re-create a pruned entry.
+		const { opened, fixture } = await bootFixture({
+			responses: [
+				// A tool round keeps the run live across the archive flip.
+				fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done after the archive"),
+			],
+			eventBus: { idleThresholdMs: 300, idleSweepMs: 50 },
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const submission = await root.submit(
+			{ type: "input", content: "long running" },
+			BACKGROUND_CONTEXT,
+		);
+		// Materialize the meta doc (seeds the flip baseline), then archive
+		// MID-RUN: the prune drops the conversation's idle bookkeeping while
+		// its run is live.
+		await patchMeta(root, (draft) => {
+			draft.pinned = true;
+		});
+		await patchMeta(root, (draft) => {
+			draft.archived = true;
+		});
+		await vi.waitFor(
+			() =>
+				expect(
+					fixture.lifecycle.filter(
+						(one) =>
+							one.handler === "conversationArchived" &&
+							one.archived === true,
+					),
+				).toHaveLength(1),
+			{ timeout: 5_000, interval: 50 },
+		);
+
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+		// The settle emission is untouched: runSettled delivers normally.
+		const [event] = await nextDelivered(fixture);
+		expect(event.conversationId).toBe(root.id);
+		expect(event.outcome).toMatchObject({
+			status: "answered",
+			answerText: "done after the archive",
+		});
+		// The settle's live-run decrement skipped the pruned key (no floored
+		// 0 re-creation): continued quiet past the threshold fires NO idle
+		// — the pruned conversation stays out of the sweep until its next
+		// admission.
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		expect(idleEvents(fixture)).toHaveLength(0);
+	});
+
+	test("archiving prunes idle state: no idle while archived, re-armed at the next admission", async () => {
+		// Post-ship review item: conversationArchived(true) prunes the
+		// per-conversation idle maps (#lastAdmission/#liveInputs/#idleFiredAt)
+		// — archive is stronger idle with its own event; un-archive does NOT
+		// restore (conservative: misses idles, never invents them); the next
+		// admission re-enters the idle clock.
+		const { opened, fixture } = await bootFixture({
+			responses: [
+				fauxAssistantMessage("the answer"),
+				fauxAssistantMessage("the second answer"),
+			],
+			eventBus: { idleThresholdMs: 300, idleSweepMs: 50 },
+		});
+		const { root, record } = await runTurn(opened, "hello");
+		expect(record.status).toBe("done");
+
+		// Quiet past the threshold: exactly one idle fire.
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(1), {
+			timeout: 5_000,
+			interval: 50,
+		});
+
+		// Materialize the meta doc (seeds the flip baseline), then ARCHIVE:
+		// the archived(true) event prunes the conversation's idle state.
+		await patchMeta(root, (draft) => {
+			draft.pinned = true;
+		});
+		await patchMeta(root, (draft) => {
+			draft.archived = true;
+		});
+		// Pin the archive delivery BEFORE the quiet-window assertions: an
+		// unsynchronized archive patch could land after (or never) — the
+		// sweep's prune is keyed on this delivery.
+		await vi.waitFor(
+			() =>
+				expect(
+					fixture.lifecycle.filter(
+						(one) =>
+							one.handler === "conversationArchived" &&
+							one.archived === true,
+					),
+				).toHaveLength(1),
+			{ timeout: 5_000, interval: 50 },
+		);
+
+		// Continued quiet well past the threshold fires NO further idle
+		// (post-ship review item: the archived(true) event PRUNES the
+		// per-conversation idle maps — archive is stronger idle, and the
+		// already-fired record must not keep this conversation from
+		// re-firing after a later admission).
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		expect(idleEvents(fixture)).toHaveLength(1);
+
+		// Un-archive: no restoration — STILL no idle (the conversation
+		// re-enters the idle clock only at its NEXT admission; conservative
+		// — misses idles, never invents them).
+		await patchMeta(root, (draft) => {
+			draft.archived = false;
+		});
+		await vi.waitFor(
+			() =>
+				expect(
+					fixture.lifecycle.filter(
+						(one) =>
+							one.handler === "conversationArchived" &&
+							one.archived === false,
+					),
+				).toHaveLength(1),
+			{ timeout: 5_000, interval: 50 },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		expect(idleEvents(fixture)).toHaveLength(1);
+
+		// Un-pruned-state proof: a second full threshold of quiet while
+		// UN-archived fires nothing (the pre-archive fire is the once-per-
+		// quiet-period record; the archive/un-archive round-trip restores
+		// nothing). This is the assertion the un-pruned shape fails: without
+		// the prune the last-phase re-admission re-fires identically, so
+		// this window is what separates the shapes.
+		await patchMeta(root, (draft) => {
+			draft.archived = true;
+		});
+		await patchMeta(root, (draft) => {
+			draft.archived = false;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		expect(idleEvents(fixture)).toHaveLength(1);
+
+		// A new admission settles; the sweep re-arms from it and idle fires
+		// again past the threshold — WITHOUT the prune, the pre-archive
+		// #idleFiredAt would suppress this fire (idleFiredAt >= admittedAt).
+		const second = await runTurn(opened, "again");
+		expect(second.record.status).toBe("done");
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(2), {
+			timeout: 5_000,
+			interval: 50,
+		});
+		expect(idleEvents(fixture)[1]).toMatchObject({
+			handler: "conversationIdle",
+			conversationId: root.id,
+		});
+	});
+
 	test("harnessShutdown fires during shutdown; the handler's commit lands", async () => {
 		const { opened, fixture } = await bootFixture({
 			responses: [fauxAssistantMessage("the answer")],
