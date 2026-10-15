@@ -51,6 +51,26 @@ export interface LocalWorkspace {
 	readonly path: string;
 }
 
+/**
+ * The memory-seam bounds (memory-seam Tasks 2-5, knobed in Task 6): the
+ * side-lane hook deadline (`SIGRUN_HOOK_DEADLINE`, the per-handler cap
+ * `drain` races against), the idle threshold (`SIGRUN_IDLE_THRESHOLD`,
+ * quiet time before a conversation fires `conversationIdle`), the idle
+ * worker deadline (`SIGRUN_WORKER_DEADLINE`, when the host stops waiting
+ * for an abandoned `run()`), and the event queue bound
+ * (`SIGRUN_QUEUE_MAX`, drop-oldest overflow). All positive integers.
+ */
+export interface MemorySeamConfig {
+	/** `SIGRUN_HOOK_DEADLINE`, default 30000. */
+	hookDeadlineMs: number;
+	/** `SIGRUN_IDLE_THRESHOLD`, default 600000 (spec §2: 10 minutes). */
+	idleThresholdMs: number;
+	/** `SIGRUN_WORKER_DEADLINE`, default 600000 (spec §3: 10 minutes). */
+	workerDeadlineMs: number;
+	/** `SIGRUN_QUEUE_MAX`, default 1000. */
+	queueMax: number;
+}
+
 export interface SigrunConfig {
 	storagePath: string;
 	models: SigrunModels;
@@ -95,6 +115,13 @@ export interface SigrunConfig {
 	 * one `backgroundTokens` below the blocking threshold; `0` disables it).
 	 */
 	compaction: CompactionPolicy;
+	/**
+	 * The memory-seam bounds (spec §2/§3), parsed from the
+	 * `SIGRUN_{HOOK_DEADLINE,IDLE_THRESHOLD,WORKER_DEADLINE,QUEUE_MAX}`
+	 * knobs and threaded into the event bus `EventBus.open` options at
+	 * boot (Tasks 2-5 shipped them as temporary hardcoded constants).
+	 */
+	memorySeam: MemorySeamConfig;
 }
 
 /** The provider id used when the model spec carries no `provider/` prefix. */
@@ -123,6 +150,17 @@ export const DEFAULT_COMPACTION: CompactionPolicy = {
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
 	backgroundTokens: 32768,
+};
+
+/**
+ * The memory-seam defaults (spec §2/§3): 30s hook deadline, 10-minute
+ * idle threshold, 10-minute worker deadline, 1000-event queue bound.
+ */
+export const DEFAULT_MEMORY_SEAM: MemorySeamConfig = {
+	hookDeadlineMs: 30_000,
+	idleThresholdMs: 600_000,
+	workerDeadlineMs: 600_000,
+	queueMax: 1_000,
 };
 
 export type Env = Record<string, string | undefined>;
@@ -305,6 +343,56 @@ function parseCompaction(
 	};
 }
 
+/** The env var spelling each {@link MemorySeamConfig} field parses from. */
+type MemorySeamEnvKey =
+	| "SIGRUN_HOOK_DEADLINE"
+	| "SIGRUN_IDLE_THRESHOLD"
+	| "SIGRUN_WORKER_DEADLINE"
+	| "SIGRUN_QUEUE_MAX";
+
+/**
+ * Parse one memory-seam positive-integer knob (the
+ * `SIGRUN_COMPACTION_*` token-count pattern: fail loud naming the
+ * variable on a non-numeric/zero/negative value, treat `""` as unset).
+ */
+function parseMemorySeamCount(env: Env, key: MemorySeamEnvKey): number | undefined {
+	const raw = env[key];
+	if (raw === undefined || raw === "") return undefined;
+	const parsed = Number(raw);
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error(`${key} must be a positive integer, got ${raw}`);
+	}
+	return parsed;
+}
+
+function parseMemorySeam(
+	env: Env,
+	server?: ServerSettings["memorySeam"],
+): MemorySeamConfig {
+	// Same chain as parseCompaction: env parsed first (a bad env value
+	// fails loud even when a file value would be valid), the settings
+	// file's `server.memorySeam` section applies per-field where env is
+	// absent, code defaults last.
+	return {
+		hookDeadlineMs:
+			parseMemorySeamCount(env, "SIGRUN_HOOK_DEADLINE") ??
+			server?.hookDeadlineMs ??
+			DEFAULT_MEMORY_SEAM.hookDeadlineMs,
+		idleThresholdMs:
+			parseMemorySeamCount(env, "SIGRUN_IDLE_THRESHOLD") ??
+			server?.idleThresholdMs ??
+			DEFAULT_MEMORY_SEAM.idleThresholdMs,
+		workerDeadlineMs:
+			parseMemorySeamCount(env, "SIGRUN_WORKER_DEADLINE") ??
+			server?.workerDeadlineMs ??
+			DEFAULT_MEMORY_SEAM.workerDeadlineMs,
+		queueMax:
+			parseMemorySeamCount(env, "SIGRUN_QUEUE_MAX") ??
+			server?.queueMax ??
+			DEFAULT_MEMORY_SEAM.queueMax,
+	};
+}
+
 /**
  * Project a resolved config into the settings file's `server` section —
  * the object `SettingsStore.bootstrap` persists on first boot. Defaults
@@ -337,6 +425,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		extensionsDir: config.extensionsDir,
 		webuiBundle: config.webuiBundle,
 		compaction: { ...config.compaction },
+		memorySeam: { ...config.memorySeam },
 		...(backup === undefined ? {} : { backup }),
 	};
 }
@@ -410,6 +499,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		},
 		backup: parseBackupConfig(env) ?? parseServerBackup(server?.backup),
 		compaction: parseCompaction(env, server?.compaction),
+		memorySeam: parseMemorySeam(env, server?.memorySeam),
 		// Ruling 4: env wins; the file's `server.webuiBundle` next; the code
 		// default last. A file value counts as EXPLICIT (missing index.html
 		// is a boot error), exactly like a set env var.
