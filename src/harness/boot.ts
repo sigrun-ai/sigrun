@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
-import { EventBus, type ExtensionEventHandlers } from "./event-bus.js";
+import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { AuthStore } from "./auth.js";
@@ -62,6 +62,12 @@ const HOOK_DEADLINE_MS = 30_000;
 const IDLE_THRESHOLD_MS = 600_000;
 /** The idle sweep cadence (spec §2: ONE host-owned 1s interval). */
 const IDLE_SWEEP_MS = 1_000;
+/**
+ * The worker deadline's temporary hardcoded default (spec §3: 10 minutes).
+ * Task 6 replaces this with the `SIGRUN_WORKER_DEADLINE` config knob —
+ * thread the config value into `OpenHarnessOptions.eventBus.workerDeadlineMs`.
+ */
+const WORKER_DEADLINE_MS = 600_000;
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
@@ -172,6 +178,13 @@ export interface OpenedHarness {
 	 * boot's `subscribeClose` wiring. Task 5 stops idle workers before it.
 	 */
 	readonly eventBus: EventBus;
+	/**
+	 * The idle-worker projection (memory-seam Task 5) for `GET /v1/meta`:
+	 * extension name → per-worker `{name, lastRunAt?, lastError?}` — a live
+	 * function (statuses change over the process lifetime), re-derived per
+	 * request like the §3 health producers.
+	 */
+	readonly workerStatuses: () => ReadonlyMap<string, readonly WorkerStatus[]>;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -236,6 +249,12 @@ export interface OpenHarnessOptions {
 	readonly eventBus?: {
 		readonly idleThresholdMs?: number;
 		readonly idleSweepMs?: number;
+		/**
+		 * The worker deadline (memory-seam Task 5), default 600000ms
+		 * (`SIGRUN_WORKER_DEADLINE` arrives in Task 6). Tests pass a small
+		 * value to exercise the abandon path.
+		 */
+		readonly workerDeadlineMs?: number;
 	};
 }
 
@@ -310,6 +329,7 @@ export async function openHarness(
 		submitBindings: extensionSubmits,
 		runSettledBindings,
 		lifecycleBindings,
+		workerBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -456,6 +476,7 @@ export async function openHarness(
 		hookDeadlineMs: HOOK_DEADLINE_MS,
 		idleThresholdMs: options.eventBus?.idleThresholdMs ?? IDLE_THRESHOLD_MS,
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
+		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? WORKER_DEADLINE_MS,
 	});
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
@@ -468,6 +489,14 @@ export async function openHarness(
 		handlersByName.set(binding.extension.name, {
 			...handlersByName.get(binding.extension.name),
 			...binding.handlers,
+		});
+	}
+	// Task 5: workers merge into the same per-extension registration (the
+	// bus owns their timers + wake fan-out from that point).
+	for (const binding of workerBindings) {
+		handlersByName.set(binding.extension.name, {
+			...handlersByName.get(binding.extension.name),
+			workers: binding.workers,
 		});
 	}
 	for (const [name, handlers] of handlersByName) {
@@ -513,5 +542,6 @@ export async function openHarness(
 		seamHosts,
 		seamKinds,
 		eventBus,
+		workerStatuses: () => eventBus.workerStatuses(),
 	};
 }

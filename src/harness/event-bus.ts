@@ -188,6 +188,51 @@ export type ExtensionHarnessShutdownHandler = (
 ) => void | Promise<void>;
 
 /**
+ * The lifecycle event names a worker's `wakeOn` may declare (memory-seam
+ * Task 5). `harnessShutdown` is excluded by the loader: workers stop BEFORE
+ * the shutdown handlers run (spec §3 shutdown ordering).
+ */
+export type WorkerWakeEvent = Exclude<keyof ExtensionLifecyclePayload, never>;
+
+/** The wake argument of an event-triggered worker run (absent on every-tick runs). */
+export type WorkerWake = {
+	readonly event: string;
+	readonly conversationId: ConversationId;
+};
+
+/**
+ * One factory-declared idle worker (memory-seam Task 5 — the curator
+ * contract), as the loader validated it. Host-owned lifecycle: the bus
+ * starts the `every` timer at registration and taps the lifecycle fan-out
+ * for `wakeOn` matches. One run at a time per worker (a tick during an
+ * in-flight run is SKIPPED); a wake during an in-flight run is queued +
+ * coalesced (one pending-wake slot, last wins) and delivered as the next
+ * run's `wake`.
+ */
+export type ExtensionWorker = {
+	/** Unique within the extension; surfaces in /v1/meta. */
+	readonly name: string;
+	/** Periodic cadence; a tick is skipped while a run is in flight. */
+	readonly every?: { readonly ms: number };
+	/** Lifecycle events that wake the worker. */
+	readonly wakeOn?: readonly WorkerWakeEvent[];
+	/** The work; rejects (or overruns the worker deadline) to fail the run. */
+	run(context: Context, wake?: WorkerWake): Promise<void>;
+};
+
+/**
+ * The /v1/meta projection of one worker (memory-seam Task 5): `lastRunAt`
+ * appears at the first run's start; `lastError` carries the last failure
+ * (rejection or deadline abandonment) and clears on the next success. Both
+ * absent until the worker first runs.
+ */
+export type WorkerStatus = {
+	readonly name: string;
+	readonly lastRunAt?: number;
+	readonly lastError?: string;
+};
+
+/**
  * Everything one loaded extension may register on the bus (the loader's
  * validated factory-result fields, registered by boot under the
  * extension's final resolved name).
@@ -199,6 +244,8 @@ export interface ExtensionEventHandlers {
 	readonly conversationArchived?: ExtensionLifecycleHandler<"conversationArchived">;
 	readonly conversationIdle?: ExtensionLifecycleHandler<"conversationIdle">;
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
+	/** Factory-declared idle workers (memory-seam Task 5); the bus owns their timers. */
+	readonly workers?: readonly ExtensionWorker[];
 }
 
 /** Internal queue item: which handler list an event dispatches through. */
@@ -219,6 +266,38 @@ export interface EventBusOptions {
 	readonly idleThresholdMs?: number;
 	/** The idle sweep cadence (spec §2: one host-owned 1s interval). */
 	readonly idleSweepMs?: number;
+	/**
+	 * Bounds each worker run (memory-seam Task 5; Task 6: `SIGRUN_WORKER_DEADLINE`).
+	 * A timed-out run is abandoned — the host stops waiting and logs; the
+	 * zombie promise keeps executing with its late writes unguarded
+	 * (accepted, spec §3).
+	 */
+	readonly workerDeadlineMs?: number;
+}
+
+/** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
+const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
+
+/** The bus's fallback worker deadline; boot always threads its own. */
+const DEFAULT_WORKER_DEADLINE_MS = 600_000;
+
+/** Per-worker runtime state (the bus-owned half of the curator contract). */
+interface WorkerState {
+	readonly extension: string;
+	readonly worker: ExtensionWorker;
+	readonly deadlineMs: number;
+	/** The host-owned `every` timer, when the worker declares one. */
+	timer: ReturnType<typeof setInterval> | undefined;
+	/** True while a run is in flight (host-side; a zombie counts as not running). */
+	running: boolean;
+	/** True once shutdown/close stopped the worker (no further runs). */
+	stopped: boolean;
+	/** The coalesced pending wake (last wins), delivered to the next run. */
+	pendingWake: WorkerWake | undefined;
+	/** The in-flight run's settle promise (resolves either way), for shutdown awaiting. */
+	inflight: Promise<void> | undefined;
+	lastRunAt: number | undefined;
+	lastError: string | undefined;
 }
 
 /**
@@ -255,6 +334,9 @@ export class EventBus {
 	#sweep: ReturnType<typeof setInterval> | undefined;
 	/** The single drain loop, when one is running. */
 	#loop: Promise<void> | undefined;
+	/** The worker states, in registration order (memory-seam Task 5). */
+	#workers: WorkerState[] = [];
+	#workerDeadlineMs: number;
 	#closed = false;
 
 	private constructor(harness: Harness, options: EventBusOptions) {
@@ -262,6 +344,8 @@ export class EventBus {
 		this.#queueMax = options.queueMax;
 		this.#hookDeadlineMs = options.hookDeadlineMs;
 		this.#idleThresholdMs = options.idleThresholdMs;
+		this.#workerDeadlineMs =
+			options.workerDeadlineMs ?? DEFAULT_WORKER_DEADLINE_MS;
 		this.#unsubscribe = harness.subscribeCommits((publication) => {
 			this.observe(publication);
 		});
@@ -313,12 +397,59 @@ export class EventBus {
 	 * ONE object per name before registering. Returns its unsubscribe.
 	 */
 	public registerExtension(name: string, handlers: ExtensionEventHandlers): () => void {
+		// Task 5: a same-name registration REPLACES — stop the previous
+		// workers before installing the new ones so no stale timer survives.
+		this.#stopExtensionWorkers(name);
+		this.#workers = this.#workers.filter((state) => state.extension !== name);
 		this.#extensions.set(name, handlers);
+		for (const worker of handlers.workers ?? []) {
+			this.#addWorker(name, worker);
+		}
 		return () => {
 			if (this.#extensions.get(name) === handlers) {
 				this.#extensions.delete(name);
 			}
+			this.#stopExtensionWorkers(name);
+			this.#workers = this.#workers.filter(
+				(state) => state.extension !== name,
+			);
 		};
+	}
+
+	/** Start one worker: the host-owned `every` timer, unref'd like the sweep. */
+	#addWorker(extension: string, worker: ExtensionWorker): void {
+		const state: WorkerState = {
+			extension,
+			worker,
+			deadlineMs: this.#workerDeadlineMs,
+			timer: undefined,
+			running: false,
+			stopped: this.#closed,
+			pendingWake: undefined,
+			inflight: undefined,
+			lastRunAt: undefined,
+			lastError: undefined,
+		};
+		if (worker.every !== undefined && !state.stopped) {
+			state.timer = setInterval(() => {
+				this.#tick(state);
+			}, worker.every.ms);
+			state.timer.unref?.();
+		}
+		this.#workers.push(state);
+	}
+
+	/** Stop every worker of one extension (timers cleared; in-flight runs abandoned host-side). */
+	#stopExtensionWorkers(extension: string): void {
+		for (const state of this.#workers) {
+			if (state.extension !== extension) continue;
+			state.stopped = true;
+			state.pendingWake = undefined;
+			if (state.timer !== undefined) {
+				clearInterval(state.timer);
+				state.timer = undefined;
+			}
+		}
 	}
 
 	/**
@@ -355,14 +486,16 @@ export class EventBus {
 	 * `app.close()` and `harness.close()`):
 	 *
 	 * 1. stop the idle sweep (no new events from here on);
-	 * 2. drain pending settles FIRST — a run that settled just before
-	 *    shutdown delivers before the shutdown flush (the ordering
-	 *    constraint; Task 5 additionally stops idle workers before this);
-	 * 3. deliver `harnessShutdown` to every extension in install order,
+	 * 2. stop idle workers FIRST (Task 5, spec §3): timers cleared, pending
+	 *    wakes dropped, in-flight runs awaited up to 30s then abandoned — a
+	 *    curator is not competing with the flush handlers for the window;
+	 * 3. drain pending settles — a run that settled just before shutdown
+	 *    delivers before the shutdown flush (the ordering constraint);
+	 * 4. deliver `harnessShutdown` to every extension in install order,
 	 *    each deadline-bounded. Handlers may commit — admission is still
 	 *    open in this window (the seal is `Harness.close`, the caller's
 	 *    next step), which is exactly the flush window the spec promises;
-	 * 4. close the bus (idempotent; boot's `subscribeClose` wiring makes a
+	 * 5. close the bus (idempotent; boot's `subscribeClose` wiring makes a
 	 *    later `harness.close` a no-op here).
 	 */
 	public async shutdownSequence(context: Context): Promise<void> {
@@ -371,6 +504,7 @@ export class EventBus {
 			clearInterval(this.#sweep);
 			this.#sweep = undefined;
 		}
+		await this.#stopWorkers();
 		await this.drain(this.#hookDeadlineMs, context);
 		// harnessShutdown carries no conversation: the conversation-scoped
 		// reads resolve empty and `document` serves any conversation.
@@ -417,7 +551,7 @@ export class EventBus {
 		});
 	}
 
-	/** Stop everything: unsubscribe, empty the queue, stop the sweep, and let a running loop exit. */
+	/** Stop everything: unsubscribe, empty the queue, stop the sweep + workers, and let a running loop exit. */
 	public close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
@@ -427,9 +561,181 @@ export class EventBus {
 			clearInterval(this.#sweep);
 			this.#sweep = undefined;
 		}
+		// Workers stop too (a failed-session teardown must not leak their
+		// timers); in-flight runs are abandoned host-side — close is sync.
+		for (const state of this.#workers) {
+			state.stopped = true;
+			state.pendingWake = undefined;
+			if (state.timer !== undefined) {
+				clearInterval(state.timer);
+				state.timer = undefined;
+			}
+		}
 		// A running pump observes `#closed` at its next iteration and exits;
 		// its in-flight handler call is abandoned at the hook deadline at
 		// the latest, so pending drains always resolve.
+	}
+
+	/**
+	 * The /v1/meta worker projection (memory-seam Task 5): extension name →
+	 * per-worker `{name, lastRunAt?, lastError?}` (a snapshot per call; the
+	 * server re-derives per request). Extensions without workers have no
+	 * entry.
+	 */
+	public workerStatuses(): ReadonlyMap<string, readonly WorkerStatus[]> {
+		const statuses = new Map<string, WorkerStatus[]>();
+		for (const state of this.#workers) {
+			const list = statuses.get(state.extension) ?? [];
+			list.push({
+				name: state.worker.name,
+				...(state.lastRunAt === undefined
+					? {}
+					: { lastRunAt: state.lastRunAt }),
+				...(state.lastError === undefined
+					? {}
+					: { lastError: state.lastError }),
+			});
+			statuses.set(state.extension, list);
+		}
+		return statuses;
+	}
+
+	/**
+	 * One `every` tick: SKIPPED while a run is in flight (spec §3's one-run-
+	 * at-a-time — no queueing, no overlap). A pending wake (defensive: wakes
+	 * queue only while running, so this is normally undefined) rides along.
+	 */
+	#tick(state: WorkerState): void {
+		if (state.stopped || state.running) return;
+		const wake = state.pendingWake;
+		state.pendingWake = undefined;
+		this.#startRun(state, wake, BACKGROUND_CONTEXT);
+	}
+
+	/**
+	 * Wake every worker whose `wakeOn` names this lifecycle event (memory-
+	 * seam Task 5; taps the dispatch fan-out — detection is the listener's).
+	 * A wake on an idle worker starts a run at once; a wake during an
+	 * in-flight run is QUEUED + COALESCED (one pending slot, last wins) and
+	 * delivered as the next run's `wake`.
+	 */
+	#wakeWorkers(event: LifecycleEvent, context: Context): void {
+		for (const state of this.#workers) {
+			if (state.stopped) continue;
+			if (!state.worker.wakeOn?.includes(event.type)) continue;
+			const wake: WorkerWake = {
+				event: event.type,
+				conversationId: this.#lifecycleConversation(event),
+			};
+			if (state.running) {
+				state.pendingWake = wake;
+			} else {
+				this.#startRun(state, wake, context);
+			}
+		}
+	}
+
+	/**
+	 * Start one worker run. One run at a time per worker; the run is bounded
+	 * by the worker deadline — a timeout ABANDONS the run (logged; the
+	 * zombie promise keeps executing, late writes unguarded — accepted,
+	 * spec §3) and the next tick still runs. A coalesced pending wake
+	 * triggers one follow-up run immediately.
+	 */
+	#startRun(
+		state: WorkerState,
+		wake: WorkerWake | undefined,
+		context: Context,
+	): void {
+		if (state.stopped || state.running) return;
+		state.running = true;
+		state.lastRunAt = Date.now();
+		const label = `extension ${state.extension} worker ${state.worker.name}`;
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		// `inflight` resolves when the HOST considers the run over (complete),
+		// not when the worker's promise settles — a zombie would otherwise
+		// wedge the shutdown await (the 30s cap is the outer bound, but a
+		// deadline-abandon must release it at once).
+		let hostDone: () => void = () => {};
+		state.inflight = new Promise<void>((resolve) => {
+			hostDone = resolve;
+		});
+		const complete = (error: unknown) => {
+			if (settled) return;
+			settled = true;
+			if (timer !== undefined) clearTimeout(timer);
+			state.running = false;
+			state.inflight = undefined;
+			hostDone();
+			if (error === undefined) {
+				state.lastError = undefined;
+			} else {
+				state.lastError =
+					error instanceof Error ? error.message : String(error);
+				console.error("event-bus: %s failed: %s", label, state.lastError);
+			}
+			if (!state.stopped && state.pendingWake !== undefined) {
+				const nextWake = state.pendingWake;
+				state.pendingWake = undefined;
+				this.#startRun(state, nextWake, context);
+			}
+		};
+		timer = setTimeout(() => {
+			const message = `exceeded the ${state.deadlineMs}ms worker deadline — abandoned`;
+			// Logged ONCE by complete (as the run's failure, which also stamps
+			// lastError); a separate log here would double-report.
+			complete(new Error(message));
+		}, Math.max(0, state.deadlineMs));
+		timer.unref?.();
+		let result: Promise<void>;
+		try {
+			result = state.worker.run(context, wake);
+		} catch (error) {
+			complete(error);
+			return;
+		}
+		Promise.resolve(result).then(
+			() => complete(undefined),
+			(error) => complete(error),
+		);
+	}
+
+	/**
+	 * Stop every worker (spec §3 shutdown ordering): timers cleared, pending
+	 * wakes dropped, in-flight runs awaited up to 30s then abandoned. Runs
+	 * before the harnessShutdown delivery — a curator is not competing with
+	 * the flush handlers for the same window.
+	 */
+	async #stopWorkers(): Promise<void> {
+		for (const state of this.#workers) {
+			state.stopped = true;
+			state.pendingWake = undefined;
+			if (state.timer !== undefined) {
+				clearInterval(state.timer);
+				state.timer = undefined;
+			}
+		}
+		const inflight = this.#workers
+			.map((state) => state.inflight)
+			.filter((one) => one !== undefined);
+		if (inflight.length === 0) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const cap = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, WORKER_SHUTDOWN_AWAIT_MS);
+		});
+		await Promise.race([Promise.all(inflight).then(() => undefined), cap]);
+		if (timer !== undefined) clearTimeout(timer);
+		for (const state of this.#workers) {
+			if (state.running) {
+				console.error(
+					"event-bus: extension %s worker %s still running at shutdown — abandoned",
+					state.extension,
+					state.worker.name,
+				);
+				state.running = false;
+			}
+		}
 	}
 
 	/**
@@ -618,6 +924,9 @@ export class EventBus {
 	 */
 	async #dispatchLifecycle(event: LifecycleEvent, context: Context): Promise<void> {
 		const type = event.type;
+		// Task 5: wakes tap the lifecycle fan-out — matched and queued HERE,
+		// regardless of whether any extension registered a handler for it.
+		this.#wakeWorkers(event, context);
 		const registered = [...this.#extensions.entries()].filter(
 			([, handlers]) => handlers[type] !== undefined,
 		);

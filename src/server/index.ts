@@ -68,6 +68,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import type { WorkerStatus } from "../harness/event-bus.js";
 import { aggregateHealth, type HealthStatus } from "../harness/health.js";
 import {
 	SettingsStore,
@@ -251,6 +252,12 @@ interface MetaResponse {
 		readonly name: string;
 		readonly status: string;
 		readonly error?: string;
+		/**
+		 * The extension's idle workers (memory-seam Task 5), when it
+		 * declared any; `lastRunAt`/`lastError` stay absent until the
+		 * worker's first run.
+		 */
+		readonly workers?: readonly WorkerStatus[];
 	}[];
 	/**
 	 * §5 health: pure aggregation over boot-retained §3 producers (spec
@@ -471,14 +478,24 @@ export async function createServer(
 	});
 
 	app.get("/v1/meta", async (): Promise<MetaResponse> => {
+		// Idle-worker projection (Task 5): re-derived per request (statuses
+		// change over the process lifetime); quarantined extensions never
+		// registered, so a name miss just yields no workers.
+		const workerStatuses = opened.workerStatuses();
 		return {
 			harnessVersion: HARNESS_VERSION,
 			schemaVersion: SCHEMA_VERSION,
-			extensions: opened.extensionOutcomes.map((outcome) => ({
-				name: outcome.name,
-				status: outcome.status,
-				...(outcome.error === undefined ? {} : { error: outcome.error }),
-			})),
+			extensions: opened.extensionOutcomes.map((outcome) => {
+				const workers = workerStatuses.get(outcome.name);
+				return {
+					name: outcome.name,
+					status: outcome.status,
+					...(outcome.error === undefined ? {} : { error: outcome.error }),
+					...(workers === undefined || workers.length === 0
+						? {}
+						: { workers }),
+				};
+			}),
 			// §5 health (Task 9e): pure aggregation over boot-retained §3
 			// producers — backup from config presence ("configured" iff set;
 			// no runtime backup health signal exists in v1 — the CronJob is
