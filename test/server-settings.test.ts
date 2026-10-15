@@ -24,9 +24,16 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxToolCall,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { InboxDoc, type ConversationId, type HarnessSettings } from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+import {
+	defineTool,
+	InboxDoc,
+	type ConversationId,
+	type HarnessSettings,
+} from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { settingsPath } from "../src/harness/settings.js";
@@ -98,6 +105,34 @@ afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
 });
 
+/**
+ * A `deferred: true` tool (the tool_search load target) plus a loader tool
+ * whose result carries `control.addTools` — the exact pi-durable mechanism
+ * `tool_search` uses (dist tool-search.js writes `control.addTools` for its
+ * matches). Registered per-test via `opened.registry.install`, so the
+ * hazard pin can drive a REAL load through a real tool round.
+ */
+const deferredProbeTool = defineTool({
+	name: "probe_deferred",
+	description: "A deferred tool the loader loads.",
+	parameters: Type.Object({}),
+	deferred: true,
+	async execute() {
+		return { output: [{ type: "text", text: "deferred ran" }] };
+	},
+});
+const loaderProbeTool = defineTool({
+	name: "probe_loader",
+	description: "Loads the deferred probe via control.addTools.",
+	parameters: Type.Object({}),
+	async execute() {
+		return {
+			output: [{ type: "text", text: "loaded probe_deferred" }],
+			control: { addTools: ["probe_deferred"] },
+		};
+	},
+});
+
 const patch = (app: FastifyInstance, body: unknown) =>
 	app.inject({
 		method: "PATCH",
@@ -135,7 +170,9 @@ describe("GET /v1/settings", () => {
 		const { app } = await bootServer();
 		const response = await app.inject({ method: "GET", url: "/v1/settings" });
 		expect(response.statusCode).toBe(200);
-		expect(response.json()).toEqual({});
+		// Every store key defaults — the only content is the server-computed
+		// roster (never persisted; not a settings-file key).
+		expect(response.json()).toEqual({ toolRoster: expect.any(Array) });
 	});
 
 	test("serves the file's contents when present", async () => {
@@ -146,7 +183,9 @@ describe("GET /v1/settings", () => {
 			"utf8",
 		);
 		const response = await app.inject({ method: "GET", url: "/v1/settings" });
-		expect(response.json()).toEqual({ steeringMode: "all" });
+		expect(response.json()).toEqual(
+			expect.objectContaining({ steeringMode: "all" }),
+		);
 	});
 });
 
@@ -155,7 +194,9 @@ describe("PATCH /v1/settings", () => {
 		const { app, settingsDir } = await bootServer();
 		const response = await patch(app, { steeringMode: "all" });
 		expect(response.statusCode).toBe(200);
-		expect(response.json()).toEqual({ steeringMode: "all" });
+		expect(response.json()).toEqual(
+			expect.objectContaining({ steeringMode: "all" }),
+		);
 		// The file on disk carries it (the next boot reads the same value).
 		const file = JSON.parse(
 			await (await import("node:fs/promises")).readFile(
@@ -168,24 +209,28 @@ describe("PATCH /v1/settings", () => {
 			method: "GET",
 			url: "/v1/settings",
 		});
-		expect(readBack.json()).toEqual({ steeringMode: "all" });
+		expect(readBack.json()).toEqual(
+			expect.objectContaining({ steeringMode: "all" }),
+		);
 	});
 
 	test("a second PATCH preserves the first key (merge, not replace)", async () => {
 		const { app } = await bootServer();
 		await patch(app, { steeringMode: "all" });
 		const response = await patch(app, { followUpMode: "all" });
-		expect(response.json()).toEqual({
-			steeringMode: "all",
-			followUpMode: "all",
-		});
+		expect(response.json()).toEqual(
+			expect.objectContaining({
+				steeringMode: "all",
+				followUpMode: "all",
+			}),
+		);
 	});
 
 	test("null clears a key", async () => {
 		const { app } = await bootServer();
 		await patch(app, { steeringMode: "all" });
 		const response = await patch(app, { steeringMode: null });
-		expect(response.json()).toEqual({});
+		expect(response.json()).toEqual({ toolRoster: expect.any(Array) });
 	});
 
 	test("unknown key → 400 invalid_field naming it", async () => {
@@ -235,7 +280,9 @@ describe("PATCH /v1/settings", () => {
 		const read = (
 			await app.inject({ method: "GET", url: "/v1/settings" })
 		).json();
-		expect(read).toEqual({ steeringMode: "all" });
+		expect(read).toEqual(
+			expect.objectContaining({ steeringMode: "all" }),
+		);
 		expect(JSON.parse(
 			await (await import("node:fs/promises")).readFile(
 				settingsPath(settingsDir),
@@ -248,7 +295,7 @@ describe("PATCH /v1/settings", () => {
 		const { app, settingsDir } = await bootServer();
 		const response = await patch(app, { server: { port: 4080 } });
 		expect(response.statusCode).toBe(200);
-		expect(response.json()).toEqual({ server: { port: 4080 } });
+		expect(response.json()).toEqual({ server: { port: 4080 }, toolRoster: expect.any(Array) });
 		// Persisted to the file…
 		const file = JSON.parse(
 			await (await import("node:fs/promises")).readFile(
@@ -262,7 +309,10 @@ describe("PATCH /v1/settings", () => {
 			method: "GET",
 			url: "/v1/settings",
 		});
-		expect(readBack.json()).toEqual({ server: { port: 4080 } });
+		expect(readBack.json()).toEqual({
+			server: { port: 4080 },
+			toolRoster: expect.any(Array),
+		});
 		// Invalid server fields → 400 invalid_field naming the key.
 		for (const [body, field] of [
 			[{ server: { port: "abc" } }, "server.port"],
@@ -295,6 +345,7 @@ describe("PATCH /v1/settings", () => {
 			defaultModel: "faux/m2",
 			defaultProvider: { baseUrl: "https://gw.example/v1" },
 			server: { webuiBundle: "ui/dist" },
+			toolRoster: expect.any(Array),
 		});
 		// Persisted to the file (restart-required: the running boot keeps
 		// its resolved values; these land on the NEXT boot).
@@ -512,7 +563,9 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 				method: "GET",
 				url: "/v1/settings",
 			});
-			expect(fileView.json()).toEqual({ steeringMode: "one-at-a-time" });
+			expect(fileView.json()).toEqual(
+				expect.objectContaining({ steeringMode: "one-at-a-time" }),
+			);
 			const samples = await steerSamples(server, 2);
 			// "all" admission: both steers admitted at the single boundary —
 			// no held-back sample (queued=1 while answers=0, the
@@ -613,5 +666,142 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 			headers: { "content-type": "application/json" },
 		});
 		expect(configured.json().thinkingLevel).toBe("low");
+	});
+
+	test("defaultTools maps to the MODEL-OFFERED filter (modelTools, not tools)", async () => {
+		const { app, opened } = await bootServer();
+		const patched = await patch(app, { defaultTools: ["read"] });
+		expect(patched.statusCode).toBe(200);
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(response.statusCode).toBe(201);
+		const { id } = response.json() as { id: number };
+		const conversation = await opened.harness.conversation(
+			id as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		const agent = await conversation!.agent(BACKGROUND_CONTEXT);
+		// The offered set is exactly the filter (1.2.0's modelTools array
+		// form: "exactly these, in order")...
+		expect(agent.tools.map((tool) => tool.name)).toEqual(["read"]);
+		// ...and the filter is the MODEL-offered one, not the ENABLED one:
+		// bash stays enabled for nested calls (`agent.callable`) — a
+		// `tools` emit would have DISABLED it (callable = [read] only).
+		// This is the two-layer-filter ruling's observable.
+		expect(agent.callable.map((tool) => tool.name)).toContain("bash");
+	});
+
+	test("hazard pin: a control.addTools-loaded deferred tool survives a settings re-write and a configure (no re-apply path)", async () => {
+		const { app, opened, faux } = await bootServer();
+		// The probe pair rides the live registry (the tool_search mechanism).
+		opened.registry.install({
+			name: "test.probe-tools",
+			tools: [deferredProbeTool, loaderProbeTool],
+		});
+		// modelTools set at create; the loader is offered so the faux model
+		// can call it.
+		const patched = await patch(app, {
+			defaultTools: ["read", "probe_loader"],
+		});
+		expect(patched.statusCode).toBe(200);
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(response.statusCode).toBe(201);
+		const { id } = response.json() as { id: number };
+		const conversation = (await opened.harness.conversation(
+			id as ConversationId,
+			BACKGROUND_CONTEXT,
+		))!;
+		// Before the load: the deferred tool is enabled but not offered.
+		const before = await conversation.agent(BACKGROUND_CONTEXT);
+		expect(before.tools.map((tool) => tool.name)).not.toContain(
+			"probe_deferred",
+		);
+		expect(before.deferred.map((tool) => tool.name)).toContain(
+			"probe_deferred",
+		);
+		// Drive the load through a REAL tool round: the faux model calls the
+		// loader, whose result control.addTools-loads the deferred probe
+		// (pi-durable appends the name to the stored modelTools array).
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("probe_loader", {}, { id: "call-load" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("loaded"),
+		]);
+		const submission = await conversation.submit(
+			{ type: "input", content: [{ type: "text", text: "load the probe" }] },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		const loaded = await conversation.agent(BACKGROUND_CONTEXT);
+		expect(loaded.tools.map((tool) => tool.name)).toContain(
+			"probe_deferred",
+		);
+		expect(loaded.deferred.map((tool) => tool.name)).not.toContain(
+			"probe_deferred",
+		);
+		// The hazard levers, BOTH fired: a settings re-write (the panel's
+		// save — the write that re-resolves the store's defaultTools) and a
+		// configure (a model change, the path that re-applies
+		// perModelThinking). Neither may re-apply the store's filter to the
+		// LIVE conversation — a fresh array emit would drop the loaded name.
+		// SETTLED by reading the code: storeAgentChange runs at CREATES only;
+		// configure passes only model/thinkingLevel; this test is the pin.
+		const rewritten = await patch(app, {
+			defaultTools: ["read", "probe_loader"],
+		});
+		expect(rewritten.statusCode).toBe(200);
+		const configured = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${id}/configure`,
+			payload: { model: "faux/m" },
+			headers: { "content-type": "application/json" },
+		});
+		expect(configured.statusCode).toBe(200);
+		const after = await conversation.agent(BACKGROUND_CONTEXT);
+		expect(after.tools.map((tool) => tool.name)).toContain(
+			"probe_deferred",
+		);
+		expect(after.deferred.map((tool) => tool.name)).not.toContain(
+			"probe_deferred",
+		);
+	});
+});
+
+describe("GET /v1/settings toolRoster", () => {
+	test("serves the live registry's tool names (the panel roster)", async () => {
+		const { app, opened } = await bootServer();
+		// A registry install AFTER boot must be reflected — the roster is
+		// computed per request from the live snapshot, never snapshotted at
+		// boot (Tasks 5-7 extension tools appear without panel changes).
+		opened.registry.install({
+			name: "test.probe-tools",
+			tools: [deferredProbeTool, loaderProbeTool],
+		});
+		const response = await app.inject({ method: "GET", url: "/v1/settings" });
+		expect(response.statusCode).toBe(200);
+		const body = response.json() as { toolRoster?: string[] };
+		expect(body.toolRoster).toBeDefined();
+		// The composed tool set: core names (incl. the skills convention's
+		// load_skill) plus the just-installed probes.
+		expect(body.toolRoster).toEqual(
+			expect.arrayContaining([
+				"read",
+				"bash",
+				"load_skill",
+				"probe_deferred",
+				"probe_loader",
+			]),
+		);
 	});
 });

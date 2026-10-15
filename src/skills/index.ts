@@ -290,7 +290,7 @@ async function renderSkills(
 
 /** An explicit tool error: text content the model can read and recover from. */
 function skillError(message: string): ToolExecutionResult {
-	return { content: [{ type: "text", text: message }], isError: true };
+	return { output: [{ type: "text", text: message }], isError: true };
 }
 
 /** The `load_skill` tool: return one SKILL.md's body by name. */

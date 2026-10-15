@@ -284,7 +284,7 @@ export interface ModelsResponse {
 /** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
 export type QueueModeWire = "all" | "one-at-a-time";
 
-/** The `/v1/settings` payload (mirrors `SettingsFile`). */
+/** The `/v1/settings` payload (mirrors `SettingsResponse`: `SettingsFile` + the server-computed roster). */
 export interface SettingsWire {
 	readonly steeringMode?: QueueModeWire;
 	readonly followUpMode?: QueueModeWire;
@@ -301,15 +301,25 @@ export interface SettingsWire {
 	};
 	readonly defaultTools?: readonly string[];
 	readonly perModelThinking?: Readonly<Record<string, string>>;
+	/**
+	 * The live registry's tool names (server-computed per request, never
+	 * persisted): the roster the `defaultTools` checkboxes render over.
+	 * Optional for forward compatibility — a server that omits it falls
+	 * back to the panel's bundled core list.
+	 */
+	readonly toolRoster?: readonly string[];
 }
 
 /**
  * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
  * the key. The server validates per key (unknown key / wrong type → 400
- * `invalid_field`).
+ * `invalid_field`). `toolRoster` is deliberately OMITTED — it is
+ * server-computed, not a settable key; sending it would 400 (`is not a
+ * settable field`), and the type-level Omit makes that unrepresentable
+ * here.
  */
 export type SettingsPatchWire = {
-	readonly [K in keyof SettingsWire]?: SettingsWire[K] | null;
+	readonly [K in keyof Omit<SettingsWire, "toolRoster">]?: SettingsWire[K] | null;
 };
 
 /* -------------------------------------------------------------------------

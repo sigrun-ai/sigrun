@@ -8,8 +8,10 @@
  * `retry`, `stream`) plus sigrun's own resolved fields:
  *
  * - `defaultTools` — a tool-name filter applied at conversation-create
- *   time (the server reads it from the store and passes it as
- *   `agent.tools` names to pi-durable's `AgentChange.tools`).
+ *   time (the server reads it from the store, resolves the names against
+ *   the registry, and passes them as `AgentChange.modelTools` objects —
+ *   the MODEL-OFFERED filter, pi-durable 1.2.0; NOT the enabled filter,
+ *   so filtered-out tools stay callable by nested calls).
  * - `perModelThinking` — per-model thinking-level overrides (`"provider/
  *   modelId": level`), applied by the server at conversation create and
  *   configure.
@@ -164,7 +166,11 @@ export interface SettingsFile {
 		readonly maxRetries?: number;
 		readonly maxRetryDelayMs?: number;
 	};
-	/** Sigrun: tool-name filter applied at conversation creation. */
+	/**
+	 * Sigrun: tool-name filter applied at conversation creation; maps to
+	 * pi-durable 1.2.0's `AgentChange.modelTools` (the model-offered
+	 * filter — never the enabled filter `AgentChange.tools`).
+	 */
 	readonly defaultTools?: readonly string[];
 	/**
 	 * Sigrun: per-model thinking-level overrides, keyed by

@@ -302,6 +302,36 @@ export interface ResolvedExtensionInput {
 }
 
 /**
+ * Scan the installed registry snapshot for tool names registered by more
+ * than one extension, and `console.warn` each collision (Task 7, spec
+ * slice 4): pi-durable resolves tools by NAME (`resolveAgent` composes a
+ * name→tool map in install order, so the LAST registration wins and the
+ * earlier one is shadowed silently). The scan changes nothing — last-wins
+ * is pi-durable's behavior — it only makes the shadowing visible at boot,
+ * which is the surface a deployer needs to notice a co-installed
+ * replacement extension (the slice-4 replacement contract is "do not
+ * co-install", so any collision here is a configuration mistake).
+ */
+function warnToolNameCollisions(registry: Registry): void {
+	const byName = new Map<string, { extension: string }[]>();
+	for (const { extension, tool } of registry.snapshot().tools()) {
+		const owners = byName.get(tool.name) ?? [];
+		owners.push({ extension: extension.name });
+		byName.set(tool.name, owners);
+	}
+	for (const [toolName, owners] of byName) {
+		if (owners.length < 2) continue;
+		const names = owners.map((owner) => owner.extension).join(", ");
+		console.warn(
+			`sigrun: duplicate tool name "${toolName}" registered by extensions ` +
+				`[${names}]; the last-listed registration wins (pi-durable resolves ` +
+				`tool names last-selected-wins) — do not co-install extensions ` +
+				`that register the same tool name`,
+		);
+	}
+}
+
+/**
  * Load and install every configured extension, quarantining failures.
  *
  * @param specifiers package specifiers from `SIGRUN_EXTENSIONS` (npm names,
@@ -420,5 +450,8 @@ const display = label ?? entry;
 			// `extensions[].status`, never double-reported.
 		}
 	}
+	// After all installs: surface tool-name collisions across extensions
+	// (last-wins is pi-durable's resolution — unchanged, only warned).
+	warnToolNameCollisions(registry);
 	return { outcomes, healthProducers, submitBindings };
 }

@@ -255,6 +255,9 @@ describe("chart Deployment", () => {
 	});
 
 	test("resources: 1Gi memory limit (requests/limits present)", () => {
+		// 512Mi request / 1Gi limit — shared with the codemode sandbox's
+		// in-process wasm guest heap (the codemode-parity sizing, carried
+		// into the chart values).
 		expect(container.resources.requests.memory).toBe("512Mi");
 		expect(container.resources.limits.memory).toBe("1Gi");
 	});

@@ -139,44 +139,49 @@ type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 /**
  * The agent change every server-side conversation create applies (Task 8b):
  * the boot default model, plus the settings store's sigrun-resolved fields —
- * `defaultTools` (a tool-NAME filter; pi-durable's `AgentChange.tools`
- * accepts names and resolves them against the composed selection) and
+ * `defaultTools` (a tool-NAME filter mapped to pi-durable 1.2.0's
+ * `AgentChange.modelTools`, the MODEL-OFFERED filter — NOT
+ * `AgentChange.tools`, the enabled filter: filtering the offered set never
+ * disables a tool for nested calls, the two-layer-filter ruling) and
  * `perModelThinking`'s override for THAT model (applied at create because
  * the model is known here; configure re-applies on every model change).
  * Both come from the STORE (re-read here), so a PATCHed settings file
- * reaches conversations created afterwards without a restart.
+ * reaches conversations created afterwards without a restart. Applies at
+ * CREATES only — configure never re-applies the tool filter, so a
+ * `control.addTools`-loaded deferred tool in a LIVE conversation's stored
+ * filter is never clobbered (the Task 3 hazard pin).
  */
 function storeAgentChange(
 	opened: OpenedHarness,
 	model: ModelRef | undefined,
 ): AgentChange {
 	const settings = opened.settings.read();
-	const modelTools = settings.defaultTools;
-	// `AgentChange.tools` takes ToolRegistration OBJECTS (pi-durable's
+	const filter = settings.defaultTools;
+	// `AgentChange.modelTools` takes ToolRegistration OBJECTS (pi-durable's
 	// applyChange maps `item.name`), so resolve the store's names against
 	// the registry snapshot's composed tool set. An unregistered name in
 	// the filter is a config drift: dropped here (resolveAgent's own
 	// behavior for an unknown stored name), never a boot failure — but
 	// dropped LOUDLY: a user writing `"my-ext-tool"` into the settings
 	// file deserves to know the name resolved to nothing.
-	let tools: ToolRegistration[] | undefined;
-	if (modelTools !== undefined) {
+	let modelTools: ToolRegistration[] | undefined;
+	if (filter !== undefined) {
 		const registered = new Set(
 			opened.registry
 				.snapshot()
 				.tools()
 				.map((entry) => entry.tool.name),
 		);
-		const dropped = modelTools.filter((name) => !registered.has(name));
+		const dropped = filter.filter((name) => !registered.has(name));
 		if (dropped.length > 0) {
 			console.warn(
 				`settings: dropping unregistered defaultTools name(s): ${dropped.join(", ")} (not in the composed tool set)`,
 			);
 		}
-		tools = opened.registry
+		modelTools = opened.registry
 			.snapshot()
 			.tools()
-			.filter((entry) => modelTools.includes(entry.tool.name))
+			.filter((entry) => filter.includes(entry.tool.name))
 			.map((entry) => entry.tool);
 	}
 	const thinking =
@@ -185,7 +190,12 @@ function storeAgentChange(
 			: undefined;
 	return {
 		...(model === undefined ? {} : { model }),
-		...(tools === undefined || tools.length === 0 ? {} : { tools }),
+		// An EMPTY stored array keeps every tool (an empty emit would offer
+		// the model nothing — the same guard the panel's none-on note leans
+		// on), so the emit is skipped when nothing resolved.
+		...(modelTools === undefined || modelTools.length === 0
+			? {}
+			: { modelTools }),
 		// The store validates every level against pi-ai's union, so this
 		// unsound-looking cast is checked at every write.
 		...(thinking === undefined
@@ -205,9 +215,33 @@ const ID_PARAMS_SCHEMA = {
 /**
  * The `GET/PATCH /v1/settings` payload (Task 8b): the settings file's
  * effective contents — the `HarnessSettings` pass-throughs plus the
- * sigrun-resolved fields. Absent file = `{}` (every default).
+ * sigrun-resolved fields — plus `toolRoster`, the registry-driven roster
+ * the settings panel renders `defaultTools` over (Task 3, codemode
+ * parity). Absent file = every default; the roster is SERVER-COMPUTED
+ * from the live registry snapshot per request (never persisted, never
+ * snapshotted at boot), so extension tools installed later — codemode,
+ * tool_search — appear without panel changes. `toolRoster` is NOT a
+ * settable key: the store's validation rejects it on PATCH (400
+ * `invalid_field`), and the wire patch type Omits it.
  */
-export type SettingsResponse = SettingsFile;
+export interface SettingsResponse extends SettingsFile {
+	/** The live registry snapshot's composed tool names, deduplicated. */
+	readonly toolRoster: readonly string[];
+}
+
+/** The settings response over the live store + registry snapshot. */
+function settingsResponse(opened: OpenedHarness): SettingsResponse {
+	const names = opened.registry
+		.snapshot()
+		.tools()
+		.map((entry) => entry.tool.name);
+	// Names may repeat across extensions (RegistrySnapshot.tools); the
+	// panel keys checkboxes by name, so dedupe.
+	return {
+		...opened.settings.read(),
+		toolRoster: [...new Set(names)],
+	};
+}
 
 /** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
 interface MetaResponse {
@@ -1748,7 +1782,7 @@ export async function createServer(
 	// follow the repo's PATCH conventions: 400 `invalid_field` naming the
 	// key (unknown key, wrong type), 400 `invalid_body` for a non-object.
 	app.get("/v1/settings", async (): Promise<SettingsResponse> => {
-		return opened.settings.read();
+		return settingsResponse(opened);
 	});
 
 	app.patch("/v1/settings", async (request, reply): Promise<SettingsResponse> => {
@@ -1762,7 +1796,8 @@ export async function createServer(
 			return await reply.code(400).send({ error: "invalid_body" });
 		}
 		try {
-			return opened.settings.update(body);
+			opened.settings.update(body);
+			return settingsResponse(opened);
 		} catch (error) {
 			if (error instanceof SettingsValidationError) {
 				return await reply
