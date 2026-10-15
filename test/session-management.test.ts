@@ -141,7 +141,7 @@ describe("POST /v1/conversations/:id/fork", () => {
 		expect(body.view.entries.map((e: { id: number }) => e.id)).toEqual(
 			kept.map((e: { id: number }) => e.id),
 		);
-		// The fork is tracked: it lists.
+		// The fork is durable: it lists (Task 3's scan, not a tracked set).
 		const listed = (
 			await app.inject({ method: "GET", url: "/v1/conversations" })
 		).json();

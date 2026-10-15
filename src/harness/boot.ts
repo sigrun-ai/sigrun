@@ -15,6 +15,7 @@ import {
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
+	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
@@ -53,6 +54,16 @@ const IDLE_SWEEP_MS = 1_000;
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
 	readonly harness: Harness;
+	/**
+	 * The durable storage handle the harness was opened over — the same
+	 * instance the Session owns and closes on `harness.close()`. Exposed so
+	 * the server's conversation listing scans ALL durable conversations
+	 * (the harness itself has no enumeration): `scanConversations` reads
+	 * committed state directly, so conversations created by other processes
+	 * or before a restart list. Callers must not close it — the harness's
+	 * close owns that.
+	 */
+	readonly storage: Storage;
 	readonly registry: Registry;
 	/** The merged `Models` store generation dispatches through. */
 	readonly models: Models;
@@ -509,6 +520,7 @@ export async function openHarness(
 	harness.resume();
 	return {
 		harness,
+		storage,
 		registry,
 		models,
 		defaultModel,
