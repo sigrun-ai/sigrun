@@ -302,7 +302,6 @@ describe("settle detection", () => {
 			],
 		});
 		let handlerStarted = false;
-		let handlerFinished = false;
 		bus.onSettled(() => {
 			handlerStarted = true;
 			return new Promise<void>(() => {
@@ -320,11 +319,9 @@ describe("settle detection", () => {
 		// the commit listener never waits on the drain loop.
 		const second = await runTurn(root, "two");
 		expect(second.record.status).toBe("done");
-		expect(handlerFinished).toBe(false);
 
 		// Bounded cleanup: both events abandon at the 50ms deadline.
 		await draining;
-		expect(handlerFinished).toBe(false);
 	});
 
 	test("queue overflow drops the oldest event and logs (queueMax honored)", async () => {

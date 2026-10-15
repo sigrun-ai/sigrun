@@ -40,12 +40,21 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type {
-	CommitPublication,
-	ConversationId,
-	EntryId,
-	Harness,
-	SubmissionId,
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+	AssistantEntry,
+	UserEntry,
+	type CommitPublication,
+	type ConversationDocToken,
+	type ConversationId,
+	type Cursor,
+	type EntryId,
+	type EntryQuery,
+	type EntryRecord,
+	type Harness,
+	type JsonObject,
+	type Page,
+	type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
@@ -76,13 +85,66 @@ export type LifecycleEvent =
 			readonly archived: boolean;
 	  };
 
+/**
+ * The extension-facing settled-run event (memory-seam Task 3): one per
+ * settled run, with the run's input texts host-resolved from the durable
+ * transcript. `inputTexts` is position-paired with `inputs` — an input
+ * whose entry is unresolvable (withdrawn while queued, withdrawn entry,
+ * read failure) contributes `""` at its position, never a reorder.
+ */
+export type RunSettledEvent = {
+	readonly conversationId: ConversationId;
+	readonly inputs: readonly SubmissionId[];
+	/** Text blocks of each input's `pi.user` entry, concatenated; unresolvable/withdrawn → "" at that position. */
+	readonly inputTexts: readonly string[];
+	readonly outcome:
+		| {
+				readonly status: "answered";
+				readonly answerEntryId: EntryId;
+				readonly answer: AssistantMessage;
+		  }
+		| { readonly status: "unanswered"; readonly reason: string };
+};
+
+/**
+ * The narrowed read surface a `runSettled` handler receives: exactly
+ * `entry` / `entries` / `document` over the settled conversation — no
+ * `taskId`, no `memo`, no `conversationId` (the event carries those).
+ * Structural rather than a `Pick`: pi-durable 1.2.0's `DocumentReader` is
+ * itself `Pick<Session, "snapshot" | "snapshotAsOf">`, so the brief's
+ * member set is expressed directly. `entries` mirrors `Conversation.entries`
+ * (the conversation is implicit); `document` is the committed conversation
+ * doc read (`Session.snapshot` semantics).
+ */
+export type MemoryEventApi = {
+	/** One visible entry of the settled conversation by exact id (`undefined` when absent). */
+	entry(id: EntryId, context: Context): Promise<EntryRecord | undefined>;
+	/** Fork-aware entry history of the settled conversation. */
+	entries(
+		query: Omit<EntryQuery, "conversationId">,
+		limit: number,
+		cursor: Cursor | undefined,
+		context: Context,
+	): Promise<Page<EntryRecord, Cursor>>;
+	/** Committed conversation-document read. */
+	document<T extends JsonObject>(
+		token: ConversationDocToken<T>,
+		conversationId: ConversationId,
+		context: Context,
+	): Promise<Readonly<T> | undefined>;
+};
+
+/** A loaded extension's `runSettled` handler, as the loader validated it. */
+export type ExtensionRunSettledHandler = (
+	event: RunSettledEvent,
+	api: MemoryEventApi,
+	context: Context,
+) => void | Promise<void>;
+
 /** Internal queue item: which handler list an event dispatches through. */
 type BusEvent =
 	| { readonly kind: "settled"; readonly event: SettleGroup }
 	| { readonly kind: "lifecycle"; readonly event: LifecycleEvent };
-
-/** One queued event kind, for logs. */
-type EventKind = BusEvent["kind"];
 
 /**
  * The commit-observation side lane. One instance per harness; open after
@@ -98,11 +160,17 @@ export class EventBus {
 	}
 
 	#unsubscribe: () => void;
+	#harness: Harness;
 	#queueMax: number;
 	#hookDeadlineMs: number;
 	#queue: BusEvent[] = [];
 	#settleHandlers: ((event: SettleGroup) => void | Promise<void>)[] = [];
 	#lifecycleHandlers: ((event: LifecycleEvent) => void | Promise<void>)[] = [];
+	/** Extension name → its handlers (the loader-validated factory-result fields). */
+	#extensions = new Map<
+		string,
+		{ readonly runSettled?: ExtensionRunSettledHandler }
+	>();
 	/** Per-conversation `archived` flip baseline (the last value a change was measured against). */
 	#archivedBasis = new Map<ConversationId, boolean>();
 	/** The single drain loop, when one is running. */
@@ -113,6 +181,7 @@ export class EventBus {
 		harness: Harness,
 		options: { queueMax: number; hookDeadlineMs: number },
 	) {
+		this.#harness = harness;
 		this.#queueMax = options.queueMax;
 		this.#hookDeadlineMs = options.hookDeadlineMs;
 		this.#unsubscribe = harness.subscribeCommits((publication) => {
@@ -143,14 +212,32 @@ export class EventBus {
 	}
 
 	/**
+	 * Register one loaded extension's handlers under its FINAL resolved
+	 * name (boot calls this per loaded extension after `Harness.open`).
+	 * A same-name registration replaces the previous one (the reinstall
+	 * path). Returns its unsubscribe.
+	 */
+	public registerExtension(
+		name: string,
+		handlers: { readonly runSettled?: ExtensionRunSettledHandler },
+	): () => void {
+		this.#extensions.set(name, handlers);
+		return () => {
+			if (this.#extensions.get(name) === handlers) {
+				this.#extensions.delete(name);
+			}
+		};
+	}
+
+	/**
 	 * Drain pending events through the handlers, each deadline-bounded.
 	 * Concurrent calls share ONE loop (the single side-lane worker); each
 	 * call resolves when that loop empties the queue or its own deadline
 	 * fires — whichever comes first. `context` is the drain's caller
-	 * context; Task 3 forwards it to extension handlers.
+	 * context, forwarded to the extension handlers the loop dispatches;
+	 * the loop keeps the context of the drain that started it.
 	 */
 	public drain(deadlineMs: number, context: Context): Promise<void> {
-		void context;
 		if (this.#closed) return Promise.resolve();
 		if (this.#loop === undefined) {
 			// The clearing hook runs on a MICROTASK after the assignment
@@ -159,7 +246,7 @@ export class EventBus {
 			// assignment (an empty pump completes synchronously, its finally
 			// would clear `#loop` BEFORE the assignment stores the settled
 			// promise) and wedge every later drain on an already-settled loop.
-			const run = this.#pump().finally(() => {
+			const run = this.#pump(context).finally(() => {
 				if (this.#loop === run) this.#loop = undefined;
 			});
 			this.#loop = run;
@@ -303,38 +390,205 @@ export class EventBus {
 	}
 
 	/** The single side-lane worker: pop in publication order until empty or closed. */
-	async #pump(): Promise<void> {
+	async #pump(context: Context): Promise<void> {
 		for (;;) {
 			if (this.#closed) return;
 			const next = this.#queue.shift();
 			if (next === undefined) return;
-			await this.#dispatch(next);
+			await this.#dispatch(next, context);
 		}
 	}
 
 	/** Run one event's handlers sequentially in install order. */
-	async #dispatch(item: BusEvent): Promise<void> {
+	async #dispatch(item: BusEvent, context: Context): Promise<void> {
 		if (item.kind === "settled") {
 			for (const handler of this.#settleHandlers) {
-				await this.#bounded(handler, item.event, "settled");
+				const handlerRef = handler;
+				await this.#bounded("settled", () => handlerRef(item.event));
 			}
+			await this.#dispatchRunSettled(item.event, context);
 		} else {
 			for (const handler of this.#lifecycleHandlers) {
-				await this.#bounded(handler, item.event, "lifecycle");
+				const handlerRef = handler;
+				await this.#bounded("lifecycle", () => handlerRef(item.event));
 			}
 		}
 	}
 
 	/**
-	 * One handler call: resolved by the handler or the hook deadline,
-	 * whichever first. An abandoned handler's eventual rejection is
-	 * swallowed here (it already lost the race; nobody can observe it).
+	 * Fan one settled group out to every registered extension's
+	 * `runSettled`, as a resolved `RunSettledEvent`. The raw `SettleGroup`
+	 * handlers above have already run; entry reads happen HERE, on the
+	 * drain loop — never in the commit listener (the upstream contract).
 	 */
-	#bounded<T>(
-		handler: (event: T) => void | Promise<void>,
-		event: T,
-		kind: EventKind,
-	): Promise<void> {
+	async #dispatchRunSettled(group: SettleGroup, context: Context): Promise<void> {
+		const registered = [...this.#extensions.entries()].filter(
+			([, handlers]) => handlers.runSettled !== undefined,
+		);
+		if (registered.length === 0) return;
+		let event: RunSettledEvent;
+		try {
+			event = await this.#resolveRunSettled(group, context);
+		} catch (error) {
+			console.error("event-bus: runSettled resolution failed:", error);
+			return;
+		}
+		const api = this.#apiFor(group.conversationId);
+		for (const [name, handlers] of registered) {
+			const runSettled = handlers.runSettled!;
+			await this.#bounded(`extension ${name} runSettled`, () =>
+				runSettled(event, api, context),
+			);
+		}
+	}
+
+	/**
+	 * Resolve one group into the extension-facing event: per-input text
+	 * (any failure → `""` at that position) and the run outcome. A group is
+	 * one run's inputs settling in one commit, so the outcome is the run's:
+	 * answered only when EVERY input answered (they share the run's final
+	 * answer — the last record's), otherwise unanswered with the first
+	 * unanswered record's reason. An answer entry that cannot be read
+	 * (immutable once committed; defensive) downgrades to unanswered.
+	 */
+	async #resolveRunSettled(
+		group: SettleGroup,
+		context: Context,
+	): Promise<RunSettledEvent> {
+		const inputs: SubmissionId[] = [];
+		const inputTexts: string[] = [];
+		for (const one of group.settled) {
+			inputs.push(one.id);
+			inputTexts.push(
+				one.entryId === undefined
+					? ""
+					: await this.#entryText(group.conversationId, one.entryId, context),
+			);
+		}
+		const all = group.settled;
+		const everyAnswered =
+			all.length > 0 && all.every((one) => one.status === "done");
+		if (everyAnswered) {
+			const last = all[all.length - 1]!;
+			const answerEntryId = last.answerEntryId!;
+			const entry = await this.#readEntry(
+				group.conversationId,
+				answerEntryId,
+				context,
+			);
+			const message =
+				entry !== undefined && AssistantEntry.is(entry)
+					? entry.model?.[0]
+					: undefined;
+			if (message !== undefined && message.role === "assistant") {
+				return {
+					conversationId: group.conversationId,
+					inputs,
+					inputTexts,
+					outcome: { status: "answered", answerEntryId, answer: message },
+				};
+			}
+			console.error(
+				"event-bus: answer entry %s could not be resolved — outcome downgraded",
+				String(answerEntryId),
+			);
+		}
+		const firstUnanswered = all.find((one) => one.status === "unanswered");
+		return {
+			conversationId: group.conversationId,
+			inputs,
+			inputTexts,
+			outcome: {
+				status: "unanswered",
+				reason: firstUnanswered?.reason ?? "unanswered",
+			},
+		};
+	}
+
+	/** One visible entry by exact id (`undefined` on absence or read failure). */
+	async #readEntry(
+		conversationId: ConversationId,
+		id: EntryId,
+		context: Context,
+	): Promise<EntryRecord | undefined> {
+		try {
+			const conversation = await this.#harness.conversation(
+				conversationId,
+				context,
+			);
+			if (conversation === undefined) return undefined;
+			const page = await conversation.entries(
+				{ minEntryId: id, maxEntryId: id },
+				1,
+				undefined,
+				context,
+			);
+			return page.items[0];
+		} catch (error) {
+			console.error("event-bus: entry read failed:", error);
+			return undefined;
+		}
+	}
+
+	/** The input text of one entry: `pi.user` `model[0]`'s text blocks joined. */
+	async #entryText(
+		conversationId: ConversationId,
+		id: EntryId,
+		context: Context,
+	): Promise<string> {
+		const entry = await this.#readEntry(conversationId, id, context);
+		if (entry === undefined || !UserEntry.is(entry)) return "";
+		const message = entry.model?.[0];
+		if (message === undefined || message.role !== "user") return "";
+		if (typeof message.content === "string") return message.content;
+		return message.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("");
+	}
+
+	/** The narrowed read surface handed to `runSettled` handlers. */
+	#apiFor(conversationId: ConversationId): MemoryEventApi {
+		const harness = this.#harness;
+		return {
+			entry: (id, context) => this.#readEntry(conversationId, id, context),
+			entries: (query, limit, cursor, context) =>
+				this.#entriesOf(conversationId, query, limit, cursor, context),
+			// The snapshot overloads are generic per call; the narrowed shape
+			// carries one conversation-doc read, forwarded verbatim.
+			document: ((token: ConversationDocToken<JsonObject>, id: ConversationId, context: Context) =>
+				harness.snapshot(token, id, context)) as MemoryEventApi["document"],
+		};
+	}
+
+	/** `Conversation.entries` over the settled conversation (read failures resolve empty). */
+	async #entriesOf(
+		conversationId: ConversationId,
+		query: Omit<EntryQuery, "conversationId">,
+		limit: number,
+		cursor: Cursor | undefined,
+		context: Context,
+	): Promise<Page<EntryRecord, Cursor>> {
+		try {
+			const conversation = await this.#harness.conversation(
+				conversationId,
+				context,
+			);
+			if (conversation === undefined) return { items: [] };
+			return await conversation.entries(query, limit, cursor, context);
+		} catch (error) {
+			console.error("event-bus: entries read failed:", error);
+			return { items: [] };
+		}
+	}
+
+	/**
+	 * One handler call: resolved by the call or the hook deadline,
+	 * whichever first. An abandoned handler's eventual rejection is
+	 * logged here (`failed` below runs before the no-op `finish`) — it
+	 * already lost the race, and nobody else can observe it.
+	 */
+	#bounded(label: string, call: () => void | Promise<void>): Promise<void> {
 		return new Promise<void>((resolve) => {
 			let settled = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -347,7 +601,7 @@ export class EventBus {
 			timer = setTimeout(() => {
 				console.error(
 					"event-bus: %s handler exceeded the %dms hook deadline — abandoned",
-					kind,
+					label,
 					this.#hookDeadlineMs,
 				);
 				finish();
@@ -355,17 +609,17 @@ export class EventBus {
 			// A handler may throw synchronously; that is the same failure as a
 			// rejected promise and must not escape into the drain loop.
 			const failed = (error: unknown) => {
-				console.error("event-bus: %s handler failed:", kind, error);
+				console.error("event-bus: %s handler failed:", label, error);
 				finish();
 			};
-			let call: void | Promise<void>;
+			let result: void | Promise<void>;
 			try {
-				call = handler(event);
+				result = call();
 			} catch (error) {
 				failed(error);
 				return;
 			}
-			Promise.resolve(call).then(finish, failed);
+			Promise.resolve(result).then(finish, failed);
 		});
 	}
 }

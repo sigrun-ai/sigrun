@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
+import { EventBus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { AuthStore } from "./auth.js";
@@ -45,6 +46,13 @@ import {
 	toHarnessEnv,
 	type EnvBuilder,
 } from "./workspace.js";
+
+/**
+ * Memory-seam bus bounds (Task 6 lifts these into `SIGRUN_*` config
+ * knobs: `SIGRUN_QUEUE_MAX`, `SIGRUN_HOOK_DEADLINE`).
+ */
+const EVENT_QUEUE_MAX = 1_000;
+const HOOK_DEADLINE_MS = 30_000;
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
@@ -143,6 +151,14 @@ export interface OpenedHarness {
 	readonly seamHosts: ReadonlyMap<string, SeamHost>;
 	/** The kinds each loaded extension declared, keyed by extension name. */
 	readonly seamKinds: ReadonlyMap<string, DeclaredKinds>;
+	/**
+	 * The memory-seam event bus (Tasks 2-3): opened on the booted harness
+	 * BEFORE `resume()` (recovery settles are observed), with each loaded
+	 * extension's `runSettled` registered under its final name. Delivery
+	 * is boot-scheduled: every commit schedules a debounced drain on the
+	 * next macrotask. Task 4 adds lifecycle handlers beside it.
+	 */
+	readonly eventBus: EventBus;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -268,6 +284,7 @@ export async function openHarness(
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
 		submitBindings: extensionSubmits,
+		runSettledBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -277,6 +294,9 @@ export async function openHarness(
 				// Second call for an already-created host: re-key IN PLACE. The
 				// instance the factory captured (stored under "" pre-resolution)
 				// must be the final host (review M2) — never a second instance.
+				// The first `??` arm (a host already filed under this extension's
+				// own name) is reachable only on same-name re-install — an
+				// out-of-contract path the registry permits but config should not.
 				const host =
 					seamHosts.get(extensionName) ??
 					seamHosts.get("") ??
@@ -285,7 +305,10 @@ export async function openHarness(
 						harness: harnessOf,
 					});
 				host.rekey({ name: extensionName }, kinds);
+				// Both maps key by final name only: drop the "" placeholder
+				// entries (asymmetric leftover — seamKinds kept one per load).
 				seamHosts.delete("");
+				seamKinds.delete("");
 				seamHosts.set(extensionName, host);
 				seamKinds.set(extensionName, kinds);
 				return host;
@@ -394,6 +417,35 @@ export async function openHarness(
 	// after boot completes finds the harness immediately; one issued from a
 	// post-open async factory path waits on this same promise.
 	bindHarness(harness);
+	// The memory-seam event bus (Tasks 2-3): subscribe BEFORE `resume()` so
+	// recovery settles (faulted/orphaned submissions the scheduler drains)
+	// are observed like any other commit. Extension `runSettled` handlers
+	// register under their final resolved names — the loader retained the
+	// bindings paired with the installed extensions.
+	const eventBus = EventBus.open(harness, {
+		queueMax: EVENT_QUEUE_MAX,
+		hookDeadlineMs: HOOK_DEADLINE_MS,
+	});
+	for (const binding of runSettledBindings) {
+		eventBus.registerExtension(binding.extension.name, {
+			runSettled: binding.runSettled,
+		});
+	}
+	// Delivery scheduling: the bus itself stays passive (Task 2's
+	// contract — `drain()` is the only pump); boot owns when drains run.
+	// Every commit (bus events or not) schedules one debounced drain on
+	// the next macrotask — unref'd so a bare boot never holds the process
+	// open, and a no-op once the queue is found empty. Events enqueued
+	// while a drain is already pumping are picked up by that same loop.
+	let drainTimer: ReturnType<typeof setTimeout> | undefined;
+	harness.subscribeCommits(() => {
+		if (drainTimer !== undefined) return;
+		drainTimer = setTimeout(() => {
+			drainTimer = undefined;
+			void eventBus.drain(HOOK_DEADLINE_MS, BACKGROUND_CONTEXT);
+		});
+		drainTimer.unref?.();
+	});
 	harness.resume();
 	return {
 		harness,
@@ -413,5 +465,6 @@ export async function openHarness(
 		packagesDir,
 		seamHosts,
 		seamKinds,
+		eventBus,
 	};
 }
