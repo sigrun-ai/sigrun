@@ -513,17 +513,18 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		"a server-driven submit binds the memory recall source (memory_recall answers)",
 		{ timeout: 60_000 },
 		async () => {
-			// T26a Fix B: the memory extension's wiring submit binds the
-			// conversation as the recall source at the submit boundary
-			// (degenerate.js: hosts submit through the wiring's submit()). The
-			// server must route submissions through it (OpenedHarness.memorySubmit,
-			// identity-matched to the section owner like memoryHealth) — else the
-			// memory_recall tool answers "No conversation bound to memory recall
-			// yet." on every call.
+			// Memory-seam port (Task 7): the real memory extension retired its
+			// submit pass-through (capture + the recall-source binding ride the
+			// host's runSettled event). This test pins the LEGACY loader contract:
+			// the fixture keeps its factory-result submit, boot still exposes it
+			// as OpenedHarness.memorySubmit (identity-matched to the section owner
+			// like memoryHealth), and the server still routes submissions through
+			// it when present — a pre-seam extension's recall binding must keep
+			// working.
 			const { app, opened, faux } = await bootExtendedServer({
 				extensionSpecifiers: [MEMORY_FIXTURE_SPECIFIER],
 			});
-			// Boot exposed the memory wiring's submit (identity-matched).
+			// Boot exposed the memory wiring's legacy submit (identity-matched).
 			expect(opened.memorySubmit).toBeDefined();
 			faux.setResponses([
 				fauxAssistantMessage("an unremarkable answer"),
@@ -549,9 +550,11 @@ describe("POST /v1/conversations/:id/submissions", () => {
 				BACKGROUND_CONTEXT,
 			);
 			expect(result.isError).toBeUndefined();
-			// The pinned sigrun-ext-memory-markdown (Task 2's working tree, pin
-			// bump in Task 8) still speaks pi-durable 1.0.2's `content` shape;
-			// read whichever channel the direct call actually returned.
+			// The fixture speaks the LEGACY (pre-seam) tool-result shape — its
+			// execute returns `content` — while seam-era extensions return
+			// pi-durable 1.2's `output`; read whichever channel the direct call
+			// actually returned (the assertion is the transcript read, not the
+			// result envelope).
 			const raw = result as { output?: unknown; content?: unknown };
 			const blocks = (raw.output ?? raw.content ?? []) as {
 				type: string;

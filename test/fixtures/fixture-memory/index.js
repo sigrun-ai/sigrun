@@ -7,12 +7,19 @@
  * `long-term-memory` section, and the factory-result `submit` pass-through
  * that binds the conversation as the recall source at the submit boundary.
  *
+ * LEGACY CONTRACT: the real package (sigrun-ext-memory-markdown 0.2+) retired
+ * its `submit` pass-through — capture rides the host's `runSettled` seam event
+ * and the recall source arrives with that delivery. This fixture KEEPS the
+ * legacy `{ extension, submit }` factory shape on purpose: it pins the
+ * loader's legacy submit pass-through contract (`OpenedHarness.memorySubmit`),
+ * which the loader still supports for pre-seam extensions.
+ *
  * Plain JavaScript so `import(specifier)` resolves it directly — the same
  * dynamic-import path the loader uses for installed packages. Contract: the
- * default export is a factory returning `{ extension, submit }`.
+ * default export is a factory returning `{ extension, submit }` (LEGACY).
  *
- * Mirrors: sigrun-ext-memory-markdown dist/degenerate.js (keep in lockstep
- * when the real package's semantics change).
+ * Mirrors: sigrun-ext-memory-markdown dist/degenerate.js pre-seam (the
+ * current real package captures via runSettled — do not port that here).
  */
 
 import {
