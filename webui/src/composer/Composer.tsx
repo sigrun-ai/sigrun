@@ -570,6 +570,22 @@ export function Composer(props: {
 				interactions={interactions}
 				client={client}
 				onError={(message) => setError(message)}
+				onAnswered={() => {
+					// Optimistic immediate refetch — the view-frame cadence
+					// only fires while a stream runs; an answer must clear
+					// its card now, not on the next frame.
+					if (conversationId === null) return;
+					client
+						.listInteractions(conversationId)
+						.then((response) =>
+							setInteractions(
+								(response.interactions ?? []).filter(
+									(i) => i.status === "pending",
+								),
+							),
+						)
+						.catch(() => undefined);
+				}}
 			/>
 			{error !== null && <p role="alert">{error}</p>}
 			{notice !== null && (

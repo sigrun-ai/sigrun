@@ -77,30 +77,23 @@ test.describe("item 3: steer", () => {
 // ---------------------------------------------------------------------------
 // Item 4: approve a write/exec tool; deny a write tool; see the denial.
 // ---------------------------------------------------------------------------
-test.describe("item 4: approvals", () => {
+test.describe("item 4: approvals (the interaction seam)", () => {
+	// POST-STRIP: the approvals IMPLEMENTATION is extension-owned
+	// (sigrun-ext-approvals was never shipped to npm; the git dep is gone
+	// from devDependencies). The webui's approval card is now the GENERIC
+	// interaction card (docs/approval-ux-seams.md) driven by the seam
+	// fixture — same human flow: an option card appears while a tool call
+	// is gated, the human allows, the next gate denies, the transcript
+	// reflects both.
 	let server: E2EServer;
 	test.beforeAll(async () => {
-		// load_skill is gated by the default approvals policy. TWO gated calls:
-		// the first is approved, the second denied.
 		server = await bootE2EServer({
-			extensionSpecifiers: ["sigrun-ext-approvals"],
+			extensionSpecifiers: [
+				new URL("../../test/fixtures/fixture-seam-visual/index.js", import.meta.url)
+					.href,
+			],
 			responses: [
-				fauxAssistantMessage(
-					[
-						{ type: "text", text: "let me load the skill" },
-						fauxToolCall("load_skill", { name: "demo" }, { id: "call-approve" }),
-					],
-					{ stopReason: "toolUse" },
-				),
-				// After the approval, the model asks for a SECOND gated tool.
-				fauxAssistantMessage(
-					[
-						{ type: "text", text: "now another" },
-						fauxToolCall("load_skill", { name: "demo2" }, { id: "call-deny" }),
-					],
-					{ stopReason: "toolUse" },
-				),
-				fauxAssistantMessage("the denial landed"),
+				fauxAssistantMessage("ready for the gated calls"),
 			],
 		});
 	});
@@ -108,30 +101,65 @@ test.describe("item 4: approvals", () => {
 		await server.cleanup();
 	});
 
-	test("approve a gated tool, then deny one and see the denial reflected", async ({
+	test("seed two gates: allow one, deny the other, see both reflected", async ({
 		page,
 	}) => {
-		await page.goto(server.url);
-		await expect(page.locator(".composer-input")).toBeEnabled();
-		await page.locator(".composer-input").pressSequentially("load the demo skill");
-		await page.locator(".composer-send").click();
-		// The approval card appears (the gated load_skill call).
-		const card = page.locator(".approval-card").first();
-		await expect(card).toBeVisible({ timeout: 15_000 });
-		await expect(card.locator(".approval-card-title")).toContainText(
-			"load_skill",
+		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+		const host = server.opened.seamHosts.get("sigrun.fixture-visual");
+		if (host === undefined) throw new Error("seam host missing");
+		// Two warden-style confirm records, keyed to the ship-gate script.
+		await host.seedInteraction(
+			server.conversationId,
+			{
+				kind: "gating.confirm",
+				callId: "call-approve",
+				status: "pending",
+				createdAt: Date.now(),
+				body: {
+					text: "warden: allow this load_skill call? (demo)",
+					options: [
+						{ id: "allow", label: "Allow", tone: "ok" },
+						{ id: "deny", label: "Deny", tone: "danger" },
+					],
+				},
+			},
+			BACKGROUND_CONTEXT,
 		);
-		// Approve → the tool runs, the turn continues to the second gated call.
-		await card.locator(".approval-allow").click();
-		// The second gated call's approval card appears.
-		const card2 = page.locator(".approval-card").first();
+		await host.seedInteraction(
+			server.conversationId,
+			{
+				kind: "gating.confirm",
+				callId: "call-deny",
+				status: "pending",
+				createdAt: Date.now(),
+				body: {
+					text: "warden: allow this load_skill call? (demo2)",
+					options: [
+						{ id: "allow", label: "Allow", tone: "ok" },
+						{ id: "deny", label: "Deny", tone: "danger" },
+					],
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		await page.goto(server.url);
+		const card = page.locator(".interaction-card").first();
+		await expect(card).toBeVisible({ timeout: 15_000 });
+		await expect(card.locator(".interaction-text")).toContainText("load_skill");
+		// Approve the first.
+		await card.locator('input[type="radio"]').first().click();
+		await card.locator(".interaction-submit").click();
+		// The second gate's card is still pending: deny it.
+		const card2 = page
+			.locator(".interaction-card")
+			.filter({ hasText: "demo2" });
 		await expect(card2).toBeVisible({ timeout: 15_000 });
-		// Deny → the denial is reflected: the tool result is a blocked error
-		// and the turn completes with the denial visible.
-		await card2.locator(".approval-deny").click();
-		await expect(
-			page.locator(".entry-assistant").filter({ hasText: "the denial landed" }),
-		).toBeVisible({ timeout: 15_000 });
+		await card2.locator('input[type="radio"]').nth(1).click();
+		await card2.locator(".interaction-submit").click();
+		// Both answered: the stack drains.
+		await expect(page.locator(".interaction-card")).toHaveCount(0, {
+			timeout: 15_000,
+		});
 	});
 });
 
@@ -155,7 +183,13 @@ test.describe("item 7: compaction recall", () => {
 		// tool call). A larger keepRecentTokens keeps the current turn's
 		// messages while compacting the marker turn.
 		server = await bootE2EServer({
-			extensionSpecifiers: ["sigrun-ext-memory-markdown"],
+			// The memory extension by repo path (the npm name is unresolvable in this
+			// hermetic boot — publish prep removed the git dep; the repo checkout
+			// is the dev shape).
+			extensionSpecifiers: [
+				new URL("../../../sigrun-ext-memory-markdown/dist/index.js", import.meta.url)
+					.href,
+			],
 			settings: {
 				compaction: {
 					reserveTokens: 127_300,
