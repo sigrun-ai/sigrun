@@ -1,4 +1,7 @@
 {
 	"extends": "../tsconfig.json",
-	"include": ["src", "test"]
+	"compilerOptions": {
+		"rootDir": ".."
+	},
+	"include": ["src", "test", "../src/server/views.ts", "../src/server/commands.ts", "../src/server/session-meta.ts"]
 }
