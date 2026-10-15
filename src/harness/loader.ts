@@ -50,6 +50,7 @@ import type {
 	Submission,
 	SubmissionDraft,
 } from "@earendil-works/pi-durable";
+import type { ExtensionRunSettledHandler } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { DeclaredKinds } from "./seam-host.js";
 import { resolveExtensionEntry } from "./packages.js";
@@ -101,6 +102,18 @@ export interface ExtensionSubmitBinding {
 	readonly submit: ExtensionSubmit;
 }
 
+/**
+ * A factory-result `runSettled` handler retained from an extension factory
+ * result (memory-seam Task 3) — paired with the resolved `Extension` like
+ * the health/submit bindings, so boot registers it on the event bus under
+ * the extension's final name.
+ */
+export interface ExtensionRunSettledBinding {
+	/** The extension the factory result carried the handler for. */
+	readonly extension: Extension;
+	readonly runSettled: ExtensionRunSettledHandler;
+}
+
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -116,6 +129,13 @@ export interface LoadedExtensions {
 	 * extension that carried one; quarantined extensions contribute none.
 	 */
 	readonly submitBindings: readonly ExtensionSubmitBinding[];
+	/**
+	 * `runSettled` handlers from factory results (memory-seam Task 3), one
+	 * per loaded extension that carried one; quarantined extensions
+	 * contribute none. Boot registers each on the event bus under the
+	 * extension's final name.
+	 */
+	readonly runSettledBindings: readonly ExtensionRunSettledBinding[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -138,6 +158,8 @@ export interface ResolvedExtension {
 	readonly health?: () => HealthStatus;
 	/** Present only when the factory result carried one (the memory wiring's submit). */
 	readonly submit?: ExtensionSubmit;
+	/** Present only when the factory result carried one (memory-seam Task 3). */
+	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -196,6 +218,7 @@ function resolvedFromFactory(
 		extension?: unknown;
 		health?: unknown;
 		submit?: unknown;
+		runSettled?: unknown;
 		interactionKinds?: unknown;
 		ambientKinds?: unknown;
 	};
@@ -216,6 +239,14 @@ function resolvedFromFactory(
 			"extension factory returned a submit field that is not a function",
 		);
 	}
+	if (
+		candidate.runSettled !== undefined &&
+		typeof candidate.runSettled !== "function"
+	) {
+		throw new Error(
+			"extension factory returned a runSettled field that is not a function",
+		);
+	}
 	const kindsProblem =
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
@@ -228,6 +259,9 @@ function resolvedFromFactory(
 		...(candidate.submit === undefined
 			? {}
 			: { submit: candidate.submit as ExtensionSubmit }),
+		...(candidate.runSettled === undefined
+			? {}
+			: { runSettled: candidate.runSettled as ExtensionRunSettledHandler }),
 		...(candidate.interactionKinds === undefined
 			? {}
 			: { interactionKinds: candidate.interactionKinds as readonly string[] }),
@@ -362,6 +396,7 @@ typeof spec === "string"
 const outcomes: ExtensionOutcome[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
 const submitBindings: ExtensionSubmitBinding[] = [];
+const runSettledBindings: ExtensionRunSettledBinding[] = [];
 for (const { name: label, entry } of entries) {
 const display = label ?? entry;
 				try {
@@ -381,44 +416,41 @@ const display = label ?? entry;
 						// packages dir is an unrelated node_modules tree — Node's
 						// upward walk never finds it from sigrun's own imports, so it
 						// must be consulted explicitly.
-						const module = (await import(loaded)) as ExtensionModule;
+			const module = (await import(loaded)) as ExtensionModule;
 			// Two-phase host: the factory receives the host at CALL time, but
-			// the kinds it declares are only known from its RESULT. The host
-			// therefore takes a mutable kinds cell the loader fills right
-			// after resolution; a write gate that fires before the fill
-			// (impossible: the factory body hasn't returned yet) would see
-			// empty kinds and fail loud.
-			const kindsCell: { kinds: DeclaredKinds } = { kinds: {} };
+			// the extension name and kinds it declares are only known from its
+			// RESULT. The loader therefore invokes the host factory TWICE with
+			// the SAME instance: once pre-resolution with placeholder identity
+			// ("", no kinds) so the factory body has a host to capture, and once
+			// post-resolution with the real name + kinds — boot's factory
+			// re-keys the SAME host object IN PLACE (SeamHost.rekey), so the
+			// instance the factory captured becomes the final host and its
+			// write gate sees the declared kinds from then on.
 			let host: unknown;
 			if (options.hostContextFactory !== undefined) {
-				// The extension name is only known after resolution too —
-				// pass an identity stub now, re-key after resolution.
-				host = options.hostContextFactory("", kindsCell.kinds);
+				host = options.hostContextFactory("", {});
 			}
 			const resolved = resolveExtension(module, host);
 			if (resolved === undefined) {
 				throw new Error(
 					`does not satisfy the sigrun extension-package contract ` +
-						`(expected a default-export factory returning { extension })`,
+					`(expected a default-export factory returning { extension })`,
 				);
 			}
-			// Re-key the host with the real extension name + declared kinds
-			// (the pre-resolution call used placeholders). The seam host
-			// object is the SAME instance the factory captured, so a
-			// post-hoc mutation of the cell reaches every later seam call.
-			if (options.hostContextFactory !== undefined && resolved !== undefined) {
+			// The post-resolution call re-keys the captured host instance in
+			// place with the real extension name + declared kinds (boot's
+			// hostContextFactory; see src/harness/boot.ts). No second host is
+			// ever created — a rebuilt instance would orphan every inbound
+			// handler the factory registered on the host it captured.
+			if (options.hostContextFactory !== undefined) {
 				const kinds: DeclaredKinds = {
 					...(resolved.interactionKinds === undefined
-						? {}
-						: { interaction: resolved.interactionKinds }),
+					? {}
+					: { interaction: resolved.interactionKinds }),
 					...(resolved.ambientKinds === undefined
-						? {}
-						: { ambient: resolved.ambientKinds }),
+					? {}
+					: { ambient: resolved.ambientKinds }),
 				};
-				// Rebuild through the factory so boot's map gets the final
-				// identity; the factory's own closure captured the FIRST
-				// host — acceptable because the first host already carries
-				// the binding; only identity/kinds differ.
 				options.hostContextFactory(resolved.extension.name, kinds);
 			}
 			registry.install(resolved.extension);
@@ -433,6 +465,12 @@ const display = label ?? entry;
 				submitBindings.push({
 					extension: resolved.extension,
 					submit: resolved.submit,
+				});
+			}
+			if (resolved.runSettled !== undefined) {
+				runSettledBindings.push({
+					extension: resolved.extension,
+					runSettled: resolved.runSettled,
 				});
 			}
 		} catch (cause) {
@@ -453,5 +491,5 @@ const display = label ?? entry;
 	// After all installs: surface tool-name collisions across extensions
 	// (last-wins is pi-durable's resolution — unchanged, only warned).
 	warnToolNameCollisions(registry);
-	return { outcomes, healthProducers, submitBindings };
+	return { outcomes, healthProducers, submitBindings, runSettledBindings };
 }
