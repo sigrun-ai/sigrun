@@ -10,7 +10,7 @@
 
 import { act } from "react";
 import type TestRenderer from "react-test-renderer";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	createClient,
 	type FetchLike,
@@ -240,6 +240,33 @@ describe("WorkspaceBrowser", () => {
 		);
 		expect(
 			renderer.root.findAllByProps({ className: "file-preview" }),
+		).toHaveLength(0);
+	});
+});
+
+describe("WorkspaceBrowser close affordance (2026-10-15 drawer fix)", () => {
+	test("an onClose prop renders the ✕ in the title; clicking closes", async () => {
+		const onClose = vi.fn();
+		const { client } = makeHarness();
+		const renderer = await renderAsync(
+			<WorkspaceBrowser client={client} conversationId={1} onClose={onClose} />,
+		);
+		const button = renderer.root.findByProps({
+			className: "workspace-close",
+		});
+		await act(async () => {
+			button.props.onClick();
+		});
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	test("without onClose the ✕ does not render (desktop static column)", async () => {
+		const { client } = makeHarness();
+		const renderer = await renderAsync(
+			<WorkspaceBrowser client={client} conversationId={1} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ className: "workspace-close" }),
 		).toHaveLength(0);
 	});
 });

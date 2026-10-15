@@ -9,8 +9,9 @@ import type { ContentBlockWire, MessageWire } from "../api";
 
 /**
  * The message's text: string content as-is, or its text blocks joined with
- * a blank line (markdown paragraph separation). Non-text blocks are skipped
- * (see {@link attachmentParts}).
+ * a blank line (markdown paragraph separation). Thinking blocks are NOT
+ * text — they render separately (see {@link thinkingTexts}); non-text
+ * blocks are skipped here (see {@link attachmentParts}).
  */
 export function messageText(message: MessageWire): string {
 	const content = message.content;
@@ -21,6 +22,34 @@ export function messageText(message: MessageWire): string {
 		)
 		.map((block) => block.text as string)
 		.join("\n\n");
+}
+
+/**
+ * The message's thinking texts, in content order (pi-ai ThinkingContent
+ * blocks). Empty for string content — a bare string can't carry thinking.
+ */
+export function thinkingTexts(message: MessageWire): readonly string[] {
+	const content = message.content;
+	if (typeof content === "string") return [];
+	return content
+		.filter(
+			(block) =>
+				block.type === "thinking" && typeof block.thinking === "string",
+		)
+		.map((block) => block.thinking as string);
+}
+
+/**
+ * Whether the message carries anything worth rendering: non-blank text or
+ * non-blank thinking. A tool-call-only assistant message (the bubble above
+ * a tool card) renders NOTHING — the tool card itself is the entry's
+ * visible form.
+ */
+export function hasRenderableContent(message: MessageWire): boolean {
+	return (
+		messageText(message).trim() !== "" ||
+		thinkingTexts(message).some((text) => text.trim() !== "")
+	);
 }
 
 /** The message's non-text blocks (image/file upload parts). */

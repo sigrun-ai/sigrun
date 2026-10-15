@@ -108,6 +108,10 @@ body {
 	background: var(--panel);
 	border-bottom: 1px solid var(--border);
 	flex: none;
+	/* Badges must never push the bar wider than the window (the horizontal
+	   overflow measured at ~450px): wrap instead. */
+	flex-wrap: wrap;
+	min-width: 0;
 }
 
 .top-bar .brand {
@@ -292,6 +296,100 @@ body {
 	border: 1px solid var(--border);
 }
 
+/* A message with nothing renderable (tool-call-only) renders nothing —
+   the empty bubble above a tool card was a webui bug, not content. The
+   entry shell keeps its layout only when children exist. */
+.entry-assistant:empty {
+	display: none;
+}
+
+/* ── thinking blocks (2026-10-15 quick wins) ─────────────────── */
+
+.entry-thinking {
+	margin: 0 0 0.4rem 0;
+	border-left: 2px solid var(--border);
+	padding-left: 0.6rem;
+	font-size: 0.82rem;
+	color: var(--text-dim);
+}
+
+.entry-thinking-summary {
+	cursor: pointer;
+	user-select: none;
+	font-family: var(--mono);
+	font-size: 0.72rem;
+	letter-spacing: 0.3px;
+}
+
+.entry-thinking-body {
+	white-space: pre-wrap;
+	margin-top: 0.3rem;
+}
+
+.entry-thinking[data-live] .entry-thinking-summary {
+	color: var(--accent);
+	animation: thinking-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.45;
+	}
+}
+
+/* ── the working indicator (2026-10-15 quick wins) ───────────── */
+
+.chat-working {
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	padding: 0.4rem 0.2rem;
+	color: var(--text-dim);
+	font-size: 0.8rem;
+}
+
+.chat-working-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--text-dim);
+	animation: working-bounce 1.2s ease-in-out infinite;
+}
+
+.chat-working-dot:nth-child(2) {
+	animation-delay: 0.15s;
+}
+
+.chat-working-dot:nth-child(3) {
+	animation-delay: 0.3s;
+}
+
+@keyframes working-bounce {
+	0%,
+	100% {
+		opacity: 0.25;
+		transform: translateY(0);
+	}
+	50% {
+		opacity: 1;
+		transform: translateY(-3px);
+	}
+}
+
+.chat-working-label {
+	margin-left: 0.25rem;
+}
+
+.chat-compaction-failure {
+	color: var(--danger);
+	font-size: 0.8rem;
+	margin: 0.25rem 0;
+}
+
 .entry-assistant-message p,
 .entry-user-message p {
 	margin: 0.25rem 0;
@@ -413,14 +511,15 @@ body {
 .composer-row {
 	display: flex;
 	gap: 0.6rem;
-	align-items: flex-end;
+	/* Stretch: the side cluster defines the row height and the textarea
+	   matches it (the 2026-10-15 round-2 request — the stacked controls
+	   used to tower over the input). */
+	align-items: stretch;
 }
 
 .composer-input {
 	flex: 1;
 	resize: none;
-	min-height: 44px;
-	max-height: 160px;
 	padding: 0.6rem 0.75rem;
 	background: var(--panel-2);
 	color: var(--text);
@@ -434,6 +533,13 @@ body {
 	flex-direction: column;
 	gap: 0.4rem;
 	align-items: stretch;
+	justify-content: center;
+}
+
+.composer-controls {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
 }
 
 .composer-model {
@@ -468,25 +574,6 @@ body {
 	stroke-linecap: round;
 }
 
-.composer-compact {
-	background: var(--panel-2);
-	color: var(--text-dim);
-	border: 1px solid var(--border);
-	border-radius: 8px;
-	padding: 0.45rem 0.7rem;
-	font-size: 12px;
-	cursor: pointer;
-}
-
-.composer-compact:disabled {
-	opacity: 0.5;
-	cursor: default;
-}
-
-.composer-compact[data-compacting] {
-	color: var(--accent);
-}
-
 .composer-send {
 	background: var(--accent);
 	color: #fff;
@@ -505,7 +592,7 @@ body {
 .composer-queued {
 	color: var(--warn);
 	font-size: 12px;
-	text-align: center;
+	white-space: nowrap;
 }
 
 /* Composer attachments (Task 24). */
@@ -580,6 +667,23 @@ body {
 	color: var(--text-dim);
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
+	display: flex;
+	align-items: center;
+}
+
+/* The drawer's close affordance (the fixed drawer covers the top-bar
+   toggle, so the panel needs its own ✕). Desktop widths hide it — the
+   static column has no close semantics there. */
+.workspace-close {
+	display: none;
+	margin-left: auto;
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 14px;
+	padding: 0 0.2rem;
+	text-transform: none;
 }
 
 .workspace-tree,
@@ -661,7 +765,17 @@ body {
 	font-size: 0.8rem;
 }
 
-/* ── narrow viewports (the mockup's media queries) ───────────────────── */
+/* ── narrow viewports (the mockup's media queries) ───────────────── */
+
+/* The workspace toggle only exists where the static column is hidden. */
+.workspace-toggle {
+	display: none;
+	background: none;
+	border: none;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 15px;
+}
 
 @media (max-width: 1000px) {
 	.app-shell {
@@ -669,6 +783,34 @@ body {
 	}
 	.right-panel {
 		display: none;
+	}
+	.workspace-toggle {
+		display: block;
+	}
+	.workspace-close {
+		display: block;
+	}
+	/* Backdrop behind the drawer: dims the page and owns click-outside. */
+	.workspace-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgb(0 0 0 / 35%);
+		z-index: 85;
+	}
+	/* The drawer: the panel overlays the chat column from the right. The
+	   backdrop (z 85) sits under it; the top bar (static stacking) sits
+	   under the backdrop too — dimmed like the rest of the page. The
+	   drawer covers the top-bar toggle, so dismissal is the panel's own
+	   ✕ or a backdrop click. */
+	.right-panel.workspace-open {
+		display: flex;
+		position: fixed;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: min(320px, 85vw);
+		z-index: 90;
+		box-shadow: -12px 0 32px rgb(0 0 0 / 45%);
 	}
 }
 
@@ -779,6 +921,48 @@ body {
 	display: flex;
 	flex-direction: column;
 	gap: 0.625rem;
+	/* Section bodies may carry wide content (the raw-JSON textarea, long
+	   notes) — never widen the panel (the overflow report). */
+	min-width: 0;
+	max-width: 100%;
+}
+
+.settings-layout {
+	display: flex;
+	gap: 0.75rem;
+	min-width: 0;
+}
+
+.settings-nav {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+	flex: none;
+}
+
+.settings-nav-item {
+	background: none;
+	border: none;
+	border-radius: 5px;
+	padding: 0.3rem 0.6rem;
+	text-align: left;
+	font-size: 13px;
+	color: var(--text-dim);
+	cursor: pointer;
+}
+
+.settings-nav-item:hover {
+	background: var(--panel-2);
+}
+
+.settings-nav-item[data-active] {
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	color: var(--text);
+}
+
+.settings-section {
+	flex: 1;
+	min-width: 0;
 }
 
 .settings-field {
@@ -801,16 +985,29 @@ body {
 	align-items: center;
 	gap: 0.4rem;
 	font-size: 13px;
+	flex-wrap: wrap;
+}
+
+/* The Interface section's checkbox notes sit on their own line. */
+.settings-checkbox .settings-note {
+	flex-basis: 100%;
 }
 
 .settings-tools {
 	display: flex;
+	/* Explicit row: the .settings-field base is column, and a column-wrap
+	   under the section's height turns the checkboxes into one vertical
+	   column with the note beside it as a clipped second column — the
+	   user-reported horizontal scroll. Row + wrap keeps the note (basis
+	   100%) on its own full-width line. */
+	flex-direction: row;
 	flex-wrap: wrap;
 	gap: 0.25rem 0.75rem;
 }
 
 .settings-tools .settings-note {
 	flex-basis: 100%;
+	min-width: 0;
 }
 
 .settings-note {
@@ -828,6 +1025,11 @@ body {
 	border-radius: 4px;
 	padding: 0.4rem;
 	resize: vertical;
+	/* The textarea (and any section content) must shrink with the panel —
+	   default form sizing overflows the 26rem shell. */
+	width: 100%;
+	box-sizing: border-box;
+	max-width: 100%;
 }
 
 .settings-actions {
@@ -854,7 +1056,13 @@ body {
 	border: none;
 	color: var(--text-dim);
 	cursor: pointer;
-	font-size: 15px;
+	font-size: 20px;
+	line-height: 1;
+	padding: 0.2rem 0.3rem;
+}
+
+.settings-gear:hover {
+	color: var(--text);
 }
 
 

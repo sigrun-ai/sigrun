@@ -74,8 +74,6 @@ function makeHarness(init?: {
 		},
 		source: "user",
 	};
-	/** Test seam: invoked when the compact POST fires (pending-state test). */
-	let compactionSawRequest: () => void = () => {};
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let body: unknown;
@@ -88,9 +86,6 @@ function makeHarness(init?: {
 			body = { path: `uploads/1/${parsed.name}` };
 		} else if (input.endsWith("/submissions")) {
 			body = { id: 9, conversationId: 1, type: "input", status: "done" };
-		} else if (input.endsWith("/compact")) {
-			body = { taskId: 42 };
-			compactionSawRequest();
 		} else if (input.endsWith("/export")) {
 			// text(), not json(): the export route serves raw JSONL.
 			const jsonl =
@@ -128,9 +123,6 @@ function makeHarness(init?: {
 		calls,
 		client,
 
-		onCompactRequest(callback: () => void) {
-			compactionSawRequest = callback;
-		},
 	};
 }
 
@@ -493,77 +485,6 @@ describe("Composer", () => {
 			);
 		});
 
-		// Manual compaction (Task 4, pi parity): the Compact button next to
-		// the usage ring POSTs the compact endpoint on click, shows the
-		// pending state while the POST is in flight, and returns to idle.
-		test("the Compact button POSTs the compact endpoint and returns to idle", async () => {
-			const { calls, client } = makeHarness();
-			const renderer = await renderComposer(client, makeView());
-			const button = renderer.root.findByProps({
-				className: "composer-compact",
-			});
-			expect(textContent(renderer.toJSON())).toContain("Compact");
-			await act(async () => {
-				await button.props.onClick();
-			});
-			const compactCall = calls.find(
-				(c: { input: string; method?: string }) =>
-					c.method === "POST" && c.input.endsWith("/compact"),
-			);
-			expect(compactCall).toBeDefined();
-			expect(compactCall?.body).toBe(JSON.stringify({}));
-			// Back to idle after the 202 resolves.
-			expect(
-				renderer.root.findByProps({ className: "composer-compact" })
-					.props.disabled,
-			).toBe(false);
-		});
-
-		test("the Compact button shows the pending state while the POST is in flight", async () => {
-			// Gate the compact POST: the harness seam resolves it only when
-			// the test releases, so the in-flight render is observable.
-			const { client } = makeHarness();
-			let release!: () => void;
-			client.compact = (conversationId: number) => {
-				void conversationId;
-				return new Promise((resolve) => {
-					release = () => resolve({ taskId: 1 });
-				});
-			};
-			const renderer = await renderComposer(client, makeView());
-			const button = renderer.root.findByProps({
-				className: "composer-compact",
-			});
-			await act(async () => {
-				void button.props.onClick();
-			});
-			// In flight: disabled + the Compacting… label.
-			expect(button.props.disabled).toBe(true);
-			expect(
-				renderer.root.findByProps({ className: "composer-compact" }).props[
-					"data-compacting"
-				],
-			).toBe(true);
-			expect(textContent(renderer.toJSON())).toContain("Compacting…");
-			await act(async () => {
-				release();
-			});
-			// Settled: back to idle.
-			expect(
-				renderer.root.findByProps({ className: "composer-compact" })
-					.props.disabled,
-			).toBe(false);
-			expect(textContent(renderer.toJSON())).toContain("Compact");
-		});
-
-		test("the Compact button is disabled with no conversation selected", async () => {
-			const { client } = makeHarness();
-			const renderer = await renderComposer(client, makeView(), null);
-			const button = renderer.root.findByProps({
-				className: "composer-compact",
-			});
-			expect(button.props.disabled).toBe(true);
-		});
 	});
 
 	describe("slash commands (Task 7)", () => {
@@ -774,5 +695,94 @@ describe("Composer", () => {
 			await submitLine(renderer, "/thinking high");
 			expect(textContent(renderer.toJSON())).toContain("failed with status 400");
 		});
+	});
+});
+
+describe("Composer submit keys", () => {
+	test("Ctrl+Enter submits; plain Enter never does by default", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderComposer(client, makeView());
+		await typeText(renderer, "hello chord");
+		const textarea = composerTextarea(renderer);
+		await act(async () => {
+			textarea.props.onKeyDown({
+				key: "Enter",
+				ctrlKey: true,
+				preventDefault: () => {},
+			});
+		});
+		expect(
+			calls.some(
+				(c) => c.method === "POST" && c.input.endsWith("/submissions"),
+			),
+		).toBe(true);
+		const callsAfterCtrl = calls.length;
+		await typeText(renderer, "second");
+		await act(async () => {
+			textarea.props.onKeyDown({
+				key: "Enter",
+				ctrlKey: false,
+				preventDefault: () => {},
+			});
+		});
+		expect(calls.length).toBe(callsAfterCtrl);
+	});
+
+	test("enterToSend makes plain Enter submit (shift+Enter still newlines)", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderAsync(
+			<Composer
+				client={client}
+				conversationId={1}
+				view={makeView()}
+				enterToSend
+			/>,
+		);
+		await typeText(renderer, "hello enter");
+		const textarea = composerTextarea(renderer);
+		await act(async () => {
+			textarea.props.onKeyDown({
+				key: "Enter",
+				ctrlKey: false,
+				shiftKey: false,
+				preventDefault: () => {},
+			});
+		});
+		expect(
+			calls.some(
+				(c) => c.method === "POST" && c.input.endsWith("/submissions"),
+			),
+		).toBe(true);
+		const count = calls.length;
+		await typeText(renderer, "more");
+		await act(async () => {
+			textarea.props.onKeyDown({
+				key: "Enter",
+				ctrlKey: false,
+				shiftKey: true,
+				preventDefault: () => {},
+			});
+		});
+		expect(calls.length).toBe(count);
+	});
+
+	test("Cmd+Enter submits (the mac submit chord)", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderComposer(client, makeView());
+		await typeText(renderer, "hello cmd");
+		const textarea = composerTextarea(renderer);
+		await act(async () => {
+			textarea.props.onKeyDown({
+				key: "Enter",
+				metaKey: true,
+				ctrlKey: false,
+				preventDefault: () => {},
+			});
+		});
+		expect(
+			calls.some(
+				(c) => c.method === "POST" && c.input.endsWith("/submissions"),
+			),
+		).toBe(true);
 	});
 });

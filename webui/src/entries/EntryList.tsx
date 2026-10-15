@@ -10,7 +10,11 @@ import type { ConversationEntryWire, ConversationViewWire } from "../api";
 import { messageText } from "./content";
 import { AssistantEntry } from "./AssistantEntry";
 import { CompactionEntry } from "./CompactionEntry";
-import { liveToolSlots, slotForEntry } from "./liveDoc";
+import {
+	liveGenerationPartial,
+	liveToolSlots,
+	slotForEntry,
+} from "./liveDoc";
 import { SystemEntry } from "./SystemEntry";
 import { ToolResultEntry } from "./ToolResultEntry";
 import { UserEntry } from "./UserEntry";
@@ -18,13 +22,14 @@ import { UserEntry } from "./UserEntry";
 function Entry(props: {
 	entry: ConversationEntryWire;
 	view: ConversationViewWire;
+	readonly showThinking?: boolean;
 }) {
-	const { entry, view } = props;
+	const { entry, view, showThinking = true } = props;
 	switch (entry.kind) {
 		case "pi.user":
 			return <UserEntry entry={entry} />;
 		case "pi.assistant":
-			return <AssistantEntry entry={entry} />;
+			return <AssistantEntry entry={entry} showThinking={showThinking} />;
 		case "pi.tool-result":
 			return (
 				<ToolResultEntry
@@ -49,12 +54,40 @@ function Entry(props: {
 	}
 }
 
-export function EntryList(props: { view: ConversationViewWire }) {
+export function EntryList(props: {
+	view: ConversationViewWire;
+	/** Show thinking blocks (the `showThinking` pref). Default true. */
+	readonly showThinking?: boolean;
+}) {
+	const { view, showThinking = true } = props;
+	// The streaming partial (pi.live.generation.message) renders as a
+	// provisional assistant entry after the committed history — live
+	// thinking + text, the working indicator in transcript form. The
+	// synthetic id is negative so it can never collide with a real entry
+	// key; the partial vanishes when the run's generation ends.
+	const partial = liveGenerationPartial(view);
 	return (
 		<div className="entry-list">
-			{props.view.entries.map((entry) => (
-				<Entry key={entry.id} entry={entry} view={props.view} />
+			{view.entries.map((entry) => (
+				<Entry
+					key={entry.id}
+					entry={entry}
+					view={view}
+					showThinking={showThinking}
+				/>
 			))}
+			{partial !== undefined && (
+				<AssistantEntry
+					entry={{
+						id: -1,
+						conversationId: view.conversation.id,
+						kind: "pi.assistant",
+						model: [partial],
+					}}
+					showThinking={showThinking}
+					live
+				/>
+			)}
 		</div>
 	);
 }
