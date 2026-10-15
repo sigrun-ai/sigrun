@@ -211,6 +211,8 @@ Notes:
 - **Archive is stronger idle, not a different thing** — but it gets
   its own event because it is durable and reversible (un-archive =
   resume; the extension may want a final flush AND a wake-up).
+  Archiving prunes the conversation's idle state; an un-archived
+  conversation re-enters the idle clock at its next admission.
 - **Fork continuity is the extension's decision, informed by the
   event.** The survey precedent is pi-honcho's `session.clone` (child
   inherits history to the fork point) vs pi-observational-memory's
@@ -238,6 +240,9 @@ Notes:
   "conversationCreated" | "conversationForked"]` (default: no event
   wakes — `every`-tick only). A wake arriving while the run is in
   flight is QUEUED (coalesced to one pending wake), not dropped —
+  dropped wakes lose archive-triggered final flushes. The run's
+  `run(context, wake?: { event, conversationId })` receives the
+  coalesced wake.
 - **Abandoned ≠ stopped (ruling):** a timed-out run is abandoned by
   the HOST (it stops waiting) — the zombie `run()` promise keeps
   executing and its late writes land unguarded. One-run-at-a-time is
@@ -245,9 +250,6 @@ Notes:
   deadline fires), so zombie overlap is bounded to one late run per
   timeout; extensions needing hard cancellation take an AbortSignal
   (future: a `signal` parameter on run()).
-  dropped wakes lose archive-triggered final flushes. The run's
-  `run(context, wake?: { event, conversationId })` receives the
-  coalesced wake.
 - **Delivery is best-effort in-process, awaited at `harnessShutdown`
   (flushes must complete before storage closes). Missed idle events
   (server restart) are acceptable — the next idle/archive/shutdown
@@ -470,7 +472,7 @@ upstream issue (generation.js:357/:359-362) fixed. Note: kimi-k3 and
 deepseek disagreed on whether endRun is "a true choke point" (glm:
 yes functionally; kimi: yes but unwrappable; deepseek: unwrappable AND
 unexported) — all three converge on subscribeCommits regardless.
-(created + never admitted = quiet from creation, fires at the
-threshold; harmless, idempotent); cron runs = treated as any run
+(created + never admitted = stays non-idle — no durable anchor);
+cron runs = treated as any run
 (empty inputs fire empty); ambient's `expires: "idle"` may share the
 idle clock later (noted, not required).
