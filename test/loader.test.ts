@@ -40,6 +40,11 @@ const MEMORY_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
 ).href;
 
+/** The zero-arg fixture (contract: a length-0 factory is invoked with NO arguments). */
+const ZEROARG_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-zeroarg", "index.js"),
+).href;
+
 function configWith(dir: string) {
 	return loadConfig({
 		SIGRUN_MODEL: "openai/gpt-4o",
@@ -196,6 +201,31 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 			).toHaveLength(1);
 			expect(opened.extensionOutcomes).toEqual([
 				{ name: "sigrun.memory", status: "ok" },
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a zero-arg factory is invoked with NO arguments (no host leak into defaulted slots)", async () => {
+	// The seams loader passes the host context only to arity-1 factories
+	// (factory.length > 0). A length-0 factory with a defaulted first
+	// parameter (createMemory(backend = new Backend())) closes over its own
+	// dependency — an argument would land in the backend slot and every
+	// later backend call would throw. The fixture fails loud at load if the
+	// loader ever passes it an argument, so an install here IS the assertion.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-zeroarg-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [ZEROARG_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "sigrun.fixture-zeroarg", status: "ok" },
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
