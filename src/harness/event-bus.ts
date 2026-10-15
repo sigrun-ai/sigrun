@@ -522,12 +522,24 @@ export class EventBus {
 					value.status === "done" ||
 					value.status === "unanswered"
 				) {
-					// Recovery may settle a placement this process never observed
-					// (the bus opened after it) — floor the count at zero.
-					this.#liveInputs.set(
-						value.conversationId,
-						Math.max(0, (this.#liveInputs.get(value.conversationId) ?? 0) - 1),
-					);
+					// Gate on the record's ENTRY: a placed-then-settled input keeps
+					// its entry (upstream `applySubmissionChange`: "an unanswered
+					// input keeps its entry"), while a queued-never-placed withdrawal
+					// (abortSubmission on a queued id, Conversation.abort's withdrawal
+					// pass) settles with `entry === undefined` — it was never counted
+					// live, and decrementing for it would zero the run's count
+					// mid-run and let the sweep fire idle (Review Focus 6). The
+					// settle-group emission below is NOT gated: a withdrawal still
+					// emits runSettled (Task 3's position-preserving contract).
+					if (value.entry !== undefined) {
+						this.#liveInputs.set(
+							value.conversationId,
+							Math.max(
+								0,
+								(this.#liveInputs.get(value.conversationId) ?? 0) - 1,
+							),
+						);
+					}
 				}
 				if (value.status !== "done" && value.status !== "unanswered")
 					continue;

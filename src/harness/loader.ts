@@ -568,11 +568,11 @@ const display = label ?? entry;
 	// After all installs: surface tool-name collisions across extensions
 	// (last-wins is pi-durable's resolution — unchanged, only warned).
 	warnToolNameCollisions(registry);
-return {
-	outcomes,
-	healthProducers,
-	submitBindings,
-	runSettledBindings,
-	lifecycleBindings,
-};
+	return {
+		outcomes,
+		healthProducers,
+		submitBindings,
+		runSettledBindings,
+		lifecycleBindings,
+	};
 }

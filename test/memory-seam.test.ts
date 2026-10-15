@@ -619,4 +619,53 @@ describe("conversation lifecycle contract", () => {
 			);
 		}
 	});
+
+	test("idle does not fire when a queued input is withdrawn mid-run (live-run gate holds)", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [
+				// A tool round keeps the run live ~1s — past the 300ms
+				// threshold and several sweep ticks.
+				fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done after tools"),
+			],
+			eventBus: { idleThresholdMs: 300, idleSweepMs: 50 },
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const first = await root.submit(
+			{ type: "input", content: "long running" },
+			BACKGROUND_CONTEXT,
+		);
+		// Queued behind the busy run (the default whenBusy): admitted but
+		// never placed — no entry, no live-run count.
+		const queued = await root.submit(
+			{ type: "input", content: "queued then withdrawn" },
+			BACKGROUND_CONTEXT,
+		);
+		// Withdraw the QUEUED input: it settles `unanswered` with NO entry.
+		// The settle must not decrement the run's live count (the placed
+		// input's run is still live) — the sweep stays gated (Focus 6).
+		const aborted = await opened.harness.abortSubmission(
+			queued.id,
+			BACKGROUND_CONTEXT,
+			root.id,
+		);
+		expect(aborted).toBe("aborted");
+
+		// Past the threshold, several sweeps, run still live: NO idle.
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(idleEvents(fixture)).toHaveLength(0);
+
+		const record = await first.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+		// The run ends; the sweep fires idle after the threshold.
+		await vi.waitFor(() => expect(idleEvents(fixture)).toHaveLength(1), {
+			timeout: 5_000,
+			interval: 50,
+		});
+		expect(idleEvents(fixture)[0]!.idleMs).toBeGreaterThanOrEqual(300);
+	});
 });
