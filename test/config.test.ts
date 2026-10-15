@@ -22,6 +22,7 @@ import { describe, expect, test } from "vitest";
 import {
 	DEFAULT_COMPACTION,
 	DEFAULT_EXTENSIONS_DIR,
+	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
 	DEFAULT_STORAGE_PATH,
 	DEFAULT_WORKSPACE_PATH,
@@ -148,6 +149,69 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		);
 		expect(mixed.compaction.reserveTokens).toBe(8192);
 		expect(mixed.compaction.backgroundTokens).toBe(0);
+	});
+
+	test("memory-seam knobs default when env + file are silent", () => {
+		const config = loadConfig({ ...MODEL_ENV });
+		expect(config.memorySeam).toEqual(DEFAULT_MEMORY_SEAM);
+		expect(config.memorySeam).toEqual({
+			hookDeadlineMs: 30000,
+			idleThresholdMs: 600000,
+			workerDeadlineMs: 600000,
+			queueMax: 1000,
+		});
+	});
+
+	test("memory-seam knobs parse from env", () => {
+		const config = loadConfig({
+			...MODEL_ENV,
+			SIGRUN_HOOK_DEADLINE: "5000",
+			SIGRUN_IDLE_THRESHOLD: "120000",
+			SIGRUN_WORKER_DEADLINE: "300000",
+			SIGRUN_QUEUE_MAX: "50",
+		});
+		expect(config.memorySeam).toEqual({
+			hookDeadlineMs: 5000,
+			idleThresholdMs: 120000,
+			workerDeadlineMs: 300000,
+			queueMax: 50,
+		});
+	});
+
+	test("memory-seam knobs accept settings-file overrides (file over default; env over file)", () => {
+		const file: SettingsFile = {
+			server: { memorySeam: { idleThresholdMs: 120000, queueMax: 50 } },
+		};
+		// File applies where env is absent; unset knobs keep their defaults.
+		const fromFile = loadConfig({ ...MODEL_ENV }, file);
+		expect(fromFile.memorySeam.idleThresholdMs).toBe(120000);
+		expect(fromFile.memorySeam.queueMax).toBe(50);
+		expect(fromFile.memorySeam.hookDeadlineMs).toBe(30000);
+		expect(fromFile.memorySeam.workerDeadlineMs).toBe(600000);
+		// Env wins the knob it sets; the file's other knob still applies.
+		const mixed = loadConfig(
+			{ ...MODEL_ENV, SIGRUN_IDLE_THRESHOLD: "60000" },
+			file,
+		);
+		expect(mixed.memorySeam.idleThresholdMs).toBe(60000);
+		expect(mixed.memorySeam.queueMax).toBe(50);
+	});
+
+	test("invalid memory-seam knob values fail loud naming the variable", () => {
+		for (const key of [
+			"SIGRUN_HOOK_DEADLINE",
+			"SIGRUN_IDLE_THRESHOLD",
+			"SIGRUN_WORKER_DEADLINE",
+			"SIGRUN_QUEUE_MAX",
+		] as const) {
+			for (const value of ["abc", "0", "-5"]) {
+				// The compaction-knob convention: the error names the variable
+				// and states the constraint (positive integer), with the raw value.
+				expect(() => loadConfig({ ...MODEL_ENV, [key]: value })).toThrow(
+					new RegExp(`^${key} must be a positive integer, got ${value}$`),
+				);
+			}
+		}
 	});
 
 	test("backup: file target applies only when env configures none", () => {
@@ -285,6 +349,7 @@ describe("resolvedServerSection (the bootstrap projection)", () => {
 			extensionsDir: DEFAULT_EXTENSIONS_DIR,
 			webuiBundle: "webui/dist",
 			compaction: { ...DEFAULT_COMPACTION },
+			memorySeam: { ...DEFAULT_MEMORY_SEAM },
 		});
 	});
 

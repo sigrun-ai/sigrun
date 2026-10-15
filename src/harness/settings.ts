@@ -124,6 +124,18 @@ export interface ServerSettings {
 		readonly backgroundTokens?: number;
 	};
 	/**
+	 * The memory-seam bounds (memory-seam Task 6), mirroring the
+	 * `SIGRUN_{HOOK_DEADLINE,IDLE_THRESHOLD,WORKER_DEADLINE,QUEUE_MAX}`
+	 * env knobs — each a positive integer applied per-field where the
+	 * corresponding env var is absent.
+	 */
+	readonly memorySeam?: {
+		readonly hookDeadlineMs?: number;
+		readonly idleThresholdMs?: number;
+		readonly workerDeadlineMs?: number;
+		readonly queueMax?: number;
+	};
+	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
 	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`).
 	 */
@@ -461,6 +473,7 @@ function validateServer(server: unknown): void {
 		"extensionsDir",
 		"webuiBundle",
 		"compaction",
+		"memorySeam",
 		"backup",
 	]);
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
@@ -499,6 +512,32 @@ function validateServer(server: unknown): void {
 				throw new SettingsValidationError(
 					`server.compaction.${key}`,
 					minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
+				);
+			}
+		}
+	}
+	if (record.memorySeam !== undefined) {
+		const memorySeam = asRecord(record.memorySeam);
+		if (memorySeam === undefined) {
+			throw new SettingsValidationError("server.memorySeam", "must be an object");
+		}
+		checkKeys("server.memorySeam.", memorySeam, [
+			"hookDeadlineMs",
+			"idleThresholdMs",
+			"workerDeadlineMs",
+			"queueMax",
+		]);
+		for (const key of [
+			"hookDeadlineMs",
+			"idleThresholdMs",
+			"workerDeadlineMs",
+			"queueMax",
+		] as const) {
+			const v = memorySeam[key];
+			if (v !== undefined && !isPositiveInt(v)) {
+				throw new SettingsValidationError(
+					`server.memorySeam.${key}`,
+					"must be a positive integer",
 				);
 			}
 		}
@@ -725,24 +764,41 @@ export class SettingsStore {
 				const sub: Record<string, unknown> = {
 					...((merged.server as Record<string, unknown>) ?? {}),
 				};
-				for (const [subKey, subValue] of Object.entries(incoming)) {
-					if (subValue === null) delete sub[subKey];
-					else if (
-						subKey === "compaction" &&
-						typeof subValue === "object"
-					) {
-						const mergedCompaction: Record<string, unknown> = {
-							...((sub.compaction as Record<string, unknown>) ?? {}),
-						};
-						for (const [compKey, compValue] of Object.entries(
-							subValue as Record<string, unknown>,
-						)) {
-							if (compValue === null) delete mergedCompaction[compKey];
-							else mergedCompaction[compKey] = compValue;
-						}
-						if (Object.keys(mergedCompaction).length === 0) delete sub.compaction;
-						else sub.compaction = mergedCompaction;
-					} else sub[subKey] = subValue;
+					for (const [subKey, subValue] of Object.entries(incoming)) {
+						if (subValue === null) delete sub[subKey];
+						else if (
+							subKey === "compaction" &&
+							typeof subValue === "object"
+						) {
+							const mergedCompaction: Record<string, unknown> = {
+								...((sub.compaction as Record<string, unknown>) ?? {}),
+							};
+							for (const [compKey, compValue] of Object.entries(
+								subValue as Record<string, unknown>,
+							)) {
+								if (compValue === null) delete mergedCompaction[compKey];
+								else mergedCompaction[compKey] = compValue;
+							}
+							if (Object.keys(mergedCompaction).length === 0) delete sub.compaction;
+							else sub.compaction = mergedCompaction;
+						} else if (
+							subKey === "memorySeam" &&
+							typeof subValue === "object"
+						) {
+							// Same sub-merge as compaction: a flat record, merged per-key
+							// (a wholesale replace would silently drop unset knobs).
+							const mergedSeam: Record<string, unknown> = {
+								...((sub.memorySeam as Record<string, unknown>) ?? {}),
+							};
+							for (const [seamKey, seamValue] of Object.entries(
+								subValue as Record<string, unknown>,
+							)) {
+								if (seamValue === null) delete mergedSeam[seamKey];
+								else mergedSeam[seamKey] = seamValue;
+							}
+							if (Object.keys(mergedSeam).length === 0) delete sub.memorySeam;
+							else sub.memorySeam = mergedSeam;
+						} else sub[subKey] = subValue;
 				}
 				if (Object.keys(sub).length === 0) delete merged.server;
 				else merged.server = sub;

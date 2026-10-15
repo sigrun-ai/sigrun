@@ -47,27 +47,8 @@ import {
 	type EnvBuilder,
 } from "./workspace.js";
 
-/**
- * Memory-seam bus bounds (Task 6 lifts these into `SIGRUN_*` config
- * knobs: `SIGRUN_QUEUE_MAX`, `SIGRUN_HOOK_DEADLINE`,
- * `SIGRUN_IDLE_THRESHOLD`).
- */
-const EVENT_QUEUE_MAX = 1_000;
-const HOOK_DEADLINE_MS = 30_000;
-/**
- * The idle threshold's temporary hardcoded default (spec §2: 10 minutes).
- * Task 6 replaces this with the `SIGRUN_IDLE_THRESHOLD` config knob —
- * thread the config value into `OpenHarnessOptions.eventBus.idleThresholdMs`.
- */
-const IDLE_THRESHOLD_MS = 600_000;
 /** The idle sweep cadence (spec §2: ONE host-owned 1s interval). */
 const IDLE_SWEEP_MS = 1_000;
-/**
- * The worker deadline's temporary hardcoded default (spec §3: 10 minutes).
- * Task 6 replaces this with the `SIGRUN_WORKER_DEADLINE` config knob —
- * thread the config value into `OpenHarnessOptions.eventBus.workerDeadlineMs`.
- */
-const WORKER_DEADLINE_MS = 600_000;
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
@@ -240,19 +221,19 @@ export interface OpenHarnessOptions {
 	 */
 	readonly packagesDir?: string;
 	/**
-	 * The memory-seam event-bus tuning (Task 4's test seam; Task 6 threads
-	 * the config knobs here): `idleThresholdMs` defaults to the hardcoded
-	 * 600000ms (`SIGRUN_IDLE_THRESHOLD` arrives in Task 6) and
-	 * `idleSweepMs` to the spec's 1s sweep. Passing `idleThresholdMs: 0`
-	 * would fire idle on every sweep — tests always pass a real value.
+	 * The memory-seam event-bus tuning (Task 4's test seam): the resolved
+	 * `config.memorySeam` knobs (Task 6's `SIGRUN_*` env / settings-file
+	 * chain) are the defaults; a caller-set field here wins over config
+	 * (the hermetic-test seam — tests pass small values to exercise the
+	 * idle/abandon paths quickly).
 	 */
 	readonly eventBus?: {
 		readonly idleThresholdMs?: number;
 		readonly idleSweepMs?: number;
 		/**
-		 * The worker deadline (memory-seam Task 5), default 600000ms
-		 * (`SIGRUN_WORKER_DEADLINE` arrives in Task 6). Tests pass a small
-		 * value to exercise the abandon path.
+		 * The worker deadline (memory-seam Task 5), default
+		 * `config.memorySeam.workerDeadlineMs`. Tests pass a small value to
+		 * exercise the abandon path.
 		 */
 		readonly workerDeadlineMs?: number;
 	};
@@ -468,15 +449,18 @@ export async function openHarness(
 	// their final resolved names — the loader retained the bindings paired
 	// with the installed extensions, and registerExtension REPLACES a
 	// same-name entry, so the runSettled + lifecycle bindings MERGE here into
-	// one object per extension. The idle sweep rides the same open (the
-	// bus owns the 1s interval; `idleThresholdMs` is Task 6's config knob,
-	// currently the hardcoded IDLE_THRESHOLD_MS).
+	// one object per extension. The idle sweep rides the same open (the bus
+	// owns the 1s interval); the bounds come from `config.memorySeam`
+	// (Task 6's `SIGRUN_*` knobs), with the caller's eventBus seam winning
+	// per-field (the hermetic-test override).
+	const memorySeam = config.memorySeam;
+	const hookDeadlineMs = memorySeam.hookDeadlineMs;
 	const eventBus = EventBus.open(harness, {
-		queueMax: EVENT_QUEUE_MAX,
-		hookDeadlineMs: HOOK_DEADLINE_MS,
-		idleThresholdMs: options.eventBus?.idleThresholdMs ?? IDLE_THRESHOLD_MS,
+		queueMax: memorySeam.queueMax,
+		hookDeadlineMs,
+		idleThresholdMs: options.eventBus?.idleThresholdMs ?? memorySeam.idleThresholdMs,
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
-		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? WORKER_DEADLINE_MS,
+		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
 	});
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
@@ -513,7 +497,7 @@ export async function openHarness(
 		if (drainTimer !== undefined) return;
 		drainTimer = setTimeout(() => {
 			drainTimer = undefined;
-			void eventBus.drain(HOOK_DEADLINE_MS, BACKGROUND_CONTEXT);
+			void eventBus.drain(hookDeadlineMs, BACKGROUND_CONTEXT);
 		});
 		drainTimer.unref?.();
 	});

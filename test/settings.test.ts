@@ -244,6 +244,7 @@ describe("SettingsStore", () => {
 			server: {
 				port: 4080,
 				compaction: { reserveTokens: 4096, backgroundTokens: 0 },
+				memorySeam: { idleThresholdMs: 120000 },
 				backup: { s3: { bucket: "b", prefix: "p/" } },
 			},
 		});
@@ -260,6 +261,12 @@ describe("SettingsStore", () => {
 			[{ server: { compaction: { enabled: "yes" } } }, /server\.compaction\.enabled/],
 			[{ server: { compaction: { reserveTokens: 0 } } }, /server\.compaction\.reserveTokens/],
 			[{ server: { compaction: { backgroundTokens: -1 } } }, /server\.compaction\.backgroundTokens/],
+			[{ server: { memorySeam: "fast" } }, /server\.memorySeam/],
+			[{ server: { memorySeam: { hookDeadlineMs: "30000" } } }, /server\.memorySeam\.hookDeadlineMs/],
+			[{ server: { memorySeam: { idleThresholdMs: 0 } } }, /server\.memorySeam\.idleThresholdMs/],
+			[{ server: { memorySeam: { workerDeadlineMs: -5 } } }, /server\.memorySeam\.workerDeadlineMs/],
+			[{ server: { memorySeam: { queueMax: 1.5 } } }, /server\.memorySeam\.queueMax/],
+			[{ server: { memorySeam: { unknownKnob: 1 } } }, /server\.memorySeam\.unknownKnob/],
 			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, /server\.backup/],
 			[{ server: { backup: { s3: {} } } }, /server\.backup\.s3\.bucket/],
 			// The model, extension list, and provider endpoint are NOT
