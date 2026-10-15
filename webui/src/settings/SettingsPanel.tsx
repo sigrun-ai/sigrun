@@ -11,11 +11,15 @@
  *   key, restoring the pi-durable default `one-at-a-time`).
  * - `retry.enabled`: a checkbox (the only simply-shaped retry/stream
  *   field; the retry/stream TIMING knobs stay file-only in v1).
- * - `defaultTools`: checkboxes over the 7 core tool names (read, bash,
- *   edit, write, find, grep, ls). All-checked clears the filter (absent
- *   key = every installed tool); NONE-checked also clears it — the
- *   filter hides listed tools and can never disable them all, so the
- *   fieldset carries a note saying so.
+ * - `defaultTools`: checkboxes over the server's `toolRoster` (the live
+ *   registry's tool names — extension tools like codemode's appear
+ *   automatically; mapped to pi-durable's model-offered filter
+ *   `AgentChange.modelTools`, NOT the enabled filter). All-checked clears
+ *   the filter (absent key = every installed tool); NONE-checked also
+ *   clears it — the filter hides listed tools and can never disable them
+ *   all, so the fieldset carries a note saying so. A server that omits
+ *   `toolRoster` falls back to the bundled CORE_TOOLS list (forward
+ *   compat with older servers).
  *
  * Save semantics: only changed fields ride the PATCH. A save with every
  * control at its baseline sends an empty patch and reports "no changes
@@ -33,7 +37,11 @@ import type {
 	SigrunClient,
 } from "../api";
 
-/** The 7 core tool names the `defaultTools` filter selects over. */
+/**
+ * The fallback `defaultTools` roster: the core tool names, used only when
+ * the server omits `toolRoster` (an older server, or a transient shape
+ * change) — the panel stays usable instead of rendering an empty fieldset.
+ */
 export const CORE_TOOLS = [
 	"read",
 	"bash",
@@ -43,6 +51,11 @@ export const CORE_TOOLS = [
 	"grep",
 	"ls",
 ] as const;
+
+/** The roster the checkboxes render over: the server's when present, the fallback otherwise. */
+function rosterOf(settings: SettingsWire): readonly string[] {
+	return settings.toolRoster ?? CORE_TOOLS;
+}
 
 type LoadState =
 	| { readonly status: "loading" }
@@ -61,8 +74,8 @@ interface Draft {
 
 function draftFrom(settings: SettingsWire): Draft {
 	const tools: Record<string, boolean> = {};
-	for (const name of CORE_TOOLS) {
-		// Absent defaultTools = no filter = every core tool on.
+	for (const name of rosterOf(settings)) {
+		// Absent defaultTools = no filter = every roster tool on.
 		tools[name] =
 			settings.defaultTools === undefined ||
 			settings.defaultTools.includes(name);
@@ -103,8 +116,9 @@ function patchFrom(draft: Draft, baseline: SettingsWire): SettingsPatchWire {
 	if (draft.retryEnabled !== retryEnabled) {
 		patch.retry = { enabled: draft.retryEnabled };
 	}
-	const allOn = CORE_TOOLS.every((name) => draft.tools[name]);
-	const noneOn = CORE_TOOLS.every((name) => !draft.tools[name]);
+	const roster = rosterOf(baseline);
+	const allOn = roster.every((name) => draft.tools[name]);
+	const noneOn = roster.every((name) => !draft.tools[name]);
 	if (allOn || noneOn) {
 		// All-on clears the filter (the no-filter default). None-on clears
 		// it too: an empty `tools` array would drop every tool — an
@@ -112,8 +126,8 @@ function patchFrom(draft: Draft, baseline: SettingsWire): SettingsPatchWire {
 		// empty stored array keeps every tool anyway.
 		if (baseline.defaultTools !== undefined) patch.defaultTools = null;
 	} else {
-		const selected = CORE_TOOLS.filter((name) => draft.tools[name]);
-		const baselineTools = baseline.defaultTools ?? [...CORE_TOOLS];
+		const selected = roster.filter((name) => draft.tools[name]);
+		const baselineTools = baseline.defaultTools ?? [...roster];
 		if (
 			selected.length !== baselineTools.length ||
 			selected.some((name) => !baselineTools.includes(name))
@@ -311,7 +325,7 @@ export function SettingsPanel(props: {
 					</label>
 						<fieldset className="settings-field settings-tools">
 							<legend className="settings-label">default tools</legend>
-							{CORE_TOOLS.map((name) => (
+							{rosterOf(load.settings).map((name) => (
 								<label key={name} className="settings-checkbox">
 									<input
 										type="checkbox"

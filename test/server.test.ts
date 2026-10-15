@@ -32,7 +32,7 @@ import { SCHEMA_VERSION } from "../src/server/schema-fixture.js";
 import type { FastifyInstance } from "fastify";
 
 /** The pi-durable version `GET /v1/meta` must report (pinned dependency). */
-const PI_DURABLE_VERSION = "1.0.2";
+const PI_DURABLE_VERSION = "1.2.0";
 
 /** The test fixture extension package's entry (loader contract: default factory). */
 const FIXTURE_SPECIFIER = pathToFileURL(

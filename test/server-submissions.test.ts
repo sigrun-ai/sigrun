@@ -549,7 +549,15 @@ describe("POST /v1/conversations/:id/submissions", () => {
 				BACKGROUND_CONTEXT,
 			);
 			expect(result.isError).toBeUndefined();
-			const text = (result.content ?? [])
+			// The pinned sigrun-ext-memory-markdown (Task 2's working tree, pin
+			// bump in Task 8) still speaks pi-durable 1.0.2's `content` shape;
+			// read whichever channel the direct call actually returned.
+			const raw = result as { output?: unknown; content?: unknown };
+			const blocks = (raw.output ?? raw.content ?? []) as {
+				type: string;
+				text?: string;
+			}[];
+			const text = blocks
 				.map((block) => (block.type === "text" ? block.text : ""))
 				.join("");
 			expect(text).toContain("hello");
