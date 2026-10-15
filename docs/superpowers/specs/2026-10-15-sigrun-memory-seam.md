@@ -84,60 +84,84 @@ runSettled(event: {
 Semantics (rulings on delivery, settle paths, ordering, and failure —
 the builder-check questions):
 
-- **Registration shape:** a seam-host event, NOT a pi-durable
-  HookRegistration. pi-durable 1.2.0's `GenerationHooks` has no
-  `runSettled` field, so a task-hook shape would require widening the
-  handlers object against a foreign type — fragile and upstream-hostile.
-  Extensions declare interest in the factory result
-  (`runSettled?: (event, api, context) => void | Promise<void>`, a new
-  validated optional field, same fail-loud treatment as
-  health/submit/kinds); the seam host fans out. The harness learns of
-  run settlement through ONE internal wrap function — the isolated
-  touchpoint — which keeps the upstream rebase (a real `runSettled` in
-  `GenerationHooks`) a clean swap of the wrap's internals plus deletion
-  of the seam-host event fan-out.
+- **Detection mechanism (three-review convergence, replaces the
+  original "wrap function" story):** the host observes settlement via
+  **`Session.subscribeCommits`** (`types.d.ts:827`), filtering
+  submission-table writes — the same signal `Submissions.#observe`
+  uses internally (submissions.js:78). This is the only 1.2.0
+  mechanism that sees EVERY settle path: `endRun` (live.js:27) is a
+  private in-tx mutator called from 7 generation sites PLUS the
+  scheduler fault/orphan path (live.js:145-156), is NOT exported
+  (`index.d.ts:11` exports LiveDoc only — a deep import throws
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`, verified), and no
+  `GenerationHooks` hook fires on abort/reset/model_error/no_model
+  settles. The original "one internal wrap function" was
+  unimplementable without forking. `watchEvents` (`index.d.ts:7`,
+  events.js:261,279) is the fallback channel: its `run_end` already
+  suppresses handOver continuations (`runChanged =
+  run?.inputs[0] !== runBefore?.inputs[0]`) — the spec's
+  settle-not-continuation semantics, pre-implemented — but carries no
+  settlement reason; subscribeCommits is primary, watchEvents
+  documents that the semantics are upstream-proven.
+- **Side lane is an upstream constraint, not a ruling:**
+  subscribeCommits' listener contract is "must not block or call
+  Session APIs" — the listener enqueues; the bounded side lane drains.
+  Delivery: handlers run in extension install order, sequentially; a
+  throwing handler is caught, logged, and does NOT skip the remaining
+  fan-out, does NOT fail the run settle. Queue bound: if runs settle
+  faster than handlers drain, the queue is bounded (SIGRUN_QUEUE_MAX,
+  default 1000); overflow drops the OLDEST pending event and logs (a
+  memory extension that needs stronger guarantees keeps durable
+  cursors — the at-least-once contract below).
+- **Event scoping (ruling):** `runSettled` and lifecycle events are
+  delivered to EVERY loaded extension (global fan-out, install
+  order) — NOT gated on conversation selection. Rationale: the surveyed
+  memory extensions are global-curators by nature (cross-conversation
+  distillation is the point), and conversation-selection gates
+  transcript access, not event visibility; a handler reading another
+  conversation's transcript goes through the same DocumentReader
+  surface core already exposes. Load shaping is the extension's
+  business (it can filter by conversationId).
 - **Which settles fire:** every run terminal outcome — `done` AND
-  `unanswered` (model_error, no_model, aborted, reset). The event
-  carries the outcome:
+  `unanswered` (model_error, no_model, aborted, reset, faulted,
+  orphaned). The event carries the outcome:
   ```ts
   readonly outcome:
-    | { readonly status: "answered"; readonly answer: AssistantMessage }
+    | { readonly status: "answered"; readonly answerEntryId: EntryId;
+        readonly answer: AssistantMessage }
     | { readonly status: "unanswered"; readonly reason: string };
   ```
-  Memory extensions decide what to do with failed turns (the surveyed
-  ones capture user text even when the answer failed — losing it
-  silently is worse than delivering an event with no answer). The
-  degenerate memory extension's afterResponse skip-list (error/tool
-  rounds observe nothing) moves INTO the host's classification: only
-  settled runs emit, and a settled run emits once.
+  The answer is reconstructed post-commit (entry id → AssistantEntry
+  read) because the commit carries ids, not messages. Memory
+  extensions decide what to do with failed turns (the surveyed ones
+  capture user text even when the answer failed — losing it silently
+  is worse than delivering an event with no answer).
 - **onYield continuations:** a `continue`-driven successor run is the
   SAME submission set handed over (`live.run.taskId` reassignment —
-  pi-durable generation.js handOver). No `runSettled` fires for the
+  pi-durable generation.js handOver, which ALSO matches watchEvents'
+  built-in run_end suppression). No `runSettled` fires for the
   pre-continuation answer; the event fires once, at the run that
-  actually settles the submissions. Extensions wanting intermediate
-  answers use `afterResponse` (still available).
-- **Empty-input runs:** fire with empty `inputs`/`inputTexts` (e.g.
-  agent-initiated work; sigrun's cron `source` creates conversations
-  whose runs still answer submissions — but a nested/tool-driven run
-  may legitimately carry none). Extensions filter on what they need.
-- **Error isolation & fan-out order:** handlers run in extension
-  install order, sequentially; a throwing handler is caught, logged,
-  and does NOT skip the remaining fan-out, does NOT fail the run
-  settle, and does NOT fail the triggering operation. The settle path
-  is the run's own commit path — a memory extension must never be able
-  to break admission or answering (the observe-infallibility rule from
-  the survey's sigrun contract row).
-- **Awaited with a deadline, not fire-and-forget:** handlers run in a
-  bounded side lane after the settle commit (never inside it). Deadline
-  `SIGRUN_HOOK_DEADLINE` (default 30s, shared with lifecycle
-  handlers); a timed-out handler is abandoned and logged. This keeps a
-  slow distiller from delaying the next run while making shutdown
-  flushes real (awaited, bounded).
-- **Ordering vs lifecycle events:** per-conversation event
-  serialization — `runSettled` for conversation N is delivered before
-  any `conversationIdle`/`conversationArchived` for conversation N
-  (the final flush cannot outrun the final capture). Cross-conversation
-  ordering is unspecified (independent).
+  actually settles the submissions.
+- **Empty-input runs:** fire with empty `inputs`/`inputTexts`.
+  Verified defensive in 1.2.0 (every `startRun` call site passes a
+  non-empty users array — glm review F2) but kept as a contract line;
+  extensions must not assume non-empty.
+- **inputTexts is text-only, documented loss (ruling):**
+  `readonly inputTexts: readonly string[]` carries the TEXT blocks of
+  each input's `pi.user` entry, concatenated; image/file parts are
+  dropped (position-preserving empty strings). Memory capture is a
+  text store concern in every surveyed implementation; an extension
+  needing full parts reads the entry via the event's `inputs` →
+  submission → `entry` link (durable, same-commit). Resolution path
+  (stated explicitly): submission id → settled `SubmissionRecord`
+  (`status: "done"` carries `entry: EntryId`) → `pi.user` entry →
+  text blocks. Withdrawn queued inputs never placed: unresolvable →
+  empty string at that position, never a reordering.
+- **HookApi is NOT reused (ruling):** the event signature takes a
+  sigrun-narrowed `MemoryEventApi` — `DocumentReader` subset +
+  `conversationId` — no `taskId`, no `memo()` (HookApi is task-scoped;
+  a fabricated one would let extensions memo against a task they
+  don't own).
 
 ### 2. Conversation lifecycle events
 
@@ -154,20 +178,33 @@ host calls it):
 |---|---|---|
 | `conversationCreated(id)` | conversation create | `createConversation` |
 | `conversationForked(childId, parentId, at)` | durable fork, AFTER entries copy per doc semantics | `forkConversation` |
-| `conversationArchived(id, archived)` | archive flag flip, BOTH directions (un-archive = resume) — any writer (the SessionMetaDoc commit path is the listener, so an extension patching its own meta fires like the server route would) | `SessionMetaDoc.archived` patch |
+| `conversationArchived(id, archived)` | archive flag flip, BOTH directions (un-archive = resume) — **on an actual boolean flip only, not on doc creation or no-op patches** (SessionMetaDoc materializes with `archived: false`; a forked child INHERITS the parent's flag with `fork: "current"` and fires no event — the inherited-archive edge is delivered via `conversationForked`, and extensions check the child's meta there) — any writer (the SessionMetaDoc commit path is the listener, so an extension patching its own meta fires like the server route would) | `SessionMetaDoc.archived` patch |
 | `conversationIdle(id, idleMs)` | no submission ADMITTED for the idle threshold (admission-based clock; re-arms per quiet period) | timer, host-owned |
-| `harnessShutdown()` | server shutdown, BEFORE storage closes | `Harness.close` |
+| `harnessShutdown()` | server shutdown, BEFORE storage closes — inserted at sigrun's own shutdown call site (src/index.ts shutdown(): between app.close() and harness.close()); NOT via Session.subscribeClose (synchronous, cannot host a 30s async flush). Flush handlers may COMMIT (admission is still open in this window; the seal happens at harness.close) | `Harness.close` |
 
 Notes:
 - **Idle is the real shutdown analog.** "Went quiet" is the honest
   end-of-conversation signal for durable conversations. The idle
-  threshold is host config (`SIGRUN_IDLE_THRESHOLD`, default 10 min),
-  **measured from the conversation's last submission ADMISSION** (any
-  admission — queued or placed — resets the clock; a long-running task
-  keeps the conversation active even without settled runs). Ruling:
-  admission-based, not settle-based — the curator must not fire
-  mid-run. The host owns the timer; the extension never sets one
-  (the twill lesson: no timers in factory bodies).
+  threshold is host config (`SIGRUN_IDLE_THRESHOLD`, default 10 min).
+  **Idle basis (ruling, corrected by review):** a conversation is idle
+  when it has **no admission AND no live run** — the admission clock
+  alone fires mid-run (a 25-minute run with no further admissions
+  would trip a 10-minute threshold), so the clock gates on
+  pi-durable's own idleness (`waitForIdle` semantics) AND the quiet
+  period. Write-type submissions (passive writes) do NOT reset the
+  clock — a cron heartbeat appending tool displays would keep a
+  conversation permanently non-idle; only INPUT submissions (user
+  turns) and live runs count. The host implements idle detection as a
+  **single sweep over a last-activity map** (updated by the
+  subscribeCommits listener), NOT one timer per conversation
+  (unbounded on a durable server). Boot re-arm: idle state is
+  in-process; after a restart, the sweep re-derives last-activity
+  from a storage scan (latest submission per conversation) —
+  approximate on first boot, exact thereafter. Never-run conversations
+  (created, no submission) have no durable anchor and stay
+  non-idle until their first input — documented, accepted. The host
+  owns the timer; the extension never sets one (the twill lesson: no
+  timers in factory bodies).
 - **Idle fires per quiet period:** re-arms after each event; a
   conversation that goes quiet again later fires again. Extensions
   must tolerate repeats (idempotent flushes).
@@ -178,19 +215,36 @@ Notes:
   event.** The survey precedent is pi-honcho's `session.clone` (child
   inherits history to the fork point) vs pi-observational-memory's
   "no rollback continuity" (child starts fresh). The host passes the
-  fork point; the memory system chooses inherit-vs-fresh.
+  fork point; the memory system chooses inherit-vs-fresh. Forked runs:
+  a fork copies history, not live runs — no `runSettled` interaction
+  exists. Inherited archive state (child born `archived: true` from an
+  archived parent) fires NO archive event (no flip occurred) —
+  extensions see it via `conversationForked` + a meta read.
 - **Recovery/replay:** the once-per-run guarantee is per-process
   best-effort; durable dedup is the extension's cursor (the
   at-least-once contract above). The pairing itself survives restart:
   the input's text is durable (the `pi.user` entry commits before run
-  admission) and `endRun` settles submissions in the same commit as
-  the run outcome (live.js:27) — so a post-restart settle resolves
-  `inputTexts` from storage.
+  admission — inbox.js appendInput + placeSubmission in one commit)
+  and `endRun` settles submissions in the same commit as the run
+  outcome (live.js:27, verified across all 7 call sites + the
+  scheduler path live.js:153) — so a post-restart settle resolves
+  `inputTexts` from storage via submission → `entry` → text blocks.
+- **Boot re-arm of lifecycle watchers:** the subscribeCommits
+  listener re-attaches at harness boot; idle state re-derives from a
+  last-activity scan (see the idle basis ruling). Created/forked/
+  archive events are commit-driven — nothing to re-arm.
 - **Wake matching is declared:** each worker carries
   `wakeOn?: readonly ["conversationIdle" | "conversationArchived" |
   "conversationCreated" | "conversationForked"]` (default: no event
   wakes — `every`-tick only). A wake arriving while the run is in
   flight is QUEUED (coalesced to one pending wake), not dropped —
+- **Abandoned ≠ stopped (ruling):** a timed-out run is abandoned by
+  the HOST (it stops waiting) — the zombie `run()` promise keeps
+  executing and its late writes land unguarded. One-run-at-a-time is
+  enforced on the HOST side (the next run won't start until the
+  deadline fires), so zombie overlap is bounded to one late run per
+  timeout; extensions needing hard cancellation take an AbortSignal
+  (future: a `signal` parameter on run()).
   dropped wakes lose archive-triggered final flushes. The run's
   `run(context, wake?: { event, conversationId })` receives the
   coalesced wake.
@@ -279,15 +333,28 @@ tool reads the durable transcript as before, and capture arrives via
 ## Constraints
 
 - pi-durable 1.2.0 stays the exact pin; no fork, no patch. The one
-  internal touchpoint (run-settle classification) is isolated in
-  sigrun's harness behind one function.
+  internal touchpoint (run-settle observation) is
+  `Session.subscribeCommits` — a PUBLIC API, no internal touching (the
+  original "wrap endRun" idea was refuted by review: endRun is not
+  exported, a deep import throws ERR_PACKAGE_PATH_NOT_EXPORTED).
 - Extension contract changes stay additive to the loader's factory
-  result (workers join health/submit/interactionKinds/ambientKinds as
-  an optional validated field — same fail-loud validation).
-- The seam host gains event fan-out; the loader's two-phase host
-  pattern (identity stub → re-key after resolution) already supports
-  it — events fire only after boot completes, never during factory
-  execution.
+  result (workers + runSettled join health/submit/interactionKinds/
+  ambientKinds as optional validated fields — same fail-loud
+  validation; violations: run not a function, worker name missing/
+  duplicate-within-extension, every.ms <= 0, wakeOn values outside
+  the enum).
+- **Loader host-instance fix required (review M2, deepseek):** the
+  two-phase re-key (hostContextFactory called twice, second return
+  discarded) means the extension's factory captured host1 while boot
+  keyed host2 — inbound event handlers registered on host1 would be
+  unreachable. The implementer must make the re-key MUTATE host1 in
+  place (identity + kinds cell) instead of creating a second host —
+  or route registration through a shared registry both instances
+  reference. This is a loader bug-adjacent fix in its own right (the
+  interaction/ambient seams only survived it because their handlers
+  are outbound); flag it in the plan.
+- Events fire only after boot completes, never during factory
+  execution (two-phase ordering retained).
 
 ## Deferred upstream (pi-durable `runSettled`)
 
@@ -298,10 +365,10 @@ Title: `GenerationHooks: add runSettled — one hook per settled run with paired
 Body:
 
 > `afterResponse` fires per terminal provider message (every round:
-> tool requests, error rounds, retries — generation.js:335, before
+> tool requests, error rounds, retries — generation.js:357, before
 > classification), so every consumer that wants "the turn's answer"
 > re-derives the classification internally (stop/length, or toolUse
-> with no tool-call block — the same logic generation.js:337-340 uses
+> with no tool-call block — the same logic generation.js:359-362 uses
 > to classify answers). Consumers also need the user inputs the run
 > answers, but `LiveDoc.run.inputs` carries submission *ids*, not
 > texts — so consumers rebuild a submit-boundary text map keyed by
@@ -318,17 +385,25 @@ Body:
 > admission order. Retry/recovery replays fire once, on the final
 > attempt.
 >
+> Note: today the only all-path settle observation (including
+> aborted/reset/model_error/no_model AND the scheduler fault/orphan
+> path, live.js:153) is `Session.subscribeCommits` on submission
+> writes — hooks cover none of the unanswered paths. The proposal
+> closes that gap at the hook layer.
+>
 > sigrun currently wraps this locally (spec:
 > docs/superpowers/specs/2026-10-15-sigrun-memory-seam.md §1); we'd
 > move to the upstream hook when available.
 
 ## What's left to the builder
 
-- The exact internal shape of the run-settle wrap (where
-  classification is borrowed from) — one function, tested against
-  pi-durable's generation.js behavior (endRun settlement sites:
-  answer/aborted/model_error/no_model/reset — live.js:27 endRun is the
-  single choke point every settle path commits through).
+- The subscribeCommits settle-observer spike: confirm
+  submission-settlement writes are distinguishable per-conversation
+  in `CommitPublication.changes` (TableCommitChange vs
+  DocumentCommitChange granularity — types.d.ts:697-705) and whether
+  the settled record's `entry` link is present in the table write or
+  needs a post-commit read. This is the pre-planning spike both
+  completing reviews flagged as residual risk.
 - Test strategy for worker deadlines (fake timers are fine; this is
   host logic, not the extension's).
 
@@ -337,22 +412,64 @@ runSettled registration = seam-host event (factory-result field, not a
 foreign HookRegistration key); settle-outcome coverage = done AND
 unanswered, with outcome in the event; onYield continuation = no event
 (the handOver keeps the same submission set; fire at the settling run);
-empty-input runs = fire with empty arrays; error isolation = caught,
+empty-input runs = fire with empty arrays (defensive in 1.2.0 — every
+startRun call site passes non-empty users); error isolation = caught,
 logged, never fails the run or the fan-out; hook latency = bounded
-side lane (SIGRUN_HOOK_DEADLINE 30s), never inside the settle commit;
-per-conversation event ordering (settle before idle/archive); idle
-basis = submission ADMISSION (ruling — the builder-note contradiction
-is resolved); idle = per quiet period, re-arming; wake matching =
-per-worker `wakeOn` declaration, in-flight wakes queued+coalesced;
-shutdown ordering = workers stop (30s) then shutdown handlers (30s);
+side lane (SIGRUN_HOOK_DEADLINE 30s), never inside the settle commit —
+UPSTREAM-FORCED by subscribeCommits' non-blocking listener contract;
+per-conversation event ordering (settle before idle/archive) via ONE
+per-conversation FIFO shared by settle + lifecycle fan-out; idle basis
+= no admission AND no live run (corrected by review — admission-only
+fires mid-run); write-submissions don't reset the clock; idle = per
+quiet period, re-arming; single last-activity sweep, not per-
+conversation timers; boot re-arm = storage scan (approximate first
+boot, never-run conversations stay non-idle — documented); wake
+matching = per-worker `wakeOn` declaration, in-flight wakes
+queued+coalesced; abandoned workers = host stops waiting, zombie
+overlap bounded to one late run; shutdown ordering = workers stop
+(30s) then shutdown handlers (30s), inserted at sigrun's own shutdown
+call site (NOT Session.subscribeClose — synchronous, can't host async
+flushes); shutdown handlers may commit (seal happens at harness.close);
 recovery/replay = input texts are durable (the input's pi.user entry
 commits before run admission; endRun settles submissions in the same
 commit as the outcome) so a post-restart settle resolves inputTexts
 — the once-only guarantee is per-process best-effort, durable dedup is
 the extension's cursor (at-least-once contract, stated); archive event
-source = the SessionMetaDoc patch itself (any writer — the doc-commit
-path is the listener site, so an extension patching its own meta fires
-like the server route would); never-run conversations = idle applies
+source = the SessionMetaDoc patch itself (any writer), fire on actual
+boolean flip only (not doc creation / no-op patch), forked children
+inherit archive state with NO event (seen via conversationForked +
+meta read); never-run conversations = stay non-idle (no durable
+anchor); cron runs = treated as any run; ambient's `expires: "idle"`
+may share the idle clock later (noted, not required); event scoping =
+global fan-out (every loaded extension, not conversation-selected);
+inputTexts = text-only (image parts dropped, position-preserving —
+full parts via inputs → submission → entry link); HookApi NOT reused
+(sigrun-narrowed DocumentReader-subset API, no memo); config knobs
+(SIGRUN_HOOK_DEADLINE/IDLE_THRESHOLD/WORKER_DEADLINE/QUEUE_MAX) join
+the env > settings-file > default chain with loadConfig validation;
+/v1/meta worker fields absent-until-first-run.
+
+## Review pass (2026-10-15)
+
+Three independent model reviews (kimi-k3, glm-5.3, deepseek-v4.1-flash
+— artifacts in reviews/2026-10-15-memory-seam-review-*.md) verified the
+spec against pi-durable 1.2.0 dist and sigrun src. Convergent findings,
+all incorporated above: (1) BLOCKER — the "wrap endRun" mechanism was
+unimplementable (not exported; ERR_PACKAGE_PATH_NOT_EXPORTED verified)
+→ replaced with Session.subscribeCommits + bounded side lane (now an
+upstream-forced constraint); (2) idle admission-clock fired mid-run →
+no-admission-AND-no-live-run; (3) loader two-phase host re-key
+discards the second host instance → inbound handlers unreachable →
+mutate-in-place fix flagged for the plan; (4) event shape
+self-contradiction (top-level answer vs outcome union) → outcome
+union; (5) event scoping ruling added (global); (6) inputTexts
+multimodal loss documented; (7) archive no-op/fork-inheritance edges;
+(8) shutdown-handler commit permission + insertion point; (9) worker
+validation set + abandoned-vs-stopped; (10) line-number drift in the
+upstream issue (generation.js:357/:359-362) fixed. Note: kimi-k3 and
+deepseek disagreed on whether endRun is "a true choke point" (glm:
+yes functionally; kimi: yes but unwrappable; deepseek: unwrappable AND
+unexported) — all three converge on subscribeCommits regardless.
 (created + never admitted = quiet from creation, fires at the
 threshold; harmless, idempotent); cron runs = treated as any run
 (empty inputs fire empty); ambient's `expires: "idle"` may share the
