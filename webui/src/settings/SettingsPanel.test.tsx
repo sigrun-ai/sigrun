@@ -15,6 +15,7 @@ import {
 } from "../api";
 import { renderAsync } from "../test-utils";
 import { SettingsPanel } from "./SettingsPanel";
+import { usePrefs } from "./usePrefs";
 
 interface Call {
 	readonly input: string;
@@ -54,8 +55,50 @@ function makeHarness(init?: {
 	return { calls, client: createClient({ fetch: fetchImpl }) };
 }
 
+/**
+ * Render the panel wired to a live usePrefs instance (the App shape: the
+ * hook lives in a wrapper so its state survives the panel). The probe
+ * exposes the held prefs for assertions.
+ */
+function renderPanelWithPrefs(
+	client: ReturnType<typeof createClient>,
+) {
+	let captured: ReturnType<typeof usePrefs> | undefined;
+	function Probe() {
+		captured = usePrefs();
+		return (
+			<SettingsPanel
+				client={client}
+				prefsState={captured}
+				onClose={() => {}}
+			/>
+		);
+	}
+	return renderAsync(<Probe />).then((renderer) => ({
+		renderer,
+		prefs: () => {
+			if (captured === undefined) throw new Error("prefs not captured");
+			return captured.prefs;
+		},
+	}));
+}
+
 function renderPanel(client: ReturnType<typeof createClient>) {
-	return renderAsync(<SettingsPanel client={client} onClose={() => {}} />);
+	return renderPanelWithPrefs(client).then(({ renderer }) => renderer);
+}
+
+/** Click one section-nav button (fields are section-scoped now). */
+async function openSection(
+	renderer: TestRenderer.ReactTestRenderer,
+	name: string,
+) {
+	const button = renderer.root
+		.findAllByType("button")
+		.find((node) => node.props.className === "settings-nav-item" && node.props.children === name);
+	if (button === undefined) throw new Error(`section ${name} not rendered`);
+	await act(async () => {
+		button.props.onClick();
+	});
 }
 
 function find<T extends TestRenderer.ReactTestInstance>(
@@ -78,13 +121,15 @@ describe("SettingsPanel", () => {
 		});
 		const renderer = await renderPanel(client);
 		expect(calls.some((call) => call.method === "GET" || (call.method === undefined && call.input === "/v1/settings"))).toBe(true);
-		// The selects carry the served modes.
+		// The General section is the default view; its selects carry the modes.
 		expect(find(renderer, "settings-steering").props.value).toBe("all");
 		expect(find(renderer, "settings-followup").props.value).toBe(
 			"one-at-a-time",
 		);
+		await openSection(renderer, "Advanced");
 		// retry.enabled false renders unchecked.
 		expect(find(renderer, "settings-retry-enabled").props.checked).toBe(false);
+		await openSection(renderer, "Tools");
 		// defaultTools ["read", "bash"]: those two checked, bash's siblings not.
 		const tools = renderer.root.findAllByType("input");
 		const byLabel = (name: string) =>
@@ -94,27 +139,31 @@ describe("SettingsPanel", () => {
 		expect(byLabel("read")?.props.checked).toBe(true);
 		expect(byLabel("bash")?.props.checked).toBe(true);
 		expect(byLabel("edit")?.props.checked).toBe(false);
+		await openSection(renderer, "Advanced");
 		// perModelThinking renders as JSON in the textarea.
 		expect(find(renderer, "settings-thinking").props.value).toContain(
 			'"faux/m": "high"',
 		);
-	});
+});
 
 	test("absent settings render defaults: (server default) selects, retry on, every tool on", async () => {
 		const { client } = makeHarness();
 		const renderer = await renderPanel(client);
 		expect(find(renderer, "settings-steering").props.value).toBe("");
 		expect(find(renderer, "settings-followup").props.value).toBe("");
+		await openSection(renderer, "Advanced");
 		expect(find(renderer, "settings-retry-enabled").props.checked).toBe(true);
+		await openSection(renderer, "Tools");
 		const tools = renderer.root.findAllByType("input");
 		expect(
 			tools.filter((node) => node.props.type === "checkbox").length,
-		).toBe(8); // retry + 7 tools
+		).toBe(7); // the 7 roster tools
 		for (const node of tools) {
 			expect(node.props.checked).toBe(true);
 		}
+		await openSection(renderer, "Advanced");
 		expect(find(renderer, "settings-thinking").props.value).toBe("");
-	});
+});
 
 	test("edit steeringMode + save PATCHes only the changed field", async () => {
 		const { calls, client } = makeHarness();
@@ -162,6 +211,7 @@ describe("SettingsPanel", () => {
 	test("unchecking a tool PATCHes the reduced defaultTools list", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderPanel(client);
+		await openSection(renderer, "Tools");
 		const grep = renderer.root
 			.findAllByType("input")
 			.find((node) =>
@@ -202,11 +252,12 @@ describe("SettingsPanel", () => {
 			settings: { toolRoster: roster },
 		});
 		const renderer = await renderPanel(client);
-		const boxes = renderer.root
-			.findAllByType("input")
-			.filter((node) => node.props.type === "checkbox");
-		// retry + the 9 roster names (both non-core entries render).
-		expect(boxes.length).toBe(10);
+		await openSection(renderer, "Tools");
+		const boxes = renderer.root.findAllByType("input").filter(
+			(node) => node.props.type === "checkbox",
+		);
+		// The 9 roster names (both non-core entries render).
+		expect(boxes.length).toBe(9);
 		const byLabel = (name: string) =>
 			renderer.root
 				.findAllByType("input")
@@ -247,6 +298,7 @@ describe("SettingsPanel", () => {
 			settings: { defaultTools: ["read"] },
 		});
 		const renderer = await renderPanel(client);
+		await openSection(renderer, "Tools");
 		// Check every unchecked box.
 		const boxes = renderer.root
 			.findAllByType("input")
@@ -270,6 +322,7 @@ describe("SettingsPanel", () => {
 	test("invalid per-model thinking JSON refuses to save (no PATCH fired)", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderPanel(client);
+		await openSection(renderer, "Advanced");
 		await act(async () => {
 			find(renderer, "settings-thinking").props.onChange({
 				target: { value: "{not json" },
@@ -292,6 +345,7 @@ describe("SettingsPanel", () => {
 			settings: { perModelThinking: { "faux/m": "high" } },
 		});
 		const renderer = await renderPanel(client);
+		await openSection(renderer, "Advanced");
 		expect(find(renderer, "settings-thinking").props.value).toContain(
 			'"faux/m": "high"',
 		);
@@ -309,5 +363,53 @@ describe("SettingsPanel", () => {
 		expect(JSON.parse(patchCall!.body as string)).toEqual({
 			perModelThinking: null,
 		});
+	});
+
+	test("sections render: the nav shows all four and switches views", async () => {
+		const { client } = makeHarness();
+		const renderer = await renderPanel(client);
+		const navItems = renderer.root
+			.findAllByType("button")
+			.filter((node) => node.props.className === "settings-nav-item");
+		expect(navItems.map((node) => node.props.children)).toEqual([
+			"General",
+			"Tools",
+			"Interface",
+			"Advanced",
+		]);
+		// General renders steering; Interface does NOT.
+		expect(
+			renderer.root.findAllByProps({ className: "settings-steering" }),
+		).toHaveLength(1);
+		await openSection(renderer, "Interface");
+		expect(
+			renderer.root.findAllByProps({ className: "settings-steering" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "settings-pref-enterToSend" }),
+		).toHaveLength(1);
+		expect(
+			renderer.root.findAllByProps({ className: "settings-pref-showThinking" }),
+		).toHaveLength(1);
+	});
+
+	test("interface prefs apply live through the shared prefs state", async () => {
+		const { client } = makeHarness();
+		const { renderer, prefs } = await renderPanelWithPrefs(client);
+		await openSection(renderer, "Interface");
+		expect(prefs().enterToSend).toBe(false);
+		expect(prefs().showThinking).toBe(true);
+		await act(async () => {
+			find(renderer, "settings-pref-enterToSend").props.onChange({
+				target: { checked: true },
+			});
+		});
+		expect(prefs().enterToSend).toBe(true);
+		await act(async () => {
+			find(renderer, "settings-pref-showThinking").props.onChange({
+				target: { checked: false },
+			});
+		});
+		expect(prefs().showThinking).toBe(false);
 	});
 });

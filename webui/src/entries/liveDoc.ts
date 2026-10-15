@@ -10,6 +10,7 @@ import type {
 	ConversationEntryWire,
 	ConversationViewWire,
 	LiveDocWire,
+	MessageWire,
 	ToolSlotWire,
 } from "../api";
 
@@ -19,6 +20,37 @@ export function liveToolSlots(
 ): readonly ToolSlotWire[] {
 	const live = view.docs["pi.live"] as LiveDocWire | undefined;
 	return live?.tools ?? [];
+}
+
+/**
+ * The in-flight generation's committed partial message, or undefined when
+ * idle (or the doc shape is unexpected — fail soft to absent; upstream
+ * drift surfaces in the schema fixture first).
+ */
+export function liveGenerationPartial(
+	view: ConversationViewWire,
+): MessageWire | undefined {
+	const live = view.docs["pi.live"] as LiveDocWire | undefined;
+	const message = live?.generation?.message;
+	if (typeof message !== "object" || message === null) return undefined;
+	return message as MessageWire;
+}
+
+/** How many compaction tasks are live right now (0 = none). */
+export function liveCompactions(view: ConversationViewWire): number {
+	const live = view.docs["pi.live"] as LiveDocWire | undefined;
+	return live?.compactions?.length ?? 0;
+}
+
+/** The newest compaction failure's error text, when one is surfaced. */
+export function liveCompactionFailure(
+	view: ConversationViewWire,
+): string | undefined {
+	const live = view.docs["pi.live"] as LiveDocWire | undefined;
+	const failure = live?.compactionFailure;
+	if (typeof failure !== "object" || failure === null) return undefined;
+	const error = failure.error;
+	return typeof error === "string" && error !== "" ? error : undefined;
 }
 
 /**

@@ -3,21 +3,26 @@
  *
  * - The sigrun brand.
  * - The extension-set badge (spec §6.1 "Surface visibility"): the enabled
- *   extension set rendered from `GET /v1/meta` (`extensions[].name`), a
- *   read-only per-deployment view. A QUARANTINED extension (boot-failed,
- *   `extensions[].status`) renders distinctly — the badge goes to the
- *   degraded style and the name carries a ⚠ marker.
+	 *   extension set rendered from `GET /v1/meta` (`extensions[].name`), a
+	 *   read-only per-deployment view. A QUARANTINED extension (boot-failed,
+	 *   `extensions[].status`) renders distinctly — the badge goes to the
+	 *   degraded style and the name carries a ⚠ marker.
  * - The degraded-health badges: `health.backup` anything-but-configured
- *   renders `backup: <status>` (the unconfigured-backup badge, core spec
- *   §4.3); `memory` / `providers` render when `degraded`.
+	 *   renders `backup: <status>` (the unconfigured-backup badge, core spec
+	 *   §4.3); `memory` / `providers` render when `degraded`.
+ * - The workspace toggle (2026-10-15 quick wins): visible below the
+	 *   1000px breakpoint (CSS), where the static right column is hidden —
+	 *   opens the workspace panel as an overlay drawer.
  * - The theme controls (toggle + accent picker) on the right.
  * - The settings gear (Task 8c): opens the SettingsPanel over
- *   `GET/PATCH /v1/settings`.
+	 *   `GET/PATCH /v1/settings`; the app's {@link PrefsState} rides in so
+	 *   the panel's Interface section edits the SAME instance App holds.
  */
 
 import { useState } from "react";
 import type { MetaResponse, SigrunClient } from "../api";
 import { SettingsPanel } from "../settings/SettingsPanel";
+import type { PrefsState } from "../settings/usePrefs";
 import { ThemeControls } from "../theme/ThemeControls";
 import type { ThemeState } from "../theme/useTheme";
 
@@ -45,8 +50,15 @@ export function TopBar(props: {
 	meta: MetaResponse;
 	theme: ThemeState;
 	client: SigrunClient;
+	/** The app-owned client prefs (the settings panel edits them). */
+	prefsState: PrefsState;
+	/** Whether the workspace drawer is open (narrow widths). */
+	workspaceOpen: boolean;
+	/** Toggle the workspace drawer. */
+	onToggleWorkspace: () => void;
 }) {
-	const { meta, theme, client } = props;
+	const { meta, theme, client, prefsState, workspaceOpen, onToggleWorkspace } =
+		props;
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const quarantined = meta.extensions.filter(
 		(extension) => extension.status !== "ok",
@@ -87,6 +99,16 @@ export function TopBar(props: {
 				</span>
 			))}
 			<span className="spacer" />
+			<button
+				type="button"
+				className="workspace-toggle"
+				aria-pressed={workspaceOpen}
+				aria-label="toggle workspace panel"
+				title="workspace"
+				onClick={onToggleWorkspace}
+			>
+				🗂
+			</button>
 			<ThemeControls theme={theme} />
 			<button
 				type="button"
@@ -100,6 +122,7 @@ export function TopBar(props: {
 			{settingsOpen && (
 				<SettingsPanel
 					client={client}
+					prefsState={prefsState}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}

@@ -5,6 +5,13 @@
  * `steeringMode` up on the NEXT submission's admission — the spec's binding
  * testable).
  *
+ * Sections (2026-10-15 quick wins): the fields are grouped into a
+ * left-hand nav — General (queue modes), Tools (default tools),
+ * Interface (client-only prefs, localStorage — never the server file),
+ * Advanced (retry + raw per-model thinking JSON). The nav is deliberately
+ * HARDCODED: extension-registered sections are a future spec (recorded
+ * 2026-10-15, deferred) — no seam yet, by design.
+ *
  * Field shapes v1:
  * - `steeringMode` / `followUpMode`: selects over pi-durable's QueueMode,
  *   plus a "(server default)" option that PATCHes `null` (clears the file
@@ -20,6 +27,9 @@
  *   all, so the fieldset carries a note saying so. A server that omits
  *   `toolRoster` falls back to the bundled CORE_TOOLS list (forward
  *   compat with older servers).
+ * - Interface (client prefs): `enterToSend` and `showThinking` — applied
+ *   the moment their checkbox flips (no save step; they live in
+ *   localStorage via the app-owned {@link PrefsState}).
  *
  * Save semantics: only changed fields ride the PATCH. A save with every
  * control at its baseline sends an empty patch and reports "no changes
@@ -36,6 +46,11 @@ import type {
 	SettingsPatchWire,
 	SigrunClient,
 } from "../api";
+import { type PrefKey, type PrefsState } from "./usePrefs";
+
+/** The settings sections, in nav order. */
+const SECTIONS = ["General", "Tools", "Interface", "Advanced"] as const;
+type Section = (typeof SECTIONS)[number];
 
 /**
  * The fallback `defaultTools` roster: the core tool names, used only when
@@ -144,7 +159,8 @@ function patchFrom(draft: Draft, baseline: SettingsWire): SettingsPatchWire {
 		if (trimmed === "") patch.perModelThinking = null;
 		else {
 			// parsePerModelThinking validated this before save was enabled.
-			patch.perModelThinking = JSON.parse(trimmed) as Record<string, string>;
+			const parsed: unknown = JSON.parse(trimmed);
+			patch.perModelThinking = parsed as Record<string, string>;
 		}
 	}
 	return patch as SettingsPatchWire;
@@ -185,13 +201,34 @@ const QUEUE_MODE_OPTIONS: readonly (QueueModeWire | "")[] = [
 	"all",
 ];
 
+/** The Interface section's client prefs, in render order. */
+const CLIENT_PREF_FIELDS: readonly {
+	readonly key: PrefKey;
+	readonly label: string;
+	readonly note: string;
+}[] = [
+	{
+		key: "enterToSend",
+		label: "enter sends the prompt",
+		note: "off: Ctrl+Enter submits (Enter inserts a newline); on: Enter submits and Shift+Enter inserts a newline. Ctrl+Enter submits either way.",
+	},
+	{
+		key: "showThinking",
+		label: "show thinking blocks",
+		note: "reasoning text arrives with assistant messages; off hides it completely.",
+	},
+];
+
 export function SettingsPanel(props: {
 	readonly client: SigrunClient;
+	/** The app-owned client prefs (the Interface section edits them live). */
+	readonly prefsState: PrefsState;
 	readonly onClose: () => void;
 }) {
-	const { client, onClose } = props;
+	const { client, onClose, prefsState } = props;
 	const [load, setLoad] = useState<LoadState>({ status: "loading" });
 	const [draft, setDraft] = useState<Draft | null>(null);
+	const [section, setSection] = useState<Section>("General");
 	const [saveState, setSaveState] = useState<{
 		readonly status: "idle" | "saving" | "saved";
 		readonly message?: string;
@@ -249,6 +286,141 @@ export function SettingsPanel(props: {
 	const thinkingValid =
 		draft === null ? true : parsePerModelThinking(draft.perModelThinking).ok;
 
+	const body =
+		load.status === "loading" ? (
+			<p className="settings-note">loading settings…</p>
+		) : load.status === "error" ? (
+			<p className="settings-note" role="alert">
+				{load.message}
+			</p>
+		) : draft === null ? null : section === "General" ? (
+			<div className="settings-body">
+				<label className="settings-field">
+					<span className="settings-label">steering mode</span>
+					<select
+						className="settings-steering"
+						value={draft.steeringMode}
+						onChange={(event) =>
+							setDraft({
+								...draft,
+								steeringMode: event.target.value as QueueModeWire | "",
+							})
+						}
+					>
+						{QUEUE_MODE_OPTIONS.map((mode) => (
+							<option key={mode || "default"} value={mode}>
+								{mode === "" ? "(server default)" : mode}
+							</option>
+						))}
+					</select>
+				</label>
+				<label className="settings-field">
+					<span className="settings-label">follow-up mode</span>
+					<select
+						className="settings-followup"
+						value={draft.followUpMode}
+						onChange={(event) =>
+							setDraft({
+								...draft,
+								followUpMode: event.target.value as QueueModeWire | "",
+							})
+						}
+					>
+						{QUEUE_MODE_OPTIONS.map((mode) => (
+							<option key={mode || "default"} value={mode}>
+								{mode === "" ? "(server default)" : mode}
+							</option>
+						))}
+					</select>
+				</label>
+			</div>
+		) : section === "Tools" ? (
+			<div className="settings-body">
+				<fieldset className="settings-field settings-tools">
+					<legend className="settings-label">default tools</legend>
+					{rosterOf(load.settings).map((name) => (
+						<label key={name} className="settings-checkbox">
+							<input
+								type="checkbox"
+								checked={draft.tools[name]}
+								onChange={(event) =>
+									setDraft({
+										...draft,
+										tools: {
+											...draft.tools,
+											[name]: event.target.checked,
+										},
+									})
+								}
+							/>
+							{name}
+						</label>
+					))}
+					<p className="settings-note">
+						all checked = no filter (every installed tool); unchecking
+						every box also leaves every tool enabled — the filter only
+						hides listed tools, it can never disable them all
+					</p>
+				</fieldset>
+			</div>
+		) : section === "Interface" ? (
+			<div className="settings-body">
+				{CLIENT_PREF_FIELDS.map((field) => (
+					<label
+						key={field.key}
+						className="settings-field settings-checkbox"
+					>
+						<input
+							type="checkbox"
+							className={`settings-pref-${field.key}`}
+							checked={prefsState.prefs[field.key]}
+							onChange={(event) =>
+								prefsState.setPref(field.key, event.target.checked)
+							}
+						/>
+						<span className="settings-label">{field.label}</span>
+						<p className="settings-note">{field.note}</p>
+					</label>
+				))}
+				<p className="settings-note">
+					interface preferences are per-browser (stored locally — never
+					sent to the server)
+				</p>
+			</div>
+		) : (
+			<div className="settings-body">
+				<label className="settings-field settings-checkbox">
+					<input
+						type="checkbox"
+						className="settings-retry-enabled"
+						checked={draft.retryEnabled}
+						onChange={(event) =>
+							setDraft({ ...draft, retryEnabled: event.target.checked })
+						}
+					/>
+					<span className="settings-label">retry enabled</span>
+				</label>
+				<label className="settings-field">
+					<span className="settings-label">
+						per-model thinking (raw JSON, v1)
+					</span>
+					<textarea
+						className="settings-thinking"
+						rows={4}
+						spellCheck={false}
+						placeholder='{"provider/modelId": "high"}'
+						value={draft.perModelThinking}
+						onChange={(event) =>
+							setDraft({ ...draft, perModelThinking: event.target.value })
+						}
+					/>
+					<p className="settings-note">
+						{`a raw JSON object — "provider/modelId": thinking level (off, minimal, low, medium, high, xhigh, max); empty clears`}
+					</p>
+				</label>
+			</div>
+		);
+
 	return (
 		<div className="settings-overlay" role="dialog" aria-label="settings">
 			<div className="settings-panel">
@@ -264,129 +436,47 @@ export function SettingsPanel(props: {
 						✕
 					</button>
 				</header>
-				{load.status === "loading" && (
-					<p className="settings-note">loading settings…</p>
-				)}
-				{load.status === "error" && (
-					<p className="settings-note" role="alert">
-						{load.message}
-					</p>
-				)}
-				{load.status === "ready" && draft !== null && (
-					<div className="settings-body">
-						<label className="settings-field">
-							<span className="settings-label">steering mode</span>
-							<select
-								className="settings-steering"
-								value={draft.steeringMode}
-								onChange={(event) =>
-									setDraft({
-										...draft,
-										steeringMode: event.target.value as QueueModeWire | "",
-									})
-								}
-							>
-								{QUEUE_MODE_OPTIONS.map((mode) => (
-									<option key={mode || "default"} value={mode}>
-										{mode === "" ? "(server default)" : mode}
-									</option>
-								))}
-							</select>
-						</label>
-						<label className="settings-field">
-							<span className="settings-label">follow-up mode</span>
-							<select
-								className="settings-followup"
-								value={draft.followUpMode}
-								onChange={(event) =>
-									setDraft({
-										...draft,
-										followUpMode: event.target.value as QueueModeWire | "",
-									})
-								}
-							>
-								{QUEUE_MODE_OPTIONS.map((mode) => (
-									<option key={mode || "default"} value={mode}>
-										{mode === "" ? "(server default)" : mode}
-									</option>
-								))}
-							</select>
-						</label>
-					<label className="settings-field settings-checkbox">
-						<input
-							type="checkbox"
-							className="settings-retry-enabled"
-							checked={draft.retryEnabled}
-							onChange={(event) =>
-								setDraft({ ...draft, retryEnabled: event.target.checked })
-							}
-						/>
-						<span className="settings-label">retry enabled</span>
-					</label>
-						<fieldset className="settings-field settings-tools">
-							<legend className="settings-label">default tools</legend>
-							{rosterOf(load.settings).map((name) => (
-								<label key={name} className="settings-checkbox">
-									<input
-										type="checkbox"
-										checked={draft.tools[name]}
-										onChange={(event) =>
-											setDraft({
-												...draft,
-												tools: {
-													...draft.tools,
-													[name]: event.target.checked,
-												},
-											})
-										}
-									/>
-									{name}
-								</label>
-							))}
-							<p className="settings-note">
-								all checked = no filter (every installed tool); unchecking
-								every box also leaves every tool enabled — the filter only
-								hides listed tools, it can never disable them all
-							</p>
-						</fieldset>
-						<label className="settings-field">
-							<span className="settings-label">
-								per-model thinking (raw JSON, v1)
-							</span>
-							<textarea
-								className="settings-thinking"
-								rows={4}
-								spellCheck={false}
-								placeholder='{"provider/modelId": "high"}'
-								value={draft.perModelThinking}
-								onChange={(event) =>
-									setDraft({ ...draft, perModelThinking: event.target.value })
-								}
-							/>
-							<p className="settings-note">
-								{`a raw JSON object — "provider/modelId": thinking level (off, minimal, low, medium, high, xhigh, max); empty clears`}
-							</p>
-						</label>
-						<footer className="settings-actions">
-							<button
-								type="button"
-								className="settings-save"
-								disabled={saveState.status === "saving" || !thinkingValid}
-								onClick={() => void save()}
-							>
-								{saveState.status === "saving" ? "saving…" : "save"}
-							</button>
-							{saveState.message !== undefined && (
-								<span
-									className="settings-note"
-									role={saveState.status === "saved" ? "status" : "alert"}
+				{load.status === "ready" && (
+					<div className="settings-layout">
+						<nav className="settings-nav" aria-label="settings sections">
+							{SECTIONS.map((name) => (
+								<button
+									key={name}
+									type="button"
+									className="settings-nav-item"
+									data-active={name === section || undefined}
+									onClick={() => setSection(name)}
 								>
-									{saveState.message}
-								</span>
-							)}
-						</footer>
+									{name}
+								</button>
+							))}
+						</nav>
+						<div className="settings-section">{body}</div>
 					</div>
 				)}
+				{load.status !== "ready" && body}
+				<footer className="settings-actions">
+					<button
+						type="button"
+						className="settings-save"
+						disabled={
+							saveState.status === "saving" ||
+							!thinkingValid ||
+							load.status !== "ready"
+						}
+						onClick={() => void save()}
+					>
+						{saveState.status === "saving" ? "saving…" : "save"}
+					</button>
+					{saveState.message !== undefined && (
+						<span
+							className="settings-note"
+							role={saveState.status === "saved" ? "status" : "alert"}
+						>
+							{saveState.message}
+						</span>
+					)}
+				</footer>
 			</div>
 		</div>
 	);

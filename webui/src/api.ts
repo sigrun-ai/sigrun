@@ -329,10 +329,14 @@ export type SettingsPatchWire = {
  * sync by hand; the stream is the §5 full-immutable-revision contract.
  * ---------------------------------------------------------------------- */
 
-/** One content block of a message (`{type: "text", text}`, image/file parts…). */
+/** One content block of a message (`{type: "text", text}`, `{type:
+ * "thinking", thinking}`, image/file parts, tool calls). */
 export interface ContentBlockWire {
 	readonly type: string;
 	readonly text?: string;
+	/** The thinking text on `{type: "thinking"}` blocks (pi-ai
+	 * ThinkingContent). Absent on every other block type. */
+	readonly thinking?: string;
 	readonly path?: string;
 }
 
@@ -424,11 +428,21 @@ export interface ToolSlotWire {
  * The `docs["pi.live"]` LiveState doc, narrowed to what the webui reads
  * (`run`/`generation`/`compactions` are consumed by later tasks).
  */
+/**
+ * The `docs["pi.live"]` LiveState doc, narrowed to what the webui reads.
+ * Shape per pi-durable dist/harness/live.d.ts: `run` (present exactly while
+ * busy — the steer field derives from it server-side), `generation.message`
+ * (the committed throttled partial of the in-flight response), `tools`
+ * (live tool slots), `compactions` (live compaction tasks),
+ * `compactionFailure` (the newest failure — a completed compaction clears
+ * it; nothing-to-compact or a fault leaves it).
+ */
 export interface LiveDocWire {
 	readonly run?: unknown;
-	readonly generation?: unknown;
+	readonly generation?: { readonly message?: unknown };
 	readonly tools?: readonly ToolSlotWire[];
-	readonly compactions?: unknown;
+	readonly compactions?: readonly unknown[];
+	readonly compactionFailure?: { readonly error?: unknown };
 }
 
 
@@ -719,10 +733,6 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			);
 		}
 		return response.json();
-	}
-
-	function post(path: string, body: unknown): Promise<void> {
-		return send("POST", path, body).then(() => undefined);
 	}
 
 	/** GET a non-JSON body (the JSONL export); fail-loud on non-2xx. */

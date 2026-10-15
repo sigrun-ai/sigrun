@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added (webui)
+- Thinking blocks: `thinking` content blocks render as collapsible
+  `<details>` before each assistant message's text — expanded + pulsing
+  while the generation streams (`pi.live.generation.message` partials
+  render as a provisional entry), collapsed at rest, hidden entirely by
+  the new Interface setting.
+- A "working…" indicator (three pulsing dots) driven by `steer.busy`,
+  reading "compacting…" while a compaction task is live, plus a persistent
+  compaction-failure alert from `pi.live.compactionFailure`.
+- Submit chords: Ctrl+Enter / Cmd+Enter submit; the Interface setting's
+  "enter sends the prompt" adds plain-Enter submit (Shift+Enter stays a
+  newline).
+- Settings sections: the panel gains a left nav (General / Tools /
+  Interface / Advanced). Interface holds the new client-only prefs
+  (`enterToSend`, `showThinking`) — localStorage-backed (`sigrun.prefs`),
+  applied live, never sent to the server.
+- Workspace drawer: below 1000px the workspace panel opens as a right-side
+  overlay drawer (top-bar toggle, backdrop click / in-panel ✕ to close)
+  instead of being hidden.
+
+### Changed (webui)
+- Tool-call-only assistant messages render nothing — the empty bubble
+  above a tool card is gone.
+- The Compact button is removed (compaction is automatic server-side;
+  `/compact` remains a slash command). Composer controls sit in one row
+  (Attach · usage ring · Send) and the textarea matches their height.
+- The settings gear is larger; the top bar wraps badges instead of
+  overflowing horizontally at narrow widths.
+
+### Fixed (webui)
+- The Tools section's checkboxes collapsed into a vertical column with the
+  explanatory note clipped off the right edge (a `flex-direction` leak from
+  the `.settings-field` base), forcing a horizontal scrollbar.
+- `pi.live` doc narrowing gained the `generation`/`compactions`/
+  `compactionFailure` shapes the new consumers read.
 - Unified `extensions` list (install-and-load): one settings.json array
   covers npm specifiers, `file:`/path checkouts, and git sources
   (`git:host/path[@ref]` cloned into `<config-dir>/git/` with fetch/reconcile

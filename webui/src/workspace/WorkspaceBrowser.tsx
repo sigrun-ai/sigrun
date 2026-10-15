@@ -34,8 +34,16 @@ function sortEntries(
 export function WorkspaceBrowser(props: {
 	readonly client: SigrunClient;
 	readonly conversationId: number | null;
+	/**
+	 * Close affordance for the narrow-viewport drawer (2026-10-15): the
+	 * fixed drawer covers the top bar, so the toggle is unreachable while
+	 * it is open — the ✕ in the panel header (CSS-hidden at desktop widths,
+	 * where the static column has no close semantics) and the backdrop
+	 * click own dismissal. Optional so a bare embed can omit it.
+	 */
+	readonly onClose?: () => void;
 }) {
-	const { client, conversationId } = props;
+	const { client, conversationId, onClose } = props;
 	// Root entries; null = not loaded yet (loading or no conversation).
 	const [root, setRoot] = useState<readonly FileEntryWire[] | null>(null);
 	// Loaded directory children, keyed by the directory's path.
@@ -143,7 +151,20 @@ export function WorkspaceBrowser(props: {
 
 	return (
 		<section className="workspace-browser" aria-label="workspace files">
-			<h2 className="workspace-title">Workspace</h2>
+			<h2 className="workspace-title">
+				Workspace
+				{onClose !== undefined && (
+					<button
+						type="button"
+						className="workspace-close"
+						aria-label="close workspace panel"
+						title="close"
+						onClick={onClose}
+					>
+						✕
+					</button>
+				)}
+			</h2>
 			{conversationId === null ? (
 				<p className="workspace-empty">
 					Select a conversation to browse its workspace

@@ -36,7 +36,7 @@
  *   optional `onNavigate` prop (App wires it to the active-id flip).
  */
 
-import { useEffect, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import {
 	type CommandWire,
 	type ConversationViewWire,
@@ -228,8 +228,15 @@ export function Composer(props: {
 	 * a bare embed (tests) can omit it.
 	 */
 	onNavigate?: (id: number) => void;
+	/**
+	 * The `enterToSend` pref (usePrefs): when true, Enter (without shift)
+	 * submits and Shift+Enter inserts a newline; Ctrl+Enter submits in every
+	 * mode. Default false — Ctrl+Enter is the only submit chord.
+	 */
+	readonly enterToSend?: boolean;
 }) {
-	const { client, conversationId, view, onNavigate } = props;
+	const { client, conversationId, view, onNavigate, enterToSend = false } =
+		props;
 	const draft = useDraft(client, conversationId);
 	const [models, setModels] = useState<readonly ModelEntry[]>([]);
 	const [selectedModel, setSelectedModel] = useState<string | null>(null);
@@ -237,7 +244,6 @@ export function Composer(props: {
 	const [notice, setNotice] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
 	const [uploading, setUploading] = useState(false);
-	const [compacting, setCompacting] = useState(false);
 	const [commands, setCommands] = useState<readonly CommandWire[]>([]);
 	const [highlight, setHighlight] = useState(0);
 	const [interactions, setInteractions] = useState<readonly InteractionWire[]>([]);
@@ -351,13 +357,14 @@ export function Composer(props: {
 		}
 	}
 
-	function onFilesSelected(event: ChangeEvent<HTMLInputElement>): unknown {
+	function onFilesSelected(event: ChangeEvent<HTMLInputElement>): void {
 		const files = event.target.files;
 		const picked = files === null ? [] : Array.from(files);
 		// Reset so picking the SAME file again re-fires the change event.
 		event.target.value = "";
-		if (picked.length === 0) return undefined;
-		return attach(picked);
+		if (picked.length === 0) return;
+		// attach() catches its own failures (the alert strip owns them).
+		void attach(picked);
 	}
 
 	/**
@@ -544,23 +551,11 @@ export function Composer(props: {
 	}
 
 	/**
-	 * Manual compaction (Task 4, pi parity): POST the compact endpoint —
-	 * the task is admitted server-side and its `pi.compaction` summary
-	 * entry arrives as a view revision (the stream refreshes the ring).
-	 * Pending state until the POST resolves; errors surface in the strip.
+	 * Manual compaction stays available as the `/compact` COMMAND (Task 4,
+	 * pi parity): the dedicated button was removed in the 2026-10-15
+	 * round-2 pass — compaction is automatic server-side, and the button
+	 * crowded the composer.
 	 */
-	async function compact(): Promise<void> {
-		if (conversationId === null || compacting) return;
-		setCompacting(true);
-		setError(null);
-		try {
-			await client.compact(conversationId);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setCompacting(false);
-		}
-	}
 
 	return (
 		<div className="composer">
@@ -656,47 +651,49 @@ export function Composer(props: {
 					disabled={conversationId === null}
 					onChange={(event) => draft.setText(event.target.value)}
 					onKeyDown={(event) => {
-						if (!menuOpen) return;
-						const key = event.key;
-						if (
-							key === "ArrowDown" ||
-							key === "ArrowUp" ||
-							(key === "Enter" && filteredCommands.length > 0) ||
-							key === "Escape"
-						) {
-							event.preventDefault();
-							if (key === "Escape") {
-								draft.setText("");
-							} else if (key === "ArrowDown") {
-								setHighlight(
-									(clampedHighlight + 1) % filteredCommands.length,
-								);
-							} else if (key === "ArrowUp") {
-								setHighlight(
-									(clampedHighlight - 1 + filteredCommands.length) %
-										filteredCommands.length,
-								);
-							} else {
-								selectCommand(filteredCommands[clampedHighlight]!);
+						// The slash menu owns the keys while it is open.
+						if (menuOpen) {
+							const key = event.key;
+							if (
+								key === "ArrowDown" ||
+								key === "ArrowUp" ||
+								(key === "Enter" && filteredCommands.length > 0) ||
+								key === "Escape"
+							) {
+								event.preventDefault();
+								if (key === "Escape") {
+									draft.setText("");
+								} else if (key === "ArrowDown") {
+									setHighlight(
+										(clampedHighlight + 1) % filteredCommands.length,
+									);
+								} else if (key === "ArrowUp") {
+									setHighlight(
+										(clampedHighlight - 1 + filteredCommands.length) %
+											filteredCommands.length,
+									);
+								} else {
+									selectCommand(filteredCommands[clampedHighlight]!);
+								}
 							}
+							return;
+						}
+						// Submit chords: Ctrl+Enter / Cmd+Enter always (the mac
+						// keyboard's submit key is Cmd — the 2026-10-15 round-2
+						// report); Enter only under the `enterToSend` pref
+						// (Shift+Enter stays a newline there).
+						const submitChord =
+							(event.key === "Enter" &&
+								(event.ctrlKey ||
+									event.metaKey ||
+									(enterToSend && !event.shiftKey)));
+						if (submitChord) {
+							event.preventDefault();
+							void send();
 						}
 					}}
 				/>
 				<div className="composer-side">
-					<label
-						className="composer-attach"
-						data-uploading={uploading || undefined}
-					>
-						{uploading ? "Uploading…" : "Attach"}
-						<input
-							type="file"
-							className="composer-file-input"
-							multiple
-							hidden
-							disabled={conversationId === null || uploading}
-							onChange={onFilesSelected}
-						/>
-					</label>
 					{/* THE PICKER CONVENTION (spec §6.1): a picker renders ONLY
 					    when its list has more than one item — a single-model
 					    deployment hides the picker (the single model stays
@@ -714,34 +711,41 @@ export function Composer(props: {
 							))}
 						</select>
 					)}
-					<UsageRing fraction={fraction} />
-					<button
-						type="button"
-						className="composer-compact"
-						disabled={conversationId === null || compacting}
-						data-compacting={compacting || undefined}
-						onClick={() => void compact()}
-					>
-						{compacting ? "Compacting…" : "Compact"}
-					</button>
-					<button
-						type="button"
-						className="composer-send"
-						disabled={
-							conversationId === null ||
-							(sending && !busy) ||
-							(draft.text.trim() === "" &&
-								draft.attachments.length === 0)
-						}
-						onClick={() => void send()}
-					>
-						{busy ? "Steer" : "Send"}
-					</button>
-					{queued > 0 && (
-						<span className="composer-queued">+{queued} queued</span>
-					)}
+					<div className="composer-controls">
+						<label
+							className="composer-attach"
+							data-uploading={uploading || undefined}
+						>
+							{uploading ? "Uploading…" : "Attach"}
+							<input
+								type="file"
+								className="composer-file-input"
+								multiple
+								hidden
+								disabled={conversationId === null || uploading}
+								onChange={onFilesSelected}
+							/>
+						</label>
+						<UsageRing fraction={fraction} />
+						<button
+							type="button"
+							className="composer-send"
+							disabled={
+								conversationId === null ||
+								(sending && !busy) ||
+								(draft.text.trim() === "" &&
+									draft.attachments.length === 0)
+							}
+							onClick={() => void send()}
+						>
+							{busy ? "Steer" : "Send"}
+						</button>
+							{queued > 0 && (
+								<span className="composer-queued">+{queued} queued</span>
+							)}
+						</div>
+					</div>
 				</div>
 			</div>
-		</div>
-	);
+		);
 }

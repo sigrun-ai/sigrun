@@ -7,9 +7,14 @@ import {
 } from "./api";
 import { Composer } from "./composer/Composer";
 import { EntryList } from "./entries/EntryList";
+import {
+	liveCompactionFailure,
+	liveCompactions,
+} from "./entries/liveDoc";
 import { TopBar } from "./layout/TopBar";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
+import { usePrefs, type PrefsState } from "./settings/usePrefs";
 import type { EventSourceFactory } from "./stream";
 import { useTheme } from "./theme/useTheme";
 import { useConversationView } from "./useConversationView";
@@ -62,8 +67,9 @@ function ChatCenter(props: {
 	view: ConversationViewWire | null;
 	status: string;
 	error: string | null;
+	readonly showThinking: boolean;
 }) {
-	const { activeId, view, status, error } = props;
+	const { activeId, view, status, error, showThinking } = props;
 	if (activeId === null) {
 		return (
 			<section className="chat-center">
@@ -71,6 +77,12 @@ function ChatCenter(props: {
 			</section>
 		);
 	}
+	const busy = view?.steer.busy ?? false;
+	// A live compaction task renders its own line; a FAILURE persists on the
+	// doc after the task ends (cleared by the next successful summary).
+	const compacting = view !== null && liveCompactions(view) > 0;
+	const compactionError =
+		view === null || compacting ? undefined : liveCompactionFailure(view);
 	return (
 		<section
 			className="chat-center"
@@ -81,7 +93,24 @@ function ChatCenter(props: {
 			{view === null ? (
 				<p className="chat-loading">loading…</p>
 			) : (
-				<EntryList view={view} />
+				<>
+					<EntryList view={view} showThinking={showThinking} />
+					{busy && (
+						<div className="chat-working" role="status">
+							<span className="chat-working-dot" />
+							<span className="chat-working-dot" />
+							<span className="chat-working-dot" />
+							<span className="chat-working-label">
+								{compacting ? "compacting…" : "working…"}
+							</span>
+						</div>
+					)}
+					{compactionError !== undefined && (
+						<p className="chat-compaction-failure" role="alert">
+							compaction failed: {compactionError}
+						</p>
+					)}
+				</>
 			)}
 		</section>
 	);
@@ -90,12 +119,19 @@ function ChatCenter(props: {
 export function App(options: AppOptions = {}) {
 	const client = options.client ?? defaultClient;
 	const theme = useTheme();
+	const prefsState: PrefsState = usePrefs();
 	const [boot, setBoot] = useState<Boot>({ status: "loading" });
 	const [activeId, setActiveId] = useState<number | null>(null);
+	const [workspaceOpen, setWorkspaceOpen] = useState(false);
 	const { view, status, error } = useConversationView(activeId, {
 		createEventSource: options.createEventSource,
 	});
 	const onSelect = useCallback((id: number) => setActiveId(id), []);
+	const toggleWorkspace = useCallback(
+		() => setWorkspaceOpen((open) => !open),
+		[],
+	);
+	const closeWorkspace = useCallback(() => setWorkspaceOpen(false), []);
 
 	// Boot-time default: select the root conversation (the §5 default session)
 	// once the schema gate passes, so the composer is live without a click.
@@ -176,7 +212,14 @@ export function App(options: AppOptions = {}) {
 
 	return (
 		<div className="app-root">
-			<TopBar meta={boot.meta} theme={theme} client={client} />
+			<TopBar
+				meta={boot.meta}
+				theme={theme}
+				client={client}
+				prefsState={prefsState}
+				workspaceOpen={workspaceOpen}
+				onToggleWorkspace={toggleWorkspace}
+			/>
 			<main className="app-shell">
 				<SessionList
 					client={client}
@@ -189,6 +232,7 @@ export function App(options: AppOptions = {}) {
 						view={view}
 						status={status}
 						error={error}
+						showThinking={prefsState.prefs.showThinking}
 					/>
 					<footer className="composer-slot">
 						<Composer
@@ -196,12 +240,31 @@ export function App(options: AppOptions = {}) {
 							conversationId={activeId}
 							view={view}
 							onNavigate={onSelect}
+							enterToSend={prefsState.prefs.enterToSend}
 						/>
 					</footer>
 				</div>
-				<aside className="right-panel">
-					<WorkspaceBrowser client={client} conversationId={activeId} />
+				<aside
+					className={
+						workspaceOpen ? "right-panel workspace-open" : "right-panel"
+					}
+				>
+					<WorkspaceBrowser
+						client={client}
+						conversationId={activeId}
+						onClose={closeWorkspace}
+					/>
 				</aside>
+				{/* The narrow-viewport drawer's backdrop (CSS: rendered only under
+				    the 1000px media query when open) — clicking outside closes,
+				    because the fixed drawer covers the top-bar toggle. */}
+				{workspaceOpen && (
+					<div
+						className="workspace-backdrop"
+						onClick={closeWorkspace}
+						aria-hidden="true"
+					/>
+				)}
 			</main>
 		</div>
 	);
