@@ -22,6 +22,10 @@ export default function createSeamFixture(host) {
 	if (host === undefined) {
 		throw new Error("seam fixture requires the host context");
 	}
+	// Stash the received host: the loader's identity test asserts the
+	// instance the factory captured is the SAME instance boot's seamHosts
+	// map holds (re-key mutates in place — never a second host).
+	globalThis.__fixtureSeamHost = host;
 
 	const emitInteraction = defineTool({
 		name: "emit_interaction",

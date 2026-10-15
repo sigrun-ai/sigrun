@@ -274,11 +274,18 @@ export async function openHarness(
 		{
 			packagesDir,
 			hostContextFactory: (extensionName, kinds) => {
-				const host = createSeamHost(
-					{ name: extensionName },
-					kinds,
-					{ bindHarness, harness: harnessOf },
-				);
+				// Second call for an already-created host: re-key IN PLACE. The
+				// instance the factory captured (stored under "" pre-resolution)
+				// must be the final host (review M2) — never a second instance.
+				const host =
+					seamHosts.get(extensionName) ??
+					seamHosts.get("") ??
+					createSeamHost({ name: extensionName }, kinds, {
+						bindHarness,
+						harness: harnessOf,
+					});
+				host.rekey({ name: extensionName }, kinds);
+				seamHosts.delete("");
 				seamHosts.set(extensionName, host);
 				seamKinds.set(extensionName, kinds);
 				return host;

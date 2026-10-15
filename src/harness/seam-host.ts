@@ -61,6 +61,16 @@ export interface DeclaredKinds {
 /** The seam surface handed to extension factories. */
 export interface SeamHost {
 	/**
+	 * Boot-owned two-phase re-key (the loader calls the host factory once
+	 * with a `""` identity stub before the extension name/kinds are known,
+	 * then again after the factory result resolves): mutates identity and
+	 * kind sets IN PLACE so the object the extension factory captured IS
+	 * the final host — a second instance would orphan every inbound handler
+	 * the factory registered on its captured host (review M2). Extensions
+	 * never call this; it is not part of the extension-facing surface.
+	 */
+	rekey(identity: HostIdentity, kinds: DeclaredKinds): void;
+	/**
 	 * Seed (or fully replace) one interaction record. The callId must be
 	 * pending-or-absent; seeding an already-terminal record is a no-op
 	 * (first-write wins, crash-idempotent).
@@ -144,6 +154,17 @@ export function createSeamHost(
 	}
 
 	return {
+		rekey(nextIdentity, nextKinds) {
+			// In place, by design: the factory already captured THIS object, so
+			// the reassign below is visible to every closure reading it and no
+			// second host instance ever exists.
+			identity = nextIdentity;
+			interactionKinds.clear();
+			for (const kind of nextKinds.interaction ?? []) interactionKinds.add(kind);
+			ambientKinds.clear();
+			for (const kind of nextKinds.ambient ?? []) ambientKinds.add(kind);
+		},
+
 		async seedInteraction(conversationId, record, context) {
 			if (!interactionKinds.has(record.kind)) {
 				throw new SeamError(
