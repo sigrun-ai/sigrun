@@ -53,7 +53,10 @@
  * Never-run conversations (created, never admitted — no durable anchor)
  * stay non-idle; documented and accepted in the spec. All idle state is
  * in-process: a restart forgets prior quiet periods (missed idle events
- * are acceptable per the spec's at-least-once posture).
+ * are acceptable per the spec's at-least-once posture). Archive prunes a
+ * conversation's idle state (archive is stronger idle, with its own
+ * event); an un-archived conversation re-enters the idle clock only at
+ * its next admission (conservative — misses idles, never invents them).
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -268,18 +271,16 @@ export interface EventBusOptions {
 	readonly idleSweepMs?: number;
 	/**
 	 * Bounds each worker run (memory-seam Task 5; Task 6: `SIGRUN_WORKER_DEADLINE`).
-	 * A timed-out run is abandoned — the host stops waiting and logs; the
-	 * zombie promise keeps executing with its late writes unguarded
-	 * (accepted, spec §3).
+	 * REQUIRED — config.ts's `DEFAULT_MEMORY_SEAM` is the single source of
+	 * the 600_000 default; the bus carries no second copy. A timed-out run
+	 * is abandoned — the host stops waiting and logs; the zombie promise
+	 * keeps executing with its late writes unguarded (accepted, spec §3).
 	 */
-	readonly workerDeadlineMs?: number;
+	readonly workerDeadlineMs: number;
 }
 
 /** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
 const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
-
-/** The bus's fallback worker deadline; boot always threads its own. */
-const DEFAULT_WORKER_DEADLINE_MS = 600_000;
 
 /** Per-worker runtime state (the bus-owned half of the curator contract). */
 interface WorkerState {
@@ -344,8 +345,7 @@ export class EventBus {
 		this.#queueMax = options.queueMax;
 		this.#hookDeadlineMs = options.hookDeadlineMs;
 		this.#idleThresholdMs = options.idleThresholdMs;
-		this.#workerDeadlineMs =
-			options.workerDeadlineMs ?? DEFAULT_WORKER_DEADLINE_MS;
+		this.#workerDeadlineMs = options.workerDeadlineMs;
 		this.#unsubscribe = harness.subscribeCommits((publication) => {
 			this.observe(publication);
 		});
@@ -406,9 +406,12 @@ export class EventBus {
 			this.#addWorker(name, worker);
 		}
 		return () => {
-			if (this.#extensions.get(name) === handlers) {
-				this.#extensions.delete(name);
-			}
+			// Identity-guarded: a STALE unsubscribe (a same-name registration
+			// has since replaced this one) is a no-op — it must not delete the
+			// current registration NOR stop its workers. Both sides key on the
+			// exact handlers object this registration installed.
+			if (this.#extensions.get(name) !== handlers) return;
+			this.#extensions.delete(name);
 			this.#stopExtensionWorkers(name);
 			this.#workers = this.#workers.filter(
 				(state) => state.extension !== name,
@@ -463,6 +466,22 @@ export class EventBus {
 	 */
 	public sweepIdle(now: number = Date.now()): number {
 		if (this.#closed || this.#idleThresholdMs === undefined) return 0;
+		// Prune-on-archive (post-ship review item): an archived conversation
+		// stops firing conversationIdle — archive is the stronger idle, with
+		// its own event. The listener keys the prune on the session-meta
+		// flip basis (#archivedBasis), the one place archive state is
+		// already tracked; a conversation with no flip record yet
+		// (materialization default false, or a pre-process doc) is treated
+		// as un-archived. Archived(false) restores NOTHING — the
+		// conversation re-enters the idle clock at its next admission
+		// (conservative: misses idles, never invents them).
+		for (const conversationId of [...this.#lastAdmission.keys()]) {
+			if (this.#archivedBasis.get(conversationId) === true) {
+				this.#lastAdmission.delete(conversationId);
+				this.#liveInputs.delete(conversationId);
+				this.#idleFiredAt.delete(conversationId);
+			}
+		}
 		let enqueued = 0;
 		for (const [conversationId, admittedAt] of this.#lastAdmission) {
 			if ((this.#liveInputs.get(conversationId) ?? 0) > 0) continue;
@@ -521,11 +540,15 @@ export class EventBus {
 
 	/**
 	 * Drain pending events through the handlers, each deadline-bounded.
-	 * Concurrent calls share ONE loop (the single side-lane worker); each
-	 * call resolves when that loop empties the queue or its own deadline
-	 * fires — whichever comes first. `context` is the drain's caller
-	 * context, forwarded to the extension handlers the loop dispatches;
-	 * the loop keeps the context of the drain that started it.
+	 * Concurrent calls share ONE loop (the single side-lane worker), and a
+	 * call resolves as soon as EITHER the shared loop empties the queue OR
+	 * the call's own deadline fires — the deadline only bounds the WAIT, it
+	 * does not reserve a share of the loop: when a loop is already running,
+	 * its completion wins the race for every waiter, so a late caller with
+	 * a tiny deadline can resolve AFTER that deadline (it rode the running
+	 * loop past it). `context` is the drain's caller context, forwarded to
+	 * the extension handlers the loop dispatches; the loop keeps the
+	 * context of the drain that started it.
 	 */
 	public drain(deadlineMs: number, context: Context): Promise<void> {
 		if (this.#closed) return Promise.resolve();
@@ -838,13 +861,19 @@ export class EventBus {
 					// settle-group emission below is NOT gated: a withdrawal still
 					// emits runSettled (Task 3's position-preserving contract).
 					if (value.entry !== undefined) {
-						this.#liveInputs.set(
-							value.conversationId,
-							Math.max(
-								0,
-								(this.#liveInputs.get(value.conversationId) ?? 0) - 1,
-							),
-						);
+						// Skip when the key is absent: a conversation archived
+						// mid-run has its idle state pruned (see sweepIdle), and a
+						// settle arriving after the prune must NOT re-create the
+						// entry with a floored 0 — that would re-admit the archived
+						// conversation to the sweep (and a still-running second
+						// input would then fire idle MID-RUN).
+						const live = this.#liveInputs.get(value.conversationId);
+						if (live !== undefined) {
+							this.#liveInputs.set(
+								value.conversationId,
+								Math.max(0, live - 1),
+							);
+						}
 					}
 				}
 				if (value.status !== "done" && value.status !== "unanswered")

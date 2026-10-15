@@ -487,6 +487,80 @@ describe("idle workers — the curator contract", () => {
 		}
 	});
 
+	test("a stale unsubscribe cannot kill a same-name re-registration's workers or handlers", async () => {
+		// Post-ship review item: registerExtension's unsubscribe captured no
+		// registration identity — a STALE unsub stopped the CURRENT
+		// registration's workers (the #extensions delete was guarded; the
+		// worker stop was not).
+		const { opened, fixture } = await bootFixture();
+		await vi.waitFor(
+			() =>
+				expect(
+					fixture.runs.filter((run) => run.worker === "ticker").length,
+				).toBeGreaterThanOrEqual(1),
+			{ timeout: 5_000, interval: 20 },
+		);
+
+		const bus = opened.eventBus;
+		const reRunSettled: string[] = [];
+		const staleUnsub = bus.registerExtension("sigrun.re-register", {
+			workers: [
+				{
+					name: "first-ticker",
+					every: { ms: 40 },
+					async run() {
+						// Registration-era marker — must NEVER run: the
+						// replacement stops the old worker at re-register time.
+						reRunSettled.push("first-worker");
+					},
+				},
+			],
+		});
+		const currentUnsub = bus.registerExtension("sigrun.re-register", {
+			workers: [
+				{
+					name: "second-ticker",
+					every: { ms: 40 },
+					async run() {
+						reRunSettled.push("second-worker");
+					},
+				},
+			],
+			runSettled(event) {
+				reRunSettled.push(`runSettled:${event.conversationId}`);
+			},
+		});
+
+		// The replacement stopped the FIRST registration's worker at
+		// re-register time; the current one ticks.
+		await vi.waitFor(
+			() => expect(reRunSettled).toContain("second-worker"),
+			{ timeout: 5_000, interval: 20 },
+		);
+		expect(reRunSettled).not.toContain("first-worker");
+
+		// The STALE unsubscribe is a no-op: the current worker keeps ticking
+		// and the current registration's handlers stay registered.
+		staleUnsub();
+		const before = reRunSettled.length;
+		await vi.waitFor(
+			() => expect(reRunSettled.length).toBeGreaterThan(before + 1),
+			{ timeout: 5_000, interval: 20 },
+		);
+		const { root } = await runTurn(opened, "still registered");
+		await vi.waitFor(
+			() =>
+				expect(reRunSettled).toContain(`runSettled:${root.id}`),
+			{ timeout: 5_000, interval: 20 },
+		);
+
+		// The CURRENT unsubscribe does stop it.
+		currentUnsub();
+		const finalCount = reRunSettled.length;
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(reRunSettled.length).toBe(finalCount);
+	});
+
 	test("shutdown stops workers before harnessShutdown handlers (ordering)", async () => {
 		// workerDeadlineMs 150 bounds the in-flight wait far below the 30s
 		// shutdown cap: the hung run is abandoned by the worker deadline and
