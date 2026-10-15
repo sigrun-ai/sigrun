@@ -1,0 +1,29 @@
+# pi-hermes-memory — Memory-Architecture Inspection
+Source: https://github.com/chandra447/pi-hermes-memory
+
+## 1. ARCHITECTURE
+Hybrid: curated **markdown distillery + SQLite FTS5 transcript-index**. Two markdown files (`MEMORY.md` agent notes, `USER.md` profile, 5000-char caps each) live in `~/.pi/agent/pi-hermes-memory/` (constants.ts:87-88); project-scoped copies under `~/.pi/agent/projects-memory/<project>/`. An "extended store" SQLite DB (better-sqlite3, schema.ts:1-120) holds unlimited memories + all indexed session messages: `memories` table with `id, project, target('memory'|'user'|'failure'), category('failure'|'correction'|'insight'|'preference'|'convention'|'tool-quirk'), content, failure_reason, tool_state, corrected_to, created, last_referenced, hit_count, last_hit_at`; `sessions`, `session_files` (path/size/mtime for incremental backfill), `messages` + trigram FTS5 `message_fts`/`memory_fts` kept in sync by triggers. Procedural skills are separate `skills/<slug>/SKILL.md` files (global and per-project roots). A record of memory is a markdown bullet with HTML-comment metadata (created/lastReferenced) appended (memory-store.ts ~652).
+
+## 2. CAPTURE
+Four triggers, all LLM-distilled (a child `pi -p` subprocess or direct LLM call writes the files — background-review.ts, session-flush.ts):
+- **Background review** every N turns (default 10) or N tool calls, ≥3 user turns: `pi.on("turn_end")` + `pi.on("message_end")` counters (background-review.ts:190-198).
+- **Session flush** on `session_before_compact` and `session_shutdown` with `flushMinTurns` gate (session-flush.ts:158, 277, 284).
+- **Correction detection**: regex pattern match on user messages → immediate save (correction-detector.ts:143,153).
+- **Model-invoked writes**: action-specific tools (`memory_add`, `memory_replace`, etc., names from a shared allowlist constant, memory-tool.ts:417+).
+Dedup/idempotency: single-flight review guard (`if (activeReview) return`), abort-signal + timeout budget, cross-process **atomic lock coordinator** (fs+sqlite, staleMs eviction — atomic-lock-coordinator.ts) for markdown mutation and consolidation; incremental session backfill keyed on `session_files` size/mtime (session-indexer.ts). Every write passes a **content scanner** (injection/exfil patterns + SECRET_PATTERNS; content-scanner.ts:14-60). Capture is project-bound via cwd → project name binding, not per-session id.
+
+## 3. RETRIEVAL
+Two layers: (a) **automatic injection** — `before_agent_start` appends policy prompt (policy-only default; legacy-inject mode injects full MEMORY.md/USER.md blocks + recent failure entries with age/count caps) via `promptOptions.appendSystemPrompt`, preserving named sections (index.ts:305-337; memory-store.ts:594-617). (b) **model-invoked tools**: `memory_search` (query, project, target, category, limit ≤20; FTS5 trigram substring search + hit_count tracking — memory-search-tool.ts:32-70) and `session_search` (all past messages; legacy or "anchors" variant). No embeddings — pure FTS5 trigram tokenization (chosen for CJK substring). Context size bounded by markdown char caps (5k each) + failure-injection caps.
+
+## 4. STATE + LIFECYCLE
+Durable: markdown files, SQLite DB, skills dirs. In-memory: review counters, project binding per session. Compaction: **auto-consolidation** when a file overflows (LLM merges entries; strategies auto-consolidate/reject/fifo-evict; overflow grace timer; cross-session lock). Session boundaries: flush on compact/shutdown (turn-gated), live indexing per message, full index on shutdown, then WAL checkpoint TRUNCATE (index.ts:417-447). Schema versioning: extension_metadata table + migration steps (v0.4 schema, memories table rebuild in db.ts:1020-1093, legacy-root migration in extension-root-migration.ts). Session retention pruning (> N days) at startup (index.ts:250).
+
+## 5. SEAM SURFACE
+Tools: memory action tools, `memory_search`, `session_search`, `skill_manage`. Commands: `/memory-consolidate`, `/memory-index-sessions`, `/memory-insights`, `/memory-interview`, `/learn-memory-tool`, `/memory-preview-context`, `/memory-skills`, `/memory-pin` (standing instructions), `/memory-switch-project`, `/memory-sync-markdown`. Hooks: session_start, before_agent_start (section append), message_end, turn_end, session_before_compact, session_shutdown, resources_discover (skill discovery). UI: `ctx.ui.notify` toasts ("💾 Memory auto-reviewed"), custom tool-result renderers (tool-result-views.ts). Human-readable artifacts are the markdown files themselves (MEMORY.md/USER.md/SKILL.md) — these map naturally to durable per-record doc-families; the FTS index and sessions tables are private derived storage. No statusline/panel widget.
+
+## 6. EXTERNAL DEPENDENCIES
+`better-sqlite3` (native binary) + `strip-ansi`. LLM calls for distillation go through pi's own providers (direct transport or `pi -p` subprocess with model/thinking overrides + fallback chain, config.ts) — no separate API keys. Offline-capable except the distillation LLM calls; FTS search, injection, commands all work offline.
+
+## 7. VERDICT
+(a) **~45%.** The markdown files are essentially per-record durable documents a doc-family seam could own, but the architecture's core value — the trigram FTS index over messages/memories and the LLM-distillation pipeline — is private derived state no {doc-family + panel} seam covers; capture triggers (turn thresholds, compaction flush, correction regex) also need hooks the seam doesn't grant.
+(b) **"Searchable derived index over host-visible documents"** — a seam primitive where the host (or extension) maintains a queryable index (FTS/embedding) whose source documents are durable per-record docs, with the host panel exposing hit-stats/last-referenced; approvals/interactions/ambient have no recall/search surface today.

@@ -22,3 +22,17 @@ forced line `segments[]` composition + derived metrics hint),
 pi-usage (countdown statusline — forced envelope `refresh`),
 pi-zentui (chrome-skin ownership/allocation + styled-segment
 budgets). Summarized in ../approval-ux-seams.md.
+
+## Memory-seam third wave (2026-10-15, `memory-*`)
+
+21 memory extensions inspected to size a channel-neutral memory seam
+(capture/retrieval/provenance/lifecycle instead of dialog primitives):
+pi-memory, pi-hermes-memory, pi-honcho (spec-B control), omms,
+@pi-unipi/memory, @remnic/plugin-pi, pi-observational-memory, openlore
+(code-memory control), pi-weave, @amaster.ai/pi-memory-mem0,
+@josephyoung/pi-openviking, @kvidzibo/pi-mem, common-memory-core,
+@pify/memory, pi-optchat (compaction-replacement control),
+pi-session-memory, @luxusai/pi-hindsight, pi-memory-evolution,
+@arihantdeva/heimdall (path-keyed control), @mnemosyne-oss/pi-mnemosyne
+(thin-wrapper control), pi-blackhole (worker-architecture control).
+Summarized in memory-comparison.md.
