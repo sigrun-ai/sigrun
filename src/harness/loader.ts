@@ -179,7 +179,18 @@ function resolvedFromFactory(
 	hostContext: unknown,
 ): ResolvedExtension | undefined {
 	if (typeof factory !== "function") return undefined;
-	const result = (factory as (host?: unknown) => unknown)(hostContext);
+	// Arity gate: the host context goes ONLY to factories that declare the
+	// arity-1 signature (factory.length > 0). A length-0 factory with a
+	// defaulted first parameter (createMemory(backend = new Backend()),
+	// createApprovals(options = {})) consumes its first argument as a real
+	// dependency — passing the host unconditionally landed it in that slot
+	// and broke the extension at runtime (memory: every submit 500ed on
+	// `bindRecallSource is not a function`). Extra arguments are inert only
+	// for factories that read none; `length` is how the contract declares it.
+	const result =
+		factory.length > 0
+			? (factory as (host?: unknown) => unknown)(hostContext)
+			: (factory as () => unknown)();
 	if (typeof result !== "object" || result === null) return undefined;
 	const candidate = result as {
 		extension?: unknown;
