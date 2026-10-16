@@ -4,6 +4,9 @@
 	"private": true,
 	"description": "Durable personal assistant on pi-durable",
 	"type": "module",
+	"bin": {
+		"sigrun": "src/cli.ts"
+	},
 	"workspaces": [
 		"webui",
 		"tui"
