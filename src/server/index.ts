@@ -453,9 +453,10 @@ export async function createServer(
 	if (webuiBundle !== undefined) {
 		await serveWebuiBundle(app, webuiBundle);
 	}
-	// Conversation ids this server can list: the reserved root (ensured now)
-	// plus this server's own creates. See the module docstring for the
-	// enumeration gap.
+	// The reserved root is ensured before any route runs. The listing is
+	// durable (the module docstring's "Conversation listing (durable)"
+	// section): it scans storage, so this server serves every recorded
+	// conversation, not only its own creates.
 	// The root conversation's agent carries the settings store's
 	// sigrun-resolved fields too (Task 8b): the root is created once, so its
 	// tool filter / thinking override snapshot at factory time — later

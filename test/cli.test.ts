@@ -127,14 +127,14 @@ function stubDeps(overrides: Partial<CliDeps> = {}): {
 	deps: CliDeps;
 	calls: {
 		serve: { env: NodeJS.ProcessEnv }[];
-		boot: { env: NodeJS.ProcessEnv }[];
+		boot: { env: NodeJS.ProcessEnv; host?: string }[];
 		launchTui: { baseUrl: string; user?: string }[];
 		shutdown: number;
 	};
 } {
 	const calls = {
 		serve: [] as { env: NodeJS.ProcessEnv }[],
-		boot: [] as { env: NodeJS.ProcessEnv }[],
+		boot: [] as { env: NodeJS.ProcessEnv; host?: string }[],
 		launchTui: [] as { baseUrl: string; user?: string }[],
 		shutdown: 0,
 	};
@@ -142,8 +142,8 @@ function stubDeps(overrides: Partial<CliDeps> = {}): {
 		serve: async (env) => {
 			calls.serve.push({ env });
 		},
-		boot: async (env) => {
-			calls.boot.push({ env });
+		boot: async (env, options) => {
+			calls.boot.push({ env, ...(options?.host === undefined ? {} : { host: options.host }) });
 			const shutdownOnce = async (): Promise<void> => {
 				calls.shutdown += 1;
 			};
@@ -179,6 +179,25 @@ describe("cliMain run", () => {
 		expect(calls.launchTui).toEqual([
 			{ baseUrl: "http://localhost:4321", user: undefined },
 		]);
+	});
+
+	test("run binds loopback only (the workstation ruling) while serve keeps the container default", async () => {
+		const { deps, calls } = stubDeps();
+		await cliMain(["run"], { SIGRUN_DEFAULT_MODEL: "acme/model-1" }, deps);
+		// Fix wave F3: the naive-identity API must not answer the LAN in
+		// workstation mode; the TUI dials loopback, so loopback is all it needs.
+		expect(calls.boot).toEqual([
+			{ env: { SIGRUN_DEFAULT_MODEL: "acme/model-1" }, host: "127.0.0.1" },
+		]);
+		// `serve` carries no host override: the 0.0.0.0 default stands (the
+		// serve command calls the serve dep, which never takes a host).
+		expect(calls.serve).toEqual([]);
+		const serveDeps = stubDeps();
+		await cliMain(["serve"], { SIGRUN_DEFAULT_MODEL: "acme/model-1" }, serveDeps.deps);
+		expect(serveDeps.calls.serve).toEqual([
+			{ env: { SIGRUN_DEFAULT_MODEL: "acme/model-1" } },
+		]);
+		expect(serveDeps.calls.boot).toEqual([]);
 	});
 
 	test("the agent dies with the TUI: launchTui's return triggers one shutdown", async () => {

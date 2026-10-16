@@ -21,7 +21,9 @@
  * (a 400 on the submit POST, an abort racing settlement, an unknown slash
  * command) as `[error]`/`[notice]` rows. They are NOT stream state, so
  * {@link showView}'s wholesale replacement preserves them — they re-render
- * after the entries until the shell discards them.
+ * after the entries until the shell discards them (fix wave F4: the shell
+ * discards them on every conversation swap via {@link ConversationPane.clearNotices}
+ * — a notice is per-conversation context and must never bleed across a swap).
  */
 
 import {
@@ -228,6 +230,17 @@ export class ConversationPane implements Component {
 	/** Append a `[notice]` line (an outcome, e.g. an abort that settled). */
 	showNotice(text: string): void {
 		this.#appendNotice({ kind: "notice", text });
+	}
+
+	/**
+	 * Discard all composer-surfaced lines (fix wave F4): the shell calls
+	 * this on every conversation swap so a stale error never renders in
+	 * the new conversation. The currently-rendered rows stay until the
+	 * next {@link showView} rebuilds the container — the swap's fresh
+	 * snapshot is that rebuild.
+	 */
+	clearNotices(): void {
+		this.#notices.length = 0;
 	}
 
 	#appendNotice(notice: PaneNotice): void {

@@ -36,6 +36,14 @@
  * {@link SlashCatalog}); unknown commands render a clear error. The POST's
  * immediate failure (4xx) and the abort outcomes render as pane
  * error/notice lines — the pane keeps rendering the reply off the stream.
+ *
+ * Sidebar focus (fix wave F2): the sidebar is the switcher (spec §2), so it
+ * must be keyboard-reachable — ctrl+b toggles key routing between the
+ * composer and the conversation list; a selection (or a second ctrl+b)
+ * returns keys to the composer. Guarded actions (fix wave F1): every
+ * fire-and-forget mutation path (`+ new`, conversation select, ctrl+f
+ * fork) catches its rejection into a pane error line — a flaky remote must
+ * never crash the process on an unhandled rejection.
  */
 
 import {
@@ -113,6 +121,8 @@ export class TuiApp implements Component {
 	#watchGen = 0;
 	/** The last frame's `steer.busy` — the steer gate for the next submit. */
 	#busy = false;
+	/** ctrl+b state: while true, keys route to the sidebar (fix wave F2). */
+	#sidebarFocused = false;
 	/** The slash-command catalog (fetched once, cached — a boot constant). */
 	readonly #catalog: SlashCatalog;
 
@@ -149,10 +159,17 @@ export class TuiApp implements Component {
 		this.interactions.onError = (message) => this.pane.showError(message);
 
 		this.sidebar.onSelect = (selection) => {
+			// A selection returns keys to the composer (fix wave F2).
+			this.#sidebarFocused = false;
 			if (selection === "new") {
 				void this.createAndSelect();
 			} else {
-				void this.selectConversation(selection);
+				// Caught at the call site (fix wave F1): selectConversation
+				// keeps propagating for boot's fail-loud refresh, so the
+				// interactive path guards here.
+				void this.selectConversation(selection).catch((error: unknown) => {
+					this.pane.showError(describeCommandError("select", error));
+				});
 			}
 		};
 
@@ -200,6 +217,9 @@ export class TuiApp implements Component {
 			// its first frame arrives.
 			this.#busy = false;
 			this.sidebar.setActive(id);
+			// Notices are per-conversation context (fix wave F4): an error
+			// from the OLD conversation must never render in the new one.
+			this.pane.clearNotices();
 			// Generation guard (review finding): a frame already in flight
 			// from the JUST-closed watch can still deliver after the swap;
 			// without a per-watch token it would land in the new
@@ -229,6 +249,9 @@ export class TuiApp implements Component {
 					onError: (message) => {
 						if (gen === this.#watchGen) this.onWatchError?.(message);
 					},
+					onOpen: () => {
+						if (gen === this.#watchGen) this.onWatchOpen?.();
+					},
 				},
 				this.#watchOptions,
 			);
@@ -240,11 +263,20 @@ export class TuiApp implements Component {
 	}
 
 	/**
-	 * Stream-error sink. Task 7 owns rendering these in the pane; v1's
-	 * default is a no-op — the generation guard above exists so a STALE
-	 * watch's errors can't reach whatever a later task mounts here.
+	 * Stream-error sink: the launcher wires this to the stream-health
+	 * notices (fix wave F5 — "stream: disconnected" on the first failure,
+	 * "stream: reconnected" on the next open). The generation guard above
+	 * fences STALE watches' errors so they can't reach whatever is mounted
+	 * here.
 	 */
 	onWatchError?: (message: string) => void;
+
+	/**
+	 * Stream-open sink (fix wave F5): fires on every (re)connect of the
+	 * CURRENT watch — the recovery half of the launcher's stream-health
+	 * notices. Generation-guarded like {@link onWatchError}.
+	 */
+	onWatchOpen?: () => void;
 
 	/** Create a conversation (`+ new`), refresh the sidebar, select it. */
 	async createAndSelect(): Promise<void> {
@@ -255,6 +287,11 @@ export class TuiApp implements Component {
 			const created = await this.#client.createConversation();
 			await this.sidebar.refresh();
 			await this.selectConversation(created.id);
+		} catch (error: unknown) {
+			// Fix wave F1: every fire-and-forget caller (`+ new`, `/new`) is
+			// void-ed — a rejection must surface as a pane error, never an
+			// unhandled rejection that kills the process.
+			this.pane.showError(describeCommandError("new", error));
 		} finally {
 			this.editor.disableSubmit = false;
 		}
@@ -272,13 +309,17 @@ export class TuiApp implements Component {
 			const forked = await this.#client.forkConversation(this.#activeId);
 			await this.sidebar.refresh();
 			await this.selectConversation(forked.id);
+		} catch (error: unknown) {
+			// Fix wave F1 (see createAndSelect).
+			this.pane.showError(describeCommandError("fork", error));
 		} finally {
 			this.editor.disableSubmit = false;
 		}
 	}
 
 	/**
-	 * The launcher's global keybinding seam: ctrl+f forks the active
+	 * The launcher's global keybinding seam: ctrl+b toggles sidebar focus
+	 * (the spec §2 switcher — fix wave F2); ctrl+f forks the active
 	 * conversation (spec §8's v1 fork-at-latest default); Esc during a live
 	 * run aborts it (the composer idiom — the launcher routes input through
 	 * here before the editor sees it, so Esc while busy never reaches the
@@ -289,6 +330,19 @@ export class TuiApp implements Component {
 		// exits answer mode — it must NOT reach the busy-abort below.
 		if (this.interactions.answerMode) {
 			if (this.interactions.handleKey(data)) return true;
+		}
+		// ctrl+b toggles sidebar focus (the switcher must be reachable).
+		if (matchesKey(data, Key.ctrl("b"))) {
+			this.#sidebarFocused = !this.#sidebarFocused;
+			return true;
+		}
+		// While the sidebar is focused, every other key is list input —
+		// arrows/enter navigate and select (onSelect returns the focus);
+		// the busy-abort Esc below is deliberately shadowed (a list-focused
+		// Esc is the SelectList's own, not an abort).
+		if (this.#sidebarFocused) {
+			this.sidebar.handleInput(data);
+			return true;
 		}
 		// ctrl+o enters answer mode (ctrl+a is the editor's cursorLineStart).
 		// Not consumed when nothing answerable is pending — the key falls

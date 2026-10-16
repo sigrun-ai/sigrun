@@ -242,10 +242,11 @@ describe("tui e2e smoke (attach-mode wire path)", () => {
 					"hello from the e2e",
 				);
 				expect(submission.status).toBe("done");
-				// Streaming observed: a busy frame landed before settlement...
-				expect(
-					recorder.views.some((view) => view.steer.busy),
-				).toBe(true);
+				// Streaming observed: a busy frame landed before settlement.
+				// Wait (never a sync check): the submit response and the SSE
+				// frame travel on separate connections, so arrival order is not
+				// guaranteed even though the busy revision commits first.
+				await recorder.waitFor((view) => view.steer.busy);
 				// ...and a settled frame carries the faux answer.
 				const settled = await recorder.waitFor(
 					(view) =>

@@ -33,9 +33,11 @@
  * Polling: {@link kick} on each stream frame (a revision may change the
  * pending set) plus a short interval while a conversation is active.
  * Kicks coalesce (one fetch in flight, one queued). Poll failures are
- * QUIET — the prompt keeps its last state; the stream's own error path
- * reports transport health. Answer failures (user-initiated) are LOUD via
- * {@link onError} (the app routes them to the pane's `[error]` line).
+ * QUIET — the prompt keeps its last state; stream transport health is
+ * reported separately by the watcher's error/open transition notices
+ * (the launcher's stream-health wiring). Answer failures (user-initiated)
+ * are LOUD via {@link onError} (the app routes them to the pane's
+ * `[error]` line).
  */
 
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";

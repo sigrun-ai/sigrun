@@ -57,13 +57,29 @@ export interface BootedServer {
 }
 
 /**
- * Boot the harness + server composition and listen on `0.0.0.0:<port>`
- * (the container's address — loopback-only would be unreachable behind the
- * Service; `loadConfig` refuses port 0, so a real port is always bound).
+ * Boot options. The one knob is the listen host: the default is the
+ * container's `0.0.0.0` (loopback-only would be unreachable behind the
+ * Service); the CLI's `run` passes `127.0.0.1` — workstation mode is
+ * local-only (the TUI dials loopback; the naive-identity API must not
+ * answer on the LAN).
+ */
+export interface ServeOptions {
+	/** The listen host (default `"0.0.0.0"`; `run` passes `"127.0.0.1"`). */
+	readonly host?: string;
+}
+
+/**
+ * Boot the harness + server composition and listen on
+ * `options.host ?? "0.0.0.0"` + `<port>` (the default is the container's
+ * address — loopback-only would be unreachable behind the Service;
+ * `loadConfig` refuses port 0, so a real port is always bound).
  * The CLI's `run` additionally launches the TUI against the loopback URL
  * on {@link BootedServer.port}.
  */
-export async function serve(env: NodeJS.ProcessEnv): Promise<BootedServer> {
+export async function serve(
+	env: NodeJS.ProcessEnv,
+	options?: ServeOptions,
+): Promise<BootedServer> {
 	// 1. Env-only resolution (the pre-file behavior — fail-loud on a bad
 	//    env value before anything is written).
 	const envConfig = loadConfig(env);
@@ -101,10 +117,11 @@ export async function serve(env: NodeJS.ProcessEnv): Promise<BootedServer> {
 	await mkdir(config.workspace.path, { recursive: true });
 	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
 	const app = await createServer(opened, config);
-	await app.listen({ port: config.port, host: "0.0.0.0" });
+	const host = options?.host ?? "0.0.0.0";
+	await app.listen({ port: config.port, host });
 	// Machine-greppable: the deploy-entry test waits for this line, and an
 	// operator reading pod logs sees the bound port without guessing.
-	console.log(`sigrun listening on http://0.0.0.0:${config.port}`);
+	console.log(`sigrun listening on http://${host}:${config.port}`);
 
 	const shutdown = async (): Promise<void> => {
 		const failures: unknown[] = [];

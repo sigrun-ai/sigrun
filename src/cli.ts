@@ -183,13 +183,16 @@ export interface CliDeps {
 	serve(env: NodeJS.ProcessEnv): Promise<void>;
 	/**
 	 * Boot harness+server in-process (`src/serve.ts`), resolving the bound
-	 * port and the shutdown the `run` lifecycle drives.
+	 * port and the shutdown the `run` lifecycle drives. The CLI passes
+	 * `{ host: "127.0.0.1" }` — workstation mode is loopback-only (the
+	 * TUI dials loopback; the naive-identity API must not answer on the
+	 * LAN). `serve` (the deploy entry) keeps the `0.0.0.0` default.
 	 */
-	boot(env: NodeJS.ProcessEnv): Promise<BootedServer>;
+	boot(env: NodeJS.ProcessEnv, options?: { host?: string }): Promise<BootedServer>;
 	/**
-	 * The TUI entry (Task 6/8): resolves when the TUI exits. The DEFAULT
-	 * throws — the TUI is not yet wired, and a bare `sigrun` says so at
-	 * launch time rather than silently idling.
+	 * The TUI entry (tui/src/launch.ts's `launchTuiShell`): resolves when
+	 * the TUI exits. The default lazy-imports the tui workspace (the deploy
+	 * container's `npm start` path must never load it).
 	 */
 	launchTui(options: LaunchTuiOptions): Promise<void>;
 }
@@ -259,7 +262,7 @@ export async function cliMain(
 			process.on("SIGTERM", stop);
 			process.on("SIGINT", stop);
 		},
-		boot: (bootEnv) => serve(bootEnv),
+		boot: (bootEnv, bootOptions) => serve(bootEnv, bootOptions),
 		launchTui: async (options) => {
 			// Lazy import (see the module docstring): the tui workspace must
 			// never load in the deploy container's `npm start` path.
@@ -298,7 +301,10 @@ export async function cliMain(
 				// (loadConfig names SIGRUN_DEFAULT_MODEL).
 				const file = await loadTuiFile(env);
 				const user = resolveUser(parsed, env, file);
-				const booted = await realDeps.boot(env);
+				// Workstation mode binds loopback only: the TUI dials
+				// 127.0.0.1, and the naive-identity API has no business
+				// answering the LAN.
+				const booted = await realDeps.boot(env, { host: "127.0.0.1" });
 				const stop = (): void => {
 					void booted.shutdownOnce().catch((error: unknown) => {
 						console.error("sigrun shutdown error:", error);

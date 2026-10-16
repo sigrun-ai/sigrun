@@ -133,7 +133,9 @@ export class SigrunClient {
 	readonly #headers: Record<string, string>;
 
 	constructor(options: SigrunClientOptions) {
-		this.#baseUrl = options.baseUrl;
+		// A trailing slash would double every route's leading one
+		// (`--server http://host/` → `//v1/...`) — normalize once.
+		this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
 		this.#fetch =
 			options.fetch ??
 			(((input, init) => globalThis.fetch(input, init)) as FetchLike);
