@@ -4,8 +4,12 @@
 	"private": true,
 	"description": "Durable personal assistant on pi-durable",
 	"type": "module",
+	"bin": {
+		"sigrun": "src/cli.ts"
+	},
 	"workspaces": [
-		"webui"
+		"webui",
+		"tui"
 	],
 	"engines": {
 		"node": ">=22.19.0"
@@ -22,6 +26,7 @@
 		"@earendil-works/chord": "^1.0.4",
 		"@earendil-works/pi-ai": "^1.0.4",
 		"@earendil-works/pi-durable": "1.2.0",
+		"@earendil-works/pi-tui": "^1.1.0",
 		"@fastify/static": "^9.1.0",
 		"fastify": "^5.12.5",
 		"tsx": "^4.23.15"

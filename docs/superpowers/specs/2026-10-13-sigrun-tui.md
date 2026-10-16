@@ -1,6 +1,8 @@
 # Sigrun TUI design
 
-> Status: design, pending approval. The *what*, companion to the *why* already
+> Status: implemented (2026-10-16, branch `feat/tui`) — plan:
+> [../plans/2026-10-13-sigrun-tui.md](../plans/2026-10-13-sigrun-tui.md).
+> The *what*, companion to the *why* already
 > in CONTEXT.md ("The interaction surfaces (webui now, TUI and audio later)
 > attach to the in-cluster core from anywhere over the tailnet") — pulled
 > forward, per the user: the TUI is the gate for showing sigrun publicly.

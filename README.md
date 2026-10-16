@@ -3,7 +3,7 @@
 Sigrun is a durable personal-assistant harness built on
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable):
 long-lived conversations over a SQLite store (surviving restarts, with
-resumable generation), an HTTP API plus an optional web UI, and an
+resumable generation), an HTTP API plus web and terminal UIs, and an
 extension system that installs extra tools, providers, prompt sections,
 and capabilities at boot.
 
@@ -20,6 +20,10 @@ and capabilities at boot.
 - **Web UI** — a static bundle served from `SIGRUN_WEBUI_BUNDLE` (or the
   settings file's `server.webuiBundle`; default `webui/dist`); API-only
   deploys simply omit it.
+- **Terminal UI** — a pi-idiom terminal client over the same HTTP + SSE
+  API the web UI consumes (feature parity by design): conversation
+  sidebar, streaming conversation pane, fork, the interaction and
+  ambient seams, slash commands. See [Launch modes](#launch-modes).
 
 ## Quickstart
 
@@ -52,6 +56,32 @@ docker compose up --build
 ```
 
 For a durable cluster deployment, use the Helm chart in `charts/`.
+
+## Launch modes
+
+The `sigrun` binary (`package.json` `bin`, run via tsx) has three
+entrypoints:
+
+| Command | Behavior |
+|---|---|
+| `sigrun [--user <name>]` | Workstation mode: boot the harness + server **in-process** and launch the terminal UI against the loopback port — the server binds **loopback (`127.0.0.1`) only**, so the naive-identity API never answers the LAN. The agent dies with the TUI — when the TUI exits, server and harness shut down with it. |
+| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`0.0.0.0`) — the container default; workstation `sigrun` (run) binds loopback only. |
+| `sigrun attach [--server <url>] [--user <name>]` | TUI only, against a harness it can reach — the remote-client mode (e.g. attaching to a cluster or tailnet deployment). |
+
+Resolution chains for `attach` (and for the workstation-mode user):
+
+- **server**: `--server` → `tui.json`'s `server` →
+  `http://localhost:$SIGRUN_PORT` (default `3000`)
+- **user**: `--user` → `SIGRUN_USER` → `tui.json`'s `user`
+
+`tui.json` lives in the config directory (`SIGRUN_CONFIG_DIR`, default
+`~/.config/sigrun`) next to `settings.json`, and holds the TUI client's
+own small config: `{ "user": "...", "server": "..." }` (both optional;
+a malformed file is a boot error). The configured `user` rides every
+request as the `X-Sigrun-User` header and is stamped as the
+conversation's `owner` on create/fork/import (the identity seam — naive
+mode, no auth flow yet; omitting the user omits the header and behavior
+is unchanged).
 
 ## Configuration
 
