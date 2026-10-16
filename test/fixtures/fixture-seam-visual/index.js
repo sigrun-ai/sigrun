@@ -9,6 +9,6 @@ export default function createVisual(host) {
 	return {
 		interactionKinds: ["gating.confirm", "questions.form"],
 		ambientKinds: ["goal", "powerline", "audit"],
-		extension: { name: "sigrun.fixture-visual", hooks: [], tools: [] },
+		extension: { name: "sigrun-fixture-visual", hooks: [], tools: [] },
 	};
 }

@@ -6,7 +6,7 @@
 export default function createBadKinds() {
 	return {
 		extension: {
-			name: "sigrun.fixture-seam-bad",
+			name: "sigrun-fixture-seam-bad",
 			hooks: [],
 			tools: [],
 		},

@@ -71,7 +71,7 @@ export default function createFixtureWorkers(host) {
 	void host;
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-workers",
+			name: "sigrun-fixture-workers",
 		}),
 		workers: [
 			{

@@ -304,12 +304,12 @@ describe("loader + packages dir integration", () => {
 		});
 		try {
 			const snapshot = opened.registry.snapshot();
-			expect(snapshot.extension("sigrun.fixture-ext")).toBeDefined();
+			expect(snapshot.extension("sigrun-fixture-ext")).toBeDefined();
 			expect(
 				snapshot.tools().some((entry) => entry.tool.name === "fixture_marker"),
 			).toBe(true);
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-ext", status: "ok" },
+				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
 			expect(opened.packagesDir).toBe(packagesDir);
 		} finally {
@@ -336,10 +336,10 @@ describe("loader + packages dir integration", () => {
 		});
 		try {
 			expect(
-				opened.registry.snapshot().extension("sigrun.fixture-ext"),
+				opened.registry.snapshot().extension("sigrun-fixture-ext"),
 			).toBeDefined();
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-ext", status: "ok" },
+				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
@@ -376,7 +376,7 @@ function createGitFixture(): { dir: string; url: string; firstSha: string; secon
 		);
 	git(["init", "-q", "-b", "main", dir]);
 	const extension = (text: string): string =>
-		`import { defineExtension, defineTool } from "@earendil-works/pi-durable";\nconst marker = defineTool({\n\tname: "${GIT_MARKER}",\n\tdescription: "${text}",\n\tparameters: undefined,\n\tasync execute() {\n\t\treturn { result: { output: [{ type: "text", text: "git-fixture" }] } };\n\t},\n});\nexport default function create() {\n\treturn defineExtension({ name: "sigrun.git-fixture-ext", tools: [marker], sections: [] });\n}\n`;
+		`import { defineExtension, defineTool } from "@earendil-works/pi-durable";\nconst marker = defineTool({\n\tname: "${GIT_MARKER}",\n\tdescription: "${text}",\n\tparameters: undefined,\n\tasync execute() {\n\t\treturn { result: { output: [{ type: "text", text: "git-fixture" }] } };\n\t},\n});\nexport default function create() {\n\treturn defineExtension({ name: "sigrun-git-fixture-ext", tools: [marker], sections: [] });\n}\n`;
 	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "git-fixture-ext", version: "0.1.0", sigrun: { extension: "./ext.js" } }, null, "\t") + "\n");
 	writeFileSync(join(dir, "ext.js"), extension("first"));
 	git(["add", "."]);

@@ -3,7 +3,7 @@
  * stand-in for the real `sigrun-ext-memory-markdown` package — the repo no
  * longer pins the personal git+ssh package, so this fixture mirrors its
  * contract and the degenerate-memory semantics the sigrun tests exercise:
- * the loader-install name (`sigrun.memory`), the `memory_recall` tool, the
+ * the loader-install name (`sigrun-memory`), the `memory_recall` tool, the
  * `long-term-memory` section, and the factory-result `submit` pass-through
  * that binds the conversation as the recall source at the submit boundary.
  *
@@ -127,7 +127,7 @@ export default function createFixtureMemory() {
 	});
 
 	const extension = defineExtension({
-		name: "sigrun.memory",
+		name: "sigrun-memory",
 		tools: [recallTool],
 		sections: [section("long-term-memory", () => MEMORY_PLACEHOLDER)],
 		hooks: [

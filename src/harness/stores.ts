@@ -1,7 +1,9 @@
 /**
  * The sigrun store roots (extension config surfaces, spec §3/§4): the
  * four XDG-respected roots every on-disk surface resolves under —
- * config, data, cache, state. ONE resolution chain per root:
+ * config, data, cache, state — plus the extension slug function that
+ * names every per-extension surface under them. ONE resolution chain
+ * per root:
  *
  * 1. explicit env — `SIGRUN_CONFIG_DIR` / `SIGRUN_DATA_DIR` /
  *    `SIGRUN_CACHE_DIR` / `SIGRUN_STATE_DIR`, used VERBATIM (never
@@ -176,6 +178,29 @@ export async function ensureCacheDir(
 	const dir = join(roots.cacheDir, slug);
 	await ensureDir(dir);
 	return dir;
+}
+
+/**
+ * The extension slug (spec §6 rename rule): the sanitized identity every
+ * sigrun surface keys on — registry name, store sections, seam records,
+ * worker names. The chain, verbatim: take everything after the LAST `/`
+ * (npm scopes `@org/name` and URL-ish git names both collapse to their
+ * last segment — `@a/tool` and `@b/tool` share a slug by design), strip a
+ * trailing `@version` suffix (defensive; manifest names cannot carry
+ * one), lowercase, fold `[^a-z0-9_-]+` runs to a single `-`, trim edge
+ * `-`/`_`. An empty result is the CALLER's rejection — the loader fails
+ * the load naming the declared name (Review Focus 2); this function
+ * itself just returns "" for names nothing survives.
+ */
+export function slugifyName(declared: string): string {
+	const segment = declared.slice(declared.lastIndexOf("/") + 1);
+	const versionAt = segment.lastIndexOf("@");
+	const unversioned =
+		versionAt === -1 ? segment : segment.slice(0, versionAt);
+	return unversioned
+		.toLowerCase()
+		.replace(/[^a-z0-9_-]+/g, "-")
+		.replace(/^[-_]+|[-_]+$/g, "");
 }
 
 /**

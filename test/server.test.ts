@@ -260,7 +260,7 @@ describe("GET /v1/meta", () => {
 		});
 		const meta = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
 		expect(meta.extensions).toEqual([
-			{ name: "sigrun.fixture-ext", status: "ok" },
+			{ name: "sigrun-fixture-ext", status: "ok" },
 			{
 				name: "./no-such-extension",
 				status: "quarantined",

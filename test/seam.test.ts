@@ -70,18 +70,18 @@ async function bootWith(
 
 test("the loader passes the host context to arity-1 factories and retains kinds", async () => {
 	const { opened } = await bootWith([FIXTURE_SPECIFIER]);
-	const kinds = opened.seamKinds.get("sigrun.fixture-seam");
+	const kinds = opened.seamKinds.get("sigrun-fixture-seam");
 	expect(kinds).toEqual({
 		interaction: ["fixture.ask"],
 		ambient: ["fixture.panel"],
 	});
 	// The extension installed and its tools registered.
 	expect(opened.extensionOutcomes).toContainEqual({
-		name: "sigrun.fixture-seam",
+		name: "sigrun-fixture-seam",
 		status: "ok",
 	});
 	// A seam host exists for the extension.
-	expect(opened.seamHosts.get("sigrun.fixture-seam")).toBeDefined();
+	expect(opened.seamHosts.get("sigrun-fixture-seam")).toBeDefined();
 });
 
 test("a malformed kinds declaration quarantines the extension (fail-loud)", async () => {
@@ -92,7 +92,7 @@ test("a malformed kinds declaration quarantines the extension (fail-loud)", asyn
 	expect(outcome?.status).toBe("quarantined");
 	expect(outcome?.error).toContain("kinds declaration");
 	// No seam host or kinds recorded for a quarantined extension.
-	expect(opened.seamHosts.has("sigrun.fixture-seam-bad")).toBe(false);
+	expect(opened.seamHosts.has("sigrun-fixture-seam-bad")).toBe(false);
 });
 
 test("resolveExtension: a zero-arg factory still resolves with a host passed (arity-safe)", () => {
@@ -118,7 +118,7 @@ test("seedInteraction maintains the pending index; answer flips the record and d
 	// Direct seam call (the host is the contract surface; a tool is one
 	// caller among several — testing the host directly keeps this suite
 	// focused on the seam, not the model loop).
-	const host = opened.seamHosts.get("sigrun.fixture-seam");
+	const host = opened.seamHosts.get("sigrun-fixture-seam");
 	expect(host).toBeDefined();
 	if (host === undefined) throw new Error("seam host missing");
 	await host.seedInteraction(
@@ -201,7 +201,7 @@ test("seedInteraction maintains the pending index; answer flips the record and d
 test("the extension-side answer path works and is first-answer-wins with the route", async () => {
 	const { opened, app } = await bootWith([FIXTURE_SPECIFIER]);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
-	const host = opened.seamHosts.get("sigrun.fixture-seam");
+	const host = opened.seamHosts.get("sigrun-fixture-seam");
 	expect(host).toBeDefined();
 	if (host === undefined) throw new Error("seam host missing");
 	await host.seedInteraction(
@@ -241,7 +241,7 @@ test("the extension-side answer path works and is first-answer-wins with the rou
 test("seam-host validation: undeclared kind and malformed body fail loud", async () => {
 	const { opened } = await bootWith([FIXTURE_SPECIFIER]);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
-	const host = opened.seamHosts.get("sigrun.fixture-seam");
+	const host = opened.seamHosts.get("sigrun-fixture-seam");
 	expect(host).toBeDefined();
 	if (host === undefined) throw new Error("seam host missing");
 	// Undeclared kind.
@@ -273,7 +273,7 @@ test("seam-host validation: undeclared kind and malformed body fail loud", async
 test("setAmbient writes; the list serves the surface; clear empties it", async () => {
 	const { opened, app } = await bootWith([FIXTURE_SPECIFIER]);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
-	const host = opened.seamHosts.get("sigrun.fixture-seam");
+	const host = opened.seamHosts.get("sigrun-fixture-seam");
 	expect(host).toBeDefined();
 	if (host === undefined) throw new Error("seam host missing");
 	await host.setAmbient(
@@ -294,7 +294,7 @@ test("setAmbient writes; the list serves the surface; clear empties it", async (
 	expect(surfaces).toHaveLength(1);
 	expect(surfaces[0]).toMatchObject({
 		key: "fixture.panel",
-		owner: "sigrun.fixture-seam",
+		owner: "sigrun-fixture-seam",
 		place: "status",
 		body: { line: { text: "hello" } },
 	});
@@ -331,7 +331,7 @@ test("setAmbient writes; the list serves the surface; clear empties it", async (
 test("ambient undeclared key and malformed row fail loud", async () => {
 	const { opened } = await bootWith([FIXTURE_SPECIFIER]);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
-	const host = opened.seamHosts.get("sigrun.fixture-seam");
+	const host = opened.seamHosts.get("sigrun-fixture-seam");
 	expect(host).toBeDefined();
 	if (host === undefined) throw new Error("seam host missing");
 	await expect(
@@ -360,7 +360,7 @@ test("the meta route inventories declared kinds", async () => {
 	const { app } = await bootWith([FIXTURE_SPECIFIER]);
 	const meta = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
 	expect(meta.seam).toEqual({
-		interactions: [{ extension: "sigrun.fixture-seam", kinds: ["fixture.ask"] }],
-		ambient: [{ extension: "sigrun.fixture-seam", keys: ["fixture.panel"] }],
+		interactions: [{ extension: "sigrun-fixture-seam", kinds: ["fixture.ask"] }],
+		ambient: [{ extension: "sigrun-fixture-seam", keys: ["fixture.panel"] }],
 	});
 });

@@ -24,7 +24,7 @@ export default function createZeroArgFixture() {
 	}
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-zeroarg",
+			name: "sigrun-fixture-zeroarg",
 			tools: [],
 			sections: [],
 		}),

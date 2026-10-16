@@ -135,7 +135,7 @@ export default function createSeamFixture(host) {
 		interactionKinds: ["fixture.ask"],
 		ambientKinds: ["fixture.panel"],
 		extension: defineExtension({
-			name: "sigrun.fixture-seam",
+			name: "sigrun-fixture-seam",
 			tools: [emitInteraction, answerInteraction, setAmbient, clearAmbient],
 		}),
 	};

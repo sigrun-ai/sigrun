@@ -36,7 +36,7 @@ test.afterAll(async () => {
 test.describe("seam visual verification", () => {
 	test("rich interaction card (options/fields/diff/details)", async ({ page }) => {
 		const root = await opened_root();
-		const host = server.opened.seamHosts.get("sigrun.fixture-visual");
+		const host = server.opened.seamHosts.get("sigrun-fixture-visual");
 		if (host === undefined) throw new Error("seam host missing — fixture did not load");
 
 		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
@@ -206,7 +206,7 @@ test.describe("seam visual verification", () => {
 		// Re-seed one answerable card (the previous test drained the rest —
 		// which is itself the drain behavior under test).
 		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
-		const host = server.opened.seamHosts.get("sigrun.fixture-visual");
+		const host = server.opened.seamHosts.get("sigrun-fixture-visual");
 		if (host === undefined) throw new Error("seam host missing");
 		await host.seedInteraction(
 			server.conversationId,

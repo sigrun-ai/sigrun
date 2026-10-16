@@ -15,7 +15,7 @@ import { defineExtension } from "@earendil-works/pi-durable";
 export default function createFixtureBadRunSettled() {
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-bad-runsettled",
+			name: "sigrun-fixture-bad-runsettled",
 		}),
 		runSettled: 42,
 	};

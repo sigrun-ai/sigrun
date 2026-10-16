@@ -294,7 +294,7 @@ test(
 				await fetch(`http://127.0.0.1:${port}/v1/meta`)
 			).json()) as { extensions?: readonly { name: string; status: string }[] };
 			expect(meta.extensions).toEqual([
-				{ name: "sigrun.fixture-ext", status: "ok" },
+				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
 		} finally {
 			entry.child.kill("SIGTERM");
