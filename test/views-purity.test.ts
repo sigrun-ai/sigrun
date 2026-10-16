@@ -7,7 +7,11 @@
  * To keep that true, the module must stay PURE:
  *
  * - every import is `import type` (no runtime module imports — a runtime
- *   import would drag server-only code into client bundles);
+ *   import would drag server-only code into client bundles), and there
+ *   are no side-effect imports (`import "..."` — the same drag with no
+ *   names to lint);
+ * - every `export ... from` re-export is `export type` (a runtime
+ *   re-export drags the source module in exactly like a runtime import);
  * - no `node:` specifiers anywhere (the webui compiles without
  *   `@types/node`);
  * - never an import from the route module (`./index.js`) — types move
@@ -43,6 +47,21 @@ function importStatements(): { head: string; specifier: string }[] {
 describe("views.ts channel-contract purity", () => {
 	it("has at least one import (the guard is not vacuous)", () => {
 		expect(importStatements().length).toBeGreaterThan(0);
+	});
+
+	it("no side-effect imports (`import \"...\"` with no bindings)", () => {
+		expect(source).not.toMatch(/^\s*import\s*["']/m);
+	});
+
+	it("every `export ... from` re-export is `export type`", () => {
+		// `[^;]` keeps the match inside one statement — an `export interface`
+		// body carries semicolons, so the scan cannot span from a local
+		// declaration forward to some distant re-export's `from`.
+		const EXPORT_FROM = /^\s*export\s([^;]*?)\bfrom\s+"([^"]+)";/gm;
+		const violations = [...source.matchAll(EXPORT_FROM)].filter(
+			(match) => !match[1].startsWith("type "),
+		);
+		expect(violations).toEqual([]);
 	});
 
 	it("every import is `import type` — no runtime module imports", () => {

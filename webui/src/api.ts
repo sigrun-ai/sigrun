@@ -11,15 +11,16 @@
  * below are stable export names so consumers (`./stream`,
  * `./useConversationView`, the entry renderers) are unchanged.
  *
- * Types with NO server counterpart stay declared locally: the wire
- * projections pi-durable publishes but sigrun never names
+ * Types that stay declared locally: the client-NARROWED view projections
  * (`ContentBlockWire`/`UsageWire`/`MessageWire`/`ConversationEntryWire`/
- * `ConversationViewWire`/`ToolSlotWire`/`LiveDocWire`), the client-side
+ * `ConversationViewWire`/`ToolSlotWire`/`LiveDocWire` — views.ts DOES
+ * export a `ConversationViewWire`, pi-durable's full `ConversationView`
+ * plus `steer`; the webui keeps its own declaration under the same name
+ * because its renderers read deliberately narrowed `entries`/`docs`
+ * shapes, so the name is shadowed here on purpose), and the client-side
  * request inputs (`ConversationMetaPatch`, `SettingsPatchWire`,
  * `ConfigureInput`, `UploadFileInput`, `SubmissionInputPart`,
- * `SubmitOptions`, `SigrunClient`, `FetchLike`, `SigrunClientOptions`),
- * and `ConversationMeta` (the server serves the `SessionMeta` record
- * verbatim; the canonical shape lives in `src/server/session-meta.ts`).
+ * `SubmitOptions`, `SigrunClient`, `FetchLike`, `SigrunClientOptions`).
  *
  * The client is fail-loud: a non-2xx response rejects with an error naming
  * the status and path (never a silent `undefined` the UI could misrender as
@@ -44,6 +45,10 @@ import type {
 	CompactResponse as CompactResponseWire,
 	ConversationCreateResponse as ConversationCreatedWire,
 	SubmissionResponse as SubmissionResponseWire,
+	ConfigureResponse as ConfigureResponseWire,
+	CommandsResponse as CommandsResponseWire,
+	SlashCommand as CommandWire,
+	SessionMeta as ConversationMeta,
 } from "../../src/server/views.js";
 
 export type {
@@ -66,6 +71,10 @@ export type {
 	CompactResponse as CompactResponseWire,
 	ConversationCreateResponse as ConversationCreatedWire,
 	SubmissionResponse as SubmissionResponseWire,
+	ConfigureResponse as ConfigureResponseWire,
+	CommandsResponse as CommandsResponseWire,
+	SlashCommand as CommandWire,
+	SessionMeta as ConversationMeta,
 } from "../../src/server/views.js";
 
 // The interaction/ambient seam sub-shapes — the seam records ARE the wire
@@ -99,29 +108,6 @@ export type QueueModeWire = "all" | "one-at-a-time";
 export type SettingsPatchWire = {
 	readonly [K in keyof Omit<SettingsWire, "toolRoster">]?: SettingsWire[K] | null;
 };
-
-/**
- * The `GET /v1/conversations/:id/meta` payload (the server serves the
- * `SessionMeta` record from src/server/session-meta.ts verbatim).
- * `PATCH /v1/conversations/:id/meta` MERGES a partial of this shape
- * (`{ archived: true }` archives).
- *
- * Corrected in the T23a review: `tagged` is a string array, `draft` is an
- * object (the per-session composer draft), `source` is the
- * `"user" | "cron"` enum — the first draft of this interface had all three
- * wrong, which would have rendered the DEFAULT_META fallback for every live
- * conversation.
- */
-export interface ConversationMeta {
-	readonly pinned: boolean;
-	readonly tagged: readonly string[];
-	readonly archived: boolean;
-	readonly draft: { readonly text: string; readonly attachments: readonly string[] };
-	readonly source: "user" | "cron";
-	readonly owner?: string;
-	/** The user-facing session name; absent = unnamed (T5d). */
-	readonly name?: string;
-}
 
 /**
  * A PATCH body for `/v1/conversations/:id/meta`: a merge where an explicit
@@ -260,29 +246,10 @@ export interface LiveDocWire {
 	readonly compactionFailure?: { readonly error?: unknown };
 }
 
-/** One `GET /v1/commands` entry (mirrors `SlashCommand` in src/server/commands.ts). */
-export interface CommandWire {
-	readonly name: string;
-	readonly description: string;
-	readonly argsHint?: string;
-	readonly endpoint: { readonly method: string; readonly path: string };
-}
-
-/** The response of `GET /v1/commands`. */
-export interface CommandsResponseWire {
-	readonly commands: readonly CommandWire[];
-}
-
 /** The configure body (`POST .../configure`): exactly one field per call. */
 export interface ConfigureInput {
 	readonly model?: string;
 	readonly thinking?: string;
-}
-
-/** The response of `POST .../configure` (mirrors `ConfigureResponse`). */
-export interface ConfigureResponseWire {
-	readonly model?: string;
-	readonly thinkingLevel: string;
 }
 
 /**

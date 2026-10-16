@@ -296,7 +296,7 @@ describe("SettingsPanel", () => {
 
 	test("all tools checked clears the filter (PATCH null) when one was set", async () => {
 		const { calls, client } = makeHarness({
-			settings: { defaultTools: ["read"], toolRoster: [] },
+			settings: { defaultTools: ["read"], toolRoster: ["read", "bash"] },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Tools");
