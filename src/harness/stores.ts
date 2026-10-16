@@ -21,9 +21,17 @@
  * directly, never cached): tests vary env per call, and boot reads the
  * live process env once at the boundary. `homedir()` is the one
  * process-global consulted, exactly as the precedents do.
+ *
+ * The lifecycle half sits below the resolver: `ensureStoreRoots` (the
+ * boot-time mkdir of every root but cache) and `ensureCacheDir` (the
+ * per-call repair of `<cacheDir>/<slug>`). The split is the plan's
+ * Review Focus 5: a wiped cache root (the container `emptyDir` case)
+ * must never break boot — so boot never ensures cache, and every
+ * cache-path consumer recreates it at call time instead.
  */
 
 import { homedir } from "node:os";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Env } from "../config.js";
 
@@ -110,6 +118,64 @@ function expandHome(path: string, home: string): string {
 /** Tier 3 — the spec default: `~`-expanded base + dir name. */
 function defaultRoot(spec: StoreRootDefault, home: string): string {
 	return join(expandHome(spec[0], home), spec[1]);
+}
+
+/** The config root's per-extension settings subdirectory (spec §3 map). */
+const SETTINGS_DIR_NAME = "settings";
+
+/**
+ * `mkdir -p` one path, failing loud with the path and the operation
+ * named when it cannot be created (EACCES/EROFS and friends — the
+ * message carries the root so a mispermissioned deploy points at the
+ * exact directory, not a generic sqlite/npm error from further in).
+ */
+async function ensureDir(path: string): Promise<void> {
+	try {
+		await mkdir(path, { recursive: true });
+	} catch (error) {
+		const { code, message } = error as NodeJS.ErrnoException;
+		const detail =
+			code === undefined
+				? String(error)
+				: `${code}: ${message ?? String(error)}`;
+		throw new Error(`sigrun: cannot mkdir ${path} (${detail})`, {
+			cause: error,
+		});
+	}
+}
+
+/**
+ * Ensure the durable store roots exist (spec §6 boot): mkdir recursive
+ * on the config root AND its `settings/` subdirectory (the
+ * per-extension settings files' home), plus the data and state roots.
+ * The CACHE root is deliberately absent from this list — it is
+ * regenerable and wipe-prone (`emptyDir` mounts), so ensuring it at
+ * boot would make a wipe break the NEXT boot's repair story instead;
+ * `ensureCacheDir` owns it, per call.
+ */
+export async function ensureStoreRoots(roots: StoreRoots): Promise<void> {
+	await ensureDir(roots.configDir);
+	await ensureDir(join(roots.configDir, SETTINGS_DIR_NAME));
+	await ensureDir(roots.dataDir);
+	await ensureDir(roots.stateDir);
+}
+
+/**
+ * Ensure and return `<cacheDir>/<slug>` — mkdir -p AT CALL TIME (never
+ * at boot), recreating the cache root itself when it has vanished
+ * since the last call (the wiped-`emptyDir` repair, Review Focus 5).
+ * Idempotent: an existing directory is a no-op. Never touches any
+ * other root — repair is confined to the cache path, and the resolved
+ * path always sits under `roots.cacheDir` (there is no fallback chain;
+ * a missing cache root is recreated, never rerouted under data).
+ */
+export async function ensureCacheDir(
+	roots: StoreRoots,
+	slug: string,
+): Promise<string> {
+	const dir = join(roots.cacheDir, slug);
+	await ensureDir(dir);
+	return dir;
 }
 
 /**
