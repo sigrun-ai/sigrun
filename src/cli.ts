@@ -17,15 +17,17 @@
  *   (default 3000)
  * - user: `--user` > `SIGRUN_USER` > tui.json `user`
  *
- * The TUI entry (Task 6/8) does not exist yet: `launchTui` is the ONE
- * injected seam those tasks fill (the CLI's default throws "TUI not yet
- * wired"); everything around it is real and tested through the seams
- * (`test/cli.test.ts` injects factories — process-launch stays out of the
- * unit tests, and `npm start` → src/index.ts is unchanged for the
- * cluster's monolith).
+ * The TUI entry (Task 6) is `tui/src/launch.ts`'s `launchTuiShell` — the
+ * CLI's default `launchTui` imports it lazily (the deploy container
+ * install strips devDependencies, so a static import would drag the tui
+ * workspace into `npm start` resolution). Everything else is real and
+ * tested through the seams (`test/cli.test.ts` injects factories —
+ * process-launch stays out of the unit tests, and `npm start` →
+ * src/index.ts is unchanged for the cluster's monolith).
  */
 
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Env } from "./config.js";
 import { serve, type BootedServer } from "./serve.js";
@@ -109,12 +111,21 @@ export interface TuiFile {
 	readonly server?: string;
 }
 
+/**
+ * The config dir: `SIGRUN_CONFIG_DIR`, defaulting to
+ * `~/.config/sigrun` when unset (the T5 deferred minor, absorbed in Task
+ * 6 — mirroring `defaultSettingsDir()` in src/harness/settings.ts, the
+ * server-side twin; `SIGRUN_CONFIG_DIR` itself stays env-only).
+ */
+export function defaultConfigDir(env: Env): string {
+	return env.SIGRUN_CONFIG_DIR !== undefined && env.SIGRUN_CONFIG_DIR !== ""
+		? env.SIGRUN_CONFIG_DIR
+		: join(homedir(), ".config", "sigrun");
+}
+
 /** Read `tui.json` (see {@link TuiFile}); `env` defaults to process.env. */
 export async function loadTuiFile(env: Env): Promise<TuiFile> {
-	if (env.SIGRUN_CONFIG_DIR === undefined || env.SIGRUN_CONFIG_DIR === "") {
-		return {};
-	}
-	const path = join(env.SIGRUN_CONFIG_DIR, "tui.json");
+	const path = join(defaultConfigDir(env), "tui.json");
 	let raw: string;
 	try {
 		raw = await readFile(path, "utf8");
@@ -249,10 +260,14 @@ export async function cliMain(
 			process.on("SIGINT", stop);
 		},
 		boot: (bootEnv) => serve(bootEnv),
-		launchTui: () => {
-			throw new Error(
-				"sigrun: the TUI is not yet wired (Task 6 provides the launchTui default) — use `sigrun serve` to boot the server only",
-			);
+		launchTui: async (options) => {
+			// Lazy import (see the module docstring): the tui workspace must
+			// never load in the deploy container's `npm start` path.
+			const { launchTuiShell } = await import("../tui/src/launch.js");
+			await launchTuiShell({
+				baseUrl: options.baseUrl,
+				...(options.user === undefined ? {} : { user: options.user }),
+			});
 		},
 	};
 
