@@ -23,6 +23,16 @@
  * action (`forkActive`, bound to ctrl+f by the launcher) calls
  * `forkConversation(id)` at the latest entry (the v1 default, spec §8),
  * refreshes the sidebar, and switches to the fork.
+ *
+ * Composer behaviors (Task 7): the composer tracks the wire's `steer.busy`
+ * per frame; submitting while busy sends `whenBusy: "steer"`. Esc during a
+ * live run aborts (the binding rides the launcher's pre-editor global
+ * listener through {@link handleKeybinding} — pi-tui 1.3.0's `Editor` has
+ * no escape hook of its own). A `/`-prefixed line routes through the
+ * slash-command catalog (`getCommands()`, fetched once and cached by
+ * {@link SlashCatalog}); unknown commands render a clear error. The POST's
+ * immediate failure (4xx) and the abort outcomes render as pane
+ * error/notice lines — the pane keeps rendering the reply off the stream.
  */
 
 import {
@@ -35,8 +45,10 @@ import {
 	type SelectListTheme,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import type { SigrunClient } from "../api.js";
+import type { SigrunClient, WhenBusyMode } from "../api.js";
+import { SigrunApiError } from "../api.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
+import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
 import { ConversationPane } from "./conversation-pane.js";
 import { Sidebar } from "./sidebar.js";
 
@@ -88,11 +100,16 @@ export class TuiApp implements Component {
 	#unwatch: Unwatch | undefined;
 	/** Monotonic watch generation: a stale watch's frames must never land. */
 	#watchGen = 0;
+	/** The last frame's `steer.busy` — the steer gate for the next submit. */
+	#busy = false;
+	/** The slash-command catalog (fetched once, cached — a boot constant). */
+	readonly #catalog: SlashCatalog;
 
 	constructor(client: SigrunClient, options: TuiAppOptions) {
 		this.#client = client;
 		this.#watch = options.watch ?? watchConversation;
 		this.#watchOptions = options.watchOptions ?? { baseUrl: "" };
+		this.#catalog = new SlashCatalog(client);
 		this.sidebar = new Sidebar(client);
 		this.pane = new ConversationPane();
 		this.editor = new Editor(options.tui, plainEditorTheme());
@@ -151,6 +168,9 @@ export class TuiApp implements Component {
 			this.#unwatch?.();
 			this.#unwatch = undefined;
 			this.#activeId = id;
+			// Busy state is per-frame: unknown for the new conversation until
+			// its first frame arrives.
+			this.#busy = false;
 			this.sidebar.setActive(id);
 			// Generation guard (review finding): a frame already in flight
 			// from the JUST-closed watch can still deliver after the swap;
@@ -162,10 +182,14 @@ export class TuiApp implements Component {
 				id,
 				{
 					onSnapshot: (wire) => {
-						if (gen === this.#watchGen) this.pane.showView(wire);
+						if (gen !== this.#watchGen) return;
+						this.#busy = wire.steer.busy;
+						this.pane.showView(wire);
 					},
 					onView: (wire) => {
-						if (gen === this.#watchGen) this.pane.showView(wire);
+						if (gen !== this.#watchGen) return;
+						this.#busy = wire.steer.busy;
+						this.pane.showView(wire);
 					},
 					onError: (message) => {
 						if (gen === this.#watchGen) this.onWatchError?.(message);
@@ -218,31 +242,139 @@ export class TuiApp implements Component {
 
 	/**
 	 * The launcher's global keybinding seam: ctrl+f forks the active
-	 * conversation (spec §8's v1 fork-at-latest default). Returns true
-	 * when the key was consumed.
+	 * conversation (spec §8's v1 fork-at-latest default); Esc during a live
+	 * run aborts it (the composer idiom — the launcher routes input through
+	 * here before the editor sees it, so Esc while busy never reaches the
+	 * editor). Returns true when the key was consumed.
 	 */
 	handleKeybinding(data: string): boolean {
 		if (matchesKey(data, Key.ctrl("f"))) {
 			void this.forkActive();
 			return true;
 		}
+		if (matchesKey(data, Key.escape) && this.#busy && this.#activeId !== undefined) {
+			this.#abortActive();
+			return true;
+		}
 		return false;
 	}
 
-	/** Fire-and-forget submit (the stream carries the reply, spec §10). */
+	/**
+	 * Fire-and-forget submit (the stream carries the reply, spec §10). While
+	 * the last frame reported a live run, the input goes as a steer
+	 * (`whenBusy`, spec §7 item 3). The POST's own failure (an immediate 4xx
+	 * — Review Focus 2) is the only thing awaited, and it lands as a pane
+	 * error line; the composer never wedges on it.
+	 */
 	#submit(text: string): void {
 		// Belt to the editor's own gate: pi-tui checks `disableSubmit` in
 		// handleInput, not in the onSubmit callback — a programmatic
 		// onSubmit during a swap must no-op too, and never destroy a draft.
 		if (this.editor.disableSubmit) return;
-		const id = this.#activeId;
 		// Guard BEFORE clearing: a no-op submit must never destroy a draft.
-		if (id === undefined || text.trim() === "") return;
+		if (text.trim() === "") return;
+		if (text.startsWith("/")) {
+			// A command line is consumed by its dispatch (even when the
+			// outcome is an error line).
+			this.editor.setText("");
+			void this.#runSlashCommand(text);
+			return;
+		}
+		const id = this.#activeId;
+		if (id === undefined) return;
 		this.editor.setText("");
-		this.#client.submit(id, text).catch(() => {
-			// Task 7 owns error surfacing in the pane; the shell's contract
-			// is that a failed submit never wedges the composer.
+		const whenBusy: WhenBusyMode | undefined = this.#busy ? "steer" : undefined;
+		this.#client.submit(id, text, whenBusy).catch((error: unknown) => {
+			this.pane.showError(describeCommandError("submit", error));
 		});
+	}
+
+	/**
+	 * Abort the active conversation's live run (the Esc binding). The
+	 * settled race (Review Focus 3) surfaces as a plain notice — the
+	 * server's 200 `{result: "settled"}` and its 404 `no_active_submission`
+	 * both mean "nothing left to abort"; a landed abort stays silent (the
+	 * stream carries the outcome). Anything else is an error line.
+	 */
+	#abortActive(): void {
+		const id = this.#activeId;
+		if (id === undefined) return;
+		void this.#client.abort(id).then(
+			(response) => {
+				if (response.result === "settled") {
+					this.pane.showNotice("abort: the run had already settled");
+				}
+			},
+			(error: unknown) => {
+				if (error instanceof SigrunApiError && error.status === 404) {
+					this.pane.showNotice("abort: no active run (already settled)");
+					return;
+				}
+				this.pane.showError(describeCommandError("abort", error));
+			},
+		);
+	}
+
+	/**
+	 * Route a `/`-prefixed line through the slash-command catalog. The
+	 * catalog tells the composer what exists and where it goes (the server's
+	 * thin-registry rule: no server-side execute indirection); the dispatch
+	 * itself is the client's typed calls. Unknown commands and catalog
+	 * commands the composer cannot drive both render clear errors.
+	 */
+	async #runSlashCommand(input: string): Promise<void> {
+		const parsed = parseSlashInput(input);
+		if (parsed === undefined || parsed.name === "") {
+			this.pane.showError("empty slash command");
+			return;
+		}
+		let command;
+		try {
+			command = await this.#catalog.get(parsed.name);
+		} catch (error: unknown) {
+			this.pane.showError(describeCommandError("getCommands", error));
+			return;
+		}
+		if (command === undefined) {
+			this.pane.showError(`unknown command: /${parsed.name}`);
+			return;
+		}
+		try {
+			switch (parsed.name) {
+				case "new":
+					await this.createAndSelect();
+					return;
+				case "fork": {
+					if (this.#activeId === undefined) {
+						this.pane.showError("/fork needs an active conversation");
+						return;
+					}
+					await this.forkActive();
+					return;
+				}
+				case "compact": {
+					const id = this.#activeId;
+					if (id === undefined) {
+						this.pane.showError("/compact needs an active conversation");
+						return;
+					}
+					await this.#client.compact(
+						id,
+						parsed.args === "" ? undefined : parsed.args,
+					);
+					this.pane.showNotice(
+						"compaction admitted — the summary arrives on the stream",
+					);
+					return;
+				}
+				default:
+					this.pane.showError(
+						`/${parsed.name} is not supported by the TUI composer`,
+					);
+			}
+		} catch (error: unknown) {
+			this.pane.showError(describeCommandError(`/${parsed.name}`, error));
+		}
 	}
 
 	/** Close the stream subscription (the launcher calls this on exit). */

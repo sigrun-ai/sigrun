@@ -16,6 +16,12 @@
  *
  * Unknown entry kinds render a fail-visible fallback naming the kind (the
  * webui's rule — a new server-side kind must never vanish silently).
+ *
+ * Error/notice lines (Task 7): the composer surfaces its immediate failures
+ * (a 400 on the submit POST, an abort racing settlement, an unknown slash
+ * command) as `[error]`/`[notice]` rows. They are NOT stream state, so
+ * {@link showView}'s wholesale replacement preserves them — they re-render
+ * after the entries until the shell discards them.
  */
 
 import {
@@ -181,13 +187,25 @@ function entryComponents(entry: EntryShape, theme: MarkdownTheme): Component[] {
 	}
 }
 
+/** One composer-surfaced line: `error` for failures, `notice` for outcomes. */
+interface PaneNotice {
+	readonly kind: "error" | "notice";
+	readonly text: string;
+}
+
+function noticeComponent(notice: PaneNotice): Component {
+	return new Text(`[${notice.kind}] ${notice.text}`, 0, 0);
+}
+
 export class ConversationPane implements Component {
 	readonly #container = new Container();
 	readonly #theme = plainMarkdownTheme();
+	readonly #notices: PaneNotice[] = [];
 
 	/**
 	 * Replace the pane with the projection of `wire` (the SSE rule: a full
 	 * revision replaces; a reconnect's snapshot subsumes missed frames).
+	 * Composer notices are not stream state: they re-render after the entries.
 	 */
 	showView(wire: ConversationViewWire): void {
 		this.#container.clear();
@@ -196,6 +214,25 @@ export class ConversationPane implements Component {
 				this.#container.addChild(component);
 			}
 		}
+		for (const notice of this.#notices) {
+			this.#container.addChild(noticeComponent(notice));
+		}
+		this.#container.invalidate();
+	}
+
+	/** Append an `[error]` line (a failed composer action's surface). */
+	showError(text: string): void {
+		this.#appendNotice({ kind: "error", text });
+	}
+
+	/** Append a `[notice]` line (an outcome, e.g. an abort that settled). */
+	showNotice(text: string): void {
+		this.#appendNotice({ kind: "notice", text });
+	}
+
+	#appendNotice(notice: PaneNotice): void {
+		this.#notices.push(notice);
+		this.#container.addChild(noticeComponent(notice));
 		this.#container.invalidate();
 	}
 
