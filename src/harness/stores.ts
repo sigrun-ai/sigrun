@@ -32,8 +32,9 @@
  * cache-path consumer recreates it at call time instead.
  */
 
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Env } from "../config.js";
 
@@ -225,4 +226,186 @@ export function resolveStoreRoots(env: Env): StoreRoots {
 		cacheDir: one("cache"),
 		stateDir: one("state"),
 	};
+}
+
+/**
+ * The extension store classes + the secret precedence resolver (spec
+ * §3's server-mediated surfaces): extension code NEVER touches these
+ * files directly — it asks the server, which is the single writer.
+ * Every write goes through {@link writeFileAtomic}, so a crash or a
+ * concurrent reader can only ever see the old complete file or the new
+ * complete file, never a half-written one.
+ */
+
+/**
+ * Atomic file replace: stage `data` to a fresh temp file in the SAME
+ * directory as `path` (rename is same-filesystem atomic), stamp the
+ * final `mode` on the temp BEFORE the rename (a chmod after the rename
+ * would leave a window at the wrong permissions on secrets; `chmod`
+ * beats `writeFile`'s `mode` option here because the latter is masked
+ * by umask), then `rename` over the target. On failure the staged temp
+ * is best-effort removed and the error rethrown — the target keeps its
+ * old bytes.
+ */
+export async function writeFileAtomic(
+	path: string,
+	data: string,
+	mode: number,
+): Promise<void> {
+	const temp = `${path}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temp, data, { mode });
+		await chmod(temp, mode);
+		await rename(temp, path);
+	} catch (error) {
+		await rm(temp, { force: true }).catch(() => {});
+		throw error;
+	}
+}
+
+/** Serialize a JSON value the house way (tabs, trailing newline). */
+function serializeJson(value: unknown): string {
+	return `${JSON.stringify(value, null, "\t")}\n`;
+}
+
+/**
+ * Read one JSON-object file. Absent (`ENOENT`) → `{}` — first use is
+ * not an error for either store. Every OTHER failure mode is loud:
+ * unparseable JSON, or JSON that is not an object (an array/scalar
+ * file is malformed for a map-shaped surface). The error names the
+ * path — a corrupt `secrets.json` must stop the show pointing at the
+ * file, never be silently reset to `{}` by the next write.
+ */
+async function readJsonObject(
+	path: string,
+): Promise<Record<string, unknown>> {
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+		throw error;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch (error) {
+		throw new Error(
+			`sigrun: malformed JSON in ${path}: ${String(error)}`,
+			{ cause: error },
+		);
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error(
+			`sigrun: malformed JSON in ${path}: expected an object, got ${Array.isArray(parsed) ? "an array" : typeof parsed}`,
+		);
+	}
+	return parsed as Record<string, unknown>;
+}
+
+/** An object-shaped value check (sections are always written objects). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return (
+		typeof value === "object" && value !== null && !Array.isArray(value)
+	);
+}
+
+/**
+ * The secrets store (spec §3): ONE `secrets.json` at the config root,
+ * keyed by extension slug — whole-file read-modify-write, atomic,
+ * `0600`. The server (the API-mediated secret endpoints) is the only
+ * writer; extension code reads through `resolveSecretFor`.
+ */
+export class SecretsStore {
+	constructor(private readonly secretsPath: string) {}
+
+	/** One extension's secret section; absent section → `{}`. */
+	async readSection(slug: string): Promise<Record<string, unknown>> {
+		const section = (await readJsonObject(this.secretsPath))[slug];
+		return isPlainObject(section) ? section : {};
+	}
+
+	/**
+	 * Set one extension's section, preserving every sibling section
+	 * (read-modify-write of the whole map). Loud on a malformed file —
+	 * never a silent reset.
+	 */
+	async writeSection(
+		slug: string,
+		section: Record<string, unknown>,
+	): Promise<void> {
+		const all = await readJsonObject(this.secretsPath);
+		all[slug] = section;
+		await writeFileAtomic(this.secretsPath, serializeJson(all), 0o600);
+	}
+}
+
+/**
+ * The per-extension settings store (spec §3): one JSON file per slug
+ * under `<configDir>/settings/`, contents entirely the extension's
+ * shape. Absent → `{}`; atomic `0644` writes (settings are not
+ * secrets — world-unreadable is not required, group/other-readable
+ * is acceptable).
+ */
+export class ExtensionSettingsStore {
+	constructor(private readonly settingsDir: string) {}
+
+	private pathFor(slug: string): string {
+		return join(this.settingsDir, `${slug}.json`);
+	}
+
+	/** One extension's settings object; absent file → `{}`. */
+	async read(slug: string): Promise<Record<string, unknown>> {
+		return readJsonObject(this.pathFor(slug));
+	}
+
+	/** Replace one extension's settings file atomically. */
+	async write(
+		slug: string,
+		value: Record<string, unknown>,
+	): Promise<void> {
+		await writeFileAtomic(this.pathFor(slug), serializeJson(value), 0o644);
+	}
+}
+
+/** Where a resolved secret's winning value came from. */
+export interface SecretResolution {
+	readonly value: string;
+	readonly source: "stored" | "env";
+}
+
+/** The env prefix every extension secret's fallback var carries. */
+const SECRET_ENV_PREFIX = "SIGRUN_EXT_";
+
+/** slug/key → `SIGRUN_EXT_<SLUG-SNAKE>_<KEY-SNAKE>` (upper, `-`→`_`). */
+function secretEnvName(slug: string, key: string): string {
+	const snake = (part: string) => part.toUpperCase().replace(/-/g, "_");
+	return `${SECRET_ENV_PREFIX}${snake(slug)}_${snake(key)}`;
+}
+
+/**
+ * Resolve one secret for one extension (spec §4 precedence): the
+ * STORED section wins when it has the key; else the env var
+ * `SIGRUN_EXT_<SLUG>_<KEY>`; else undefined. Pure over its arguments —
+ * it NEVER writes env values down (Review Focus 4: env-only
+ * resolution must leave the file byte-identical; the write path is
+ * the API alone). Takes the SECTION object (the caller just did
+ * `readSection`), not a store instance. An empty-string env var
+ * counts as unset — the same ""-means-unset reading this module's dir
+ * tiers use.
+ */
+export function resolveSecretFor(
+	slug: string,
+	section: Record<string, unknown>,
+	key: string,
+	env: Env,
+): SecretResolution | undefined {
+	const stored = section[key];
+	if (stored !== undefined && stored !== null) {
+		return { value: String(stored), source: "stored" };
+	}
+	const fromEnv = env[secretEnvName(slug, key)];
+	return fromEnv !== undefined && fromEnv !== ""
+		? { value: fromEnv, source: "env" }
+		: undefined;
 }
