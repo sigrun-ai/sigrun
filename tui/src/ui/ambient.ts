@@ -22,7 +22,10 @@
  *
  * Fetching: on conversation connect + rescheduled after each fetch at the
  * smallest `refreshMs` the current records declare (the record's
- * re-render hint becomes the re-fetch cadence). Fetch failures are QUIET
+ * re-render hint becomes the re-fetch cadence); when NO record declares
+ * one — the zero-record bootstrap included — a 30s fallback cadence arms
+ * so a surface that appears later is still picked up (a declared
+ * `refreshMs` always wins once known). Fetch failures are QUIET
  * (best-effort chrome; stream transport health is reported separately by
  * the watcher's error/open transition notices — the launcher's
  * stream-health wiring) and the cadence re-arms after them — one dropped
@@ -33,6 +36,11 @@
  * they disappear when the conversation goes idle and reappear on the next
  * busy frame while the record is still served. `expires: "never"` records
  * stay until the server stops serving them (replacement-state reads).
+ *
+ * Segments: a line's `segments` render as their texts joined with spaces
+ * in AUTHORED order — the segment `place` zones (left/middle/right) are
+ * ignored in the statusline join (the TUI chrome has no zone layout; the
+ * webui owns zoned placement).
  */
 
 import type { Component } from "@earendil-works/pi-tui";
@@ -44,6 +52,9 @@ type AmbientRow = NonNullable<NonNullable<AmbientWire["body"]>["rows"]>[number];
 
 /** The gauge bar width (text cells). */
 const GAUGE_CELLS = 10;
+
+/** The cadence when no served record declares a refreshMs (fix wave A4). */
+const FALLBACK_REFRESH_MS = 30_000;
 
 export class AmbientChrome implements Component {
 	readonly #client: SigrunClient;
@@ -152,7 +163,10 @@ export class AmbientChrome implements Component {
 		}
 	}
 
-	/** Re-fetch at the smallest refreshMs the current records declare. */
+	/** Re-fetch at the smallest refreshMs the current records declare;
+	 * with NO declared refreshMs (the zero-record bootstrap included),
+	 * arm the 30s fallback cadence (fix wave A4) — a declared refreshMs
+	 * always wins once one is known. */
 	#reschedule(): void {
 		this.#clearTimer();
 		let soonest: number | undefined;
@@ -162,11 +176,10 @@ export class AmbientChrome implements Component {
 				soonest = record.refreshMs;
 			}
 		}
-		if (soonest === undefined) return;
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
 			void this.#refresh();
-		}, soonest);
+		}, soonest ?? FALLBACK_REFRESH_MS);
 		// Never keep the process alive for chrome polling.
 		this.#timer.unref();
 	}

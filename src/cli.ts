@@ -1,3 +1,4 @@
+#!/usr/bin/env -S npx tsx
 /**
  * The CLI entrypoints (Task 5): `sigrun` / `sigrun serve` / `sigrun attach`
  * — the package's `bin` (`"sigrun": "src/cli.ts"`, run via tsx).
@@ -6,7 +7,8 @@
  *   composition) and launch the TUI against the loopback URL of the bound
  *   port. The spec's lifecycle rule: the agent dies with the TUI — when the
  *   TUI exits, the server+harness shut down. SIGTERM/SIGINT also stop the
- *   in-process server while the TUI runs.
+ *   in-process server — and, in run mode, exit the process once shutdown
+ *   completes (fix wave A8: the TUI must never run against a dead server).
  * - `sigrun serve`: the deploy composition minus the TUI — literally the
  *   `src/index.ts` entry (same graceful shutdown, same fail-loud boot).
  * - `sigrun attach`: no harness boot; launch the TUI against the resolved
@@ -29,6 +31,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Env } from "./config.js";
 import { serve, type BootedServer } from "./serve.js";
 
@@ -195,6 +198,12 @@ export interface CliDeps {
 	 * container's `npm start` path must never load it).
 	 */
 	launchTui(options: LaunchTuiOptions): Promise<void>;
+	/**
+	 * The process-exit seam (fix wave A8): run mode's signal path exits
+	 * once shutdown completes so the TUI never runs against a dead server.
+	 * Defaults to `process.exit`; tests inject a capture.
+	 */
+	exit?(code: number): never;
 }
 
 /** The sink for usage/boot error lines (tests capture it). */
@@ -211,6 +220,18 @@ function resolveUser(
 	return parsed.user ?? env.SIGRUN_USER ?? file.user;
 }
 
+/** Parse a port env value: undefined when absent/empty, else a positive
+ * integer — anything else fails loud naming the variable (D1: extracted
+ * from resolveServer's lazy IIFE). */
+export function parsePort(raw: string | undefined): number | undefined {
+	if (raw === undefined || raw === "") return undefined;
+	const port = Number(raw);
+	if (!Number.isInteger(port) || port <= 0) {
+		throw new Error(`SIGRUN_PORT must be a positive integer, got ${raw}`);
+	}
+	return port;
+}
+
 /** Resolve the attach server: `--server` > tui.json > localhost default. */
 function resolveServer(
 	parsed: ParsedArgs,
@@ -219,20 +240,7 @@ function resolveServer(
 ): string {
 	if (parsed.server !== undefined) return parsed.server;
 	if (file.server !== undefined) return file.server;
-	const rawPort = env.SIGRUN_PORT;
-	const port =
-		rawPort === undefined || rawPort === ""
-			? 3000
-			: (() => {
-					const parsedPort = Number(rawPort);
-					if (!Number.isInteger(parsedPort) || parsedPort <= 0) {
-						throw new Error(
-							`SIGRUN_PORT must be a positive integer, got ${rawPort}`,
-						);
-					}
-					return parsedPort;
-				})();
-	return `http://localhost:${port}`;
+	return `http://localhost:${parsePort(env.SIGRUN_PORT) ?? 3000}`;
 }
 
 /**
@@ -272,6 +280,7 @@ export async function cliMain(
 				...(options.user === undefined ? {} : { user: options.user }),
 			});
 		},
+		exit: (exitCode) => process.exit(exitCode),
 	};
 
 	let parsed: ParsedArgs;
@@ -305,10 +314,19 @@ export async function cliMain(
 				// 127.0.0.1, and the naive-identity API has no business
 				// answering the LAN.
 				const booted = await realDeps.boot(env, { host: "127.0.0.1" });
+				const exit = realDeps.exit ?? ((exitCode: number) => process.exit(exitCode));
 				const stop = (): void => {
-					void booted.shutdownOnce().catch((error: unknown) => {
-						console.error("sigrun shutdown error:", error);
-					});
+					// Fix wave A8: once shutdown completes, run mode EXITS — the
+					// TUI must never run against a dead server (a signal is the
+					// operator's stop request; the serve entry keeps its own
+					// semantics in src/index.ts, unchanged).
+					void booted.shutdownOnce().then(
+						() => exit(0),
+						(error: unknown) => {
+							console.error("sigrun shutdown error:", error);
+							exit(1);
+						},
+					);
 				};
 				process.on("SIGTERM", stop);
 				process.on("SIGINT", stop);
@@ -332,7 +350,11 @@ export async function cliMain(
 	}
 }
 
-const invokedAsScript = process.argv[1]?.endsWith("cli.ts") === true;
+// Script detection (fix wave A7): the exact entry-module comparison —
+// the old endsWith("cli.ts") fired for ANY cli.ts basename.
+const invokedAsScript =
+	process.argv[1] !== undefined &&
+	import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedAsScript) {
 	void cliMain(process.argv.slice(2)).then((code) => {
 		process.exit(code);

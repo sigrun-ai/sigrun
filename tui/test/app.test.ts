@@ -250,6 +250,29 @@ describe("ConversationPane", () => {
 		pane.showView(view(1, [{ id: 1, kind: "pi.compaction", data: { reason: "threshold" } }]));
 		expect(pane.render(60).join("\n")).toContain("[compaction]");
 	});
+
+	test("notices cap at the 10 most recent (fix wave A5 — oldest drop silently)", () => {
+		const pane = new ConversationPane();
+		pane.showView(view(1, []));
+		const notes = [
+			"first dropped", "second dropped", "kept three", "kept four",
+			"kept five", "kept six", "kept seven", "kept eight", "kept nine",
+			"kept ten", "kept eleven", "kept twelve",
+		];
+		for (const text of notes) pane.showNotice(text);
+		const lines = pane.render(60).join("\n");
+		// Exactly the last 10 render; the oldest two dropped silently.
+		for (const text of notes.slice(2)) expect(lines).toContain(text);
+		expect(lines).not.toContain("first dropped");
+		expect(lines).not.toContain("second dropped");
+		const rendered = lines.split("\n").filter((line) => line.startsWith("[notice]"));
+		expect(rendered).toHaveLength(10);
+		// The cap survives a stream replacement (notices re-render capped).
+		pane.showView(view(1, []));
+		const after = pane.render(60).join("\n");
+		expect(after).not.toContain("second dropped");
+		expect(after).toContain("kept twelve");
+	});
 });
 
 // ─── App shell ──────────────────────────────────────────────────────────
@@ -439,6 +462,38 @@ describe("TuiApp fix wave", () => {
 		expect(lines).not.toContain("conv-1 error");
 	});
 
+	test("A6: the swap clears notice rows IMMEDIATELY (before any new frame arrives)", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// Conversation 1 has entries AND a notice.
+		watchRegistry.get(1)?.onSnapshot?.(
+			view(1, [
+				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "conv 1 body" }] },
+			]),
+		);
+		app.pane.showError("conv-1 error");
+		const before = app.render(80).join("\n");
+		expect(before).toContain("conv 1 body");
+		expect(before).toContain("conv-1 error");
+		// Switch: the clear must repaint — the notice rows are gone right
+		// away, NOT only after conversation 2's first frame rebuilds.
+		await app.selectConversation(2);
+		const midSwap = app.render(80).join("\n");
+		expect(midSwap).not.toContain("conv-1 error");
+		expect(midSwap).not.toContain("conv 1 body");
+		// The fresh frame still lands normally afterwards.
+		watchRegistry.get(2)?.onSnapshot?.(
+			view(2, [
+				{ id: 2, kind: "pi.user", model: [{ role: "user", content: "conv 2 body" }] },
+			]),
+		);
+		expect(app.render(80).join("\n")).toContain("conv 2 body");
+	});
+
 	test("F5: the current watch's onOpen reaches onWatchOpen; a stale watch's does not", async () => {
 		const { client, watchCalls, watchRegistry } = stubClient({});
 		const app = new TuiApp(client, {
@@ -494,6 +549,58 @@ describe("TuiApp race guards", () => {
 		expect(lines).not.toContain("stale frame");
 		expect(lines).toContain("fresh frame");
 		expect(staleErrors).toEqual([]);
+	});
+
+	test("a stale onView after a switch never renders (C2: the guarded onView path)", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		const staleHandlers = watchRegistry.get(1);
+		expect(staleHandlers).toBeDefined();
+		await app.selectConversation(2);
+		watchRegistry.get(2)?.onView?.(
+			view(2, [
+				{ id: 2, kind: "pi.user", model: [{ role: "user", content: "fresh view" }] },
+			]),
+		);
+		// The OLD watch's in-flight onView must be generation-fenced too
+		// (the race-guards scenario covered only onSnapshot).
+		staleHandlers?.onView?.(
+			view(1, [
+				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "stale view" }] },
+			]),
+		);
+		const lines = app.render(80).join("\n");
+		expect(lines).toContain("fresh view");
+		expect(lines).not.toContain("stale view");
+	});
+
+	test("dispose() fences stale watch handlers (A9: the watch generation bumps)", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		watchRegistry.get(1)?.onSnapshot?.(
+			view(1, [
+				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "before dispose" }] },
+			]),
+		);
+		expect(app.render(80).join("\n")).toContain("before dispose");
+		// Capture the handlers, dispose, then fire the stale delivery — the
+		// generation bump must fence it exactly as a switch does.
+		const staleHandlers = watchRegistry.get(1);
+		app.dispose();
+		staleHandlers?.onSnapshot?.(
+			view(1, [
+				{ id: 2, kind: "pi.user", model: [{ role: "user", content: "after dispose" }] },
+			]),
+		);
+		expect(app.render(80).join("\n")).not.toContain("after dispose");
 	});
 	test("the composer cannot submit during a swap (createAndSelect's async window)", async () => {
 		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});

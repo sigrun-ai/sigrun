@@ -57,7 +57,7 @@ import {
 	type SelectListTheme,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import type { SigrunClient, WhenBusyMode } from "../api.js";
+import type { ConversationViewWire, SigrunClient, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
@@ -219,13 +219,23 @@ export class TuiApp implements Component {
 			this.sidebar.setActive(id);
 			// Notices are per-conversation context (fix wave F4): an error
 			// from the OLD conversation must never render in the new one.
-			this.pane.clearNotices();
+			// The clear happens when the NEW watch installs (below): clearing
+			// here — at selection time — would race the fork/create action
+			// that LED to the swap (fix wave A1's /fork notice must survive
+			// into the fork's pane).
 			// Generation guard (review finding): a frame already in flight
 			// from the JUST-closed watch can still deliver after the swap;
 			// without a per-watch token it would land in the new
 			// conversation's pane. The guard also fences error callbacks,
 			// which carry no conversation id.
 			const gen = ++this.#watchGen;
+			// Fix wave A6: the swap repaints immediately — notice rows drop
+			// and the pane swaps to the empty view (the stream's fresh
+			// snapshot is the real first revision; a wholesale replacement
+			// is the pane's own idiom, and the container is in entry order,
+			// so dropping notice rows mid-list would leave a hole).
+			this.pane.clearNotices();
+			this.pane.showView(this.#emptyView(id));
 			this.#unwatch = this.#watch(
 				id,
 				{
@@ -260,6 +270,19 @@ export class TuiApp implements Component {
 		} finally {
 			this.editor.disableSubmit = false;
 		}
+	}
+
+	/** The pre-snapshot pane state on a swap (fix wave A6): no entries,
+	 * not busy — the stream's fresh snapshot is the real first revision. */
+	#emptyView(id: number): ConversationViewWire {
+		// SAFETY: a structural stub — ConversationViewWire's full shape is
+		// server-built; the pane reads only conversation.id + entries.
+		return {
+			conversation: { id },
+			entries: [],
+			docs: {},
+			steer: { busy: false, queued: 0 },
+		} as unknown as ConversationViewWire;
 	}
 
 	/**
@@ -451,7 +474,20 @@ export class TuiApp implements Component {
 						this.pane.showError("/fork needs an active conversation");
 						return;
 					}
+					const droppedArgs = parsed.args;
 					await this.forkActive();
+					// The catalog advertises argsHint "[at]", but the composer
+					// has no at-entry selection (notice, not support — the fix
+					// wave's ruling): the argument is dropped WITH a notice, and
+					// the fork still landed at the latest entry. The notice is
+					// posted AFTER the fork: forkActive swaps conversations, and
+					// the swap clears the pane (fix wave A6), so a notice posted
+					// before would be discarded with the old conversation.
+					if (droppedArgs !== "") {
+						this.pane.showNotice(
+							"fork at-entry selection is not supported by the TUI composer; forking at latest",
+						);
+					}
 					return;
 				}
 				case "compact": {
@@ -483,6 +519,10 @@ export class TuiApp implements Component {
 	dispose(): void {
 		this.#unwatch?.();
 		this.#unwatch = undefined;
+		// Bump the watch generation too (fix wave A9): a handler still
+		// held by an unwound delivery must fence after dispose exactly as
+		// after a switch — nothing renders post-dispose.
+		this.#watchGen += 1;
 		this.interactions.dispose();
 		this.ambient.dispose();
 	}

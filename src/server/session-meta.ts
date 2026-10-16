@@ -6,7 +6,8 @@
  * (survives reloads — `draft.attachments` are workspace-relative paths from
  * the uploads endpoint), the session source, the user-facing session name
  * (T5d), and the multi-user `owner` seam (spec §5: "exists in schema from
- * day 1; the flow does not" — present, unused in v1).
+ * day 1; the flow does not" — written by the auth hook at create/fork/
+ * import and read by the listing route; still no interactive flow in v1).
  *
  * Docs are standalone tokens: `defineDoc` needs no registry install (the
  * approvals extension's policy doc (sigrun-ext-approvals) is the
@@ -39,8 +40,9 @@ export type SessionMeta = {
 	/** Who created the session: interactive use or a cron job. */
 	source: "user" | "cron";
 	/**
-	 * Multi-user seam (spec §5): present, unused in v1 — PATCH accepts it,
-	 * GET serves it, nothing reads it.
+	 * Multi-user seam (spec §5): PATCH accepts it, GET serves it, the auth
+	 * hook writes it (create/fork/import), and the listing route reads it
+	 * — there is no interactive flow around it in v1 beyond that plumbing.
 	 */
 	owner?: string;
 	/** The user-facing session name; absent = unnamed (T5d). */

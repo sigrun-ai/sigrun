@@ -14,7 +14,11 @@
  * multi-line `data:` joins with `\n`.
  *
  * Transport failures close the reader and reconnect with exponential
- * backoff (base 250ms doubling, capped at 4s). A malformed frame reports
+ * backoff (base 250ms doubling, capped at 4s, ±30% jitter). Reconnects
+ * give up after 10 consecutive failures with ONE final `onError`; the
+ * counter resets on every successful open and at watch start. One failed
+ * connection emits at most one transport `onError` (a read failure and
+ * the ensuing close are the same failure). A malformed frame reports
  * `onError` and the stream STAYS OPEN — one bad frame must never kill the
  * transport.
  */
@@ -135,6 +139,8 @@ export function watchConversation(
 	const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
 	const baseMs = options.reconnectBaseMs ?? 250;
 	const maxMs = options.reconnectMaxMs ?? 4_000;
+	/** Give up after this many consecutive failed reconnects. */
+	const maxAttempts = 10;
 	const user = options.user?.trim();
 	const headers: Record<string, string> =
 		user === undefined || user === ""
@@ -146,10 +152,14 @@ export function watchConversation(
 	let attempts = 0;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let abort: AbortController | undefined;
+	/** Per-attempt onError dedupe (fix wave A10); cleared on open. */
+	let reportedTransportError = false;
 
 	function scheduleReconnect(): void {
 		attempts += 1;
-		const delay = Math.min(baseMs * 2 ** (attempts - 1), maxMs);
+		const base = Math.min(baseMs * 2 ** (attempts - 1), maxMs);
+		// ±30% jitter: correlated drops must not reconnect in lockstep.
+		const delay = base * (1 + (Math.random() * 0.6 - 0.3));
 		timer = setTimeout(() => {
 			timer = undefined;
 			void connect();
@@ -158,6 +168,15 @@ export function watchConversation(
 
 	async function connect(): Promise<void> {
 		if (closed) return;
+		if (attempts >= maxAttempts) {
+			// Give up (fix wave A3): the 10th consecutive failure was just
+			// reported by its caller; emit ONE final notice and stop — no
+			// 11th fetch fires.
+			handlers.onError?.(
+				`giving up after ${maxAttempts} failed reconnects`,
+			);
+			return;
+		}
 		const controller = new AbortController();
 		abort = controller;
 		let response;
@@ -184,6 +203,9 @@ export function watchConversation(
 			return;
 		}
 		attempts = 0;
+		// The open clears the per-attempt dedupe (fix wave A10): the next
+		// failed connection gets its own single onError.
+		reportedTransportError = false;
 		handlers.onOpen?.();
 
 		const parser = createFrameParser((frame) => {
@@ -216,12 +238,20 @@ export function watchConversation(
 			}
 		} catch (error) {
 			if (closed) return;
-			handlers.onError?.(
-				`conversation stream read failed: ${(error as Error).message}`,
-			);
+			// Dedupe (fix wave A10): a read failure and the close that
+			// follows it are ONE connection failure — one onError.
+			if (!reportedTransportError) {
+				reportedTransportError = true;
+				handlers.onError?.(
+					`conversation stream read failed: ${(error as Error).message}`,
+				);
+			}
 		}
 		if (!closed) {
-			handlers.onError?.("conversation stream closed by the server");
+			if (!reportedTransportError) {
+				reportedTransportError = true;
+				handlers.onError?.("conversation stream closed by the server");
+			}
 			scheduleReconnect();
 		}
 	}

@@ -199,10 +199,15 @@ function noticeComponent(notice: PaneNotice): Component {
 	return new Text(`[${notice.kind}] ${notice.text}`, 0, 0);
 }
 
+/** The notice backlog cap (fix wave A5 — most recent win). */
+const MAX_NOTICES = 10;
+
 export class ConversationPane implements Component {
 	readonly #container = new Container();
 	readonly #theme = plainMarkdownTheme();
 	readonly #notices: PaneNotice[] = [];
+	/** The notices' mounted components, aligned with `#notices`. */
+	readonly #noticeComponents: Component[] = [];
 
 	/**
 	 * Replace the pane with the projection of `wire` (the SSE rule: a full
@@ -211,13 +216,16 @@ export class ConversationPane implements Component {
 	 */
 	showView(wire: ConversationViewWire): void {
 		this.#container.clear();
+		this.#noticeComponents.length = 0;
 		for (const entry of wire.entries as readonly EntryShape[]) {
 			for (const component of entryComponents(entry, this.#theme)) {
 				this.#container.addChild(component);
 			}
 		}
 		for (const notice of this.#notices) {
-			this.#container.addChild(noticeComponent(notice));
+			const component = noticeComponent(notice);
+			this.#noticeComponents.push(component);
+			this.#container.addChild(component);
 		}
 		this.#container.invalidate();
 	}
@@ -235,17 +243,33 @@ export class ConversationPane implements Component {
 	/**
 	 * Discard all composer-surfaced lines (fix wave F4): the shell calls
 	 * this on every conversation swap so a stale error never renders in
-	 * the new conversation. The currently-rendered rows stay until the
-	 * next {@link showView} rebuilds the container — the swap's fresh
-	 * snapshot is that rebuild.
+	 * the new conversation. The notice ROWS are dropped immediately too
+	 * (fix wave A6): a swap is the discarding moment, and the new
+	 * conversation's fresh snapshot may not land for a beat — the old
+	 * conversation's entries (without its notices) render in between.
 	 */
 	clearNotices(): void {
+		if (this.#notices.length === 0) return;
 		this.#notices.length = 0;
+		for (const component of this.#noticeComponents.splice(0)) {
+			this.#container.removeChild(component);
+		}
+		this.#container.invalidate();
 	}
 
 	#appendNotice(notice: PaneNotice): void {
 		this.#notices.push(notice);
-		this.#container.addChild(noticeComponent(notice));
+		const component = noticeComponent(notice);
+		this.#noticeComponents.push(component);
+		this.#container.addChild(component);
+		// Cap the backlog (fix wave A5): keep the 10 most recent, dropping
+		// the oldest silently — both the array and its rendered row.
+		while (this.#notices.length > MAX_NOTICES) {
+			this.#notices.shift();
+			const oldest = this.#noticeComponents.shift();
+			if (oldest === undefined) break; // array is the source of truth
+			this.#container.removeChild(oldest);
+		}
 		this.#container.invalidate();
 	}
 
