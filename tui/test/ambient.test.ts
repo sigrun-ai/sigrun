@@ -355,6 +355,35 @@ describe("AmbientChrome", () => {
 		}
 	});
 
+	test("zero records arm the 30s fallback cadence; a later refreshMs record takes it over (fix wave A4)", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
+		try {
+			const stub = stubClient();
+			// Zero records: no refreshMs is known…
+			stub.setSurfaces([]);
+			const chrome = new AmbientChrome(stub.client);
+			chrome.setConversation(1);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(stub.ambientCalls()).toBe(1);
+			// …but the fallback cadence still polls (a surface that appears
+			// later must be picked up without a conversation switch).
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(stub.ambientCalls()).toBe(2);
+			// A record declaring refreshMs arrives on a poll: the declared
+			// cadence WINS over the fallback.
+			stub.setSurfaces([ambient("clock", { place: "status", refreshMs: 500, line: { text: "tick" } })]);
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(stub.ambientCalls()).toBe(3); // the poll that served the record
+			await vi.advanceTimersByTimeAsync(500);
+			expect(stub.ambientCalls()).toBe(4); // now on the 500ms cadence
+			await vi.advanceTimersByTimeAsync(500);
+			expect(stub.ambientCalls()).toBe(5);
+			chrome.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("expires: idle entries disappear when the conversation is idle", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([

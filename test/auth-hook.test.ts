@@ -170,6 +170,24 @@ describe("POST /v1/conversations/:id/fork × X-Sigrun-User", () => {
 		// — the caller's header overwrites it.
 		expect(meta.owner).toBe("bob");
 	});
+
+	test("fork WITHOUT the header inherits the parent's owner (pi-durable meta copy)", async () => {
+		const { app, faux } = await bootServer();
+		const parent = await createConversation(app, "alice");
+		faux.setResponses([fauxAssistantMessage("answer")]);
+		await submit(app, parent, "hello");
+		const forked = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${parent}/fork`,
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(forked.statusCode).toBe(201);
+		const meta = await fetchMeta(app, forked.json().id);
+		// C1: no caller header → no overwrite → the doc's "current" fork
+		// semantics carry the parent's stamped owner through unchanged.
+		expect(meta.owner).toBe("alice");
+	});
 });
 
 // ---------------------------------------------------------------------------

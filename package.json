@@ -16,6 +16,7 @@
 	},
 	"scripts": {
 		"start": "tsx src/index.ts",
+		"tui": "tsx src/cli.ts",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
 		"build:webui": "npm --workspace @sigrun/webui run build",

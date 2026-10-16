@@ -321,6 +321,39 @@ describe("composer slash commands", () => {
 		expect(app.activeConversationId).toBe(101);
 	});
 
+	test("/fork <at> notices that at-entry selection is unsupported, then forks at latest (fix wave A1)", async () => {
+		const { app, forkCalls } = await boot();
+		app.editor.onSubmit?.("/fork 3");
+		await flush();
+		// The argument is NOT silently dropped: a notice names the limit
+		// (rendered lines wrap, so assert the unwrapped halves)…
+		const lines = app.pane.render(80).join("\n");
+		expect(lines).toContain("fork at-entry selection is not supported by the TUI composer");
+		expect(lines).toContain("at latest");
+		// …and the fork still happens at the latest entry.
+		expect(forkCalls).toEqual([1]);
+		expect(app.activeConversationId).toBe(101);
+	});
+
+	test("/new creates a conversation and selects it (C3: the create dispatch)", async () => {
+		const { app, watchCalls } = await boot();
+		app.editor.onSubmit?.("/new");
+		await flush();
+		expect(app.activeConversationId).toBe(4);
+		expect(watchCalls).toEqual([1, 4]);
+	});
+
+	test("a bare `/` is the empty slash command — a clear error, nothing dispatched (C3)", async () => {
+		const { app, submitCalls, forkCalls, compactCalls, getCommandsCalls } = await boot();
+		app.editor.onSubmit?.("/");
+		await flush();
+		expect(app.pane.render(60).join("\n")).toContain("empty slash command");
+		expect(getCommandsCalls()).toBe(0);
+		expect(submitCalls).toEqual([]);
+		expect(forkCalls).toEqual([]);
+		expect(compactCalls).toEqual([]);
+	});
+
 	test("/compact hits compact (with the argument as instructions)", async () => {
 		const { app, compactCalls } = await boot();
 		app.editor.onSubmit?.("/compact keep the acme thread");

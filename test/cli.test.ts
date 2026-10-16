@@ -11,11 +11,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	cliMain,
 	loadTuiFile,
 	parseArgs,
+	parsePort,
 	USAGE_TEXT,
 	USAGE_ERROR_PATTERN,
 	type CliDeps,
@@ -35,6 +37,37 @@ async function tmpConfigDir(): Promise<string> {
 	tmpDirs.push(dir);
 	return dir;
 }
+
+describe("parsePort (D1)", () => {
+	test("absent/empty → undefined (the localhost default applies)", () => {
+		expect(parsePort(undefined)).toBeUndefined();
+		expect(parsePort("")).toBeUndefined();
+	});
+
+	test("a positive integer parses", () => {
+		expect(parsePort("4444")).toBe(4444);
+	});
+
+	test("non-integers and non-positives fail loud naming the variable", () => {
+		expect(() => parsePort("abc")).toThrowError(/SIGRUN_PORT/);
+		expect(() => parsePort("-1")).toThrowError(/SIGRUN_PORT/);
+		expect(() => parsePort("3.5")).toThrowError(/SIGRUN_PORT/);
+	});
+});
+
+describe("script detection (A7)", () => {
+	test("cli.ts's own file resolves to its module URL (the entry case matches)", () => {
+		// The detection is import.meta.url === pathToFileURL(argv[1]).href;
+		// the hermetic check feeds cli.ts's own path as argv[1].
+		const cliUrl = new URL("../src/cli.ts", import.meta.url);
+		expect(pathToFileURL(cliUrl.pathname).href).toBe(cliUrl.href);
+	});
+
+	test("an unrelated argv path does NOT match (imported, not invoked)", () => {
+		const cliUrl = new URL("../src/cli.ts", import.meta.url);
+		expect(pathToFileURL("/some/other/tool.ts").href).not.toBe(cliUrl.href);
+	});
+});
 
 describe("parseArgs", () => {
 	test("bare → run (the default command)", () => {
@@ -204,6 +237,40 @@ describe("cliMain run", () => {
 		const { deps, calls } = stubDeps();
 		await cliMain([], {}, deps);
 		expect(calls.shutdown).toBe(1);
+	});
+
+	test("run-mode signal: shutdown AND exit(0) fire (fix wave A8 — the TUI never outlives its server)", async () => {
+		const exitCalls: number[] = [];
+		const { deps, calls } = stubDeps({
+			// The TUI never exits on its own: the signal is the only way down.
+			launchTui: () => new Promise<void>(() => {}),
+			exit: (code) => {
+				exitCalls.push(code);
+				return undefined as never;
+			},
+		});
+		// Capture the SIGTERM listener cliMain installs (the run case wires
+		// process.on("SIGTERM", stop)); invoking it directly is the signal.
+		const onSpy = vi.spyOn(process, "on");
+		const run = cliMain([], {}, deps);
+		// cliMain is now mid-launchTui (pending): find and fire its SIGTERM stop.
+		await vi.waitFor(() => {
+			expect(calls.boot).toHaveLength(1);
+		});
+		const sigterm = onSpy.mock.calls.find(
+			([event]) => event === "SIGTERM",
+		)?.[1] as (() => void) | undefined;
+		expect(sigterm).toBeDefined();
+		onSpy.mockRestore();
+		sigterm!();
+		// shutdownOnce resolves asynchronously; the exit seam follows it.
+		await vi.waitFor(() => {
+			expect(exitCalls).toContain(0);
+		});
+		expect(calls.shutdown).toBeGreaterThanOrEqual(1);
+		// cliMain's own promise stays pending (the TUI never returned) — the
+		// exit seam is what retires the process, per the ruling.
+		void run;
 	});
 
 	test("carries --user into the TUI launch", async () => {
