@@ -177,18 +177,20 @@ volumes.
   commands). `enabled: false` is likewise never a deletion. Data,
   state, and cache directories are left in place for the same reason —
   the operator may still want them.
-- **On rename**: extension identity is its registered name — the
-  manifest-declared name, which the loader reads before the factory
-  runs, so it is available even on the quarantine path (a factory
-  failure happens after manifest read; a package that fails before
-  manifest read has no declared name and no stores to strand).
-  Store keys are the declared name sanitized to a path-safe form
-  (lowercased, `[^a-z0-9_-]` sequences folded to `-`; npm-scope `@` and
-  `/` cannot survive as one directory name). A declared-name collision
-  between two installed extensions fails loud at load — sharing a store
-  section silently is worse than refusing to boot the second one.
-  Renaming changes the directory key; migration of old directories is
-  the operator's move (documented, not automated).
+- **On rename**: extension identity is its **slug** — computed once at
+  load from the declared name, deterministically: take everything after
+  the last `/` (npm scopes `@org/name` and URL-ish git names both
+  collapse to their last segment — the "one fork" assumption is
+  deliberate: `@a/tool` and `@b/tool` collide and that is correct),
+  strip a trailing `@version` suffix (defensive; npm manifest names
+  cannot carry one), lowercase, fold `[^a-z0-9_-]+` runs to `-`, trim
+  edge separators. The slug is THE extension name everywhere in sigrun
+  — store keys, interaction records, ambient keys, worker names — never
+  just a store-path concern. Empty slug or a collision between two
+  loaded extensions fails loud at load (sharing a store section or a
+  registry key silently is worse than refusing the second one).
+  Renaming changes the slug; migration of old directories is the
+  operator's move (documented, not automated).
 
 ## 7. Goals / non-goals / anti-goals
 
@@ -280,4 +282,6 @@ on-by-default backup.
 12. Controller calls (settled in the builder check, §6): packages/ and
     git/ stay at the config root (container boots must not need the
     network); workspace root out of scope; store key = manifest-declared
-    name, path-sanitized, collisions fail loud.
+    name, slug-sanitized (last segment after `/`, version suffix stripped,
+    case-folded; slug is the name everywhere, not just store paths),
+    collisions fail loud.
