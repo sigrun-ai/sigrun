@@ -6,13 +6,16 @@
  * not React (components are `render(width): string[]` classes), so the
  * plan's `app.tsx` alternative does not apply.
  *
- * Layout: {@link TuiApp} IS the body row (`HStack`: sidebar at a fixed
- * basis, pane growing). The composer is a pi-tui `Editor` the launcher
- * mounts after the app on the TUI root — pi's idiom is `TuiMainScreen`
- * (the terminal owns scrollback; chat content scrolls, the editor anchors
- * the bottom as the last child). Viewport `VStack`/`ScrollView` layouts
- * are alt-screen-only (pi-tui 1.3.0), so the footer composition lives in
- * the launcher, not the app component.
+ * Layout: {@link TuiApp} is a `VStack`: the body row (`HStack`: sidebar
+ * at a fixed basis, pane growing), then the interaction seam's prompt
+ * strip (Task 8 — the pending stack, answerable via ctrl+o + digits), then
+ * the ambient chrome (panel/footer/statusline zones by the record's
+ * `place`). Both strips collapse to zero height when empty. The composer
+ * is a pi-tui `Editor` the launcher mounts after the app on the TUI root —
+ * pi's idiom is `TuiMainScreen` (the terminal owns scrollback; chat content
+ * scrolls, the editor anchors the bottom as the last child). Viewport
+ * `VStack`/`ScrollView` layouts are alt-screen-only (pi-tui 1.3.0), so the
+ * footer composition lives in the launcher, not the app component.
  *
  * Wiring: the sidebar refreshes from `listConversations()`; selecting a
  * conversation swaps the pane's `watchConversation` subscription (the old
@@ -40,6 +43,7 @@ import {
 	HStack,
 	Key,
 	matchesKey,
+	VStack,
 	type Component,
 	type EditorTheme,
 	type SelectListTheme,
@@ -49,7 +53,9 @@ import type { SigrunClient, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
+import { AmbientChrome } from "./ambient.js";
 import { ConversationPane } from "./conversation-pane.js";
+import { InteractionPrompter } from "./interactions.js";
 import { Sidebar } from "./sidebar.js";
 
 /** The watch injection seam (tests stub it; the launcher uses the real one). */
@@ -94,8 +100,13 @@ export class TuiApp implements Component {
 	readonly pane: ConversationPane;
 	/** The composer (the launcher mounts it after the app + focuses it). */
 	readonly editor: Editor;
+	/** The interaction seam's prompt strip (Task 8; zero height when empty). */
+	readonly interactions: InteractionPrompter;
+	/** The ambient seam's chrome zones (Task 8; zero height when empty). */
+	readonly ambient: AmbientChrome;
 
-	readonly #layout = new HStack();
+	readonly #body = new HStack();
+	readonly #layout = new VStack();
 	#activeId: number | undefined;
 	#unwatch: Unwatch | undefined;
 	/** Monotonic watch generation: a stale watch's frames must never land. */
@@ -113,12 +124,29 @@ export class TuiApp implements Component {
 		this.sidebar = new Sidebar(client);
 		this.pane = new ConversationPane();
 		this.editor = new Editor(options.tui, plainEditorTheme());
+		this.interactions = new InteractionPrompter(client);
+		this.ambient = new AmbientChrome(client);
 
-		this.#layout.addChild(this.sidebar, {
+		this.#body.addChild(this.sidebar, {
 			basis: options.sidebarWidth ?? 24,
 			shrink: 1,
 		});
-		this.#layout.addChild(this.pane, { basis: 0, grow: 1, minSize: 1 });
+		this.#body.addChild(this.pane, { basis: 0, grow: 1, minSize: 1 });
+		// All entries are intrinsic-height (basis "auto"): the TUI mounts
+		// the app on the MAIN screen, where render(width) is the production
+		// path and the terminal owns scrollback — a numeric basis would be
+		// clamped to its minSize and slice the body to one line (VStack
+		// render path, no available height).
+		this.#layout.addChild(this.#body, { basis: "auto" });
+		this.#layout.addChild(this.interactions, { basis: "auto" });
+		this.#layout.addChild(this.ambient, { basis: "auto" });
+
+		// Seam state changes repaint; answer failures are user-initiated,
+		// so they land as pane error lines (background polls fail quiet).
+		const repaint = (): void => options.tui.requestRender();
+		this.interactions.onChanged = repaint;
+		this.ambient.onChanged = repaint;
+		this.interactions.onError = (message) => this.pane.showError(message);
 
 		this.sidebar.onSelect = (selection) => {
 			if (selection === "new") {
@@ -184,11 +212,18 @@ export class TuiApp implements Component {
 					onSnapshot: (wire) => {
 						if (gen !== this.#watchGen) return;
 						this.#busy = wire.steer.busy;
+						// A revision may change the seam state: re-poll the
+						// pending interactions; the ambient chrome tracks the
+						// run state for its expires:"idle" surfaces.
+						this.interactions.kick();
+						this.ambient.setBusy(wire.steer.busy);
 						this.pane.showView(wire);
 					},
 					onView: (wire) => {
 						if (gen !== this.#watchGen) return;
 						this.#busy = wire.steer.busy;
+						this.interactions.kick();
+						this.ambient.setBusy(wire.steer.busy);
 						this.pane.showView(wire);
 					},
 					onError: (message) => {
@@ -197,6 +232,8 @@ export class TuiApp implements Component {
 				},
 				this.#watchOptions,
 			);
+			this.interactions.setConversation(id);
+			this.ambient.setConversation(id);
 		} finally {
 			this.editor.disableSubmit = false;
 		}
@@ -248,6 +285,17 @@ export class TuiApp implements Component {
 	 * editor). Returns true when the key was consumed.
 	 */
 	handleKeybinding(data: string): boolean {
+		// Answer mode captures the prompt's keys first (Task 8): esc here
+		// exits answer mode — it must NOT reach the busy-abort below.
+		if (this.interactions.answerMode) {
+			if (this.interactions.handleKey(data)) return true;
+		}
+		// ctrl+o enters answer mode (ctrl+a is the editor's cursorLineStart).
+		// Not consumed when nothing answerable is pending — the key falls
+		// through to the editor.
+		if (matchesKey(data, Key.ctrl("o"))) {
+			return this.interactions.beginAnswer();
+		}
 		if (matchesKey(data, Key.ctrl("f"))) {
 			void this.forkActive();
 			return true;
@@ -377,10 +425,12 @@ export class TuiApp implements Component {
 		}
 	}
 
-	/** Close the stream subscription (the launcher calls this on exit). */
+	/** Close the stream subscription + seam pollers (the launcher calls this on exit). */
 	dispose(): void {
 		this.#unwatch?.();
 		this.#unwatch = undefined;
+		this.interactions.dispose();
+		this.ambient.dispose();
 	}
 
 	render(width: number): string[] {
