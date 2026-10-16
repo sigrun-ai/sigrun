@@ -86,6 +86,8 @@ export class TuiApp implements Component {
 	readonly #layout = new HStack();
 	#activeId: number | undefined;
 	#unwatch: Unwatch | undefined;
+	/** Monotonic watch generation: a stale watch's frames must never land. */
+	#watchGen = 0;
 
 	constructor(client: SigrunClient, options: TuiAppOptions) {
 		this.#client = client;
@@ -135,28 +137,66 @@ export class TuiApp implements Component {
 		}
 	}
 
-	/** Swap the pane to `id`: close the old watch, open the new one. */
+	/**
+	 * Swap the pane to `id`: close the old watch, open the new one. The
+	 * composer is disabled for the swap's duration (review finding): a
+	 * submission must never split from the pane it was typed against, so
+	 * Enter cannot fire `onSubmit` mid-swap (pi-tui's `disableSubmit`
+	 * gates the submit path).
+	 */
 	async selectConversation(id: number): Promise<void> {
 		if (id === this.#activeId) return;
-		this.#unwatch?.();
-		this.#unwatch = undefined;
-		this.#activeId = id;
-		this.sidebar.setActive(id);
-		this.#unwatch = this.#watch(
-			id,
-			{
-				onSnapshot: (wire) => this.pane.showView(wire),
-				onView: (wire) => this.pane.showView(wire),
-			},
-			this.#watchOptions,
-		);
+		this.editor.disableSubmit = true;
+		try {
+			this.#unwatch?.();
+			this.#unwatch = undefined;
+			this.#activeId = id;
+			this.sidebar.setActive(id);
+			// Generation guard (review finding): a frame already in flight
+			// from the JUST-closed watch can still deliver after the swap;
+			// without a per-watch token it would land in the new
+			// conversation's pane. The guard also fences error callbacks,
+			// which carry no conversation id.
+			const gen = ++this.#watchGen;
+			this.#unwatch = this.#watch(
+				id,
+				{
+					onSnapshot: (wire) => {
+						if (gen === this.#watchGen) this.pane.showView(wire);
+					},
+					onView: (wire) => {
+						if (gen === this.#watchGen) this.pane.showView(wire);
+					},
+					onError: (message) => {
+						if (gen === this.#watchGen) this.onWatchError?.(message);
+					},
+				},
+				this.#watchOptions,
+			);
+		} finally {
+			this.editor.disableSubmit = false;
+		}
 	}
+
+	/**
+	 * Stream-error sink. Task 7 owns rendering these in the pane; v1's
+	 * default is a no-op — the generation guard above exists so a STALE
+	 * watch's errors can't reach whatever a later task mounts here.
+	 */
+	onWatchError?: (message: string) => void;
 
 	/** Create a conversation (`+ new`), refresh the sidebar, select it. */
 	async createAndSelect(): Promise<void> {
-		const created = await this.#client.createConversation();
-		await this.sidebar.refresh();
-		await this.selectConversation(created.id);
+		// The submit guard spans the WHOLE async swap: the awaits below are
+		// the window where an Enter would otherwise target the old id.
+		this.editor.disableSubmit = true;
+		try {
+			const created = await this.#client.createConversation();
+			await this.sidebar.refresh();
+			await this.selectConversation(created.id);
+		} finally {
+			this.editor.disableSubmit = false;
+		}
 	}
 
 	/**
@@ -166,9 +206,14 @@ export class TuiApp implements Component {
 	 */
 	async forkActive(): Promise<void> {
 		if (this.#activeId === undefined) return;
-		const forked = await this.#client.forkConversation(this.#activeId);
-		await this.sidebar.refresh();
-		await this.selectConversation(forked.id);
+		this.editor.disableSubmit = true;
+		try {
+			const forked = await this.#client.forkConversation(this.#activeId);
+			await this.sidebar.refresh();
+			await this.selectConversation(forked.id);
+		} finally {
+			this.editor.disableSubmit = false;
+		}
 	}
 
 	/**
@@ -186,9 +231,14 @@ export class TuiApp implements Component {
 
 	/** Fire-and-forget submit (the stream carries the reply, spec §10). */
 	#submit(text: string): void {
+		// Belt to the editor's own gate: pi-tui checks `disableSubmit` in
+		// handleInput, not in the onSubmit callback — a programmatic
+		// onSubmit during a swap must no-op too, and never destroy a draft.
+		if (this.editor.disableSubmit) return;
 		const id = this.#activeId;
-		this.editor.setText("");
+		// Guard BEFORE clearing: a no-op submit must never destroy a draft.
 		if (id === undefined || text.trim() === "") return;
+		this.editor.setText("");
 		this.#client.submit(id, text).catch(() => {
 			// Task 7 owns error surfacing in the pane; the shell's contract
 			// is that a failed submit never wedges the composer.

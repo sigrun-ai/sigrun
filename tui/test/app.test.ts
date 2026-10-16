@@ -111,6 +111,12 @@ function stubWatch(
 /** A render target stand-in: Editor needs one; the shell is tested headless. */
 const fakeTui = { requestRender: () => {} } as unknown as TUI;
 
+/** Yield microtasks so an `async` swap's awaits interleave. */
+async function tick(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
 // ─── Sidebar ────────────────────────────────────────────────────────────
 
 describe("Sidebar", () => {
@@ -313,5 +319,100 @@ describe("TuiApp", () => {
 		await app.createAndSelect();
 		expect(app.activeConversationId).toBe(4);
 		expect(watchCalls).toEqual([1, 4]);
+	});
+});
+
+// ─── Race guards (fix round 1, review findings 1+2) ─────────────────────
+
+describe("TuiApp race guards", () => {
+	test("a stale frame in flight from the old watch never lands after a switch", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// Simulate a frame in flight from the OLD watch: capture its
+		// handlers before the switch (the stub's unwatch removes the
+		// registry entry, but a real in-flight delivery already holds them).
+		const staleHandlers = watchRegistry.get(1);
+		expect(staleHandlers).toBeDefined();
+		await app.selectConversation(2);
+		// The new conversation's own snapshot renders first; the stale
+		// delivery arrives AFTER it (the async-delivery race).
+		watchRegistry.get(2)?.onSnapshot?.(
+			view(2, [
+				{ id: 2, kind: "pi.user", model: [{ role: "user", content: "fresh frame" }] },
+			]),
+		);
+		staleHandlers?.onSnapshot?.(
+			view(1, [
+				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "stale frame" }] },
+			]),
+		);
+		// A stale ERROR must not surface either (errors carry no id).
+		const staleErrors: string[] = [];
+		app.onWatchError = (message) => staleErrors.push(message);
+		staleHandlers?.onError?.("stale connection dropped");
+		const lines = app.render(80).join("\n");
+		expect(lines).not.toContain("stale frame");
+		expect(lines).toContain("fresh frame");
+		expect(staleErrors).toEqual([]);
+	});
+	test("the composer cannot submit during a swap (createAndSelect's async window)", async () => {
+		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		const swap = app.createAndSelect();
+		await tick(); // the swap is now awaiting createConversation()
+		expect(app.editor.disableSubmit).toBe(true);
+		// Even a PROGRAMMATIC onSubmit (bypassing the editor's own gate)
+		// must no-op — and must not destroy the draft.
+		app.editor.setText("mid-swap draft");
+		app.editor.onSubmit?.("mid-swap draft");
+		expect(submitCalls).toEqual([]);
+		expect(app.editor.getText()).toBe("mid-swap draft");
+		await swap;
+		expect(app.editor.disableSubmit).toBe(false);
+		// After the swap completes, submits flow to the NEW conversation.
+		app.editor.setText("after swap");
+		app.editor.onSubmit?.("after swap");
+		await tick();
+		expect(submitCalls).toEqual([{ id: 4, text: "after swap" }]);
+	});
+	test("the composer cannot submit during selectConversation's window", async () => {
+		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});
+		// selectConversation's try block has no awaits with the stub, so it
+		// completes synchronously — sample disableSubmit DURING the swap by
+		// firing a submit from inside the watch factory (invoked mid-swap).
+		let app: TuiApp | undefined;
+		const samplingWatch = (
+			conversationId: number,
+			handlers: WatchHandlers,
+		): Unwatch => {
+			if (conversationId === 2) {
+				expect(app?.editor.disableSubmit).toBe(true);
+				app?.editor.setText("during select");
+				app?.editor.onSubmit?.("during select");
+			}
+			watchCalls.push(conversationId);
+			watchRegistry.set(conversationId, handlers);
+			return () => {
+				watchRegistry.delete(conversationId);
+			};
+		};
+		app = new TuiApp(client, { tui: fakeTui, watch: samplingWatch });
+		await app.refresh();
+		await app.selectConversation(2);
+		expect(submitCalls).toEqual([]);
+		// The draft survived the no-op submit; the editor is re-enabled.
+		expect(app.editor.getText()).toBe("during select");
+		expect(app.editor.disableSubmit).toBe(false);
+		app.editor.onSubmit?.("settled");
+		await tick();
+		expect(submitCalls).toEqual([{ id: 2, text: "settled" }]);
 	});
 });
