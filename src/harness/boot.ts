@@ -41,6 +41,7 @@ import {
 import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
+import { ensureStoreRoots, resolveStoreRoots } from "./stores.js";
 import {
 	createWorkspaceService,
 	defaultWorkspacePrefs,
@@ -276,6 +277,20 @@ export async function openHarness(
 	config: SigrunConfig,
 	options: OpenHarnessOptions = {},
 ): Promise<OpenedHarness> {
+	// The boot env, read once through the one seam (tests inject a fake;
+	// the deploy passes nothing and gets `process.env`). Two consumers:
+	// store-root resolution immediately below, and the provider
+	// collector further down (`providerEnv`).
+	const env = options.env ?? process.env;
+	// Store-root lifecycle (spec §6): every durable root except cache
+	// exists before anything touches disk — storage, the registry's
+	// first install, extension packages — so a fresh deploy (or a PVC
+	// mount missing a subpath) fails HERE, loudly, naming the root it
+	// could not create, rather than deep inside sqlite or npm. The cache
+	// root is NOT ensured at boot (Review Focus 5: a wiped `emptyDir`
+	// must never break boot; cache consumers repair per call through
+	// `ensureCacheDir`).
+	await ensureStoreRoots(resolveStoreRoots(env));
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
@@ -377,7 +392,6 @@ export async function openHarness(
 		(binding) => binding.extension === memoryOwner,
 	)?.submit;
 	const sink = createProviderMergeSink();
-	const env = options.env ?? process.env;
 	// `config.models` is the already-validated default-model resolution
 	// (loadConfig refuses to boot without env or file); restating it for
 	// the collector under BOTH env spellings keeps a hand-built config
