@@ -453,6 +453,32 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
+	test("a poll that changes the top record exits answer mode and keys answer nothing", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", { text: "prompt A", options: [{ id: "a", label: "A" }] }),
+			interaction("c2", { text: "prompt B", options: [{ id: "b", label: "B" }] }),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		// The user reads prompt A and arms the answer keys.
+		expect(prompter.beginAnswer()).toBe(true);
+		expect(prompter.render(60).join("\n")).toContain("prompt A");
+		// A poll lands where A has settled elsewhere and B is now the top.
+		stub.setPending([
+			interaction("c2", { text: "prompt B", options: [{ id: "b", label: "B" }] }),
+		]);
+		await prompter.kickAndWait();
+		expect(prompter.render(60).join("\n")).toContain("prompt B");
+		expect(prompter.answerMode).toBe(false);
+		// The stale digit must NOT answer B (the user never saw it).
+		expect(prompter.handleKey("1")).toBe(false);
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		prompter.dispose();
+	});
+
 	test("setConversation(undefined) clears the prompt and stops polling", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
 		try {

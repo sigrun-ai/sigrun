@@ -22,9 +22,10 @@
  *
  * Fetching: on conversation connect + rescheduled after each fetch at the
  * smallest `refreshMs` the current records declare (the record's
- * re-render hint becomes the re-fetch cadence — chrome state changes
- * server-side between frames). Fetch failures are QUIET (best-effort
- * chrome; the stream's error path reports transport health).
+ * re-render hint becomes the re-fetch cadence). Fetch failures are QUIET
+ * (best-effort chrome; the stream's error path reports transport health)
+ * and the cadence re-arms after them — one dropped fetch must not stop
+ * the refresh chain for the conversation's lifetime.
  *
  * Expiry: `expires: "idle"` surfaces render only while the conversation
  * has a live run ({@link setBusy}, driven by the stream's `steer.busy`);
@@ -123,21 +124,31 @@ export class AmbientChrome implements Component {
 		);
 	}
 
-	/** Generation-guarded fetch; reschedules at the smallest refreshMs. */
+	/** Generation-guarded fetch; the refreshMs cadence re-arms in ALL
+	 * outcomes (success, quiet failure) while this refresh still belongs
+	 * to the live conversation — a switch/dispose owns its own timers. */
 	async #refresh(): Promise<void> {
 		const id = this.#conversationId;
 		const gen = this.#gen;
 		if (id === undefined) return;
-		let list;
 		try {
-			list = await this.#client.getAmbient(id);
-		} catch {
-			return; // quiet: keep the last surfaces
+			let list;
+			try {
+				list = await this.#client.getAmbient(id);
+			} catch {
+				return; // quiet: keep the last surfaces
+			}
+			if (gen !== this.#gen) return; // stale — a switch happened
+			this.#records = list.ambient;
+			this.#changed();
+		} finally {
+			// One dropped fetch must NOT kill the cadence for the
+			// conversation's lifetime (ambient has no interval and no
+			// frame-triggered re-fetch — this timer chain IS the cadence).
+			if (gen === this.#gen && this.#conversationId !== undefined) {
+				this.#reschedule();
+			}
 		}
-		if (gen !== this.#gen) return; // stale — a switch happened
-		this.#records = list.ambient;
-		this.#changed();
-		this.#reschedule();
 	}
 
 	/** Re-fetch at the smallest refreshMs the current records declare. */

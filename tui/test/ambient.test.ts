@@ -320,6 +320,41 @@ describe("AmbientChrome", () => {
 		}
 	});
 
+	test("the refreshMs cadence survives a transient fetch failure", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
+		try {
+			const stub = stubClient();
+			stub.setSurfaces([ambient("clock", { place: "status", refreshMs: 500, line: { text: "tick" } })]);
+			let failNext = false;
+			let attempts = 0;
+			const flaky = {
+				...stub.client,
+				getAmbient(id: number): Promise<AmbientList> {
+					attempts += 1;
+					if (failNext) {
+						failNext = false;
+						return Promise.reject(new Error("boom"));
+					}
+					return stub.client.getAmbient(id);
+				},
+			} as unknown as SigrunClient;
+			const chrome = new AmbientChrome(flaky);
+			chrome.setConversation(1);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(attempts).toBe(1);
+			// The first scheduled refresh fails; the cadence must re-arm.
+			failNext = true;
+			await vi.advanceTimersByTimeAsync(500);
+			expect(attempts).toBe(2); // the failed attempt happened
+			await vi.advanceTimersByTimeAsync(500);
+			expect(attempts).toBe(3); // cadence survived the failure
+			expect(stub.ambientCalls()).toBe(2); // two fetches succeeded
+			chrome.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("expires: idle entries disappear when the conversation is idle", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
@@ -371,7 +406,7 @@ describe("AmbientChrome", () => {
 		let calls = 0;
 		const slow = {
 			...stub.client,
-			getAmbient(id: number): Promise<AmbientList> {
+			getAmbient(_id: number): Promise<AmbientList> {
 				calls += 1;
 				if (calls === 1) {
 					return new Promise((resolve) => {
