@@ -85,6 +85,16 @@ describe("SigrunClient request shaping", () => {
 		expect(calls[0]?.user).toBeUndefined();
 	});
 
+	test("a baseUrl with a trailing slash never doubles the route's slash", async () => {
+		const { calls, fetchImpl } = stubFetch({ conversations: [] });
+		const client = new SigrunClient({
+			baseUrl: `${BASE}/`,
+			fetch: fetchImpl,
+		});
+		await client.listConversations();
+		expect(calls[0]?.input).toBe(`${BASE}/v1/conversations`);
+	});
+
 	test("getConversation GETs the view route", async () => {
 		const view = {
 			conversation: { id: 7 },

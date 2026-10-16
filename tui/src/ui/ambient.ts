@@ -23,9 +23,10 @@
  * Fetching: on conversation connect + rescheduled after each fetch at the
  * smallest `refreshMs` the current records declare (the record's
  * re-render hint becomes the re-fetch cadence). Fetch failures are QUIET
- * (best-effort chrome; the stream's error path reports transport health)
- * and the cadence re-arms after them — one dropped fetch must not stop
- * the refresh chain for the conversation's lifetime.
+ * (best-effort chrome; stream transport health is reported separately by
+ * the watcher's error/open transition notices — the launcher's
+ * stream-health wiring) and the cadence re-arms after them — one dropped
+ * fetch must not stop the refresh chain for the conversation's lifetime.
  *
  * Expiry: `expires: "idle"` surfaces render only while the conversation
  * has a live run ({@link setBusy}, driven by the stream's `steer.busy`);

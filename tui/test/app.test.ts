@@ -44,6 +44,9 @@ function view(id: number, entries: unknown[]): ConversationViewWire {
 function stubClient(init: {
 	metas?: Record<number, { archived?: boolean; name?: string }>;
 	watch?: (handlers: WatchHandlers) => void;
+	/** Fix-wave seam: make createConversation/forkConversation reject. */
+	createError?: Error;
+	forkError?: Error;
 }) {
 	const submitCalls: { id: number; text: string }[] = [];
 	const forkCalls: number[] = [];
@@ -69,10 +72,14 @@ function stubClient(init: {
 			});
 		},
 		createConversation() {
+			if (init.createError !== undefined)
+				return Promise.reject(init.createError);
 			listed.push(summary(4));
 			return Promise.resolve({ id: 4, view: view(4, []) });
 		},
 		forkConversation(id: number) {
+			if (init.forkError !== undefined)
+				return Promise.reject(init.forkError);
 			forkCalls.push(id);
 			forkSerial += 1;
 			listed.push(summary(forkSerial));
@@ -172,6 +179,16 @@ describe("Sidebar", () => {
 // ─── Conversation pane ─────────────────────────────────────────────────
 
 describe("ConversationPane", () => {
+	test("clearNotices drops pending notice rows (fix wave F4)", () => {
+		const pane = new ConversationPane();
+		pane.showError("boom");
+		pane.showView(view(1, []));
+		expect(pane.render(60).join("\n")).toContain("[error] boom");
+		pane.clearNotices();
+		pane.showView(view(1, []));
+		expect(pane.render(60).join("\n")).not.toContain("[error] boom");
+	});
+
 	test("renders user, assistant, thinking, and tool rows in entry order", () => {
 		const pane = new ConversationPane();
 		pane.showView(
@@ -322,7 +339,126 @@ describe("TuiApp", () => {
 	});
 });
 
-// ─── Race guards (fix round 1, review findings 1+2) ─────────────────────
+// ─── Fix wave: guarded actions, sidebar focus, notices, stream health ──
+
+describe("TuiApp fix wave", () => {
+	test("F1: a rejecting createConversation renders a pane error and never throws", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({
+			createError: new Error("boom: server gone"),
+		});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// The sidebar's `+ new` selection is the void-ed path the finding
+		// named; createAndSelect catching it is the fix (no rejection escapes).
+		app.sidebar.onSelect?.("new");
+		await tick();
+		const lines = app.render(80).join("\n");
+		expect(lines).toContain("[error]");
+		expect(lines).toContain("boom: server gone");
+		// The app survived and stayed on the boot conversation.
+		expect(app.activeConversationId).toBe(1);
+		expect(app.editor.disableSubmit).toBe(false);
+	});
+
+	test("F1: a rejecting forkConversation renders a pane error and never throws", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({
+			forkError: new Error("boom: fork refused"),
+		});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// ctrl+f is the void-ed keybinding path the finding named.
+		expect(app.handleKeybinding("\u0006")).toBe(true); // ctrl+f
+		await tick();
+		const lines = app.render(80).join("\n");
+		expect(lines).toContain("boom: fork refused");
+		expect(app.activeConversationId).toBe(1);
+		expect(app.editor.disableSubmit).toBe(false);
+	});
+
+	test("F2: ctrl+b routes keys to the sidebar; a selection switches the pane and returns focus", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// Composer-focused: arrows fall through to the editor (not consumed).
+		expect(app.handleKeybinding("\x1b[B")).toBe(false);
+		// ctrl+b focuses the sidebar; arrows+enter now drive the list.
+		expect(app.handleKeybinding("\u0002")).toBe(true);
+		expect(app.handleKeybinding("\x1b[B")).toBe(true); // → #2
+		expect(app.handleKeybinding("\r")).toBe(true); // select #2
+		await tick();
+		expect(app.activeConversationId).toBe(2);
+		expect(watchCalls).toEqual([1, 2]);
+		// Focus returned to the composer: arrows fall through again.
+		expect(app.handleKeybinding("\x1b[B")).toBe(false);
+	});
+
+	test("F2: a second ctrl+b returns focus without selecting", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		app.handleKeybinding("\u0002");
+		app.handleKeybinding("\x1b[B"); // cursor moves, no selection yet
+		app.handleKeybinding("\u0002"); // back to the composer
+		await tick();
+		expect(app.activeConversationId).toBe(1);
+		expect(app.handleKeybinding("\x1b[B")).toBe(false);
+	});
+
+	test("F4: an error notice never bleeds across a conversation swap", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// An error in conversation 1 renders…
+		app.pane.showError("submit failed (400): conv-1 error");
+		expect(app.render(80).join("\n")).toContain("conv-1 error");
+		// …and switching conversations discards it: conversation 2's first
+		// frame renders WITHOUT the stale notice.
+		await app.selectConversation(2);
+		watchRegistry.get(2)?.onSnapshot?.(
+			view(2, [
+				{ id: 2, kind: "pi.user", model: [{ role: "user", content: "conv 2 body" }] },
+			]),
+		);
+		const lines = app.render(80).join("\n");
+		expect(lines).toContain("conv 2 body");
+		expect(lines).not.toContain("conv-1 error");
+	});
+
+	test("F5: the current watch's onOpen reaches onWatchOpen; a stale watch's does not", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		const opens: number[] = [];
+		app.onWatchOpen = () => opens.push(1);
+		watchRegistry.get(1)?.onOpen?.();
+		expect(opens).toEqual([1]);
+		// Stale watches are generation-fenced like onError.
+		const staleHandlers = watchRegistry.get(1);
+		await app.selectConversation(2);
+		staleHandlers?.onOpen?.();
+		expect(opens).toEqual([1]);
+		watchRegistry.get(2)?.onOpen?.();
+		expect(opens).toEqual([1, 1]);
+	});
+});
 
 describe("TuiApp race guards", () => {
 	test("a stale frame in flight from the old watch never lands after a switch", async () => {
