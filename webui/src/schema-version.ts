@@ -8,9 +8,10 @@
  * mismatch means the bundle was built against a different wire shape than
  * the server speaks, and rendering would misread the contract.
  *
- * THE SYNC MECHANISM: the webui is a separate workspace package and cannot
- * import the server sources (NodeNext vs bundler resolution), so the pin is
- * this hard-coded literal. The ROOT test `test/webui-schema-pin.test.ts`
+ * THE SYNC MECHANISM: the pin is a hard-coded literal. Importing the
+ * server's runtime constant would pin the client to whatever the BUILD
+ * machine resolved — the point is a fixed pin a drift guard compares the
+ * server against, so the value stays a literal by design. The ROOT test `test/webui-schema-pin.test.ts`
  * reads this file, extracts the literal, and asserts it equals the server's
  * computed SCHEMA_VERSION — schema-fixture drift fails the root suite
  * loudly, and the fix is to re-pin this constant and rebuild the bundle.

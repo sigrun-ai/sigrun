@@ -27,6 +27,7 @@ import type {
 	ConversationViewWire,
 	InteractionAnswered,
 	InteractionList,
+	SettingsResponse,
 	SubmissionResponse,
 } from "../../src/server/views.js";
 
@@ -43,6 +44,7 @@ export type {
 	InteractionAnswered,
 	InteractionList,
 	InteractionWire,
+	SettingsResponse,
 	SubmissionResponse,
 } from "../../src/server/views.js";
 export type { CommandsResponse, SlashCommand } from "../../src/server/commands.js";
@@ -57,32 +59,6 @@ export interface InteractionAnswerInput {
 
 /** The `whenBusy` admission modes the server accepts (spec §7 item 3). */
 export type WhenBusyMode = "steer" | "followUp" | "reject";
-
-/**
- * The `/v1/settings` payload: `SettingsFile` + the server-computed
- * `toolRoster`. The server's `SettingsResponse` lives in
- * `src/server/index.ts` (the route module) rather than views.ts — mirrored
- * here, same hand-mirror discipline as the webui.
- */
-export interface SettingsResponseWire {
-	readonly steeringMode?: "all" | "one-at-a-time";
-	readonly followUpMode?: "all" | "one-at-a-time";
-	readonly retry?: {
-		readonly enabled?: boolean;
-		readonly maxRetries?: number;
-		readonly baseDelayMs?: number;
-		readonly maxAgentDelayMs?: number;
-	};
-	readonly stream?: {
-		readonly timeoutMs?: number;
-		readonly maxRetries?: number;
-		readonly maxRetryDelayMs?: number;
-	};
-	readonly defaultTools?: readonly string[];
-	readonly perModelThinking?: Readonly<Record<string, string>>;
-	/** The live registry's tool names (server-computed, never persisted). */
-	readonly toolRoster?: readonly string[];
-}
 
 /** A non-2xx response: status + the server's parsed error body. */
 export class SigrunApiError extends Error {
@@ -262,7 +238,7 @@ export class SigrunClient {
 	}
 
 	/** `GET /v1/settings` — the effective settings (absent file = `{}`). */
-	getSettings(): Promise<SettingsResponseWire> {
+	getSettings(): Promise<SettingsResponse> {
 		return this.#get("/v1/settings");
 	}
 }

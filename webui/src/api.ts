@@ -2,224 +2,115 @@
  * Typed client for the sigrun §5 HTTP API (Task 20 scaffold subset:
  * `GET /v1/meta`, `GET /v1/conversations`, `GET /v1/models`).
  *
- * The wire interfaces here MIRROR the server's serializers
- * (`src/server/views.ts` + the `MetaResponse` interface in
- * `src/server/index.ts`) — the webui is a separate workspace package and
- * cannot import server sources (the server is NodeNext, the webui is
- * bundler-resolution). Keep these in sync by hand; the §5 shapes are the
- * stable contract the channel bundle consumes.
+ * `src/server/views.ts` is sigrun's channel contract: every wire type the
+ * server serves is declared there, and this facade RE-EXPORTS the
+ * contract types from it (no hand-maintained mirrors — the webui
+ * typechecks against the server sources; views.ts's enforced purity —
+ * `import type` only, no `node:` imports — keeps the client bundle free
+ * of server runtime code). The `*Wire` suffixes on the re-exported shapes
+ * below are stable export names so consumers (`./stream`,
+ * `./useConversationView`, the entry renderers) are unchanged.
+ *
+ * Types with NO server counterpart stay declared locally: the wire
+ * projections pi-durable publishes but sigrun never names
+ * (`ContentBlockWire`/`UsageWire`/`MessageWire`/`ConversationEntryWire`/
+ * `ConversationViewWire`/`ToolSlotWire`/`LiveDocWire`), the client-side
+ * request inputs (`ConversationMetaPatch`, `SettingsPatchWire`,
+ * `ConfigureInput`, `UploadFileInput`, `SubmissionInputPart`,
+ * `SubmitOptions`, `SigrunClient`, `FetchLike`, `SigrunClientOptions`),
+ * and `ConversationMeta` (the server serves the `SessionMeta` record
+ * verbatim; the canonical shape lives in `src/server/session-meta.ts`).
  *
  * The client is fail-loud: a non-2xx response rejects with an error naming
  * the status and path (never a silent `undefined` the UI could misrender as
  * empty state).
  */
 
-/** The `GET /v1/meta` payload (mirrors `MetaResponse` in src/server/index.ts). */
-export interface MetaResponse {
-	readonly harnessVersion: string;
-	readonly schemaVersion: string;
-	readonly extensions: readonly {
-		readonly name: string;
-		readonly status: string;
-		readonly error?: string;
-	}[];
-	readonly health: {
-		readonly backup: "configured" | "unconfigured" | "degraded";
-		readonly memory: "ok" | "degraded";
-		readonly providers: "ok" | "degraded";
-	};
-	readonly capabilities: {
-		readonly backup: boolean;
-		readonly channels: readonly string[];
-	};
-	/** The seam inventory (mirrors the server's `seam` field). */
-	readonly seam: {
-		readonly interactions: readonly {
-			readonly extension: string;
-			readonly kinds: readonly string[];
-		}[];
-		readonly ambient: readonly {
-			readonly extension: string;
-			readonly keys: readonly string[];
-		}[];
-	};
-}
+// ─── Contract re-exports (the channel contract — src/server/views.ts) ─────
 
-// ─── Interaction seam wire types (mirror src/harness/interactions.ts) ─────
+import type {
+	MetaResponse,
+	InteractionList as InteractionListWire,
+	InteractionAnswered as InteractionAnsweredWire,
+	AmbientList as AmbientListWire,
+	ConversationSummary,
+	ConversationList,
+	ModelsResponse,
+	SettingsResponse as SettingsWire,
+	SteerField as SteerWire,
+	FileListResponse as FileListResponseWire,
+	FileContentResponse as FileContentResponseWire,
+	UploadResponse as UploadResponseWire,
+	CompactResponse as CompactResponseWire,
+	ConversationCreateResponse as ConversationCreatedWire,
+	SubmissionResponse as SubmissionResponseWire,
+} from "../../src/server/views.js";
 
-/** Lifecycle of one interaction record. */
-export type InteractionStatus =
-	| "pending"
-	| "answered"
-	| "skipped"
-	| "expired"
-	| "cancelled";
+export type {
+	MetaResponse,
+	InteractionWire,
+	InteractionList as InteractionListWire,
+	InteractionAnswered as InteractionAnsweredWire,
+	AmbientWire,
+	AmbientList as AmbientListWire,
+	ConversationSummary,
+	ConversationList,
+	ModelEntry,
+	ModelsResponse,
+	SettingsResponse as SettingsWire,
+	SteerField as SteerWire,
+	FileEntry as FileEntryWire,
+	FileListResponse as FileListResponseWire,
+	FileContentResponse as FileContentResponseWire,
+	UploadResponse as UploadResponseWire,
+	CompactResponse as CompactResponseWire,
+	ConversationCreateResponse as ConversationCreatedWire,
+	SubmissionResponse as SubmissionResponseWire,
+} from "../../src/server/views.js";
 
-/** One choice button. */
-export interface InteractionOptionWire {
-	readonly id: string;
-	readonly label: string;
-	readonly description?: string;
-	readonly tone?: "danger" | "warn" | "ok" | "neutral";
-	readonly recommended?: boolean;
-}
+// The interaction/ambient seam sub-shapes — the seam records ARE the wire
+// (never projected), so their constituent primitives are the contract too.
+// The `*Wire` aliases keep the stable export names the seam renderers use.
+export type {
+	InteractionStatus,
+	InteractionOption as InteractionOptionWire,
+	InteractionField as InteractionFieldWire,
+	InteractionDiff as InteractionDiffWire,
+	InteractionBody as InteractionBodyWire,
+	AmbientMetrics as AmbientMetricsWire,
+	AmbientRow as AmbientRowWire,
+	AmbientLine as AmbientLineWire,
+	AmbientGauge as AmbientGaugeWire,
+	AmbientLedgerEntry as AmbientLedgerEntryWire,
+	AmbientBody as AmbientBodyWire,
+} from "../../src/server/views.js";
 
-/** One light-form field. */
-export interface InteractionFieldWire {
-	readonly name: string;
-	readonly type: "string" | "number" | "boolean" | "secret";
-	readonly label?: string;
-	readonly required?: boolean;
-}
-
-/** The diff primitive. */
-export interface InteractionDiffWire {
-	readonly before: string;
-	readonly after: string;
-	readonly path?: string;
-	readonly lang?: string;
-}
-
-/** The body: only the closed primitives. */
-export interface InteractionBodyWire {
-	readonly text?: string;
-	readonly options?: readonly InteractionOptionWire[];
-	readonly fields?: readonly InteractionFieldWire[];
-	readonly diff?: InteractionDiffWire;
-}
-
-/** One interaction record on the wire (envelope + body + details). */
-export interface InteractionWire {
-	readonly kind: string;
-	readonly callId: string;
-	readonly status: InteractionStatus;
-	readonly createdAt: number;
-	readonly expiresAt?: number;
-	readonly settledAt?: number;
-	readonly answer?: {
-		readonly ids?: readonly string[];
-		readonly values?: Readonly<Record<string, string | number | boolean>>;
-		readonly text?: string;
-	};
-	readonly answeredBy?: "human" | "extension";
-	readonly body?: InteractionBodyWire;
-	readonly details?: unknown;
-}
-
-/** `GET /v1/conversations/:id/interactions`. */
-export interface InteractionListWire {
-	readonly interactions: readonly InteractionWire[];
-}
-
-/** `POST .../interactions/:callId/answer`. */
-export interface InteractionAnsweredWire {
-	readonly callId: string;
-	readonly status: "answered";
-	readonly answer: {
-		readonly ids?: readonly string[];
-		readonly values?: Readonly<Record<string, string | number | boolean>>;
-		readonly text?: string;
-	};
-}
-
-// ─── Ambient seam wire types (mirror src/harness/ambient.ts) ──────────────
-
-export interface AmbientMetricsWire {
-	readonly tokens?: number;
-	readonly cost?: number;
-	readonly current?: number;
-	readonly total?: number;
-	readonly completed?: number;
-	readonly format?: "compact" | "usd" | "percent";
-}
-
-export interface AmbientRowWire {
-	readonly id: string;
-	readonly label: string;
-	readonly status?: string;
-	readonly severity?: 0 | 1 | 2;
-	readonly quiet?: boolean;
-	readonly detail?: string;
-	readonly depth?: number;
-	readonly deps?: readonly string[];
-	readonly spinnerLabel?: string;
-	readonly metrics?: AmbientMetricsWire;
-}
-
-export interface AmbientLineWire {
-	readonly text: string;
-	readonly segments?: readonly {
-		readonly id: string;
-		readonly text: string;
-		readonly place?: "left" | "middle" | "right";
-	}[];
-}
-
-export interface AmbientGaugeWire {
-	readonly label: string;
-	readonly percent?: number;
-	readonly phase?: string;
-	readonly elapsedMs?: number;
-	readonly recentOutput?: readonly string[];
-	readonly checks?: readonly AmbientRowWire[];
-}
-
-export interface AmbientLedgerEntryWire {
-	readonly id: string;
-	readonly at: number;
-	readonly kind: string;
-	readonly summary: string;
-	readonly detail?: readonly string[];
-}
-
-export interface AmbientBodyWire {
-	readonly line?: AmbientLineWire;
-	readonly rows?: readonly AmbientRowWire[];
-	readonly gauge?: AmbientGaugeWire;
-	readonly ledger?: readonly AmbientLedgerEntryWire[];
-}
-
-/** One ambient surface on the wire. */
-export interface AmbientWire {
-	readonly key: string;
-	readonly owner: string;
-	readonly place: "status" | "footer" | "panel";
-	readonly maxRows?: number;
-	readonly overflow?: "drop" | "wrap" | "summarize";
-	readonly refreshMs?: number;
-	readonly expires: "never" | "idle";
-	readonly updatedAt: number;
-	readonly body?: AmbientBodyWire;
-	readonly details?: unknown;
-}
-
-/** `GET /v1/conversations/:id/ambient`. */
-export interface AmbientListWire {
-	readonly ambient: readonly AmbientWire[];
-}
-
-/** One list item of `GET /v1/conversations` (mirrors `ConversationSummary`). */
-export interface ConversationSummary {
-	readonly id: number;
-	readonly root: boolean;
-	readonly entryCount: number;
-}
-
-/** The list response of `GET /v1/conversations`. */
-export interface ConversationList {
-	readonly conversations: readonly ConversationSummary[];
-}
+/** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
+export type QueueModeWire = "all" | "one-at-a-time";
 
 /**
- * The `GET /v1/conversations/:id/meta` payload (mirrors the server's meta
- * serializer). `PATCH /v1/conversations/:id/meta` MERGES a partial of this
- * shape (`{ archived: true }` archives).
+ * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
+ * the key. The server validates per key (unknown key / wrong type → 400
+ * `invalid_field`). `toolRoster` is deliberately OMITTED — it is
+ * server-computed, not a settable key; sending it would 400 (`is not a
+ * settable field`), and the type-level Omit makes that unrepresentable
+ * here.
+ */
+export type SettingsPatchWire = {
+	readonly [K in keyof Omit<SettingsWire, "toolRoster">]?: SettingsWire[K] | null;
+};
+
+/**
+ * The `GET /v1/conversations/:id/meta` payload (the server serves the
+ * `SessionMeta` record from src/server/session-meta.ts verbatim).
+ * `PATCH /v1/conversations/:id/meta` MERGES a partial of this shape
+ * (`{ archived: true }` archives).
  *
- * Mirrors the server's SessionMeta (src/server/session-meta.ts). Corrected in
- * the T23a review: `tagged` is a string array, `draft` is an object (the
- * per-session composer draft), `source` is the `"user" | "cron"` enum — the
- * first draft of this interface had all three wrong, which would have
- * rendered the DEFAULT_META fallback for every live conversation.
+ * Corrected in the T23a review: `tagged` is a string array, `draft` is an
+ * object (the per-session composer draft), `source` is the
+ * `"user" | "cron"` enum — the first draft of this interface had all three
+ * wrong, which would have rendered the DEFAULT_META fallback for every live
+ * conversation.
  */
 export interface ConversationMeta {
 	readonly pinned: boolean;
@@ -250,83 +141,11 @@ export type ConversationMetaPatch = {
 	readonly name?: string | null;
 };
 
-/** One `GET /v1/models` entry (mirrors `ModelEntry`). */
-export interface ModelEntry {
-	readonly id: string;
-	readonly provider: string;
-	readonly modelId: string;
-	readonly name: string;
-	readonly contextWindow: number;
-	readonly maxTokens: number;
-	readonly reasoning: boolean;
-	readonly input: readonly string[];
-	readonly cost: {
-		readonly input: number;
-		readonly output: number;
-		readonly cacheRead: number;
-		readonly cacheWrite: number;
-	};
-}
-
-/** The response of `GET /v1/models`. */
-export interface ModelsResponse {
-	readonly models: readonly ModelEntry[];
-}
-
 /* -------------------------------------------------------------------------
- * Settings wire types (Task 8c) — mirror `SettingsFile` in
- * src/harness/settings.ts: GET /v1/settings serves the effective file
- * (absent file = `{}` — every default), PATCH /v1/settings merges (an
- * explicit null clears a key). Keep in sync by hand, same discipline as
- * the shapes above.
- * ---------------------------------------------------------------------- */
-
-/** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
-export type QueueModeWire = "all" | "one-at-a-time";
-
-/** The `/v1/settings` payload (mirrors `SettingsResponse`: `SettingsFile` + the server-computed roster). */
-export interface SettingsWire {
-	readonly steeringMode?: QueueModeWire;
-	readonly followUpMode?: QueueModeWire;
-	readonly retry?: {
-		readonly enabled?: boolean;
-		readonly maxRetries?: number;
-		readonly baseDelayMs?: number;
-		readonly maxAgentDelayMs?: number;
-	};
-	readonly stream?: {
-		readonly timeoutMs?: number;
-		readonly maxRetries?: number;
-		readonly maxRetryDelayMs?: number;
-	};
-	readonly defaultTools?: readonly string[];
-	readonly perModelThinking?: Readonly<Record<string, string>>;
-	/**
-	 * The live registry's tool names (server-computed per request, never
-	 * persisted): the roster the `defaultTools` checkboxes render over.
-	 * Optional for forward compatibility — a server that omits it falls
-	 * back to the panel's bundled core list.
-	 */
-	readonly toolRoster?: readonly string[];
-}
-
-/**
- * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
- * the key. The server validates per key (unknown key / wrong type → 400
- * `invalid_field`). `toolRoster` is deliberately OMITTED — it is
- * server-computed, not a settable key; sending it would 400 (`is not a
- * settable field`), and the type-level Omit makes that unrepresentable
- * here.
- */
-export type SettingsPatchWire = {
-	readonly [K in keyof Omit<SettingsWire, "toolRoster">]?: SettingsWire[K] | null;
-};
-
-/* -------------------------------------------------------------------------
- * Conversation view stream wire types (Task 21) — same hand-mirror discipline
- * as the shapes above: they mirror the server's view serializer consumed by
- * `GET /v1/conversations/:id/stream` (`snapshot` + `view` frames). Keep in
- * sync by hand; the stream is the §5 full-immutable-revision contract.
+ * Conversation view stream wire types (Task 21): the pi-durable native
+ * view's inner shapes — published over the §5 stream (`snapshot` + `view`
+ * frames; every frame is a FULL immutable revision: replace, never
+ * accumulate) but never named by a sigrun wire type, so declared here.
  * ---------------------------------------------------------------------- */
 
 /** One content block of a message (`{type: "text", text}`, `{type:
@@ -413,7 +232,7 @@ export interface ConversationViewWire {
 	readonly conversation: { readonly id: number };
 	readonly entries: readonly ConversationEntryWire[];
 	readonly docs: Readonly<Record<string, unknown>>;
-	readonly steer: { readonly busy: boolean; readonly queued: number };
+	readonly steer: SteerWire;
 }
 
 /** One live tool slot of `docs["pi.live"]` (the LiveState tools list). */
@@ -424,10 +243,6 @@ export interface ToolSlotWire {
 	readonly output?: string;
 }
 
-/**
- * The `docs["pi.live"]` LiveState doc, narrowed to what the webui reads
- * (`run`/`generation`/`compactions` are consumed by later tasks).
- */
 /**
  * The `docs["pi.live"]` LiveState doc, narrowed to what the webui reads.
  * Shape per pi-durable dist/harness/live.d.ts: `run` (present exactly while
@@ -443,60 +258,6 @@ export interface LiveDocWire {
 	readonly tools?: readonly ToolSlotWire[];
 	readonly compactions?: readonly unknown[];
 	readonly compactionFailure?: { readonly error?: unknown };
-}
-
-
-/** One `GET /v1/conversations/:id/files` entry (mirrors `FileEntry`). */
-export interface FileEntryWire {
-	readonly name: string;
-	readonly path: string;
-	readonly kind: "file" | "directory" | "symlink";
-	readonly size: number;
-	readonly mtimeMs: number;
-}
-
-/** The list response of `GET /v1/conversations/:id/files` (mirrors `FileListResponse`). */
-export interface FileListResponseWire {
-	readonly entries: readonly FileEntryWire[];
-}
-
-/**
- * The read response of `GET /v1/conversations/:id/files/content` (mirrors
- * `FileContentResponse`): `"text"` when the bytes are strictly valid UTF-8,
- * else `"base64"`. `size` is the byte length; the server caps reads at 1 MiB
- * (413 `file_too_large` over the cap).
- */
-export interface FileContentResponseWire {
-	readonly encoding: "text" | "base64";
-	readonly content: string;
-	readonly size: number;
-}
-
-/** The response of `POST /v1/conversations/:id/uploads` (mirrors `UploadResponse`). */
-export interface UploadResponseWire {
-	/** The workspace-relative path a submission content part consumes. */
-	readonly path: string;
-}
-
-/**
- * The admit response of `POST /v1/conversations/:id/compact` (manual
- * compaction): the durable task's id. The task is conversation-owned — it
- * compacts even when idle — and its `pi.compaction` summary entry lands as
- * a view revision (the SSE stream carries it).
- */
-export interface CompactResponseWire {
-	readonly taskId: number;
-}
-
-/**
- * The create-family response (`POST /v1/conversations`, `.../fork`,
- * `/v1/conversations/import` — mirrors `ConversationCreateResponse`): the
- * new conversation id plus its first view frame. `root`/`entryCount` are
- * list-projections the create routes never send, so this is its own shape.
- */
-export interface ConversationCreatedWire {
-	readonly id: number;
-	readonly view: ConversationViewWire;
 }
 
 /** One `GET /v1/commands` entry (mirrors `SlashCommand` in src/server/commands.ts). */
@@ -539,22 +300,6 @@ export interface SubmissionInputPart {
 	readonly text?: string;
 	readonly path?: string;
 	readonly mime?: string;
-}
-
-/**
- * The settled submission record returned by `POST
- * /v1/conversations/:id/submissions` (the server waits for settlement
- * server-side in v1 — mirrors `SubmissionResponse` in
- * src/server/views.ts).
- */
-export interface SubmissionResponseWire {
-	readonly id: number;
-	readonly conversationId: number;
-	readonly type: string;
-	readonly status: string;
-	readonly entry?: number;
-	readonly answer?: number;
-	readonly reason?: string;
 }
 
 /** `submit` options (spec §5: `requestId` idempotence; T23b's steer). */
