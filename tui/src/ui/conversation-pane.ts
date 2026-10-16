@@ -245,8 +245,10 @@ export class ConversationPane implements Component {
 	 * this on every conversation swap so a stale error never renders in
 	 * the new conversation. The notice ROWS are dropped immediately too
 	 * (fix wave A6): a swap is the discarding moment, and the new
-	 * conversation's fresh snapshot may not land for a beat — the old
-	 * conversation's entries (without its notices) render in between.
+	 * conversation's fresh snapshot may not land for a beat — the swap
+	 * installs an empty view of the target conversation (id, no entries)
+	 * so the pane shows a clean, correctly-addressed blank until its
+	 * snapshot arrives.
 	 */
 	clearNotices(): void {
 		if (this.#notices.length === 0) return;

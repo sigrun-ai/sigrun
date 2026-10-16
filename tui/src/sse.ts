@@ -16,9 +16,11 @@
  * Transport failures close the reader and reconnect with exponential
  * backoff (base 250ms doubling, capped at 4s, ±30% jitter). Reconnects
  * give up after 10 consecutive failures with ONE final `onError`; the
- * counter resets on every successful open and at watch start. One failed
- * connection emits at most one transport `onError` (a read failure and
- * the ensuing close are the same failure). A malformed frame reports
+ * counter resets on every successful open and at watch start. Transport
+ * failures (read error, mid-stream close) emit at most one `onError` per
+ * connection (a read failure and the ensuing close are the same failure);
+ * a non-OK status on (re)connect reports per attempt — it never opens a
+ * connection. A malformed frame reports
  * `onError` and the stream STAYS OPEN — one bad frame must never kill the
  * transport.
  */
