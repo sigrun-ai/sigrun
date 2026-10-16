@@ -15,8 +15,11 @@
  * {@link TuiApp.handleKeybinding}; ctrl+a is the editor's cursorLineStart,
  * so the prompt uses ctrl+o). Digits 1-9 pick options — single-choice
  * answers immediately; multi (`details.multi`) toggles and enter submits
- * the accumulated set; esc exits. The answer POSTs through the ONE generic
- * route (`answerInteraction`); the record clears when the next list poll
+ * the accumulated set; esc exits. Answer mode PINS the record it was
+ * armed on: if a poll replaces the top of the stack before the user keys
+ * an answer, the mode exits instead of answering a record the user never
+ * saw. The answer POSTs through the ONE generic route
+ * (`answerInteraction`); the record clears when the next list poll
  * reflects the settle (the server drops answered records from pending).
  *
  * Medium limits (the parity rule's documented exceptions):
@@ -63,6 +66,14 @@ export class InteractionPrompter implements Component {
 	#gen = 0;
 	#pending: readonly InteractionWire[] = [];
 	#answerMode = false;
+	/**
+	 * The record answer mode is ARMED ON. Pinned at beginAnswer: a poll can
+	 * replace the top of the stack at any time (the record settled via the
+	 * webui, the extension resolved it, it expired), and a digit keyed for
+	 * the prompt the user READ must never answer the prompt that replaced
+	 * it. Any top-identity change exits answer mode instead.
+	 */
+	#answerCallId: string | undefined;
 	/** The multi-select working set (option ids), pre-seeded recommended. */
 	#selected: ReadonlySet<string> = new Set();
 	#timer: ReturnType<typeof setInterval> | undefined;
@@ -121,6 +132,14 @@ export class InteractionPrompter implements Component {
 	}
 
 	/**
+	 * kick(), awaited. Production polls are fire-and-forget; tests need to
+	 * await the poll's settle to assert the state after it.
+	 */
+	async kickAndWait(): Promise<void> {
+		await this.#refresh();
+	}
+
+	/**
 	 * Enter answer mode — only when the top pending item is option-
 	 * answerable. Returns whether the mode was entered (the caller consumes
 	 * the key only then).
@@ -130,6 +149,8 @@ export class InteractionPrompter implements Component {
 		const options = top?.body?.options ?? [];
 		if (top === undefined || options.length === 0) return false;
 		this.#answerMode = true;
+		// Pin the target: keys answer THIS record or nothing.
+		this.#answerCallId = top.callId;
 		// The webui's pre-selection rule: recommended options start selected.
 		this.#selected = new Set(
 			options.filter((o) => o.recommended === true).map((o) => o.id),
@@ -147,7 +168,15 @@ export class InteractionPrompter implements Component {
 		const top = this.#pending[0];
 		const options = top?.body?.options ?? [];
 		if (!this.#answerMode || top === undefined || options.length === 0) {
-			this.#answerMode = false;
+			this.#exitAnswer();
+			return false;
+		}
+		// Target-pin check: if a poll replaced the armed record, the keys
+		// the user is pressing belong to a prompt they never saw — exit
+		// answer mode and let the key pass through unanswered.
+		if (this.#answerCallId !== top.callId) {
+			this.#exitAnswer();
+			this.#changed();
 			return false;
 		}
 		if (matchesKey(data, Key.escape)) {
@@ -189,6 +218,9 @@ export class InteractionPrompter implements Component {
 	#submit(record: InteractionWire, ids: readonly string[]): void {
 		const id = this.#conversationId;
 		if (id === undefined) return;
+		// Belt to the handleKey pin check: never POST for a record the
+		// answer keys were not armed on.
+		if (this.#answerCallId !== record.callId) return;
 		this.#exitAnswer();
 		this.#changed();
 		const answer: InteractionAnswerInput = { ids };
@@ -205,6 +237,7 @@ export class InteractionPrompter implements Component {
 
 	#exitAnswer(): void {
 		this.#answerMode = false;
+		this.#answerCallId = undefined;
 		this.#selected = new Set();
 	}
 
@@ -233,7 +266,17 @@ export class InteractionPrompter implements Component {
 				this.#pending = list.interactions.filter(
 					(record) => record.status === "pending",
 				);
-				if (this.#pending.length === 0) this.#exitAnswer();
+				// The armed record left the top of the stack (settled via
+				// another channel, resolved by its extension, expired — or
+				// simply reordered): the user's armed keys belong to a prompt
+				// they are no longer looking at. Exit answer mode rather than
+				// risk answering a record they never saw.
+				if (
+					this.#answerMode &&
+					this.#pending[0]?.callId !== this.#answerCallId
+				) {
+					this.#exitAnswer();
+				}
 				this.#changed();
 			} while (this.#queued && gen === this.#gen);
 		} finally {
