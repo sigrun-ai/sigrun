@@ -391,3 +391,10 @@ export interface AuthCheckProvider {
 export interface AuthCheckResponse {
 	readonly providers: readonly AuthCheckProvider[];
 }
+
+// ─── Sibling leaf re-exports ──────────────────────────────────────────────
+// The slash-command catalog and session-meta wire shapes live in their own
+// leaf modules; re-exported here (type-only, erased at compile) so this
+// module is the single contract entry point for every §5 wire shape.
+export type { CommandsResponse, SlashCommand } from "./commands.js";
+export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";

@@ -60,7 +60,7 @@ const COMMANDS = [
 
 function makeHarness(init?: {
 	readonly draftText?: string;
-	readonly draftAttachments?: readonly string[];
+	readonly draftAttachments?: string[];
 	readonly models?: readonly ModelEntry[];
 }) {
 	const calls: { input: string; method?: string; body?: string }[] = [];

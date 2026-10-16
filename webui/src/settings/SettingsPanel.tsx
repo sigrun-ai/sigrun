@@ -24,9 +24,10 @@
  *   `AgentChange.modelTools`, NOT the enabled filter). All-checked clears
  *   the filter (absent key = every installed tool); NONE-checked also
  *   clears it — the filter hides listed tools and can never disable them
- *   all, so the fieldset carries a note saying so. A server that omits
- *   `toolRoster` falls back to the bundled CORE_TOOLS list (forward
- *   compat with older servers).
+ *   all, so the fieldset carries a note saying so. `toolRoster` is a
+ *   required contract field; the bundled CORE_TOOLS fallback below is
+ *   defensive only (a mid-deploy shape drift renders the core list
+ *   instead of an empty fieldset).
  * - Interface (client prefs): `enterToSend` and `showThinking` — applied
  *   the moment their checkbox flips (no save step; they live in
  *   localStorage via the app-owned {@link PrefsState}).
@@ -54,8 +55,9 @@ type Section = (typeof SECTIONS)[number];
 
 /**
  * The fallback `defaultTools` roster: the core tool names, used only when
- * the server omits `toolRoster` (an older server, or a transient shape
- * change) — the panel stays usable instead of rendering an empty fieldset.
+ * a response omits `toolRoster` (defensive — the contract declares it
+ * required) — the panel stays usable instead of rendering an empty
+ * fieldset.
  */
 export const CORE_TOOLS = [
 	"read",

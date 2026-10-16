@@ -16,7 +16,7 @@ import { createClient, type ConversationMeta, type FetchLike } from "../api";
 import { renderAsync, textContent } from "../test-utils";
 import { useDraft, type UseDraftResult } from "./useDraft";
 
-function metaWithDraft(text: string, attachments: readonly string[] = []): ConversationMeta {
+function metaWithDraft(text: string, attachments: string[] = []): ConversationMeta {
 	return {
 		pinned: false,
 		tagged: [],

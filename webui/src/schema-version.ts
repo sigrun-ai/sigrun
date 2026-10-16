@@ -11,8 +11,9 @@
  * THE SYNC MECHANISM: the pin is a hard-coded literal. Importing the
  * server's runtime constant would pin the client to whatever the BUILD
  * machine resolved — the point is a fixed pin a drift guard compares the
- * server against, so the value stays a literal by design. The ROOT test `test/webui-schema-pin.test.ts`
- * reads this file, extracts the literal, and asserts it equals the server's
+ * server against, so the value stays a literal by design. The ROOT test
+ * `test/webui-schema-pin.test.ts` reads this file, extracts the literal,
+ * and asserts it equals the server's
  * computed SCHEMA_VERSION — schema-fixture drift fails the root suite
  * loudly, and the fix is to re-pin this constant and rebuild the bundle.
  * Keep the value a bare 64-hex literal on the `=` line so the guard's regex
