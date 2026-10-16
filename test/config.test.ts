@@ -19,13 +19,14 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { join } from "node:path";
 import {
 	DEFAULT_COMPACTION,
 	DEFAULT_EXTENSIONS_DIR,
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
-	DEFAULT_STORAGE_PATH,
 	DEFAULT_WORKSPACE_PATH,
+	STORAGE_FILE_NAME,
 	loadConfig,
 	parseBackupConfig,
 	resolvedServerSection,
@@ -122,10 +123,12 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		expect(mixed.workspace.path).toBe("/srv/workspace");
 		expect(mixed.extensionsDir).toBe("/srv/extensions");
 
-		// No file: the code defaults (the pre-file behavior, unchanged).
+		// No file: the code defaults (the pre-file behavior, unchanged) —
+		// except storagePath, whose default moved under the data root
+		// (Task 6's clean break; see test/config-store-dirs.test.ts).
 		const bare = loadConfig({ ...MODEL_ENV });
 		expect(bare.port).toBe(DEFAULT_PORT);
-		expect(bare.storagePath).toBe(DEFAULT_STORAGE_PATH);
+		expect(bare.storagePath).toBe(join(bare.dataDir, STORAGE_FILE_NAME));
 		expect(bare.workspace.path).toBe(DEFAULT_WORKSPACE_PATH);
 		expect(bare.extensionsDir).toBe(DEFAULT_EXTENSIONS_DIR);
 	});
@@ -339,14 +342,18 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 	});
 });
 
-describe("resolvedServerSection (the bootstrap projection)", () => {
+	describe("resolvedServerSection (the bootstrap projection)", () => {
 	test("includes the defaults (the file records the full effective section)", () => {
-		const section = resolvedServerSection(loadConfig({ ...MODEL_ENV }));
+		const config = loadConfig({ ...MODEL_ENV });
+		const section = resolvedServerSection(config);
 		expect(section).toEqual({
 			port: DEFAULT_PORT,
 			workspacePath: DEFAULT_WORKSPACE_PATH,
-			storagePath: DEFAULT_STORAGE_PATH,
+			storagePath: join(config.dataDir, STORAGE_FILE_NAME),
 			extensionsDir: DEFAULT_EXTENSIONS_DIR,
+			dataDir: config.dataDir,
+			cacheDir: config.cacheDir,
+			stateDir: config.stateDir,
 			webuiBundle: "webui/dist",
 			compaction: { ...DEFAULT_COMPACTION },
 			memorySeam: { ...DEFAULT_MEMORY_SEAM },

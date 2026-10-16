@@ -41,7 +41,12 @@ import {
 import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
-import { ensureStoreRoots, resolveStoreRoots, sharedExtensionStores } from "./stores.js";
+import {
+	ensureStoreRoots,
+	resolveStoreRoots,
+	sharedExtensionStores,
+	type StoreRoots,
+} from "./stores.js";
 import {
 	createWorkspaceService,
 	defaultWorkspacePrefs,
@@ -292,7 +297,22 @@ export async function openHarness(
 	// `ensureCacheDir`). The ONE resolved roots object threads on from
 	// here: the extension-stores handle (the seam host's `stores`) is
 	// built from it below — never re-resolved from env.
-	const roots = resolveStoreRoots(env);
+	//
+	// Task 6: config owns the data/cache/state resolution — it folded the
+	// `SIGRUN_*_DIR` envs over the file's `server.*Dir` over the resolver
+	// chain ONCE, and `SigrunConfig` carries the result — so boot takes
+	// those three from the config (resolution-once; a hand-built config
+	// stays authoritative over a stale injected `env`). Only the CONFIG
+	// root still resolves here from env: `SIGRUN_CONFIG_DIR` keeps its
+	// own meaning (the settings file's own location) and is deliberately
+	// not a `SigrunConfig` field. The stores layer stays env-param pure —
+	// this is the one place the two worlds meet.
+	const roots: StoreRoots = {
+		...resolveStoreRoots(env),
+		dataDir: config.dataDir,
+		cacheDir: config.cacheDir,
+		stateDir: config.stateDir,
+	};
 	await ensureStoreRoots(roots);
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();

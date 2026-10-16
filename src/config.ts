@@ -1,5 +1,7 @@
 import type { CompactionPolicy } from "@earendil-works/pi-durable";
+import { isAbsolute, join } from "node:path";
 import type { SettingsFile, ServerSettings } from "./harness/settings.js";
+import { resolveStoreRoots } from "./harness/stores.js";
 
 /**
  * Sigrun configuration.
@@ -72,6 +74,21 @@ export interface MemorySeamConfig {
 }
 
 export interface SigrunConfig {
+	/**
+	 * The resolved store roots (extension-config-surfaces spec §4): the
+	 * data, cache, and state directories, resolved once here through the
+	 * one `resolveStoreRoots` chain (`SIGRUN_{DATA,CACHE,STATE}_DIR` over
+	 * `$XDG_{DATA,CACHE,STATE}_HOME`/sigrun over the `~`-based spec
+	 * defaults) with the file's `server.{dataDir,cacheDir,stateDir}`
+	 * sitting between env and the default, exactly like
+	 * {@link SigrunConfig.storagePath}'s precedence. The CONFIG root is
+	 * deliberately absent here: `SIGRUN_CONFIG_DIR` keeps its existing
+	 * meaning (the settings file's own location), resolved by its own
+	 * call sites — this config must never rewire it.
+	 */
+	dataDir: string;
+	cacheDir: string;
+	stateDir: string;
 	storagePath: string;
 	models: SigrunModels;
 	extensionsDir: string;
@@ -127,7 +144,14 @@ export interface SigrunConfig {
 /** The provider id used when the model spec carries no `provider/` prefix. */
 export const DEFAULT_PROVIDER = "openai";
 
-export const DEFAULT_STORAGE_PATH = "data/sigrun.db";
+/**
+ * The SQLite DB file name under the resolved data root (the file itself
+ * is `<dataDir>/<this>`; the old cwd-relative `"data/sigrun.db"` default
+ * is RETIRED — the clean break, no migration machinery: only test DBs
+ * ever lived at the old default, and chart/compose deploys pin absolute
+ * `SIGRUN_STORAGE_PATH` values that stay verbatim).
+ */
+export const STORAGE_FILE_NAME = "sigrun.db";
 export const DEFAULT_EXTENSIONS_DIR = "extensions";
 export const DEFAULT_PORT = 3000;
 /** Spec §4.5: core ships `{ defaultWorkspace: { type: "local", path: "/home/sigrun" } }`. */
@@ -423,6 +447,9 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		workspacePath: config.workspace.path,
 		storagePath: config.storagePath,
 		extensionsDir: config.extensionsDir,
+		dataDir: config.dataDir,
+		cacheDir: config.cacheDir,
+		stateDir: config.stateDir,
 		webuiBundle: config.webuiBundle,
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
@@ -476,8 +503,37 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 
 	const envWebui = env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined;
 	const fileWebui = server?.webuiBundle;
+	// The store roots (Task 6): the ONE resolution chain, applied per root
+	// with the file's `server.*Dir` sitting between the env var and the
+	// tier default — the same precedence shape as every other `server.*`
+	// mirror. An env-or-file value wins VERBATIM (no suffix, no `~`
+	// expansion); the fallback runs Task 1's resolver over the env. Env
+	// `""` counts as unset (the stores module's own reading).
+	const resolvedRoots = resolveStoreRoots(env);
+	const rootDir = (kind: "data" | "cache" | "state"): string =>
+		env[`SIGRUN_${kind.toUpperCase()}_DIR`] ||
+		server?.[`${kind}Dir`] ||
+		resolvedRoots[`${kind}Dir`];
+	const dataDir = rootDir("data");
+	const cacheDir = rootDir("cache");
+	const stateDir = rootDir("state");
+	// The DB default under the data root (clean break): a configured
+	// `SIGRUN_STORAGE_PATH` (or the file's `server.storagePath`) — env over
+	// file, `""`-means-unset — joins the DATA root when relative (the old
+	// cwd-relative reading is retired); absolute values stay verbatim.
+	const configuredStorage =
+		env.SIGRUN_STORAGE_PATH || server?.storagePath || undefined;
+	const storagePath =
+		configuredStorage === undefined
+			? join(dataDir, STORAGE_FILE_NAME)
+			: isAbsolute(configuredStorage)
+				? configuredStorage
+				: join(dataDir, configuredStorage);
 	return {
-		storagePath: env.SIGRUN_STORAGE_PATH || server?.storagePath || DEFAULT_STORAGE_PATH,
+		dataDir,
+		cacheDir,
+		stateDir,
+		storagePath,
 		models,
 		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array

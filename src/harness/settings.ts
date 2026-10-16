@@ -110,6 +110,17 @@ export interface ServerSettings {
 	/** `SIGRUN_EXTENSIONS_DIR` — a non-empty path. */
 	readonly extensionsDir?: string;
 	/**
+	 * `SIGRUN_DATA_DIR` — a non-empty path. Applied where the env var is
+	 * absent; the env-or-file value wins VERBATIM (no `/sigrun` suffix),
+	 * exactly like the stores resolver's explicit tier. The DB default
+	 * and relative `SIGRUN_STORAGE_PATH` values resolve under this root.
+	 */
+	readonly dataDir?: string;
+	/** `SIGRUN_CACHE_DIR` — a non-empty path, verbatim (see `dataDir`). */
+	readonly cacheDir?: string;
+	/** `SIGRUN_STATE_DIR` — a non-empty path, verbatim (see `dataDir`). */
+	readonly stateDir?: string;
+	/**
 	 * `SIGRUN_WEBUI_BUNDLE` — a non-empty path. Relative paths resolve
 	 * against the process cwd, like the env var. A present value counts as
 	 * an EXPLICIT bundle (missing `index.html` is a boot error), exactly
@@ -471,6 +482,9 @@ function validateServer(server: unknown): void {
 		"workspacePath",
 		"storagePath",
 		"extensionsDir",
+		"dataDir",
+		"cacheDir",
+		"stateDir",
 		"webuiBundle",
 		"compaction",
 		"memorySeam",
@@ -479,7 +493,7 @@ function validateServer(server: unknown): void {
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
 		throw new SettingsValidationError("server.port", "must be a positive integer");
 	}
-	for (const key of ["workspacePath", "storagePath", "extensionsDir", "webuiBundle"]) {
+	for (const key of ["workspacePath", "storagePath", "extensionsDir", "dataDir", "cacheDir", "stateDir", "webuiBundle"]) {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
 		}
