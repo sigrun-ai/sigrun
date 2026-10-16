@@ -8,6 +8,9 @@ Guidance for coding agents working in this repository.
   surface, `src/harness/` = pi-durable wiring, `src/server/` = HTTP routes).
 - `webui/` — npm workspace package (`@sigrun/webui`, vite + react). Built
   bundle lands at `webui/dist` (the default `server.webuiBundle`).
+- `tui/` — npm workspace package (`@sigrun/tui`, pi-tui terminal client).
+  Its wire types are imported directly from `src/server/` (NodeNext — no
+  codegen or mirrored schemas).
 - `charts/sigrun/` — the Helm chart (reference k8s deploy).
 - `docker/` — compose reference. `Dockerfile` — image build.
 - `docs/superpowers/` — internal specs/plans/audits (agent-session artifacts,
@@ -17,13 +20,16 @@ Guidance for coding agents working in this repository.
 ## Run and test
 
 ```sh
-npm install            # workspaces: root + webui
-npm test               # vitest (src suites)
+npm install            # workspaces: root + webui + tui
+npm test               # vitest (src suites; the webui and tui workspaces
+                       # run their OWN suites, excluded from the root run)
 npm run typecheck      # tsc --noEmit (root)
 npm run typecheck:webui
 npm run build:webui    # vite build -> webui/dist
 npm run test:e2e       # builds webui, then playwright
-npm start              # tsx src/index.ts
+npm --workspace @sigrun/tui run test       # tui suite (vitest)
+npm --workspace @sigrun/tui run typecheck
+npm start              # tsx src/index.ts (== `sigrun serve`)
 ```
 
 ## Conventions
@@ -34,7 +40,8 @@ npm start              # tsx src/index.ts
   built `dist/` for that shape. This core repo runs from `src/` via tsx —
   it does NOT commit `dist/`.
 - **Verification before completion**: run `npm test` + `npm run typecheck`
-  before claiming done; the webui adds `build:webui` when its source moved.
+  before claiming done; the webui adds `build:webui` when its source moved,
+  the tui adds its workspace test + typecheck when `tui/` moved.
 - **Private artifacts**: never commit real hostnames, tokens, or session
   transcripts. `docs/private.md` and `.env` stay untracked by design.
 - Tests own their literals: fixtures use synthetic hosts (`.example`,
