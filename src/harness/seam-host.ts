@@ -1,7 +1,10 @@
 /**
  * The host context (spec: docs/approval-ux-seams.md, "What this asks of
  * core"): the object sigrun hands an extension factory so the extension can
- * use the interaction/ambient seams without importing anything from core.
+ * use the interaction/ambient seams — and its scoped extension-stores
+ * handle (`stores`: secrets/settings get/set on its own section/file plus
+ * its own raw data/cache/state paths) — without importing anything from
+ * core.
  *
  * Factories run BEFORE `Harness.open` (spec §3 boot order), so the context
  * binds the harness lazily: boot assigns `bindHarness` right after open,
@@ -34,6 +37,11 @@ import {
 	type InteractionAnswer,
 	type InteractionRecord,
 } from "./interactions.js";
+import {
+	scopedExtensionStores,
+	type ExtensionStores,
+	type SharedExtensionStores,
+} from "./stores.js";
 
 /** One seam violation. Name carries the surface ("interaction"/"ambient"). */
 export class SeamError extends Error {
@@ -61,13 +69,23 @@ export interface DeclaredKinds {
 /** The seam surface handed to extension factories. */
 export interface SeamHost {
 	/**
+	 * The scoped extension-stores handle (spec §5): secrets/settings
+	 * get/set on THIS extension's section/file (server-mediated, no
+	 * paths) plus this slug's raw data/cache/state directories. Rebuilt
+	 * by `rekey` when identity changes — always keyed on the CURRENT
+	 * slug. Cheap at construction; the cache dir is created lazily on
+	 * first `paths.cache` access, never at boot.
+	 */
+	readonly stores: ExtensionStores;
+	/**
 	 * Boot-owned two-phase re-key (the loader calls the host factory once
 	 * with a `""` identity stub before the extension name/kinds are known,
-	 * then again after the factory result resolves): mutates identity and
-	 * kind sets IN PLACE so the object the extension factory captured IS
-	 * the final host — a second instance would orphan every inbound handler
-	 * the factory registered on its captured host (review M2). Extensions
-	 * never call this; it is not part of the extension-facing surface.
+	 * then again after the factory result resolves): mutates identity,
+	 * kind sets, AND the scoped stores view IN PLACE so the object the
+	 * extension factory captured IS the final host — a second instance
+	 * would orphan every inbound handler the factory registered on its
+	 * captured host (review M2). Extensions never call this; it is not
+	 * part of the extension-facing surface.
 	 */
 	rekey(identity: HostIdentity, kinds: DeclaredKinds): void;
 	/**
@@ -130,7 +148,9 @@ export interface SeamHost {
  * Build the seam host for one extension. `kinds` gates writes: a record
  * whose `kind`/`key` the extension never declared is rejected — the
  * declaration is what channels use to inventory capabilities, so an
- * undeclared write would silently falsify it.
+ * undeclared write would silently falsify it. `sharedStores` is the
+ * boot-built store trio (one per boot, from the resolved roots); the
+ * host scopes it to its identity's slug — `rekey` re-scopes in place.
  */
 export function createSeamHost(
 	identity: HostIdentity,
@@ -141,9 +161,16 @@ export function createSeamHost(
 		/** Resolve the harness or wait for it (bounded by the caller's context). */
 		readonly harness: () => Promise<Harness>;
 	},
+	sharedStores: SharedExtensionStores,
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
 	const ambientKinds = new Set(kinds.ambient ?? []);
+	// The scoped stores view, keyed on the CURRENT identity — the same
+	// closed-over `let` pattern as `identity` itself: rekey re-points it
+	// and the `stores` getter below reads through the closure, so the
+	// factory-captured host object re-scopes IN PLACE (never a second
+	// host, never a stale view).
+	let stores = scopedExtensionStores(sharedStores, identity.name);
 
 	async function harness(context: Context): Promise<Harness> {
 		const h = await bind.harness();
@@ -154,11 +181,17 @@ export function createSeamHost(
 	}
 
 	return {
+		get stores() {
+			return stores;
+		},
+
 		rekey(nextIdentity, nextKinds) {
 			// In place, by design: the factory already captured THIS object, so
 			// the reassign below is visible to every closure reading it and no
-			// second host instance ever exists.
+			// second host instance ever exists. The stores view re-points to the
+			// rekeyed slug the same way — same host object, corrected scope.
 			identity = nextIdentity;
+			stores = scopedExtensionStores(sharedStores, nextIdentity.name);
 			interactionKinds.clear();
 			for (const kind of nextKinds.interaction ?? []) interactionKinds.add(kind);
 			ambientKinds.clear();
