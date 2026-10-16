@@ -18,7 +18,7 @@ import { defineExtension, section } from "@earendil-works/pi-durable";
 export default function createFixtureMemory() {
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-memory-degraded",
+			name: "sigrun-fixture-memory-degraded",
 			sections: [section("long-term-memory", () => "fixture memory section")],
 		}),
 		health: () => "degraded",

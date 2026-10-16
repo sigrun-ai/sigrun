@@ -71,7 +71,7 @@ function recordLifecycle(handler, event) {
 export default function createFixtureMemoryEvents(host) {
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-memory-events",
+			name: "sigrun-fixture-memory-events",
 		}),
 		// Declared so the shutdown handler's ambient commit passes the host's
 		// write gate (the loader validates the arrays; the host enforces them).

@@ -105,7 +105,7 @@ test.describe("item 4: approvals (the interaction seam)", () => {
 		page,
 	}) => {
 		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
-		const host = server.opened.seamHosts.get("sigrun.fixture-visual");
+		const host = server.opened.seamHosts.get("sigrun-fixture-visual");
 		if (host === undefined) throw new Error("seam host missing");
 		// Two warden-style confirm records, keyed to the ship-gate script.
 		await host.seedInteraction(

@@ -112,14 +112,14 @@ test("a valid fixture extension installs through the loader", async () => {
 		});
 		try {
 			const snapshot = opened.registry.snapshot();
-			expect(snapshot.extension("sigrun.fixture-ext")).toBeDefined();
+			expect(snapshot.extension("sigrun-fixture-ext")).toBeDefined();
 			expect(
 				snapshot.tools().some(
 					(entry) => entry.tool.name === "fixture_marker",
 				),
 			).toBe(true);
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-ext", status: "ok" },
+				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
@@ -141,7 +141,7 @@ test("a failing specifier is quarantined; the valid one still installs", async (
 		});
 		try {
 			// Boot succeeded: Harness.open returned.
-			expect(opened.registry.snapshot().extension("sigrun.fixture-ext")).toBeDefined();
+			expect(opened.registry.snapshot().extension("sigrun-fixture-ext")).toBeDefined();
 			const quarantined = opened.extensionOutcomes.filter(
 				(outcome) => outcome.status === "quarantined",
 			);
@@ -152,7 +152,7 @@ test("a failing specifier is quarantined; the valid one still installs", async (
 			expect(quarantined[0]?.error).toBeTruthy();
 			expect(opened.extensionOutcomes).toHaveLength(2);
 			expect(opened.extensionOutcomes[1]).toEqual({
-				name: "sigrun.fixture-ext",
+				name: "sigrun-fixture-ext",
 				status: "ok",
 			});
 		} finally {
@@ -199,8 +199,8 @@ test("two extensions registering the same tool name: console.warn names the pair
 		try {
 			// Both extensions installed (quarantine is for load failures, not collisions).
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-ext", status: "ok" },
-				{ name: "sigrun.fixture-ext-collision", status: "ok" },
+				{ name: "sigrun-fixture-ext", status: "ok" },
+				{ name: "sigrun-fixture-ext-collision", status: "ok" },
 			]);
 			// The warning names BOTH extension names and the colliding tool name.
 			const warnings = warn.mock.calls.map((call) => String(call[0]));
@@ -208,8 +208,8 @@ test("two extensions registering the same tool name: console.warn names the pair
 				text.includes("fixture_marker"),
 			);
 			expect(collisionWarning).toBeDefined();
-			expect(collisionWarning).toContain("sigrun.fixture-ext");
-			expect(collisionWarning).toContain("sigrun.fixture-ext-collision");
+			expect(collisionWarning).toContain("sigrun-fixture-ext");
+			expect(collisionWarning).toContain("sigrun-fixture-ext-collision");
 			// And it states the resolution semantics (pi-durable's, unchanged).
 			expect(collisionWarning).toContain("last");
 			// No duplicate warning for the non-colliding installs.
@@ -233,7 +233,7 @@ test("no collision: distinct tool names install silently", async () => {
 		});
 		try {
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-ext", status: "ok" },
+				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
 			expect(
 				warn.mock.calls.some((call) =>
@@ -260,7 +260,7 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 		});
 		try {
 			const snapshot = opened.registry.snapshot();
-			expect(snapshot.extension("sigrun.memory")).toBeDefined();
+			expect(snapshot.extension("sigrun-memory")).toBeDefined();
 			expect(
 				snapshot.tools().some((entry) => entry.tool.name === "memory_recall"),
 			).toBe(true);
@@ -278,7 +278,7 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 					.filter((entry) => entry.section.key === "long-term-memory"),
 			).toHaveLength(1);
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.memory", status: "ok" },
+				{ name: "sigrun-memory", status: "ok" },
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
@@ -303,7 +303,7 @@ test("a zero-arg factory is invoked with NO arguments (no host leak into default
 		});
 		try {
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-zeroarg", status: "ok" },
+				{ name: "sigrun-fixture-zeroarg", status: "ok" },
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
@@ -330,7 +330,7 @@ test("the factory-captured host is the final host (re-key mutates in place)", as
 			});
 			const captured = (globalThis as { __fixtureSeamHost?: unknown })
 				.__fixtureSeamHost;
-			const booted = opened.seamHosts.get("sigrun.fixture-seam");
+			const booted = opened.seamHosts.get("sigrun-fixture-seam");
 			expect(booted).toBeDefined();
 			expect(captured).toBeDefined();
 			expect(captured).toBe(booted);

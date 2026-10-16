@@ -12,6 +12,15 @@
  * via the outcome list (which `GET /v1/meta`, Task 9, surfaces as
  * `extensions[].status`), and boot continues — the loader never throws.
  *
+ * Extension IDENTITY is the slug (spec §6): each resolved extension's
+ * declared name is sanitized ONCE at load (`slugifyName`,
+ * src/harness/stores.ts) and the slug replaces the name for everything
+ * downstream — the registry key, the seam host's identity, interaction/
+ * ambient records, worker names, and health correlation. A declared name
+ * that sanitizes to an empty slug, or a slug already claimed by another
+ * loaded extension this boot, fails the LOAD (quarantine naming the
+ * declared name(s)) — never the first store use mid-run.
+ *
  * The sigrun extension-package contract: a package's default export is a
  * factory returning an object with an `extension: Extension` field, plus an
  * optional §3 `health` producer (spec §3 — the memory-backend form; Task
@@ -52,17 +61,17 @@ import type {
 } from "@earendil-works/pi-durable";
 import type {
 	ExtensionEventHandlers,
-	ExtensionLifecycleHandler,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { DeclaredKinds } from "./seam-host.js";
 import { resolveExtensionEntry } from "./packages.js";
+import { slugifyName } from "./stores.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
 export interface ExtensionOutcome {
-	/** The extension name on success; the specifier on quarantine. */
+	/** The extension's slug identity on success; the specifier on quarantine. */
 	readonly name: string;
 	readonly status: "ok" | "quarantined";
 	/** The failure message; present only when `status === "quarantined"`. */
@@ -573,6 +582,9 @@ const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
+// Slug → declared name, for collision rejection at load (this boot's
+// loaded set only — quarantined extensions never claim a slug).
+const slugs = new Map<string, string>();
 for (const { name: label, entry } of entries) {
 const display = label ?? entry;
 				try {
@@ -613,54 +625,89 @@ const display = label ?? entry;
 					`(expected a default-export factory returning { extension })`,
 				);
 			}
-			// The post-resolution call re-keys the captured host instance in
-			// place with the real extension name + declared kinds (boot's
-			// hostContextFactory; see src/harness/boot.ts). No second host is
-			// ever created — a rebuilt instance would orphan every inbound
-			// handler the factory registered on the host it captured.
-			if (options.hostContextFactory !== undefined) {
-				const kinds: DeclaredKinds = {
-					...(resolved.interactionKinds === undefined
-					? {}
-					: { interaction: resolved.interactionKinds }),
-					...(resolved.ambientKinds === undefined
-					? {}
-					: { ambient: resolved.ambientKinds }),
-				};
-				options.hostContextFactory(resolved.extension.name, kinds);
-			}
-			registry.install(resolved.extension);
-			outcomes.push({ name: resolved.extension.name, status: "ok" });
-			if (resolved.health !== undefined) {
-				healthProducers.push({
-					extension: resolved.extension,
-					health: resolved.health,
-				});
-			}
-			if (resolved.submit !== undefined) {
-				submitBindings.push({
-					extension: resolved.extension,
+				// Task 3 — the slug IS the extension identity from here down: ONE
+				// sanitization point, computed from the DECLARED name at load and
+				// applied before the seam host is re-keyed and before the registry
+				// install — every downstream surface (registry key, seam-host
+				// identity, interaction/ambient records, worker names, health
+				// correlation) sees the slug, never the declared name. Rejections
+				// ride the LOAD (Review Focus 2): an empty slug or a collision
+				// quarantines HERE naming the declared name(s), never the first
+				// store use mid-run.
+				const declared = resolved.extension.name;
+				const slug = slugifyName(declared);
+				if (slug === "") {
+					throw new Error(
+						`extension name "${declared}" sanitizes to an empty slug ` +
+							"(nothing survives [a-z0-9_-] folding); refusing to load",
+					);
+				}
+				const collides = slugs.get(slug);
+				if (collides !== undefined) {
+					throw new Error(
+						`slug collision: extension "${declared}" sanitizes to ` +
+						`"${slug}", already claimed by "${collides}" — extension ` +
+						"identities must be unique after sanitization",
+					);
+				}
+				// Rename at the ONE point: a shallow copy with the slug as `name`
+				// (the Extension contract is readonly; the declared object is
+				// never mutated). Every binding below pairs with THIS object so
+				// boot's identity correlation (health/submit/memory-owner
+				// matching) stays exact.
+				const extension: Extension = { ...resolved.extension, name: slug };
+				// The post-resolution call re-keys the captured host instance in
+				// place with the slug + declared kinds (boot's
+				// hostContextFactory; see src/harness/boot.ts). No second host is
+				// ever created — a rebuilt instance would orphan every inbound
+				// handler the factory registered on the host it captured.
+				if (options.hostContextFactory !== undefined) {
+					const kinds: DeclaredKinds = {
+						...(resolved.interactionKinds === undefined
+						? {}
+						: { interaction: resolved.interactionKinds }),
+						...(resolved.ambientKinds === undefined
+						? {}
+						: { ambient: resolved.ambientKinds }),
+					};
+					options.hostContextFactory(extension.name, kinds);
+				}
+				registry.install(extension);
+				// Only an INSTALLED extension claims its slug — a later stage's
+				// quarantine (never loaded) leaves the slug free for the next
+				// boot's specifier list.
+				slugs.set(slug, declared);
+				outcomes.push({ name: extension.name, status: "ok" });
+				if (resolved.health !== undefined) {
+					healthProducers.push({
+						extension,
+						health: resolved.health,
+					});
+				}
+				if (resolved.submit !== undefined) {
+					submitBindings.push({
+						extension,
 					submit: resolved.submit,
-				});
-			}
-			if (resolved.runSettled !== undefined) {
-				runSettledBindings.push({
-					extension: resolved.extension,
+					});
+				}
+				if (resolved.runSettled !== undefined) {
+					runSettledBindings.push({
+						extension,
 					runSettled: resolved.runSettled,
-				});
-			}
-			if (resolved.lifecycle !== undefined) {
-				lifecycleBindings.push({
-					extension: resolved.extension,
+					});
+				}
+				if (resolved.lifecycle !== undefined) {
+					lifecycleBindings.push({
+						extension,
 					handlers: resolved.lifecycle,
-				});
-			}
-			if (resolved.workers !== undefined) {
-				workerBindings.push({
-					extension: resolved.extension,
+					});
+				}
+				if (resolved.workers !== undefined) {
+					workerBindings.push({
+						extension,
 					workers: resolved.workers,
-				});
-			}
+					});
+				}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(

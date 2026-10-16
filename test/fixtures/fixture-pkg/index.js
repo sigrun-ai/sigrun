@@ -25,7 +25,7 @@ const marker = defineTool({
 export default function createFixture() {
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-ext",
+			name: "sigrun-fixture-ext",
 			tools: [marker],
 			sections: [section("fixture-note", () => "fixture section")],
 		}),

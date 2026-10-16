@@ -320,7 +320,7 @@ describe("idle workers — the curator contract", () => {
 					const abandonments = spy.mock.calls.filter(
 						(call) =>
 							String(call[1]).includes(
-								"extension sigrun.fixture-workers worker ticker",
+								"extension sigrun-fixture-workers worker ticker",
 							) && String(call[2]).includes("80ms worker deadline"),
 					);
 					// >= 1: a second hung tick can hit its own deadline before the
@@ -407,7 +407,7 @@ describe("idle workers — the curator contract", () => {
 			const badEntry = join(badDir, "index.mjs");
 			const source = `export default function bad() {
 	return {
-		extension: { name: "sigrun.fixture-bad-worker" },
+		extension: { name: "sigrun-fixture-bad-worker" },
 		workers: ${JSON.stringify(workers, (_key, value) =>
 			typeof value === "function" ? "__run__" : value,
 		).replace(/"__run__"/g, "async () => {}")},
@@ -419,7 +419,7 @@ describe("idle workers — the curator contract", () => {
 			);
 			const entries: ResolvedExtensionInput[] = [
 				{
-					name: "sigrun.fixture-bad-worker",
+					name: "sigrun-fixture-bad-worker",
 					entry: pathToFileURL(badEntry).href,
 				},
 			];
@@ -434,7 +434,7 @@ describe("idle workers — the curator contract", () => {
 			});
 			closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun.fixture-bad-worker", status: "quarantined", error },
+				{ name: "sigrun-fixture-bad-worker", status: "quarantined", error },
 			]);
 			void config;
 		}
@@ -466,7 +466,7 @@ describe("idle workers — the curator contract", () => {
 				}[];
 			};
 			const entry = body.extensions.find(
-				(one) => one.name === "sigrun.fixture-workers",
+				(one) => one.name === "sigrun-fixture-workers",
 			);
 			expect(entry).toBeDefined();
 			expect(entry!.status).toBe("ok");

@@ -12,7 +12,7 @@ test.afterAll(async () => { await server.cleanup(); });
 
 test("the rendered DOM carries all primitive renderings", async ({ page }) => {
 	const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
-	const host = server.opened.seamHosts.get("sigrun.fixture-visual");
+	const host = server.opened.seamHosts.get("sigrun-fixture-visual");
 	if (host === undefined) throw new Error("seam host missing");
 	const root = server.conversationId;
 

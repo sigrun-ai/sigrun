@@ -221,7 +221,7 @@ describe("runSettled contract", () => {
 		// as a pre-resolved entry with the extension's name as its label
 		// keeps the outcome readable as the fixture's own name.
 		const entries: ResolvedExtensionInput[] = [
-			{ name: "sigrun.fixture-bad-runsettled", entry: BAD_RUNSETTLED_SPECIFIER },
+			{ name: "sigrun-fixture-bad-runsettled", entry: BAD_RUNSETTLED_SPECIFIER },
 		];
 		const opened = await openHarness(config, {
 			env: {},
@@ -230,7 +230,7 @@ describe("runSettled contract", () => {
 		closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
 		expect(opened.extensionOutcomes).toEqual([
 			{
-				name: "sigrun.fixture-bad-runsettled",
+				name: "sigrun-fixture-bad-runsettled",
 				status: "quarantined",
 				error: "extension factory returned a runSettled field that is not a function",
 			},
@@ -328,7 +328,7 @@ describe("runSettled contract", () => {
 						.map((call) => call.map(String).join(" "))
 						.filter((text) =>
 							text.includes(
-								"handler failed: extension sigrun.fixture-memory-events runSettled",
+								"handler failed: extension sigrun-fixture-memory-events runSettled",
 							),
 						);
 					expect(failures).toHaveLength(1);
@@ -758,7 +758,7 @@ describe("conversation lifecycle contract", () => {
 	test("a factory lifecycle field that is not a function is quarantined with the reason", () => {
 		// The five validation branches mirror runSettled's fail-loud pattern,
 		// each naming its own field.
-		const extension = { name: "sigrun.fixture-bad-lifecycle" } as never;
+		const extension = { name: "sigrun-fixture-bad-lifecycle" } as never;
 		const fields = [
 			"conversationCreated",
 			"conversationForked",

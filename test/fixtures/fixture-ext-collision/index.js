@@ -28,7 +28,7 @@ const collidingMarker = defineTool({
 export default function createFixtureCollision() {
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-ext-collision",
+			name: "sigrun-fixture-ext-collision",
 			tools: [collidingMarker],
 			sections: [section("fixture-note", () => "collision fixture section")],
 		}),

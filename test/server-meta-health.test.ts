@@ -329,7 +329,7 @@ describe("GET /v1/meta health", () => {
 		});
 		const meta = await getMeta(app);
 		expect(meta.extensions).toEqual([
-			{ name: "sigrun.fixture-memory-degraded", status: "ok" },
+			{ name: "sigrun-fixture-memory-degraded", status: "ok" },
 		]);
 		expect(meta.health).toEqual({
 			backup: "unconfigured",
@@ -344,7 +344,7 @@ describe("GET /v1/meta health", () => {
 		});
 		const meta = await getMeta(app);
 		expect(meta.extensions).toEqual([
-			{ name: "sigrun.fixture-ext-degraded", status: "ok" },
+			{ name: "sigrun-fixture-ext-degraded", status: "ok" },
 		]);
 		// Memory health is the LOADED MEMORY EXTENSION's producer — not any
 		// extension's producer; a non-memory producer is retained but inert.

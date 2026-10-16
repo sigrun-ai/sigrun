@@ -267,7 +267,7 @@ describe("tui e2e smoke (attach-mode wire path)", () => {
 				).toBe(true);
 
 				// ── interaction round-trip on the fork (fixture seam) ──
-				const host = server.opened.seamHosts.get("sigrun.fixture-seam");
+				const host = server.opened.seamHosts.get("sigrun-fixture-seam");
 				if (host === undefined) throw new Error("seam host missing");
 				await host.seedInteraction(
 					forked.id as ConversationId,

@@ -17,7 +17,7 @@ import { defineExtension, section } from "@earendil-works/pi-durable";
 export default function createFixtureExt() {
 	return {
 		extension: defineExtension({
-			name: "sigrun.fixture-ext-degraded",
+			name: "sigrun-fixture-ext-degraded",
 			sections: [section("fixture-note", () => "fixture section")],
 		}),
 		health: () => "degraded",
