@@ -1,5 +1,20 @@
 /**
- * §5 wire serializers (Tasks 9a–9d).
+ * §5 wire serializers (Tasks 9a–9d) — THE channel contract.
+ *
+ * This module is sigrun's sole wire-type leaf: every HTTP/SSE payload
+ * shape both clients (webui, tui) consume is declared or re-exported
+ * here, and both import it directly. It is the intended basis for a
+ * generated OpenAPI schema later, so the purity rule is enforced by
+ * `test/views-purity.test.ts`:
+ *
+ * - wire types + pure serializers/constants ONLY — no server/framework
+ *   types, no route logic;
+ * - imports must be `import type` from leaf modules; the only runtime
+ *   code is local pure serializers/constants (type re-exports erase at
+ *   compile time and contribute no runtime);
+ * - no `node:` imports (the webui compiles DOM-only against this file);
+ * - never import the route module (`src/server/index.ts`) — types move
+ *   FROM the route module TO here, never the reverse.
  *
  * Spec §5: the server serves pi-durable's NATIVE views, not a bespoke
  * endpoint list — so the conversation wire payload IS the `ConversationView`
@@ -22,11 +37,27 @@ import type {
 	JsonObject,
 	ModelRef,
 } from "@earendil-works/pi-durable";
-import type { AmbientRecord } from "../harness/ambient.js";
+import type {
+	AmbientBody,
+	AmbientGauge,
+	AmbientLedgerEntry,
+	AmbientLine,
+	AmbientMetrics,
+	AmbientRecord,
+	AmbientRow,
+} from "../harness/ambient.js";
 import type {
 	InteractionAnswer,
+	InteractionBody,
+	InteractionDiff,
+	InteractionField,
+	InteractionOption,
 	InteractionRecord,
+	InteractionStatus,
 } from "../harness/interactions.js";
+import type { SettingsFile } from "../harness/settings.js";
+import type { HealthStatus } from "../harness/health.js";
+import type { WorkerStatus } from "../harness/event-bus.js";
 
 /**
  * The per-conversation steer field (spec §5: "reflecting submit-while-busy
@@ -251,4 +282,112 @@ export type AmbientWire = AmbientRecord;
 /** The response of `GET /v1/conversations/:id/ambient`. */
 export interface AmbientList {
 	readonly ambient: readonly AmbientWire[];
+}
+
+// The seam records ride the wire as-is, so their sub-shapes are the
+// contract too — re-exported here so channels (and a future generated
+// schema) resolve every wire shape from this one module without importing
+// the harness leaf modules.
+export type {
+	InteractionBody,
+	InteractionDiff,
+	InteractionField,
+	InteractionOption,
+	InteractionStatus,
+};
+export type {
+	AmbientBody,
+	AmbientGauge,
+	AmbientLedgerEntry,
+	AmbientLine,
+	AmbientMetrics,
+	AmbientRow,
+};
+
+// ─── Settings / meta / auth wire types ────────────────────────────────────
+
+/**
+ * The `GET/PATCH /v1/settings` payload (Task 8b): the settings file's
+ * effective contents — the `HarnessSettings` pass-throughs plus the
+ * sigrun-resolved fields — plus `toolRoster`, the registry-driven roster
+ * the settings panel renders `defaultTools` over (Task 3, codemode
+ * parity). Absent file = every default; the roster is SERVER-COMPUTED
+ * from the live registry snapshot per request (never persisted, never
+ * snapshotted at boot), so extension tools installed later — codemode,
+ * tool_search — appear without panel changes. `toolRoster` is NOT a
+ * settable key: the store's validation rejects it on PATCH (400
+ * `invalid_field`), and the wire patch type Omits it.
+ */
+export interface SettingsResponse extends SettingsFile {
+	/** The live registry snapshot's composed tool names, deduplicated. */
+	readonly toolRoster: readonly string[];
+}
+
+/** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
+export interface MetaResponse {
+	readonly harnessVersion: string;
+	readonly schemaVersion: string;
+	readonly extensions: readonly {
+		readonly name: string;
+		readonly status: string;
+		readonly error?: string;
+		/**
+		 * The extension's idle workers (memory-seam Task 5), when it
+		 * declared any; `lastRunAt`/`lastError` stay absent until the
+		 * worker's first run.
+		 */
+		readonly workers?: readonly WorkerStatus[];
+	}[];
+	/**
+	 * §5 health: pure aggregation over boot-retained §3 producers (spec
+	 * §3) — synchronous status reads, never network or storage.
+	 */
+	readonly health: {
+		/**
+		 * Derived from `config.backup` presence. T11 deliberately emits only
+		 * "configured"/"unconfigured" (no runtime backup health signal exists
+		 * in v1 — the CronJob is an external process); the "degraded" literal
+		 * stays in the spec §5 union for a future runtime signal.
+		 */
+		readonly backup: "configured" | "unconfigured" | "degraded";
+		/** The memory extension's §3 producer, else "ok" (no-op default). */
+		readonly memory: HealthStatus;
+		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
+		readonly providers: HealthStatus;
+	};
+	readonly capabilities: {
+		readonly backup: boolean;
+		readonly channels: readonly string[];
+	};
+	/**
+	 * The seam inventory (docs/approval-ux-seams.md): per extension, the
+	 * interaction kinds / ambient surface keys its factory declared.
+	 * Extensions that declared nothing are absent — an absent entry means
+	 * the extension writes no seam records, which is exactly the fail-open
+	 * posture (channels render what is declared, nothing more).
+	 */
+	readonly seam: {
+		readonly interactions: readonly {
+			readonly extension: string;
+			readonly kinds: readonly string[];
+		}[];
+		readonly ambient: readonly {
+			readonly extension: string;
+			readonly keys: readonly string[];
+		}[];
+	};
+}
+
+/** Provider auth readiness (Task 6, spec §6.4): statuses only. */
+export type AuthStatus = "ready" | "not_ready" | "invalid";
+
+/** One `GET /v1/auth/check` provider entry — provider id + status, nothing else. */
+export interface AuthCheckProvider {
+	readonly provider: string;
+	readonly status: AuthStatus;
+}
+
+/** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */
+export interface AuthCheckResponse {
+	readonly providers: readonly AuthCheckProvider[];
 }

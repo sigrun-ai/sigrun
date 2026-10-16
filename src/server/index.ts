@@ -66,13 +66,8 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
-import type { WorkerStatus } from "../harness/event-bus.js";
-import { aggregateHealth, type HealthStatus } from "../harness/health.js";
-import {
-	SettingsStore,
-	SettingsValidationError,
-	type SettingsFile,
-} from "../harness/settings.js";
+import { aggregateHealth } from "../harness/health.js";
+import { SettingsStore, SettingsValidationError } from "../harness/settings.js";
 import { OPENAI_API_KEY_ENV, requireServedModel, UnservedModelError } from "../harness/providers/index.js";
 import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
 import { SLASH_COMMANDS, type CommandsResponse } from "./commands.js";
@@ -97,8 +92,13 @@ import {
 import {
 	serializeConversationView,
 	type AmbientList,
+	type AuthCheckProvider,
+	type AuthCheckResponse,
+	type AuthStatus,
 	type InteractionAnswered,
 	type InteractionList,
+	type MetaResponse,
+	type SettingsResponse,
 	type AbortResponse,
 	type ConversationCreateResponse,
 	type ConversationImportResponse,
@@ -223,23 +223,6 @@ const ID_PARAMS_SCHEMA = {
 	additionalProperties: false,
 } as const;
 
-/**
- * The `GET/PATCH /v1/settings` payload (Task 8b): the settings file's
- * effective contents — the `HarnessSettings` pass-throughs plus the
- * sigrun-resolved fields — plus `toolRoster`, the registry-driven roster
- * the settings panel renders `defaultTools` over (Task 3, codemode
- * parity). Absent file = every default; the roster is SERVER-COMPUTED
- * from the live registry snapshot per request (never persisted, never
- * snapshotted at boot), so extension tools installed later — codemode,
- * tool_search — appear without panel changes. `toolRoster` is NOT a
- * settable key: the store's validation rejects it on PATCH (400
- * `invalid_field`), and the wire patch type Omits it.
- */
-export interface SettingsResponse extends SettingsFile {
-	/** The live registry snapshot's composed tool names, deduplicated. */
-	readonly toolRoster: readonly string[];
-}
-
 /** The settings response over the live store + registry snapshot. */
 function settingsResponse(opened: OpenedHarness): SettingsResponse {
 	const names = opened.registry
@@ -252,75 +235,6 @@ function settingsResponse(opened: OpenedHarness): SettingsResponse {
 		...opened.settings.read(),
 		toolRoster: [...new Set(names)],
 	};
-}
-
-/** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
-interface MetaResponse {
-	readonly harnessVersion: string;
-	readonly schemaVersion: string;
-	readonly extensions: readonly {
-		readonly name: string;
-		readonly status: string;
-		readonly error?: string;
-		/**
-		 * The extension's idle workers (memory-seam Task 5), when it
-		 * declared any; `lastRunAt`/`lastError` stay absent until the
-		 * worker's first run.
-		 */
-		readonly workers?: readonly WorkerStatus[];
-	}[];
-	/**
-	 * §5 health: pure aggregation over boot-retained §3 producers (spec
-	 * §3) — synchronous status reads, never network or storage.
-	 */
-	readonly health: {
-		/**
-		 * Derived from `config.backup` presence. T11 deliberately emits only
-		 * "configured"/"unconfigured" (no runtime backup health signal exists
-		 * in v1 — the CronJob is an external process); the "degraded" literal
-		 * stays in the spec §5 union for a future runtime signal.
-		 */
-		readonly backup: "configured" | "unconfigured" | "degraded";
-		/** The memory extension's §3 producer, else "ok" (no-op default). */
-		readonly memory: HealthStatus;
-		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
-		readonly providers: HealthStatus;
-	};
-	readonly capabilities: {
-		readonly backup: boolean;
-		readonly channels: readonly string[];
-	};
-	/**
-	 * The seam inventory (docs/approval-ux-seams.md): per extension, the
-	 * interaction kinds / ambient surface keys its factory declared.
-	 * Extensions that declared nothing are absent — an absent entry means
-	 * the extension writes no seam records, which is exactly the fail-open
-	 * posture (channels render what is declared, nothing more).
-	 */
-	readonly seam: {
-		readonly interactions: readonly {
-			readonly extension: string;
-			readonly kinds: readonly string[];
-		}[];
-		readonly ambient: readonly {
-			readonly extension: string;
-			readonly keys: readonly string[];
-		}[];
-	};
-}
-
-/** Provider auth readiness (Task 6, spec §6.4): statuses only. */
-type AuthStatus = "ready" | "not_ready" | "invalid";
-
-/** One `GET /v1/auth/check` provider entry — provider id + status, nothing else. */
-interface AuthCheckProvider {
-	readonly provider: string;
-	readonly status: AuthStatus;
-}
-
-/** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */
-interface AuthCheckResponse {
-	readonly providers: readonly AuthCheckProvider[];
 }
 
 /** Re-brand a route id as a ConversationId (the branded Id type is a number). */

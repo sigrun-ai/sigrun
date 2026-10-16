@@ -76,7 +76,7 @@ function fakeTheme(init?: Partial<ThemeState>): ThemeState {
 }
 
 /** A client over a fetch stub that serves `{}` for every settings GET. */
-function fakeClient(settings: SettingsWire = {}) {
+function fakeClient(settings: SettingsWire = { toolRoster: [] }) {
 	const fetchImpl: FetchLike = (input) =>
 		Promise.resolve({
 			ok: true,
@@ -197,7 +197,7 @@ describe("TopBar", () => {
 
 	test("the gear opens the settings panel; the close button closes it", async () => {
 		const renderer = renderTopBar({
-			client: fakeClient({ steeringMode: "all" }),
+			client: fakeClient({ steeringMode: "all", toolRoster: [] }),
 		});
 		const gear = renderer.root.findByProps({ className: "settings-gear" });
 		expect(renderer.root.findAllByProps({ className: "settings-overlay" })).toHaveLength(0);
