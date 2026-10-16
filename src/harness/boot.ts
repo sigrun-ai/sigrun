@@ -41,7 +41,7 @@ import {
 import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
-import { ensureStoreRoots, resolveStoreRoots } from "./stores.js";
+import { ensureStoreRoots, resolveStoreRoots, sharedExtensionStores } from "./stores.js";
 import {
 	createWorkspaceService,
 	defaultWorkspacePrefs,
@@ -289,8 +289,11 @@ export async function openHarness(
 	// could not create, rather than deep inside sqlite or npm. The cache
 	// root is NOT ensured at boot (Review Focus 5: a wiped `emptyDir`
 	// must never break boot; cache consumers repair per call through
-	// `ensureCacheDir`).
-	await ensureStoreRoots(resolveStoreRoots(env));
+	// `ensureCacheDir`). The ONE resolved roots object threads on from
+	// here: the extension-stores handle (the seam host's `stores`) is
+	// built from it below — never re-resolved from env.
+	const roots = resolveStoreRoots(env);
+	await ensureStoreRoots(roots);
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
@@ -328,6 +331,11 @@ export async function openHarness(
 	});
 	const bindHarness = (harness: Harness): void => release(harness);
 	const harnessOf = (): Promise<Harness> => harnessPromise;
+	// The boot-shared store trio (Task 5): one SecretsStore + one
+	// ExtensionSettingsStore over the roots resolved at the top of boot;
+	// each seam host scopes it to its extension's slug (cheap, no I/O —
+	// the cache dir materializes lazily on first `paths.cache` access).
+	const sharedStores = sharedExtensionStores(roots);
 	const seamHosts = new Map<string, SeamHost>();
 	const seamKinds = new Map<string, DeclaredKinds>();
 	const {
@@ -355,7 +363,7 @@ export async function openHarness(
 					createSeamHost({ name: extensionName }, kinds, {
 						bindHarness,
 						harness: harnessOf,
-					});
+					}, sharedStores);
 				host.rekey({ name: extensionName }, kinds);
 				// Both maps key by final name only: drop the "" placeholder
 				// entries (asymmetric leftover — seamKinds kept one per load).

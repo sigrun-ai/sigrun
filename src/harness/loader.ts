@@ -40,7 +40,10 @@
  *
  * A factory MAY declare an arity-1 signature: the loader then passes the
  * host context (src/harness/seam-host.ts — the interaction/ambient seam
- * handles). Zero-arg factories keep working (extra arguments are inert in
+ * handles plus the scoped extension-stores handle `stores` (spec §5:
+ * get/set on the extension's OWN secrets section and settings file, and
+ * its own raw data/cache/state paths; src/harness/stores.ts). Zero-arg
+ * factories keep working (extra arguments are inert in
  * JS), and the factory-result `interactionKinds`/`ambientKinds` string
  * arrays declare which seam kinds/keys the extension writes — validated
  * fail-loud here and consumed by the seam host's write gate and the

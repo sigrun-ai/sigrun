@@ -34,6 +34,7 @@
 
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Env } from "../config.js";
@@ -136,15 +137,20 @@ async function ensureDir(path: string): Promise<void> {
 	try {
 		await mkdir(path, { recursive: true });
 	} catch (error) {
-		const { code, message } = error as NodeJS.ErrnoException;
-		const detail =
-			code === undefined
-				? String(error)
-				: `${code}: ${message ?? String(error)}`;
-		throw new Error(`sigrun: cannot mkdir ${path} (${detail})`, {
-			cause: error,
-		});
+		throw mkdirFailure(path, error);
 	}
+}
+
+/** The loud `cannot mkdir` error both ensure paths share (async + sync). */
+function mkdirFailure(path: string, error: unknown): Error {
+	const { code, message } = error as NodeJS.ErrnoException;
+	const detail =
+		code === undefined
+			? String(error)
+			: `${code}: ${message ?? String(error)}`;
+	return new Error(`sigrun: cannot mkdir ${path} (${detail})`, {
+		cause: error,
+	});
 }
 
 /**
@@ -171,13 +177,28 @@ export async function ensureStoreRoots(roots: StoreRoots): Promise<void> {
  * other root — repair is confined to the cache path, and the resolved
  * path always sits under `roots.cacheDir` (there is no fallback chain;
  * a missing cache root is recreated, never rerouted under data).
+ *
+ * The mkdir core is synchronous (`ensureCacheDirAt`): the async wrapper
+ * is the call-time contract callers hold, while the sync core serves
+ * the extension-stores handle's `paths.cache` getter — a getter cannot
+ * await, and a fire-and-forget ensure would let a caller stat a path
+ * whose mkdir is still in flight. Same semantics, one implementation.
  */
 export async function ensureCacheDir(
 	roots: StoreRoots,
 	slug: string,
 ): Promise<string> {
+	return ensureCacheDirAt(roots, slug);
+}
+
+/** The synchronous mkdir core behind {@link ensureCacheDir}. */
+function ensureCacheDirAt(roots: StoreRoots, slug: string): string {
 	const dir = join(roots.cacheDir, slug);
-	await ensureDir(dir);
+	try {
+		mkdirSync(dir, { recursive: true });
+	} catch (error) {
+		throw mkdirFailure(dir, error);
+	}
 	return dir;
 }
 
@@ -408,4 +429,111 @@ export function resolveSecretFor(
 	return fromEnv !== undefined && fromEnv !== ""
 		? { value: fromEnv, source: "env" }
 		: undefined;
+}
+
+/**
+ * The extension-stores handle (spec §5's scoped surface): the ONLY
+ * store view extension code ever receives — through its factory host
+ * (src/harness/seam-host.ts), never by importing this module. Secrets
+ * and settings are SERVER-MEDIATED (the extension calls get/set on ITS
+ * section / ITS file and cannot name another slug; it never sees a
+ * path, only the handle); data/state/cache are RAW directories (the
+ * extension owns the I/O; only the cache one is created by sigrun,
+ * lazily at first access — Review Focus 5: never at boot).
+ */
+export interface ExtensionStores {
+	/** This slug's `secrets.json` section (whole-section read-modify-write). */
+	readonly secrets: {
+		get(key: string): Promise<string | undefined>;
+		set(key: string, value: string): Promise<void>;
+	};
+	/** This slug's `settings/<slug>.json` file, absent → `{}`. */
+	readonly settings: {
+		get(): Promise<Record<string, unknown>>;
+		set(value: Record<string, unknown>): Promise<void>;
+	};
+	/** Per-slug raw directories under the data/state/cache roots. */
+	readonly paths: {
+		/** `<dataDir>/<slug>` — the root exists; the subdir is the extension's. */
+		readonly data: string;
+		/**
+		 * `<cacheDir>/<slug>` — CREATED on access (mkdir -p at call time,
+		 * never at boot; an access after a wipe self-heals, which is why
+		 * the ensure is not memoized).
+		 */
+		readonly cache: string;
+		/** `<stateDir>/<slug>` — the root exists; the subdir is the extension's. */
+		readonly state: string;
+	};
+}
+
+/**
+ * The boot-shared store trio one `scopedExtensionStores` view closes
+ * over: the two store classes (stateless file wrappers — instances may
+ * be shared freely; every operation reads-modifies-writes the file) plus
+ * the resolved roots. Built ONCE per boot from the roots `openHarness`
+ * already resolved (never re-resolved from env).
+ */
+export interface SharedExtensionStores {
+	readonly secrets: SecretsStore;
+	readonly settings: ExtensionSettingsStore;
+	readonly roots: StoreRoots;
+}
+
+/** The `secrets.json` file name at the config root (spec §3 map). */
+const SECRETS_FILE_NAME = "secrets.json";
+
+/** Build the shared trio from resolved roots (cheap, no I/O). */
+export function sharedExtensionStores(
+	roots: StoreRoots,
+): SharedExtensionStores {
+	return {
+		secrets: new SecretsStore(join(roots.configDir, SECRETS_FILE_NAME)),
+		settings: new ExtensionSettingsStore(
+			join(roots.configDir, SETTINGS_DIR_NAME),
+		),
+		roots,
+	};
+}
+
+/**
+ * Build ONE extension's scoped view over the shared trio — the object
+ * the factory host exposes as `stores`. All cheap closure wiring (no
+ * I/O at construction): reads/writes ride the shared classes keyed by
+ * `slug`, paths are joins, and the cache dir is created only when
+ * `paths.cache` is actually read. The seam host REBUILDS this view on
+ * `rekey` (the two-phase identity pattern) so the view always keys on
+ * the host's CURRENT slug.
+ */
+export function scopedExtensionStores(
+	shared: SharedExtensionStores,
+	slug: string,
+): ExtensionStores {
+	return {
+		secrets: {
+			async get(key) {
+				const section = await shared.secrets.readSection(slug);
+				const value = section[key];
+				return value === undefined || value === null
+					? undefined
+					: String(value);
+			},
+			async set(key, value) {
+				const section = await shared.secrets.readSection(slug);
+				section[key] = value;
+				await shared.secrets.writeSection(slug, section);
+			},
+		},
+		settings: {
+			get: () => shared.settings.read(slug),
+			set: (value) => shared.settings.write(slug, value),
+		},
+		paths: {
+			data: join(shared.roots.dataDir, slug),
+			state: join(shared.roots.stateDir, slug),
+			get cache() {
+				return ensureCacheDirAt(shared.roots, slug);
+			},
+		},
+	};
 }
