@@ -160,6 +160,13 @@ controllers:
           # The db under backup: the same PVC the Deployment mounts.
           - name: SIGRUN_STORAGE_PATH
             value: /data/sigrun.db
+          # Per-section opt-in (Task 7): comma list of
+          # config,secrets,data,state to ALSO tar the named store roots
+          # into <target>/<section>-<UTC timestamp>.tar.gz (secrets
+          # tarball mode 0600; cache is NEVER a valid section). Absent /
+          # empty = DB-only backup, the default.
+          - name: SIGRUN_BACKUP_SECTIONS
+            value: ""
         envFrom:
           # Core backup secret (spec §4.3): SIGRUN_BACKUP_PATH or
           # SIGRUN_BACKUP_S3_BUCKET/PREFIX, AWS_* credentials, and
