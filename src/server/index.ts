@@ -24,14 +24,12 @@
  * (light-my-request settles only on `end()`). Deploy listens; the SSE tests
  * listen on an ephemeral loopback port.
  *
- * **Conversation listing gap (v1):** pi-durable's `Harness` has no
- * conversation enumeration (its storage has `scanConversations`, but the
- * harness does not expose it). Until a later slice wires storage-backed
- * enumeration, the server tracks the conversations it can know: the reserved
- * root conversation (ensured at factory time — the root is the spec §5
- * default) plus every id this server created. Conversations created inside
- * pi-durable by tasks/tools do not appear, and a restart forgets non-root
- * creates; both close when a later slice adds durable enumeration.
+ * **Conversation listing (durable):** `GET /v1/conversations` scans
+ * storage — `scanConversations` over the handle `openHarness` exposes —
+ * so the listing is the DURABLE set: conversations other processes or
+ * earlier servers created (a restart forgets nothing), and conversations
+ * tasks/tools created inside pi-durable (the cron case) all list. The
+ * harness itself has no enumeration; the storage scan is authoritative.
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
@@ -105,6 +103,7 @@ import {
 	type ConversationCreateResponse,
 	type ConversationImportResponse,
 	type ConversationList,
+	type ConversationSummary,
 	type ConversationViewWire,
 	type ConfigureResponse,
 	type CompactResponse,
@@ -136,6 +135,17 @@ const THINKING_LEVELS: readonly string[] = [
 const WHEN_BUSY_MODES: readonly string[] = ["steer", "followUp", "reject"];
 /** The validated `whenBusy` type (pi-durable `InputSubmissionDraft`). */
 type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
+
+declare module "fastify" {
+	interface FastifyRequest {
+		/**
+		 * The resolved caller identity (spec §5 owner seam): the trimmed
+		 * `X-Sigrun-User` header, or `undefined` when absent/empty. Naive
+		 * mode — nothing is verified (trusted-network posture, v1).
+		 */
+		sigrunUser: string | undefined;
+	}
+}
 
 /**
  * The agent change every server-side conversation create applies (Task 8b):
@@ -327,6 +337,26 @@ async function readView(conversation: Conversation) {
 }
 
 /**
+ * Stamp the resolved caller identity onto a fresh conversation's
+ * session-meta doc as `owner` (spec §5 seam; the auth hook's only writer).
+ * Undefined (naive mode — no header) is a NO-OP: the doc stays
+ * unmaterialized and reads serve the defaults (defaults are free; only a
+ * PATCH or a stamped owner writes). A fork's doc carries the parent's
+ * copied state (`fork: "current"`), so the caller's identity OVERWRITES
+ * the source's.
+ */
+async function stampSessionOwner(
+	conversation: Conversation,
+	owner: string | undefined,
+): Promise<void> {
+	if (owner === undefined) return;
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		draft.owner = owner;
+	}, BACKGROUND_CONTEXT);
+}
+
+/**
  * Build the conversation's workspace `ExecutionEnv` the same way
  * `Harness.buildEnv` does for tool calls (dist/harness/harness.js:133-139):
  * resolve the committed `agent.cwd` and hand it, with the harness as the
@@ -359,6 +389,13 @@ async function conversationEnv(
 const FILE_CONTENT_MAX_BYTES = 1024 * 1024;
 
 /**
+ * One `scanConversations` page size for the listing route. Not a client
+ * limit — the route walks the continuation cursor to completion (v1 is
+ * unpaginated); a larger page only trades per-page round-trips.
+ */
+const SCAN_PAGE_SIZE = 1_000;
+
+/**
  * Decode a base64 body strictly: Node's `Buffer.from(s, "base64")` is
  * LENIENT (invalid characters are skipped, so `"!!!"` decodes to empty), so
  * uploads validate the alphabet and round-trip — invalid base64 is a client
@@ -384,7 +421,9 @@ function decodeBase64Strict(value: string): Buffer | undefined {
  * @param config parsed sigrun config; the listen entry consumes
  * `config.port`, the meta route derives `health.backup` from
  * `config.backup` presence, and `capabilities.backup` from the same
- * presence (the §5 backup affordance gate). Auth arrives with a later
+ * presence (the §5 backup affordance gate). Identity is the naive seam —
+ * `X-Sigrun-User` resolves per request and stamps `SessionMeta.owner` at
+ * create/fork/import; VERIFICATION (actual auth) arrives with a later
  * slice.
  */
 export async function createServer(
@@ -392,6 +431,19 @@ export async function createServer(
 	config: SigrunConfig,
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
+	// The identity seam (spec §5 / TUI plan): resolve the caller on EVERY
+	// request — the trimmed `X-Sigrun-User` header, `undefined` when absent
+	// or empty. Naive mode: the hook VERIFIES nothing (trusted-network
+	// posture; no auth flow in v1) — an absent header is not an error, the
+	// request proceeds exactly as before. Registered first, before any
+	// route, so every handler sees the resolved identity; it only reads a
+	// header, so content-type parsing (the JSONL parser below) and any later
+	// deploy-auth onRequest hook keep their semantics.
+	app.addHook("onRequest", async (request) => {
+		const header = request.headers["x-sigrun-user"];
+		const value = Array.isArray(header) ? header[0] : header;
+		request.sigrunUser = value?.trim() || undefined;
+	});
 	// The webui channel bundle (Task 20, spec §4.1/§6): mount the static
 	// bundle + SPA fallback when it resolves; an explicit-but-missing bundle
 	// rejects here (fail loud, per the deploy entry's boot contract). Explicit
@@ -401,9 +453,10 @@ export async function createServer(
 	if (webuiBundle !== undefined) {
 		await serveWebuiBundle(app, webuiBundle);
 	}
-	// Conversation ids this server can list: the reserved root (ensured now)
-	// plus this server's own creates. See the module docstring for the
-	// enumeration gap.
+	// The reserved root is ensured before any route runs. The listing is
+	// durable (the module docstring's "Conversation listing (durable)"
+	// section): it scans storage, so this server serves every recorded
+	// conversation, not only its own creates.
 	// The root conversation's agent carries the settings store's
 	// sigrun-resolved fields too (Task 8b): the root is created once, so its
 	// tool filter / thinking override snapshot at factory time — later
@@ -412,7 +465,6 @@ export async function createServer(
 		agent: storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
-	const trackedConversations = new Set<number>([rootId]);
 
 	// Liveness probe (Task 13, spec §4.4 "distinguishes process-up from
 	// harness-ready"): 200 ALWAYS once listening — no aggregation, no
@@ -570,7 +622,9 @@ export async function createServer(
 				},
 				BACKGROUND_CONTEXT,
 			);
-			trackedConversations.add(conversation.id);
+			// The identity seam: stamp the caller as owner when the request
+			// carried one (naive mode — no header, no write).
+			await stampSessionOwner(conversation, request.sigrunUser);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
@@ -641,25 +695,46 @@ export async function createServer(
 	});
 
 	app.get("/v1/conversations", async (): Promise<ConversationList> => {
-		const conversations: {
-			id: number;
-			root: boolean;
-			entryCount: number;
-		}[] = [];
-		for (const id of [...trackedConversations].sort((a, b) => a - b)) {
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
+		// Durable enumeration (Task 3): the storage scan is authoritative —
+		// conversations this process never created (before a restart, in
+		// another process, or by tasks/tools inside pi-durable) all list.
+		// `scanConversations` pages ascending by id (creation order); this
+		// route is unpaginated v1, so one page at a generous limit covers a
+		// deployment-scale set, and the loop below walks the continuation
+		// cursor to completion so nothing truncates silently.
+		const conversations: ConversationSummary[] = [];
+		let cursor: Cursor | undefined = undefined;
+		do {
+			const page = await opened.storage.scanConversations(
+				{ order: "ascending" },
+			SCAN_PAGE_SIZE,
+			cursor,
+			BACKGROUND_CONTEXT,
 			);
-			// Unresolvable ids (dropped elsewhere) are skipped, not listed.
-			if (conversation === undefined) continue;
-			const view = await readView(conversation);
-			conversations.push({
-				id,
-				root: id === rootId,
-				entryCount: view.entries.length,
-			});
-		}
+			for (const record of page.items) {
+				const conversation = await opened.harness.conversation(
+					record.id,
+					BACKGROUND_CONTEXT,
+				);
+				// Unresolvable ids (dropped elsewhere) are skipped, not listed.
+				if (conversation === undefined) continue;
+				const view = await readView(conversation);
+				// The session-meta owner rides the summary when stamped (Task
+				// 2's doc; defaults serve nothing — no owner key when unset).
+				const meta = await opened.harness.snapshot(
+					SessionMetaDoc,
+					conversation.id,
+					BACKGROUND_CONTEXT,
+				);
+				conversations.push({
+					id: conversation.id,
+					root: conversation.id === rootId,
+					entryCount: view.entries.length,
+					...(meta?.owner === undefined ? {} : { owner: meta.owner }),
+				});
+			}
+			cursor = page.next;
+		} while (cursor !== undefined);
 		return { conversations };
 	});
 
@@ -785,9 +860,8 @@ export async function createServer(
 
 	// Submissions: content-part resolution + upstream idempotence (T9b);
 	// `whenBusy` pass-through + memory-wiring submit (T26a).
-	// Conversation resolution is storage-backed (`harness.conversation`), so
-	// an id that exists in storage works even when the tracked Set forgot it
-	// (restart amnesia — the Set remains listing-only).
+	// Conversation resolution is storage-backed (`harness.conversation`),
+	// so any durable id works — the listing's scan sees it too (Task 3).
 	app.post(
 		"/v1/conversations/:id/submissions",
 		{ schema: { params: ID_PARAMS_SCHEMA } },
@@ -1378,7 +1452,10 @@ export async function createServer(
 				},
 				BACKGROUND_CONTEXT,
 			);
-			trackedConversations.add(fork.id);
+			// The fork's identity is the CALLER's, not the source's: the doc
+			// copied the parent's owner ("current" fork semantics), the stamp
+			// overwrites it; no header → the copy stands.
+			await stampSessionOwner(fork, request.sigrunUser);
 			const view = await readView(fork);
 			return await reply.code(201).send({ id: fork.id, view });
 		},
@@ -1501,7 +1578,6 @@ export async function createServer(
 				},
 				BACKGROUND_CONTEXT,
 			);
-			trackedConversations.add(conversation.id);
 			// One commit appends every entry in order; the conversation's own
 			// commit binds the transaction to this conversation.
 			await conversation.commit(async (tx) => {
@@ -1509,6 +1585,9 @@ export async function createServer(
 					await tx.appendEntry(conversation.id, draft);
 				}
 			}, BACKGROUND_CONTEXT);
+			// The imported conversation is the IMPORTER's, not the source's
+			// (the JSONL never carries meta — the stamp is the only owner).
+			await stampSessionOwner(conversation, request.sigrunUser);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
