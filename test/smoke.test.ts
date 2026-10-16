@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { isAbsolute, join } from "node:path";
 import { loadConfig } from "../src/config.js";
 test("loadConfig requires the default model (env or file)", () => {
   expect(() => loadConfig({ OPENAI_BASE_URL: "x", OPENAI_API_KEY: "y" })).toThrow(/SIGRUN_DEFAULT_MODEL/);
@@ -19,9 +20,12 @@ test("bare model id defaults to the env OpenAI-compat provider", () => {
   expect(config.models).toEqual({ provider: "openai", modelId: "gpt-4o" });
 });
 
-test("defaults: storage path, extensions dir, port, no backup", () => {
+test("defaults: storage path under the data root, extensions dir, port, no backup", () => {
   const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" });
-  expect(config.storagePath).toBe("data/sigrun.db");
+  // Task 6's clean break: the DB default moved from the cwd-relative
+  // "data/sigrun.db" to <dataDir>/sigrun.db (absolute).
+  expect(config.storagePath).toBe(join(config.dataDir, "sigrun.db"));
+  expect(isAbsolute(config.storagePath)).toBe(true);
   expect(config.extensionsDir).toBe("extensions");
   expect(config.port).toBe(3000);
   expect(config.backup).toBeUndefined();
