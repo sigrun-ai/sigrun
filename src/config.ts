@@ -39,10 +39,24 @@ export interface SigrunModels {
  * `SIGRUN_BACKUP_S3_PREFIX` (s3 target). Exactly one may be set — both
  * is a fail-loud config error (ambiguous target); neither leaves backup
  * unconfigured (sigrun runs fine and says so in `/v1/meta`).
+ *
+ * `sections` (Task 7, Ruling F): the per-section opt-in from
+ * `SIGRUN_BACKUP_SECTIONS=config,secrets,data,state`. The key is
+ * OPTIONAL and OMITTED when the env var is absent/empty — DB-only
+ * deployments keep a byte-identical BackupConfig shape; absent means
+ * all-false. `cache` is NEVER a section (the parse fails loud on the
+ * name).
  */
+export interface BackupSections {
+	config: boolean;
+	secrets: boolean;
+	data: boolean;
+	state: boolean;
+}
+
 export type BackupConfig =
-	| { target: "s3"; bucket: string; prefix?: string; endpoint?: string }
-	| { target: "path"; path: string };
+	| { target: "s3"; bucket: string; prefix?: string; endpoint?: string; sections?: BackupSections }
+	| { target: "path"; path: string; sections?: BackupSections };
 
 /**
  * The static workspace every conversation resolves to (spec §4.5): a local
@@ -323,21 +337,60 @@ export function parseBackupConfig(env: Env): BackupConfig | undefined {
 	const bucket = env.SIGRUN_BACKUP_S3_BUCKET?.trim() || undefined;
 	const prefix = env.SIGRUN_BACKUP_S3_PREFIX?.trim() || undefined;
 	const endpoint = env.SIGRUN_BACKUP_S3_ENDPOINT?.trim() || undefined;
+	const sections = parseBackupSections(env.SIGRUN_BACKUP_SECTIONS);
 	if (path !== undefined && bucket !== undefined) {
 		throw new Error(
 			"SIGRUN_BACKUP_PATH and SIGRUN_BACKUP_S3_BUCKET are both set — exactly one backup target is allowed",
 		);
 	}
-	if (path !== undefined) return { target: "path", path };
+	if (path !== undefined) {
+		return {
+			target: "path",
+			path,
+			...(sections === undefined ? {} : { sections }),
+		};
+	}
 	if (bucket !== undefined) {
 		return {
 			target: "s3",
 			bucket,
 			...(prefix === undefined ? {} : { prefix }),
 			...(endpoint === undefined ? {} : { endpoint }),
+			...(sections === undefined ? {} : { sections }),
 		};
 	}
 	return undefined;
+}
+
+/**
+ * Parse `SIGRUN_BACKUP_SECTIONS` (Task 7): a comma-separated list of
+ * `config|secrets|data|state`. Absent/empty → `undefined` (Ruling F:
+ * the BackupConfig carries NO `sections` key at all — the DB-only shape
+ * stays byte-identical and absent means all-false). An unknown name
+ * (`cache` is NEVER valid — it must never be backed up) throws naming
+ * the offending token. Duplicates dedup (`config,config` == `config`).
+ */
+export function parseBackupSections(
+	raw: string | undefined,
+): BackupSections | undefined {
+	if (raw === undefined || raw.trim() === "") return undefined;
+	const sections: BackupSections = {
+		config: false,
+		secrets: false,
+		data: false,
+		state: false,
+	};
+	for (const token of raw.split(",")) {
+		const name = token.trim();
+		if (name === "") continue;
+		if (!(name in sections)) {
+			throw new Error(
+				`SIGRUN_BACKUP_SECTIONS: unknown backup section "${name}" — valid sections are config,secrets,data,state (cache is never backed up)`,
+			);
+		}
+		sections[name as keyof BackupSections] = true;
+	}
+	return sections;
 }
 
 function parseCompaction(
@@ -553,7 +606,15 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			type: "local",
 			path: env.SIGRUN_WORKSPACE_PATH || server?.workspacePath || DEFAULT_WORKSPACE_PATH,
 		},
-		backup: parseBackupConfig(env) ?? parseServerBackup(server?.backup),
+		// Sections (Task 7): `SIGRUN_BACKUP_SECTIONS` is env-only and
+		// applies to the FILE-sourced target too — the env knob selects
+		// WHAT to back up, the target may come from either tier.
+		backup:
+			parseBackupConfig(env) ??
+			parseServerBackup(
+				server?.backup,
+				parseBackupSections(env.SIGRUN_BACKUP_SECTIONS),
+			),
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
 		// Ruling 4: env wins; the file's `server.webuiBundle` next; the code
@@ -578,6 +639,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
  */
 function parseServerBackup(
 	backup: ServerSettings["backup"],
+	sections?: BackupSections,
 ): BackupConfig | undefined {
 	if (backup === undefined) return undefined;
 	// Property-presence narrowing: the union's two shapes are
@@ -585,7 +647,11 @@ function parseServerBackup(
 	// for TS — `in` does.
 	if ("path" in backup) {
 		if (backup.path === undefined) return undefined;
-		return { target: "path", path: backup.path };
+		return {
+			target: "path",
+			path: backup.path,
+			...(sections === undefined ? {} : { sections }),
+		};
 	}
 	if (!("s3" in backup)) return undefined;
 	const s3 = backup.s3;
@@ -598,5 +664,6 @@ function parseServerBackup(
 		bucket: s3.bucket,
 		...(s3.prefix === undefined ? {} : { prefix: s3.prefix }),
 		...(s3.endpoint === undefined ? {} : { endpoint: s3.endpoint }),
+		...(sections === undefined ? {} : { sections }),
 	};
 }

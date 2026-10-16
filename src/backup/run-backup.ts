@@ -31,12 +31,13 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdtemp, readdir, rename, rm, stat, unlink } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseBackupConfig, type BackupConfig } from "../config.js";
+import { parseBackupConfig, type BackupConfig, type BackupSections } from "../config.js";
+import { resolveStoreRoots, type StoreRoots } from "../harness/stores.js";
 
 /** Retention floor (spec §4.3: "retention ≥ 30 days"). */
 export const BACKUP_RETENTION_DAYS = 30;
@@ -171,6 +172,103 @@ export async function runBackup(
 		// success and the rename/upload — always clean it up.
 		await rm(tempFile, { force: true });
 		await rm(dirname(tempFile), { force: true, recursive: true });
+	}
+	// Sections fold in AFTER the DB steps (Task 7): with no sections
+	// enabled the loop is a no-op and the run is byte-identical to the
+	// DB-only contract.
+	await backupSections(backup);
+}
+
+/** The store root each backup section tars. */
+const SECTION_ROOTS: Readonly<Record<keyof BackupSections, keyof StoreRoots>> = {
+	// config and secrets both live under the config root (settings.json /
+	// auth.json); secrets differs by its 0600 tarball mode.
+	config: "configDir",
+	secrets: "configDir",
+	data: "dataDir",
+	state: "stateDir",
+};
+
+/**
+ * Sections whose content can carry secret files → tarball mode 0600
+ * (fix round 1). `config` tars the same root as `secrets`, so its
+ * archive carries auth.json too and must share the mode; `data` and
+ * `state` carry no key material and stay at the umask default.
+ */
+const SECRET_SECTIONS: ReadonlySet<keyof BackupSections> = new Set([
+	"config",
+	"secrets",
+]);
+
+/** Tar one section's root directory into `tarball`; fail loud on error. */
+async function tarSection(sourceDir: string, tarball: string): Promise<void> {
+	// `-C source .` keeps the entries relative (settings.json, not
+	// /data/config/settings.json) and sidesteps tar's leading-`/` strip.
+	const result = await run("tar", ["-czf", tarball, "-C", sourceDir, "."]);
+	if (result.code !== 0) {
+		await rm(tarball, { force: true });
+		throw new Error(
+			`tar of ${sourceDir} failed with exit ${result.code}: ${result.stderr.trim()}`,
+		);
+	}
+}
+
+/** Upload one section tarball to the s3 target; fail loud when aws fails. */
+async function s3UploadSection(
+	backup: Extract<BackupConfig, { target: "s3" }>,
+	file: string,
+	name: string,
+): Promise<void> {
+	const target = `s3://${backup.bucket}/${backup.prefix ?? ""}${name}`;
+	const endpointArgs =
+		process.env.SIGRUN_BACKUP_S3_ENDPOINT === undefined
+			? []
+			: ["--endpoint-url", process.env.SIGRUN_BACKUP_S3_ENDPOINT];
+	const result = await run("aws", ["s3", "cp", file, target, ...endpointArgs]);
+	if (result.code !== 0) {
+		throw new Error(
+			`aws s3 cp of ${name} failed with exit ${result.code}: ${result.stderr.trim()}`,
+		);
+	}
+}
+
+/**
+ * The per-section opt-in (Task 7): for each enabled section, tar its
+ * store root (`resolveStoreRoots(process.env)` — the same chain boot
+ * uses) into `<section>-<UTC timestamp>.tar.gz` and ship it to the
+ * target. Sections whose content can carry secret files get mode 0600
+ * (fix round 1: config tars the same root as secrets — auth.json rides
+ * BOTH tarballs, and in-archive modes don't gate extraction, so the
+ * config ARCHIVE itself must be 0600 too or enabling `config` would
+ * defeat the secrets tarball's mode). No enabled sections → no-op.
+ */
+async function backupSections(backup: BackupConfig): Promise<void> {
+	const enabled = (Object.keys(SECTION_ROOTS) as Array<keyof BackupSections>).filter(
+		(name) => backup.sections?.[name] === true,
+	);
+	if (enabled.length === 0) return;
+	const roots = resolveStoreRoots(process.env);
+	for (const name of enabled) {
+		const tarballName = `${name}-${timestampSegment()}.tar.gz`;
+		if (backup.target === "path") {
+			const dest = join(backup.path, tarballName);
+			await tarSection(roots[SECTION_ROOTS[name]], dest);
+			if (SECRET_SECTIONS.has(name)) await chmod(dest, 0o600);
+		} else {
+			// Tar to the OS temp dir, upload, clean up — same shape as the
+			// DB's s3 leg (the upload is the move).
+			const tempFile = join(
+				await mkdtemp(join(tmpdir(), ".sigrun-backup-section-")),
+				tarballName,
+			);
+			try {
+				await tarSection(roots[SECTION_ROOTS[name]], tempFile);
+				await s3UploadSection(backup, tempFile, tarballName);
+			} finally {
+				await rm(tempFile, { force: true });
+				await rm(dirname(tempFile), { force: true, recursive: true });
+			}
+		}
 	}
 }
 
