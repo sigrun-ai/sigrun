@@ -1,7 +1,7 @@
 /**
  * UserEntry (B4, UI refresh): a `pi.user` TURN — the right-aligned bubble
- * (text parts + path markers for uploads, §5 path-parts) with the user's
- * MessageActions (Copy / Edit / Fork from here) beneath. The turn root
+ * (the text rendered as Markdown — B5's bubble variant — plus path
+ * markers for uploads, §5 path-parts) with the user's MessageActions (Copy / Edit / Fork from here) beneath. The turn root
  * carries data-turn-kind="user" + data-entry-id for the outline (B5).
  *
  * TurnList owns the fork/edit WIRING (it has the view and client);
@@ -10,6 +10,7 @@
  */
 
 import type { ConversationEntryWire } from "../api";
+import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
 import { attachmentParts, messageText } from "./content";
 
@@ -36,7 +37,7 @@ export function UserEntry(props: {
 			<div className="entry-user">
 				{(entry.model ?? []).map((message, index) => (
 					<div className="entry-user-message" key={index}>
-						{messageText(message)}
+						<Markdown source={messageText(message)} variant="bubble" />
 						{attachmentParts(message).map((part, partIndex) => (
 							<span className="entry-attachment" key={partIndex}>
 								[{part.type}: {part.path ?? "?"}]

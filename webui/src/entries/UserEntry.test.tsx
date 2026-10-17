@@ -78,6 +78,16 @@ describe("UserEntry", () => {
 		renderer.unmount();
 	});
 
+	test("user text renders as Markdown: **bold** becomes <strong>", () => {
+		const renderer = render(
+			h(UserEntry, { entry: userTurnEntry(1, "a **bold** move"), onFork: noop, onEdit: noop }),
+		);
+		const strongs = renderer.root.findAllByType("strong");
+		expect(strongs).toHaveLength(1);
+		expect(strongs[0]?.children).toEqual(["bold"]);
+		renderer.unmount();
+	});
+
 	test("renders MessageActions with Copy, Edit, and Fork from here", () => {
 		const onFork = vi.fn();
 		const onEdit = vi.fn();

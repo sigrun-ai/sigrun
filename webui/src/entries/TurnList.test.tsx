@@ -117,7 +117,9 @@ describe("TurnList: grouping and rendering", () => {
 		);
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("What is at the filesystem root?");
-		expect(text).toContain("The root has `bin` and `etc`.");
+		// Markdown renders the backticks as real inline code elements (B5);
+		// the plain-text tree reads the words only.
+		expect(text).toContain("The root has bin and etc.");
 		expect(text).toContain("Thinking · 1 tool");
 		// Collapsed: no thinking text, no tool preview.
 		expect(text).not.toContain("List the root directory first.");
@@ -160,6 +162,29 @@ describe("TurnList: grouping and rendering", () => {
 		});
 		expect(assistant).toHaveLength(1);
 		expect(assistant[0]?.props["data-entry-id"]).toBeUndefined();
+		renderer.unmount();
+	});
+
+	test("assistant prose renders Markdown: **bold** becomes <strong>", () => {
+		const view = makeView({
+			id: 1,
+			entries: [
+				userTurnEntry(1, "which files?"),
+				assistantTurnEntry(2, [textBlock("The root has **bin** and `etc`.")]),
+			],
+		});
+		const renderer = render(
+			h(TurnList, {
+				view,
+				showThinking: true,
+				onNavigate: () => {},
+				client: makeTurnClient().client,
+			}),
+		);
+		const prose = renderer.root.findByProps({ className: "turn-prose" });
+		const strongs = prose.findAllByType("strong");
+		expect(strongs).toHaveLength(1);
+		expect(strongs[0]?.children).toEqual(["bin"]);
 		renderer.unmount();
 	});
 

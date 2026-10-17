@@ -1,15 +1,16 @@
 /**
  * AssistantTurn (B4, UI refresh): one grouped assistant turn (B1's
- * groupTurns) — the turn's text (plain pre-wrap in B4; the Markdown
- * renderer lands in B5), the collapsed ActivityLine beneath it, and the
- * assistant's MessageActions (Copy / Fork from here) with the
- * `<model> · <n> tokens` meta label read from the last assistant message
- * carrying both. The turn root carries data-turn-kind="assistant".
+ * groupTurns) — the turn's text rendered as Markdown (B5's prose
+ * variant), the collapsed ActivityLine beneath it, and the assistant's
+ * MessageActions (Copy / Fork from here) with the `<model> · <n> tokens`
+ * meta label read from the last assistant message carrying both. The
+ * turn root carries data-turn-kind="assistant".
  */
 
 import type { ConversationEntryWire, SigrunClient, ToolSlotWire } from "../api";
 import type { ToolCall } from "../../../src/shared/turns.js";
 import { ActivityLine } from "./ActivityLine";
+import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
 
 /** The grouped assistant turn TurnList hands down (groupTurns' assistant variant). */
@@ -57,7 +58,11 @@ export function AssistantTurn(props: {
 	};
 	return (
 		<div className="turn turn-assistant" data-turn-kind="assistant">
-			{turn.text !== "" && <div className="turn-prose">{turn.text}</div>}
+			{turn.text !== "" && (
+				<div className="turn-prose">
+					<Markdown source={turn.text} variant="prose" />
+				</div>
+			)}
 			{(turn.thinking.length > 0 || turn.tools.length > 0) && (
 				<ActivityLine
 					conversationId={conversationId}

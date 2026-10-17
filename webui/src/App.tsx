@@ -26,6 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { displayName } from "../../src/shared/conversations.js";
+import { groupTurns } from "../../src/shared/turns.js";
 import {
 	createClient,
 	type ConversationSummary,
@@ -35,6 +36,7 @@ import {
 } from "./api";
 import { Composer } from "./composer/Composer";
 import { TurnList } from "./entries/TurnList";
+import { userText } from "./entries/UserEntry";
 import {
 	liveCompactionFailure,
 	liveCompactions,
@@ -42,6 +44,7 @@ import {
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
+import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
 import { useConversationList } from "./sessions/useConversationList";
@@ -125,6 +128,11 @@ function ChatCenter(props: {
 	readonly client: SigrunClient;
 	readonly onNavigate: (id: number) => void;
 	readonly parent?: { id: number; name: string };
+	/** Receives the transcript's scroll root (the outline jumps inside it). */
+	readonly onScrollRoot: (element: HTMLElement | null) => void;
+	/** The dock height as bottom padding, so the last message clears the
+	 *  composer dock that overlays the scroll area (the scroll fade, B5). */
+	readonly dockPadding: number;
 }) {
 	const { activeId, view, status, error, showThinking } = props;
 	if (activeId === null) {
@@ -145,6 +153,12 @@ function ChatCenter(props: {
 			className="chat-center"
 			data-view-status={status}
 			aria-label="chat transcript"
+			ref={props.onScrollRoot}
+			style={
+				props.dockPadding > 0
+					? { paddingBottom: `${props.dockPadding}px` }
+					: undefined
+			}
 		>
 			{error !== null && <p role="alert">{error}</p>}
 			{view === null ? (
@@ -189,6 +203,30 @@ export function App(options: AppOptions = {}) {
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [shellError, setShellError] = useState<string | null>(null);
+	// The scroll fade (B5): the composer dock overlays the transcript's
+	// bottom, so the transcript's bottom padding must equal the dock height
+	// (the last message stays scrollable clear of the dock). A ResizeObserver
+	// follows the dock — the composer's height moves with its tray/strip.
+	const [scrollRoot, setScrollRoot] = useState<HTMLElement | null>(null);
+	const [dockPadding, setDockPadding] = useState(0);
+	// Callback ref (React 19 ref cleanup): measure once, then follow resizes.
+	const dockRef = useCallback(
+		(dock: HTMLElement | null): (() => void) | undefined => {
+			if (dock === null) return undefined;
+			const measure = (): void => setDockPadding(dock.offsetHeight);
+			measure();
+			const Observer = (
+				globalThis as {
+					ResizeObserver?: new (callback: () => void) => ResizeObserver;
+				}
+			).ResizeObserver;
+			if (Observer === undefined) return undefined;
+			const observer = new Observer(measure);
+			observer.observe(dock);
+			return () => observer.disconnect();
+		},
+		[],
+	);
 	const { view, status, error } = useConversationView(activeId, {
 		createEventSource: options.createEventSource,
 	});
@@ -214,6 +252,19 @@ export function App(options: AppOptions = {}) {
 					: displayName(row),
 		};
 	}, [list.rows, activeId]);
+	// The outline's rows (B5): one per USER turn, from the same grouped
+	// turns the transcript renders — data-entry-id joins the panel to the
+	// turn roots TurnList emits.
+	const outlineTurns = useMemo(() => {
+		const items: { entryId: number; text: string }[] = [];
+		for (const turn of groupTurns(view?.entries ?? [])) {
+			if (turn.kind === "user") {
+				items.push({ entryId: turn.entry.id, text: userText(turn.entry) });
+			}
+		}
+		return items;
+	}, [view]);
+
 	const onSelect = useCallback((id: number) => {
 		setActiveId(id);
 		setDrawerOpen(false);
@@ -454,8 +505,14 @@ export function App(options: AppOptions = {}) {
 							client={client}
 							onNavigate={onSelect}
 							parent={parent}
+							onScrollRoot={setScrollRoot}
+							dockPadding={dockPadding}
 						/>
-						<footer className="composer-slot">
+						{/* The scroll fade (B5): the pointer-events-none gradient +
+						    mask + 1.5px blur band over the transcript bottom, under the
+						    composer dock that overlays the scroll area. */}
+						<div className="chat-fade" aria-hidden="true" />
+						<footer className="composer-slot" ref={dockRef}>
 							<Composer
 								client={client}
 								conversationId={activeId}
@@ -468,9 +525,7 @@ export function App(options: AppOptions = {}) {
 					<RightPanel
 						mode={panel}
 						outline={
-							<div className="right-panel-body">
-								<h4 className="right-panel-title">Outline</h4>
-							</div>
+							<OutlinePanel scrollRoot={scrollRoot} turns={outlineTurns} />
 						}
 						workspace={
 							<WorkspaceBrowser
