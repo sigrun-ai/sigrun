@@ -29,6 +29,7 @@ import {
 	ProcessTerminal,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
+import type { AccentName, ModeName, PaletteName } from "../../src/shared/themes.js";
 import { SigrunClient } from "./api.js";
 import { TuiApp } from "./ui/app.js";
 
@@ -37,6 +38,16 @@ export interface LaunchTuiShellOptions {
 	readonly baseUrl: string;
 	/** The `X-Sigrun-User` identity; absent = the server's naive mode. */
 	readonly user?: string;
+	/**
+	 * The UI refresh's tui.json fields (C1a threads them in from the CLI).
+	 * ACCEPT-AND-IGNORE for now: C1b's launcher rework consumes them
+	 * (palette/accent/mode build the theme; keymap/editor later).
+	 */
+	readonly palette?: PaletteName;
+	readonly accent?: AccentName;
+	readonly mode?: ModeName;
+	readonly keymap?: "standard" | "vim" | "emacs";
+	readonly editor?: string;
 }
 
 /**
