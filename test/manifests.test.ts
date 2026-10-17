@@ -436,6 +436,20 @@ describe("chart backup CronJob", () => {
 		expect(
 			backup.env.find((e) => e.name === "SIGRUN_STORAGE_PATH")?.value,
 		).toBe("/data/sigrun.db");
+		// Section roots (Task 7) resolve via resolveStoreRoots' tier 1 —
+		// the same dirs the Deployment pins. Without these, a
+		// sections-enabled CronJob resolves configDir to the image's
+		// /root/.config/sigrun (HOME defaults) and tars nonexistent dirs.
+		// No SIGRUN_CACHE_DIR: cache is never a backup section.
+		expect(
+			backup.env.find((e) => e.name === "SIGRUN_CONFIG_DIR")?.value,
+		).toBe("/data/config");
+		expect(
+			backup.env.find((e) => e.name === "SIGRUN_DATA_DIR")?.value,
+		).toBe("/data/data");
+		expect(
+			backup.env.find((e) => e.name === "SIGRUN_STATE_DIR")?.value,
+		).toBe("/data/state");
 		const mount = backup.volumeMounts.find((m) => m.mountPath === "/data");
 		expect(mount).toBeDefined();
 		// The Deployment's own PVC — the second process touching the sqlite

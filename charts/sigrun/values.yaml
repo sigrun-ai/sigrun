@@ -181,6 +181,19 @@ controllers:
           # empty = DB-only backup, the default.
           - name: SIGRUN_BACKUP_SECTIONS
             value: ""
+          # The store dirs the sections resolve through
+          # (resolveStoreRoots tier 1 — the same values as the
+          # Deployment): without them the CronJob pod resolves
+          # configDir to the image's /root/.config/sigrun and tars
+          # nonexistent dirs when sections are enabled. Cache is
+          # deliberately absent — never a backup section, so its root
+          # is never resolved on this path.
+          - name: SIGRUN_CONFIG_DIR
+            value: /data/config
+          - name: SIGRUN_DATA_DIR
+            value: /data/data
+          - name: SIGRUN_STATE_DIR
+            value: /data/state
         envFrom:
           # Core backup secret (spec §4.3): SIGRUN_BACKUP_PATH or
           # SIGRUN_BACKUP_S3_BUCKET/PREFIX, AWS_* credentials, and
