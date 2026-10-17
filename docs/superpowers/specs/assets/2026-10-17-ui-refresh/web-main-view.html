@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sigrun — refined main view (mockup)</title>
+<style>
+  :root {
+    --bg: #0d0c0b;
+    --surface: #161514;
+    --surface-2: #1d1c1a;
+    --border: #2a2826;
+    --text: #eae0d5;
+    --muted: #9a8f84;
+    --faint: #6b625a;
+    --accent: #c6ac8f;
+    --accent-bg: rgba(198,172,143,.12);
+    --ok: #8fb58a;
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --sans: Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
+  .note { position: fixed; bottom: 54px; left: 64px; max-width: 240px; z-index: 50; background: #2b2118; color: #e8c9a4; border: 1px solid #5a4430; border-radius: 8px; padding: 4px 12px; font-size: 12px; }
+
+  .app { display: grid; grid-template-columns: 52px 264px 1fr; height: 100vh; }
+
+  /* Section rail */
+  .rail { border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 4px; background: var(--bg); }
+  .brand { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--accent); font-size: 18px; margin-bottom: 14px; border: 1px solid var(--border); }
+  .rail-btn { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; color: var(--faint); cursor: pointer; position: relative; }
+  .rail-btn:hover { color: var(--text); background: var(--surface-2); }
+  .rail-btn.active { color: var(--text); background: var(--surface-2); }
+  .rail-btn.active::before { content: ""; position: absolute; left: -8px; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: var(--accent); }
+  .rail-btn svg { width: 18px; height: 18px; }
+  .rail-spacer { flex: 1; }
+  .health { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px rgba(143,181,138,.15); margin: 8px 0 10px; }
+
+  /* Sidebar */
+  .sidebar { border-right: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+  .side-head { padding: 14px 12px 8px; display: flex; gap: 8px; }
+  .search { flex: 1; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); color: var(--faint); font-size: 13px; }
+  .search kbd { margin-left: auto; font: 11px var(--mono); color: var(--faint); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+  .new-btn { width: 32px; height: 32px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); display: grid; place-items: center; cursor: pointer; }
+  .new-btn:hover { background: var(--surface-2); }
+  .group { padding: 10px 16px 4px; font-size: 11px; color: var(--faint); letter-spacing: .04em; }
+  .conv { margin: 1px 8px; padding: 7px 10px; border-radius: 6px; display: flex; align-items: baseline; gap: 8px; cursor: pointer; color: var(--muted); }
+  .conv:hover { background: var(--surface-2); color: var(--text); }
+  .conv.active { background: var(--accent-bg); color: var(--text); }
+  .conv .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv .time { font-size: 11px; color: var(--faint); }
+  .conv.fork { padding-left: 26px; }
+  .conv.fork .title::before { content: "↳ "; color: var(--faint); }
+  .conv .more { display: none; color: var(--faint); }
+  .conv:hover .more { display: inline; }
+  .conv:hover .time { display: none; }
+
+  /* Main */
+  .main { display: flex; flex-direction: column; min-height: 0; position: relative; }
+  .header { height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px 0 24px; border-bottom: 1px solid var(--border); }
+  .header h1 { font-size: 14px; font-weight: 600; margin: 0; }
+  .chip { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+  .header .spacer { flex: 1; }
+  .icon-btn { width: 30px; height: 30px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); cursor: pointer; }
+  .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  .icon-btn.on { color: var(--text); background: var(--surface-2); }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  .body { flex: 1; min-height: 0; display: flex; }
+  .chat { flex: 1; position: relative; min-width: 0; }
+  .scroll { position: absolute; inset: 0; overflow-y: auto; }
+  .col { max-width: 720px; margin: 0 auto; padding: 28px 24px 200px; }
+
+  /* Outline docked as a header-anchored panel */
+  .outline { width: 220px; flex: none; border-left: 1px solid var(--border); padding: 14px 10px; overflow-y: auto; }
+  .outline h4 { margin: 0 6px 8px; font-size: 11px; font-weight: 500; color: var(--faint); letter-spacing: .04em; }
+  .ol-item { display: block; padding: 6px 8px; border-radius: 6px; color: var(--muted); font-size: 12.5px; line-height: 1.35; cursor: pointer; border-left: 2px solid transparent; }
+  .ol-item:hover { background: var(--surface-2); color: var(--text); }
+  .ol-item.cur { color: var(--text); border-left-color: var(--accent); border-radius: 0 6px 6px 0; }
+
+  .turn-user { display: flex; flex-direction: column; align-items: flex-end; margin: 8px 0 22px; }
+  .bubble { max-width: 78%; background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px 14px 4px 14px; padding: 9px 14px; }
+  .bubble code { font: 12.5px var(--mono); background: rgba(255,255,255,.05); padding: 1px 4px; border-radius: 4px; }
+
+  .actions { display: flex; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity .12s; }
+  .turn-user:hover .actions, .turn-asst:hover .actions, .actions.show { opacity: 1; }
+  .act { height: 24px; padding: 0 6px; border-radius: 5px; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 12px; cursor: pointer; }
+  .act:hover { background: var(--surface-2); color: var(--text); }
+  .act svg { width: 14px; height: 14px; }
+
+  .turn-asst { margin-bottom: 28px; }
+  .activity { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 12.5px; cursor: pointer; padding: 2px 0; margin-bottom: 6px; }
+  .activity:hover { color: var(--muted); }
+  .activity .car { font-size: 10px; transition: transform .15s; }
+  .activity.open .car { transform: rotate(90deg); }
+  .act-detail { border-left: 1px solid var(--border); margin: 2px 0 12px 4px; padding: 2px 0 2px 14px; }
+  .trace { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 3px 0; }
+  .trace .ok { color: var(--ok); }
+  .trace code { font: 12px var(--mono); color: var(--text); }
+  .trace .dur { margin-left: auto; color: var(--faint); font-size: 11px; }
+  .thought { font-family: var(--serif); font-style: italic; color: var(--faint); font-size: 13.5px; padding: 3px 0; }
+
+  .prose { font-family: var(--serif); font-size: 15.5px; line-height: 1.65; }
+  .prose p { margin: 0 0 12px; }
+  .prose h3 { font-family: var(--sans); font-size: 15px; margin: 18px 0 8px; }
+  .prose code { font: 13px var(--mono); background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px; }
+  .prose ul { margin: 0 0 12px; padding-left: 20px; }
+
+  .tbl-wrap { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 6px 0 14px; font-family: var(--sans); }
+  .tbl-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 12px; color: var(--faint); }
+  .tbl-bar input { background: transparent; border: none; outline: none; color: var(--text); font: 12px var(--sans); flex: 1; }
+  .tbl-bar .n { margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  td { padding: 7px 10px; border-bottom: 1px solid #211f1d; }
+  tr:last-child td { border-bottom: none; }
+  .yes { color: var(--ok); }
+  .no { color: var(--faint); }
+
+  .code { position: relative; border: 1px solid var(--border); border-radius: 10px; background: #0a0908; margin: 6px 0 14px; }
+  .code-head { display: flex; justify-content: space-between; padding: 5px 10px; font: 11px var(--sans); color: var(--faint); border-bottom: 1px solid var(--border); }
+  .code pre { margin: 0; padding: 10px 12px; font: 12.5px/1.55 var(--mono); color: #d8cfc4; overflow-x: auto; }
+
+  /* Fade above composer */
+  .fade { position: absolute; left: 0; right: 0; bottom: 0; height: 190px; pointer-events: none;
+    background: linear-gradient(to bottom, rgba(13,12,11,0) 0%, rgba(13,12,11,.85) 45%, var(--bg) 70%);
+    backdrop-filter: blur(1.5px); -webkit-mask-image: linear-gradient(to bottom, transparent, #000 40%); mask-image: linear-gradient(to bottom, transparent, #000 40%); }
+
+  .composer-dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 24px 18px; }
+  .composer { max-width: 720px; margin: 0 auto; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 12px 12px 8px; }
+  .composer .ph { color: var(--faint); font-size: 14px; min-height: 40px; padding: 0 4px; }
+  .tb { display: flex; align-items: center; gap: 4px; }
+  .pill { height: 28px; padding: 0 9px; border-radius: 7px; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+  .pill:hover { background: var(--surface-2); color: var(--text); }
+  .pill svg { width: 15px; height: 15px; }
+  .pill .v { color: var(--faint); }
+  .tb .spacer { flex: 1; }
+  .ring { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; margin-right: 6px; }
+  .send { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: #1a1410; display: grid; place-items: center; cursor: pointer; }
+  .hint { max-width: 720px; margin: 6px auto 0; text-align: center; color: var(--faint); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <nav class="rail">
+    <div class="brand" title="sigrun">ᛋ</div>
+    <div class="rail-btn active" title="Chats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/></svg></div>
+    <div class="rail-btn" title="Board"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="10" rx="1.5"/><rect x="17" y="4" width="4" height="13" rx="1.5"/></svg></div>
+    <div class="rail-btn" title="Files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></div>
+    <div class="rail-btn" title="Memory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3a6 6 0 0 0-6 6c0 2.2 1.2 3.6 2 4.5V17h8v-3.5c.8-.9 2-2.3 2-4.5a6 6 0 0 0-6-6Z"/><path d="M9.5 20h5"/></svg></div>
+    <div class="rail-btn" title="Terminal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></div>
+    <div class="rail-spacer"></div>
+    <div class="health" title="All systems ok · backup unconfigured"></div>
+    <div class="rail-btn" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></div>
+  </nav>
+
+  <aside class="sidebar">
+    <div class="side-head">
+      <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search<kbd>⌘K</kbd></div>
+      <button class="new-btn" title="New conversation (⌘⇧O)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
+    <div class="group">Today</div>
+    <div class="conv active"><span class="title">Static site generators with i18n</span><span class="time">2m</span><span class="more">⋯</span></div>
+    <div class="conv fork"><span class="title">…Hugo deep dive</span><span class="time">1m</span><span class="more">⋯</span></div>
+    <div class="conv"><span class="title">Paris weather (no network)</span><span class="time">3h</span><span class="more">⋯</span></div>
+    <div class="group">Yesterday</div>
+    <div class="conv"><span class="title">Root filesystem layout</span><span class="time">1d</span><span class="more">⋯</span></div>
+    <div class="conv"><span class="title">Compare backup tools for S3</span><span class="time">1d</span><span class="more">⋯</span></div>
+    <div class="group">Earlier</div>
+    <div class="conv"><span class="title">Heat pump sizing notes</span><span class="time">Oct 9</span><span class="more">⋯</span></div>
+  </aside>
+
+  <main class="main">
+    <div class="header">
+      <h1>Static site generators with i18n</h1>
+      <span class="spacer"></span>
+      <div class="icon-btn on" title="Outline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg></div>
+      <div class="icon-btn" title="Workspace files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></div>
+      <div class="icon-btn" title="More (export, compact, rename, archive)"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></div>
+    </div>
+
+    <div class="body">
+      <div class="chat"><div class="scroll">
+        <div class="col">
+
+          <div class="turn-user">
+            <div class="bubble">Which static site generators support <strong>i18n</strong> out of the box? I care about build speed and whether translations live next to the content.</div>
+            <div class="actions">
+              <span class="act"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copy</span>
+              <span class="act"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20h4L19 9l-4-4L4 16Z"/></svg>Edit</span>
+              <span class="act"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11.5 7.5"/></svg>Fork</span>
+            </div>
+          </div>
+
+          <div class="turn-asst">
+            <div class="activity open"><span class="car">▶</span>Thought for 4s · searched 3 sites</div>
+            <div class="act-detail">
+              <div class="thought">Need the built-in i18n story per generator, not plugins. Check docs pages directly…</div>
+              <div class="trace"><span class="ok">✓</span>web_fetch <code>gohugo.io/content-management/multilingual</code><span class="dur">0.8s</span></div>
+              <div class="trace"><span class="ok">✓</span>web_fetch <code>docs.astro.build/en/guides/internationalization</code><span class="dur">1.1s</span></div>
+              <div class="trace"><span class="ok">✓</span>web_fetch <code>www.11ty.dev/docs/i18n</code><span class="dur">0.6s</span></div>
+            </div>
+            <div class="prose">
+              <p>Three of the common generators ship i18n in core; the rest rely on plugins. Here's how they compare on the two things you asked about:</p>
+              <div class="tbl-wrap">
+                <div class="tbl-bar"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input placeholder="Filter rows"><span class="n">8 rows</span></div>
+                <table>
+                  <tr><th>Generator</th><th>Built-in i18n</th><th>Translations beside content</th><th>Build speed</th></tr>
+                  <tr><td>Hugo</td><td class="yes">Yes</td><td class="yes">Yes</td><td>Very fast</td></tr>
+                  <tr><td>Astro</td><td class="yes">Yes</td><td class="yes">Yes</td><td>Fast</td></tr>
+                  <tr><td>Eleventy</td><td class="yes">Partial</td><td class="yes">Yes</td><td>Fast</td></tr>
+                  <tr><td>Docusaurus</td><td class="yes">Yes</td><td class="no">Separate tree</td><td>Moderate</td></tr>
+                  <tr><td>Jekyll</td><td class="no">Plugin</td><td class="no">Plugin-dependent</td><td>Slow</td></tr>
+                  <tr><td>Zola</td><td class="yes">Yes</td><td class="yes">Yes</td><td>Very fast</td></tr>
+                  <tr><td>Next.js (SSG)</td><td class="no">Routing only</td><td class="no">No</td><td>Moderate</td></tr>
+                  <tr><td>VitePress</td><td class="yes">Yes</td><td class="no">Separate tree</td><td>Fast</td></tr>
+                </table>
+              </div>
+              <p>If speed and co-located translations are the deciders, <strong>Hugo</strong> or <strong>Zola</strong> are the clean picks. A Hugo page with a translation sits right beside the original:</p>
+              <div class="code">
+                <div class="code-head"><span>tree</span><span class="act" style="height:18px">Copy</span></div>
+                <pre>content/
+  about.en.md
+  about.fr.md</pre>
+              </div>
+              <p>Want me to sketch a minimal Hugo config for two languages?</p>
+            </div>
+            <div class="actions show">
+              <span class="act"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>Copy</span>
+              <span class="act"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11.5 7.5"/></svg>Fork from here</span>
+              <span class="act" style="margin-left:auto">glm-5.3-flash · 1.2k tokens</span>
+            </div>
+          </div>
+
+          <div class="turn-user">
+            <div class="bubble">Yes — Hugo, English + French, French under <code>/fr/</code>.</div>
+          </div>
+
+          <div class="turn-asst">
+            <div class="activity"><span class="car">▶</span>Thought for 2s</div>
+            <div class="prose">
+              <p>Here's the smallest config that gives you English at the root and French under <code>/fr/</code>:</p>
+              <div class="tbl-wrap"><table>
+                <tr><th>Key</th><th>Value</th></tr>
+                <tr><td><code>defaultContentLanguage</code></td><td>en</td></tr>
+                <tr><td><code>defaultContentLanguageInSubdir</code></td><td>false</td></tr>
+              </table></div>
+              <p>Small tables like this one skip the filter bar.</p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      <div class="fade"></div>
+    <div class="composer-dock">
+      <div class="composer">
+        <div class="ph">Ask sigrun…</div>
+        <div class="tb">
+          <span class="pill" title="Attach files"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span class="pill">glm-5.3-flash <span class="v">▾</span></span>
+          <span class="pill">Thinking: medium <span class="v">▾</span></span>
+          <span class="spacer"></span>
+          <span class="ring" title="Context used: 4% of 128k"><svg width="16" height="16" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="#2a2826" stroke-width="2.5"/><circle cx="10" cy="10" r="7" fill="none" stroke="#c6ac8f" stroke-width="2.5" stroke-dasharray="44" stroke-dashoffset="42" transform="rotate(-90 10 10)"/></svg>4%</span>
+          <span class="send"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
+        </div>
+      </div>
+      <div class="hint">Enter to send · Shift+Enter for newline · / for commands</div>
+    </div>
+      </div>
+
+      <aside class="outline">
+        <h4>Outline</h4>
+        <div class="ol-item">Which static site generators support i18n out of the box?</div>
+        <div class="ol-item cur">Yes — Hugo, English + French, French under /fr/.</div>
+      </aside>
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

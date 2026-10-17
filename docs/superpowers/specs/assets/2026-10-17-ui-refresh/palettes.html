@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sigrun — palette options</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #111; color: #ddd; font: 14px/1.5 Inter, -apple-system, "Segoe UI", system-ui, sans-serif; padding: 28px 32px 60px; }
+  h2 { margin: 0 0 4px; font-size: 20px; }
+  .sub { color: #999; margin: 0 0 22px; max-width: 900px; }
+  .accents-global { display: flex; gap: 10px; align-items: center; margin: 0 0 22px; flex-wrap: wrap; }
+  .accents-global .lbl { color: #999; font-size: 12px; margin-right: 4px; }
+  .sw { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 6px; border-radius: 999px; border: 1px solid #333; cursor: pointer; font-size: 12px; color: #ccc; }
+  .sw i { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+  .sw.on { border-color: #ddd; color: #fff; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(620px, 1fr)); gap: 20px; }
+  .card { border: 1px solid #2c2c2c; border-radius: 12px; padding: 14px; cursor: pointer; background: #161616; transition: border-color .15s; }
+  .card:hover { border-color: #555; }
+  .card.selected { border-color: #e8e8e8; box-shadow: 0 0 0 1px #e8e8e8; }
+  .card-title { display: flex; align-items: baseline; gap: 10px; margin: 0 0 2px; }
+  .card-title h3 { margin: 0; font-size: 15px; }
+  .card-title .tag { font-size: 11px; color: #c9b07a; border: 1px solid #5a4b2c; border-radius: 999px; padding: 0 7px; }
+  .card p.d { margin: 0 0 12px; color: #999; font-size: 12.5px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .mini { border-radius: 9px; overflow: hidden; border: 1px solid var(--border); background: var(--bg); color: var(--text); display: grid; grid-template-columns: 18px 70px 1fr; height: 230px; font-size: 10.5px; }
+  .m-rail { border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 7px; padding-top: 8px; }
+  .m-rail b { width: 8px; height: 8px; border-radius: 2px; background: var(--faint); opacity: .7; }
+  .m-rail b.on { background: var(--accent); opacity: 1; }
+  .m-side { background: var(--surface); border-right: 1px solid var(--border); padding: 7px 5px; }
+  .m-search { height: 13px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); margin-bottom: 7px; }
+  .m-row { height: 15px; border-radius: 4px; padding: 0 5px; font-size: 8.5px; line-height: 15px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .m-row.on { background: var(--accent-bg); color: var(--text); }
+  .m-main { position: relative; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
+  .m-user { align-self: flex-end; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px 8px 2px 8px; padding: 4px 8px; max-width: 75%; }
+  .m-act { color: var(--faint); font-size: 9px; }
+  .m-act span { color: var(--ok); }
+  .m-prose { font-family: Georgia, "Iowan Old Style", serif; font-size: 11px; line-height: 1.5; }
+  .m-prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .m-prose code { font: 9.5px ui-monospace, Menlo, monospace; background: var(--code); padding: 0 3px; border-radius: 3px; }
+  .m-comp { margin-top: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 6px 7px; display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 9px; }
+  .m-comp .sp { flex: 1; }
+  .m-send { width: 16px; height: 16px; border-radius: 4px; background: var(--accent); }
+  .m-chip { border-radius: 4px; padding: 1px 4px; color: var(--muted); }
+
+  .accent-row { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+  .accent-row .lbl { font-size: 11px; color: #888; margin-right: 4px; }
+  .dot { width: 16px; height: 16px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
+  .dot.on { border-color: #eee; }
+</style>
+</head>
+<body>
+<h2>sigrun palettes (all four ship; default Polar Night + Baltic Amber)</h2>
+<p class="sub">Each card shows dark and light mode. The accent is independent and stays user-selectable; each palette has a default. Click a card to pick it, and click the dots to try other accents on that card.</p>
+
+<div class="accents-global">
+  <span class="lbl">Accent set (Norse-named):</span>
+  <span class="sw"><i style="background:#d6a24a"></i>Baltic Amber</span>
+  <span class="sw"><i style="background:#d9773a"></i>Ember</span>
+  <span class="sw"><i style="background:#c9505a"></i>Lingonberry</span>
+  <span class="sw"><i style="background:#8fb8d0"></i>Glacier</span>
+  <span class="sw"><i style="background:#5fd4a8"></i>Aurora</span>
+  <span class="sw"><i style="background:#b9c46a"></i>Lichen</span>
+  <span class="sw"><i style="background:#a993c9"></i>Heather</span>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<script>
+window.toggleSelect = window.toggleSelect || ((el) => { document.querySelectorAll(".card").forEach((c) => c.classList.remove("selected")); el.classList.add("selected"); });
+const ACCENTS = {
+  amber: { dark: '#d6a24a', light: '#a8741f' },
+  ember: { dark: '#d9773a', light: '#b8571c' },
+  lingonberry: { dark: '#d0606a', light: '#a83440' },
+  glacier: { dark: '#8fb8d0', light: '#2f6f93' },
+  aurora: { dark: '#5fd4a8', light: '#13866a' },
+  lichen: { dark: '#b9c46a', light: '#6f7a1f' },
+  heather: { dark: '#a993c9', light: '#6c4f99' },
+};
+
+const PALETTES = [
+  {
+    id: 'fjord', name: 'Fjord', tag: 'my pick',
+    desc: 'Cold slate-blue night, ice-white text. Pairs best with a warm accent: lamplight in a longhouse.',
+    accent: 'amber',
+    dark: { bg: '#0b0f13', surface: '#11171e', 'surface-2': '#18202a', border: '#222d39', text: '#dde6ee', muted: '#8d9cab', faint: '#5f6e7d', ok: '#7fbf9a', code: 'rgba(255,255,255,.06)' },
+    light: { bg: '#eef2f5', surface: '#ffffff', 'surface-2': '#e3e9ef', border: '#d3dbe3', text: '#18212a', muted: '#4d5b69', faint: '#8593a1', ok: '#2f8a5a', code: 'rgba(0,0,0,.05)' },
+  },
+  {
+    id: 'iron', name: 'Iron & Ember',
+    desc: 'Forge-dark charcoal with bone-coloured text. Neutral grey, so any accent sits well.',
+    accent: 'ember',
+    dark: { bg: '#0e0e0f', surface: '#161618', 'surface-2': '#1e1e21', border: '#2a2a2e', text: '#e6e1da', muted: '#9a958e', faint: '#66625d', ok: '#8fb58a', code: 'rgba(255,255,255,.06)' },
+    light: { bg: '#f3f1ee', surface: '#fbfaf8', 'surface-2': '#e9e6e1', border: '#dbd7d1', text: '#1c1b1a', muted: '#55524d', faint: '#8e8a84', ok: '#3e7a3a', code: 'rgba(0,0,0,.05)' },
+  },
+  {
+    id: 'aurora', name: 'Polar Night',
+    desc: 'Deep blue-black arctic sky. The aurora accent is the one bright note on a dark field.',
+    accent: 'aurora',
+    dark: { bg: '#090d16', surface: '#0f1524', 'surface-2': '#161e31', border: '#1f2942', text: '#e2e8f3', muted: '#8e9ab2', faint: '#5d6984', ok: '#5fd4a8', code: 'rgba(255,255,255,.06)' },
+    light: { bg: '#f0f3f9', surface: '#ffffff', 'surface-2': '#e4e9f3', border: '#d2d9e6', text: '#141b2b', muted: '#4b5670', faint: '#8691a8', ok: '#13866a', code: 'rgba(0,0,0,.05)' },
+  },
+  {
+    id: 'birch', name: 'Birch & Moss',
+    desc: 'Dark forest floor with birch-bark text. Earthy and calm, and the closest to hermes\u2019 warmth.',
+    accent: 'lichen',
+    dark: { bg: '#0d100d', surface: '#141a15', 'surface-2': '#1b221c', border: '#263027', text: '#e8e6dc', muted: '#9ba091', faint: '#666d60', ok: '#9cc48a', code: 'rgba(255,255,255,.06)' },
+    light: { bg: '#f3f2ea', surface: '#fbfbf6', 'surface-2': '#e7e7dc', border: '#d8d8ca', text: '#1b1e18', muted: '#525849', faint: '#8b9080', ok: '#4a7a35', code: 'rgba(0,0,0,.05)' },
+  },
+];
+
+function hexToRgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+function mini(vars, accentHex, mode) {
+  const el = document.createElement('div');
+  el.className = 'mini';
+  for (const [k, v] of Object.entries(vars)) el.style.setProperty('--' + k, v);
+  el.style.setProperty('--accent', accentHex);
+  el.style.setProperty('--accent-bg', hexToRgba(accentHex, mode === 'dark' ? .14 : .16));
+  el.innerHTML = `
+    <div class="m-rail"><b class="on"></b><b></b><b></b><b></b></div>
+    <div class="m-side"><div class="m-search"></div>
+      <div class="m-row on">SSG with i18n</div><div class="m-row">Paris weather</div><div class="m-row">Root filesystem</div><div class="m-row">S3 backup tools</div></div>
+    <div class="m-main">
+      <div class="m-user">Which SSGs do i18n?</div>
+      <div class="m-act">▸ Thought 4s · <span>✓</span> 3 sites</div>
+      <div class="m-prose"><b>Hugo</b> and <b>Zola</b> ship it in core, with translations beside content like <code>about.fr.md</code>. See the <a>Hugo docs</a>.</div>
+      <div class="m-comp"><span>+</span><span class="m-chip">glm-5.3-flash ▾</span><span class="sp"></span><span>4%</span><span class="m-send"></span></div>
+    </div>`;
+  return el;
+}
+
+const cards = document.getElementById('cards');
+for (const p of PALETTES) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.choice = p.id;
+  card.onclick = () => toggleSelect(card);
+  card.innerHTML = `<div class="card-title"><h3>${p.name}</h3>${p.tag ? `<span class="tag">${p.tag}</span>` : ''}</div><p class="d">${p.desc}</p>`;
+  const pair = document.createElement('div');
+  pair.className = 'pair';
+  card.appendChild(pair);
+  const row = document.createElement('div');
+  row.className = 'accent-row';
+  row.innerHTML = '<span class="lbl">accent</span>';
+  card.appendChild(row);
+  const render = (accentId) => {
+    pair.replaceChildren(mini(p.dark, ACCENTS[accentId].dark, 'dark'), mini(p.light, ACCENTS[accentId].light, 'light'));
+    row.querySelectorAll('.dot').forEach(d => d.classList.toggle('on', d.dataset.a === accentId));
+  };
+  for (const [id, a] of Object.entries(ACCENTS)) {
+    const d = document.createElement('span');
+    d.className = 'dot';
+    d.dataset.a = id;
+    d.title = id;
+    d.style.background = a.dark;
+    d.onclick = (e) => { e.stopPropagation(); render(id); };
+    row.appendChild(d);
+  }
+  render(p.accent);
+  cards.appendChild(card);
+}
+</script>
+</body>
+</html>
