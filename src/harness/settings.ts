@@ -68,8 +68,9 @@ import {
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+import { resolveStoreRoots } from "./stores.js";
 
 export interface SettingsStoreOptions {
 	/**
@@ -256,12 +257,13 @@ const SETTING_KEYS = [
 	"server",
 ] as const;
 
-/** Default settings directory (`~/.config/sigrun`). */
+/**
+ * Default settings directory: the ONE config-root chain
+ * (`resolveStoreRoots`, spec Decision 3) — `SIGRUN_CONFIG_DIR` →
+ * `$XDG_CONFIG_HOME`/sigrun → `~/.config/sigrun`.
+ */
 export function defaultSettingsDir(): string {
-	return process.env.SIGRUN_CONFIG_DIR !== undefined &&
-		process.env.SIGRUN_CONFIG_DIR !== ""
-		? process.env.SIGRUN_CONFIG_DIR
-		: join(homedir(), ".config", "sigrun");
+	return resolveStoreRoots(process.env).configDir;
 }
 
 /** Default file path: `<dir>/settings.json`. */

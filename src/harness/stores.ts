@@ -14,10 +14,12 @@
  *    `homedir()`, the join style of `defaultSettingsDir`).
  *
  * The empty-string-falls-through semantics (`undefined` OR `""` counts
- * as unset) match the existing `SIGRUN_CONFIG_DIR` call sites
- * (`defaultConfigDir` in src/cli.ts, `defaultSettingsDir` in
- * src/harness/settings.ts) — those stay as they are; this module is the
- * additive one-stop resolver for all four roots.
+ * as unset) predate this module and hold across the whole chain. The
+ * core config-dir helpers (`defaultConfigDir` in src/cli.ts,
+ * `defaultSettingsDir` in src/harness/settings.ts) delegate to
+ * `resolveStoreRoots` for their configDir — ONE chain everywhere, so
+ * settings/auth/packages/git can never split from the store roots
+ * (spec Decision 3).
  *
  * Resolution is CALL-TIME on the `env` PARAMETER (never `process.env`
  * directly, never cached): tests vary env per call, and boot reads the

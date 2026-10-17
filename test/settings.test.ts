@@ -53,11 +53,40 @@ describe("SettingsStore", () => {
 			if (before === undefined) delete process.env.SIGRUN_CONFIG_DIR;
 			else process.env.SIGRUN_CONFIG_DIR = before;
 		}
-		// Absent: the config-dir convention.
+		// Absent: the config-dir convention (XDG cleared so the DEFAULT
+		// tier is what's pinned, not a dev machine's XDG_CONFIG_HOME).
 		if (process.env.SIGRUN_CONFIG_DIR === undefined) {
-			expect(defaultSettingsDir()).toContain(
-				join(".config", "sigrun"),
-			);
+			const xdgBefore = process.env.XDG_CONFIG_HOME;
+			delete process.env.XDG_CONFIG_HOME;
+			try {
+				expect(defaultSettingsDir()).toContain(
+					join(".config", "sigrun"),
+				);
+			} finally {
+				if (xdgBefore !== undefined) process.env.XDG_CONFIG_HOME = xdgBefore;
+			}
+		}
+	});
+
+	test("the default dir honors the XDG tier (one chain, no split root)", () => {
+		// Spec Decision 3: settings/auth/packages/git resolve through the
+		// SAME chain as the extension store roots. SIGRUN_CONFIG_DIR unset
+		// + XDG_CONFIG_HOME set → $XDG_CONFIG_HOME/sigrun (the old 2-tier
+		// shape landed here at ~/.config/sigrun — the split root this
+		// pins away). Explicit env still wins over XDG.
+		const beforeCfg = process.env.SIGRUN_CONFIG_DIR;
+		const beforeXdg = process.env.XDG_CONFIG_HOME;
+		delete process.env.SIGRUN_CONFIG_DIR;
+		process.env.XDG_CONFIG_HOME = "/synthetic/xdg-config";
+		try {
+			expect(defaultSettingsDir()).toBe("/synthetic/xdg-config/sigrun");
+			process.env.SIGRUN_CONFIG_DIR = "/tmp/override-dir";
+			expect(defaultSettingsDir()).toBe("/tmp/override-dir");
+		} finally {
+			if (beforeCfg === undefined) delete process.env.SIGRUN_CONFIG_DIR;
+			else process.env.SIGRUN_CONFIG_DIR = beforeCfg;
+			if (beforeXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+			else process.env.XDG_CONFIG_HOME = beforeXdg;
 		}
 	});
 

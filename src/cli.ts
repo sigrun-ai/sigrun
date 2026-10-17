@@ -29,8 +29,8 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveStoreRoots } from "./harness/stores.js";
 import { pathToFileURL } from "node:url";
 import type { Env } from "./config.js";
 import { serve, type BootedServer } from "./serve.js";
@@ -115,15 +115,15 @@ export interface TuiFile {
 }
 
 /**
- * The config dir: `SIGRUN_CONFIG_DIR`, defaulting to
- * `~/.config/sigrun` when unset (the T5 deferred minor, absorbed in Task
- * 6 — mirroring `defaultSettingsDir()` in src/harness/settings.ts, the
- * server-side twin; `SIGRUN_CONFIG_DIR` itself stays env-only).
+ * The config dir: the ONE config-root chain (`resolveStoreRoots`,
+ * spec Decision 3) — `SIGRUN_CONFIG_DIR` → `$XDG_CONFIG_HOME`/sigrun
+ * → `~/.config/sigrun`, identical to `defaultSettingsDir()` in
+ * src/harness/settings.ts (both delegate to the same resolver, so
+ * settings/auth/packages/git can never split from the store roots);
+ * `SIGRUN_CONFIG_DIR` itself stays env-only.
  */
 export function defaultConfigDir(env: Env): string {
-	return env.SIGRUN_CONFIG_DIR !== undefined && env.SIGRUN_CONFIG_DIR !== ""
-		? env.SIGRUN_CONFIG_DIR
-		: join(homedir(), ".config", "sigrun");
+	return resolveStoreRoots(env).configDir;
 }
 
 /** Read `tui.json` (see {@link TuiFile}); `env` defaults to process.env. */

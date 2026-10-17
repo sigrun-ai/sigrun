@@ -8,7 +8,7 @@
  * `npm start` still runs src/index.ts unchanged).
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -123,6 +123,22 @@ describe("loadTuiFile", () => {
 	test("absent tui.json → empty file", async () => {
 		const dir = await tmpConfigDir();
 		expect(await loadTuiFile({ SIGRUN_CONFIG_DIR: dir })).toEqual({});
+	});
+
+	test("XDG tier resolves the config dir (one chain with the store roots)", async () => {
+		// Spec Decision 3: defaultConfigDir delegates to resolveStoreRoots,
+		// so XDG_CONFIG_HOME (set + SIGRUN_CONFIG_DIR unset) lands tui.json
+		// under $XDG_CONFIG_HOME/sigrun — never a split from the stores.
+		const dir = await tmpConfigDir();
+		await mkdir(join(dir, "sigrun"), { recursive: true });
+		await writeFile(
+			join(dir, "sigrun", "tui.json"),
+			JSON.stringify({ user: "acme-xdg-user" }),
+			"utf8",
+		);
+		expect(await loadTuiFile({ XDG_CONFIG_HOME: dir })).toEqual({
+			user: "acme-xdg-user",
+		});
 	});
 
 	test("present tui.json → its user/server fields", async () => {
