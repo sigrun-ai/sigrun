@@ -8,8 +8,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-/** How long the Copy button's label reads "Copied" (ms). */
-const COPIED_RESET_MS = 1500;
+/** How long a Copy label reads "Copied" (ms) — shared by the markdown
+ *  code block's Copy button (B5). */
+export const COPIED_RESET_MS = 1500;
 
 /**
  * Copy text through the async clipboard API. Best-effort: an absent

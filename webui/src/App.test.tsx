@@ -423,6 +423,58 @@ describe("App shell", () => {
 		);
 	});
 
+	test("the Outline panel lists the conversation's user prompts; the scroll fade rides above the composer dock", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		act(() => {
+			sources[0]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						entries: [
+							makeEntry(
+								"pi.user",
+								[textMessage("user", "What is at the filesystem root?")],
+								{ id: 10, conversationId: 1 },
+							),
+							makeEntry(
+								"pi.assistant",
+								[textMessage("assistant", "The root has `bin` and `etc`.")],
+								{ id: 11, conversationId: 1 },
+							),
+							makeEntry(
+								"pi.user",
+								[textMessage("user", "Yes — Hugo, English + French")],
+								{ id: 12, conversationId: 1 },
+							),
+						],
+					}),
+				),
+			);
+		});
+		await clickPanel(renderer, "outline");
+		const panel = renderer.root.findByProps({ className: "right-panel" });
+		const items = panel.findAllByProps({ className: "outline-item" });
+		expect(items).toHaveLength(2);
+		expect(items[0]?.props["data-entry-id"]).toBe(10);
+		expect(items[1]?.props["data-entry-id"]).toBe(12);
+		expect(textContent(renderer.toJSON())).toContain(
+			"What is at the filesystem root?",
+		);
+		expect(textContent(renderer.toJSON())).toContain(
+			"Yes — Hugo, English + French",
+		);
+		// The scroll fade (B5): one pointer-events-none overlay over the
+		// transcript bottom, ahead of the composer dock.
+		expect(
+			renderer.root.findAllByProps({ className: "chat-fade" }),
+		).toHaveLength(1);
+		renderer.unmount();
+	});
+
 	test("the rail's Settings button opens the settings panel", async () => {
 		const { client, createEventSource } = makeHarness();
 		const renderer = await renderAsync(
