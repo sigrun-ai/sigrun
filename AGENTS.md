@@ -6,6 +6,8 @@ Guidance for coding agents working in this repository.
 
 - `src/` — harness + server (`src/index.ts` = boot, `src/config.ts` = config
   surface, `src/harness/` = pi-durable wiring, `src/server/` = HTTP routes).
+- `src/harness/stores.ts` — store roots, extension slug, secrets/settings
+  stores; boot ensures roots (author-facing contract in `docs/extending.md`).
 - `webui/` — npm workspace package (`@sigrun/webui`, vite + react). Built
   bundle lands at `webui/dist` (the default `server.webuiBundle`).
 - `tui/` — npm workspace package (`@sigrun/tui`, pi-tui terminal client).
