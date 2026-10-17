@@ -221,7 +221,7 @@ body {
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
 }
 
-/* ── sessions sidebar (the mockup's 264px column; B3 restyles the rows) */
+/* ── sessions sidebar (the mockup's 264px column; B3's grouped rows) ─── */
 
 .session-list {
 	width: 264px;
@@ -234,77 +234,273 @@ body {
 	padding: 0.4rem;
 }
 
+/* Search + new: the mockup's side-head row (search grows, + stays 32px). */
+
+.session-search-row {
+	display: flex;
+	gap: 8px;
+	margin: 4px 2px 6px;
+}
+
+.session-search {
+	flex: 1;
+	min-width: 0;
+	height: 32px;
+	padding: 0 10px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: var(--bg);
+	color: var(--text);
+	font: inherit;
+	font-size: 13px;
+}
+
+.session-search::placeholder {
+	color: var(--faint);
+}
+
+.session-search:focus-visible {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.session-new {
+	width: 32px;
+	height: 32px;
+	flex: none;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text);
+	cursor: pointer;
+}
+
+.session-new:hover,
+.session-new:focus-visible {
+	background: var(--surface-2);
+}
+
+.session-new svg {
+	width: 16px;
+	height: 16px;
+}
+
 .session-list ul {
 	list-style: none;
-	margin: 0.5rem 0 0;
+	margin: 0.25rem 0 0;
 	padding: 0;
 	overflow: auto;
 	flex: 1;
 }
 
-.session-new {
-	width: 100%;
-	padding: 0.4rem 0.6rem;
-	border: 1px solid var(--border);
-	border-radius: 8px;
-	background: transparent;
-	color: var(--text);
-	font: inherit;
-	cursor: pointer;
-}
-
-.session-new:hover {
-	background: var(--surface-2);
+/* Group headings (Pinned / Today / Yesterday / Earlier). */
+.session-group {
+	padding: 10px 16px 4px;
+	font-size: 11px;
+	letter-spacing: 0.04em;
+	color: var(--faint);
 }
 
 .session-item {
+	/* Fixed row metrics for EVERY name length (the 200-char contract). */
+	position: relative;
 	display: flex;
 	align-items: center;
-	gap: 0.4rem;
-	margin: 0.15rem 0;
-	border-radius: 7px;
+	gap: 6px;
+	min-height: 32px;
+	margin: 1px 8px;
+	padding: 0 6px 0 10px;
+	border-radius: 6px;
+	color: var(--muted);
+}
+
+.session-item:hover,
+.session-item:focus-within {
+	background: var(--surface-2);
+	color: var(--text);
+}
+
+.session-item-active {
+	background: var(--accent-bg);
+	color: var(--text);
+}
+
+.session-fork-mark {
+	flex: none;
+	width: 14px;
+	color: var(--faint);
+	font-size: 12px;
+	text-align: right;
 }
 
 .session-select {
 	flex: 1;
+	min-width: 0;
+	display: block;
 	text-align: left;
-	padding: 0.5rem 0.6rem;
+	padding: 6px 0;
 	border: none;
-	border-radius: 7px;
 	background: transparent;
-	color: var(--muted);
+	color: inherit;
 	cursor: pointer;
 	font: inherit;
-	white-space: nowrap;
+}
+
+/* The single-line ellipsis element (the 200-char-name contract): ONE
+   element owns the name; it never wraps and never changes row height. */
+.session-name {
+	display: block;
 	overflow: hidden;
+	white-space: nowrap;
 	text-overflow: ellipsis;
-	min-width: 0;
 }
 
-.session-select:hover {
-	background: var(--surface-2);
+.session-age {
+	flex: none;
+	font-size: 11px;
+	color: var(--faint);
+}
+
+.session-row-actions {
+	flex: none;
+	display: flex;
+	position: relative;
+}
+
+.session-menu-toggle {
+	width: 22px;
+	height: 22px;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--faint);
+	cursor: pointer;
+	font-size: 13px;
+	line-height: 1;
+}
+
+.session-menu-toggle svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* Hover/focus swaps the age for the ⋯ menu (keyboard focus reaches it:
+   focus-within on the row reveals the toggle, then Tab lands on it). */
+.session-menu-toggle {
+	opacity: 0;
+	transition: opacity 0.08s ease;
+}
+
+/* The age fades OUT as the menu fades IN (hover or keyboard focus). */
+.session-item:hover .session-menu-toggle,
+.session-item:focus-within .session-menu-toggle {
+	opacity: 1;
+}
+
+.session-item:hover .session-age,
+.session-item:focus-within .session-age {
+	opacity: 0;
+}
+
+.session-menu-toggle:hover,
+.session-menu-toggle:focus-visible {
 	color: var(--text);
+	background: var(--bg);
 }
 
-.session-item-active .session-select {
+/* The per-row menu (same surface as the header's ⋯ menu). */
+.session-menu {
+	position: absolute;
+	top: 24px;
+	right: 0;
+	z-index: 30;
+	min-width: 130px;
+	display: flex;
+	flex-direction: column;
+	padding: 4px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--surface-2);
+	box-shadow: 0 8px 24px rgb(0 0 0 / 30%);
+}
+
+.session-menu button {
+	padding: 6px 10px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	font-size: 13px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.session-menu button:hover,
+.session-menu button:focus-visible {
 	background: var(--accent-bg);
+}
+
+.session-rename-input {
+	flex: 1;
+	min-width: 0;
+	padding: 3px 6px;
+	border: 1px solid var(--accent);
+	border-radius: 6px;
+	background: var(--bg);
+	color: var(--text);
+	font: inherit;
+	font-size: 13px;
+}
+
+.session-empty {
+	padding: 16px;
+	color: var(--faint);
+	font-size: 13px;
+	text-align: center;
+}
+
+.session-archived-toggle {
+	flex: none;
+	margin: 6px 8px 2px;
+	padding: 5px 10px;
+	width: calc(100% - 16px);
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--faint);
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.session-archived-toggle:hover,
+.session-archived-toggle:focus-visible {
+	background: var(--surface-2);
+	color: var(--muted);
+}
+
+.session-archived-toggle[aria-pressed="true"] {
 	color: var(--text);
 }
 
 /* Archived conversations render dimmed. */
 .session-item-archived {
-	opacity: 0.5;
+	opacity: 0.55;
 }
 
-.session-archive {
-	flex: none;
-	padding: 0.2rem 0.45rem;
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	background: transparent;
-	color: var(--muted);
-	font-size: 0.75rem;
-	cursor: pointer;
+/* The sidebar's list-load failure line (App renders it above the rows). */
+.side-error {
+	margin: 0;
+	padding: 6px 10px;
+	color: var(--danger);
+	font-size: 12px;
 }
 
 /* ── main column: header + (chat | right panel) ─────────────────────── */

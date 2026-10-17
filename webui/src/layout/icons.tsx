@@ -101,6 +101,15 @@ export function WorkspaceIcon(props: IconProps) {
 	);
 }
 
+/** The sidebar's new-conversation button (a plus). */
+export function PlusIcon(props: IconProps) {
+	return (
+		<Svg {...props}>
+			<path d="M12 5v14M5 12h14" />
+		</Svg>
+	);
+}
+
 /** The ⋯ more-actions menu (three dots, filled). */
 export function MoreIcon(props: IconProps) {
 	return (
