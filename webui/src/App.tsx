@@ -195,13 +195,19 @@ function ChatCenter(props: {
 
 export function App(options: AppOptions = {}) {
 	const client = options.client ?? defaultClient;
-	useTheme();
+	// The theme hook runs here for its root-application side effect; the
+	// STATE feeds the settings panel's Interface section (B7) — its picks
+	// apply immediately through this instance.
+	const theme = useTheme();
 	const prefsState: PrefsState = usePrefs();
 	const [boot, setBoot] = useState<Boot>({ status: "loading" });
 	const [activeId, setActiveId] = useState<number | null>(null);
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	// The action-failure strip (rename/fork/new/export/compact). A SUCCESS
+	// of any later action clears it — a stale failure must not outlive the
+	// next thing that worked.
 	const [shellError, setShellError] = useState<string | null>(null);
 	// The scroll fade (B5): the composer dock overlays the transcript's
 	// bottom, so the transcript's bottom padding must equal the dock height
@@ -344,6 +350,7 @@ export function App(options: AppOptions = {}) {
 			try {
 				await client.patchConversationMeta(id, { name });
 				await list.reload();
+				setShellError(null);
 			} catch (cause) {
 				setShellError(
 					`rename failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -367,6 +374,7 @@ export function App(options: AppOptions = {}) {
 			try {
 				await client.patchConversationMeta(id, { archived });
 				await list.reload();
+				setShellError(null);
 			} catch (cause) {
 				setShellError(
 					`archive failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -383,6 +391,7 @@ export function App(options: AppOptions = {}) {
 				.then(async (created) => {
 					await list.reload(); // the fork row (nested under its parent)
 					onSelect(created.id); // navigate to the new conversation
+					setShellError(null);
 				})
 				.catch((cause: unknown) =>
 					setShellError(
@@ -399,6 +408,7 @@ export function App(options: AppOptions = {}) {
 			.then(async (created) => {
 				await list.reload();
 				onSelect(created.id);
+				setShellError(null);
 			})
 			.catch((cause: unknown) =>
 				setShellError(
@@ -411,7 +421,10 @@ export function App(options: AppOptions = {}) {
 		if (activeId === null) return;
 		client
 			.exportConversation(activeId)
-			.then((jsonl) => downloadText(`sigrun-conversation-${activeId}.jsonl`, jsonl))
+			.then((jsonl) => {
+				downloadText(`sigrun-conversation-${activeId}.jsonl`, jsonl);
+				setShellError(null);
+			})
 			.catch((cause: unknown) =>
 				setShellError(
 					`export failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -423,6 +436,7 @@ export function App(options: AppOptions = {}) {
 		if (activeId === null) return;
 		client
 			.compact(activeId)
+			.then(() => setShellError(null))
 			.catch((cause: unknown) =>
 				setShellError(
 					`compact failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -558,6 +572,7 @@ export function App(options: AppOptions = {}) {
 				<SettingsPanel
 					client={client}
 					prefsState={prefsState}
+					theme={theme}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}

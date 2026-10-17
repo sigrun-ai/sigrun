@@ -2047,10 +2047,12 @@ body {
 	margin: 0;
 }
 
+/* Labels (B7): sentence case in the sans stack — the mono field ids are
+   gone; these read as prose labels now. */
 .settings-label {
-	font-size: 11px;
-	color: var(--faint);
-	font-family: var(--mono);
+	font-size: 12px;
+	color: var(--muted);
+	font-family: var(--sans);
 }
 
 .settings-checkbox {
@@ -2086,6 +2088,125 @@ body {
 	font-size: 11px;
 	color: var(--faint);
 	margin: 0;
+}
+
+/* Selects (B7): appearance:none + token colours (the native menu chrome
+   never follows the palette). The wrap carries the caret glyph — the one
+   token-coloured affordance a background-image cannot be. */
+.settings-select-wrap {
+	position: relative;
+	width: fit-content;
+	max-width: 100%;
+}
+
+.settings-select-wrap::after {
+	content: "\25BE";
+	position: absolute;
+	right: 0.55rem;
+	top: 50%;
+	transform: translateY(-50%);
+	color: var(--muted);
+	font-size: 11px;
+	pointer-events: none;
+}
+
+.settings-field select {
+	appearance: none;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0.35rem 1.7rem 0.35rem 0.6rem;
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+	max-width: 100%;
+}
+
+/* The theme controls (B7 Interface section): a mode segmented control,
+   palette swatches previewing bg + text + default accent, and round
+   accent dots with their labels in title. */
+
+.settings-mode-row {
+	display: flex;
+	gap: 3px;
+	padding: 3px;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	width: fit-content;
+}
+
+.settings-mode {
+	border: none;
+	background: transparent;
+	color: var(--muted);
+	padding: 0.25rem 0.85rem;
+	border-radius: 6px;
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.settings-mode:hover {
+	color: var(--text);
+}
+
+.settings-mode[aria-pressed="true"] {
+	background: var(--surface-2);
+	color: var(--text);
+	box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.settings-palettes {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.settings-palette {
+	width: 56px;
+	height: 34px;
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	padding: 0;
+}
+
+.settings-palette[aria-pressed="true"] {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.settings-swatch-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex: none;
+}
+
+.settings-accents {
+	display: flex;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.settings-accent {
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	border: 1px solid var(--border);
+	cursor: pointer;
+	padding: 0;
+}
+
+.settings-accent[aria-pressed="true"] {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
 }
 
 .settings-thinking {
@@ -2125,6 +2246,16 @@ body {
 }
 
 /* ── interaction cards (the seam's pending stack) ───────────────────── */
+
+/* The seam zones inside the B5 composer dock: a tall pending stack (or
+   ambient column) must never grow the dock past the viewport — cap and
+   scroll, so every card stays reachable (the dock anchors to the bottom
+   and would otherwise clip its own top). */
+.interaction-cards,
+.ambient-panels {
+	max-height: 40vh;
+	overflow-y: auto;
+}
 
 .interaction-cards {
 	display: flex;

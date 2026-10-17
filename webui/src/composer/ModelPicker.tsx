@@ -13,10 +13,12 @@
  * Keyboard (the combobox-lite pattern the slash menu uses): the toggle
  * holds focus; Enter/Space/ArrowDown opens, ArrowUp/ArrowDown move the
  * highlight (aria-activedescendant names it), Enter picks, Escape closes.
+ * Outside-click + Esc close the popover too (useDismiss, B7 polish).
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ModelEntry } from "../api";
+import { useDismiss } from "../useDismiss";
 
 export function ModelPicker(props: {
 	/** The catalog (the §5 picker fields — no provider internals). */
@@ -34,6 +36,8 @@ export function ModelPicker(props: {
 	const { models, current, disabled, onPick } = props;
 	const [open, setOpen] = useState(false);
 	const [highlight, setHighlight] = useState(0);
+	const pickerSlot = useRef<HTMLSpanElement | null>(null);
+	useDismiss(open, () => setOpen(false), pickerSlot);
 
 	// The picker convention (see the module comment).
 	if (models.length <= 1) return null;
@@ -99,7 +103,7 @@ export function ModelPicker(props: {
 	}
 
 	return (
-		<span className="composer-picker">
+		<span className="composer-picker" ref={pickerSlot}>
 			<button
 				type="button"
 				className="composer-pill"

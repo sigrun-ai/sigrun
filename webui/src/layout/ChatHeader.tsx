@@ -2,18 +2,20 @@
  * ChatHeader (B2, UI refresh): the 48px header over the chat pane.
  *
  * - The conversation title, click → an inline rename input (Enter saves
- *   through `onRename` and closes after it resolves, Esc cancels).
+ *   through `onRename`; blur COMMITS like Enter, Esc cancels).
  * - The Outline / Workspace panel toggles (`aria-pressed`; App closes the
  *   panel when the active mode is clicked again).
  * - The `⋯` menu: Export, Compact, Rename, Archive — each forwarding its
- *   App-owned action (Rename reuses the inline input).
+ *   App-owned action (Rename reuses the inline input). Outside-click +
+ *   Esc close it (useDismiss).
  * - The narrow-viewport drawer toggle (CSS shows it ≤900px only, where
  *   the rail + sidebar collapse into the drawer).
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MenuIcon, MoreIcon, OutlineIcon, WorkspaceIcon } from "./icons";
 import type { PanelMode } from "./RightPanel";
+import { useDismiss } from "../useDismiss";
 
 export type { PanelMode } from "./RightPanel";
 
@@ -48,6 +50,8 @@ export function ChatHeader(props: {
 	const [renaming, setRenaming] = useState(false);
 	const [draft, setDraft] = useState(title);
 	const [menuOpen, setMenuOpen] = useState(false);
+	const menuSlot = useRef<HTMLSpanElement | null>(null);
+	useDismiss(menuOpen, () => setMenuOpen(false), menuSlot);
 
 	const beginRename = () => {
 		setDraft(title);
@@ -89,7 +93,9 @@ export function ChatHeader(props: {
 					className="chat-title-input"
 					value={draft}
 					aria-label="conversation name"
+					autoFocus
 					onChange={(event) => setDraft(event.target.value)}
+					onBlur={commitRename}
 					onKeyDown={(event) => {
 						if (event.key === "Enter") commitRename();
 						else if (event.key === "Escape") cancelRename();
@@ -128,7 +134,7 @@ export function ChatHeader(props: {
 			>
 				<WorkspaceIcon />
 			</button>
-			<span className="chat-menu-slot">
+			<span className="chat-menu-slot" ref={menuSlot}>
 				<button
 					type="button"
 					className="icon-btn"

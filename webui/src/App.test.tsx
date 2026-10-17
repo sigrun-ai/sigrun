@@ -46,7 +46,11 @@ function makeMeta(init?: {
 function makeHarness(init?: {
 	readonly meta?: MetaResponse;
 	readonly metaFails?: boolean;
+	/** Serve a 500 for the FIRST conversation-meta PATCH, then succeed (the
+	 * shell-error recovery test's scripted failure). */
+	readonly failFirstMetaPatch?: boolean;
 }) {
+	let metaPatchFails = init?.failFirstMetaPatch === true;
 	const metas: Record<number, ConversationMeta> = {
 		1: {
 			pinned: false,
@@ -106,6 +110,15 @@ function makeHarness(init?: {
 		let body: unknown;
 		if (metaMatch !== null) {
 			const id = Number(metaMatch[1]);
+			if (init2?.method === "PATCH" && metaPatchFails) {
+				metaPatchFails = false;
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					json: () => Promise.resolve({ message: "meta write failed" }),
+					text: () => Promise.resolve("meta write failed"),
+				});
+			}
 			if (init2?.method === "PATCH") {
 				// The server-side merge: a name/archived patch updates the
 				// summary the list serves (the reload re-reads it).
@@ -473,6 +486,36 @@ describe("App shell", () => {
 			renderer.root.findAllByProps({ className: "chat-fade" }),
 		).toHaveLength(1);
 		renderer.unmount();
+	});
+
+	test("a shell error clears when a later action succeeds", async () => {
+		const { client, createEventSource } = makeHarness({
+			failFirstMetaPatch: true,
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const more = renderer.root.findByProps({ "aria-label": "more actions" });
+		const archive = async (): Promise<void> => {
+			await act(async () => {
+				(more.props as { onClick: () => unknown }).onClick();
+			});
+			await act(async () => {
+				await (
+					renderer.root.findByProps({ "data-menu-action": "archive" })
+						.props as { onClick: () => unknown }
+				).onClick();
+			});
+		};
+		await archive();
+		expect(
+			renderer.root.findAllByProps({ className: "shell-error" }),
+		).toHaveLength(1);
+		// The retry succeeds — the stale failure must not outlive it.
+		await archive();
+		expect(
+			renderer.root.findAllByProps({ className: "shell-error" }),
+		).toHaveLength(0);
 	});
 
 	test("the rail's Settings button opens the settings panel", async () => {

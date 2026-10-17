@@ -49,6 +49,7 @@
 	"homepage": "https://github.com/sigrun-ai/sigrun#readme",
 	"files": [
 		"src",
+		"THIRD_PARTY_NOTICES.md",
 		"webui/src",
 		"!webui/src/**/*.test.ts",
 		"!webui/src/**/*.test.tsx",
