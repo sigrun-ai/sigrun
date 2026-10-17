@@ -22,6 +22,11 @@
  * key entirely. The merge runs as a read-modify-write inside ONE
  * `Conversation.commit` callback, so concurrent patches cannot lose each
  * other's fields (the mutation line serializes commits).
+ *
+ * Server-owned fields (`autoName`, `autoNameAttempts`, `lastActivityAt`)
+ * are written by host code only (activity.ts, the A2 auto-namer); they
+ * are NOT patch surface — the strict validator keeps rejecting them as
+ * `invalid_field`.
  */
 
 import type { Draft } from "@earendil-works/chord";
@@ -47,6 +52,20 @@ export type SessionMeta = {
 	owner?: string;
 	/** The user-facing session name; absent = unnamed (T5d). */
 	name?: string;
+	/**
+	 * Server-owned automatic name (the auto-namer writes it, A2); the
+	 * listing serves it only while `name` is unset. NEVER patchable — the
+	 * strict validator rejects the key as `invalid_field`.
+	 */
+	autoName?: string;
+	/** Server-owned: the auto-namer's attempt count (A2). Never patchable. */
+	autoNameAttempts?: number;
+	/**
+	 * Server-owned: the last activity instant, ISO 8601 (`activity.ts`
+	 * stamps it at submission admission and run settlement). Never
+	 * patchable — the strict validator rejects the key as `invalid_field`.
+	 */
+	lastActivityAt?: string;
 };
 
 /** What a never-written doc — and every explicit `null` clear — means. */

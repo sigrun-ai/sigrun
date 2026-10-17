@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
+import { wireActivity } from "./activity.js";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
@@ -183,6 +184,12 @@ export interface OpenedHarness {
 	 * request like the §3 health producers.
 	 */
 	readonly workerStatuses: () => ReadonlyMap<string, readonly WorkerStatus[]>;
+	/**
+	 * The activity clock (UI refresh A1): what `touchActivity` stamps
+	 * `lastActivityAt` from. Defaults to the real clock; overridable so
+	 * tests pin the instant.
+	 */
+	readonly now: () => Date;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -254,6 +261,11 @@ export interface OpenHarnessOptions {
 		 */
 		readonly workerDeadlineMs?: number;
 	};
+	/**
+	 * The activity clock (UI refresh A1), default `() => new Date()` — the
+	 * seam `lastActivityAt` stamps come from, overridable so tests pin time.
+	 */
+	readonly now?: () => Date;
 }
 
 /**
@@ -515,6 +527,13 @@ export async function openHarness(
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
 	});
+	// Activity stamping (UI refresh A1): every settled run stamps its
+	// conversation's `lastActivityAt` (the admission-side stamp lives in the
+	// submissions route). Registered directly after the bus opens — host-owned
+	// machinery, ahead of every extension registration (install order = run
+	// order). The bus's close stops delivery; the unsubscribe is unused.
+	const now = options.now ?? (() => new Date());
+	wireActivity(eventBus, harness, now);
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
 		handlersByName.set(binding.extension.name, {
@@ -581,5 +600,6 @@ export async function openHarness(
 		seamKinds,
 		eventBus,
 		workerStatuses: () => eventBus.workerStatuses(),
+		now,
 	};
 }

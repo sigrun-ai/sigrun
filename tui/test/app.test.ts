@@ -23,12 +23,18 @@ import type { Unwatch, WatchHandlers, WatchOptions } from "../src/sse.js";
 
 // ─── Stub client (the brief's "against a stub client") ──────────────────
 
-function summary(id: number, init?: { owner?: string }): ConversationSummary {
+function summary(
+	id: number,
+	init?: { owner?: string; archived?: boolean; name?: string },
+): ConversationSummary {
 	return {
 		id,
 		root: false,
 		entryCount: 0,
+		archived: init?.archived ?? false,
+		pinned: false,
 		...(init?.owner === undefined ? {} : { owner: init.owner }),
+		...(init?.name === undefined ? {} : { name: init.name }),
 	};
 }
 
@@ -42,11 +48,15 @@ function view(id: number, entries: unknown[]): ConversationViewWire {
 }
 
 function stubClient(init: {
-	metas?: Record<number, { archived?: boolean; name?: string }>;
+	/** Per-id sidebar metadata the summaries carry (A1: one request). */
+	rows?: Record<number, { archived?: boolean; name?: string }>;
 	watch?: (handlers: WatchHandlers) => void;
 	/** Fix-wave seam: make createConversation/forkConversation reject. */
 	createError?: Error;
 	forkError?: Error;
+	/** Park createConversation until released (sampling mid-swap, A1: the
+	 * shorter refresh chain no longer spans tick() on its own). */
+	holdCreate?: { readonly promise: Promise<void> };
 }) {
 	const submitCalls: { id: number; text: string }[] = [];
 	const forkCalls: number[] = [];
@@ -55,27 +65,25 @@ function stubClient(init: {
 	const watchRegistry = new Map<number, WatchHandlers>();
 	// The stub's listing is stateful: created/forked conversations join it,
 	// the way a real server's listing would reflect them on the next poll.
-	const listed: ConversationSummary[] = [summary(1), summary(2), summary(3)];
+	const listed: ConversationSummary[] = [
+		summary(1, init.rows?.[1]),
+		summary(2, init.rows?.[2]),
+		summary(3, init.rows?.[3]),
+	];
 	const client = {
 		listConversations(): Promise<ConversationList> {
 			return Promise.resolve({ conversations: [...listed] });
 		},
-		getMeta(id: number) {
-			const meta = init.metas?.[id] ?? {};
-			return Promise.resolve({
-				pinned: false,
-				tagged: [],
-				archived: meta.archived ?? false,
-				draft: { text: "", attachments: [] },
-				source: "user",
-				...(meta.name === undefined ? {} : { name: meta.name }),
-			});
-		},
 		createConversation() {
 			if (init.createError !== undefined)
 				return Promise.reject(init.createError);
-			listed.push(summary(4));
-			return Promise.resolve({ id: 4, view: view(4, []) });
+			const create = (): { id: number; view: ConversationViewWire } => {
+				listed.push(summary(4));
+				return { id: 4, view: view(4, []) };
+			};
+			return init.holdCreate === undefined
+				? Promise.resolve(create())
+				: init.holdCreate.promise.then(create);
 		},
 		forkConversation(id: number) {
 			if (init.forkError !== undefined)
@@ -124,6 +132,15 @@ async function tick(): Promise<void> {
 	await Promise.resolve();
 }
 
+/** A manual gate: `promise` parks until `release()` (the sse-view idiom). */
+function makeGate(): { readonly promise: Promise<void>; release(): void } {
+	let release: () => void = () => {};
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
 // ─── Sidebar ────────────────────────────────────────────────────────────
 
 describe("Sidebar", () => {
@@ -140,8 +157,8 @@ describe("Sidebar", () => {
 		expect(lines).toContain("#3");
 	});
 
-	test("hides archived conversations (meta.archived)", async () => {
-		const { client } = stubClient({ metas: { 2: { archived: true } } });
+	test("hides archived conversations (summary.archived)", async () => {
+		const { client } = stubClient({ rows: { 2: { archived: true } } });
 		const sidebar = new Sidebar(client, { maxVisible: 20 });
 		await sidebar.refresh();
 		const lines = sidebar.render(30).join("\n");
@@ -151,7 +168,7 @@ describe("Sidebar", () => {
 	});
 
 	test("shows the session name when meta carries one", async () => {
-		const { client } = stubClient({ metas: { 1: { name: "acme-research" } } });
+		const { client } = stubClient({ rows: { 1: { name: "acme-research" } } });
 		const sidebar = new Sidebar(client, { maxVisible: 20 });
 		await sidebar.refresh();
 		const lines = sidebar.render(40).join("\n");
@@ -603,14 +620,17 @@ describe("TuiApp race guards", () => {
 		expect(app.render(80).join("\n")).not.toContain("after dispose");
 	});
 	test("the composer cannot submit during a swap (createAndSelect's async window)", async () => {
-		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});
+		const gate = makeGate();
+		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({
+			holdCreate: gate,
+		});
 		const app = new TuiApp(client, {
 			tui: fakeTui,
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
 		const swap = app.createAndSelect();
-		await tick(); // the swap is now awaiting createConversation()
+		await tick(); // the swap reached (and is parked in) createConversation
 		expect(app.editor.disableSubmit).toBe(true);
 		// Even a PROGRAMMATIC onSubmit (bypassing the editor's own gate)
 		// must no-op — and must not destroy the draft.
@@ -618,6 +638,7 @@ describe("TuiApp race guards", () => {
 		app.editor.onSubmit?.("mid-swap draft");
 		expect(submitCalls).toEqual([]);
 		expect(app.editor.getText()).toBe("mid-swap draft");
+		gate.release();
 		await swap;
 		expect(app.editor.disableSubmit).toBe(false);
 		// After the swap completes, submits flow to the NEW conversation.

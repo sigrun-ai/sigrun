@@ -24,7 +24,7 @@ import type { Unwatch, WatchHandlers, WatchOptions } from "../src/sse.js";
 // ─── Stub client (the app.test.ts idiom, extended for Task 4's surface) ──
 
 function summary(id: number): ConversationSummary {
-	return { id, root: false, entryCount: 0 };
+	return { id, root: false, entryCount: 0, archived: false, pinned: false };
 }
 
 function view(id: number, entries: unknown[], busy = false): ConversationViewWire {

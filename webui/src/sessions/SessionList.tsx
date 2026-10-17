@@ -1,56 +1,36 @@
 /**
  * SessionList (Task 23a): the sidebar — conversations from
- * `client.listConversations()` joined with their per-conversation meta
- * (`GET /v1/conversations/:id/meta`). Pinned conversations sort first
- * (server order otherwise preserved); archived conversations render dimmed
- * and no longer offer an archive action. Actions: new (POST creates, then
+ * `client.listConversations()`. Pinned conversations sort first (server
+ * order otherwise preserved); archived conversations render dimmed and no
+ * longer offer an archive action. Actions: new (POST creates, then
  * selects the created conversation), switch (`onSelect`), archive (PATCH
  * `{ archived: true }`, merged server-side).
  *
- * Metas load best-effort per conversation: a failing meta GET renders the
- * conversation with the default meta (fail-visible for the action error,
- * never a blank sidebar). Mutations reload the list so the rendered state
- * always reflects the server's.
+ * UI refresh A1: the listing itself carries the sidebar metadata —
+ * `name`, `archived`, `pinned` ride `ConversationSummary` — so one
+ * request renders the list (no per-row meta GET; the N+1 is gone). The
+ * meta PATCH remains the archive action's write path.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type {
-	ConversationMeta,
-	ConversationSummary,
-	SigrunClient,
-} from "../api";
-
-interface ListedConversation {
-	readonly summary: ConversationSummary;
-	readonly meta: ConversationMeta;
-}
-
-/** The meta rendered before one loads (or when its GET fails). */
-const DEFAULT_META: ConversationMeta = {
-	pinned: false,
-	tagged: [],
-	archived: false,
-	draft: { text: "", attachments: [] },
-	source: "user",
-};
+import type { ConversationSummary, SigrunClient } from "../api";
 
 /** Fallback title when the session has no name: `Conversation #<id>`. */
 function titleOf(id: number): string {
 	return `Conversation #${id}`;
 }
 
-function classNameOf(item: ListedConversation, active: boolean): string {
+function classNameOf(item: ConversationSummary, active: boolean): string {
 	const parts = ["session-item"];
 	if (active) parts.push("session-item-active");
-	if (item.meta.archived) parts.push("session-item-archived");
+	if (item.archived) parts.push("session-item-archived");
 	return parts.join(" ");
 }
 
-function badgesOf(item: ListedConversation): string {
+function badgesOf(item: ConversationSummary): string {
 	const badges: string[] = [];
-	if (item.meta.pinned) badges.push("pinned");
-	if (item.meta.archived) badges.push("archived");
-	if (item.meta.draft.text.length > 0) badges.push("draft");
+	if (item.pinned) badges.push("pinned");
+	if (item.archived) badges.push("archived");
 	return badges.length === 0 ? "" : ` (${badges.join(", ")})`;
 }
 
@@ -62,28 +42,15 @@ export function SessionList(props: {
 	onSelect: (id: number) => void;
 }) {
 	const { client, activeId, onSelect } = props;
-	const [items, setItems] = useState<readonly ListedConversation[]>([]);
+	const [items, setItems] = useState<readonly ConversationSummary[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const reload = useCallback(async (): Promise<void> => {
 		try {
 			const list = await client.listConversations();
-			const loaded = await Promise.all(
-				list.conversations.map(async (summary): Promise<ListedConversation> => {
-					try {
-						return {
-							summary,
-							meta: await client.getConversationMeta(summary.id),
-						};
-					} catch {
-						// A failing meta GET must never blank the sidebar row.
-						return { summary, meta: DEFAULT_META };
-					}
-				}),
-			);
-			const ordered = [...loaded].sort((a, b) => {
-				if (a.meta.pinned === b.meta.pinned) return 0;
-				return a.meta.pinned ? -1 : 1;
+			const ordered = [...list.conversations].sort((a, b) => {
+				if (a.pinned === b.pinned) return 0;
+				return a.pinned ? -1 : 1;
 			});
 			setItems(ordered);
 			setError(null);
@@ -129,22 +96,22 @@ export function SessionList(props: {
 			<ul>
 				{items.map((item) => (
 					<li
-						key={item.summary.id}
-						className={classNameOf(item, item.summary.id === activeId)}
+						key={item.id}
+						className={classNameOf(item, item.id === activeId)}
 					>
 						<button
 							type="button"
 							className="session-select"
-							onClick={() => onSelect(item.summary.id)}
+							onClick={() => onSelect(item.id)}
 						>
-							{item.meta.name ?? titleOf(item.summary.id)}
+							{item.name ?? titleOf(item.id)}
 							{badgesOf(item)}
 						</button>
-						{item.meta.archived ? null : (
+						{item.archived ? null : (
 							<button
 								type="button"
 								className="session-archive"
-								onClick={() => void onArchive(item.summary.id)}
+								onClick={() => void onArchive(item.id)}
 							>
 								Archive
 							</button>

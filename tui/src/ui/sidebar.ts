@@ -1,11 +1,15 @@
 /**
  * The sidebar (Task 6): the conversation list — header, one row per
  * conversation, a trailing `+ new` action row, the active conversation
- * marked `*`. Archived conversations (`meta.archived`) are hidden from the
- * default listing (spec §3.2; the server has no delete, archive is the
- * hide). Named conversations list by name, unnamed by `#id` (spec: "named
+ * marked `*`. Archived conversations (`summary.archived`) are hidden from
+ * the default listing (spec §3.2; the server has no delete, archive is
+ * the hide). Named conversations list by name, unnamed by `#id` (spec: "named
  * ones by name, unnamed by id/first-prompt" — first-prompt previews are a
  * Task-7+ nicety; v1 is id).
+ *
+ * UI refresh A1: the listing itself carries the sidebar metadata —
+ * `name`, `archived`, `pinned` ride `ConversationSummary` — so refresh
+ * makes ONE request: the per-row `getMeta` poll is gone.
  *
  * The list body is a pi-tui `SelectList` (arrow keys + enter; its own
  * scroll window caps the rows). `SelectList.setFilter` is a prefix MATCH,
@@ -80,16 +84,15 @@ export class Sidebar implements Component {
 	}
 
 	/**
-	 * Re-fetch the listing and resolve labels: `getMeta` per conversation
-	 * supplies the name and the archive filter.
+	 * Re-fetch the listing and resolve labels: the summary itself carries
+	 * the name and the archive filter (A1 — no per-row meta fetch).
 	 */
 	async refresh(): Promise<void> {
 		const list = await this.#client.listConversations();
 		const rows: SidebarRow[] = [];
 		for (const summary of list.conversations) {
-			const meta = await this.#client.getMeta(summary.id);
-			if (meta.archived) continue;
-			const name = meta.name?.trim();
+			if (summary.archived) continue;
+			const name = summary.name?.trim();
 			rows.push({
 				id: summary.id,
 				label: name !== undefined && name !== "" ? name : `#${summary.id}`,
