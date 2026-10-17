@@ -63,6 +63,26 @@ function makeHarness(init?: {
 			source: "user",
 		},
 	};
+	const conversations = [
+		{
+			id: 1,
+			root: true,
+			entryCount: 2,
+			archived: false,
+			pinned: false,
+			name: "Tide table rewrite",
+			lastActivityAt: new Date().toISOString(),
+		},
+		{
+			id: 2,
+			root: false,
+			entryCount: 1,
+			archived: false,
+			pinned: false,
+			name: "Moor line inspection",
+			lastActivityAt: new Date().toISOString(),
+		},
+	];
 	const calls: Call[] = [];
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
@@ -84,17 +104,33 @@ function makeHarness(init?: {
 		}
 		const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(input);
 		let body: unknown;
-		if (metaMatch !== null) body = metas[Number(metaMatch[1])];
-		else if (input === "/v1/models") body = { models: [] };
+		if (metaMatch !== null) {
+			const id = Number(metaMatch[1]);
+			if (init2?.method === "PATCH") {
+				// The server-side merge: a name/archived patch updates the
+				// summary the list serves (the reload re-reads it).
+				const patch = JSON.parse(init2.body ?? "{}") as {
+					name?: string;
+					archived?: boolean;
+				};
+				const target = conversations.find((one) => one.id === id);
+				if (target !== undefined && patch.name !== undefined) {
+					target.name = patch.name;
+				}
+				if (target !== undefined && patch.archived !== undefined) {
+					target.archived = patch.archived;
+				}
+				body = {};
+			} else {
+				body = metas[id];
+			}
+		} else if (input === "/v1/models") body = { models: [] };
 		else if (/^\/v1\/conversations\/\d+\/files\?/.test(input)) {
 			body = { entries: [] };
 		} else {
-			body = {
-				conversations: [
-					{ id: 1, root: true, entryCount: 2, archived: false, pinned: false },
-					{ id: 2, root: false, entryCount: 1, archived: false, pinned: false },
-				],
-			};
+			// A copy per response — freshly parsed JSON in reality; a
+			// same-reference list would bail out of the reload re-render.
+			body = { conversations: conversations.map((one) => ({ ...one })) };
 		}
 		return Promise.resolve({
 			ok: true,
@@ -118,17 +154,15 @@ function makeHarness(init?: {
 	};
 }
 
-async function clickByClass(
+/** Click a sidebar conversation row by its display name (its title). */
+async function clickConversation(
 	renderer: Awaited<ReturnType<typeof renderAsync>>,
-	className: string,
-	labelMatch: string,
+	name: string,
 ): Promise<void> {
-	const button = renderer.root
-		.findAllByProps({ className })
-		.find((node) => node.children.join("").includes(labelMatch));
-	if (button === undefined) {
-		throw new Error(`no .${className} containing ${labelMatch}`);
-	}
+	const button = renderer.root.findByProps({
+		className: "session-select",
+		title: name,
+	});
 	await act(async () => {
 		await (button.props as { onClick: () => unknown }).onClick();
 	});
@@ -212,9 +246,11 @@ describe("App shell", () => {
 			<App client={client} createEventSource={createEventSource} />,
 		);
 		const text = textContent(renderer.toJSON());
-		// Sidebar conversations rendered.
-		expect(text).toContain("#1");
-		expect(text).toContain("#2");
+		// Sidebar conversations rendered (grouped under Today — the activity
+		// stamps are fresh).
+		expect(text).toContain("Tide table rewrite");
+		expect(text).toContain("Moor line inspection");
+		expect(text).toContain("Today");
 		// The boot-time default selection picked the root conversation (id 1)
 		// and opened its stream — the composer is live without a click.
 		expect(text).not.toContain("Select or create a conversation");
@@ -271,7 +307,7 @@ describe("App shell", () => {
 		);
 		// The boot default selected the root (id 1) and opened its stream.
 		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
-		await clickByClass(renderer, "session-select", "#2");
+		await clickConversation(renderer, "Moor line inspection");
 		expect(sources.map((s) => s.url)).toEqual([
 			"/v1/conversations/1/stream",
 			"/v1/conversations/2/stream",
@@ -311,8 +347,8 @@ describe("App shell", () => {
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
-		await clickByClass(renderer, "session-select", "#1");
-		await clickByClass(renderer, "session-select", "#2");
+		await clickConversation(renderer, "Tide table rewrite");
+		await clickConversation(renderer, "Moor line inspection");
 		expect(sources.map((s) => s.url)).toEqual([
 			"/v1/conversations/1/stream",
 			"/v1/conversations/2/stream",
@@ -326,8 +362,8 @@ describe("App shell", () => {
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
-		// Boot default: conversation 1, unnamed → the fallback title.
-		expect(textContent(renderer.toJSON())).toContain("Conversation #1");
+		// Boot default: conversation 1, named → its display name is the title.
+		expect(textContent(renderer.toJSON())).toContain("Tide table rewrite");
 		const title = renderer.root.findByProps({ className: "chat-title" });
 		await act(async () => {
 			(title.props as { onClick: () => unknown }).onClick();

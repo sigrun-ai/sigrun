@@ -13,8 +13,9 @@
  * Boot gate (spec §5 fail-loud): the app fetches `GET /v1/meta` and
  * REFUSES to render the shell when the served `schemaVersion` differs
  * from the bundle's pinned copy. A matching meta feeds the rail (health
- * dot) and the shell; the summaries it lists also feed the ChatHeader's
- * title (B3 lifts the whole list into App).
+ * dot) and the shell; the ChatHeader's title comes from the lifted
+ * conversation list (B3's `useConversationList` — one hook owns the rows
+ * the sidebar, the header, and the transcript all read).
  *
  * Shell state: `panel` (Outline/Workspace, persisted under
  * `sigrun.panel`; clicking the active mode closes it), `drawerOpen` (the
@@ -24,6 +25,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { displayName } from "../../src/shared/conversations.js";
 import {
 	createClient,
 	type ConversationSummary,
@@ -42,6 +44,7 @@ import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
+import { useConversationList } from "./sessions/useConversationList";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { usePrefs, type PrefsState } from "./settings/usePrefs";
 import type { EventSourceFactory } from "./stream";
@@ -54,7 +57,6 @@ type Boot =
 	| { readonly status: "loading" }
 	| { readonly status: "refused"; readonly message: string }
 	| { readonly status: "ready"; readonly meta: MetaResponse };
-
 /** The default client (same-origin); tests inject a stub-backed one. */
 const defaultClient = createClient();
 
@@ -100,10 +102,11 @@ function downloadText(filename: string, text: string): void {
 	URL.revokeObjectURL(url);
 }
 
-/** Fallback title when the conversation has no name: `Conversation #<id>`. */
+/** The conversation's display title: B1's `displayName` — the ONE name
+ *  spelling (sidebar rows and the header agree; unnamed → "New conversation"). */
 function titleOf(summaries: readonly ConversationSummary[], id: number | null): string {
 	if (id === null) return "sigrun";
-	return summaries.find((item) => item.id === id)?.name ?? `Conversation #${id}`;
+	return displayName(summaries.find((item) => item.id === id) ?? { id, archived: false, pinned: false });
 }
 
 export interface AppOptions {
@@ -173,15 +176,19 @@ export function App(options: AppOptions = {}) {
 	const prefsState: PrefsState = usePrefs();
 	const [boot, setBoot] = useState<Boot>({ status: "loading" });
 	const [activeId, setActiveId] = useState<number | null>(null);
-	const [summaries, setSummaries] = useState<readonly ConversationSummary[]>(
-		[],
-	);
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [shellError, setShellError] = useState<string | null>(null);
 	const { view, status, error } = useConversationView(activeId, {
 		createEventSource: options.createEventSource,
+	});
+	// The LIFTED conversation list (B3): one hook owns the rows for the
+	// sidebar, the header title, and the transcript's fork parents. `busy`
+	// (the view's steer state) drives the post-run reloads — a name the
+	// auto-namer writes at settlement appears without a manual reload.
+	const list = useConversationList(client, {
+		busy: view?.steer.busy ?? false,
 	});
 	const onSelect = useCallback((id: number) => {
 		setActiveId(id);
@@ -202,30 +209,19 @@ export function App(options: AppOptions = {}) {
 	}, []);
 
 	// Boot-time default: select the root conversation (the §5 default session)
-	// once the schema gate passes, so the composer is live without a click.
-	// The fetched summaries also feed the ChatHeader's title (B3 replaces
-	// this with the live list hook).
+	// once the schema gate passes and the lifted list has rows, so the
+	// composer is live without a click.
 	useEffect(() => {
 		if (boot.status !== "ready" || activeId !== null) return;
-		let cancelled = false;
-		client
-			.listConversations()
-			.then((list) => {
-				if (cancelled) return;
-				setSummaries(list.conversations);
-				const root = list.conversations.find((c) => c.root);
-				const first = root ?? list.conversations[0];
-				// Re-check activeId inside the callback: a user click that landed
-				// while the list was in flight wins over the boot default (the
-				// T26b review's clobber race).
-				setActiveId((current) => current ?? first?.id ?? null);
-			})
-			.catch(() => undefined); // a list failure leaves the composer gated; the sidebar shows the error
-		return () => {
-			cancelled = true;
-		};
+		if (list.rows.length === 0) return;
+		const root = list.rows.find((c) => c.root);
+		const first = root ?? list.rows[0];
+		// Re-check activeId inside the callback: a user click that landed while
+		// the list was in flight wins over the boot default (the T26b review's
+		// clobber race).
+		setActiveId((current) => current ?? first?.id ?? null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [boot.status, client]);
+	}, [boot.status, list.rows]);
 
 	// The schema-version gate (spec §5): no shell renders until /v1/meta
 	// answers with the pinned schema. A mismatch — or an unverifiable fetch —
@@ -264,26 +260,77 @@ export function App(options: AppOptions = {}) {
 		};
 	}, [client]);
 
-	// Header menu actions (the ⋯ menu + the inline rename).
+	// Conversation writes. Each action lands its write, then reloads the
+	// lifted list so the sidebar (and the header title) reflect it at once —
+	// the 10 s poll would also catch up, but the user just acted.
 
-	const onRename = useCallback(
-		async (name: string): Promise<void> => {
-			if (activeId === null) return;
+	const renameConversation = useCallback(
+		async (id: number, name: string): Promise<void> => {
 			try {
-				await client.patchConversationMeta(activeId, { name });
-				setSummaries((rows) =>
-					rows.map((row) =>
-						row.id === activeId ? { ...row, name } : row,
-					),
-				);
+				await client.patchConversationMeta(id, { name });
+				await list.reload();
 			} catch (cause) {
 				setShellError(
 					`rename failed: ${cause instanceof Error ? cause.message : String(cause)}`,
 				);
 			}
 		},
-		[activeId, client],
+		[client, list.reload],
 	);
+
+	// The header's inline rename targets the active conversation.
+	const onRename = useCallback(
+		async (name: string): Promise<void> => {
+			if (activeId === null) return;
+			await renameConversation(activeId, name);
+		},
+		[activeId, renameConversation],
+	);
+
+	const archiveConversation = useCallback(
+		async (id: number, archived: boolean): Promise<void> => {
+			try {
+				await client.patchConversationMeta(id, { archived });
+				await list.reload();
+			} catch (cause) {
+				setShellError(
+					`archive failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+			}
+		},
+		[client, list.reload],
+	);
+
+	const onFork = useCallback(
+		(id: number): void => {
+			client
+				.fork(id)
+				.then(async (created) => {
+					await list.reload(); // the fork row (nested under its parent)
+					onSelect(created.id); // navigate to the new conversation
+				})
+				.catch((cause: unknown) =>
+					setShellError(
+						`fork failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				),
+			);
+		},
+		[client, list.reload, onSelect],
+	);
+
+	const onNew = useCallback((): void => {
+		client
+			.createConversation()
+			.then(async (created) => {
+				await list.reload();
+				onSelect(created.id);
+			})
+			.catch((cause: unknown) =>
+				setShellError(
+					`new conversation failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+			),
+		);
+	}, [client, list.reload, onSelect]);
 
 	const onExport = useCallback((): void => {
 		if (activeId === null) return;
@@ -308,23 +355,11 @@ export function App(options: AppOptions = {}) {
 			);
 	}, [activeId, client]);
 
+	// The header's archive action targets the active conversation.
 	const onArchive = useCallback((): void => {
 		if (activeId === null) return;
-		client
-			.patchConversationMeta(activeId, { archived: true })
-			.then(() =>
-				setSummaries((rows) =>
-					rows.map((row) =>
-						row.id === activeId ? { ...row, archived: true } : row,
-					),
-				),
-			)
-			.catch((cause: unknown) =>
-				setShellError(
-					`archive failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-				),
-			);
-	}, [activeId, client]);
+		void archiveConversation(activeId, true);
+	}, [activeId, archiveConversation]);
 
 	if (boot.status === "loading") {
 		return (
@@ -352,15 +387,24 @@ export function App(options: AppOptions = {}) {
 					meta={boot.meta}
 					onOpenSettings={() => setSettingsOpen(true)}
 				/>
+				{list.error !== null && (
+					<p className="side-error" role="alert">
+						conversations unavailable: {list.error}
+					</p>
+				)}
 				<SessionList
-					client={client}
+					rows={list.rows}
 					activeId={activeId}
 					onSelect={onSelect}
+					onNew={onNew}
+					onRename={renameConversation}
+					onArchive={archiveConversation}
+					onFork={onFork}
 				/>
 			</div>
 			<main className="main-column">
 				<ChatHeader
-					title={titleOf(summaries, activeId)}
+					title={titleOf(list.rows, activeId)}
 					panel={panel}
 					onPanel={onPanel}
 					onRename={onRename}
