@@ -39,6 +39,14 @@ services:
       # total. Adding an extension = edit /data/config/settings.json
       # (packages[] + extensions[]) → docker compose restart; no rebuild.
       SIGRUN_CONFIG_DIR: /data/config
+      # The store-dir contract (Tasks 1–7: explicit env used VERBATIM):
+      # data + state are the durable buckets — subdirs of the data
+      # volume below, alongside the db/workspace/config. Cache is the
+      # regenerable root (spec §4 — never a backup section, a wipe is a
+      # cold start) — pod-local, see the tmpfs mount below.
+      SIGRUN_DATA_DIR: /data/data
+      SIGRUN_CACHE_DIR: /cache
+      SIGRUN_STATE_DIR: /data/state
       # The degenerate env-provider path (spec §4.1): enough to run against
       # ANY OpenAI-compatible endpoint — OpenAI itself, a local
       # ramalama/ollama, or a remote/private gateway.
@@ -48,6 +56,13 @@ services:
       - "${SIGRUN_PORT:-3000}:3000"
     volumes:
       - sigrun-data:/data
+    # Cache is pod-local (the compose analogue of the chart's emptyDir):
+    # tmpfs rather than an anonymous volume, because its lifetime should
+    # die WITH the container (no /var/lib/docker/volumes residue to
+    # accumulate a regenerable root) — data/state stay on the named
+    # sigrun-data volume, cache never touches it.
+    tmpfs:
+      - /cache
     healthcheck:
       # Same /healthz liveness probe as deploy/base/deployment.yaml. The
       # node:22-slim image ships no curl/wget, so a node one-liner fetch.

@@ -73,13 +73,27 @@ controllers:
           # chart deliberately does not implement one.)
           - name: SIGRUN_CONFIG_DIR
             value: /data/config
+          # The store-dir contract (Tasks 1–7: the explicit env is used
+          # VERBATIM, stores.ts tier 1): data + state are the durable
+          # buckets — subdirs of the /data PVC mount, next to the db,
+          # workspace, and config above. Cache is the regenerable root:
+          # pod-local emptyDir (see persistence.cache below), NEVER on
+          # the PVC (spec §4 — a wiped cache is a cold start, not a
+          # restore event, and cache is never a backup section).
+          - name: SIGRUN_DATA_DIR
+            value: /data/data
+          - name: SIGRUN_CACHE_DIR
+            value: /cache
+          - name: SIGRUN_STATE_DIR
+            value: /data/state
           # Must match the service.main port.
           - name: SIGRUN_PORT
             value: "3000"
         envFrom:
           # Everything else config-shaped comes from the Secret
-          # (envFrom): SIGRUN_DEFAULT_MODEL (required; SIGRUN_MODEL deprecated), OPENAI_API_KEY /
-          # OPENAI_BASE_URL (the degenerate env provider) or extension
+          # (envFrom): SIGRUN_DEFAULT_MODEL (required; SIGRUN_MODEL
+          # deprecated), OPENAI_API_KEY / OPENAI_BASE_URL (the degenerate
+          # env provider) or extension
           # provider creds, and the SIGRUN_EXTENSIONS package list (§4.1).
           # All extension env lives there too — extensions read the whole
           # environment (§4.4: "every enabled extension can read every env
@@ -228,6 +242,20 @@ persistence:
     # needs lock access to the -shm/-wal sidecar files).
     globalMounts:
       - path: /data
+
+  cache:
+    # -- Pod-local cache volume: the SIGRUN_CACHE_DIR mount. Cache is
+    # regenerable + self-cleaning (spec §4) — it NEVER touches the PVC
+    # (a wiped cache is a cold start, not a restore event; boot never
+    # ensures the cache root, every consumer repairs it at call time)
+    # and is never a backup section, so emptyDir is the whole story.
+    enabled: true
+    type: emptyDir
+    # Mounted at /cache in every container (globalMounts mirrors the
+    # data entry's shape). Inert for the backup CronJob — cache is
+    # never a backup section (Task 7).
+    globalMounts:
+      - path: /cache
 
 serviceMonitor:
   # -- M1 observability (spec §4.4). In M1 the readiness probe IS the
