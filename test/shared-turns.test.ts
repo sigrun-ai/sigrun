@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import {
 	activityLabel,
 	groupTurns,
+	previewArgument,
 	toolPreview,
 	type ToolCall,
 	type TurnBlock,
@@ -232,6 +233,33 @@ describe("toolPreview", () => {
 		expect(toolPreview("bash", { command: "y".repeat(80) })).toBe(
 			"y".repeat(80),
 		);
+	});
+});
+
+describe("previewArgument", () => {
+	it("returns the full argument the preview truncates (no line or length cut)", () => {
+		const multiLine = "echo one\necho two";
+		expect(previewArgument("bash", { command: multiLine })).toBe(multiLine);
+		const long = `git commit -m ${"x".repeat(200)}`;
+		expect(previewArgument("bash", { command: long })).toBe(long);
+	});
+
+	it("selects the same argument as the preview (name key, then first string)", () => {
+		expect(previewArgument("read", { path: "src/index.ts" })).toBe(
+			"src/index.ts",
+		);
+		expect(previewArgument("grep", { pattern: "TODO", path: "src" })).toBe(
+			"TODO",
+		);
+		expect(
+			previewArgument("webfetch", { url: "https://example.invalid", mode: "raw" }),
+		).toBe("https://example.invalid");
+	});
+
+	it("returns undefined when nothing fits", () => {
+		expect(previewArgument("bash", {})).toBeUndefined();
+		expect(previewArgument("mystery", { count: 2 })).toBeUndefined();
+		expect(previewArgument("read", undefined)).toBeUndefined();
 	});
 });
 

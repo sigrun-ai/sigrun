@@ -159,23 +159,36 @@ const PREVIEW_ARGUMENT: Readonly<Record<string, string>> = {
 const PREVIEW_MAX = 80;
 
 export function toolPreview(name: string, args: unknown): string {
-	let candidate: unknown = undefined;
-	if (typeof args === "object" && args !== null && !Array.isArray(args)) {
-		const record = args as Record<string, unknown>;
-		const key = PREVIEW_ARGUMENT[name];
-		if (key !== undefined) {
-			candidate = record[key];
-		} else {
-			candidate = Object.values(record).find(
-				(value) => typeof value === "string",
-			);
-		}
-	}
-	if (typeof candidate !== "string" || candidate.length === 0) return "";
+	const candidate = previewArgument(name, args);
+	if (candidate === undefined) return "";
 	const firstLine = candidate.split("\n", 1)[0]!;
 	return firstLine.length > PREVIEW_MAX
 		? `${firstLine.slice(0, PREVIEW_MAX)}…`
 		: firstLine;
+}
+
+/**
+ * The FULL argument a tool's preview shows, uncut — the transcript's
+ * copy-command action copies it verbatim: the same name-keyed argument
+ * the preview selects, before its first-line/80-char truncation.
+ * Undefined when the arguments carry no previewable string.
+ */
+export function previewArgument(
+	name: string,
+	args: unknown,
+): string | undefined {
+	if (typeof args !== "object" || args === null || Array.isArray(args)) {
+		return undefined;
+	}
+	const record = args as Record<string, unknown>;
+	const key = PREVIEW_ARGUMENT[name];
+	const candidate =
+		key === undefined
+			? Object.values(record).find((value) => typeof value === "string")
+			: record[key];
+	return typeof candidate === "string" && candidate.length > 0
+		? candidate
+		: undefined;
 }
 
 /**

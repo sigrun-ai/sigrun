@@ -24,7 +24,7 @@
  * accent) runs here for its root-application side effect.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { displayName } from "../../src/shared/conversations.js";
 import {
 	createClient,
@@ -34,7 +34,7 @@ import {
 	type SigrunClient,
 } from "./api";
 import { Composer } from "./composer/Composer";
-import { EntryList } from "./entries/EntryList";
+import { TurnList } from "./entries/TurnList";
 import {
 	liveCompactionFailure,
 	liveCompactions,
@@ -122,6 +122,9 @@ function ChatCenter(props: {
 	status: string;
 	error: string | null;
 	readonly showThinking: boolean;
+	readonly client: SigrunClient;
+	readonly onNavigate: (id: number) => void;
+	readonly parent?: { id: number; name: string };
 }) {
 	const { activeId, view, status, error, showThinking } = props;
 	if (activeId === null) {
@@ -148,7 +151,13 @@ function ChatCenter(props: {
 				<p className="chat-loading">loading…</p>
 			) : (
 				<>
-					<EntryList view={view} showThinking={showThinking} />
+					<TurnList
+						view={view}
+						showThinking={showThinking}
+						parent={props.parent}
+						client={props.client}
+						onNavigate={props.onNavigate}
+					/>
 					{busy && (
 						<div className="chat-working" role="status">
 							<span className="chat-working-dot" />
@@ -190,6 +199,21 @@ export function App(options: AppOptions = {}) {
 	const list = useConversationList(client, {
 		busy: view?.steer.busy ?? false,
 	});
+	// The transcript's fork lineage (B4): the active conversation's fork
+	// parent, named from the lifted rows — one hook owns every name the UI
+	// shows. A parent missing from the rows falls back to the display name.
+	const parent = useMemo(() => {
+		const ref = list.rows.find((row) => row.id === activeId)?.parent;
+		if (ref === undefined) return undefined;
+		const row = list.rows.find((candidate) => candidate.id === ref.id);
+		return {
+			id: ref.id,
+			name:
+				row === undefined
+					? displayName({ id: ref.id, archived: false, pinned: false })
+					: displayName(row),
+		};
+	}, [list.rows, activeId]);
 	const onSelect = useCallback((id: number) => {
 		setActiveId(id);
 		setDrawerOpen(false);
@@ -427,6 +451,9 @@ export function App(options: AppOptions = {}) {
 							status={status}
 							error={error}
 							showThinking={prefsState.prefs.showThinking}
+							client={client}
+							onNavigate={onSelect}
+							parent={parent}
 						/>
 						<footer className="composer-slot">
 							<Composer
