@@ -1,18 +1,17 @@
 /**
  * SessionList (Task 23a) against a stub fetch: conversations render with
- * their meta (pinned first, archived dimmed) and the new / switch / archive
- * actions hit the right §5 endpoints. The client is the REAL `createClient`
- * over the stub fetch so the tests also cover the wire paths.
+ * their summary metadata (pinned first, archived dimmed) and the new /
+ * switch / archive actions hit the right §5 endpoints. The client is the
+ * REAL `createClient` over the stub fetch so the tests also cover the
+ * wire paths. UI refresh A1: the summary carries `name`/`archived`/
+ * `pinned` — one list request, no per-row meta GET (the archive PATCH
+ * stays a meta write).
  */
 
 import { act } from "react";
 import type TestRenderer from "react-test-renderer";
 import { describe, expect, test } from "vitest";
-import {
-	createClient,
-	type ConversationMeta,
-	type FetchLike,
-} from "../api";
+import { createClient, type FetchLike } from "../api";
 import { renderAsync } from "../test-utils";
 import { SessionList } from "./SessionList";
 
@@ -47,48 +46,52 @@ function makeFetch(routes: Record<string, (call: Call) => unknown>): {
 	return { calls, fetchImpl };
 }
 
-const META_DEFAULTS = {
-	pinned: false,
-	tagged: [],
-	archived: false,
-	draft: { text: "", attachments: [] },
-	source: "user",
-} satisfies Partial<ConversationMeta>;
+/** The stub's mutable summary fixture (the wire shape, minus readonly). */
+interface StubSummary {
+	id: number;
+	root: boolean;
+	entryCount: number;
+	archived: boolean;
+	pinned: boolean;
+	name?: string;
+}
 
 function makeHarness() {
-	const conversations = [
-		{ id: 1, root: true, entryCount: 3 },
-		{ id: 2, root: false, entryCount: 5 },
-		{ id: 3, root: false, entryCount: 1 },
+	const conversations: StubSummary[] = [
+		{ id: 1, root: true, entryCount: 3, archived: false, pinned: false },
+		{ id: 2, root: false, entryCount: 5, archived: false, pinned: true },
+		{ id: 3, root: false, entryCount: 1, archived: true, pinned: false },
 	];
-	const metas: Record<number, ConversationMeta> = {
-		1: { ...META_DEFAULTS },
-		2: { ...META_DEFAULTS, pinned: true },
-		3: { ...META_DEFAULTS, archived: true },
-	};
 	const { calls, fetchImpl } = makeFetch({
-		// Meta route MUST precede the list route (prefix matching).
+		// The meta route (the archive action's PATCH) MUST precede the list
+		// route (prefix matching). The archive flip mutates the SUMMARY the
+		// list serves — the server-side merge the reload re-reads.
 		"/v1/conversations/": (call) => {
 			const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(call.input);
-			if (metaMatch !== null) {
-				if (call.method === "PATCH") {
-					const id = Number(metaMatch[1]);
-					const patch = JSON.parse(call.body ?? "{}") as Record<
-						string,
-						unknown
-					>;
-					metas[id] = { ...metas[id], ...patch } as ConversationMeta;
-					return {};
+			if (metaMatch !== null && call.method === "PATCH") {
+				const id = Number(metaMatch[1]);
+				const patch = JSON.parse(call.body ?? "{}") as Record<
+					string,
+					unknown
+				>;
+				const summary = conversations.find((one) => one.id === id);
+				if (summary !== undefined && patch.archived === true) {
+					summary.archived = true;
 				}
-				return metas[Number(metaMatch[1])];
+				return {};
 			}
 			throw new Error(`unexpected path ${call.input}`);
 		},
 		"/v1/conversations": (call) => {
 			if (call.method === "POST") {
-				const created = { id: 4, root: false, entryCount: 0 };
+				const created = {
+					id: 4,
+					root: false,
+					entryCount: 0,
+					archived: false,
+					pinned: false,
+				};
 				conversations.push(created);
-				metas[4] = { ...META_DEFAULTS };
 				return { id: 4 };
 			}
 			return { conversations };
@@ -101,7 +104,7 @@ function makeHarness() {
 		activeId: null as number | null,
 		onSelect: (id: number) => selected.push(id),
 	};
-	return { calls, conversations, metas, props, selected };
+	return { calls, conversations, props, selected };
 }
 
 async function click(instance: TestRenderer.ReactTestInstance): Promise<void> {
@@ -111,7 +114,7 @@ async function click(instance: TestRenderer.ReactTestInstance): Promise<void> {
 }
 
 describe("SessionList", () => {
-	test("renders conversations with meta: pinned first, archived dimmed", async () => {
+	test("renders conversations with summary metadata: pinned first, archived dimmed", async () => {
 		const { props } = makeHarness();
 		const renderer = await renderAsync(<SessionList {...props} />);
 		const items = renderer.root.findAllByType("li");
@@ -132,10 +135,11 @@ describe("SessionList", () => {
 	});
 
 	test("a named session renders its name in place of the fallback title", async () => {
-		const { metas, props } = makeHarness();
-		// Give #1 a name BEFORE the first load (the stub fetch reads the
-		// same mutable record the component's meta GETs hit).
-		metas[1] = { ...metas[1]!, name: "Debugging the fork" };
+		const { conversations, props } = makeHarness();
+		// Give #1 a name BEFORE the first load (the stub fetch serves the
+		// same mutable array the component's list GET reads).
+		const named = conversations.find((one) => one.id === 1);
+		named!.name = "Debugging the fork";
 		const renderer = await renderAsync(<SessionList {...props} />);
 		const labels = renderer.root
 			.findAllByProps({ className: "session-select" })

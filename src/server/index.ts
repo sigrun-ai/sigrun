@@ -66,6 +66,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { touchActivity } from "../harness/activity.js";
 import { aggregateHealth } from "../harness/health.js";
 import { SettingsStore, SettingsValidationError } from "../harness/settings.js";
 import { OPENAI_API_KEY_ENV, requireServedModel, UnservedModelError } from "../harness/providers/index.js";
@@ -634,17 +635,37 @@ export async function createServer(
 				if (conversation === undefined) continue;
 				const view = await readView(conversation);
 				// The session-meta owner rides the summary when stamped (Task
-				// 2's doc; defaults serve nothing — no owner key when unset).
+				// 2's doc; defaults serve nothing — no owner key when unset),
+				// and so do the sidebar fields (UI refresh A1): the display
+				// name (user name over auto name), the activity stamp, and the
+				// archive/pin flags — one request, no per-row meta fetch.
 				const meta = await opened.harness.snapshot(
 					SessionMetaDoc,
 					conversation.id,
 					BACKGROUND_CONTEXT,
 				);
+				const name = meta?.name ?? meta?.autoName;
 				conversations.push({
 					id: conversation.id,
 					root: conversation.id === rootId,
 					entryCount: view.entries.length,
 					...(meta?.owner === undefined ? {} : { owner: meta.owner }),
+					...(name === undefined ? {} : { name }),
+					...(meta?.lastActivityAt === undefined
+						? {}
+						: { lastActivityAt: meta.lastActivityAt }),
+					// Fork lineage from the durable record (the scan page item);
+					// a root or plainly created conversation has none.
+					...(record.parent === undefined
+						? {}
+						: {
+								parent: {
+									id: record.parent.conversationId,
+									at: record.parent.at,
+								},
+							}),
+					archived: meta?.archived ?? false,
+					pinned: meta?.pinned ?? false,
 				});
 			}
 			cursor = page.next;
@@ -861,6 +882,14 @@ export async function createServer(
 				opened.memorySubmit === undefined
 					? await conversation.submit(draft, BACKGROUND_CONTEXT)
 					: await opened.memorySubmit(conversation, draft, BACKGROUND_CONTEXT);
+			// Admission stamps activity (UI refresh A1): the sidebar's activity
+			// sort must move the moment a prompt lands — before the run settles.
+			await touchActivity(
+				opened.harness,
+				conversation.id,
+				opened.now,
+				BACKGROUND_CONTEXT,
+			);
 			// v1 waits for settlement server-side (the watch stream is T9d);
 			// `wait()` resolves with the settled record either way.
 			const settled = await submission.wait(BACKGROUND_CONTEXT);
@@ -1589,6 +1618,17 @@ export async function createServer(
 					},
 					...(draft.owner === undefined ? {} : { owner: draft.owner }),
 					...(draft.name === undefined ? {} : { name: draft.name }),
+					// The server-owned trio rides the projection when present —
+					// a patch must never lose them from the served doc.
+					...(draft.autoName === undefined
+						? {}
+						: { autoName: draft.autoName }),
+					...(draft.autoNameAttempts === undefined
+						? {}
+						: { autoNameAttempts: draft.autoNameAttempts }),
+					...(draft.lastActivityAt === undefined
+						? {}
+						: { lastActivityAt: draft.lastActivityAt }),
 				};
 			}, BACKGROUND_CONTEXT);
 		},
