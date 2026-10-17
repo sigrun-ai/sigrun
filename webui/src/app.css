@@ -1403,56 +1403,142 @@ body {
 	background: var(--surface);
 }
 
-.composer-row {
-	display: flex;
-	gap: 0.6rem;
-	/* Stretch: the side cluster defines the row height and the textarea
-	   matches it (the stacked controls used to tower over the input). */
-	align-items: stretch;
-}
+/* The textarea rides ON TOP of the box (B6) — a plain input area, the
+   box itself is the border (the mockup's `.ph`). */
 
 .composer-input {
-	flex: 1;
+	width: 100%;
 	resize: none;
-	padding: 0.6rem 0.75rem;
-	background: var(--surface);
+	padding: 0.35rem 0.25rem 0.45rem;
+	background: transparent;
 	color: var(--text);
-	border: 1px solid var(--border);
-	border-radius: 10px;
+	border: none;
 	font: inherit;
+	min-height: 3.2rem;
 }
 
-.composer-side {
-	display: flex;
-	flex-direction: column;
-	gap: 0.4rem;
-	align-items: stretch;
-	justify-content: center;
+.composer-input:focus-visible {
+	outline: 1px solid var(--border);
+	outline-offset: 3px;
+	border-radius: 6px;
 }
 
-.composer-controls {
+/* The toolbar (B6): the mockup's pill row under the textarea —
+   `[attach] [model] [thinking] spacer [ring %] [send]`. The pills are
+   quiet text buttons that surface on hover (no shadows on routine
+   controls — shadows are reserved for popovers). */
+
+.composer-toolbar {
 	display: flex;
 	align-items: center;
-	gap: 0.45rem;
+	gap: 4px;
+	flex-wrap: wrap;
 }
 
-.composer-model {
-	max-width: 12rem;
-	padding: 0.2rem 0.4rem;
-	border: 1px solid var(--border);
-	border-radius: 6px;
+.composer-toolbar-spacer {
+	flex: 1;
+}
+
+.composer-pill {
+	height: 28px;
+	padding: 0 9px;
+	border: none;
+	border-radius: 7px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 12.5px;
+	cursor: pointer;
+}
+
+.composer-pill:hover,
+.composer-pill[aria-expanded="true"] {
 	background: var(--surface-2);
 	color: var(--text);
-	font: inherit;
+}
+
+.composer-pill:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
+.composer-pill svg {
+	width: 15px;
+	height: 15px;
+}
+
+.composer-pill-caret {
+	color: var(--faint);
+	font-size: 10px;
+}
+
+/* The picker popovers open UPWARD from the bottom-docked toolbar. */
+
+.composer-picker {
+	position: relative;
+	display: inline-flex;
+}
+
+.composer-picker-menu {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 0;
+	z-index: 60;
+	min-width: 210px;
+	max-height: 16rem;
+	overflow: auto;
+	margin: 0;
+	padding: 4px;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+}
+
+.composer-picker-menu li {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	font-size: 13px;
+	color: var(--text);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.composer-picker-menu li[data-highlighted] {
+	background: var(--accent-bg);
+}
+
+.composer-picker-check {
+	color: var(--accent);
+	font-size: 12px;
+}
+
+.composer-picker-id {
+	color: var(--muted);
+	font-family: var(--mono);
+	font-size: 11.5px;
+	margin-left: auto;
+	padding-left: 12px;
 }
 
 .composer-ring {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.35rem;
-	color: var(--muted);
-	font-size: 12px;
+	gap: 6px;
+	color: var(--faint);
+	font-size: 11.5px;
 	justify-content: center;
+	margin-right: 6px;
 }
 
 .composer-ring-track {
@@ -1469,17 +1555,31 @@ body {
 }
 
 .composer-send {
-	background: var(--accent);
-	color: var(--bg);
+	width: 30px;
+	height: 30px;
+	flex: none;
 	border: 0;
 	border-radius: 8px;
-	padding: 0.55rem 0.9rem;
-	font-weight: 600;
+	background: var(--accent);
+	color: var(--bg);
+	display: grid;
+	place-items: center;
+	padding: 0;
 	cursor: pointer;
 }
 
-.composer-send:disabled {
-	opacity: 0.5;
+.composer-send svg {
+	width: 16px;
+	height: 16px;
+}
+
+/* The disabled state (aria-disabled + class, NOT the native attribute —
+   the button stays focusable and clickable for Steer): the mockup's
+   clearly-distinct surface-2 + faint icon. */
+
+.composer-send.composer-send-disabled {
+	background: var(--surface-2);
+	color: var(--faint);
 	cursor: default;
 }
 
@@ -1492,19 +1592,22 @@ body {
 /* Composer attachments (Task 24). */
 
 .composer-attach {
-	background: none;
-	border: 1px dashed var(--border);
-	color: var(--muted);
-	border-radius: 6px;
-	padding: 0.25rem 0.5rem;
-	cursor: pointer;
-	font-size: 12px;
-	text-align: center;
+	padding: 0 7px;
 }
 
 .composer-attach[data-uploading] {
 	opacity: 0.6;
 	cursor: default;
+}
+
+/* The hint line beneath the box (the mockup's centered faint caption). */
+
+.composer-hint {
+	max-width: 720px;
+	margin: 6px auto 0;
+	text-align: center;
+	color: var(--faint);
+	font-size: 11px;
 }
 
 .composer-attachments {

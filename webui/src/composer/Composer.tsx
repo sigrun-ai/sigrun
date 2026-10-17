@@ -13,14 +13,18 @@
  *   part per attachment + the text part; a known image extension maps to
  *   `image` + its mime, anything else to `file` (the server resolves
  *   path-parts at submit time, spec §5).
- * - Model picker from `client.listModels()` (the §5 catalog). v1 is
- *   display-only: the selection names the model the usage ring reads and
- *   the composer label — the wire-level model change is `configure`, a
- *   later task.
- * - Context-usage ring: the selected model's `docs["pi.usage"].models`
+ * - Model + thinking pickers (B6, the toolbar): live popovers — picking
+ *   calls `configure` (model / thinking). The current model follows the
+ *   view's `docs["pi.agent"].model` (`{provider, modelId}` — the server
+ *   truth); a successful pick is echoed immediately (the frame lands
+ *   next) while a FAILED configure keeps the previous selection and lands
+ *   in the alert strip. The thinking picker is ALWAYS rendered — the
+ *   catalog's `reasoning` flag is unreliable (glm-5.3-flash thinks but
+ *   reports false) and must never hide the control.
+ * - Context-usage ring: the current model's `docs["pi.usage"].models`
  *   ledger entry (input+output+cacheRead+cacheWrite — `totalTokens` is
  *   upstream-drift-prone) over its `contextWindow`, rendered as a compact
- *   SVG ring + percent.
+ *   SVG ring + percent; the tooltip names the raw `used / window` tokens.
  * - Interaction cards + ambient panels: the seam surfaces (docs/
  *   approval-ux-seams.md), endpoint-sourced, refreshed per view frame.
  * - Send/steer toggle: `view.steer.busy` flips the button and the submit
@@ -50,6 +54,9 @@ import type {
 	AmbientWire,
 	InteractionWire,
 } from "../api";
+import { PlusIcon, SendIcon } from "../layout/icons";
+import { ModelPicker } from "./ModelPicker";
+import { THINKING_LEVELS, ThinkingPicker } from "./ThinkingPicker";
 import { useDraft } from "./useDraft";
 
 /** The `pi.usage` doc (pi-durable's UsageState), narrowed to what the ring reads. */
@@ -68,11 +75,32 @@ interface UsageDocWire {
 	>;
 }
 
-/** The selected model's context usage, 0–1; null when unknown. */
-function usageFraction(
+/**
+ * The `pi.agent` doc (pi-durable's AgentState), narrowed to the current
+ * model — the schema's `{provider, modelId}` ref.
+ */
+interface AgentDocWire {
+	readonly model?: {
+		readonly provider: string;
+		readonly modelId: string;
+	};
+}
+
+/** The view's configured model as a catalog id (`provider/modelId`), null
+ *  when the view carries no model ref yet. */
+function agentModelId(view: ConversationViewWire | null): string | null {
+	if (view === null) return null;
+	const doc = view.docs["pi.agent"] as AgentDocWire | undefined;
+	if (doc?.model === undefined) return null;
+	return `${doc.model.provider}/${doc.model.modelId}`;
+}
+
+/** The current model's context usage — the raw token counts the ring's
+ *  tooltip names plus the 0–1 fraction; null when unknown. */
+function contextUsage(
 	view: ConversationViewWire | null,
 	model: ModelEntry | undefined,
-): number | null {
+): { used: number; window: number; fraction: number } | null {
 	if (view === null || model === undefined) return null;
 	const usage = view.docs["pi.usage"] as UsageDocWire | undefined;
 	const entry = usage?.models?.[model.id];
@@ -83,7 +111,11 @@ function usageFraction(
 		(entry.output ?? 0) +
 		(entry.cacheRead ?? 0) +
 		(entry.cacheWrite ?? 0);
-	return Math.max(0, Math.min(1, used / model.contextWindow));
+	return {
+		used,
+		window: model.contextWindow,
+		fraction: Math.max(0, Math.min(1, used / model.contextWindow)),
+	};
 }
 
 /** Known image extensions → mime (the submit part's `image` discriminator). */
@@ -103,22 +135,6 @@ function basename(path: string): string {
 	const slash = path.lastIndexOf("/");
 	return slash === -1 ? path : path.slice(slash + 1);
 }
-
-/**
- * The `thinking` values `/thinking` accepts (mirrors the server's
- * THINKING_LEVELS — itself pi-ai `ModelThinkingLevel`; the webui cannot
- * import server sources). Duplicated so an invalid level errors CLEARLY in
- * the composer instead of the generic non-2xx message.
- */
-const THINKING_LEVELS: readonly string[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
 
 /**
  * Parse a submitted composer line into `(name, args)` — `args` is
@@ -175,22 +191,30 @@ function attachmentPart(path: string): SubmissionInputPart {
 	return { type: "image", path, mime };
 }
 
-/** The compact context-usage ring (an SVG arc + percent label). */
-function UsageRing(props: { fraction: number | null }) {
+/** The compact context-usage ring (an SVG arc + percent label). The
+ *  tooltip names the raw counts — "<used> / <window> tokens". */
+function UsageRing(props: {
+	readonly used: number | null;
+	readonly window: number | null;
+}) {
+	const fraction =
+		props.used === null || props.window === null || props.window <= 0
+			? null
+			: Math.max(0, Math.min(1, props.used / props.window));
 	const percent =
-		props.fraction === null ? null : Math.round(props.fraction * 100);
+		fraction === null ? null : Math.round(fraction * 100);
 	const radius = 9;
 	const circumference = 2 * Math.PI * radius;
 	const filled =
-		props.fraction === null ? 0 : props.fraction * circumference;
+		fraction === null ? 0 : fraction * circumference;
 	return (
 		<span
 			className="composer-ring"
 			data-usage-percent={percent === null ? undefined : percent}
 			title={
-				percent === null
+				props.used === null || props.window === null
 					? "context usage unknown"
-					: `context usage ${percent}%`
+					: `${props.used} / ${props.window} tokens`
 			}
 		>
 			<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
@@ -239,7 +263,8 @@ export function Composer(props: {
 		props;
 	const draft = useDraft(client, conversationId);
 	const [models, setModels] = useState<readonly ModelEntry[]>([]);
-	const [selectedModel, setSelectedModel] = useState<string | null>(null);
+	const [pickedModel, setPickedModel] = useState<string | null>(null);
+	const [pickedThinking, setPickedThinking] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
@@ -310,7 +335,9 @@ export function Composer(props: {
 	}, [client, conversationId, view]);
 
 	// The model catalog: fetched once per mount (the §5 catalog is a server
-	// boot constant for M2's purposes).
+	// boot constant for M2's purposes). The CURRENT model is not picked here
+	// — it follows the view's pi.agent doc (with the last successful pick as
+	// the session echo that covers the frame latency).
 	useEffect(() => {
 		let cancelled = false;
 		client
@@ -318,12 +345,6 @@ export function Composer(props: {
 			.then((response) => {
 				if (cancelled) return;
 				setModels(response.models);
-				setSelectedModel((current) =>
-					current !== null &&
-					response.models.some((m) => m.id === current)
-						? current
-						: (response.models[0]?.id ?? null),
-				);
 			})
 			.catch((cause: unknown) => {
 				if (cancelled) return;
@@ -334,10 +355,21 @@ export function Composer(props: {
 		};
 	}, [client]);
 
+	// The current model: the view's pi.agent doc is the authority. The echo
+	// (`pickedModel` — the last model successfully configured from here)
+	// covers the gap between a successful pick and the frame that confirms
+	// it; whenever the doc names a DIFFERENT model the server truth wins (an
+	// out-of-band change, another tab, or the pick's own confirming frame).
+	const viewModelId = agentModelId(view);
+	useEffect(() => {
+		if (viewModelId !== null) setPickedModel(viewModelId);
+	}, [viewModelId]);
+	const currentModel = pickedModel ?? viewModelId ?? models[0]?.id ?? null;
+
 	const busy = view?.steer.busy ?? false;
 	const queued = view?.steer.queued ?? 0;
-	const model = models.find((m) => m.id === selectedModel);
-	const fraction = usageFraction(view, model);
+	const model = models.find((m) => m.id === currentModel);
+	const usage = contextUsage(view, model);
 
 	async function attach(files: Iterable<File>): Promise<void> {
 		if (conversationId === null || uploading) return;
@@ -491,11 +523,14 @@ export function Composer(props: {
 				}
 				case "model": {
 					await client.configure(conversationId, { model: args });
+					// The pill follows the command too (one spelling of "current").
+					setPickedModel(args);
 					setNotice(`model set to ${args}`);
 					break;
 				}
 				case "thinking": {
 					await client.configure(conversationId, { thinking: args });
+					setPickedThinking(args);
 					setNotice(`thinking set to ${args}`);
 					break;
 				}
@@ -507,6 +542,35 @@ export function Composer(props: {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
 			setSending(false);
+		}
+	}
+
+	/**
+	 * Toolbar pick → `configure`. Success echoes immediately (the view frame
+	 * confirms next — see `currentModel`); FAILURE keeps the previous
+	 * selection and lands in the alert strip — a failed pick must never
+	 * silently swap or drop what the composer shows.
+	 */
+	async function pickModel(id: string): Promise<void> {
+		if (conversationId === null) return;
+		try {
+			await client.configure(conversationId, { model: id });
+			setPickedModel(id);
+			setError(null);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
+
+	/** The thinking twin of {@link pickModel} (same contract). */
+	async function pickThinking(level: string): Promise<void> {
+		if (conversationId === null) return;
+		try {
+			await client.configure(conversationId, { thinking: level });
+			setPickedThinking(level);
+			setError(null);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
 		}
 	}
 
@@ -557,86 +621,94 @@ export function Composer(props: {
 	 * crowded the composer.
 	 */
 
+	// The send button's disabled state (aria-disabled + class — see the
+	// toolbar comment): no conversation, an in-flight non-steer submit, or
+	// nothing to send. A busy conversation keeps it LIVE (a click steers).
+	const sendDisabled =
+		conversationId === null ||
+		(sending && !busy) ||
+		(draft.text.trim() === "" && draft.attachments.length === 0);
+
 	return (
-		<div className="composer">
-			<AmbientPanels surfaces={ambient} />
-			<InteractionCards
-				conversationId={conversationId}
-				interactions={interactions}
-				client={client}
-				onError={(message) => setError(message)}
-				onAnswered={() => {
-					// Optimistic immediate refetch — the view-frame cadence
-					// only fires while a stream runs; an answer must clear
-					// its card now, not on the next frame.
-					if (conversationId === null) return;
-					client
-						.listInteractions(conversationId)
-						.then((response) =>
-							setInteractions(
-								(response.interactions ?? []).filter(
-									(i) => i.status === "pending",
+		<>
+			<div className="composer">
+				<AmbientPanels surfaces={ambient} />
+				<InteractionCards
+					conversationId={conversationId}
+					interactions={interactions}
+					client={client}
+					onError={(message) => setError(message)}
+					onAnswered={() => {
+						// Optimistic immediate refetch — the view-frame cadence
+						// only fires while a stream runs; an answer must clear
+						// its card now, not on the next frame.
+						if (conversationId === null) return;
+						client
+							.listInteractions(conversationId)
+							.then((response) =>
+								setInteractions(
+									(response.interactions ?? []).filter(
+										(i) => i.status === "pending",
+									),
 								),
-							),
-						)
-						.catch(() => undefined);
-				}}
-			/>
-			{error !== null && <p role="alert">{error}</p>}
-			{notice !== null && (
-				<p className="composer-notice" role="status">
-					{notice}
-				</p>
-			)}
-			{menuOpen && (
-				<ul className="composer-command-menu" role="listbox">
-					{filteredCommands.map((command, index) => (
-						<li
-							key={command.name}
-							role="option"
-							aria-selected={index === clampedHighlight}
-							data-highlighted={index === clampedHighlight || undefined}
-							onMouseDown={(event) => {
-								// Prevent the textarea's blur before the click lands.
-								event.preventDefault();
-							}}
-							onClick={() => selectCommand(command)}
-						>
-							<span className="composer-command-name">/{command.name}</span>
-							{command.argsHint !== undefined && (
-								<span className="composer-command-args">{command.argsHint}</span>
-							)}
-							<span className="composer-command-description">
-								{command.description}
-							</span>
-						</li>
-					))}
-				</ul>
-			)}
-			{draft.attachments.length > 0 && (
-				<ul className="composer-attachments">
-					{draft.attachments.map((path) => (
-						<li
-							key={path}
-							className="composer-attachment"
-							data-path={path}
-						>
-							<span className="composer-attachment-name">
-								{basename(path)}
-							</span>
-							<button
-								type="button"
-								className="composer-attachment-remove"
-								aria-label={`remove ${basename(path)}`}
-								onClick={() => draft.removeAttachment(path)}
+							)
+							.catch(() => undefined);
+					}}
+				/>
+				{error !== null && <p role="alert">{error}</p>}
+				{notice !== null && (
+					<p className="composer-notice" role="status">
+						{notice}
+					</p>
+				)}
+				{menuOpen && (
+					<ul className="composer-command-menu" role="listbox">
+						{filteredCommands.map((command, index) => (
+							<li
+								key={command.name}
+								role="option"
+								aria-selected={index === clampedHighlight}
+								data-highlighted={index === clampedHighlight || undefined}
+								onMouseDown={(event) => {
+									// Prevent the textarea's blur before the click lands.
+									event.preventDefault();
+								}}
+								onClick={() => selectCommand(command)}
 							>
-								×
-							</button>
-						</li>
-					))}
-				</ul>
-			)}
-			<div className="composer-row">
+								<span className="composer-command-name">/{command.name}</span>
+								{command.argsHint !== undefined && (
+									<span className="composer-command-args">{command.argsHint}</span>
+								)}
+								<span className="composer-command-description">
+									{command.description}
+								</span>
+							</li>
+						))}
+					</ul>
+				)}
+				{draft.attachments.length > 0 && (
+					<ul className="composer-attachments">
+						{draft.attachments.map((path) => (
+							<li
+								key={path}
+								className="composer-attachment"
+								data-path={path}
+							>
+								<span className="composer-attachment-name">
+									{basename(path)}
+								</span>
+								<button
+									type="button"
+									className="composer-attachment-remove"
+									aria-label={`remove ${basename(path)}`}
+									onClick={() => draft.removeAttachment(path)}
+								>
+									×
+								</button>
+							</li>
+						))}
+					</ul>
+				)}
 				<textarea
 					className="composer-input"
 					rows={3}
@@ -693,59 +765,66 @@ export function Composer(props: {
 						}
 					}}
 				/>
-				<div className="composer-side">
-					{/* THE PICKER CONVENTION (spec §6.1): a picker renders ONLY
-					    when its list has more than one item — a single-model
-					    deployment hides the picker (the single model stays
-					    selected, so the ring still reads its ledger entry). */}
-					{models.length > 1 && (
-						<select
-							className="composer-model"
-							value={selectedModel ?? ""}
-							onChange={(event) => setSelectedModel(event.target.value)}
-						>
-							{models.map((m) => (
-								<option key={m.id} value={m.id}>
-									{m.name}
-								</option>
-							))}
-						</select>
+				{/* THE TOOLBAR (B6) — the mockup's `[attach] [model] [thinking]
+				    spacer [ring %] [send]` under the textarea. The send/steer
+				    state is aria-label + aria-disabled + the
+				    `composer-send-disabled` class — NOT a native `disabled`, which
+				    would drop the Steer-while-busy click (T26b-iii); send() owns
+				    the no-op guard. */}
+				<div className="composer-toolbar">
+					<label
+						className="composer-pill composer-attach"
+						title="Attach files"
+						aria-label="attach files"
+						data-uploading={uploading || undefined}
+					>
+						<PlusIcon />
+						<input
+							type="file"
+							className="composer-file-input"
+							multiple
+							hidden
+							disabled={conversationId === null || uploading}
+							onChange={onFilesSelected}
+						/>
+					</label>
+					<ModelPicker
+						models={models}
+						current={currentModel}
+						disabled={conversationId === null}
+						onPick={pickModel}
+					/>
+					{/* ALWAYS rendered (B6): the catalog's `reasoning` flag is
+					    unreliable (glm-5.3-flash thinks but reports false) — it must
+					    never gate this control. */}
+					<ThinkingPicker current={pickedThinking} onPick={pickThinking} />
+					<span className="composer-toolbar-spacer" />
+					<UsageRing used={usage?.used ?? null} window={usage?.window ?? null} />
+					<button
+						type="button"
+						className={
+							"composer-send" +
+							(sendDisabled ? " composer-send-disabled" : "")
+						}
+						aria-label={busy ? "Steer" : "Send"}
+						title={busy ? "Steer the running session" : "Send"}
+						aria-disabled={sendDisabled}
+						onClick={() => void send()}
+					>
+						<SendIcon />
+					</button>
+					{queued > 0 && (
+						<span className="composer-queued">+{queued} queued</span>
 					)}
-					<div className="composer-controls">
-						<label
-							className="composer-attach"
-							data-uploading={uploading || undefined}
-						>
-							{uploading ? "Uploading…" : "Attach"}
-							<input
-								type="file"
-								className="composer-file-input"
-								multiple
-								hidden
-								disabled={conversationId === null || uploading}
-								onChange={onFilesSelected}
-							/>
-						</label>
-						<UsageRing fraction={fraction} />
-						<button
-							type="button"
-							className="composer-send"
-							disabled={
-								conversationId === null ||
-								(sending && !busy) ||
-								(draft.text.trim() === "" &&
-									draft.attachments.length === 0)
-							}
-							onClick={() => void send()}
-						>
-							{busy ? "Steer" : "Send"}
-						</button>
-							{queued > 0 && (
-								<span className="composer-queued">+{queued} queued</span>
-							)}
-						</div>
-					</div>
 				</div>
 			</div>
-		);
+			{/* The hint line beneath the box (the mockup's centered faint
+			    caption): the submit chord + the slash affordance, exact. */}
+			<p className="composer-hint">
+				{enterToSend
+					? "Enter to send · Shift+Enter for newline · / for commands"
+					: "Ctrl+Enter to send · / for commands"}
+			</p>
+	</>
+	);
 }

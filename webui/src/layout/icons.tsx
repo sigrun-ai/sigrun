@@ -125,3 +125,12 @@ export function MoreIcon(props: IconProps) {
 		</svg>
 	);
 }
+
+/** The composer's send/steer action (an up arrow, the mockup's glyph). */
+export function SendIcon(props: IconProps) {
+	return (
+		<Svg {...props}>
+			<path d="M12 19V5M5 12l7-7 7 7" />
+		</Svg>
+	);
+}
