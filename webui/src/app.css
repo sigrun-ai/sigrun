@@ -1,43 +1,67 @@
-/* The M2 webui stylesheet (Task 25): a port of the rendering-verified mockup
-   (spikes/webui-transport/mockup.html) onto the app's component class names.
-   The theme system is the mockup's verbatim: CSS custom properties on :root
-   (dark default), [data-theme="light"] and [data-accent="emerald"|"amber"]
-   overrides, switched by useTheme via document.documentElement's dataset.
-   Thin hand-rolled CSS, no framework (the T20 scaffold stance). */
+/* The webui stylesheet (B2, UI refresh): everything runs on the theme
+   system's CSS custom properties — the palette tokens useTheme sets
+   inline on the root (`--bg --surface --surface-2 --border --text
+   --muted --faint --ok --code --accent --accent-bg`) plus the three font
+   stacks. The :root block below carries the default palette's dark values
+   (Polar Night + Baltic Amber) as the pre-mount paint fallback; useTheme
+   overwrites them at mount and on every change, keyed by the
+   `data-mode` / `data-palette` / `data-accent` attributes it also sets.
 
-/* ── theme custom properties (the mockup's shape, verbatim) ──────────── */
+   Layout follows the refresh mockup's metrics: rail 52px, sidebar 264px,
+   header 48px, transcript column max 720px, right panel 280px. Below
+   900px the rail + sidebar collapse into a drawer (header menu button)
+   and the right panel becomes an overlay; nothing in the header wraps at
+   390px.
+
+   --warn and --danger are state colours (error/approval surfaces), not
+   palette members — they are defined here per resolved mode only. */
+
+/* ── tokens ──────────────────────────────────────────────────────────── */
 
 :root {
-	--bg: #0f1115;
-	--panel: #161a22;
-	--panel-2: #1c212b;
-	--border: #262d3a;
-	--text: #e6e9ef;
-	--text-dim: #8b93a3;
-	--accent: #6366f1;
-	--ok: #34d399;
-	--warn: #fbbf24;
-	--danger: #f87171;
-	--mono: ui-monospace, "SF Mono", Menlo, monospace;
+	/* Polar Night dark + Baltic Amber — the shipped default's first paint;
+	   useTheme replaces these inline on mount. */
+	--bg: #090d16;
+	--surface: #0f1524;
+	--surface-2: #161e31;
+	--border: #1f2942;
+	--text: #e2e8f3;
+	--muted: #8e9ab2;
+	--faint: #5d6984;
+	--ok: #5fd4a8;
+	--code: rgba(255, 255, 255, 0.06);
+	--accent: #d6a24a;
+	--accent-bg: rgba(214, 162, 74, 0.14);
+
+	/* State colours (never decorative): warnings + errors. */
+	--warn: #d9a35a;
+	--danger: #e0707a;
+
+	--serif: Georgia, "Iowan Old Style", serif;
+	--sans: Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
+	--mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
 	color-scheme: dark;
 }
 
-[data-theme="light"] {
-	--bg: #f6f7f9;
-	--panel: #ffffff;
-	--panel-2: #eef1f5;
-	--border: #d8dee8;
-	--text: #1c2330;
-	--text-dim: #5b6474;
+[data-mode="light"] {
+	--warn: #8a6116;
+	--danger: #b3363f;
 	color-scheme: light;
 }
 
-[data-accent="emerald"] {
-	--accent: #10b981;
+/* Links: the accent as the link colour in dark mode; in light mode the
+   text colour with an accent underline (light-mode Baltic Amber is
+   4.05:1 on white — under the 4.5:1 text bar, fine as an underline). */
+
+a {
+	color: var(--accent);
 }
 
-[data-accent="amber"] {
-	--accent: #f59e0b;
+[data-mode="light"] a {
+	color: var(--text);
+	text-decoration: underline;
+	text-decoration-color: var(--accent);
 }
 
 /* ── base ─────────────────────────────────────────────────────────────── */
@@ -53,7 +77,7 @@ body {
 }
 
 body {
-	font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+	font: 14px/1.5 var(--sans);
 	background: var(--bg);
 	color: var(--text);
 	overflow: hidden;
@@ -66,7 +90,6 @@ body {
 .app-root {
 	height: 100%;
 	display: flex;
-	flex-direction: column;
 	overflow: hidden;
 }
 
@@ -80,7 +103,7 @@ body {
 	align-items: center;
 	justify-content: center;
 	gap: 0.5rem;
-	color: var(--text-dim);
+	color: var(--muted);
 	padding: 2rem;
 	text-align: center;
 }
@@ -98,76 +121,112 @@ body {
 	word-break: break-all;
 }
 
-/* ── top bar (the mockup's header) ───────────────────────────────────── */
+/* ── the rail + sidebar drawer (one unit; a drawer below 900px) ──────── */
 
-.top-bar {
+.side-drawer {
 	display: flex;
-	align-items: center;
-	gap: 0.75rem;
-	padding: 0.5rem 0.875rem;
-	background: var(--panel);
-	border-bottom: 1px solid var(--border);
 	flex: none;
-	/* Badges must never push the bar wider than the window (the horizontal
-	   overflow measured at ~450px): wrap instead. */
-	flex-wrap: wrap;
 	min-width: 0;
+	background: var(--bg);
 }
 
-.top-bar .brand {
-	font-weight: 650;
-	letter-spacing: 0.2px;
-}
+/* Section rail (the mockup's .rail). */
 
-.badge {
-	font-size: 11px;
-	color: var(--text-dim);
-	border: 1px solid var(--border);
-	padding: 0.1rem 0.45rem;
-	border-radius: 999px;
-	font-family: var(--mono);
-	white-space: nowrap;
-}
-
-.badge.badge-degraded {
-	color: var(--warn);
-	border-color: var(--warn);
-}
-
-.top-bar .spacer {
-	flex: 1;
-}
-
-.theme-controls {
-	display: inline-flex;
-	gap: 0.5rem;
+.rail {
+	width: 52px;
+	flex: none;
+	border-right: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
 	align-items: center;
+	padding: 12px 0;
+	gap: 4px;
+	background: var(--bg);
 }
 
-.theme-controls select,
-.theme-controls button {
-	background: var(--panel-2);
-	color: var(--text);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	padding: 0.3rem 0.55rem;
-	font: inherit;
-	cursor: pointer;
-}
-
-/* ── three-panel body (the mockup's main grid) ───────────────────────── */
-
-.app-shell {
-	flex: 1;
+.rail-brand {
+	width: 30px;
+	height: 30px;
+	border-radius: 8px;
 	display: grid;
-	grid-template-columns: 250px 1fr 300px;
-	min-height: 0;
+	place-items: center;
+	color: var(--accent);
+	margin-bottom: 14px;
+	border: 1px solid var(--border);
 }
 
-/* ── sessions sidebar ────────────────────────────────────────────────── */
+.rail-brand svg {
+	width: 18px;
+	height: 18px;
+}
+
+.rail-btn {
+	width: 36px;
+	height: 36px;
+	border: none;
+	border-radius: 8px;
+	display: grid;
+	place-items: center;
+	color: var(--faint);
+	cursor: pointer;
+	position: relative;
+	background: transparent;
+	padding: 0;
+}
+
+.rail-btn:hover {
+	color: var(--text);
+	background: var(--surface-2);
+}
+
+.rail-btn-active {
+	color: var(--text);
+	background: var(--surface-2);
+}
+
+.rail-btn-active::before {
+	content: "";
+	position: absolute;
+	left: -8px;
+	top: 9px;
+	bottom: 9px;
+	width: 2px;
+	border-radius: 2px;
+	background: var(--accent);
+}
+
+.rail-btn svg {
+	width: 18px;
+	height: 18px;
+}
+
+.rail-spacer {
+	flex: 1;
+}
+
+/* The health dot (the rail's quiet ok/degraded indicator). */
+
+.rail-health {
+	width: 8px;
+	height: 8px;
+	flex: none;
+	border-radius: 50%;
+	background: var(--ok);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 15%, transparent);
+	margin: 8px 0 10px;
+}
+
+.rail-health[data-health="degraded"] {
+	background: var(--warn);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
+}
+
+/* ── sessions sidebar (the mockup's 264px column; B3 restyles the rows) */
 
 .session-list {
-	background: var(--panel);
+	width: 264px;
+	flex: none;
+	background: var(--surface);
 	border-right: 1px solid var(--border);
 	display: flex;
 	flex-direction: column;
@@ -187,12 +246,15 @@ body {
 	width: 100%;
 	padding: 0.4rem 0.6rem;
 	border: 1px solid var(--border);
-	border-radius: 6px;
-	background: var(--accent);
-	border-color: transparent;
-	color: #fff;
-	font-weight: 600;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
 	cursor: pointer;
+}
+
+.session-new:hover {
+	background: var(--surface-2);
 }
 
 .session-item {
@@ -210,16 +272,23 @@ body {
 	border: none;
 	border-radius: 7px;
 	background: transparent;
-	color: var(--text);
+	color: var(--muted);
 	cursor: pointer;
+	font: inherit;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
 }
 
 .session-select:hover {
-	background: var(--panel-2);
+	background: var(--surface-2);
+	color: var(--text);
 }
 
 .session-item-active .session-select {
-	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	background: var(--accent-bg);
+	color: var(--text);
 }
 
 /* Archived conversations render dimmed. */
@@ -233,14 +302,165 @@ body {
 	border: 1px solid var(--border);
 	border-radius: 6px;
 	background: transparent;
-	color: var(--text-dim);
+	color: var(--muted);
 	font-size: 0.75rem;
 	cursor: pointer;
 }
 
-/* ── chat column (transcript + the T23b composer slot) ───────────────── */
+/* ── main column: header + (chat | right panel) ─────────────────────── */
+
+.main-column {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.main-body {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+
+/* The chat header (the mockup's 48px bar). Nothing wraps: the title
+   ellipsizes, the controls keep fixed sizes. */
+
+.chat-header {
+	height: 48px;
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 0 16px 0 24px;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg);
+	min-width: 0;
+}
+
+.chat-title {
+	/* The single-line ellipsis element (the 200-char-title contract). */
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text);
+	border: none;
+	background: transparent;
+	padding: 0;
+	cursor: text;
+	font-family: inherit;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.chat-title-input {
+	font: inherit;
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text);
+	background: var(--surface);
+	border: 1px solid var(--accent);
+	border-radius: 6px;
+	padding: 2px 8px;
+	min-width: 0;
+	max-width: 100%;
+	width: min(360px, 60vw);
+}
+
+.chat-header-spacer {
+	flex: 1;
+	min-width: 12px;
+}
+
+/* Icon buttons (header + panels): 30px squares, hover-lifted only by
+   background (no shadows on routine controls). */
+
+.icon-btn {
+	width: 30px;
+	height: 30px;
+	flex: none;
+	border: none;
+	border-radius: 6px;
+	display: grid;
+	place-items: center;
+	color: var(--muted);
+	cursor: pointer;
+	background: transparent;
+	padding: 0;
+}
+
+.icon-btn:hover {
+	background: var(--surface-2);
+	color: var(--text);
+}
+
+.icon-btn[aria-pressed="true"] {
+	color: var(--text);
+	background: var(--surface-2);
+}
+
+.icon-btn svg {
+	width: 16px;
+	height: 16px;
+}
+
+/* The ⋯ menu popover (shadows are reserved for popovers — DESIGN.md). */
+
+.chat-menu-slot {
+	position: relative;
+	display: inline-flex;
+}
+
+.chat-menu {
+	position: absolute;
+	top: 34px;
+	right: 0;
+	z-index: 60;
+	min-width: 148px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 4px;
+	box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+	display: flex;
+	flex-direction: column;
+}
+
+.chat-menu button {
+	border: none;
+	background: transparent;
+	color: var(--text);
+	text-align: left;
+	font: inherit;
+	font-size: 13px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.chat-menu button:hover {
+	background: var(--surface-2);
+}
+
+.shell-error {
+	margin: 0;
+	padding: 0.35rem 24px;
+	color: var(--danger);
+	font-size: 12.5px;
+	border-bottom: 1px solid var(--border);
+}
+
+/* The narrow-viewport drawer toggle: shown only below 900px. */
+
+.chat-menu-toggle {
+	display: none;
+}
+
+/* ── chat pane (transcript + composer) ──────────────────────────────── */
 
 .chat-column {
+	flex: 1;
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
@@ -251,29 +471,28 @@ body {
 .chat-center {
 	flex: 1;
 	overflow-y: auto;
-	padding: 1rem 1.25rem;
+	padding: 28px 24px;
 	min-height: 0;
 }
 
 .chat-empty,
 .chat-loading {
-	color: var(--text-dim);
+	color: var(--faint);
+	text-align: center;
 }
+
+/* The transcript's centred column (the mockup's 720px max). */
 
 .entry-list {
 	display: flex;
 	flex-direction: column;
 	gap: 0.8rem;
+	max-width: 720px;
+	margin: 0 auto;
+	width: 100%;
 }
 
-/* Message bubbles (the mockup's .msg rules). */
-
-.entry-user-message,
-.entry-assistant-message {
-	max-width: 76ch;
-	padding: 0.65rem 0.9rem;
-	border-radius: 10px;
-}
+/* Message bubbles. */
 
 .entry-user {
 	display: flex;
@@ -287,13 +506,23 @@ body {
 	align-items: flex-start;
 }
 
+.entry-user-message,
+.entry-assistant-message {
+	max-width: 78%;
+	padding: 9px 14px;
+	border-radius: 14px 14px 4px 14px;
+	font-size: 14px;
+}
+
 .entry-user-message {
-	background: color-mix(in srgb, var(--accent) 22%, transparent);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
 }
 
 .entry-assistant-message {
-	background: var(--panel);
-	border: 1px solid var(--border);
+	background: transparent;
+	padding: 0;
+	max-width: 100%;
 }
 
 /* A message with nothing renderable (tool-call-only) renders nothing —
@@ -303,14 +532,56 @@ body {
 	display: none;
 }
 
-/* ── thinking blocks (2026-10-15 quick wins) ─────────────────── */
+.entry-assistant-message p,
+.entry-user-message p {
+	margin: 0.25rem 0;
+}
+
+.entry-assistant-message code {
+	font-family: var(--mono);
+	font-size: 0.9em;
+	background: var(--code);
+	padding: 0.1em 0.35em;
+	border-radius: 4px;
+}
+
+.entry-user-message code {
+	font-family: var(--mono);
+	font-size: 0.9em;
+	background: var(--code);
+	padding: 0.1em 0.35em;
+	border-radius: 4px;
+}
+
+.entry-system,
+.entry-compaction,
+.entry-unknown {
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+
+.entry-compaction-label {
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	font-size: 0.72rem;
+}
+
+.entry-attachment {
+	font-family: var(--mono);
+	font-size: 0.75rem;
+	color: var(--muted);
+	margin-left: 0.4rem;
+}
+
+/* ── thinking blocks (2026-10-15 quick wins) ─────────────────────────── */
 
 .entry-thinking {
 	margin: 0 0 0.4rem 0;
 	border-left: 2px solid var(--border);
 	padding-left: 0.6rem;
 	font-size: 0.82rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .entry-thinking-summary {
@@ -341,14 +612,14 @@ body {
 	}
 }
 
-/* ── the working indicator (2026-10-15 quick wins) ───────────── */
+/* ── the working indicator ──────────────────────────────────────────── */
 
 .chat-working {
 	display: flex;
 	align-items: center;
 	gap: 0.3rem;
 	padding: 0.4rem 0.2rem;
-	color: var(--text-dim);
+	color: var(--muted);
 	font-size: 0.8rem;
 }
 
@@ -356,7 +627,7 @@ body {
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
-	background: var(--text-dim);
+	background: var(--muted);
 	animation: working-bounce 1.2s ease-in-out infinite;
 }
 
@@ -390,48 +661,16 @@ body {
 	margin: 0.25rem 0;
 }
 
-.entry-assistant-message p,
-.entry-user-message p {
-	margin: 0.25rem 0;
-}
-
-.entry-assistant-message code {
-	font-family: var(--mono);
-	background: var(--panel-2);
-	padding: 0.1em 0.35em;
-	border-radius: 4px;
-}
-
-.entry-system,
-.entry-compaction,
-.entry-unknown {
-	color: var(--text-dim);
-	font-size: 0.8rem;
-}
-
-.entry-compaction-label {
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	font-size: 0.72rem;
-}
-
-.entry-attachment {
-	font-family: var(--mono);
-	font-size: 0.75rem;
-	color: var(--text-dim);
-	margin-left: 0.4rem;
-}
-
-/* Tool cards (the mockup's .tool rules). */
+/* Tool cards (the mockup's quiet tool rows). */
 
 .entry-tool {
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	background: var(--panel-2);
+	background: var(--surface);
 	overflow: hidden;
 	align-self: stretch;
-	max-width: 76ch;
+	max-width: 720px;
+	width: 100%;
 }
 
 .entry-tool-running {
@@ -449,7 +688,7 @@ body {
 	cursor: pointer;
 	font-family: var(--mono);
 	font-size: 12px;
-	color: var(--text-dim);
+	color: var(--muted);
 	text-align: left;
 }
 
@@ -490,19 +729,22 @@ body {
 }
 
 .tool-card-diff .diff-line-ctx {
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
-/* ── composer footer (the mockup's #composer) ────────────────────────── */
+/* ── composer footer ─────────────────────────────────────────────────── */
 
 .composer-slot {
 	flex: none;
 	border-top: 1px solid var(--border);
-	background: var(--panel);
+	background: var(--bg);
+	padding: 0 24px;
 }
 
 .composer {
-	padding: 0.7rem 0.9rem;
+	max-width: 720px;
+	margin: 0 auto;
+	padding: 12px 0;
 	display: flex;
 	flex-direction: column;
 	gap: 0.55rem;
@@ -512,8 +754,7 @@ body {
 	display: flex;
 	gap: 0.6rem;
 	/* Stretch: the side cluster defines the row height and the textarea
-	   matches it (the 2026-10-15 round-2 request — the stacked controls
-	   used to tower over the input). */
+	   matches it (the stacked controls used to tower over the input). */
 	align-items: stretch;
 }
 
@@ -521,10 +762,10 @@ body {
 	flex: 1;
 	resize: none;
 	padding: 0.6rem 0.75rem;
-	background: var(--panel-2);
+	background: var(--surface);
 	color: var(--text);
 	border: 1px solid var(--border);
-	border-radius: 8px;
+	border-radius: 10px;
 	font: inherit;
 }
 
@@ -547,7 +788,7 @@ body {
 	padding: 0.2rem 0.4rem;
 	border: 1px solid var(--border);
 	border-radius: 6px;
-	background: var(--panel-2);
+	background: var(--surface-2);
 	color: var(--text);
 	font: inherit;
 }
@@ -556,7 +797,7 @@ body {
 	display: inline-flex;
 	align-items: center;
 	gap: 0.35rem;
-	color: var(--text-dim);
+	color: var(--muted);
 	font-size: 12px;
 	justify-content: center;
 }
@@ -576,7 +817,7 @@ body {
 
 .composer-send {
 	background: var(--accent);
-	color: #fff;
+	color: var(--bg);
 	border: 0;
 	border-radius: 8px;
 	padding: 0.55rem 0.9rem;
@@ -600,7 +841,7 @@ body {
 .composer-attach {
 	background: none;
 	border: 1px dashed var(--border);
-	color: var(--text-dim);
+	color: var(--muted);
 	border-radius: 6px;
 	padding: 0.25rem 0.5rem;
 	cursor: pointer;
@@ -636,21 +877,33 @@ body {
 .composer-attachment-remove {
 	border: none;
 	background: transparent;
-	color: var(--text-dim);
+	color: var(--muted);
 	cursor: pointer;
 	padding: 0;
 	font-size: 0.9rem;
 }
 
-/* ── workspace browser (the mockup's right panel) ────────────────────── */
+/* ── right panel (280px docked; an overlay below 900px) ─────────────── */
 
 .right-panel {
-	background: var(--panel);
+	width: 280px;
+	flex: none;
+	background: var(--surface);
 	border-left: 1px solid var(--border);
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
 }
+
+.right-panel-title {
+	margin: 14px 10px 8px;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--faint);
+	letter-spacing: 0.04em;
+}
+
+/* ── workspace browser (the Workspace panel's content) ──────────────── */
 
 .workspace-browser {
 	display: flex;
@@ -664,22 +917,21 @@ body {
 	margin: 0 0 0.6rem;
 	font-weight: 600;
 	font-size: 12px;
-	color: var(--text-dim);
+	color: var(--faint);
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
 	display: flex;
 	align-items: center;
 }
 
-/* The drawer's close affordance (the fixed drawer covers the top-bar
-   toggle, so the panel needs its own ✕). Desktop widths hide it — the
-   static column has no close semantics there. */
+/* The drawer-overlay close affordance (CSS-hidden at desktop widths,
+   where the docked panel has no close semantics). */
 .workspace-close {
 	display: none;
 	margin-left: auto;
 	background: none;
 	border: none;
-	color: var(--text-dim);
+	color: var(--muted);
 	cursor: pointer;
 	font-size: 14px;
 	padding: 0 0.2rem;
@@ -716,12 +968,12 @@ body {
 }
 
 .workspace-file {
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .workspace-dir:hover,
 .workspace-file:hover {
-	background: var(--panel-2);
+	background: var(--surface-2);
 }
 
 .workspace-file:hover {
@@ -729,21 +981,21 @@ body {
 }
 
 .workspace-file[data-selected] {
-	background: var(--panel-2);
+	background: var(--surface-2);
 	color: var(--text);
 }
 
 .file-preview {
 	border-top: 1px solid var(--border);
 	padding: 0.6rem 0.8rem;
-	background: var(--panel-2);
+	background: var(--surface-2);
 	overflow: auto;
 	max-height: 40%;
 }
 
 .file-preview-path {
 	font-size: 0.75rem;
-	color: var(--text-dim);
+	color: var(--muted);
 	word-break: break-all;
 	margin: 0 0 0.4rem;
 }
@@ -761,49 +1013,42 @@ body {
 .file-preview-loading,
 .workspace-empty,
 .workspace-loading {
-	color: var(--text-dim);
+	color: var(--faint);
 	font-size: 0.8rem;
 }
 
-/* ── narrow viewports (the mockup's media queries) ───────────────── */
+/* ── backdrops (the ≤900px overlays' click-outside surfaces) ────────── */
 
-/* The workspace toggle only exists where the static column is hidden. */
-.workspace-toggle {
+.drawer-backdrop,
+.panel-backdrop {
 	display: none;
-	background: none;
-	border: none;
-	color: var(--text-dim);
-	cursor: pointer;
-	font-size: 15px;
 }
 
-@media (max-width: 1000px) {
-	.app-shell {
-		grid-template-columns: 210px 1fr;
-	}
-	.right-panel {
-		display: none;
-	}
-	.workspace-toggle {
-		display: block;
-	}
-	.workspace-close {
-		display: block;
-	}
-	/* Backdrop behind the drawer: dims the page and owns click-outside. */
-	.workspace-backdrop {
+/* ── narrow viewports (≤900px: drawer + overlay panel) ───────────────── */
+
+@media (max-width: 900px) {
+	/* The rail + sidebar collapse into one left drawer. */
+	.side-drawer {
 		position: fixed;
-		inset: 0;
-		background: rgb(0 0 0 / 35%);
-		z-index: 85;
+		top: 0;
+		bottom: 0;
+		left: 0;
+		z-index: 90;
+		transform: translateX(-100%);
+		transition: transform 0.18s ease;
+		box-shadow: 0 0 32px rgb(0 0 0 / 35%);
 	}
-	/* The drawer: the panel overlays the chat column from the right. The
-	   backdrop (z 85) sits under it; the top bar (static stacking) sits
-	   under the backdrop too — dimmed like the rest of the page. The
-	   drawer covers the top-bar toggle, so dismissal is the panel's own
-	   ✕ or a backdrop click. */
-	.right-panel.workspace-open {
-		display: flex;
+
+	.side-drawer[data-open] {
+		transform: translateX(0);
+	}
+
+	.chat-menu-toggle {
+		display: grid;
+	}
+
+	/* The right panel detaches into a fixed overlay. */
+	.right-panel {
 		position: fixed;
 		top: 0;
 		right: 0;
@@ -812,34 +1057,50 @@ body {
 		z-index: 90;
 		box-shadow: -12px 0 32px rgb(0 0 0 / 45%);
 	}
-}
 
-@media (max-width: 680px) {
-	.app-shell {
-		grid-template-columns: 1fr;
+	.workspace-close {
+		display: block;
 	}
-	.session-list {
-		display: none;
+
+	.drawer-backdrop,
+	.panel-backdrop {
+		display: block;
+		position: fixed;
+		inset: 0;
+		background: rgb(0 0 0 / 35%);
+		z-index: 85;
+	}
+
+	.chat-center {
+		padding: 20px 16px;
+	}
+
+	.chat-header {
+		padding: 0 12px 0 16px;
+	}
+
+	.composer-slot {
+		padding: 0 16px;
 	}
 }
 
 /* ── slash-command menu (Task 7, pi parity) ──────────────────────────── */
 
 .composer-notice {
-	margin: 0.25rem 0.75rem;
+	margin: 0.25rem 0;
 	font-size: 0.8rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .composer-command-menu {
 	list-style: none;
-	margin: 0 0.75rem;
+	margin: 0;
 	padding: 0.25rem 0;
 	max-height: 12rem;
 	overflow: auto;
 	border: 1px solid var(--border);
-	border-radius: 0.5rem;
-	background: var(--panel-2);
+	border-radius: 8px;
+	background: var(--surface-2);
 	font-size: 0.8rem;
 }
 
@@ -852,7 +1113,7 @@ body {
 }
 
 .composer-command-menu li[data-highlighted] {
-	background: color-mix(in srgb, var(--accent) 18%, transparent);
+	background: var(--accent-bg);
 }
 
 .composer-command-name {
@@ -860,15 +1121,15 @@ body {
 }
 
 .composer-command-args {
-	color: var(--text-dim);
-	font-family: var(--mono, monospace);
+	color: var(--muted);
+	font-family: var(--mono);
 }
 
 .composer-command-description {
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
-/* ── settings panel (Task 8c: the gear-opened /v1/settings editor) ───── */
+/* ── settings panel (the rail-opened /v1/settings editor; B7 restyles) */
 
 .settings-overlay {
 	position: fixed;
@@ -885,13 +1146,14 @@ body {
 	width: min(26rem, 92vw);
 	max-height: 82vh;
 	overflow-y: auto;
-	background: var(--panel);
+	background: var(--surface);
 	border: 1px solid var(--border);
-	border-radius: 8px;
+	border-radius: 12px;
 	padding: 0.75rem 0.875rem;
 	display: flex;
 	flex-direction: column;
 	gap: 0.625rem;
+	box-shadow: 0 18px 48px rgb(0 0 0 / 40%);
 }
 
 .settings-head {
@@ -912,7 +1174,7 @@ body {
 .settings-close {
 	background: none;
 	border: none;
-	color: var(--text-dim);
+	color: var(--muted);
 	cursor: pointer;
 	font-size: 13px;
 }
@@ -922,7 +1184,7 @@ body {
 	flex-direction: column;
 	gap: 0.625rem;
 	/* Section bodies may carry wide content (the raw-JSON textarea, long
-	   notes) — never widen the panel (the overflow report). */
+	   notes) — never widen the panel. */
 	min-width: 0;
 	max-width: 100%;
 }
@@ -947,16 +1209,16 @@ body {
 	padding: 0.3rem 0.6rem;
 	text-align: left;
 	font-size: 13px;
-	color: var(--text-dim);
+	color: var(--muted);
 	cursor: pointer;
 }
 
 .settings-nav-item:hover {
-	background: var(--panel-2);
+	background: var(--surface-2);
 }
 
 .settings-nav-item[data-active] {
-	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	background: var(--accent-bg);
 	color: var(--text);
 }
 
@@ -976,7 +1238,7 @@ body {
 
 .settings-label {
 	font-size: 11px;
-	color: var(--text-dim);
+	color: var(--faint);
 	font-family: var(--mono);
 }
 
@@ -997,9 +1259,8 @@ body {
 	display: flex;
 	/* Explicit row: the .settings-field base is column, and a column-wrap
 	   under the section's height turns the checkboxes into one vertical
-	   column with the note beside it as a clipped second column — the
-	   user-reported horizontal scroll. Row + wrap keeps the note (basis
-	   100%) on its own full-width line. */
+	   column with the note beside it as a clipped second column. Row +
+	   wrap keeps the note (basis 100%) on its own full-width line. */
 	flex-direction: row;
 	flex-wrap: wrap;
 	gap: 0.25rem 0.75rem;
@@ -1012,7 +1273,7 @@ body {
 
 .settings-note {
 	font-size: 11px;
-	color: var(--text-dim);
+	color: var(--faint);
 	margin: 0;
 }
 
@@ -1025,8 +1286,7 @@ body {
 	border-radius: 4px;
 	padding: 0.4rem;
 	resize: vertical;
-	/* The textarea (and any section content) must shrink with the panel —
-	   default form sizing overflows the 26rem shell. */
+	/* The textarea (and any section content) must shrink with the panel. */
 	width: 100%;
 	box-sizing: border-box;
 	max-width: 100%;
@@ -1039,10 +1299,12 @@ body {
 }
 
 .settings-save {
-	background: var(--accent, indigo);
-	border: 1px solid var(--border);
-	border-radius: 4px;
+	background: var(--accent);
+	border: none;
+	border-radius: 6px;
+	color: var(--bg);
 	padding: 0.3rem 0.9rem;
+	font-weight: 600;
 	cursor: pointer;
 }
 
@@ -1050,21 +1312,6 @@ body {
 	opacity: 0.5;
 	cursor: default;
 }
-
-.settings-gear {
-	background: none;
-	border: none;
-	color: var(--text-dim);
-	cursor: pointer;
-	font-size: 20px;
-	line-height: 1;
-	padding: 0.2rem 0.3rem;
-}
-
-.settings-gear:hover {
-	color: var(--text);
-}
-
 
 /* ── interaction cards (the seam's pending stack) ───────────────────── */
 
@@ -1077,9 +1324,9 @@ body {
 .interaction-card {
 	border: 1px solid var(--warn);
 	border-radius: 8px;
-	background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+	background: color-mix(in srgb, var(--warn) 8%, var(--surface));
 	padding: 0.7rem 0.9rem;
-	max-width: 76ch;
+	max-width: 720px;
 }
 
 .interaction-card-title {
@@ -1092,7 +1339,7 @@ body {
 .interaction-kind {
 	font-family: var(--mono);
 	font-size: 11px;
-	color: var(--text-dim);
+	color: var(--muted);
 	background: color-mix(in srgb, var(--warn) 14%, transparent);
 	padding: 0.1rem 0.45rem;
 	border-radius: 4px;
@@ -1100,7 +1347,7 @@ body {
 
 .interaction-expiry {
 	font-size: 0.75rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .interaction-text {
@@ -1119,7 +1366,7 @@ body {
 	margin: 0;
 	padding: 0.5rem;
 	border-radius: 6px;
-	background: var(--panel);
+	background: var(--surface);
 	font-family: var(--mono);
 	font-size: 12px;
 	overflow: auto;
@@ -1176,7 +1423,7 @@ body {
 .interaction-option-description {
 	grid-column: 2;
 	font-size: 0.8rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .interaction-field {
@@ -1187,14 +1434,14 @@ body {
 
 .interaction-field-label {
 	font-size: 0.8rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .interaction-field input {
 	padding: 0.4rem 0.6rem;
 	border-radius: 6px;
 	border: 1px solid var(--border);
-	background: var(--panel);
+	background: var(--surface);
 	color: var(--text);
 	font: inherit;
 }
@@ -1205,7 +1452,7 @@ body {
 	border-radius: 6px;
 	border: 1px solid var(--border);
 	background: var(--ok);
-	color: #06281c;
+	color: var(--bg);
 	font-weight: 600;
 	cursor: pointer;
 }
@@ -1219,7 +1466,7 @@ body {
 .ambient-details {
 	margin-top: 0.4rem;
 	font-size: 0.75rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .interaction-details pre,
@@ -1227,7 +1474,7 @@ body {
 	margin: 0.3rem 0 0;
 	max-height: 12rem;
 	overflow: auto;
-	background: var(--panel);
+	background: var(--surface);
 	border-radius: 6px;
 	padding: 0.5rem;
 }
@@ -1243,16 +1490,16 @@ body {
 .ambient-surface {
 	border: 1px solid var(--border);
 	border-radius: 8px;
-	background: var(--panel);
+	background: var(--surface);
 	padding: 0.5rem 0.7rem;
-	max-width: 76ch;
+	max-width: 720px;
 }
 
 .ambient-surface-title {
 	display: flex;
 	justify-content: space-between;
 	font-size: 0.72rem;
-	color: var(--text-dim);
+	color: var(--faint);
 	margin-bottom: 0.3rem;
 }
 
@@ -1296,9 +1543,9 @@ body {
 .ambient-row[data-status="completed"],
 .ambient-row[data-status="complete"],
 .ambient-row[data-status="passed"] {
-	color: var(--text-dim);
+	color: var(--muted);
 	text-decoration: line-through;
-	text-decoration-color: color-mix(in srgb, var(--text-dim) 60%, transparent);
+	text-decoration-color: color-mix(in srgb, var(--muted) 60%, transparent);
 }
 
 .ambient-row[data-status="failed"],
@@ -1312,31 +1559,31 @@ body {
 }
 
 .ambient-row-spinner {
-	color: var(--text-dim);
+	color: var(--muted);
 	font-style: italic;
 	font-size: 0.78rem;
 }
 
 .ambient-row-detail {
-	color: var(--text-dim);
+	color: var(--muted);
 	font-size: 0.8rem;
 }
 
 .ambient-row-deps {
-	color: var(--text-dim);
+	color: var(--muted);
 	font-family: var(--mono);
 	font-size: 0.72rem;
 }
 
 .ambient-metrics {
-	color: var(--text-dim);
+	color: var(--muted);
 	font-family: var(--mono);
 	font-size: 0.72rem;
 	margin-left: auto;
 }
 
 .ambient-quiet-summary {
-	color: var(--text-dim);
+	color: var(--faint);
 	font-size: 0.75rem;
 }
 
@@ -1348,13 +1595,13 @@ body {
 
 .ambient-gauge-label {
 	font-size: 0.8rem;
-	color: var(--text-dim);
+	color: var(--muted);
 }
 
 .ambient-gauge-bar {
 	height: 6px;
 	border-radius: 3px;
-	background: color-mix(in srgb, var(--text-dim) 25%, transparent);
+	background: color-mix(in srgb, var(--faint) 25%, transparent);
 	overflow: hidden;
 }
 
@@ -1396,11 +1643,11 @@ body {
 .ambient-ledger-kind {
 	font-family: var(--mono);
 	font-size: 0.7rem;
-	color: var(--text-dim);
+	color: var(--muted);
 	flex: none;
 }
 
 .ambient-ledger-detail {
-	color: var(--text-dim);
+	color: var(--muted);
 	font-size: 0.75rem;
 }

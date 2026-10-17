@@ -1,6 +1,6 @@
 /**
  * SettingsPanel (Task 8c, pi parity): the settings editor opened from the
- * TopBar gear. GETs `/v1/settings` on open, edits the store fields, PATCHes
+ * rail's Settings button. GETs `/v1/settings` on open, edits the store fields, PATCHes
  * the edits on Save (the server persists them; the harness picks a patched
  * `steeringMode` up on the NEXT submission's admission — the spec's binding
  * testable).

@@ -1,19 +1,31 @@
 <!doctype html>
-<html lang="en" data-theme="dark" data-accent="indigo">
+<html lang="en">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>sigrun</title>
 		<script>
-			// Pre-paint theme boot (T25 review P2): apply the persisted theme
-			// before the stylesheet paints so a persisted light/accent theme
-			// doesn't flash the dark+indigo defaults. Synchronous, tiny, no
-			// dependencies — mirrors useTheme's storage keys + fallback.
+			// Pre-paint theme boot (B2): stamp the persisted mode/palette/accent
+			// dataset keys before the stylesheet paints so a persisted light mode
+			// or accent doesn't flash the dark defaults in `color-scheme`-driven
+			// chrome. The full token set is applied by useTheme at mount (the
+			// palette data lives only in src/shared/themes.ts — nothing is
+			// duplicated here); app.css's :root carries the default palette's
+			// dark values as the pre-mount fallback.
 			try {
-				const t = localStorage.getItem("sigrun.theme");
-				const a = localStorage.getItem("sigrun.accent");
-				if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
-				if (a) document.documentElement.dataset.accent = a;
+				const mode = localStorage.getItem("sigrun.theme");
+				document.documentElement.dataset.mode =
+					mode === "light" || mode === "dark"
+						? mode
+						: matchMedia("(prefers-color-scheme: dark)").matches
+							? "dark"
+							: "light";
+				const palette = localStorage.getItem("sigrun.palette");
+				if (palette)
+					document.documentElement.dataset.palette = palette;
+				let accent = localStorage.getItem("sigrun.accent");
+				if (accent === "amber") accent = "baltic-amber";
+				if (accent) document.documentElement.dataset.accent = accent;
 			} catch {}
 		</script>
 	</head>
