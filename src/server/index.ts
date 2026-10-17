@@ -1395,6 +1395,28 @@ export async function createServer(
 				},
 				BACKGROUND_CONTEXT,
 			);
+			// The fork's sidebar identity (UI refresh A2): the copied meta doc
+			// carries the source's name/autoName and the namer's attempt count;
+			// ONE commit drops all three (a fork is a new conversation, not the
+			// source's name — and it starts naming-fresh: inheriting an exhausted
+			// attempt count would make the fork forever unnameable, the plan's
+			// Task D deviation (c)), re-seeds it with "<source display name> (fork)"
+			// as its AUTO name when the source had one, and stamps activity so
+			// the fresh fork sorts where it happened.
+			const sourceMeta = await opened.harness.snapshot(
+				SessionMetaDoc,
+				conversation.id,
+				BACKGROUND_CONTEXT,
+			);
+			const sourceName = sourceMeta?.name ?? sourceMeta?.autoName;
+			await fork.commit(async (tx) => {
+				const draft = await tx.doc(SessionMetaDoc, fork.id);
+				delete draft.name;
+				delete draft.autoName;
+				delete draft.autoNameAttempts;
+				if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
+				draft.lastActivityAt = opened.now().toISOString();
+			}, BACKGROUND_CONTEXT);
 			// The fork's identity is the CALLER's, not the source's: the doc
 			// copied the parent's owner ("current" fork semantics), the stamp
 			// overwrites it; no header → the copy stands.

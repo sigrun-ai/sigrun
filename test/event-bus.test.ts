@@ -13,7 +13,7 @@
  * never leaks across tests.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
@@ -80,10 +80,16 @@ async function bootBus(
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
+	// Auto-naming off: the namer completes through the same faux provider
+	// and would consume scripted responses after the first settled run —
+	// these tests script exact responses for the BUS (naming behavior is
+	// test/naming.test.ts's subject).
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
 		settings: options.settings,
+		settingsDir: dir,
 	});
 	// The root (and its creation commit) exists BEFORE the bus subscribes:
 	// lifecycle tests observe only what happens after open.

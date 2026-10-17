@@ -17,7 +17,7 @@
  * compaction resume consistency is the Task 12 battery's job (forward-ref).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -70,6 +70,16 @@ function fauxContributor(
 		},
 		faux,
 	};
+}
+
+/**
+ * Turn A2's auto-namer off for one scenario dir: the namer completes
+ * through the same faux provider and would consume scripted responses
+ * after the first settled run. These tests script exact responses for
+ * compaction; naming behavior is test/naming.test.ts's subject.
+ */
+async function disableAutoNaming(dir: string): Promise<void> {
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 }
 
 // ---------------------------------------------------------------------------
@@ -161,9 +171,11 @@ test("an overflowing conversation compacts and places a summary entry", async ()
 			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
 			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
 		});
+		await disableAutoNaming(dir);
 		const opened = await openHarness(config, {
 			extensions: [contributor],
 			env: {},
+			settingsDir: dir,
 		});
 		try {
 			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -257,9 +269,11 @@ test("SIGRUN_COMPACTION_BACKGROUND_TOKENS > 0 starts a background compaction", a
 			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
 			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "400",
 		});
+		await disableAutoNaming(dir);
 		const opened = await openHarness(config, {
 			extensions: [contributor],
 			env: {},
+			settingsDir: dir,
 		});
 		try {
 			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -335,9 +349,11 @@ test("caller settings.compaction wins over config-provided policy", async () => 
 			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
 			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
 		});
+		await disableAutoNaming(dir);
 		const opened = await openHarness(config, {
 			extensions: [contributor],
 			env: {},
+			settingsDir: dir,
 			settings: { compaction: { enabled: false } },
 		});
 		try {

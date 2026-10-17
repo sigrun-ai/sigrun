@@ -474,7 +474,10 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 		'steeringMode "all" (PATCHed through the endpoint): every steer is admitted at the single boundary',
 		{ timeout: 90_000 },
 		async () => {
-			const server = await bootServer();
+			// Auto-naming off (the settings file): the namer would consume a
+			// scripted steer answer after the first settle — these tests
+			// script exact responses for the steering observable.
+			const server = await bootServer({}, { file: '{"namingModel": false}' });
 			const patched = await patch(server.app, { steeringMode: "all" });
 			expect(patched.statusCode).toBe(200);
 			const samples = await steerSamples(server, 2);
@@ -515,7 +518,7 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 		"the default (no PATCH): one-at-a-time — the second steer is STILL QUEUED when the first steered answer lands",
 		{ timeout: 90_000 },
 		async () => {
-			const server = await bootServer();
+			const server = await bootServer({}, { file: '{"namingModel": false}' });
 			const samples = await steerSamples(server, 2);
 			// The binding observable (the mirror of the "all" test):
 			// pi-durable's default one-at-a-time admission holds the second
@@ -553,7 +556,7 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 			const server = await bootServer(
 				{},
 				{
-					file: '{"steeringMode": "one-at-a-time"}',
+					file: '{"steeringMode": "one-at-a-time", "namingModel": false}',
 					settings: { steeringMode: "all" },
 				},
 			);
