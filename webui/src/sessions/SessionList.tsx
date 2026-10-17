@@ -16,7 +16,8 @@
  * - Row = name (single-line ellipsis — 200-char names never wrap) + age;
  *   hover/focus-within swaps the age for the ⋯ menu (Rename, Fork,
  *   Archive / Unarchive). The menu toggle is a real button, so keyboard
- *   users reach it (focus-within reveals it, then Tab).
+ *   users reach it (focus-within reveals it, then Tab). Outside-click +
+ *   Esc close the open row's menu (useDismiss).
  * - Children indent one level per depth with the ↳ lineage mark.
  * - The bottom "Archived" toggle switches `includeArchived`.
  *
@@ -26,7 +27,7 @@
  * N+1 removal dropped. The row is name + age, per the refresh spec.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	ageGroup,
 	buildConversationTree,
@@ -36,6 +37,7 @@ import {
 	type TreeNode,
 } from "../../../src/shared/conversations.js";
 import { MoreIcon, PlusIcon } from "../layout/icons";
+import { useDismiss } from "../useDismiss";
 import type { ConversationSummary } from "../api";
 
 /** The Ctrl+K / ⌘K focus target (a stable id; the shortcut is global). */
@@ -151,6 +153,8 @@ export function SessionList(props: {
 	const [query, setQuery] = useState("");
 	const [includeArchived, setIncludeArchived] = useState(false);
 	const [menuFor, setMenuFor] = useState<number | null>(null);
+	const menuSlot = useRef<HTMLSpanElement | null>(null);
+	useDismiss(menuFor !== null, () => setMenuFor(null), menuSlot);
 	const [renaming, setRenaming] = useState<{
 		id: number;
 		draft: string;
@@ -284,7 +288,10 @@ export function SessionList(props: {
 							<span className="session-age">
 								{formatAge(row.lastActivityAt, now)}
 							</span>
-							<span className="session-row-actions">
+							<span
+								className="session-row-actions"
+								ref={menuFor === row.id ? menuSlot : undefined}
+							>
 								<button
 									type="button"
 									className="session-menu-toggle"

@@ -1,8 +1,11 @@
 /**
- * SettingsPanel (Task 8c): the settings editor over GET/PATCH /v1/settings —
- * renders the current settings from GET, edits + save PATCHes the changed
- * fields, invalid raw JSON refuses to save locally. Fetch-stub style per
- * Composer.test.tsx.
+ * SettingsPanel (Task 8c + B7): the settings editor over GET/PATCH
+ * /v1/settings — renders the current settings from GET, edits + save
+ * PATCHes the changed fields, invalid raw JSON refuses to save locally.
+ * The Interface section (B7) also carries the client-only theme controls,
+ * asserted through a live useTheme wired to fake storage + a fake root
+ * (the dataset the browser's documentElement receives). Fetch-stub style
+ * per Composer.test.tsx.
  */
 
 import { act } from "react";
@@ -13,7 +16,8 @@ import {
 	type FetchLike,
 	type SettingsWire,
 } from "../api";
-import { renderAsync } from "../test-utils";
+import { renderAsync, textContent } from "../test-utils";
+import { useTheme, type ThemeRoot, type ThemeState, type ThemeStorage } from "../theme/useTheme";
 import { SettingsPanel } from "./SettingsPanel";
 import { usePrefs } from "./usePrefs";
 
@@ -55,21 +59,60 @@ function makeHarness(init?: {
 	return { calls, client: createClient({ fetch: fetchImpl }) };
 }
 
+/** A minimal in-memory storage (useTheme's localStorage surface). */
+function makeThemeStorage(): ThemeStorage {
+	const map = new Map<string, string>();
+	return {
+		getItem: (key) => map.get(key) ?? null,
+		setItem: (key, value) => {
+			map.set(key, value);
+		},
+	};
+}
+
+/** A minimal fake root element (useTheme's dataset + setProperty surface). */
+function makeThemeRoot(): { root: ThemeRoot; dataset: Record<string, string | undefined> } {
+	const dataset: Record<string, string | undefined> = {};
+	return {
+		dataset,
+		root: {
+			dataset,
+			setProperty: () => undefined,
+		},
+	};
+}
+
+/** A matchMedia stub that always reports a dark system preference. */
+const darkMatchMedia = () => () => ({
+	matches: true,
+	addEventListener: () => undefined,
+	removeEventListener: () => undefined,
+});
+
 /**
- * Render the panel wired to a live usePrefs instance (the App shape: the
- * hook lives in a wrapper so its state survives the panel). The probe
- * exposes the held prefs for assertions.
+ * Render the panel wired to live usePrefs + useTheme instances (the App
+ * shape: the hooks live in a wrapper so their state survives the panel).
+ * The probe exposes the held prefs and the theme root's dataset (what the
+ * browser's documentElement would receive).
  */
 function renderPanelWithPrefs(
 	client: ReturnType<typeof createClient>,
 ) {
+	const themeRoot = makeThemeRoot();
 	let captured: ReturnType<typeof usePrefs> | undefined;
+	let theme: ThemeState | undefined;
 	function Probe() {
 		captured = usePrefs();
+		theme = useTheme({
+			storage: makeThemeStorage(),
+			root: themeRoot.root,
+			matchMedia: darkMatchMedia(),
+		});
 		return (
 			<SettingsPanel
 				client={client}
 				prefsState={captured}
+				theme={theme}
 				onClose={() => {}}
 			/>
 		);
@@ -80,6 +123,7 @@ function renderPanelWithPrefs(
 			if (captured === undefined) throw new Error("prefs not captured");
 			return captured.prefs;
 		},
+		themeRoot: themeRoot.dataset,
 	}));
 }
 
@@ -412,5 +456,82 @@ describe("SettingsPanel", () => {
 			});
 		});
 		expect(prefs().showThinking).toBe(false);
+	});
+
+	test("Interface theme controls: Fjord / Lichen / Light apply immediately to the theme root", async () => {
+		const { client } = makeHarness();
+		const { renderer, themeRoot } = await renderPanelWithPrefs(client);
+		await openSection(renderer, "Interface");
+		// The three controls render over the shared theme data: four palette
+		// swatches, seven accent swatches, three mode segments.
+		const optionsOf = (attr: string): (string | undefined)[] =>
+			renderer.root
+				.findAllByType("button")
+				.map((button) => button.props[attr] as string | undefined)
+				.filter((value) => value !== undefined);
+		expect(optionsOf("data-palette-option")).toEqual([
+			"fjord",
+			"iron-ember",
+			"polar-night",
+			"birch-moss",
+		]);
+		expect(optionsOf("data-accent-option")).toEqual([
+			"baltic-amber",
+			"ember",
+			"lingonberry",
+			"glacier",
+			"aurora",
+			"lichen",
+			"heather",
+		]);
+		expect(optionsOf("data-mode-option")).toEqual(["system", "dark", "light"]);
+		// A pick applies IMMEDIATELY (no save): the theme root's dataset —
+		// what documentElement carries in the browser — flips on click.
+		await act(async () => {
+			renderer.root.findByProps({ "data-palette-option": "fjord" }).props.onClick();
+		});
+		expect(themeRoot.palette).toBe("fjord");
+		await act(async () => {
+			renderer.root.findByProps({ "data-accent-option": "lichen" }).props.onClick();
+		});
+		expect(themeRoot.accent).toBe("lichen");
+		await act(async () => {
+			renderer.root.findByProps({ "data-mode-option": "light" }).props.onClick();
+		});
+		expect(themeRoot.mode).toBe("light");
+	});
+
+	test("the palette swatch carries its own preview colours + label; the accent swatch its label in title", async () => {
+		const { client } = makeHarness();
+		const { renderer } = await renderPanelWithPrefs(client);
+		await openSection(renderer, "Interface");
+		// Fjord's swatch: its own dark bg + text + default accent (Baltic Amber).
+		const fjord = renderer.root.findByProps({ "data-palette-option": "fjord" });
+		expect(fjord.props.title).toBe("Fjord");
+		expect(fjord.props.style.background).toBe("#0b0f13");
+		const dots = fjord.children.filter(
+			(node): node is TestRenderer.ReactTestInstance =>
+				typeof node === "object",
+		);
+		expect(
+			dots.map((node) => node.props.className === "settings-swatch-dot"),
+		).toEqual([true, true]);
+		expect(dots.map((node) => node.props.style.background)).toEqual([
+			"#dde6ee",
+			"#d6a24a",
+		]);
+		// An accent swatch is round with its label in title.
+		const lichen = renderer.root.findByProps({ "data-accent-option": "lichen" });
+		expect(lichen.props.title).toBe("Lichen");
+		expect(lichen.props.style.background).toBe("#b9c46a");
+	});
+
+	test("showThinking's description names the activity-details surface", async () => {
+		const { client } = makeHarness();
+		const { renderer } = await renderPanelWithPrefs(client);
+		await openSection(renderer, "Interface");
+		expect(textContent(renderer.toJSON())).toContain(
+			"Show thinking text inside activity details",
+		);
 	});
 });

@@ -13,10 +13,12 @@
  * holds focus; Enter/Space/ArrowDown opens, ArrowUp/ArrowDown move the
  * highlight (aria-activedescendant names it), Enter picks, Escape closes.
  * Enter/Space are always preventDefault-ed so the native button click
- * cannot double-fire alongside the keydown path.
+ * cannot double-fire alongside the keydown path. Outside-click + Esc
+ * close the popover too (useDismiss, B7 polish).
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useDismiss } from "../useDismiss";
 
 /**
  * The `thinking` values `/thinking` accepts (mirrors the server's
@@ -50,6 +52,8 @@ export function ThinkingPicker(props: {
 	const { current, onPick } = props;
 	const [open, setOpen] = useState(false);
 	const [highlight, setHighlight] = useState(0);
+	const pickerSlot = useRef<HTMLSpanElement | null>(null);
+	useDismiss(open, () => setOpen(false), pickerSlot);
 
 	/** Open the menu with the highlight ON the current level (or the first). */
 	function openMenu(): void {
@@ -109,7 +113,7 @@ export function ThinkingPicker(props: {
 
 	const label = current ?? DEFAULT_THINKING_LABEL;
 	return (
-		<span className="composer-picker">
+		<span className="composer-picker" ref={pickerSlot}>
 			<button
 				type="button"
 				className="composer-pill"
