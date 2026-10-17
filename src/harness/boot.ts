@@ -23,6 +23,7 @@ import { wireActivity } from "./activity.js";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
+import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import {
@@ -190,6 +191,13 @@ export interface OpenedHarness {
 	 * tests pin the instant.
 	 */
 	readonly now: () => Date;
+	/**
+	 * The auto-namer (UI refresh A2): registered on the bus as the
+	 * `sigrun:auto-name` extension, after every loaded extension. Exposed
+	 * so tests await `idle()` (production never does — naming is a
+	 * background side lane that must never delay a run).
+	 */
+	readonly autoNamer: AutoNamer;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -558,6 +566,23 @@ export async function openHarness(
 	for (const [name, handlers] of handlersByName) {
 		eventBus.registerExtension(name, handlers);
 	}
+	// Auto-naming (UI refresh A2): one background one-shot completion per
+	// first-settled answered run writes `SessionMeta.autoName`. Host-owned
+	// machinery registered AFTER every extension (install order = run order
+	// — naming never delays an extension's observation), never over a user
+	// name, never for task-owned conversations, `namingModel: false` opts
+	// out, and its failures never touch the run.
+	const autoNamer = createAutoNamer({
+		harness,
+		models,
+		readSettings: () => settingsStore.read(),
+		defaultModel,
+		isTaskOwned: async (id) =>
+			(await storage.conversation(id, BACKGROUND_CONTEXT))?.owner !== undefined,
+	});
+	eventBus.registerExtension("sigrun:auto-name", {
+		runSettled: autoNamer.runSettled,
+	});
 	// Delivery scheduling: the bus itself stays passive (Task 2's
 	// contract — `drain()` is the only pump); boot owns when drains run.
 	// Every commit (bus events or not) schedules one debounced drain on
@@ -601,5 +626,6 @@ export async function openHarness(
 		eventBus,
 		workerStatuses: () => eventBus.workerStatuses(),
 		now,
+		autoNamer,
 	};
 }
