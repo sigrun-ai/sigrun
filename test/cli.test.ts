@@ -169,6 +169,76 @@ describe("loadTuiFile", () => {
 			loadTuiFile({ SIGRUN_CONFIG_DIR: dir }),
 		).rejects.toThrowError(/tui\.json/);
 	});
+
+	test("UI refresh fields (palette/accent/mode/keymap/editor) round-trip", async () => {
+		const dir = await tmpConfigDir();
+		await writeFile(
+				dir + "/tui.json",
+			JSON.stringify({
+					palette: "fjord",
+				accent: "lichen",
+				mode: "light",
+				keymap: "vim",
+				editor: "/usr/bin/nvim",
+			}),
+			"utf8",
+		);
+		expect(await loadTuiFile({ SIGRUN_CONFIG_DIR: dir })).toEqual({
+			palette: "fjord",
+			accent: "lichen",
+			mode: "light",
+			keymap: "vim",
+			editor: "/usr/bin/nvim",
+		});
+	});
+
+	test("an unknown palette fails loud naming the key", async () => {
+		const dir = await tmpConfigDir();
+		await writeFile(
+			dir + "/tui.json",
+			JSON.stringify({ palette: "nord" }),
+			"utf8",
+		);
+		await expect(
+			loadTuiFile({ SIGRUN_CONFIG_DIR: dir }),
+		).rejects.toThrowError(
+			/tui\.json: palette must be one of fjord, iron-ember, polar-night, birch-moss/,
+		);
+	});
+
+	test("an unknown accent, mode, or keymap fails loud naming the key", async () => {
+		const dir = await tmpConfigDir();
+		await writeFile(
+			dir + "/tui.json",
+			JSON.stringify({ accent: "gold", mode: "sepia", keymap: "dvorak" }),
+			"utf8",
+		);
+		await expect(
+			loadTuiFile({ SIGRUN_CONFIG_DIR: dir }),
+		).rejects.toThrowError(/tui\.json: accent must be one of/);
+		await writeFile(dir + "/tui.json", JSON.stringify({ mode: "sepia" }), "utf8");
+		await expect(
+			loadTuiFile({ SIGRUN_CONFIG_DIR: dir }),
+		).rejects.toThrowError(/tui\.json: mode must be one of dark, light/);
+		await writeFile(dir + "/tui.json", JSON.stringify({ keymap: "dvorak" }), "utf8");
+		await expect(
+			loadTuiFile({ SIGRUN_CONFIG_DIR: dir }),
+		).rejects.toThrowError(
+				/tui\.json: keymap must be one of standard, vim, emacs/,
+		);
+	});
+
+	test("a non-string editor fails loud", async () => {
+		const dir = await tmpConfigDir();
+		await writeFile(
+			dir + "/tui.json",
+			JSON.stringify({ editor: 42 }),
+			"utf8",
+		);
+		await expect(
+			loadTuiFile({ SIGRUN_CONFIG_DIR: dir }),
+		).rejects.toThrowError(/tui\.json: editor must be a string/);
+	});
 });
 
 /** A deps stub: factories record their calls, never boot anything real. */
