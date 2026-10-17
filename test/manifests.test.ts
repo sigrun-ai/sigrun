@@ -186,9 +186,10 @@ describe("chart Deployment", () => {
 					volumes: {
 						name: string;
 						persistentVolumeClaim?: {
-								claimName: string;
-								readOnly?: boolean;
-							};
+							claimName: string;
+							readOnly?: boolean;
+						};
+						emptyDir?: Record<string, unknown>;
 					}[];
 				};
 			};
@@ -240,6 +241,63 @@ describe("chart Deployment", () => {
 			(e) => e.name === "SIGRUN_STORAGE_PATH",
 		);
 		expect(storage?.value).toBe("/data/sigrun.db");
+	});
+
+	test("store-dir envs: data/state on the PVC mount, cache pod-local", () => {
+		// The Tasks 1–7 contract: the explicit SIGRUN_*_DIR envs are used
+		// VERBATIM (stores.ts tier 1), so the deployment values ARE the
+		// store layout. data + state are the durable buckets — subdirs of
+		// the /data PVC mount, next to the db + workspace + config; cache
+		// is the regenerable root on its own pod-local volume.
+		expect(
+			container.env.find((e) => e.name === "SIGRUN_DATA_DIR")?.value,
+		).toBe("/data/data");
+		expect(
+			container.env.find((e) => e.name === "SIGRUN_CACHE_DIR")?.value,
+		).toBe("/cache");
+		expect(
+			container.env.find((e) => e.name === "SIGRUN_STATE_DIR")?.value,
+		).toBe("/data/state");
+	});
+
+	test("the cache volume is a pod-local emptyDir, never the PVC", () => {
+		// Cache is regenerable + self-cleaning (spec §4): a wiped cache is
+		// a cold start, not a restore event, and cache is never a backup
+		// section — so it mounts an emptyDir, never the sigrun-data claim.
+		const cacheMount = container.volumeMounts.find(
+			(m) => m.mountPath === "/cache",
+		);
+		expect(cacheMount).toBeDefined();
+		expect(cacheMount?.readOnly).toBeUndefined();
+		const cacheVolume = deployment.spec.template.spec.volumes.find(
+			(v) => v.name === cacheMount?.name,
+		);
+		expect(cacheVolume).toBeDefined();
+		expect(cacheVolume?.persistentVolumeClaim).toBeUndefined();
+		expect(cacheVolume?.emptyDir).toBeDefined();
+	});
+
+	test("the data/state/config store roots live on the PVC volume", () => {
+		// Every durable root the envs point to (data, state, config — plus
+		// SIGRUN_STORAGE_PATH itself) sits under /data, the one PVC mount.
+		const env = Object.fromEntries(
+			container.env.map((e) => [e.name, e.value]),
+		);
+		for (const name of [
+			"SIGRUN_DATA_DIR",
+			"SIGRUN_STATE_DIR",
+			"SIGRUN_CONFIG_DIR",
+		]) {
+			expect(env[name], `${name} must sit under /data`).toMatch(/^\/data\//);
+		}
+		expect(env["SIGRUN_STORAGE_PATH"]).toBe("/data/sigrun.db");
+		const dataMount = container.volumeMounts.find(
+			(m) => m.mountPath === "/data",
+		);
+		const dataVolume = deployment.spec.template.spec.volumes.find(
+			(v) => v.name === dataMount?.name,
+		);
+		expect(dataVolume?.persistentVolumeClaim?.claimName).toBe("sigrun-data");
 	});
 
 	test("SIGRUN_PORT matches the Service port", () => {
@@ -381,8 +439,12 @@ describe("chart backup CronJob", () => {
 		const mount = backup.volumeMounts.find((m) => m.mountPath === "/data");
 		expect(mount).toBeDefined();
 		// The Deployment's own PVC — the second process touching the sqlite
-		// file (App C's named verification class).
-		expect(pod.volumes[0]?.persistentVolumeClaim?.claimName).toBe(
+		// file (App C's named verification class). Found by claim (not
+		// index: the cache emptyDir renders first in the volumes list).
+		const pvcVolume = pod.volumes.find(
+			(v) => v.persistentVolumeClaim !== undefined,
+		);
+		expect(pvcVolume?.persistentVolumeClaim?.claimName).toBe(
 			"sigrun-data",
 		);
 	});
