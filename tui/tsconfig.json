@@ -3,5 +3,5 @@
 	"compilerOptions": {
 		"rootDir": ".."
 	},
-	"include": ["src", "test", "../src/server/views.ts", "../src/server/commands.ts", "../src/server/session-meta.ts"]
+	"include": ["src", "test", "../src/server/views.ts", "../src/server/commands.ts", "../src/server/session-meta.ts", "../src/shared/*.ts"]
 }
