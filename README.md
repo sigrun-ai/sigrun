@@ -265,6 +265,15 @@ ts-loadable source under the tsx-started process) is the contract.
 Load failures quarantine in `GET /v1/meta` (`extensions[].status`) and
 never abort the boot — install failures fail loud at boot.
 
+**Writing an extension:** an extension is a plain npm package — a
+default-export factory returning `{ extension }` — and every file it
+touches has exactly one place to live: five stores (settings, secrets,
+data, state, cache) under XDG-respected roots, scoped by the extension's
+slug, with one resolution chain and a fixed secrets precedence (stored
+wins, env bootstraps). The author-facing contract — the store taxonomy,
+the directory map, the slug rule, the `host.stores` handle, uninstall
+and backup posture — is [`docs/extending.md`](docs/extending.md).
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, capabilities.
