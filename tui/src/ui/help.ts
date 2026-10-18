@@ -2,9 +2,8 @@
  * The key reference overlay (Task C5, UI refresh): `showHelp` mounts a
  * centred overlay listing the active keymap's `describe()` table in two
  * columns. Esc, `q`, or the keymap's own help key (`?` standard, `C-h`
- * emacs — the vim keymap binds no help key, so its overlay closes on
- * Esc/`q`) closes it. Built on the same `showOverlay` mechanism as C3's
- * picker.
+ * emacs, `g?` vim — a two-key sequence, matched via a pending-`g` flag)
+ * closes it. Built on the same `showOverlay` mechanism as C3's picker.
  */
 
 import { Key, matchesKey, type Component, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
@@ -19,6 +18,7 @@ export interface HelpOptions {
 function helpKey(keymap: Keymap): string | undefined {
 	if (keymap.name === "standard") return "?";
 	if (keymap.name === "emacs") return "\x08"; // C-h
+	if (keymap.name === "vim") return "g?"; // the g-prefix chord (? stays search)
 	return undefined;
 }
 
@@ -27,6 +27,8 @@ class HelpOverlay implements Component {
 	readonly #helpKey: string | undefined;
 	readonly #options: HelpOptions;
 	#overlay: OverlayHandle | undefined;
+	/** Set after a bare "g" while #helpKey is "g?" (the vim close chord). */
+	#pendingG = false;
 
 	constructor(keymap: Keymap, options: HelpOptions) {
 		this.#rows = keymap.describe();
@@ -45,11 +47,12 @@ class HelpOverlay implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (
-			matchesKey(data, Key.escape) ||
-			data === "q" ||
-			(this.#helpKey !== undefined && data === this.#helpKey)
-		) {
+		const helpClose =
+			this.#helpKey === "g?"
+				? this.#pendingG && data === "?"
+				: this.#helpKey !== undefined && data === this.#helpKey;
+		this.#pendingG = this.#helpKey === "g?" && data === "g";
+		if (matchesKey(data, Key.escape) || data === "q" || helpClose) {
 			this.#close();
 		}
 		// Every other key is consumed: the overlay is modal.

@@ -95,6 +95,17 @@ describe("help overlay", () => {
 		expect(env.shown.component).toBeUndefined();
 	});
 
+	test("the vim overlay closes on g? but not on bare g or ?", () => {
+		const { tui, shown } = stubTui();
+		showHelp(tui, createVimKeymap());
+		shown.component!.handleInput!("?"); // bare ? is not vim's help key
+		expect(shown.component).toBeDefined();
+		shown.component!.handleInput!("g");
+		expect(shown.component).toBeDefined(); // g alone arms, never closes
+		shown.component!.handleInput!("?");
+		expect(shown.component).toBeUndefined(); // g? closes
+	});
+
 	test("onClose fires when the overlay closes", () => {
 		const { tui, shown } = stubTui();
 		let closed = 0;

@@ -91,6 +91,14 @@ describe("vim keymap — normal mode", () => {
 		}
 	});
 
+	test("g? within 500 ms opens help; bare ? stays search-backward", () => {
+		const keymap = normalKeymap();
+		const normal = ctx({ focus: "transcript" });
+		expect(keymap.handle("?", normal)).toEqual({ type: "search", direction: "backward" });
+		expect(keymap.handle("g", normal)).toBe("consume");
+		expect(keymap.handle("?", normal)).toEqual({ type: "help" });
+	});
+
 	test("yy copies; ZZ quits; za toggles the fold; v edits in vim", () => {
 		vi.useFakeTimers();
 		try {

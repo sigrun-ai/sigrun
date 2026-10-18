@@ -80,7 +80,12 @@ export function createEmacsKeymap(): Keymap {
 		modeLabel: () => undefined,
 		handle(data: string, ctx: KeyContext): KeyResult {
 			// The composer's readline chords + the tmux prefix: NEVER bound.
-			if (isReserved(data)) return "pass";
+			// A reserved pass-through disarms a pending C-x — otherwise
+			// `C-x C-b b` would fire the picker with the user's "b".
+			if (isReserved(data)) {
+				chordAt = undefined;
+				return "pass";
+			}
 			// A modal overlay owns the keys; C-g passes too — the picker and
 			// the search overlay close themselves on it.
 			if (ctx.overlayOpen) return "pass";
