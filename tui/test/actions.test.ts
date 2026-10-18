@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import { TuiApp } from "../src/ui/app.js";
 import { StatusBar } from "../src/ui/status-bar.js";
+import { createStandardKeymap } from "../src/keymaps/standard.js";
 import { createTuiTheme } from "../src/theme.js";
 import type {
 	CommandsResponse,
@@ -390,6 +391,23 @@ describe("status bar: config segments + mouse surface", () => {
 		expect(stub.configureCalls).toEqual([{ id: 2, body: { thinking: "xhigh" } }]);
 		expect(statusBar.handleMouse(click(3, 120))).toEqual({ handled: true });
 		expect(app.overlayOpen).toBe(true); // the model picker opened
+	});
+
+	test("a focus change repaints the keymap's hints (C5)", async () => {
+		const { app, statusBar } = await bootWithStatusBar();
+		const keymap = createStandardKeymap();
+		app.hintsProvider = () => keymap.hints(app.keyContext());
+		app.refreshHints();
+		expect(statusBar.getState().hints).toEqual(["Tab focus", "^P chats", "? keys"]);
+		await app.dispatch({ type: "focus", target: "transcript" });
+		expect(statusBar.getState().hints).toEqual([
+			"enter open",
+			"y copy",
+			"f fork",
+			"e edit",
+			"/ search",
+			"? help",
+		]);
 	});
 });
 

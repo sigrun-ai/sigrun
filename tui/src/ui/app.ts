@@ -846,6 +846,32 @@ export class TuiApp implements Component, ActionHost {
 		if (this.#focus === "composer") this.#tui.setFocus(this.editor);
 		else if (this.#focus === "list") this.#tui.setFocus(this.sidebar);
 		else this.#tui.setFocus(this.pane);
+		this.refreshHints();
+	}
+
+	/**
+	 * The launcher's keymap seam (C5 fix): the active keymap's
+	 * `hints(ctx)` for the current {@link keyContext}. Wired once at
+	 * launch; {@link refreshHints} re-polls it on every focus change
+	 * (and the launcher re-polls after each key for vim mode changes).
+	 */
+	public hintsProvider: (() => readonly string[]) | undefined;
+
+	/**
+	 * Re-poll the keymap's hints into the status bar's steady state.
+	 * A transient flash or the search overlay owns the bar's right
+	 * cluster until it restores the snapshot, so only the snapshot is
+	 * updated while one is up (the restore paints the fresh hints).
+	 */
+	refreshHints(): void {
+		if (this.#statusBar === undefined || this.hintsProvider === undefined) return;
+		const hints = this.hintsProvider();
+		const base = this.#statusSnapshot ?? { conversation: "", hints: [] };
+		const next = { ...base, hints };
+		this.#statusSnapshot = next;
+		if (this.#search === undefined && this.#statusBar.getState().message === undefined) {
+			this.#statusBar.set(next);
+		}
 	}
 
 	/** Move the transcript's focused turn, clamped to the turn count. */
