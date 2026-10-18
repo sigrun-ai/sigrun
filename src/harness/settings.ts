@@ -148,6 +148,15 @@ export interface ServerSettings {
 		readonly queueMax?: number;
 	};
 	/**
+	 * The provider plugins' runtime knobs (provider plugins Task 5):
+	 * `SIGRUN_PROVIDER_REFRESH_MINUTES` — the interval refresh cadence
+	 * in minutes, a non-negative integer where `0` disables the
+	 * scheduler. Applied per-field where the env var is absent.
+	 */
+	readonly providers?: {
+		readonly refreshIntervalMinutes?: number;
+	};
+	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
 	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`).
 	 */
@@ -522,6 +531,7 @@ function validateServer(server: unknown): void {
 		"webuiBundle",
 		"compaction",
 		"memorySeam",
+		"providers",
 		"backup",
 	]);
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
@@ -588,6 +598,22 @@ function validateServer(server: unknown): void {
 					"must be a positive integer",
 				);
 			}
+		}
+	}
+	if (record.providers !== undefined) {
+		const providers = asRecord(record.providers);
+		if (providers === undefined) {
+			throw new SettingsValidationError("server.providers", "must be an object");
+		}
+		checkKeys("server.providers.", providers, ["refreshIntervalMinutes"]);
+		if (
+			providers.refreshIntervalMinutes !== undefined &&
+			!isNonNegativeInt(providers.refreshIntervalMinutes)
+		) {
+			throw new SettingsValidationError(
+				"server.providers.refreshIntervalMinutes",
+				"must be a non-negative integer",
+			);
 		}
 	}
 	if (record.backup !== undefined) {
@@ -846,6 +872,24 @@ export class SettingsStore {
 							}
 							if (Object.keys(mergedSeam).length === 0) delete sub.memorySeam;
 							else sub.memorySeam = mergedSeam;
+						} else if (
+							subKey === "providers" &&
+							typeof subValue === "object"
+						) {
+							// Same sub-merge for the provider runtime knobs: a flat
+							// record merged per-key (the refresh cadence PATCH never
+							// drops the section's other server fields).
+							const mergedProviders: Record<string, unknown> = {
+								...((sub.providers as Record<string, unknown>) ?? {}),
+							};
+							for (const [provKey, provValue] of Object.entries(
+								subValue as Record<string, unknown>,
+							)) {
+								if (provValue === null) delete mergedProviders[provKey];
+								else mergedProviders[provKey] = provValue;
+							}
+							if (Object.keys(mergedProviders).length === 0) delete sub.providers;
+							else sub.providers = mergedProviders;
 						} else sub[subKey] = subValue;
 				}
 				if (Object.keys(sub).length === 0) delete merged.server;

@@ -39,11 +39,13 @@ export interface BootedServer {
 	 * The ordered shutdown (spec §2, memory-seam Task 4): close the server
 	 * (drain in-flight requests), run the event bus's shutdown sequence
 	 * (drain pending settles, then deliver `harnessShutdown` — handlers may
-	 * commit, admission is still open), THEN close the harness (joins tasks,
-	 * seals storage). Throws with all collected failures; resolves on a
-	 * clean close. Does NOT exit the process — the caller owns exit policy
-	 * (the deploy entry exits 0/1; the CLI's `run` returns to its exit
-	 * code).
+	 * commit, admission is still open), stop the interval refresh scheduler
+	 * and join any still-in-flight boot refresh (provider plugins Tasks 4-5
+	 * — no catalog fetch outlives the shutdown), THEN close the harness
+	 * (joins tasks, seals storage). Throws with all collected failures;
+	 * resolves on a clean close. Does NOT exit the process — the caller owns
+	 * exit policy (the deploy entry exits 0/1; the CLI's `run` returns to its
+	 * exit code).
 	 */
 	shutdown(): Promise<void>;
 	/**
@@ -132,6 +134,16 @@ export async function serve(
 		}
 		try {
 			await opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT);
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			// The interval refresh scheduler (provider plugins Task 5) stops
+			// BEFORE the harness closes, and the T4 boot refresh promise —
+			// never-rejecting by contract — joins here if still in flight, so
+			// no catalog fetch outlives the ordered shutdown.
+			opened.stopProviderRefresh();
+			await opened.bootRefresh;
 		} catch (error) {
 			failures.push(error);
 		}

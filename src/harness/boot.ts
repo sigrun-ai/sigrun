@@ -44,6 +44,7 @@ import {
 	bootRefresh,
 	DEFAULT_REFRESH_TIMEOUT_MS,
 } from "./providers/refresh.js";
+import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
@@ -212,6 +213,17 @@ export interface OpenedHarness {
 	 * join it if still in flight.
 	 */
 	readonly bootRefresh: Promise<void>;
+	/**
+	 * Stop the interval refresh scheduler (provider plugins Task 5): the
+	 * host-owned cadence re-running `models.refresh()` over every dynamic
+	 * provider, started at boot when the resolved
+	 * `server.providers.refreshIntervalMinutes` (env
+	 * `SIGRUN_PROVIDER_REFRESH_MINUTES`, default 15) is greater than zero.
+	 * A no-op when the scheduler never started (interval 0). The deploy
+	 * shutdown path (`src/serve.ts`) calls this BEFORE `harness.close()`;
+	 * the timer is unref()ed either way, so it never holds the process.
+	 */
+	readonly stopProviderRefresh: () => void;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -496,6 +508,17 @@ export async function openHarness(
 	const bootRefreshDone = bootRefresh(models, {
 		timeoutMs: DEFAULT_REFRESH_TIMEOUT_MS,
 	});
+	// The interval refresh scheduler (Task 5, refresh policy 2): the cadence
+	// keeping the catalogs current after the boot refresh. Started only
+	// when the resolved interval is greater than zero (0 = the designed
+	// disable, no timer); the timer is unref()ed inside, and `stop()` rides
+	// on the returned handle for the deploy shutdown path.
+	const stopProviderRefresh =
+		config.providers.refreshIntervalMinutes > 0
+			? startProviderRefresh(models, {
+					intervalMinutes: config.providers.refreshIntervalMinutes,
+				}).stop
+			: (): void => {};
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so a future resolver swap changes this wiring's
 	// inputs and nothing downstream.
@@ -665,5 +688,6 @@ export async function openHarness(
 		now,
 		autoNamer,
 		bootRefresh: bootRefreshDone,
+		stopProviderRefresh,
 	};
 }
