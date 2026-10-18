@@ -106,6 +106,19 @@ function plainEditorTheme(): EditorTheme {
 	return { borderColor: identity, selectList };
 }
 
+/**
+ * The `pi.agent` doc (pi-durable's AgentState), narrowed to the
+ * configured surface the status bar and thinking cycle read — the same
+ * source the webui's Composer uses.
+ */
+interface AgentDocWire {
+	readonly model?: {
+		readonly provider: string;
+		readonly modelId: string;
+	};
+	readonly thinkingLevel?: string;
+}
+
 export class TuiApp implements Component, ActionHost {
 	readonly #client: SigrunClient;
 	readonly #watch: WatchFn;
@@ -235,6 +248,17 @@ export class TuiApp implements Component, ActionHost {
 			if (state.message === undefined) this.#statusSnapshot = state;
 			originalSet(state);
 		};
+		// The launcher paints the steady state BEFORE attaching (the
+		// wrapper never saw it): seed the snapshot from the bar's current
+		// state, or flashes/config paints stay dead until the next set.
+		const current = statusBar.getState();
+		if (current.message === undefined) this.#statusSnapshot = current;
+		// The plan's status-bar mouse rule (C3): the MODEL segment opens
+		// the model picker, the THINKING segment cycles the level — the
+		// same actions as ctrl+p's picker and ctrl+t, through the one
+		// dispatch seam.
+		statusBar.onModelClick = () => void this.dispatch({ type: "picker", kind: "model" });
+		statusBar.onThinkingClick = () => void this.dispatch({ type: "cycle-thinking" });
 	}
 
 	/** Flash a transient status-bar message, restoring the steady state. */
@@ -244,18 +268,36 @@ export class TuiApp implements Component, ActionHost {
 		this.#statusBar.set({ ...base, message });
 	}
 
-	/** The configured model/thinking a frame carries (drives the cycle). */
+	/**
+	 * The configured model/thinking a frame carries (drives the cycle and
+	 * the status bar's model/thinking segments). The source is the
+	 * `pi.agent` doc (pi-durable's AgentState) — ConversationRecord is
+	 * `{id, parent?}` and carries no model/thinking fields.
+	 */
 	#trackConfig(wire: ConversationViewWire): void {
-		const conversation = wire.conversation as unknown as {
-			readonly model?: { readonly provider: string; readonly modelId: string };
-			readonly thinkingLevel?: string;
-		};
-		if (conversation.model !== undefined) {
-			this.#modelId = `${conversation.model.provider}/${conversation.model.modelId}`;
+		const doc = wire.docs["pi.agent"] as AgentDocWire | undefined;
+		if (doc?.model !== undefined) {
+			this.#modelId = `${doc.model.provider}/${doc.model.modelId}`;
 		}
-		if (conversation.thinkingLevel !== undefined) {
-			this.#thinkingLevel = conversation.thinkingLevel;
+		if (doc?.thinkingLevel !== undefined) {
+			this.#thinkingLevel = doc.thinkingLevel;
 		}
+		this.#paintConfig();
+	}
+
+	/**
+	 * Feed the tracked model/thinking to the status bar's segments,
+	 * merged into the launcher's steady state (no `message`) so a flash
+	 * restores the segments too.
+	 */
+	#paintConfig(): void {
+		const base = this.#statusSnapshot;
+		if (this.#statusBar === undefined || base === undefined) return;
+		this.#statusBar.set({
+			...base,
+			...(this.#modelId === undefined ? {} : { model: this.#modelId }),
+			thinking: this.#thinkingLevel,
+		});
 	}
 
 	/**
@@ -431,6 +473,11 @@ export class TuiApp implements Component, ActionHost {
 		if (this.#search !== undefined) {
 			return this.#handleSearchKey(data);
 		}
+		// A modal overlay (picker) owns the keys: the pre-keymap seams
+		// below (answer mode, ctrl+o, busy Esc) must never fire behind it.
+		// Returning false hands the key to the keymap, which passes
+		// everything but ctrl+c through to the focused overlay.
+		if (this.#overlayOpen) return false;
 		// Answer mode captures the prompt's keys first (Task 8): esc here
 		// exits answer mode — it must NOT reach the busy-abort below.
 		if (this.interactions.answerMode) {
@@ -972,10 +1019,14 @@ export class TuiApp implements Component, ActionHost {
 	}
 
 	/**
-	 * Edit-from-here (the web B4 Edit rule): fork at the PREVIOUS entry so
-	 * the message is re-entered; on the first entry there is no fork point,
+	 * Edit-from-here (the web B4 Edit rule): fork at the PREVIOUS turn so
+	 * the message is re-entered; on the first turn there is no fork point,
 	 * so a fresh conversation is created. Either way the text prefills the
-	 * durable draft (`patchMeta`) and the local composer.
+	 * durable draft (`patchMeta`) and the local composer. The fork point
+	 * comes from the TURNS list (webui TurnList's rule): pi-durable mints
+	 * ids from ONE global counter (entries, conversations, submissions,
+	 * tasks), so entry-id arithmetic (`entryId - 1`) cannot locate the
+	 * previous entry.
 	 */
 	async #editHere(): Promise<void> {
 		const id = this.#activeId;
@@ -987,15 +1038,12 @@ export class TuiApp implements Component, ActionHost {
 			return;
 		}
 		const text = this.pane.textOf(index);
-		const entryId = this.pane.entryIdOf(index);
 		this.editor.disableSubmit = true;
 		try {
-			let newId: number;
-			if (entryId > 1) {
-				newId = (await this.#client.forkConversation(id, entryId - 1)).id;
-			} else {
-				newId = (await this.#client.createConversation()).id;
-			}
+			const newId =
+				index === 0
+					? (await this.#client.createConversation()).id
+					: (await this.#client.forkConversation(id, this.pane.entryIdOf(index - 1))).id;
 			await this.#client.patchMeta(newId, { draft: { text } });
 			await this.sidebar.refresh();
 			await this.selectConversation(newId);
