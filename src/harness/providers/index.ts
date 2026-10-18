@@ -90,7 +90,37 @@ export interface ProviderContribution {
 	 * `defaultModel`); the last contributor to propose one wins otherwise.
 	 */
 	readonly defaultModel?: ModelRef;
+	/**
+	 * Per-provider readiness tracker (provider plugins Task 6, spec "Core:
+	 * readiness & health"): the plugin seeds it from credential resolution
+	 * and updates it per refresh — pi-ai never refreshes an unconfigured
+	 * provider, so refresh outcomes alone cannot express `not_configured`.
+	 * `GET /v1/auth/check` consults it directly; the three-state vocabulary
+	 * applies ONLY to tracker-backed providers. A contribution without one
+	 * keeps the legacy producer-status mapping.
+	 */
+	readonly readiness?: ReadinessTracker;
 }
+
+/** Three-state per-provider readiness (provider plugins Task 6, spec
+ * "Core: readiness & health"). `not_configured`: no credential resolved
+ * (an unconfigured optional plugin — NOT a degraded process). `degraded`:
+ * credential resolved, the last refresh failed. `ready`: credential
+ * resolved, the last refresh succeeded or never ran over a static catalog. */
+export type ProviderReadinessStatus = "not_configured" | "degraded" | "ready";
+
+/** One tracker report: the status plus optional operator-facing detail. */
+export interface ProviderReadiness {
+	readonly status: ProviderReadinessStatus;
+	readonly detail?: string;
+}
+
+/**
+ * A plugin's per-provider readiness tracker: a synchronous per-request
+ * read over plugin-owned state (the same discipline as §3 health
+ * producers — never network, never storage).
+ */
+export type ReadinessTracker = () => ProviderReadiness;
 
 /**
  * What a provider-contributor extension provides at boot. Extensions are
@@ -132,6 +162,16 @@ export interface CollectedProviders {
 	 * (contributor-owned).
 	 */
 	readonly providerOwnership: ReadonlyMap<string, string>;
+	/**
+	 * Provider id → the owning contributor's readiness tracker (Task 6):
+	 * registered from `ProviderContribution.readiness`, keyed by provider
+	 * id, last-registered-wins exactly like ownership (a replacing
+	 * contribution without a tracker clears the entry). `GET
+	 * /v1/auth/check` consults these first — the three-state vocabulary
+	 * (`not_configured` | `degraded` | `ready`) — before the legacy
+	 * producer/env-presence mappings.
+	 */
+	readonly readinessTrackers: ReadonlyMap<string, ReadinessTracker>;
 }
 
 /** Environment keys the degenerate env provider reads. */
@@ -212,6 +252,7 @@ export function collectProviders(
 	});
 	let defaultModel: ModelRef | undefined;
 	const ownership = new Map<string, string>();
+	const readinessTrackers = new Map<string, ReadinessTracker>();
 	const healthProducers: HealthProducer[] = [];
 
 	for (const extension of extensions) {
@@ -241,6 +282,14 @@ export function collectProviders(
 				});
 			}
 			ownership.set(provider.id, extension.name);
+			// Task 6: the OWNING contributor's tracker is authoritative — a
+			// replacing contribution without one clears a replaced
+			// contributor's tracker (last-registered-wins, like ownership).
+			if (contribution.readiness !== undefined) {
+				readinessTrackers.set(provider.id, contribution.readiness);
+			} else {
+				readinessTrackers.delete(provider.id);
+			}
 			models.setProvider(provider);
 			if (contribution.defaultModel !== undefined) {
 				defaultModel = contribution.defaultModel;
@@ -285,6 +334,7 @@ export function collectProviders(
 		defaultModel,
 		healthProducers,
 		providerOwnership: ownership,
+		readinessTrackers,
 	};
 }
 
