@@ -91,6 +91,18 @@ describe("StatusBar.render", () => {
 		expect(line).toContain("ctrl+o pending");
 	});
 
+	test("commandLine renders after message and survives the flash TTL (C4)", () => {
+		const statusBar = bar(state());
+		statusBar.set(state({ message: "flash", commandLine: ":b hugo" }));
+		let line = strip(statusBar.render(100)[0]);
+		expect(line).toContain(":b hugo");
+		// A slow typist pausing past the 4 s flash TTL keeps the `:` line.
+		vi.advanceTimersByTime(10_000);
+		line = strip(statusBar.render(100)[0]);
+		expect(line).toContain(":b hugo");
+		expect(line).not.toContain("flash"); // the message expired as usual
+	});
+
 	test("render never exceeds the width in visible cells", () => {
 		const statusBar = bar(state({ mode: "attach", thinking: "on", contextPct: 57 }));
 		const line = statusBar.render(40)[0];

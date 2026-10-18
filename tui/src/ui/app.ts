@@ -1117,6 +1117,10 @@ export class TuiApp implements Component, ActionHost {
 				return;
 			}
 			case "b": {
+				if (arg === "") {
+					this.pane.showError("usage: b <id|name>");
+					return;
+				}
 				const hit = /^\d+$/.test(arg)
 					? this.sidebar.rows.find((row) => row.id === Number(arg))
 					: this.sidebar.rows.find((row) =>
@@ -1158,6 +1162,20 @@ export class TuiApp implements Component, ActionHost {
 		this.editor.setText(result.text);
 		this.#focus = "composer";
 		this.#applyFocusTarget();
+		// Focus and mode must agree: the composer is focused, so the vim
+		// keymap returns to INSERT (the launcher wires this seam).
+		this.enterInsertMode?.();
+	}
+
+	/** The launcher's vim-keymap seam: re-enter INSERT after edit-in-vim. */
+	public enterInsertMode: (() => void) | undefined;
+
+	/**
+	 * The slash catalog's command names (C3's picker source, cached) —
+	 * the launcher feeds them to the vim `:` Tab completion.
+	 */
+	async slashCommandNames(): Promise<string[]> {
+		return this.#catalog.names();
 	}
 
 	/**
@@ -1170,10 +1188,12 @@ export class TuiApp implements Component, ActionHost {
 		const base = this.#statusSnapshot;
 		if (this.#statusBar === undefined || base === undefined) return;
 		if (commandLine !== undefined) {
-			this.#statusBar.set({ ...base, message: commandLine });
+			// A dedicated non-expiring segment — the `:` line must outlive the
+			// flash TTL for the whole command mode.
+			this.#statusBar.set({ ...base, commandLine });
 			return;
 		}
-		this.#statusBar.set({ ...base, mode: modeLabel ?? base.mode });
+		this.#statusBar.set({ ...base, commandLine: undefined, mode: modeLabel ?? base.mode });
 	}
 
 	render(width: number): string[] {

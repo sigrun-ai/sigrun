@@ -33,6 +33,12 @@ export interface StatusBarState {
 	readonly hints: readonly string[];
 	/** Transient notice; replaces the hints for 4 s. */
 	readonly message?: string;
+	/**
+	 * The vim `:` command line (C4): rendered after `message` and NOT
+	 * subject to the flash TTL — it persists for the whole command mode
+	 * (a slow typist must never lose the line mid-edit).
+	 */
+	readonly commandLine?: string;
 }
 
 export interface StatusBarOptions {
@@ -51,7 +57,7 @@ function rightCluster(state: StatusBarState): string {
 	if (state.thinking !== undefined) parts.push(state.thinking);
 	if (state.contextPct !== undefined) parts.push(`ctx ${Math.round(state.contextPct)}%`);
 	const head = parts.join(SEPARATOR);
-	const tail = state.message ?? state.hints.join(" ");
+	const tail = state.commandLine ?? state.message ?? state.hints.join(" ");
 	return tail === "" ? head : `${head}${SEPARATOR}${tail}`;
 }
 
@@ -60,6 +66,7 @@ function rightClusterCompact(state: StatusBarState): string {
 	const parts: string[] = [];
 	if (state.model !== undefined) parts.push(state.model);
 	if (state.contextPct !== undefined) parts.push(`ctx ${Math.round(state.contextPct)}%`);
+	if (state.commandLine !== undefined) parts.push(state.commandLine);
 	return parts.join(SEPARATOR);
 }
 

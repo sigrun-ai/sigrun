@@ -49,7 +49,9 @@ export function editInVim(opts: {
 		opts.tmpDir ?? tmpdir(),
 		`sigrun-prompt-${randomBytes(8).toString("hex")}.md`,
 	);
-	writeFileSync(file, opts.text, "utf8");
+	writeFileSync(file, opts.text, { encoding: "utf8", mode: 0o600 });
+	// The editor string splits on whitespace — quoted paths with spaces in
+	// the command or its arguments are NOT supported (a known limitation).
 	const [command, ...args] = opts.editor.trim().split(/\s+/);
 	try {
 		opts.tui.stop();
