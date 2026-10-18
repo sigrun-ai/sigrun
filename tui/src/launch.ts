@@ -31,9 +31,7 @@
 import {
 	getTerminalColorMode,
 	HStack,
-	Key,
 	KeybindingsManager,
-	matchesKey,
 	ProcessTerminal,
 	ScrollView,
 	setKeybindings,
@@ -47,6 +45,8 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AccentName, ModeName, PaletteName } from "../../src/shared/themes.js";
 import { SigrunClient, type FetchLike } from "./api.js";
+import { createStandardKeymap } from "./keymaps/standard.js";
+import type { Keymap } from "./keymaps/types.js";
 import { createTuiTheme } from "./theme.js";
 import { TuiApp } from "./ui/app.js";
 import { StatusBar } from "./ui/status-bar.js";
@@ -87,7 +87,7 @@ export interface LaunchTuiShellOptions {
 	readonly palette?: PaletteName;
 	readonly accent?: AccentName;
 	readonly mode?: ModeName;
-	/** Reserved for the keymap task; accepted, unused here. */
+	/** The keymap (C3); defaults to the standard one. */
 	readonly keymap?: "standard" | "vim" | "emacs";
 	/** Reserved for the $EDITOR task; accepted, unused here. */
 	readonly editor?: string;
@@ -203,6 +203,9 @@ export async function launchTuiShell(
 		conversation: "",
 		hints: ["ctrl+o answer", "esc abort", "ctrl+c quit"],
 	});
+	// C3: the app flashes copy/configure/help/search through the bar.
+	app.setStatusBar(statusBar);
+	const keymap: Keymap = createStandardKeymap();
 	const body = new HStack([
 		{
 			component: app.sidebar,
@@ -238,15 +241,19 @@ export async function launchTuiShell(
 	poll.unref();
 
 	const done = new Promise<void>((resolve) => {
+		app.onQuit = resolve;
 		tui.addInputListener((data) => {
-			if (matchesKey(data, Key.ctrl("c"))) {
-				resolve();
-				return { consume: true };
-			}
+			// The seam prompts (answer mode, the search overlay) own their
+			// keys before the keymap sees them.
 			if (app.handleKeybinding(data)) {
 				return { consume: true };
 			}
-			return undefined;
+			// C3: the keymap decides — dispatch, consume, or pass through
+			// to the focused component (the composer owns the rest).
+			const result = keymap.handle(data, app.keyContext());
+			if (result === "pass") return undefined;
+			if (result !== "consume") void app.dispatch(result);
+			return { consume: true };
 		});
 	});
 

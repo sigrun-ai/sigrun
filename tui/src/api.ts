@@ -21,12 +21,14 @@ import type {
 	AbortResponse,
 	AmbientList,
 	CompactResponse,
+	ConfigureResponse,
 	ConversationCreateResponse,
 	ConversationForkResponse,
 	ConversationList,
 	ConversationViewWire,
 	InteractionAnswered,
 	InteractionList,
+	ModelsResponse,
 	SettingsResponse,
 	SubmissionResponse,
 } from "../../src/server/views.js";
@@ -36,6 +38,7 @@ export type {
 	AmbientList,
 	AmbientWire,
 	CompactResponse,
+	ConfigureResponse,
 	ConversationCreateResponse,
 	ConversationForkResponse,
 	ConversationList,
@@ -44,6 +47,8 @@ export type {
 	InteractionAnswered,
 	InteractionList,
 	InteractionWire,
+	ModelEntry,
+	ModelsResponse,
 	SettingsResponse,
 	SubmissionResponse,
 } from "../../src/server/views.js";
@@ -240,5 +245,22 @@ export class SigrunClient {
 	/** `GET /v1/settings` — the effective settings (absent file = `{}`). */
 	getSettings(): Promise<SettingsResponse> {
 		return this.#get("/v1/settings");
+	}
+
+	/** `GET /v1/models` — the chat-model catalog (the model picker's items). */
+	listModels(): Promise<ModelsResponse> {
+		return this.#get("/v1/models");
+	}
+
+	/**
+	 * `POST /v1/conversations/:id/configure` — change the model and/or
+	 * thinking level (T9c-i). At least one field is required (the server
+	 * rejects an empty change as `invalid_body`).
+	 */
+	configure(
+		id: number,
+		body: { readonly model?: string; readonly thinking?: string },
+	): Promise<ConfigureResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/configure`, body);
 	}
 }

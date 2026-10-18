@@ -56,17 +56,22 @@ import {
 	type Component,
 	type EditorTheme,
 	type SelectListTheme,
+	type Terminal,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import type { ConversationViewWire, SigrunClient, WhenBusyMode } from "../api.js";
+import type { ConversationViewWire, ModelEntry, SigrunClient, SlashCommand, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import type { TuiTheme } from "../theme.js";
+import type { Action, ActionHost, Focus } from "../actions.js";
+import { copyToTerminal } from "../clipboard.js";
 import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
 import { AmbientChrome } from "./ambient.js";
 import { ConversationPane } from "./conversation-pane.js";
 import { InteractionPrompter } from "./interactions.js";
+import { openPicker, type PickerItem } from "./picker.js";
 import { Sidebar } from "./sidebar.js";
+import type { StatusBar } from "./status-bar.js";
 
 /** The watch injection seam (tests stub it; the launcher uses the real one). */
 export type WatchFn = (
@@ -101,7 +106,7 @@ function plainEditorTheme(): EditorTheme {
 	return { borderColor: identity, selectList };
 }
 
-export class TuiApp implements Component {
+export class TuiApp implements Component, ActionHost {
 	readonly #client: SigrunClient;
 	readonly #watch: WatchFn;
 	readonly #watchOptions: WatchOptions;
@@ -127,11 +132,30 @@ export class TuiApp implements Component {
 	#busy = false;
 	/** The slash-command catalog (fetched once, cached — a boot constant). */
 	readonly #catalog: SlashCatalog;
+	/** The repainting surface (pickers, copy flashes, redraw). */
+	readonly #tui: TUI;
+	/** The status bar sink the launcher mounts (notices, flashes, hints). */
+	#statusBar: StatusBar | undefined;
+	/** The focus region the action layer drives (C3). */
+	#focus: Focus = "composer";
+	/** A modal overlay (picker/search) owns the keys. */
+	#overlayOpen = false;
+	/** The quit sink: the launcher's exit resolution. */
+	onQuit: (() => void) | undefined;
+	/** The status-bar state the launcher last painted (flashes preserve it). */
+	#statusSnapshot: { conversation: string; hints: readonly string[] } | undefined;
+	/** The transcript search overlay state (query + direction). */
+	#search: { query: string; direction: "forward" | "backward" } | undefined;
+	/** The last frame's configured model id (status bar + pickers). */
+	#modelId: string | undefined;
+	/** The last frame's thinking level (the cycle order starts here). */
+	#thinkingLevel: string = "off";
 
 	constructor(client: SigrunClient, options: TuiAppOptions) {
 		this.#client = client;
 		this.#watch = options.watch ?? watchConversation;
 		this.#watchOptions = options.watchOptions ?? { baseUrl: "" };
+		this.#tui = options.tui;
 		this.#catalog = new SlashCatalog(client);
 		const theme = options.theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
@@ -182,6 +206,56 @@ export class TuiApp implements Component {
 	/** The active conversation id (undefined before the first refresh). */
 	get activeConversationId(): number | undefined {
 		return this.#activeId;
+	}
+
+	/** The focused region (the action layer's routing state). */
+	get focus(): Focus {
+		return this.#focus;
+	}
+
+	/** A modal overlay (picker/search) owns the keys. */
+	get overlayOpen(): boolean {
+		return this.#overlayOpen;
+	}
+
+	/** The last frame's `steer.busy` (the keymap's abort gate). */
+	get busy(): boolean {
+		return this.#busy;
+	}
+
+	/**
+	 * The launcher's sink: the status bar it mounted (flashes, help, and
+	 * the search overlay render through it). `set` also snapshots the
+	 * launcher's steady state so a flash can restore it.
+	 */
+	setStatusBar(statusBar: StatusBar): void {
+		this.#statusBar = statusBar;
+		const originalSet = statusBar.set.bind(statusBar);
+		statusBar.set = (state) => {
+			if (state.message === undefined) this.#statusSnapshot = state;
+			originalSet(state);
+		};
+	}
+
+	/** Flash a transient status-bar message, restoring the steady state. */
+	#flashStatus(message: string): void {
+		const base = this.#statusSnapshot;
+		if (this.#statusBar === undefined || base === undefined) return;
+		this.#statusBar.set({ ...base, message });
+	}
+
+	/** The configured model/thinking a frame carries (drives the cycle). */
+	#trackConfig(wire: ConversationViewWire): void {
+		const conversation = wire.conversation as unknown as {
+			readonly model?: { readonly provider: string; readonly modelId: string };
+			readonly thinkingLevel?: string;
+		};
+		if (conversation.model !== undefined) {
+			this.#modelId = `${conversation.model.provider}/${conversation.model.modelId}`;
+		}
+		if (conversation.thinkingLevel !== undefined) {
+			this.#thinkingLevel = conversation.thinkingLevel;
+		}
 	}
 
 	/**
@@ -243,6 +317,7 @@ export class TuiApp implements Component {
 					onSnapshot: (wire) => {
 						if (gen !== this.#watchGen) return;
 						this.#busy = wire.steer.busy;
+						this.#trackConfig(wire);
 						// A revision may change the seam state: re-poll the
 						// pending interactions; the ambient chrome tracks the
 						// run state for its expires:"idle" surfaces.
@@ -253,6 +328,7 @@ export class TuiApp implements Component {
 					onView: (wire) => {
 						if (gen !== this.#watchGen) return;
 						this.#busy = wire.steer.busy;
+						this.#trackConfig(wire);
 						this.interactions.kick();
 						this.ambient.setBusy(wire.steer.busy);
 						this.pane.showView(wire);
@@ -351,6 +427,10 @@ export class TuiApp implements Component {
 	 * the mouse drives the sidebar and `/fork` carries the fork.
 	 */
 	handleKeybinding(data: string): boolean {
+		// The search overlay owns every key while open (C3).
+		if (this.#search !== undefined) {
+			return this.#handleSearchKey(data);
+		}
 		// Answer mode captures the prompt's keys first (Task 8): esc here
 		// exits answer mode — it must NOT reach the busy-abort below.
 		if (this.interactions.answerMode) {
@@ -454,6 +534,40 @@ export class TuiApp implements Component {
 				case "new":
 					await this.createAndSelect();
 					return;
+				case "archive":
+				case "unarchive": {
+					const id = this.#activeId;
+					if (id === undefined) {
+						this.pane.showError(`/${parsed.name} needs an active conversation`);
+						return;
+					}
+					await this.#client.patchMeta(id, { archived: parsed.name === "archive" });
+					await this.sidebar.refresh();
+					return;
+				}
+				case "model":
+				case "thinking": {
+					const id = this.#activeId;
+					if (id === undefined) {
+						this.pane.showError(`/${parsed.name} needs an active conversation`);
+						return;
+					}
+					if (parsed.args === "") {
+						this.pane.showError(`/${parsed.name} needs an argument (${command.argsHint ?? ""})`);
+						return;
+					}
+					const response =
+						parsed.name === "model"
+							? await this.#client.configure(id, { model: parsed.args })
+							: await this.#client.configure(id, { thinking: parsed.args });
+					this.#thinkingLevel = response.thinkingLevel;
+					if (response.model !== undefined) {
+						this.#modelId = `${response.model.provider}/${response.model.modelId}`;
+					}
+					const model = this.#modelId ?? "no model";
+					this.#flashStatus(`model ${model} · thinking ${response.thinkingLevel}`);
+					return;
+				}
 				case "fork": {
 					if (this.#activeId === undefined) {
 						this.pane.showError("/fork needs an active conversation");
@@ -510,6 +624,389 @@ export class TuiApp implements Component {
 		this.#watchGen += 1;
 		this.interactions.dispose();
 		this.ambient.dispose();
+	}
+
+	// ─── The action layer (Task C3) ────────────────────────────────────
+
+	/**
+	 * The keymap's context: focus, busy, autocomplete, overlay. The
+	 * composer's autocomplete state is internal to pi-tui's Editor (no
+	 * public getter), so the flag is a projection — the composer is the
+	 * default focus and the editor cancels autocomplete before any
+	 * focus-leaving key the keymap would act on.
+	 */
+	keyContext(): { focus: Focus; busy: boolean; autocompleteOpen: boolean; overlayOpen: boolean } {
+		return {
+			focus: this.#focus,
+			busy: this.#busy,
+			autocompleteOpen: false,
+			overlayOpen: this.#overlayOpen,
+		};
+	}
+
+	/** Run one action (the keymap's / pickers' / mouse's single seam). */
+	async dispatch(action: Action): Promise<void> {
+		switch (action.type) {
+			case "focus":
+				this.#focus = action.target;
+				this.#applyFocusTarget();
+				return;
+			case "focus-cycle": {
+				const order: readonly Focus[] = ["composer", "list", "transcript"];
+				const index = order.indexOf(this.#focus);
+				this.#focus = order[(index + action.direction + order.length) % order.length]!;
+				this.#applyFocusTarget();
+				return;
+			}
+			case "move":
+				if (this.#focus === "list") {
+					this.sidebar.moveCursor(action.delta);
+				} else if (this.#focus === "transcript") {
+					this.#moveTranscriptFocus(action.delta);
+				}
+				return;
+			case "page":
+				if (this.#focus === "list") {
+					this.sidebar.moveCursor(action.direction * 10);
+				} else if (this.#focus === "transcript") {
+					this.#moveTranscriptFocus(action.direction * 10);
+				}
+				return;
+			case "edge":
+				if (this.#focus === "list") {
+					this.sidebar.moveCursor(action.to === "top" ? -1_000_000 : 1_000_000);
+				} else if (this.#focus === "transcript") {
+					this.#moveTranscriptFocus(action.to === "top" ? -1_000_000 : 1_000_000);
+				}
+				return;
+			case "prompt-jump":
+				this.#promptJump(action.delta);
+				return;
+			case "toggle-fold":
+				this.#foldFocused();
+				return;
+			case "open":
+				if (this.#focus === "list") this.sidebar.confirm();
+				else if (this.#focus === "transcript") this.#foldFocused();
+				return;
+			case "copy": {
+				const index = this.pane.focusIndex;
+				if (index === undefined) return;
+				copyToTerminal(this.#tui.terminal as Terminal, this.pane.textOf(index));
+				this.#flashStatus("Copied");
+				return;
+			}
+			case "fork-here": {
+				const id = this.#activeId;
+				const index = this.pane.focusIndex;
+				if (id === undefined || index === undefined) return;
+				this.editor.disableSubmit = true;
+				try {
+					const forked = await this.#client.forkConversation(id, this.pane.entryIdOf(index));
+					await this.sidebar.refresh();
+					await this.selectConversation(forked.id);
+				} catch (error: unknown) {
+					this.pane.showError(describeCommandError("fork", error));
+				} finally {
+					this.editor.disableSubmit = false;
+				}
+				return;
+			}
+			case "edit-here":
+				await this.#editHere();
+				return;
+			case "edit-in-vim":
+				// Deferred to the $EDITOR task (C4/C5): the seam exists so the
+				// keymap can bind it without the app knowing how it works.
+				return;
+			case "picker":
+				this.#openPickerFor(action.kind);
+				return;
+			case "new-conversation":
+				await this.createAndSelect();
+				return;
+			case "cycle-thinking":
+				await this.#cycleThinking();
+				return;
+			case "search":
+				this.#beginSearch(action.direction);
+				return;
+			case "search-next":
+				this.#searchNext(action.reverse);
+				return;
+			case "answer-interaction":
+				if (!this.interactions.answerMode) this.interactions.beginAnswer();
+				return;
+			case "cancel-run":
+				this.#abortActive();
+				return;
+			case "redraw":
+				this.invalidate();
+				this.#tui.requestRender(true);
+				return;
+			case "quit":
+				this.onQuit?.();
+				return;
+			case "help":
+				this.#flashStatus(
+					"tab focus · enter open · y copy · f fork · e edit · / search · ctrl+p conversations",
+				);
+				return;
+			case "command-line":
+				this.editor.setText("/");
+				return;
+			case "run-command":
+				await this.#runSlashCommand(action.line);
+				return;
+		}
+	}
+
+	/** pi-tui focus follows the action layer's region. */
+	#applyFocusTarget(): void {
+		if (this.#focus === "composer") this.#tui.setFocus(this.editor);
+		else if (this.#focus === "list") this.#tui.setFocus(this.sidebar);
+		else this.#tui.setFocus(this.pane);
+	}
+
+	/** Move the transcript's focused turn, clamped to the turn count. */
+	#moveTranscriptFocus(delta: number): void {
+		const count = this.pane.turns().length;
+		if (count === 0) return;
+		const current = this.pane.focusIndex;
+		if (current === undefined) {
+			this.pane.setFocus(delta < 0 ? count - 1 : 0);
+			return;
+		}
+		this.pane.setFocus(Math.max(0, Math.min(current + delta, count - 1)));
+	}
+
+	/** Fold/unfold the focused assistant turn (no-op without one). */
+	#foldFocused(): void {
+		const index = this.pane.focusIndex;
+		if (index !== undefined) this.pane.toggleFold(index);
+	}
+
+	/** Focus the previous/next user turn (delta -1 backward, 1 forward). */
+	#promptJump(delta: 1 | -1): void {
+		const turns = this.pane.turns();
+		const current = this.pane.focusIndex ?? (delta < 0 ? turns.length : -1);
+		for (let i = current + delta; i >= 0 && i < turns.length; i += delta) {
+			if (turns[i]!.kind === "user") {
+				this.pane.setFocus(i);
+				return;
+			}
+		}
+	}
+
+	/** The transcript search overlay: a `/` query line in the status bar. */
+	#beginSearch(direction: "forward" | "backward"): void {
+		this.#search = { query: "", direction };
+		this.#overlayOpen = true;
+		this.#paintSearch();
+	}
+
+	/** The search line's status-bar rendering. */
+	#paintSearch(): void {
+		const search = this.#search;
+		if (this.#statusBar === undefined || search === undefined) return;
+		const base = this.#statusSnapshot ?? { conversation: "", hints: [] };
+		this.#statusBar.set({
+			...base,
+			message: `/${search.query}`,
+		});
+	}
+
+	/** End the search overlay (Enter keeps the match, Esc restores). */
+	#endSearch(): void {
+		this.#search = undefined;
+		this.#overlayOpen = false;
+		const base = this.#statusSnapshot;
+		if (this.#statusBar !== undefined && base !== undefined) this.#statusBar.set(base);
+	}
+
+	/** Advance to the next match (reverse flips the remembered direction). */
+	#searchNext(reverse: boolean): void {
+		const search = this.#search;
+		if (search === undefined || search.query === "") return;
+		const forward = search.direction === "forward";
+		this.#findMatch(search.query, reverse ? !forward : forward);
+	}
+
+	/** Focus the next turn whose text contains the query (case-insensitive). */
+	#findMatch(query: string, forward: boolean): boolean {
+		const turns = this.pane.turns();
+		if (turns.length === 0) return false;
+		const needle = query.toLowerCase();
+		const delta = forward ? 1 : -1;
+		const current = this.pane.focusIndex ?? (forward ? -1 : turns.length);
+		for (let i = current + delta; i >= 0 && i < turns.length; i += delta) {
+			if (this.pane.textOf(i).toLowerCase().includes(needle)) {
+				this.pane.setFocus(i);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** The search overlay's input seam (the launcher routes keys here). */
+	#handleSearchKey(data: string): boolean {
+		const search = this.#search;
+		if (search === undefined) return false;
+		if (matchesKey(data, Key.escape)) {
+			this.#endSearch();
+			return true;
+		}
+		if (matchesKey(data, Key.enter) || data === "\r") {
+			if (search.query !== "") {
+				this.#findMatch(search.query, search.direction === "forward");
+			}
+			this.#endSearch();
+			return true;
+		}
+		if (matchesKey(data, Key.backspace) || data === "\x7f" || data === "\b") {
+			search.query = search.query.slice(0, -1);
+			this.#paintSearch();
+			return true;
+		}
+		if (data.length === 1 && data >= " ") {
+			search.query += data;
+			this.#paintSearch();
+			return true;
+		}
+		return true; // the overlay owns every key while open
+	}
+
+	/** Open the conversation/model/command picker for `kind`. */
+	#openPickerFor(kind: "conversation" | "model" | "command"): void {
+		if (this.#overlayOpen) return;
+		this.#overlayOpen = true;
+		const close = (): void => {
+			this.#overlayOpen = false;
+		};
+		if (kind === "conversation") {
+			const items: PickerItem<number>[] = this.sidebar.rows.map((row) => ({
+				label: `${"  ".repeat(row.depth)}${row.depth > 0 ? "↳ " : ""}${row.name}`,
+				detail: row.age,
+				value: row.id,
+			}));
+			openPicker(this.#tui, items, {
+				title: "Conversations",
+				onPick: (id) => {
+					void this.selectConversation(id).catch((error: unknown) => {
+						this.pane.showError(describeCommandError("select", error));
+					});
+				},
+				onClose: close,
+			});
+			return;
+		}
+		if (kind === "model") {
+			this.#client
+				.listModels()
+				.then((response) => {
+					openPicker(
+						this.#tui,
+						response.models.map((model: ModelEntry) => ({
+							label: model.id,
+							detail: model.name,
+							value: model.id,
+						})),
+						{
+							title: "Models",
+							onPick: (modelId) => {
+								void this.dispatch({ type: "run-command", line: `/model ${modelId}` });
+							},
+							onClose: close,
+						},
+					);
+				})
+				.catch((error: unknown) => {
+					close();
+					this.pane.showError(describeCommandError("listModels", error));
+				});
+			return;
+		}
+		this.#client
+			.getCommands()
+			.then((response) => {
+				openPicker(
+					this.#tui,
+					response.commands.map((command: SlashCommand) => ({
+						label: `/${command.name}`,
+						detail: command.description,
+						value: command,
+					})),
+					{
+						title: "Commands",
+						onPick: (command) => {
+							this.#focus = "composer";
+							this.#applyFocusTarget();
+							this.editor.setText(
+								command.argsHint === undefined ? `/${command.name}` : `/${command.name} `,
+							);
+						},
+						onClose: close,
+					},
+				);
+			})
+			.catch((error: unknown) => {
+				close();
+				this.pane.showError(describeCommandError("getCommands", error));
+			});
+	}
+
+	/** The thinking cycle (off → minimal → low → medium → high → xhigh → off). */
+	async #cycleThinking(): Promise<void> {
+		const id = this.#activeId;
+		if (id === undefined) return;
+		const order = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+		const index = order.indexOf(this.#thinkingLevel as (typeof order)[number]);
+		const next = order[(index + 1) % order.length]!;
+		try {
+			const response = await this.#client.configure(id, { thinking: next });
+			this.#thinkingLevel = response.thinkingLevel;
+			this.#flashStatus(`thinking: ${response.thinkingLevel}`);
+		} catch (error: unknown) {
+			this.pane.showError(describeCommandError("configure", error));
+		}
+	}
+
+	/**
+	 * Edit-from-here (the web B4 Edit rule): fork at the PREVIOUS entry so
+	 * the message is re-entered; on the first entry there is no fork point,
+	 * so a fresh conversation is created. Either way the text prefills the
+	 * durable draft (`patchMeta`) and the local composer.
+	 */
+	async #editHere(): Promise<void> {
+		const id = this.#activeId;
+		const index = this.pane.focusIndex;
+		if (id === undefined || index === undefined) return;
+		const turn = this.pane.turns()[index];
+		if (turn === undefined || turn.kind !== "user") {
+			this.pane.showError("edit: focus a user turn");
+			return;
+		}
+		const text = this.pane.textOf(index);
+		const entryId = this.pane.entryIdOf(index);
+		this.editor.disableSubmit = true;
+		try {
+			let newId: number;
+			if (entryId > 1) {
+				newId = (await this.#client.forkConversation(id, entryId - 1)).id;
+			} else {
+				newId = (await this.#client.createConversation()).id;
+			}
+			await this.#client.patchMeta(newId, { draft: { text } });
+			await this.sidebar.refresh();
+			await this.selectConversation(newId);
+			this.editor.setText(text);
+			this.#focus = "composer";
+			this.#applyFocusTarget();
+		} catch (error: unknown) {
+			this.pane.showError(describeCommandError("edit", error));
+		} finally {
+			this.editor.disableSubmit = false;
+		}
 	}
 
 	render(width: number): string[] {
