@@ -4,9 +4,9 @@
  * of raw entries — a user turn is the accent `▎` bar on every line, an
  * assistant turn is prose plus ONE collapsible activity line
  * (`▸ Thinking · 2 tools`; `▾` when open) that unfolds into the thinking
- * text and `✓ tool  preview` rows (`✗` error, `·` no result yet, `◌`
- * running slot). `pi.compaction` renders the centred
- * `── context compacted ──` divider. The `[tool]`/`[thinking]` tags of
+ * text and `✓ tool  preview` rows (`✗` error, `·` no result yet — the
+ * wire carries no per-tool running marker, so `·` covers pending too).
+ * `pi.compaction` renders the centred `── context compacted ──` divider. The `[tool]`/`[thinking]` tags of
  * the entry-era pane are gone.
  *
  * Focus (the C3 action layer's seam): `focusIndex` names the focused
@@ -490,7 +490,8 @@ export class ConversationPane implements Component {
 	/**
 	 * Apply the focus + user-bar chrome: the focused turn's FIRST line
 	 * gets the `surface2` background and the `›` gutter marker; every line
-	 * of a user turn carries the accent `▎` bar.
+	 * of a user turn carries the accent `▎` bar. The two are independent —
+	 * a focused user turn's first line composes `› ▎ …` on surface2.
 	 */
 	#decorate(lines: string[], width: number): string[] {
 		const out = [...lines];
@@ -498,15 +499,19 @@ export class ConversationPane implements Component {
 			const turn = this.#turns[index];
 			if (turn === undefined) continue;
 			const focused = index === this.#focus;
+			const bar =
+				turn.kind === "user"
+					? `${this.#theme.fg("accent")("▎")} `
+					: "";
 			for (let line = mounted.start; line < mounted.end; line++) {
 				const original = out[line] ?? "";
 				if (line === mounted.start && focused) {
-					const marked = `› ${original}`;
+					const marked = `› ${bar}${original}`;
 					out[line] = this.#theme.bg("surface2")(
 						marked + " ".repeat(Math.max(0, width - marked.length)),
 					);
 				} else if (turn.kind === "user") {
-					out[line] = `${this.#theme.fg("accent")("▎")} ${original}`;
+					out[line] = `${bar}${original}`;
 				} else if (focused) {
 					out[line] = `  ${original}`;
 				}
