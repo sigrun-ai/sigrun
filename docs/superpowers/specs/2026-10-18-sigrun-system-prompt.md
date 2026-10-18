@@ -1,6 +1,6 @@
 # Sigrun system prompt — identity, persona, per-model guidance
 
-Status: draft for review. Date: 2026-10-18.
+Status: implemented. Date: 2026-10-18.
 
 ## Why
 

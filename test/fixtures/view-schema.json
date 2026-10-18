@@ -131,6 +131,12 @@
 										"sections": {
 											"kind": "object",
 											"fields": {
+												"identity": {
+													"kind": "string"
+												},
+												"persona": {
+													"kind": "string"
+												},
 												"long-term-memory": {
 													"kind": "string"
 												}

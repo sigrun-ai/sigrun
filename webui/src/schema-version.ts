@@ -20,4 +20,4 @@
  * can extract it.
  */
 export const PINNED_SCHEMA_VERSION =
-	"31843a20668c9bb012bfefb93c0c3ee29c1b81a02292b331d3087a501c2ab789";
+	"8a10509d8decf282cfbd247143aa75ff8494356960734818ca29b314bb17c1b6";
