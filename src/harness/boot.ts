@@ -40,6 +40,7 @@ import {
 	type ProviderCollision,
 	type ProviderContributor,
 } from "./providers/index.js";
+import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
@@ -458,6 +459,11 @@ export async function openHarness(
 	// uses. Passed to the collector so the degenerate provider resolves
 	// credentials from `auth.json` before the OPENAI_API_KEY fallback.
 	const authStore = new AuthStore({ dir: options.settingsDir });
+	// The file-backed models store (Task 3): refreshed provider catalogs
+	// persist under `<dataDir>/models/` and restore at the next boot's
+	// offline init — the data root is ensured above, so the store never
+	// mkdirs outside a sanctioned root.
+	const modelsStore = fileModelsStore(config.dataDir);
 	const { models, defaultModel, healthProducers: providerHealth, providerOwnership } =
 		collectProviders(
 			[...(options.extensions ?? []), ...providerContributors],
@@ -466,6 +472,7 @@ export async function openHarness(
 			{
 				auth: authStore,
 				baseUrl: config.defaultProviderBaseUrl,
+				modelsStore,
 			},
 		);
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
