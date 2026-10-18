@@ -44,6 +44,17 @@ const MODELS: readonly ModelEntry[] = [
 		input: ["text"],
 		cost: { input: 3, output: 4, cacheRead: 1, cacheWrite: 1 },
 	},
+	{
+		id: "faux/m2",
+		provider: "faux",
+		modelId: "m2",
+		name: "Faux M2",
+		contextWindow: 2000,
+		maxTokens: 200,
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+	},
 ];
 
 /** The `/` menu's catalog fixture (the Task 7 server set, metadata only). */
@@ -144,6 +155,19 @@ function composerTextarea(renderer: TestRenderer.ReactTestRenderer) {
 	return renderer.root.findByProps({ className: "composer-input" });
 }
 
+/** The send/steer icon button (its accessible name flips Send↔Steer). */
+function sendButton(renderer: TestRenderer.ReactTestRenderer) {
+	const button = renderer.root
+		.findAllByType("button")
+		.find(
+			(b) =>
+				b.props["aria-label"] === "Send" ||
+				b.props["aria-label"] === "Steer",
+		);
+	if (button === undefined) throw new Error("send button not found");
+	return button;
+}
+
 async function typeText(
 	renderer: TestRenderer.ReactTestRenderer,
 	text: string,
@@ -157,7 +181,7 @@ async function typeText(
 }
 
 async function clickSend(renderer: TestRenderer.ReactTestRenderer) {
-	const button = renderer.root.findByProps({ className: "composer-send" });
+	const button = sendButton(renderer);
 	await act(async () => {
 		await button.props.onClick();
 	});
@@ -171,18 +195,33 @@ describe("Composer", () => {
 		vi.useRealTimers();
 	});
 
-	test("renders the model picker from the catalog and defaults to the first model", async () => {
+	/** Open the model picker's popover (click the toggle); returns the toggle. */
+	function openModelMenu(renderer: TestRenderer.ReactTestRenderer) {
+		const toggle = renderer.root.findByProps({ "data-picker": "model" });
+		act(() => {
+			toggle.props.onClick();
+		});
+		return toggle;
+	}
+
+	test("the model picker names the current model and defaults to the catalog's first entry", async () => {
 		const { client } = makeHarness();
 		const renderer = await renderComposer(client, makeView());
-		const select = renderer.root.findByProps({
-			className: "composer-model",
+		const toggle = renderer.root.findByProps({ "data-picker": "model" });
+		expect(toggle.props["aria-haspopup"]).toBe("listbox");
+		expect(toggle.props["aria-expanded"]).toBe(false);
+		// No pi.agent doc on the view yet: the catalog's first entry is the
+		// working selection (the ring still reads a model).
+		expect(toggle.children.join("")).toContain("Faux One");
+		act(() => {
+			toggle.props.onClick();
 		});
-		const options = select.findAllByType("option");
-		expect(options.map((o) => o.props.value)).toEqual([
+		const options = renderer.root.findAllByProps({ role: "option" });
+		expect(options.map((o) => o.props["data-model-id"])).toEqual([
 			"faux/one",
 			"faux/two",
+			"faux/m2",
 		]);
-		expect(select.props.value).toBe("faux/one");
 	});
 
 	// THE PICKER CONVENTION (spec §6.1, binding): a picker renders ONLY when
@@ -201,7 +240,7 @@ describe("Composer", () => {
 		});
 		const renderer = await renderComposer(client, view);
 		expect(
-			renderer.root.findAllByProps({ className: "composer-model" }),
+			renderer.root.findAllByProps({ "data-picker": "model" }),
 		).toHaveLength(0);
 		// The single model is still the ring's selection (50% of 1000).
 		expect(textContent(renderer.toJSON())).toContain("50%");
@@ -211,7 +250,7 @@ describe("Composer", () => {
 		const { client } = makeHarness({ models: [] });
 		const renderer = await renderComposer(client, makeView());
 		expect(
-			renderer.root.findAllByProps({ className: "composer-model" }),
+			renderer.root.findAllByProps({ "data-picker": "model" }),
 		).toHaveLength(0);
 	});
 
@@ -239,8 +278,9 @@ describe("Composer", () => {
 			client,
 			makeView({ steer: { busy: true, queued: 0 } }),
 		);
-		const button = renderer.root.findByProps({ className: "composer-send" });
-		expect(button.children.join("")).toBe("Steer");
+		// Icon button: the accessible name carries the send/steer flip.
+		const button = renderer.root.findByProps({ "aria-label": "Steer" });
+		expect(button.props["aria-label"]).toBe("Steer");
 		await typeText(renderer, "actually, stop that");
 		await clickSend(renderer);
 		const posts = calls.filter((c) => c.input.endsWith("/submissions"));
@@ -282,12 +322,15 @@ describe("Composer", () => {
 		const ring = renderer.root.findByProps({ className: "composer-ring" });
 		expect(ring.props["data-usage-percent"]).toBe(50);
 		expect(textContent(renderer.toJSON())).toContain("50%");
+		// The tooltip names used / window tokens (the B6 toolbar contract).
+		expect(ring.props.title).toBe("500 / 1000 tokens");
 	});
 
-	test("switching the model re-rates the ring against THAT model's ledger entry and window", async () => {
+	test("the view's pi.agent doc drives the current model and re-rates the ring against it", async () => {
 		const { client } = makeHarness();
 		const view = makeView({
 			docs: {
+				"pi.agent": { model: { provider: "faux", modelId: "two" } },
 				"pi.usage": {
 					models: {
 						"faux/two": {
@@ -310,12 +353,8 @@ describe("Composer", () => {
 			},
 		});
 		const renderer = await renderComposer(client, view);
-		const select = renderer.root.findByProps({
-			className: "composer-model",
-		});
-		await act(async () => {
-			select.props.onChange({ target: { value: "faux/two" } });
-		});
+		const toggle = renderer.root.findByProps({ "data-picker": "model" });
+		expect(toggle.children.join("")).toContain("Faux Two");
 		const ring = renderer.root.findByProps({ className: "composer-ring" });
 		expect(ring.props["data-usage-percent"]).toBe(25);
 	});
@@ -342,6 +381,118 @@ describe("Composer", () => {
 		expect(
 			calls.filter((c) => c.input.endsWith("/submissions")),
 		).toEqual([]);
+	});
+
+	describe("toolbar: live model + thinking pickers (B6)", () => {
+		test("picking a model from the popover POSTs configure and the pill follows", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			openModelMenu(renderer);
+			await act(async () => {
+				renderer.root
+					.findByProps({ "data-model-id": "faux/m2" })
+					.props.onClick();
+			});
+			const configureCalls = calls.filter((c) => c.input.endsWith("/configure"));
+			expect(configureCalls).toEqual([
+				{
+					input: "/v1/conversations/1/configure",
+					method: "POST",
+					body: JSON.stringify({ model: "faux/m2" }),
+			},
+			]);
+			// The pill names the picked model immediately (the view frame is the
+			// authority that follows).
+			expect(
+				renderer.root.findByProps({ "data-picker": "model" }).children.join(""),
+			).toContain("Faux M2");
+		});
+
+		test("a rejected configure leaves the previous model shown and renders the error", async () => {
+			const { client } = makeHarness();
+			client.configure = () =>
+				Promise.reject(
+					new Error(
+						"sigrun api: POST /v1/conversations/1/configure failed with status 400",
+					),
+			);
+			const renderer = await renderComposer(client, makeView());
+			openModelMenu(renderer);
+			await act(async () => {
+				renderer.root
+					.findByProps({ "data-model-id": "faux/m2" })
+					.props.onClick();
+			});
+			// The previous selection survives the failure (never silently lost).
+			expect(
+				renderer.root.findByProps({ "data-picker": "model" }).children.join(""),
+			).toContain("Faux One");
+			expect(textContent(renderer.toJSON())).toContain("failed with status 400");
+			expect(renderer.root.findByProps({ role: "alert" })).toBeDefined();
+		});
+
+		test("the thinking picker renders even when every model has reasoning:false, and picking configures the level", async () => {
+			// Both fixture models report reasoning:false — the picker must stay
+		// (the flag is unreliable: glm-5.3-flash thinks but reports false).
+			const { calls, client } = makeHarness({
+				models: [MODELS[0]!, MODELS[2]!],
+			});
+			const renderer = await renderComposer(client, makeView());
+			const toggle = renderer.root.findByProps({ "data-picker": "thinking" });
+			expect(toggle.children.join("")).toContain("Thinking: default");
+			act(() => {
+				toggle.props.onClick();
+			});
+			await act(async () => {
+				renderer.root
+					.findByProps({ "data-thinking-level": "high" })
+					.props.onClick();
+			});
+			const configureCalls = calls.filter((c) => c.input.endsWith("/configure"));
+			expect(configureCalls).toEqual([
+				{
+					input: "/v1/conversations/1/configure",
+					method: "POST",
+					body: JSON.stringify({ thinking: "high" }),
+			},
+			]);
+			expect(
+				renderer.root.findByProps({ "data-picker": "thinking" }).children.join(""),
+			).toContain("Thinking: high");
+		});
+
+		test("the hint line matches both enterToSend states exactly", async () => {
+			const { client } = makeHarness();
+		const renderer = await renderComposer(client, makeView());
+			expect(
+				renderer.root.findByProps({ className: "composer-hint" }).children,
+			).toEqual(["Ctrl+Enter to send \u00b7 / for commands"]);
+			const renderer2 = await renderAsync(
+				<Composer
+					client={client}
+					conversationId={1}
+					view={makeView()}
+					enterToSend
+				/>,
+			);
+			expect(
+				renderer2.root.findByProps({ className: "composer-hint" }).children,
+			).toEqual([
+				"Enter to send \u00b7 Shift+Enter for newline \u00b7 / for commands",
+			]);
+		});
+
+		test("a disabled send carries aria-disabled and the disabled class; text re-enables it", async () => {
+			const { client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			const idle = renderer.root.findByProps({ "aria-label": "Send" });
+			expect(idle.props["aria-disabled"]).toBe(true);
+			expect((idle.props.className as string).includes("disabled")).toBe(true);
+			await typeText(renderer, "some words");
+			const live = renderer.root.findByProps({ "aria-label": "Send" });
+			expect(live.props["aria-disabled"]).toBe(false);
+			expect((live.props.className as string).includes("disabled")).toBe(false);
+		});
 	});
 
 	describe("attachments (Task 24)", () => {

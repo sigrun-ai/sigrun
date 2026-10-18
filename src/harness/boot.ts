@@ -19,9 +19,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
+import { wireActivity } from "./activity.js";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
+import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import {
@@ -183,6 +185,19 @@ export interface OpenedHarness {
 	 * request like the §3 health producers.
 	 */
 	readonly workerStatuses: () => ReadonlyMap<string, readonly WorkerStatus[]>;
+	/**
+	 * The activity clock (UI refresh A1): what `touchActivity` stamps
+	 * `lastActivityAt` from. Defaults to the real clock; overridable so
+	 * tests pin the instant.
+	 */
+	readonly now: () => Date;
+	/**
+	 * The auto-namer (UI refresh A2): registered on the bus as the
+	 * `sigrun:auto-name` extension, after every loaded extension. Exposed
+	 * so tests await `idle()` (production never does — naming is a
+	 * background side lane that must never delay a run).
+	 */
+	readonly autoNamer: AutoNamer;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -254,6 +269,11 @@ export interface OpenHarnessOptions {
 		 */
 		readonly workerDeadlineMs?: number;
 	};
+	/**
+	 * The activity clock (UI refresh A1), default `() => new Date()` — the
+	 * seam `lastActivityAt` stamps come from, overridable so tests pin time.
+	 */
+	readonly now?: () => Date;
 }
 
 /**
@@ -515,6 +535,13 @@ export async function openHarness(
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
 	});
+	// Activity stamping (UI refresh A1): every settled run stamps its
+	// conversation's `lastActivityAt` (the admission-side stamp lives in the
+	// submissions route). Registered directly after the bus opens — host-owned
+	// machinery, ahead of every extension registration (install order = run
+	// order). The bus's close stops delivery; the unsubscribe is unused.
+	const now = options.now ?? (() => new Date());
+	wireActivity(eventBus, harness, now);
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
 		handlersByName.set(binding.extension.name, {
@@ -539,6 +566,23 @@ export async function openHarness(
 	for (const [name, handlers] of handlersByName) {
 		eventBus.registerExtension(name, handlers);
 	}
+	// Auto-naming (UI refresh A2): one background one-shot completion per
+	// first-settled answered run writes `SessionMeta.autoName`. Host-owned
+	// machinery registered AFTER every extension (install order = run order
+	// — naming never delays an extension's observation), never over a user
+	// name, never for task-owned conversations, `namingModel: false` opts
+	// out, and its failures never touch the run.
+	const autoNamer = createAutoNamer({
+		harness,
+		models,
+		readSettings: () => settingsStore.read(),
+		defaultModel,
+		isTaskOwned: async (id) =>
+			(await storage.conversation(id, BACKGROUND_CONTEXT))?.owner !== undefined,
+	});
+	eventBus.registerExtension("sigrun:auto-name", {
+		runSettled: autoNamer.runSettled,
+	});
 	// Delivery scheduling: the bus itself stays passive (Task 2's
 	// contract — `drain()` is the only pump); boot owns when drains run.
 	// Every commit (bus events or not) schedules one debounced drain on
@@ -581,5 +625,7 @@ export async function openHarness(
 		seamKinds,
 		eventBus,
 		workerStatuses: () => eventBus.workerStatuses(),
+		now,
+		autoNamer,
 	};
 }

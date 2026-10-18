@@ -312,6 +312,34 @@ describe("SettingsStore", () => {
 		expect(() => store.read()).toThrow(/server\.port/);
 	});
 
+	test("namingModel accepts provider/model and false, rejects bad shapes naming the field", () => {
+		const { store } = freshStore();
+		// A provider/model spec, the disable flag, and the null clear all
+		// round-trip (the file key the auto-namer resolves its model from).
+		store.update({ namingModel: "faux/m" });
+		expect(store.read().namingModel).toBe("faux/m");
+		store.update({ namingModel: false });
+		expect(store.read().namingModel).toBe(false);
+		store.update({ namingModel: null });
+		expect(store.read().namingModel).toBeUndefined();
+		// Everything else rejects naming `namingModel` (the field the
+		// /v1/settings PATCH surfaces as its 400 `field`).
+		for (const bad of ["", "  ", 42, true, "faux/", "/m"] as const) {
+			let rejected: SettingsValidationError | undefined;
+			try {
+				store.update({ namingModel: bad });
+			} catch (error) {
+				if (error instanceof SettingsValidationError) rejected = error;
+				else throw error;
+			}
+			expect(
+				rejected,
+				`namingModel ${JSON.stringify(bad)} must reject`,
+			).toBeInstanceOf(SettingsValidationError);
+			expect(rejected!.field).toBe("namingModel");
+		}
+	});
+
 	test("the new top-level sections validate (extensions, defaultModel, defaultProvider)", async () => {
 		const { store, dir } = freshStore();
 		// Good shapes round-trip.

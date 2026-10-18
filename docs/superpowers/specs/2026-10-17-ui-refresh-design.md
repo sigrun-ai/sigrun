@@ -476,6 +476,24 @@ sections; user/auto names stored separately; naming model defaults to
 the server default model with thinking off; OSC 52 clipboard in the
 TUI; accent migration mapping.
 
+Deviations recorded during execution (rulings by the executor):
+
+- Activity lines show counts ("Thinking · 2 tools"), not durations —
+  the wire carries no per-block timing.
+- The web table filter threshold is `> 6` data rows.
+- A fork of an unnamed conversation stays eligible for auto naming
+  (only named sources hand down `"<name> (fork)"`); the fork commit
+  also resets `autoNameAttempts` so a fresh naming budget applies.
+- The TUI disables alt-screen's built-in search and prompt-jump
+  bindings in favour of turn-aware actions.
+- Vim keeps `?` = search-backward (plan C4's binding, correct vim
+  behaviour); the vim help key is `g?` and vim normal hints advertise
+  "g? keys" — §5.5's "? opens key reference" holds for standard and
+  emacs only.
+- C-g in emacs cancels a run only when no overlay is open; with the
+  picker/search open it closes the overlay first (modal owns keys),
+  so cancelling a busy run with an overlay open takes two presses.
+
 ## 9. Credit
 
 Add `THIRD_PARTY_NOTICES.md` with hermes-webui's MIT copyright notice

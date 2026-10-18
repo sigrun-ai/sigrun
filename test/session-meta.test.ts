@@ -359,6 +359,26 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		expect(final.json()).toEqual(DEFAULT_BODY);
 	});
 
+	test("PATCH rejects server-owned keys (autoName/autoNameAttempts/lastActivityAt)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		// The three server-owned session-meta fields are NEVER patchable:
+		// whatever the value's type, the KEY itself is the client error.
+		for (const field of ["autoName", "autoNameAttempts", "lastActivityAt"]) {
+			const response = await patchMeta(app, root.id, { [field]: "nope" });
+			expect(response.statusCode).toBe(400);
+			expect(response.json()).toEqual({
+				error: "invalid_field",
+				field,
+			});
+		}
+		// Nothing was applied by any rejected patch.
+		const final = await getMeta(app, root.id);
+		expect(final.json()).toEqual(DEFAULT_BODY);
+	});
+
 	test("rejects a non-object or empty body", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {

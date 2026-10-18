@@ -20,7 +20,7 @@
  * `afterAll`.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +58,16 @@ export interface E2EServerOptions {
 	 * seam) — the forced compaction policy, per the mid-compaction driver.
 	 */
 	readonly settings?: HarnessSettings;
+	/**
+	 * The settings FILE the booted server reads (`<tmpdir>/config/settings.json`
+	 * — the `OpenHarnessOptions.settingsDir` seam). The boot's settingsDir is
+	 * ALWAYS the tmpdir (never the developer's real config dir — the harness
+	 * is hermetic); this option writes the given document into it. The
+	 * response-counting specs use `{ namingModel: false }`: A2's background
+	 * auto-namer otherwise consumes one scripted faux response after the
+	 * first settled run (naming has its own vitest coverage).
+	 */
+	readonly settingsFile?: Record<string, unknown>;
 	/**
 	 * T26b-iii items 4 + 7: extension package specifiers to load (the
 	 * `OpenHarnessOptions.extensionSpecifiers` seam — "sigrun-ext-approvals",
@@ -136,9 +146,22 @@ async function bootOnDir(
 		webuiBundle: WEBUI_DIST,
 		webuiBundleExplicit: true,
 	};
+	// The hermetic settings dir: ALWAYS inside the tmpdir (the boot otherwise
+	// reads the developer's real config dir — not hermetic). Specs that need a
+	// non-default setting (namingModel: false) write it via `options.settingsFile`.
+	const settingsDir = join(dir, "config");
+	await mkdir(settingsDir, { recursive: true });
+	if (options.settingsFile !== undefined) {
+		await writeFile(
+			join(settingsDir, "settings.json"),
+			JSON.stringify(options.settingsFile, null, "\t"),
+			"utf8",
+		);
+	}
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		settingsDir,
 		...(options.extensionSpecifiers === undefined
 			? {}
 			: { extensionSpecifiers: options.extensionSpecifiers }),
