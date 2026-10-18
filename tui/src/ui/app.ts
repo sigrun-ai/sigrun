@@ -61,6 +61,7 @@ import {
 import type { ConversationViewWire, SigrunClient, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
+import type { TuiTheme } from "../theme.js";
 import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
 import { AmbientChrome } from "./ambient.js";
 import { ConversationPane } from "./conversation-pane.js";
@@ -83,6 +84,8 @@ export interface TuiAppOptions {
 	readonly watchOptions?: WatchOptions;
 	/** The sidebar's fixed column basis (default 24). */
 	readonly sidebarWidth?: number;
+	/** The token theme (C1/C2); defaults to the plain identity fallback. */
+	readonly theme?: TuiTheme;
 }
 
 /** No-color theme: the shell pins structure; styling is a later task. */
@@ -130,8 +133,9 @@ export class TuiApp implements Component {
 		this.#watch = options.watch ?? watchConversation;
 		this.#watchOptions = options.watchOptions ?? { baseUrl: "" };
 		this.#catalog = new SlashCatalog(client);
-		this.sidebar = new Sidebar(client);
-		this.pane = new ConversationPane();
+		const theme = options.theme;
+		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
+		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
 		this.editor = new Editor(options.tui, plainEditorTheme());
 		this.interactions = new InteractionPrompter(client);
 		this.ambient = new AmbientChrome(client);
