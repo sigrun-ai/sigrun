@@ -28,6 +28,8 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxText,
+	fauxThinking,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../../src/config.js";
@@ -59,7 +61,7 @@ interface TestServer {
 }
 
 /** Boot a hermetic server on an ephemeral port; registers cleanup. */
-async function bootServer(): Promise<TestServer> {
+async function bootServer(responses?: unknown[]): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-tui-e2e-"));
 	const faux = fauxProvider({
 		provider: "faux",
@@ -67,10 +69,12 @@ async function bootServer(): Promise<TestServer> {
 	});
 	// Two responses: the create-submit answer, then the fork's submit (if a
 	// test drives one). A queue exhausts in declaration order.
-	faux.setResponses([
-		fauxAssistantMessage("the e2e answer"),
-		fauxAssistantMessage("the follow-up answer"),
-	]);
+	faux.setResponses(
+		(responses as never) ?? [
+			fauxAssistantMessage("the e2e answer"),
+			fauxAssistantMessage("the follow-up answer"),
+		],
+	);
 	const contributor: ProviderContributor = {
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
@@ -331,4 +335,206 @@ describe("tui e2e smoke (attach-mode wire path)", () => {
 		expect(summary).toBeDefined();
 		expect(summary && "owner" in summary).toBe(false);
 	});
+});
+
+// ─── Task C5: the per-keymap headless TUI e2e ──────────────────────────
+//
+// For EACH keymap (standard, vim, emacs): drive a real TuiApp over the
+// real wire (a hermetic server, real SSE watch) through the keymap's own
+// keys — the launcher listener's exact dispatch/pass/consume flow with a
+// recording terminal standing in for the screen. Two conversations, a
+// picker switch, a streamed prompt, an activity fold/unfold, an OSC 52
+// copy, and a fork from the answer.
+
+import type { Component, TUI } from "@earendil-works/pi-tui";
+import { TuiApp } from "../src/ui/app.js";
+import { createStandardKeymap } from "../src/keymaps/standard.js";
+import { createVimKeymap } from "../src/keymaps/vim.js";
+import { createEmacsKeymap } from "../src/keymaps/emacs.js";
+import type { Keymap } from "../src/keymaps/types.js";
+import { showHelp } from "../src/ui/help.js";
+
+/** The key spellings one flow needs per keymap. */
+const KEYMAP_KEYS = {
+	standard: {
+		picker: ["\x10"], // ctrl+p
+		composer: [], // the picker keeps the composer focus
+		transcript: ["\t", "\t"], // tab cycles composer → list → transcript
+		down: "\x1b[B",
+		copy: "y",
+		fork: "f",
+	},
+	vim: {
+		picker: ["\x1b", "\x10"], // esc → normal, then ctrl+p
+		composer: ["i"],
+		transcript: ["\x1b"], // esc → normal focuses the transcript
+		down: "j",
+		copy: "y",
+		fork: "f",
+	},
+	emacs: {
+		picker: ["\x18", "b"], // C-x b
+		composer: [],
+		transcript: ["\x18", "o", "\x18", "o"], // C-x o twice
+		down: "\x0e", // C-n
+		copy: "\x1bw", // M-w
+		fork: "\x1bf", // M-f
+	},
+} as const;
+
+/** Poll until `predicate` holds (the stream is asynchronous). */
+async function waitUntil(
+	predicate: () => boolean,
+	label: string,
+	timeoutMs = 15_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
+describe("per-keymap TUI e2e (headless app over the real wire)", () => {
+	for (const name of ["standard", "vim", "emacs"] as const) {
+		test(
+			`${name}: picker switch → prompt → fold → OSC 52 copy → fork`,
+			{ timeout: 120_000 },
+			async () => {
+				const server = await bootServer([
+					// The thinking block gives the answer an activity line to fold.
+					fauxAssistantMessage([fauxThinking("e2e thinking"), fauxText("the e2e answer")]),
+				]);
+				const client = new SigrunClient({
+					baseUrl: server.baseUrl,
+					user: "e2e-user",
+				});
+				const alpha = await client.createConversation();
+				await client.patchMeta(alpha.id, { name: "alpha" });
+				const beta = await client.createConversation();
+				await client.patchMeta(beta.id, { name: "beta" });
+
+				// The recording terminal + overlay capture (the screen stand-in).
+				const writes: string[] = [];
+				let overlay: Component | undefined;
+				const tui = {
+					requestRender: () => {},
+					setFocus: () => {},
+					terminal: {
+						write: (data: string) => {
+							writes.push(data);
+						},
+					},
+					showOverlay: (component: Component) => {
+						overlay = component;
+						return {
+							hide: () => {
+								overlay = undefined;
+							},
+						};
+					},
+				} as unknown as TUI;
+
+				const keymap: Keymap =
+					name === "vim"
+						? createVimKeymap()
+						: name === "emacs"
+							? createEmacsKeymap()
+							: createStandardKeymap();
+				const app = new TuiApp(client, {
+					tui,
+					watchOptions: { baseUrl: server.baseUrl, user: "e2e-user" },
+				});
+				app.helpOverlay = (onClose) => showHelp(tui, keymap, { onClose });
+
+				/** The launcher's input listener, verbatim semantics. */
+				const press = (data: string): void => {
+					if (app.handleKeybinding(data)) return;
+					const result = keymap.handle(data, app.keyContext());
+					if (result === "pass") {
+						if (overlay?.handleInput !== undefined) overlay.handleInput(data);
+						else app.editor.handleInput(data);
+						return;
+					}
+					if (result !== "consume") void app.dispatch(result);
+				};
+				const type = (text: string): void => {
+					for (const char of text) press(char);
+				};
+				const keys = KEYMAP_KEYS[name];
+
+				try {
+					await app.refresh();
+					// The sidebar boots the newest conversation (beta).
+					expect(app.activeConversationId).toBe(beta.id);
+
+					// ── switch to alpha via this keymap's picker key ──
+					for (const key of keys.picker) press(key);
+					await waitUntil(() => overlay !== undefined, "the picker to open");
+					type("alpha");
+					press("\r");
+					await waitUntil(
+						() => app.activeConversationId === alpha.id,
+						"the picker switch to alpha",
+					);
+
+					// ── send a prompt; the faux answer streams in ──
+					for (const key of keys.composer) press(key);
+					type("hello from the keymap e2e");
+					press("\r");
+					press("\r");
+					await waitUntil(
+						() =>
+							app.pane.turns().some((turn, index) =>
+								turn.kind === "assistant" &&
+								app.pane.textOf(index).includes("the e2e answer"),
+							),
+						"the streamed answer",
+					);
+
+					// ── fold/unfold the answer's activity line ──
+					for (const key of keys.transcript) press(key);
+					const assistantIndex = app.pane
+						.turns()
+						.findIndex((turn) => turn.kind === "assistant");
+					expect(assistantIndex).toBeGreaterThan(-1);
+					for (let i = 0; i < 10 && app.pane.focusIndex !== assistantIndex; i++) {
+						press(keys.down);
+					}
+					expect(app.pane.focusIndex).toBe(assistantIndex);
+					const markerOf = (): string => {
+						const line = app.pane
+							.render(100)
+							.find((l) => l.includes("▸") || l.includes("▾"));
+						expect(line).toBeDefined();
+						return line!.includes("▸") ? "▸" : "▾";
+					};
+					const openMarker = markerOf();
+					press("\r"); // fold (or unfold — the activity marker flips)
+					expect(markerOf()).not.toBe(openMarker);
+					press("\r"); // and back
+					expect(markerOf()).toBe(openMarker);
+
+					// ── copy: the OSC 52 sequence hits the terminal ──
+					writes.length = 0;
+					press(keys.copy);
+					expect(writes.join("")).toContain("\x1b]52;c;");
+
+					// ── fork from the answer: the fork becomes active, named ──
+					press(keys.fork);
+					await waitUntil(
+						() =>
+							app.activeConversationId !== undefined &&
+							app.activeConversationId !== alpha.id &&
+							app.activeConversationId !== beta.id,
+						"the fork to become active",
+					);
+					const forkMeta = await client.getMeta(app.activeConversationId!);
+					expect(forkMeta.autoName).toBe("alpha (fork)");
+				} finally {
+					app.dispose();
+				}
+			},
+		);
+	}
 });

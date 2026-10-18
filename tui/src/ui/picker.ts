@@ -122,6 +122,12 @@ class Picker<T> implements Component {
 	}
 
 	handleInput(data: string): void {
+		// C-g is the emacs cancel: close like Esc (the emacs keymap passes it
+		// through while an overlay owns the keys).
+		if (data === "\x07") {
+			this.#close();
+			return;
+		}
 		if (matchesKey(data, Key.backspace) || matchesKey(data, "backspace")) {
 			if (this.#query !== "") {
 				this.#query = this.#query.slice(0, -1);

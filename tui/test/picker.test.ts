@@ -92,6 +92,23 @@ describe("openPicker", () => {
 		expect(closed).toBe(1);
 	});
 
+	test("ctrl+g closes without picking and fires onClose (the emacs cancel)", () => {
+		const { tui, shown } = stubTui();
+		const picked: number[] = [];
+		let closed = 0;
+		openPicker(tui, ITEMS, {
+			title: "Conversations",
+			onPick: (value) => picked.push(value),
+			onClose: () => {
+				closed += 1;
+			},
+		});
+		shown[0]!.component.handleInput!("\x07");
+		expect(picked).toEqual([]);
+		expect(shown[0]!.hidden).toBe(true);
+		expect(closed).toBe(1);
+	});
+
 	test("a mouse click picks the clicked row (additive, not required)", () => {
 		const { tui, shown } = stubTui();
 		const picked: number[] = [];
