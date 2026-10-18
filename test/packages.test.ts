@@ -13,11 +13,14 @@
 import {
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
@@ -32,6 +35,7 @@ import { openHarness } from "../src/harness/boot.js";
 import {
 	GitSyncError,
 	PackageSyncError,
+	ensureHostModuleLinks,
 	findExtEntry,
 	gitDirOf,
 	gitTargetDir,
@@ -62,6 +66,8 @@ function freshDir(prefix: string): string {
 const FIXTURE_PKG_DIR = join(import.meta.dirname, "fixtures", "fixture-pkg");
 /** A `file:` specifier pointing at the fixture package. */
 const FIXTURE_PKG_SPEC = `file:${FIXTURE_PKG_DIR}`;
+/** The host-module fixture source dir (NO runtime deps, bare host import). */
+const FIXTURE_HOSTMOD_DIR = join(import.meta.dirname, "fixtures", "fixture-pkg-hostmod");
 
 /** Read the packages dir's root manifest. */
 function readManifest(packagesDir: string): {
@@ -347,9 +353,100 @@ describe("loader + packages dir integration", () => {
 	}, 60_000);
 });
 
+describe("host runtime module links (provider-plugins dependency posture)", () => {
+	/** npm pack the host-module fixture into a tarball (the registry shape). */
+	async function packHostmod(): Promise<string> {
+		const dir = freshDir("sigrun-pkg-hostmod-pack-");
+		const { stdout } = await new Promise<{ stdout: string }>(
+			(resolvePack, rejectPack) => {
+				execFile(
+					"npm",
+					["pack", "--ignore-scripts", "--json", "--pack-destination", dir, FIXTURE_HOSTMOD_DIR],
+					(error: Error | null, out: string) =>
+						error === null ? resolvePack({ stdout: out }) : rejectPack(error),
+				);
+			},
+		);
+		const parsed = JSON.parse(stdout) as { filename?: string }[];
+		const filename = parsed.at(-1)?.filename;
+		if (filename === undefined) throw new Error("npm pack produced no tarball");
+		return join(dir, filename);
+	}
+
+	test(
+		"a tarball-installed package with devDeps-only host imports LOADS: entry is a FILE, host modules resolve from sigrun's tree",
+		async () => {
+			const tarball = await packHostmod();
+			const configDir = freshDir("sigrun-hostmod-config-");
+			const packagesDir = packagesDirOf(configDir);
+			await syncPackages([`file:${tarball}`], packagesDir, { log: false });
+			// The packages dir carries the host's runtime modules as links.
+			const piAi = join(packagesDir, "node_modules", "@earendil-works", "pi-ai");
+			expect(lstatSync(piAi).isSymbolicLink()).toBe(true);
+			// The link points at the SAME copy the host runs (not a second
+			// npm-installed instance).
+			expect(realpathSync(piAi)).toBe(
+				realpathSync(
+					join(import.meta.dirname, "..", "node_modules", "@earendil-works", "pi-ai"),
+				),
+			);
+			// The resolved entry is a FILE inside the package (a bare package
+			// dir URL is ERR_UNSUPPORTED_DIR_IMPORT for import()).
+			const entry = resolveExtensionEntry("file:fixture-pkg-hostmod", packagesDir)
+				?? resolveExtensionEntry("fixture-pkg-hostmod", packagesDir);
+			expect(entry).toBeDefined();
+			expect(entry!.endsWith("/index.js")).toBe(true);
+			// THE import: the fixture's bare `@earendil-works/pi-ai/models`
+			// import resolves through the packages-dir link — without it this
+			// throws ERR_MODULE_NOT_FOUND.
+			const mod = (await import(entry!)) as { hostResolved: boolean };
+			expect(mod.hostResolved).toBe(true);
+		},
+		60_000,
+	);
+
+	test("ensureHostModuleLinks is idempotent and leaves npm's real copies alone", () => {
+		const packagesDir = join(freshDir("sigrun-hostmod-links-"), "packages");
+		mkdirSync(join(packagesDir, "node_modules"), { recursive: true });
+		// A pre-existing REAL entry npm could have installed (a package that
+		// declared the module a runtime dependency):
+		const realTypebox = join(packagesDir, "node_modules", "typebox");
+		mkdirSync(realTypebox, { recursive: true });
+		writeFileSync(join(realTypebox, "package.json"), "{\"name\":\"typebox\"}");
+		ensureHostModuleLinks(packagesDir);
+		// The missing modules linked; the real copy untouched.
+		expect(
+			lstatSync(join(packagesDir, "node_modules", "@earendil-works", "pi-ai")).isSymbolicLink(),
+		).toBe(true);
+		expect(
+			lstatSync(join(packagesDir, "node_modules", "@earendil-works", "pi-durable")).isSymbolicLink(),
+		).toBe(true);
+		expect(lstatSync(realTypebox).isSymbolicLink()).toBe(false);
+		// Idempotent: a second pass changes nothing.
+		const before = realpathSync(join(packagesDir, "node_modules", "@earendil-works", "pi-ai"));
+		ensureHostModuleLinks(packagesDir);
+		expect(
+			realpathSync(join(packagesDir, "node_modules", "@earendil-works", "pi-ai")),
+		).toBe(before);
+	});
+
+	test("ensureHostModuleLinks replaces a broken link and clears it for relinking", () => {
+		const packagesDir = join(freshDir("sigrun-hostmod-broken-"), "packages");
+		const nodeModules = join(packagesDir, "node_modules", "@earendil-works");
+		mkdirSync(nodeModules, { recursive: true });
+		// A symlink whose target vanished (a stale absolute link after the
+		// host moved): existsSync follows it and reads false — the ensure
+		// pass must remove and relink it, not skip or throw EEXIST.
+		symlinkSync("/nonexistent-pi-ai-target", join(nodeModules, "pi-ai"), "dir");
+		ensureHostModuleLinks(packagesDir);
+		const relinked = join(nodeModules, "pi-ai");
+		expect(lstatSync(relinked).isSymbolicLink()).toBe(true);
+		expect(existsSync(relinked)).toBe(true);
+	});
+});
+
 /** The git fixture's extension tool (the load assertion's probe). */
 const GIT_MARKER = "git_fixture_marker";
-
 /**
  * Build the hermetic git-source fixture: a real repo (git init + two
  * commits) with a `sigrun` manifest naming its extension entry. District

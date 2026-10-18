@@ -48,7 +48,15 @@
 
 import { createHash } from "node:crypto";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -56,6 +64,95 @@ import type { ExtensionSpec } from "./settings.js";
 
 /** The npm install/uninstall timeout (ms) — one subprocess invocation. */
 export const NPM_TIMEOUT_MS = 120_000;
+
+/**
+ * Runtime modules the HOST ships that extension packages may import bare.
+ * Extension packages declare these devDependencies-only (the
+ * provider-plugins dependency posture: pi-ai/pi-durable ship with sigrun,
+ * typebox ships as pi-ai's own dependency — structural typing at runtime,
+ * never identity), and npm never installs a dependency's devDependencies,
+ * so a package installed into the packages dir cannot resolve them on its
+ * own. {@link ensureHostModuleLinks} links sigrun's own copies into the
+ * packages dir's node_modules so the dynamic import of such a package
+ * resolves them — the SAME module instances the host runs.
+ */
+export const HOST_RUNTIME_MODULES: readonly string[] = [
+	"@earendil-works/pi-ai",
+	"@earendil-works/pi-durable",
+	"typebox",
+];
+
+/**
+ * Resolve a host runtime module's package dir from sigrun's own tree: the
+ * nearest `node_modules/<name>` walking up from THIS module's location
+ * (the repo root in every deploy shape — sigrun runs from source). The
+ * walk stops at the filesystem root; `undefined` when nothing resolves.
+ */
+function resolveHostModuleDir(name: string): string | undefined {
+	let dir = dirname(fileURLToPath(import.meta.url));
+	for (let hops = 0; hops < 10; hops++) {
+		const candidate = join(dir, "node_modules", ...name.split("/"));
+		if (existsSync(join(candidate, "package.json"))) return candidate;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+	return undefined;
+}
+
+/**
+ * Link every host runtime module into the packages dir's node_modules
+ * (absolute dir symlinks), so packages installed there whose manifests
+ * declare those modules devDependencies-only resolve their bare imports
+ * — without the link, `import()` of the package fails ERR_MODULE_NOT_FOUND
+ * (the packages dir is an unrelated node_modules tree; Node's upward walk
+ * from the package never finds sigrun's own).
+ *
+ * Present entries are LEFT ALONE (an npm-installed real copy — a package
+ * that declared the module a runtime dependency — wins over the link; the
+ * sync never fights npm's own tree). A stale BROKEN link is removed before
+ * relinking. A module unresolvable from sigrun's tree warns and skips: a
+ * package that does not import it never needs the link, and the loader's
+ * quarantine names the gap for one that does.
+ */
+export function ensureHostModuleLinks(packagesDir: string): void {
+	const nodeModules = join(packagesDir, "node_modules");
+	if (!existsSync(nodeModules)) return;
+	for (const name of HOST_RUNTIME_MODULES) {
+		const linkPath = join(nodeModules, ...name.split("/"));
+		// existsSync follows links: an INTACT link (or a real npm-installed
+		// copy) reads true and is left alone.
+		if (existsSync(linkPath)) continue;
+		let stat: ReturnType<typeof lstatSync>;
+		try {
+			stat = lstatSync(linkPath);
+		} catch {
+			stat = undefined; // nothing at the path
+		}
+		if (stat !== undefined) {
+			// Present but NOT a link: something npm placed that does not
+			// resolve (a stray file) — leave it for npm, never fight the tree.
+			if (!stat.isSymbolicLink()) continue;
+			// A present-but-BROKEN symlink (existsSync followed it and failed):
+			// clear it so the fresh link below is creatable.
+			rmSync(linkPath, { force: true });
+		}
+		const target = resolveHostModuleDir(name);
+		if (target === undefined) {
+			console.warn(
+				`packages: host module ${name} not found in the sigrun tree; not linking into ${packagesDir}`,
+			);
+			continue;
+		}
+		mkdirSync(dirname(linkPath), { recursive: true });
+		try {
+			symlinkSync(target, linkPath, "dir");
+		} catch (cause) {
+			if ((cause as NodeJS.ErrnoException | null)?.code === "EEXIST") continue;
+			throw cause;
+		}
+	}
+}
 
 /** The packages dir's synthetic root manifest name (pi's is `pi-extensions`). */
 export const PACKAGES_ROOT_NAME = "sigrun-packages";
@@ -506,6 +603,10 @@ async function syncPackagesFlat(
 		// Fast path: the dir already matches the declaration — no
 		// subprocess, no npm startup cost (the steady-state boot).
 		if (log) console.log(`packages: ${packages.length} declared, 0 changes`);
+		// Host-module links are idempotent-cheap (an existsSync per module)
+		// and still ensured here: a packages dir populated by an older boot
+		// (or hand-copied) gains them on the next steady-state boot.
+		ensureHostModuleLinks(packagesDir);
 		return;
 	}
 	if (plan.uninstall.length > 0) {
@@ -547,6 +648,9 @@ async function syncPackagesFlat(
 	// Uninstalled-but-still-present is npm's problem to have gotten right —
 	// npm uninstall is authoritative; no post-assertion (a leftover
 	// transitive dep directory is normal and not an error).
+	// Host-module links: after any npm pass (install or uninstall), so the
+	// dir the loader resolves from carries the host's runtime modules.
+	ensureHostModuleLinks(packagesDir);
 	if (log) console.log("packages: sync complete");
 }
 
@@ -598,7 +702,7 @@ export function resolveExtensionEntry(
 			const id = identifySpecifier(specifier);
 			const name = readPackageName(id.pathShaped ? id.range : specifier) ?? id.name;
 			const pkgDir = join(packagesDir, "node_modules", ...name.split("/"));
-				if (existsSync(pkgDir)) return importableEntry(pkgDir);
+				if (existsSync(pkgDir)) return packageEntry(pkgDir, name);
 		} else {
 			try {
 				return importableEntry(createRequire(manifest).resolve(specifier));
@@ -622,6 +726,34 @@ export function resolveExtensionEntry(
  */
 function importableEntry(absolutePath: string): string {
 	return pathToFileURL(absolutePath).href;
+}
+
+/**
+ * Resolve a packages-dir package's ENTRY FILE — the thing `import()` can
+ * actually load. A bare package DIRECTORY url is not importable in ESM
+ * (`ERR_UNSUPPORTED_DIR_IMPORT`), so the loader needs the file.
+ * Self-resolution through the package's own manifest (anchored at its
+ * root — `exports` map or `main`) is the npm-blessed computation;
+ * conventional fallbacks (`index.js`, `dist/index.js`, `index.ts`) cover
+ * manifest-less shapes, and a package with none of those resolves to its
+ * dir so the loader's import fails LOUD (quarantined with the path)
+ * instead of silently resolving something adjacent.
+ */
+function packageEntry(pkgDir: string, name: string): string {
+	try {
+		return importableEntry(
+			createRequire(join(pkgDir, "package.json")).resolve(name),
+		);
+	} catch {
+		// No self-resolvable entry (no exports, no main) — probe the
+		// conventions in priority order.
+	}
+	for (const entry of ["index.js", "dist/index.js", "index.ts"]) {
+		if (existsSync(join(pkgDir, entry))) {
+			return importableEntry(join(pkgDir, entry));
+		}
+	}
+	return importableEntry(pkgDir);
 }
 
 // ---------------------------------------------------------------------------
