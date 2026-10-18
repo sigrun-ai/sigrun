@@ -46,6 +46,7 @@ import {
 import type { AccentName, ModeName, PaletteName } from "../../src/shared/themes.js";
 import { SigrunClient, type FetchLike } from "./api.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
+import { createVimKeymap } from "./keymaps/vim.js";
 import type { Keymap } from "./keymaps/types.js";
 import { createTuiTheme } from "./theme.js";
 import { TuiApp } from "./ui/app.js";
@@ -89,7 +90,7 @@ export interface LaunchTuiShellOptions {
 	readonly mode?: ModeName;
 	/** The keymap (C3); defaults to the standard one. */
 	readonly keymap?: "standard" | "vim" | "emacs";
-	/** Reserved for the $EDITOR task; accepted, unused here. */
+	/** The tui.json `editor` field (C1); a vim-family value feeds edit-in-vim. */
 	readonly editor?: string;
 	/** TEST SEAM: the screen constructor (defaults to TuiAltScreen). */
 	readonly screen?: TuiScreenFactory;
@@ -183,6 +184,7 @@ export async function launchTuiShell(
 			baseUrl: options.baseUrl,
 			...(options.user === undefined ? {} : { user: options.user }),
 		},
+		...(options.editor === undefined ? {} : { editor: options.editor }),
 		theme,
 	});
 	// Fix wave F5: surface stream transport health as transition notices.
@@ -205,7 +207,13 @@ export async function launchTuiShell(
 	});
 	// C3: the app flashes copy/configure/help/search through the bar.
 	app.setStatusBar(statusBar);
-	const keymap: Keymap = createStandardKeymap();
+	// C3/C4: the keymap comes from the tui.json `keymap` option (standard
+	// is the default; "emacs" is reserved and falls back to standard).
+	const keymap: Keymap =
+		options.keymap === "vim" ? createVimKeymap() : createStandardKeymap();
+	if (keymap.name === "vim") {
+		statusBar.set({ ...statusBar.getState(), mode: keymap.modeLabel() ?? "attach" });
+	}
 	const body = new HStack([
 		{
 			component: app.sidebar,
@@ -253,6 +261,12 @@ export async function launchTuiShell(
 			const result = keymap.handle(data, app.keyContext());
 			if (result === "pass") return undefined;
 			if (result !== "consume") void app.dispatch(result);
+			// C4: the vim keymap's mode chip + ":" command line repaint after
+			// each key (the app polls — the keymap owns the buffer).
+			if (keymap.name === "vim") {
+				const vim = keymap as ReturnType<typeof createVimKeymap>;
+				app.renderCommandLine(vim.getCommandLine(), vim.modeLabel());
+			}
 			return { consume: true };
 		});
 	});
