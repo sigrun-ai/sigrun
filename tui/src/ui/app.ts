@@ -23,7 +23,8 @@
  * pane (the SSE contract — a snapshot subsumes missed frames); the
  * composer submits fire-and-forget via `submit(id, text)` — the stream is
  * the source of truth for the reply (spec §10's composer rule). The fork
- * action (`forkActive`, bound to ctrl+f by the launcher) calls
+ * action (`forkActive`, driven by the `/fork` slash command; task C3's
+ * action layer reintroduces a keybinding) calls
  * `forkConversation(id)` at the latest entry (the v1 default, spec §8),
  * refreshes the sidebar, and switches to the fork.
  *
@@ -121,8 +122,6 @@ export class TuiApp implements Component {
 	#watchGen = 0;
 	/** The last frame's `steer.busy` — the steer gate for the next submit. */
 	#busy = false;
-	/** ctrl+b state: while true, keys route to the sidebar (fix wave F2). */
-	#sidebarFocused = false;
 	/** The slash-command catalog (fetched once, cached — a boot constant). */
 	readonly #catalog: SlashCatalog;
 
@@ -159,8 +158,6 @@ export class TuiApp implements Component {
 		this.interactions.onError = (message) => this.pane.showError(message);
 
 		this.sidebar.onSelect = (selection) => {
-			// A selection returns keys to the composer (fix wave F2).
-			this.#sidebarFocused = false;
 			if (selection === "new") {
 				void this.createAndSelect();
 			} else {
@@ -341,12 +338,13 @@ export class TuiApp implements Component {
 	}
 
 	/**
-	 * The launcher's global keybinding seam: ctrl+b toggles sidebar focus
-	 * (the spec §2 switcher — fix wave F2); ctrl+f forks the active
-	 * conversation (spec §8's v1 fork-at-latest default); Esc during a live
-	 * run aborts it (the composer idiom — the launcher routes input through
-	 * here before the editor sees it, so Esc while busy never reaches the
-	 * editor). Returns true when the key was consumed.
+	 * The launcher's global keybinding seam: ctrl+o enters the interaction
+	 * seam's answer mode; Esc during a live run aborts it (the composer
+	 * idiom — the launcher routes input through here before the editor sees
+	 * it, so Esc while busy never reaches the editor). Returns true when the
+	 * key was consumed. Task C1b removed ctrl+b (sidebar focus) and ctrl+f
+	 * (fork): task C3's action layer reintroduces navigation — until then
+	 * the mouse drives the sidebar and `/fork` carries the fork.
 	 */
 	handleKeybinding(data: string): boolean {
 		// Answer mode captures the prompt's keys first (Task 8): esc here
@@ -354,28 +352,11 @@ export class TuiApp implements Component {
 		if (this.interactions.answerMode) {
 			if (this.interactions.handleKey(data)) return true;
 		}
-		// ctrl+b toggles sidebar focus (the switcher must be reachable).
-		if (matchesKey(data, Key.ctrl("b"))) {
-			this.#sidebarFocused = !this.#sidebarFocused;
-			return true;
-		}
-		// While the sidebar is focused, every other key is list input —
-		// arrows/enter navigate and select (onSelect returns the focus);
-		// the busy-abort Esc below is deliberately shadowed (a list-focused
-		// Esc is the SelectList's own, not an abort).
-		if (this.#sidebarFocused) {
-			this.sidebar.handleInput(data);
-			return true;
-		}
 		// ctrl+o enters answer mode (ctrl+a is the editor's cursorLineStart).
 		// Not consumed when nothing answerable is pending — the key falls
 		// through to the editor.
 		if (matchesKey(data, Key.ctrl("o"))) {
 			return this.interactions.beginAnswer();
-		}
-		if (matchesKey(data, Key.ctrl("f"))) {
-			void this.forkActive();
-			return true;
 		}
 		if (matchesKey(data, Key.escape) && this.#busy && this.#activeId !== undefined) {
 			this.#abortActive();

@@ -412,8 +412,10 @@ describe("TuiApp fix wave", () => {
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		// ctrl+f is the void-ed keybinding path the finding named.
-		expect(app.handleKeybinding("\u0006")).toBe(true); // ctrl+f
+		// `/fork` dispatches to the same void-ed internal path the finding
+		// named (ctrl+f was its keybinding; task C1b removed it — C3's
+		// action layer reintroduces navigation).
+		void app.forkActive();
 		await tick();
 		const lines = app.render(80).join("\n");
 		expect(lines).toContain("boom: fork refused");
@@ -421,36 +423,36 @@ describe("TuiApp fix wave", () => {
 		expect(app.editor.disableSubmit).toBe(false);
 	});
 
-	test("F2: ctrl+b routes keys to the sidebar; a selection switches the pane and returns focus", async () => {
+	test("F2 (C1b): the mouse-era sidebar — a direct selection switches the pane", async () => {
 		const { client, watchCalls, watchRegistry } = stubClient({});
 		const app = new TuiApp(client, {
 			tui: fakeTui,
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		// Composer-focused: arrows fall through to the editor (not consumed).
-		expect(app.handleKeybinding("\x1b[B")).toBe(false);
-		// ctrl+b focuses the sidebar; arrows+enter now drive the list.
-		expect(app.handleKeybinding("\u0002")).toBe(true);
-		expect(app.handleKeybinding("\x1b[B")).toBe(true); // → #2
-		expect(app.handleKeybinding("\r")).toBe(true); // select #2
+		// No ctrl+b toggle: the key is unbound and arms no routing state.
+		expect(app.handleKeybinding("\u0002")).toBe(false);
+		expect(app.handleKeybinding("\x1b[B")).toBe(false); // arrows fall through
+		// The launcher enables mouse mode, so the switcher is driven by
+		// clicks — SelectList's onSelect fires identically for click and
+		// key selection; the app reacts the same either way.
+		app.sidebar.handleInput("\x1b[B"); // → #2 (the list's own input seam)
+		app.sidebar.handleInput("\r"); // select #2
 		await tick();
 		expect(app.activeConversationId).toBe(2);
 		expect(watchCalls).toEqual([1, 2]);
-		// Focus returned to the composer: arrows fall through again.
+		// No focus state to return: arrows keep falling through.
 		expect(app.handleKeybinding("\x1b[B")).toBe(false);
 	});
 
-	test("F2: a second ctrl+b returns focus without selecting", async () => {
+	test("F2 (C1b): a selection lands immediately — no toggle round-trip", async () => {
 		const { client, watchCalls, watchRegistry } = stubClient({});
 		const app = new TuiApp(client, {
 			tui: fakeTui,
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		app.handleKeybinding("\u0002");
-		app.handleKeybinding("\x1b[B"); // cursor moves, no selection yet
-		app.handleKeybinding("\u0002"); // back to the composer
+		app.sidebar.handleInput("\x1b[B"); // cursor moves, no selection yet
 		await tick();
 		expect(app.activeConversationId).toBe(1);
 		expect(app.handleKeybinding("\x1b[B")).toBe(false);
@@ -529,6 +531,34 @@ describe("TuiApp fix wave", () => {
 		expect(opens).toEqual([1]);
 		watchRegistry.get(2)?.onOpen?.();
 		expect(opens).toEqual([1, 1]);
+	});
+});
+
+describe("TuiApp C1b keybinding removals", () => {
+	test("ctrl+b is unbound (C3 reintroduces navigation via the action layer)", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// Not consumed — the key falls through to the editor.
+		expect(app.handleKeybinding("\u0002")).toBe(false);
+		// And it arms nothing: arrows still fall through afterwards.
+		expect(app.handleKeybinding("\x1b[B")).toBe(false);
+	});
+
+	test("ctrl+f no longer forks (the action layer owns fork now)", async () => {
+		const { client, forkCalls, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		expect(app.handleKeybinding("\u0006")).toBe(false); // ctrl+f
+		await tick();
+		expect(forkCalls).toEqual([]);
+		expect(app.activeConversationId).toBe(1);
 	});
 });
 
