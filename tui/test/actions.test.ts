@@ -7,8 +7,10 @@
  */
 
 import { describe, expect, test } from "vitest";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI, TuiMouseEvent } from "@earendil-works/pi-tui";
 import { TuiApp } from "../src/ui/app.js";
+import { StatusBar } from "../src/ui/status-bar.js";
+import { createTuiTheme } from "../src/theme.js";
 import type {
 	CommandsResponse,
 	ConversationList,
@@ -36,11 +38,15 @@ function userEntry(id: number, text: string): unknown {
 	return { id, kind: "pi.user", model: [{ role: "user", content: text }] };
 }
 
-function view(id: number, entries: unknown[]): ConversationViewWire {
+function view(
+	id: number,
+	entries: unknown[],
+	docs: Record<string, unknown> = {},
+): ConversationViewWire {
 	return {
 		conversation: { id },
 		entries,
-		docs: {},
+		docs,
 		steer: { busy: false, queued: 0 },
 	} as unknown as ConversationViewWire;
 }
@@ -81,6 +87,9 @@ function stubClient() {
 					: "off";
 			return Promise.resolve({ thinkingLevel: thinking });
 		},
+		listModels() {
+			return Promise.resolve({ models: [] });
+		},
 		getCommands(): Promise<CommandsResponse> {
 			return Promise.resolve({
 				commands: [
@@ -111,19 +120,33 @@ function stubClient() {
 	};
 }
 
-function stubWatch(): (
+function stubWatch(
+	registry?: Map<number, WatchHandlers>,
+): (
 	conversationId: number,
 	handlers: WatchHandlers,
 	options: WatchOptions,
 ) => Unwatch {
-	return () => () => {};
+	return (conversationId, handlers) => {
+		registry?.set(conversationId, handlers);
+		return () => {
+			registry?.delete(conversationId);
+		};
+	};
 }
 
 const fakeTui = {
 	requestRender: () => {},
 	setFocus: () => {},
 	terminal: { write: () => {} },
+	showOverlay: () => ({ hide: () => {} }),
 } as unknown as TUI;
+
+/** Yield microtasks so an `async` dispatch's awaits settle. */
+async function tick(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
 
 /** Boot an app against the stub with `entries` already in the pane. */
 async function bootWith(entries: unknown[]): Promise<{
@@ -156,33 +179,49 @@ describe("dispatch: fork-here", () => {
 
 // ─── edit-here ──────────────────────────────────────────────────────────
 
+// The fork point comes from the TURNS list, never entry-id arithmetic:
+// pi-durable mints ids from one global counter, so these fixtures use
+// non-dense ids — an `entryId - 1` implementation cannot pass them.
 describe("dispatch: edit-here", () => {
 	test("first user turn: creates (no fork point), prefills the draft + composer", async () => {
-		const { app, stub } = await bootWith([userEntry(1, "original prompt")]);
+		const { app, stub } = await bootWith([userEntry(41, "original prompt")]);
 		await app.dispatch({ type: "focus", target: "transcript" });
 		app.pane.setFocus(0);
 		await app.dispatch({ type: "edit-here" });
 		expect(stub.forkCalls).toEqual([]);
-			expect(stub.patchCalls).toEqual([
+		expect(stub.patchCalls).toEqual([
 			{ id: 101, patch: { draft: { text: "original prompt" } } },
 		]);
 		expect(app.activeConversationId).toBe(101);
 		expect(app.editor.getText()).toBe("original prompt");
 	});
 
-	test("a later user turn: forks at the PREVIOUS entry, prefills the draft", async () => {
+	test("a later user turn: forks at the PREVIOUS turn's entry, prefills the draft", async () => {
 		const { app, stub } = await bootWith([
-			userEntry(1, "first"),
-			userEntry(2, "reword me"),
+			userEntry(41, "first"),
+			userEntry(57, "reword me"),
+			userEntry(90, "third"),
 		]);
 		await app.dispatch({ type: "focus", target: "transcript" });
-		app.pane.setFocus(1);
+		app.pane.setFocus(1); // the second user turn (entry 57)
 		await app.dispatch({ type: "edit-here" });
-		expect(stub.forkCalls).toEqual([{ id: 2, at: 1 }]);
+		expect(stub.forkCalls).toEqual([{ id: 2, at: 41 }]);
 		expect(stub.patchCalls).toEqual([
 			{ id: 101, patch: { draft: { text: "reword me" } } },
 		]);
 		expect(app.editor.getText()).toBe("reword me");
+	});
+
+	test("the last user turn forks at its predecessor's entry, not its own minus one", async () => {
+		const { app, stub } = await bootWith([
+			userEntry(41, "first"),
+			userEntry(57, "middle"),
+			userEntry(90, "reword me"),
+		]);
+		await app.dispatch({ type: "focus", target: "transcript" });
+		app.pane.setFocus(2); // the third user turn (entry 90)
+		await app.dispatch({ type: "edit-here" });
+		expect(stub.forkCalls).toEqual([{ id: 2, at: 57 }]);
 	});
 });
 
@@ -201,6 +240,23 @@ describe("dispatch: cycle-thinking", () => {
 		const { app, stub } = await bootWith([]);
 		for (let i = 0; i < 6; i += 1) await app.dispatch({ type: "cycle-thinking" });
 		expect(stub.configureCalls.at(-1)).toEqual({ id: 2, body: { thinking: "off" } });
+	});
+
+	test("the pi.agent doc seeds the cycle's start level (no dead off default)", async () => {
+		const registry = new Map<number, WatchHandlers>();
+		const stub = stubClient();
+		const app = new TuiApp(stub.client, { tui: fakeTui, watch: stubWatch(registry) });
+		await app.refresh();
+		registry.get(2)?.onView?.(
+			view(2, [], {
+				"pi.agent": {
+					model: { provider: "faux", modelId: "m" },
+					thinkingLevel: "high",
+				},
+			}),
+		);
+		await app.dispatch({ type: "cycle-thinking" });
+		expect(stub.configureCalls).toEqual([{ id: 2, body: { thinking: "xhigh" } }]);
 	});
 });
 
@@ -263,5 +319,98 @@ describe("dispatch: navigation", () => {
 		expect(app.pane.focusIndex).toBe(2); // the latest user turn
 		await app.dispatch({ type: "prompt-jump", delta: -1 });
 		expect(app.pane.focusIndex).toBe(0);
+	});
+});
+
+// ─── status bar: config segments + the mouse surface ────────────────────
+
+const theme = createTuiTheme({
+	palette: "polar-night",
+	accent: "baltic-amber",
+	mode: "dark",
+	colorMode: "truecolor",
+});
+
+const stripAnsi = (line: string): string => line.replace(/\u001b\[[0-9;]*m/g, "");
+
+function click(x: number, width: number): TuiMouseEvent {
+	return {
+		type: "click",
+		button: "left",
+		x,
+		y: 0,
+		screenX: x,
+		screenY: 0,
+		width,
+		height: 1,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
+}
+
+/** Boot with a StatusBar attached and one pi.agent frame delivered. */
+async function bootWithStatusBar(): Promise<{
+	app: TuiApp;
+	stub: ReturnType<typeof stubClient>;
+	statusBar: StatusBar;
+}> {
+	const registry = new Map<number, WatchHandlers>();
+	const stub = stubClient();
+	const app = new TuiApp(stub.client, { tui: fakeTui, watch: stubWatch(registry) });
+	const statusBar = new StatusBar({ theme });
+	statusBar.set({ conversation: "", hints: [] });
+	app.setStatusBar(statusBar);
+	await app.refresh();
+	registry.get(2)?.onView?.(
+		view(2, [], {
+			"pi.agent": {
+				model: { provider: "faux", modelId: "m" },
+				thinkingLevel: "high",
+			},
+		}),
+	);
+	return { app, stub, statusBar };
+}
+
+describe("status bar: config segments + mouse surface", () => {
+	test("a frame's pi.agent doc populates the model/thinking segments", async () => {
+		const { statusBar } = await bootWithStatusBar();
+		const line = stripAnsi(statusBar.render(120)[0] ?? "");
+		expect(line).toContain("faux/m");
+		expect(line).toContain("high");
+	});
+
+	test("the thinking segment cycles; the model segment opens the model picker", async () => {
+		const { app, stub, statusBar } = await bootWithStatusBar();
+		// Layout: empty conversation name → the cluster starts at column 2:
+		// "faux/m" [2,8), separator, "high" [11,15).
+		expect(statusBar.handleMouse(click(12, 120))).toEqual({ handled: true });
+		await tick();
+		expect(stub.configureCalls).toEqual([{ id: 2, body: { thinking: "xhigh" } }]);
+		expect(statusBar.handleMouse(click(3, 120))).toEqual({ handled: true });
+		expect(app.overlayOpen).toBe(true); // the model picker opened
+	});
+});
+
+// ─── the overlay guard (the pre-keymap seams) ───────────────────────────
+
+describe("handleKeybinding: the overlay guard", () => {
+	test("an open picker fences busy Esc and ctrl+o", async () => {
+		const { app } = await bootWith([]);
+		await app.dispatch({ type: "picker", kind: "conversation" });
+		expect(app.overlayOpen).toBe(true);
+		// Esc must NOT abort behind the picker; ctrl+o must NOT arm answer mode.
+		expect(app.handleKeybinding("\x1b")).toBe(false);
+		expect(app.handleKeybinding("\x0f")).toBe(false);
+	});
+
+	test("the search overlay still owns every key (it precedes the guard)", async () => {
+		const { app } = await bootWith([]);
+		await app.dispatch({ type: "search", direction: "forward" });
+		expect(app.overlayOpen).toBe(true);
+		expect(app.handleKeybinding("a")).toBe(true); // extends the query
+		expect(app.handleKeybinding("\x1b")).toBe(true); // Esc closes the search
+		expect(app.overlayOpen).toBe(false);
 	});
 });

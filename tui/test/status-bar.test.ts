@@ -9,6 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import { StatusBar, type StatusBarState } from "../src/ui/status-bar.js";
 import { createTuiTheme } from "../src/theme.js";
 
@@ -94,5 +95,71 @@ describe("StatusBar.render", () => {
 		const statusBar = bar(state({ mode: "attach", thinking: "on", contextPct: 57 }));
 		const line = statusBar.render(40)[0];
 		expect(strip(line).length).toBeLessThanOrEqual(40);
+	});
+});
+
+describe("StatusBar.handleMouse", () => {
+	function click(x: number, width: number): TuiMouseEvent {
+		return {
+			type: "click",
+			button: "left",
+			x,
+			y: 0,
+			screenX: x,
+			screenY: 0,
+			width,
+			height: 1,
+			shift: false,
+			alt: false,
+			ctrl: false,
+		};
+	}
+
+	test("the model segment fires onModelClick, thinking fires onThinkingClick", () => {
+		const statusBar = bar(
+			state({ model: "pi-5-turbo", thinking: "high", contextPct: 57 }),
+		);
+		const line = strip(statusBar.render(120)[0] ?? "");
+		const modelX = line.indexOf("pi-5-turbo") + 1;
+		const thinkingX = line.indexOf("high") + 1;
+		const ctxX = line.indexOf("ctx 57") + 1;
+		const seen: string[] = [];
+		statusBar.onModelClick = () => seen.push("model");
+		statusBar.onThinkingClick = () => seen.push("thinking");
+		expect(statusBar.handleMouse(click(modelX, 120))).toEqual({ handled: true });
+		expect(statusBar.handleMouse(click(thinkingX, 120))).toEqual({ handled: true });
+		expect(seen).toEqual(["model", "thinking"]);
+		// ctx and the left side carry no surface.
+		expect(statusBar.handleMouse(click(ctxX, 120))).toBeUndefined();
+		expect(statusBar.handleMouse(click(0, 120))).toBeUndefined();
+	});
+
+	test("narrow width: thinking is dropped, so it mis-hits nothing", () => {
+		const statusBar = bar(
+			state({ mode: "attach", thinking: "thinking", contextPct: 12 }),
+		);
+		const line = strip(statusBar.render(60)[0] ?? "");
+		expect(line).not.toContain("thinking"); // compact fallback
+		const seen: string[] = [];
+		statusBar.onModelClick = () => seen.push("model");
+		statusBar.onThinkingClick = () => seen.push("thinking");
+		expect(
+			statusBar.handleMouse(click(line.indexOf("pi-5-turbo") + 1, 60)),
+		).toEqual({ handled: true });
+		expect(seen).toEqual(["model"]);
+		// The dropped thinking segment has no hit region in the compact layout.
+		expect(statusBar.handleMouse(click(line.indexOf("ctx") + 1, 60))).toBeUndefined();
+	});
+
+	test("unset sinks pass the click through; non-left clicks pass too", () => {
+		const statusBar = bar(state({ model: "pi-5-turbo" }));
+		const line = strip(statusBar.render(120)[0] ?? "");
+		expect(
+			statusBar.handleMouse(click(line.indexOf("pi-5-turbo") + 1, 120)),
+		).toBeUndefined();
+		statusBar.onModelClick = () => {};
+		expect(
+			statusBar.handleMouse({ ...click(line.indexOf("pi-5-turbo") + 1, 120), button: "right" }),
+		).toBeUndefined();
 	});
 });

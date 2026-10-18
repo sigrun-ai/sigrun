@@ -8,10 +8,17 @@
  *
  * A pi-tui `Component` (`render(width): string[]`, one line) — mounting
  * is the launcher's layout job (basis 1), not this component's.
+ *
+ * Mouse (Task C3, additive to ctrl+p/ctrl+t): a left click on the right
+ * cluster's MODEL segment fires {@link StatusBar.onModelClick} (the model
+ * picker), one on the THINKING segment fires
+ * {@link StatusBar.onThinkingClick} (the cycle). The hit ranges mirror
+ * render()'s full/compact fallback, so a narrowed bar never mis-hits a
+ * dropped segment.
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { TuiTheme } from "../theme.js";
 
 export interface StatusBarState {
@@ -57,6 +64,10 @@ function rightClusterCompact(state: StatusBarState): string {
 }
 
 export class StatusBar implements Component {
+	/** Click sink for the right cluster's model segment (the picker). */
+	public onModelClick: (() => void) | undefined;
+	/** Click sink for the right cluster's thinking segment (the cycle). */
+	public onThinkingClick: (() => void) | undefined;
 	private readonly theme: TuiTheme;
 	private readonly messageMs: number;
 	private state: StatusBarState;
@@ -76,6 +87,11 @@ export class StatusBar implements Component {
 		}
 	}
 
+	/** The current state (the app's flash/config snapshot reads it). */
+	public getState(): StatusBarState {
+		return this.state;
+	}
+
 	private armMessageExpiry(): void {
 		if (this.messageTimer !== undefined) clearTimeout(this.messageTimer);
 		this.messageTimer = setTimeout(() => {
@@ -83,6 +99,50 @@ export class StatusBar implements Component {
 			const { message: _message, ...rest } = this.state;
 			this.state = rest;
 		}, this.messageMs);
+	}
+
+	/**
+	 * The mouse surface: dispatch a left click on the model / thinking
+	 * segment; everything else (the left side, ctx, hints, other buttons)
+	 * passes through.
+	 */
+	public handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		for (const range of this.segmentRanges(event.width)) {
+			if (event.x < range.start || event.x >= range.end) continue;
+			const sink = range.kind === "model" ? this.onModelClick : this.onThinkingClick;
+			if (sink === undefined) return undefined;
+			sink();
+			return { handled: true };
+		}
+		return undefined;
+	}
+
+	/**
+	 * The model/thinking segments' cell ranges under render()'s layout:
+	 * the full right cluster, or the compact fallback (thinking dropped).
+	 * The truncated-compact case keeps the compact offsets — cells past
+	 * the width cannot be clicked anyway.
+	 */
+	private segmentRanges(
+		width: number,
+	): readonly { kind: "model" | "thinking"; start: number; end: number }[] {
+		const leftWidth = visibleWidth(this.renderLeft());
+		const useFull = leftWidth + 2 + visibleWidth(rightCluster(this.state)) <= width;
+		const parts: { kind: "model" | "thinking" | "ctx"; text: string }[] = [];
+		if (this.state.model !== undefined) parts.push({ kind: "model", text: this.state.model });
+		if (useFull && this.state.thinking !== undefined)
+			parts.push({ kind: "thinking", text: this.state.thinking });
+		if (this.state.contextPct !== undefined)
+			parts.push({ kind: "ctx", text: `ctx ${Math.round(this.state.contextPct)}%` });
+		const ranges: { kind: "model" | "thinking"; start: number; end: number }[] = [];
+		let cursor = leftWidth + 2;
+		for (const part of parts) {
+			const end = cursor + visibleWidth(part.text);
+			if (part.kind !== "ctx") ranges.push({ kind: part.kind, start: cursor, end });
+			cursor = end + visibleWidth(SEPARATOR);
+		}
+		return ranges;
 	}
 
 	/** No cached rendering state — the line is derived each render. */
