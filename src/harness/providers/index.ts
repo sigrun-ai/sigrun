@@ -19,6 +19,8 @@
  * absence.
  */
 
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import {
 	createModels,
 	createProvider,
@@ -32,6 +34,10 @@ import type { ModelRef } from "@earendil-works/pi-durable";
 import { DEFAULT_PROVIDER, parseModelSpec, type Env } from "../../config.js";
 import { AuthStore, DEFAULT_AUTH_KEY } from "../auth.js";
 import type { HealthProducer, HealthStatus } from "../health.js";
+import {
+	authStoreCredentialStore,
+	type AuthContext,
+} from "./auth-bridge.js";
 
 /** One provider two or more contributors both claimed; the later one won. */
 export interface ProviderCollision {
@@ -136,6 +142,25 @@ export const OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL";
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 
 /**
+ * pi-ai `ModelsStoreEntry` — structural re-declaration (no public export
+ * path; same discipline as the auth-bridge shapes). `models` stays opaque:
+ * the harness never inspects persisted entries.
+ */
+export interface ModelsStoreEntry {
+	readonly models: readonly unknown[];
+	readonly lastModified?: number;
+	readonly checkedAt?: number;
+	readonly etag?: string;
+}
+
+/** pi-ai `ModelsStore` — structural re-declaration; Task 3 wires it in. */
+export interface ModelsStore {
+	read(providerId: string): Promise<ModelsStoreEntry | undefined>;
+	write(providerId: string, entry: ModelsStoreEntry): Promise<void>;
+	delete(providerId: string): Promise<void>;
+}
+
+/**
  * Conservative defaults for an unknown OpenAI-compat model. Context
  * management (Task 8) tunes its policy against the default model's window;
  * these placeholders keep that deterministic before tuning.
@@ -167,9 +192,32 @@ export function collectProviders(
 	options?: {
 		readonly auth?: AuthStore;
 		readonly baseUrl?: string;
+		/**
+		 * Test seam: auth-context env lookups consult this BEFORE the raw
+		 * `env`, keeping auth resolution hermetic off `process.env`.
+		 */
+		readonly env?: Env;
+		/** File-backed models store; Task 3 wires it into `createModels`. */
+		readonly modelsStore?: ModelsStore;
 	},
 ): CollectedProviders {
-	const models: MutableModels = createModels();
+	// The auth bridge: with a credential store present, auth.json owns
+	// stored credentials for every contributed + degenerate provider; the
+	// auth context keeps ambient env/file lookups on the operator-provided
+	// environment (the options.env seam first, then the raw env).
+	const authContext: AuthContext = {
+		env: async (name) => options?.env?.[name] ?? env[name],
+		fileExists: (path) =>
+			Promise.resolve(
+				existsSync(path.startsWith("~") ? homedir() + path.slice(1) : path),
+			),
+	};
+	const models: MutableModels = createModels({
+		...(options?.auth === undefined
+			? {}
+			: { credentials: authStoreCredentialStore(options.auth) }),
+		authContext,
+	});
 	let defaultModel: ModelRef | undefined;
 	const ownership = new Map<string, string>();
 	const healthProducers: HealthProducer[] = [];
