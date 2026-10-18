@@ -145,6 +145,22 @@ describe("vim keymap — command mode", () => {
 		expect(keymap.handle("\x1b", ctx())).toBe("consume");
 		expect(keymap.mode).toBe("normal");
 	});
+	test("tab completes a slash-catalog name (the options-injected table)", () => {
+		const keymap = createVimKeymap({ catalogNames: ["thinking", "model"] });
+		keymap.handle("\x1b", ctx());
+		keymap.handle(":", ctx());
+		for (const ch of "/th") keymap.handle(ch, ctx());
+		keymap.handle("\t", ctx());
+		expect(keymap.getCommandLine()).toBe(":/thinking");
+	});
+
+	test("enterInsertMode drops the keymap to insert", () => {
+		const keymap = createVimKeymap();
+		keymap.handle("\x1b", ctx());
+		expect(keymap.mode).toBe("normal");
+		keymap.enterInsertMode();
+		expect(keymap.mode).toBe("insert");
+	});
 });
 
 describe("vim keymap — overlays", () => {
@@ -253,6 +269,38 @@ describe("vim app wiring", () => {
 		await app.refresh();
 		await app.runCommand("b zzz");
 		expect(statusBar.getState().message).toBe("no match");
+	});
+
+	test("runCommand `b` with no arg: usage error, no selection", async () => {
+		const { client } = vimStubClient();
+		const { app } = makeApp(client);
+		await app.refresh();
+		const showError = vi.spyOn(app.pane, "showError");
+		await app.runCommand("b");
+		expect(showError).toHaveBeenCalledWith("usage: b <id|name>");
+	});
+
+	test("edit-in-vim success: the keymap returns to insert mode (C4)", async () => {
+		const { client } = vimStubClient();
+		const stopStartTui = {
+			requestRender: () => {},
+			stop: () => {},
+			start: () => {},
+			setFocus: () => {},
+		} as unknown as TUI;
+		const watch = () => () => {};
+		const app = new TuiApp(client, {
+			tui: stopStartTui,
+			watch,
+			// `true` exits 0 without touching the temp file (ok: true).
+			resolveVim: () => "true",
+		});
+		const keymap = createVimKeymap();
+		keymap.handle("\x1b", ctx());
+		expect(keymap.mode).toBe("normal");
+		app.enterInsertMode = () => keymap.enterInsertMode();
+		await app.dispatch({ type: "edit-in-vim" });
+		expect(keymap.mode).toBe("insert");
 	});
 
 	test("runCommand `model faux/m2` configures the model", async () => {

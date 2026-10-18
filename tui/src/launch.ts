@@ -209,10 +209,24 @@ export async function launchTuiShell(
 	app.setStatusBar(statusBar);
 	// C3/C4: the keymap comes from the tui.json `keymap` option (standard
 	// is the default; "emacs" is reserved and falls back to standard).
+	// The vim `:` Tab completion merges the slash catalog — a shared array
+	// the keymap reads live, filled by the fetch below.
+	const vimCatalogNames: string[] = [];
 	const keymap: Keymap =
-		options.keymap === "vim" ? createVimKeymap() : createStandardKeymap();
+		options.keymap === "vim"
+			? createVimKeymap({ catalogNames: vimCatalogNames })
+			: createStandardKeymap();
 	if (keymap.name === "vim") {
 		statusBar.set({ ...statusBar.getState(), mode: keymap.modeLabel() ?? "attach" });
+		const vim = keymap as ReturnType<typeof createVimKeymap>;
+		// Post edit-in-vim the keymap follows the composer focus back to INSERT.
+		app.enterInsertMode = () => vim.enterInsertMode();
+		// The `:` Tab completion also completes the slash catalog (fire-and-
+		// forget: completion works on the vim table until the fetch lands).
+		void app
+			.slashCommandNames()
+			.then((names) => vimCatalogNames.push(...names))
+			.catch(() => {}); // a failed catalog fetch degrades completion only
 	}
 	const body = new HStack([
 		{

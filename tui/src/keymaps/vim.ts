@@ -34,6 +34,22 @@ export interface VimKeymap extends Keymap {
 	readonly mode: VimMode;
 	/** The ":" line while in command mode; undefined otherwise. */
 	getCommandLine(): string | undefined;
+	/**
+	 * Drop to INSERT (the app calls this after an external edit-in-vim so
+	 * the mode agrees with the restored composer focus).
+	 */
+	enterInsertMode(): void;
+}
+
+/** Options for {@link createVimKeymap}. */
+export interface VimKeymapOptions {
+	/**
+	 * The slash-command catalog's names (C3's picker source); they join
+	 * COMMAND_NAMES in the Tab completion table as `"/"`-prefixed
+	 * entries. Defaults to none (the launcher fills a shared array once
+	 * the catalog fetch lands).
+	 */
+	readonly catalogNames?: readonly string[];
 }
 
 /** The two-key chord window (gg, yy, za, ZZ). */
@@ -75,7 +91,13 @@ function isPrintable(data: string): boolean {
 	return data.length === 1 && data >= " ";
 }
 
-export function createVimKeymap(): VimKeymap {
+export function createVimKeymap(options?: VimKeymapOptions): VimKeymap {
+	const catalogNames = options?.catalogNames ?? [];
+	/** Tab completion table: the vim-native commands plus `/`-catalog names. */
+	const completionNames = (): readonly string[] => [
+		...COMMAND_NAMES,
+		...catalogNames.map((name) => `/${name}`),
+	];
 	let mode: VimMode = "insert";
 	let commandLine = "";
 	/** The pending chord prefix ("g" | "y" | "z" | "Z") and its timestamp. */
@@ -184,7 +206,7 @@ export function createVimKeymap(): VimKeymap {
 			return "consume";
 		}
 		if (matchesKey(data, Key.tab) || data === "\t") {
-			const match = COMMAND_NAMES.find(
+			const match = completionNames().find(
 				(name) => name.startsWith(commandLine) && name !== commandLine,
 			);
 			if (match !== undefined) commandLine = match;
@@ -203,6 +225,9 @@ export function createVimKeymap(): VimKeymap {
 			return mode;
 		},
 		getCommandLine: () => (mode === "command" ? `:${commandLine}` : undefined),
+		enterInsertMode: () => {
+			mode = "insert";
+		},
 		modeLabel: () => {
 			if (mode === "insert") return "-- INSERT --";
 			if (mode === "normal") return "-- NORMAL --";
