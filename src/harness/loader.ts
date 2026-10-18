@@ -28,7 +28,14 @@
  * `submit` pass-through (the memory wiring's submit — Task 26a retains it so
  * boot can expose it as `OpenedHarness.memorySubmit`; it binds the
  * conversation as the memory_recall source at the submit boundary), and an
- * optional `submit` pass-through. Packages that predate the settled
+ * optional `submit` pass-through. A factory result may also carry a
+ * `providers` array (`ProviderContribution[]`, provider plugins Task 1):
+ * boot feeds every loaded contributor into `collectProviders` after the
+ * `options.extensions` seam — and a result carrying `providers` with NO
+ * `extension` is a valid PROVIDER-ONLY contributor (the model-plugin shape:
+ * no pi-durable surface, identified by its `name` field). Factories may
+ * return a Promise (the plugins read their scoped settings store inside the
+ * factory); the loader awaits the result. Packages that predate the settled
  * contract export named factories (`createMemory`) whose results carry the
  * same `.extension` field, so the loader resolves, in order:
  *
@@ -52,6 +59,9 @@
  * have no factory result to read one from). A `health`/`submit` field that
  * is present but not the expected shape, or kinds that are not string
  * arrays, is a contract violation — quarantined, never silently ignored.
+ * A `providers` entry whose `provider` has no string `id` is the same class
+ * of violation (a plugin that THINKS it contributed a provider must not
+ * silently lose it).
  */
 
 import type { Context } from "@earendil-works/chord";
@@ -68,6 +78,7 @@ import type {
 	ExtensionWorker,
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
+import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
 import type { DeclaredKinds } from "./seam-host.js";
 import { resolveExtensionEntry } from "./packages.js";
 import { slugifyName } from "./stores.js";
@@ -176,6 +187,16 @@ export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
 	readonly outcomes: readonly ExtensionOutcome[];
 	/**
+	 * Provider contributors from factory results (provider plugins Task 1):
+	 * one `{name, providers, health?}` entry per loaded extension whose
+	 * result carried `providers` — the name is the slug identity. Boot
+	 * concatenates these AFTER its `options.extensions` seam into
+	 * `collectProviders`. A result with only a health producer (the §5
+	 * memory aggregation's input) contributes none — that producer is
+	 * retained below, inert for the provider surface.
+	 */
+	readonly providerContributors: readonly ProviderContributor[];
+	/**
 	 * §3 producers from factory results, one per loaded extension that
 	 * carried one; quarantined extensions and the no-op memory default
 	 * contribute none (degenerate ok by absence).
@@ -223,7 +244,20 @@ interface ExtensionModule {
  * direct-`Extension` forms resolve without.
  */
 export interface ResolvedExtension {
-	readonly extension: Extension;
+	/**
+	 * The pi-durable `Extension` to install. ABSENT for provider-only
+	 * contributors (a factory result carrying `providers` with no
+	 * `extension` — identified by `name` instead).
+	 */
+	readonly extension?: Extension;
+	/**
+	 * The provider-only contributor's declared name — its collision-record
+	 * identity, sanitized to the slug like every extension name. Present
+	 * only when the factory result carried `providers` without an
+	 * `extension`; an extension-carrying result's identity is always the
+	 * extension's own name.
+	 */
+	readonly name?: string;
 	/** Present only when resolution came from a factory result carrying one. */
 	readonly health?: () => HealthStatus;
 	/** Present only when the factory result carried one (the memory wiring's submit). */
@@ -234,6 +268,8 @@ export interface ResolvedExtension {
 	readonly lifecycle?: ExtensionLifecycleHandlers;
 	/** Present only when the factory result carried one (memory-seam Task 5). */
 	readonly workers?: readonly ExtensionWorker[];
+	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
+	readonly providers?: readonly ProviderContribution[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -342,17 +378,57 @@ function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined
 }
 
 /**
+ * Validate a factory result's `providers` declaration (provider plugins
+ * Task 1). Absent → undefined (no contributions). Present but malformed →
+ * throw; the loader quarantines the extension with the thrown message
+ * (fail-loud: a plugin that THINKS it contributed a provider must not
+ * silently lose it). Each entry must be a `ProviderContribution` — an
+ * object whose `provider` carries a string `id`, the key the collector
+ * merges by and the §5 ownership records read.
+ */
+function validateProviders(
+	value: unknown,
+): readonly ProviderContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a providers field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const provider = (entry as { provider?: unknown } | null)?.provider;
+		if (
+			typeof provider !== "object" ||
+			provider === null ||
+			typeof (provider as { id?: unknown }).id !== "string"
+		) {
+			throw new Error(
+				"extension factory returned a providers entry whose provider.id is missing or not a string",
+			);
+		}
+	}
+	return value as readonly ProviderContribution[];
+}
+
+/**
  * Call an unknown-typed factory and validate the `{ extension, health?,
  * submit? }` result. A `health`/`submit` field that
  * is present but not the expected shape is a contract violation — thrown,
  * so the loader quarantines the extension (fail-loud: a package that THINKS
  * it reports health or owns a submit boundary must not read as healthy or
  * lose submissions from a broken capability).
+ *
+ * The factory result may be a Promise (provider plugins read their scoped
+ * settings store inside the factory) — awaited before validation. A result
+ * carrying `providers` with NO `extension` is a valid provider-only
+ * contributor (named by its `name` field); a result with neither is not
+ * this contract form at all (returns undefined, falling through to the
+ * next resolution candidate).
  */
-function resolvedFromFactory(
+async function resolvedFromFactory(
 	factory: unknown,
 	hostContext: unknown,
-): ResolvedExtension | undefined {
+): Promise<ResolvedExtension | undefined> {
 	if (typeof factory !== "function") return undefined;
 	// Arity gate: the host context goes ONLY to factories that declare the
 	// arity-1 signature (factory.length > 0). A length-0 factory with a
@@ -366,9 +442,14 @@ function resolvedFromFactory(
 		factory.length > 0
 			? (factory as (host?: unknown) => unknown)(hostContext)
 			: (factory as () => unknown)();
-	if (typeof result !== "object" || result === null) return undefined;
-	const candidate = result as {
+	// Provider plugins may resolve asynchronously; `await` passes a
+	// synchronous result through unchanged.
+	const awaited = await result;
+	if (typeof awaited !== "object" || awaited === null) return undefined;
+	const candidate = awaited as {
 		extension?: unknown;
+		name?: unknown;
+		providers?: unknown;
 		health?: unknown;
 		submit?: unknown;
 		runSettled?: unknown;
@@ -380,7 +461,23 @@ function resolvedFromFactory(
 		interactionKinds?: unknown;
 		ambientKinds?: unknown;
 	};
-	if (!isExtension(candidate.extension)) return undefined;
+	const providers = validateProviders(candidate.providers);
+	const extension = isExtension(candidate.extension)
+		? candidate.extension
+		: undefined;
+	if (extension === undefined) {
+		// Provider-only contributor: valid only when `providers` is present;
+		// otherwise this factory result is not the contract form (fall
+		// through to the next resolution candidate). The contributor's name
+		// is its collision-record identity — without one there is nothing to
+		// attribute providers or health to, which is a contract violation.
+		if (providers === undefined) return undefined;
+		if (typeof candidate.name !== "string" || candidate.name.length === 0) {
+			throw new Error(
+				"extension factory returned a provider-only result without a name",
+			);
+		}
+	}
 	if (
 		candidate.health !== undefined &&
 		typeof candidate.health !== "function"
@@ -429,7 +526,11 @@ function resolvedFromFactory(
 		(candidate as { workers?: unknown }).workers,
 	);
 	return {
-		extension: candidate.extension,
+		// Identity: the extension when one was carried, else the
+		// provider-only contributor's validated `name`.
+		...(extension !== undefined
+			? { extension }
+			: { name: candidate.name as string }),
 		...(candidate.health === undefined
 			? {}
 			: { health: candidate.health as () => HealthStatus }),
@@ -454,31 +555,36 @@ function resolvedFromFactory(
 			? {}
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
 		...(workers === undefined ? {} : { workers }),
+		...(providers === undefined ? {} : { providers }),
 	};
 }
 
 /**
  * Resolve one imported module to the extension the loader installs, per the
  * contract order documented on this module, retaining a factory-result §3
- * health producer when one was carried.
+ * health producer when one was carried. Async: the factory result may be a
+ * Promise (settings-reading provider plugins).
  */
-export function resolveExtension(
+export async function resolveExtension(
 	module: ExtensionModule,
 	hostContext: unknown = undefined,
-): ResolvedExtension | undefined {
+): Promise<ResolvedExtension | undefined> {
 	// 1. Default export: factory returning `{ extension, health? }`, or the Extension itself.
 	const defaultExport = module.default;
 	if (isExtension(defaultExport)) return { extension: defaultExport };
-	const fromDefault = resolvedFromFactory(defaultExport, hostContext);
+	const fromDefault = await resolvedFromFactory(defaultExport, hostContext);
 	if (fromDefault !== undefined) return fromDefault;
 
 	// 2. Named real-package factories (bridge for the pre-contract packages).
 	// A package whose factory result carries extra capabilities (approvals,
 	// future insight/seam fields) resolves fine: only health and submit are
 	// validated and retained; everything else is the extension's own business.
-	const fromMemory = resolvedFromFactory(module.createMemory, hostContext);
+	const fromMemory = await resolvedFromFactory(module.createMemory, hostContext);
 	if (fromMemory !== undefined) return fromMemory;
-	const fromApprovals = resolvedFromFactory(module.createApprovals, hostContext);
+	const fromApprovals = await resolvedFromFactory(
+		module.createApprovals,
+		hostContext,
+	);
 	if (fromApprovals !== undefined) return fromApprovals;
 
 	// 3. Named `extension` export.
@@ -580,6 +686,7 @@ typeof spec === "string"
 : { name: spec.name, entry: spec.entry },
 );
 const outcomes: ExtensionOutcome[] = [];
+const providerContributors: ProviderContributor[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
 const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
@@ -621,7 +728,7 @@ const display = label ?? entry;
 			if (options.hostContextFactory !== undefined) {
 				host = options.hostContextFactory("", {});
 			}
-			const resolved = resolveExtension(module, host);
+			const resolved = await resolveExtension(module, host);
 			if (resolved === undefined) {
 				throw new Error(
 					`does not satisfy the sigrun extension-package contract ` +
@@ -637,7 +744,18 @@ const display = label ?? entry;
 				// ride the LOAD (Review Focus 2): an empty slug or a collision
 				// quarantines HERE naming the declared name(s), never the first
 				// store use mid-run.
-				const declared = resolved.extension.name;
+				const declared =
+					resolved.extension !== undefined
+						? resolved.extension.name
+						: resolved.name;
+				if (declared === undefined) {
+					// Unreachable by construction (provider-only results validate
+					// `name`; every other form carries an `extension`) — but the
+					// identity rule fails loud rather than slugifying `undefined`.
+					throw new Error(
+						"factory result carried neither an extension nor a contributor name",
+					);
+				}
 				const slug = slugifyName(declared);
 				if (slug === "") {
 					throw new Error(
@@ -658,7 +776,10 @@ const display = label ?? entry;
 				// never mutated). Every binding below pairs with THIS object so
 				// boot's identity correlation (health/submit/memory-owner
 				// matching) stays exact.
-				const extension: Extension = { ...resolved.extension, name: slug };
+				const extension: Extension | undefined =
+					resolved.extension === undefined
+						? undefined
+						: { ...resolved.extension, name: slug };
 				// The post-resolution call re-keys the captured host instance in
 				// place with the slug + declared kinds (boot's
 				// hostContextFactory; see src/harness/boot.ts). No second host is
@@ -673,42 +794,53 @@ const display = label ?? entry;
 						? {}
 						: { ambient: resolved.ambientKinds }),
 					};
-					options.hostContextFactory(extension.name, kinds);
+					options.hostContextFactory(slug, kinds);
 				}
-				registry.install(extension);
-				// Only an INSTALLED extension claims its slug — a later stage's
-				// quarantine (never loaded) leaves the slug free for the next
-				// boot's specifier list.
+				if (extension !== undefined) {
+					registry.install(extension);
+				}
+				// Only a LOADED extension or contributor claims its slug — a
+				// later stage's quarantine (never loaded) leaves the slug free
+				// for the next boot's specifier list.
 				slugs.set(slug, declared);
-				outcomes.push({ name: extension.name, status: "ok" });
-				if (resolved.health !== undefined) {
+				outcomes.push({ name: slug, status: "ok" });
+				if (extension !== undefined && resolved.health !== undefined) {
 					healthProducers.push({
 						extension,
 						health: resolved.health,
 					});
 				}
-				if (resolved.submit !== undefined) {
+				if (extension !== undefined && resolved.submit !== undefined) {
 					submitBindings.push({
 						extension,
 					submit: resolved.submit,
 					});
 				}
-				if (resolved.runSettled !== undefined) {
+				if (extension !== undefined && resolved.runSettled !== undefined) {
 					runSettledBindings.push({
 						extension,
 					runSettled: resolved.runSettled,
 					});
 				}
-				if (resolved.lifecycle !== undefined) {
+				if (extension !== undefined && resolved.lifecycle !== undefined) {
 					lifecycleBindings.push({
 						extension,
 					handlers: resolved.lifecycle,
 					});
 				}
-				if (resolved.workers !== undefined) {
+				if (extension !== undefined && resolved.workers !== undefined) {
 					workerBindings.push({
 						extension,
 					workers: resolved.workers,
+					});
+				}
+				if (resolved.providers !== undefined) {
+					providerContributors.push({
+						name: slug,
+						providers: resolved.providers,
+						...(resolved.health === undefined
+							? {}
+							: { health: resolved.health }),
 					});
 				}
 		} catch (cause) {
@@ -731,6 +863,7 @@ const display = label ?? entry;
 	warnToolNameCollisions(registry);
 	return {
 		outcomes,
+		providerContributors,
 		healthProducers,
 		submitBindings,
 		runSettledBindings,

@@ -68,12 +68,12 @@ function configWith(dir: string) {
 	});
 }
 
-test("a factory result may carry capability fields beyond health/submit — they resolve and are ignored", () => {
+test("a factory result may carry capability fields beyond health/submit — they resolve and are ignored", async () => {
 	// The capability-freedom ruling: core retains only health + submit;
 	// an approvals extension may return extra fields (its own doc tooling,
 	// future seams) and those are the extension's business, never core's.
 	const ext = { name: "sigrun.approvals", hooks: [], tools: [] } as never;
-	const result = resolveExtension({
+	const result = await resolveExtension({
 		createApprovals: () => ({
 			extension: ext,
 			approvals: { listPending: () => {}, decide: () => {} },

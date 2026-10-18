@@ -761,7 +761,7 @@ describe("conversation lifecycle contract", () => {
 		expect(doc?.body?.line?.text).toBe("flushed at shutdown");
 	});
 
-	test("a factory lifecycle field that is not a function is quarantined with the reason", () => {
+	test("a factory lifecycle field that is not a function is quarantined with the reason", async () => {
 		// The five validation branches mirror runSettled's fail-loud pattern,
 		// each naming its own field.
 		const extension = { name: "sigrun-fixture-bad-lifecycle" } as never;
@@ -773,11 +773,13 @@ describe("conversation lifecycle contract", () => {
 			"harnessShutdown",
 		] as const;
 		for (const field of fields) {
-			// The throw propagates out of resolveExtension and surfaces through
-			// the loader as the quarantine reason; assert the message exactly.
+			// The throw propagates out of resolveExtension (async — factories
+			// may return a Promise, provider plugins Task 1) and surfaces
+			// through the loader as the quarantine reason; assert the message
+			// exactly.
 			let message = "";
 			try {
-				resolveExtension({
+				await resolveExtension({
 					default: () => ({ extension, [field]: 42 }),
 				});
 			} catch (error) {
