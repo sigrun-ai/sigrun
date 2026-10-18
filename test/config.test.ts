@@ -25,6 +25,7 @@ import {
 	DEFAULT_EXTENSIONS_DIR,
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
+	DEFAULT_PROVIDER_REFRESH_MINUTES,
 	DEFAULT_WORKSPACE_PATH,
 	STORAGE_FILE_NAME,
 	loadConfig,
@@ -357,6 +358,7 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			webuiBundle: "webui/dist",
 			compaction: { ...DEFAULT_COMPACTION },
 			memorySeam: { ...DEFAULT_MEMORY_SEAM },
+			providers: { refreshIntervalMinutes: DEFAULT_PROVIDER_REFRESH_MINUTES },
 		});
 	});
 

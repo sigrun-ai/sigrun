@@ -87,6 +87,22 @@ export interface MemorySeamConfig {
 	queueMax: number;
 }
 
+/**
+ * The provider runtime knobs (provider plugins Task 5): the interval
+ * refresh cadence — how often the host-owned scheduler re-runs
+ * `models.refresh()` over every dynamic provider after the boot
+ * refresh (T4) populated the catalogs.
+ */
+export interface ProviderRuntimeConfig {
+	/**
+	 * The cadence in minutes, from `SIGRUN_PROVIDER_REFRESH_MINUTES` over
+	 * the file's `server.providers.refreshIntervalMinutes` over
+	 * {@link DEFAULT_PROVIDER_REFRESH_MINUTES}. `0` disables the
+	 * scheduler (no timer).
+	 */
+	refreshIntervalMinutes: number;
+}
+
 export interface SigrunConfig {
 	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
@@ -153,6 +169,14 @@ export interface SigrunConfig {
 	 * boot (Tasks 2-5 shipped them as temporary hardcoded constants).
 	 */
 	memorySeam: MemorySeamConfig;
+	/**
+	 * The provider runtime knobs (provider plugins Task 5): the interval
+	 * refresh cadence, parsed from `SIGRUN_PROVIDER_REFRESH_MINUTES` over
+	 * the file's `server.providers.refreshIntervalMinutes` over the
+	 * default. Boot starts the scheduler when the resolved interval is
+	 * greater than zero.
+	 */
+	providers: ProviderRuntimeConfig;
 }
 
 /** The provider id used when the model spec carries no `provider/` prefix. */
@@ -200,6 +224,12 @@ export const DEFAULT_MEMORY_SEAM: MemorySeamConfig = {
 	workerDeadlineMs: 600_000,
 	queueMax: 1_000,
 };
+
+/** The env var carrying the interval refresh cadence (Task 5). */
+export const PROVIDER_REFRESH_MINUTES_ENV = "SIGRUN_PROVIDER_REFRESH_MINUTES";
+
+/** The interval refresh cadence default (minutes); `0` disables. */
+export const DEFAULT_PROVIDER_REFRESH_MINUTES = 15;
 
 export type Env = Record<string, string | undefined>;
 
@@ -442,6 +472,30 @@ function parseMemorySeamCount(env: Env, key: MemorySeamEnvKey): number | undefin
 	return parsed;
 }
 
+/**
+ * Parse the interval refresh cadence (Task 5): `SIGRUN_PROVIDER_REFRESH_MINUTES`
+ * — a NON-NEGATIVE integer (0 is the designed disable, unlike the
+ * memory-seam positive-only knobs), `""` counts as unset, anything else
+ * fails loud naming the variable. The file's `server.providers`
+ * section applies where the env var is absent; the default last.
+ */
+function parseRefreshIntervalMinutes(
+	env: Env,
+	file?: number,
+): number {
+	const raw = env[PROVIDER_REFRESH_MINUTES_ENV];
+	if (raw !== undefined && raw !== "") {
+		const parsed = Number(raw);
+		if (!Number.isInteger(parsed) || parsed < 0) {
+			throw new Error(
+				`${PROVIDER_REFRESH_MINUTES_ENV} must be a non-negative integer, got ${raw}`,
+			);
+		}
+		return parsed;
+	}
+	return file ?? DEFAULT_PROVIDER_REFRESH_MINUTES;
+}
+
 function parseMemorySeam(
 	env: Env,
 	server?: ServerSettings["memorySeam"],
@@ -506,6 +560,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		webuiBundle: config.webuiBundle,
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
+		providers: { ...config.providers },
 		...(backup === undefined ? {} : { backup }),
 	};
 }
@@ -617,6 +672,12 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			),
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
+		providers: {
+			refreshIntervalMinutes: parseRefreshIntervalMinutes(
+				env,
+				server?.providers?.refreshIntervalMinutes,
+			),
+		},
 		// Ruling 4: env wins; the file's `server.webuiBundle` next; the code
 		// default last. A file value counts as EXPLICIT (missing index.html
 		// is a boot error), exactly like a set env var.
