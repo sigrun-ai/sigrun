@@ -1,5 +1,6 @@
 /**
- * The views.ts purity guard (the channel-contract rule).
+ * The views.ts purity guard (the channel-contract rule) — and the
+ * `src/shared/*.ts` purity guard (Task B1, UI refresh).
  *
  * `src/server/views.ts` is sigrun's sole wire-type leaf: both clients
  * (webui — DOM-only, bundler resolution; tui — NodeNext) import it
@@ -23,14 +24,32 @@
  * "./index.js") keep them exact. A false positive here means the module
  * picked up a shape the guard can't see through — tighten the module,
  * not the guard.
+ *
+ * `src/shared/*.ts` is under a stricter contract: the UI-refresh shared
+ * modules (themes, turns, conversations) are consumed by BOTH clients
+ * from one source, so they may not import anything at all — no runtime
+ * imports, no `import type`, no re-exports. A type dependency would
+ * reintroduce the exact two-client drift these modules remove. Guarded
+ * over the module TEXT the same lint-style way.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const VIEWS_PATH = join(__dirname, "..", "src", "server", "views.ts");
 const source = readFileSync(VIEWS_PATH, "utf8");
+
+const SHARED_DIR = join(__dirname, "..", "src", "shared");
+
+function sharedModuleSources(): { file: string; source: string }[] {
+	return readdirSync(SHARED_DIR)
+		.filter((name) => name.endsWith(".ts"))
+		.map((name) => ({
+			file: name,
+			source: readFileSync(join(SHARED_DIR, name), "utf8"),
+		}));
+}
 
 // One import per statement; the `import ... from "specifier"` form only
 // (views.ts has no side-effect imports). Multiline named lists included.
@@ -80,5 +99,26 @@ describe("views.ts channel-contract purity", () => {
 			/(^|\/)index\.js$/.test(statement.specifier),
 		);
 		expect(violations).toEqual([]);
+	});
+});
+
+describe("src/shared modules are fully pure (no imports at all)", () => {
+	it("has at least one shared module (the guard is not vacuous)", () => {
+		expect(sharedModuleSources().length).toBeGreaterThan(0);
+	});
+
+	it("no import statement of any kind (type or value)", () => {
+		for (const { file, source: text } of sharedModuleSources()) {
+			const violations = [...text.matchAll(/^\s*import\b/gm)];
+			expect(violations, `${file} must not import`).toEqual([]);
+		}
+	});
+
+	it("no re-export from another module (`export ... from`)", () => {
+		for (const { file, source: text } of sharedModuleSources()) {
+			const EXPORT_FROM = /^\s*export\s[^;]*?\bfrom\s+"/gm;
+			const violations = [...text.matchAll(EXPORT_FROM)];
+			expect(violations, `${file} must not re-export`).toEqual([]);
+		}
 	});
 });

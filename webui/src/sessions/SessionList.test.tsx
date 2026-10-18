@@ -1,215 +1,487 @@
 /**
- * SessionList (Task 23a) against a stub fetch: conversations render with
- * their meta (pinned first, archived dimmed) and the new / switch / archive
- * actions hit the right §5 endpoints. The client is the REAL `createClient`
- * over the stub fetch so the tests also cover the wire paths.
+ * SessionList (B3, UI refresh): the grouped, searchable, fork-nested
+ * conversation sidebar. Rows arrive pre-loaded (`rows` — App owns the
+ * list via useConversationList), so these are pure-prop renders: group
+ * order against a stubbed clock (fake timers freeze `new Date()`), fork
+ * nesting with the ↳ lineage mark, search keeping a match's ANCESTORS
+ * visible, the 200-char-name single-line contract, the archived toggle,
+ * and the per-row ⋯ menu (Rename / Fork / Archive / Unarchive) plus the
+ * Ctrl+K / ⌘K search focus (a stubbed window + document — the suite runs
+ * under react-test-renderer with no DOM).
+ *
+ * Fixtures are synthetic (tests own their literals); `NOW` is local noon
+ * so calendar-day grouping survives any runner timezone.
  */
 
 import { act } from "react";
 import type TestRenderer from "react-test-renderer";
-import { describe, expect, test } from "vitest";
-import {
-	createClient,
-	type ConversationMeta,
-	type FetchLike,
-} from "../api";
-import { renderAsync } from "../test-utils";
-import { SessionList } from "./SessionList";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { ConversationSummary } from "../api";
+import { render } from "../test-utils";
+import { SESSION_SEARCH_INPUT_ID, SessionList } from "./SessionList";
 
-type Call = { input: string; method?: string; body?: string };
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
-/** A stub fetch routing by path prefix; handlers may mutate their fixtures. */
-function makeFetch(routes: Record<string, (call: Call) => unknown>): {
-	calls: Call[];
-	fetchImpl: FetchLike;
-} {
-	const calls: Call[] = [];
-	const fetchImpl: FetchLike = (input, init) => {
-		const call: Call = { input, method: init?.method, body: init?.body };
-		calls.push(call);
-		for (const [prefix, handler] of Object.entries(routes)) {
-			if (input.startsWith(prefix)) {
-				return Promise.resolve({
-					ok: true,
-					status: 200,
-					json: () => Promise.resolve(handler(call)),
-					text: () => Promise.resolve(String(handler(call))),
-				});
-			}
-		}
-		return Promise.resolve({
-			ok: false,
-			status: 404,
-			json: () => Promise.resolve({ error: "no route" }),
-			text: () => Promise.resolve(String({ error: "no route" })),
-		});
+const NOW = new Date(2026, 9, 17, 12, 0, 0); // local noon, Oct 17 2026
+const ago = (span: number): string =>
+	new Date(NOW.getTime() - span).toISOString();
+
+function summary(
+	fields: Partial<ConversationSummary> & Pick<ConversationSummary, "id">,
+): ConversationSummary {
+	return {
+		root: false,
+		entryCount: 1,
+		archived: false,
+		pinned: false,
+		...fields,
 	};
-	return { calls, fetchImpl };
 }
 
-const META_DEFAULTS = {
-	pinned: false,
-	tagged: [],
-	archived: false,
-	draft: { text: "", attachments: [] },
-	source: "user",
-} satisfies Partial<ConversationMeta>;
-
-function makeHarness() {
-	const conversations = [
-		{ id: 1, root: true, entryCount: 3 },
-		{ id: 2, root: false, entryCount: 5 },
-		{ id: 3, root: false, entryCount: 1 },
-	];
-	const metas: Record<number, ConversationMeta> = {
-		1: { ...META_DEFAULTS },
-		2: { ...META_DEFAULTS, pinned: true },
-		3: { ...META_DEFAULTS, archived: true },
+function makeProps(
+	rows: readonly ConversationSummary[],
+	init?: { readonly activeId?: number | null },
+) {
+	return {
+		rows,
+		activeId: init?.activeId ?? null,
+		onSelect: vi.fn(),
+		onNew: vi.fn(),
+		onRename: vi.fn(async () => {}),
+		onArchive: vi.fn(async () => {}),
+		onFork: vi.fn(),
 	};
-	const { calls, fetchImpl } = makeFetch({
-		// Meta route MUST precede the list route (prefix matching).
-		"/v1/conversations/": (call) => {
-			const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(call.input);
-			if (metaMatch !== null) {
-				if (call.method === "PATCH") {
-					const id = Number(metaMatch[1]);
-					const patch = JSON.parse(call.body ?? "{}") as Record<
-						string,
-						unknown
-					>;
-					metas[id] = { ...metas[id], ...patch } as ConversationMeta;
-					return {};
-				}
-				return metas[Number(metaMatch[1])];
-			}
-			throw new Error(`unexpected path ${call.input}`);
-		},
-		"/v1/conversations": (call) => {
-			if (call.method === "POST") {
-				const created = { id: 4, root: false, entryCount: 0 };
-				conversations.push(created);
-				metas[4] = { ...META_DEFAULTS };
-				return { id: 4 };
-			}
-			return { conversations };
-		},
-	});
-	const client = createClient({ fetch: fetchImpl });
-	const selected: number[] = [];
-	const props = {
-		client,
-		activeId: null as number | null,
-		onSelect: (id: number) => selected.push(id),
-	};
-	return { calls, conversations, metas, props, selected };
 }
 
-async function click(instance: TestRenderer.ReactTestInstance): Promise<void> {
+type Props = ReturnType<typeof makeProps>;
+
+/** The rendered conversation rows (`<li data-conversation-id>`), in order. */
+function conversationItems(
+	renderer: TestRenderer.ReactTestRenderer,
+): TestRenderer.ReactTestInstance[] {
+	return renderer.root
+		.findAllByType("li")
+		.filter((li) => li.props["data-conversation-id"] !== undefined);
+}
+
+function rowIds(renderer: TestRenderer.ReactTestRenderer): number[] {
+	return conversationItems(renderer).map(
+		(li) => li.props["data-conversation-id"] as number,
+	);
+}
+
+function rowById(
+	renderer: TestRenderer.ReactTestRenderer,
+	id: number,
+): TestRenderer.ReactTestInstance {
+	const row = conversationItems(renderer).find(
+		(li) => li.props["data-conversation-id"] === id,
+	);
+	if (row === undefined) throw new Error(`no sidebar row ${id}`);
+	return row;
+}
+
+async function click(
+	node: TestRenderer.ReactTestInstance,
+): Promise<void> {
 	await act(async () => {
-		await (instance.props as { onClick: () => unknown }).onClick();
+		await (node.props as { onClick: () => unknown }).onClick();
+	});
+}
+
+function keyDown(
+	node: TestRenderer.ReactTestInstance,
+	key: string,
+): Promise<void> {
+	return act(async () => {
+		(node.props as { onKeyDown: (event: { key: string }) => void }).onKeyDown({
+			key,
+		});
+	});
+}
+
+/** Drain the microtask queue (promise-chained state updates) inside act. */
+async function flush(): Promise<void> {
+	await act(async () => {
+		for (let hop = 0; hop < 5; hop += 1) await Promise.resolve();
+	});
+}
+
+/** Type into the search input (the sidebar's filter). */
+async function typeSearch(
+	renderer: TestRenderer.ReactTestRenderer,
+	text: string,
+): Promise<void> {
+	const input = renderer.root.findByProps({ className: "session-search" });
+	await act(async () => {
+		(input.props as {
+			onChange: (event: { target: { value: string } }) => void;
+		}).onChange({ target: { value: text } });
 	});
 }
 
 describe("SessionList", () => {
-	test("renders conversations with meta: pinned first, archived dimmed", async () => {
-		const { props } = makeHarness();
-		const renderer = await renderAsync(<SessionList {...props} />);
-		const items = renderer.root.findAllByType("li");
-		expect(items.map((li) => li.props.className as string)).toEqual([
-			"session-item",
-			"session-item",
-			"session-item session-item-archived",
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	test("groups rows under Pinned / Today / Yesterday / Earlier headings in order", () => {
+		const rows = [
+			summary({
+				id: 5,
+				name: "Pinned north road",
+				pinned: true,
+				lastActivityAt: ago(30 * DAY),
+			}),
+			summary({
+				id: 1,
+				name: "Harbor dredging log",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({
+				id: 2,
+				name: "Fog signal check",
+				lastActivityAt: ago(18 * HOUR),
+			}),
+			summary({
+				id: 3,
+				name: "Heat pump sizing notes",
+				lastActivityAt: ago(10 * DAY),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		const headings = renderer.root.findAllByProps({
+			className: "session-group",
+		});
+		expect(headings.map((h) => h.props["data-age-group"])).toEqual([
+			"Pinned",
+			"Today",
+			"Yesterday",
+			"Earlier",
 		]);
-		// Pinned (#2) sorts first; the rest keep server order.
-		const labels = items.map((li) =>
-			(li.children[0] as TestRenderer.ReactTestInstance).children.join(""),
-		);
-		expect(labels[0]).toContain("#2");
-		expect(labels[0]).toContain("pinned");
-		expect(labels[1]).toContain("#1");
-		expect(labels[2]).toContain("#3");
-		expect(labels[2]).toContain("archived");
+		expect(headings.map((h) => h.children.join(""))).toEqual([
+			"Pinned",
+			"Today",
+			"Yesterday",
+			"Earlier",
+		]);
+		// Rows render grouped under their heading, newest-first inside it.
+		expect(rowIds(renderer)).toEqual([5, 1, 2, 3]);
 	});
 
-	test("a named session renders its name in place of the fallback title", async () => {
-		const { metas, props } = makeHarness();
-		// Give #1 a name BEFORE the first load (the stub fetch reads the
-		// same mutable record the component's meta GETs hit).
-		metas[1] = { ...metas[1]!, name: "Debugging the fork" };
-		const renderer = await renderAsync(<SessionList {...props} />);
-		const labels = renderer.root
-			.findAllByProps({ className: "session-select" })
-			.map((button) => button.children.join(""));
-		// Pinned #2 sorts first, so #1 is the second row: named.
-		expect(labels[1]).toContain("Debugging the fork");
-		expect(labels[1]).not.toContain("#1");
-		// Unnamed sessions render the fallback title as before.
-		expect(labels[0]).toContain("#2");
-		expect(labels[2]).toContain("#3");
+	test("a fork renders directly under its parent with the ↳ marker", () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Static site notes",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({
+				id: 2,
+				name: "Static site notes — Hugo deep dive",
+				parent: { id: 1, at: 4 },
+				lastActivityAt: ago(10 * MINUTE),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		expect(rowIds(renderer)).toEqual([1, 2]);
+		const parent = rowById(renderer, 1);
+		const fork = rowById(renderer, 2);
+		expect(parent.props["data-depth"]).toBe(0);
+		expect(fork.props["data-depth"]).toBe(1);
+		// The lineage mark is real content (CSS ::before would not be).
+		expect(fork.findAllByProps({ className: "session-fork-mark" })).toHaveLength(1);
+		expect(parent.findAllByProps({ className: "session-fork-mark" })).toHaveLength(0);
 	});
 
-	test("marks the active conversation", async () => {
-		const { props } = makeHarness();
-		const renderer = await renderAsync(
-			<SessionList {...props} activeId={1} />,
-		);
-		const items = renderer.root.findAllByType("li");
-		const active = items.filter((li) =>
-			(li.props.className as string).includes("session-item-active"),
-		);
-		expect(active).toHaveLength(1);
-		const activeLabel = active[0]
-		?.findByProps({ className: "session-select" })
-		.children.join("");
-		expect(activeLabel).toContain("#1");
+	test("search filters by displayName case-insensitively and keeps a match's ancestors", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Static site notes",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({
+				id: 2,
+				name: "Static site notes — Hugo deep dive",
+				parent: { id: 1, at: 4 },
+				lastActivityAt: ago(10 * MINUTE),
+			}),
+			summary({
+				id: 3,
+				name: "Paris weather",
+				lastActivityAt: ago(3 * HOUR),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		await typeSearch(renderer, "hugo");
+		// The matching fork AND its parent stay; the unrelated row goes.
+		expect(rowIds(renderer)).toEqual([1, 2]);
+		// Case-insensitive: uppercase still matches.
+		await typeSearch(renderer, "HUGO");
+		expect(rowIds(renderer)).toEqual([1, 2]);
+		// No matches at all renders the quiet empty line.
+		await typeSearch(renderer, "zeppelin");
+		expect(rowIds(renderer)).toEqual([]);
+		expect(
+			renderer.root.findByProps({ className: "session-empty" }).children.join(""),
+		).toContain("No matching conversations");
+		// Clearing the query restores the full list.
+		await typeSearch(renderer, "");
+		expect(rowIds(renderer)).toEqual([1, 2, 3]);
 	});
 
-	test("switch: clicking a conversation calls onSelect with its id", async () => {
-		const { props, selected } = makeHarness();
-		const renderer = await renderAsync(<SessionList {...props} />);
-		const buttons = renderer.root.findAllByProps({
-			className: "session-select",
+	test("a 200-char name renders in ONE ellipsis element; the row's height class is unchanged", () => {
+		const long = "n".repeat(200);
+		const rows = [
+			summary({
+				id: 1,
+				name: long,
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		const names = renderer.root.findAllByProps({ className: "session-name" });
+		expect(names).toHaveLength(1);
+		expect(names[0]!.children.join("")).toBe(long);
+		// No long-name modifier class: the row's classes (and so its height)
+		// are exactly the standard row's.
+		expect(rowById(renderer, 1).props.className).toBe("session-item");
+	});
+
+	test("archived rows are hidden until the Archived toggle; then they render dimmed", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Harbor dredging log",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({
+				id: 2,
+				name: "Retired beacon audit",
+				archived: true,
+				lastActivityAt: ago(2 * HOUR),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		expect(rowIds(renderer)).toEqual([1]);
+		const toggle = renderer.root.findByProps({
+			className: "session-archived-toggle",
 		});
-		await click(buttons[1]!); // #1 (pinned #2 sorts first)
-		expect(selected).toEqual([1]);
-	});
-
-	test("archive: PATCHes { archived: true } and re-renders dimmed", async () => {
-		const { calls, props } = makeHarness();
-		const renderer = await renderAsync(<SessionList {...props} />);
-		const archiveButtons = renderer.root.findAllByProps({
-			className: "session-archive",
-		});
-		// #3 is already archived (no archive button); two buttons remain.
-		expect(archiveButtons).toHaveLength(2);
-		await click(archiveButtons[0]!); // archive #2 (pinned, first row)
-		const patch = calls.find(
-			(call) =>
-				call.method === "PATCH" && call.input === "/v1/conversations/2/meta",
-		);
-		expect(patch?.body).toBe(JSON.stringify({ archived: true }));
-		const items = renderer.root.findAllByType("li");
-		// After the merge, #2 is archived AND pinned (pinned still first).
-		expect(items[0]?.props.className).toBe(
+		expect(toggle.props["aria-pressed"]).toBe(false);
+		await click(toggle);
+		expect(toggle.props["aria-pressed"]).toBe(true);
+		expect(rowIds(renderer)).toEqual([1, 2]);
+		expect(rowById(renderer, 2).props.className).toBe(
 			"session-item session-item-archived",
 		);
 	});
 
-	test("new: POSTs /v1/conversations, reloads, selects the new id", async () => {
-		const { calls, props, selected } = makeHarness();
-		const renderer = await renderAsync(<SessionList {...props} />);
-		const newButton = renderer.root.findByProps({
-			className: "session-new",
-		});
-		await click(newButton);
-		const post = calls.find(
-			(call) => call.method === "POST" && call.input === "/v1/conversations",
+	test("each row shows formatAge next to the name plus a focusable ⋯ menu button", () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Harbor dredging log",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({ id: 2, name: "Never used" }),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		const ages = renderer.root.findAllByProps({ className: "session-age" });
+		expect(ages).toHaveLength(2);
+		expect(ages[0]!.children.join("")).toBe("30m");
+		// Never used → no stamp → no age text (formatAge's "" for undefined).
+		expect(ages[1]!.children.join("")).toBe("");
+		// The menu toggle is a real button on every row (keyboard-reachable;
+		// CSS reveals it on hover/focus-within).
+		for (const id of [1, 2]) {
+			const toggle = rowById(renderer, id).findByProps({
+				className: "session-menu-toggle",
+			});
+			expect(toggle.type).toBe("button");
+			expect(toggle.props["aria-haspopup"]).toBe("menu");
+		}
+	});
+
+	test("the ⋯ menu forwards Rename, Fork, and Archive", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Harbor dredging log",
+				lastActivityAt: ago(5 * MINUTE),
+			}),
+		];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		await click(rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }));
+		const menu = renderer.root.findByProps({ className: "session-menu" });
+		expect(
+			menu
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["rename", "fork", "archive"]);
+		// Fork forwards the row's id.
+		await click(menu.findByProps({ "data-menu-action": "fork" }));
+		expect(props.onFork).toHaveBeenCalledWith(1);
+		// Archive forwards (id, true) for an unarchived row.
+		await click(rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }));
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "archive" }),
 		);
-		expect(post).toBeDefined();
-		expect(selected).toEqual([4]);
-		const labels = renderer.root
-			.findAllByProps({ className: "session-select" })
-			.map((button) => button.children.join(""));
-		expect(labels.some((label) => label.includes("#4"))).toBe(true);
+		expect(props.onArchive).toHaveBeenCalledWith(1, true);
+		// Rename swaps the name for an inline input; Enter commits.
+		await click(rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }));
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "rename" }),
+		);
+		const input = rowById(renderer, 1).findByProps({
+			className: "session-rename-input",
+		});
+		act(() => {
+			(input.props as {
+				onChange: (event: { target: { value: string } }) => void;
+			}).onChange({ target: { value: "Fjord walking routes" } });
+		});
+		await keyDown(input, "Enter");
+		await flush();
+		expect(props.onRename).toHaveBeenCalledWith(1, "Fjord walking routes");
+		// The input closed once the rename resolved.
+		expect(
+			renderer.root.findAllByProps({ className: "session-rename-input" }),
+		).toHaveLength(0);
+	});
+
+	test("an archived row's menu offers Unarchive and forwards (id, false)", async () => {
+		const rows = [
+			summary({ id: 2, name: "Retired beacon audit", archived: true }),
+		];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			renderer.root.findByProps({ className: "session-archived-toggle" }),
+		);
+		await click(
+			rowById(renderer, 2).findByProps({ className: "session-menu-toggle" }),
+		);
+		const menu = renderer.root.findByProps({ className: "session-menu" });
+		expect(menu.findByProps({ "data-menu-action": "archive" }).children.join("")).toBe(
+			"Unarchive",
+		);
+		await click(menu.findByProps({ "data-menu-action": "archive" }));
+		expect(props.onArchive).toHaveBeenCalledWith(2, false);
+	});
+
+	test("rename Esc cancels without calling onRename", async () => {
+		const rows = [summary({ id: 1, name: "Harbor dredging log" })];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "rename" }),
+		);
+		const input = rowById(renderer, 1).findByProps({
+			className: "session-rename-input",
+		});
+		act(() => {
+			(input.props as {
+				onChange: (event: { target: { value: string } }) => void;
+			}).onChange({ target: { value: "discarded" } });
+		});
+		await keyDown(input, "Escape");
+		expect(props.onRename).not.toHaveBeenCalled();
+		expect(
+			renderer.root.findAllByProps({ className: "session-rename-input" }),
+		).toHaveLength(0);
+	});
+
+	test("clicking a row selects it; the active row carries the active class", async () => {
+		const rows = [
+			summary({ id: 1, name: "Harbor dredging log" }),
+			summary({ id: 2, name: "Signal lamp repair" }),
+		];
+		const props = makeProps(rows, { activeId: 2 });
+		const renderer = render(<SessionList {...props} />);
+		expect(rowById(renderer, 2).props.className).toBe("session-item session-item-active");
+		await click(rowById(renderer, 1).findByProps({ className: "session-select" }));
+		expect(props.onSelect).toHaveBeenCalledWith(1);
+	});
+
+	test("the new button forwards onNew", async () => {
+		const rows = [summary({ id: 1, name: "Harbor dredging log" })];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		await click(renderer.root.findByProps({ className: "session-new" }));
+		expect(props.onNew).toHaveBeenCalledTimes(1);
+	});
+
+	test("Ctrl+K and ⌘K focus the search input; other keys do not", async () => {
+		interface FakeKeyEvent {
+			key: string;
+			ctrlKey: boolean;
+			metaKey: boolean;
+			preventDefault(): void;
+		}
+		const listeners = new Map<string, (event: FakeKeyEvent) => void>();
+		const fakeWindow = {
+			addEventListener(
+				type: string,
+				listener: (event: FakeKeyEvent) => void,
+			): void {
+				listeners.set(type, listener);
+			},
+			removeEventListener(
+				type: string,
+				listener: (event: FakeKeyEvent) => void,
+			): void {
+				if (listeners.get(type) === listener) listeners.delete(type);
+			},
+		};
+		const focus = vi.fn();
+		vi.stubGlobal("window", fakeWindow);
+		vi.stubGlobal("document", {
+			getElementById: (id: string) =>
+				id === SESSION_SEARCH_INPUT_ID ? { focus } : null,
+		});
+		const renderer = render(
+			<SessionList {...makeProps([summary({ id: 1, name: "One" })])} />,
+		);
+		const keydown = listeners.get("keydown");
+		expect(keydown).toBeDefined();
+		const fired = (init: Partial<FakeKeyEvent>): FakeKeyEvent => ({
+			key: "",
+			ctrlKey: false,
+			metaKey: false,
+			preventDefault: vi.fn(),
+			...init,
+		});
+		const ctrlK = fired({ key: "k", ctrlKey: true });
+		keydown!(ctrlK);
+		expect(focus).toHaveBeenCalledTimes(1);
+		expect(ctrlK.preventDefault).toHaveBeenCalledTimes(1);
+		keydown!(fired({ key: "k", metaKey: true }));
+		expect(focus).toHaveBeenCalledTimes(2);
+		keydown!(fired({ key: "j", ctrlKey: true }));
+		keydown!(fired({ key: "k" }));
+		expect(focus).toHaveBeenCalledTimes(2);
+		// Unmount detaches the listener.
+		act(() => {
+			renderer.unmount();
+		});
+		expect(listeners.has("keydown")).toBe(false);
 	});
 });

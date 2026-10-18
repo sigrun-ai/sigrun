@@ -1,13 +1,11 @@
 /**
- * The App shell (Task 23a): SessionList left, the chat center (EntryList
- * over `useConversationView(activeId)`), a right-panel placeholder, and the
- * empty composer footer slot (T23b fills it). Switching the active
- * conversation re-drives the view hook (a fresh stream opens, the stale one
- * closes). Stub fetch for the §5 HTTP calls; StubEventSource for the stream.
+ * The App shell (B2, UI refresh): the section rail + sidebar drawer, the
+ * chat pane under ChatHeader, and the mode-switchable RightPanel over the
+ * composer footer. Stub fetch for the §5 HTTP calls; StubEventSource for
+ * the stream.
  */
 
 import { act } from "react";
-import type TestRenderer from "react-test-renderer";
 import { describe, expect, test } from "vitest";
 import { App } from "./App";
 import {
@@ -48,7 +46,11 @@ function makeMeta(init?: {
 function makeHarness(init?: {
 	readonly meta?: MetaResponse;
 	readonly metaFails?: boolean;
+	/** Serve a 500 for the FIRST conversation-meta PATCH, then succeed (the
+	 * shell-error recovery test's scripted failure). */
+	readonly failFirstMetaPatch?: boolean;
 }) {
+	let metaPatchFails = init?.failFirstMetaPatch === true;
 	const metas: Record<number, ConversationMeta> = {
 		1: {
 			pinned: false,
@@ -65,6 +67,26 @@ function makeHarness(init?: {
 			source: "user",
 		},
 	};
+	const conversations = [
+		{
+			id: 1,
+			root: true,
+			entryCount: 2,
+			archived: false,
+			pinned: false,
+			name: "Tide table rewrite",
+			lastActivityAt: new Date().toISOString(),
+		},
+		{
+			id: 2,
+			root: false,
+			entryCount: 1,
+			archived: false,
+			pinned: false,
+			name: "Moor line inspection",
+			lastActivityAt: new Date().toISOString(),
+		},
+	];
 	const calls: Call[] = [];
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
@@ -74,7 +96,7 @@ function makeHarness(init?: {
 					ok: false,
 					status: 500,
 					json: () => Promise.resolve({}),
-				text: () => Promise.resolve(String({})),
+					text: () => Promise.resolve(String({})),
 				});
 			}
 			return Promise.resolve({
@@ -86,18 +108,42 @@ function makeHarness(init?: {
 		}
 		const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(input);
 		let body: unknown;
-		if (metaMatch !== null) body = metas[Number(metaMatch[1])];
-		else if (input === "/v1/models") body = { models: [] };
+		if (metaMatch !== null) {
+			const id = Number(metaMatch[1]);
+			if (init2?.method === "PATCH" && metaPatchFails) {
+				metaPatchFails = false;
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					json: () => Promise.resolve({ message: "meta write failed" }),
+					text: () => Promise.resolve("meta write failed"),
+				});
+			}
+			if (init2?.method === "PATCH") {
+				// The server-side merge: a name/archived patch updates the
+				// summary the list serves (the reload re-reads it).
+				const patch = JSON.parse(init2.body ?? "{}") as {
+					name?: string;
+					archived?: boolean;
+				};
+				const target = conversations.find((one) => one.id === id);
+				if (target !== undefined && patch.name !== undefined) {
+					target.name = patch.name;
+				}
+				if (target !== undefined && patch.archived !== undefined) {
+					target.archived = patch.archived;
+				}
+				body = {};
+			} else {
+				body = metas[id];
+			}
+		} else if (input === "/v1/models") body = { models: [] };
 		else if (/^\/v1\/conversations\/\d+\/files\?/.test(input)) {
 			body = { entries: [] };
-
 		} else {
-			body = {
-				conversations: [
-					{ id: 1, root: true, entryCount: 2 },
-					{ id: 2, root: false, entryCount: 1 },
-				],
-			};
+			// A copy per response — freshly parsed JSON in reality; a
+			// same-reference list would bail out of the reload re-render.
+			body = { conversations: conversations.map((one) => ({ ...one })) };
 		}
 		return Promise.resolve({
 			ok: true,
@@ -118,44 +164,62 @@ function makeHarness(init?: {
 		client,
 		createEventSource,
 		sources,
-
 	};
 }
 
-async function clickByClass(
-	renderer: TestRenderer.ReactTestRenderer,
-	className: string,
-	labelMatch: string,
+/** Click a sidebar conversation row by its display name (its title). */
+async function clickConversation(
+	renderer: Awaited<ReturnType<typeof renderAsync>>,
+	name: string,
 ): Promise<void> {
-	const button = renderer.root
-		.findAllByProps({ className })
-		.find((node) => node.children.join("").includes(labelMatch));
-	if (button === undefined) {
-		throw new Error(`no .${className} containing ${labelMatch}`);
-	}
+	const button = renderer.root.findByProps({
+		className: "session-select",
+		title: name,
+	});
 	await act(async () => {
 		await (button.props as { onClick: () => unknown }).onClick();
 	});
 }
 
+/** Click a header panel toggle by its aria-label hook. */
+async function clickPanel(
+	renderer: Awaited<ReturnType<typeof renderAsync>>,
+	panel: "outline" | "workspace",
+): Promise<void> {
+	const button = renderer.root.findByProps({ "aria-label": panel });
+	await act(async () => {
+		(button.props as { onClick: () => unknown }).onClick();
+	});
+}
+
 describe("App shell", () => {
-	test("boots past the schema gate on a matching schemaVersion and renders the top bar with the meta badges", async () => {
+	test("boots past the schema gate and renders the rail + header shell with the meta health dot", async () => {
 		const { client, createEventSource } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
-		const text = textContent(renderer.toJSON());
-		// The TopBar mounts with the meta-fed badges.
-		expect(text).toContain("sigrun");
-		expect(text).toContain("memory");
-		expect(text).toContain("backup: unconfigured");
-		// The shell renders beneath it; the boot-time default selection picks
-		// the root conversation, so the transcript area is live (not the
-		// no-selection placeholder).
-		expect(text).not.toContain("Select or create a conversation");
+		// The rail mounts with the health dot fed from the meta (extensions
+		// all ok + memory/providers ok + backup not degraded → ok).
+		const rail = renderer.root.findByProps({ className: "rail" });
+		expect(rail.findByProps({ className: "rail-brand" }).props.title).toBe(
+			"sigrun",
+		);
+		const dot = rail.findByProps({ className: "rail-health" });
+		expect(dot.props["data-health"]).toBe("ok");
+		expect(dot.props.title).toContain("memory: ok");
+		expect(dot.props.title).toContain("backup: unconfigured");
+		// The old top bar is gone; the chat header owns the title now.
 		expect(
 			renderer.root.findAllByProps({ className: "top-bar" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "chat-header" }),
 		).toHaveLength(1);
+		// The shell renders beneath; the boot-time default selection picks
+		// the root conversation, so the transcript area is live.
+		expect(textContent(renderer.toJSON())).not.toContain(
+			"Select or create a conversation",
+		);
 	});
 
 	test("a schemaVersion mismatch REFUSES to render (fail loud, spec §5)", async () => {
@@ -189,15 +253,17 @@ describe("App shell", () => {
 		).toHaveLength(0);
 	});
 
-	test("composes sidebar + chat center + workspace right panel + composer slot; the boot-time default selects the root conversation and opens its stream", async () => {
+	test("composes sidebar + chat pane + composer slot; the boot-time default selects the root conversation and opens its stream", async () => {
 		const { client, createEventSource, sources } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
 		const text = textContent(renderer.toJSON());
-		// Sidebar conversations rendered.
-		expect(text).toContain("#1");
-		expect(text).toContain("#2");
+		// Sidebar conversations rendered (grouped under Today — the activity
+		// stamps are fresh).
+		expect(text).toContain("Tide table rewrite");
+		expect(text).toContain("Moor line inspection");
+		expect(text).toContain("Today");
 		// The boot-time default selection picked the root conversation (id 1)
 		// and opened its stream — the composer is live without a click.
 		expect(text).not.toContain("Select or create a conversation");
@@ -208,16 +274,53 @@ describe("App shell", () => {
 			1,
 		);
 		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
+		// The right panel is closed by default (mode null renders nothing).
+		expect(
+			renderer.root.findAllByProps({ className: "right-panel" }),
+		).toHaveLength(0);
 	});
 
-	test("selecting a conversation drives the view hook and renders the transcript + the workspace browser", async () => {
+	test("Outline opens the panel; Outline again closes it; Workspace replaces Outline", async () => {
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		await clickPanel(renderer, "outline");
+		let panel = renderer.root.findByProps({ className: "right-panel" });
+		expect(panel.props["data-panel"]).toBe("outline");
+		// Clicking the active mode closes the panel (mode → null).
+		await clickPanel(renderer, "outline");
+		expect(
+			renderer.root.findAllByProps({ className: "right-panel" }),
+		).toHaveLength(0);
+		// Workspace replaces Outline when both would be open.
+		await clickPanel(renderer, "outline");
+		await clickPanel(renderer, "workspace");
+		panel = renderer.root.findByProps({ className: "right-panel" });
+		expect(panel.props["data-panel"]).toBe("workspace");
+	});
+
+	test("the old top-bar accent select (and theme controls) are gone", async () => {
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ className: "accent-picker" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "theme-controls" }),
+		).toHaveLength(0);
+	});
+
+	test("selecting a conversation drives the view hook and renders the transcript; the Workspace panel lists that conversation's files", async () => {
 		const { calls, client, createEventSource, sources } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
 		// The boot default selected the root (id 1) and opened its stream.
 		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
-		await clickByClass(renderer, "session-select", "#2");
+		await clickConversation(renderer, "Moor line inspection");
 		expect(sources.map((s) => s.url)).toEqual([
 			"/v1/conversations/1/stream",
 			"/v1/conversations/2/stream",
@@ -242,7 +345,11 @@ describe("App shell", () => {
 		});
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("hello from conversation two");
-		// The right-panel browser listed conversation 2's workspace root.
+		// Opening the Workspace panel lists conversation 2's workspace root.
+		expect(calls.map((c) => c.input)).not.toContain(
+			"/v1/conversations/2/files?path=.",
+		);
+		await clickPanel(renderer, "workspace");
 		expect(calls.map((c) => c.input)).toContain(
 			"/v1/conversations/2/files?path=.",
 		);
@@ -253,8 +360,8 @@ describe("App shell", () => {
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
-		await clickByClass(renderer, "session-select", "#1");
-		await clickByClass(renderer, "session-select", "#2");
+		await clickConversation(renderer, "Tide table rewrite");
+		await clickConversation(renderer, "Moor line inspection");
 		expect(sources.map((s) => s.url)).toEqual([
 			"/v1/conversations/1/stream",
 			"/v1/conversations/2/stream",
@@ -262,5 +369,169 @@ describe("App shell", () => {
 		expect(sources[0]?.source.closed).toBe(true);
 		expect(sources[1]?.source.closed).toBe(false);
 	});
-});
 
+	test("renaming from the header persists the name and updates the title", async () => {
+		const { calls, client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// Boot default: conversation 1, named → its display name is the title.
+		expect(textContent(renderer.toJSON())).toContain("Tide table rewrite");
+		const title = renderer.root.findByProps({ className: "chat-title" });
+		await act(async () => {
+			(title.props as { onClick: () => unknown }).onClick();
+		});
+		const input = renderer.root.findByProps({
+			className: "chat-title-input",
+		});
+		act(() => {
+			(input.props as {
+				onChange: (event: { target: { value: string } }) => void;
+			}).onChange({ target: { value: "Fjord walking routes" } });
+		});
+		await act(async () => {
+			(input.props as {
+				onKeyDown: (event: { key: string }) => void;
+			}).onKeyDown({ key: "Enter" });
+		});
+		const patch = calls.find(
+			(call) =>
+				call.input === "/v1/conversations/1/meta" && call.method === "PATCH",
+		);
+		expect(patch?.body).toContain("Fjord walking routes");
+		expect(textContent(renderer.toJSON())).toContain("Fjord walking routes");
+	});
+
+	test("the ⋯ menu's Export and Compact forward to the client", async () => {
+		const { calls, client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const more = renderer.root.findByProps({ "aria-label": "more actions" });
+		await act(async () => {
+			(more.props as { onClick: () => unknown }).onClick();
+		});
+		const menu = renderer.root.findByProps({ className: "chat-menu" });
+		await act(async () => {
+			(menu.findByProps({ "data-menu-action": "export" }).props as {
+				onClick: () => unknown;
+			}).onClick();
+		});
+		expect(calls.map((call) => call.input)).toContain(
+			"/v1/conversations/1/export",
+		);
+		await act(async () => {
+			(renderer.root.findByProps({ "aria-label": "more actions" }).props as {
+				onClick: () => unknown;
+			}).onClick();
+		});
+		const menu2 = renderer.root.findByProps({ className: "chat-menu" });
+		await act(async () => {
+			(menu2.findByProps({ "data-menu-action": "compact" }).props as {
+				onClick: () => unknown;
+			}).onClick();
+		});
+		expect(calls.map((call) => call.input)).toContain(
+			"/v1/conversations/1/compact",
+		);
+	});
+
+	test("the Outline panel lists the conversation's user prompts; the scroll fade rides above the composer dock", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		act(() => {
+			sources[0]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						entries: [
+							makeEntry(
+								"pi.user",
+								[textMessage("user", "What is at the filesystem root?")],
+								{ id: 10, conversationId: 1 },
+							),
+							makeEntry(
+								"pi.assistant",
+								[textMessage("assistant", "The root has `bin` and `etc`.")],
+								{ id: 11, conversationId: 1 },
+							),
+							makeEntry(
+								"pi.user",
+								[textMessage("user", "Yes — Hugo, English + French")],
+								{ id: 12, conversationId: 1 },
+							),
+						],
+					}),
+				),
+			);
+		});
+		await clickPanel(renderer, "outline");
+		const panel = renderer.root.findByProps({ className: "right-panel" });
+		const items = panel.findAllByProps({ className: "outline-item" });
+		expect(items).toHaveLength(2);
+		expect(items[0]?.props["data-entry-id"]).toBe(10);
+		expect(items[1]?.props["data-entry-id"]).toBe(12);
+		expect(textContent(renderer.toJSON())).toContain(
+			"What is at the filesystem root?",
+		);
+		expect(textContent(renderer.toJSON())).toContain(
+			"Yes — Hugo, English + French",
+		);
+		// The scroll fade (B5): one pointer-events-none overlay over the
+		// transcript bottom, ahead of the composer dock.
+		expect(
+			renderer.root.findAllByProps({ className: "chat-fade" }),
+		).toHaveLength(1);
+		renderer.unmount();
+	});
+
+	test("a shell error clears when a later action succeeds", async () => {
+		const { client, createEventSource } = makeHarness({
+			failFirstMetaPatch: true,
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const more = renderer.root.findByProps({ "aria-label": "more actions" });
+		const archive = async (): Promise<void> => {
+			await act(async () => {
+				(more.props as { onClick: () => unknown }).onClick();
+			});
+			await act(async () => {
+				await (
+					renderer.root.findByProps({ "data-menu-action": "archive" })
+						.props as { onClick: () => unknown }
+				).onClick();
+			});
+		};
+		await archive();
+		expect(
+			renderer.root.findAllByProps({ className: "shell-error" }),
+		).toHaveLength(1);
+		// The retry succeeds — the stale failure must not outlive it.
+		await archive();
+		expect(
+			renderer.root.findAllByProps({ className: "shell-error" }),
+		).toHaveLength(0);
+	});
+
+	test("the rail's Settings button opens the settings panel", async () => {
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ className: "settings-overlay" }),
+		).toHaveLength(0);
+		const settings = renderer.root.findByProps({ "aria-label": "settings" });
+		await act(async () => {
+			(settings.props as { onClick: () => unknown }).onClick();
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "settings-overlay" }),
+		).toHaveLength(1);
+	});
+});

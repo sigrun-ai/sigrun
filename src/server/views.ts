@@ -132,6 +132,27 @@ export interface ConversationSummary {
 	 * who owns what). Absent when the doc never carried one.
 	 */
 	readonly owner?: string;
+	/**
+	 * The display name: the user's `meta.name`, else the server-owned
+	 * `meta.autoName` (A2's auto-namer). Absent when neither was written.
+	 */
+	readonly name?: string;
+	/**
+	 * The last activity instant, ISO 8601 (activity.ts stamps it at
+	 * submission admission and run settlement). Absent on a conversation
+	 * that was never used.
+	 */
+	readonly lastActivityAt?: string;
+	/**
+	 * Fork lineage: the source conversation id and the entry the history
+	 * was forked at, when this conversation is a fork. Absent on a root
+	 * or plainly created conversation.
+	 */
+	readonly parent?: { readonly id: number; readonly at: number };
+	/** The session-meta archive flag (the sidebar's hide), default false. */
+	readonly archived: boolean;
+	/** The session-meta pin flag (pinned conversations float to top), default false. */
+	readonly pinned: boolean;
 }
 
 /** The list response of `GET /v1/conversations`. */

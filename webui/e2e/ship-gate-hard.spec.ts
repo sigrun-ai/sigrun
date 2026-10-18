@@ -7,12 +7,35 @@
  * With these + the seven from ship-gate.spec.ts, all 11 §7 M2 items pass.
  */
 
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { bootE2EServer, type E2EServer } from "./harness.js";
+
+/**
+ * The memory extension by sibling checkout (the npm name is unresolvable in
+ * this hermetic boot — publish prep removed the git dep; the repo checkout
+ * is the dev shape). Resolution walks UP from this spec so it works from
+ * the main checkout (webui/e2e → ../../../sigrun-ext-*) AND from git
+ * worktrees (one level deeper, → ../../../../../sigrun-ext-*).
+ */
+const MEMORY_EXTENSION = (() => {
+	for (const relative of [
+		"../../../sigrun-ext-memory-markdown/dist/index.js",
+		"../../../../../sigrun-ext-memory-markdown/dist/index.js",
+	]) {
+		const url = new URL(relative, import.meta.url);
+		if (existsSync(fileURLToPath(url))) return url.href;
+	}
+	throw new Error(
+		"sigrun-ext-memory-markdown checkout not found next to the repo " +
+			"(item 7 needs its memory_recall tool; see webui/e2e/harness.ts)",
+	);
+})();
 
 test.describe.configure({ mode: "serial" });
 
@@ -46,10 +69,13 @@ test.describe("item 3: steer", () => {
 		await page.locator(".composer-input").fill("first");
 		await expect(page.locator(".composer-send")).toBeEnabled();
 		await page.locator(".composer-send").click();
-		// The conversation is busy (streaming); the composer flips to Steer.
-		await expect(page.locator(".composer-send")).toHaveText("Steer", {
-			timeout: 15_000,
-		});
+		// The conversation is busy (streaming); the composer flips to Steer
+		// (B6: the send button is an icon button — Steer is its aria-label).
+		await expect(page.locator(".composer-send")).toHaveAttribute(
+			"aria-label",
+			"Steer",
+			{ timeout: 15_000 },
+		);
 		// Steer: a second input while busy goes into the running turn. Type with
 		// real keystrokes (pressSequentially) so React's controlled-input
 		// onChange fires — a Playwright fill() sets the DOM value without
@@ -183,13 +209,10 @@ test.describe("item 7: compaction recall", () => {
 		// tool call). A larger keepRecentTokens keeps the current turn's
 		// messages while compacting the marker turn.
 		server = await bootE2EServer({
-			// The memory extension by repo path (the npm name is unresolvable in this
-			// hermetic boot — publish prep removed the git dep; the repo checkout
-			// is the dev shape).
-			extensionSpecifiers: [
-				new URL("../../../sigrun-ext-memory-markdown/dist/index.js", import.meta.url)
-					.href,
-			],
+			// The memory extension by sibling checkout (the npm name is
+			// unresolvable in this hermetic boot; MEMORY_EXTENSION resolves the
+			// dev checkout — main repo or worktree).
+			extensionSpecifiers: [MEMORY_EXTENSION],
 			settings: {
 				compaction: {
 					reserveTokens: 127_300,
@@ -197,6 +220,10 @@ test.describe("item 7: compaction recall", () => {
 					backgroundTokens: 400,
 				},
 			},
+			// The spec counts faux responses per submission; A2's background
+			// auto-namer would otherwise consume one after the first settled
+			// run (naming has its own vitest coverage, test/naming.test.ts).
+			settingsFile: { namingModel: false },
 			responses: [
 				fauxAssistantMessage("the marker answer: ZEBRA-COMPACTED-OUT"),
 				fauxAssistantMessage("a second turn"),
@@ -227,14 +254,16 @@ test.describe("item 7: compaction recall", () => {
 		await page.locator(".composer-send").click();
 		await expect(
 			page
-				.locator(".entry-assistant")
+				.locator('[data-turn-kind="assistant"]')
 				.filter({ hasText: "ZEBRA-COMPACTED-OUT" }),
 		).toBeVisible({ timeout: 15_000 });
 		// Turn 2: forces the compaction.
 		await page.locator(".composer-input").pressSequentially("another turn");
 		await page.locator(".composer-send").click();
 		await expect(
-			page.locator(".entry-assistant").filter({ hasText: "a second turn" }),
+			page
+				.locator('[data-turn-kind="assistant"]')
+				.filter({ hasText: "a second turn" }),
 		).toBeVisible({ timeout: 15_000 });
 		// Turn 3: the model recalls the compacted-out marker. The memory_recall
 		// tool call's result (a pi.tool-result entry) must carry the marker —
@@ -242,12 +271,14 @@ test.describe("item 7: compaction recall", () => {
 		// binding), not the live window.
 		await page.locator(".composer-input").pressSequentially("what was the marker?");
 		await page.locator(".composer-send").click();
-		// The tool card for memory_recall expands to show the recalled content.
-		const card = page.locator(".tool-card-header").filter({ hasText: "memory_recall" }).first();
+		// The tool call renders as the activity line's tool row (B4): expand
+		// the activity, then the memory_recall row, to see the recalled content.
+		await page.locator(".activity-toggle").last().click();
+		const card = page.locator(".tool-row-toggle").filter({ hasText: "memory_recall" }).first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		await card.click();
 		await expect(
-			page.locator(".tool-card-output").filter({ hasText: "ZEBRA-COMPACTED-OUT" }),
+			page.locator(".tool-row-output").filter({ hasText: "ZEBRA-COMPACTED-OUT" }),
 		).toBeVisible({ timeout: 15_000 });
 	});
 });
@@ -261,6 +292,9 @@ test.describe("item 10: restart resume", () => {
 	}) => {
 		let server = await bootE2EServer({
 			responses: [fauxAssistantMessage("pre-restart answer")],
+			// Same response-counting determinism as item 7: no background
+			// naming call against the scripted faux queue.
+			settingsFile: { namingModel: false },
 		});
 		try {
 			await initialPage.goto(server.url);
@@ -269,7 +303,7 @@ test.describe("item 10: restart resume", () => {
 			await initialPage.locator(".composer-send").click();
 			await expect(
 				initialPage
-					.locator(".entry-assistant")
+					.locator('[data-turn-kind="assistant"]')
 					.filter({ hasText: "pre-restart answer" }),
 			).toBeVisible({ timeout: 15_000 });
 
@@ -289,7 +323,7 @@ test.describe("item 10: restart resume", () => {
 			// The pre-restart turn is still in the transcript.
 			await expect(
 				page
-					.locator(".entry-assistant")
+					.locator('[data-turn-kind="assistant"]')
 					.filter({ hasText: "pre-restart answer" }),
 			).toBeVisible({ timeout: 15_000 });
 			// A new submit works post-restart. Type with real keystrokes
@@ -301,7 +335,7 @@ test.describe("item 10: restart resume", () => {
 			await page.locator(".composer-send").click();
 			await expect(
 				page
-					.locator(".entry-assistant")
+					.locator('[data-turn-kind="assistant"]')
 					.filter({ hasText: "post-restart answer" }),
 			).toBeVisible({ timeout: 15_000 });
 			// Close the fresh page BEFORE cleanup — its open SSE watch stream

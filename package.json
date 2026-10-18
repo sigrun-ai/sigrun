@@ -49,6 +49,7 @@
 	"homepage": "https://github.com/sigrun-ai/sigrun#readme",
 	"files": [
 		"src",
+		"THIRD_PARTY_NOTICES.md",
 		"webui/src",
 		"!webui/src/**/*.test.ts",
 		"!webui/src/**/*.test.tsx",
@@ -68,5 +69,10 @@
 		"LICENSE",
 		"CHANGELOG.md",
 		"CONTEXT.md"
-	]
+	],
+	"allowScripts": {
+		"@google/genai@2.21.0": true,
+		"esbuild@0.28.2": true,
+		"protobufjs@7.6.6": true
+	}
 }

@@ -65,7 +65,9 @@ describe("createClient", () => {
 
 	test("listConversations GETs /v1/conversations", async () => {
 		const body: ConversationList = {
-			conversations: [{ id: 1, root: true, entryCount: 0 }],
+			conversations: [
+				{ id: 1, root: true, entryCount: 0, archived: false, pinned: false },
+			],
 		};
 		const { calls, fetchImpl } = stubFetch(body);
 		const client = createClient({ fetch: fetchImpl });
@@ -177,7 +179,7 @@ describe("createClient", () => {
 	});
 
 	test("createConversation POSTs /v1/conversations and parses the created summary", async () => {
-		const body = { id: 42, root: false, entryCount: 0 };
+		const body = { id: 42, root: false, entryCount: 0, archived: false, pinned: false };
 		const { calls, fetchImpl } = stubFetch(body);
 		const client = createClient({ fetch: fetchImpl });
 		const created = await client.createConversation();

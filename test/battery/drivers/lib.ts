@@ -122,9 +122,16 @@ export async function bootScenarioHarness(
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
+	// Auto-naming off: the namer completes through the same faux provider,
+	// and its request carries the warm-up answer text — the mid-compaction
+	// driver's content-discriminating factories would route it to the
+	// summarizer branch and forge a marker line. Crash scenarios script
+	// exact responses; naming behavior is test/naming.test.ts's subject.
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	return openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		settingsDir: dir,
 		...(settings === undefined ? {} : { settings }),
 	});
 }

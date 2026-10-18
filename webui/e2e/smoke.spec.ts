@@ -1,15 +1,16 @@
 /**
- * Task 26b-i: the harness smoke test — proves the E2E fixture end to end.
+ * Task 26b-i (refreshed B7): the harness smoke test — proves the E2E fixture
+ * end to end.
  *
  * Boots the real M1 server (bootE2EServer) serving the built bundle, loads
- * it in a real browser, and asserts the T25 app shell renders: the schema
+ * it in a real browser, and asserts the B2+ app shell renders: the schema
  * gate PASSES (no `.app-refused` — the served schemaVersion matches the
- * bundle's pin), the top bar shows the brand, and the sessions sidebar
+ * bundle's pin), the rail + chat header show, and the conversation sidebar
  * lists the root conversation. Screenshots to the gitignored
  * webui/test-results/ directory (local evidence, not committed).
  *
- * The checklist items (spec §7) land in follow-on slices against this
- * proven harness.
+ * Selectors ride the B2-B6 stable hooks: the section rail, the chat header
+ * (the old `header.top-bar`/`.brand` are gone), and the session list.
  */
 
 import { mkdir } from "node:fs/promises";
@@ -42,11 +43,16 @@ test("the bundle serves and the app shell renders", async ({ page }) => {
 	// The schema gate passed: the app did not refuse to render.
 	await expect(page.locator(".app-refused")).toHaveCount(0);
 
-	// The T25 top bar + brand.
-	await expect(page.locator("header.top-bar")).toBeVisible();
-	await expect(page.locator("header.top-bar .brand")).toHaveText("sigrun");
+	// The B2+ shell: the section rail (brand + Chats) + the chat header
+	// (the old top bar with its brand text is gone).
+	await expect(page.locator("nav.rail")).toBeVisible();
+	await expect(page.locator(".rail-brand")).toHaveAttribute("title", "sigrun");
+	await expect(
+		page.locator('[data-rail-section="chats"]'),
+	).toBeVisible();
+	await expect(page.locator("header.chat-header")).toBeVisible();
 
-	// The sessions sidebar lists the root conversation.
+	// The conversations sidebar lists the root conversation.
 	await expect(page.locator("nav.session-list")).toBeVisible();
 	await expect(page.locator(".session-select").first()).toBeVisible();
 

@@ -57,6 +57,17 @@ export class SlashCatalog {
 			throw error;
 		}
 	}
+
+	/** Every catalog name (the vim `:` Tab completion's source, C4). */
+	async names(): Promise<string[]> {
+		try {
+			this.#cache ??= this.#client.getCommands();
+			return (await this.#cache).commands.map((command) => command.name);
+		} catch (error) {
+			this.#cache = undefined;
+			throw error;
+		}
+	}
 }
 
 /**

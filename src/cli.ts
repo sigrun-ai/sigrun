@@ -34,6 +34,15 @@ import { resolveStoreRoots } from "./harness/stores.js";
 import { pathToFileURL } from "node:url";
 import type { Env } from "./config.js";
 import { serve, type BootedServer } from "./serve.js";
+import {
+	ACCENT_NAMES,
+	PALETTE_NAMES,
+	isAccentName,
+	isPaletteName,
+	type AccentName,
+	type ModeName,
+	type PaletteName,
+} from "./shared/themes.js";
 
 export const USAGE_TEXT = `usage: sigrun [--user <name>]
        sigrun serve
@@ -106,12 +115,20 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
  * The `tui.json` client file: the TUI's own small config (room to grow an
  * OAuth section later), read from `SIGRUN_CONFIG_DIR`/tui.json (the same
  * dir `settings.json` lives in — `SIGRUN_CONFIG_DIR` stays env-only and
- * locates the file itself). `{ user?, server? }`; absent dir/file → `{}`.
- * Fail-loud on a malformed file (the settings.json posture).
+ * locates the file itself). `{ user?, server? }` plus the UI refresh's
+ * client fields (C1): `palette`/`accent`/`mode` (theme), `keymap`
+ * (standard/vim/emacs — bindings land in C3), `editor` (external editor
+ * command, validated in C4). Absent dir/file → `{}`. Fail-loud on a
+ * malformed file (the settings.json posture).
  */
 export interface TuiFile {
 	readonly user?: string;
 	readonly server?: string;
+	readonly palette?: PaletteName;
+	readonly accent?: AccentName;
+	readonly mode?: ModeName;
+	readonly keymap?: "standard" | "vim" | "emacs";
+	readonly editor?: string;
 }
 
 /**
@@ -159,18 +176,61 @@ export async function loadTuiFile(env: Env): Promise<TuiFile> {
 	if (server !== undefined && typeof server !== "string") {
 		throw new Error(`tui.json: server must be a string`);
 	}
+	// UI refresh (C1): validate each client field, failing loud naming the
+	// key — the shared themes module owns the palette/accent name sets.
+	const palette = record.palette;
+	if (palette !== undefined && !isPaletteName(palette)) {
+		throw new Error(
+			`tui.json: palette must be one of ${PALETTE_NAMES.join(", ")}`,
+		);
+	}
+	const accent = record.accent;
+	if (accent !== undefined && !isAccentName(accent)) {
+		throw new Error(
+			`tui.json: accent must be one of ${ACCENT_NAMES.join(", ")}`,
+		);
+	}
+	const mode = record.mode;
+	if (mode !== undefined && mode !== "dark" && mode !== "light") {
+		throw new Error(`tui.json: mode must be one of dark, light`);
+	}
+	const keymap = record.keymap;
+	if (
+		keymap !== undefined &&
+		keymap !== "standard" &&
+		keymap !== "vim" &&
+		keymap !== "emacs"
+	) {
+		throw new Error(`tui.json: keymap must be one of standard, vim, emacs`);
+	}
+	// Any string: the editor command's existence/validation is C4's job.
+	const editor = record.editor;
+	if (editor !== undefined && typeof editor !== "string") {
+		throw new Error(`tui.json: editor must be a string`);
+	}
 	return {
 		...(user === undefined ? {} : { user }),
 		...(server === undefined ? {} : { server }),
+		...(palette === undefined ? {} : { palette }),
+		...(accent === undefined ? {} : { accent }),
+		...(mode === undefined ? {} : { mode }),
+		...(keymap === undefined ? {} : { keymap }),
+		...(editor === undefined ? {} : { editor }),
 	};
 }
 
-/** The launch surface the TUI entry (Task 6/8) will provide. */
+/** The launch surface the TUI entry (Task 6/8) provides. */
 export interface LaunchTuiOptions {
 	/** The server's base URL (`SigrunClient`'s `baseUrl`). */
 	readonly baseUrl: string;
 	/** The `X-Sigrun-User` identity; absent = the server's naive mode. */
 	readonly user?: string;
+	/** The UI refresh's tui.json client fields (C1), threaded through. */
+	readonly palette?: PaletteName;
+	readonly accent?: AccentName;
+	readonly mode?: ModeName;
+	readonly keymap?: "standard" | "vim" | "emacs";
+	readonly editor?: string;
 }
 
 /**
@@ -218,6 +278,26 @@ function resolveUser(
 	file: TuiFile,
 ): string | undefined {
 	return parsed.user ?? env.SIGRUN_USER ?? file.user;
+}
+
+/**
+ * The tui.json UI refresh fields (C1) as a spreadable launch fragment —
+ * the same five keys for both dispatch paths (attach + run).
+ */
+function tuiThemeFields(file: TuiFile): {
+	palette?: PaletteName;
+	accent?: AccentName;
+	mode?: ModeName;
+	keymap?: "standard" | "vim" | "emacs";
+	editor?: string;
+} {
+	return {
+		...(file.palette === undefined ? {} : { palette: file.palette }),
+		...(file.accent === undefined ? {} : { accent: file.accent }),
+		...(file.mode === undefined ? {} : { mode: file.mode }),
+		...(file.keymap === undefined ? {} : { keymap: file.keymap }),
+		...(file.editor === undefined ? {} : { editor: file.editor }),
+	};
 }
 
 /** Parse a port env value: undefined when absent/empty, else a positive
@@ -278,6 +358,13 @@ export async function cliMain(
 			await launchTuiShell({
 				baseUrl: options.baseUrl,
 				...(options.user === undefined ? {} : { user: options.user }),
+				// C1a threads the tui.json fields through; the shell consumes
+				// them in C1b's launcher rework (accept-and-ignore for now).
+				...(options.palette === undefined ? {} : { palette: options.palette }),
+				...(options.accent === undefined ? {} : { accent: options.accent }),
+				...(options.mode === undefined ? {} : { mode: options.mode }),
+				...(options.keymap === undefined ? {} : { keymap: options.keymap }),
+				...(options.editor === undefined ? {} : { editor: options.editor }),
 			});
 		},
 		exit: (exitCode) => process.exit(exitCode),
@@ -302,6 +389,7 @@ export async function cliMain(
 				await realDeps.launchTui({
 					baseUrl: resolveServer(parsed, env, file),
 					user: resolveUser(parsed, env, file),
+					...tuiThemeFields(file),
 				});
 				return 0;
 			}
@@ -334,6 +422,7 @@ export async function cliMain(
 					await realDeps.launchTui({
 						baseUrl: `http://localhost:${booted.port}`,
 						user,
+						...tuiThemeFields(file),
 					});
 				} finally {
 					// The lifecycle rule: the agent dies with the TUI.

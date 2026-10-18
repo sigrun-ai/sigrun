@@ -232,6 +232,14 @@ export interface SettingsFile {
 	 */
 	readonly defaultModel?: string;
 	/**
+	 * Sigrun: the model the auto-namer (UI refresh A2) completes through, a
+	 * non-empty `provider/model-id` spec validated exactly like
+	 * `defaultModel`, or `false` to disable automatic naming. Absent = the
+	 * boot default model. Read live per settled run, so a PATCH reaches the
+	 * next naming call without a restart.
+	 */
+	readonly namingModel?: string | false;
+	/**
 	 * Sigrun: the env-driven OpenAI-compatible provider's endpoint
 	 * (ruling 7), applied when `OPENAI_BASE_URL` is absent.
 	 */
@@ -253,6 +261,7 @@ const SETTING_KEYS = [
 	"perModelThinking",
 	"extensions",
 	"defaultModel",
+	"namingModel",
 	"defaultProvider",
 	"server",
 ] as const;
@@ -445,6 +454,29 @@ function validate(value: Record<string, unknown>): void {
 		) {
 			throw new SettingsValidationError(
 				"defaultModel",
+				"must have a non-empty provider and model id",
+			);
+		}
+	}
+	if (value.namingModel !== undefined && value.namingModel !== false) {
+		// Exactly defaultModel's spec rules, plus the `false` disable flag
+		// (checked before the string checks, so only the spec shapes fall
+		// through to them).
+		const spec = value.namingModel;
+		if (typeof spec !== "string" || spec.trim() === "") {
+			throw new SettingsValidationError(
+				"namingModel",
+				"must be a non-empty provider/model-id string or false",
+			);
+		}
+		const trimmed = spec.trim();
+		const slash = trimmed.indexOf("/");
+		if (
+			slash !== -1 &&
+			(trimmed.slice(0, slash) === "" || trimmed.slice(slash + 1) === "")
+		) {
+			throw new SettingsValidationError(
+				"namingModel",
 				"must have a non-empty provider and model id",
 			);
 		}

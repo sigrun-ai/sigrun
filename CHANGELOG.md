@@ -6,7 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added (server)
+- Conversation list fields: name, last-activity, parent (fork lineage),
+  archived and pinned on the list payload — the per-conversation meta
+  N+1 is gone; fork trees sort by newest activity anywhere in the tree.
+- Automatic conversation naming: a one-shot naming call driven by the
+  `namingModel` setting (a model id, or `false` to disable; defaults to
+  the server default model with thinking off). Forks of named
+  conversations inherit `"<name> (fork)"`.
+
+### Added (tui)
+- Fullscreen alt-screen UI with mouse support: per-keymap themes,
+  status bar, and a turn-grouped transcript with foldable turns.
+- Action layer with configurable keymaps (standard / vim / emacs):
+  turn-aware search, prompt-jump and picker actions replace the
+  alt-screen built-ins; vim mode has real insert / normal / command
+  modes with `v` opening the prompt in vim.
+- Key reference overlay (`?` in standard/emacs, `g?` in vim).
+
 ### Added (webui)
+- Theme system: palette / accent / mode, applied across the rail,
+  header and right-panel shell; visual design adapted from hermes-webui
+  by nesquena and contributors (credited in THIRD_PARTY_NOTICES).
+- Sidebar: named, grouped, searchable conversation list with pin and
+  archive.
+- Transcript: turn-grouped rendering with an activity line per turn
+  ("Thinking · 2 tools"), markdown everywhere, filterable tables
+  (filter bar above > 6 data rows), copy buttons on code blocks, a
+  transcript outline, and a scroll fade.
+- Composer model and thinking pickers.
+
 - Thinking blocks: `thinking` content blocks render as collapsible
   `<details>` before each assistant message's text — expanded + pulsing
   while the generation streams (`pi.live.generation.message` partials

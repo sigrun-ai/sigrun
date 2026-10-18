@@ -1,6 +1,6 @@
 /**
  * SettingsPanel (Task 8c, pi parity): the settings editor opened from the
- * TopBar gear. GETs `/v1/settings` on open, edits the store fields, PATCHes
+ * rail's Settings button. GETs `/v1/settings` on open, edits the store fields, PATCHes
  * the edits on Save (the server persists them; the harness picks a patched
  * `steeringMode` up on the NEXT submission's admission — the spec's binding
  * testable).
@@ -30,7 +30,12 @@
  *   instead of an empty fieldset).
  * - Interface (client prefs): `enterToSend` and `showThinking` — applied
  *   the moment their checkbox flips (no save step; they live in
- *   localStorage via the app-owned {@link PrefsState}).
+ *   localStorage via the app-owned {@link PrefsState}) — plus the theme
+ *   controls (B7): Mode / Palette / Accent over App's {@link ThemeState}
+ *   (the useTheme instance mounted in the shell — a pick applies
+ *   immediately through it, never through Save). The palette swatches
+ *   preview each palette's own bg + text + default accent; the accent
+ *   swatches are round dots with their labels in `title`.
  *
  * Save semantics: only changed fields ride the PATCH. A save with every
  * control at its baseline sends an empty patch and reports "no changes
@@ -41,12 +46,19 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import {
+	ACCENTS,
+	ACCENT_NAMES,
+	PALETTES,
+	PALETTE_NAMES,
+} from "../../../src/shared/themes.js";
 import type {
 	QueueModeWire,
 	SettingsWire,
 	SettingsPatchWire,
 	SigrunClient,
 } from "../api";
+import type { ThemeMode, ThemeState } from "../theme/useTheme";
 import { type PrefKey, type PrefsState } from "./usePrefs";
 
 /** The settings sections, in nav order. */
@@ -211,23 +223,35 @@ const CLIENT_PREF_FIELDS: readonly {
 }[] = [
 	{
 		key: "enterToSend",
-		label: "enter sends the prompt",
+		label: "Enter sends the prompt",
 		note: "off: Ctrl+Enter submits (Enter inserts a newline); on: Enter submits and Shift+Enter inserts a newline. Ctrl+Enter submits either way.",
 	},
 	{
 		key: "showThinking",
-		label: "show thinking blocks",
-		note: "reasoning text arrives with assistant messages; off hides it completely.",
+		label: "Show thinking blocks",
+		note: "Show thinking text inside activity details",
 	},
+];
+
+/** The mode segments (useTheme's ThemeMode values, labelled for the UI). */
+const MODE_OPTIONS: readonly {
+	readonly value: ThemeMode;
+	readonly label: string;
+}[] = [
+	{ value: "system", label: "System" },
+	{ value: "dark", label: "Dark" },
+	{ value: "light", label: "Light" },
 ];
 
 export function SettingsPanel(props: {
 	readonly client: SigrunClient;
 	/** The app-owned client prefs (the Interface section edits them live). */
 	readonly prefsState: PrefsState;
+	/** The shell's useTheme state (the Interface section's theme controls). */
+	readonly theme: ThemeState;
 	readonly onClose: () => void;
 }) {
-	const { client, onClose, prefsState } = props;
+	const { client, onClose, prefsState, theme } = props;
 	const [load, setLoad] = useState<LoadState>({ status: "loading" });
 	const [draft, setDraft] = useState<Draft | null>(null);
 	const [section, setSection] = useState<Section>("General");
@@ -298,7 +322,8 @@ export function SettingsPanel(props: {
 		) : draft === null ? null : section === "General" ? (
 			<div className="settings-body">
 				<label className="settings-field">
-					<span className="settings-label">steering mode</span>
+					<span className="settings-label">Steering mode</span>
+					<span className="settings-select-wrap">
 					<select
 						className="settings-steering"
 						value={draft.steeringMode}
@@ -314,10 +339,12 @@ export function SettingsPanel(props: {
 								{mode === "" ? "(server default)" : mode}
 							</option>
 						))}
-					</select>
+						</select>
+					</span>
 				</label>
 				<label className="settings-field">
-					<span className="settings-label">follow-up mode</span>
+					<span className="settings-label">Follow-up mode</span>
+					<span className="settings-select-wrap">
 					<select
 						className="settings-followup"
 						value={draft.followUpMode}
@@ -333,13 +360,14 @@ export function SettingsPanel(props: {
 								{mode === "" ? "(server default)" : mode}
 							</option>
 						))}
-					</select>
+						</select>
+					</span>
 				</label>
 			</div>
 		) : section === "Tools" ? (
 			<div className="settings-body">
 				<fieldset className="settings-field settings-tools">
-					<legend className="settings-label">default tools</legend>
+					<legend className="settings-label">Default tools</legend>
 					{rosterOf(load.settings).map((name) => (
 						<label key={name} className="settings-checkbox">
 							<input
@@ -367,6 +395,76 @@ export function SettingsPanel(props: {
 			</div>
 		) : section === "Interface" ? (
 			<div className="settings-body">
+				{/* The theme controls (B7): picks apply IMMEDIATELY through the
+				    shell's useTheme state — no Save, never the server. */}
+				<fieldset className="settings-field">
+					<legend className="settings-label">Mode</legend>
+					<div className="settings-mode-row" role="group" aria-label="mode">
+						{MODE_OPTIONS.map((option) => (
+							<button
+								key={option.value}
+								type="button"
+								className="settings-mode"
+								data-mode-option={option.value}
+								aria-pressed={theme.mode === option.value}
+								onClick={() => theme.setMode(option.value)}
+							>
+								{option.label}
+							</button>
+						))}
+					</div>
+				</fieldset>
+				<fieldset className="settings-field">
+					<legend className="settings-label">Palette</legend>
+					<div className="settings-palettes" role="group" aria-label="palette">
+						{PALETTE_NAMES.map((name) => {
+							const palette = PALETTES[name];
+							const tokens = palette[theme.resolved];
+							return (
+								<button
+									key={name}
+									type="button"
+									className="settings-palette"
+									data-palette-option={name}
+									aria-pressed={theme.palette === name}
+									title={palette.label}
+									onClick={() => theme.setPalette(name)}
+									style={{ background: tokens.bg }}
+								>
+									<span
+										className="settings-swatch-dot"
+										aria-hidden="true"
+										style={{ background: tokens.text }}
+									/>
+									<span
+										className="settings-swatch-dot"
+										aria-hidden="true"
+										style={{
+											background: ACCENTS[palette.defaultAccent][theme.resolved],
+										}}
+									/>
+								</button>
+							);
+						})}
+					</div>
+				</fieldset>
+				<fieldset className="settings-field">
+					<legend className="settings-label">Accent</legend>
+					<div className="settings-accents" role="group" aria-label="accent">
+						{ACCENT_NAMES.map((name) => (
+							<button
+								key={name}
+								type="button"
+								className="settings-accent"
+								data-accent-option={name}
+								aria-pressed={theme.accent === name}
+								title={ACCENTS[name].label}
+								onClick={() => theme.setAccent(name)}
+								style={{ background: ACCENTS[name][theme.resolved] }}
+							/>
+						))}
+					</div>
+				</fieldset>
 				{CLIENT_PREF_FIELDS.map((field) => (
 					<label
 						key={field.key}
@@ -400,11 +498,11 @@ export function SettingsPanel(props: {
 							setDraft({ ...draft, retryEnabled: event.target.checked })
 						}
 					/>
-					<span className="settings-label">retry enabled</span>
+					<span className="settings-label">Retry enabled</span>
 				</label>
 				<label className="settings-field">
 					<span className="settings-label">
-						per-model thinking (raw JSON, v1)
+						Per-model thinking (raw JSON, v1)
 					</span>
 					<textarea
 						className="settings-thinking"
@@ -427,7 +525,7 @@ export function SettingsPanel(props: {
 		<div className="settings-overlay" role="dialog" aria-label="settings">
 			<div className="settings-panel">
 				<header className="settings-head">
-					<span className="settings-title">settings</span>
+					<span className="settings-title">Settings</span>
 					<span className="spacer" />
 					<button
 						type="button"
@@ -468,7 +566,7 @@ export function SettingsPanel(props: {
 						}
 						onClick={() => void save()}
 					>
-						{saveState.status === "saving" ? "saving…" : "save"}
+						{saveState.status === "saving" ? "Saving…" : "Save"}
 					</button>
 					{saveState.message !== undefined && (
 						<span

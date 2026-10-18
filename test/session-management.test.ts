@@ -32,6 +32,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { SessionMetaDoc } from "../src/server/session-meta.js";
 import type { FastifyInstance } from "fastify";
 
 /** One hermetic server: harness + faux provider + Fastify app. */
@@ -171,6 +172,61 @@ describe("POST /v1/conversations/:id/fork", () => {
 		expect(body.view.entries.map((e: { id: number }) => e.id)).toEqual(
 			parent.entries.map((e: { id: number }) => e.id),
 		);
+	});
+
+	test("fork gets \"<name> (fork)\" and drops the copied user name", async () => {
+		const { app, opened, faux } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		faux.setResponses([fauxAssistantMessage("answer")]);
+		await submit(app, root.id, "hello");
+		// Let the background auto-namer settle out (it fails on the empty
+		// script; its attempt bookkeeping must not leak into the assertions).
+		await opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
+		await opened.autoNamer.idle();
+		// Name the source "Alpha" through the meta route.
+		const patched = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${root.id}/meta`,
+			payload: { name: "Alpha" },
+			headers: { "content-type": "application/json" },
+		});
+		expect(patched.statusCode).toBe(200);
+		// Exhaust the source's naming attempts (a host-owned field, so it is
+		// seeded through the doc the same way the namer writes it): the fork
+		// must NOT inherit the dead count — it stays eligible for auto naming
+		// (the plan's Task D deviation (c)).
+		const source = await opened.harness.conversation(root.id, BACKGROUND_CONTEXT);
+		expect(source).toBeDefined();
+		await source!.commit(async (tx) => {
+			const draft = await tx.doc(SessionMetaDoc, root.id);
+			draft.autoNameAttempts = 3;
+		}, BACKGROUND_CONTEXT);
+		const forked = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/fork`,
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(forked.statusCode).toBe(201);
+		const forkId = forked.json().id as number;
+		const listed = (
+			await app.inject({ method: "GET", url: "/v1/conversations" })
+		).json();
+		const forkRow = listed.conversations.find(
+			(c: { id: number }) => c.id === forkId,
+		);
+		expect(forkRow.name).toBe("Alpha (fork)");
+		// The fork's own meta carries no USER name — its display name is the
+		// server-set fork autoName, and the copied `name` is gone.
+		const meta = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${forkId}/meta` })
+		).json();
+		expect("name" in meta).toBe(false);
+		expect(meta.autoName).toBe("Alpha (fork)");
+		// And no inherited attempt count: the fork is naming-fresh.
+		expect("autoNameAttempts" in meta).toBe(false);
 	});
 
 	test("unknown conversation → 404; bad `at` → 400 invalid_field", async () => {

@@ -84,9 +84,15 @@ async function bootServer(
 		SIGRUN_WORKSPACE_PATH: dir,
 		...env,
 	});
+	// Auto-naming off: the namer completes through the same faux provider
+	// and would consume scripted responses after the first settled run —
+	// these tests script exact responses for the submissions surface
+	// (naming behavior is test/naming.test.ts's subject).
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		settingsDir: dir,
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {
@@ -125,10 +131,13 @@ async function bootExtendedServer(options: {
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
+	// Same disable as bootServer (exact-response scripts).
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
 		extensionSpecifiers: options.extensionSpecifiers,
+		settingsDir: dir,
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {

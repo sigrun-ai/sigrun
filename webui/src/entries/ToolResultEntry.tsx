@@ -1,20 +1,29 @@
 /**
- * ToolResultEntry (Task 22): a `pi.tool-result` entry rendered as an
- * expandable tool card. Collapsed shows the tool name + status; expanded
- * shows the output. When the matching LiveDoc tool slot (joined by
- * `toolCallId === callId`) is running, the card renders in-progress and the
- * slot's streaming output wins over the committed entry body.
+ * ToolRow (B4, UI refresh): ONE tool call inside the expanded
+ * ActivityLine — the anti-goal ruling is that tool calls are NOT
+ * first-class transcript cards; they live in the collapsed activity line.
+ * A row shows its glyph (✓ settled / ✗ error / spinner running / · no
+ * result yet), the tool name, and the preview in mono; expanding reveals
+ * the call arguments (JSON) and the result output (first 20 lines,
+ * "Show more" for the rest), with the edit result's line-coloured diff
+ * view (Task 1d) and Copy command / Copy output actions.
  *
- * Task 1d: an edit result carries the applied diff in its `details` field
- * (`{ diff, patch, firstChangedLine }` — pi-durable's display format:
- * `+<line> …` added, `-<line> …` removed, ` <line> …` context). When a
- * string `diff` is present, the expanded card renders it as a line-colored
- * diff view instead of relying on the plain text body.
+ * A running live slot (joined by callId) wins: spinner glyph, streaming
+ * output over the settled entry's body.
  */
 
 import { useState } from "react";
-import type { ConversationEntryWire, ToolSlotWire } from "../api";
+import type {
+	ConversationEntryWire,
+	MessageWire,
+	ToolSlotWire,
+} from "../api";
+import { previewArgument, type ToolCall } from "../../../src/shared/turns.js";
+import { copyText } from "./MessageActions";
 import { messageText } from "./content";
+
+/** How many output lines render before the "Show more" button. */
+const OUTPUT_MAX_LINES = 20;
 
 /** The diff string of a tool result's `details`, when it carries one. */
 function diffOf(message: { details?: unknown } | undefined): string | undefined {
@@ -32,10 +41,10 @@ function diffLineClass(line: string): string {
 	return "diff-line-ctx";
 }
 
-/** Line-colored rendering of one diff (see {@link diffOf}). */
+/** Line-coloured rendering of one diff (see {@link diffOf}). */
 function DiffView(props: { diff: string }) {
 	return (
-		<pre className="tool-card-diff">
+		<pre className="tool-row-diff">
 			{props.diff.split("\n").map((line, index) => (
 				<span key={index} className={diffLineClass(line)}>
 					{line + "\n"}
@@ -45,47 +54,110 @@ function DiffView(props: { diff: string }) {
 	);
 }
 
-export function ToolResultEntry(props: {
-	entry: ConversationEntryWire;
+export function ToolRow(props: {
+	/** The grouped turn's tool call (callId, name, preview, result state). */
+	tool: ToolCall;
+	/** The call's arguments (the JSON the row expands to; Copy command's source). */
+	args: unknown;
+	/** The settled result entry, when the call has one. */
+	result?: ConversationEntryWire;
 	/** The matching live tool slot, when the tool is still live. */
 	slot?: ToolSlotWire;
 }) {
+	const { tool, args, result, slot } = props;
 	const [expanded, setExpanded] = useState(false);
-	const entryModel = props.entry.model ?? [];
-	const message =
-		entryModel.find((candidate) => candidate.role === "toolResult") ??
-		entryModel[0];
-	const name = props.slot?.name ?? message?.toolName ?? "tool";
-	const status = props.slot?.status ?? "done";
-	const running = status === "running";
+	const [outputLimit, setOutputLimit] = useState(OUTPUT_MAX_LINES);
+
+	const running = slot?.status === "running";
+	const settled = resultMessage(result);
 	const output =
-		props.slot?.output ?? (message === undefined ? "" : messageText(message));
+		slot?.output ?? (settled === undefined ? "" : messageText(settled));
 	// A live slot has no committed details yet; the diff view reads the
 	// settled entry only.
-	const diff =
-		props.slot === undefined ? diffOf(message) : undefined;
-	const className = running
-		? "entry entry-tool entry-tool-running"
-		: "entry entry-tool";
+	const diff = slot === undefined ? diffOf(settled) : undefined;
+	const command = previewArgument(tool.name, args);
+	const lines = output.split("\n");
+	const shown = lines.slice(0, outputLimit).join("\n");
+
 	return (
-		<div className={className}>
-			<button
-				type="button"
-				className="tool-card-header"
-				aria-expanded={expanded}
-				onClick={() => setExpanded((value) => !value)}
-			>
-				<span className="tool-card-name">{name}</span>
-				<span className="tool-card-status">
-					{running ? "running…" : status}
-				</span>
-			</button>
+		<div
+			className="tool-row"
+			data-error={tool.isError || undefined}
+			data-running={running || undefined}
+		>
+			<div className="tool-row-head">
+				<button
+					type="button"
+					className="tool-row-toggle"
+					aria-expanded={expanded}
+					onClick={() => setExpanded((value) => !value)}
+				>
+					{running ? (
+						<span className="tool-row-spinner" aria-label="running" />
+					) : tool.isError ? (
+						<span className="tool-row-glyph" data-glyph="error">
+							✗
+						</span>
+					) : result !== undefined ? (
+						<span className="tool-row-glyph" data-glyph="ok">
+							✓
+						</span>
+					) : (
+						<span className="tool-row-glyph" data-glyph="pending">·</span>
+					)}
+					<span className="tool-row-name">{slot?.name ?? tool.name}</span>
+					<span className="tool-row-preview">{tool.preview}</span>
+				</button>
+				<div className="tool-row-actions">
+					{command !== undefined && (
+						<button
+							type="button"
+							className="message-action"
+							onClick={() => copyText(command)}
+						>
+							Copy command
+						</button>
+					)}
+					{output !== "" && (
+						<button
+							type="button"
+							className="message-action"
+							onClick={() => copyText(output)}
+						>
+							Copy output
+						</button>
+					)}
+				</div>
+			</div>
 			{expanded && (
-				<>
-					{output !== "" && <pre className="tool-card-output">{output}</pre>}
+				<div className="tool-row-detail">
+					{args !== undefined && (
+						<pre className="tool-row-args">{JSON.stringify(args, null, 2)}</pre>
+					)}
+					{shown !== "" && <pre className="tool-row-output">{shown}</pre>}
+					{lines.length > outputLimit && (
+						<button
+							type="button"
+							className="tool-row-more"
+							onClick={() => setOutputLimit((limit) => limit + OUTPUT_MAX_LINES)}
+						>
+							Show more
+						</button>
+					)}
 					{diff !== undefined && <DiffView diff={diff} />}
-				</>
+				</div>
 			)}
 		</div>
+	);
+}
+
+/** The toolResult-role message of a settled result entry, if any. */
+function resultMessage(
+	entry: ConversationEntryWire | undefined,
+): MessageWire | undefined {
+	if (entry === undefined) return undefined;
+	return (
+		(entry.model ?? []).find((candidate) => candidate.role === "toolResult") ??
+		(entry.model ?? [])[0]
 	);
 }

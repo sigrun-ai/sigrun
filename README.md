@@ -19,7 +19,9 @@ and capabilities at boot.
   reported, never a boot abort.
 - **Web UI** — a static bundle served from `SIGRUN_WEBUI_BUNDLE` (or the
   settings file's `server.webuiBundle`; default `webui/dist`); API-only
-  deploys simply omit it.
+  deploys simply omit it. The web UI's visual design is adapted from
+  [hermes-webui](https://github.com/nesquena/hermes-webui) by nesquena and
+  contributors — see THIRD_PARTY_NOTICES.md.
 - **Terminal UI** — a pi-idiom terminal client over the same HTTP + SSE
   API the web UI consumes (feature parity by design): conversation
   sidebar, streaming conversation pane, fork, the interaction and

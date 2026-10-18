@@ -18,7 +18,7 @@
  * timers, short waits — the repo's convention) rather than fake timers.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -124,12 +124,18 @@ async function bootFixture(options: {
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
+	// Auto-naming off: the namer completes through the same faux provider
+	// and would consume scripted responses after the first settled run —
+	// these tests script exact responses for the seam's own observables
+	// (naming behavior is test/naming.test.ts's subject).
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
 		settings: options.settings,
 		extensionSpecifiers: [MEMORY_EVENTS_SPECIFIER],
 		eventBus: options.eventBus,
+		settingsDir: dir,
 	});
 	closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
 	const fixture = await fixtureModule();
