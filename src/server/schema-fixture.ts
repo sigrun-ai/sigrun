@@ -283,6 +283,12 @@ export const VIEW_SCHEMA: Shape = {
 										"sections": {
 											"kind": "object",
 											"fields": {
+												"identity": {
+													"kind": "string"
+												},
+												"persona": {
+													"kind": "string"
+												},
 												"long-term-memory": {
 													"kind": "string"
 												}
