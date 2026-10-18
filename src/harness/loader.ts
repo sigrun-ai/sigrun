@@ -79,8 +79,10 @@ import type {
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { DeclaredKinds } from "./seam-host.js";
-import { resolveExtensionEntry } from "./packages.js";
+import { readPackageName, resolveExtensionEntry } from "./packages.js";
 import { slugifyName } from "./stores.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
@@ -606,16 +608,25 @@ export interface LoadExtensionsOptions {
 	/** Optional context: the gitDir for the sync step's logging. */
 	readonly gitDir?: string;
 	/**
-	 * Host-context factory (the interaction/ambient seam): invoked once per
-	 * resolving extension with its pi-durable extension name and its declared
-	 * kinds; the returned object is what the loader passes to arity-1
-	 * factories. Omitted (or a factory that ignores the argument) = the
-	 * extension uses no seam. The factory pattern lets boot own the lazy
-	 * harness binding once, shared by every extension.
+	 * Host-context factory (the interaction/ambient seam): invoked TWICE
+	 * per resolving extension. The PRE-import call passes the PROVISIONAL
+	 * identity — the slug derived from the load specifier
+	 * (`provisionalSlugFor` below; `""` when nothing derives) — so a
+	 * factory that reads scoped settings during its body (e.g.
+	 * sigrun-pareto's `baseUrl` override) resolves the real package's
+	 * settings file, not the pre-fix `settings/.json` placeholder scope.
+	 * The post-resolution call passes the extension's declared slug +
+	 * kinds AND the instance the first call returned as `priorHost`, so
+	 * the host is re-keyed IN PLACE (a second instance would orphan every
+	 * inbound handler the factory registered on the instance it
+	 * captured). Omitted (or a factory that ignores the argument) = the
+	 * extension uses no seam.
 	 */
 	readonly hostContextFactory?: (
 		extensionName: string,
 		kinds: DeclaredKinds,
+		/** The pre-import call's instance — present on the post-resolution call only. */
+		priorHost?: unknown,
 	) => unknown;
 }
 
@@ -625,6 +636,65 @@ export interface ResolvedExtensionInput {
 	readonly name?: string;
 	/** The module entry: an absolute `file://` URL or any import() specifier. */
 	readonly entry: string;
+}
+
+/**
+ * The PROVISIONAL host identity for the pre-import factory call
+ * (provider plugins Task 9, review P1): the slug derived from the LOAD
+ * SPECIFIER — the package's own manifest name when the entry is
+ * path-shaped (packages-dir installs, git checkouts, dev checkouts:
+ * the nearest `package.json` at or above the entry, never read across
+ * a `node_modules` boundary — the packages root's own manifest is not
+ * an extension's identity), else the specifier's name part
+ * (`slugifyName` folds scoped names and `@version`s; an `npm:` install
+ * prefix is stripped). `""` when nothing survives (the pre-fix
+ * placeholder shape — an absent settings file reads as `{}` either
+ * way, but `""` never invents a wrong-but-plausible scope).
+ *
+ * Why a provisional at all: a factory that reads scoped settings
+ * DURING its body (sigrun-pareto's `baseUrl` override) runs BEFORE the
+ * declared name is known; with the `""` placeholder its read hit
+ * `settings/.json` and the override was silently inert. Pre-keying on
+ * the specifier-derived slug makes the factory-time read resolve the
+ * real package's file whenever the extension's declared name matches
+ * its package name — the documented requirement for provider plugins
+ * that read settings at factory time. A mismatching declared name
+ * still re-keys to the declared slug after resolution; only its
+ * factory-time settings reads saw the provisional scope.
+ */
+function provisionalSlugFor(loaded: string): string {
+	let absolute: string | undefined;
+	if (loaded.startsWith("file://")) {
+		try {
+			absolute = fileURLToPath(loaded);
+		} catch {
+			// Not a usable file URL — fall through to the specifier form.
+		}
+	} else if (
+		loaded.startsWith("/") ||
+		loaded.startsWith("./") ||
+		loaded.startsWith("../")
+	) {
+		absolute = resolve(loaded);
+	}
+	if (absolute !== undefined) {
+		// Bounded walk from the entry itself (a directory entry carries
+		// its manifest at the top) up its ancestors.
+		let dir = absolute;
+		for (let hops = 0; hops < 6; hops++) {
+			if (basename(dir) === "node_modules") return "";
+			const name = readPackageName(dir);
+			if (name !== undefined) {
+				const slug = slugifyName(name);
+				if (slug !== "") return slug;
+			}
+			const parent = dirname(dir);
+			if (parent === dir) return "";
+			dir = parent;
+		}
+		return "";
+	}
+	return slugifyName(loaded.replace(/^npm:/, ""));
 }
 
 /**
@@ -718,15 +788,24 @@ const display = label ?? entry;
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its
 			// RESULT. The loader therefore invokes the host factory TWICE with
-			// the SAME instance: once pre-resolution with placeholder identity
-			// ("", no kinds) so the factory body has a host to capture, and once
-			// post-resolution with the real name + kinds — boot's factory
-			// re-keys the SAME host object IN PLACE (SeamHost.rekey), so the
-			// instance the factory captured becomes the final host and its
-			// write gate sees the declared kinds from then on.
+			// the SAME instance: once PRE-import with the PROVISIONAL identity
+			// (the slug derived from the load specifier — `provisionalSlugFor`;
+			// "" when nothing derives) so a factory that reads scoped settings
+			// during its body resolves the real package's store (provider
+			// plugins Task 9 P1 — the pre-fix "" placeholder made sigrun-pareto's
+			// `baseUrl` override silently inert), and once post-resolution with
+			// the declared name + kinds PLUS the captured instance — boot's
+			// factory re-keys that SAME host object IN PLACE (SeamHost.rekey),
+			// so the instance the factory captured becomes the final host and
+			// its write gate sees the declared kinds from then on. The
+			// provisional normally EQUALS the resolved slug (extension name ==
+			// package name); when it differs the re-key still corrects the
+			// scope — only factory-time settings reads of such an extension
+			// saw the provisional scope (documented: read scoped settings at
+			// factory time only when the plugin name matches its package name).
 			let host: unknown;
 			if (options.hostContextFactory !== undefined) {
-				host = options.hostContextFactory("", {});
+				host = options.hostContextFactory(provisionalSlugFor(loaded), {});
 			}
 			const resolved = await resolveExtension(module, host);
 			if (resolved === undefined) {
@@ -782,7 +861,9 @@ const display = label ?? entry;
 						: { ...resolved.extension, name: slug };
 				// The post-resolution call re-keys the captured host instance in
 				// place with the slug + declared kinds (boot's
-				// hostContextFactory; see src/harness/boot.ts). No second host is
+				// hostContextFactory; see src/harness/boot.ts) — the instance is
+				// handed back explicitly as `priorHost`, so even a provisional ≠
+				// resolved mismatch re-keys the SAME instance. No second host is
 				// ever created — a rebuilt instance would orphan every inbound
 				// handler the factory registered on the host it captured.
 				if (options.hostContextFactory !== undefined) {
@@ -794,7 +875,7 @@ const display = label ?? entry;
 						? {}
 						: { ambient: resolved.ambientKinds }),
 					};
-					options.hostContextFactory(slug, kinds);
+					options.hostContextFactory(slug, kinds, host);
 				}
 				if (extension !== undefined) {
 					registry.install(extension);

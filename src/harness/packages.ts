@@ -212,9 +212,11 @@ function canonicalizePath(spec: string, base: string): string {
  * The `name` of a path-shaped specifier's target package, when readable.
  * A directory's `package.json` reads directly; a `.tgz` tarball's
  * `package/package.json` reads by listing the archive (npm keys a tarball
- * install by the packed manifest's name too).
+ * install by the packed manifest's name too). Exported for the loader's
+ * provisional-identity derivation (the nearest manifest above a load
+ * entry names the package).
  */
-function readPackageName(absPath: string): string | undefined {
+export function readPackageName(absPath: string): string | undefined {
 	try {
 		const pkg = JSON.parse(
 			readFileSync(join(absPath, "package.json"), "utf8"),

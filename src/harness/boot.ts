@@ -430,27 +430,33 @@ export async function openHarness(
 		registry,
 		{
 			packagesDir,
-			hostContextFactory: (extensionName, kinds) => {
-				// Second call for an already-created host: re-key IN PLACE. The
-				// instance the factory captured (stored under "" pre-resolution)
-				// must be the final host (review M2) — never a second instance.
-				// The first `??` arm (a host already filed under this extension's
-				// own name) is reachable only on same-name re-install — an
-				// out-of-contract path the registry permits but config should not.
+			hostContextFactory: (extensionName, kinds, priorHost) => {
+				// Two-phase, revised for the provisional identity (provider
+				// plugins Task 9 P1): the loader's PRE-import call passes the
+				// slug derived from the load specifier (a factory-time settings
+				// read — sigrun-pareto's `baseUrl` override — resolves the real
+				// package's file), and the post-resolution call hands the SAME
+				// instance back as `priorHost`. The re-key below therefore always
+				// mutates the instance the factory captured — never a second
+				// instance (review M2: a rebuilt host would orphan every inbound
+				// handler registered on the captured one), even when the declared
+				// name differs from the specifier-derived provisional.
 				const host =
-					seamHosts.get(extensionName) ??
-					seamHosts.get("") ??
+					(priorHost as SeamHost | undefined) ??
 					createSeamHost({ name: extensionName }, kinds, {
 						bindHarness,
 						harness: harnessOf,
 					}, sharedStores);
 				host.rekey({ name: extensionName }, kinds);
-				// Both maps key by final name only: drop the "" placeholder
-				// entries (asymmetric leftover — seamKinds kept one per load).
-				seamHosts.delete("");
-				seamKinds.delete("");
-				seamHosts.set(extensionName, host);
-				seamKinds.set(extensionName, kinds);
+				// File under the final name only, and only once the load
+				// resolved: the PRE-import call must NOT file (its identity is
+				// provisional; a quarantined load would leak a placeholder
+				// entry), so the maps gain exactly one entry per resolving
+				// extension.
+				if (priorHost !== undefined) {
+					seamHosts.set(extensionName, host);
+					seamKinds.set(extensionName, kinds);
+				}
 				return host;
 			},
 		},
