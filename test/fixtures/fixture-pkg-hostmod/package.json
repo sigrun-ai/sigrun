@@ -1,0 +1,8 @@
+{
+	"name": "fixture-pkg-hostmod",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension package with NO runtime deps that imports a host-shipped module bare — the provider-plugin dependency posture (pi-ai/pi-durable declared devDependencies-only).",
+	"type": "module",
+	"main": "index.js"
+}
