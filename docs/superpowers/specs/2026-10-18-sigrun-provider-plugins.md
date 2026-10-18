@@ -1,6 +1,6 @@
 # Sigrun provider plugins — opencode, ollama, pareto, bifrost + core refresh policy
 
-Status: draft for review. Date: 2026-10-18.
+Status: implemented. Date: 2026-10-18.
 
 ## Why
 

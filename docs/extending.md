@@ -242,6 +242,90 @@ export SIGRUN_EXT_ACME_TOOL_API_KEY=sk-...
 - An empty-string env var counts as unset — the same
   ""-means-unset reading the directory tiers use.
 
+## Contributing model providers (provider plugins)
+
+An extension package can contribute pi-ai providers — dynamic catalogs
+that boot merges, refreshes, persists, and serves on `/v1/models` —
+without any pi-durable surface at all. The factory result carries a
+`providers` array of contributions; **a result with `providers` and no
+`extension` is a valid provider-only contributor** identified by its
+`name` field (which must equal the package name for factory-time scoped
+settings reads to resolve — see below):
+
+```ts
+import { createProvider } from "@earendil-works/pi-ai/models";
+
+export default async function sigrunAcme(host: {
+	readonly stores: {
+		readonly settings: {
+			get(): Promise<Record<string, unknown>>;
+		};
+	};
+}) {
+	const settings = await host.stores.settings.get();
+	// ...build the provider (see the rules below)...
+	return {
+		name: "sigrun-acme",
+		providers: [{ provider, readiness }],
+		health, // optional, "ok" | "degraded"
+	};
+}
+```
+
+The contract rules, all load-bearing:
+
+- **Baseline `models: []`.** `createProvider` requires the field
+  (omitting it throws); an empty array is the purely-dynamic shape and
+  boots with an empty catalog the refresh fills.
+- **Stamp `provider: "<your-id>"` on every model `fetchModels` returns.**
+  pi-ai's restore path drops persisted models whose `provider` differs
+  from the registered id, so an unstamped catalog silently vanishes on
+  the next cold boot.
+- **`fetchModels` throws, never returns `[]`.** The createProvider
+  wrapper publishes and persists whatever the fetch returns — an empty
+  array would wipe the catalog and the persisted store. Unconfigured,
+  unreachable, or garbage upstreams throw (the refresh retains the last
+  known catalog by contract).
+- **`readiness` is the three-state tracker** sigrun's `/v1/auth/check`
+  reports verbatim: `not_configured` (no credential resolved — an
+  unconfigured optional plugin, not a broken process), `degraded`
+  (credential resolved, last refresh failed), `ready` (credential
+  resolved, refresh succeeded or a static catalog serves). Seed it from
+  credential resolution — pi-ai never refreshes an unconfigured
+  provider, so refresh outcomes alone cannot express `not_configured` —
+  and update it per refresh outcome. It must be a synchronous read over
+  plugin-owned state: never network, never storage.
+- **Without a tracker**, `/v1/auth/check` falls back to the legacy
+  producer mapping: `ok` → `ready`, `degraded` → `invalid`, absent →
+  `not_ready`. The three-state vocabulary applies only to tracker-backed
+  providers.
+- **Credentials resolve through the auth bridge, never your own I/O.**
+  The stored credential arrives as `credential` on your auth resolver
+  (auth.json's `"default"` entry first, then your provider's own — sigrun
+  reads it for you); ambient env arrives via `ctx.env(NAME)`. Do not
+  read `auth.json` or `process.env` yourself. Resolve `undefined` when
+  nothing is configured — pi-ai then skips the refresh phase and
+  requests fail loud instead of boot failing.
+- **Scoped settings are restart-required.** Whatever your factory reads
+  from `host.stores.settings` is baked into the provider at factory
+  time; changing `settings/<slug>.json` applies on the next restart, not
+  mid-run. (The loader pre-keys the factory host on the slug derived
+  from your package name, so a factory-time read resolves your file
+  when the declared `name` matches the package name.)
+
+**Dependency posture.** Declare `@earendil-works/pi-ai` (and
+`@earendil-works/pi-durable` if you use its types) as **devDependencies
+only**. Sigrun ships them at runtime, the packages-dir install omits dev
+dependencies, and the loader links the host's own copies into the
+packages dir so your bare imports resolve — you consume the SAME module
+instances the host runs, matched structurally at runtime (never by
+`instanceof`). `typebox` (pi-ai's own dependency) resolves the same way.
+Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-ollama)
+(the minimal shape), [sigrun-opencode](https://github.com/sigrun-ai/sigrun-opencode),
+[sigrun-pareto](https://github.com/sigrun-ai/sigrun-pareto) (scoped-settings
+base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-bifrost)
+(multi-surface discovery).
+
 ## Uninstall
 
 There is no automatic deletion, anywhere. Removing an entry from
