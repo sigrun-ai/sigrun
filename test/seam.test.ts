@@ -95,9 +95,9 @@ test("a malformed kinds declaration quarantines the extension (fail-loud)", asyn
 	expect(opened.seamHosts.has("sigrun-fixture-seam-bad")).toBe(false);
 });
 
-test("resolveExtension: a zero-arg factory still resolves with a host passed (arity-safe)", () => {
+test("resolveExtension: a zero-arg factory still resolves with a host passed (arity-safe)", async () => {
 	const ext = { name: "sigrun.zero-arg", hooks: [], tools: [] };
-	const result = resolveExtension({
+	const result = await resolveExtension({
 		default: () => ({ extension: ext }),
 	});
 	expect(result?.extension).toBe(ext);

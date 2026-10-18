@@ -206,8 +206,11 @@ export interface OpenHarnessOptions {
 	 * PROVIDER contributors (Task 2 seam) — NOT the extension package list.
 	 * These feed the Models collector; they are distinct from the deployed
 	 * extension *packages* loaded from `config.extensions` by the loader
-	 * (Task 5.5). (Renaming this field to `providerContributors` is a queued
-	 * cleanup to end the collision with `config.extensions`.)
+	 * (Task 5.5), whose own factory-result contributors are collected at
+	 * load and concatenated AFTER this seam (options first — a test seam
+	 * contributor never gets shadowed by a loaded one). (Renaming this field
+	 * to `providerContributors` is a queued cleanup to end the collision with
+	 * `config.extensions`.)
 	 */
 	readonly extensions?: readonly ProviderContributor[];
 	/** Environment the provider collector reads; defaults to `process.env`. */
@@ -385,6 +388,7 @@ export async function openHarness(
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,
+		providerContributors,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -455,10 +459,15 @@ export async function openHarness(
 	// credentials from `auth.json` before the OPENAI_API_KEY fallback.
 	const authStore = new AuthStore({ dir: options.settingsDir });
 	const { models, defaultModel, healthProducers: providerHealth, providerOwnership } =
-		collectProviders(options.extensions ?? [], effectiveEnv, sink, {
-			auth: authStore,
-			baseUrl: config.defaultProviderBaseUrl,
-		});
+		collectProviders(
+			[...(options.extensions ?? []), ...providerContributors],
+			effectiveEnv,
+			sink,
+			{
+				auth: authStore,
+				baseUrl: config.defaultProviderBaseUrl,
+			},
+		);
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so a future resolver swap changes this wiring's
 	// inputs and nothing downstream.
