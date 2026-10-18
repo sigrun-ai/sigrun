@@ -21,9 +21,9 @@
  * through the REAL loader inside `openHarness`.
  */
 
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -39,6 +39,16 @@ import {
 /** Fixture: arity-1 factory capturing its host (the ""-phase object). */
 const FIXTURE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-stores", "index.js"),
+).href;
+
+/**
+ * Fixture: ASYNC arity-1 factory reading scoped settings DURING its body
+ * (provider plugins Task 9 P1); its package manifest names the extension
+ * ("acme-settings-tool") so the specifier-derived provisional slug
+ * matches the declared slug.
+ */
+const SETTINGS_READ_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-stores-read", "index.js"),
 ).href;
 
 /** A fake env pinning all four roots under one synthetic tmpdir base. */
@@ -158,4 +168,46 @@ test("paths: per-slug data/state; cache exists on disk after FIRST access only",
 			host.stores.paths.cache,
 		).toBe(true);
 	});
+});
+
+test("a factory-time settings read resolves the REAL slug's file (provisional pre-key, Task 9 P1)", async () => {
+	// The P1: sigrun-pareto's factory reads host.stores.settings at CALL
+	// time, before the declared name is known; the pre-fix "" placeholder
+	// identity made that read hit settings/.json (absent → {}) and the
+	// deployment's baseUrl override was silently inert. The loader now
+	// pre-keys the host on the PROVISIONAL slug derived from the load
+	// specifier — the fixture's manifest name — so the factory-time read
+	// must resolve the package's real settings file, written BEFORE boot.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-provisional-"));
+	const seen = globalThis as { __fixtureSettingsSeen?: unknown };
+	seen.__fixtureSettingsSeen = undefined;
+	let opened: OpenedHarness | undefined;
+	try {
+		const env = fakeEnv(dir);
+		const settingsFile = join(
+			env.SIGRUN_CONFIG_DIR,
+			"settings",
+			"acme-settings-tool.json",
+		);
+		await mkdir(dirname(settingsFile), { recursive: true });
+		await writeFile(
+			settingsFile,
+			JSON.stringify({ baseUrl: "https://acme.example.invalid/v1" }),
+		);
+		opened = await openHarness(loadConfig(env), {
+			env,
+			extensionSpecifiers: [SETTINGS_READ_SPECIFIER],
+		});
+		expect(opened.extensionOutcomes).toContainEqual({
+			name: "acme-settings-tool",
+			status: "ok",
+		});
+		expect(seen.__fixtureSettingsSeen).toEqual({
+			baseUrl: "https://acme.example.invalid/v1",
+		});
+	} finally {
+		await opened?.harness.close(BACKGROUND_CONTEXT);
+		seen.__fixtureSettingsSeen = undefined;
+		await rm(dir, { recursive: true, force: true });
+	}
 });

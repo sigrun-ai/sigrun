@@ -79,8 +79,10 @@ export interface SeamHost {
 	readonly stores: ExtensionStores;
 	/**
 	 * Boot-owned two-phase re-key (the loader calls the host factory once
-	 * with a `""` identity stub before the extension name/kinds are known,
-	 * then again after the factory result resolves): mutates identity,
+	 * with the PROVISIONAL identity before the extension name/kinds are
+	 * known — the slug derived from the load specifier, `""` when nothing
+	 * derives — then again after the factory result resolves, handing the
+	 * same instance back): mutates identity,
 	 * kind sets, AND the scoped stores view IN PLACE so the object the
 	 * extension factory captured IS the final host — a second instance
 	 * would orphan every inbound handler the factory registered on its
