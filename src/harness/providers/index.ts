@@ -28,7 +28,7 @@ import {
 	type MutableModels,
 	type Provider,
 } from "@earendil-works/pi-ai/models";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ModelsStore } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { DEFAULT_PROVIDER, parseModelSpec, type Env } from "../../config.js";
@@ -142,23 +142,12 @@ export const OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL";
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 
 /**
- * pi-ai `ModelsStoreEntry` — structural re-declaration (no public export
- * path; same discipline as the auth-bridge shapes). `models` stays opaque:
- * the harness never inspects persisted entries.
+ * The pi-ai `ModelsStore` import (re-exported from the package root):
+ * boot constructs the file-backed implementation from `models-store.ts`
+ * and passes it here, so refreshed provider catalogs survive restarts.
+ * Persisted entries stay opaque — the harness never inspects them.
  */
-export interface ModelsStoreEntry {
-	readonly models: readonly unknown[];
-	readonly lastModified?: number;
-	readonly checkedAt?: number;
-	readonly etag?: string;
-}
-
-/** pi-ai `ModelsStore` — structural re-declaration; Task 3 wires it in. */
-export interface ModelsStore {
-	read(providerId: string): Promise<ModelsStoreEntry | undefined>;
-	write(providerId: string, entry: ModelsStoreEntry): Promise<void>;
-	delete(providerId: string): Promise<void>;
-}
+export type { ModelsStore } from "@earendil-works/pi-ai";
 
 /**
  * Conservative defaults for an unknown OpenAI-compat model. Context
@@ -216,6 +205,9 @@ export function collectProviders(
 		...(options?.auth === undefined
 			? {}
 			: { credentials: authStoreCredentialStore(options.auth) }),
+		...(options?.modelsStore === undefined
+			? {}
+			: { modelsStore: options.modelsStore }),
 		authContext,
 	});
 	let defaultModel: ModelRef | undefined;
