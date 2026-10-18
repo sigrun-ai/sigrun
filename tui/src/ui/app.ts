@@ -62,8 +62,10 @@ import {
 import type { ConversationViewWire, ModelEntry, SigrunClient, SlashCommand, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
+import { spawnSync } from "node:child_process";
 import type { TuiTheme } from "../theme.js";
 import type { Action, ActionHost, Focus } from "../actions.js";
+import { editInVim, resolveVimEditor } from "../editor-launch.js";
 import { copyToTerminal } from "../clipboard.js";
 import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
 import { AmbientChrome } from "./ambient.js";
@@ -91,6 +93,17 @@ export interface TuiAppOptions {
 	readonly sidebarWidth?: number;
 	/** The token theme (C1/C2); defaults to the plain identity fallback. */
 	readonly theme?: TuiTheme;
+	/** The tui.json `editor` field (C1; used when it names a vim binary). */
+	readonly editor?: string;
+	/** TEST SEAM: the vim resolution for edit-in-vim (C4). */
+	readonly resolveVim?: () => string | undefined;
+}
+
+/** PATH lookup for the vim fallback chain (nvim/vim/vi). */
+function whichPath(name: string): string | undefined {
+	const result = spawnSync("which", [name], { encoding: "utf8" });
+	if (result.status !== 0) return undefined;
+	return result.stdout.trim().split("\n")[0] || undefined;
 }
 
 /** No-color theme: the shell pins structure; styling is a later task. */
@@ -156,13 +169,15 @@ export class TuiApp implements Component, ActionHost {
 	/** The quit sink: the launcher's exit resolution. */
 	onQuit: (() => void) | undefined;
 	/** The status-bar state the launcher last painted (flashes preserve it). */
-	#statusSnapshot: { conversation: string; hints: readonly string[] } | undefined;
+	#statusSnapshot: { conversation: string; hints: readonly string[]; mode?: string } | undefined;
 	/** The transcript search overlay state (query + direction). */
 	#search: { query: string; direction: "forward" | "backward" } | undefined;
 	/** The last frame's configured model id (status bar + pickers). */
 	#modelId: string | undefined;
 	/** The last frame's thinking level (the cycle order starts here). */
 	#thinkingLevel: string = "off";
+	/** The vim resolution for edit-in-vim (C4; configured → env → PATH). */
+	readonly #resolveVim: () => string | undefined;
 
 	constructor(client: SigrunClient, options: TuiAppOptions) {
 		this.#client = client;
@@ -170,6 +185,8 @@ export class TuiApp implements Component, ActionHost {
 		this.#watchOptions = options.watchOptions ?? { baseUrl: "" };
 		this.#tui = options.tui;
 		this.#catalog = new SlashCatalog(client);
+		this.#resolveVim = options.resolveVim ?? (() =>
+			resolveVimEditor({ configured: options.editor, env: process.env, which: whichPath }));
 		const theme = options.theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
 		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
@@ -763,8 +780,7 @@ export class TuiApp implements Component, ActionHost {
 				await this.#editHere();
 				return;
 			case "edit-in-vim":
-				// Deferred to the $EDITOR task (C4/C5): the seam exists so the
-				// keymap can bind it without the app knowing how it works.
+				this.#editInVim();
 				return;
 			case "picker":
 				this.#openPickerFor(action.kind);
@@ -803,7 +819,7 @@ export class TuiApp implements Component, ActionHost {
 				this.editor.setText("/");
 				return;
 			case "run-command":
-				await this.#runSlashCommand(action.line);
+				await this.runCommand(action.line);
 				return;
 		}
 	}
@@ -1055,6 +1071,109 @@ export class TuiApp implements Component, ActionHost {
 		} finally {
 			this.editor.disableSubmit = false;
 		}
+	}
+
+	/**
+	 * The vim command line's command table (Task C4). A `/`-prefixed line
+	 * (or any name outside the table) routes through the existing slash
+	 * catalog — the table holds only the vim-native commands.
+	 */
+	async runCommand(line: string): Promise<void> {
+		if (line.startsWith("/")) {
+			await this.#runSlashCommand(line);
+			return;
+		}
+		const space = line.indexOf(" ");
+		const name = space === -1 ? line : line.slice(0, space);
+		const arg = space === -1 ? "" : line.slice(space + 1).trim();
+		switch (name) {
+			case "q":
+			case "quit":
+				this.onQuit?.();
+				return;
+			case "new":
+				await this.createAndSelect();
+				return;
+			case "fork":
+				await this.dispatch({ type: "fork-here" });
+				return;
+			case "ls":
+				this.#openPickerFor("conversation");
+				return;
+			case "model":
+				if (arg === "") {
+					this.pane.showError("usage: model <provider/id>");
+					return;
+				}
+				await this.#runSlashCommand(`/model ${arg}`);
+				return;
+			case "set": {
+				const thinking = /^thinking=(\S+)$/.exec(arg);
+				if (thinking === null) {
+					this.pane.showError("usage: set thinking=<level>");
+					return;
+				}
+				await this.#runSlashCommand(`/thinking ${thinking[1]}`);
+				return;
+			}
+			case "b": {
+				const hit = /^\d+$/.test(arg)
+					? this.sidebar.rows.find((row) => row.id === Number(arg))
+					: this.sidebar.rows.find((row) =>
+							row.name.toLowerCase().includes(arg.toLowerCase()),
+					);
+				if (hit === undefined) {
+					this.#flashStatus("no match");
+					return;
+				}
+				await this.selectConversation(hit.id);
+				return;
+			}
+			default:
+				await this.#runSlashCommand(`/${line}`);
+		}
+	}
+
+	/**
+	 * Edit the composer draft in a vim-family editor (Task C4): the TUI
+	 * suspends while vim owns the terminal. No vim found → a status
+	 * message and the draft stays untouched; nothing is spawned.
+	 */
+	#editInVim(): void {
+		const editor = this.#resolveVim();
+		if (editor === undefined) {
+			this.#flashStatus("no vim found");
+			return;
+		}
+		const tui = this.#tui as unknown as {
+			stop(): void;
+			start(): void;
+			requestRender(force?: boolean): void;
+		};
+		const result = editInVim({ text: this.editor.getText(), editor, tui });
+		if (!result.ok) {
+			this.pane.showError(result.reason);
+			return;
+		}
+		this.editor.setText(result.text);
+		this.#focus = "composer";
+		this.#applyFocusTarget();
+	}
+
+	/**
+	 * The vim keymap's status-bar seam (Task C4): the app polls the keymap
+	 * after each key. `commandLine` set → the bar shows the `:` line;
+	 * otherwise the steady state is restored with the keymap's mode chip
+	 * in the `mode` segment.
+	 */
+	renderCommandLine(commandLine: string | undefined, modeLabel: string | undefined): void {
+		const base = this.#statusSnapshot;
+		if (this.#statusBar === undefined || base === undefined) return;
+		if (commandLine !== undefined) {
+			this.#statusBar.set({ ...base, message: commandLine });
+			return;
+		}
+		this.#statusBar.set({ ...base, mode: modeLabel ?? base.mode });
 	}
 
 	render(width: number): string[] {
