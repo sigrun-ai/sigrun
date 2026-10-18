@@ -199,7 +199,7 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		expect(pane.render(80).join("\n")).toContain("✗ bash  false");
 	});
 
-	test("setFocus(0) marks the first user turn's first line with ›", () => {
+	test("setFocus(0) composes › and the ▎ bar on a focused user turn's first line", () => {
 		const pane = new ConversationPane();
 		pane.showView(view(1, rootFilesystemEntries()));
 		expect(pane.focusIndex).toBeUndefined();
@@ -208,7 +208,11 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		const lines = pane.render(80);
 		const first = lines.find((line) => line.includes("what is in the root"));
 		expect(first).toBeDefined();
+		// The focus gutter and the user bar are independent chrome: the
+		// focused user turn's first line carries BOTH (the bar must not be
+		// lost to the focus branch).
 		expect(first?.startsWith("›")).toBe(true);
+		expect(first).toContain("▎");
 		// Clearing focus removes the marker.
 		pane.setFocus(undefined);
 		const after = pane.render(80).join("\n");
