@@ -32,6 +32,7 @@ import {
 	type SeamHost,
 } from "./seam-host.js";
 import { contextFilesExtension } from "./sections/context-files.js";
+import { modelGuidanceExtension } from "./sections/model-guidance.js";
 import { skillsExtension } from "../skills/index.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
@@ -65,6 +66,35 @@ import {
 
 /** The idle sweep cadence (spec §2: ONE host-owned 1s interval). */
 const IDLE_SWEEP_MS = 1_000;
+
+/**
+ * The prompt-section keys the core surfaces own (system-prompt Task 3).
+ * The registry itself permits duplicate section keys across extensions
+ * (last-writer-wins at render), so a loaded extension could silently
+ * replace a core surface — boot asserts ownership instead (below).
+ */
+export const RESERVED_CORE_SECTION_KEYS = [
+	"identity",
+	"persona",
+	"workspace-instructions",
+	"skills",
+	"tool-guidance",
+	"execution-guidance",
+] as const;
+
+/**
+ * Reserved key → the one core extension that may own it. Anything else
+ * owning a reserved key fails boot loud (the walk after the guidance
+ * install below).
+ */
+export const RESERVED_CORE_SECTION_OWNERS: Readonly<Record<string, string>> = {
+	identity: "sigrun.context-files",
+	persona: "sigrun.context-files",
+	"workspace-instructions": "sigrun.context-files",
+	skills: "sigrun.skills",
+	"tool-guidance": "sigrun.model-guidance",
+	"execution-guidance": "sigrun.model-guidance",
+};
 
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
@@ -471,6 +501,26 @@ export async function openHarness(
 		.find((entry) => entry.section.key === MEMORY_SECTION_KEY)?.extension;
 	if (memoryOwner === undefined) {
 		registry.install(noopMemoryExtension);
+	}
+	// Per-model guidance installs LAST (system-prompt Task 3): after
+	// `loadExtensions` and the memory section, so its two sections appear
+	// and disappear with the matched model as trailing patch rows instead
+	// of re-emitting the whole prompt on a mid-conversation model swap.
+	registry.install(modelGuidanceExtension);
+	// The reserved-core-section assertion (Task 3), walked AFTER
+	// `loadExtensions` and the guidance install: any non-core extension
+	// owning a reserved key — including one that last-writer-wins REPLACED
+	// a core section, which `sections.set` makes the snapshot owner — fails
+	// boot loud, naming the extension and the key. Prompt-section shape is
+	// core-owned surface (spec §3); a silent takeover is not a valid
+	// configuration.
+	for (const entry of registry.snapshot().sections()) {
+		const expectedOwner = RESERVED_CORE_SECTION_OWNERS[entry.section.key];
+		if (expectedOwner !== undefined && entry.extension.name !== expectedOwner) {
+			throw new Error(
+				`extension "${entry.extension.name}" declares reserved core section "${entry.section.key}"`,
+			);
+		}
 	}
 	// §5 memory health (Task 9e): the memory extension's retained §3 producer
 	// — identity-matched against the INSTALLED extension, so a same-name

@@ -325,6 +325,53 @@ Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-ollama)
 [sigrun-pareto](https://github.com/sigrun-ai/sigrun-pareto) (scoped-settings
 base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-bifrost)
 (multi-surface discovery).
+## Prompt sections: six keys are reserved
+
+pi-durable composes the system message from **sections** — a key plus
+a render function — declared on every loaded extension, in registry
+install order. Core installs its own extensions before `Harness.open`
+reads the registry, so core sections lead the prompt; the per-model
+guidance extension installs last, so its sections trail. The
+`acme-note` section in the snippet above is one of yours; six keys are
+core-owned surface:
+
+| key | owned by | what renders |
+|---|---|---|
+| `identity` | `sigrun.context-files` | static identity paragraph (runtime facts) |
+| `persona` | `sigrun.context-files` | `SOUL.md`, else the shipped default persona |
+| `workspace-instructions` | `sigrun.context-files` | `AGENTS.md` from the conversation cwd (absent file → section omitted) |
+| `skills` | `sigrun.skills` | declared skills |
+| `tool-guidance` | `sigrun.model-guidance` | per-model tool guidance |
+| `execution-guidance` | `sigrun.model-guidance` | per-model execution guidance |
+
+The registry itself permits duplicate section keys across extensions
+(last writer wins at render), so a loaded extension could silently
+replace a core surface. Boot asserts ownership instead: any extension
+declaring a reserved key fails boot loud —
+
+```
+extension "<name>" declares reserved core section "<key>"
+```
+
+— naming your extension and the key. Sections under any non-reserved
+key are yours, freely; there is no registration and no schema.
+
+Two of the reserved keys carry a convention worth knowing even if you
+never declare a section yourself:
+
+- **Per-model guidance keys off the request's model string.** Core's
+  model-guidance extension resolves `tool-guidance` and
+  `execution-guidance` from an ordered, first-match-wins table of
+  substrings matched case-insensitively against the request's resolved
+  `${provider}/${modelId}` (table strings are lowercase by convention).
+  For an unmatched model both sections render absent — the designed
+  empty case, not an error. Section renderers have no `Models` catalog
+  access: `PromptInput.agent.model` is the only model input, so a
+  model-keyed section of your own keys off the same string.
+- **Persona replacement is wholesale.** A present `SOUL.md` — including
+  an empty file — owns the `persona` section outright, and an absent
+  `SOUL.md` (or no env) renders the shipped `DEFAULT_PERSONA`. The
+  default is never merged with a user file.
 
 ## Uninstall
 

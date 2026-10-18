@@ -1,11 +1,12 @@
 /**
- * Task 4: context-file prompt sections (spec §3 context files row).
+ * Context-file prompt sections (spec §3 context files row) plus the core
+ * identity section and persona fallback (system-prompt spec §Design).
  *
- * `SOUL.md` in the workspace renders the `persona` section and `AGENTS.md`
- * the `workspace-instructions` section, read through the conversation's
- * `ExecutionEnv` (`PromptInput.env`). A missing file is an empty section
- * (render → undefined), never an error; a malformed read (any `FileError`
- * other than `not_found`) fails loud.
+ * `identity` is static runtime facts; `persona` comes from `SOUL.md` or,
+ * when the file is missing (or there is no env at all), the shipped default
+ * persona; `workspace-instructions` comes from `AGENTS.md`. A missing
+ * `AGENTS.md` is an empty section (render → undefined), never an error; a
+ * malformed read (any `FileError` other than `not_found`) fails loud.
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -17,7 +18,10 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
-import { contextFilesExtension } from "../src/harness/sections/context-files.js";
+import {
+	contextFilesExtension,
+	DEFAULT_PERSONA,
+} from "../src/harness/sections/context-files.js";
 import {
 	createWorkspaceService,
 	defaultWorkspacePrefs,
@@ -60,7 +64,22 @@ function sectionByKey(key: string) {
  * (env read, not_found → undefined) is this module's own; the harness-level
  * tests below prove the same sections render end-to-end through generation.
  */
-test("missing SOUL.md renders an absent persona section", async () => {
+test("identity renders the static sigrun facts", async () => {
+	// The verbatim identity text from the plan's Global Constraints:
+	// runtime facts only — no tool claims, no model name.
+	const identity = sectionByKey("identity");
+	const text = await identity.render(
+		promptInput(undefined),
+		BACKGROUND_CONTEXT,
+	);
+	expect(text).toBe(
+		"You are sigrun, an AI assistant running as a persistent server built on the pi-durable harness. Conversations are durable: they survive restarts and can span channels (web UI, terminal UI, HTTP API). Multiple conversations may be active at once; each is independent.",
+	);
+});
+
+test("missing SOUL.md renders the default persona", async () => {
+	// No SOUL.md in the workspace: the shipped default speaks instead of an
+	// absent section — sigrun always has a persona.
 	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-cf-"));
 	try {
 		const service = createWorkspaceService();
@@ -70,16 +89,18 @@ test("missing SOUL.md renders an absent persona section", async () => {
 		);
 		const persona = sectionByKey("persona");
 		const text = await persona.render(promptInput(env), BACKGROUND_CONTEXT);
-		expect(text).toBeUndefined();
+		expect(text).toBe(DEFAULT_PERSONA);
 	} finally {
 		await rm(workspacePath, { recursive: true, force: true });
 	}
 });
 
-test("a present SOUL.md renders its body as the persona section", async () => {
+test("a present SOUL.md replaces the default persona wholesale", async () => {
+	// Full replacement, never merge: the file body owns the section even
+	// though it is shorter than (and shares nothing with) the default.
 	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-cf-"));
 	try {
-		const soul = "You are sigrun. Speak plainly and keep promises.\n";
+		const soul = "persona only\n";
 		await writeFile(join(workspacePath, "SOUL.md"), soul);
 		const service = createWorkspaceService();
 		const env = await service.forConversation(
@@ -89,6 +110,27 @@ test("a present SOUL.md renders its body as the persona section", async () => {
 		const persona = sectionByKey("persona");
 		const text = await persona.render(promptInput(env), BACKGROUND_CONTEXT);
 		expect(text).toBe(soul);
+		expect(text).not.toBe(DEFAULT_PERSONA);
+	} finally {
+		await rm(workspacePath, { recursive: true, force: true });
+	}
+});
+
+test("an empty SOUL.md renders an empty persona, not the default", async () => {
+	// The read succeeds, so the default does not apply: the fallback is for
+	// not_found / no-env only, and an empty file is a deliberate empty
+	// persona.
+	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-cf-"));
+	try {
+		await writeFile(join(workspacePath, "SOUL.md"), "");
+		const service = createWorkspaceService();
+		const env = await service.forConversation(
+			conversation,
+			defaultWorkspacePrefs(workspacePath),
+		);
+		const persona = sectionByKey("persona");
+		const text = await persona.render(promptInput(env), BACKGROUND_CONTEXT);
+		expect(text).toBe("");
 	} finally {
 		await rm(workspacePath, { recursive: true, force: true });
 	}
@@ -159,14 +201,16 @@ test("a malformed read fails loud instead of rendering empty", async () => {
 	).rejects.toThrow(/permission denied/);
 });
 
-test("without an environment the sections render empty, not error", async () => {
+test("no env renders the default persona", async () => {
 	// `PromptInput.env` is undefined when the harness has no env option;
-	// reading files then is impossible: empty section, never an error.
+	// env-less is "absent SOUL.md" by another route, not a third state:
+	// default persona, while workspace-instructions stays an empty section
+	// (render → undefined), never an error.
 	const persona = sectionByKey("persona");
 	const instructions = sectionByKey("workspace-instructions");
 	expect(
 		await persona.render(promptInput(undefined), BACKGROUND_CONTEXT),
-	).toBeUndefined();
+	).toBe(DEFAULT_PERSONA);
 	expect(
 		await instructions.render(promptInput(undefined), BACKGROUND_CONTEXT),
 	).toBeUndefined();
