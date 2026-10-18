@@ -202,13 +202,6 @@ export async function launchTuiShell(
 	// view (the wheel + page keys target it); the status bar's mode chip
 	// rides the theme's accent background (StatusBar owns that styling).
 	const statusBar = new StatusBar({ theme });
-	statusBar.set({
-		mode: "attach",
-		conversation: "",
-		hints: ["ctrl+o answer", "esc abort", "ctrl+c quit"],
-	});
-	// C3: the app flashes copy/configure/help/search through the bar.
-	app.setStatusBar(statusBar);
 	// C3/C4/C5: the keymap comes from the tui.json `keymap` option
 	// (standard is the default). The vim `:` Tab completion merges the
 	// slash catalog — a shared array the keymap reads live, filled by the
@@ -220,6 +213,18 @@ export async function launchTuiShell(
 			: options.keymap === "emacs"
 				? createEmacsKeymap()
 				: createStandardKeymap();
+	// C5: the bar's hint cluster is the keymap's `hints(ctx)` — the app
+	// re-polls it on every focus change (and after each key below, so a
+	// vim mode change repaints too). Boot paints the composer-focused
+	// steady state.
+	app.hintsProvider = () => keymap.hints(app.keyContext());
+	statusBar.set({
+		mode: "attach",
+		conversation: "",
+		hints: keymap.hints({ focus: "composer", busy: false, autocompleteOpen: false, overlayOpen: false }),
+	});
+	// C3: the app flashes copy/configure/help/search through the bar.
+	app.setStatusBar(statusBar);
 	// C5: the `help` action opens the key reference overlay for the
 	// active keymap (the app owns the overlayOpen bookkeeping).
 	app.helpOverlay = (onClose) =>
@@ -289,6 +294,9 @@ export async function launchTuiShell(
 				const vim = keymap as ReturnType<typeof createVimKeymap>;
 				app.renderCommandLine(vim.getCommandLine(), vim.modeLabel());
 			}
+			// C5: a key may change the keymap's hint state (vim mode, focus
+			// via dispatch) — re-poll the hints after every handled key.
+			app.refreshHints();
 			return { consume: true };
 		});
 	});
