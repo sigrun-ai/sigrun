@@ -399,13 +399,32 @@ export interface MetaResponse {
 	};
 }
 
-/** Provider auth readiness (Task 6, spec §6.4): statuses only. */
-export type AuthStatus = "ready" | "not_ready" | "invalid";
+/**
+ * Provider auth readiness statuses (Task 6, spec §6.4 + provider plugins
+ * Task 6): statuses only. The legacy vocabulary (`ready` | `not_ready` |
+ * `invalid`) is preserved VERBATIM for every derivation that exists today
+ * — the legacy producer mapping (tracker-less contributors) and the
+ * degenerate env-presence mapping — so old consumers keep working; the
+ * provider-plugins three-state vocabulary (`not_configured` |
+ * `degraded` | `ready`) is ADDED for tracker-backed providers, where
+ * `ready` is the shared spelling.
+ */
+export type AuthStatus =
+	| "ready"
+	| "not_ready"
+	| "invalid"
+	| "not_configured"
+	| "degraded";
 
-/** One `GET /v1/auth/check` provider entry — provider id + status, nothing else. */
+/**
+ * One `GET /v1/auth/check` provider entry — provider id + status, nothing
+ * else. `detail` (provider plugins Task 6) is the optional tracker-facing
+ * operator detail; the legacy derivations never set it.
+ */
 export interface AuthCheckProvider {
 	readonly provider: string;
 	readonly status: AuthStatus;
+	readonly detail?: string;
 }
 
 /** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */

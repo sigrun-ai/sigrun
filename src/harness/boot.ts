@@ -39,6 +39,7 @@ import {
 	createProviderMergeSink,
 	type ProviderCollision,
 	type ProviderContributor,
+	type ReadinessTracker,
 } from "./providers/index.js";
 import {
 	bootRefresh,
@@ -112,6 +113,15 @@ export interface OpenedHarness {
 	 * derivation applies per provider.
 	 */
 	readonly providerOwnership: ReadonlyMap<string, string>;
+	/**
+	 * Provider id → the owning contributor's readiness tracker (provider
+	 * plugins Task 6), straight from the collector's tracker registry.
+	 * `GET /v1/auth/check` consults these FIRST — the three-state vocabulary
+	 * (`not_configured` | `degraded` | `ready`) — before falling back to
+	 * the legacy producer (contributor-owned, tracker-less) and
+	 * env-presence (degenerate) mappings.
+	 */
+	readonly providerReadiness: ReadonlyMap<string, ReadinessTracker>;
 	/**
 	 * The environment the provider collector resolved (Task 6): the boot env
 	 * with the default model restated from config (both env var spellings —
@@ -489,17 +499,22 @@ export async function openHarness(
 	// offline init — the data root is ensured above, so the store never
 	// mkdirs outside a sanctioned root.
 	const modelsStore = fileModelsStore(config.dataDir);
-	const { models, defaultModel, healthProducers: providerHealth, providerOwnership } =
-		collectProviders(
-			[...(options.extensions ?? []), ...providerContributors],
-			effectiveEnv,
-			sink,
-			{
-				auth: authStore,
-				baseUrl: config.defaultProviderBaseUrl,
-				modelsStore,
-			},
-		);
+	const {
+		models,
+		defaultModel,
+		healthProducers: providerHealth,
+		providerOwnership,
+		readinessTrackers: providerReadiness,
+	} = collectProviders(
+		[...(options.extensions ?? []), ...providerContributors],
+		effectiveEnv,
+		sink,
+		{
+			auth: authStore,
+			baseUrl: config.defaultProviderBaseUrl,
+			modelsStore,
+		},
+	);
 	// The boot refresh (Task 4, spec refresh policy 1): one network-allowed
 	// refresh of every dynamic provider, started HERE and never awaited on
 	// the boot path — it runs concurrently with `Harness.open` and listen.
@@ -675,6 +690,7 @@ export async function openHarness(
 		extensionOutcomes,
 		providerHealth,
 		providerOwnership,
+		providerReadiness,
 		providerEnv: effectiveEnv,
 		auth: authStore,
 		memoryHealth,
