@@ -79,6 +79,7 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "ctrl+o", action: "answer interaction" },
 	{ keys: "ctrl+l", action: "redraw" },
 	{ keys: "ctrl+c", action: "abort run (busy)" },
+	{ keys: "g?", action: "key reference" },
 	{ keys: "ZZ / :q", action: "quit" },
 ];
 
@@ -116,6 +117,8 @@ export function createVimKeymap(options?: VimKeymapOptions): VimKeymap {
 			pending = undefined;
 			if (now - prefix.at <= CHORD_MS) {
 				if (prefix.key === "g" && data === "g") return { type: "edge", to: "top" };
+				// g? is vim normal's help key — "?" stays search-backward.
+				if (prefix.key === "g" && data === "?") return { type: "help" };
 				if (prefix.key === "Z" && data === "Z") return { type: "quit" };
 				if (prefix.key === "z" && data === "a") return { type: "toggle-fold" };
 			}
@@ -245,7 +248,7 @@ export function createVimKeymap(options?: VimKeymapOptions): VimKeymap {
 		hints(ctx: KeyContext): readonly string[] {
 			if (mode === "command") return ["enter run", "esc cancel", "tab complete"];
 			if (mode === "insert" || ctx.focus === "composer") return ["Esc normal"];
-			return ["i insert", ": command", "? keys"];
+			return ["i insert", ": command", "g? keys"];
 		},
 		describe: () => BINDINGS,
 	};

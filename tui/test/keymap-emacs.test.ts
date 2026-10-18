@@ -56,6 +56,13 @@ describe("emacs keymap — C-x chord", () => {
 		expect(keymap.handle("b", ctx())).toBe("pass");
 	});
 
+	test("a reserved pass-through disarms the chord (C-x C-b b does not pick)", () => {
+		const keymap = createEmacsKeymap();
+		expect(keymap.handle("\x18", ctx())).toBe("consume");
+		expect(keymap.handle("\x02", ctx())).toBe("pass"); // C-b is reserved
+		expect(keymap.handle("b", ctx())).toBe("pass"); // the user's "b", not a chord
+	});
+
 	test("a mismatched chord follow-up is consumed (emacs undefined-key beep)", () => {
 		const keymap = createEmacsKeymap();
 		expect(keymap.handle("\x18", ctx())).toBe("consume");

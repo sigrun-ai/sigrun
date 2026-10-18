@@ -447,7 +447,15 @@ describe("per-keymap TUI e2e (headless app over the real wire)", () => {
 				});
 				app.helpOverlay = (onClose) => showHelp(tui, keymap, { onClose });
 
-				/** The launcher's input listener, verbatim semantics. */
+				/**
+				 * The launcher's input listener, verbatim semantics — see
+				 * launch.ts's real `addInputListener` (lines ~275-292). Known
+				 * divergences from that listener: (1) "pass" routes to the open
+				 * overlay if any, else to the editor UNCONDITIONALLY (the real
+				 * listener lets the tui route to the focused component), and
+				 * (2) no vim mode-chip / command-line repaint after each key
+				 * (the real listener calls renderCommandLine for vim).
+				 */
 				const press = (data: string): void => {
 					if (app.handleKeybinding(data)) return;
 					const result = keymap.handle(data, app.keyContext());
