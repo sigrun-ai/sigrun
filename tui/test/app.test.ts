@@ -33,6 +33,11 @@ function summary(
 		entryCount: 0,
 		archived: init?.archived ?? false,
 		pinned: false,
+		// C2's tree orders by recency; the stub conversations carry no
+		// activity stamps (all epoch 0), so ties break by id DESCENDING —
+		// the boot listing is newest-id-first and app.refresh() selects
+		// row 0 (the greatest id).
+		lastActivityAt: "2026-01-01T00:00:00.000Z",
 		...(init?.owner === undefined ? {} : { owner: init.owner }),
 		...(init?.name === undefined ? {} : { name: init.name }),
 	};
@@ -144,52 +149,49 @@ function makeGate(): { readonly promise: Promise<void>; release(): void } {
 // ─── Sidebar ────────────────────────────────────────────────────────────
 
 describe("Sidebar", () => {
-	test("lists conversations with the header, + new action, and the active marked", async () => {
+	test("lists conversations with the header, + New action, and the active marked", async () => {
 		const { client } = stubClient({});
-		const sidebar = new Sidebar(client, { maxVisible: 20 });
+		const sidebar = new Sidebar(client);
 		await sidebar.refresh();
 		sidebar.setActive(2);
 		const lines = sidebar.render(30).join("\n");
 		expect(lines).toContain("CONVERSATIONS");
-		expect(lines).toContain("+ new");
-		expect(lines).toContain("#1");
-		expect(lines).toContain("* #2");
-		expect(lines).toContain("#3");
+		expect(lines).toContain("+ New conversation");
+		// Rows order by recency: the stamps above list newest first —
+		// 3, 2, 1 — then the + New action.
+		expect(sidebar.rows.map((row) => row.id)).toEqual([3, 2, 1]);
+		expect(sidebar.rows.find((row) => row.id === 2)?.active).toBe(true);
 	});
 
 	test("hides archived conversations (summary.archived)", async () => {
 		const { client } = stubClient({ rows: { 2: { archived: true } } });
-		const sidebar = new Sidebar(client, { maxVisible: 20 });
+		const sidebar = new Sidebar(client);
 		await sidebar.refresh();
-		const lines = sidebar.render(30).join("\n");
-		expect(lines).toContain("#1");
-		expect(lines).not.toContain("#2");
-		expect(lines).toContain("#3");
+		expect(sidebar.rows.map((row) => row.id)).toEqual([3, 1]);
 	});
 
 	test("shows the session name when meta carries one", async () => {
 		const { client } = stubClient({ rows: { 1: { name: "acme-research" } } });
-		const sidebar = new Sidebar(client, { maxVisible: 20 });
+		const sidebar = new Sidebar(client);
 		await sidebar.refresh();
 		const lines = sidebar.render(40).join("\n");
 		expect(lines).toContain("acme-research");
 	});
 
-	test("selection reports the chosen conversation; the + new row reports create", async () => {
+	test("selection reports the chosen conversation; the + New row reports create", async () => {
 		const { client } = stubClient({});
-		const sidebar = new Sidebar(client, { maxVisible: 20 });
+		const sidebar = new Sidebar(client);
 		await sidebar.refresh();
 		const selections: (number | "new")[] = [];
 		sidebar.onSelect = (selection) => selections.push(selection);
-		// Cursor starts on the first conversation; enter selects it.
-		sidebar.handleInput("\r");
-		expect(selections).toEqual([1]);
-		// Down past the list lands on the "+ new" action row.
-		sidebar.handleInput("[B"); // → #2
-		sidebar.handleInput("[B"); // → #3
-		sidebar.handleInput("[B"); // → + new
-		sidebar.handleInput("\r");
-		expect(selections).toEqual([1, "new"]);
+		// Rows order by recency (newest first): 3, 2, 1, then + New. The
+		// cursor starts on the first conversation; Enter selects it.
+		sidebar.confirm();
+		expect(selections).toEqual([3]);
+		// To the last row: the "+ New conversation" action.
+		sidebar.moveCursor(3);
+		sidebar.confirm();
+		expect(selections).toEqual([3, "new"]);
 	});
 });
 
@@ -206,7 +208,7 @@ describe("ConversationPane", () => {
 		expect(pane.render(60).join("\n")).not.toContain("[error] boom");
 	});
 
-	test("renders user, assistant, thinking, and tool rows in entry order", () => {
+	test("renders user, assistant, thinking, and tool structure in entry order", () => {
 		const pane = new ConversationPane();
 		pane.showView(
 			view(1, [
@@ -233,16 +235,21 @@ describe("ConversationPane", () => {
 			]),
 		);
 		const lines = pane.render(60).join("\n");
-		const userIndex = lines.indexOf("hello there");
-		const thinkingIndex = lines.indexOf("[thinking] let me consider");
+		// C2: turns, not entry tags — the user prompt carries the accent
+		// bar, the assistant's thinking folds into the activity line after
+		// its prose, and the [tool]/[thinking] tags are gone. (The orphan
+		// tool-result entry folds into the same turn; its tool call was
+		// never emitted, so it contributes nothing renderable.)
+		const userIndex = lines.indexOf("▎ hello there");
+		const activityIndex = lines.indexOf("▸ Thinking");
 		const answerIndex = lines.indexOf("the answer");
-		const toolIndex = lines.indexOf("[tool] read");
-		const followUpIndex = lines.indexOf("follow up");
+		const followUpIndex = lines.indexOf("▎ follow up");
+		expect(lines).not.toContain("[thinking]");
+		expect(lines).not.toContain("[tool]");
 		expect(userIndex).toBeGreaterThanOrEqual(0);
-		expect(thinkingIndex).toBeGreaterThan(userIndex);
-		expect(answerIndex).toBeGreaterThan(thinkingIndex);
-		expect(toolIndex).toBeGreaterThan(answerIndex);
-		expect(followUpIndex).toBeGreaterThan(toolIndex);
+		expect(answerIndex).toBeGreaterThan(userIndex);
+		expect(activityIndex).toBeGreaterThan(answerIndex);
+		expect(followUpIndex).toBeGreaterThan(activityIndex);
 	});
 
 	test("the next snapshot REPLACES the pane (the SSE contract — no accumulation)", () => {
@@ -262,10 +269,10 @@ describe("ConversationPane", () => {
 		expect(lines).toContain("unsupported entry kind: acme.custom");
 	});
 
-	test("pi.compaction entries render as compact rows", () => {
+	test("pi.compaction entries render the context-compacted divider", () => {
 		const pane = new ConversationPane();
 		pane.showView(view(1, [{ id: 1, kind: "pi.compaction", data: { reason: "threshold" } }]));
-		expect(pane.render(60).join("\n")).toContain("[compaction]");
+		expect(pane.render(60).join("\n")).toContain("── context compacted ──");
 	});
 
 	test("notices cap at the 10 most recent (fix wave A5 — oldest drop silently)", () => {
@@ -313,10 +320,10 @@ describe("TuiApp", () => {
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		expect(app.activeConversationId).toBe(1);
-		expect(watchCalls).toEqual([1]);
+		expect(app.activeConversationId).toBe(3);
+		expect(watchCalls).toEqual([3]);
 		// A snapshot on the stream renders into the pane.
-		watchRegistry.get(1)?.onSnapshot?.(
+		watchRegistry.get(3)?.onSnapshot?.(
 			view(1, [{ id: 1, kind: "pi.user", model: [{ role: "user", content: "streamed prompt" }] }]),
 		);
 		expect(app.render(80).join("\n")).toContain("streamed prompt");
@@ -332,8 +339,8 @@ describe("TuiApp", () => {
 		await app.selectConversation(2);
 		expect(app.activeConversationId).toBe(2);
 		// The old watch is closed, the new one opened.
-		expect(watchCalls).toEqual([1, 2]);
-		expect(watchRegistry.has(1)).toBe(false);
+		expect(watchCalls).toEqual([3, 2]);
+		expect(watchRegistry.has(3)).toBe(false);
 		expect(watchRegistry.has(2)).toBe(true);
 	});
 
@@ -347,7 +354,7 @@ describe("TuiApp", () => {
 		app.editor.setText("ship it");
 		app.editor.onSubmit?.("ship it");
 		await Promise.resolve();
-		expect(submitCalls).toEqual([{ id: 1, text: "ship it" }]);
+		expect(submitCalls).toEqual([{ id: 3, text: "ship it" }]);
 		expect(app.editor.getText()).toBe("");
 	});
 
@@ -359,11 +366,11 @@ describe("TuiApp", () => {
 		});
 		await app.refresh();
 		await app.forkActive();
-		expect(forkCalls).toEqual([1]);
+		expect(forkCalls).toEqual([3]);
 		expect(app.activeConversationId).toBe(101);
-		expect(watchCalls).toEqual([1, 101]);
+		expect(watchCalls).toEqual([3, 101]);
 		// The fork appears in the sidebar listing.
-		expect(app.render(80).join("\n")).toContain("#101");
+		expect(app.sidebar.rows.some((row) => row.id === 101)).toBe(true);
 	});
 
 	test("the + new action creates a conversation and selects it", async () => {
@@ -375,7 +382,7 @@ describe("TuiApp", () => {
 		await app.refresh();
 		await app.createAndSelect();
 		expect(app.activeConversationId).toBe(4);
-		expect(watchCalls).toEqual([1, 4]);
+		expect(watchCalls).toEqual([3, 4]);
 	});
 });
 
@@ -399,7 +406,7 @@ describe("TuiApp fix wave", () => {
 		expect(lines).toContain("[error]");
 		expect(lines).toContain("boom: server gone");
 		// The app survived and stayed on the boot conversation.
-		expect(app.activeConversationId).toBe(1);
+		expect(app.activeConversationId).toBe(3);
 		expect(app.editor.disableSubmit).toBe(false);
 	});
 
@@ -419,7 +426,7 @@ describe("TuiApp fix wave", () => {
 		await tick();
 		const lines = app.render(80).join("\n");
 		expect(lines).toContain("boom: fork refused");
-		expect(app.activeConversationId).toBe(1);
+		expect(app.activeConversationId).toBe(3);
 		expect(app.editor.disableSubmit).toBe(false);
 	});
 
@@ -434,13 +441,15 @@ describe("TuiApp fix wave", () => {
 		expect(app.handleKeybinding("\u0002")).toBe(false);
 		expect(app.handleKeybinding("\x1b[B")).toBe(false); // arrows fall through
 		// The launcher enables mouse mode, so the switcher is driven by
-		// clicks — SelectList's onSelect fires identically for click and
-		// key selection; the app reacts the same either way.
-		app.sidebar.handleInput("\x1b[B"); // → #2 (the list's own input seam)
-		app.sidebar.handleInput("\r"); // select #2
+		// clicks — a MouseRegion click fires onSelect identically to the
+		// keyboard path; the app reacts the same either way.
+		app.sidebar.moveCursor(1); // cursor moves, no selection yet
+		await tick();
+		expect(app.activeConversationId).toBe(3);
+		app.sidebar.confirm(); // select the cursor's row (recency: 3,2,1)
 		await tick();
 		expect(app.activeConversationId).toBe(2);
-		expect(watchCalls).toEqual([1, 2]);
+		expect(watchCalls).toEqual([3, 2]);
 		// No focus state to return: arrows keep falling through.
 		expect(app.handleKeybinding("\x1b[B")).toBe(false);
 	});
@@ -452,9 +461,9 @@ describe("TuiApp fix wave", () => {
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		app.sidebar.handleInput("\x1b[B"); // cursor moves, no selection yet
+		app.sidebar.moveCursor(1); // cursor moves, no selection yet
 		await tick();
-		expect(app.activeConversationId).toBe(1);
+		expect(app.activeConversationId).toBe(3);
 		expect(app.handleKeybinding("\x1b[B")).toBe(false);
 	});
 
@@ -489,7 +498,7 @@ describe("TuiApp fix wave", () => {
 		});
 		await app.refresh();
 		// Conversation 1 has entries AND a notice.
-		watchRegistry.get(1)?.onSnapshot?.(
+		watchRegistry.get(3)?.onSnapshot?.(
 			view(1, [
 				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "conv 1 body" }] },
 			]),
@@ -522,10 +531,10 @@ describe("TuiApp fix wave", () => {
 		await app.refresh();
 		const opens: number[] = [];
 		app.onWatchOpen = () => opens.push(1);
-		watchRegistry.get(1)?.onOpen?.();
+		watchRegistry.get(3)?.onOpen?.();
 		expect(opens).toEqual([1]);
 		// Stale watches are generation-fenced like onError.
-		const staleHandlers = watchRegistry.get(1);
+		const staleHandlers = watchRegistry.get(3);
 		await app.selectConversation(2);
 		staleHandlers?.onOpen?.();
 		expect(opens).toEqual([1]);
@@ -558,7 +567,7 @@ describe("TuiApp C1b keybinding removals", () => {
 		expect(app.handleKeybinding("\u0006")).toBe(false); // ctrl+f
 		await tick();
 		expect(forkCalls).toEqual([]);
-		expect(app.activeConversationId).toBe(1);
+		expect(app.activeConversationId).toBe(3);
 	});
 });
 
@@ -573,7 +582,7 @@ describe("TuiApp race guards", () => {
 		// Simulate a frame in flight from the OLD watch: capture its
 		// handlers before the switch (the stub's unwatch removes the
 		// registry entry, but a real in-flight delivery already holds them).
-		const staleHandlers = watchRegistry.get(1);
+		const staleHandlers = watchRegistry.get(3);
 		expect(staleHandlers).toBeDefined();
 		await app.selectConversation(2);
 		// The new conversation's own snapshot renders first; the stale
@@ -605,7 +614,7 @@ describe("TuiApp race guards", () => {
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		const staleHandlers = watchRegistry.get(1);
+		const staleHandlers = watchRegistry.get(3);
 		expect(staleHandlers).toBeDefined();
 		await app.selectConversation(2);
 		watchRegistry.get(2)?.onView?.(
@@ -632,7 +641,7 @@ describe("TuiApp race guards", () => {
 			watch: stubWatch(watchRegistry, watchCalls),
 		});
 		await app.refresh();
-		watchRegistry.get(1)?.onSnapshot?.(
+		watchRegistry.get(3)?.onSnapshot?.(
 			view(1, [
 				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "before dispose" }] },
 			]),
@@ -640,7 +649,7 @@ describe("TuiApp race guards", () => {
 		expect(app.render(80).join("\n")).toContain("before dispose");
 		// Capture the handlers, dispose, then fire the stale delivery — the
 		// generation bump must fence it exactly as a switch does.
-		const staleHandlers = watchRegistry.get(1);
+		const staleHandlers = watchRegistry.get(3);
 		app.dispose();
 		staleHandlers?.onSnapshot?.(
 			view(1, [

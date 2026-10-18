@@ -36,7 +36,17 @@ import type { Unwatch, WatchHandlers, WatchOptions } from "../src/sse.js";
 // ─── Stubs (the app.test.ts idiom, extended with the seam surface) ──────
 
 function summary(id: number): ConversationSummary {
-	return { id, root: false, entryCount: 0, archived: false, pinned: false };
+	// C2's sidebar tree orders by recency; a distinct stamp per id keeps
+	// the boot listing deterministic with the LOWEST id newest (row 0,
+	// the app's boot selection) — the pre-C2 insertion-order behavior.
+	return {
+		id,
+		root: false,
+		entryCount: 0,
+		archived: false,
+		pinned: false,
+		lastActivityAt: new Date(2026, 0, 1, 0, 0, -id).toISOString(),
+	};
 }
 
 function view(id: number, entries: unknown[], busy = false): ConversationViewWire {

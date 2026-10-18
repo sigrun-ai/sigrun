@@ -183,6 +183,7 @@ export async function launchTuiShell(
 			baseUrl: options.baseUrl,
 			...(options.user === undefined ? {} : { user: options.user }),
 		},
+		theme,
 	});
 	// Fix wave F5: surface stream transport health as transition notices.
 	const streamHealth = createStreamHealthNotices((message) =>
@@ -228,6 +229,14 @@ export async function launchTuiShell(
 
 	await app.refresh();
 
+	// The sidebar polls the listing (C2): names/ages/forks drift while
+	// the TUI is open, and the summary fields ride the ONE list request.
+	// Unref'd so the timer never holds the process open; dispose clears it.
+	const poll = setInterval(() => {
+		void app.refresh().catch(() => {}); // a failed poll fails quiet
+	}, 10_000);
+	poll.unref();
+
 	const done = new Promise<void>((resolve) => {
 		tui.addInputListener((data) => {
 			if (matchesKey(data, Key.ctrl("c"))) {
@@ -246,6 +255,7 @@ export async function launchTuiShell(
 	try {
 		await done;
 	} finally {
+		clearInterval(poll);
 		app.dispose();
 		tui.stop();
 	}
