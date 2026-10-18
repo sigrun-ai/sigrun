@@ -40,6 +40,10 @@ import {
 	type ProviderCollision,
 	type ProviderContributor,
 } from "./providers/index.js";
+import {
+	bootRefresh,
+	DEFAULT_REFRESH_TIMEOUT_MS,
+} from "./providers/refresh.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf } from "./packages.js";
 import { createRegistry } from "./registry.js";
@@ -199,6 +203,15 @@ export interface OpenedHarness {
 	 * background side lane that must never delay a run).
 	 */
 	readonly autoNamer: AutoNamer;
+	/**
+	 * The boot refresh (provider plugins Task 4): the in-flight (or done)
+	 * deadline-bounded catalog refresh started right after
+	 * `collectProviders`. Boot NEVER awaits it — it runs concurrently with
+	 * `Harness.open` and listen — and it never rejects (timeout/failure
+	 * warned inside). Exposed so tests await completion and shutdown MAY
+	 * join it if still in flight.
+	 */
+	readonly bootRefresh: Promise<void>;
 }
 
 /** Optional `openHarness` inputs beyond the parsed config. */
@@ -475,6 +488,14 @@ export async function openHarness(
 				modelsStore,
 			},
 		);
+	// The boot refresh (Task 4, spec refresh policy 1): one network-allowed
+	// refresh of every dynamic provider, started HERE and never awaited on
+	// the boot path — it runs concurrently with `Harness.open` and listen.
+	// The deadline bounds a wedged upstream; timeout/failure only warns
+	// (never blocks boot). The tracked promise rides on the returned handle.
+	const bootRefreshDone = bootRefresh(models, {
+		timeoutMs: DEFAULT_REFRESH_TIMEOUT_MS,
+	});
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so a future resolver swap changes this wiring's
 	// inputs and nothing downstream.
@@ -643,5 +664,6 @@ export async function openHarness(
 		workerStatuses: () => eventBus.workerStatuses(),
 		now,
 		autoNamer,
+		bootRefresh: bootRefreshDone,
 	};
 }

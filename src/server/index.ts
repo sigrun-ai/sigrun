@@ -69,7 +69,8 @@ import type { OpenedHarness } from "../harness/boot.js";
 import { touchActivity } from "../harness/activity.js";
 import { aggregateHealth } from "../harness/health.js";
 import { SettingsStore, SettingsValidationError } from "../harness/settings.js";
-import { OPENAI_API_KEY_ENV, requireServedModel, UnservedModelError } from "../harness/providers/index.js";
+import { OPENAI_API_KEY_ENV, UnservedModelError } from "../harness/providers/index.js";
+import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
 import { SLASH_COMMANDS, type CommandsResponse } from "./commands.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
@@ -826,12 +827,18 @@ export async function createServer(
 			// Spec §2/§3 binding contract (Review Focus #2): a conversation
 			// pinned to an unserved model fails explicitly AT SUBMIT — 4xx with
 			// the available ids — never a silent fallback, and never a settled
-			// no_model run surfaced only later. `requireServedModel` throws
-			// UnservedModelError carrying the catalog; map it to 400.
+			// no_model run surfaced only later. Resolution goes through the
+			// refresh-on-miss wrapper (provider plugins Task 4): ONE bounded
+			// refresh of the named provider + re-resolve on the miss, so a
+			// model gained upstream since the last interval tick is
+			// immediately usable; still absent → the UnservedModelError
+			// carrying the catalog maps to 400. The auto-namer's resolution
+			// deliberately stays on bare `requireServedModel` (background
+			// lane — no refresh there).
 			const agent = await conversation.agent(BACKGROUND_CONTEXT);
 			try {
 				if (agent.model !== undefined) {
-					requireServedModel(opened.models, agent.model);
+					await resolveServedModelRefreshing(opened.models, agent.model);
 				}
 			} catch (error) {
 				if (error instanceof UnservedModelError) {
