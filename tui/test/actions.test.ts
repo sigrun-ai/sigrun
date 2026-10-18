@@ -413,4 +413,30 @@ describe("handleKeybinding: the overlay guard", () => {
 		expect(app.handleKeybinding("\x1b")).toBe(true); // Esc closes the search
 		expect(app.overlayOpen).toBe(false);
 	});
+
+	test("C-g closes the search overlay (the emacs cancel)", async () => {
+		const { app } = await bootWith([]);
+		await app.dispatch({ type: "search", direction: "forward" });
+		expect(app.overlayOpen).toBe(true);
+		expect(app.handleKeybinding("\x07")).toBe(true);
+		expect(app.overlayOpen).toBe(false);
+	});
+
+	test("C-s / C-r walk the matches while the search overlay stays open", async () => {
+		const { app } = await bootWith([
+			userEntry(41, "needle one"),
+			userEntry(57, "needle two"),
+		]);
+		await app.dispatch({ type: "search", direction: "forward" });
+		for (const char of "needle") app.handleKeybinding(char);
+		// C-s walks forward to the first match; again to the second.
+		expect(app.handleKeybinding("\x13")).toBe(true);
+		expect(app.pane.focusIndex).toBe(0);
+		expect(app.handleKeybinding("\x13")).toBe(true);
+		expect(app.pane.focusIndex).toBe(1);
+		// C-r walks back; the overlay stays open throughout.
+		expect(app.handleKeybinding("\x12")).toBe(true);
+		expect(app.pane.focusIndex).toBe(0);
+		expect(app.overlayOpen).toBe(true);
+	});
 });

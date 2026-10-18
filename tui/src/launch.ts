@@ -47,9 +47,11 @@ import type { AccentName, ModeName, PaletteName } from "../../src/shared/themes.
 import { SigrunClient, type FetchLike } from "./api.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
+import { createEmacsKeymap } from "./keymaps/emacs.js";
 import type { Keymap } from "./keymaps/types.js";
 import { createTuiTheme } from "./theme.js";
 import { TuiApp } from "./ui/app.js";
+import { showHelp } from "./ui/help.js";
 import { StatusBar } from "./ui/status-bar.js";
 
 /** The input-listener signature pi-tui's TUI uses. */
@@ -207,15 +209,21 @@ export async function launchTuiShell(
 	});
 	// C3: the app flashes copy/configure/help/search through the bar.
 	app.setStatusBar(statusBar);
-	// C3/C4: the keymap comes from the tui.json `keymap` option (standard
-	// is the default; "emacs" is reserved and falls back to standard).
-	// The vim `:` Tab completion merges the slash catalog — a shared array
-	// the keymap reads live, filled by the fetch below.
+	// C3/C4/C5: the keymap comes from the tui.json `keymap` option
+	// (standard is the default). The vim `:` Tab completion merges the
+	// slash catalog — a shared array the keymap reads live, filled by the
+	// fetch below.
 	const vimCatalogNames: string[] = [];
 	const keymap: Keymap =
 		options.keymap === "vim"
 			? createVimKeymap({ catalogNames: vimCatalogNames })
-			: createStandardKeymap();
+			: options.keymap === "emacs"
+				? createEmacsKeymap()
+				: createStandardKeymap();
+	// C5: the `help` action opens the key reference overlay for the
+	// active keymap (the app owns the overlayOpen bookkeeping).
+	app.helpOverlay = (onClose) =>
+		showHelp(tui as unknown as TUI, keymap, { onClose });
 	if (keymap.name === "vim") {
 		statusBar.set({ ...statusBar.getState(), mode: keymap.modeLabel() ?? "attach" });
 		const vim = keymap as ReturnType<typeof createVimKeymap>;

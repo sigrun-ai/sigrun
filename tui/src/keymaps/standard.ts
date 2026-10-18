@@ -105,7 +105,7 @@ export function createStandardKeymap(): Keymap {
 		},
 		hints(ctx: KeyContext): readonly string[] {
 			if (ctx.focus === "composer") {
-				return ["tab focus", "ctrl+p conversations", "ctrl+c quit"];
+				return ["Tab focus", "^P chats", "? keys"];
 			}
 			return ["enter open", "y copy", "f fork", "e edit", "/ search", "? help"];
 		},

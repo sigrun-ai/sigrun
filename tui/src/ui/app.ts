@@ -811,9 +811,7 @@ export class TuiApp implements Component, ActionHost {
 				this.onQuit?.();
 				return;
 			case "help":
-				this.#flashStatus(
-					"tab focus · enter open · y copy · f fork · e edit · / search · ctrl+p conversations",
-				);
+				this.#openHelp();
 				return;
 			case "command-line":
 				this.editor.setText("/");
@@ -822,6 +820,25 @@ export class TuiApp implements Component, ActionHost {
 				await this.runCommand(action.line);
 				return;
 		}
+	}
+
+	/**
+	 * The key reference overlay (C5): the launcher wires {@link helpOverlay}
+	 * to `showHelp(tui, keymap)`. Without the seam the one-line hint flash
+	 * is the fallback (the unit harness mounts no overlay).
+	 */
+	#openHelp(): void {
+		if (this.#overlayOpen) return;
+		if (this.helpOverlay === undefined) {
+			this.#flashStatus(
+				"tab focus · enter open · y copy · f fork · e edit · / search · ctrl+p conversations",
+			);
+			return;
+		}
+		this.#overlayOpen = true;
+		this.helpOverlay(() => {
+			this.#overlayOpen = false;
+		});
 	}
 
 	/** pi-tui focus follows the action layer's region. */
@@ -915,8 +932,14 @@ export class TuiApp implements Component, ActionHost {
 	#handleSearchKey(data: string): boolean {
 		const search = this.#search;
 		if (search === undefined) return false;
-		if (matchesKey(data, Key.escape)) {
+		if (matchesKey(data, Key.escape) || data === "\x07") {
+			// Esc — and C-g, the emacs cancel — close the search.
 			this.#endSearch();
+			return true;
+		}
+		// C-s / C-r walk the matches while the overlay stays open (emacs).
+		if (data === "\x13" || data === "\x12") {
+			if (search.query !== "") this.#findMatch(search.query, data === "\x13");
 			return true;
 		}
 		if (matchesKey(data, Key.enter) || data === "\r") {
@@ -1169,6 +1192,12 @@ export class TuiApp implements Component, ActionHost {
 
 	/** The launcher's vim-keymap seam: re-enter INSERT after edit-in-vim. */
 	public enterInsertMode: (() => void) | undefined;
+
+	/**
+	 * The launcher's help-overlay seam (C5): opens the key reference for
+	 * the active keymap; the callback fires when the overlay closes.
+	 */
+	public helpOverlay: ((onClose: () => void) => void) | undefined;
 
 	/**
 	 * The slash catalog's command names (C3's picker source, cached) —
