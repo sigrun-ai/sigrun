@@ -103,6 +103,27 @@ export interface ProviderRuntimeConfig {
 	refreshIntervalMinutes: number;
 }
 
+/**
+ * The webui channel surface (build-and-webui Task 4): the enable gate
+ * and the bundle selector. `enabled` defaults true (`false` = a
+ * positively API-only deploy); `bundle` is the SELECTOR — a string the
+ * serve-time resolution (src/server/static.ts, Task 5) discriminates
+ * syntactically into a contributed-bundle NAME or a directory PATH. Task
+ * 4 only stores and validates it. `bundle` is ABSENT when nothing selects
+ * (the built-in default bundle; an absent default stays the supported
+ * API-only deploy).
+ */
+export interface WebuiConfig {
+	/** From `SIGRUN_WEBUI` (strict true/false) over `server.webui.enabled`. */
+	enabled: boolean;
+	/**
+	 * From `SIGRUN_WEBUI_BUNDLE` over `server.webui.bundle` over the
+	 * legacy `server.webuiBundle` (deprecated alias, one release).
+	 * `undefined` = nothing selects (the built-in default bundle).
+	 */
+	bundle?: string;
+}
+
 export interface SigrunConfig {
 	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
@@ -129,22 +150,17 @@ export interface SigrunConfig {
 	workspace: LocalWorkspace;
 	backup?: BackupConfig;
 	/**
-	 * The webui channel-bundle directory (spec §4.1/§6, Task 20), resolved
-	 * from `SIGRUN_WEBUI_BUNDLE` over the file's `server.webuiBundle` over
-	 * the default `webui/dist`. Relative paths resolve against the process
-	 * cwd (the repo/deploy root). An absent default bundle is a supported
-	 * API-only deploy, while an explicit-but-missing bundle is a boot
-	 * error (see {@link SigrunConfig.webuiBundleExplicit}).
+	 * The webui channel surface (build-and-webui Task 4): the enable gate
+	 * (`SIGRUN_WEBUI` over `server.webui.enabled`, default true — `false`
+	 * is the positive API-only deploy) and the bundle selector. The
+	 * selector chain: `SIGRUN_WEBUI_BUNDLE` over the file's
+	 * `server.webui.bundle` over the LEGACY `server.webuiBundle`
+	 * (deprecated alias, one release) over the built-in default. The
+	 * serve-time seam (`src/server/static.ts`, Task 5) resolves the
+	 * selector: syntactic name/path discrimination, the contributed-bundle
+	 * registry, and the default's package-root anchor.
 	 */
-	webuiBundle: string;
-	/**
-	 * True iff {@link SigrunConfig.webuiBundle} was configured EXPLICITLY
-	 * (the env var or the file's `server.webuiBundle` — both count). The
-	 * server fails loud when an explicit bundle path has no `index.html`
-	 * (a misconfigured deploy intended the webui), and serves API-only
-	 * when the DEFAULT path is absent (no webui was ever intended).
-	 */
-	webuiBundleExplicit: boolean;
+	webui: WebuiConfig;
 	/**
 	 * The env-driven OpenAI-compatible provider's endpoint (ruling 7):
 	 * `OPENAI_BASE_URL` over the file's `defaultProvider.baseUrl` over
@@ -322,6 +338,22 @@ function parseCompactionEnabled(env: Env): boolean | undefined {
 	if (lowered === "false") return false;
 	throw new Error(
 		`SIGRUN_COMPACTION_ENABLED must be "true" or "false", got ${JSON.stringify(raw)}`,
+	);
+}
+
+/**
+ * Parse `SIGRUN_WEBUI` ("true"/"false", case-insensitive) — the webui
+ * channel's enable gate, the `parseCompactionEnabled` pattern (strict:
+ * empty counts as unset, anything else fails loud naming the variable).
+ */
+function parseWebuiEnabled(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_WEBUI;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true") return true;
+	if (lowered === "false") return false;
+	throw new Error(
+		`SIGRUN_WEBUI must be "true" or "false", got ${JSON.stringify(raw)}`,
 	);
 }
 
@@ -549,6 +581,23 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 								: { endpoint: config.backup.endpoint }),
 						},
 					};
+	// The webui keys are the ONE deliberate exception to "the file
+	// records the full effective section" (build-and-webui Task 4's
+	// review focus): a DEFAULTED webui is OMITTED entirely — persisting a
+	// mirrored `webui/dist` (or an `enabled: true` half-section) would
+	// read as an explicit selection on the NEXT boot, re-arming the
+	// cwd-relative default bug and making absent-default → API-only
+	// unreachable. A CONFIGURED webui records the new shape only; the
+	// LEGACY `webuiBundle` key is never written (it is a read-side alias).
+	const webui: ServerSettings["webui"] =
+		config.webui.enabled === true && config.webui.bundle === undefined
+			? undefined
+			: {
+					enabled: config.webui.enabled,
+					...(config.webui.bundle === undefined
+						? {}
+						: { bundle: config.webui.bundle }),
+				};
 	return {
 		port: config.port,
 		workspacePath: config.workspace.path,
@@ -557,7 +606,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		dataDir: config.dataDir,
 		cacheDir: config.cacheDir,
 		stateDir: config.stateDir,
-		webuiBundle: config.webuiBundle,
+		...(webui === undefined ? {} : { webui }),
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
 		providers: { ...config.providers },
@@ -609,8 +658,17 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		port = parsed;
 	}
 
+	// The webui surface (build-and-webui Task 4). The bundle selector's
+	// FOUR slots, first-set-wins: `SIGRUN_WEBUI_BUNDLE` (the env form,
+	// deprecated in docs but still winning) over the file's
+	// `server.webui.bundle` over the LEGACY `server.webuiBundle` (a
+	// deprecated read-side alias, one release) over nothing (the built-in
+	// default bundle — `webui.bundle` stays ABSENT so serve-time resolution
+	// can tell "unset" from "set to the default's value"). The
+	// enable gate is its own two-slot chain (strict env parse over the
+	// file's `server.webui.enabled`, default true).
 	const envWebui = env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined;
-	const fileWebui = server?.webuiBundle;
+	const fileWebui = server?.webui?.bundle ?? server?.webuiBundle;
 	// The store roots (Task 6): the ONE resolution chain, applied per root
 	// with the file's `server.*Dir` sitting between the env var and the
 	// tier default — the same precedence shape as every other `server.*`
@@ -678,11 +736,18 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				server?.providers?.refreshIntervalMinutes,
 			),
 		},
-		// Ruling 4: env wins; the file's `server.webuiBundle` next; the code
-		// default last. A file value counts as EXPLICIT (missing index.html
-		// is a boot error), exactly like a set env var.
-		webuiBundle: envWebui ?? fileWebui ?? DEFAULT_WEBUI_BUNDLE,
-		webuiBundleExplicit: envWebui !== undefined || fileWebui !== undefined,
+		// The webui surface (build-and-webui Task 4): the NEW shape the
+		// serve-time seam resolves (Task 5, src/server/static.ts). `enabled`
+		// is the strict env gate over the file's `server.webui.enabled`, default
+		// true; `bundle` is the four-slot selector — ABSENT when nothing selects
+		// (the built-in default bundle; serve-time resolution reads absence,
+		// never a mirrored default value).
+		webui: {
+			enabled: parseWebuiEnabled(env) ?? server?.webui?.enabled ?? true,
+			...((envWebui ?? fileWebui) === undefined
+				? {}
+				: { bundle: envWebui ?? fileWebui }),
+		},
 		// Ruling 7: the degenerate provider's endpoint. `undefined` when
 		// neither env nor file sets it — the provider layer applies the
 		// OpenAI public default there.

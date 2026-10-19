@@ -42,6 +42,10 @@ import {
 	type ProviderContributor,
 	type ReadinessTracker,
 } from "./providers/index.js";
+import type {
+	ContributedWebuiBundle,
+	WebuiBundleCollision,
+} from "../server/static.js";
 import {
 	bootRefresh,
 	DEFAULT_REFRESH_TIMEOUT_MS,
@@ -114,8 +118,23 @@ export interface OpenedHarness {
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
 	readonly defaultModel: ModelRef;
-	/** Provider-merge collisions; the sink `GET /v1/meta` reads (Task 9). */
+	/** Provider-merge collisions; the sink `GET /v1/meta`'s `collisions.providers` reads. */
 	readonly providerCollisions: readonly ProviderCollision[];
+	/**
+	 * The extension-contributed webui-bundle registry (build-and-webui
+	 * Task 6): the loader's flat collection folded into one entry per NAME
+	 * — last-registered-wins on collision, mirroring the provider merge.
+	 * `createServer`'s NAME-selector resolution reads it (`serve.ts`
+	 * threads it as the third parameter); an empty registry is the
+	 * no-contributor deploy.
+	 */
+	readonly webuiBundles: readonly ContributedWebuiBundle[];
+	/**
+	 * Webui-bundle NAME collisions (build-and-webui Task 6): the sink
+	 * `GET /v1/meta`'s `collisions.webui` reads — the exact mirror of
+	 * `providerCollisions` (warned at merge time, never silent).
+	 */
+	readonly webuiBundleCollisions: readonly WebuiBundleCollision[];
 	/**
 	 * The workspace `env` builder passed into `HarnessOptions.env` — what
 	 * pi-durable invokes per tool call. Exposed because the §5 file and upload
@@ -455,6 +474,7 @@ export async function openHarness(
 		lifecycleBindings,
 		workerBindings,
 		providerContributors,
+		webuiBundles: extensionWebuiBundles,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -491,6 +511,32 @@ export async function openHarness(
 			},
 		},
 	);
+	// The contributed-bundle registry (build-and-webui Task 6): the loader's
+	// flat, slug-attributed collection folded into one entry per NAME.
+	// Collision semantics mirror the provider merge EXACTLY —
+	// last-registered-wins with a console.warn and a retained record
+	// (`webuiBundleCollisions`, the sink `/v1/meta`'s `collisions.webui`
+	// reads) — a co-installed replacement bundle is a configuration choice
+	// the deployer must be able to SEE, never a silent shadowing.
+	const webuiBundleRegistry = new Map<string, ContributedWebuiBundle>();
+	const webuiBundleCollisions: WebuiBundleCollision[] = [];
+	for (const bundle of extensionWebuiBundles) {
+		const previous = webuiBundleRegistry.get(bundle.name);
+		if (previous !== undefined) {
+			webuiBundleCollisions.push({
+				kind: "webui-bundle",
+				name: bundle.name,
+				previous: previous.extension,
+				contributor: bundle.extension,
+			});
+			console.warn(
+					`webui bundle collision: extension "${bundle.extension}" replaces ` +
+					`"${previous.extension}" bundle "${bundle.name}" (last-registered-wins)`,
+			);
+		}
+		webuiBundleRegistry.set(bundle.name, bundle);
+	}
+	const webuiBundles = [...webuiBundleRegistry.values()];
 	// The memory-surface owner: the installed extension whose sections
 	// include the long-term-memory key. None → the no-op default installs
 	// (the zero-extensions guarantee); a quarantined memory extension also
@@ -742,6 +788,8 @@ export async function openHarness(
 		models,
 		defaultModel,
 		providerCollisions: sink.collisions,
+		webuiBundles,
+		webuiBundleCollisions,
 		envBuilder,
 		extensionOutcomes,
 		providerHealth,

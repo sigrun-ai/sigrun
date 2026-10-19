@@ -68,13 +68,13 @@ async function bootServer(options?: {
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
-	// This suite asserts the API-only shape (channels: []): override the
-	// bundle path to an absent dir so the result never depends on whether
-	// the repo's real webui/dist happens to be built in this checkout.
+	// This suite asserts the API-only shape (channels: []): the webui gate
+	// OFF pins it hermetically — the result never depends on whether the
+	// repo's real webui/dist happens to be built in this checkout (the
+	// absent-default variant is pinned in test/webui-resolution.test.ts).
 	const config = {
 		...config0,
-		webuiBundle: join(dir, "no-webui-bundle"),
-		webuiBundleExplicit: false,
+		webui: { ...config0.webui, enabled: false },
 	};
 	const opened = await openHarness(config, {
 		extensions: [contributor],
@@ -251,6 +251,7 @@ describe("GET /v1/meta", () => {
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },
+			collisions: { webui: [], providers: [] },
 		});
 	});
 

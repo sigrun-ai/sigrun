@@ -33,7 +33,13 @@
  * boot feeds every loaded contributor into `collectProviders` after the
  * `options.extensions` seam — and a result carrying `providers` with NO
  * `extension` is a valid PROVIDER-ONLY contributor (the model-plugin shape:
- * no pi-durable surface, identified by its `name` field). Factories may
+ * no pi-durable surface, identified by its `name` field). A result may
+ * likewise carry a `webuiBundles` array (`{name, dir}[]`, build-and-webui
+ * Task 6): the loader validates it fail-loud, anchors each `dir` at the
+ * extension module's URL, and collects the entries attributed to the slug
+ * for boot's contributed-bundle registry — the same contributor-only form
+ * applies (a `webuiBundles` result with no `extension` needs a `name`).
+ * Factories may
  * return a Promise (the plugins read their scoped settings store inside the
  * factory); the loader awaits the result. Packages that predate the settled
  * contract export named factories (`createMemory`) whose results carry the
@@ -79,11 +85,13 @@ import type {
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
-import { basename, dirname, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DeclaredKinds } from "./seam-host.js";
 import { readPackageName, resolveExtensionEntry } from "./packages.js";
 import { slugifyName } from "./stores.js";
+import type { ContributedWebuiBundle } from "../server/static.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
 export interface ExtensionOutcome {
@@ -223,12 +231,23 @@ export interface LoadedExtensions {
 	 * bindings per extension name and registers the result on the bus.
 	 */
 	readonly lifecycleBindings: readonly ExtensionLifecycleBinding[];
-	/**
-	 * `workers` declarations from factory results (memory-seam Task 5), one
-	 * per loaded extension that carried one; quarantined extensions
-	 * contribute none. Boot merges them into the bus registration.
-	 */
+/**
+ * `workers` declarations from factory results (memory-seam Task 5), one
+ * per loaded extension that carried one; quarantined extensions
+ * contribute none. Boot merges them into the bus registration.
+ */
 	readonly workerBindings: readonly ExtensionWorkerBinding[];
+	/**
+	 * Webui-bundle contributions from factory results (build-and-webui
+	 * Task 6), one entry per contributed bundle across every loaded
+	 * extension — each `{name, dir, extension}` with `dir` resolved against
+	 * the contributing module's URL (the loader's attribution; the factory
+	 * contributes `{name, dir}` only). Boot folds this flat list into the
+	 * name-keyed registry (last-registered-wins + the collision sink) that
+	 `createServer`'s NAME-selector resolution reads. Quarantined
+	 * extensions contribute none.
+	 */
+	readonly webuiBundles: readonly ContributedWebuiBundle[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -272,6 +291,12 @@ export interface ResolvedExtension {
 	readonly workers?: readonly ExtensionWorker[];
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
 	readonly providers?: readonly ProviderContribution[];
+	/**
+	 * Webui-bundle contributions (build-and-webui Task 6), validated
+	 * fail-loud — `{name, dir}` entries; the loader resolves each `dir`
+	 * against the extension module's URL when collecting.
+	 */
+	readonly webuiBundles?: readonly { name: string; dir: string }[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -413,6 +438,87 @@ function validateProviders(
 }
 
 /**
+ * The contributed-bundle NAME grammar (spec §4.1: `^[a-z][a-z0-9_-]*$` —
+ * a selector value matching it is a contributed-bundle NAME). Kept in
+ * sync with `BUNDLE_NAME` in src/server/static.ts by the spec grammar,
+ * not a shared import: this module must not pull the server's runtime
+ * graph (the loader has no fs/server coupling by contract).
+ */
+const WEBUI_BUNDLE_NAME = /^[a-z][a-z0-9_-]*$/;
+
+/**
+ * Validate a factory result's `webuiBundles` declaration (build-and-webui
+ * Task 6). Absent → undefined (no contributions). Present but malformed →
+ * throw; the loader quarantines the extension with the thrown message
+ * (fail-loud: an extension that THINKS it contributed a bundle must not
+ * silently lose it — the providers/health/submit class). Each entry must
+ * be a `{name, dir}` object whose `name` matches the contributed-bundle
+ * grammar and whose `dir` is a non-empty string; extra fields are inert.
+ */
+function validateWebuiBundles(
+	value: unknown,
+): readonly { name: string; dir: string }[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a webuiBundles field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const bundle = entry as { name?: unknown; dir?: unknown } | null;
+		if (
+			typeof bundle?.name !== "string" ||
+			!WEBUI_BUNDLE_NAME.test(bundle.name)
+		) {
+			throw new Error(
+				"extension factory returned a webuiBundles entry whose name is missing or does not match ^[a-z][a-z0-9_-]*$",
+			);
+		}
+		if (typeof bundle?.dir !== "string" || bundle.dir.length === 0) {
+			throw new Error(
+				`extension factory returned a webuiBundles entry "${bundle?.name}" whose dir is missing or not a non-empty string`,
+		);
+		}
+	}
+	return value as readonly { name: string; dir: string }[];
+}
+
+/**
+ * The extension module's DIRECTORY — the anchor a contributed bundle's
+ * relative `dir` resolves against (build-and-webui Task 6: an
+ * npm-installed extension's bundle lives in its own package, so the dir
+ * anchors where the MODULE loaded from, never the process cwd). Path-shaped
+ * specifiers (file:// URLs, POSIX absolutes — the packages-dir and
+ * pre-resolved flows) derive directly; bare specifiers resolve through
+ * the loader's own require anchor (the same mechanism
+ * `resolveExtensionEntry`'s fallback uses). `undefined` when nothing
+ * path-shaped derives — a contributed `dir` then passes through unchanged
+ * (absolute dirs always do; `resolve` keeps them verbatim).
+ */
+function extensionModuleDir(loaded: string): string | undefined {
+	let path: string | undefined;
+	if (loaded.startsWith("file://")) {
+		try {
+			path = fileURLToPath(loaded);
+		} catch {
+			return undefined;
+		}
+	} else if (loaded.startsWith("/")) {
+		path = loaded;
+	} else {
+		try {
+			const resolved = createRequire(import.meta.url).resolve(loaded);
+			path = resolved.startsWith("file://")
+				? fileURLToPath(resolved)
+				: resolved;
+		} catch {
+			return undefined;
+		}
+	}
+	return path === undefined ? undefined : dirname(path);
+}
+
+/**
  * Call an unknown-typed factory and validate the `{ extension, health?,
  * submit? }` result. A `health`/`submit` field that
  * is present but not the expected shape is a contract violation — thrown,
@@ -452,6 +558,7 @@ async function resolvedFromFactory(
 		extension?: unknown;
 		name?: unknown;
 		providers?: unknown;
+		webuiBundles?: unknown;
 		health?: unknown;
 		submit?: unknown;
 		runSettled?: unknown;
@@ -464,19 +571,23 @@ async function resolvedFromFactory(
 		ambientKinds?: unknown;
 	};
 	const providers = validateProviders(candidate.providers);
+	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
 	if (extension === undefined) {
-		// Provider-only contributor: valid only when `providers` is present;
-		// otherwise this factory result is not the contract form (fall
-		// through to the next resolution candidate). The contributor's name
-		// is its collision-record identity — without one there is nothing to
-		// attribute providers or health to, which is a contract violation.
-		if (providers === undefined) return undefined;
+		// Contributor-only result: valid when ANY contribution field is
+		// present (`providers`, `webuiBundles`); otherwise this factory
+		// result is not the contract form (fall through to the next
+		// resolution candidate). The contributor's name is its
+		// collision-record identity — without one there is nothing to
+		// attribute the contributions to, which is a contract violation.
+		if (providers === undefined && webuiBundles === undefined) {
+			return undefined;
+		}
 		if (typeof candidate.name !== "string" || candidate.name.length === 0) {
 			throw new Error(
-				"extension factory returned a provider-only result without a name",
+				"extension factory returned a contributor-only result without a name",
 			);
 		}
 	}
@@ -558,6 +669,7 @@ async function resolvedFromFactory(
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
 		...(workers === undefined ? {} : { workers }),
 		...(providers === undefined ? {} : { providers }),
+		...(webuiBundles === undefined ? {} : { webuiBundles }),
 	};
 }
 
@@ -757,6 +869,7 @@ typeof spec === "string"
 );
 const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
+const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
 const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
@@ -784,6 +897,17 @@ const display = label ?? entry;
 						// packages dir is an unrelated node_modules tree — Node's
 						// upward walk never finds it from sigrun's own imports, so it
 						// must be consulted explicitly.
+						// A resolved entry ending in `.ts` is rejected BEFORE the import
+						// (build-and-webui Task 3, BREAKING): the built server ships no
+						// loader — a `.ts` entry is a from-source artifact whose behavior
+						// depends on the host node's type-stripping flags (newer node
+						// loads it, older node crashes with ERR_UNKNOWN_FILE_EXTENSION).
+						// Sources must ship a BUILT entry; the quarantine names it.
+						if (/\.ts$/.test(loaded)) {
+							throw new Error(
+								`the resolved entry is a TypeScript source (${loaded}) — build the package and ship its built entry (dist/index.js); the built server loads JavaScript`,
+							);
+						}
 			const module = (await import(loaded)) as ExtensionModule;
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its
@@ -915,15 +1039,35 @@ const display = label ?? entry;
 					workers: resolved.workers,
 					});
 				}
-				if (resolved.providers !== undefined) {
-					providerContributors.push({
-						name: slug,
-						providers: resolved.providers,
-						...(resolved.health === undefined
-							? {}
-							: { health: resolved.health }),
+			if (resolved.providers !== undefined) {
+				providerContributors.push({
+					name: slug,
+					providers: resolved.providers,
+					...(resolved.health === undefined
+						? {}
+						: { health: resolved.health }),
+				});
+			}
+			// Webui-bundle contributions (build-and-webui Task 6): each entry
+			// is attributed to the extension slug and its `dir` anchored at
+			// the MODULE's directory — resolved HERE, the one point the module
+			// URL is known (an npm-installed extension's bundle lives in its
+			// own package, never the server cwd). Absolute dirs pass through
+			// `resolve` verbatim; the server owns the index.html check at
+			// serve time (the loader has no fs coupling by contract).
+			if (resolved.webuiBundles !== undefined) {
+				const moduleDir = extensionModuleDir(loaded);
+				for (const entry of resolved.webuiBundles) {
+					webuiBundles.push({
+						name: entry.name,
+						dir:
+							moduleDir === undefined || isAbsolute(entry.dir)
+								? entry.dir
+								: resolve(moduleDir, entry.dir),
+						extension: slug,
 					});
 				}
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -945,6 +1089,7 @@ const display = label ?? entry;
 	return {
 		outcomes,
 		providerContributors,
+		webuiBundles,
 		healthProducers,
 		submitBindings,
 		runSettledBindings,

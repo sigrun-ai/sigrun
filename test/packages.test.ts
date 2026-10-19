@@ -563,18 +563,20 @@ describe("git sources in the unified extensions list", () => {
 		);
 	});
 
-	test("entry discovery order: manifest > dist/index.js > index.ts", () => {
+	test("entry discovery order: manifest > dist/index.js; a .ts-only checkout fails loud", () => {
 		// The fixture's manifest names ./ext.js — discover without explicit.
 		expect(findExtEntry(fixture.dir, undefined)).toBe(join(fixture.dir, "ext.js"));
-		// dist/index.js beats index.ts when both exist and no manifest.
+		// dist/index.js discovered when it exists and no manifest.
 		const bare = freshDir("sigrun-baregit-");
-		writeFileSync(join(bare, "index.ts"), "// ts entry\n");
 		mkdirSync(join(bare, "dist"), { recursive: true });
 		writeFileSync(join(bare, "dist", "index.js"), "// js entry\n");
 		expect(findExtEntry(bare, undefined)).toBe(join(bare, "dist", "index.js"));
-		// index.ts alone.
+		// A .ts-only checkout fails loud (build Task 3: no implicit .ts
+		// fallback — the built server runs plain node, which cannot load a
+		// .ts entry; git sources must ship dist/index.js).
 		rmSync(join(bare, "dist"), { recursive: true });
-		expect(findExtEntry(bare, undefined)).toBe(join(bare, "index.ts"));
+		writeFileSync(join(bare, "index.ts"), "// ts entry\n");
+		expect(() => findExtEntry(bare, undefined)).toThrow(/dist\/index\.js/);
 		// Nothing → fail loud.
 		rmSync(join(bare, "index.ts"));
 		expect(() => findExtEntry(bare, undefined)).toThrow(GitSyncError);

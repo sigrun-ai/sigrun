@@ -1,9 +1,9 @@
 /**
- * The TUI theme (Task C1, UI refresh): wraps src/shared/themes.ts's
+ * The TUI theme (Task C1, UI refresh): wraps the shared themes module's
  * palettes in pi-tui's color pipeline (parseColor → foregroundAnsi /
  * backgroundAnsi) so components style text through token names instead
  * of raw SGR sequences. The palette DATA lives in one place
- * (src/shared/themes.ts, shared with the webui — zero duplication);
+ * (@sigrun/shared/themes, shared with the webui — zero duplication);
  * this module owns only the terminal mapping.
  *
  * Degradation: `colorMode` threads through foregroundAnsi/backgroundAnsi,
@@ -30,7 +30,7 @@ import {
 	type ModeName,
 	type PaletteName,
 	type PaletteTokens,
-} from "../../src/shared/themes.js";
+} from "@sigrun/shared/themes";
 
 /** A palette token, or the accent colour. */
 export type TuiToken = keyof PaletteTokens | "accent";

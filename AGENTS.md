@@ -8,13 +8,16 @@ Guidance for coding agents working in this repository.
   surface, `src/harness/` = pi-durable wiring, `src/server/` = HTTP routes).
 - `src/harness/stores.ts` — store roots, extension slug, secrets/settings
   stores; boot ensures roots (author-facing contract in `docs/extending.md`).
-- `src/shared/` — pure client-shared leaf (zero imports): themes and
-  other shared primitives consumed by both `webui/` and `tui/`.
+- `shared/` — npm workspace package (`@sigrun/shared`, the pure
+  client-shared leaf — zero imports): theme tokens and other shared
+  primitives consumed by `webui/`, `tui/`, and core.
 - `webui/` — npm workspace package (`@sigrun/webui`, vite + react). Built
-  bundle lands at `webui/dist` (the default `server.webuiBundle`).
-- `tui/` — npm workspace package (`@sigrun/tui`, pi-tui terminal client).
-  Its wire types are imported directly from `src/server/` (NodeNext — no
-  codegen or mirrored schemas).
+  bundle lands at `webui/dist` (the built-in default bundle; select via
+  `server.webui.bundle`).
+- `tui/` — npm workspace package (`@sigrun/tui`, pi-tui terminal
+  client), spawned by the CLI as a child process (optional dep). Its
+  wire types come from `@sigrun/shared` (NodeNext — no codegen or
+  mirrored schemas).
 - `charts/sigrun/` — the Helm chart (reference k8s deploy).
 - `docker/` — compose reference. `Dockerfile` — image build.
 - `docs/superpowers/` — internal specs/plans/audits (agent-session artifacts,

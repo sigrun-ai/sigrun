@@ -77,7 +77,7 @@ import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
 import {
 	resolveWebuiBundle,
 	serveWebuiBundle,
-	WEBUI_CHANNEL,
+	type ContributedWebuiBundle,
 } from "./static.js";
 import {
 	isConfinedPath,
@@ -341,10 +341,15 @@ function decodeBase64Strict(value: string): Buffer | undefined {
  * `X-Sigrun-User` resolves per request and stamps `SessionMeta.owner` at
  * create/fork/import; VERIFICATION (actual auth) arrives with a later
  * slice.
+ * @param contributedBundles the extension-contributed webui-bundle registry
+ * (build-and-webui Task 6 threads it here from boot; the serve-time
+ * resolution (Task 5) selects a NAME selector against it — an empty
+ * registry is the no-extension deploy).
  */
 export async function createServer(
 	opened: OpenedHarness,
 	config: SigrunConfig,
+	contributedBundles: readonly ContributedWebuiBundle[] = [],
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
 	// The identity seam (spec §5 / TUI plan): resolve the caller on EVERY
@@ -360,12 +365,14 @@ export async function createServer(
 		const value = Array.isArray(header) ? header[0] : header;
 		request.sigrunUser = value?.trim() || undefined;
 	});
-	// The webui channel bundle (Task 20, spec §4.1/§6): mount the static
-	// bundle + SPA fallback when it resolves; an explicit-but-missing bundle
-	// rejects here (fail loud, per the deploy entry's boot contract). Explicit
-	// routes win over the static wildcard, so the /v1 API + probes are
-	// unaffected by the mount.
-	const webuiBundle = await resolveWebuiBundle(config);
+	// The webui channel bundle (Task 20, spec §4.1/§6; serve-time resolution
+	// is build-and-webui Task 5): resolve enabled-gate → contributed NAME →
+	// PATH → default against `config.webui` and the contributed registry,
+	// then mount the static bundle + SPA fallback when one resolves. An
+	// explicit-but-unresolvable selector rejects here (fail loud, per the
+	// deploy entry's boot contract). Explicit routes win over the static
+	// wildcard, so the /v1 API + probes are unaffected by the mount.
+	const webuiBundle = await resolveWebuiBundle(config, contributedBundles);
 	if (webuiBundle !== undefined) {
 		await serveWebuiBundle(app, webuiBundle);
 	}
@@ -481,24 +488,36 @@ export async function createServer(
 			// configured (Task 11 — the badge, not an error, when absent).
 			capabilities: {
 				backup: config.backup !== undefined,
-				// §4.1/§6 channels: "webui" exactly while the channel bundle is
-				// mounted; an API-only deploy reports [].
-				channels: webuiBundle === undefined ? [] : [WEBUI_CHANNEL],
+			// §4.1/§6 channels: the SELECTED bundle's name ("webui" for the
+			// built-in default and explicit paths; a contributed selection's own
+			// name) exactly while the channel bundle is mounted; an API-only
+			// deploy (gate off or absent default) reports [].
+			channels:
+				webuiBundle === undefined ? [] : [webuiBundle.channel],
 			},
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {
 				interactions: [...opened.seamKinds]
 					.filter(([, kinds]) => (kinds.interaction?.length ?? 0) > 0)
 					.map(([name, kinds]) => ({
-						extension: name,
-						kinds: [...(kinds.interaction ?? [])],
-					})),
+					extension: name,
+					kinds: [...(kinds.interaction ?? [])],
+				})),
 				ambient: [...opened.seamKinds]
 					.filter(([, kinds]) => (kinds.ambient?.length ?? 0) > 0)
 					.map(([name, kinds]) => ({
-						extension: name,
-						keys: [...(kinds.ambient ?? [])],
-					})),
+					extension: name,
+					keys: [...(kinds.ambient ?? [])],
+				})),
+			},
+			// Boot-merge collisions (build-and-webui Task 6): name collisions
+			// among extension-contributed webui bundles, plus the provider-merge
+			// sink (retained since Task 6 of the provider plan but never read —
+			// the same field carries both). Last-registered-wins everywhere; the
+			// record is operator visibility, never an error.
+			collisions: {
+				webui: opened.webuiBundleCollisions,
+				providers: opened.providerCollisions,
 			},
 		};
 	});

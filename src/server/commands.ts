@@ -6,6 +6,12 @@
  * it goes (the task plan's "thin catalog over the endpoints Tasks 4–6
  * built").
  *
+ * SPLIT (build-and-webui Task 1): the WIRE types (`SlashCommandEndpoint`,
+ * `SlashCommand`, `CommandsResponse`) live in the `@sigrun/shared` package
+ * (`shared/src/commands.ts` — the canonical declarations both clients
+ * import); this module owns the CATALOG runtime and re-exports the types
+ * for server-side importers.
+ *
  * Scope (controller rulings): ONLY commands mapping to EXISTING endpoints.
  * `/login`/`/logout` are core-spec §6.4 exclusions (credentials never cross
  * the API), `/skill:name` has no endpoint (deferred), and prompt templates
@@ -18,27 +24,13 @@
  * served); no extension wiring exists yet.
  */
 
-/** The HTTP method + literal route path a command drives. */
-export interface SlashCommandEndpoint {
-	readonly method: "GET" | "POST" | "PATCH";
-	/**
-	 * The REGISTERED route path (Fastify `:param` form, e.g.
-	 * `/v1/conversations/:id/fork`) — the composer substitutes the active
-	 * conversation id; `server-commands.test.ts` asserts every entry resolves
-	 * against the live route table.
-	 */
-	readonly path: string;
-}
+import type { SlashCommand } from "@sigrun/shared/commands";
 
-/** One slash command's catalog entry. */
-export interface SlashCommand {
-	/** The bare name (no leading slash) — the `Map` key. */
-	readonly name: string;
-	readonly description: string;
-	/** Argument shape shown in the menu/usage errors; absent = no args. */
-	readonly argsHint?: string;
-	readonly endpoint: SlashCommandEndpoint;
-}
+export type {
+	CommandsResponse,
+	SlashCommand,
+	SlashCommandEndpoint,
+} from "@sigrun/shared/commands";
 
 /** The catalog, keyed by bare name. */
 export const SLASH_COMMANDS: ReadonlyMap<string, SlashCommand> = new Map(
@@ -70,10 +62,7 @@ export const SLASH_COMMANDS: ReadonlyMap<string, SlashCommand> = new Map(
 			{
 				name: "export",
 				description: "Download this conversation as JSONL",
-				endpoint: {
-					method: "GET",
-					path: "/v1/conversations/:id/export",
-				},
+				endpoint: { method: "GET", path: "/v1/conversations/:id/export" },
 			},
 			{
 				name: "import",
@@ -114,8 +103,3 @@ export const SLASH_COMMANDS: ReadonlyMap<string, SlashCommand> = new Map(
 		] as const
 	).map((command) => [command.name, command]),
 );
-
-/** The `GET /v1/commands` response (spec §5 response conventions). */
-export interface CommandsResponse {
-	readonly commands: readonly SlashCommand[];
-}

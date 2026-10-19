@@ -1,15 +1,41 @@
 {
 	"name": "@sigrun/tui",
 	"version": "0.1.0",
-	"private": true,
-	"description": "sigrun terminal client (pi-tui based) over the §5 API",
+	"description": "sigrun terminal client (pi-tui based) over the §5 API — spawned by the sigrun CLI, or standalone against a server URL",
 	"type": "module",
+	"bin": {
+		"sigrun-tui": "dist/launch.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/launch.d.ts",
+			"default": "./dist/launch.js"
+		},
+		"./package.json": "./package.json"
+	},
 	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@earendil-works/pi-tui": "^1.1.0",
+		"@sigrun/shared": "*"
 	},
 	"devDependencies": {
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
-	}
+	},
+	"files": [
+		"dist"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "github",
+		"url": "git+https://github.com/sigrun-ai/sigrun.git"
+	},
+	"bugs": {
+		"url": "https://github.com/sigrun-ai/sigrun/issues"
+	},
+	"homepage": "https://github.com/sigrun-ai/sigrun#readme"
 }

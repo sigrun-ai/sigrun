@@ -5,11 +5,12 @@
 	"description": "Durable personal assistant on pi-durable",
 	"type": "module",
 	"bin": {
-		"sigrun": "src/cli.ts"
+		"sigrun": "dist/cli.js"
 	},
 	"workspaces": [
 		"webui",
-		"tui"
+		"tui",
+		"shared"
 	],
 	"engines": {
 		"node": ">=22.19.0"
@@ -19,9 +20,12 @@
 		"tui": "tsx src/cli.ts",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
+		"build:shared": "npm --workspace @sigrun/shared run build",
+		"build": "npm run build:shared && tsc -p tsconfig.build.json",
 		"build:webui": "npm --workspace @sigrun/webui run build",
 		"typecheck:webui": "npm --workspace @sigrun/webui run typecheck",
-		"test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e"
+		"test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e",
+		"prepublishOnly": "npm run build && npm run build:webui"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "^1.0.4",
@@ -29,11 +33,15 @@
 		"@earendil-works/pi-durable": "1.2.0",
 		"@earendil-works/pi-tui": "^1.1.0",
 		"@fastify/static": "^9.1.0",
-		"fastify": "^5.12.5",
-		"tsx": "^4.23.15"
+		"@sigrun/shared": "*",
+		"fastify": "^5.12.5"
+	},
+	"optionalDependencies": {
+		"@sigrun/tui": "*"
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",
+		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3",
 		"yaml": "^2.9.1"
@@ -48,19 +56,9 @@
 	},
 	"homepage": "https://github.com/sigrun-ai/sigrun#readme",
 	"files": [
-		"src",
+		"dist",
+		"webui/dist",
 		"THIRD_PARTY_NOTICES.md",
-		"webui/src",
-		"!webui/src/**/*.test.ts",
-		"!webui/src/**/*.test.tsx",
-		"!webui/src/test-utils.ts",
-		"webui/index.html",
-		"webui/package.json",
-		"webui/tsconfig.json",
-		"webui/tsconfig.e2e.json",
-		"webui/vite.config.ts",
-		"webui/playwright.config.ts",
-		"webui/e2e",
 		"scripts",
 		"docker",
 		"charts",

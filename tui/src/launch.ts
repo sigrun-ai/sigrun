@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * The TUI entry the CLI's default `launchTui` runs (Task 6): boot the
  * pi-tui fullscreen alt-screen renderer (task C1b — the terminal scrollback
@@ -5,6 +6,14 @@
  * root, and resolve when the user exits (ctrl+c). The CLI's `run`
  * lifecycle owns the shutdown from there — this promise resolving IS the
  * exit signal. There is no main-screen fallback.
+ *
+ * As of build-and-webui Task 2 this file is ALSO the package's bin
+ * (`sigrun-tui` → `dist/launch.js`): the CLI no longer imports
+ * `launchTuiShell` in-process — it spawns this bin as a child process
+ * (`node <resolved dist/launch.js>`), passing the resolved server URL,
+ * user, and tui.json UI fields as `--flags`. Run standalone, the bin
+ * resolves them itself: `--server`/`SIGRUN_SERVER` (default
+ * `http://localhost:$SIGRUN_PORT` or 3000) and `--user`/`SIGRUN_USER`.
  *
  * Layout (task C1b): `tui.setLayoutRoot(new VStack([...]))` — the body row
  * (`HStack`: the sidebar at basis 28, visible only at width ≥ 80, and the
@@ -43,7 +52,15 @@ import {
 	type TUI,
 	type TuiAltScreenOptions,
 } from "@earendil-works/pi-tui";
-import type { AccentName, ModeName, PaletteName } from "../../src/shared/themes.js";
+import {
+	isAccentName,
+	isPaletteName,
+	type AccentName,
+	type ModeName,
+	type PaletteName,
+} from "@sigrun/shared/themes";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { SigrunClient, type FetchLike } from "./api.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
@@ -181,6 +198,8 @@ export async function launchTuiShell(
 	const app = new TuiApp(client, {
 		// The app needs pi-tui's TUI surface for the Editor + repaint
 		// pings; the constructed screen provides it.
+		// SAFETY: TuiAltScreen implements TUI's render/input surface (pi-tui's
+		// own TUI is exactly this shape); the seam type only narrows tests.
 		tui: tui as unknown as TUI,
 		watchOptions: {
 			baseUrl: options.baseUrl,
@@ -227,6 +246,7 @@ export async function launchTuiShell(
 	app.setStatusBar(statusBar);
 	// C5: the `help` action opens the key reference overlay for the
 	// active keymap (the app owns the overlayOpen bookkeeping).
+	// SAFETY: same TuiAltScreen-as-TUI surface as the TuiApp seam above.
 	app.helpOverlay = (onClose) =>
 		showHelp(tui as unknown as TUI, keymap, { onClose });
 	if (keymap.name === "vim") {
@@ -310,4 +330,164 @@ export async function launchTuiShell(
 		app.dispose();
 		tui.stop();
 	}
+}
+
+/**
+ * The `sigrun-tui` bin's usage line (parse failures print it + the
+ * reason, exit 1).
+ */
+const TUI_USAGE_TEXT = `usage: sigrun-tui [--server <url>] [--user <name>]
+       [--palette <name>] [--accent <name>] [--mode dark|light]
+       [--keymap standard|vim|emacs] [--editor <command>]`;
+
+/**
+ * The flags {@link tuiMain} accepts. The CLI passes the fields it
+ * resolved (tui.json + its own flags) through these; a standalone
+ * invocation may pass any subset.
+ */
+export interface TuiLaunchArgs {
+	readonly server?: string;
+	readonly user?: string;
+	readonly palette?: PaletteName;
+	readonly accent?: AccentName;
+	readonly mode?: ModeName;
+	readonly keymap?: "standard" | "vim" | "emacs";
+	readonly editor?: string;
+}
+
+/** Every flag {@link parseTuiLaunchArgs} accepts, with its validator. */
+const TUI_FLAGS: Record<
+	string,
+	(value: string) => TuiLaunchArgs[keyof TuiLaunchArgs] | undefined
+> = {
+	"--server": (value) => (value === "" ? undefined : value),
+	"--user": (value) => (value === "" ? undefined : value),
+	"--palette": (value) => (isPaletteName(value) ? value : undefined),
+	"--accent": (value) => (isAccentName(value) ? value : undefined),
+	"--mode": (value) =>
+		value === "dark" || value === "light" ? value : undefined,
+	"--keymap": (value) =>
+		value === "standard" || value === "vim" || value === "emacs"
+			? value
+			: undefined,
+	"--editor": (value) => (value === "" ? undefined : value),
+};
+
+/**
+ * Parse the bin's argv (post-`node` slices): every entry must be a known
+ * flag followed by a value. A validator returning `undefined` means the
+ * VALUE was malformed for that flag (not a parse-usage error) — it is
+ * reported naming the flag's expected form.
+ */
+export function parseTuiLaunchArgs(argv: readonly string[]): TuiLaunchArgs {
+	const args: {
+		[K in keyof TuiLaunchArgs]?: TuiLaunchArgs[K] | undefined
+	} = {};
+	let index = 0;
+	while (index < argv.length) {
+		const flag = argv[index] as string;
+		const parse = TUI_FLAGS[flag];
+		if (parse === undefined) {
+			throw new Error(`unknown argument ${JSON.stringify(flag)}\n${TUI_USAGE_TEXT}`);
+		}
+		const raw = argv[index + 1];
+		if (raw === undefined || raw.startsWith("--")) {
+			throw new Error(`${flag} requires a value\n${TUI_USAGE_TEXT}`);
+		}
+		const value = parse(raw);
+		if (value === undefined) {
+			throw new Error(`${flag} does not accept ${JSON.stringify(raw)}\n${TUI_USAGE_TEXT}`);
+		}
+		// SAFETY: each TUI_FLAGS entry's validator only returns the value
+		// type its key names (the Record's value union is exactly the
+		// per-flag literal unions of TuiLaunchArgs).
+		(args as Record<string, unknown>)[flag.slice(2)] = value;
+		index += 2;
+	}
+	return args;
+}
+
+/**
+ * The standalone default server URL: `http://localhost:$SIGRUN_PORT`
+ * (3000 when unset). A malformed `SIGRUN_PORT` fails loud naming the
+ * variable — the same posture as the core CLI's port parsing.
+ */
+function defaultBaseUrl(env: NodeJS.ProcessEnv): string {
+	const raw = env.SIGRUN_PORT;
+	let port = 3000;
+	if (raw !== undefined && raw !== "") {
+		port = Number(raw);
+		if (!Number.isInteger(port) || port <= 0) {
+			throw new Error(`SIGRUN_PORT must be a positive integer, got ${raw}`);
+		}
+	}
+	return `http://localhost:${port}`;
+}
+
+/**
+ * The bin's `main`: resolve server (`--server` > `SIGRUN_SERVER` > the
+ * localhost default) and user (`--user` > `SIGRUN_USER`, absent = the
+ * server's naive mode), then run {@link launchTuiShell}. Returns the
+ * process exit code (0 clean; 1 on a usage error or a boot failure,
+ * with the message printed).
+ */
+export async function tuiMain(
+	argv: readonly string[] = process.argv.slice(2),
+	env: NodeJS.ProcessEnv = process.env,
+	io: { error(text: string): void } = { error: (text) => console.error(text) },
+): Promise<number> {
+	let args: TuiLaunchArgs;
+	try {
+		args = parseTuiLaunchArgs(argv);
+	} catch (error) {
+		io.error(error instanceof Error ? error.message : String(error));
+		return 1;
+	}
+	try {
+		await launchTuiShell({
+			baseUrl: args.server ?? env.SIGRUN_SERVER ?? defaultBaseUrl(env),
+			...(args.user === undefined && env.SIGRUN_USER === undefined
+				? {}
+				: { user: (args.user ?? env.SIGRUN_USER) as string }),
+			...(args.palette === undefined ? {} : { palette: args.palette }),
+			...(args.accent === undefined ? {} : { accent: args.accent }),
+			...(args.mode === undefined ? {} : { mode: args.mode }),
+			...(args.keymap === undefined ? {} : { keymap: args.keymap }),
+			...(args.editor === undefined ? {} : { editor: args.editor }),
+		});
+		return 0;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		io.error(message.startsWith("sigrun-tui:") ? message : `sigrun-tui: ${message}`);
+		return 1;
+	}
+}
+
+// Script detection (the bin entry): only run main when node invoked THIS
+// file (dist/launch.js) — an import (tests, the old in-process path)
+// leaves it inert. npm bin entries are SYMLINKS (…/.bin/sigrun-tui → the
+// package's dist/launch.js): node realpaths the main module by default
+// (import.meta.url is the REAL path) while process.argv[1] keeps the
+// INVOKED path — the comparison must realpath the argv side, or a
+// .bin/npx invocation never matches and the bin exits 0 silently.
+/** Realpath argv[1], or undefined when it is not a file on disk (an
+ * argv[1] that doesn't exist can never be this module — e.g. exotic
+ * wrapper invocations). */
+function invokedEntryPath(): string | undefined {
+	if (process.argv[1] === undefined) return undefined;
+	try {
+		return realpathSync(process.argv[1]);
+	} catch {
+		return undefined;
+	}
+}
+
+const invokedEntry = invokedEntryPath();
+const invokedAsBin =
+	invokedEntry !== undefined &&
+	import.meta.url === pathToFileURL(invokedEntry).href;
+if (invokedAsBin) {
+	void tuiMain().then((code) => {
+		process.exit(code);
+	});
 }

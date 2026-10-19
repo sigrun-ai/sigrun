@@ -1,7 +1,8 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env node
 /**
  * The CLI entrypoints (Task 5): `sigrun` / `sigrun serve` / `sigrun attach`
- * — the package's `bin` (`"sigrun": "src/cli.ts"`, run via tsx).
+ * — the package's `bin` (`"sigrun": "dist/cli.js"`, plain node — build
+ * Task 3; the tsx shebang served the from-source era).
  *
  * - `sigrun` (run): boot harness+server IN-PROCESS (the `src/serve.ts`
  *   composition) and launch the TUI against the loopback URL of the bound
@@ -14,22 +15,36 @@
  * - `sigrun attach`: no harness boot; launch the TUI against the resolved
  *   server URL, carrying the resolved user into the client config.
  *
+ * Build-and-webui Task 2: the TUI is a SPAWNED package, not an in-process
+ * import. `run`/`attach` spawn `node <resolved @sigrun/tui bin>` as a
+ * child process, passing the resolved server URL, user, and tui.json UI
+ * fields as `--flags` (the bin, `tui/dist/launch.js`, parses them itself).
+ * The parent watches the child's exit: exit → shutdown (agent-dies-with-
+ * tui), nonzero exit → exit 1. A package-resolution failure surfaces as
+ * an actionable `install @sigrun/tui` message, never a module-not-found
+ * crash — the core install is server-only unless the companion tui
+ * package is present. The old lazy `import("../tui/src/launch.js")` is
+ * gone: an in-process import would drag the tui workspace's runtime
+ * (pi-tui) into the core's resolution graph.
+ *
  * Resolution chains (both `attach`; `run` resolves `user` the same way):
  * - server: `--server` > tui.json `server` > `http://localhost:$SIGRUN_PORT`
  *   (default 3000)
  * - user: `--user` > `SIGRUN_USER` > tui.json `user`
  *
- * The TUI entry (Task 6) is `tui/src/launch.ts`'s `launchTuiShell` — the
- * CLI's default `launchTui` imports it lazily (the deploy container
- * install strips devDependencies, so a static import would drag the tui
- * workspace into `npm start` resolution). Everything else is real and
- * tested through the seams (`test/cli.test.ts` injects factories —
- * process-launch stays out of the unit tests, and `npm start` →
- * src/index.ts is unchanged for the cluster's monolith).
+ * The TUI entry (Task 6) is the `@sigrun/tui` package's `sigrun-tui` bin
+ * (`tui/dist/launch.js` — build-and-webui Task 2) — the CLI's default
+ * `launchTui` spawns it; everything else is real and tested through the
+ * seams (`test/cli.test.ts` injects factories — process-launch stays out
+ * of the unit tests, and `npm start` → src/index.ts is unchanged for the
+ * cluster's monolith).
  */
 
+import { spawn as nodeSpawn } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { resolveStoreRoots } from "./harness/stores.js";
 import { pathToFileURL } from "node:url";
 import type { Env } from "./config.js";
@@ -42,7 +57,7 @@ import {
 	type AccentName,
 	type ModeName,
 	type PaletteName,
-} from "./shared/themes.js";
+} from "@sigrun/shared/themes";
 
 export const USAGE_TEXT = `usage: sigrun [--user <name>]
        sigrun serve
@@ -234,6 +249,104 @@ export interface LaunchTuiOptions {
 }
 
 /**
+ * The child-process surface {@link launchTuiProcess} drives — the
+ * narrowed slice of `ChildProcess` the tests fake.
+ */
+export interface TuiChildProcess {
+	on(event: "exit", listener: (code: number | null) => void): void;
+	/** Spawn failures (ENOENT, EACCES) — without a listener node emits an
+	 * unhandled `error` event, which CRASHES the CLI instead of printing
+	 * the actionable message. */
+	on(event: "error", listener: (error: Error) => void): void;
+	kill(signal?: NodeJS.Signals): void;
+}
+
+/** The spawn seam (tests inject a fake; production uses node's spawn). */
+export type TuiSpawnFn = (
+	command: string,
+	args: readonly string[],
+) => TuiChildProcess;
+
+/** The bin-resolver seam: returns the ABSOLUTE path of the tui bin. */
+export type TuiBinResolver = () => string;
+
+/**
+ * Resolve the `@sigrun/tui` bin: the package manifest through its
+ * `./package.json` exports entry (a createRequire rooted at THIS module —
+ * never a relative path into the workspace), joined with the `sigrun-tui`
+ * bin the manifest declares. Any resolution failure (package absent,
+ * manifest shape, bin missing on disk) throws — callers translate it into
+ * the `install @sigrun/tui` error.
+ */
+export function resolveTuiBin(): string {
+	const require = createRequire(import.meta.url);
+	const manifestPath = require.resolve("@sigrun/tui/package.json");
+	// The manifest path is read DIRECTLY (never wrapped in a file:// URL —
+	// interpolating a filesystem path into a URL mis-parses on `#`, `?`,
+	// and `%`, and WHATWG quirks are exactly how the T2 reviewer's
+	// mis-parse class happens; a plain path is what readFileSync takes).
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+		bin?: Record<string, string> | string;
+	};
+	const binField = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.["sigrun-tui"];
+	if (binField === undefined) {
+		throw new Error(`@sigrun/tui/package.json declares no sigrun-tui bin`);
+	}
+	return join(dirname(manifestPath), binField);
+}
+
+/** The tui.json UI fields as `--flag value` argv pairs (Task 2: the tui
+ * is spawned; the fields the old in-process call threaded now ride the
+ * child's argv, parsed by the bin's own `parseTuiLaunchArgs`). */
+function tuiArgv(options: LaunchTuiOptions): string[] {
+	return [
+		"--server",
+		options.baseUrl,
+		...(options.user === undefined ? [] : ["--user", options.user]),
+		...(options.palette === undefined ? [] : ["--palette", options.palette]),
+		...(options.accent === undefined ? [] : ["--accent", options.accent]),
+		...(options.mode === undefined ? [] : ["--mode", options.mode]),
+		...(options.keymap === undefined ? [] : ["--keymap", options.keymap]),
+		...(options.editor === undefined ? [] : ["--editor", options.editor]),
+	];
+}
+
+/**
+ * The default `launchTui`: spawn `node <resolved sigrun-tui bin>` as a
+ * child process (stdio inherited — the TUI owns the terminal) and resolve
+ * when the child exits. A bin-resolution failure is wrapped as the
+ * actionable `install @sigrun/tui` message; a nonzero child exit rejects
+ * (the CLI prints it and exits 1).
+ */
+export async function launchTuiProcess(
+	options: LaunchTuiOptions,
+	seams?: { spawn?: TuiSpawnFn; resolveTuiBin?: TuiBinResolver },
+): Promise<void> {
+	const doSpawn: TuiSpawnFn =
+		seams?.spawn ??
+		((command, args) => nodeSpawn(command, [...args], { stdio: "inherit" }));
+	const resolveBin = seams?.resolveTuiBin ?? resolveTuiBin;
+	let bin: string;
+	try {
+		bin = resolveBin();
+	} catch (cause) {
+		throw new Error(
+			`sigrun-tui is not installed; install @sigrun/tui to use the terminal client (${
+				cause instanceof Error ? cause.message : String(cause)
+			})`,
+		);
+	}
+	const child = doSpawn(process.execPath, [bin, ...tuiArgv(options)]);
+	const code = await new Promise<number | null>((resolve, reject) => {
+		child.on("exit", (exitCode: number | null) => resolve(exitCode));
+		child.on("error", (error: Error) => reject(error));
+	});
+	if (code !== 0) {
+		throw new Error(`sigrun-tui exited with ${code ?? "no exit code (terminated)"}`);
+	}
+}
+
+/**
  * The CLI's injected dependencies — the wiring seams the unit tests stub
  * (process-launch stays out of unit tests; the deploy-entry test owns the
  * real boot through `src/index.ts`).
@@ -253,11 +366,23 @@ export interface CliDeps {
 	 */
 	boot(env: NodeJS.ProcessEnv, options?: { host?: string }): Promise<BootedServer>;
 	/**
-	 * The TUI entry (tui/src/launch.ts's `launchTuiShell`): resolves when
-	 * the TUI exits. The default lazy-imports the tui workspace (the deploy
-	 * container's `npm start` path must never load it).
+	 * The TUI launch (build-and-webui Task 2): spawn the `@sigrun/tui`
+	 * bin as a child process — resolves when the child exits, rejects on a
+	 * nonzero exit (or an `install @sigrun/tui` resolution failure).
+	 * OPTIONAL: the default composes {@link launchTuiProcess} with the
+	 * `spawn`/`resolveTuiBin` seams below (inject those to fake the child
+	 * while keeping the real default wiring); `run`/`attach` shut the
+	 * server down when it settles (agent-dies-with-tui).
 	 */
-	launchTui(options: LaunchTuiOptions): Promise<void>;
+	launchTui?(options: LaunchTuiOptions): Promise<void>;
+	/**
+	 * TEST SEAM: the child-process spawn (`launchTuiProcess`'s engine).
+	 * Defaults to node's `spawn` with `stdio: "inherit"` (the TUI owns
+	 * the terminal).
+	 */
+	spawn?(command: string, args: readonly string[]): TuiChildProcess;
+	/** TEST SEAM: the `@sigrun/tui` bin resolver (see {@link resolveTuiBin}). */
+	resolveTuiBin?(): string;
 	/**
 	 * The process-exit seam (fix wave A8): run mode's signal path exits
 	 * once shutdown completes so the TUI never runs against a dead server.
@@ -335,40 +460,46 @@ export async function cliMain(
 	deps?: CliDeps,
 	io: CliIO = { error: (text) => console.error(text) },
 ): Promise<number> {
-	const realDeps: CliDeps = deps ?? {
-		serve: async (serveEnv) => {
-			const booted = await serve(serveEnv);
-			const stop = (): void => {
-				void booted.shutdownOnce().then(
-					() => process.exit(0),
-					(error: unknown) => {
-						console.error("sigrun shutdown error:", error);
-						process.exit(1);
-					},
-				);
-			};
-			process.on("SIGTERM", stop);
-			process.on("SIGINT", stop);
-		},
-		boot: (bootEnv, bootOptions) => serve(bootEnv, bootOptions),
-		launchTui: async (options) => {
-			// Lazy import (see the module docstring): the tui workspace must
-			// never load in the deploy container's `npm start` path.
-			const { launchTuiShell } = await import("../tui/src/launch.js");
-			await launchTuiShell({
-				baseUrl: options.baseUrl,
-				...(options.user === undefined ? {} : { user: options.user }),
-				// C1a threads the tui.json fields through; the shell consumes
-				// them in C1b's launcher rework (accept-and-ignore for now).
-				...(options.palette === undefined ? {} : { palette: options.palette }),
-				...(options.accent === undefined ? {} : { accent: options.accent }),
-				...(options.mode === undefined ? {} : { mode: options.mode }),
-				...(options.keymap === undefined ? {} : { keymap: options.keymap }),
-				...(options.editor === undefined ? {} : { editor: options.editor }),
-			});
-		},
-		exit: (exitCode) => process.exit(exitCode),
+	const realDeps: CliDeps = {
+		...(deps ?? {}),
+		serve:
+			deps?.serve ??
+			(async (serveEnv) => {
+				const booted = await serve(serveEnv);
+				const stop = (): void => {
+					void booted.shutdownOnce().then(
+						() => process.exit(0),
+						(error: unknown) => {
+							console.error("sigrun shutdown error:", error);
+							process.exit(1);
+						},
+					);
+				};
+				process.on("SIGTERM", stop);
+				process.on("SIGINT", stop);
+				// Stay pending until a signal runs `stop` (which exits the
+				// process): cliMain's caller maps this promise's RESOLUTION onto
+				// `process.exit(0)` — a serve that returned after attaching the
+				// handlers would exit the process the instant the server started
+				// listening (the built-bin test caught exactly that: boot, print
+				// the listening line, exit 0, serve nothing).
+				await new Promise<never>(() => {});
+			}),
+		boot: deps?.boot ?? ((bootEnv, bootOptions) => serve(bootEnv, bootOptions)),
 	};
+	// The resolved TUI launch: an injected `launchTui` wins (cli.test.ts's
+	// in-process stubs); otherwise the SPAWN default, composed with the
+	// injected child seams (cli-spawn.test.ts fakes the child while running
+	// this real wiring).
+	const launchTui =
+		realDeps.launchTui ??
+		((options: LaunchTuiOptions) =>
+			launchTuiProcess(options, {
+				...(realDeps.spawn === undefined ? {} : { spawn: realDeps.spawn }),
+				...(realDeps.resolveTuiBin === undefined
+					? {}
+					: { resolveTuiBin: realDeps.resolveTuiBin }),
+			}));
 
 	let parsed: ParsedArgs;
 	try {
@@ -386,7 +517,7 @@ export async function cliMain(
 			}
 			case "attach": {
 				const file = await loadTuiFile(env);
-				await realDeps.launchTui({
+				await launchTui({
 					baseUrl: resolveServer(parsed, env, file),
 					user: resolveUser(parsed, env, file),
 					...tuiThemeFields(file),
@@ -419,7 +550,7 @@ export async function cliMain(
 				process.on("SIGTERM", stop);
 				process.on("SIGINT", stop);
 				try {
-					await realDeps.launchTui({
+					await launchTui({
 						baseUrl: `http://localhost:${booted.port}`,
 						user,
 						...tuiThemeFields(file),
@@ -439,11 +570,26 @@ export async function cliMain(
 	}
 }
 
-// Script detection (fix wave A7): the exact entry-module comparison —
-// the old endsWith("cli.ts") fired for ANY cli.ts basename.
+// Script detection (fix wave A7 + build Task 3): the exact entry-module
+// comparison — the old endsWith("cli.ts") fired for ANY cli.ts basename.
+// The argv side is REALPATH'd first (the T2 fix, mirrored for the core
+// bin): npm bin entries are symlinks (…/.bin/sigrun → dist/cli.js), node
+// realpaths the main module (import.meta.url is the real path) while
+// process.argv[1] keeps the invoked symlink — a raw comparison mismatches
+// and the bin exits 0 SILENTLY.
+function invokedEntryPath(): string | undefined {
+	if (process.argv[1] === undefined) return undefined;
+	try {
+		return realpathSync(process.argv[1]);
+	} catch {
+		return undefined;
+	}
+}
+
+const invokedEntry = invokedEntryPath();
 const invokedAsScript =
-	process.argv[1] !== undefined &&
-	import.meta.url === pathToFileURL(process.argv[1]).href;
+	invokedEntry !== undefined &&
+	import.meta.url === pathToFileURL(invokedEntry).href;
 if (invokedAsScript) {
 	void cliMain(process.argv.slice(2)).then((code) => {
 		process.exit(code);

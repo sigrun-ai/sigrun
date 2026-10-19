@@ -91,6 +91,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restart — no image rebuild. Compose mounts the config dir on the data
   volume (`SIGRUN_CONFIG_DIR=/data/config`); the chart defaults
   `SIGRUN_CONFIG_DIR=/data/config` onto the same PVC as the database.
+- `server.webui` settings section (the webui channel surface):
+  `enabled` (default `true`; `false` is a positively API-only deploy —
+  nothing mounts even when a bundle is present) and `bundle` (the
+  selector — a value matching `^[a-z][a-z0-9_-]*$` is a contributed-bundle
+  NAME, a path-shaped value is a directory). `SIGRUN_WEBUI` is the strict
+  env gate (`true`/`false`, anything else fails loud);
+  `SIGRUN_WEBUI_BUNDLE` remains the env selector form.
+  `PATCH {server:{webui:{…}}}` sub-merges per key (a partial update no
+  longer drops a previously set `bundle`); a defaulted first boot
+  persists no webui keys at all.
+- Extension-contributed webui bundles: a factory result may carry
+  `webuiBundles: [{name, dir}]` (contract in `docs/extending.md`) — `dir`
+  resolves against the extension entry file's directory (the bundle lives
+  in the extension's package, never the server cwd), the server owns the
+  `index.html` check at serve time (a missing index is a boot error naming
+  the extension), and name collisions are last-registered-wins with a
+  warn. Selection by name via `server.webui.bundle`; the selected
+  bundle mounts exactly like the built-in one and
+  `capabilities.channels` reports its name (`"webui"` for the built-in
+  default).
+- `/v1/meta` gains a `collisions` field (`webui` + `providers`):
+  boot-merge collision records surfaced for operator visibility — the
+  provider collision sink was retained since the provider plan but never
+  readable until now.
+
+### Deprecated
+- `server.webuiBundle` — the legacy flat key reads as a deprecated alias
+  for `server.webui.bundle` for one release (accepted with a deprecation
+  warn). Selector precedence: `SIGRUN_WEBUI_BUNDLE` >
+  `server.webui.bundle` > legacy `server.webuiBundle` > the built-in
+  default. Bootstrap never writes the legacy key; migrate to
+  `server.webui.bundle`.
 
 ### Changed
 - `charts/sigrun` is rewritten as a bjw-s common library (app-template
@@ -105,6 +137,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Deployment's Recreate strategy, /healthz + /readyz probes, sigrun-env
   envFrom secret, and the RWO sigrun-data PVC at /data are unchanged
   contracts. test/manifests.test.ts asserts against the new render.
+- **BREAKING** (packaging): `@sigrun/tui` is a spawned package, not an
+  in-process import — `sigrun run`/`attach` spawn the `sigrun-tui` bin
+  (`tui/dist/launch.js`) as a child process; the agent-dies-with-the-TUI
+  lifecycle is preserved by the parent watching the child's exit. The
+  tui declares its own runtime deps (`@earendil-works/pi-tui` plus the
+  new `@sigrun/shared` leaf package carrying the theme tokens and shared
+  primitives) and core lists it as an optional dependency: `serve` needs
+  no tui, and a missing tui degrades `run`/`attach` with an actionable
+  "install @sigrun/tui" message instead of a module-not-found crash.
+- The CLI is buildable and installable: `npm run build` compiles
+  `@sigrun/shared` + `src` → `dist` (sourcemaps off; the `sigrun` bin is
+  `dist/cli.js` under plain node — the tsx shebang is gone); `tsx` moves
+  to devDependencies (dev `start`/`tui` scripts keep it); `prepublishOnly`
+  builds core + webui. Deploy entries run the built form — the Dockerfile
+  build stage gains `npm run build` with `CMD ["node", "dist/index.js"]`,
+  the chart's container command and backup CronJob are
+  `node dist/index.js` / `node /app/dist/backup/run-backup.js`, and
+  docker-compose runs `node dist/index.js` (no tsx in any deploy path).
+- The default webui bundle anchors to the package root instead of the
+  process cwd — an installed `sigrun serve` finds the bundle it ships
+  from any working directory; explicit path selectors keep cwd-relative
+  semantics, and an absent default stays the supported API-only deploy.
+
+### Removed
+- **BREAKING**: the extension-loader `.ts`-entry fallback. Extension
+  sources (`git:` and path checkouts) must ship a built `dist/index.js` —
+  a `.ts` entry no longer loads — it resolves only to quarantine at load
+  with a clear "build the package and ship its built entry
+  (dist/index.js)" error instead of riding the dev tree's tsx loader
+  (whose behavior under plain node depends on the host's
+  type-stripping flags). npm packages were never affected.
 
 ## [0.1.0] - 2026-10-13
 ### Added

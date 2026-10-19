@@ -1,5 +1,5 @@
 /**
- * The TUI theme (Task C1, UI refresh): wraps src/shared/themes.ts's
+ * The TUI theme (Task C1, UI refresh): wraps the shared themes module's
  * palettes in pi-tui's color pipeline (parseColor → foregroundAnsi /
  * backgroundAnsi) so components style text through token names instead
  * of raw SGR sequences. The palette data lives in ONE place (themes.ts,
@@ -13,7 +13,7 @@ import {
 	DEFAULT_ACCENT,
 	DEFAULT_PALETTE,
 	PALETTES,
-} from "../../src/shared/themes.js";
+} from "@sigrun/shared/themes";
 
 const TRUECOLOR = { palette: DEFAULT_PALETTE, accent: DEFAULT_ACCENT, mode: "dark", colorMode: "truecolor" } as const;
 

@@ -880,12 +880,15 @@ export async function syncGit(
 }
 
 /**
- * Entry discovery for a synced git checkout, in priority order: the
- * object form's explicit `entry`, a `sigrun` manifest
+	 * Entry discovery for a synced git checkout, in priority order: the
+	 * object form's explicit `entry`, a `sigrun` manifest
 	 * (`{"sigrun": {"extension": "./x.js"}}`), a pi-compat manifest
-	 * (`"pi": {"extensions": [...]}` — first entry, warned), `dist/index.js`,
-	 * `index.ts`.
- */
+	 * (`"pi": {"extensions": [...]}` — first entry, warned), or
+	 * `dist/index.js`. No `.ts` fallback (build-and-webui Task 3, BREAKING):
+	 * the built server runs plain node, which cannot load a `.ts` entry —
+	 * npm/git/path sources must ship a built entry; a `.ts`-only checkout
+	 * fails loud here instead of importing-and-crashing at load time.
+	 */
 export function findExtEntry(
 	repoDir: string,
 	explicitEntry: string | undefined,
@@ -923,9 +926,7 @@ export function findExtEntry(
 	}
 	const dist = join(repoDir, "dist", "index.js");
 	if (existsSync(dist)) return dist;
-	const rootTs = join(repoDir, "index.ts");
-	if (existsSync(rootTs)) return rootTs;
 	throw new GitSyncError(
-		"git source has no loadable entry (no sigrun manifest, no dist/index.js, no index.ts)",
+		"git source has no loadable entry (no sigrun manifest, no dist/index.js) — ship a built entry; a .ts source cannot load under plain node",
 	);
 }

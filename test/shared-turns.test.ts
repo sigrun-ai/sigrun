@@ -1,7 +1,7 @@
 /**
  * Task B1 (UI refresh): turn grouping over the pi-durable entry wire.
  *
- * `src/shared/turns.ts` folds a flat entry list into renderable turns:
+ * `@sigrun/shared/turns` folds a flat entry list into renderable turns:
  * consecutive `pi.assistant` + `pi.tool-result` entries form ONE
  * assistant turn; `pi.user` is its own turn; everything else (compaction
  * records, summaries) is an `other` turn and also ends the assistant
@@ -20,7 +20,7 @@ import {
 	type ToolCall,
 	type TurnBlock,
 	type TurnEntry,
-} from "../src/shared/turns.js";
+} from "@sigrun/shared/turns";
 
 const userEntry = (id: number, text: string): TurnEntry => ({
 	id,

@@ -61,12 +61,11 @@ async function bootServer(storagePath: string): Promise<TestServer> {
 		SIGRUN_STORAGE_PATH: storagePath,
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
-	// API-only shape (server.test.ts's hermetic override): never depend on
-	// whether the repo's webui/dist happens to be built.
+	// API-only shape (server.test.ts's hermetic override): the gate OFF,
+	// never depending on whether the repo's webui/dist happens to be built.
 	const config = {
 		...config0,
-		webuiBundle: join(dir, "no-webui-bundle"),
-		webuiBundleExplicit: false,
+		webui: { ...config0.webui, enabled: false },
 	};
 	const opened = await openHarness(config, {
 		extensions: [contributor],
