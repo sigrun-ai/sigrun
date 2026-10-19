@@ -138,7 +138,7 @@ describe("charts/sigrun lint + default render", () => {
 		// The portable public default: the server + its PVC + service +
 		// serviceaccount. The backup CronJob and ServiceMonitor/
 		// PrometheusRule are opt-in (the backup needs an image carrying
-		// sqlite3+awscli+tsx; the monitor needs a Prometheus to scrape).
+		// sqlite3+awscli; the monitor needs a Prometheus to scrape).
 		expect(kinds).toEqual([
 			"Deployment",
 			"PersistentVolumeClaim",
@@ -212,8 +212,8 @@ describe("chart Deployment", () => {
 		expect(deployment.spec.strategy.type).toBe("Recreate");
 	});
 
-	test("entrypoint is the deploy entry: npx tsx src/index.ts at /app", () => {
-		expect(container.command).toEqual(["npx", "tsx", "src/index.ts"]);
+	test("entrypoint is the deploy entry: node dist/index.js at /app", () => {
+		expect(container.command).toEqual(["node", "dist/index.js"]);
 		expect(container.workingDir).toBe("/app");
 	});
 
@@ -425,13 +425,12 @@ describe("chart backup CronJob", () => {
 		);
 	});
 
-	test("backup script runs via tsx against the live db on the shared PVC", () => {
+	test("backup script runs the built entry under plain node against the live db on the shared PVC", () => {
 		const pod = cronjob.spec.jobTemplate.spec.template.spec;
 		const backup = pod.containers[0];
 		expect(backup.command).toEqual([
-			"npx",
-			"tsx",
-			"/app/src/backup/run-backup.ts",
+			"node",
+			"/app/dist/backup/run-backup.js",
 		]);
 		expect(
 			backup.env.find((e) => e.name === "SIGRUN_STORAGE_PATH")?.value,

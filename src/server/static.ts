@@ -26,13 +26,46 @@
 
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import type { FastifyInstance } from "fastify";
 import type { SigrunConfig } from "../config.js";
 
 /** The channel id reported in `/v1/meta` `capabilities.channels`. */
 export const WEBUI_CHANNEL = "webui";
+
+/**
+ * The package root this module ships in (build-and-webui Task 3):
+ * `…/<package>/dist/server` (the built module) — `../..` is the package
+ * dir, both in the repo tree (`…/src/server` → the repo root, where
+ * `webui/dist` is the workspace's vite output) and in an installed
+ * package (`…/node_modules/sigrun/dist/server` → the package carrying
+ * `webui/dist` in its npm `files`). This is what the DEFAULT bundle
+ * anchors to — see {@link webuiBundleDir}.
+ */
+const PACKAGE_ROOT = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"..",
+);
+
+/**
+ * Where the configured bundle directory lives on disk (build-and-webui
+ * Task 3, plan review focus #1). EXPLICIT paths are operator-authored
+ * and resolve against the process cwd — the operator's relative path
+ * means what they wrote, wherever sigrun was started from. The DEFAULT
+ * (`webui/dist`, and any configured value equal to it) anchors to the
+ * PACKAGE ROOT: an installed `sigrun` CLI run from an arbitrary working
+ * directory must find the bundle it ships, not the operator's cwd
+ * (absolute paths pass through `join` unchanged, so a non-explicit
+ * absolute path keeps its own meaning).
+ */
+export function webuiBundleDir(config: SigrunConfig): string {
+	return config.webuiBundleExplicit
+		? resolve(config.webuiBundle)
+		: join(PACKAGE_ROOT, config.webuiBundle);
+}
 
 /** A resolved webui bundle, ready to serve. */
 export interface WebuiBundle {
@@ -50,7 +83,7 @@ export interface WebuiBundle {
 export async function resolveWebuiBundle(
 	config: SigrunConfig,
 ): Promise<WebuiBundle | undefined> {
-	const dir = resolve(config.webuiBundle);
+	const dir = webuiBundleDir(config);
 	const indexPath = join(dir, "index.html");
 	if (!existsSync(indexPath)) {
 		if (config.webuiBundleExplicit) {

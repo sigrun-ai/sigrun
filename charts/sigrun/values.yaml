@@ -34,23 +34,23 @@ controllers:
       main:
         image:
           # The sigrun image: must carry Node >= 22.19 (node:sqlite), the
-          # repo at /app with node_modules, and tsx (internal imports use
-          # .js specifiers resolving to .ts sources — stock node cannot
-          # resolve them).
+          # repo at /app with node_modules, and the BUILT tree — dist/ (the
+          # core tsc build, chained with the shared workspace build) and
+          # webui/dist (the vite bundle). tsx is dev-only (from-source
+          # runs); the runtime is plain node against dist/.
           repository: REPLACEME-node22-sigrun-image
           # -- Image tag (defaults to the chart appVersion).
           tag: ""
           # -- Image pull policy.
           pullPolicy: IfNotPresent
-        # The deploy entry (src/index.ts), run exactly as `npm start` does
-        # (package.json "start": "tsx src/index.ts"). Direct tsx — not
-        # `npm start` — so SIGTERM reaches the entry with no npm in the
-        # signal path (graceful close of server + harness, exit 0).
+        # The deploy entry's BUILT form (dist/index.js), run under plain
+        # node — direct, no npm in the signal path, so SIGTERM reaches the
+        # entry's graceful shutdown (server close, event-bus drain, harness
+        # close, exit 0).
         command:
-          - npx
-          - tsx
-          - src/index.ts
-        # The relative `src/index.ts` resolves against this directory, not
+          - node
+          - dist/index.js
+        # The relative `dist/index.js` resolves against this directory, not
         # the image's WORKDIR convention — pin it so the contract is in the
         # manifest, not the image.
         workingDir: /app
@@ -137,7 +137,7 @@ controllers:
 
   backup:
     # -- Nightly backup CronJob (spec §4.3). Disabled by default in the
-    # public shape (an image carrying sqlite3 + the target client + tsx is
+    # public shape (an image carrying sqlite3 + the target client is
     # a deliberate choice; a deployment that skips backup has ZERO disaster
     # copies of transcripts — accepted choice, not a supported recovery
     # posture §4.4). The homelab instantiation enables it.
@@ -155,10 +155,10 @@ controllers:
     containers:
       backup:
         image:
-          # Must carry sqlite3 + awscli (the target's client) AND tsx (the
-          # script's runtime — internal imports use .js specifiers
-          # resolving to .ts files, which stock node does not resolve).
-          repository: REPLACEME-sqlite3-awscli-tsx-image
+          # Must carry sqlite3 + awscli (the target's client); the backup
+          # script runs as the BUILT dist/backup/run-backup.js under plain
+          # node — no tsx (dev-only, from-source runs).
+          repository: REPLACEME-sqlite3-awscli-image
           tag: ""
           pullPolicy: IfNotPresent
         # Nightly `sqlite3 .backup` against the LIVE harness database —
@@ -167,9 +167,8 @@ controllers:
         # restore drill, App C). Retention (30 days, path target) and
         # fail-loud exit codes live in the script itself.
         command:
-          - npx
-          - tsx
-          - /app/src/backup/run-backup.ts
+          - node
+          - /app/dist/backup/run-backup.js
         env:
           # The db under backup: the same PVC the Deployment mounts.
           - name: SIGRUN_STORAGE_PATH

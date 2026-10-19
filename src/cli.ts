@@ -1,7 +1,8 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env node
 /**
  * The CLI entrypoints (Task 5): `sigrun` / `sigrun serve` / `sigrun attach`
- * — the package's `bin` (`"sigrun": "src/cli.ts"`, run via tsx).
+ * — the package's `bin` (`"sigrun": "dist/cli.js"`, plain node — build
+ * Task 3; the tsx shebang served the from-source era).
  *
  * - `sigrun` (run): boot harness+server IN-PROCESS (the `src/serve.ts`
  *   composition) and launch the TUI against the loopback URL of the bound
@@ -40,7 +41,7 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -253,6 +254,10 @@ export interface LaunchTuiOptions {
  */
 export interface TuiChildProcess {
 	on(event: "exit", listener: (code: number | null) => void): void;
+	/** Spawn failures (ENOENT, EACCES) — without a listener node emits an
+	 * unhandled `error` event, which CRASHES the CLI instead of printing
+	 * the actionable message. */
+	on(event: "error", listener: (error: Error) => void): void;
 	kill(signal?: NodeJS.Signals): void;
 }
 
@@ -276,7 +281,11 @@ export type TuiBinResolver = () => string;
 export function resolveTuiBin(): string {
 	const require = createRequire(import.meta.url);
 	const manifestPath = require.resolve("@sigrun/tui/package.json");
-	const manifest = JSON.parse(readFileSync(new URL(`file://${manifestPath}`), "utf8")) as {
+	// The manifest path is read DIRECTLY (never wrapped in a file:// URL —
+	// interpolating a filesystem path into a URL mis-parses on `#`, `?`,
+	// and `%`, and WHATWG quirks are exactly how the T2 reviewer's
+	// mis-parse class happens; a plain path is what readFileSync takes).
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
 		bin?: Record<string, string> | string;
 	};
 	const binField = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.["sigrun-tui"];
@@ -313,7 +322,9 @@ export async function launchTuiProcess(
 	options: LaunchTuiOptions,
 	seams?: { spawn?: TuiSpawnFn; resolveTuiBin?: TuiBinResolver },
 ): Promise<void> {
-	const doSpawn = seams?.spawn ?? ((command, args) => nodeSpawn(command, [...args], { stdio: "inherit" }));
+	const doSpawn: TuiSpawnFn =
+		seams?.spawn ??
+		((command, args) => nodeSpawn(command, [...args], { stdio: "inherit" }));
 	const resolveBin = seams?.resolveTuiBin ?? resolveTuiBin;
 	let bin: string;
 	try {
@@ -326,8 +337,9 @@ export async function launchTuiProcess(
 		);
 	}
 	const child = doSpawn(process.execPath, [bin, ...tuiArgv(options)]);
-	const code = await new Promise<number | null>((resolve) => {
+	const code = await new Promise<number | null>((resolve, reject) => {
 		child.on("exit", (exitCode: number | null) => resolve(exitCode));
+		child.on("error", (error: Error) => reject(error));
 	});
 	if (code !== 0) {
 		throw new Error(`sigrun-tui exited with ${code ?? "no exit code (terminated)"}`);
@@ -465,6 +477,13 @@ export async function cliMain(
 				};
 				process.on("SIGTERM", stop);
 				process.on("SIGINT", stop);
+				// Stay pending until a signal runs `stop` (which exits the
+				// process): cliMain's caller maps this promise's RESOLUTION onto
+				// `process.exit(0)` — a serve that returned after attaching the
+				// handlers would exit the process the instant the server started
+				// listening (the built-bin test caught exactly that: boot, print
+				// the listening line, exit 0, serve nothing).
+				await new Promise<never>(() => {});
 			}),
 		boot: deps?.boot ?? ((bootEnv, bootOptions) => serve(bootEnv, bootOptions)),
 	};
@@ -551,11 +570,26 @@ export async function cliMain(
 	}
 }
 
-// Script detection (fix wave A7): the exact entry-module comparison —
-// the old endsWith("cli.ts") fired for ANY cli.ts basename.
+// Script detection (fix wave A7 + build Task 3): the exact entry-module
+// comparison — the old endsWith("cli.ts") fired for ANY cli.ts basename.
+// The argv side is REALPATH'd first (the T2 fix, mirrored for the core
+// bin): npm bin entries are symlinks (…/.bin/sigrun → dist/cli.js), node
+// realpaths the main module (import.meta.url is the real path) while
+// process.argv[1] keeps the invoked symlink — a raw comparison mismatches
+// and the bin exits 0 SILENTLY.
+function invokedEntryPath(): string | undefined {
+	if (process.argv[1] === undefined) return undefined;
+	try {
+		return realpathSync(process.argv[1]);
+	} catch {
+		return undefined;
+	}
+}
+
+const invokedEntry = invokedEntryPath();
 const invokedAsScript =
-	process.argv[1] !== undefined &&
-	import.meta.url === pathToFileURL(process.argv[1]).href;
+	invokedEntry !== undefined &&
+	import.meta.url === pathToFileURL(invokedEntry).href;
 if (invokedAsScript) {
 	void cliMain(process.argv.slice(2)).then((code) => {
 		process.exit(code);

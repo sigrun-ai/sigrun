@@ -18,10 +18,11 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    # Run the deploy entry exactly as `npm start` does (package.json:
-    # "start": "tsx src/index.ts"), direct tsx so SIGTERM reaches it with no
-    # npm in the signal path — same rule as deploy/base/deployment.yaml.
-    command: ["npx", "tsx", "src/index.ts"]
+    # Run the BUILT deploy entry (dist/index.js) under plain node — no
+    # npm in the signal path, so SIGTERM reaches the entry's graceful
+    # shutdown (same rule as the Helm chart's container command). tsx is
+    # dev-only (`npm start` from a source checkout).
+    command: ["node", "dist/index.js"]
     working_dir: /app
     environment:
       # Required. An OpenAI-model id against the endpoint below, e.g.

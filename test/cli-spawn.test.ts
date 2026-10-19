@@ -47,20 +47,27 @@ async function hermeticEnv(): Promise<NodeJS.ProcessEnv> {
 }
 
 /**
- * A fake child: records `exit` listeners so tests can retire the child
- * the way a real TUI process would (emit exit → the launch resolves).
+ * A fake child: records `exit`/`error` listeners so tests can retire
+ * the child the way a real TUI process would (emit exit → the launch
+ * resolves; emit error → the launch rejects — the spawn-failure path).
  */
 function fakeChild(): TuiChildProcess & {
 	exit(code: number | null): void;
+	fail(error: Error): void;
 } {
-	const listeners: ((code: number | null) => void)[] = [];
+	const exits: ((code: number | null) => void)[] = [];
+	const errors: ((error: Error) => void)[] = [];
 	return {
 		on: (event, listener) => {
-			if (event === "exit") listeners.push(listener);
+			if (event === "exit") exits.push(listener as (code: number | null) => void);
+			if (event === "error") errors.push(listener as (error: Error) => void);
 		},
 		kill: () => {},
 		exit: (code) => {
-			for (const listener of listeners) listener(code);
+			for (const listener of exits) listener(code);
+		},
+		fail: (error) => {
+			for (const listener of errors) listener(error);
 		},
 	};
 }
@@ -209,6 +216,46 @@ describe("cliMain run/attach spawn the sigrun-tui bin", () => {
 		expect(await run).toBe(1);
 		expect(rec.shutdowns()).toBe(1);
 		expect(errors[0]).toMatch(/sigrun-tui/);
+	});
+
+	test("a spawn 'error' event rejects the launch (no unhandled crash)", async () => {
+		// Spawn failures (ENOENT on the bin, EACCES) arrive as the child's
+		// 'error' event, NOT an exit: without a listener node raises an
+		// unhandled 'error' event and the CLI CRASHES instead of printing
+		// the actionable message (the T2 review's carried finding).
+		const rec = spawnRecorder();
+		const errors: string[] = [];
+		const run = cliMain(
+			["attach", "--server", "http://localhost:3000"],
+			await hermeticEnv(),
+			rec.deps(),
+			{ error: (text) => errors.push(text) },
+		);
+		await vi.waitFor(() => {
+			expect(rec.spawns).toHaveLength(1);
+		});
+		rec.child.fail(new Error("spawn ENOENT"));
+		expect(await run).toBe(1);
+		expect(errors[0]).toMatch(/spawn ENOENT/);
+	});
+
+	test("a signal-killed child (code null) reports no exit code", async () => {
+		const rec = spawnRecorder();
+		const errors: string[] = [];
+		const run = cliMain(
+			["attach", "--server", "http://localhost:3000"],
+			await hermeticEnv(),
+			rec.deps(),
+			{ error: (text) => errors.push(text) },
+		);
+		await vi.waitFor(() => {
+			expect(rec.spawns).toHaveLength(1);
+		});
+		// A signal kill reports code === null (the exit listener's null
+		// arm) — the message must name it, not print "null" or crash.
+		rec.child.exit(null);
+		expect(await run).toBe(1);
+		expect(errors[0]).toMatch(/sigrun-tui exited with no exit code/);
 	});
 });
 
