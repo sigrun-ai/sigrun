@@ -201,7 +201,11 @@ export async function runBackup(
 	// DB-only contract.
 	await backupSections(backup);
 	// §6.8: the marker — after EVERYTHING above succeeded (see the
-	// docblock for why a sections failure must leave it stale).
+	// docblock for why a sections failure must leave it stale). A marker
+	// WRITE failure warns and is swallowed (fix round 1): the marker is
+	// observability, never a gate — a read-only state dir or a full disk
+	// must not turn a completed backup into a failed one. The consequence
+	// is honest: the server reads no marker and reports degraded.
 	if (stateDir === undefined) {
 		console.warn(
 			"SIGRUN_STATE_DIR is not set — skipping the backup last-success marker " +
@@ -210,11 +214,18 @@ export async function runBackup(
 		);
 		return;
 	}
-	await writeBackupMarker(stateDir, {
-		at: new Date().toISOString(),
-		target: backup.target,
-		bytes,
-	});
+	try {
+		await writeBackupMarker(stateDir, {
+			at: new Date().toISOString(),
+			target: backup.target,
+			bytes,
+		});
+	} catch (error) {
+		console.warn(
+			`backup succeeded but writing the last-success marker under ${stateDir} failed: ${String(error)} ` +
+				"(health.backup will report degraded until this is fixed)",
+		);
+	}
 }
 
 /** The store root each backup section tars. */
@@ -326,21 +337,21 @@ const invokedAsScript = (() => {
 })();
 
 if (invokedAsScript) {
-const backup = parseBackupConfig(process.env);
-if (backup === undefined) {
-console.error(
-"No backup target configured: set SIGRUN_BACKUP_PATH or SIGRUN_BACKUP_S3_BUCKET",
-);
-process.exit(1);
-}
-try {
-await runBackup(
-DB_PATH,
-backup,
-process.env.SIGRUN_STATE_DIR?.trim() || undefined,
-);
-} catch (error) {
-console.error(`sigrun backup failed: ${String(error)}`);
-process.exit(1);
-}
+	const backup = parseBackupConfig(process.env);
+	if (backup === undefined) {
+		console.error(
+			"No backup target configured: set SIGRUN_BACKUP_PATH or SIGRUN_BACKUP_S3_BUCKET",
+		);
+		process.exit(1);
+	}
+	try {
+		await runBackup(
+			DB_PATH,
+			backup,
+			process.env.SIGRUN_STATE_DIR?.trim() || undefined,
+		);
+	} catch (error) {
+		console.error(`sigrun backup failed: ${String(error)}`);
+		process.exit(1);
+	}
 }
