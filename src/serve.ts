@@ -86,7 +86,7 @@ export async function serve(
 	//    env value before anything is written).
 	const envConfig = loadConfig(env);
 	// 2. First-boot bootstrap: absent settings file → write the RESOLVED
-	//    boot configuration (server section incl. webuiBundle, plus the
+	//    boot configuration (server section incl. webui, plus the
 	//    resolved extension list, and defaultModel when the env provided
 	//    it) as the deployment's visible baseline — the file records
 	//    reality. A present file is never touched.

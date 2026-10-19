@@ -118,10 +118,6 @@ describe("the legacy server.webuiBundle alias", () => {
 				) as SettingsFile,
 			);
 			expect(config.webui).toEqual({ enabled: true, bundle: "legacy/dist" });
-			// The serve-time seam keeps its resolved pair (Task 5 consumes
-			// the new shape; the old fields stay coherent through the alias).
-			expect(config.webuiBundle).toBe("legacy/dist");
-			expect(config.webuiBundleExplicit).toBe(true);
 		} finally {
 			warn.mockRestore();
 		}
@@ -130,9 +126,9 @@ describe("the legacy server.webuiBundle alias", () => {
 
 describe("the bundle selector precedence", () => {
 	test("precedence: env > server.webui.bundle > legacy server.webuiBundle > default", () => {
-		// Default: no selector at all (the built-in bundle, Task 5).
+		// Default: no selector at all (the built-in bundle — serve-time
+		// resolution reads ABSENCE, never a mirrored default value).
 		expect(loadConfig({ ...MODEL_ENV }).webui).toEqual({ enabled: true });
-		expect(loadConfig({ ...MODEL_ENV }).webuiBundle).toBe("webui/dist");
 		// Legacy slot applies when nothing else is set.
 		expect(
 			loadConfig({ ...MODEL_ENV }, { server: { webuiBundle: "legacy/dist" } })
@@ -164,12 +160,13 @@ describe("the bundle selector precedence", () => {
 			).webui.bundle,
 		).toBe("env/dist");
 		// A configured value EQUAL to the default keeps the default's
-		// semantics (Task 3's classification) through every slot.
+		// semantics (the selector value survives verbatim; serve-time
+		// resolution — static.ts — treats `webui/dist` as the default).
 		const mirrored = loadConfig(
 			{ ...MODEL_ENV },
 			{ server: { webui: { bundle: "webui/dist" } } },
 		);
-		expect(mirrored.webuiBundleExplicit).toBe(false);
+		expect(mirrored.webui.bundle).toBe("webui/dist");
 	});
 
 	test("invalid enabled/bundle values fail validation naming the field", () => {
@@ -229,6 +226,5 @@ describe("the bootstrap omission", () => {
 			{ server: selected },
 		);
 		expect(reResolved.webui.bundle).toBe("/opt/sigrun-ui");
-		expect(reResolved.webuiBundleExplicit).toBe(true);
 	});
 });

@@ -228,26 +228,27 @@ describe("the default webui bundle resolves from the package root", () => {
 		try {
 			process.chdir(elsewhere);
 			const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" });
-			expect(config.webuiBundle).toBe("webui/dist");
-			expect(config.webuiBundleExplicit).toBe(false);
+			expect(config.webui.bundle).toBeUndefined();
 			// The DEFAULT anchors to the package that ships the bundle —
 			// never the process cwd.
 			expect(webuiBundleDir(config)).toBe(expected);
 			// An EXPLICIT path means what the operator wrote: cwd-relative.
+			// ("bundles/ui" contains a slash — a PATH selector, not a name.)
 			const explicit = loadConfig({
 				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
-				SIGRUN_WEBUI_BUNDLE: "my-bundle",
+				SIGRUN_WEBUI_BUNDLE: "bundles/ui",
 			});
-			expect(webuiBundleDir(explicit)).toBe(join(elsewhere, "my-bundle"));
-			// A file value EQUAL to the default is the bootstrap's own
-			// mirror of the default — it stays NON-explicit (second boots
-			// keep the package-root anchor and the API-only fallback); an
-			// operator wanting cwd-relative writes a different path.
+			expect(explicit.webui.bundle).toBe("bundles/ui");
+			expect(webuiBundleDir(explicit)).toBe(join(elsewhere, "bundles/ui"));
+			// A value EQUAL to the default is the bootstrap's own mirror of
+			// the default — it stays default-anchored (second boots keep the
+			// package-root anchor and the API-only fallback); an operator
+			// wanting cwd-relative writes a different path.
 			const mirrored = loadConfig(
 				{ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" },
-				{ server: { webuiBundle: "webui/dist" } },
+			{ server: { webuiBundle: "webui/dist" } },
 			);
-			expect(mirrored.webuiBundleExplicit).toBe(false);
+			expect(mirrored.webui.bundle).toBe("webui/dist");
 			expect(webuiBundleDir(mirrored)).toBe(expected);
 		} finally {
 			process.chdir(prev);
