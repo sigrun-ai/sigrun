@@ -231,7 +231,10 @@ export function collectProviders(
 	},
 ): CollectedProviders {
 	// The auth bridge: with a credential store present, auth.json owns
-	// stored credentials for every contributed + degenerate provider; the
+	// stored credentials for every contributed + degenerate provider —
+	// except `"default"`, which applies only to the provider of the
+	// resolved default model (the closure reads `defaultModel` as it
+	// stands at each `read()`, so the post-loop resolution governs); the
 	// auth context keeps ambient env/file lookups on the operator-provided
 	// environment (the options.env seam first, then the raw env).
 	const authContext: AuthContext = {
@@ -244,7 +247,12 @@ export function collectProviders(
 	const models: MutableModels = createModels({
 		...(options?.auth === undefined
 			? {}
-			: { credentials: authStoreCredentialStore(options.auth) }),
+			: {
+				credentials: authStoreCredentialStore(
+					options.auth,
+				() => defaultModel?.provider,
+				),
+			}),
 		...(options?.modelsStore === undefined
 			? {}
 			: { modelsStore: options.modelsStore }),
