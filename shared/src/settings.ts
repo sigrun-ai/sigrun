@@ -64,10 +64,32 @@ export interface ServerSettings {
 	/** `SIGRUN_STATE_DIR` — a non-empty path, verbatim (see `dataDir`). */
 	readonly stateDir?: string;
 	/**
-	 * `SIGRUN_WEBUI_BUNDLE` — a non-empty path. Relative paths resolve
-	 * against the process cwd, like the env var. A present value counts as
-	 * an EXPLICIT bundle (missing `index.html` is a boot error), exactly
-	 * like a set env var.
+	 * The webui channel's gate + bundle selector (build-and-webui Task 4):
+	 * `SIGRUN_WEBUI` maps to `enabled` (strict true/false parse), the
+	 * selector comes from `SIGRUN_WEBUI_BUNDLE` over `bundle` over the
+	 * legacy `webuiBundle` (deprecated alias, one release). Both keys are
+	 * OPTIONAL — the settings bootstrap OMITS the section entirely when
+	 * fully defaulted (a mirrored default would read as an explicit
+	 * selection on the next boot and make absent-default → API-only
+	 * unreachable).
+	 */
+	readonly webui?: {
+		/** `SIGRUN_WEBUI` — boolean, default true. `false` = API-only. */
+		readonly enabled?: boolean;
+		/**
+		 * The bundle selector (non-empty string): a contributed-bundle NAME
+		 * or a PATH, discriminated syntactically at serve time (Task 5).
+		 * Absent = the built-in default bundle.
+		 */
+		readonly bundle?: string;
+	};
+	/**
+	 * DEPRECATED ALIAS for `webui.bundle` (build-and-webui Task 4), kept
+	 * for one release: `SIGRUN_WEBUI_BUNDLE` over `webui.bundle` over THIS
+	 * key over the default. Accepted by validation with a deprecation
+	 * warn; the bootstrap never writes it.
+	 *
+	 * @deprecated use `webui.bundle`
 	 */
 	readonly webuiBundle?: string;
 	/** The `SIGRUN_COMPACTION_*` policy knobs. */
