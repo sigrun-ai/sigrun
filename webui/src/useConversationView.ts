@@ -3,16 +3,17 @@
  * view rides on — one EventSource over `GET /v1/conversations/:id/stream`,
  * the spike's proven shape ported to a hook.
  *
- * The view IS the latest frame: `snapshot` and `view` frames both FULL-REPLACE
- * the held `ConversationViewWire` (never accumulate, never delta-merge), and
- * `frames` counts accepted frames. The hook holds no agent state — it is a
- * thin client over the §5 stream.
+ * The view IS the latest revision: the stream wrapper (./stream) folds the
+ * wire frames (`snapshot` REPLACES, `delta` folds via the shared
+ * `applyDelta`) into full `ConversationViewWire` revisions, and this hook
+ * holds the latest one (never accumulate); `frames` counts accepted frames.
+ * The hook holds no agent state — it is a thin client over the §5 stream.
  *
  * Status machine:
  * - `idle` — no conversation selected (`conversationId === null`), no stream;
  * - `connecting` — stream open, waiting for the first frame;
  * - `snapshot` — the last accepted frame was a snapshot (connect / re-attach);
- * - `live` — the last accepted frame was a view revision;
+ * - `live` — the last accepted frame was a delta revision;
  * - `error` — the last failure (malformed frame or transport drop). Fail loud:
  *   `error` carries the description; a later good frame recovers and clears it.
  *

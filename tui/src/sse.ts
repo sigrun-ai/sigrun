@@ -1,13 +1,15 @@
 /**
- * The TUI's §5 conversation stream watcher (Task 4): a Node-side SSE
- * client over `GET /v1/conversations/:id/stream` carrying `snapshot` and
- * `view` frames.
+ * The TUI's §5 conversation stream watcher (Task 4; delta frames in core
+ * hardening W3 Task 3, spec §7.3 ruling 11): a Node-side SSE client over
+ * `GET /v1/conversations/:id/stream` carrying `snapshot` and `delta` frames.
  *
- * Frame contract (verified against src/server/index.ts): every frame is a
- * FULL immutable `ConversationViewWire` revision — the consumer replaces,
- * never accumulates. The server sends a fresh `snapshot` on EVERY connect,
- * so a reconnect's snapshot SUBSUMES any frame missed while disconnected —
- * no replay, no stale merge (Review Focus 1).
+ * This watcher is the TUI's delta folder: `snapshot` REPLACES the held view
+ * wholesale, `delta` folds into it via the shared `applyDelta`, and every
+ * accepted frame surfaces to the consumer as a FULL immutable
+ * `ConversationViewWire` revision — the consumer replaces, never
+ * accumulates. The server sends a fresh `snapshot` on EVERY connect, so a
+ * reconnect's snapshot SUBSUMES any frame missed while disconnected — no
+ * replay, no stale merge (Review Focus 1).
  *
  * Node 22 global fetch + manual frame parsing: `:` lines are comments,
  * `data:` lines accumulate until a blank line dispatches the frame;
@@ -26,11 +28,16 @@
  */
 
 import type { ConversationViewWire } from "./api.js";
+import { applyDelta, type ViewDelta } from "@sigrun/shared/view-delta";
 
 export interface WatchHandlers {
 	/** A `snapshot` frame arrived (the full view on connect/re-attach). */
 	readonly onSnapshot?: (view: ConversationViewWire) => void;
-	/** A `view` frame arrived (a full revision — replace, never accumulate). */
+	/**
+	 * A full revision arrived — either the connect snapshot or the fold of
+	 * every `delta` since it. The view is ALWAYS a full immutable
+	 * `ConversationViewWire`: replace, never accumulate.
+	 */
 	readonly onView?: (view: ConversationViewWire) => void;
 	/**
 	 * A failure: a malformed frame (stream stays open) or a transport
@@ -66,8 +73,8 @@ export interface WatchOptions {
 /** The watcher handle: `unwatch()` closes the stream, idempotent. */
 export type Unwatch = () => void;
 
-/** Parse a frame; `undefined` when the payload is not a view object. */
-function parseFrame(data: string): ConversationViewWire | undefined {
+/** Parse a frame; `undefined` when the payload is not an object. */
+function parseFrame(data: string): unknown | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(data);
@@ -77,7 +84,7 @@ function parseFrame(data: string): ConversationViewWire | undefined {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		return undefined;
 	}
-	return parsed as ConversationViewWire;
+	return parsed;
 }
 
 /**
@@ -165,6 +172,12 @@ export function watchConversation(
 	let abort: AbortController | undefined;
 	/** Per-attempt onError dedupe (fix wave A10); cleared on open. */
 	let reportedTransportError = false;
+	/**
+	 * The held view: the last snapshot, folded with every accepted delta
+	 * since. `undefined` before the first snapshot — a delta arriving then
+	 * is malformed (there is nothing to fold into).
+	 */
+	let currentView: ConversationViewWire | undefined;
 
 	function scheduleReconnect(): void {
 		attempts += 1;
@@ -221,19 +234,29 @@ export function watchConversation(
 
 		const parser = createFrameParser((frame) => {
 			if (closed) return;
-			const view = parseFrame(frame.data);
-			if (view === undefined) {
+			const parsed = parseFrame(frame.data);
+			if (parsed === undefined) {
 				handlers.onError?.(
 					`malformed ${frame.event === "" ? "message" : frame.event} frame (not a view object)`,
 				);
 				return;
 			}
 			if (frame.event === "snapshot") {
-				// A fresh snapshot SUBSUMES anything missed — the consumer
-				// replaces state wholesale; nothing here merges.
-				handlers.onSnapshot?.(view);
-			} else if (frame.event === "view") {
-				handlers.onView?.(view);
+				// A fresh snapshot SUBSUMES anything missed — the fold re-bases
+				// on it wholesale; nothing here merges.
+				currentView = parsed as ConversationViewWire;
+				handlers.onSnapshot?.(currentView);
+			} else if (frame.event === "delta") {
+				if (currentView === undefined) {
+					handlers.onError?.(
+						"malformed delta frame (arrived before any snapshot)",
+					);
+					return;
+				}
+				// Fold, then surface the FULL revision: the consumer's contract
+				// stays "replace, never accumulate".
+				currentView = applyDelta(currentView, parsed as ViewDelta);
+				handlers.onView?.(currentView);
 			} else {
 				handlers.onError?.(`unknown stream event "${frame.event}"`);
 			}
