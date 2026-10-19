@@ -154,8 +154,13 @@ test(
 				port,
 				storagePath: join(dir, "sigrun.db"),
 				workspacePath: dir,
-				webuiBundle: "webui/dist",
 			});
+			// The webui keys are OMITTED on a defaulted first boot
+			// (build-and-webui Task 4): a mirrored `webuiBundle: "webui/dist"`
+			// would read as an explicit selection on the next boot and make
+			// absent-default → API-only unreachable. Neither key may appear.
+			expect(bootstrapped.server.webui).toBeUndefined();
+			expect(bootstrapped.server.webuiBundle).toBeUndefined();
 			// Defaults are recorded too (extensionsDir/compaction even though no
 			// env set them), plus the env-provided model and the resolved
 			// (empty) extension list.

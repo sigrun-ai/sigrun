@@ -108,6 +108,22 @@ const SETTING_KEYS = [
 ] as const;
 
 /**
+ * Warn once per process when the deprecated `server.webuiBundle` alias
+ * appears in a validated file (build-and-webui Task 4, one release):
+ * `read()` validates on EVERY access (the live-getter contract), so an
+ * ungated warn would fire per resolution. Module-level, like
+ * `warnDeprecatedModelEnv` in src/config.ts.
+ */
+let deprecatedWebuiBundleWarned = false;
+function warnDeprecatedWebuiBundle(): void {
+	if (deprecatedWebuiBundleWarned) return;
+	deprecatedWebuiBundleWarned = true;
+	console.warn(
+		"settings: server.webuiBundle is deprecated, use server.webui.bundle (reads as the same selector for one release)",
+	);
+}
+
+/**
  * Default settings directory: the ONE config-root chain
  * (`resolveStoreRoots`, spec Decision 3) — `SIGRUN_CONFIG_DIR` →
  * `$XDG_CONFIG_HOME`/sigrun → `~/.config/sigrun`.
@@ -360,6 +376,7 @@ function validateServer(server: unknown): void {
 		"dataDir",
 		"cacheDir",
 		"stateDir",
+		"webui",
 		"webuiBundle",
 		"compaction",
 		"memorySeam",
@@ -369,9 +386,35 @@ function validateServer(server: unknown): void {
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
 		throw new SettingsValidationError("server.port", "must be a positive integer");
 	}
-	for (const key of ["workspacePath", "storagePath", "extensionsDir", "dataDir", "cacheDir", "stateDir", "webuiBundle"]) {
+	for (const key of ["workspacePath", "storagePath", "extensionsDir", "dataDir", "cacheDir", "stateDir"]) {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
+		}
+	}
+	// The webui channel surface (build-and-webui Task 4). The LEGACY
+	// `webuiBundle` key stays ACCEPTED for one release (a read-side alias
+	// for `webui.bundle` in config resolution) but warns — never throws —
+	// so existing deployments' files keep booting while Task 7's docs
+	// migrate them.
+	if (record.webuiBundle !== undefined) {
+		if (!isNonEmptyString(record.webuiBundle)) {
+			throw new SettingsValidationError("server.webuiBundle", "must be a non-empty string");
+		}
+		warnDeprecatedWebuiBundle();
+	}
+	if (record.webui !== undefined) {
+		const webui = asRecord(record.webui);
+		if (webui === undefined) {
+			throw new SettingsValidationError("server.webui", "must be an object");
+		}
+		checkKeys("server.webui.", webui, ["enabled", "bundle"]);
+		if (webui.enabled !== undefined && typeof webui.enabled !== "boolean") {
+			throw new SettingsValidationError("server.webui.enabled", "must be a boolean");
+		}
+		// Non-empty only — name/path discrimination is Task 5's
+		// serve-time concern, not a file-validation rule.
+		if (webui.bundle !== undefined && !isNonEmptyString(webui.bundle)) {
+			throw new SettingsValidationError("server.webui.bundle", "must be a non-empty string");
 		}
 	}
 	if (record.compaction !== undefined) {
@@ -660,9 +703,9 @@ export class SettingsStore {
 			) {
 				// Server sub-merge: PATCH {server: {port: 4080}} preserves the
 				// rest of the section (including the bootstrap-written fields);
-				// `compaction` sub-merges one level deeper; `backup` replaces
-				// wholesale (it is a discriminated union — a partial union merge
-				// could mix a path target with an s3 one).
+				// `compaction`/`memorySeam`/`providers`/`webui` sub-merge one level
+				// deeper; `backup` replaces wholesale (it is a discriminated union —
+				// a partial union merge could mix a path target with an s3 one).
 				const incoming = asRecord(value);
 				if (incoming === undefined) {
 					throw new SettingsValidationError("server", "must be an object");
@@ -722,6 +765,25 @@ export class SettingsStore {
 							}
 							if (Object.keys(mergedProviders).length === 0) delete sub.providers;
 							else sub.providers = mergedProviders;
+						} else if (
+							subKey === "webui" &&
+							typeof subValue === "object"
+						) {
+							// Same sub-merge for the webui channel section (build-and-webui
+							// Task 4): PATCH {server:{webui:{enabled:false}}} preserves a
+							// previously set bundle — a wholesale replace would silently
+							// drop the operator's selector.
+							const mergedWebui: Record<string, unknown> = {
+								...((sub.webui as Record<string, unknown>) ?? {}),
+							};
+							for (const [webuiKey, webuiValue] of Object.entries(
+								subValue as Record<string, unknown>,
+							)) {
+								if (webuiValue === null) delete mergedWebui[webuiKey];
+								else mergedWebui[webuiKey] = webuiValue;
+							}
+							if (Object.keys(mergedWebui).length === 0) delete sub.webui;
+							else sub.webui = mergedWebui;
 						} else sub[subKey] = subValue;
 				}
 				if (Object.keys(sub).length === 0) delete merged.server;

@@ -10,9 +10,10 @@
  * - the default model is REQUIRED from env (`SIGRUN_DEFAULT_MODEL`,
  *   deprecated alias `SIGRUN_MODEL`) OR the file's top-level
  *   `defaultModel` — no code default;
- * - extensions, webuiBundle, and the degenerate provider's baseUrl are
- *   file-configurable (top-level `extensions`, `server.webuiBundle`,
- *   `defaultProvider.baseUrl`) under env;
+ * - extensions, the webui bundle selector, and the degenerate provider's
+ *   baseUrl are file-configurable (top-level `extensions`, the
+ *   `server.webui` section with its deprecated `server.webuiBundle`
+ *   alias, `defaultProvider.baseUrl`) under env;
  * - `resolvedServerSection` projects a resolved config (defaults
  *   included) into the file's `server` shape — what the first-boot
  *   bootstrap persists.
@@ -344,7 +345,7 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 });
 
 	describe("resolvedServerSection (the bootstrap projection)", () => {
-	test("includes the defaults (the file records the full effective section)", () => {
+	test("includes the defaults (the file records the full effective section; webui omitted when defaulted)", () => {
 		const config = loadConfig({ ...MODEL_ENV });
 		const section = resolvedServerSection(config);
 		expect(section).toEqual({
@@ -355,7 +356,11 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			dataDir: config.dataDir,
 			cacheDir: config.cacheDir,
 			stateDir: config.stateDir,
-			webuiBundle: "webui/dist",
+			// The webui keys are the deliberate exception (build-and-webui
+			// Task 4): a DEFAULTED webui is omitted entirely — a mirrored
+			// `webuiBundle: "webui/dist"` would read as an explicit selection
+			// on the next boot and make absent-default → API-only
+			// unreachable (test/webui-settings.test.ts pins the omission).
 			compaction: { ...DEFAULT_COMPACTION },
 			memorySeam: { ...DEFAULT_MEMORY_SEAM },
 			providers: { refreshIntervalMinutes: DEFAULT_PROVIDER_REFRESH_MINUTES },
@@ -371,14 +376,14 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		const first = loadConfig(env);
 		const section = resolvedServerSection(first);
 		// Second boot: env over the bootstrapped file resolves the same —
-		// INCLUDING webuiBundleExplicit. The bootstrap records the resolved
-		// (default) webuiBundle in the file, and a file value EQUAL to the
-		// default stays NON-explicit (build Task 3: the default bundle
-		// anchors to the package root and an absent default stays the
-		// supported API-only deploy across boots — treating the mirrored
-		// value as explicit would freeze every booted deployment to
+		// INCLUDING webuiBundleExplicit. The bootstrap OMITS the defaulted
+		// webui keys entirely (build Task 4), and a surviving default-valued
+		// mirror (a hand-edited file) stays NON-explicit (build Task 3: the
+		// default bundle anchors to the package root and an absent default
+		// stays the supported API-only deploy across boots — treating the
+		// mirrored value as explicit would freeze every booted deployment to
 		// cwd-relative resolution and retire the API-only fallback). An
-		// operator wanting a different bundle writes a different path.
+		// operator wanting a different bundle writes a different selector.
 		const second = loadConfig(env, { server: section });
 		expect(second).toEqual(first);
 		// Env dropped: the bootstrapped file alone reproduces the section.
