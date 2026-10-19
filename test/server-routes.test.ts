@@ -227,6 +227,10 @@ async function bootServer(): Promise<TestServer> {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
+		// Hermetic: a dev checkout with a built `webui/dist` would otherwise
+		// register the catch-all static route (`*`); the table under test is
+		// the API surface (the webui mount has its own coverage).
+		SIGRUN_WEBUI: "false",
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],
