@@ -36,6 +36,7 @@
  */
 
 import type { JsonObject } from "./json.js";
+import type { Sharing } from "./access.js";
 import type {
 	InteractionAnswer,
 	InteractionBody,
@@ -185,6 +186,17 @@ export interface ConversationSummary {
 	readonly archived: boolean;
 	/** The session-meta pin flag (pinned conversations float to top), default false. */
 	readonly pinned: boolean;
+	/**
+	 * The §5.9 sharing state, when the conversation carries one (absent =
+	 * private). Surfaced so a picker can show what is shared.
+	 */
+	readonly sharing?: Sharing;
+	/**
+	 * THIS caller's resolved access to the conversation (§5.9 `accessOf`):
+	 * conversations the caller cannot see are filtered from the list
+	 * entirely, so every listed row is at least `read`.
+	 */
+	readonly access: "read" | "write";
 }
 
 /** The list response of `GET /v1/conversations`. */
@@ -421,6 +433,17 @@ export interface MetaResponse {
 		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
 		readonly providers: HealthStatus;
 	};
+	/**
+	 * The auth block (core hardening W1 Task 6, spec §5.7): the effective
+	 * authenticator list (`ctx.methods` — loopback-derived or explicit) and
+	 * the onboarding state (`claimed` = the user directory has its first
+	 * user). A pure boot+store derivation, like the rest of meta — clients
+	 * may cache it only per boot, since the claim flips it.
+	 */
+	readonly auth: {
+		readonly methods: readonly ("token" | "proxy")[];
+		readonly claimed: boolean;
+	};
 	readonly capabilities: {
 		readonly backup: boolean;
 		readonly channels: readonly string[];
@@ -501,6 +524,18 @@ export interface AuthCheckProvider {
 	readonly detail?: string;
 }
 
+/**
+ * The `GET /v1/providers` payload (core hardening W1 Task 6, spec
+ * §5.7/§7.6): the auth-check derivation under its new home — `/v1/auth`
+ * is API auth only, and the secret-free readiness report lives at
+ * `/v1/providers`. `GET /v1/auth/check` serves this same payload as a
+ * deprecated alias for one release (its responses carry a `Deprecation`
+ * header).
+ */
+export interface ProvidersResponse {
+	readonly providers: readonly AuthCheckProvider[];
+}
+
 /** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */
 export interface AuthCheckResponse {
 	readonly providers: readonly AuthCheckProvider[];
@@ -512,3 +547,88 @@ export interface AuthCheckResponse {
 // this module is the single contract entry point for every §5 wire shape.
 export type { CommandsResponse, SlashCommand } from "./commands.js";
 export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
+
+/**
+ * The `GET /v1/auth/whoami` payload (core hardening W1 Task 3, spec
+ * §5.8): the resolved principal, verbatim. `user` is absent only under
+ * the naive empty-method path with no `X-Sigrun-User` header;
+ * `service` marks the env service token.
+ */
+export interface WhoamiResponse {
+	readonly user?: string;
+	readonly name?: string;
+	readonly email?: string;
+	readonly admin: boolean;
+	readonly service: boolean;
+	readonly method: "none" | "token" | "proxy";
+}
+
+// ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
+
+/**
+ * The `GET /v1/onboarding` payload (core hardening W1 Task 4, spec
+ * §5.8): what an unauthenticated client needs to drive the claim flow.
+ * `codeRequired` is false on a loopback bind or when the request itself
+ * carries a trusted proxy identity (either is trust enough — no code);
+ * `proxyIdentity` is present exactly then, carrying what the headers
+ * vouch for so the webui can render its confirm screen.
+ */
+export interface OnboardingState {
+	readonly state: "unclaimed" | "claimed";
+	readonly methods: readonly ("token" | "proxy")[];
+	readonly codeRequired: boolean;
+	readonly proxyIdentity?: {
+		readonly user: string;
+		readonly name?: string;
+		readonly email?: string;
+	};
+}
+
+/**
+ * One directory user on the wire (Task 4): the full record — emails are
+ * admin-visible material and the routes that serve this type are
+ * admin-gated. `createdAt` is epoch ms.
+ */
+export interface UserWire {
+	readonly user: string;
+	readonly name?: string;
+	readonly email?: string;
+	readonly admin: boolean;
+	readonly createdAt: number;
+	readonly source: "proxy" | "invite" | "cli";
+}
+
+/** The `POST /v1/onboarding/claim` payload (Task 4): the user (plus the
+ * minted token when `issueToken` was requested — shown once, never
+ * persisted). */
+export interface ClaimResponse {
+	readonly user: UserWire;
+	readonly token?: string;
+}
+
+/** The `POST /v1/users/invites` payload (Task 4): the one-time code is
+ * shown once, never stored in the clear. */
+export interface InviteResponse {
+	readonly id: string;
+	readonly code: string;
+	readonly expiresAt: number;
+}
+
+/**
+ * One API token on the wire (Task 4): the token store's record minus the
+ * `sha256` digest — digests never leave the server. Created by the
+ * claim route (`issueToken`) and `POST /v1/auth/tokens`.
+ */
+export interface TokenWire {
+	readonly id: string;
+	readonly name: string;
+	readonly user: string;
+	readonly createdAt: number;
+}
+
+/** The `POST /v1/auth/tokens` payload (Task 4): the secret once, the
+ * digest-free record alongside it. */
+export interface TokenCreateResponse {
+	readonly token: string;
+	readonly record: TokenWire;
+}

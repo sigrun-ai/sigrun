@@ -20,6 +20,7 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 		input: string;
 		method?: string;
 		user?: string;
+		authorization?: string;
 		accept?: string;
 		body?: string;
 	}[] = [];
@@ -28,6 +29,7 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 			input,
 			method: request?.method,
 			user: request?.headers?.["x-sigrun-user"],
+			authorization: request?.headers?.["authorization"],
 			accept: request?.headers?.["accept"],
 			body: request?.body,
 		});
@@ -314,5 +316,39 @@ describe("SigrunClient error handling", () => {
 		expect((caught as SigrunApiError).body).toMatchObject({
 			error: "unserved_model",
 		});
+	});
+});
+
+describe("authorization header (Task 7: the token seam)", () => {
+	test("a token adds authorization: Bearer on EVERY request (GET and POST)", async () => {
+		const { calls, fetchImpl } = stubFetch({ conversations: [] });
+		const client = new SigrunClient({
+			baseUrl: BASE,
+			user: "alice",
+			token: "sgr_test_token",
+			fetch: fetchImpl,
+		});
+		await client.listConversations();
+		await client.submit(1, "hello");
+		expect(calls[0]?.authorization).toBe("Bearer sgr_test_token");
+		expect(calls[1]?.authorization).toBe("Bearer sgr_test_token");
+	});
+
+	test("absent token omits the authorization header entirely", async () => {
+		const { calls, fetchImpl } = stubFetch({ conversations: [] });
+		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
+		await client.listConversations();
+		expect(calls[0]?.authorization).toBeUndefined();
+	});
+
+	test("a whitespace token omits the authorization header", async () => {
+		const { calls, fetchImpl } = stubFetch({ conversations: [] });
+		const client = new SigrunClient({
+			baseUrl: BASE,
+			token: "   ",
+			fetch: fetchImpl,
+		});
+		await client.listConversations();
+		expect(calls[0]?.authorization).toBeUndefined();
 	});
 });

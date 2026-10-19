@@ -296,6 +296,7 @@ export function applyAnswer(
 	answer: InteractionAnswer,
 	answeredBy: "human" | "extension",
 	now: number,
+	answeredByUser?: string,
 ): boolean {
 	if (draft.status !== "pending") return false;
 	const clean: Record<string, JsonValue> = {};
@@ -305,6 +306,9 @@ export function applyAnswer(
 	const mutable = draft as unknown as Record<string, unknown>;
 	mutable.answer = clean;
 	mutable.answeredBy = answeredBy;
+	// The answering USER rides alongside the actor class (spec §5.9): who
+	// answered matters to every participant a conversation is shared with.
+	if (answeredByUser !== undefined) mutable.answeredByUser = answeredByUser;
 	mutable.status = "answered";
 	mutable.settledAt = now;
 	return true;

@@ -154,10 +154,10 @@ export interface ExtensionRunSettledBinding {
 	readonly runSettled: ExtensionRunSettledHandler;
 }
 
-/** The lifecycle handler fields a factory result may carry (memory-seam Task 4). */
+/** The lifecycle handler fields a factory result may carry (memory-seam Task 4; `userDeleted` — W1 Task 4). */
 export type ExtensionLifecycleHandlers = Pick<
 	ExtensionEventHandlers,
-	"conversationCreated" | "conversationForked" | "conversationArchived" | "conversationIdle" | "harnessShutdown"
+	"conversationCreated" | "conversationForked" | "conversationArchived" | "conversationIdle" | "harnessShutdown" | "userDeleted"
 >;
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
@@ -167,6 +167,7 @@ const LIFECYCLE_FIELDS = [
 	"conversationArchived",
 	"conversationIdle",
 	"harnessShutdown",
+	"userDeleted",
 ] as const;
 
 /**
@@ -569,6 +570,7 @@ async function resolvedFromFactory(
 		conversationArchived?: unknown;
 		conversationIdle?: unknown;
 		harnessShutdown?: unknown;
+		userDeleted?: unknown;
 		interactionKinds?: unknown;
 		ambientKinds?: unknown;
 	};

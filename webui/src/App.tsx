@@ -33,6 +33,7 @@ import {
 	type ConversationViewWire,
 	type MetaResponse,
 	type SigrunClient,
+	type WhoamiResponse,
 } from "./api";
 import { Composer } from "./composer/Composer";
 import { TurnList } from "./entries/TurnList";
@@ -47,6 +48,7 @@ import { RightPanel } from "./layout/RightPanel";
 import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
+import { ShareMenu } from "./sessions/ShareMenu";
 import { useConversationList } from "./sessions/useConversationList";
 import { SettingsPanel } from "./settings/SettingsPanel";
 import { usePrefs, type PrefsState } from "./settings/usePrefs";
@@ -117,6 +119,12 @@ export interface AppOptions {
 	readonly client?: SigrunClient;
 	/** Injected for tests; defaults to the browser's native EventSource. */
 	readonly createEventSource?: EventSourceFactory;
+	/** The resolved principal (W1 Task 8, fed by the AuthGate): the rail's
+	 *  identity and the sidebar's owner gate. Absent in bare embeds. */
+	readonly identity?: WhoamiResponse;
+	/** The AuthGate's logout flip: App performs the logout call, then hands
+	 *  the session-end back. */
+	readonly onLogout?: () => void;
 }
 
 function ChatCenter(props: {
@@ -195,6 +203,8 @@ function ChatCenter(props: {
 
 export function App(options: AppOptions = {}) {
 	const client = options.client ?? defaultClient;
+	const identity = options.identity;
+	const onLogout = options.onLogout;
 	// The theme hook runs here for its root-application side effect; the
 	// STATE feeds the settings panel's Interface section (B7) — its picks
 	// apply immediately through this instance.
@@ -205,6 +215,9 @@ export function App(options: AppOptions = {}) {
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
+	// the sidebar's owner-only Share… action, rendered as an overlay.
+	const [shareFor, setShareFor] = useState<number | null>(null);
 	// The action-failure strip (rename/fork/new/export/compact). A SUCCESS
 	// of any later action clears it — a stale failure must not outlive the
 	// next thing that worked.
@@ -475,6 +488,20 @@ export function App(options: AppOptions = {}) {
 				<Rail
 					meta={boot.meta}
 					onOpenSettings={() => setSettingsOpen(true)}
+					identity={identity}
+					onLogout={
+						onLogout === undefined
+							? undefined
+							: () => {
+								// End the server session, then hand the flip back — a
+								// failed logout call still signs the UI out (the cookie
+								// is best-effort dead either way).
+								void client
+									.logout()
+									.catch(() => undefined)
+									.finally(() => onLogout());
+							}
+					}
 				/>
 				{list.error !== null && (
 					<p className="side-error" role="alert">
@@ -489,6 +516,8 @@ export function App(options: AppOptions = {}) {
 					onRename={renameConversation}
 					onArchive={archiveConversation}
 					onFork={onFork}
+					currentUser={identity?.user}
+					onShare={setShareFor}
 				/>
 			</div>
 			<main className="main-column">
@@ -533,6 +562,10 @@ export function App(options: AppOptions = {}) {
 								view={view}
 								onNavigate={onSelect}
 								enterToSend={prefsState.prefs.enterToSend}
+								readOnly={
+									list.rows.find((row) => row.id === activeId)?.access ===
+									"read"
+								}
 							/>
 						</footer>
 					</div>
@@ -576,6 +609,29 @@ export function App(options: AppOptions = {}) {
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}
+			{/* The share editor overlay (spec §5.9): the sidebar's owner-only
+			    Share… action targets a row; the backdrop click closes. */}
+			{shareFor !== null &&
+				(() => {
+					const row = list.rows.find((item) => item.id === shareFor);
+					return row === undefined ? null : (
+						<div
+							className="share-overlay"
+							onClick={(event) => {
+								if (event.target === event.currentTarget) setShareFor(null);
+							}}
+						>
+							<ShareMenu
+								client={client}
+								conversation={row}
+								onClose={() => setShareFor(null)}
+								onSaved={() => {
+									void list.reload();
+								}}
+							/>
+						</div>
+					);
+				})()}
 		</div>
 	);
 }

@@ -36,6 +36,7 @@ function summary(
 		entryCount: 1,
 		archived: false,
 		pinned: false,
+		access: "write",
 		...fields,
 	};
 }
@@ -360,6 +361,44 @@ describe("SessionList", () => {
 		expect(
 			renderer.root.findAllByProps({ className: "session-rename-input" }),
 		).toHaveLength(0);
+	});
+
+	test("the ⋯ menu's Share… is owner-only and forwards the row id (spec §5.9)", async () => {
+		const rows = [
+			summary({ id: 1, name: "Mine", owner: "alice" }),
+			summary({ id: 2, name: "Someone else's", owner: "bob" }),
+		];
+		const props = {
+			...makeProps(rows),
+			currentUser: "alice",
+			onShare: vi.fn(),
+		};
+		const renderer = render(<SessionList {...props} />);
+
+		// The owner's row offers Share… FIRST; clicking forwards the id.
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		const mine = renderer.root.findByProps({ className: "session-menu" });
+		expect(
+			mine
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["share", "rename", "fork", "archive"]);
+		await click(mine.findByProps({ "data-menu-action": "share" }));
+		expect(props.onShare).toHaveBeenCalledWith(1);
+
+		// A row someone else owns never offers it (the wire would 403 a
+		// recipient's sharing patch — the menu must not offer it either).
+		await click(
+			rowById(renderer, 2).findByProps({ className: "session-menu-toggle" }),
+		);
+		const theirs = renderer.root.findByProps({ className: "session-menu" });
+		expect(
+			theirs
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["rename", "fork", "archive"]);
 	});
 
 	test("an archived row's menu offers Unarchive and forwards (id, false)", async () => {

@@ -39,6 +39,7 @@ import type {
 	ProviderReadiness,
 } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** One hermetic server: harness + Fastify app, torn down after all tests. */
@@ -69,9 +70,11 @@ async function bootServer(options: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: options.model ?? "acme/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: options.contributors,
 		env: options.env ?? {},
 	});
@@ -147,6 +150,64 @@ function contributor(
 ): ProviderContributor {
 	return { name, providers: contributions };
 }
+
+// ---------------------------------------------------------------------------
+// GET /v1/providers + the deprecated /v1/auth/check alias (W1 Task 6)
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/providers and the /v1/auth/check alias (Task 6)", () => {
+	test("both routes serve the SAME body (the alias is byte-equal, minus headers)", async () => {
+		// A catalog with one of every derivation: a tracker provider, a
+		// tracker-less contributor, and the env-degenerate provider — the
+		// shared derivation must carry each across BOTH routes.
+		const { app } = await bootServer({
+			contributors: [
+				contributor(
+					"ext-acme",
+					{
+						provider: fixtureProvider("acme", ["m"]),
+						readiness: () => ({ status: "ready" }),
+					},
+					{ provider: fixtureProvider("acme2", ["m"]) },
+				),
+			],
+			model: "openai/gpt-test",
+			env: { OPENAI_API_KEY: "fixture-key" },
+		});
+		const providers = await app.inject({ method: "GET", url: "/v1/providers" });
+		expect(providers.statusCode).toBe(200);
+		const body = providers.json();
+		// All three derivations present under the new route.
+		expect(body.providers).toEqual([
+			{ provider: "acme", status: "ready" },
+			{ provider: "acme2", status: "not_ready" },
+			{ provider: "openai", status: "ready" },
+		]);
+		// The alias serves the identical body.
+		const alias = await app.inject({ method: "GET", url: "/v1/auth/check" });
+		expect(alias.statusCode).toBe(200);
+		expect(alias.json()).toEqual(body);
+	});
+
+	test("the alias carries the Deprecation header; the new route does not", async () => {
+		const { app } = await bootServer({
+			contributors: [
+				contributor("ext-acme", {
+					provider: fixtureProvider("acme", ["m"]),
+					readiness: () => ({ status: "ready" }),
+				}),
+			],
+			model: "acme/m",
+			env: {},
+		});
+		const alias = await app.inject({ method: "GET", url: "/v1/auth/check" });
+		expect(alias.statusCode).toBe(200);
+		expect(alias.headers.deprecation).toBe("true");
+		const providers = await app.inject({ method: "GET", url: "/v1/providers" });
+		expect(providers.statusCode).toBe(200);
+		expect(providers.headers.deprecation).toBeUndefined();
+	});
+});
 
 describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 	test("an unconfigured contributor provider reports not_configured and APPEARS despite an empty catalog", async () => {

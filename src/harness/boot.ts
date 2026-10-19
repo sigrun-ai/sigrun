@@ -25,6 +25,11 @@ import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
+import {
+	openIdentityStores,
+	ensureSetupCode,
+	type IdentityStores,
+} from "./identity/index.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import {
 	createSeamHost,
@@ -188,6 +193,16 @@ export interface OpenedHarness {
 	 */
 	readonly auth: AuthStore;
 	/**
+	 * The identity stores (core hardening W1 Task 2): the user
+	 * directory (`<configDir>/users.json`), the token digests
+	 * (`<configDir>/api-tokens.json`), the invite digests
+	 * (`<stateDir>/invites.json`), and the cache root the setup code
+	 * lives under — every file 0600 + atomic, mtime-reloaded per access
+	 * so the CLI's writes land live. The auth pipeline and routes
+	 * (Tasks 3-6) consume exactly this bundle.
+	 */
+	readonly identity: IdentityStores;
+	/**
 	 * The settings store (Task 8a): the file-backed store the `/v1/settings`
 	 * endpoints read and PATCH through. Booted here so a malformed settings
 	 * file fails loud at boot exactly like a bad `SIGRUN_*` value (the
@@ -300,6 +315,14 @@ export interface OpenHarnessOptions {
 	readonly extensions?: readonly ProviderContributor[];
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
+	/**
+	 * The identity stores injection seam (core hardening W1 Task 3):
+	 * when present it WINS over `openIdentityStores(roots)` — tests seed
+	 * a claimed directory (the pipeline's unclaimed gate would 403 every
+	 * route) without writing under the resolved config root. Boot passes
+	 * nothing.
+	 */
+	readonly identity?: IdentityStores;
 	/**
 	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
 	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
@@ -422,6 +445,26 @@ export async function openHarness(
 		stateDir: config.stateDir,
 	};
 	await ensureStoreRoots(roots);
+	// The identity stores (W1 Task 2) ride the same resolved roots: no
+	// I/O here (each file materializes on its first write), so this is
+	// pure construction over paths boot already owns.
+	const identity = options.identity ?? openIdentityStores(roots);
+	// The unclaimed onboarding posture (W1 Task 4, spec §5.8): every
+	// unclaimed boot (re)ensures the setup code under the pod-local cache
+	// root and logs it ONCE — the retrieval flow is `kubectl logs … | grep
+	// "setup code"` or `kubectl exec … cat <cacheDir>/setup-code` (the file
+	// is 0600 + atomic, and the cache root is never a backup section).
+	// `SIGRUN_SETUP_CODE` pins the value instead (the k8s Secret shape).
+	// Claimed boots (every identity-seeded test, every post-onboarding
+	// deploy) write nothing.
+	if (!identity.users.isClaimed()) {
+		// `identity.cacheDir`, not `roots.cacheDir`: the claim route reads
+		// `readSetupCode(identity.cacheDir)`, and an injected identity
+		// bundle (the test seam) may root elsewhere than the resolved
+		// roots — write where the reader reads.
+		const code = await ensureSetupCode(identity.cacheDir, env);
+		console.log(`sigrun setup code: ${code}`);
+	}
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
@@ -797,6 +840,7 @@ export async function openHarness(
 		providerReadiness,
 		providerEnv: effectiveEnv,
 		auth: authStore,
+		identity,
 		memoryHealth,
 		memorySubmit,
 		settings: settingsStore,

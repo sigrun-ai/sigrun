@@ -36,6 +36,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /**
@@ -49,6 +50,24 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/meta"],
 	["GET", "/v1/commands"],
 	["GET", "/v1/auth/check"],
+	// The W1 Task 6 provider-readiness home + the deprecated alias.
+	["GET", "/v1/providers"],
+	// The W1 Task 3 auth surface (routes/auth.ts).
+	["POST", "/v1/auth/login"],
+	["POST", "/v1/auth/logout"],
+	["GET", "/v1/auth/whoami"],
+	// The W1 Task 4 token management (routes/auth.ts).
+	["GET", "/v1/auth/tokens"],
+	["POST", "/v1/auth/tokens"],
+	["DELETE", "/v1/auth/tokens/:id"],
+	// The W1 Task 4 onboarding surface (routes/onboarding.ts).
+	["GET", "/v1/onboarding"],
+	["POST", "/v1/onboarding/claim"],
+	// The W1 Task 4 users + invites surface (routes/users.ts).
+	["GET", "/v1/users"],
+	["PATCH", "/v1/users/:user"],
+	["POST", "/v1/users/invites"],
+	["DELETE", "/v1/users/:user"],
 	["GET", "/v1/models"],
 	["GET", "/v1/settings"],
 	["PATCH", "/v1/settings"],
@@ -226,6 +245,7 @@ async function bootServer(): Promise<TestServer> {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 		// Hermetic: a dev checkout with a built `webui/dist` would otherwise
 		// register the catch-all static route (`*`); the table under test is
@@ -233,6 +253,7 @@ async function bootServer(): Promise<TestServer> {
 		SIGRUN_WEBUI: "false",
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 		settingsDir: dir,
@@ -279,8 +300,19 @@ describe("server route table", () => {
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/check",
+				"/v1/auth/login",
+				"/v1/auth/logout",
+				"/v1/auth/tokens",
+				"/v1/auth/tokens/:id",
+				"/v1/auth/whoami",
 				"/v1/models",
+				"/v1/onboarding",
+				"/v1/onboarding/claim",
+				"/v1/providers",
 				"/v1/settings",
+				"/v1/users",
+				"/v1/users/:user",
+				"/v1/users/invites",
 				"/v1/conversations",
 				"/v1/conversations/import",
 				"/v1/conversations/:id",

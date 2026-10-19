@@ -59,8 +59,10 @@ story to guess.
   mandates nothing about their contents — not file formats, not
   structure. The surface is "a directory that is yours."
 - The config root's other top-level entries are named, not litter:
-  `packages/` and `git/` (the extension install machinery) and channel
-  client configs such as `tui.json`.
+  `packages/` and `git/` (the extension install machinery), the
+  identity surfaces `users.json` and `api-tokens.json` (mode 0600,
+  sigrun-owned — user accounts and token digests), and channel client
+  configs such as `tui.json`.
 
 ## One resolution chain — workstation and container
 

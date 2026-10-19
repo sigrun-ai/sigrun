@@ -381,6 +381,8 @@ function validateServer(server: unknown): void {
 		"compaction",
 		"memorySeam",
 		"providers",
+		"auth",
+		"metrics",
 		"backup",
 	]);
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
@@ -491,6 +493,86 @@ function validateServer(server: unknown): void {
 			);
 		}
 	}
+	if (record.auth !== undefined) {
+		const auth = asRecord(record.auth);
+		if (auth === undefined) {
+			throw new SettingsValidationError("server.auth", "must be an object");
+		}
+		checkKeys("server.auth.", auth, [
+			"methods",
+			"proxy",
+			"adminGroups",
+			"allowedHosts",
+			"allowedOrigins",
+		]);
+		if (auth.methods !== undefined) {
+			if (
+				!Array.isArray(auth.methods) ||
+				auth.methods.some((m) => m !== "token" && m !== "proxy")
+			) {
+				throw new SettingsValidationError(
+					"server.auth.methods",
+					'must be an array of "token" and/or "proxy"',
+				);
+			}
+		}
+		if (auth.proxy !== undefined) {
+			const proxy = asRecord(auth.proxy);
+			if (proxy === undefined) {
+				throw new SettingsValidationError("server.auth.proxy", "must be an object");
+			}
+			// `secret` is deliberately NOT in the list: the shared secret is a
+			// credential, env-only (SIGRUN_PROXY_SECRET) — key material never
+			// lives in the settings file (auth.json's monopoly).
+			checkKeys("server.auth.proxy.", proxy, [
+				"trustedProxies",
+				"secretHeader",
+				"userHeader",
+				"groupsHeader",
+				"nameHeader",
+				"emailHeader",
+				"autoProvision",
+			]);
+			if (proxy.trustedProxies !== undefined && !isNonEmptyStringArray(proxy.trustedProxies)) {
+				throw new SettingsValidationError(
+					"server.auth.proxy.trustedProxies",
+					"must be an array of non-empty CIDR/IP strings",
+				);
+			}
+			for (const key of ["secretHeader", "userHeader", "groupsHeader", "nameHeader", "emailHeader"] as const) {
+				if (proxy[key] !== undefined && !isNonEmptyString(proxy[key])) {
+					throw new SettingsValidationError(
+						`server.auth.proxy.${key}`,
+					"must be a non-empty string",
+				);
+			}
+			}
+			if (proxy.autoProvision !== undefined && typeof proxy.autoProvision !== "boolean") {
+				throw new SettingsValidationError(
+					"server.auth.proxy.autoProvision",
+					"must be a boolean",
+				);
+			}
+		}
+		for (const key of ["adminGroups", "allowedHosts", "allowedOrigins"] as const) {
+			if (auth[key] !== undefined && !isNonEmptyStringArray(auth[key])) {
+				throw new SettingsValidationError(
+					`server.auth.${key}`,
+					"must be an array of non-empty strings",
+				);
+			}
+		}
+	}
+	if (record.metrics !== undefined) {
+		const metrics = asRecord(record.metrics);
+		if (metrics === undefined) {
+			throw new SettingsValidationError("server.metrics", "must be an object");
+		}
+		checkKeys("server.metrics.", metrics, ["public"]);
+		if (metrics.public !== undefined && typeof metrics.public !== "boolean") {
+			throw new SettingsValidationError("server.metrics.public", "must be a boolean");
+		}
+	}
 	if (record.backup !== undefined) {
 		const backup = asRecord(record.backup);
 		if (backup === undefined) {
@@ -547,6 +629,13 @@ function isPositiveInt(value: unknown): boolean {
 /** A non-empty string (the file's path/string fields). */
 function isNonEmptyString(value: unknown): boolean {
 	return typeof value === "string" && value !== "";
+}
+
+function isNonEmptyStringArray(value: unknown): boolean {
+	return (
+		Array.isArray(value) &&
+		value.every((entry) => isNonEmptyString(entry))
+	);
 }
 
 /** An enumerable record (not null, not an array). */
@@ -703,9 +792,10 @@ export class SettingsStore {
 			) {
 				// Server sub-merge: PATCH {server: {port: 4080}} preserves the
 				// rest of the section (including the bootstrap-written fields);
-				// `compaction`/`memorySeam`/`providers`/`webui` sub-merge one level
-				// deeper; `backup` replaces wholesale (it is a discriminated union —
-				// a partial union merge could mix a path target with an s3 one).
+				// `compaction`/`memorySeam`/`providers`/`webui`/`auth`/`metrics`
+				// sub-merge one level deeper (`auth.proxy` two levels); `backup`
+				// replaces wholesale (it is a discriminated union — a partial
+				// union merge could mix a path target with an s3 one).
 				const incoming = asRecord(value);
 				if (incoming === undefined) {
 					throw new SettingsValidationError("server", "must be an object");
@@ -765,26 +855,77 @@ export class SettingsStore {
 							}
 							if (Object.keys(mergedProviders).length === 0) delete sub.providers;
 							else sub.providers = mergedProviders;
-						} else if (
-							subKey === "webui" &&
-							typeof subValue === "object"
-						) {
-							// Same sub-merge for the webui channel section (build-and-webui
-							// Task 4): PATCH {server:{webui:{enabled:false}}} preserves a
-							// previously set bundle — a wholesale replace would silently
-							// drop the operator's selector.
-							const mergedWebui: Record<string, unknown> = {
-								...((sub.webui as Record<string, unknown>) ?? {}),
-							};
-							for (const [webuiKey, webuiValue] of Object.entries(
-								subValue as Record<string, unknown>,
-							)) {
-								if (webuiValue === null) delete mergedWebui[webuiKey];
-								else mergedWebui[webuiKey] = webuiValue;
-							}
-							if (Object.keys(mergedWebui).length === 0) delete sub.webui;
-							else sub.webui = mergedWebui;
-						} else sub[subKey] = subValue;
+					} else if (
+						subKey === "webui" &&
+						typeof subValue === "object"
+					) {
+						// Same sub-merge for the webui channel section (build-and-webui
+						// Task 4): PATCH {server:{webui:{enabled:false}}} preserves a
+						// previously set bundle — a wholesale replace would silently
+						// drop the operator's selector.
+						const mergedWebui: Record<string, unknown> = {
+							...((sub.webui as Record<string, unknown>) ?? {}),
+						};
+						for (const [webuiKey, webuiValue] of Object.entries(
+							subValue as Record<string, unknown>,
+						)) {
+							if (webuiValue === null) delete mergedWebui[webuiKey];
+							else mergedWebui[webuiKey] = webuiValue;
+						}
+						if (Object.keys(mergedWebui).length === 0) delete sub.webui;
+						else sub.webui = mergedWebui;
+					} else if (
+						subKey === "auth" &&
+						typeof subValue === "object"
+					) {
+						// The auth section (core-hardening W1) sub-merges per-key like
+						// webui, with `proxy` one level deeper still: PATCH
+						// {server:{auth:{proxy:{autoProvision:false}}}} preserves a
+						// stored trustedProxies — a wholesale replace would silently
+						// turn a proxy deployment into "trust no one" (or worse, keep
+						// trusting with different headers).
+						const mergedAuth: Record<string, unknown> = {
+							...((sub.auth as Record<string, unknown>) ?? {}),
+						};
+						for (const [authKey, authValue] of Object.entries(
+							subValue as Record<string, unknown>,
+						)) {
+							if (authValue === null) delete mergedAuth[authKey];
+							else if (
+								authKey === "proxy" &&
+								typeof authValue === "object"
+							) {
+								const mergedProxy: Record<string, unknown> = {
+									...((mergedAuth.proxy as Record<string, unknown>) ?? {}),
+								};
+								for (const [proxyKey, proxyValue] of Object.entries(
+									authValue as Record<string, unknown>,
+								)) {
+									if (proxyValue === null) delete mergedProxy[proxyKey];
+									else mergedProxy[proxyKey] = proxyValue;
+								}
+								if (Object.keys(mergedProxy).length === 0) delete mergedAuth.proxy;
+								else mergedAuth.proxy = mergedProxy;
+							} else mergedAuth[authKey] = authValue;
+						}
+						if (Object.keys(mergedAuth).length === 0) delete sub.auth;
+						else sub.auth = mergedAuth;
+					} else if (
+						subKey === "metrics" &&
+						typeof subValue === "object"
+					) {
+						const mergedMetrics: Record<string, unknown> = {
+							...((sub.metrics as Record<string, unknown>) ?? {}),
+						};
+						for (const [metricsKey, metricsValue] of Object.entries(
+							subValue as Record<string, unknown>,
+						)) {
+							if (metricsValue === null) delete mergedMetrics[metricsKey];
+							else mergedMetrics[metricsKey] = metricsValue;
+						}
+						if (Object.keys(mergedMetrics).length === 0) delete sub.metrics;
+						else sub.metrics = mergedMetrics;
+					} else sub[subKey] = subValue;
 				}
 				if (Object.keys(sub).length === 0) delete merged.server;
 				else merged.server = sub;

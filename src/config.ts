@@ -2,6 +2,7 @@ import type { CompactionPolicy } from "@earendil-works/pi-durable";
 import { isAbsolute, join } from "node:path";
 import type { SettingsFile, ServerSettings } from "./harness/settings.js";
 import { resolveStoreRoots } from "./harness/stores.js";
+import { isLoopbackHost } from "./server/auth/loopback.js";
 
 /**
  * Sigrun configuration.
@@ -124,6 +125,42 @@ export interface WebuiConfig {
 	bundle?: string;
 }
 
+/**
+ * The auth surface (core-hardening W1, spec §5.2/§5.3): what the Task 3
+ * pipeline authenticates with and what the Host/Origin checks accept.
+ * Parsed from the `SIGRUN_AUTH*` env knobs over the file's `server.auth`
+ * section by {@link parseAuth}; the effective method list (with the
+ * listen-host default applied) is {@link effectiveMethods}.
+ */
+export interface AuthConfig {
+	/**
+	 * The explicit authenticator list, in try order. `undefined` = derive
+	 * from the listen host (`[]` on loopback, `["token"]` otherwise —
+	 * {@link effectiveMethods}); an explicit `[]` disables authentication
+	 * (the config override; the pipeline warns on non-loopback binds).
+	 */
+	methods: readonly ("token" | "proxy")[] | undefined;
+	/**
+	 * The forward-auth (proxy) method's config. `trustedProxies` is the
+	 * CIDR allowlist the peer must fall in; the header names default to
+	 * Authelia's (`Remote-*`); `secretHeader` names the shared-secret
+	 * header whose VALUE is `secret` (env-only).
+	 */
+	proxy: { trustedProxies: readonly string[]; secretHeader?: string; secret?: string;
+		userHeader: string; groupsHeader: string; nameHeader: string; emailHeader: string; autoProvision: boolean };
+	/** Proxy groups intersecting these grant admin (never persisted). */
+	adminGroups: readonly string[];
+	/** Extra `Host` values accepted by the §5.5 Host check. */
+	allowedHosts?: readonly string[];
+	/** Extra `Origin` values accepted by the §5.5 Origin check. */
+	allowedOrigins?: readonly string[];
+	/**
+	 * The env service token (`SIGRUN_API_TOKEN` + `SIGRUN_API_TOKEN_USER`,
+	 * default user `"sigrun"`), env-only — a credential, like `proxy.secret`.
+	 */
+	serviceToken?: { token: string; user: string };
+}
+
 export interface SigrunConfig {
 	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
@@ -193,6 +230,15 @@ export interface SigrunConfig {
 	 * greater than zero.
 	 */
 	providers: ProviderRuntimeConfig;
+	/**
+	 * The auth surface (core-hardening W1), parsed from
+	 * `SIGRUN_AUTH`/`SIGRUN_AUTH_TRUSTED_PROXIES`/`SIGRUN_PROXY_SECRET`/
+	 * `SIGRUN_API_TOKEN` over the file's `server.auth` section. Consumed
+	 * by the Task 3 pipeline via {@link effectiveMethods}.
+	 */
+	auth: AuthConfig;
+	/** `/metrics` without a principal — `SIGRUN_METRICS_PUBLIC` (strict) over `server.metrics.public`, default false. */
+	metricsPublic: boolean;
 }
 
 /** The provider id used when the model spec carries no `provider/` prefix. */
@@ -246,6 +292,41 @@ export const PROVIDER_REFRESH_MINUTES_ENV = "SIGRUN_PROVIDER_REFRESH_MINUTES";
 
 /** The interval refresh cadence default (minutes); `0` disables. */
 export const DEFAULT_PROVIDER_REFRESH_MINUTES = 15;
+
+/**
+ * The auth defaults (spec §5.2/§5.3 + the plan's Global Constraints):
+ * no explicit method list (derive from the listen host), no trusted
+ * proxies, Authelia's `Remote-*` header names, auto-provision on, no
+ * admin groups. Credentials (`proxy.secret`, `serviceToken`) are never
+ * defaulted — they exist only when env provides them.
+ */
+export const DEFAULT_AUTH: AuthConfig = {
+	methods: undefined,
+	proxy: {
+		trustedProxies: [],
+		userHeader: "Remote-User",
+		groupsHeader: "Remote-Groups",
+		nameHeader: "Remote-Name",
+		emailHeader: "Remote-Email",
+		autoProvision: true,
+	},
+	adminGroups: [],
+};
+
+/**
+ * The effective authenticator list (spec §5.2's defaults ruling): an
+ * explicit `methods` always wins (including `[]` on a non-loopback
+ * bind — the config override); otherwise `[]` on a loopback listen
+ * host and `["token"]` on any other. The Task 3 pipeline calls this
+ * once at boot with the bound host.
+ */
+export function effectiveMethods(
+	auth: AuthConfig,
+	listenHost: string,
+): readonly ("token" | "proxy")[] {
+	if (auth.methods !== undefined) return auth.methods;
+	return isLoopbackHost(listenHost) ? [] : ["token"];
+}
 
 export type Env = Record<string, string | undefined>;
 
@@ -355,6 +436,138 @@ function parseWebuiEnabled(env: Env): boolean | undefined {
 	throw new Error(
 		`SIGRUN_WEBUI must be "true" or "false", got ${JSON.stringify(raw)}`,
 	);
+}
+
+/**
+ * Parse `SIGRUN_METRICS_PUBLIC` ("true"/"false", case-insensitive) — the
+ * `parseWebuiEnabled` pattern: strict, empty counts as unset, anything
+ * else fails loud naming the variable.
+ */
+function parseMetricsPublic(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_METRICS_PUBLIC;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true") return true;
+	if (lowered === "false") return false;
+	throw new Error(
+		`SIGRUN_METRICS_PUBLIC must be "true" or "false", got ${JSON.stringify(raw)}`,
+	);
+}
+
+/**
+ * Parse `SIGRUN_AUTH`: a csv of `token`/`proxy` (order preserved,
+ * duplicates dropped), `none` ALONE as the empty list (authentication
+ * disabled), unset/empty as `undefined` (derive from the listen host).
+ * Anything else fails loud naming the variable and the raw value — the
+ * `parseCompactionEnabled` pattern.
+ */
+function parseAuthMethods(
+	env: Env,
+): readonly ("token" | "proxy")[] | undefined {
+	const raw = env.SIGRUN_AUTH;
+	if (raw === undefined || raw === "") return undefined;
+	const methods: ("token" | "proxy")[] = [];
+	let sawNone = false;
+	for (const entry of raw.split(",")) {
+		const name = entry.trim();
+		if (name === "") continue;
+		if (name === "none") {
+			if (sawNone || methods.length > 0) {
+				throw new Error(
+					`SIGRUN_AUTH "none" must appear alone, got ${JSON.stringify(raw)}`,
+				);
+			}
+			sawNone = true;
+			continue;
+		}
+		if (name !== "token" && name !== "proxy") {
+			throw new Error(
+				`SIGRUN_AUTH must be a comma-separated list of "token" and/or "proxy" (or "none" alone), got ${JSON.stringify(raw)}`,
+			);
+		}
+		if (sawNone) {
+			throw new Error(
+				`SIGRUN_AUTH "none" must appear alone, got ${JSON.stringify(raw)}`,
+			);
+		}
+		if (!methods.includes(name)) methods.push(name);
+	}
+	if (sawNone) return [];
+	// Only commas/whitespace: unset, not an empty method list (`none` is
+	// the positive spelling for that).
+	return methods.length > 0 ? methods : undefined;
+}
+
+/**
+ * Parse `SIGRUN_AUTH_TRUSTED_PROXIES`: a csv of CIDR/IP strings. Unset or
+ * empty is `undefined` (the file's `server.auth.proxy.trustedProxies`
+ * applies then); comma-only degenerate input parses as the explicit
+ * empty list (which fails the `proxy` cross-check below, never
+ * "trust everyone").
+ */
+function parseTrustedProxies(env: Env): readonly string[] | undefined {
+	const raw = env.SIGRUN_AUTH_TRUSTED_PROXIES;
+	if (raw === undefined || raw === "") return undefined;
+	return raw
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry !== "");
+}
+
+/**
+ * Resolve {@link AuthConfig}: env over the file's `server.auth` section
+ * per field. The env-only credentials (`SIGRUN_PROXY_SECRET` →
+ * `proxy.secret`, `SIGRUN_API_TOKEN` → `serviceToken`) have NO file
+ * fallback (validation rejects a file `secret` key; tokens never lived
+ * in the settings file). Fails loud when `proxy` is a method but no
+ * trusted range is configured — an unscoped proxy method would trust
+ * everyone (spec §5.3's boot error).
+ */
+function parseAuth(env: Env, server?: ServerSettings["auth"]): AuthConfig {
+	const methods = parseAuthMethods(env) ?? server?.methods;
+	const trustedProxies =
+		parseTrustedProxies(env) ?? server?.proxy?.trustedProxies ?? [];
+	if (methods?.includes("proxy") && trustedProxies.length === 0) {
+		throw new Error(
+			'server.auth methods include "proxy" but trustedProxies is empty — ' +
+				"set SIGRUN_AUTH_TRUSTED_PROXIES or server.auth.proxy.trustedProxies " +
+				'(a proxy method with no trusted range would trust everyone)',
+		);
+	}
+	const token = env.SIGRUN_API_TOKEN?.trim() || undefined;
+	const secret = env.SIGRUN_PROXY_SECRET?.trim() || undefined;
+	return {
+		methods,
+		proxy: {
+			trustedProxies,
+			...(server?.proxy?.secretHeader === undefined
+				? {}
+				: { secretHeader: server.proxy.secretHeader }),
+			...(secret === undefined ? {} : { secret }),
+			userHeader: server?.proxy?.userHeader ?? DEFAULT_AUTH.proxy.userHeader,
+			groupsHeader:
+				server?.proxy?.groupsHeader ?? DEFAULT_AUTH.proxy.groupsHeader,
+			nameHeader: server?.proxy?.nameHeader ?? DEFAULT_AUTH.proxy.nameHeader,
+			emailHeader:
+				server?.proxy?.emailHeader ?? DEFAULT_AUTH.proxy.emailHeader,
+			autoProvision: server?.proxy?.autoProvision ?? true,
+		},
+		adminGroups: server?.adminGroups ?? [],
+		...(server?.allowedHosts === undefined
+			? {}
+			: { allowedHosts: server.allowedHosts }),
+		...(server?.allowedOrigins === undefined
+			? {}
+			: { allowedOrigins: server.allowedOrigins }),
+		...(token === undefined
+			? {}
+			: {
+					serviceToken: {
+						token,
+					user: env.SIGRUN_API_TOKEN_USER?.trim() || "sigrun",
+					},
+			}),
+	};
 }
 
 /**
@@ -597,7 +810,75 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 					...(config.webui.bundle === undefined
 						? {}
 						: { bundle: config.webui.bundle }),
-				};
+			};
+	// `auth`/`metrics` are the SECOND intent-shaped exception (the webui
+	// pattern, core-hardening W1): a DEFAULTED auth is omitted entirely —
+	// a mirrored `methods: []` would read as "authentication disabled"
+	// intent on the next boot, when the derived default is `[]` ONLY on a
+	// loopback bind (a fact the file cannot see). A CONFIGURED auth
+	// records only the non-default keys, and the env-only credentials
+	// (`proxy.secret`, `serviceToken`) are NEVER written — key material
+	// stays in env/auth.json.
+	const proxy = config.auth.proxy;
+	const proxySection:
+		| NonNullable<NonNullable<ServerSettings["auth"]>["proxy"]>
+		| undefined =
+		proxy.trustedProxies.length > 0 ||
+		proxy.secretHeader !== undefined ||
+		proxy.userHeader !== DEFAULT_AUTH.proxy.userHeader ||
+		proxy.groupsHeader !== DEFAULT_AUTH.proxy.groupsHeader ||
+		proxy.nameHeader !== DEFAULT_AUTH.proxy.nameHeader ||
+		proxy.emailHeader !== DEFAULT_AUTH.proxy.emailHeader ||
+		proxy.autoProvision !== true
+			? {
+					...(proxy.trustedProxies.length > 0
+						? { trustedProxies: [...proxy.trustedProxies] }
+						: {}),
+					...(proxy.secretHeader === undefined
+						? {}
+						: { secretHeader: proxy.secretHeader }),
+					...(proxy.userHeader !== DEFAULT_AUTH.proxy.userHeader
+						? { userHeader: proxy.userHeader }
+						: {}),
+					...(proxy.groupsHeader !== DEFAULT_AUTH.proxy.groupsHeader
+						? { groupsHeader: proxy.groupsHeader }
+						: {}),
+					...(proxy.nameHeader !== DEFAULT_AUTH.proxy.nameHeader
+						? { nameHeader: proxy.nameHeader }
+						: {}),
+					...(proxy.emailHeader !== DEFAULT_AUTH.proxy.emailHeader
+						? { emailHeader: proxy.emailHeader }
+						: {}),
+					...(proxy.autoProvision !== true
+						? { autoProvision: proxy.autoProvision }
+						: {}),
+				}
+			: undefined;
+	const auth: ServerSettings["auth"] | undefined =
+		config.auth.methods !== undefined ||
+		proxySection !== undefined ||
+		config.auth.adminGroups.length > 0 ||
+		config.auth.allowedHosts !== undefined ||
+		config.auth.allowedOrigins !== undefined
+			? {
+					...(config.auth.methods === undefined
+						? {}
+						: { methods: [...config.auth.methods] }),
+					...(proxySection === undefined ? {} : { proxy: proxySection }),
+					...(config.auth.adminGroups.length > 0
+						? { adminGroups: [...config.auth.adminGroups] }
+						: {}),
+					...(config.auth.allowedHosts === undefined
+						? {}
+						: { allowedHosts: [...config.auth.allowedHosts] }),
+					...(config.auth.allowedOrigins === undefined
+						? {}
+						: { allowedOrigins: [...config.auth.allowedOrigins] }),
+				}
+			: undefined;
+	const metrics: ServerSettings["metrics"] | undefined = config.metricsPublic
+		? { public: true }
+		: undefined;
 	return {
 		port: config.port,
 		workspacePath: config.workspace.path,
@@ -610,6 +891,8 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
 		providers: { ...config.providers },
+		...(auth === undefined ? {} : { auth }),
+		...(metrics === undefined ? {} : { metrics }),
 		...(backup === undefined ? {} : { backup }),
 	};
 }
@@ -736,6 +1019,9 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				server?.providers?.refreshIntervalMinutes,
 			),
 		},
+		auth: parseAuth(env, server?.auth),
+		metricsPublic:
+			parseMetricsPublic(env) ?? server?.metrics?.public ?? false,
 		// The webui surface (build-and-webui Task 4): the NEW shape the
 		// serve-time seam resolves (Task 5, src/server/static.ts). `enabled`
 		// is the strict env gate over the file's `server.webui.enabled`, default

@@ -36,6 +36,7 @@ import { loadConfig } from "../../src/config.js";
 import { openHarness, type OpenedHarness } from "../../src/harness/boot.js";
 import type { ProviderContributor } from "../../src/harness/providers/index.js";
 import { createServer } from "../../src/server/index.js";
+import { seededIdentity, unclaimedIdentity } from "../../test/helpers/identity.js";
 
 /** The built bundle this E2E server serves (webui/e2e → webui/dist). */
 const WEBUI_DIST = fileURLToPath(new URL("../dist", import.meta.url));
@@ -68,6 +69,14 @@ export interface E2EServerOptions {
 	 * first settled run (naming has its own vitest coverage).
 	 */
 	readonly settingsFile?: Record<string, unknown>;
+	/**
+	 * W1 Task 8 (spec §5.4/§5.8): boot TOKEN-ONLY and UNCLAIMED —
+	 * `SIGRUN_AUTH=token` with the setup code pinned via the env seam
+	 * (`SIGRUN_SETUP_CODE`) and an EMPTY user directory, so the browser
+	 * onboards through the real claim route. The default boot stays the
+	 * naive workstation posture (`SIGRUN_AUTH=none` + a claimed admin).
+	 */
+	readonly auth?: { readonly setupCode: string };
 	/**
 	 * T26b-iii items 4 + 7: extension package specifiers to load (the
 	 * `OpenHarnessOptions.extensionSpecifiers` seam — "sigrun-ext-approvals",
@@ -141,6 +150,11 @@ async function bootOnDir(
 		...loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			// W1 Task 3: the naive workstation path — claimed identity below,
+			// no authenticators. The auth boot (Task 8) is the token method:
+			// every /v1 call needs the session cookie the onboarding claim
+			// (or a login) sets.
+			SIGRUN_AUTH: options.auth === undefined ? "none" : "token",
 			SIGRUN_WORKSPACE_PATH: dir,
 		}),
 		webuiBundle: WEBUI_DIST,
@@ -159,8 +173,20 @@ async function bootOnDir(
 		);
 	}
 	const opened = await openHarness(config, {
+		// The unclaimed gate 403s an empty directory under every method —
+		// the e2e boots a claimed admin ("tester") exactly like the
+		// in-process suites' test/helpers/identity.ts seam. The AUTH boot
+		// (Task 8) is the one deliberate exception: unclaimed, with the
+		// pinned setup code the browser's onboarding screen presents.
+		identity:
+			options.auth === undefined
+				? await seededIdentity(dir)
+				: await unclaimedIdentity(dir),
 		extensions: [contributor],
-		env: {},
+		env:
+			options.auth === undefined
+				? {}
+				: { SIGRUN_SETUP_CODE: options.auth.setupCode },
 		settingsDir,
 		...(options.extensionSpecifiers === undefined
 			? {}

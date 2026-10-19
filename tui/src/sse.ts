@@ -50,6 +50,11 @@ export interface WatchOptions {
 	readonly baseUrl: string;
 	/** `X-Sigrun-User` identity header (Task 2); omitted when absent/empty. */
 	readonly user?: string;
+	/**
+	 * The bearer token (Task 7): `authorization: Bearer <token>` on the
+	 * stream connect; omitted when absent/empty/whitespace.
+	 */
+	readonly token?: string;
 	/** Backoff ladder base in ms (default 250; tests shrink it). */
 	readonly reconnectBaseMs?: number;
 	/** Backoff cap in ms (default 4000). */
@@ -144,10 +149,14 @@ export function watchConversation(
 	/** Give up after this many consecutive failed reconnects. */
 	const maxAttempts = 10;
 	const user = options.user?.trim();
-	const headers: Record<string, string> =
-		user === undefined || user === ""
-			? { accept: "text/event-stream" }
-			: { accept: "text/event-stream", "x-sigrun-user": user };
+	const token = options.token?.trim();
+	const headers: Record<string, string> = {
+		accept: "text/event-stream",
+		...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
+		...(token === undefined || token === ""
+			? {}
+			: { authorization: `Bearer ${token}` }),
+	};
 	const url = `${options.baseUrl}/v1/conversations/${conversationId}/stream`;
 
 	let closed = false;

@@ -35,6 +35,7 @@ import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** The hand-written bundle fixture (marked content the tests assert on). */
 const FIXTURE_BUNDLE = join(import.meta.dirname, "fixtures", "webui-dist");
@@ -70,6 +71,7 @@ async function bootServer(options?: {
 	const env: Record<string, string> = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	};
 	if (options?.webuiBundleEnv !== undefined) {
@@ -80,6 +82,7 @@ async function bootServer(options?: {
 	}
 	const config = loadConfig(env);
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 	});
@@ -238,10 +241,12 @@ describe("SIGRUN_WEBUI_BUNDLE set but missing", () => {
 		const config: SigrunConfig = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: dir,
 			SIGRUN_WEBUI_BUNDLE: join(dir, "no-such-bundle"),
 		});
 		const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 			extensions: [contributor],
 			env: {},
 		});

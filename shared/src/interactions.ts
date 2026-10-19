@@ -92,6 +92,12 @@ export type InteractionRecord = {
 	readonly answer?: InteractionAnswer;
 	/** Who answered: "human" via the route, or the extension itself. */
 	readonly answeredBy?: "human" | "extension";
+	/**
+	 * The answering principal's directory username (spec §5.9): stamped by
+	 * the answer route from `request.principal.user` — host-assigned, never
+	 * model-asserted. Absent on the naive single-operator path (no user).
+	 */
+	readonly answeredByUser?: string;
 	readonly body?: InteractionBody;
 	/** Opaque extension-owned payload; rendered collapsed, never interpreted. */
 	readonly details?: JsonObject;

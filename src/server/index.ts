@@ -32,19 +32,25 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { SigrunConfig } from "../config.js";
+import { effectiveMethods, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { registerAuthPipeline } from "./auth/pipeline.js";
+import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
 import { storeAgentChange } from "./helpers.js";
+import { registerCoreOwnershipParticipant } from "./ownership.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMetaRoutes } from "./routes/meta.js";
+import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
+import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
 	serveWebuiBundle,
@@ -62,10 +68,14 @@ import {
  * @param config parsed sigrun config; the listen entry consumes
  * `config.port`, the meta route derives `health.backup` from
  * `config.backup` presence, and `capabilities.backup` from the same
- * presence (the §5 backup affordance gate). Identity is the naive seam —
- * `X-Sigrun-User` resolves per request and stamps `SessionMeta.owner` at
- * create/fork/import; VERIFICATION (actual auth) arrives with a later
- * slice.
+ * presence (the §5 backup affordance gate). Identity is the W1 request
+ * pipeline (`auth/pipeline.ts`, registered FIRST below): Host/Origin
+ * checks, the public surface, the env service token, the setup gate,
+ * then the configured methods — the resolved principal stamps
+ * `SessionMeta.owner` at create/fork/import.
+ * @param options.listenHost the host the server will bind (default
+ * `"0.0.0.0"`); the pipeline's Host check and the default method list
+ * (`effectiveMethods`) both derive from it.
  * @param contributedBundles the extension-contributed webui-bundle registry
  * (build-and-webui Task 6 threads it here from boot; the serve-time
  * resolution (Task 5) selects a NAME selector against it — an empty
@@ -75,21 +85,30 @@ export async function createServer(
 	opened: OpenedHarness,
 	config: SigrunConfig,
 	contributedBundles: readonly ContributedWebuiBundle[] = [],
+	options?: { listenHost?: string },
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
-	// The identity seam (spec §5 / TUI plan): resolve the caller on EVERY
-	// request — the trimmed `X-Sigrun-User` header, `undefined` when absent
-	// or empty. Naive mode: the hook VERIFIES nothing (trusted-network
-	// posture; no auth flow in v1) — an absent header is not an error, the
-	// request proceeds exactly as before. Registered first, before any
-	// route, so every handler sees the resolved identity; it only reads a
-	// header, so content-type parsing (the JSONL parser below) and any later
-	// deploy-auth onRequest hook keep their semantics.
-	app.addHook("onRequest", async (request) => {
-		const header = request.headers["x-sigrun-user"];
-		const value = Array.isArray(header) ? header[0] : header;
-		request.sigrunUser = value?.trim() || undefined;
+	const listenHost = options?.listenHost ?? "0.0.0.0";
+	const methods = effectiveMethods(config.auth, listenHost);
+	// The auth posture warnings (W1 Task 3, the plan's Global
+	// Constraints): once per server, never per request.
+	if (methods.length === 0 && !isLoopbackHost(listenHost)) {
+		console.warn(
+			`sigrun: authentication is DISABLED (methods: []) on a non-loopback bind (${listenHost}) — any reachable client is trusted`,
+		);
+	}
+	const broadTrusted = config.auth.proxy.trustedProxies.some((cidr) => {
+		const slash = cidr.indexOf("/");
+		if (slash === -1) return false;
+		const prefix = Number(cidr.slice(slash + 1));
+		const v6 = cidr.includes(":");
+		return v6 ? prefix <= 32 : prefix <= 8;
 	});
+	if (methods.includes("proxy") && broadTrusted) {
+		console.warn(
+			"sigrun: auth.proxy.trustedProxies includes a very broad range — a forward-auth method trusts every peer it matches",
+		);
+	}
 	// The webui channel bundle (Task 20, spec §4.1/§6; serve-time resolution
 	// is build-and-webui Task 5): resolve enabled-gate → contributed NAME →
 	// PATH → default against `config.webui` and the contributed registry,
@@ -113,10 +132,15 @@ export async function createServer(
 		agent: storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
-	// The shared context every route module receives: the opened harness,
-	// the config, the root id (computed once, never per request), and the
-	// resolved webui bundle.
-	const ctx: ServerContext = { opened, config, rootId, webuiBundle };
+	const ctx: ServerContext = { opened, config, rootId, webuiBundle, listenHost, methods };
+	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
+	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
+	// env service token, the setup gate, and method resolution stamp
+	// `request.principal` before any route runs.
+	registerAuthPipeline(app, ctx);
+	registerAuthRoutes(app, ctx);
+	registerOnboardingRoutes(app, ctx);
+	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
@@ -126,6 +150,10 @@ export async function createServer(
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
+	// The core ownership participant (W1 Task 4): registered FIRST so
+	// conversations transfer before any extension's `userDeleted`
+	// observer runs (W4's jobs participant registers behind it).
+	registerCoreOwnershipParticipant(ctx);
 
 	return app;
 }

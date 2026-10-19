@@ -10,6 +10,8 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Cursor, EntryDraft, EntryId } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
+import { accessOf } from "@sigrun/shared/access";
+import { isSuperuser } from "../auth/principal.js";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import {
@@ -69,13 +71,13 @@ export function registerConversationRoutes(
 			);
 			// The identity seam: stamp the caller as owner when the request
 			// carried one (naive mode — no header, no write).
-			await stampSessionOwner(conversation, request.sigrunUser);
+			await stampSessionOwner(conversation, request.principal.user);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
 	);
 
-	app.get("/v1/conversations", async (): Promise<ConversationList> => {
+	app.get("/v1/conversations", async (request): Promise<ConversationList> => {
 		// Durable enumeration: the storage scan is authoritative —
 		// conversations this process never created (before a restart, in
 		// another process, or by tasks/tools inside pi-durable) all list.
@@ -83,6 +85,14 @@ export function registerConversationRoutes(
 		// route is unpaginated v1, so one page at a generous limit covers a
 		// deployment-scale set, and the loop below walks the continuation
 		// cursor to completion so nothing truncates silently.
+		// §5.9: the list is PER-CALLER — conversations the caller may not
+		// see (accessOf "none") are filtered out entirely (hidden is absent
+		// from lists, not just 404s), and every served row carries the
+		// caller's resolved access.
+		const principal = {
+			user: request.principal.user,
+			superuser: isSuperuser(request.principal),
+		};
 		const conversations: ConversationSummary[] = [];
 		let cursor: Cursor | undefined = undefined;
 		do {
@@ -110,11 +120,16 @@ export function registerConversationRoutes(
 					conversation.id,
 					BACKGROUND_CONTEXT,
 				);
+				const access = accessOf(principal, meta ?? {});
+				// Hidden is absent from the list (spec §5.9).
+				if (access === "none") continue;
 				const name = meta?.name ?? meta?.autoName;
 				conversations.push({
 					id: conversation.id,
 					root: conversation.id === rootId,
 					entryCount: view.entries.length,
+					access,
+					...(meta?.sharing === undefined ? {} : { sharing: meta.sharing }),
 					...(meta?.owner === undefined ? {} : { owner: meta.owner }),
 					...(name === undefined ? {} : { name }),
 					...(meta?.lastActivityAt === undefined
@@ -156,7 +171,10 @@ export function registerConversationRoutes(
 	// the create shape: 201 `{id, view}`.
 	app.post(
 		"/v1/conversations/:id/fork",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{
+			schema: { params: ID_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx, "write"),
+		},
 		async (
 			request,
 			reply,
@@ -237,6 +255,10 @@ export function registerConversationRoutes(
 			// it with "<source display name> (fork)"
 			// as its AUTO name when the source had one, and stamps activity so
 			// the fresh fork sorts where it happened.
+			// §5.9 (Review Focus 3): the doc copied the source's `owner` and
+			// `sharing` (fork: "current") — the SAME commit resets them: a fork
+			// is the FORKER's private copy (owner = the caller, sharing deleted;
+			// a header-less caller means no owner at all — the key is removed).
 			const sourceMeta = await opened.harness.snapshot(
 				SessionMetaDoc,
 				conversation.id,
@@ -248,13 +270,12 @@ export function registerConversationRoutes(
 				delete draft.name;
 				delete draft.autoName;
 				delete draft.autoNameAttempts;
+				delete draft.sharing;
+				if (request.principal.user === undefined) delete draft.owner;
+				else draft.owner = request.principal.user;
 				if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
 				draft.lastActivityAt = opened.now().toISOString();
 			}, BACKGROUND_CONTEXT);
-			// The fork's identity is the CALLER's, not the source's: the doc
-			// copied the parent's owner ("current" fork semantics), the stamp
-			// overwrites it; no header → the copy stands.
-			await stampSessionOwner(fork, request.sigrunUser);
 			const view = await readView(fork);
 			return await reply.code(201).send({ id: fork.id, view });
 		},
@@ -377,7 +398,7 @@ export function registerConversationRoutes(
 			}, BACKGROUND_CONTEXT);
 			// The imported conversation is the IMPORTER's, not the source's
 			// (the JSONL never carries meta — the stamp is the only owner).
-			await stampSessionOwner(conversation, request.sigrunUser);
+			await stampSessionOwner(conversation, request.principal.user);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
@@ -421,7 +442,10 @@ export function registerConversationRoutes(
 
 	app.patch(
 		"/v1/conversations/:id/meta",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{
+			schema: { params: ID_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx, "write"),
+		},
 		async (request, reply): Promise<SessionMeta> => {
 			const conversation = request.conversation;
 			// Validate FIRST — a rejected patch never touches the doc.
@@ -429,37 +453,40 @@ export function registerConversationRoutes(
 			if ("error" in validated) {
 				return await reply.code(400).send(validated);
 			}
+			// §5.9: `sharing` additionally requires the OWNER or a superuser —
+			// write access (granted by a share) must not let a recipient
+			// re-share the resource.
+			if (validated.sharing !== undefined) {
+				const meta = await opened.harness.snapshot(
+					SessionMetaDoc,
+					conversation.id,
+					BACKGROUND_CONTEXT,
+				);
+				const isOwner =
+					request.principal.user !== undefined &&
+					request.principal.user === meta?.owner;
+				if (!isOwner && !isSuperuser(request.principal)) {
+					return await reply.code(403).send({ error: "forbidden" });
+				}
+			}
 			// Read-modify-write inside ONE commit: tx.doc materializes the doc
-			// (initial()) when absent, the patch mutates the tracked draft, and the
-			// return value — a plain projection, since the draft handle dies at
-			// callback return — is exactly what the commit stores.
-			return await conversation.commit(async (tx) => {
+			// (initial()) when absent and the patch mutates the tracked draft.
+			await conversation.commit(async (tx) => {
 				const draft = await tx.doc(SessionMetaDoc, conversation.id);
 				applySessionMetaPatch(draft, validated);
-				return {
-					pinned: draft.pinned,
-					tagged: [...draft.tagged],
-					archived: draft.archived,
-					source: draft.source,
-					draft: {
-						text: draft.draft.text,
-						attachments: [...draft.draft.attachments],
-					},
-					...(draft.owner === undefined ? {} : { owner: draft.owner }),
-					...(draft.name === undefined ? {} : { name: draft.name }),
-					// The server-owned trio rides the projection when present —
-					// a patch must never lose them from the served doc.
-					...(draft.autoName === undefined
-						? {}
-						: { autoName: draft.autoName }),
-					...(draft.autoNameAttempts === undefined
-						? {}
-						: { autoNameAttempts: draft.autoNameAttempts }),
-					...(draft.lastActivityAt === undefined
-						? {}
-						: { lastActivityAt: draft.lastActivityAt }),
-				};
 			}, BACKGROUND_CONTEXT);
+			// The response is a FRESH snapshot, not a draft projection:
+			// reading a newly-SET nested draft value (`sharing`, §5.9) trips
+			// chord's settled-overlay rule, so the reply must never read the
+			// mutated draft — a post-commit snapshot is exactly what was
+			// stored.
+			return (
+				(await opened.harness.snapshot(
+					SessionMetaDoc,
+					conversation.id,
+					BACKGROUND_CONTEXT,
+				)) ?? DEFAULT_SESSION_META
+			);
 		},
 	);
 }

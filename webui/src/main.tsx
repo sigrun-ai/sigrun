@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { AuthGate } from "./auth/AuthGate";
 import "./app.css";
 
 // The bundle's entry document guarantees the mount point (index.html); a
@@ -12,6 +12,6 @@ if (container === null) {
 
 createRoot(container).render(
 	<StrictMode>
-		<App />
+		<AuthGate />
 	</StrictMode>,
 );

@@ -36,7 +36,7 @@ export function registerFileRoutes(
 	// namespace via the workspace env (spec §5: correct for remote workspaces).
 	app.post(
 		"/v1/conversations/:id/uploads",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<UploadResponse> => {
 			const conversation = request.conversation;
 			const body = request.body as Record<string, unknown> | undefined;

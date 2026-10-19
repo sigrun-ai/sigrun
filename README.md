@@ -190,7 +190,7 @@ the resolved default model; every other provider reads its own entry.
 With no key anywhere the provider registers unconfigured — requests
 fail loud, boot does not. The file is created
 with mode `0600` (owner-only) whenever sigrun writes it. Key material is
-never logged, echoed, or served by the API (`GET /v1/auth/check` reports
+never logged, echoed, or served by the API (`GET /v1/providers` reports
 key *presence* only).
 
 **Restart requirement:** `server.*`, `extensions`,
@@ -198,6 +198,67 @@ key *presence* only).
 `PATCH /v1/settings` — apply on the **next boot** only; the live
 settings (`steeringMode`, `retry`, `stream`, `defaultTools`,
 `perModelThinking`) take effect immediately on the next submission.
+
+## Authentication
+
+One pipeline authenticates every request into a *principal* (user,
+admin flag, method) before any route runs. `/healthz` and `/readyz` are
+always public; the browser surface, `/v1/onboarding*`, and login/logout
+are public too; everything else needs a resolved principal. An
+unclaimed server (empty user directory) answers 403 `setup_required` on
+every gated route — onboarding is the only usable surface until the
+first claim.
+
+**Defaults.** The effective method list derives from the listen host:
+a loopback bind (`127.0.0.1` / `[::1]` — `sigrun` workstation mode and
+loopback `serve`) requires nothing (the naive single-operator path,
+where an optional `X-Sigrun-User` header names the acting user); any
+other bind requires `token`.
+
+**The override.** `SIGRUN_AUTH` (csv of `token` and/or `proxy`; `none`
+= the empty list) or the settings file's `server.auth.methods` sets the
+list explicitly — explicit always wins, including `[]` on a non-
+loopback bind, which boots with a warning that any reachable client is
+trusted. The related env knobs: `SIGRUN_AUTH_TRUSTED_PROXIES` (CIDR
+csv), `SIGRUN_PROXY_SECRET` and `SIGRUN_API_TOKEN` (credentials —
+env-only, never in `settings.json`). Every auth setting is
+restart-required.
+
+**Tokens.** API tokens are `sgr_`-prefixed secrets shown once at
+creation (the store keeps only SHA-256 digests) and are self-service:
+an authenticated user lists and mints their own via
+`GET`/`POST /v1/auth/tokens` (`DELETE /v1/auth/tokens/{id}` revokes;
+admins may revoke anyone's). A token whose user was deleted is dead.
+A browser exchanges a token for a `sigrun_session` cookie at
+`POST /v1/auth/login` — invalid attempts are delayed and rate-limited —
+and `GET /v1/auth/whoami` returns the resolved principal.
+
+**Proxy method (forward auth).** A trusted reverse proxy vouches for
+the caller through headers (Authelia's `Remote-*` defaults,
+configurable) when the request comes from a peer inside
+`server.auth.proxy.trustedProxies` (CIDRs). Setting
+`SIGRUN_PROXY_SECRET` additionally requires that shared secret in the
+`secretHeader` on every request. Scope the CIDR list to exactly the
+proxy and nothing else: every peer in `trustedProxies` can forge any
+identity, including an admin.
+
+**Onboarding (the first claim).** An unclaimed server serves
+`GET /v1/onboarding` + `POST /v1/onboarding/claim`. On a loopback bind
+or through a trusted proxy identity the claim needs no code; otherwise
+the one-shot setup code is required — printed once in the log at boot
+and written to `<cacheDir>/setup-code` (in the Helm chart: the pod log
+and `/cache/setup-code`; `SIGRUN_SETUP_CODE` pins it instead). The
+claimant becomes the first admin and owns the reserved root
+conversation. Later users join by invite code (`POST /v1/users/invites`,
+admin) or by trusted-proxy auto-provision; admins can transfer or remove
+users (`PATCH`/`DELETE /v1/users/{user}` — deletion transfers their
+conversations).
+
+**Sharing.** Conversations are private to their owner by default. The
+owner can share one — household-wide or with named users, `read` or
+`write` — through the web UI's ⋯ menu or the TUI's `/share`; `write`
+lets a recipient submit, answer, and fork, but only the owner can
+re-share. Household sharing defaults to `read`.
 
 ## Extensions
 
@@ -280,11 +341,23 @@ and backup posture — is [`docs/extending.md`](docs/extending.md).
 
 ## API sketch
 
-- `GET /v1/meta` — version, extensions, health, capabilities.
+- `GET /v1/meta` — version, extensions, health, auth posture
+  (`methods`, `claimed`), capabilities.
 - `GET`/`PATCH /v1/settings` — the settings file (see above).
 - `POST /v1/conversations`, `POST /v1/conversations/{id}/submissions`,
   `GET /v1/conversations/{id}` — the durable conversation surface
   (SSE streaming views included).
+- `GET /v1/providers` — per-provider readiness, statuses only (never
+  credentials); `GET /v1/auth/check` is the deprecated alias.
+- `GET /v1/onboarding`, `POST /v1/onboarding/claim` — the unclaimed
+  state and the first-user claim.
+- `POST /v1/auth/login`, `POST /v1/auth/logout`, `GET /v1/auth/whoami` —
+  the browser session and the resolved principal.
+- `GET`/`POST /v1/auth/tokens`, `DELETE /v1/auth/tokens/{id}` —
+  self-service API tokens.
+- `GET /v1/users`, `PATCH`/`DELETE /v1/users/{user}`,
+  `POST /v1/users/invites` — the user directory and invite codes
+  (admin-gated).
 - `GET /healthz`, `GET /readyz` — probes.
 
 ## Development

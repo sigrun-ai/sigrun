@@ -7,10 +7,13 @@
  * sidebar reads happen constantly, a write per read would churn every
  * revision). `PATCH /v1/conversations/:id/meta` MERGES the body into the doc:
  * per-field shallow set, `draft` sub-merges its own fields, explicit `null`
- * resets a field to its default (`owner: null` removes the field), `tagged`
- * replaces wholesale (arrays never merge element-wise), `source` accepts only
- * `"user"|"cron"`. Validation mirrors the configure endpoint: unknown key →
- * 400 `invalid_field` (naming the key); wrong types → 400 `invalid_body`.
+ * resets a field to its default, `tagged` replaces wholesale (arrays never
+ * merge element-wise), and `sharing` sets/clears the §5.9 sharing state
+ * (`sharing: null` removes it — private by default). Validation mirrors the
+ * configure endpoint: unknown key → 400 `invalid_field` (naming the key);
+ * wrong types → 400 `invalid_body`. `owner` and `source` are SERVER-ONLY
+ * (core hardening W1 Task 5): any patch carrying either key — even a clear —
+ * is a 400 `invalid_field`.
  *
  * Hermetic pattern: faux provider + tmp workspace + `app.inject()` (see
  * server-configure.test.ts). The durability test CLOSES the harness and
@@ -31,6 +34,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import {
 	DEFAULT_SESSION_META,
 	SessionMetaDoc,
@@ -58,9 +62,11 @@ async function bootServer(): Promise<TestServer> {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 	});
@@ -234,7 +240,7 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		});
 	});
 
-	test("null clears tagged, archived, and source as well (the full clear table)", async () => {
+	test("null clears tagged and archived (the per-field clear table)", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
@@ -242,12 +248,10 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		await patchMeta(app, root.id, {
 			tagged: ["a"],
 			archived: true,
-			source: "cron",
 		});
 		const response = await patchMeta(app, root.id, {
 			tagged: null,
 			archived: null,
-			source: null,
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toEqual(DEFAULT_BODY);
@@ -268,26 +272,72 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		expect(response.json().draft).toEqual({ text: "kept", attachments: [] });
 	});
 
-	test("source accepts user and cron; owner round-trips and null removes it", async () => {
+	test("owner and source are server-only: any patch naming them is a 400 invalid_field", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
-		const cron = await patchMeta(app, root.id, {
-			source: "cron",
-			owner: "mike",
+		// Core hardening W1 Task 5 (spec §5.9): `owner` is written by the
+		// auth hook alone and `source` is server-owned — a patch carrying
+		// either key is rejected even when the VALUE would have been valid
+		// (and even as a `null` clear).
+		for (const [field, values] of [
+			["owner", ["mike", null]],
+			["source", ["user", "cron", "bogus", null]],
+		] as const) {
+			for (const value of values) {
+				const response = await patchMeta(app, root.id, { [field]: value });
+				expect(response.statusCode).toBe(400);
+				expect(response.json()).toEqual({
+					error: "invalid_field",
+					field,
+				});
+			}
+		}
+		// Nothing was applied by any rejected patch.
+		const final = await getMeta(app, root.id);
+		expect(final.json()).toEqual(DEFAULT_BODY);
+	});
+
+	test("sharing round-trips: PATCH sets it, GET serves it, null removes it", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
 		});
-		expect(cron.statusCode).toBe(200);
-		expect(cron.json().source).toBe("cron");
-		expect(cron.json().owner).toBe("mike");
-		const user = await patchMeta(app, root.id, { source: "user" });
-		expect(user.statusCode).toBe(200);
-		expect(user.json().source).toBe("user");
-		expect(user.json().owner).toBe("mike");
-		const cleared = await patchMeta(app, root.id, { owner: null });
+		const sharing = { scope: "household", level: "read" } as const;
+		const shared = await patchMeta(app, root.id, { sharing });
+		expect(shared.statusCode).toBe(200);
+		expect(shared.json().sharing).toEqual(sharing);
+		// A fresh GET (not the PATCH echo) serves the stored sharing.
+		const served = await getMeta(app, root.id);
+		expect(served.json().sharing).toEqual(sharing);
+		const cleared = await patchMeta(app, root.id, { sharing: null });
 		expect(cleared.statusCode).toBe(200);
-		expect(cleared.json().owner).toBeUndefined();
-		expect(cleared.json()).not.toHaveProperty("owner");
+		// Cleared = ABSENT (private by default is the absence of sharing).
+		expect(cleared.json()).not.toHaveProperty("sharing");
+		const after = await getMeta(app, root.id);
+		expect(after.json()).toEqual(DEFAULT_BODY);
+	});
+
+	test("rejects a malformed sharing value (400 invalid_field)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		for (const value of [
+			"household",
+			42,
+			{ scope: "everyone" },
+			{ scope: "household", level: "admin" },
+			{ scope: "people", users: [42], level: "read" },
+		]) {
+			const response = await patchMeta(app, root.id, { sharing: value });
+			expect(response.statusCode).toBe(400);
+			expect(response.json()).toEqual({
+				error: "invalid_field",
+				field: "sharing",
+			});
+		}
 	});
 
 	test("name round-trips: PATCH sets it, GET serves it, null removes it", async () => {
@@ -323,13 +373,11 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		expect(final.json()).toEqual(DEFAULT_BODY);
 	});
 
-	test("rejects source: bogus (400), unknown field (invalid_field), wrong type (invalid_body)", async () => {
+	test("rejects unknown field (invalid_field) and wrong types (invalid_body)", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
-		const badSource = await patchMeta(app, root.id, { source: "bogus" });
-		expect(badSource.statusCode).toBe(400);
 		const unknown = await patchMeta(app, root.id, { priority: 1 });
 		expect(unknown.statusCode).toBe(400);
 		expect(unknown.json()).toEqual({
@@ -428,9 +476,14 @@ describe("session-meta durability", () => {
 		const config = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: dir,
 		});
+		// One claimed identity shared by BOTH opens (the reopen must not
+		// re-seed — the directory survives on disk).
+		const identity = await seededIdentity(dir);
 		const first = await openHarness(config, {
+			identity,
 			extensions: [contributor],
 			env: {},
 		});
@@ -443,8 +496,7 @@ describe("session-meta durability", () => {
 				pinned: true,
 				tagged: ["durable"],
 				draft: { text: "wip", attachments: ["uploads/1/a.png"] },
-				source: "cron",
-				owner: "mike",
+				sharing: { scope: "people", users: ["dave"], level: "write" },
 			});
 			await app.close();
 			await first.harness.close(BACKGROUND_CONTEXT);
@@ -452,6 +504,7 @@ describe("session-meta durability", () => {
 			// Re-open the SAME storage path: the doc lives in storage, so the
 			// meta survives restart by construction (documents are durable).
 			const reopened = await openHarness(config, {
+				identity,
 				extensions: [contributor],
 				env: {},
 			});
@@ -466,8 +519,8 @@ describe("session-meta durability", () => {
 					tagged: ["durable"],
 					archived: false,
 					draft: { text: "wip", attachments: ["uploads/1/a.png"] },
-					source: "cron",
-					owner: "mike",
+					source: "user",
+					sharing: { scope: "people", users: ["dave"], level: "write" },
 				});
 			} finally {
 				await reopened.harness.close(BACKGROUND_CONTEXT);

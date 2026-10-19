@@ -33,6 +33,7 @@ function summary(
 		entryCount: 0,
 		archived: init?.archived ?? false,
 		pinned: false,
+		access: "write",
 		// C2's tree orders by recency; the stub conversations carry no
 		// activity stamps (all epoch 0), so ties break by id DESCENDING —
 		// the boot listing is newest-id-first and app.refresh() selects

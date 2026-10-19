@@ -33,6 +33,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { createServer } from "../src/server/index.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** The fixture-workers entry, imported by specifier (contract: factory + workers). */
 const WORKERS_SPECIFIER = pathToFileURL(
@@ -118,9 +119,11 @@ async function bootFixture(options: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 		extensionSpecifiers: [WORKERS_SPECIFIER],
@@ -363,6 +366,7 @@ describe("idle workers — the curator contract", () => {
 		const config = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: dir,
 		});
 		const cases: readonly { workers: unknown; error: string }[] = [
@@ -426,6 +430,7 @@ describe("idle workers — the curator contract", () => {
 			const badConfig = loadConfig({
 				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 				SIGRUN_STORAGE_PATH: join(badDir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 				SIGRUN_WORKSPACE_PATH: badDir,
 			});
 			const opened = await openHarness(badConfig, {
@@ -453,6 +458,7 @@ describe("idle workers — the curator contract", () => {
 		const app = await createServer(opened, loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: "/tmp/unused-meta.db",
+			SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: "/tmp",
 		}));
 		try {

@@ -1,0 +1,322 @@
+/**
+ * The onboarding routes (core hardening W1 Task 4, spec §5.8): the
+ * unclaimed state's whole surface. The pipeline public-paths
+ * `/v1/onboarding*` (stage 2), so these routes resolve trust THEMSELVES:
+ * a trusted proxy identity (headers from a trusted peer) or a loopback
+ * bind is trust enough to claim with no code; everything else must
+ * present the setup code (the unclaimed boot's one-shot credential) or,
+ * once claimed, a valid invite code.
+ *
+ * Claims and invite redemptions serialize on the ONE in-process claim
+ * mutex (`claim-lock.ts`) with the directory write atomic — concurrent
+ * correct claims yield exactly one 200; the rest get 409
+ * `already_claimed`.
+ */
+
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { timingSafeEqual } from "node:crypto";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { ServerContext } from "../context.js";
+import { withClaimLock } from "../auth/claim-lock.js";
+import { ipAllowed } from "../auth/ip.js";
+import { isLoopbackHost } from "../auth/loopback.js";
+import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
+import { stampSessionOwner } from "../helpers.js";
+import { buildSessionCookie } from "./auth.js";
+import type { ClaimResponse, OnboardingState } from "../views.js";
+
+/** One header read (Fastify headers are string | string[]; first wins). */
+function headerOf(request: FastifyRequest, name: string): string | undefined {
+	const value = request.headers[name.toLowerCase()];
+	const single = Array.isArray(value) ? value[0] : value;
+	return single?.trim() || undefined;
+}
+
+/** The username rule (spec §5.8, shared with the directory's own check). */
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+/** What a trusted proxy vouches for — identity the claim may take as-is. */
+interface ProxyIdentity {
+	readonly user: string;
+	readonly name?: string;
+	readonly email?: string;
+}
+
+/** Constant-time string equality (the pipeline's discipline). */
+function timingSafeStringEqual(a: string, b: string): boolean {
+	const left = Buffer.from(a, "utf8");
+	const right = Buffer.from(b, "utf8");
+	if (left.length !== right.length) return false;
+	return timingSafeEqual(left, right);
+}
+
+/**
+ * Resolve the request's trusted proxy identity WITHOUT provisioning: the
+ * proxy method must be configured, the peer trusted, and the user header
+ * present (and a shape the directory could hold — the pipeline's
+ * invalid-username posture). When a shared secret is configured, it is
+ * required here TOO — the pipeline never runs on public paths (stage 2
+ * returns before the proxy method), so these routes own the same secret
+ * discipline, and the header is deleted from the request after the check
+ * exactly as the pipeline would have done. Name/email ride their headers
+ * when present.
+ */
+function resolveProxyIdentity(
+	request: FastifyRequest,
+	ctx: ServerContext,
+): ProxyIdentity | undefined {
+	if (!ctx.methods.includes("proxy")) return undefined;
+	const { proxy } = ctx.config.auth;
+	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
+		return undefined;
+	}
+	if (proxy.secret !== undefined && proxy.secretHeader !== undefined) {
+		const name = proxy.secretHeader.toLowerCase();
+		const presented = headerOf(request, name);
+		delete request.headers[name];
+		if (
+			presented === undefined ||
+			!timingSafeStringEqual(presented, proxy.secret)
+		) {
+			return undefined;
+		}
+	}
+	const user = headerOf(request, proxy.userHeader);
+	if (user === undefined || !USERNAME_PATTERN.test(user)) return undefined;
+	const name = headerOf(request, proxy.nameHeader);
+	const email = headerOf(request, proxy.emailHeader);
+	return {
+		user,
+		...(name === undefined ? {} : { name }),
+		...(email === undefined ? {} : { email }),
+	};
+}
+
+/** The validated claim body (every field optional; the paths below pick). */
+interface ClaimBody {
+	readonly code?: string;
+	readonly user?: string;
+	readonly name?: string;
+	readonly email?: string;
+	readonly issueToken?: boolean;
+	readonly tokenName?: string;
+}
+
+/** The failure shape of {@link validateClaimBody} (an optional field name). */
+interface ClaimBodyError {
+	error: string;
+	field?: string;
+}
+
+/**
+ * Validate the claim body strictly: unknown keys and wrong types are
+ * client errors (the repo's fail-loud validator posture).
+ */
+function validateClaimBody(body: unknown): ClaimBody | ClaimBodyError {
+	if (body === undefined) return {};
+	if (typeof body !== "object" || Array.isArray(body)) {
+		return { error: "invalid_body" };
+	}
+	const record = body as Record<string, unknown>;
+	const result: {
+		code?: string;
+		user?: string;
+		name?: string;
+		email?: string;
+		issueToken?: boolean;
+		tokenName?: string;
+	} = {};
+	for (const key of Object.keys(record)) {
+		const value = record[key];
+		switch (key) {
+			case "code":
+			case "user":
+			case "name":
+			case "email":
+			case "tokenName":
+				if (typeof value !== "string") return { error: "invalid_body" };
+				result[key] = value;
+				break;
+			case "issueToken":
+				if (typeof value !== "boolean") return { error: "invalid_body" };
+				result.issueToken = value;
+				break;
+			default:
+				return { error: "invalid_field", field: key };
+		}
+	}
+	return result;
+}
+
+/** Register the onboarding state + claim routes. */
+export function registerOnboardingRoutes(
+	app: FastifyInstance,
+	ctx: ServerContext,
+): void {
+	const { identity } = ctx.opened;
+
+	app.get("/v1/onboarding", async (request): Promise<OnboardingState> => {
+		const proxyIdentity = resolveProxyIdentity(request, ctx);
+		// Loopback is the trust itself; a trusted proxy identity likewise.
+		const codeRequired =
+			!isLoopbackHost(ctx.listenHost) && proxyIdentity === undefined;
+		return {
+			state: identity.users.isClaimed() ? "claimed" : "unclaimed",
+			methods: ctx.methods,
+			codeRequired,
+			...(proxyIdentity === undefined ? {} : { proxyIdentity }),
+		};
+	});
+
+	app.post("/v1/onboarding/claim", async (request, reply) => {
+		const validated = validateClaimBody(request.body);
+		if ("error" in validated) {
+			return await reply.code(400).send(validated);
+		}
+		const proxyIdentity = resolveProxyIdentity(request, ctx);
+		const loopback = isLoopbackHost(ctx.listenHost);
+		// The code's validity is evaluated ONCE, BEFORE the mutex: the winner
+		// clears the setup-code file inside its critical section, so a claim
+		// that loses the race must still be recognizable as having held a
+		// valid code — it gets 409 `already_claimed` (the brief's "one
+		// claimant wins and the rest get 409"), never a misleading 403.
+		const codeWasSetup =
+			validated.code !== undefined &&
+			validated.code === readSetupCode(identity.cacheDir);
+
+		// The claim critical section: read state, decide, add — all inside
+		// the one mutex, so concurrent claims cannot both pass the gate.
+		const outcome = await withClaimLock(async () => {
+			const claimed = identity.users.isClaimed();
+			if (!claimed) {
+				// The first admin: proxy headers, loopback bind, or the setup
+				// code ("the first invite" — same shape, admin grant).
+				let grant: { user: string; name?: string; email?: string; source: "proxy" | "cli" };
+				if (proxyIdentity !== undefined) {
+					// Proxy claims take identity from the headers, verbatim
+					// (body identity fields are ignored — the proxy vouched).
+					grant = { ...proxyIdentity, source: "proxy" };
+				} else if (loopback) {
+					if (validated.user === undefined) return { status: 400, error: "invalid_body" } as const;
+					grant = {
+						user: validated.user,
+						...(validated.name === undefined ? {} : { name: validated.name }),
+						...(validated.email === undefined ? {} : { email: validated.email }),
+						source: "cli",
+					};
+				} else if (codeWasSetup) {
+					if (validated.user === undefined) return { status: 400, error: "invalid_body" } as const;
+					grant = {
+						user: validated.user,
+						...(validated.name === undefined ? {} : { name: validated.name }),
+						...(validated.email === undefined ? {} : { email: validated.email }),
+						source: "cli",
+					};
+				} else {
+					// Wrong or absent code where one is required.
+					return { status: 403, error: "invalid_code" } as const;
+				}
+				if (!USERNAME_PATTERN.test(grant.user)) {
+					return { status: 400, error: "invalid_username" } as const;
+				}
+				const record = await identity.users.add({
+					user: grant.user,
+					...(grant.name === undefined ? {} : { name: grant.name }),
+					...(grant.email === undefined ? {} : { email: grant.email }),
+					admin: true,
+					source: grant.source,
+				});
+				// The setup code dies with the claim (single-shot); the
+				// pinned env form re-materializes at the next unclaimed
+				// boot, which no longer exists once claimed.
+				await clearSetupCode(identity.cacheDir);
+				// The reserved root conversation belongs to the claimant —
+				// the server's first configured resource.
+				const root = await ctx.opened.harness.conversation(
+					ctx.rootId,
+					BACKGROUND_CONTEXT,
+				);
+				if (root !== undefined) {
+					await stampSessionOwner(root, record.user);
+				}
+				return { status: 200, record } as const;
+			}
+			// Claimed: an invite code admits one more user; a codeless
+			// proxy/loopback caller auto-provisions (or re-surfaces); a code
+			// that WAS the setup code lost the race — 409, per the mutex
+			// contract (one winner, the rest already_claimed).
+			if (codeWasSetup) {
+				return { status: 409, error: "already_claimed" } as const;
+			}
+			if (validated.code !== undefined) {
+				const invite =
+					validated.user === undefined
+						? undefined
+						: await identity.invites.redeem(validated.code, validated.user);
+				if (invite === undefined) {
+					return { status: 403, error: "invalid_code" } as const;
+				}
+				const record = await identity.users.add({
+					user: validated.user!,
+					...(validated.name === undefined ? {} : { name: validated.name }),
+					...(validated.email === undefined ? {} : { email: validated.email }),
+					admin: invite.admin,
+					source: "invite",
+				});
+				return { status: 200, record } as const;
+			}
+			// Claimed + no code: only a trusted proxy identity still
+			// admits (auto-provision, or the existing record back) — a
+			// loopback/token caller has “nothing valid” and gets 409.
+			if (proxyIdentity === undefined) {
+				return { status: 409, error: "already_claimed" } as const;
+			}
+			const existing = identity.users.get(proxyIdentity.user);
+			if (existing !== undefined) return { status: 200, record: existing } as const;
+			const record = await identity.users.add({
+				user: proxyIdentity.user,
+				...(proxyIdentity.name === undefined ? {} : { name: proxyIdentity.name }),
+				...(proxyIdentity.email === undefined ? {} : { email: proxyIdentity.email }),
+				admin: false,
+				source: "proxy",
+			});
+			return { status: 200, record } as const;
+		});
+
+		if (outcome.status !== 200) {
+			return await reply.code(outcome.status).send({ error: outcome.error });
+		}
+		const response: ClaimResponse = {
+			user: {
+				user: outcome.record.user,
+				...(outcome.record.name === undefined ? {} : { name: outcome.record.name }),
+				...(outcome.record.email === undefined ? {} : { email: outcome.record.email }),
+				admin: outcome.record.admin,
+				createdAt: outcome.record.createdAt,
+				source: outcome.record.source,
+			},
+			...(validated.issueToken
+				? {
+						token: (
+							await identity.tokens.create(
+								validated.tokenName ?? "onboarding",
+								outcome.record.user,
+							)
+						).token,
+					}
+				: {}),
+		};
+		// issueToken also logs the browser in: the session cookie is the
+		// webui's (and the TUI attach flow's) carry-home credential.
+		if (validated.issueToken && response.token !== undefined) {
+			return await reply
+				.code(200)
+				.header(
+					"set-cookie",
+					buildSessionCookie(response.token, request, ctx),
+				)
+				.send(response);
+		}
+		return await reply.code(200).send(response);
+	});
+}

@@ -45,6 +45,7 @@ import {
 } from "../src/harness/tools.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 
@@ -99,9 +100,11 @@ async function bootToolsServer(responses: unknown[]): Promise<TestServer> {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: workspace,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 	});

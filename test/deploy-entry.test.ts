@@ -50,14 +50,24 @@ function freePort(): Promise<number> {
 	});
 }
 
-/** Minimal hermetic env for the entry — nothing inherited but PATH/HOME. */
+/**
+ * Minimal hermetic env for the entry — nothing inherited but PATH/HOME.
+ * `SIGRUN_API_TOKEN` is the W1 spawned-process pattern (the task-3
+ * brief): the child serves an UNCLAIMED directory, so the env service
+ * token is what gets a caller past the setup gate; requests send it as
+ * Bearer.
+ */
 function childEnv(overrides: Record<string, string>): NodeJS.ProcessEnv {
 	return {
 		PATH: process.env.PATH ?? "",
 		HOME: process.env.HOME,
+		SIGRUN_API_TOKEN: "sgr_test_env",
 		...overrides,
 	};
 }
+
+/** The Bearer header every spawned-entry request sends (W1 Task 3). */
+const SERVICE_BEARER = { authorization: "Bearer sgr_test_env" };
 
 /** Spawn the entry and resolve once it prints its listening line. */
 function spawnEntry(env: NodeJS.ProcessEnv) {
@@ -127,7 +137,9 @@ test(
 		try {
 			const listenedOn = await entry.listening;
 			expect(listenedOn).toBe(port);
-			const response = await fetch(`http://127.0.0.1:${port}/v1/meta`);
+			const response = await fetch(`http://127.0.0.1:${port}/v1/meta`, {
+				headers: SERVICE_BEARER,
+			});
 			expect(response.status).toBe(200);
 			const meta = (await response.json()) as {
 				harnessVersion: string;
@@ -296,7 +308,9 @@ test(
 			// fixture's import chain is a tsx-invocation detail, not the
 			// feature under test).
 			const meta = (await (
-				await fetch(`http://127.0.0.1:${port}/v1/meta`)
+				await fetch(`http://127.0.0.1:${port}/v1/meta`, {
+					headers: SERVICE_BEARER,
+				})
 			).json()) as { extensions?: readonly { name: string; status: string }[] };
 			expect(meta.extensions).toEqual([
 				{ name: "sigrun-fixture-ext", status: "ok" },

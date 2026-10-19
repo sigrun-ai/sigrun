@@ -7,18 +7,25 @@
  * (the load-bearing decoupling — the tui is a pure client of the wire).
  *
  * PURE module: no imports at all (the views-purity guard enforces this
- * across `shared/src`).
- *
+ * across `shared/src`) — the `import type` below is the sanctioned wire-
+ * module exception: sibling-only (`./access.js`), type-only.
+ */
+
+import type { Sharing } from "./access.js";
+
+export type { Sharing } from "./access.js";
+
+/**
  * Doc header (from the server module — the runtime semantics live there):
  *
  * One latest-only singleton doc per conversation (kind
  * `"sigrun.session-meta"`): pin/tag/archive flags, the composer draft
  * (survives reloads — `draft.attachments` are workspace-relative paths
  * from the uploads endpoint), the session source, the user-facing session
- * name (T5d), and the multi-user `owner` seam (spec §5: "exists in schema
- * from day 1; the flow does not" — written by the auth hook at
- * create/fork/import and read by the listing route; still no interactive
- * flow in v1).
+ * name (T5d), the multi-user `owner` seam, and the §5.9 `sharing` state.
+ * `owner` and `source` are SERVER-ONLY: the auth hook stamps the owner at
+ * create/fork/import, and a client PATCH carrying either key is a 400
+ * `invalid_field`.
  *
  * Server-owned fields (`autoName`, `autoNameAttempts`,
  * `lastActivityAt`) are written by host code only (activity.ts, the A2
@@ -36,12 +43,15 @@ export type SessionMeta = {
 	archived: boolean;
 	/** The composer draft; survives a reload. */
 	draft: { text: string; attachments: string[] };
-	/** Who created the session: interactive use or a cron job. */
-	source: "user" | "cron";
+	/** Who created the session: an interactive user, a cron job, a channel
+	 * adapter — a free-form server-owned label (spec §5.9: no longer a
+	 * closed enum; never patchable). */
+	source: string;
 	/**
-	 * Multi-user seam (spec §5): PATCH accepts it, GET serves it, the auth
-	 * hook writes it (create/fork/import), and the listing route reads it
-	 * — there is no interactive flow around it in v1 beyond that plumbing.
+	 * Multi-user seam (spec §5.9): the caller identity the auth hook
+	 * stamped at create/fork/import, read by the listing route and the
+	 * access checks. SERVER-ONLY — a PATCH carrying the key is a 400
+	 * `invalid_field`.
 	 */
 	owner?: string;
 	/** The user-facing session name; absent = unnamed (T5d). */
@@ -60,6 +70,12 @@ export type SessionMeta = {
 	 * patchable — the strict validator rejects the key as `invalid_field`.
 	 */
 	lastActivityAt?: string;
+	/**
+	 * The §5.9 per-resource sharing state; absent = private (owner and
+	 * superuser only). Patchable by the OWNER or a superuser (403
+	 * otherwise); `sharing: null` clears back to private.
+	 */
+	sharing?: Sharing;
 };
 
 /** A validated PATCH body: present keys apply, `null` clears to default. */
@@ -71,9 +87,14 @@ export interface SessionMetaPatch {
 		readonly text?: string | null;
 		readonly attachments?: readonly string[] | null;
 	} | null;
-	readonly source?: "user" | "cron" | null;
-	readonly owner?: string | null;
 	readonly name?: string | null;
+	/**
+	 * The §5.9 sharing set/clear (`null` → private). `owner` and `source`
+	 * are deliberately ABSENT — the validator rejects them as
+	 * `invalid_field`, so a patch type that cannot express them keeps the
+	 * apply step honest by construction.
+	 */
+	readonly sharing?: Sharing | null;
 }
 
 /** Why a PATCH body was rejected (the configure endpoint's error contract). */

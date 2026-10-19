@@ -1,0 +1,504 @@
+/**
+ * The request pipeline + auth routes (core hardening W1 Task 3).
+ *
+ * Covers the six stages in `src/server/auth/pipeline.ts` (Host/Origin
+ * checks → public paths → env service token → the unclaimed
+ * `setup_required` gate → proxy/token method resolution → principal on
+ * the request) and the three routes in `src/server/routes/auth.ts`
+ * (login with the per-IP limiter, logout, whoami).
+ *
+ * Hermetic pattern: faux provider + tmp workspace + `app.inject()`
+ * (see auth-hook.test.ts). Identity is pre-seeded claimed via the
+ * {@link seededIdentity} boot seam; the unclaimed tests boot WITHOUT
+ * the seed.
+ */
+
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test, vi } from "vitest";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { FastifyInstance } from "fastify";
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+} from "@earendil-works/pi-ai/providers/faux";
+import { loadConfig, type SigrunConfig } from "../src/config.js";
+import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import type { ProviderContributor } from "../src/harness/providers/index.js";
+import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
+
+interface TestServer {
+	app: FastifyInstance;
+	opened: OpenedHarness;
+	dir: string;
+}
+
+/**
+ * Boot one hermetic server. `env` rides loadConfig (SIGRUN_* knobs);
+ * `file` is the settings-file `server` section (auth proxy fields,
+ * admin groups, allowed hosts/origins). Identity seeds claimed unless
+ * `claimed: false`.
+ */
+async function bootServer(options: {
+	env?: Record<string, string | undefined>;
+	file?: { auth?: Record<string, unknown> };
+	claimed?: boolean;
+	listenHost?: string;
+	fakeTimers?: boolean;
+}): Promise<TestServer> {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-pipeline-"));
+	const faux = fauxProvider({
+		provider: "faux",
+		models: [{ id: "m", contextWindow: 128_000 }],
+	});
+	faux.setResponses([fauxAssistantMessage("ok")]);
+	const contributor: ProviderContributor = {
+		name: "ext-faux",
+		providers: [{ provider: faux.provider }],
+	};
+	const config = loadConfig(
+		{
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_CONFIG_DIR: join(dir, "config"),
+			...options.env,
+		},
+		{ server: options.file ?? {} } as Parameters<typeof loadConfig>[1],
+	);
+	const claimed = options.claimed !== false;
+	const opened = await openHarness(config, {
+		extensions: [contributor],
+		env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
+		...(claimed ? { identity: await seededIdentity(dir) } : {}),
+	});
+	const app = await createServer(opened, config, [], {
+		listenHost: options.listenHost ?? "127.0.0.1",
+	});
+	const teardown = async () => {
+		await app.close();
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await rm(dir, { recursive: true, force: true });
+	};
+	cleanups.push(teardown);
+	return { app, opened, dir };
+}
+
+const cleanups: Array<() => Promise<void>> = [];
+afterAll(async () => {
+	for (const teardown of cleanups.splice(0)) await teardown();
+});
+
+async function mintToken(
+	opened: OpenedHarness,
+	user: string,
+	name = "test",
+): Promise<string> {
+	const { token } = await opened.identity.tokens.create(name, user);
+	return token;
+}
+
+// ---------------------------------------------------------------------------
+// token method
+// ---------------------------------------------------------------------------
+
+describe("token method", () => {
+	test("no credential → 401", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const response = await app.inject({ method: "GET", url: "/v1/meta" });
+		expect(response.statusCode).toBe(401);
+		// The wire code is pinned (spec §5.2 / the plan's Global
+		// Constraints): 401 carries `unauthenticated`, verbatim.
+		expect(response.json()).toEqual({ error: "unauthenticated" });
+	});
+
+	test("a created token → 200", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const token = await mintToken(opened, "tester");
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "tester",
+			admin: true,
+			method: "token",
+		});
+	});
+
+	test("an unknown token → 401", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: "Bearer sgr_bogus" },
+		});
+		expect(response.statusCode).toBe(401);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// login / logout / whoami
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/auth/login", () => {
+	test("valid token → 200 + sigrun_session cookie (HttpOnly, SameSite=Strict); cookie auths whoami", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const token = await mintToken(opened, "tester");
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login",
+			payload: { token },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({ user: "tester" });
+		const cookie = response.headers["set-cookie"];
+		expect(cookie).toBeDefined();
+		const cookieLine = Array.isArray(cookie) ? cookie[0] : cookie;
+		expect(cookieLine).toContain("sigrun_session=");
+		expect(cookieLine).toContain("HttpOnly");
+		expect(cookieLine).toContain("SameSite=Strict");
+
+		const whoami = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		expect(whoami.statusCode).toBe(200);
+		expect(whoami.json()).toMatchObject({ user: "tester", method: "token" });
+	});
+
+	test("POST /v1/auth/logout → 204 + Max-Age=0 cookie", async () => {
+		const { app } = await bootServer({ env: { SIGRUN_AUTH: "token" } });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+		});
+		expect(response.statusCode).toBe(204);
+		const cookie = response.headers["set-cookie"];
+		const cookieLine = Array.isArray(cookie) ? cookie[0] : cookie;
+		expect(cookieLine).toContain("sigrun_session=");
+		expect(cookieLine).toContain("Max-Age=0");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// login limiter
+// ---------------------------------------------------------------------------
+
+describe("login limiter", () => {
+	test("10 bad logins from one IP, the 11th → 429; another IP not limited", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		// Fake timers engage AFTER boot — pi-durable's harness waits on
+		// real timers internally during open, and a pre-boot freeze never
+		// lets it settle.
+		// Fake only the timer functions — faking Date would freeze the
+		// harness's activity clock and wedge shutdown against pi-durable's
+		// in-flight join (the provider-scheduler suite's pattern).
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+		const attempt = async (ip: string) => {
+			const pending = app.inject({
+				method: "POST",
+				url: "/v1/auth/login",
+				remoteAddress: ip,
+				payload: { token: "sgr_wrong" },
+			});
+			// A failed login delays 1 000 ms — let the request reach the
+			// handler (the tick-0 advance), then ride the clock through
+			// its wait.
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(1_100);
+			return await pending;
+		};
+		for (let i = 0; i < 10; i += 1) {
+			const response = await attempt("192.0.2.9");
+			expect(response.statusCode).toBe(401);
+		}
+		// The 11th is refused BEFORE the wait.
+		const eleventh = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login",
+			remoteAddress: "192.0.2.9",
+			payload: { token: "sgr_wrong" },
+		});
+		expect(eleventh.statusCode).toBe(429);
+		// A different IP is its own bucket.
+		const elsewhere = await attempt("198.51.100.2");
+		expect(elsewhere.statusCode).toBe(401);
+		} finally {
+			vi.useRealTimers();
+		}
+	}, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// proxy method
+// ---------------------------------------------------------------------------
+
+const PROXY_ENV = {
+	SIGRUN_AUTH: "proxy",
+	SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+};
+const PROXY_FILE = { auth: { adminGroups: ["admins"] } };
+
+describe("proxy method", () => {
+	test("trusted peer + Remote-User/Remote-Groups → whoami alice, admin via groups, directory record NOT admin", async () => {
+		const { app, opened } = await bootServer({
+			env: PROXY_ENV,
+			file: PROXY_FILE,
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: {
+				"remote-user": "alice",
+				"remote-groups": "users,admins",
+			},
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "alice",
+			admin: true,
+			method: "proxy",
+		});
+		// Auto-provisioned with admin:false — the group admin grant is
+		// request-scoped, never persisted.
+		expect(opened.identity.users.get("alice")).toMatchObject({
+			user: "alice",
+			admin: false,
+			source: "proxy",
+		});
+	});
+
+	test("untrusted peer → 401", async () => {
+		const { app } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "203.0.113.7",
+			headers: { "remote-user": "alice" },
+		});
+		expect(response.statusCode).toBe(401);
+	});
+
+	test("v4-mapped v6 peer address authenticates", async () => {
+		const { app } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "::ffff:10.42.3.4",
+			headers: { "remote-user": "alice" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("alice");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// proxy secret header
+// ---------------------------------------------------------------------------
+
+describe("proxy secret header", () => {
+	const SECRET_ENV = {
+		...PROXY_ENV,
+		SIGRUN_PROXY_SECRET: "s3cret",
+	};
+	const SECRET_FILE = {
+		auth: { ...PROXY_FILE.auth, proxy: { secretHeader: "X-Sigrun-Proxy-Secret" } },
+	};
+
+	test("without the header → 401; with it → 200", async () => {
+		const { app } = await bootServer({ env: SECRET_ENV, file: SECRET_FILE });
+		const missing = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "alice" },
+		});
+		expect(missing.statusCode).toBe(401);
+		const present = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "alice", "x-sigrun-proxy-secret": "s3cret" },
+		});
+		expect(present.statusCode).toBe(200);
+	});
+
+	test("a route handler never sees the secret header", async () => {
+		const { app } = await bootServer({ env: SECRET_ENV, file: SECRET_FILE });
+		let observed: unknown = "unset";
+		app.addHook("preHandler", async (request) => {
+			observed = request.headers["x-sigrun-proxy-secret"];
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "alice", "x-sigrun-proxy-secret": "s3cret" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(observed).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// autoProvision
+// ---------------------------------------------------------------------------
+
+describe("proxy autoProvision", () => {
+	test("autoProvision:false + an unknown user → 403 user_not_provisioned", async () => {
+		const { app } = await bootServer({
+			env: PROXY_ENV,
+			file: { auth: { ...PROXY_FILE.auth, proxy: { autoProvision: false } } },
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "mallory" },
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toMatchObject({ error: "user_not_provisioned" });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// bearer identity wins over the X-Sigrun-User hint
+// ---------------------------------------------------------------------------
+
+describe("verified identity wins over the header hint", () => {
+	test("X-Sigrun-User: bob + alice's token → whoami alice", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		await opened.identity.users.add({
+			user: "alice",
+			admin: false,
+			source: "cli",
+		});
+		const token = await mintToken(opened, "alice");
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${token}`, "x-sigrun-user": "bob" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("alice");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Host + Origin checks
+// ---------------------------------------------------------------------------
+
+describe("Host check", () => {
+	test("loopback bind: Host evil.example.invalid → 421", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "none" },
+			listenHost: "127.0.0.1",
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { host: "evil.example.invalid" },
+		});
+		expect(response.statusCode).toBe(421);
+	});
+
+	test("loopback bind: Host localhost:3000 → 200", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "none" },
+			listenHost: "127.0.0.1",
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { host: "localhost:3000" },
+		});
+		expect(response.statusCode).toBe(200);
+	});
+});
+
+describe("Origin check", () => {
+	test("POST /v1/conversations with Origin evil → 403 origin_mismatch; no Origin → 201", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "none" },
+			listenHost: "127.0.0.1",
+		});
+		const mismatched = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { origin: "https://evil.example.invalid" },
+		});
+		expect(mismatched.statusCode).toBe(403);
+		expect(mismatched.json()).toMatchObject({ error: "origin_mismatch" });
+		const absent = await app.inject({ method: "POST", url: "/v1/conversations" });
+		expect(absent.statusCode).toBe(201);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// unclaimed gate + env service token
+// ---------------------------------------------------------------------------
+
+describe("unclaimed gate + service token", () => {
+	test("no bearer → 403 setup_required (never 401 — the pipeline order)", async () => {
+		const { app } = await bootServer({
+			claimed: false,
+			env: { SIGRUN_API_TOKEN: "sgr_test_env" },
+			listenHost: "0.0.0.0",
+		});
+		const response = await app.inject({ method: "GET", url: "/v1/meta" });
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toMatchObject({ error: "setup_required" });
+	});
+
+	test("the env service-token bearer → 200 service principal, skips the gate", async () => {
+		const { app } = await bootServer({
+			claimed: false,
+			env: { SIGRUN_API_TOKEN: "sgr_test_env" },
+			listenHost: "0.0.0.0",
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: "Bearer sgr_test_env" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "sigrun",
+			service: true,
+			method: "token",
+		});
+	});
+
+	test("GET / and /healthz answer without credentials on a claimed token server", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token", SIGRUN_WEBUI: "false" },
+		});
+		const root = await app.inject({ method: "GET", url: "/" });
+		// No webui bundle in a bare checkout: not a 401/403 — the pipeline
+		// answered (a mounted bundle would serve 200).
+		expect(root.statusCode).not.toBe(401);
+		expect(root.statusCode).not.toBe(403);
+		const healthz = await app.inject({ method: "GET", url: "/healthz" });
+		expect(healthz.statusCode).toBe(200);
+	});
+});

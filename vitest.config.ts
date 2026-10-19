@@ -11,5 +11,8 @@ export default defineConfig({
 		// scripts/docker-vendor-exts.sh for the image build) — never a test
 		// source; its vendored tests mirror the real ones and their deps differ.
 		exclude: [...defaultExclude, "webui/**", "tui/**", ".worktrees/**", ".docker-ext/**"],
+		// The suite-wide env pin (test/setup.ts): the unclaimed-boot setup-code
+		// write lands in a tmp cache root, never the developer's ~/.cache/sigrun.
+		setupFiles: ["./test/setup.ts"],
 	},
 });

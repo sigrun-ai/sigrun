@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "vitest";
 import {
+	ApiError,
 	createClient,
 	type ConversationList,
 	type ConversationMeta,
@@ -47,6 +48,7 @@ const META: MetaResponse = {
 	schemaVersion: "s-0",
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },
+	auth: { methods: [], claimed: true },
 	capabilities: { backup: false, channels: ["webui"] },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [] },
@@ -67,7 +69,7 @@ describe("createClient", () => {
 	test("listConversations GETs /v1/conversations", async () => {
 		const body: ConversationList = {
 			conversations: [
-				{ id: 1, root: true, entryCount: 0, archived: false, pinned: false },
+				{ id: 1, root: true, entryCount: 0, archived: false, pinned: false, access: "write" },
 			],
 		};
 		const { calls, fetchImpl } = stubFetch(body);
@@ -96,11 +98,120 @@ describe("createClient", () => {
 		expect(calls[0]?.input).toBe("https://sigrun.example/v1/meta");
 	});
 
-	test("a non-2xx response rejects with status and path, never a silent empty state", async () => {
+	test("a non-2xx response rejects with an ApiError carrying status + error (never a silent empty state)", async () => {
 		const { fetchImpl } = stubFetch({ error: "nope" }, { status: 503 });
 		const client = createClient({ fetch: fetchImpl });
-		await expect(client.getMeta()).rejects.toThrow("503");
-		await expect(client.getMeta()).rejects.toThrow("/v1/meta");
+		const caught = await client.getMeta().then(
+			() => undefined,
+			(cause: unknown) => cause,
+		);
+		expect(caught).toBeInstanceOf(ApiError);
+		const error = caught as ApiError;
+		expect(error.status).toBe(503);
+		expect(error.error).toBe("nope");
+		// The message keeps the fail-loud spelling (status + path).
+		expect(error.message).toContain("503");
+		expect(error.message).toContain("/v1/meta");
+	});
+
+	describe("the auth surface (W1 Task 8)", () => {
+		test("getOnboarding GETs /v1/onboarding and parses the state", async () => {
+			const body = {
+				state: "unclaimed",
+				methods: ["token"],
+				codeRequired: true,
+			};
+			const { calls, fetchImpl } = stubFetch(body);
+			const client = createClient({ fetch: fetchImpl });
+			const state = await client.getOnboarding();
+			expect(state).toEqual(body);
+			expect(calls[0]).toEqual({
+				input: "/v1/onboarding",
+				method: "GET",
+				accept: "application/json",
+			});
+		});
+
+		test("claim POSTs the claim body verbatim (code + identity + issueToken)", async () => {
+			const { calls, fetchImpl } = stubFetch({
+				user: { user: "alice", admin: true, createdAt: 1, source: "cli" },
+			});
+			const client = createClient({ fetch: fetchImpl });
+			const response = await client.claim({
+				code: "ABCD-EFGH",
+				user: "alice",
+				issueToken: true,
+				tokenName: "webui",
+			});
+			expect(response.user.user).toBe("alice");
+			expect(calls[0]).toEqual({
+				input: "/v1/onboarding/claim",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({
+					code: "ABCD-EFGH",
+					user: "alice",
+					issueToken: true,
+					tokenName: "webui",
+				}),
+			});
+		});
+
+		test("login POSTs {token} and parses {user}", async () => {
+			const { calls, fetchImpl } = stubFetch({ user: "alice" });
+			const client = createClient({ fetch: fetchImpl });
+			const who = await client.login("sig-token");
+			expect(who).toEqual({ user: "alice" });
+			expect(calls[0]).toEqual({
+				input: "/v1/auth/login",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({ token: "sig-token" }),
+			});
+		});
+
+		test("logout POSTs /v1/auth/logout and resolves void on the 204 (no body parse)", async () => {
+			const { calls, fetchImpl } = stubFetch(undefined, { status: 204 });
+			const client = createClient({ fetch: fetchImpl });
+			await expect(client.logout()).resolves.toBeUndefined();
+			expect(calls[0]).toEqual({
+				input: "/v1/auth/logout",
+				method: "POST",
+				accept: "application/json",
+				body: JSON.stringify({}),
+			});
+		});
+
+		test("whoami GETs /v1/auth/whoami and parses the principal", async () => {
+			const body = {
+				user: "alice",
+				admin: true,
+				service: false,
+				method: "token",
+			};
+			const { calls, fetchImpl } = stubFetch(body);
+			const client = createClient({ fetch: fetchImpl });
+			const identity = await client.whoami();
+			expect(identity).toEqual(body);
+			expect(calls[0]).toEqual({
+				input: "/v1/auth/whoami",
+				method: "GET",
+				accept: "application/json",
+			});
+		});
+
+		test("patchConversationMeta carries the sharing patch (scope shapes + null clear)", async () => {
+			const { calls, fetchImpl } = stubFetch({});
+			const client = createClient({ fetch: fetchImpl });
+			await client.patchConversationMeta(5, {
+				sharing: { scope: "household", level: "write" },
+			});
+			expect(calls[0]?.body).toBe(
+				JSON.stringify({ sharing: { scope: "household", level: "write" } }),
+			);
+			await client.patchConversationMeta(5, { sharing: null });
+			expect(calls[1]?.body).toBe(JSON.stringify({ sharing: null }));
+		});
 	});
 
 	test("submit POSTs the §5 submission body (input parts + requestId + whenBusy) and parses the settled record", async () => {

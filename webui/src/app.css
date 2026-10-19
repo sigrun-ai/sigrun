@@ -221,6 +221,22 @@ body {
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
 }
 
+/* The rail's identity chip (W1 Task 8): the signed-in user under the
+   token method — vertical text would crowd the 52px rail, so the name
+   clips horizontally with the full title on hover. */
+
+.rail-user {
+	max-width: 44px;
+	flex: none;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 0.68rem;
+	color: var(--muted);
+	text-align: center;
+	margin: 6px 0 2px;
+}
+
 /* ── sessions sidebar (the mockup's 264px column; B3's grouped rows) ─── */
 
 .session-list {
@@ -2592,4 +2608,222 @@ body {
 .ambient-ledger-detail {
 	color: var(--muted);
 	font-size: 0.75rem;
+}
+
+/* ── auth screens (W1 Task 8, spec §5.4/§5.8) ────────────────────────── */
+
+.auth-screen {
+	height: 100%;
+	display: grid;
+	place-items: center;
+	padding: 1rem;
+	overflow: auto;
+}
+
+.auth-card {
+	width: min(24rem, 100%);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	padding: 1.5rem 1.5rem 1.25rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.9rem;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.auth-card h1 {
+	margin: 0;
+	font-size: 1.15rem;
+	font-family: var(--serif);
+}
+
+.auth-message {
+	margin: 0;
+	color: var(--muted);
+	font-size: 0.85rem;
+}
+
+.auth-identity {
+	margin: 0;
+	font-family: var(--mono);
+	font-size: 0.85rem;
+	color: var(--text);
+	word-break: break-all;
+}
+
+.auth-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	font-size: 0.8rem;
+	color: var(--muted);
+}
+
+.auth-field input {
+	font: inherit;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.5rem 0.65rem;
+}
+
+.auth-field input:focus-visible {
+	outline: 1px solid var(--accent);
+	border-color: var(--accent);
+}
+
+.auth-optional {
+	color: var(--faint);
+	font-size: 0.72rem;
+}
+
+.auth-submit {
+	font: inherit;
+	color: var(--text);
+	background: var(--accent-bg);
+	border: 1px solid var(--accent);
+	border-radius: 8px;
+	padding: 0.5rem 0.9rem;
+	cursor: pointer;
+}
+
+.auth-submit:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.auth-error {
+	margin: 0;
+	color: var(--danger);
+	font-size: 0.8rem;
+	word-break: break-word;
+}
+
+/* ── the share editor overlay (W1 Task 8, spec §5.9) ─────────────────── */
+
+.share-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 60;
+	background: rgba(0, 0, 0, 0.45);
+	display: grid;
+	place-items: center;
+	padding: 1rem;
+}
+
+.share-menu {
+	width: min(22rem, 100%);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	padding: 1rem 1.25rem 1.1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.8rem;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.share-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+
+.share-head h2 {
+	margin: 0;
+	font-size: 1rem;
+	font-family: var(--serif);
+}
+
+.share-close {
+	font: inherit;
+	font-size: 0.75rem;
+	color: var(--muted);
+	background: transparent;
+	border: none;
+	cursor: pointer;
+	padding: 0;
+}
+
+.share-close:hover {
+	color: var(--text);
+}
+
+.share-scopes {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+
+.share-scope {
+	font: inherit;
+	text-align: left;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.45rem 0.65rem;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	gap: 0.1rem;
+}
+
+.share-scope[data-selected] {
+	border-color: var(--accent);
+	background: var(--accent-bg);
+}
+
+.share-scope-hint {
+	font-size: 0.72rem;
+	color: var(--muted);
+}
+
+.share-level {
+	display: flex;
+	gap: 0.4rem;
+}
+
+.share-level-btn {
+	flex: 1;
+	font: inherit;
+	font-size: 0.8rem;
+	color: var(--muted);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.35rem 0.5rem;
+	cursor: pointer;
+}
+
+.share-level-btn[data-selected] {
+	color: var(--text);
+	border-color: var(--accent);
+	background: var(--accent-bg);
+}
+
+.share-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+	font-size: 0.8rem;
+	color: var(--muted);
+}
+
+.share-field input {
+	font: inherit;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.45rem 0.6rem;
+}
+
+.share-warning {
+	margin: 0;
+	color: var(--warn);
+	font-size: 0.8rem;
 }
