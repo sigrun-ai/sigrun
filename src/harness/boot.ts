@@ -72,24 +72,20 @@ import {
 const IDLE_SWEEP_MS = 1_000;
 
 /**
- * The prompt-section keys the core surfaces own (system-prompt Task 3).
- * The registry itself permits duplicate section keys across extensions
- * (last-writer-wins at render), so a loaded extension could silently
- * replace a core surface — boot asserts ownership instead (below).
+ * The prompt-section keys the core surfaces own live in
+ * `./reserved-sections.ts` (spec §6.5 R11): the loader reads them for the
+ * load-time quarantine — an extension declaring one fails its LOAD,
+ * never this boot — and this module re-exports the constant for existing
+ * importers.
  */
-export const RESERVED_CORE_SECTION_KEYS = [
-	"identity",
-	"persona",
-	"workspace-instructions",
-	"skills",
-	"tool-guidance",
-	"execution-guidance",
-] as const;
+export { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
 
 /**
- * Reserved key → the one core extension that may own it. Anything else
- * owning a reserved key fails boot loud (the walk after the guidance
- * install below).
+ * Reserved key → the one core extension that may own it. The loader's
+ * quarantine already rejects any loaded extension declaring a reserved
+ * key, so the post-install walk below (which reads THIS map) is a
+ * CORE-ONLY assertion — it can fire only on a core bug (a core extension
+ * replaced by or mis-registered under another name).
  */
 export const RESERVED_CORE_SECTION_OWNERS: Readonly<Record<string, string>> = {
 	identity: "sigrun.context-files",
@@ -553,13 +549,14 @@ export async function openHarness(
 	// and disappear with the matched model as trailing patch rows instead
 	// of re-emitting the whole prompt on a mid-conversation model swap.
 	registry.install(modelGuidanceExtension);
-	// The reserved-core-section assertion (Task 3), walked AFTER
-	// `loadExtensions` and the guidance install: any non-core extension
-	// owning a reserved key — including one that last-writer-wins REPLACED
-	// a core section, which `sections.set` makes the snapshot owner — fails
-	// boot loud, naming the extension and the key. Prompt-section shape is
-	// core-owned surface (spec §3); a silent takeover is not a valid
-	// configuration.
+	// The reserved-core-section assertion (Task 3; §6.5 R11 narrows it to a
+	// CORE-ONLY guard), walked AFTER `loadExtensions` and the guidance
+	// install: the loader already quarantines any loaded extension that
+	// DECLARES a reserved key, so a mismatch here means a core extension
+	// was replaced by or registered under the wrong name — a core bug,
+	// failing boot loud naming the extension and the key. Prompt-section
+	// shape is core-owned surface (spec §3); a silent takeover is not a
+	// valid configuration.
 	for (const entry of registry.snapshot().sections()) {
 		const expectedOwner = RESERVED_CORE_SECTION_OWNERS[entry.section.key];
 		if (expectedOwner !== undefined && entry.extension.name !== expectedOwner) {
