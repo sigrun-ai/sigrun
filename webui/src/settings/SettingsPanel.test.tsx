@@ -162,6 +162,7 @@ describe("SettingsPanel", () => {
 				defaultTools: ["read", "bash"],
 				perModelThinking: { "faux/m": "high" },
 				toolRoster: ["read", "bash", "edit"],
+				effective: {},
 			},
 		});
 		const renderer = await renderPanel(client);
@@ -234,7 +235,7 @@ describe("SettingsPanel", () => {
 
 	test("re-selecting (server default) PATCHes null to clear the key", async () => {
 		const { calls, client } = makeHarness({
-			settings: { steeringMode: "all", toolRoster: [] },
+			settings: { steeringMode: "all", toolRoster: [], effective: {} },
 		});
 		const renderer = await renderPanel(client);
 		await act(async () => {
@@ -294,7 +295,7 @@ describe("SettingsPanel", () => {
 			"codemode_eval",
 		];
 		const { calls, client } = makeHarness({
-			settings: { toolRoster: roster },
+			settings: { toolRoster: roster, effective: {} },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Tools");
@@ -340,7 +341,7 @@ describe("SettingsPanel", () => {
 
 	test("all tools checked clears the filter (PATCH null) when one was set", async () => {
 		const { calls, client } = makeHarness({
-			settings: { defaultTools: ["read"], toolRoster: ["read", "bash"] },
+			settings: { defaultTools: ["read"], toolRoster: ["read", "bash"], effective: {} },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Tools");
@@ -387,7 +388,7 @@ describe("SettingsPanel", () => {
 
 	test("an empty textarea clears perModelThinking when one was set", async () => {
 		const { calls, client } = makeHarness({
-			settings: { perModelThinking: { "faux/m": "high" }, toolRoster: [] },
+			settings: { perModelThinking: { "faux/m": "high" }, toolRoster: [], effective: {} },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Advanced");

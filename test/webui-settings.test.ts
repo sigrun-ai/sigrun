@@ -25,7 +25,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { loadConfig, resolvedServerSection } from "../src/config.js";
+import { envServerSection, loadConfig } from "../src/config.js";
 import { SettingsStore, settingsPath } from "../src/harness/settings.js";
 import type { SettingsFile } from "../src/harness/settings.js";
 
@@ -184,18 +184,19 @@ describe("the bundle selector precedence", () => {
 	});
 });
 
-describe("the bootstrap omission", () => {
-	test("a defaulted first boot writes neither webui key (pinned here)", async () => {
-		// A fully-defaulted config: enabled true, no selector. The
-		// bootstrap projection omits BOTH `webui` and the legacy
-		// `webuiBundle` — a mirrored default would read as an explicit
+describe("the bootstrap omission (re-pointed at envServerSection, ruling 5)", () => {
+	test("a defaulted first boot writes no webui key (pinned here)", async () => {
+		// A fully-defaulted env: enabled true, no selector. The env-only
+		// projection omits BOTH `webui` and the legacy `webuiBundle` — under
+		// ruling 5 it omits EVERYTHING (no env var set a server key at all);
+		// in particular a mirrored default would read as an explicit
 		// selection on the next boot (re-arming the cwd-relative default
 		// and making absent-default → API-only unreachable).
-		const defaulted = loadConfig({ ...MODEL_ENV });
-		const section = resolvedServerSection(defaulted);
+		const section = envServerSection({ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" });
 		expect(section.webui).toBeUndefined();
 		expect(section.webuiBundle).toBeUndefined();
-		// End to end: the persisted first-boot file carries neither key.
+		// End to end: the persisted first-boot file carries NO server keys —
+		// an empty section is omitted entirely (ruling 5).
 		const { store, dir } = freshStore();
 		store.bootstrap(section, {
 			defaultModel: "openai/gpt-4o",
@@ -203,7 +204,7 @@ describe("the bootstrap omission", () => {
 		const persisted = JSON.parse(
 			readFileSync(settingsPath(dir), "utf8"),
 		) as SettingsFile;
-		expect(persisted.server?.webui).toBeUndefined();
+		expect(persisted.server).toBeUndefined();
 		expect(persisted.server?.webuiBundle).toBeUndefined();
 		// The file re-resolves to the same defaults (round-trip stable).
 		expect(loadConfig({ ...MODEL_ENV }, persisted).webui).toEqual({
@@ -211,15 +212,11 @@ describe("the bootstrap omission", () => {
 		});
 
 		// A CONFIGURED boot records the new shape only — never the legacy
-		// key — and omits the defaulted half of the section.
-		const gated = resolvedServerSection(
-			loadConfig({ ...MODEL_ENV, SIGRUN_WEBUI: "false" }),
-		);
-		expect(gated.webui).toEqual({ enabled: false });
-		const selected = resolvedServerSection(
-			loadConfig({ ...MODEL_ENV, SIGRUN_WEBUI_BUNDLE: "/opt/sigrun-ui" }),
-		);
-		expect(selected.webui).toEqual({ enabled: true, bundle: "/opt/sigrun-ui" });
+		// key — and only the env-set half of the section.
+		const gated = envServerSection({ SIGRUN_WEBUI: "false" });
+		expect(gated).toEqual({ webui: { enabled: false } });
+		const selected = envServerSection({ SIGRUN_WEBUI_BUNDLE: "/opt/sigrun-ui" });
+		expect(selected).toEqual({ webui: { bundle: "/opt/sigrun-ui" } });
 		// And the recorded section re-resolves identically without env.
 		const reResolved = loadConfig(
 			{ ...MODEL_ENV },

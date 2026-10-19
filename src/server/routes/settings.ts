@@ -16,7 +16,7 @@ export function registerSettingsRoutes(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
-	const { opened } = ctx;
+	const { opened, config, env } = ctx;
 
 	// PATCH semantics: the harness picks a change up on the next resolution
 	// (steeringMode on the next submission's admission, because
@@ -24,7 +24,7 @@ export function registerSettingsRoutes(
 	// the repo's PATCH conventions: 400 `invalid_field` naming the key
 	// (unknown key, wrong type), 400 `invalid_body` for a non-object.
 	app.get("/v1/settings", async (): Promise<SettingsResponse> => {
-		return settingsResponse(opened);
+		return settingsResponse(opened, config, env);
 	});
 
 	app.patch("/v1/settings", async (request, reply): Promise<SettingsResponse> => {
@@ -39,7 +39,7 @@ export function registerSettingsRoutes(
 		}
 		try {
 			opened.settings.update(body);
-			return settingsResponse(opened);
+			return settingsResponse(opened, config, env);
 		} catch (error) {
 			if (error instanceof SettingsValidationError) {
 				return await reply

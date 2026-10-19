@@ -100,13 +100,16 @@ export type QueueModeWire = "all" | "one-at-a-time";
 /**
  * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
  * the key. The server validates per key (unknown key / wrong type → 400
- * `invalid_field`). `toolRoster` is deliberately OMITTED — it is
- * server-computed, not a settable key; sending it would 400 (`is not a
- * settable field`), and the type-level Omit makes that unrepresentable
- * here.
+ * `invalid_field`). `toolRoster` and `effective` are deliberately
+ * OMITTED — both are server-computed per request, not settable keys;
+ * sending either would 400 (`is not a settable field`), and the
+ * type-level Omit makes that unrepresentable here.
  */
 export type SettingsPatchWire = {
-	readonly [K in keyof Omit<SettingsWire, "toolRoster">]?: SettingsWire[K] | null;
+	readonly [K in keyof Omit<
+		SettingsWire,
+		"toolRoster" | "effective"
+	>]?: SettingsWire[K] | null;
 };
 
 /**

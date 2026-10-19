@@ -232,7 +232,20 @@ describe("SettingsStore", () => {
 		);
 	});
 
-	test("bootstrap writes the resolved extensions list and defaultModel (the file records reality)", async () => {
+	test("bootstrap omits an empty server section (ruling 5: nothing env-set → a {} file)", async () => {
+		const { store, dir } = freshStore();
+		// A first boot with no env-set server values bootstraps an EMPTY
+		// section; the persisted file carries no `server` key at all (a
+		// `server: {}` placeholder would round-trip as an empty object —
+		// harmless, but the omission keeps the file exactly the env intent).
+		store.bootstrap({});
+		expect(JSON.parse(readFileSync(settingsPath(dir), "utf8"))).toEqual({});
+		// Still idempotent: a second bootstrap leaves the {} file alone.
+		store.bootstrap({ port: 9999 });
+		expect(JSON.parse(readFileSync(settingsPath(dir), "utf8"))).toEqual({});
+	});
+
+	test("bootstrap writes the resolved extensions list and defaultModel (ruling 5: only env-supplied values)", async () => {
 		const { store, dir } = freshStore();
 		const section = {
 			port: 3000,

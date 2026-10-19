@@ -32,7 +32,7 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { SigrunConfig } from "../config.js";
+import type { Env, SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import type { ServerContext } from "./context.js";
 import { storeAgentChange } from "./helpers.js";
@@ -70,11 +70,17 @@ import {
  * (build-and-webui Task 6 threads it here from boot; the serve-time
  * resolution (Task 5) selects a NAME selector against it — an empty
  * registry is the no-extension deploy).
+ * @param env the boot env (`process.env` at the deploy entry) — the
+ * `/v1/settings` `effective` block classifies env-sourced server keys
+ * against it (spec §6.6). Defaults to `{}` for hand-built test servers
+ * (every key then reports file/default, which is accurate for an
+ * env-less boot).
  */
 export async function createServer(
 	opened: OpenedHarness,
 	config: SigrunConfig,
 	contributedBundles: readonly ContributedWebuiBundle[] = [],
+	env: Env = {},
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
 	// The one body-limit error shape (spec §6.2): Fastify's
@@ -129,9 +135,10 @@ export async function createServer(
 	});
 	const rootId = root.id;
 	// The shared context every route module receives: the opened harness,
-	// the config, the root id (computed once, never per request), and the
-	// resolved webui bundle.
-	const ctx: ServerContext = { opened, config, rootId, webuiBundle };
+	// the config, the root id (computed once, never per request), the
+	// resolved webui bundle, and the boot env (the settings routes'
+	// `effective` block reads it).
+	const ctx: ServerContext = { opened, config, rootId, webuiBundle, env };
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
