@@ -313,6 +313,6 @@ export function registerAuthPipeline(
 					.send({ error: resolved.error ?? "forbidden" });
 			}
 		}
-		return await reply.code(401).send({ error: "authentication_required" });
+		return await reply.code(401).send({ error: "unauthenticated" });
 	});
 }

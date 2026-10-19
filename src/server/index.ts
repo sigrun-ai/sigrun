@@ -65,10 +65,14 @@ import {
  * @param config parsed sigrun config; the listen entry consumes
  * `config.port`, the meta route derives `health.backup` from
  * `config.backup` presence, and `capabilities.backup` from the same
- * presence (the §5 backup affordance gate). Identity is the naive seam —
- * `X-Sigrun-User` resolves per request and stamps `SessionMeta.owner` at
- * create/fork/import; VERIFICATION (actual auth) arrives with a later
- * slice.
+ * presence (the §5 backup affordance gate). Identity is the W1 request
+ * pipeline (`auth/pipeline.ts`, registered FIRST below): Host/Origin
+ * checks, the public surface, the env service token, the setup gate,
+ * then the configured methods — the resolved principal stamps
+ * `SessionMeta.owner` at create/fork/import.
+ * @param options.listenHost the host the server will bind (default
+ * `"0.0.0.0"`); the pipeline's Host check and the default method list
+ * (`effectiveMethods`) both derive from it.
  * @param contributedBundles the extension-contributed webui-bundle registry
  * (build-and-webui Task 6 threads it here from boot; the serve-time
  * resolution (Task 5) selects a NAME selector against it — an empty

@@ -111,6 +111,9 @@ describe("token method", () => {
 		});
 		const response = await app.inject({ method: "GET", url: "/v1/meta" });
 		expect(response.statusCode).toBe(401);
+		// The wire code is pinned (spec §5.2 / the plan's Global
+		// Constraints): 401 carries `unauthenticated`, verbatim.
+		expect(response.json()).toEqual({ error: "unauthenticated" });
 	});
 
 	test("a created token → 200", async () => {
