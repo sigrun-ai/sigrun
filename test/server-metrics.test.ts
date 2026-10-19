@@ -30,6 +30,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
@@ -69,10 +70,14 @@ async function bootServer(): Promise<TestServer> {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
+		// W1 posture: naive identity over a claimed directory — the scrape
+		// requires a principal (metricsPublic defaults false).
+		SIGRUN_AUTH: "none",
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		identity: await seededIdentity(dir),
 	});
 	const app = await createServer(opened, config);
 	cleanups.push(async () => {
