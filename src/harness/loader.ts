@@ -92,6 +92,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DeclaredKinds } from "./seam-host.js";
 import { readPackageName, resolveExtensionEntry } from "./packages.js";
+import { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
@@ -303,6 +304,15 @@ export interface ResolvedExtension {
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
 }
+
+/**
+ * The reserved-key membership probe (spec §6.5 R11): a `Set` because the
+ * `as const` tuple's `includes` narrows its parameter to the literal
+ * union, which a section's `string` key can never satisfy.
+ */
+const RESERVED_SECTION_KEY_SET: ReadonlySet<string> = new Set(
+	RESERVED_CORE_SECTION_KEYS,
+);
 
 /** A structural check for "looks like a pi-durable Extension". */
 function isExtension(value: unknown): value is Extension {
@@ -985,6 +995,25 @@ const display = label ?? entry;
 					resolved.extension === undefined
 						? undefined
 						: { ...resolved.extension, name: slug };
+				// Reserved core section keys (spec §6.5 R11): a section under one
+				// of them is a LOAD-TIME quarantine, checked HERE — after the slug
+				// is final and BEFORE anything is collected. The registry would
+				// otherwise accept the duplicate (sections are last-writer-wins
+				// across extensions), silently replacing a core surface; the
+				// existing catch quarantines with this message instead, leaving
+				// nothing installed (no registry entry), no post-resolution host
+				// re-key (boot's seamHosts never files the entry), and no
+				// provider/health/submit/runSettled/lifecycle/worker/webui
+				// binding collected. Boot's post-install walk over
+				// RESERVED_CORE_SECTION_OWNERS stays as a core-only assertion.
+				const reservedSectionKey = extension?.sections?.find((section) =>
+					RESERVED_SECTION_KEY_SET.has(section.key),
+				)?.key;
+				if (reservedSectionKey !== undefined) {
+					throw new Error(
+						`extension "${slug}" declares reserved core section "${reservedSectionKey}"`,
+					);
+				}
 				// The post-resolution call re-keys the captured host instance in
 				// place with the slug + declared kinds (boot's
 				// hostContextFactory; see src/harness/boot.ts) — the instance is

@@ -412,14 +412,16 @@ core-owned surface:
 
 The registry itself permits duplicate section keys across extensions
 (last writer wins at render), so a loaded extension could silently
-replace a core surface. Boot asserts ownership instead: any extension
-declaring a reserved key fails boot loud —
+replace a core surface. The loader quarantines instead: any extension
+declaring a reserved key fails its LOAD — boot continues without it,
+`GET /v1/meta`'s `extensions[].status` reports the quarantine — with
+the message
 
 ```
 extension "<name>" declares reserved core section "<key>"
 ```
 
-— naming your extension and the key. Sections under any non-reserved
+naming your extension and the key. Sections under any non-reserved
 key are yours, freely; there is no registration and no schema.
 
 Two of the reserved keys carry a convention worth knowing even if you
