@@ -121,6 +121,35 @@ export interface ServerSettings {
 		readonly refreshIntervalMinutes?: number;
 	};
 	/**
+	 * The auth surface (core-hardening W1, spec §5.2/§5.3): the
+	 * authenticator method list, the forward-auth (proxy) config, the
+	 * admin group mapping, and the Host/Origin allowlists. Mirrors the
+	 * `SIGRUN_AUTH`/`SIGRUN_AUTH_TRUSTED_PROXIES` env knobs (the env
+	 * service token `SIGRUN_API_TOKEN` and the shared secret
+	 * `SIGRUN_PROXY_SECRET` are ENV-ONLY credentials — validation rejects
+	 * a `secret` key here, key material never lives in this file).
+	 * `methods` ABSENT means derive from the listen host (`[]` on
+	 * loopback, `["token"]` otherwise) — which is why a defaulted auth
+	 * section is omitted from the bootstrap projection entirely (an
+	 * explicit `methods: []` would read as intent on the next boot).
+	 */
+	readonly auth?: {
+		/** `SIGRUN_AUTH` — csv of `token`/`proxy`; absent = derive from the listen host. */
+		readonly methods?: readonly ("token" | "proxy")[];
+		readonly proxy?: { readonly trustedProxies?: readonly string[]; readonly secretHeader?: string;
+			readonly userHeader?: string; readonly groupsHeader?: string; readonly nameHeader?: string;
+			readonly emailHeader?: string; readonly autoProvision?: boolean };
+		readonly adminGroups?: readonly string[];
+		readonly allowedHosts?: readonly string[];
+		readonly allowedOrigins?: readonly string[];
+	};
+	/**
+	 * `/metrics` exposure (core-hardening W1): `SIGRUN_METRICS_PUBLIC`
+	 * over this key, default `false` (a principal is required). Omitted
+	 * from the bootstrap projection when defaulted (the webui pattern).
+	 */
+	readonly metrics?: { readonly public?: boolean };
+	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
 	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`).
 	 */
