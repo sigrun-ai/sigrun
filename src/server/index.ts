@@ -32,10 +32,13 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { SigrunConfig } from "../config.js";
+import { effectiveMethods, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { registerAuthPipeline } from "./auth/pipeline.js";
+import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
 import { storeAgentChange } from "./helpers.js";
+import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
@@ -75,21 +78,30 @@ export async function createServer(
 	opened: OpenedHarness,
 	config: SigrunConfig,
 	contributedBundles: readonly ContributedWebuiBundle[] = [],
+	options?: { listenHost?: string },
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
-	// The identity seam (spec §5 / TUI plan): resolve the caller on EVERY
-	// request — the trimmed `X-Sigrun-User` header, `undefined` when absent
-	// or empty. Naive mode: the hook VERIFIES nothing (trusted-network
-	// posture; no auth flow in v1) — an absent header is not an error, the
-	// request proceeds exactly as before. Registered first, before any
-	// route, so every handler sees the resolved identity; it only reads a
-	// header, so content-type parsing (the JSONL parser below) and any later
-	// deploy-auth onRequest hook keep their semantics.
-	app.addHook("onRequest", async (request) => {
-		const header = request.headers["x-sigrun-user"];
-		const value = Array.isArray(header) ? header[0] : header;
-		request.sigrunUser = value?.trim() || undefined;
+	const listenHost = options?.listenHost ?? "0.0.0.0";
+	const methods = effectiveMethods(config.auth, listenHost);
+	// The auth posture warnings (W1 Task 3, the plan's Global
+	// Constraints): once per server, never per request.
+	if (methods.length === 0 && !isLoopbackHost(listenHost)) {
+		console.warn(
+			`sigrun: authentication is DISABLED (methods: []) on a non-loopback bind (${listenHost}) — any reachable client is trusted`,
+		);
+	}
+	const broadTrusted = config.auth.proxy.trustedProxies.some((cidr) => {
+		const slash = cidr.indexOf("/");
+		if (slash === -1) return false;
+		const prefix = Number(cidr.slice(slash + 1));
+		const v6 = cidr.includes(":");
+		return v6 ? prefix <= 32 : prefix <= 8;
 	});
+	if (methods.includes("proxy") && broadTrusted) {
+		console.warn(
+			"sigrun: auth.proxy.trustedProxies includes a very broad range — a forward-auth method trusts every peer it matches",
+		);
+	}
 	// The webui channel bundle (Task 20, spec §4.1/§6; serve-time resolution
 	// is build-and-webui Task 5): resolve enabled-gate → contributed NAME →
 	// PATH → default against `config.webui` and the contributed registry,
@@ -113,10 +125,13 @@ export async function createServer(
 		agent: storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
-	// The shared context every route module receives: the opened harness,
-	// the config, the root id (computed once, never per request), and the
-	// resolved webui bundle.
-	const ctx: ServerContext = { opened, config, rootId, webuiBundle };
+	const ctx: ServerContext = { opened, config, rootId, webuiBundle, listenHost, methods };
+	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
+	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
+	// env service token, the setup gate, and method resolution stamp
+	// `request.principal` before any route runs.
+	registerAuthPipeline(app, ctx);
+	registerAuthRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);

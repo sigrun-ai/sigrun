@@ -512,3 +512,18 @@ export interface AuthCheckResponse {
 // this module is the single contract entry point for every §5 wire shape.
 export type { CommandsResponse, SlashCommand } from "./commands.js";
 export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
+
+/**
+ * The `GET /v1/auth/whoami` payload (core hardening W1 Task 3, spec
+ * §5.8): the resolved principal, verbatim. `user` is absent only under
+ * the naive empty-method path with no `X-Sigrun-User` header;
+ * `service` marks the env service token.
+ */
+export interface WhoamiResponse {
+	readonly user?: string;
+	readonly name?: string;
+	readonly email?: string;
+	readonly admin: boolean;
+	readonly service: boolean;
+	readonly method: "none" | "token" | "proxy";
+}
