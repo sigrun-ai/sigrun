@@ -2,7 +2,8 @@
  * The §5 conversation stream wrapper against a stubbed EventSource (Task 21).
  * No real server: the injectable `EventSourceFactory` seam is the point — the
  * spike (spikes/webui-transport) already proved the real-server path. Covers:
- * URL shaping, snapshot/view parsing, malformed-frame survival, and the
+ * URL shaping, snapshot/delta folding (delta frames fold via the shared
+ * `applyDelta`; a later snapshot REPLACES), malformed-frame survival, and the
  * reconnect-with-backoff loop (reconnect = re-attach, fresh snapshot).
  */
 
@@ -64,7 +65,7 @@ describe("openConversationStream", () => {
 		handle.close();
 	});
 
-	test("snapshot and view frames parse and dispatch to their handlers", () => {
+	test("the snapshot dispatches; delta frames fold into full revisions (onView)", () => {
 		const { sources, factory } = stubFactory();
 		const snapshots: ConversationViewWire[] = [];
 		const views: ConversationViewWire[] = [];
@@ -75,12 +76,75 @@ describe("openConversationStream", () => {
 		const source = sources[0]!;
 		source.emit("open");
 		source.emit("snapshot", JSON.stringify(view(7, "snap")));
-		source.emit("view", JSON.stringify(view(7, "live")));
+		// A delta frame: append a second entry + set a doc. The consumer
+		// receives the FOLDED full revision.
+		source.emit("delta", JSON.stringify({
+			entries: {
+				append: [
+					{
+						id: 2,
+						conversationId: 7,
+						kind: "pi.assistant",
+						model: [
+							{ role: "assistant", content: [{ type: "text", text: "live" }] },
+						],
+					},
+				],
+			},
+			docs: { set: { "pi.live": { run: {} } } },
+			steer: { busy: true, queued: 0 },
+		}));
 		expect(snapshots.map((v) => v.entries[0]?.model?.[0]?.content)).toEqual([
 			[{ type: "text", text: "snap" }],
 		]);
 		expect(views).toHaveLength(1);
 		expect(views[0]?.conversation.id).toBe(7);
+		expect(views[0]?.entries.map((e) => e.id)).toEqual([1, 2]);
+		expect(views[0]?.docs).toEqual({ "pi.live": { run: {} } });
+		expect(views[0]?.steer).toEqual({ busy: true, queued: 0 });
+		handle.close();
+	});
+
+	test("a later snapshot REPLACES the folded view (reconnect subsumes)", () => {
+		const { sources, factory } = stubFactory();
+		const views: ConversationViewWire[] = [];
+		const handle = openConversationStream(7, {
+			onView: (v) => views.push(v),
+		}, "", { createEventSource: factory });
+		const source = sources[0]!;
+		source.emit("open");
+		source.emit("snapshot", JSON.stringify(view(7, "snap")));
+		source.emit("delta", JSON.stringify({ steer: { busy: true, queued: 1 } }));
+		expect(views.at(-1)?.steer).toEqual({ busy: true, queued: 1 });
+		// A fresh snapshot (the reconnect/fallback shape): the folded state
+		// is REPLACED wholesale — no delta carries over.
+		source.emit("snapshot", JSON.stringify(view(7, "fresh")));
+		source.emit("delta", JSON.stringify({ docs: { set: { "pi.x": { n: 1 } } } }));
+		const folded = views.at(-1)!;
+		expect(folded.steer).toEqual({ busy: false, queued: 0 }); // replaced
+		expect(folded.entries[0]?.model?.[0]?.content).toEqual([
+			{ type: "text", text: "fresh" },
+		]);
+		expect(folded.docs).toEqual({ "pi.x": { n: 1 } });
+		handle.close();
+	});
+
+	test("a delta before any snapshot is malformed; the stream survives", () => {
+		const { sources, factory } = stubFactory();
+		const errors: string[] = [];
+		const views: ConversationViewWire[] = [];
+		const handle = openConversationStream(7, {
+			onView: (v) => views.push(v),
+			onError: (message) => errors.push(message),
+		}, "", { createEventSource: factory });
+		const source = sources[0]!;
+		source.emit("delta", JSON.stringify({ steer: { busy: true, queued: 0 } }));
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toMatch(/before any snapshot/i);
+		expect(views).toHaveLength(0);
+		source.emit("snapshot", JSON.stringify(view(7, "recovered")));
+		source.emit("delta", JSON.stringify({ steer: { busy: true, queued: 0 } }));
+		expect(views.at(-1)?.steer).toEqual({ busy: true, queued: 0 });
 		handle.close();
 	});
 
@@ -110,9 +174,10 @@ describe("openConversationStream", () => {
 			onView: (v) => views.push(v),
 			onError: (message) => errors.push(message),
 		}, "", { createEventSource: factory });
-		sources[0]!.emit("view", "42");
-		sources[0]!.emit("view", "[1,2]");
-		sources[0]!.emit("view", "null");
+		sources[0]!.emit("snapshot", JSON.stringify(view(7, "base")));
+		sources[0]!.emit("delta", "42");
+		sources[0]!.emit("delta", "[1,2]");
+		sources[0]!.emit("delta", "null");
 		expect(errors).toHaveLength(3);
 		expect(views).toHaveLength(0);
 		handle.close();
