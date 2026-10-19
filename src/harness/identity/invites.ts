@@ -67,12 +67,14 @@ export class InviteStore {
 	/**
 	 * Issue one invite: draws a fresh code, stores only its digest plus
 	 * the grant and expiry (`expiresInMs` defaults to 7 days), and
-	 * returns `{id, code}` — the code is shown once, by the caller.
+	 * returns `{id, code, expiresAt}` — the code is shown once, by the
+	 * caller; the expiry rides along so the issuing route serves the
+	 * wire's `expiresAt` from the stored row, not a recomputed clock.
 	 */
 	create(opts: {
 		admin: boolean;
 		expiresInMs?: number;
-	}): Promise<{ id: string; code: string }> {
+	}): Promise<{ id: string; code: string; expiresAt: number }> {
 		return this.mutations.run(async () => {
 			const code = generateCode();
 			const record: InviteRecord = {
@@ -83,7 +85,7 @@ export class InviteStore {
 					Date.now() + (opts.expiresInMs ?? DEFAULT_INVITE_EXPIRY_MS),
 			};
 			await writeJson(this.path, [...this.list(), record]);
-			return { id: record.id, code };
+			return { id: record.id, code, expiresAt: record.expiresAt };
 		});
 	}
 

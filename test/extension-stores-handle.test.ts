@@ -35,6 +35,7 @@ import {
 	sharedExtensionStores,
 	type StoreRoots,
 } from "../src/harness/stores.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** Fixture: arity-1 factory capturing its host (the ""-phase object). */
 const FIXTURE_SPECIFIER = pathToFileURL(
@@ -87,6 +88,11 @@ async function withCapturedHost(
 		const opened = await openHarness(loadConfig(env), {
 			env,
 			extensionSpecifiers: [FIXTURE_SPECIFIER],
+			// Claimed identity (seeded OUTSIDE the asserted roots): an
+			// unclaimed boot's setup-code write materializes the cache root
+			// (W1 Task 4 — the one sanctioned boot-time cache consumer), which
+			// would defeat the first-access assertions below.
+			identity: await seededIdentity(join(base, "seed")),
 		});
 		booted = { opened, roots: resolveStoreRoots(env), base };
 		const host = (globalThis as Captured).__fixtureStoresHost;

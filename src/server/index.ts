@@ -38,16 +38,19 @@ import { registerAuthPipeline } from "./auth/pipeline.js";
 import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
 import { storeAgentChange } from "./helpers.js";
+import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMetaRoutes } from "./routes/meta.js";
+import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
+import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
 	serveWebuiBundle,
@@ -136,6 +139,8 @@ export async function createServer(
 	// `request.principal` before any route runs.
 	registerAuthPipeline(app, ctx);
 	registerAuthRoutes(app, ctx);
+	registerOnboardingRoutes(app, ctx);
+	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
@@ -145,6 +150,10 @@ export async function createServer(
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
+	// The core ownership participant (W1 Task 4): registered FIRST so
+	// conversations transfer before any extension's `userDeleted`
+	// observer runs (W4's jobs participant registers behind it).
+	registerCoreOwnershipParticipant(ctx);
 
 	return app;
 }
