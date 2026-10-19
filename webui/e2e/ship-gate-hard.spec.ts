@@ -81,15 +81,13 @@ test.describe("item 3: steer", () => {
 		// onChange fires — a Playwright fill() sets the DOM value without
 		// updating the component's draft state.
 		//
-		// NOTE on the assertion: the submissions route awaits settlement
-		// server-side, so the first submit's send() stays open for the whole
-		// busy turn — the draft is cleared only after settlement, so the
-		// composer's textarea still holds "first" when the steer types (the
-		// steered text is appended). The honest observable that the steer
-		// LANDED is the queued indicator (the steered input sits in the inbox
-		// with mode "steer" waiting for the running turn to consume it — the
-		// T26a reviewer's note). A settled pi.user entry for the steered text
-		// only appears once the slow turn finishes — beyond the test window.
+		// NOTE on the assertion: the submissions route returns 202 AT ADMISSION
+		// (§7.1), so the first submit's draft is already cleared by the time
+		// the steer types. The honest observable that the steer LANDED is the
+		// queued indicator (the steered input sits in the inbox with mode
+		// "steer" waiting for the running turn to consume it — the T26a
+		// reviewer's note). A settled pi.user entry for the steered text only
+		// appears once the slow turn finishes — beyond the test window.
 		await page.locator(".composer-input").pressSequentially("steer this");
 		await page.locator(".composer-send").click();
 		// The steer landed: the queued indicator is present (the steered input
