@@ -2,10 +2,10 @@
 	"name": "fixture-pkg",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Test-fixture extension package installed via npm file: by the packages-dir tests.",
+	"description": "Test-fixture extension package installed via npm file: by the packages-dir tests. Host runtime modules (pi-durable/pi-ai) are DEV-dependencies only (the provider-plugins posture): npm never installs a tarball's devDependencies, so no install shape bundles a second pi-durable for the loader's host-module guard to trip over — the packages dir's host-module links provide them.",
 	"main": "index.js",
 	"exports": "./index.js",
-	"dependencies": {
+	"devDependencies": {
 		"@earendil-works/pi-durable": "*",
 		"@earendil-works/pi-ai": "*"
 	}

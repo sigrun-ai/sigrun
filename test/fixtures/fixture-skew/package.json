@@ -1,0 +1,8 @@
+{
+	"name": "fixture-skew",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension package with a NESTED fake pi-durable (0.0.1) under its own node_modules — the discriminator for the loader's host-module version guard (spec §6.4 R6).",
+	"type": "module",
+	"main": "index.js"
+}

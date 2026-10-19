@@ -50,6 +50,15 @@ const ZEROARG_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-zeroarg", "index.js"),
 ).href;
 
+/**
+ * The skew fixture (core-hardening Task 5): bundles its own nested
+ * `node_modules/@earendil-works/pi-durable` at 0.0.1 while the host runs
+ * 1.2.0 — the discriminator for the loader's host-module version guard.
+ */
+const SKEW_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-skew", "index.js"),
+).href;
+
 /** The collision fixture package: registers `fixture_marker` under a second extension. */
 const COLLISION_SPECIFIER = pathToFileURL(
 	join(
@@ -125,6 +134,65 @@ test("a valid fixture extension installs through the loader", async () => {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
 	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("an extension resolving a different pi-durable is quarantined; the healthy one still loads", async () => {
+	// Spec §6.4 R6: an extension silently running a DIFFERENT pi-durable
+	// than the host is the classic trap (its Extension/tool objects flow
+	// into the host registry under structural typing — identity never
+	// matches). The guard anchors version resolution at the extension
+	// ENTRY's directory, so the fixture's nested fake 0.0.1 counts even
+	// though the entry itself imports nothing. Quarantine fires right
+	// after the import: no registry install, no seam host keyed, and the
+	// next specifier in the list still loads.
+	//
+	// The fixture ALSO nests a minor-skew pi-ai (1.99.0, same major):
+	// pi-ai's exports map exposes neither `./package.json` nor any
+	// require-compatible condition, so resolving it needs the guard's
+	// node_modules-walk fallback — the WARN line below is the regression
+	// signal that pi-ai skew stays VISIBLE (a silent skip would be the
+	// exact R6 blind spot re-opened).
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-skew-"));
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [SKEW_SPECIFIER, FIXTURE_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: SKEW_SPECIFIER,
+					status: "quarantined",
+					error: expect.stringMatching(
+						/host module skew: @earendil-works\/pi-durable resolves to 0\.0\.1 from .*fixture-skew, host runs \d+\.\d+\.\d+/,
+					),
+				},
+				{ name: "sigrun-fixture-ext", status: "ok" },
+			]);
+			// Nothing installed and no seam host filed for the skew fixture.
+			expect(
+				opened.registry.snapshot().extension("sigrun-fixture-skew"),
+			).toBeUndefined();
+			expect(opened.seamHosts.has("sigrun-fixture-skew")).toBe(false);
+			// The healthy fixture in the same list loaded fine.
+			expect(
+				opened.registry.snapshot().extension("sigrun-fixture-ext"),
+			).toBeDefined();
+			// The minor-skew pi-ai WARNED (seen by the fallback), not quarantined.
+			const warnings = warn.mock.calls.map((call) => String(call[0]));
+			expect(
+					warnings.find((text) =>
+						text.includes("@earendil-works/pi-ai resolves to 1.99.0"),
+					),
+			).toBeDefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		warn.mockRestore();
 		await rm(dir, { recursive: true, force: true });
 	}
 });
