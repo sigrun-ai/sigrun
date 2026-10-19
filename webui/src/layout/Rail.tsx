@@ -3,6 +3,11 @@
  * active **Chats** entry, a spacer, the health dot, and the Settings
  * button (the settings dialog itself stays App-owned; B7 restyles it).
  *
+ * W1 Task 8: the resolved identity renders here — under the token
+ * method the user's name sits above the sign-out action (a session
+ * cookie is a thing you can END); the naive/proxy methods carry no
+ * browser-side credential to drop, so they show neither.
+ *
  * The health dot collapses the old TopBar's badge row into one quiet
  * indicator: `data-health="ok"` only when every extension is `ok`,
  * `health.memory`/`health.providers` are `ok`, and `health.backup` is not
@@ -11,8 +16,8 @@
  * `backup: <status>`.
  */
 
-import type { MetaResponse } from "../api";
-import { BrandMark, ChatsIcon, SettingsIcon } from "./icons";
+import type { MetaResponse, WhoamiResponse } from "../api";
+import { BrandMark, ChatsIcon, LogoutIcon, SettingsIcon } from "./icons";
 
 /** ok ⟺ every extension ok, memory/providers ok, backup not degraded. */
 function healthOf(meta: MetaResponse): "ok" | "degraded" {
@@ -41,8 +46,14 @@ export function Rail(props: {
 	readonly meta: MetaResponse;
 	/** Opens the settings dialog (App owns the dialog). */
 	readonly onOpenSettings: () => void;
+	/** The resolved principal (W1 Task 8): renders the user + sign-out
+	 *  under the token method. */
+	readonly identity?: WhoamiResponse;
+	/** Ends the browser session (App wires logout + the gate flip). */
+	readonly onLogout?: () => void;
 }) {
-	const { meta, onOpenSettings } = props;
+	const { meta, onOpenSettings, identity, onLogout } = props;
+	const tokenSession = identity?.method === "token";
 	return (
 		<nav className="rail" aria-label="sections">
 			<span className="rail-brand" title="sigrun">
@@ -63,6 +74,31 @@ export function Rail(props: {
 				data-health={healthOf(meta)}
 				title={healthTitle(meta)}
 			/>
+			{tokenSession && (
+				<span
+					className="rail-user"
+					data-rail-user={identity.user ?? ""}
+					title={
+						identity.user === undefined
+							? "signed in"
+							: `signed in as ${identity.user}`
+					}
+				>
+					{identity.user ?? "—"}
+				</span>
+			)}
+			{tokenSession && onLogout !== undefined && (
+				<button
+					type="button"
+					className="rail-btn"
+					data-rail-section="logout"
+					title="Sign out"
+					aria-label="sign out"
+					onClick={onLogout}
+				>
+					<LogoutIcon />
+				</button>
+			)}
 			<button
 				type="button"
 				className="rail-btn"

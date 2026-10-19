@@ -383,6 +383,31 @@ describe("Composer", () => {
 		).toEqual([]);
 	});
 
+	test("a read-access conversation renders the read-only composer (spec §5.9): disabled textarea, placeholder, no submit", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderAsync(
+			<Composer
+				client={client}
+				conversationId={1}
+				view={makeView()}
+				readOnly
+			/>,
+		);
+		const textarea = composerTextarea(renderer);
+		expect(textarea.props.disabled).toBe(true);
+		expect(textarea.props.placeholder).toBe("Read-only (shared with you)");
+		// Typing is impossible through a disabled textarea, but the send
+		// path is guarded too: nothing POSTs even with text in the draft.
+		const send = sendButton(renderer);
+		expect(send.props["aria-disabled"]).toBe(true);
+		await act(async () => {
+			await send.props.onClick();
+		});
+		expect(
+			calls.filter((c) => c.input.endsWith("/submissions")),
+		).toEqual([]);
+	});
+
 	describe("toolbar: live model + thinking pickers (B6)", () => {
 		test("picking a model from the popover POSTs configure and the pill follows", async () => {
 			const { calls, client } = makeHarness();

@@ -49,7 +49,11 @@ import type {
 	CommandsResponse as CommandsResponseWire,
 	SlashCommand as CommandWire,
 	SessionMeta as ConversationMeta,
+	OnboardingState,
+	ClaimResponse,
+	WhoamiResponse,
 } from "@sigrun/shared/views";
+import type { Sharing } from "@sigrun/shared/access";
 
 export type {
 	MetaResponse,
@@ -75,7 +79,14 @@ export type {
 	CommandsResponse as CommandsResponseWire,
 	SlashCommand as CommandWire,
 	SessionMeta as ConversationMeta,
+	OnboardingState,
+	ClaimResponse,
+	WhoamiResponse,
 } from "@sigrun/shared/views";
+
+/** A conversation's sharing grant (spec §5.9) — the shared leaf's shape,
+ *  re-exported so the share UI and the patch type agree with the server. */
+export type { Sharing } from "@sigrun/shared/access";
 
 // The interaction/ambient seam sub-shapes — the seam records ARE the wire
 // (never projected), so their constituent primitives are the contract too.
@@ -96,6 +107,49 @@ export type {
 
 /** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
 export type QueueModeWire = "all" | "one-at-a-time";
+
+/**
+ * A non-2xx §5 response, fail-loud: carries the HTTP `status` and the
+ * body's `error` code (when it spoke one) so callers can branch on both —
+ * the auth gate keys on `status === 401`, the forms surface `error`.
+ * Today's plain `Error` rejections lose the status (W1 Task 8's brief).
+ */
+export class ApiError extends Error {
+	readonly status: number;
+	readonly error?: string;
+
+	constructor(init: {
+		readonly method: string;
+		readonly path: string;
+		readonly status: number;
+		readonly error?: string;
+	}) {
+		super(
+			`sigrun api: ${init.method} ${init.path} failed with status ${init.status}` +
+				(init.error === undefined ? "" : ` (${init.error})`),
+		);
+		this.name = "ApiError";
+		this.status = init.status;
+		this.error = init.error;
+	}
+}
+
+/** The `POST /v1/onboarding/claim` body (spec §5.8): every field optional —
+ *  the route picks by trust posture (proxy vouch, loopback bind, code). */
+export interface ClaimInput {
+	readonly code?: string;
+	readonly user?: string;
+	readonly name?: string;
+	readonly email?: string;
+	readonly issueToken?: boolean;
+	readonly tokenName?: string;
+}
+
+/** The `POST /v1/auth/login` body's success reply: `{user}` (the cookie is
+ *  the credential — set by the response, never the body). */
+export interface LoginResponse {
+	readonly user: string;
+}
 
 /**
  * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
@@ -125,6 +179,9 @@ export type ConversationMetaPatch = {
 	readonly source?: "user" | "cron" | null;
 	readonly owner?: string | null;
 	readonly name?: string | null;
+	/** The §5.9 sharing grant (owner-only server-side); `null` clears it
+	 *  (back to private). */
+	readonly sharing?: Sharing | null;
 };
 
 /* -------------------------------------------------------------------------
@@ -361,6 +418,20 @@ export interface SigrunClient {
 	 * clears a key. Resolves to the new effective settings.
 	 */
 	patchSettings(patch: SettingsPatchWire): Promise<SettingsWire>;
+	/** The onboarding state (`GET /v1/onboarding` — public; the boot probe). */
+	getOnboarding(): Promise<OnboardingState>;
+	/**
+	 * Claim the server (`POST /v1/onboarding/claim`). With
+	 * `issueToken: true` the server ALSO sets the `sigrun_session` cookie
+	 * — the browser keeps the cookie and discards the returned token.
+	 */
+	claim(body: ClaimInput): Promise<ClaimResponse>;
+	/** Token login (`POST /v1/auth/login` — the cookie lands in the response). */
+	login(token: string): Promise<LoginResponse>;
+	/** Log out (`POST /v1/auth/logout` — expires the cookie). */
+	logout(): Promise<void>;
+	/** The resolved principal (`GET /v1/auth/whoami`). */
+	whoami(): Promise<WhoamiResponse>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -404,6 +475,34 @@ function bytesToBase64(bytes: Uint8Array): string {
 	return btoa(binary);
 }
 
+/**
+ * Build the fail-loud rejection for a non-2xx response: an `ApiError`
+ * carrying the status plus the body's `error` code when it spoke one (a
+ * body that isn't JSON, or lacks a string `error`, still rejects — the
+ * status alone is the contract).
+ */
+async function failure(
+	method: string,
+	path: string,
+	response: Awaited<ReturnType<FetchLike>>,
+): Promise<ApiError> {
+	let error: string | undefined;
+	try {
+		const body: unknown = await response.json();
+		if (
+			typeof body === "object" &&
+			body !== null &&
+			"error" in body &&
+			typeof (body as { error: unknown }).error === "string"
+		) {
+			error = (body as { error: string }).error;
+		}
+	} catch {
+		// Not JSON (or empty): the status-only ApiError.
+	}
+	return new ApiError({ method, path, status: response.status, ...(error === undefined ? {} : { error }) });
+}
+
 /** Create a §5 client. See {@link SigrunClientOptions} for the seams. */
 export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 	const baseUrl = options.baseUrl ?? "";
@@ -418,9 +517,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			headers: { accept: "application/json" },
 		});
 		if (!response.ok) {
-			throw new Error(
-				`sigrun api: GET ${path} failed with status ${response.status}`,
-			);
+			throw await failure("GET", path, response);
 		}
 		return (await response.json()) as T;
 	}
@@ -440,9 +537,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			body: JSON.stringify(body),
 		});
 		if (!response.ok) {
-			throw new Error(
-				`sigrun api: ${method} ${path} failed with status ${response.status}`,
-			);
+			throw await failure(method, path, response);
 		}
 		return response.json();
 	}
@@ -454,9 +549,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			headers: { accept: "application/x-ndjson" },
 		});
 		if (!response.ok) {
-			throw new Error(
-				`sigrun api: GET ${path} failed with status ${response.status}`,
-			);
+			throw await failure("GET", path, response);
 		}
 		return await response.text();
 	}
@@ -475,11 +568,24 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			body,
 		});
 		if (!response.ok) {
-			throw new Error(
-				`sigrun api: POST ${path} failed with status ${response.status}`,
-			);
+			throw await failure("POST", path, response);
 		}
 		return response.json();
+	}
+
+	/** POST expecting NO body (204); fail-loud on non-2xx. */
+	async function sendVoid(method: "POST", path: string, body: unknown): Promise<void> {
+		const response = await fetchImpl(`${baseUrl}${path}`, {
+			method,
+			headers: {
+				accept: "application/json",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+		if (!response.ok) {
+			throw await failure(method, path, response);
+		}
 	}
 
 	return {
@@ -553,5 +659,12 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		getSettings: () => get<SettingsWire>("/v1/settings"),
 		patchSettings: (patch) =>
 			send("PATCH", "/v1/settings", patch) as Promise<SettingsWire>,
+		getOnboarding: () => get<OnboardingState>("/v1/onboarding"),
+		claim: (body) =>
+			send("POST", "/v1/onboarding/claim", body) as Promise<ClaimResponse>,
+		login: (token) =>
+			send("POST", "/v1/auth/login", { token }) as Promise<LoginResponse>,
+		logout: () => sendVoid("POST", "/v1/auth/logout", {}),
+		whoami: () => get<WhoamiResponse>("/v1/auth/whoami"),
 	};
 }
