@@ -315,6 +315,32 @@ describe("runBackup (path target, live harness)", () => {
 		expect(files).toHaveLength(1);
 	});
 
+	test("marker-write failure → warn, backup still exits 0 (fix round 1: the marker is never a gate)", async () => {
+		const { dbPath } = await bootHarness();
+		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(backupDir, { recursive: true, force: true }));
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		// Break the marker path exactly: a regular FILE where `backup/` must
+		// go makes the marker's mkdir fail (recursive mkdir does not clobber
+		// files) — the read-only-dir / full-disk class, hermetically.
+		await writeFile(join(stateDir, "backup"), "not a directory");
+		const result = await runScript(dbPath, {
+			SIGRUN_BACKUP_PATH: backupDir,
+			SIGRUN_STATE_DIR: stateDir,
+		});
+		// The backup SUCCEEDED: exit 0, the db file exists.
+		expect(result.code).toBe(0);
+		const files = await import("node:fs/promises").then((fs) =>
+			fs.readdir(backupDir),
+		);
+		expect(files).toHaveLength(1);
+		expect(files[0]).toMatch(/^sigrun-\d{4}-\d{2}-\d{2}T.+\.db$/);
+		// The failure is a WARNING (same posture as the unset leg), loud
+		// enough to find in the CronJob log.
+		expect(result.stderr).toMatch(/marker/i);
+	});
+
 	test("retention prunes files older than 30 days, keeps fresh ones", async () => {
 		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
 		cleanups.push(() => rm(backupDir, { recursive: true, force: true }));
