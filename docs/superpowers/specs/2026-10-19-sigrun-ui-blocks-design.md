@@ -96,9 +96,10 @@ dashboards, extension-to-extension actions, i18n of extension strings.
 18. **This spec supersedes core-hardening §5.7's "every `server.*` key is
     restart-required".** It lands after core-hardening; §13.1 is the rule
     from then on. The core-hardening docs are not edited.
-19. **Forks copy everything as of the fork point, then diverge.** A fork
-    gets the chat block state, its revisions and its pending change
-    records exactly as they were at the forked entry; after that, edits in
+19. **Forks copy block state as it is when the fork is created, then
+    diverge.** A fork gets every chat block's current data, revision and
+    change records, whichever entry it forks from; a block never shows
+    older data in the fork than it showed before. After the fork, edits in
     either conversation never reach the other (§8.2).
 20. **Interaction answers are form values.** `{values: {<field>: value}}`
     replaces `{ids, values, text}` (§9.1).
@@ -679,16 +680,16 @@ needs an immediate reply."
   - `notedThrough` is the highest `seq` already sent to the agent in a
     change note (§8.3). Records at or below it are trimmed when more than
     50 have accumulated.
-- **Forks (ruling 19).** The family is declared `history: "rewindable",
-  fork: "asOf"`. pi-durable copies `asOf` documents as they were at the
-  forked entry's commit (`session/forks.js`), so a fork gets the state,
-  `rev`, change records and `notedThrough` exactly as they were at the
-  fork point. After that, the parent's and the child's copies are
-  separate documents and diverge. Forking at the latest entry gives the
-  current state.
-  - The cost is retained history for as-of reads. The family's
-    `checkpointWhen` takes a full snapshot every 100 ops, so one edit is
-    one small op, not a copy of the data.
+- **Forks (ruling 19).** The family is declared `history: "latest",
+  fork: "current"`. pi-durable copies `current` documents as they are
+  when the fork is created (`session/forks.js`), so the fork gets each
+  block's current data, `rev`, change records and `notedThrough`, even
+  when it forks from an earlier entry. After that, the parent's and the
+  child's copies are separate documents and diverge.
+  - Only blocks whose entries are in the fork's history are visible
+    there. Copied state for a block created after the fork point is
+    never shown, because its entry isn't in the fork.
+  - No history is kept, so there is no as-of storage cost.
 - **Chat surfaces use the surface machinery of §7.** Their address is
   `(conversationId, entryId)` instead of `(slug, id, key)`:
   - `GET /v1/conversations/:id/blocks/:entryId` returns `{tree, data,
@@ -1233,9 +1234,10 @@ section, a dashboard).
     triggers it; a crash between the note write and `notedThrough`
     advancing re-sends nothing new (`requestId` dedup);
   - changes by two users name both authors;
-  - a fork at an earlier entry has that entry's state, `rev` and change
-    records; edits after the fork in either conversation don't reach the
-    other;
+  - a fork from an earlier entry shows each block's data as it was when
+    the fork was created (not as first rendered, and not as at the
+    forked entry); edits after the fork in either conversation don't
+    reach the other;
   - `since` fetches across a fork return full data for the child (its
     ops history starts at the fork);
   - `update_blocks` returns the post-update projection.
@@ -1298,7 +1300,7 @@ contract type).
 | U2 | TUI renderer for the same, keymap bindings, inline images | U0 |
 | U3 | extension surfaces: contract field, routes (reserved prefixes), per-principal access cache, watcher registry and `surface.changed`, data fetch with `since`, optimistic-move server side, actions, uploads, assets, rail and panel registration | U0 |
 | U4 | settings: `apply`, `settings.changed`, `onSettingsChanged`, `pendingRestart`, restart route, supervised detection, core sections rebuilt, extension sections | U0, U1, U2, U3 |
-| U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and the rewindable state family, chat surface routes, edits, change notes in the submit path, answers | U0, U1, U2, U3 |
+| U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and the state family, chat surface routes, edits, change notes in the submit path, answers | U0, U1, U2, U3 |
 | U6 | interactions and ambient on trees: record schemas carry trees only, `{values}` answers, channel renderers switched to trees, core seam fixtures rewritten | U1, U2 |
 | U7 | image proxy (signing, vetted-address fetching, cache, `sharp` PNG conversion), icon set, docs | U0 (U1/U2 consume the icons) |
 
@@ -1316,8 +1318,8 @@ Every claim against the code was checked before folding.
 
 - **Folded:** `access: "none"` (§6.5); per-principal access enforcement
   (§6.5, §15); the watcher registry and hashed instance keys (§7.3);
-  chat state as a rewindable `asOf` family on the surface routes, not
-  the view stream (§8.2); handler-name props (§5.5, §5.6, §6.1); DNS-
+  chat state as a document family on the surface routes, not the view
+  stream (§8.2); handler-name props (§5.5, §5.6, §6.1); DNS-
   rebinding-safe proxy fetching, expiring signatures and a persisted key
   (§11.2); tree size caps and the 192 KiB data-URL cap (§4.5, §11.1);
   `{values}` answers (§9.1, ruling 20); the change-note write in the
