@@ -192,6 +192,25 @@ export type ExtensionHarnessShutdownHandler = (
 ) => void | Promise<void>;
 
 /**
+ * The `userDeleted` payload (core hardening W1 Task 4, spec §5.8 user
+ * ruling 9): which directory user left and who received their
+ * resources. Directly emitted (`EventBus.emitUserDeleted`) — never
+ * commit-derived, since the directory is not durable conversation
+ * state.
+ */
+export interface UserDeletedPayload {
+	readonly user: string;
+	readonly transferTo: string;
+}
+
+/** A loaded extension's `userDeleted` handler (the transfer counterpart of harnessShutdown). */
+export type ExtensionUserDeletedHandler = (
+	event: UserDeletedPayload,
+	api: MemoryEventApi,
+	context: Context,
+) => void | Promise<void>;
+
+/**
  * The lifecycle event names a worker's `wakeOn` may declare (memory-seam
  * Task 5). `harnessShutdown` is excluded by the loader: workers stop BEFORE
  * the shutdown handlers run (spec §3 shutdown ordering).
@@ -249,6 +268,8 @@ export interface ExtensionEventHandlers {
 	readonly conversationArchived?: ExtensionLifecycleHandler<"conversationArchived">;
 	readonly conversationIdle?: ExtensionLifecycleHandler<"conversationIdle">;
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
+	/** The user-removal transfer event (W1 Task 4); direct fan-out, not commit-derived. */
+	readonly userDeleted?: ExtensionUserDeletedHandler;
 	/** Factory-declared idle workers (memory-seam Task 5); the bus owns their timers. */
 	readonly workers?: readonly ExtensionWorker[];
 }
@@ -500,6 +521,31 @@ export class EventBus {
 			enqueued += 1;
 		}
 		return enqueued;
+	}
+
+	/**
+	 * Emit one `userDeleted` directly (core hardening W1 Task 4): the
+	 * DELETE /v1/users route's final step, AFTER the ownership transfer,
+	 * token revocation, and record removal have landed. Delivered exactly
+	 * like `harnessShutdown` — inline to every registered extension's
+	 * handler in install order, each deadline-bounded, never queued —
+	 * because the directory is not durable conversation state (there is
+	 * no commit to derive from). The api is the conversation-less shape:
+	 * `entry`/`entries` resolve empty, `document` serves any conversation.
+	 */
+	public async emitUserDeleted(
+		payload: UserDeletedPayload,
+		context: Context,
+	): Promise<void> {
+		if (this.#closed) return;
+		const api = this.#apiFor(undefined);
+		for (const [name, handlers] of this.#extensions) {
+			const handler = handlers.userDeleted;
+			if (handler === undefined) continue;
+			await this.#bounded(`extension ${name} userDeleted`, () =>
+				handler(payload, api, context),
+			);
+		}
 	}
 
 	/**

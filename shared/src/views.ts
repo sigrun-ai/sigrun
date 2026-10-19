@@ -527,3 +527,73 @@ export interface WhoamiResponse {
 	readonly service: boolean;
 	readonly method: "none" | "token" | "proxy";
 }
+
+// ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
+
+/**
+ * The `GET /v1/onboarding` payload (core hardening W1 Task 4, spec
+ * §5.8): what an unauthenticated client needs to drive the claim flow.
+ * `codeRequired` is false on a loopback bind or when the request itself
+ * carries a trusted proxy identity (either is trust enough — no code);
+ * `proxyIdentity` is present exactly then, carrying what the headers
+ * vouch for so the webui can render its confirm screen.
+ */
+export interface OnboardingState {
+	readonly state: "unclaimed" | "claimed";
+	readonly methods: readonly ("token" | "proxy")[];
+	readonly codeRequired: boolean;
+	readonly proxyIdentity?: {
+		readonly user: string;
+		readonly name?: string;
+		readonly email?: string;
+	};
+}
+
+/**
+ * One directory user on the wire (Task 4): the full record — emails are
+ * admin-visible material and the routes that serve this type are
+ * admin-gated. `createdAt` is epoch ms.
+ */
+export interface UserWire {
+	readonly user: string;
+	readonly name?: string;
+	readonly email?: string;
+	readonly admin: boolean;
+	readonly createdAt: number;
+	readonly source: "proxy" | "invite" | "cli";
+}
+
+/** The `POST /v1/onboarding/claim` payload (Task 4): the user (plus the
+ * minted token when `issueToken` was requested — shown once, never
+ * persisted). */
+export interface ClaimResponse {
+	readonly user: UserWire;
+	readonly token?: string;
+}
+
+/** The `POST /v1/users/invites` payload (Task 4): the one-time code is
+ * shown once, never stored in the clear. */
+export interface InviteResponse {
+	readonly id: string;
+	readonly code: string;
+	readonly expiresAt: number;
+}
+
+/**
+ * One API token on the wire (Task 4): the token store's record minus the
+ * `sha256` digest — digests never leave the server. Created by the
+ * claim route (`issueToken`) and `POST /v1/auth/tokens`.
+ */
+export interface TokenWire {
+	readonly id: string;
+	readonly name: string;
+	readonly user: string;
+	readonly createdAt: number;
+}
+
+/** The `POST /v1/auth/tokens` payload (Task 4): the secret once, the
+ * digest-free record alongside it. */
+export interface TokenCreateResponse {
+	readonly token: string;
+	readonly record: TokenWire;
+}

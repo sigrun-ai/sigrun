@@ -25,7 +25,11 @@ import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
-import { openIdentityStores, type IdentityStores } from "./identity/index.js";
+import {
+	openIdentityStores,
+	ensureSetupCode,
+	type IdentityStores,
+} from "./identity/index.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import {
 	createSeamHost,
@@ -445,6 +449,22 @@ export async function openHarness(
 	// I/O here (each file materializes on its first write), so this is
 	// pure construction over paths boot already owns.
 	const identity = options.identity ?? openIdentityStores(roots);
+	// The unclaimed onboarding posture (W1 Task 4, spec §5.8): every
+	// unclaimed boot (re)ensures the setup code under the pod-local cache
+	// root and logs it ONCE — the retrieval flow is `kubectl logs … | grep
+	// "setup code"` or `kubectl exec … cat <cacheDir>/setup-code` (the file
+	// is 0600 + atomic, and the cache root is never a backup section).
+	// `SIGRUN_SETUP_CODE` pins the value instead (the k8s Secret shape).
+	// Claimed boots (every identity-seeded test, every post-onboarding
+	// deploy) write nothing.
+	if (!identity.users.isClaimed()) {
+		// `identity.cacheDir`, not `roots.cacheDir`: the claim route reads
+		// `readSetupCode(identity.cacheDir)`, and an injected identity
+		// bundle (the test seam) may root elsewhere than the resolved
+		// roots — write where the reader reads.
+		const code = await ensureSetupCode(identity.cacheDir, env);
+		console.log(`sigrun setup code: ${code}`);
+	}
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the

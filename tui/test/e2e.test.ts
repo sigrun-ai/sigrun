@@ -83,6 +83,11 @@ async function bootServer(responses?: unknown[]): Promise<TestServer> {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
+		// The unclaimed-boot setup-code write (W1 Task 4) lands in the tmp
+		// dir, never the developer's real ~/.cache/sigrun (the root-suite
+		// vitest setupFiles pin lives in the repo root's config — this
+		// workspace's own runner needs its own env).
+		SIGRUN_CACHE_DIR: join(dir, "cache"),
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],

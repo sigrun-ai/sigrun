@@ -27,6 +27,7 @@ import {
 	resolveStoreRoots,
 	type StoreRoots,
 } from "../src/harness/stores.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** A fake env pinning all four roots under one synthetic tmpdir base. */
 const fakeEnv = (base: string) => ({
@@ -52,7 +53,15 @@ test("boot ensures config/data/state roots (+ settings/) from the injected env; 
 	const base = await mkdtemp(join(tmpdir(), "sigrun-stores-"));
 	const env = fakeEnv(base);
 	try {
-		const opened = await openHarness(loadConfig(env), { env });
+		// Claimed identity (seeded OUTSIDE the asserted roots): the generic
+		// rule under test is `ensureStoreRoots`' cache skip; an unclaimed
+		// boot would additionally run the W1 Task 4 setup-code write — the
+		// one sanctioned boot-time cache consumer — and materialize the
+		// root. Seeding claimed keeps this test on the generic rule.
+		const opened = await openHarness(loadConfig(env), {
+			env,
+			identity: await seededIdentity(join(base, "seed")),
+		});
 		await opened.harness.close(BACKGROUND_CONTEXT);
 
 		await expectDir(join(base, "config"));
