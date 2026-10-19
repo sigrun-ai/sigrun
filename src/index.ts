@@ -9,9 +9,11 @@
  * any boot error (exit 1 — a wedged deploy must crash, never serve a
  * broken process). The deploy-entry test asserts exactly this.
  *
- * `npm start` runs this via tsx (the repo's internal imports use `.js`
- * specifiers resolving to `.ts` sources, which stock node cannot resolve —
- * same rule as the backup CronJob's image note).
+ * `npm start` runs this via tsx — the DEV shape (the repo's internal
+ * imports use `.js` specifiers resolving to `.ts` sources, which stock
+ * node cannot resolve). Deployed entries run the BUILT form instead
+ * (plain `node dist/index.js`; the Dockerfile CMD, the chart's container
+ * command, and docker-compose all do — see CHANGELOG's packaging entry).
  */
 
 import { serve } from "./serve.js";

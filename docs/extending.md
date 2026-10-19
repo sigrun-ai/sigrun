@@ -347,8 +347,14 @@ export default function createAcmeWebui() {
 ```
 
 - **`name` is the selection key** and must match `^[a-z][a-z0-9_-]*$`
-  (lowercase first letter, then lowercase letters, digits, `-`, `_`). A
-  malformed `webuiBundles` field — not an array, a name outside the
+  (lowercase first letter, then lowercase letters, digits, `-`, `_`).
+  It is INDEPENDENT of your extension slug — any string in the grammar
+  is yours to pick — but naming it after your own slug (as the example
+  does for readability) is the most collision-prone choice under
+  last-registered-wins: a co-installed replacement extension reusing
+  that name silently shadows your bundle (a warned, recorded collision
+  — see `/v1/meta` `collisions.webui`). Prefer a distinctive name.
+  A malformed `webuiBundles` field — not an array, a name outside the
   grammar, a missing or empty `dir` — **quarantines the extension at
   load**, fail-loud: a package that thinks it contributed a bundle must
   never silently lose it.

@@ -322,5 +322,16 @@ describe("syntactic name/path discrimination", () => {
 		await expect(resolveWebuiBundle(config, [])).rejects.toThrow(
 			/\.\/relative-bundle.*has no index\.html/s,
 		);
+		// A backslash-containing selector is path-shaped TOO (the Windows
+		// flavor of the syntactic discrimination) — same PATH boot error,
+		// never a name-grammar error. (JSON.stringify escapes the backslash,
+		// so the subject renders `win\\ui`.)
+		const backslash = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_WEBUI_BUNDLE: "win\\ui",
+		});
+		await expect(resolveWebuiBundle(backslash, [])).rejects.toThrow(
+			/win\\\\ui.*has no index\.html/s,
+		);
 	});
 });

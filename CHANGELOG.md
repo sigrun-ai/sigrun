@@ -163,10 +163,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **BREAKING**: the extension-loader `.ts`-entry fallback. Extension
   sources (`git:` and path checkouts) must ship a built `dist/index.js` —
-  a `.ts` entry now quarantines at load with a clear "build the package
-  and ship its built entry (dist/index.js)" error instead of riding the
-  dev tree's tsx loader (whose behavior under plain node depends on the
-  host's type-stripping flags). npm packages were never affected.
+  a `.ts` entry no longer loads — it resolves only to quarantine at load
+  with a clear "build the package and ship its built entry
+  (dist/index.js)" error instead of riding the dev tree's tsx loader
+  (whose behavior under plain node depends on the host's
+  type-stripping flags). npm packages were never affected.
 
 ## [0.1.0] - 2026-10-13
 ### Added
