@@ -25,6 +25,7 @@ import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
+import { openIdentityStores, type IdentityStores } from "./identity/index.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
 import {
 	createSeamHost,
@@ -187,6 +188,16 @@ export interface OpenedHarness {
 	 * key material).
 	 */
 	readonly auth: AuthStore;
+	/**
+	 * The identity stores (core hardening W1 Task 2): the user
+	 * directory (`<configDir>/users.json`), the token digests
+	 * (`<configDir>/api-tokens.json`), the invite digests
+	 * (`<stateDir>/invites.json`), and the cache root the setup code
+	 * lives under — every file 0600 + atomic, mtime-reloaded per access
+	 * so the CLI's writes land live. The auth pipeline and routes
+	 * (Tasks 3-6) consume exactly this bundle.
+	 */
+	readonly identity: IdentityStores;
 	/**
 	 * The settings store (Task 8a): the file-backed store the `/v1/settings`
 	 * endpoints read and PATCH through. Booted here so a malformed settings
@@ -422,6 +433,10 @@ export async function openHarness(
 		stateDir: config.stateDir,
 	};
 	await ensureStoreRoots(roots);
+	// The identity stores (W1 Task 2) ride the same resolved roots: no
+	// I/O here (each file materializes on its first write), so this is
+	// pure construction over paths boot already owns.
+	const identity = openIdentityStores(roots);
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
@@ -797,6 +812,7 @@ export async function openHarness(
 		providerReadiness,
 		providerEnv: effectiveEnv,
 		auth: authStore,
+		identity,
 		memoryHealth,
 		memorySubmit,
 		settings: settingsStore,
