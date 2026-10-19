@@ -823,42 +823,87 @@ implements yet.
 
 ### 8.1 Model
 
-A job is a schedule plus an action, durable by construction:
+A job is a schedule plus an action, durable by construction.
 
-- **One pi-durable task per job.** Each job is a long-lived **background**
-  task of kind `sigrun.schedule` on the root conversation.
+**The job record** (ruling 13). Every job — from any source — is one
+record in `sigrun.db`: a session-scoped pi-durable document family
+`sigrun.job`, keyed by job id.
+
+- The record holds `{source, spec, owner?, sharing?, enabled, createdAt,
+  lastRun?, nextRun?, state, reason?}`. Definition and status live on
+  one record; there is no separate status document.
+- It behaves as a table:
+  - one row per job;
+  - enumeration is `storage.scanDocuments({scope: session, at:
+    "current", kind: "sigrun.job"})`;
+  - deletion retires the record;
+  - the schema is versioned through the family's `migrate()`.
+- It commits atomically with task creation and run-conversation
+  creation. That is why it is a document family rather than tables in a
+  separate database (the alternative considered and rejected, ruling 13).
+- `api` records are the source of truth for API jobs. `file` and
+  `extension` records are mirrored from their declarations by
+  reconciliation (§8.3) and are read-only through the API.
+
+**The executor.** One pi-durable task per *enabled* job.
+
+- Each is a long-lived **background** task of kind `sigrun.schedule` on
+  the root conversation.
   - `background: true` excludes it from conversation aborts and idle
     waits (verified: `TaskOptions.background`).
-  - The task loops `waiting(nextAt)` → `firing(fireAt)` → `waiting`,
-    using `runtime.sleep(until)` (a durable wait over the harness clock).
-  - Enumeration is `storage.scanTasks({kind: "sigrun.schedule"}, limit,
-    cursor, ctx)`, filtered in memory to live statuses.
-  - Deletion is `abortTask`.
+  - The task input is only `{jobId, hash}`. It reads the spec from the
+    job record at each phase.
+  - It loops `waiting(nextAt)` → `firing(fireAt)` → `waiting`, using
+    `runtime.sleep(until)` (a durable wait over the harness clock).
+- Disabling or deleting a job aborts its task (`abortTask`).
+- Terminal schedule-task records remain in pi-durable as tombstones
+  (there is no task purge). Jobs are never enumerated from tasks, so the
+  tombstones are invisible; growth is bounded by job churn.
 
-  There is no separate job store. Terminal schedule records remain as
-  tombstones; pi-durable has no task purge. That is accepted: growth is
-  bounded by job churn.
-- **Crash safety** (deepseek B3).
-  - `firing` is a two-step phase on the task's own commits.
-    1. One `runtime.commit` creates the run conversation (`tx`
-       creation, with `SessionMeta` written by `ConversationInit` in the
-       same commit) AND returns the next task state `{phase: "firing",
-       fireAt, conversationId}`. The conversation and the record of it
-       are atomic.
-    2. The task submits into `conversationId` with `requestId =
-       job:<id>:<fireAt>`, then commits `{phase: "waiting", nextAt}`.
-  - A crash before step 1's commit re-runs step 1 (nothing was created).
-  - A crash after it finds `conversationId` in state and goes straight
-    to step 2, where the requestId dedups the submission.
-  - Fixed-conversation actions skip step 1.
-  - A kill -9 during `waiting` wakes once, at or after the deadline. This
-    is the core spec's crash-battery item 7, now with a real subject.
-- **Run status.** It lives in a keyed `JobStatusDoc(root, jobId)` holding
-  `lastRun {at, outcome, conversationId?, error?}`.
-  - Settlement is observed by an event-bus `runSettled` handler for run
-    conversations carrying `meta.jobId`.
-  - The schedule task never blocks on a run, so a run that waits hours on
-    a human never stalls the next fire.
+**Crash safety** (deepseek B3).
+
+- Each fire has a fire record: a `sigrun.job.fire` document-family
+  member keyed `<jobId>:<fireAt>`, holding `{conversationId}`.
+- It is written inside the commit that creates the run conversation,
+  through `harness.createConversation({ownership, agent, init})`. The
+  `init` callback runs in the creating commit. pi-durable's raw
+  `tx.createConversation` cannot apply the run's `AgentChange` (model),
+  hence `init`. The conversation and the record of it are atomic.
+- `firing` first reads the fire record:
+  - present → reuse its `conversationId`;
+  - absent → create.
+- It then submits with `requestId = job:<id>:<fireAt>`, so a crash at any
+  point yields one conversation and one submission.
+- Fixed-conversation actions skip creation.
+- A kill -9 during `waiting` wakes once, at or after the deadline. This
+  is the core spec's crash-battery item 7, now with a real subject.
+
+**Run status.**
+
+- `lastRun {at, outcome, conversationId?, error?}` on the job record is
+  updated in three places:
+  - at fire (`running`);
+  - on skip;
+  - by an event-bus `runSettled` handler for run conversations carrying
+    `meta.jobId` (`succeeded` / `failed`).
+- The schedule task never blocks on a run, so a run that waits hours on
+  a human never stalls the next fire.
+
+### 8.1a Jobs are the only timer (ruling 12)
+
+The memory seam's idle workers lose their `every` field.
+
+- Workers keep `wakeOn` (lifecycle-event-triggered, in-process,
+  best-effort — e.g. a curator reacting to `conversationIdle`), their
+  deadline, and their `/v1/meta` status.
+- An extension that needs a timer declares a job with a `task` action
+  (§8.2).
+- A worker declaring `every` quarantines its extension with: `workers.every
+  was retired — declare a job with a task action`.
+- No published extension uses `every`, so nothing in the ecosystem
+  breaks.
+- Core's own interval loops are host machinery, not extension timers, and
+  are unaffected: the provider refresh scheduler and the 1 s idle sweep.
 
 ### 8.2 Schedules and actions
 
@@ -909,11 +954,15 @@ A job is a schedule plus an action, durable by construction:
 | `file` | settings.json `jobs[]` | `file:<name>` | no — edit the file |
 | `extension` | factory result `jobs[]` | `ext:<slug>:<name>` | no |
 
-- Boot reconciles declared jobs (file + extension) into tasks:
-  - missing → create;
-  - spec hash changed → abort + recreate;
-  - undeclared → abort.
-- `api` jobs are never touched by reconciliation.
+- Boot reconciles every source into job records and tasks:
+  - declared jobs (file + extension) upsert their records (mirrored
+    spec, `source`, read-only), and records whose declaration vanished
+    are retired;
+  - then, for every record: enabled with no live task of the same
+    `hash` → abort any stale task, then create; disabled or retired →
+    abort its task.
+- `api` records are changed only through the API. Each API write
+  reconciles that one job.
 - A declared job's `enabled` flips only at its source.
 - **Ownership and visibility.** Jobs carry `owner` + `sharing` and use
   §5.9's `accessOf`.
@@ -945,8 +994,8 @@ A job is a schedule plus an action, durable by construction:
   (Alertmanager, CI) using a token. No generic webhook endpoint exists.
 - The webui gains a read-only jobs panel with run-now. The TUI gains a
   `/jobs` command listing them.
-- The memory seam's idle workers stay as they are: in-process,
-  best-effort, no API. Jobs are the durable, user-visible scheduler.
+- The memory seam's idle workers remain the in-process, event-triggered
+  tier (`wakeOn` only, §8.1a). Jobs are the only time-based scheduler.
 
 ---
 
@@ -1197,7 +1246,9 @@ Each item lands with its failing-first test. The load-bearing ones:
   - kill -9 before it → one run conversation and no orphan;
   - cron run conversations are not auto-named;
   - run-now without `write` → 403;
-  - a deleted job is absent from `GET /v1/jobs` (tombstone filtered);
+  - a deleted job is absent from `GET /v1/jobs` (record retired);
+  - a worker declaring `every` quarantines its extension with the
+    retirement message;
   - `overlap: "skip"` records `skipped`;
   - `catchUp: "once"` fires once after downtime;
   - reconciliation creates/replaces/aborts declared jobs and leaves `api`
@@ -1219,7 +1270,7 @@ workstream (AGENTS.md verification rule).
 
 ## 11. Open questions
 
-None outstanding. Rulings 5–11 answered the draft and review questions.
+None outstanding. Rulings 5–13 answered the draft, review, and planning questions.
 
 ## 11a. Review disposition
 
@@ -1240,7 +1291,7 @@ Should-fixes folded:
 - `files/raw` cap;
 - the composer guard;
 - inbox from `InteractionsIndexDoc`;
-- tombstone filtering;
+- job records instead of task enumeration (ruling 13);
 - auto-namer cron skip;
 - run-now and command access;
 - reserved-key check in the loader;
@@ -1338,6 +1389,12 @@ optional key and costs nothing when unset.
 10. Group sharing is cut until OIDC supplies groups (§5.9).
 11. Streaming uses simplified delta frames: entry append/remove plus
     changed docs (§7.3).
+12. Jobs are the only time-based scheduler. Idle workers drop `every` and
+    keep `wakeOn` (§8.1a).
+13. Every job is one `sigrun.job` record (a pi-durable document family
+    in `sigrun.db`, definition + status together). A separate SQL store
+    was rejected because it cannot commit atomically with tasks and
+    conversations (§8.1).
 
 **My calls (check while reading):**
 
@@ -1366,8 +1423,8 @@ optional key and costs nothing when unset.
 - reserved-key quarantine instead of abort;
 - paging deferred;
 - delta frames by entry id / doc kind;
-- jobs as background pi-durable tasks on the root conversation, plus a
-  status doc;
+- jobs executed by background pi-durable tasks on the root conversation
+  (task input `{jobId, hash}`)
 - `croner` for cron;
 - prompt-job conversations not task-owned (continuable, survive job
   deletion), owned by the job owner;

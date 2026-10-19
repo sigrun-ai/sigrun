@@ -68,7 +68,7 @@ Host-bound APIs extend the existing seam host and bind lazily post-open. They ar
 **Files:**
 - Create: `src/extension.ts`, a **types-only**, self-contained module.
   - It may `import type` only from `@earendil-works/pi-durable`, `@earendil-works/pi-ai`, and `@sigrun/shared/*`.
-  - It exports `SigrunExtensionResult`, `SigrunHost`, `SigrunExtensionFactory`, and every field type: `ProviderContribution`, `WebuiBundleContribution`, `ExtensionWorker`, `JobSpec`, `ExtensionRouteContribution`, `ExtensionCommandContribution`, `NotifierContribution`, the lifecycle handler payloads, `InteractionRecord`, `AmbientRecord`, `Sharing`, `Access`, `DirectoryUserWire`.
+  - It exports `SigrunExtensionResult`, `SigrunHost`, `SigrunExtensionFactory`, and every field type: `ProviderContribution`, `WebuiBundleContribution`, `ExtensionWorker` (`wakeOn`-only, ruling 12), `JobSpec`, `ExtensionRouteContribution`, `ExtensionCommandContribution`, `NotifierContribution`, the lifecycle handler payloads, `InteractionRecord`, `AmbientRecord`, `Sharing`, `Access`, `DirectoryUserWire`.
 - Create: `tsconfig.extension.json` (extends `tsconfig.json`; `emitDeclarationOnly: true`, `declaration: true`, `rootDir: "src"`, `outDir: "dist"`, `files: ["src/extension.ts"]`).
 - Modify: `package.json`:
   - `"exports": { ".": "./dist/index.js", "./extension": { "types": "./dist/extension.d.ts" } }`;

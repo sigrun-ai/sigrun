@@ -5,29 +5,25 @@
 **Goal:** A durable core scheduler. Jobs (cron / every / at schedules; prompt or task actions) come from the API, `settings.json`, or extensions. Each job runs as one background pi-durable task, survives restarts, fires exactly once per slot, and is visible and runnable through `/v1/jobs`.
 
 **Architecture:**
-- **One task per job.** Each enabled job is one background `sigrun.schedule` task on the root conversation. It loops `waiting` (durable `runtime.sleep`) → `firing` → `waiting`.
-- **Desired state is reconciled.** The desired set is:
-  - `file` jobs (settings);
-  - `extension` jobs (factory result);
-  - `api` jobs (stored in a session doc, `ApiJobsDoc`).
+- **The job record.** Every job, from any source, is one `sigrun.job` record: a session-scoped pi-durable document family in `sigrun.db`, keyed by job id, holding definition + status (spec ruling 13).
+- **One task per enabled job.** Each is a background `sigrun.schedule` task on the root conversation. Its input is `{jobId, hash, firstAt?}`, and it reads the spec from the record. It loops `waiting` (durable `runtime.sleep`) → `firing` → `waiting`.
+- **Reconciliation** (at boot and after every API write):
+  - declared jobs (`file` settings + `extension` factory results) are upserted or retired as records;
+  - every record is matched to its task by `(jobId, hash)`.
+- **Prompt runs** are observed settling by an event-bus `runSettled` handler, which writes `lastRun` onto the record.
+- **Idle workers lose `every`** (ruling 12): jobs are the only time-based scheduler.
 
-  It is reconciled against the live tasks by `(jobId, specHash)` at boot and after every API write.
-- **Status** lives in a keyed session doc family, `JobStatusDoc`.
-- **Prompt runs** are observed settling by an event-bus `runSettled` handler.
+**Tech Stack:** TypeScript (NodeNext), `@earendil-works/pi-durable` 1.2.0 (`defineTask`, `runtime.sleep`, `runtime.commit`, `tx.createTask`, `harness.abortTask`, `defineDocFamily({scope: "session"})`, `storage.scanDocuments`), `croner` 10.x (new dependency), vitest + the `test/battery` kill -9 driver harness.
 
-**Tech Stack:** TypeScript (NodeNext), `@earendil-works/pi-durable` 1.2.0 tasks (`defineTask`, `runtime.sleep`, `runtime.commit`, `tx.createTask`, `harness.abortTask`, `storage.scanTasks`), `croner` 10.x (new dependency), vitest + the `test/battery` kill -9 driver harness.
-
-**Spec:** `docs/superpowers/specs/2026-10-19-sigrun-core-hardening-design.md` §8 (all), plus the §10 W4 tests. Also §5.9 for job access and §5.8 for transfer.
+**Spec:** `docs/superpowers/specs/2026-10-19-sigrun-core-hardening-design.md` §8 (all, incl. §8.1a), plus the §10 W4 tests. Also §5.9 for job access, §5.8 for transfer, and rulings 12–13.
 
 **Depends on:**
 - W1: principal, `accessOf`, `registerOwnershipParticipant`.
 - W3: the `EventHub` for `job.changed`.
 - W2 Task 8: `/metrics`, for the job metrics.
 
-## Deviations from the spec (plan-level, flag in review)
+## Plan-level decision (flag in review)
 
-- **`ApiJobsDoc` is a small job store for `api` jobs.** Spec §8.1 says "no separate job store". A disabled `api` job has no live task, yet must persist its definition, so `api` definitions live in one session doc. Tasks remain the only executors, and the spec's semantics are unchanged. File and extension jobs still have no store; their source is their declaration.
-- **The fire record is atomic through `ConversationInit`, not through the task-state commit.** Spec §8.1 describes the atomic step 1 as one `runtime.commit` that creates the conversation AND records its id. pi-durable's raw `tx.createConversation` cannot apply an `AgentChange` (the run conversation needs the job's model), so step 1 uses `harness.createConversation({ownership, agent, init})`. The `init` callback, which runs inside the creating commit, writes the `JobFireDoc` record keyed `<jobId>:<fireAt>`. Re-entry reads that record first. The guarantee is the same: the conversation and the record of it are atomic.
 - **Run-now fires through the same `fireJob` function directly from the route,** with fire key `<jobId>:manual:<epochMs>`. It does not wake the task. The scheduled cadence is unaffected.
 
 ## Global Constraints
@@ -47,7 +43,13 @@
   - `SessionMeta` `{owner: job.owner, sharing: action.runSharing, source: "cron", jobId, name: "<job name> · <YYYY-MM-DD HH:mm in the job TZ>"}`;
   - the auto-namer skips `source === "cron"`.
 - **requestId** = `job:<jobId>:<fireAt>`; a manual fire uses `job:<jobId>:manual:<ms>`.
-- **Status** (`JobStatusDoc`, key jobId): `{lastRun?: {at: string, outcome: "running"|"succeeded"|"failed"|"skipped", conversationId?: number, error?: string}, nextRun?: string}`.
+- **The job record** (`sigrun.job`, a session doc family, key = jobId, version 1 with a `migrate` hook):
+  `{source: "api"|"file"|"extension", spec: JobSpec, owner?, sharing?, enabled, createdAt: ISO, hash, state: "waiting"|"firing"|"disabled"|"blocked", reason?, nextRun?: ISO, lastRun?: {at: ISO, outcome: "running"|"succeeded"|"failed"|"skipped", conversationId?, error?}}`.
+  - Deleting a job retires its record.
+  - Listing = `storage.scanDocuments({scope: <session>, at: "current", kind: "sigrun.job"}, 500, cursor, ctx)`.
+  - Schedule tasks are never enumerated for listing.
+- **The fire record** (`sigrun.job.fire`, a session doc family, key = `<jobId>:<fireAt>` or `<jobId>:manual:<ms>`): `{conversationId}`.
+- **Worker `every` retired:** a worker declaring `every` quarantines its extension with `workers.every was retired — declare a job with a task action`.
 - **Access:** jobs carry `owner?` + `sharing?` and use `accessOf`.
   - Read lists/gets.
   - Write is needed for PATCH, DELETE, and run-now.
@@ -58,8 +60,8 @@
 
 1. **Calling `harness.createConversation` from inside a task phase.** It must not deadlock the Session line. It is called from the phase body, never inside a `runtime.commit` callback. Task 2's battery test exercises it end to end; if it deadlocks, the test times out loudly.
 2. **A DST spring-forward slot** (`30 2 * * *` America/New_York on 2026-03-08). croner skips the non-existent time; the job's `nextRun` jumps to the next day. Task 1 pins croner's behavior so an upgrade cannot silently change it.
-3. **A `file` job renamed in `settings.json`.** The old id's task is aborted and the new one created. `JobStatusDoc` history for the old id stays (an orphan doc row, accepted). Task 3 pins abort + create.
-4. **An extension job whose extension is quarantined on a later boot.** It becomes undeclared, so its task is aborted. On re-enable it returns with a fresh task; its status doc persists. Task 3 pins this.
+3. **A `file` job renamed in `settings.json`.** The old id's record is retired and its task aborted; the new id gets a fresh record and task. The old history goes with the retired record, which is accepted. Task 3 pins it.
+4. **An extension job whose extension is quarantined on a later boot.** Its declaration vanished, so its record is retired and its task aborted. On re-enable it returns with a fresh record (history reset, accepted). Task 3 pins this.
 5. **Boot with many overdue `every` jobs after long downtime.** `catchUp: "once"` fires each once, then schedules from now; it never fires once per missed interval. Task 2 pins it: nextAt is computed from `now`, not from the missed slot.
 
 ---
@@ -114,7 +116,7 @@
 - [ ] **Step 4: Run** `npm test && npm run typecheck`. Expected: green.
 - [ ] **Step 5: Commit** `git commit -m "jobs: spec validation + schedule math (croner, TZ/DST-correct)"`.
 
-### Task 2: Docs, the schedule task, and `fireJob`
+### Task 2: Job records, the schedule task, and `fireJob`
 
 **Files:**
 - Create:
@@ -130,24 +132,30 @@
 - Produces:
   ```ts
   // docs.ts
-  export const ApiJobsDoc: SessionDocToken<{ jobs: Record<string, { spec: JobSpec; owner?: string; createdAt: string }> }>;
-  export const JobStatusDoc: SessionDocFamilyToken<{ lastRun?: JobLastRun; nextRun?: string }, string>; // key = jobId
-  export const JobFireDoc: SessionDocFamilyToken<{ conversationId: number }, string>;                  // key = fire key
+  export interface JobRecord { source: "api" | "file" | "extension"; spec: JobSpec; owner?: string; sharing?: Sharing;
+    enabled: boolean; createdAt: string; hash: string; state: JobWire["state"]; reason?: string;
+    nextRun?: string; lastRun?: JobLastRun }
+  export const JobDoc: SessionDocFamilyToken<JobRecord, JobRecord>;                   // kind "sigrun.job", key = jobId
+  export const JobFireDoc: SessionDocFamilyToken<{ conversationId: number }, number>; // kind "sigrun.job.fire", key = fire key
+  export function scanJobs(storage: Storage, ctx: Context): Promise<{ id: string; record: JobRecord }[]>;
+  export function readJob(harness: Harness, id: string, ctx: Context): Promise<JobRecord | undefined>;
+  export function patchJob(harness: Harness, id: string, change: (draft: Draft<JobRecord>) => void, ctx: Context): Promise<void>;
   // fire.ts
   export interface JobRuntimeDeps { harness: Harness; models: Models; defaultModel: ModelRef; now(): number; defaultTz: string }
-  export function fireJob(deps: JobRuntimeDeps, job: { id: string; spec: JobSpec; owner?: string },
-    fireKey: string, fireAt: number, context: Context): Promise<{ outcome: "running" | "skipped" | "blocked"; conversationId?: number }>;
+  export function fireJob(deps: JobRuntimeDeps, id: string, fireKey: string, fireAt: number, context: Context):
+    Promise<{ outcome: "running" | "skipped" | "blocked"; conversationId?: number }>; // reads the record itself
   // task.ts
-  export interface ScheduleInput { id: string; spec: JobSpec; owner?: string; hash: string }
+  export interface ScheduleInput { jobId: string; hash: string; firstAt?: number }
   export type ScheduleState = { phase: "waiting"; nextAt: number } | { phase: "firing"; fireAt: number };
   export function createScheduleTask(deps: JobRuntimeDeps): Task<ScheduleInput, ScheduleState, void>;
   ```
+- **Record check:** every phase first reads the record. Absent, `hash !== input.hash`, or `enabled === false` → the task commits terminal. It is a stale executor; reconciliation owns the replacement.
 - **`fireJob` for a prompt with `conversation: "new"`:**
   1. snapshot `JobFireDoc(fireKey)`; absent → `harness.createConversation({ownership:{kind:"ownerless"}, agent: {model, thinking}, init: (tx, id) => { tx.doc(JobFireDoc, fireKey, …).conversationId = id; tx.doc(SessionMetaDoc, id) ← cron meta }})`;
   2. `harness.conversation(id).submit({type:"input", content:[{type:"text", text: prompt}], requestId: "job:" + fireKey})`;
-  3. set `JobStatusDoc(jobId).lastRun = {at, outcome:"running", conversationId}`.
+  3. `patchJob` sets `lastRun = {at, outcome:"running", conversationId}`.
 - **Fixed conversation:** submit directly with the requestId.
-- **Overlap `skip`:** when `JobStatusDoc.lastRun.outcome === "running"`, record `skipped` and return.
+- **Overlap `skip`:** when the record's `lastRun.outcome === "running"`, `patchJob` records `skipped` and returns.
 - **The task action:** inside `runtime.commit`, `tx.createTask(registry task by name, input, {ownership: {kind:"task", taskId}})`. That runs in the schedule task — `fireJob` receives an optional `runtime` for this branch.
 - **Phases:**
   - `waiting`:
@@ -157,13 +165,14 @@
   - `firing`:
     - `fireJob(…, fireKey = id + ":" + fireAt)`;
     - then `next = nextFireAt(schedule, max(now, fireAt), tz)` — **from now, not from the missed slot**;
-    - `next === undefined` → commit terminal (completed); else commit `{phase:"waiting", nextAt: next}` and write `JobStatusDoc.nextRun`.
-- **`initial(input)`:** `{phase: "waiting", nextAt: nextFireAt(spec.schedule, now, tz)}`.
+    - `next === undefined` → commit terminal (completed); else commit `{phase:"waiting", nextAt: next}` and `patchJob` `nextRun`.
+- **`initial(input)`:** `{phase: "waiting", nextAt: input.firstAt}`. The creator computes `firstAt = nextFireAt(record.spec.schedule, now, tz)`, since `initial` sees only the input.
 - **`abort`:** commits terminal.
 
 - [ ] **Step 1: Write failing tests.**
   - In-process (`test/jobs-task.test.ts`, faux provider):
-    - an `every:"60s"` prompt job with an injectable clock (`deps.now`) and pi-durable's harness clock option — use the clock seam the battery's task-wake driver uses — fires once → a run conversation with `SessionMeta.source:"cron"`, `jobId`, and owner; `JobStatusDoc.lastRun.outcome === "running"` then (after the run settles and Task 3's observer lands) `succeeded`. In this task, assert `running` + `conversationId`;
+    - a record seeded via `patchJob` for an `every:"60s"` prompt job (with an injectable `deps.now` and the harness clock seam the battery's task-wake driver uses) fires once → a run conversation with `SessionMeta.source:"cron"`, `jobId`, and owner; the record's `lastRun` is `{outcome:"running", conversationId}`;
+    - changing the record's `hash` under a live task → that task commits terminal at its next phase;
     - overlap skip: a second fire while running → `skipped`;
     - a downtime-overdue fire (nextAt 3 slots in the past) fires once, and the next `nextAt > now`;
     - the auto-namer does not name the cron conversation.
@@ -178,7 +187,7 @@
 - [ ] **Step 4: Run** `npm test && npm run typecheck`. Expected: green.
 - [ ] **Step 5: Commit** `git commit -m "jobs: sigrun.schedule background task, atomic fire records, overlap/catch-up, cron runs skip auto-naming"`.
 
-### Task 3: Sources, reconciliation, run-status observer, ownership transfer
+### Task 3: Sources, reconciliation, run-status observer, ownership transfer, worker `every` retirement
 
 **Files:**
 - Create: `src/jobs/reconcile.ts`, `src/jobs/index.ts`, with `JobsService` constructed in boot.
@@ -187,12 +196,17 @@
   - `src/harness/settings.ts` (validate each entry with `validateJobSpec`; `jobs` is restart-required like `extensions`; duplicate names → validation error);
   - `src/config.ts` (`timezone`, env `SIGRUN_TIMEZONE`).
 - Modify: `src/harness/loader.ts`. The factory-result field `jobs?: JobSpec[]` is validated (each `validateJobSpec`; invalid → quarantine) and collected as `LoadedExtensions.jobBindings: {extension: slug, jobs}[]`.
+- Modify, for the worker `every` retirement (ruling 12):
+  - `src/harness/loader.ts` `validateWorkers` (`~:346`): a worker carrying `every` throws `workers.every was retired — declare a job with a task action`, and `wakeOn` becomes required and non-empty;
+  - `src/harness/event-bus.ts`: remove the `every` timer path (`ExtensionWorker.every`, the interval start in `#addWorker`, `#tick`, `WorkerState.timer`). Deadlines, coalescing, and `/v1/meta` status stay;
+  - `test/memory-workers.test.ts` + `test/fixtures/fixture-workers`: convert the `every` cases to `wakeOn` and add the retirement-quarantine case;
+  - `docs/extending.md`, plus a dated amendment line in `docs/superpowers/specs/2026-10-15-sigrun-memory-seam.md`.
 - Modify: `src/harness/boot.ts`:
   - register the schedule task on the registry **before** `Harness.open`, via a core extension `sigrun.jobs` with `tasks: [scheduleTask]`, installed like the other core extensions;
   - after `resume()`, `jobs.reconcile()`;
-  - register a `runSettled` handler on the event bus as `sigrun:jobs` that sets `JobStatusDoc.lastRun.outcome` to `succeeded` (answered) or `failed` (unanswered, `error: reason`) for conversations whose `SessionMeta.jobId` is set;
+  - register a `runSettled` handler on the event bus as `sigrun:jobs` that `patchJob`s `lastRun.outcome` to `succeeded` (answered) or `failed` (unanswered, `error: reason`) for conversations whose `SessionMeta.jobId` is set;
   - expose `OpenedHarness.jobs: JobsService`.
-- Modify: `src/server/ownership.ts` caller (in `createServer`). Register a jobs participant: rewrite `owner` in `ApiJobsDoc` entries owned by `from`, then `jobs.reconcile()`. File jobs whose declared owner is the deleted user get a boot-time warning: their owner no longer exists, so they run ownerless until the file is edited.
+- Modify: `src/server/ownership.ts` caller (in `createServer`). Register a jobs participant: `patchJob` every `api` record with `owner === from` to `owner: to` (a new `hash`), then `jobs.reconcile()`. File jobs whose declared owner is the deleted user get a boot-time warning: their owner no longer exists, so they run ownerless until the file is edited.
 
 **Interfaces:**
 - Produces:
@@ -209,27 +223,34 @@
   export class JobDeclaredError extends Error {}
   ```
 - **`reconcile`:**
-  - desired = file jobs ∪ extension jobs ∪ `ApiJobsDoc` jobs, filtered to `enabled !== false`;
-  - live = `storage.scanTasks({kind: "sigrun.schedule"}, 500, cursor, ctx)` paged, filtered in memory to non-terminal;
-  - for each desired job without a live task of the same `hash` → abort any live task with that `id`, then create;
-  - for each live task whose `id` is not desired → `harness.abortTask`.
+  1. **Declared → records.**
+     - Upsert a record for each file and extension job (`source`, mirrored `spec`/`owner`/`sharing`/`enabled`, `hash = specHash(id, spec)`; `lastRun` is preserved on update).
+     - Retire `file`/`extension` records whose declaration is gone.
+  2. **Records → tasks.**
+     - Live tasks = `storage.scanTasks({kind: "sigrun.schedule"}, 500, cursor, ctx)`, paged and filtered in memory to non-terminal. This is used only to match executors, never for listing.
+     - Enabled record with no live task of matching `hash` → abort any live task for that `jobId`, then create.
+     - Live task whose record is retired, disabled, or hash-mismatched → `harness.abortTask`.
+     - Disabled records get `state: "disabled"`.
 
-  Creation runs in one `harness.commit` (`tx.createTask(scheduleTask, input, {ownership:{kind:"conversation"}, conversationId: rootId, background: true})`).
+  Creation runs in one `harness.commit` (`tx.createTask(scheduleTask, {jobId, hash, firstAt}, {ownership:{kind:"conversation"}, conversationId: rootId, background: true})`).
+- **`createApi` / `updateApi` / `deleteApi`:** create / patch / retire the `api` record in one commit, then reconcile that job. On `file:`/`ext:` ids they throw `JobDeclaredError`.
 
 - [ ] **Step 1: Write failing tests** in `test/jobs-reconcile.test.ts`:
   - **file jobs:**
-    - boot with a `settings.json` file job → one live task;
+    - boot with a `settings.json` file job → one record (`source:"file"`) and one live task;
     - reboot unchanged → still one, with the same task id;
-    - change its prompt → old aborted, new created;
-    - remove it → aborted;
-  - **extension jobs:** a `fixture-jobs` extension declaring a job → `ext:<slug>:<name>` is live; quarantine the fixture (rename its entry) on reboot → aborted;
+    - change its prompt → the record's hash updates, the old task is aborted, a new one is created, and `lastRun` is preserved;
+    - remove it → record retired, task aborted;
+  - **extension jobs:** a `fixture-jobs` extension declaring a job → an `ext:<slug>:<name>` record and live task; quarantine the fixture (rename its entry) on reboot → record retired, task aborted;
   - **api jobs:**
-    - `createApi` → live;
-    - `updateApi({enabled:false})` → aborted, and `list()` shows `state:"disabled"`;
+    - `createApi` → a record + live task;
+    - `updateApi({enabled:false})` → the task is aborted and the record persists with `state:"disabled"`, still listed;
+    - re-enable → a new task;
     - `updateApi` on a `file:` id → `JobDeclaredError`;
-  - `runSettled` observer: a cron run answering → `lastRun.outcome === "succeeded"`; a faux error turn → `failed` with `error`;
-  - transfer: bob's api job → `transferOwnership(bob → alice)` → its owner is alice and its task was recreated (new hash);
-  - terminal tasks never appear in `list()`.
+  - `runSettled` observer: a cron run answering → the record's `lastRun.outcome === "succeeded"`; a faux error turn → `failed` with `error`;
+  - transfer: bob's api job → `transferOwnership(bob → alice)` → the record owner is alice and the task was recreated (new hash);
+  - `list()` comes from records only: a terminal schedule task with no record never appears;
+  - **worker retirement:** a fixture worker with `every` → extension quarantined with the retirement message; a `wakeOn`-only worker still runs on `conversationIdle`.
 - [ ] **Step 2: Run** `npx vitest run test/jobs-reconcile.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.** The `fixture-jobs` fixture lives at `test/fixtures/fixture-jobs/index.js`: a factory returning `{extension: defineExtension({name: "fixture-jobs"}), jobs: [{name: "tick", schedule: {every: "60s"}, action: {kind: "prompt", prompt: "tick", conversation: "new"}}]}`.
 - [ ] **Step 4: Run** `npm test && npm run typecheck`. Expected: green.
@@ -251,7 +272,7 @@
   - `PATCH /v1/jobs/:id` (write) → `{job}`; `file:`/`ext:` ids → 409 `job_declared`;
   - `DELETE /v1/jobs/:id` (write) → 204; declared → 409;
   - `POST /v1/jobs/:id/run` (write) → `200 {outcome, conversationId?}`.
-- **`job.changed` is published** after every create/update/delete/run and after every `JobStatusDoc` change. The jobs service takes the hub as an injected `onChange(jobId)`. The status-doc changes come from the run-status observer and `fireJob`; both call `onChange`.
+- **`job.changed` is published** after every create/update/delete/run and after every job-record change. The jobs service takes the hub as an injected `onChange(jobId)`, which `patchJob` calls after each commit.
 - **Metrics:**
   - `sigrun_job_last_run_timestamp_seconds{job,outcome}`;
   - `sigrun_job_next_run_timestamp_seconds{job}`;
