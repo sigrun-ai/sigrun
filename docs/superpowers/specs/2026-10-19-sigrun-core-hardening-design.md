@@ -825,25 +825,62 @@ implements yet.
 
 A job is a schedule plus an action, durable by construction.
 
-**The job record** (ruling 13). Every job — from any source — is one
-record in `sigrun.db`: a session-scoped pi-durable document family
-`sigrun.job`, keyed by job id.
+**Three record families** (rulings 13–14), all session-scoped pi-durable
+document families in `sigrun.db`:
 
-- The record holds `{source, spec, owner?, sharing?, enabled, createdAt,
-  lastRun?, nextRun?, state, reason?}`. Definition and status live on
-  one record; there is no separate status document.
-- It behaves as a table:
+| family | key | holds | written |
+|---|---|---|---|
+| `sigrun.job` | jobId | the current definition + status: `{source, spec, owner?, sharing?, enabled, version, hash, createdAt, updatedAt, state, reason?, nextRun?, lastRun?}` | on every change and every run |
+| `sigrun.job.revision` | `<jobId>:<version>` | one immutable snapshot per version: `{jobId, version, source, spec, owner?, sharing?, enabled, changedAt, changedBy}` | when the job changes |
+| `sigrun.job.run` | `<jobId>:<fireKey>` | one record per run: `{jobId, version, fireAt, manual, conversationId?, taskId?, outcome, startedAt, settledAt?, error?}` | at fire, then at settle |
+
+- **Versioning.**
+  - `version` starts at 1.
+  - It increments on every change to the stored job: `spec`, `owner`,
+    `sharing`, or `enabled`. That covers an API `PATCH`, a declaration
+    edit picked up by reconciliation, an ownership transfer, and an
+    enable/disable.
+  - Each change writes the `revision` record in the same commit as the
+    job-record update.
+  - `changedBy` is the principal's user for API changes; `"file"` /
+    `"extension:<slug>"` for reconciled declarations; `"transfer"` for
+    user-delete transfers.
+  - Retiring a job writes a final revision with `enabled: false` and
+    `changedBy`, then retires the job record. Revisions and runs survive
+    the job until retention trims them.
+- **Runs carry the version** that fired them, so a run's outcome always
+  maps to the exact definition it ran.
+- **The job record is the table you list:**
   - one row per job;
-  - enumeration is `storage.scanDocuments({scope: session, at:
-    "current", kind: "sigrun.job"})`;
+  - enumeration is `storage.scanDocuments({scope: session, at: "current",
+    kind: "sigrun.job"})`;
   - deletion retires the record;
-  - the schema is versioned through the family's `migrate()`.
-- It commits atomically with task creation and run-conversation
-  creation. That is why it is a document family rather than tables in a
-  separate database (the alternative considered and rejected, ruling 13).
-- `api` records are the source of truth for API jobs. `file` and
-  `extension` records are mirrored from their declarations by
+  - schemas are versioned through each family's `migrate()`.
+
+  `lastRun` on the job record is a copy of the newest run, so the job
+  list stays a single scan.
+- **Atomicity.** These families commit atomically with task creation and
+  run-conversation creation. That is why they are document families
+  rather than tables in a separate database (the alternative considered
+  and rejected, ruling 13).
+- **Sources.** `api` records are the source of truth for API jobs. `file`
+  and `extension` records are mirrored from their declarations by
   reconciliation (§8.3) and are read-only through the API.
+- **Retention** (ruling 14), applied when a run settles and when a
+  revision is written:
+  - keep the newest `jobHistory.runs` run records per job (default 50);
+  - keep the newest `jobHistory.revisions` revisions per job (default 50),
+    plus any revision a retained run references;
+  - retire the rest.
+
+  Both are live settings.
+- **Retired rows are not deleted.** pi-durable keeps retired document
+  incarnations (`retiredAt`), and has no purge, so retention bounds the
+  cost of *listing* (live scans), not the database's size. Listing a
+  job's runs scans every live run record by kind and filters by key
+  prefix: O(total retained runs), fine at household scale. Unbounded
+  history, storage compaction, and indexed per-job queries are a
+  separate spec (§12).
 
 **The executor.** One pi-durable task per *enabled* job.
 
@@ -857,35 +894,37 @@ record in `sigrun.db`: a session-scoped pi-durable document family
     `runtime.sleep(until)` (a durable wait over the harness clock).
 - Disabling or deleting a job aborts its task (`abortTask`).
 - Terminal schedule-task records remain in pi-durable as tombstones
-  (there is no task purge). Jobs are never enumerated from tasks, so the
-  tombstones are invisible; growth is bounded by job churn.
+  (there is no task purge). Jobs are never enumerated from tasks.
 
 **Crash safety** (deepseek B3).
 
-- Each fire has a fire record: a `sigrun.job.fire` document-family
-  member keyed `<jobId>:<fireAt>`, holding `{conversationId}`.
-- It is written inside the commit that creates the run conversation,
-  through `harness.createConversation({ownership, agent, init})`. The
-  `init` callback runs in the creating commit. pi-durable's raw
+- The run record doubles as the fire's idempotency record. Key:
+  `<jobId>:<fireAt>`, or `<jobId>:manual:<ms>` for run-now.
+- **Prompt runs into a new conversation:** the run record is written inside
+  the commit that creates the run conversation, through
+  `harness.createConversation({ownership, agent, init})`. The `init`
+  callback runs in the creating commit. pi-durable's raw
   `tx.createConversation` cannot apply the run's `AgentChange` (model),
-  hence `init`. The conversation and the record of it are atomic.
-- `firing` first reads the fire record:
-  - present → reuse its `conversationId`;
+  hence `init`. The conversation and its run record are atomic.
+- **Fixed-conversation and `task` runs:** the run record is written in the
+  same commit as the submission or the `tx.createTask`.
+- **`firing` first reads the run record:**
+  - present → reuse its `conversationId`/`taskId`;
   - absent → create.
 - It then submits with `requestId = job:<id>:<fireAt>`, so a crash at any
-  point yields one conversation and one submission.
-- Fixed-conversation actions skip creation.
+  point yields one conversation, one submission, and one run record.
 - A kill -9 during `waiting` wakes once, at or after the deadline. This
   is the core spec's crash-battery item 7, now with a real subject.
 
 **Run status.**
 
-- `lastRun {at, outcome, conversationId?, error?}` on the job record is
-  updated in three places:
-  - at fire (`running`);
-  - on skip;
-  - by an event-bus `runSettled` handler for run conversations carrying
-    `meta.jobId` (`succeeded` / `failed`).
+- A run record starts `running`.
+- Its terminal outcome is written by:
+  - the event-bus `runSettled` handler, for prompt runs (`succeeded` /
+    `failed`, matched by `meta.jobId` + the run's `conversationId`);
+  - the task's terminal outcome, for `task` runs;
+  - the overlap check, for skips (`skipped`, written immediately).
+- Each outcome write also refreshes the job record's `lastRun` copy.
 - The schedule task never blocks on a run, so a run that waits hours on
   a human never stalls the next fire.
 
@@ -986,6 +1025,10 @@ The memory seam's idle workers lose their `every` field.
   shape plus `id`, `source`, `owner`, `action`, and `enabled`. `state` is
   `waiting` | `firing` | `disabled` | `blocked`.
 - `POST /v1/jobs` creates a job owned by the caller.
+- `GET /v1/jobs/:id/runs?limit=` (newest first, default 20, max
+  `jobHistory.runs`) and `GET /v1/jobs/:id/revisions` (newest first)
+  require `read` access. Both answer for a retired job too, until
+  retention trims its records. `JobWire` carries `version`.
 - `PATCH /v1/jobs/:id` and `DELETE /v1/jobs/:id`:
   - work on `api` jobs only (others return 409 `job_declared`);
   - need `write` access (the owner, or a `write` share).
@@ -1247,6 +1290,11 @@ Each item lands with its failing-first test. The load-bearing ones:
   - cron run conversations are not auto-named;
   - run-now without `write` → 403;
   - a deleted job is absent from `GET /v1/jobs` (record retired);
+  - a PATCH bumps `version` and writes a revision with `changedBy`; a
+    run after it records the new version;
+  - with `jobHistory.runs: 3`, a fourth settled run retires the oldest
+    run record, while a revision referenced by a retained run survives
+    revision retention;
   - a worker declaring `every` quarantines its extension with the
     retirement message;
   - `overlap: "skip"` records `skipped`;
@@ -1270,7 +1318,7 @@ workstream (AGENTS.md verification rule).
 
 ## 11. Open questions
 
-None outstanding. Rulings 5–13 answered the draft, review, and planning questions.
+None outstanding. Rulings 5–14 answered the draft, review, and planning questions.
 
 ## 11a. Review disposition
 
@@ -1344,6 +1392,9 @@ optional key and costs nothing when unset.
   never a sigrun password);
 - migrating existing conversations into the ownership/sharing model (test
   DBs only);
+- unbounded job history, storage compaction of retired records, and
+  indexed per-job queries (a separate spec; §8.1 retention bounds listing
+  cost only);
 - every product extension (honcho, research, Forgejo, Discord, calendar,
   ask-user, warden).
 
@@ -1395,6 +1446,11 @@ optional key and costs nothing when unset.
     in `sigrun.db`, definition + status together). A separate SQL store
     was rejected because it cannot commit atomically with tasks and
     conversations (§8.1).
+14. Jobs keep history: every change bumps `version` and writes a
+    revision; every run writes a run record carrying the version.
+    Retention is per job, configurable (`jobHistory.runs` /
+    `jobHistory.revisions`, default 50 each). Unbounded history and storage
+    compaction are a separate spec (§8.1).
 
 **My calls (check while reading):**
 
