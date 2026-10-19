@@ -520,6 +520,33 @@ describe("envServerSection (the env-only bootstrap projection, ruling 5)", () =>
 		).toEqual({});
 	});
 
+	test("SIGRUN_METRICS_PUBLIC parses strictly (W2 Task 8; default false, empty unset)", () => {
+		// The metrics-scrape gate: strict true/false (the SIGRUN_WEBUI
+		// pattern), env-only on this branch (W1 Task 1 owns the file tier),
+		// default false, empty counts as unset.
+		expect(loadConfig({ ...MODEL_ENV }).metricsPublic).toBe(false);
+		expect(
+			loadConfig({ ...MODEL_ENV, SIGRUN_METRICS_PUBLIC: "true" }).metricsPublic,
+		).toBe(true);
+		expect(
+			loadConfig({ ...MODEL_ENV, SIGRUN_METRICS_PUBLIC: "false" }).metricsPublic,
+		).toBe(false);
+		// Case-insensitive + whitespace-tolerant, like SIGRUN_WEBUI.
+		expect(
+			loadConfig({ ...MODEL_ENV, SIGRUN_METRICS_PUBLIC: " TRUE " }).metricsPublic,
+		).toBe(true);
+		expect(
+			loadConfig({ ...MODEL_ENV, SIGRUN_METRICS_PUBLIC: "" }).metricsPublic,
+		).toBe(false);
+		expect(() =>
+			loadConfig({ ...MODEL_ENV, SIGRUN_METRICS_PUBLIC: "yes" }),
+		).toThrow(/SIGRUN_METRICS_PUBLIC must be "true" or "false"/);
+		// Env-only by design: no value is ever projected into the bootstrap's
+		// server section (validateServer does not accept server.metrics yet —
+		// W1 Task 1 adds that file tier).
+		expect(envServerSection({ SIGRUN_METRICS_PUBLIC: "true" })).toEqual({});
+	});
+
 	test("invalid values fail loud naming the variable (the same parsers as loadConfig)", () => {
 		expect(() => envServerSection({ SIGRUN_PORT: "abc" })).toThrow(
 			/SIGRUN_PORT must be a positive integer/,

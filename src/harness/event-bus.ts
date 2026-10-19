@@ -503,6 +503,24 @@ export class EventBus {
 	}
 
 	/**
+	 * The wedge gauge's source (W2 Task 8, spec §6.9): the AGE in
+	 * milliseconds of the oldest still-live input run — `now` minus the
+	 * oldest per-conversation admission instant among conversations with
+	 * live inputs. `undefined` when no run is live. In-process state (the
+	 * admission clock): a run admitted before a restart is invisible to
+	 * this until it settles — the spec's accepted posture for a
+	 * wedge-while-up alarm (durable timestamps arrive with the §13 ask).
+	 */
+	public oldestLiveAdmissionMs(now: number = Date.now()): number | undefined {
+		let oldest: number | undefined;
+		for (const [conversationId, admittedAt] of this.#lastAdmission) {
+			if ((this.#liveInputs.get(conversationId) ?? 0) <= 0) continue;
+			if (oldest === undefined || admittedAt < oldest) oldest = admittedAt;
+		}
+		return oldest === undefined ? undefined : Math.max(0, now - oldest);
+	}
+
+	/**
 	 * The ordered shutdown sequence (Task 4; src/index.ts runs it between
 	 * `app.close()` and `harness.close()`):
 	 *

@@ -16,8 +16,9 @@
  * interaction + ambient seam routes (docs/approval-ux-seams.md,
  * `routes/interactions.ts`), the workspace file routes
  * (`routes/files.ts`), the provider surface routes
- * (`routes/providers.ts`), and the settings store routes
- * (`routes/settings.ts`). This module only composes: the Fastify
+ * (`routes/providers.ts`), the settings store routes
+ * (`routes/settings.ts`), and the Prometheus text exposition
+ * (`routes/metrics.ts`, W2 Task 8). This module only composes: the Fastify
  * instance, the identity hook, the webui mount, the reserved-root
  * ensure, and the register calls — no route handler lives here.
  *
@@ -40,6 +41,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMetaRoutes } from "./routes/meta.js";
+import { registerMetricsRoutes } from "./routes/metrics.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
@@ -141,6 +143,7 @@ export async function createServer(
 	const ctx: ServerContext = { opened, config, rootId, webuiBundle, env };
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
+	registerMetricsRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
 	registerStreamRoutes(app, ctx);
 	registerSubmissionRoutes(app, ctx);
