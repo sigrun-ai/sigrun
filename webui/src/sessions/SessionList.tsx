@@ -14,10 +14,12 @@
  *   a match's ANCESTORS visible (the fork stays meaningful under its
  *   parent). Ctrl+K / ⌘K focuses the search input from anywhere.
  * - Row = name (single-line ellipsis — 200-char names never wrap) + age;
- *   hover/focus-within swaps the age for the ⋯ menu (Rename, Fork,
- *   Archive / Unarchive). The menu toggle is a real button, so keyboard
- *   users reach it (focus-within reveals it, then Tab). Outside-click +
- *   Esc close the open row's menu (useDismiss).
+   hover/focus-within swaps the age for the ⋯ menu (Rename, Fork,
+ *   Archive / Unarchive, Share — owner-only, spec §5.9: the Share item
+ *   opens App's ShareMenu; a non-owner row never offers it). The menu
+ *   toggle is a real button, so keyboard users reach it (focus-within
+ *   reveals it, then Tab). Outside-click + Esc close the open row's menu
+ *   (useDismiss).
  * - Children indent one level per depth with the ↳ lineage mark.
  * - The bottom "Archived" toggle switches `includeArchived`.
  *
@@ -148,8 +150,13 @@ export function SessionList(props: {
 	onArchive(id: number, archived: boolean): Promise<void>;
 	/** Fork a conversation (App navigates to the created fork). */
 	onFork(id: number): void;
+	/** The signed-in user (W1 Task 8): a row's ⋯ menu offers Share only
+	 *  to its owner. */
+	readonly currentUser?: string;
+	/** Open the share editor for a conversation id (App renders ShareMenu). */
+	onShare?(id: number): void;
 }) {
-	const { rows, activeId, onSelect, onNew, onRename, onArchive, onFork } = props;
+	const { rows, activeId, onSelect, onNew, onRename, onArchive, onFork, currentUser, onShare } = props;
 	const [query, setQuery] = useState("");
 	const [includeArchived, setIncludeArchived] = useState(false);
 	const [menuFor, setMenuFor] = useState<number | null>(null);
@@ -240,6 +247,13 @@ export function SessionList(props: {
 					const row = node.row;
 					const name = displayName(row);
 					const renamingThis = renaming !== null && renaming.id === row.id;
+					// Owner-only (spec §5.9): sharing is the owner's grant to make —
+					// and the server independently refuses anyone else's sharing
+					// patch, so the menu never offers what the wire would 403.
+					const canShare =
+						onShare !== undefined &&
+						currentUser !== undefined &&
+						row.owner === currentUser;
 					const className = [
 						"session-item",
 						row.id === activeId ? "session-item-active" : "",
@@ -304,43 +318,56 @@ export function SessionList(props: {
 								>
 									<MoreIcon />
 								</button>
-								{menuFor === row.id && (
-									<div className="session-menu" role="menu">
-										<button
-											type="button"
-											role="menuitem"
-											data-menu-action="rename"
-											onClick={() => {
-												setMenuFor(null);
-												setRenaming({ id: row.id, draft: name });
-											}}
-										>
-											Rename
-										</button>
-										<button
-											type="button"
-											role="menuitem"
-											data-menu-action="fork"
-											onClick={() => {
-												setMenuFor(null);
-												onFork(row.id);
-											}}
-										>
-											Fork
-										</button>
-										<button
-											type="button"
-											role="menuitem"
-											data-menu-action="archive"
-											onClick={() => {
-												setMenuFor(null);
-												void onArchive(row.id, !row.archived);
-											}}
-										>
-											{row.archived ? "Unarchive" : "Archive"}
-										</button>
-									</div>
-								)}
+										{menuFor === row.id && (
+											<div className="session-menu" role="menu">
+												{canShare && (
+													<button
+														type="button"
+														role="menuitem"
+														data-menu-action="share"
+														onClick={() => {
+															setMenuFor(null);
+															onShare?.(row.id);
+														}}
+													>
+														Share…
+													</button>
+												)}
+												<button
+													type="button"
+													role="menuitem"
+													data-menu-action="rename"
+													onClick={() => {
+														setMenuFor(null);
+														setRenaming({ id: row.id, draft: name });
+													}}
+												>
+													Rename
+												</button>
+												<button
+													type="button"
+													role="menuitem"
+													data-menu-action="fork"
+													onClick={() => {
+														setMenuFor(null);
+														onFork(row.id);
+													}}
+												>
+													Fork
+												</button>
+												<button
+													type="button"
+													role="menuitem"
+													data-menu-action="archive"
+													onClick={() => {
+														setMenuFor(null);
+														void onArchive(row.id, !row.archived);
+													}}
+												>
+													{row.archived ? "Unarchive" : "Archive"}
+												</button>
+											</div>
+										)}
 							</span>
 						</li>
 					);

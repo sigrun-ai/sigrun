@@ -134,3 +134,13 @@ export function SendIcon(props: IconProps) {
 		</Svg>
 	);
 }
+
+/** The rail's sign-out action (a door with an outbound arrow). */
+export function LogoutIcon(props: IconProps) {
+	return (
+		<Svg {...props}>
+			<path d="M14 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4" />
+			<path d="M4 12h10M10 8l4 4-4 4" />
+		</Svg>
+	);
+}

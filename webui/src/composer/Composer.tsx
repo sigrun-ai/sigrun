@@ -258,8 +258,14 @@ export function Composer(props: {
 	 * mode. Default false — Ctrl+Enter is the only submit chord.
 	 */
 	readonly enterToSend?: boolean;
+	/**
+	 * A read-access conversation (spec §5.9): the composer renders
+	 * disabled with "Read-only (shared with you)" — a recipient views the
+	 * transcript but cannot submit, steer, or attach.
+	 */
+	readonly readOnly?: boolean;
 }) {
-	const { client, conversationId, view, onNavigate, enterToSend = false } =
+	const { client, conversationId, view, onNavigate, enterToSend = false, readOnly = false } =
 		props;
 	const draft = useDraft(client, conversationId);
 	const [models, setModels] = useState<readonly ModelEntry[]>([]);
@@ -575,6 +581,9 @@ export function Composer(props: {
 	}
 
 	async function send(): Promise<void> {
+		// Read access is not a submission path (spec §5.9) — the disabled
+		// surface normally makes this unreachable; the guard keeps it true.
+		if (readOnly) return;
 		const text = draft.text.trim();
 		// A `/command args` line is a COMMAND, not a submission (Task 7): the
 		// slash path owns the Send button too — an unknown command errors
@@ -622,9 +631,11 @@ export function Composer(props: {
 	 */
 
 	// The send button's disabled state (aria-disabled + class — see the
-	// toolbar comment): no conversation, an in-flight non-steer submit, or
-	// nothing to send. A busy conversation keeps it LIVE (a click steers).
+	// toolbar comment): no conversation, a read-only share, an in-flight
+	// non-steer submit, or nothing to send. A busy conversation keeps it
+	// LIVE (a click steers).
 	const sendDisabled =
+		readOnly ||
 		conversationId === null ||
 		(sending && !busy) ||
 		(draft.text.trim() === "" && draft.attachments.length === 0);
@@ -713,14 +724,16 @@ export function Composer(props: {
 					className="composer-input"
 					rows={3}
 					placeholder={
-						conversationId === null
-							? "Select a conversation"
-							: busy
-								? "Steer the running session…"
-								: "Message…"
+						readOnly
+							? "Read-only (shared with you)"
+							: conversationId === null
+								? "Select a conversation"
+								: busy
+									? "Steer the running session…"
+									: "Message…"
 					}
 					value={draft.text}
-					disabled={conversationId === null}
+					disabled={conversationId === null || readOnly}
 					onChange={(event) => draft.setText(event.target.value)}
 					onKeyDown={(event) => {
 						// The slash menu owns the keys while it is open.
@@ -784,7 +797,7 @@ export function Composer(props: {
 							className="composer-file-input"
 							multiple
 							hidden
-							disabled={conversationId === null || uploading}
+							disabled={conversationId === null || readOnly || uploading}
 							onChange={onFilesSelected}
 						/>
 					</label>
