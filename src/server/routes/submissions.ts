@@ -327,5 +327,4 @@ export function registerSubmissionRoutes(
 			return await reply.code(202).send({ taskId });
 		},
 	);
-
 }

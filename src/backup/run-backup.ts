@@ -3,12 +3,12 @@
  *
  * Invoked (tsx / node) with `SIGRUN_STORAGE_PATH` pointing at the live
  * harness sqlite database plus the backup target env (see
- * `parseBackupConfig`). It takes a `sqlite3 .backup` — the ONLINE-SAFE
- * backup API: sqlite3's VACUUM-into API locks the source only per page,
- * so the copy is consistent even while the harness process holds the
- * database in WAL mode (a second process touching the file is exactly the
- * class of assumption spec §4.3's App C ledger rule covers; the restore
- * drill in test/backup.test.ts verifies it live).
+ * `parseBackupConfig`). It takes a `sqlite3 .backup` — sqlite3's online
+ * backup API (`.backup`): ONLINE-SAFE, it locks the source only per
+ * page, so the copy is consistent even while the harness process holds
+ * the database in WAL mode (a second process touching the file is
+ * exactly the class of assumption spec §4.3's App C ledger rule covers;
+ * the restore drill in test/backup.test.ts verifies it live).
  *
  * Flow, fail-loud at every step:
  *  1. `sqlite3 <db> ".backup '<tmpfile>'"` into a sibling temp file (same
