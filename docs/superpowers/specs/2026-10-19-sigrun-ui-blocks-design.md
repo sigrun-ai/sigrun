@@ -70,11 +70,11 @@ dashboards, extension-to-extension actions, i18n of extension strings.
 8. **Drag and drop within and across groups** is a general `collection`
    capability.
 9. **Container width, not viewport.** Blocks adapt to the width of the
-   space they're in. Hosts own the narrow fallbacks. Extensions get
+   space they're in. Channels own the narrow fallbacks. Extensions get
    three width classes as the only escape hatch.
 10. **Fixed card slots.** Collection items render through a card with
     fixed slots; `body` (markdown) is the only free-form slot.
-11. **Optimistic moves.** The host applies a move at once, reverts it if
+11. **Optimistic moves.** The channel applies a move at once, reverts it if
     the handler rejects it, and the handler's data update is
     authoritative for everyone.
 12. **External images are proxied.** Extension assets and data URLs pass
@@ -91,8 +91,23 @@ dashboards, extension-to-extension actions, i18n of extension strings.
     is deleted rather than migrated; its replacements (ports of
     `rpiv-ask-user-question` and `pi-warden`) are written against block
     trees from the start.
+17. **The image proxy converts to PNG for the TUI.** `sharp` is a server
+    dependency (§11.3).
+18. **This spec supersedes core-hardening §5.7's "every `server.*` key is
+    restart-required".** It lands after core-hardening; §13.1 is the rule
+    from then on. The core-hardening docs are not edited.
+19. **Forks copy everything as of the fork point, then diverge.** A fork
+    gets the chat block state, its revisions and its pending change
+    records exactly as they were at the forked entry; after that, edits in
+    either conversation never reach the other (§8.2).
+20. **Interaction answers are form values.** `{values: {<field>: value}}`
+    replaces `{ids, values, text}` (§9.1).
 
 ## 3. Concepts
+
+Terms: **server** is the sigrun process; **channel** is a client (the
+webui, the TUI); **core** is sigrun's own code as opposed to an
+extension's.
 
 - **Block.** A typed node: `{type, id?, ...props, children?}`.
 - **Tree.** A root block plus the block-set version it was written
@@ -111,7 +126,7 @@ dashboards, extension-to-extension actions, i18n of extension strings.
 | `settings` | a section in Settings | core, extension |
 | `chat` | a transcript entry | agent (core tool) |
 | `interaction` | a pending human decision | extension (existing seam) |
-| `ambient` | a status line or above-composer panel | extension (existing seam) |
+| `ambient` | a status line, footer segment or above-composer panel | extension (existing seam) |
 
 ## 4. Wire format
 
@@ -123,15 +138,21 @@ type Block = { type: string; id?: string; visibleAt?: WidthCondition;
                fallback?: string; [prop: string]: unknown };
 ```
 
-- Types and props are defined in `shared/src/blocks/` (typebox schemas,
-  shared by server, webui and TUI; the same pattern as
-  `shared/src/views.ts`).
+- **Where the code lives.** `@sigrun/shared` is a zero-dependency leaf
+  whose purity test forbids runtime imports (`test/views-purity.test.ts`).
+  So:
+  - `shared/src/blocks/` holds the TypeScript types, `applyOps` (§4.3)
+    and `toText` (§14.3): pure code with no imports outside `shared/`;
+  - `src/blocks/` holds the typebox schemas and `validateTree` (§14.2),
+    and is re-exported by `sigrun/blocks` (§14.1);
+  - the purity test scans `shared/src/` recursively, so the new
+    subdirectory is covered.
 - `id` is required on blocks that carry actions or inputs, and must be
-  unique within the tree. The host uses it to route actions and keep
+  unique within the tree. Channels use it to route actions and keep
   focus and scroll across re-renders.
 - `fallback` is plain text a channel shows when it can't render the
-  block (§4.4). Every block may carry it; the server fills a generic one
-  ("[chart: CPU, 3 series]") when absent.
+  block (§4.4). Every block may carry it; when absent, the server fills
+  it with the block's `toText` projection, truncated to 200 characters.
 
 ### 4.2 Bindings and the data model
 
@@ -143,7 +164,14 @@ type Binding = { $: string };   // a JSON Pointer into the data model, e.g. "/jo
 ```
 
 - Collections bind their items: `items: {$: "/cards"}`. Inside an item
-  template, `{$: "./title"}` is relative to the current item.
+  template, a pointer starting `./` resolves against the current item
+  object (`{$: "./title"}` is the item's `title`); this is the one
+  extension to JSON Pointer.
+- **Structural props are literals,** never bindings: `type`, `id`,
+  `display`, `groupBy`, `reorder`, `select`, `mode`, field `name`s, and
+  every handler name (§6.1). A view that switches structure (a board/list
+  toggle) does it with `navigate(params)`, and `render` returns the other
+  tree. Content props (text, values, items, options, series) may bind.
 - Inputs bind their value: a form field's `name` is the path its value
   is read from and written to (relative to the form's `bind`).
 - A binding to a missing path renders as empty, never as an error. A
@@ -161,8 +189,11 @@ type DataOp =
 type DataUpdate = { rev: number; ops: DataOp[] };
 ```
 
-- A surface's data has a monotonic `rev`. Every update names the rev it
-  produces. A channel that sees a gap fetches the full data again.
+- A surface's data has a monotonic `rev`, **assigned by the server**.
+  Extensions and tools submit ops without a rev; the server applies them
+  in arrival order, increments `rev` once per update, and that is the
+  `rev` channels see. A channel that sees a gap fetches the full data
+  again.
 - `move` exists so collection reorders don't re-send the moved item.
 - The tree changes rarely. When it does, the surface's `treeRev`
   changes and channels fetch the tree again.
@@ -182,15 +213,18 @@ type DataUpdate = { rev: number; ops: DataOp[] };
 
 ### 4.5 Limits
 
-| placement | max blocks per tree | max data size |
-|---|---|---|
-| `chat` | 200 | 256 KiB |
-| `interaction`, `ambient` | 100 | 64 KiB |
-| `view`, `panel`, `settings` | 2,000 | 4 MiB |
+| placement | max blocks per tree | max tree size | max data size |
+|---|---|---|---|
+| `chat` | 200 | 256 KiB | 256 KiB |
+| `interaction`, `ambient` | 100 | 64 KiB | 64 KiB |
+| `view`, `panel`, `settings` | 2,000 | 1 MiB | 4 MiB |
 
-A collection counts as one block however many items it binds. Over a
-limit, the server rejects the tree with `413 surface_too_large` naming
-the limit.
+- Sizes are the UTF-8 length of the serialized JSON.
+- A collection counts as one block however many items it binds.
+- A `data:` image URL (§11.1) counts toward whichever of the tree or the
+  data holds it.
+- Over a limit, the server rejects the tree or update with `413
+  surface_too_large` naming the limit.
 
 ## 5. The v1 block set
 
@@ -202,13 +236,13 @@ the limit.
 |---|---|
 | `title`, `subtitle?` | header text (bindable) |
 | `switcher?` | a `choice` field in the header; selecting navigates |
-| `actions?` | header buttons: `{id, label, icon?, action}` |
+| `actions?` | header buttons: `{id, label, icon?, action: Action}` (§6.1) |
 | `sidebar?` | blocks for the list column |
 | `main` | blocks for the body |
 | `detail?` | blocks for a side pane, shown when non-empty |
-| `empty?` | `{icon, title, hint}`, shown in `main` when `main` binds to nothing |
+| `empty?` | `{icon, title, hint}`, shown instead of `main` when `main`'s first collection binds to a missing path, `null` or `[]` |
 
-The host draws the header, the columns, the empty state and their narrow
+The channel draws the header, the columns, the empty state and their narrow
 fallbacks. The extension never positions them.
 
 ### 5.2 Layout
@@ -218,9 +252,9 @@ fallbacks. The extension never positions them.
 | `stack` | `children`, `gap?: s/m/l` | every slot is implicitly a stack; explicit only where a slot takes one block |
 | `columns` | `children: {weight?, minWidth?: s/m/l, block}[]` | stacks when the minimums don't fit |
 | `grid` | `minItemWidth: s/m/l`, `children` with `span?: 1/2/"full"` | as many columns as fit; `span` is capped at the columns available |
-| `section` | `title?`, `subtitle?`, `tone?`, `collapsible?`, `collapsed?`, `actions?`, `children` | also groups fields inside a `form` |
+| `section` | `title?`, `subtitle?`, `tone?`, `collapsible?`, `collapsed?`, `children` | also groups fields inside a `form` |
 
-Width tokens `s`/`m`/`l` are host-defined (the webui maps them to
+Width tokens `s`/`m`/`l` are channel-defined (the webui maps them to
 16/24/32 rem, the TUI to 30/45/60 cells).
 
 ### 5.3 Content
@@ -228,21 +262,21 @@ Width tokens `s`/`m`/`l` are host-defined (the webui maps them to
 | block | props |
 |---|---|
 | `markdown` | `text`. The same renderer as chat (tables, code, links). Raw HTML is escaped. |
-| `fields` | `rows: {label, value, tone?, icon?, copy?: boolean}[]` (label/value pairs) |
-| `stat` | `label`, `value`, `unit?`, `format?`, `delta?`, `tone?`, `icon?`, `size?: s/m/l`, `caption?`, `sparkline?: number[]` |
+| `fields` | `rows: {label, value, tone?, icon?}[]` (label/value pairs) |
+| `stat` | `label`, `value`, `unit?`, `format?`, `tone?`, `icon?`, `size?: s/m/l`, `caption?`, `sparkline?: number[]` |
 | `callout` | `tone`, `title`, `body?` (markdown), `actions?` |
-| `image` | `src` (§11), `alt` (required), `fit?: contain/cover`, `aspect?` |
+| `image` | `src` (§11), `alt` (required). Shown at its own aspect ratio, scaled to the block's width. |
 | `chart` | §5.4 |
 | `meter` | `value`, `min?` (0), `max?` (1), `label?`, `format?`, `thresholds?: {at, tone}[]` |
-| `log` | `lines` (binding to `{at?, level?, text}[]`), `follow?`, `wrap?`, `maxLines?` |
-| `tree` | `nodes` (binding to `{id, label, icon?, hasChildren?, children?}[]`), `expand` action for lazy children, `itemAction?` |
+| `log` | `lines` (binding to `{at?, level?, text}[]`), `follow?`, `wrap?`, `tones?: {[level]: Tone}` (default: `error`→`bad`, `warn`→`warn`, `info`→`neutral`, `debug`→subtle) |
+| `tree` | `nodes` (binding to `{id, label, icon?, hasChildren?, children?}[]`), `onExpand?` (handler for lazy children; it returns a `DataUpdate` inserting them), `onActivate?` |
 | `diff` | `before`, `after`, `path?`, `lang?` (the existing interaction primitive) |
 | `details` | `value` (opaque JSON; shown collapsed and pretty-printed) |
 
 **Formats** (`format` on `stat`, `meter`, table columns, chart axes):
 `number`, `compact` (2.5k), `percent`, `currency:<ISO 4217>`, `bytes`,
 `duration` (ms in, "3h 12m" out), `datetime`, `date`, `time`,
-`relative` ("5 min ago"). Hosts format with the user's locale.
+`relative` ("5 min ago"). Channels format with the user's locale.
 
 ### 5.4 `chart`
 
@@ -251,12 +285,12 @@ Width tokens `s`/`m`/`l` are host-defined (the webui maps them to
 | `title?` | |
 | `x` | `{kind: "time" \| "category" \| "number", format?, label?}` |
 | `y?` | `{format?, unit?, label?, min?, max?}` |
-| `series` | `{name, kind: "line" \| "area" \| "bar", data: binding \| [x, y][], tone?}[]` |
+| `series` | `{name, kind: "line" \| "area" \| "bar", data: binding \| [x, y][]}[]` (colours come from the theme's series palette, in order) |
 | `stacked?` | stack `area` and `bar` series |
 | `thresholds?` | `{at, tone, label?}[]` drawn as horizontal rules |
 
 - Series kinds can be mixed in one chart (line over bars). One y-axis.
-- Data points per series: at most 2,000. The host downsamples for
+- Data points per series: at most 2,000. The channel downsamples for
   display (largest-triangle-three-buckets for line and area).
 - TUI: Braille-dot lines and areas, block-character bars, a legend line.
 - Narrow fallback: fewer ticks and the legend below; below 30 cells or
@@ -273,16 +307,17 @@ One block for every set of items.
 | `display` | `list` \| `table` \| `lanes` \| `grid` \| `calendar` |
 | `groupBy?` | item field to group on |
 | `groups?` | ordered `{id, title, tone?, collapsed?}[]`; with `lanes` these are the lanes |
-| `sort?`, `filter?` | initial sort and filter (users can change them; view-only) |
+| `sort?` | initial order, `{field, dir: "asc" \| "desc"}`; users can change it (view-only). Filtering is a `form(mode: live)` bound under `/view/` (§6.2), not a collection prop. |
 | `select?` | `single` \| `multi` |
-| `bulkActions?` | actions offered when multi-select has a selection |
-| `checkable?` | item field holding a boolean; toggling is an edit action |
-| `reorder?` | `{within?: boolean, across?: boolean}` (and time moves for `calendar`) |
+| `bulkActions?` | `{id, label, icon?, onSubmit, form?: Tree}[]`, offered when multi-select has a selection. With `form`, choosing the action opens that small form (e.g. a status `choice`) and its values ride the payload with the selected ids. |
+| `checkable?` | item field holding a boolean; toggling it calls `onCheck` (an edit, §6.2) |
+| `reorder?` | `{within?: boolean, across?: boolean}` (and time moves for `calendar`); requires `onMove` |
 | `children?` | item field holding nested items (indented in `list`) |
 | `numbered?` | `list` only |
-| `itemAction?` | action when an item is activated |
-| `columns?` | `table` only: `{field, label, format?, sortable?, priority?: "high" \| "low", width?}[]` |
-| `time?` | `calendar` only: `{start, end?, allDay?}` item fields, `range: month \| week \| day \| agenda`, `resize?`, `createByDrag?` |
+| `onMove?`, `onCheck?` | handler names (§6.1) for moves and checkbox toggles |
+| `onActivate?` | an `Action` run when an item is activated (click, Enter): usually `navigate({item: id})` |
+| `columns?` | `table` only: `{field, label, format?, cell?: "text" \| "meter" \| "badge", sortable?, priority?: "high" \| "low", width?: s/m/l}[]`. `meter` draws the value (0–1) as a bar, `badge` as a badge with the item's tone. |
+| `time?` | `calendar` only: `{start, end?, allDay?}` item fields, `range: month \| week \| day \| agenda`, `onResize?` (handler; enables dragging an item's end), `onCreate?` (handler; enables drag-to-create, payload `{start, end}`) |
 | `overflow?` | `grid` only: `wrap` (default) \| `scroll` (one horizontal row) |
 
 Display behaviour:
@@ -307,10 +342,13 @@ Display behaviour:
 | `image` | top image (grid) or thumbnail (list) |
 | `icon` | named icon (§10.2) |
 | `badges` | `{text, tone?}[]` |
-| `meta` | inline facts: `{icon?, text}` or `{person: user}` or `{time, format}` |
+| `meta` | inline facts: `{icon?, text}` or `{person: {user, name}}` (the extension supplies the display name; there is no non-admin user directory) or `{time, format}` |
 | `metrics` | `{label, value, format?}[]` |
 | `tone` | accent stripe / TUI marker |
 | `actions` | up to 3 buttons, then an overflow menu |
+| `status` | `{label, tone?, spinner?: boolean}`: a status badge; with `spinner`, an activity indicator beside the label (ambient progress rows) |
+| `quiet` | boolean: the item is folded away by default behind an "N more" toggle (pi-warden's quiet verdicts) |
+| `deps` | ids of items this one depends on, shown as "after: …" markers (task lists with blockers). Distinct from `children`, which nests. |
 
 Every slot except `title` is optional; each takes a binding relative to
 the item.
@@ -323,18 +361,20 @@ the item.
 |---|---|
 | `bind` | path of the object the fields read and write |
 | `mode` | `submit` (a Save/Send button), `live` (every change is applied after 300 ms; for filters), `inline` (one row, field plus button; for quick-add) |
-| `submit?` | the submit action (§6) and its `label` |
+| `onSubmit?`, `submitLabel?` | the handler name (§6.1) and the button label; `turn?` (chat only, §6.2) |
 | `children` | fields and `section`s grouping them |
 
 **`choice` options for interactions:** `preview` is markdown shown
-beside the options while one is focused (the webui shows it
-side by side when there's room, the TUI below the list); `allowOther`
-adds a free-text answer row whose value is returned as `{other: text}`.
+beside the options while one is focused (the webui shows it side by side
+when there's room, the TUI below the list); `allowOther` adds a free-text
+answer row. A `choice` field's value is the selected id (single) or ids
+(`multi`); with `allowOther` and text entered, it is `{other: text}`
+(single) or the ids plus `{other: text}` as the last element (`multi`).
 
 **Field props, shared by all field types:** `name`, `label`, `help?`,
 `placeholder?`, `required?`, `disabled?`, `apply?` (§13; settings only),
 validation (`min`, `max`, `minLength`, `maxLength`, `pattern`), and a
-server error the host shows under the field.
+server error the channel shows under the field.
 
 | field | extra props |
 |---|---|
@@ -342,11 +382,11 @@ server error the host shows under the field.
 | `longtext` | `syntax?: plain \| markdown \| code`, `lang?`, `rows?` |
 | `number` | `step?`, `format?` |
 | `toggle` | |
-| `choice` | `options` (literal or binding): `{id, label, description?, tone?, recommended?, preview?}[]`, `multi?`, `allowOther?: {label?}`, `display?: auto \| radio \| select \| chips` |
+| `choice` | `options` (literal or binding): `{id, label, description?, tone?, recommended?, preview?}[]`, `multi?`, `allowOther?: {label?}`. The channel picks radio buttons, a select or a list by option count and width. |
 | `date`, `datetime` | `min?`, `max?` |
 | `daterange` | `presets?: {id, label, duration}[]` |
-| `secret` | write-only; the host shows `set (stored)` / `set (env)` / `not set` from a bound status |
-| `file` | `accept?` (MIME patterns), `maxBytes?`, `multi?`; uploads through the surface's upload route (§7.2) |
+| `secret` | write-only; the channel shows `set (stored)` / `set (env)` / `not set` from a bound status |
+| `file` | `accept?` (MIME patterns), `maxBytes?`, `multi?`, `onUpload` (handler); uploads through the surface's upload route (§7.2) |
 | `list` | `item`: fields for one entry; `reorder?`, `min?`, `max?` (a repeatable group) |
 
 ### 5.7 Allowed blocks per placement
@@ -357,11 +397,13 @@ server error the host shows under the field.
 | layout blocks | ✓ | ✓ | `section` only | ✓ | `stack`, `section` | `stack`, `columns` |
 | `markdown`, `fields`, `callout`, `diff`, `details` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `stat`, `meter`, `log` | ✓ | ✓ | — | ✓ | — | ✓ |
-| `chart`, `image`, `tree` | ✓ | ✓ | — | ✓ | `image` | — |
+| `chart`, `image`, `tree` | ✓ | ✓ | — | ✓ | — | — |
 | `collection` | ✓ | ✓ | `list`, `table` | ✓ | `list` | `list` |
 | `form` | ✓ | ✓ | root, required | ✓ | root, required | — |
+| fields allowed in `form` | all | all | all but `file` | all but `secret` | `text`, `longtext`, `number`, `toggle`, `choice`, `secret` | — |
 
-Validation rejects a tree that uses a block its placement doesn't allow.
+Validation rejects a tree that uses a block or field its placement
+doesn't allow, and a `turn` flag outside `chat` (§6.2).
 
 ## 6. Actions
 
@@ -382,51 +424,76 @@ type CoreTarget =
   | { view: { extension: string; id: string; params?: JsonObject } };
 ```
 
-- `name` is the handler name the extension registered (§7.1). The host
-  sends `{action: name, payload, actionId}`.
-- `actionId` is a client-generated UUID. Handlers are invoked at most
-  once per `actionId` (the host keeps a 10-minute dedup window per
-  surface), so retries are safe.
+- `Action` objects appear where a block offers buttons: `page.actions`,
+  card `actions`, `callout.actions`, and `onActivate`.
+- Blocks with built-in gestures name their handler with a prop instead:
+  `onMove`, `onCheck`, `onExpand`, `onResize`, `onCreate` (collection and
+  tree), `onSubmit` (form, bulk action), `onUpload` (file field).
+  `validateTree` resolves each to the matching `Action` (`move`, `edit`
+  for check/expand/resize, `submit` for create/submit/upload).
+- `name` is a key of the surface's `actions` map (§7.1). A name with no
+  handler fails validation. The channel sends `{action: name, payload,
+  actionId}`.
+- `actionId` is a channel-generated UUID. The **server** invokes a
+  handler at most once per `actionId` (a 10-minute dedup window per
+  surface instance), so retries are safe.
+- `open` allows `https:`, `http:` and `mailto:` URLs only.
 
 ### 6.2 Three kinds (ruling 14)
 
 | kind | examples | where it goes | starts a turn |
 |---|---|---|---|
-| **view-only** | sort, filter, page, expand/collapse, select, copy, lane switch, `form(mode: live)` over view-only state, `navigate(params)` | nowhere: the host applies it to the surface's view state | never |
+| **view-only** | sort, filter, page, expand/collapse, select, copy, lane switch, `form(mode: live)` over view-only state, `navigate(params)` | nowhere: the channel applies it to the surface's view state | never |
 | **edit** | `move`, `edit` (checkbox, inline field), `submit` with `turn: false` | the placement's handler (§6.4); the change is saved | only with `turn: true` |
 | **answer** | `submit` (default `turn: true`), any action with `turn: true` | the placement's handler, then a turn | yes |
 
 - A `form(mode: live)` is view-only when its `bind` path is under
-  `/view/` (the surface's view-state branch, which the host owns and
-  never sends to the handler). A live form bound elsewhere is an edit.
+  `/view/` (the surface's view-state branch, which the channel owns and
+  never sends to the server). A live form bound elsewhere is an edit.
   This is how a filter over agent-generated data stays local.
+- **`turn` is valid only in the `chat` placement.** Elsewhere a turn is
+  the handler's decision (§6.4), and validation rejects the flag rather
+  than silently ignoring it.
 - `navigate` with `params` re-renders the surface with new params; with
   `target` it leaves the surface.
 
 ### 6.3 Optimistic moves (ruling 11)
 
-1. The host applies the move to its copy of the data at once.
-2. It sends `{action, payload: {itemId, from: {group?, index}, to: {group?,
-   index?, start?, end?}}, actionId, rev}`.
-3. The handler accepts or rejects:
-   - **accept** → it returns (or publishes) a `DataUpdate`. That update
-     is authoritative: it replaces the host's optimistic state, for this
-     client and every other viewer.
-   - **reject** → `{error: {message}}`. The host reverts and shows the
-     message as a toast.
-4. A handler that hasn't answered in 10 s counts as a reject.
+The channel keeps two layers: **confirmed data** (exactly what the
+server has sent, at its `rev`) and an **optimistic overlay** (pending
+actions, keyed by `actionId`). It renders confirmed data with the overlay
+applied on top.
 
-Concurrent moves need no locking: each is applied in arrival order by
-the handler, and the data updates converge every viewer.
+1. The channel adds the move to the overlay and renders it at once.
+2. It sends `{action, payload: {itemId, from: {group?, index}, to: {group?,
+   index?, start?, end?}}, actionId}`.
+3. The handler accepts or rejects:
+   - **accept with an update** → the server applies the ops, assigns the
+     next `rev`, returns it, and announces it to other viewers (§7.3).
+     The channel applies the ops to confirmed data and drops that
+     action's overlay entry.
+   - **accept without an update** (`{ok: true}`) → the handler took the
+     move as sent. The server applies the move itself as a `DataOp.move`,
+     so the next `rev` and every other viewer see it. Without this, the
+     next refetch would silently undo the drag.
+   - **reject** → `{error: {message}}`. The channel drops the overlay
+     entry (the item snaps back) and shows the message as a toast.
+4. A handler that hasn't answered in 10 s counts as a reject.
+5. Server ops always apply to confirmed data, never to the overlay, so an
+   update that arrives while a move is pending can't duplicate or lose an
+   item.
+
+Concurrent moves need no locking: the server applies them in arrival
+order, and the resulting updates converge every viewer.
 
 ### 6.4 Routing per placement
 
 | placement | handler | how a turn starts |
 |---|---|---|
-| `view`, `panel` | the extension's action handler (§7.1) | the handler calls `host.conversations.submit(...)` (W5) if it wants one; `turn` flags are not used |
+| `view`, `panel` | the extension's action handler (§7.1) | the handler calls `host.conversations.submit(...)` (W5) if it wants one |
 | `settings` | core: validate, store, publish `settings.changed` (§13) | never |
 | `chat` | core: §8 | the core submits for the user (§8.4) |
-| `interaction` | core answer route; the extension sees the answer as today | the existing interaction semantics |
+| `interaction` | core answer route; the extension receives `{values}` (§9.1) | the existing interaction semantics |
 | `ambient` | the extension's ambient action handler | as for `view` |
 
 ### 6.5 Access
@@ -434,10 +501,23 @@ the handler, and the data updates converge every viewer.
 - Every surface render and every action carries the principal (W1).
 - Extension surfaces: the extension's `render` and handlers receive the
   principal and do their own `accessOf` checks (core-hardening §5.9).
-- The host also reads an `access: "read" | "write"` the render returns.
-  With `read`, the host hides every edit and answer action and disables
-  `reorder`, `checkable`, inputs and bulk actions. The extension doesn't
-  build a second tree for read-only users.
+- `render` returns `access: "none" | "read" | "write"` for the principal:
+  - `none` → `404 surface_not_found` on the surface, data, action and
+    upload routes (indistinguishable from a surface that doesn't exist),
+    no events, and no rail entry;
+  - `read` → the channel hides every edit and answer action and disables
+    `reorder`, `checkable`, inputs and bulk actions. The extension doesn't
+    build a second tree for read-only users;
+  - `write` → everything.
+- **The server enforces it per principal.** It caches the result of each
+  render keyed by `(slug, id, key, principal.user)` for 60 seconds.
+  - An action from a principal whose cached access is `read` gets `403`;
+    `none` gets `404`.
+  - A cache miss (expired, or never rendered) is not an allow: the server
+    calls `render` for that principal first and uses its answer.
+  - One principal's render never changes another's access.
+- Handlers still check `accessOf` themselves; the server check is defence
+  in depth, not the extension's only guard.
 - Chat surfaces: access follows the conversation (`read` sees the
   blocks; `write` can edit and answer).
 
@@ -461,18 +541,25 @@ interface SurfaceDef<P> {
   icon: IconName;
   placement: P;
   sharedData?: boolean;                      // data is identical for every principal with access (§7.3)
-  refreshMs?: number;                        // the host refetches data on this interval while visible (min 5000)
-  render(ctx: SurfaceContext): Promise<{ tree: Tree; data: JsonObject; access: "read" | "write" }>;
-  data?(ctx: SurfaceContext): Promise<JsonObject>;   // data-only refetch; defaults to render().data
+  refreshMs?: number;                        // channels refetch data on this interval while visible (min 5000)
+  instanceKey?(params: JsonObject): string;  // §7.3; default: canonical JSON of params
+  render(ctx: SurfaceContext): Promise<{ tree: Tree; data: JsonObject; access: "none" | "read" | "write" }>;
+  data?(ctx: SurfaceContext): Promise<{ data: JsonObject; access: "none" | "read" | "write" }>;
   actions?: Record<string, (ctx: SurfaceContext, payload: JsonValue) => Promise<ActionResult>>;
-  uploads?: (ctx: SurfaceContext, file: UploadedFile) => Promise<ActionResult>;
 }
 
 interface SurfaceContext {
   principal: Principal;
   params: JsonObject;                        // from navigate(params); validated as JSON, size-capped at 4 KiB
-  key: string;                               // stable instance key derived from params (§7.3)
+  key: string;                               // instanceKey(params)
   signal: AbortSignal;
+}
+
+interface UploadedFile {                     // the payload of an onUpload handler
+  field: string;                             // the file field's name
+  name: string;                              // client-supplied filename, sanitised to a basename
+  mime: string;                              // sniffed, not trusted from the client
+  bytes: Uint8Array;                         // capped by the field's maxBytes and server.maxUploadBytes
 }
 
 type ActionResult =
@@ -482,6 +569,11 @@ type ActionResult =
 
 - Surfaces are validated at load. A malformed `surfaces` field
   quarantines the extension (the loader's existing fail-loud rule).
+- `data()` is required when `refreshMs` is set or when the extension
+  calls `changed` for the surface; without it, a data refetch would re-run
+  `render`.
+- Uploaded bytes go to the `onUpload` handler and nowhere else. Core keeps
+  no copy; the extension stores what it wants in its own stores.
 - The rail shows views in the user's saved order (a client preference,
   like hermes' tab order), after the core entries.
 
@@ -492,10 +584,15 @@ All under W5's extension prefix, with W1's auth pipeline:
 | route | returns |
 |---|---|
 | `GET /v1/ext/<slug>/surfaces/<id>?params=<json>` | `{tree, data, rev, treeRev, access}` |
-| `GET /v1/ext/<slug>/surfaces/<id>/data?params=<json>&since=<rev>` | `{rev, data}` or `{rev, ops}` when the server holds the ops since `since` |
-| `POST /v1/ext/<slug>/surfaces/<id>/actions` | body `{action, payload, actionId, params, rev}` → `ActionResult` |
-| `POST /v1/ext/<slug>/surfaces/<id>/uploads` | multipart, size-capped by the field's `maxBytes` (server max `server.maxUploadBytes`) → `ActionResult` |
+| `GET /v1/ext/<slug>/surfaces/<id>/data?params=<json>&since=<rev>` | `{rev, treeRev, data}`, or `{rev, treeRev, ops}` when the server holds the ops since `since` |
+| `POST /v1/ext/<slug>/surfaces/<id>/actions` | body `{action, payload, actionId, params}` → `ActionResult` |
+| `POST /v1/ext/<slug>/surfaces/<id>/uploads?field=<name>&params=<json>` | raw `application/octet-stream` body with an `X-Filename` header (the same shape as core uploads, core-hardening W2), capped by the field's `maxBytes` and `server.maxUploadBytes` → `ActionResult` |
 | `GET /v1/ext/<slug>/assets/<path>` | static files from the package's declared `assets` dir (§11) |
+
+- **Reserved prefixes.** `surfaces/` and `assets/` under
+  `/v1/ext/<slug>/` belong to core. An extension that declares an HTTP
+  route (core-hardening W5 §9.2) starting with either is quarantined at
+  load, naming the route.
 
 A surface that throws in `render` or a handler returns `500
 surface_failed`; the channel shows an error state with a retry button.
@@ -504,11 +601,24 @@ The extension stays loaded.
 ### 7.3 Live updates
 
 - Extensions publish changes with `host.surfaces.changed(id, key, update?)`.
-  `key` identifies the instance (a board id, a calendar id). The default
-  key is the canonical JSON of `params`.
-- The server sends `surface.changed {slug, id, key, rev, treeRev}` on
-  `/v1/events` (W3) to every connected principal subscribed to that
-  surface instance. **The event carries no data.**
+  `key` identifies the instance (a board id, a calendar id): the same
+  string `instanceKey(params)` returns for that instance.
+- **Watchers.** The server keeps a registry of who is looking at what:
+  - an entry is `(stream, slug, id, key)`, where `stream` is a
+    `/v1/events` connection. Its id is sent in the stream's first frame,
+    and channels send it as `X-Sigrun-Stream` on surface and data fetches;
+  - a fetch creates or refreshes the entry. It is dropped when its stream
+    closes, or 10 minutes after the last fetch. Channels make a `since`
+    fetch every 5 minutes while a surface is visible, which keeps the entry
+    alive and costs nothing when nothing changed;
+  - only principals with a registry entry get the event, and only after
+    their cached access (§6.5) for that instance is not `none`.
+- The event is `surface.changed {slug, id, k, rev, treeRev}`, where `k` is
+  `sha256(slug + "\0" + id + "\0" + key)` in hex. Params never appear in
+  events. **The event carries no data.**
+- Event types are an open set: channels ignore types they don't know.
+  This spec adds `surface.changed` and `settings.changed` (§13.2) to W3's
+  §7.4 list.
 - Each channel then fetches `…/data?since=<rev>` as its own principal.
   This is why events don't carry data: `render` and `data` are
   principal-specific, so pushing one principal's data to another would
@@ -539,10 +649,17 @@ Two core tools, available to every agent:
     retry.
   - The tool result the model sees is the text projection (§14.3) of the
     tree and its initial data, plus the `entryId`.
+  - The transcript shows the surface in place of the tool call: channels
+    render a `show_blocks` tool call whose result names an `entryId` as
+    that surface, not as a separate tool row.
 - **`update_blocks {entryId, ops}`** applies `DataOp`s to one of the
-  conversation's own block surfaces. It records no change note (the
+  conversation's own block surfaces. It records no change record (the
   agent made the change), and is how an agent keeps a progress table or
   a live chart current.
+  - Its result is the surface's text projection after the ops, so the
+    model always sees the current state. This matters after user edits:
+    an op written against stale indexes shows up as a visibly wrong
+    result instead of silently misplacing an item.
 
 The tool descriptions teach the action kinds in two sentences:
 "Interactive elements save the user's edits silently; you'll receive a
@@ -555,10 +672,37 @@ needs an immediate reply."
 - The surface is a typed pi-durable entry, kind `sigrun.blocks`:
   `{title, tree, data}` as created. It never changes.
 - Its live state is a conversation-scoped document family,
-  `sigrun.blocks.state`, keyed by entry id: `{rev, data, pending:
-  ChangeRecord[]}`. Forks copy it, so a fork starts from the state at
-  the fork point.
-- `ChangeRecord = {at, by: user, action, summary, opsRev}`.
+  `sigrun.blocks.state`, keyed by entry id:
+  `{rev, data, changes: ChangeRecord[], notedThrough: number}`.
+  - `ChangeRecord = {seq, at, by: user, action, summary}`; `seq` is
+    monotonic per surface.
+  - `notedThrough` is the highest `seq` already sent to the agent in a
+    change note (§8.3). Records at or below it are trimmed when more than
+    50 have accumulated.
+- **Forks (ruling 19).** The family is declared `history: "rewindable",
+  fork: "asOf"`. pi-durable copies `asOf` documents as they were at the
+  forked entry's commit (`session/forks.js`), so a fork gets the state,
+  `rev`, change records and `notedThrough` exactly as they were at the
+  fork point. After that, the parent's and the child's copies are
+  separate documents and diverge. Forking at the latest entry gives the
+  current state.
+  - The cost is retained history for as-of reads. The family's
+    `checkpointWhen` takes a full snapshot every 100 ops, so one edit is
+    one small op, not a copy of the data.
+- **Chat surfaces use the surface machinery of §7.** Their address is
+  `(conversationId, entryId)` instead of `(slug, id, key)`:
+  - `GET /v1/conversations/:id/blocks/:entryId` returns `{tree, data,
+    rev, treeRev: 0, access}`, `…/data?since=` and `…/actions` mirror
+    §7.2;
+  - access is the conversation's (`read` sees, `write` edits and
+    answers; hidden is 404, core-hardening §5.9);
+  - changes announce `surface.changed {conversation, entry, rev}` to
+    watchers (§7.3). Chat data is the same for everyone who can see the
+    conversation, so ops are kept and returned like `sharedData`
+    surfaces.
+  - The conversation view stream does not carry block state. Its
+    documents are keyed by kind and have no slot for per-entry family
+    members (`harness/view.d.ts`).
 
 ### 8.3 Edits and change notes
 
@@ -571,14 +715,34 @@ needs an immediate reply."
   tree, using labels the user saw: "moved 'Clair de Lune' from 4th to
   1st in 'Ranking'", "checked 'milk' in 'Shopping'", "set 'Notes' to
   '…'".
-- **At the start of the agent's next turn** (whatever starts it), core
-  appends one context entry for all surfaces with pending changes, then
-  clears `pending`:
+- **Before the agent's next turn,** core writes one change note covering
+  every surface with records above `notedThrough`:
+  - **Where:** in core's submit path (the one every turn starter goes
+    through: the composer route, block answers, jobs and W5's
+    `host.conversations.submit`), immediately before the input that
+    starts the turn is submitted;
+  - **How:** a `type: "write"` submission whose entry
+    (`kind: "sigrun.blocks.note"`) carries the note as a `model` user
+    message. pi-durable appends it at once when the conversation is idle,
+    and queues it in `pi.inbox` ahead of the input when it's busy, so the
+    note always precedes the input it belongs to (a steer included);
+  - **Exactly once:** the write's `requestId` is
+    `blocks-note:<conversationId>:<sha of the noted (entryId, seq) set>`.
+    `notedThrough` advances after the write is admitted. A crash between
+    the two re-sends the same note under the same `requestId`, which
+    pi-durable deduplicates (`submissionByRequest`);
+  - **Mid-run inputs:** a note queued while busy is placed at the next
+    boundary along with its input, so the agent sees it mid-run, exactly
+    when it sees the steer. That is the intended behaviour.
 
-  > Changes the user made to your UI since your last turn:
-  > • Ranking: moved 'Clair de Lune' 4th → 1st; moved 'Gymnopédie' 5th → 2nd.
+  The note reads:
+
+  > Changes made to your UI since your last turn:
+  > • Ranking (alice): moved 'Clair de Lune' 4th → 1st; moved 'Gymnopédie' 5th → 2nd.
   > Current state of Ranking: 1. Clair de Lune 2. Gymnopédie 3. …
 
+  - Each line names who made the change; conversations can be shared with
+    `write` access (core-hardening §5.9).
   - Each changed collection's **current state** follows its changes, so
     the agent never has to replay moves.
   - Over 50 change lines per surface, the oldest are summarised as
@@ -593,21 +757,31 @@ needs an immediate reply."
   submit a user message for the acting user, through the normal
   submission path (W3 async submit; it steers when the agent is busy,
   exactly as the composer does).
-- The message carries:
-  - a text projection: "Submitted 'Ranking': 1. Clair de Lune 2. …";
-  - a structured part `{blocksAnswer: {entryId, action, payload,
-    state}}` for agents that read structure;
-  - any pending changes for that surface, folded in rather than sent
-    again in the next change note.
-- The message is idempotent per `actionId`: `requestId =
-  "blocks:" + actionId`.
+- The submission is:
+
+  ```ts
+  { type: "input",
+    content: textProjection,              // "Submitted 'Ranking': 1. Clair de Lune 2. …"
+    entry: { kind: "sigrun.blocks.answer",
+             data: { entryId, action, payload, state } },
+    requestId: "blocks:" + actionId }
+  ```
+
+  - `content` is what the model sees. The `entry` (pi-durable's
+    `InputEntry`) is what channels show, and what agents and extensions
+    reading structure use.
+  - The surface's unnoted change records are folded into `content` and
+    `notedThrough` advances, so they aren't sent again in a change note.
+  - `requestId` makes a double click one turn.
 
 ### 8.5 Worked example: ranking songs
 
 1. User: "help me pick the playlist order."
 2. The agent calls `show_blocks` with a `collection(display: list,
-   numbered: true, reorder: {within: true})` bound to `/songs`, and a
-   `form` with one `submit` labelled "Use this order".
+   numbered: true, reorder: {within: true}, onMove: "reorder")` bound to
+   `/songs`, and a `form(onSubmit: "useOrder", submitLabel: "Use this
+   order")`. In chat, handler names are labels core reports back; core
+   handles the edits itself (§8.3).
 3. The user drags songs around for a while. Each drag is a saved edit
    with a `ChangeRecord`. No turns.
 4. The user asks, mid-way, "does this flow well?" The next turn carries
@@ -632,10 +806,16 @@ needs an immediate reply."
   | `fields[]` | `text` / `number` / `toggle` / `secret` fields |
   | `diff` | `diff` |
   | `details` | `details` |
-  | `answer {ids, values, text}` | the form's values: the `choice` field's value is `ids`, the other fields are `values`, a `longtext` named `text` is `text` |
+  | `answer {ids, values, text}` | `{values: {<field name>: value}}`: every field's value under its name (ruling 20). A `choice` value is its id or ids (§5.6). |
 
-- The envelope (`key`, `interactionKinds`, `expiresAt`, `answeredBy`,
-  first-answer-wins) is unchanged. The answer route is unchanged.
+- `tone` values use the block tones: today's `danger` becomes `bad`, `ok`
+  becomes `good`; `warn` and `neutral` are unchanged.
+- **The envelope is unchanged:** `kind`, `callId`, `status`, timestamps
+  (`createdAt`, `expiresAt?`, `answeredAt?`), `answeredBy?`, `answer`,
+  and first-answer-wins. The extension still declares its kinds through
+  the factory result's `interactionKinds`.
+- **The answer route keeps its path; its body becomes `{values}`.**
+  Nothing depends on the old shape once approvals is deleted.
 - **No compatibility layer** (ruling 16). The only extension that writes
   interaction records today is `sigrun-ext-approvals`, which is being
   deleted (core-hardening §1). No other `sigrun-ext-*` repo writes
@@ -650,32 +830,37 @@ needs an immediate reply."
     as the title) holding one `choice` with 2–4 options, `multi`,
     per-option `description` and `preview`, and a free-text answer
     (`allowOther`). `preview` and `allowOther` are the two `choice`
-    props added for it (§5.6);
+    props added for it (§5.6). Its answer is `{values: {q1: …, q2: …}}`,
+    one entry per question;
   - pi-warden: an allow/deny `choice` with tones, a `longtext` reason,
     `markdown` for the matched rule and command, and its verdict stack
-    as an ambient `collection` with severity tones.
+    as an ambient `collection` with severity tones, `quiet` items folded
+    away (§5.5.1).
 - When an interaction form has more than one `section` holding a
   `choice`, channels may present the sections one at a time (a step
-  through, with a review before submit). That's a host presentation of
+  through, with a review before submit). That's a channel presentation of
   the same tree, not a new block.
 
 ### 9.2 Ambient surfaces
 
-- Records gain `body: Tree` (placement `ambient`). The envelope
-  (`key`, `place: status | panel`, `budget`, `expires`, `refresh`) is
-  unchanged.
+- Records carry `body: Tree` (placement `ambient`) in place of today's
+  `body`. **The envelope is unchanged:** `key`, `owner`, `place: "status"
+  | "footer" | "panel"`, `maxRows?`, `overflow?: "drop" | "wrap" |
+  "summarize"`, `refreshMs?`, `expires: "never" | "idle"`, `updatedAt`,
+  and `details?` (`shared/src/ambient.ts`).
 
   | today | tree |
   |---|---|
   | `line {text}` / `segments[]` | one-line `markdown`; segments are a `columns` of one-line `markdown`s |
   | derived metrics with `format` | `stat` with `format` |
-  | `rows[]` (status, severity, depth, deps, metrics) | `collection(display: list)` with `badges`, `tone`, `children`, `metrics` |
+  | `rows[]` (status, severity, quiet, depth, deps, spinnerLabel, metrics) | `collection(display: list)`: `status` (with `spinner`), `tone`, `quiet`, `children` (depth), `deps`, `metrics` |
   | `gauge` | `meter`, plus `log` for `recentOutput` and a nested `collection` for `checks` |
   | `ledger[]` | `log` |
   | `details` | `details` |
 
-- `place: status` allows one line: a single `markdown` or one `columns`
-  of one-line blocks. Validation enforces it.
+- `place: status` and `place: footer` allow one line: a single
+  `markdown` or one `columns` of one-line blocks (the footer's left /
+  middle / right zones are three columns). Validation enforces it.
 - No compatibility layer, as for interactions: records carry trees only.
 
 ## 10. Styling and icons
@@ -685,8 +870,7 @@ needs an immediate reply."
 - Extensions never set colours, fonts, pixel sizes or spacing values.
   They set:
   - `tone`: `neutral`, `accent`, `good`, `warn`, `bad`, `info`;
-  - `size`: `s`, `m`, `l` where a block offers it;
-  - `emphasis`: `normal`, `strong`, `subtle` on text-bearing slots.
+  - `size`: `s`, `m`, `l` where a block offers it (`stat`).
 - Each tone maps to the active theme's tokens (`shared/src/themes.ts`:
   4 palettes × 7 accents × light/dark). `accent` is the user's accent.
 - The TUI maps tones through the same tokens via its existing
@@ -712,39 +896,73 @@ needs an immediate reply."
 
 | `src` | rule |
 |---|---|
-| `asset:<path>` | a file from the extension package's `assets` directory (declared in its package manifest `sigrun.assets`), served at `/v1/ext/<slug>/assets/<path>`; path traversal rejected |
-| `data:image/png\|jpeg\|gif\|webp;base64,…` | up to 512 KiB, counted in the data limit |
-| `https://…` | rewritten by the server to the proxy (§11.2) before the tree leaves the server |
+| `asset:<path>` | a file from the extension package's `assets` directory (declared in its package manifest as `sigrun.assets`), served at `/v1/ext/<slug>/assets/<path>` |
+| `data:image/png\|jpeg\|gif\|webp;base64,…` | at most 192 KiB of base64 text; counts toward the tree or data limit that holds it (§4.5) |
+| `https://…` | rewritten by the server to the proxy (§11.2) before the tree or data leaves the server |
 
-SVG is never accepted (it can carry script). `http:` URLs are rejected.
+- SVG and AVIF are never accepted. SVG can carry script; AVIF has no
+  decoder in pi-tui. `http:` URLs are rejected.
+- **Assets are public to every signed-in user,** like any static file of
+  an installed package. Extensions don't put private data in `assets`.
+- **Asset paths are resolved with `realpath`** and must stay inside the
+  package's assets directory, so `..` segments and symlinks out of it are
+  both rejected with 404. The same check applies to `asset:` sources
+  when a tree is validated.
 
 ### 11.2 The proxy (ruling 12)
 
-- `GET /v1/image?u=<url>&s=<sig>`, authenticated like every route.
-- `s` is an HMAC of the URL with a server key. The server signs only
-  URLs that appear in a tree it is serving, so the proxy can't be used to
-  fetch arbitrary URLs.
-- Fetch rules:
+- `GET /v1/image?u=<url>&e=<expiry>&s=<sig>[&as=png]`, authenticated like
+  every route.
+- **Signing.**
+  - `s` is HMAC-SHA256 over the exact bytes `u + "\n" + e`, where `u` is
+    the URL string as it appeared in the tree. The server never
+    re-parses or re-encodes `u` between verifying and fetching.
+  - `e` is an expiry 24 hours after signing. The server signs URLs only
+    when serving a tree or data that contains them, so the proxy can't be
+    used to fetch arbitrary URLs.
+  - The key is 32 random bytes in `<stateDir>/image-proxy.key`, created
+    at first boot. Deleting the file rotates it: old signatures fail and
+    channels re-fetch the surface, which re-signs.
+  - Signatures are not bound to a user. A signed URL copied to another
+    signed-in user works for them until it expires. That reveals nothing
+    the URL didn't already.
+- **Fetching** (no DNS rebinding):
   - https only;
-  - DNS-resolve first and refuse loopback, private, link-local, CGNAT
-    and unique-local ranges, re-checked on every redirect (max 3);
-  - 10 s timeout, 10 MiB cap;
-  - the response must sniff as PNG, JPEG, GIF, WebP or AVIF.
-- Cache: under the data dir, keyed by URL hash, 256 MiB LRU,
-  `max-age` clamped to between 1 hour and 7 days.
-- Served same-origin with `X-Content-Type-Options: nosniff` and
-  `Content-Security-Policy: default-src 'none'`.
+  - the server resolves the host once, checks every returned address,
+    and connects only to a checked address. It passes a custom `lookup`
+    to the HTTP agent that returns the vetted address, so the connection
+    can't re-resolve. TLS SNI and `Host` keep the original name;
+  - refused ranges: loopback, `0.0.0.0/8`, RFC 1918 private, link-local,
+    CGNAT `100.64.0.0/10`, unique-local `fc00::/7`, multicast, and
+    IPv4-mapped IPv6 forms of all of them (`::ffff:127.0.0.1`);
+  - redirects: at most 3 in total, each target re-resolved and re-checked
+    the same way, and https only;
+  - 10 s total timeout, 10 MiB cap;
+  - the body must sniff as PNG, JPEG, GIF or WebP.
+- **Cache:** `<cacheDir>/images/` (pod-local and outside backups, like the
+  other cache roots), keyed by URL hash, 256 MiB LRU, `max-age` clamped to
+  between 1 hour and 7 days.
+- **PNG conversion (ruling 17):** with `as=png`, the server converts the
+  image to PNG with `sharp` (a server dependency) and caches the result
+  beside the original. The TUI asks for it; the webui doesn't.
+- Responses carry `X-Content-Type-Options: nosniff`. The webui's own CSP
+  (`img-src 'self' data:`) is what stops images loading from elsewhere.
 - Failures render the block's `alt` text.
 
 ### 11.3 In the TUI (ruling 13)
 
-- The TUI fetches the same URLs with the user's credentials and renders
-  them with pi-tui's `Image` component (base64 data + MIME type) when
-  `getCapabilities().images` is `"kitty"` or `"iterm2"`.
+- The TUI fetches images with the user's credentials (proxied URLs with
+  `as=png`; assets and data URLs converted the same way through
+  `GET /v1/image?as=png&src=asset:…` for non-PNG files) and renders them
+  with pi-tui's `Image` component when `getCapabilities().images` is
+  `"kitty"` or `"iterm2"`. pi-tui draws only PNG on Kitty without a
+  registered transcoder; converting server-side avoids needing one.
 - Otherwise it shows `[image: <alt>]`.
 - Images are sized to the block's width in cells and capped at 20 rows.
-- Inside tmux, image passthrough depends on tmux's `allow-passthrough`.
-  The TUI keeps pi-tui's detection; the test list (§16) covers tmux.
+- **tmux:** pi-tui turns images off whenever `TMUX` is set
+  (`terminal-image.js`); setting `PI_IMAGE_PROTOCOL=kitty|iterm2`
+  overrides it. herdr reports Kitty graphics and gets images. The TUI
+  adds no detection of its own.
 - `open` actions use OSC 8 hyperlinks when `getCapabilities().hyperlinks`
   is true, and print the URL otherwise.
 
@@ -767,11 +985,13 @@ view's main area, a detail pane, a TUI pane.
 
 ### 12.2 `visibleAt`
 
-Any block may set `visibleAt: "atLeast:regular" | "atLeast:wide" |
-"atMost:compact" | "atMost:regular"`. It is the only width-dependent
-thing an extension can say. There are no per-width alternative layouts.
+Any block may set `visibleAt: "atLeast:regular"`: the block is hidden in
+a compact container. It is the only width-dependent thing an extension
+can say, and the only value with a case behind it (the sizing pass: the
+weather hourly strip, secondary dashboard charts). Other values are added
+when a case needs them. There are no per-width alternative layouts.
 
-### 12.3 Host fallbacks
+### 12.3 Channel fallbacks
 
 Every channel implements these. Extensions get them without asking.
 
@@ -810,10 +1030,12 @@ Every channel implements these. Extensions get them without asking.
     it pending.
 - Fields declared by extensions default to `live`. An extension marks a
   field `restart` when its factory reads the value at load.
-- Core keys keep their documented behaviour, and the plan audits
-  `server.*`:
-  - moved to `live`: `namingModel`, `providers.refreshIntervalMinutes`
-    (the scheduler re-arms), `jobHistory.*` (already live);
+- **This replaces core-hardening §5.7's rule** that every `server.*` key
+  is restart-required (ruling 18). From U4 on, each core key is marked
+  individually, and the plan audits `server.*`:
+  - `live`: `namingModel` (already read per use, `src/harness/naming.ts`),
+    `providers.refreshIntervalMinutes` (the scheduler re-arms),
+    `jobHistory.*` (already live);
   - stay `restart`: listen host and port, the data and config dirs,
     `auth.*`, `trustedProxies`, the webui bundle selection, the
     extension list.
@@ -837,8 +1059,10 @@ Every channel implements these. Extensions get them without asking.
 - `POST /v1/admin/restart` (admin; confirms in the UI) runs the normal
   graceful shutdown, then exits with code 0.
 - It's offered only when the server knows something will start it
-  again: `server.supervised: true`, set by the Dockerfile
-  (`SIGRUN_SUPERVISED=1`), the Helm chart and the compose file.
+  again: `server.supervised: true` (env `SIGRUN_SUPERVISED=1`), set by
+  the Helm chart and the compose file, which both restart the container.
+  The Dockerfile does not set it: a bare `docker run` without a restart
+  policy would stay down after a Restart.
   `sigrun run` (the local TUI launcher) is not supervised; there the
   callout says "Restart sigrun to apply" with no button.
 - The webui and TUI show "Restarting…" and reconnect when `/readyz`
@@ -874,9 +1098,9 @@ interface SettingsSectionDef {
 
 ### 14.1 Builders
 
-`sigrun/blocks` (a new package export, part of W5's contract surface)
-exports typed builder functions for every block and field, plus the
-types:
+`sigrun/blocks` (a new subpath in the package's `exports` map, next to
+W5's contract surface; the root `package.json` gains the map) exports
+typed builder functions for every block and field, plus the types:
 
 ```ts
 import { page, collection, card, form, choice, chart, bind } from "sigrun/blocks";
@@ -909,7 +1133,8 @@ render: async ({ principal, params }) => ({
   `groupBy`").
 - The server runs it on every render and every `show_blocks` call. An
   extension's invalid tree is a `500 surface_failed` with the errors in
-  the server log and, in development (`SIGRUN_DEV=1`), in the response.
+  the server log and, in development (`server.dev: true`, env
+  `SIGRUN_DEV=1`), in the response.
 
 ### 14.3 Text projection
 
@@ -926,7 +1151,7 @@ render: async ({ principal, params }) => ({
 
 ### 14.4 The gallery
 
-- With `SIGRUN_DEV_GALLERY=1`, core adds a "Blocks" view to the rail: one
+- With `server.dev: true` (env `SIGRUN_DEV=1`), core adds a "Blocks" view to the rail: one
   page per block and display, with sample data, in both channels.
 - It doubles as the visual regression fixture (§16) and as the place an
   extension author looks up what a block looks like.
@@ -941,18 +1166,28 @@ section, a dashboard).
 ## 15. Security
 
 - Extension and agent strings are text everywhere. `markdown` escapes
-  raw HTML; links allow `https:`, `http:` and `mailto:` only.
+  raw HTML.
+- **Links allow `https:`, `http:` and `mailto:` only,** in markdown and in
+  `open` actions, in both channels. Each channel applies an explicit
+  three-scheme URL transform: today's webui renderer passes links through
+  (`webui/src/entries/Markdown.tsx`), and react-markdown's default also
+  allows `tel:` and `irc:`. Other schemes render as plain text.
 - No block can carry script, style or HTML. SVG is never accepted.
 - Trees are validated server-side before any channel sees them.
 - `params` are size-capped (4 KiB) and passed to `render` as data; the
   extension validates them like any input.
 - Actions are rate-limited per principal per surface (20 per second,
   burst 40) → `429`.
-- Access: §6.5. The read-only rendering is enforced by the server too:
-  actions on a surface whose last render returned `access: "read"` are
-  rejected with `403` before the handler runs.
-- Image proxy: §11.2. The HMAC signature prevents use as an open proxy;
-  the range checks prevent SSRF into the cluster or LAN.
+- Access: §6.5. The server enforces it per principal: an action is
+  checked against **that principal's** most recent render of the
+  instance (60 s cache, a miss re-renders), `read` → `403`, `none` →
+  `404`, before the handler runs.
+- Events (§7.3) reach only watching principals with access, carry no
+  data, and name the instance by a hash, never by its params.
+- Image proxy: §11.2. Expiring HMAC signatures over the exact URL bytes
+  prevent use as an open proxy; connecting only to the vetted address
+  prevents DNS rebinding; the range checks (IPv4-mapped forms included)
+  prevent SSRF into the cluster or LAN.
 - Agent-authored blocks can't navigate to core targets the user can't
   access; navigation goes through the normal routes and their 404s.
 
@@ -965,14 +1200,27 @@ section, a dashboard).
 - **Data updates:** applying `DataOp`s is property-tested
   (fold(data, ops) equals the server's data); a `rev` gap forces a full
   refetch.
-- **Events:** `surface.changed` carries no data; a principal without
-  access gets no event and a 404 on fetch; `sharedData: false` surfaces
-  never return ops.
-- **Moves:** optimistic apply, accept (authoritative update reaches a
-  second client), reject (revert + toast), timeout (revert), and two
-  clients moving concurrently converge.
-- **Read-only:** the host hides edit actions; a forged action returns
-  403.
+- **Events:** `surface.changed` carries no data and no params (`k` is a
+  hash); only principals in the watcher registry get it; a watcher entry
+  expires 10 minutes after the last fetch and drops when its stream
+  closes; `access: "none"` gets no event and a 404 on every surface
+  route; `sharedData: false` surfaces never return ops; channels ignore
+  an unknown event type.
+- **Moves:** optimistic apply; accept with an update (it reaches a second
+  client); accept without an update (the server applies the move, and a
+  refetch keeps it); reject (snap back + toast); timeout (snap back); an
+  update arriving while a move is pending (no duplicate or lost item);
+  two clients moving concurrently converge.
+- **Access:** two principals on one surface instance with `read` and
+  `write`: the `read` one's forged action gets 403 and the `write` one's
+  succeeds, in either order; a cache miss re-renders before allowing.
+- **Validation of handler names:** `reorder` without `onMove`, a handler
+  name with no entry in `actions`, and `turn` outside `chat` all fail
+  with their paths.
+- **Routes:** an extension declaring a `surfaces/` or `assets/` route is
+  quarantined; an asset symlink out of the assets dir is a 404.
+- **Versions:** a `v: 2` tree with an unknown block in a `v: 1` channel
+  shows the fallback text and "Not supported in this client".
 - **Chat blocks:**
   - `show_blocks` validation errors name paths;
   - the ranking example (§8.5) end to end with the faux provider: three
@@ -981,19 +1229,36 @@ section, a dashboard).
     turn, and a double click makes one turn (`actionId`);
   - change notes are appended after earlier entries (the earlier prompt
     bytes are unchanged);
-  - a fork copies the state.
+  - a note while the agent is busy is queued ahead of the steer that
+    triggers it; a crash between the note write and `notedThrough`
+    advancing re-sends nothing new (`requestId` dedup);
+  - changes by two users name both authors;
+  - a fork at an earlier entry has that entry's state, `rev` and change
+    records; edits after the fork in either conversation don't reach the
+    other;
+  - `since` fetches across a fork return full data for the child (its
+    ops history starts at the fork);
+  - `update_blocks` returns the post-update projection.
 - **Interactions and ambient:** a legacy-shaped record fails
-  validation; the rewritten seam fixtures render in both channels;
-  answers keep their `{ids, values, text}` shape; a four-question
-  ask-user-question tree (with `preview` and `allowOther`) answers in
-  one submit.
+  validation; the rewritten seam fixtures render in both channels; a
+  four-question ask-user-question tree (with `preview` and `allowOther`)
+  answers in one submit as `{values: {q1, q2, q3, q4}}`; an
+  interaction form with a `file` or `daterange` field fails validation;
+  a `footer` ambient record with three zones renders in both channels; a
+  `quiet` row is folded by default.
 - **Settings:** a live key applies without restart and fires
   `onSettingsChanged`; a restart key shows in `pendingRestart`; restart
-  is hidden when unsupervised; `POST /v1/admin/restart` is admin-only.
-- **Images:** proxy refuses unsigned URLs, private ranges (including via
-  redirect), non-images and SVG; caches; TUI renders inline with a
-  faked Kitty capability and alt text without; tmux passthrough checked
-  by hand.
+  is hidden when unsupervised (including the bare Docker image);
+  `POST /v1/admin/restart` is admin-only.
+- **Images:** the proxy refuses unsigned and expired URLs, private
+  ranges (including IPv4-mapped IPv6 and via redirect), a fake resolver
+  that answers public then `127.0.0.1` (the connection uses the first,
+  vetted address), more than 3 redirects in total, non-images, SVG and
+  AVIF; caches under `cacheDir`; `as=png` converts a JPEG; the TUI
+  renders inline with a faked Kitty capability and shows alt text
+  without one and under `TMUX` (unless `PI_IMAGE_PROTOCOL` is set);
+  markdown links with `tel:` or `javascript:` render as text in both
+  channels.
 - **Width:** each §12.3 fallback, in the webui (container sizes) and the
   TUI (pane widths), from the gallery.
 - **Visual:** Playwright screenshots of every gallery page at the three
@@ -1028,17 +1293,52 @@ contract type).
 
 | id | delivers | depends on |
 |---|---|---|
-| U0 | `shared/src/blocks/`: schemas, `validateTree`, placements, limits, `DataOp` apply, `toText`, the `sigrun/blocks` builders | — |
+| U0 | `shared/src/blocks/` (types, `applyOps`, `toText`) and `src/blocks/` (schemas, `validateTree`, placements, limits, the `sigrun/blocks` builders and `exports` map); recursive purity test | — |
 | U1 | webui renderer for every block, display, field and width fallback; the gallery view | U0 |
 | U2 | TUI renderer for the same, keymap bindings, inline images | U0 |
-| U3 | extension surfaces: contract field, routes, `surface.changed`, data fetch with `since`, actions, uploads, assets, rail and panel registration | U0 |
+| U3 | extension surfaces: contract field, routes (reserved prefixes), per-principal access cache, watcher registry and `surface.changed`, data fetch with `since`, optimistic-move server side, actions, uploads, assets, rail and panel registration | U0 |
 | U4 | settings: `apply`, `settings.changed`, `onSettingsChanged`, `pendingRestart`, restart route, supervised detection, core sections rebuilt, extension sections | U0, U1, U2, U3 |
-| U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and state, edits, change notes, answers | U0, U1, U2 |
-| U6 | interactions and ambient on trees: record schemas carry trees only, channel renderers switched to trees, core seam fixtures rewritten | U1, U2 |
-| U7 | image proxy, icon set, docs | U0 (U1/U2 consume the icons) |
+| U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and the rewindable state family, chat surface routes, edits, change notes in the submit path, answers | U0, U1, U2, U3 |
+| U6 | interactions and ambient on trees: record schemas carry trees only, `{values}` answers, channel renderers switched to trees, core seam fixtures rewritten | U1, U2 |
+| U7 | image proxy (signing, vetted-address fetching, cache, `sharp` PNG conversion), icon set, docs | U0 (U1/U2 consume the icons) |
 
-U1 and U2 can run in parallel; so can U3, U5 and U7 once U0 lands.
+U1 and U2 can run in parallel; so can U3 and U7 once U0 lands. U5 follows U3 (chat surfaces reuse its routes, access cache and watcher registry).
 
 ## 19. Open questions
 
-None. Rulings 1–16 settle the design questions raised so far.
+None. Rulings 1–20 settle the design questions raised so far.
+
+## 20. Review disposition
+
+Reviewed by deepseek-v4.1-flash (BLOCK) and glm-5.3-flash (BLOCK), with
+artifacts in `docs/superpowers/specs/reviews/2026-10-19-ui-blocks-review-*`.
+Every claim against the code was checked before folding.
+
+- **Folded:** `access: "none"` (§6.5); per-principal access enforcement
+  (§6.5, §15); the watcher registry and hashed instance keys (§7.3);
+  chat state as a rewindable `asOf` family on the surface routes, not
+  the view stream (§8.2); handler-name props (§5.5, §5.6, §6.1); DNS-
+  rebinding-safe proxy fetching, expiring signatures and a persisted key
+  (§11.2); tree size caps and the 192 KiB data-URL cap (§4.5, §11.1);
+  `{values}` answers (§9.1, ruling 20); the change-note write in the
+  submit path with `requestId` dedup (§8.3); `InputEntry` answers (§8.4);
+  the confirmed-data plus overlay model and server-assigned revs (§4.3,
+  §6.3); `shared/` versus `src/blocks/` and a recursive purity test
+  (§4.1); reserved route prefixes (§7.2); the corrected interaction and
+  ambient envelopes, `footer` restored (§9); `status`/`quiet`/`deps` card
+  slots (§5.5.1); bulk-action forms, `meter`/`badge` table cells and log
+  tones (§5.3, §5.5); structural props as literals (§4.2); typed
+  uploads over raw octet-stream (§7.1, §7.2); `person` carrying its
+  display name (§5.5.1); open event types (§7.3); `turn` only in chat
+  (§6.2); `update_blocks` returning the projection (§8.1); `treeRev` on
+  data responses (§7.2); server/channel/core terms (§3); an explicit link
+  scheme transform (§15); the tmux and PNG facts and `sharp` (§11.3,
+  ruling 17); supervised restart only in compose and the chart (§13.3);
+  `cacheDir` for the image cache (§11.2); unevidenced props cut (§5,
+  §10.1, §12.2).
+- **Rejected:** broadcasting `surface.changed` to every signed-in user
+  (glm's simpler option for B2). Even without data, it would tell users
+  which instances other people are viewing.
+- **Ruled by the user:** `sharp` (17); superseding core-hardening's
+  restart rule without editing it (18); fork semantics (19); the answer
+  shape (20).
