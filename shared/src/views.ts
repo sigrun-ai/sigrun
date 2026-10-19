@@ -36,6 +36,7 @@
  */
 
 import type { JsonObject } from "./json.js";
+import type { Sharing } from "./access.js";
 import type {
 	InteractionAnswer,
 	InteractionBody,
@@ -185,6 +186,17 @@ export interface ConversationSummary {
 	readonly archived: boolean;
 	/** The session-meta pin flag (pinned conversations float to top), default false. */
 	readonly pinned: boolean;
+	/**
+	 * The §5.9 sharing state, when the conversation carries one (absent =
+	 * private). Surfaced so a picker can show what is shared.
+	 */
+	readonly sharing?: Sharing;
+	/**
+	 * THIS caller's resolved access to the conversation (§5.9 `accessOf`):
+	 * conversations the caller cannot see are filtered from the list
+	 * entirely, so every listed row is at least `read`.
+	 */
+	readonly access: "read" | "write";
 }
 
 /** The list response of `GET /v1/conversations`. */

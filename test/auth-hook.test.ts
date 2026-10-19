@@ -11,9 +11,12 @@
  * (Review Focus 4: the request proceeds, `owner` stays unset and the meta
  * doc stays unmaterialized — defaults are free).
  *
- * Fork and import stamp the CALLER's identity, not the source's: a fork's
- * session-meta doc copies the parent's current state (`fork: "current"`),
- * so the caller's header OVERWRITES the copied owner.
+ * Core hardening W1 Task 5 (spec §5.9) layered access ON TOP: an identified
+ * caller (header principal) is a NON-superuser, so the fork/import tests
+ * below share the source to the caller first (household write) — the stamps
+ * under test are unchanged; only the visibility precondition is new. The
+ * fork resets to the CALLER's private copy (owner = caller; no header →
+ * ownerless), never inheriting the source's owner/sharing.
  *
  * Hermetic pattern: faux provider + tmp workspace + `app.inject()` (see
  * session-management.test.ts).
@@ -156,11 +159,24 @@ describe("POST /v1/conversations × X-Sigrun-User", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /v1/conversations/:id/fork × X-Sigrun-User", () => {
+	/** Share `parent` to the whole household (as its owner) so a named
+	 * caller may fork it under §5.9 visibility. */
+	async function shareHouseholdWrite(app: FastifyInstance, parent: number, owner: string) {
+		const response = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${parent}/meta`,
+			payload: { sharing: { scope: "household", level: "write" } },
+			headers: { "x-sigrun-user": owner, "content-type": "application/json" },
+		});
+		expect(response.statusCode).toBe(200);
+	}
+
 	test("fork stamps the CALLER's identity, not the source's", async () => {
 		const { app, faux } = await bootServer();
 		const parent = await createConversation(app, "alice");
 		faux.setResponses([fauxAssistantMessage("answer")]);
 		await submit(app, parent, "hello");
+		await shareHouseholdWrite(app, parent, "alice");
 		const forked = await app.inject({
 			method: "POST",
 			url: `/v1/conversations/${parent}/fork`,
@@ -170,15 +186,16 @@ describe("POST /v1/conversations/:id/fork × X-Sigrun-User", () => {
 		expect(forked.statusCode).toBe(201);
 		const meta = await fetchMeta(app, forked.json().id);
 		// The fork's doc copied the parent's owner ("current" fork semantics)
-		// — the caller's header overwrites it.
+		// — the §5.9 fork reset stamps the caller's identity over it.
 		expect(meta.owner).toBe("bob");
 	});
 
-	test("fork WITHOUT the header inherits the parent's owner (pi-durable meta copy)", async () => {
+	test("fork WITHOUT the header is ownerless+private (the §5.9 fork reset)", async () => {
 		const { app, faux } = await bootServer();
 		const parent = await createConversation(app, "alice");
 		faux.setResponses([fauxAssistantMessage("answer")]);
 		await submit(app, parent, "hello");
+		await shareHouseholdWrite(app, parent, "alice");
 		const forked = await app.inject({
 			method: "POST",
 			url: `/v1/conversations/${parent}/fork`,
@@ -187,9 +204,12 @@ describe("POST /v1/conversations/:id/fork × X-Sigrun-User", () => {
 		});
 		expect(forked.statusCode).toBe(201);
 		const meta = await fetchMeta(app, forked.json().id);
-		// C1: no caller header → no overwrite → the doc's "current" fork
-		// semantics carry the parent's stamped owner through unchanged.
-		expect(meta.owner).toBe("alice");
+		// Spec §5.9: a fork is the forker's PRIVATE copy — the copied meta
+		// doc ("current" fork semantics) carried the parent's owner, and a
+		// header-less fork has no caller identity, so the key is REMOVED
+		// (ownerless), never inherited.
+		expect("owner" in meta).toBe(false);
+		expect("sharing" in meta).toBe(false);
 	});
 });
 

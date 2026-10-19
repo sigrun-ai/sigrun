@@ -31,6 +31,7 @@ function summary(id: number): ConversationSummary {
 		entryCount: 0,
 		archived: false,
 		pinned: false,
+		access: "write",
 		lastActivityAt: "2026-01-01T00:00:00.000Z",
 	};
 }

@@ -37,6 +37,7 @@ describe("@sigrun/shared resolves to the built package", () => {
 			"conversations",
 			"turns",
 			"session-meta",
+			"access",
 			"commands",
 			"interactions",
 			"ambient",

@@ -37,6 +37,7 @@
 
 import type { Draft } from "@earendil-works/chord";
 import { defineDoc } from "@earendil-works/pi-durable";
+import { isSharing, type Sharing } from "@sigrun/shared/access";
 import type {
 	SessionMeta,
 	SessionMetaPatch,
@@ -82,9 +83,14 @@ export const SessionMetaDoc = defineDoc<SessionMeta>({
  * Validate a PATCH body strictly (mirroring the configure endpoint):
  * non-object/array/empty → `invalid_body`; an unknown top-level key →
  * `invalid_field` naming the key; an unknown `draft` sub-key →
- * `invalid_field` naming `draft.<key>`; wrong value types → `invalid_body`;
- * `source` accepts only `"user"|"cron"` (anything else names the field).
+ * `invalid_field` naming `draft.<key>`; wrong value types → `invalid_body`.
  * `null` is valid everywhere (it is the clear operator, not a type error).
+ *
+ * Server-only keys (spec §5.9): a patch carrying `owner` or `source` is a
+ * 400 `invalid_field` EVEN when the value would once have been valid —
+ * `owner` moves via the auth hook alone, and `source` is server-owned.
+ * `sharing` is validated via `isSharing` (a malformed shape names the
+ * field).
  */
 export function validateSessionMetaPatch(
 	body: unknown,
@@ -111,9 +117,8 @@ export function validateSessionMetaPatch(
 			text?: string | null;
 			attachments?: readonly string[] | null;
 		} | null;
-		source?: "user" | "cron" | null;
-		owner?: string | null;
 		name?: string | null;
+		sharing?: Sharing | null;
 	} = {};
 	for (const key of Object.keys(record)) {
 		const value = record[key];
@@ -184,23 +189,21 @@ export function validateSessionMetaPatch(
 				patch.draft = sub;
 				break;
 			}
-			case "source": {
-				if (value === null) {
-					patch.source = null;
-				} else if (value === "user" || value === "cron") {
-					patch.source = value;
-				} else {
-					// A known key with a value outside its enum names the field
-					// (the configure endpoint's rule for a bad `thinking` level).
-					return { error: "invalid_field", field: "source" };
-				}
-				break;
-			}
+			case "source":
 			case "owner": {
-				if (value !== null && typeof value !== "string") {
-					return { error: "invalid_body" };
+				// Server-only (spec §5.9): the KEY itself is the client error,
+				// whatever the value — even a `null` clear.
+				return { error: "invalid_field", field: key };
+			}
+			case "sharing": {
+				if (value === null) {
+					patch.sharing = null;
+					break;
 				}
-				patch.owner = value;
+				if (!isSharing(value)) {
+					return { error: "invalid_field", field: "sharing" };
+				}
+				patch.sharing = value;
 				break;
 			}
 			case "name": {
@@ -221,7 +224,7 @@ export function validateSessionMetaPatch(
  * Apply a validated patch to a session-meta draft (the merge/clear table):
  *
  * - `null` resets the field to its `DEFAULT_SESSION_META` value;
- *   `owner: null` removes the key entirely.
+ *   `name: null` and `sharing: null` remove the key entirely.
  * - non-null values shallow-set; `tagged` replaces wholesale.
  * - `draft: null` resets the whole draft; a draft object sub-merges: a
  *   sub-key present sets (or `null`-clears) that sub-field, absent sub-keys
@@ -239,13 +242,23 @@ export function applySessionMetaPatch(
 	if (patch.tagged !== undefined) {
 		draft.tagged = patch.tagged === null ? [] : [...patch.tagged];
 	}
-	if (patch.source !== undefined) draft.source = patch.source ?? "user";
-	if (patch.owner !== undefined) {
-		if (patch.owner === null) delete draft.owner;
-		else draft.owner = patch.owner;
+	// `sharing` clears the same way as `name`: absent = private, and it is
+	// not in DEFAULT_SESSION_META, so the clear target is key removal.
+	if (patch.sharing !== undefined) {
+		if (patch.sharing === null) delete draft.sharing;
+		else if (patch.sharing.scope === "people") {
+			draft.sharing = {
+				scope: "people",
+				users: [...patch.sharing.users],
+				level: patch.sharing.level,
+			};
+		} else if (patch.sharing.scope === "household") {
+			draft.sharing = { scope: "household", level: patch.sharing.level };
+		} else {
+			draft.sharing = { scope: "private" };
+		}
 	}
-	// `name` clears the same way as `owner`: absent = unnamed, and it is not
-	// in DEFAULT_SESSION_META, so the clear target is key removal.
+	// `name` clears the same way: absent = unnamed.
 	if (patch.name !== undefined) {
 		if (patch.name === null) delete draft.name;
 		else draft.name = patch.name;
