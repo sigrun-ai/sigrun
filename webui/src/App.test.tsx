@@ -74,7 +74,6 @@ function makeHarness(init?: {
 		{
 			id: 1,
 			root: true,
-			entryCount: 2,
 			archived: false,
 			pinned: false,
 			name: "Tide table rewrite",
@@ -83,7 +82,6 @@ function makeHarness(init?: {
 		{
 			id: 2,
 			root: false,
-			entryCount: 1,
 			archived: false,
 			pinned: false,
 			name: "Moor line inspection",

@@ -29,7 +29,6 @@ function summary(
 	return {
 		id,
 		root: false,
-		entryCount: 0,
 		archived: init?.archived ?? false,
 		pinned: false,
 		access: "write",

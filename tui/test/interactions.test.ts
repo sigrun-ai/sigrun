@@ -42,7 +42,6 @@ function summary(id: number): ConversationSummary {
 	return {
 		id,
 		root: false,
-		entryCount: 0,
 		archived: false,
 		pinned: false,
 		access: "write",

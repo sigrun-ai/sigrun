@@ -78,7 +78,7 @@ export function registerConversationRoutes(
 		},
 	);
 
-	app.get("/v1/conversations", async (request): Promise<ConversationList> => {
+	app.get("/v1/conversations", async (request, reply): Promise<ConversationList> => {
 		// Durable enumeration: the storage scan is authoritative —
 		// conversations this process never created (before a restart, in
 		// another process, or by tasks/tools inside pi-durable) all list.
@@ -90,10 +90,36 @@ export function registerConversationRoutes(
 		// see (accessOf "none") are filtered out entirely (hidden is absent
 		// from lists, not just 404s), and every served row carries the
 		// caller's resolved access.
+		//
+		// Lean by construction (spec §7.2 / W3 Task 2): every row is built
+		// from the scan record + the SessionMetaDoc snapshot ALONE — no
+		// per-row conversation resolution, no view read. The sidebar polls
+		// this route on a cadence, so a per-row `viewState` would re-read
+		// every transcript every poll; the summary fields W1 added (owner,
+		// name, activity, parent, archive/pin, sharing, access) all come
+		// from the record or the doc, and `entryCount` is gone with the
+		// view read (no production client read it).
 		const principal = {
 			user: request.principal.user,
 			superuser: isSuperuser(request.principal),
 		};
+		// Query filters: `archived=true|false` (absent = all) and
+		// `mine=true` (owner === the caller). Strict booleans — anything
+		// else is a fail-loud 400, the same posture as body validation.
+		const query = request.query as Record<string, unknown>;
+		for (const field of ["archived", "mine"] as const) {
+			const value = query[field];
+			if (
+				value !== undefined &&
+				value !== "true" &&
+				value !== "false"
+			) {
+				return await reply.code(400).send({ error: "invalid_field", field });
+			}
+		}
+		const archivedOnly =
+			query.archived === undefined ? undefined : query.archived === "true";
+		const mine = query.mine === "true";
 		const conversations: ConversationSummary[] = [];
 		let cursor: Cursor | undefined = undefined;
 		do {
@@ -104,13 +130,6 @@ export function registerConversationRoutes(
 			BACKGROUND_CONTEXT,
 			);
 			for (const record of page.items) {
-				const conversation = await opened.harness.conversation(
-					record.id,
-					BACKGROUND_CONTEXT,
-				);
-				// Unresolvable ids (dropped elsewhere) are skipped, not listed.
-				if (conversation === undefined) continue;
-				const view = await readView(conversation);
 				// The session-meta owner rides the summary when stamped
 				// (defaults serve nothing — no owner key when unset), and so
 				// do the sidebar fields: the display name (user name over
@@ -118,17 +137,25 @@ export function registerConversationRoutes(
 				// one request, no per-row meta fetch.
 				const meta = await opened.harness.snapshot(
 					SessionMetaDoc,
-					conversation.id,
+					record.id,
 					BACKGROUND_CONTEXT,
 				);
 				const access = accessOf(principal, meta ?? {});
 				// Hidden is absent from the list (spec §5.9).
 				if (access === "none") continue;
+				// The archived filter (absent = all).
+				if (
+					archivedOnly !== undefined &&
+					(meta?.archived ?? false) !== archivedOnly
+				) {
+					continue;
+				}
+				// `mine`: the caller's own rows (owner === principal.user).
+				if (mine && meta?.owner !== principal.user) continue;
 				const name = meta?.name ?? meta?.autoName;
 				conversations.push({
-					id: conversation.id,
-					root: conversation.id === rootId,
-					entryCount: view.entries.length,
+					id: record.id,
+					root: record.id === rootId,
 					access,
 					...(meta?.sharing === undefined ? {} : { sharing: meta.sharing }),
 					...(meta?.owner === undefined ? {} : { owner: meta.owner }),
@@ -141,11 +168,11 @@ export function registerConversationRoutes(
 					...(record.parent === undefined
 						? {}
 						: {
-								parent: {
-									id: record.parent.conversationId,
-									at: record.parent.at,
-								},
-							}),
+									parent: {
+										id: record.parent.conversationId,
+										at: record.parent.at,
+									},
+								}),
 					archived: meta?.archived ?? false,
 					pinned: meta?.pinned ?? false,
 				});
