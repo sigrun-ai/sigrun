@@ -50,30 +50,38 @@ import {
 	type InteractionRecord,
 } from "../harness/interactions.js";
 import type {
-	AgentChange,
-	Conversation,
-	ConversationId,
-	ConversationView,
 	Cursor,
 	EntryDraft,
 	EntryId,
 	InputSubmissionDraft,
 	ModelRef,
-	ToolRegistration,
-	ToolSlot,
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { touchActivity } from "../harness/activity.js";
-import { aggregateHealth } from "../harness/health.js";
 import { SettingsStore, SettingsValidationError } from "../harness/settings.js";
 import { OPENAI_API_KEY_ENV, UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
-import { SLASH_COMMANDS, type CommandsResponse } from "./commands.js";
-import { HARNESS_VERSION, SCHEMA_VERSION } from "./schema-fixture.js";
+import type { ServerContext } from "./context.js";
+import {
+	THINKING_LEVELS,
+	WHEN_BUSY_MODES,
+	type WhenBusyMode,
+	storeAgentChange,
+	ID_PARAMS_SCHEMA,
+	settingsResponse,
+	conversationId,
+	readView,
+	stampSessionOwner,
+	conversationEnv,
+	FILE_CONTENT_MAX_BYTES,
+	SCAN_PAGE_SIZE,
+	decodeBase64Strict,
+} from "./helpers.js";
+import { registerMetaRoutes } from "./routes/meta.js";
+import { registerProbeRoutes } from "./routes/probes.js";
 import {
 	resolveWebuiBundle,
 	serveWebuiBundle,
@@ -110,221 +118,12 @@ import {
 	type FileContentResponse,
 	type FileListResponse,
 	JSONL_CONTENT_TYPE,
-	type MetaResponse,
 	type ModelEntry,
 	type ModelsResponse,
 	type SettingsResponse,
 	type SubmissionResponse,
 	type UploadResponse,
 } from "./views.js";
-
-/** The `thinking` values `configure` accepts (pi-ai `ModelThinkingLevel`). */
-const THINKING_LEVELS: readonly string[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
-
-/**
- * The `whenBusy` values a submission accepts (pi-durable `SubmissionDraft`'s
- * full input union, T26a — the §5 client sends "steer"; "followUp" and
- * "reject" are upstream's other busy semantics).
- */
-const WHEN_BUSY_MODES: readonly string[] = ["steer", "followUp", "reject"];
-/** The validated `whenBusy` type (pi-durable `InputSubmissionDraft`). */
-type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
-
-declare module "fastify" {
-	interface FastifyRequest {
-		/**
-		 * The resolved caller identity (spec §5 owner seam): the trimmed
-		 * `X-Sigrun-User` header, or `undefined` when absent/empty. Naive
-		 * mode — nothing is verified (trusted-network posture, v1).
-		 */
-		sigrunUser: string | undefined;
-	}
-}
-
-/**
- * The agent change every server-side conversation create applies (Task 8b):
- * the boot default model, plus the settings store's sigrun-resolved fields —
- * `defaultTools` (a tool-NAME filter mapped to pi-durable 1.2.0's
- * `AgentChange.modelTools`, the MODEL-OFFERED filter — NOT
- * `AgentChange.tools`, the enabled filter: filtering the offered set never
- * disables a tool for nested calls, the two-layer-filter ruling) and
- * `perModelThinking`'s override for THAT model (applied at create because
- * the model is known here; configure re-applies on every model change).
- * Both come from the STORE (re-read here), so a PATCHed settings file
- * reaches conversations created afterwards without a restart. Applies at
- * CREATES only — configure never re-applies the tool filter, so a
- * `control.addTools`-loaded deferred tool in a LIVE conversation's stored
- * filter is never clobbered (the Task 3 hazard pin).
- */
-function storeAgentChange(
-	opened: OpenedHarness,
-	model: ModelRef | undefined,
-): AgentChange {
-	const settings = opened.settings.read();
-	const filter = settings.defaultTools;
-	// `AgentChange.modelTools` takes ToolRegistration OBJECTS (pi-durable's
-	// applyChange maps `item.name`), so resolve the store's names against
-	// the registry snapshot's composed tool set. An unregistered name in
-	// the filter is a config drift: dropped here (resolveAgent's own
-	// behavior for an unknown stored name), never a boot failure — but
-	// dropped LOUDLY: a user writing `"my-ext-tool"` into the settings
-	// file deserves to know the name resolved to nothing.
-	let modelTools: ToolRegistration[] | undefined;
-	if (filter !== undefined) {
-		const registered = new Set(
-			opened.registry
-				.snapshot()
-				.tools()
-				.map((entry) => entry.tool.name),
-		);
-		const dropped = filter.filter((name) => !registered.has(name));
-		if (dropped.length > 0) {
-			console.warn(
-				`settings: dropping unregistered defaultTools name(s): ${dropped.join(", ")} (not in the composed tool set)`,
-			);
-		}
-		modelTools = opened.registry
-			.snapshot()
-			.tools()
-			.filter((entry) => filter.includes(entry.tool.name))
-			.map((entry) => entry.tool);
-	}
-	const thinking =
-		model !== undefined
-			? settings.perModelThinking?.[`${model.provider}/${model.modelId}`]
-			: undefined;
-	return {
-		...(model === undefined ? {} : { model }),
-		// An EMPTY stored array keeps every tool (an empty emit would offer
-		// the model nothing — the same guard the panel's none-on note leans
-		// on), so the emit is skipped when nothing resolved.
-		...(modelTools === undefined || modelTools.length === 0
-			? {}
-			: { modelTools }),
-		// The store validates every level against pi-ai's union, so this
-		// unsound-looking cast is checked at every write.
-		...(thinking === undefined
-			? {}
-			: { thinkingLevel: thinking as ModelThinkingLevel }),
-	};
-}
-
-/** Integer path params for `/v1/conversations/:id`. */
-const ID_PARAMS_SCHEMA = {
-	type: "object",
-	properties: { id: { type: "integer" } },
-	required: ["id"],
-	additionalProperties: false,
-} as const;
-
-/** The settings response over the live store + registry snapshot. */
-function settingsResponse(opened: OpenedHarness): SettingsResponse {
-	const names = opened.registry
-		.snapshot()
-		.tools()
-		.map((entry) => entry.tool.name);
-	// Names may repeat across extensions (RegistrySnapshot.tools); the
-	// panel keys checkboxes by name, so dedupe.
-	return {
-		...opened.settings.read(),
-		toolRoster: [...new Set(names)],
-	};
-}
-
-/** Re-brand a route id as a ConversationId (the branded Id type is a number). */
-function conversationId(id: number): ConversationId {
-	return id as ConversationId;
-}
-
-/** Read one conversation's current view frame; disposes the state handle. */
-async function readView(conversation: Conversation) {
-	const state = await conversation.viewState(BACKGROUND_CONTEXT);
-	const view = serializeConversationView(state.value);
-	await state.dispose();
-	return view;
-}
-
-/**
- * Stamp the resolved caller identity onto a fresh conversation's
- * session-meta doc as `owner` (spec §5 seam; the auth hook's only writer).
- * Undefined (naive mode — no header) is a NO-OP: the doc stays
- * unmaterialized and reads serve the defaults (defaults are free; only a
- * PATCH or a stamped owner writes). A fork's doc carries the parent's
- * copied state (`fork: "current"`), so the caller's identity OVERWRITES
- * the source's.
- */
-async function stampSessionOwner(
-	conversation: Conversation,
-	owner: string | undefined,
-): Promise<void> {
-	if (owner === undefined) return;
-	await conversation.commit(async (tx) => {
-		const draft = await tx.doc(SessionMetaDoc, conversation.id);
-		draft.owner = owner;
-	}, BACKGROUND_CONTEXT);
-}
-
-/**
- * Build the conversation's workspace `ExecutionEnv` the same way
- * `Harness.buildEnv` does for tool calls (dist/harness/harness.js:133-139):
- * resolve the committed `agent.cwd` and hand it, with the harness as the
- * doc `read` line, to the boot `envBuilder`. The §5 file/upload/submission
- * endpoints resolve through this — one seam, so a workspace-service swap
- * moves them all at once.
- */
-async function conversationEnv(
-	opened: OpenedHarness,
-	conversation: Conversation,
-): Promise<ExecutionEnv> {
-	const agent = await conversation.agent(BACKGROUND_CONTEXT);
-	const built = await opened.envBuilder(
-		{
-			conversationId: conversation.id,
-			...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
-			read: opened.harness,
-		},
-		BACKGROUND_CONTEXT,
-	);
-	// `HarnessOptions.env` types as optional; sigrun always passes one, so a
-	// missing env is a boot-invariant violation — fail loud, never null-check.
-	if (built === undefined) {
-		throw new Error("envBuilder returned no ExecutionEnv");
-	}
-	return built;
-}
-
-/** The upload read cap for `files/content` (binary-safe; 1 MiB). */
-const FILE_CONTENT_MAX_BYTES = 1024 * 1024;
-
-/**
- * One `scanConversations` page size for the listing route. Not a client
- * limit — the route walks the continuation cursor to completion (v1 is
- * unpaginated); a larger page only trades per-page round-trips.
- */
-const SCAN_PAGE_SIZE = 1_000;
-
-/**
- * Decode a base64 body strictly: Node's `Buffer.from(s, "base64")` is
- * LENIENT (invalid characters are skipped, so `"!!!"` decodes to empty), so
- * uploads validate the alphabet and round-trip — invalid base64 is a client
- * error, never a silent partial decode.
- */
-function decodeBase64Strict(value: string): Buffer | undefined {
-	const trimmed = value.trim();
-	if (trimmed.length === 0 || trimmed.length % 4 !== 0) return undefined;
-	if (!/^[A-Za-z0-9+/]*={0,2}$/.test(trimmed)) return undefined;
-	const bytes = Buffer.from(trimmed, "base64");
-	if (bytes.toString("base64") !== trimmed) return undefined;
-	return bytes;
-}
 
 /**
  * Build the §5 server over one opened harness.
@@ -388,147 +187,12 @@ export async function createServer(
 		agent: storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
-
-	// Liveness probe (Task 13, spec §4.4 "distinguishes process-up from
-	// harness-ready"): 200 ALWAYS once listening — no aggregation, no
-	// storage; the dead-simple "the event loop answers" signal. The body is
-	// a single Prometheus-exposition gauge line so the endpoint is
-	// scrape-compatible (the M1 metrics story — /v1/meta is JSON and cannot
-	// be scraped; see the task report's scoping decision). A degraded-but-alive
-	// process must NOT fail liveness — the kubelet would restart a process
-	// that is merely degraded.
-	app.get("/healthz", async (_request, reply) => {
-		return await reply
-			.code(200)
-			.type("text/plain; version=0.0.4; charset=utf-8")
-			.send("sigrun_liveness 1\n");
-	});
-
-	// Readiness probe (Task 13): 200 only when the harness is GENUINELY ready.
-	// The honest v1 derivation, evaluated per request:
-	//  1. booted — trivially true while this route answers (the server only
-	//     exists after `openHarness` completed); documented, not probed.
-	//  2. T9e health not degraded — `health.memory` (the loaded memory
-	//     extension's §3 producer, else ok) AND `health.providers`
-	//     (aggregated §3 producer statuses). Quarantined extensions do NOT
-	//     fail readiness: boot continues by design (spec §3
-	//     quarantined-never-aborts), memory falls back to the no-op default,
-	//     and no v1 surface hard-depends on a quarantined package —
-	//     quarantines surface via /v1/meta `extensions[].status`.
-	//  3. a cheap REAL storage read — resolve the reserved root conversation
-	//     through the session line (`storage.conversation()` under
-	//     `harness.conversation`): one real sqlite record fetch proving the db
-	//     file + session answer right now. Chosen as the cheapest real read
-	//     available (a snapshot round-trip needs a doc type + token; this is a
-	//     single record fetch on an id the server already holds). A closed
-	//     harness throws here (assertOpen) — caught, reported as "failed".
-	// Not ready ⇒ 503 + a small JSON body naming the failing check (so a
-	// `kubectl get endpoints` gap has a story). Ready ⇒ the exposition line,
-	// scrape-compatible for the same reason as /healthz.
-	app.get("/readyz", async (_request, reply) => {
-		const memory = opened.memoryHealth?.() ?? "ok";
-		const providers = aggregateHealth(opened.providerHealth);
-		let storage: "ok" | "failed";
-		try {
-			const conversation = await opened.harness.conversation(
-				conversationId(rootId),
-				BACKGROUND_CONTEXT,
-			);
-			// undefined = storage answered but the root record is gone — not a
-			// harness anyone should route traffic to.
-			storage = conversation === undefined ? "failed" : "ok";
-		} catch {
-			storage = "failed";
-		}
-		if (memory !== "ok" || providers !== "ok" || storage !== "ok") {
-			return await reply.code(503).send({
-				ready: false,
-				checks: { memory, providers, storage },
-			});
-		}
-		return await reply
-			.code(200)
-			.type("text/plain; version=0.0.4; charset=utf-8")
-			.send("sigrun_readiness 1\n");
-	});
-
-	app.get("/v1/meta", async (): Promise<MetaResponse> => {
-		// Idle-worker projection (Task 5): re-derived per request (statuses
-		// change over the process lifetime); quarantined extensions never
-		// registered, so a name miss just yields no workers.
-		const workerStatuses = opened.workerStatuses();
-		return {
-			harnessVersion: HARNESS_VERSION,
-			schemaVersion: SCHEMA_VERSION,
-			extensions: opened.extensionOutcomes.map((outcome) => {
-				const workers = workerStatuses.get(outcome.name);
-				return {
-					name: outcome.name,
-					status: outcome.status,
-					...(outcome.error === undefined ? {} : { error: outcome.error }),
-					...(workers === undefined || workers.length === 0
-						? {}
-						: { workers }),
-				};
-			}),
-			// §5 health (Task 9e): pure aggregation over boot-retained §3
-			// producers — backup from config presence ("configured" iff set;
-			// no runtime backup health signal exists in v1 — the CronJob is
-			// external, so "degraded" is deliberately NOT introduced), memory
-			// from the memory extension's producer ("ok" for the no-op default
-			// — quarantines surface via extensions[].status, never
-			// double-reported here), providers aggregated across contributors
-			// (empty → "ok").
-			health: {
-				backup: config.backup === undefined ? "unconfigured" : "configured",
-				memory: opened.memoryHealth?.() ?? "ok",
-				providers: aggregateHealth(opened.providerHealth),
-			},
-			// §5 capabilities: backup affordances exist iff a target is
-			// configured (Task 11 — the badge, not an error, when absent).
-			capabilities: {
-				backup: config.backup !== undefined,
-			// §4.1/§6 channels: the SELECTED bundle's name ("webui" for the
-			// built-in default and explicit paths; a contributed selection's own
-			// name) exactly while the channel bundle is mounted; an API-only
-			// deploy (gate off or absent default) reports [].
-			channels:
-				webuiBundle === undefined ? [] : [webuiBundle.channel],
-			},
-			// The seam inventory: declaration-derived, no doc reads.
-			seam: {
-				interactions: [...opened.seamKinds]
-					.filter(([, kinds]) => (kinds.interaction?.length ?? 0) > 0)
-					.map(([name, kinds]) => ({
-					extension: name,
-					kinds: [...(kinds.interaction ?? [])],
-				})),
-				ambient: [...opened.seamKinds]
-					.filter(([, kinds]) => (kinds.ambient?.length ?? 0) > 0)
-					.map(([name, kinds]) => ({
-					extension: name,
-					keys: [...(kinds.ambient ?? [])],
-				})),
-			},
-			// Boot-merge collisions (build-and-webui Task 6): name collisions
-			// among extension-contributed webui bundles, plus the provider-merge
-			// sink (retained since Task 6 of the provider plan but never read —
-			// the same field carries both). Last-registered-wins everywhere; the
-			// record is operator visibility, never an error.
-			collisions: {
-				webui: opened.webuiBundleCollisions,
-				providers: opened.providerCollisions,
-			},
-		};
-	});
-
-	// The slash-command catalog (Task 7): the thin metadata list the
-	// composer's `/` menu consumes — name, description, args hint, and the
-	// endpoint each command drives. A boot constant (like /v1/models), so a
-	// client may cache it. See `commands.ts` for the scope rulings.
-	app.get("/v1/commands", async (): Promise<CommandsResponse> => {
-		return { commands: [...SLASH_COMMANDS.values()] };
-	});
+	// The shared context every route module receives: the opened harness,
+	// the config, the root id (computed once, never per request), and the
+	// resolved webui bundle.
+	const ctx: ServerContext = { opened, config, rootId, webuiBundle };
+	registerProbeRoutes(app, ctx);
+	registerMetaRoutes(app, ctx);
 
 	app.post(
 		"/v1/conversations",
