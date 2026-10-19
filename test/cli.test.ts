@@ -8,7 +8,7 @@
  * `npm start` still runs src/index.ts unchanged).
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -241,6 +241,15 @@ describe("loadTuiFile", () => {
 	});
 });
 
+/** A fetch stub answering a CLAIMED server — the stubDeps default so
+ * the pre-Task-7 attach/run tests stay network-free and skip onboarding. */
+const claimedFetch = (async () => ({
+	ok: true,
+	status: 200,
+	json: () =>
+		Promise.resolve({ state: "claimed", methods: [], codeRequired: false }),
+})) as CliDeps["fetch"];
+
 /** A deps stub: factories record their calls, never boot anything real. */
 function stubDeps(overrides: Partial<CliDeps> = {}): {
 	deps: CliDeps;
@@ -271,6 +280,9 @@ function stubDeps(overrides: Partial<CliDeps> = {}): {
 		launchTui: async (options) => {
 			calls.launchTui.push(options);
 		},
+		// Task 7: the onboarding GET defaults to a claimed server (override
+		// with an unclaimed stub for the onboarding-flow tests).
+		fetch: claimedFetch,
 		...overrides,
 	};
 	return { deps, calls };
@@ -482,5 +494,529 @@ describe("cliMain usage errors", () => {
 		expect(calls.boot).toEqual([]);
 		expect(calls.serve).toEqual([]);
 		expect(calls.launchTui).toEqual([]);
+	});
+});
+
+describe("parseArgs: token/user subcommands (Task 7)", () => {
+	test("token create <name> --user <u>", () => {
+		expect(parseArgs(["token", "create", "laptop", "--user", "alice"])).toEqual({
+			command: "token",
+			sub: "create",
+			tokenName: "laptop",
+			user: "alice",
+		});
+	});
+
+	test("token list", () => {
+		expect(parseArgs(["token", "list"])).toEqual({ command: "token", sub: "list" });
+	});
+
+	test("token revoke <id>", () => {
+		expect(parseArgs(["token", "revoke", "0f0e0d0c"])).toEqual({
+			command: "token",
+			sub: "revoke",
+			id: "0f0e0d0c",
+		});
+	});
+
+	test("token create without --user is a usage error", () => {
+		expect(() => parseArgs(["token", "create", "laptop"]))
+			.toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("token create without a name is a usage error", () => {
+		expect(() => parseArgs(["token", "create", "--user", "alice"]))
+			.toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("token with an unknown sub is a usage error", () => {
+		expect(() => parseArgs(["token", "bogus"])).toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("token list rejects extra positionals", () => {
+		expect(() => parseArgs(["token", "list", "extra"]))
+			.toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("user add <user> with --admin/--name/--email", () => {
+		expect(
+			parseArgs([
+				"user", "add", "alice", "--admin", "--name", "Alice MacLeod",
+				"--email", "alice@example.invalid",
+			]),
+		).toEqual({
+			command: "user",
+			sub: "add",
+			user: "alice",
+			admin: true,
+			name: "Alice MacLeod",
+			email: "alice@example.invalid",
+		});
+	});
+
+	test("user add bare (no flags)", () => {
+		expect(parseArgs(["user", "add", "bob"])).toEqual({
+			command: "user",
+			sub: "add",
+			user: "bob",
+		});
+	});
+
+	test("user add --name without a value is a usage error", () => {
+		expect(() => parseArgs(["user", "add", "bob", "--name"]))
+			.toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("user add without a username is a usage error", () => {
+		expect(() => parseArgs(["user", "add", "--admin"]))
+			.toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("user list", () => {
+		expect(parseArgs(["user", "list"])).toEqual({ command: "user", sub: "list" });
+	});
+});
+
+/** A store-hermetic env: identity roots all inside the tmp config dir
+ * (the CLI opens the stores over resolveStoreRoots(env) directly). */
+function storeEnv(dir: string): NodeJS.ProcessEnv {
+	return {
+		SIGRUN_CONFIG_DIR: dir,
+		SIGRUN_STATE_DIR: join(dir, "state"),
+		SIGRUN_CACHE_DIR: join(dir, "cache"),
+	};
+}
+
+/** An output capture: data lines (out) + error lines, as CliIO. */
+function captureIo(): {
+	out: string[];
+	errors: string[];
+	io: { out(text: string): void; error(text: string): void };
+} {
+	const out: string[] = [];
+	const errors: string[] = [];
+	return {
+		out,
+		errors,
+		io: {
+			out: (text) => {
+				out.push(text);
+			},
+			error: (text) => {
+				errors.push(text);
+			},
+		},
+	};
+}
+
+describe("cliMain user/token subcommands (Task 7: stores directly, no server)", () => {
+	test("user add creates the directory entry (users.json 0600, source cli)", async () => {
+		const dir = await tmpConfigDir();
+		const { io } = captureIo();
+		const code = await cliMain(
+			["user", "add", "alice", "--admin", "--name", "Alice", "--email", "alice@example.invalid"],
+			storeEnv(dir),
+			undefined,
+			io,
+		);
+		expect(code).toBe(0);
+		const raw = JSON.parse(await readFile(join(dir, "users.json"), "utf8"));
+		expect(raw).toEqual([
+			{
+				user: "alice",
+				name: "Alice",
+				email: "alice@example.invalid",
+				admin: true,
+				createdAt: expect.any(Number),
+				source: "cli",
+			},
+		]);
+		const fileStat = await stat(join(dir, "users.json"));
+		expect(fileStat.mode & 0o777).toBe(0o600);
+	});
+
+	test("user add without --admin lands non-admin; duplicates fail loud", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		expect(
+			await cliMain(["user", "add", "bob"], storeEnv(dir), undefined, io),
+		).toBe(0);
+		const raw = JSON.parse(await readFile(join(dir, "users.json"), "utf8"));
+		expect(raw[0]).toMatchObject({ user: "bob", admin: false });
+		// The duplicate is an error naming the user (exit 1).
+		expect(
+			await cliMain(["user", "add", "bob"], storeEnv(dir), undefined, io),
+		).toBe(1);
+		expect(errors.join("\n")).toMatch(/bob/);
+	});
+
+	test("user list prints the directory (user, admin marker, name, email)", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		await cliMain(
+			["user", "add", "alice", "--admin", "--name", "Alice", "--email", "alice@example.invalid"],
+			storeEnv(dir),
+			undefined,
+			io,
+		);
+		out.length = 0;
+		expect(await cliMain(["user", "list"], storeEnv(dir), undefined, io)).toBe(0);
+		const printed = out.join("\n");
+		expect(printed).toContain("alice");
+		expect(printed).toContain("Alice");
+		expect(printed).toContain("alice@example.invalid");
+});
+
+	test("token create prints one sgr_ line; list shows the name without the secret; revoke removes it", async () => {
+		const dir = await tmpConfigDir();
+		const { out, errors, io } = captureIo();
+		await cliMain(["user", "add", "alice"], storeEnv(dir), undefined, io);
+		out.length = 0;
+
+		expect(
+			await cliMain(["token", "create", "laptop", "--user", "alice"], storeEnv(dir), undefined, io),
+		).toBe(0);
+		const lines = out.filter((line) => line.trim() !== "");
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatch(/^sgr_/);
+		const secret = lines[0] as string;
+
+		// The store holds the digest, never the secret.
+		const stored = JSON.parse(await readFile(join(dir, "api-tokens.json"), "utf8"));
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({ name: "laptop", user: "alice" });
+		expect(JSON.stringify(stored)).not.toContain(secret);
+
+		out.length = 0;
+		expect(await cliMain(["token", "list"], storeEnv(dir), undefined, io)).toBe(0);
+		const listing = out.join("\n");
+		expect(listing).toContain("laptop");
+		expect(listing).toContain("alice");
+		expect(listing).not.toContain(secret);
+
+		const id = (stored[0] as { id: string }).id;
+		expect(
+			await cliMain(["token", "revoke", id], storeEnv(dir), undefined, io),
+		).toBe(0);
+		const after = JSON.parse(await readFile(join(dir, "api-tokens.json"), "utf8"));
+		expect(after).toEqual([]);
+		// Revoking an unknown id fails loud.
+		errors.length = 0;
+		expect(
+			await cliMain(["token", "revoke", id], storeEnv(dir), undefined, io),
+		).toBe(1);
+		expect(errors.join("\n")).toMatch(/token/);
+	});
+
+	test("token create for an unknown user fails loud naming the user", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		expect(
+			await cliMain(["token", "create", "laptop", "--user", "ghost"], storeEnv(dir), undefined, io),
+		).toBe(1);
+		expect(errors.join("\n")).toMatch(/ghost/);
+		// Nothing was minted.
+		await expect(readFile(join(dir, "api-tokens.json"), "utf8")).rejects.toThrow();
+	});
+});
+
+/** A scripted prompt seam: pops answers in order, records the questions. */
+function scriptedPrompt(answers: string[]): {
+	questions: string[];
+	prompt: (question: string) => Promise<string>;
+} {
+	const questions: string[] = [];
+	let next = 0;
+	return {
+		questions,
+		prompt: (question) => {
+			questions.push(question);
+			const answer = answers[next];
+			next += 1;
+			if (answer === undefined) {
+				return Promise.reject(new Error(`no scripted answer for "${question}"`));
+			}
+			return Promise.resolve(answer);
+		},
+	};
+}
+
+/** The onboarding fetch stub: GET answers the state; POST records the claim. */
+function onboardingFetchStub(options?: {
+	state?: "unclaimed" | "claimed";
+	codeRequired?: boolean;
+	claimStatus?: number;
+	claimBody?: unknown;
+	noToken?: boolean;
+}): {
+	fetch: NonNullable<CliDeps["fetch"]>;
+	claims: { url: string; method?: string; body?: string }[];
+} {
+	const state = options?.state ?? "unclaimed";
+	const claims: { url: string; method?: string; body?: string }[] = [];
+	const fetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
+		if (init?.method === "POST") {
+			claims.push({ url, method: init.method, body: init.body });
+			const status = options?.claimStatus ?? 200;
+			const body =
+				options?.claimBody ??
+				(options?.noToken === true
+					? { user: { user: "alice", admin: true, createdAt: 1, source: "cli" } }
+					: {
+							user: { user: "alice", admin: true, createdAt: 1, source: "cli" },
+							token: "sgr_claimed_token",
+						});
+			return { ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) };
+		}
+		return {
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({
+					state,
+					methods: ["token"],
+					codeRequired: options?.codeRequired ?? true,
+				}),
+		};
+	}) as NonNullable<CliDeps["fetch"]>;
+	return { fetch: fetchImpl, claims };
+}
+
+describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
+	test("unclaimed → prompts code/username/name/email, claims with issueToken, writes tui.json (0600), launches with the token", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt([
+			"ABCD-EFGH",
+			"alice",
+			"Alice",
+			"alice@example.invalid",
+		]);
+		const { fetch, claims } = onboardingFetchStub();
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+		);
+		expect(code).toBe(0);
+
+		// Four prompts, the code one FIRST (codeRequired came from the GET).
+		expect(questions).toHaveLength(4);
+		expect(questions[0]).toMatch(/code/i);
+		expect(questions[1]).toMatch(/username/i);
+
+		// The claim body matches the scripted answers.
+		expect(claims).toHaveLength(1);
+		expect(claims[0]?.url).toBe("https://sigrun.example/v1/onboarding/claim");
+		expect(JSON.parse(claims[0]?.body ?? "{}")).toEqual({
+			code: "ABCD-EFGH",
+			user: "alice",
+			name: "Alice",
+			email: "alice@example.invalid",
+			issueToken: true,
+		});
+
+		// tui.json: user + server + token, mode 0600.
+		const file = JSON.parse(await readFile(join(dir, "tui.json"), "utf8"));
+		expect(file).toEqual({
+			user: "alice",
+			server: "https://sigrun.example",
+			token: "sgr_claimed_token",
+		});
+		const fileStat = await stat(join(dir, "tui.json"));
+		expect(fileStat.mode & 0o777).toBe(0o600);
+
+		// The launch carries the claimed identity and token.
+		expect(calls.launchTui).toEqual([
+			{
+				baseUrl: "https://sigrun.example",
+				user: "alice",
+				token: "sgr_claimed_token",
+			},
+		]);
+	});
+
+	test("empty name/email answers are omitted from the claim body", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt } = scriptedPrompt(["ABCD-EFGH", "alice", "", "  "]);
+		const { fetch, claims } = onboardingFetchStub();
+		const { deps } = stubDeps({ prompt, fetch });
+		await cliMain(["attach", "--server", "https://sigrun.example"], { SIGRUN_CONFIG_DIR: dir }, deps);
+		expect(JSON.parse(claims[0]?.body ?? "{}")).toEqual({
+			code: "ABCD-EFGH",
+			user: "alice",
+			issueToken: true,
+		});
+	});
+
+	test("a claimed server skips onboarding entirely (no prompts, no claim, no write)", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt([]);
+		const { fetch, claims } = onboardingFetchStub({ state: "claimed" });
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		await cliMain(["attach", "--server", "https://sigrun.example"], { SIGRUN_CONFIG_DIR: dir }, deps);
+		expect(questions).toEqual([]);
+		expect(claims).toEqual([]);
+		expect(calls.launchTui).toEqual([{ baseUrl: "https://sigrun.example" }]);
+		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("a failed claim exits 1 naming the server's error, writes nothing, launches nothing", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt } = scriptedPrompt(["WRONG", "alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({
+			claimStatus: 403,
+			claimBody: { error: "invalid_code" },
+		});
+		const errors: string[] = [];
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+			{ error: (text) => errors.push(text) },
+		);
+		expect(code).toBe(1);
+		expect(claims).toHaveLength(1);
+		expect(errors.join("\n")).toMatch(/invalid_code/);
+		expect(calls.launchTui).toEqual([]);
+		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("a GET that 403s setup_required is treated as unclaimed with a code", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["ABCD-EFGH", "alice", "", ""]);
+		const claims: { url: string; body?: string }[] = [];
+		const fetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
+			if (init?.method === "POST") {
+				claims.push({ url, body: init.body });
+				return {
+					ok: true,
+					status: 200,
+					json: () =>
+						Promise.resolve({
+							user: { user: "alice", admin: true, createdAt: 1, source: "cli" },
+							token: "sgr_claimed_token",
+						}),
+				};
+			}
+			return {
+				ok: false,
+				status: 403,
+				json: () => Promise.resolve({ error: "setup_required" }),
+			};
+		}) as NonNullable<CliDeps["fetch"]>;
+		const { deps } = stubDeps({ prompt, fetch: fetchImpl });
+		await cliMain(["attach", "--server", "https://sigrun.example"], { SIGRUN_CONFIG_DIR: dir }, deps);
+		expect(questions).toHaveLength(4);
+		expect(JSON.parse(claims[0]?.body ?? "{}")).toMatchObject({ code: "ABCD-EFGH" });
+	});
+
+	test("an unreachable server (fetch rejects) skips onboarding and launches the TUI as before", async () => {
+		const dir = await tmpConfigDir();
+		const { questions } = scriptedPrompt([]);
+		const fetchImpl = (async () => {
+			throw new Error("connect ECONNREFUSED");
+		}) as unknown as NonNullable<CliDeps["fetch"]>;
+		const { deps, calls } = stubDeps({ fetch: fetchImpl });
+		const code = await cliMain(
+			["attach", "--server", "https://down.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+		);
+		expect(code).toBe(0);
+		expect(questions).toEqual([]);
+		expect(calls.launchTui).toEqual([{ baseUrl: "https://down.example" }]);
+	});
+
+	test("token precedence on launch: env SIGRUN_TOKEN > tui.json token (both claimed and pre-existing)", async () => {
+		// A pre-existing tui.json token is passed through (claimed server).
+		const dir = await tmpConfigDir();
+		await writeFile(
+			join(dir, "tui.json"),
+			JSON.stringify({ user: "acme-user", token: "sgr_file_token" }),
+			"utf8",
+		);
+		const { fetch } = onboardingFetchStub({ state: "claimed" });
+		const fromFile = stubDeps({ fetch });
+		await cliMain(["attach", "--server", "https://sigrun.example"], { SIGRUN_CONFIG_DIR: dir }, fromFile.deps);
+		expect(fromFile.calls.launchTui[0]).toMatchObject({ token: "sgr_file_token" });
+
+		// The env var wins over the file.
+		const fromEnv = stubDeps({ fetch });
+		await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir, SIGRUN_TOKEN: "sgr_env_token" },
+			fromEnv.deps,
+		);
+		expect(fromEnv.calls.launchTui[0]).toMatchObject({ token: "sgr_env_token" });
+	});
+});
+
+describe("cliMain run: the loopback onboarding flow (Task 7)", () => {
+	test("unclaimed loopback → no code prompt, claims with issueToken, writes user ONLY (no token, no server)", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "Alice", "alice@example.invalid"]);
+		const { fetch, claims } = onboardingFetchStub({ codeRequired: false });
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain([], storeEnv(dir), deps);
+		expect(code).toBe(0);
+
+		// Three prompts, no code (loopback is the trust).
+		expect(questions).toHaveLength(3);
+		expect(questions.join("\n")).not.toMatch(/code/i);
+
+		// The claim hit the booted loopback server.
+		expect(claims[0]?.url).toBe("http://localhost:4321/v1/onboarding/claim");
+		expect(JSON.parse(claims[0]?.body ?? "{}")).toEqual({
+			user: "alice",
+			name: "Alice",
+			email: "alice@example.invalid",
+			issueToken: true,
+		});
+
+		// tui.json gains ONLY the user.
+		const file = JSON.parse(await readFile(join(dir, "tui.json"), "utf8"));
+		expect(file).toEqual({ user: "alice" });
+
+		// The launch carries the user and NO token (workstation run is
+		// loopback and unauthenticated — spec §5.4).
+		expect(calls.launchTui[0]).toEqual({
+			baseUrl: "http://localhost:4321",
+			user: "alice",
+		});
+	});
+
+	test("a claimed loopback server runs the old path unchanged", async () => {
+		const dir = await tmpConfigDir();
+		const { questions } = scriptedPrompt([]);
+		const { fetch, claims } = onboardingFetchStub({ state: "claimed" });
+		const { deps, calls } = stubDeps({ fetch });
+		await cliMain([], storeEnv(dir), deps);
+		expect(questions).toEqual([]);
+		expect(claims).toEqual([]);
+		expect(calls.launchTui).toEqual([{ baseUrl: "http://localhost:4321" }]);
+	});
+});
+
+describe("TuiFile token validation (Task 7)", () => {
+	test("a string token round-trips", async () => {
+		const dir = await tmpConfigDir();
+		await writeFile(
+			join(dir, "tui.json"),
+			JSON.stringify({ token: "sgr_tui_file_token" }),
+			"utf8",
+		);
+		expect(await loadTuiFile({ SIGRUN_CONFIG_DIR: dir })).toEqual({
+			token: "sgr_tui_file_token",
+		});
+	});
+
+	test("a non-string token fails loud", async () => {
+		const dir = await tmpConfigDir();
+		await writeFile(join(dir, "tui.json"), JSON.stringify({ token: 42 }), "utf8");
+		await expect(loadTuiFile({ SIGRUN_CONFIG_DIR: dir })).rejects.toThrowError(
+			/tui\.json: token must be a string/,
+		);
 	});
 });

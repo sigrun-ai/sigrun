@@ -9,7 +9,8 @@
  *
  * Identity seam (Task 2): the configured `user` rides EVERY request as the
  * `X-Sigrun-User` header; absent/empty user omits it entirely — the
- * server's naive mode.
+ * server's naive mode. The bearer token (Task 7) rides every request as
+ * `authorization: Bearer <token>` when configured.
  *
  * Fail-loud: a non-2xx rejects with a {@link SigrunApiError} carrying the
  * status and the server's parsed error body (`{error: ...}`), never a
@@ -104,6 +105,12 @@ export interface SigrunClientOptions {
 	 * header is omitted entirely (the server's naive mode).
 	 */
 	readonly user?: string;
+	/**
+	 * A bearer token (Task 7): rides EVERY request as
+	 * `authorization: Bearer <token>`. Absent/empty/whitespace → omitted.
+	 * The launcher threads `SIGRUN_TOKEN` here — the env beats tui.json.
+	 */
+	readonly token?: string;
 	/** Injected for tests; defaults to the ambient `fetch`. */
 	readonly fetch?: FetchLike;
 }
@@ -122,10 +129,14 @@ export class SigrunClient {
 			options.fetch ??
 			(((input, init) => globalThis.fetch(input, init)) as FetchLike);
 		const user = options.user?.trim();
-		this.#headers =
-			user === undefined || user === ""
-				? { accept: "application/json" }
-				: { accept: "application/json", "x-sigrun-user": user };
+		const token = options.token?.trim();
+		this.#headers = {
+			accept: "application/json",
+			...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
+			...(token === undefined || token === ""
+				? {}
+				: { authorization: `Bearer ${token}` }),
+		};
 	}
 
 	async #get<T>(path: string): Promise<T> {

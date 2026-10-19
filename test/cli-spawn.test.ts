@@ -29,7 +29,6 @@ import {
 	type TuiChildProcess,
 	type TuiSpawnFn,
 } from "../src/cli.js";
-
 const tmpDirs: string[] = [];
 
 afterEach(async () => {
@@ -75,10 +74,12 @@ function fakeChild(): TuiChildProcess & {
 interface SpawnRecorder {
 	child: ReturnType<typeof fakeChild>;
 	spawns: { command: string; args: string[] }[];
-/** CliDeps with stub boot/serve, the fake child's spawn seam, and a
+	/** The spawn options per call (the SIGRUN_TOKEN env assertion). */
+	envs: (NodeJS.ProcessEnv | undefined)[];
+	/** CliDeps with stub boot/serve, the fake child's spawn seam, and a
 	 * stub bin resolver — cliMain's DEFAULT launchTui wiring (the spawn path
 	 * under test) runs between them. */
-	deps(): CliDeps;
+	deps(overrides?: Partial<CliDeps>): CliDeps;
 	shutdowns(): number;
 }
 
@@ -89,15 +90,17 @@ function spawnRecorder(options?: {
 	const { bin, resolveTuiBinThrows } = options ?? {};
 	const child = fakeChild();
 	const spawns: { command: string; args: string[] }[] = [];
+	const envs: (NodeJS.ProcessEnv | undefined)[] = [];
 	let shutdowns = 0;
-	const spawn: TuiSpawnFn = (command, args) => {
+	const spawn: TuiSpawnFn = (command, args, spawnOptions) => {
 		spawns.push({ command, args: [...args] });
+		envs.push(spawnOptions?.env);
 		return child;
 	};
 	const shutdownOnce = async (): Promise<void> => {
 		shutdowns += 1;
 	};
-	const deps = (): CliDeps => ({
+	const deps = (overrides: Partial<CliDeps> = {}): CliDeps => ({
 		serve: async () => {},
 		boot: async () => ({
 			port: 4321,
@@ -108,6 +111,14 @@ function spawnRecorder(options?: {
 		// launchTui is deliberately OMITTED: cliMain composes its DEFAULT
 		// spawn wiring (launchTuiProcess + these injected seams) — the unit
 		// under test is the argv composition and the child-exit lifecycle.
+		// Task 7: the onboarding GET defaults to a claimed server (the
+		// SIGRUN_TOKEN tests override it with their own fetch stubs).
+		fetch: (async () => ({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({ state: "claimed", methods: [], codeRequired: false }),
+		})) as CliDeps["fetch"],
 		...(resolveTuiBinThrows
 			? {
 					resolveTuiBin: () => {
@@ -117,8 +128,9 @@ function spawnRecorder(options?: {
 					},
 				}
 			: { resolveTuiBin: () => bin ?? "/resolved/node_modules/@sigrun/tui/dist/launch.js" }),
+		...overrides,
 	});
-	return { child, spawns, deps, shutdowns: () => shutdowns };
+	return { child, spawns, envs, deps, shutdowns: () => shutdowns };
 }
 
 describe("cliMain run/attach spawn the sigrun-tui bin", () => {
@@ -191,7 +203,7 @@ describe("cliMain run/attach spawn the sigrun-tui bin", () => {
 		expect(rec.spawns[0]?.args).toContain("--editor");
 	});
 
-	test("the parent shuts the server down when the tui child exits (agent-dies-with-tui)", async () => {
+test("the parent shuts the server down when the tui child exits (agent-dies-with-tui)", async () => {
 		const rec = spawnRecorder();
 		const run = cliMain([], await hermeticEnv(), rec.deps());
 		await vi.waitFor(() => {
@@ -201,7 +213,131 @@ describe("cliMain run/attach spawn the sigrun-tui bin", () => {
 		rec.child.exit(0);
 		expect(await run).toBe(0);
 		expect(rec.shutdowns()).toBe(1);
-	});
+});
+
+describe("SIGRUN_TOKEN reaches the child via env, never argv (Task 7)", () => {
+		/** The onboarding fetch/prompt stubs: unclaimed + code, one claim. */
+		function onboardingStubs(): {
+			deps: Partial<CliDeps>;
+			claims: { body?: string }[];
+		} {
+			const claims: { body?: string }[] = [];
+			const fetch = (async (
+						_url: string,
+						init?: { method?: string; body?: string },
+			) => {
+						if (init?.method === "POST") {
+								claims.push({ body: init.body });
+								return {
+												ok: true,
+												status: 200,
+												json: () =>
+														Promise.resolve({
+																user: { user: "alice", admin: true, createdAt: 1, source: "cli" },
+																token: "sgr_claimed_token",
+														}),
+										};
+						}
+						return {
+								ok: true,
+								status: 200,
+								json: () =>
+										Promise.resolve({ state: "unclaimed", methods: ["token"], codeRequired: true }),
+						};
+			}) as unknown as NonNullable<CliDeps["fetch"]>;
+			const answers = ["ABCD-EFGH", "alice", "", ""];
+			let next = 0;
+			const prompt = async () => {
+						const answer = answers[next] ?? "";
+						next += 1;
+						return answer;
+			};
+			return { deps: { fetch, prompt }, claims };
+		}
+
+		test("attach onboarding: the claimed token rides env SIGRUN_TOKEN, absent from argv", async () => {
+			const rec = spawnRecorder();
+			const stubs = onboardingStubs();
+			const run = cliMain(
+						["attach", "--server", "https://sigrun.example"],
+						await hermeticEnv(),
+						rec.deps(stubs.deps),
+			);
+			await vi.waitFor(() => {
+						expect(rec.spawns).toHaveLength(1);
+			});
+			// The claim was made with issueToken (the fetch stub's POST body).
+			expect(JSON.parse(stubs.claims[0]?.body ?? "{}")).toMatchObject({
+						code: "ABCD-EFGH",
+						user: "alice",
+						issueToken: true,
+			});
+			// The child env carries the token; the argv NEVER does.
+			expect(rec.envs[0]?.SIGRUN_TOKEN).toBe("sgr_claimed_token");
+			expect(rec.spawns[0]?.args.join(" ")).not.toContain("sgr_claimed_token");
+			rec.child.exit(0);
+			expect(await run).toBe(0);
+		});
+
+		test("a tui.json token reaches the child env too (claimed server, no onboarding)", async () => {
+			const dir = await mkdtemp(join(tmpdir(), "sigrun-cli-spawn-"));
+			tmpDirs.push(dir);
+			const { writeFile } = await import("node:fs/promises");
+			await writeFile(
+						join(dir, "tui.json"),
+						JSON.stringify({ user: "acme-user", token: "sgr_file_token" }),
+						"utf8",
+			);
+			const claims: unknown[] = [];
+			const fetch = (async (
+						_url: string,
+						init?: { method?: string; body?: string },
+			) => {
+						if (init?.method === "POST") claims.push(init.body);
+						return {
+								ok: true,
+								status: 200,
+								json: () => Promise.resolve({ state: "claimed", methods: ["token"], codeRequired: false }),
+						};
+			}) as unknown as NonNullable<CliDeps["fetch"]>;
+			const rec = spawnRecorder();
+			const run = cliMain(
+						["attach", "--server", "https://sigrun.example"],
+						{ SIGRUN_CONFIG_DIR: dir },
+						rec.deps({ fetch }),
+			);
+			await vi.waitFor(() => {
+						expect(rec.spawns).toHaveLength(1);
+			});
+			expect(claims).toEqual([]); // claimed: no onboarding POST at all
+			expect(rec.envs[0]?.SIGRUN_TOKEN).toBe("sgr_file_token");
+			expect(rec.spawns[0]?.args.join(" ")).not.toContain("sgr_file_token");
+			rec.child.exit(0);
+			expect(await run).toBe(0);
+		});
+
+		test("no token anywhere: the spawn options carry no env override (inheritance)", async () => {
+			const rec = spawnRecorder();
+			const fetch = (async () => {
+						return {
+								ok: true,
+								status: 200,
+								json: () => Promise.resolve({ state: "claimed", methods: [], codeRequired: false }),
+						};
+			}) as unknown as NonNullable<CliDeps["fetch"]>;
+			const run = cliMain(
+						["attach", "--server", "https://sigrun.example"],
+						await hermeticEnv(),
+						rec.deps({ fetch }),
+			);
+			await vi.waitFor(() => {
+						expect(rec.spawns).toHaveLength(1);
+			});
+			expect(rec.envs[0]).toBeUndefined();
+			rec.child.exit(0);
+			expect(await run).toBe(0);
+		});
+});
 
 	test("a nonzero child exit is an error AND still shuts the server down", async () => {
 		const rec = spawnRecorder();

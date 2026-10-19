@@ -460,3 +460,68 @@ describe("watchConversation", () => {
 		}
 	});
 });
+
+describe("authorization header (Task 7: the token seam)", () => {
+	/** A header-recording SSE server: one snapshot, then held open. */
+	async function headerRecordingServer(): Promise<{
+		seen: Record<string, string | string[] | undefined>[];
+		baseUrl: string;
+		close(): Promise<void>;
+	}> {
+		const seen: Record<string, string | string[] | undefined>[] = [];
+		const server = http.createServer((request, response) => {
+			seen.push(request.headers);
+			response.writeHead(200, {
+				"content-type": "text/event-stream",
+				"cache-control": "no-cache",
+			});
+			response.write(
+				`event: snapshot\ndata: ${JSON.stringify({ conversation: { id: 1 }, entries: [], docs: {}, steer: { busy: false, queued: 0 } })}\n`,
+			);
+			request.on("close", () => response.end());
+		});
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", () => resolve());
+		});
+		const address = server.address() as AddressInfo;
+		return {
+			seen,
+			baseUrl: `http://127.0.0.1:${address.port}`,
+			close: () =>
+				new Promise<void>((resolve) => {
+					server.close(() => resolve());
+				}),
+		};
+	}
+
+	test("a token adds authorization: Bearer on the stream connect", async () => {
+		const { seen, baseUrl, close } = await headerRecordingServer();
+		const unwatch = watchConversation(
+			1,
+			{},
+			{
+				baseUrl,
+				token: "sgr_stream_token",
+				reconnectBaseMs: 1,
+				reconnectMaxMs: 1,
+			},
+		);
+		await vi.waitFor(() => {
+			expect(seen.length).toBeGreaterThanOrEqual(1);
+		});
+		expect(seen[0]?.authorization).toBe("Bearer sgr_stream_token");
+		unwatch();
+		await close();
+	});
+
+	test("no token: the stream connect carries no authorization header", async () => {
+		const { seen, baseUrl, close } = await headerRecordingServer();
+		const unwatch = watchConversation(1, {}, { baseUrl, reconnectBaseMs: 1, reconnectMaxMs: 1 });
+		await vi.waitFor(() => {
+			expect(seen.length).toBeGreaterThanOrEqual(1);
+		});
+		expect(seen[0]?.authorization).toBeUndefined();
+		unwatch();
+		await close();
+	});
+});
