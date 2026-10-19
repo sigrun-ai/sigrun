@@ -7,7 +7,6 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import { aggregateHealth } from "../../harness/health.js";
 import type { ServerContext } from "../context.js";
 
 /**
@@ -20,25 +19,23 @@ import type { ServerContext } from "../context.js";
  * must NOT fail liveness — the kubelet would restart a process that is
  * merely degraded.
  *
- * Readiness: 200 only when the harness is GENUINELY ready. The honest v1
- * derivation, evaluated per request:
+ * Readiness: 200 only when the harness is GENUINELY ready — and in W2
+ * (§6.1) that is STORAGE-ONLY: boot complete + a real storage read.
+ * Provider and memory health do NOT gate readiness — a degraded upstream
+ * is never a Service outage (no endpoint gap, no pod eviction); they stay
+ * visible in `/v1/meta`, `/v1/providers` (W1), and `/metrics` (W2 Task 8).
+ * The derivation, evaluated per request:
  *  1. booted — trivially true while this route answers (the server only
  *     exists after `openHarness` completed); documented, not probed.
- *  2. health not degraded — `health.memory` (the loaded memory
- *     extension's §3 producer, else ok) AND `health.providers` (aggregated
- *     §3 producer statuses). Quarantined extensions do NOT fail readiness:
- *     boot continues by design (spec §3 quarantined-never-aborts), memory
- *     falls back to the no-op default, and no v1 surface hard-depends on a
- *     quarantined package — quarantines surface via `/v1/meta`
- *     `extensions[].status`.
- *  3. a cheap REAL storage read — resolve the reserved root conversation
+ *  2. a cheap REAL storage read — resolve the reserved root conversation
  *     through the session line (`storage.conversation()` under
  *     `harness.conversation`): one real sqlite record fetch proving the db
  *     file + session answer right now. A closed harness throws here
- *     (assertOpen) — caught, reported as "failed".
- * Not ready ⇒ 503 + a small JSON body naming the failing check (so a
- * `kubectl get endpoints` gap has a story). Ready ⇒ the exposition line,
- * scrape-compatible for the same reason as `/healthz`.
+ *     (assertOpen) — caught, reported as "failed"; `undefined` (record
+ *     gone) likewise fails — not a harness anyone should route traffic to.
+ * Not ready ⇒ 503 + `{ ready: false, checks: { storage: "failed" } }` (so
+ * a `kubectl get endpoints` gap has a story). Ready ⇒ the exposition
+ * line, scrape-compatible for the same reason as `/healthz`.
  */
 export function registerProbeRoutes(
 	app: FastifyInstance,
@@ -53,8 +50,6 @@ export function registerProbeRoutes(
 	});
 
 	app.get("/readyz", async (_request, reply) => {
-		const memory = opened.memoryHealth?.() ?? "ok";
-		const providers = aggregateHealth(opened.providerHealth);
 		let storage: "ok" | "failed";
 		try {
 			const conversation = await opened.harness.conversation(
@@ -67,10 +62,10 @@ export function registerProbeRoutes(
 		} catch {
 			storage = "failed";
 		}
-		if (memory !== "ok" || providers !== "ok" || storage !== "ok") {
+		if (storage !== "ok") {
 			return await reply.code(503).send({
 				ready: false,
-				checks: { memory, providers, storage },
+				checks: { storage },
 			});
 		}
 		return await reply
