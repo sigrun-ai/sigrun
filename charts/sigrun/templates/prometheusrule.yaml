@@ -25,20 +25,28 @@ spec:
     - name: sigrun
       rules:
         - alert: SigrunNotReady
-          # Degraded T9e health ⇒ /readyz 503 ⇒ up == 0, so
-          # "meta-degraded" folds into SigrunNotReady: process down OR
-          # harness not ready (storage unreachable, memory/provider health
-          # degraded).
-          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0
+          # W2 final-review fix: the scrape moved to /metrics (Task 8), which
+          # answers 200 ALWAYS — even a harness-closed process serves the
+          # exposition with sigrun_up 0 (Review Focus 5) — and /readyz's 503
+          # is no longer scraped at all. So `up == 0` alone covers only
+          # scrape death (process down / port gone); the app's own down
+          # signal — sigrun_up 0, i.e. harness inspection failing (a closed
+          # or storage-unreachable session) — is OR-ed in. Residual, out of
+          # scope here: a STORAGE-read failure with a healthy session line
+          # (the /readyz 503 class) does not page until a follow-up gauge
+          # exposes it; /readyz remains the k8s readiness probe's channel.
+          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0 or sigrun_up == 0
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: sigrun scrape failing (process down or harness not ready)
+            summary: sigrun is down (scrape failing or the harness is not answering)
             description: >-
-              The sigrun /readyz scrape has failed for 10m — the process is
-              down, or readiness is failing (storage read, memory/provider
-              health). Check the pod and GET /v1/meta for the health block.
+              Either the /metrics scrape has failed for 10m (process down,
+              port gone) or the scrape is healthy but sigrun_up == 0 — the
+              harness fails its own inspection (closed session, storage
+              unreachable from the app). Check the pod, then GET /metrics
+              and GET /v1/meta for the health block.
         - alert: SigrunNoScrape
           # The series is absent for 30m — the ServiceMonitor/Prometheus
           # wiring itself broke (SigrunNotReady cannot fire when nothing

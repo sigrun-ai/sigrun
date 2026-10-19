@@ -540,7 +540,7 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(monitor.spec.endpoints[0].interval).toBe("30s");
 	});
 
-	test("PrometheusRule alerts on scrape failure (readiness 503 ⇒ up=0)", () => {
+	test("SigrunNotReady keys on scrape death or sigrun_up 0 (the /metrics exposition)", () => {
 		const rule = docOf(docs, "PrometheusRule") as {
 			spec: { groups: { name: string; rules: { alert: string; expr: string }[] }[] };
 		};
@@ -549,8 +549,14 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 			.sort((a, b) => a.alert.localeCompare(b.alert));
 		expect(alerts.map((r) => r.alert)).toContain("SigrunNotReady");
 		expect(alerts.map((r) => r.alert)).toContain("SigrunNoScrape");
+		// W2 final-review fix: the scrape is /metrics (answers 200 always —
+		// even a harness-closed process serves sigrun_up 0), so up==0 alone
+		// only fires on scrape death. The app's own down signal (sigrun_up 0,
+		// the inspection failure class) is OR-ed in.
 		const notReady = alerts.find((r) => r.alert === "SigrunNotReady");
-		expect(notReady?.expr).toMatch(/up\{job="sigrun"\}/);
+		expect(notReady?.expr).toBe(
+			'up{job="sigrun"} == 0 or sigrun_up == 0',
+		);
 	});
 
 	test("the four §6.9 alerts render (backup stale gated on backup enabled)", async () => {
