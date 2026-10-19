@@ -312,6 +312,14 @@ export interface OpenHarnessOptions {
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
 	/**
+	 * The identity stores injection seam (core hardening W1 Task 3):
+	 * when present it WINS over `openIdentityStores(roots)` — tests seed
+	 * a claimed directory (the pipeline's unclaimed gate would 403 every
+	 * route) without writing under the resolved config root. Boot passes
+	 * nothing.
+	 */
+	readonly identity?: IdentityStores;
+	/**
 	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
 	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
 	 * every field a caller sets here wins over the config value. The four
@@ -436,7 +444,7 @@ export async function openHarness(
 	// The identity stores (W1 Task 2) ride the same resolved roots: no
 	// I/O here (each file materializes on its first write), so this is
 	// pure construction over paths boot already owns.
-	const identity = openIdentityStores(roots);
+	const identity = options.identity ?? openIdentityStores(roots);
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the

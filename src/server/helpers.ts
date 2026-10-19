@@ -1,7 +1,7 @@
 /**
  * Shared §5 server helpers: the validation vocabularies, the
  * store-derived agent change, and the per-conversation read/env seams
- * every route module (and `index.ts`'s inline routes) consume.
+ * the route modules consume.
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

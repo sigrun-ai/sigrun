@@ -69,7 +69,7 @@ export function registerConversationRoutes(
 			);
 			// The identity seam: stamp the caller as owner when the request
 			// carried one (naive mode — no header, no write).
-			await stampSessionOwner(conversation, request.sigrunUser);
+			await stampSessionOwner(conversation, request.principal.user);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
@@ -254,7 +254,7 @@ export function registerConversationRoutes(
 			// The fork's identity is the CALLER's, not the source's: the doc
 			// copied the parent's owner ("current" fork semantics), the stamp
 			// overwrites it; no header → the copy stands.
-			await stampSessionOwner(fork, request.sigrunUser);
+			await stampSessionOwner(fork, request.principal.user);
 			const view = await readView(fork);
 			return await reply.code(201).send({ id: fork.id, view });
 		},
@@ -377,7 +377,7 @@ export function registerConversationRoutes(
 			}, BACKGROUND_CONTEXT);
 			// The imported conversation is the IMPORTER's, not the source's
 			// (the JSONL never carries meta — the stamp is the only owner).
-			await stampSessionOwner(conversation, request.sigrunUser);
+			await stampSessionOwner(conversation, request.principal.user);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},
