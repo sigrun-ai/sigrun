@@ -651,15 +651,17 @@ entry **before** the provider's own entry, for every provider id. Any
 deploy with a `"default"` key therefore hands that key to every plugin
 provider (ollama, opencode, bifrost, …).
 
-Fix:
+Fix (matching the README's documented meaning of `"default"`: "the
+resolved default provider's key"):
 
-- a provider's own entry wins;
-- `"default"` applies only to the resolved default env provider (the
-  degenerate OpenAI-compatible one);
-- the degenerate resolver (`providers/index.ts:353-359`) keeps its
-  documented order (`"default"` → own entry → `OPENAI_API_KEY`);
-- a regression test: a plugin provider with its own entry plus a
-  `"default"` entry resolves its own.
+- `"default"` applies only to the provider of the resolved default model:
+  for it, the order stays `"default"` → own entry;
+- every other provider reads only its own entry;
+- the degenerate resolver (`providers/index.ts:353-359`) is already
+  default-provider-only, by construction, and is unchanged;
+- a regression test: a plugin provider that is not the default, holding
+  its own entry plus a `"default"` entry, resolves its own; one with no
+  entry of its own resolves nothing.
 
 This ships first in W2; it does not wait for W0.
 
@@ -779,8 +781,8 @@ caller can read (§5.9). Events (`event: <type>`, JSON data):
   entry.
   - The precedence fix in §6.11 is a prerequisite; otherwise a
     `"default"` entry shadows the write.
-  - Writing the resolved default env provider's credential writes
-    `"default"`.
+  - Writing the default model's provider's credential writes
+    `"default"`, which takes precedence for that provider (§6.11).
 - These are restart-free: the auth bridge resolves credentials per use.
   The builder verifies this against pi-ai's resolver. If a provider
   caches, the response says `restartRequired: true`.
