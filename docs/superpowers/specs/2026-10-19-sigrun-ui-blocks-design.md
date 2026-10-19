@@ -824,20 +824,20 @@ interface SettingsSectionDef {
   id: string; title: string; icon?: IconName;
   form: Tree;                       // placement "settings": a root form
   secrets?: { key: string; label: string; help?: string }[];
-  admin?: boolean;                  // only admins see and edit it; default true (settings writes are admin-only, §7.7)
+  admin?: boolean;                  // only admins see and edit it; default true (settings writes are admin-only, core-hardening §7.7)
 }
 ```
 
 - The form binds to the extension's settings object
   (`settings/<slug>.json`, core-hardening §7.7). Saving validates every
   field, writes the object, then fires §13.2.
-- `secrets` render as `secret` fields backed by the §7.7 secrets routes
+- `secrets` render as `secret` fields backed by the core-hardening §7.7 secrets routes
   (write-only, showing their source).
 - Core's own sections (General, Interface, Providers, Users and invites,
   Jobs, Backup, Extensions) are rebuilt as `SettingsSectionDef`s, so core
   and extensions use one renderer. Client-only preferences (theme,
   keymap) stay client-side but render through the same blocks.
-- Extensions with no declared section keep §7.7's raw JSON editor under
+- Extensions with no declared section keep core-hardening §7.7's raw JSON editor under
   Settings → Extensions → <name> → Advanced.
 - Settings search indexes every section's field labels and help text.
   Section trees are static per extension version, so the index builds
