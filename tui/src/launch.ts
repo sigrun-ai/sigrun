@@ -61,7 +61,7 @@ import {
 } from "@sigrun/shared/themes";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { SigrunClient, type FetchLike } from "./api.js";
+import { SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
 import { createEmacsKeymap } from "./keymaps/emacs.js";
@@ -103,6 +103,12 @@ export interface LaunchTuiShellOptions {
 	readonly baseUrl: string;
 	/** The `X-Sigrun-User` identity; absent = the server's naive mode. */
 	readonly user?: string;
+	/**
+	 * The bearer token (Task 7): `authorization: Bearer` on every client
+	 * request and the stream connect. The launcher sources it from env
+	 * `SIGRUN_TOKEN` — a credential never rides argv.
+	 */
+	readonly token?: string;
 	/** The UI refresh's tui.json fields (C1a threads them in from the CLI). */
 	readonly palette?: PaletteName;
 	readonly accent?: AccentName;
@@ -177,6 +183,7 @@ export async function launchTuiShell(
 	const client = new SigrunClient({
 		baseUrl: options.baseUrl,
 		...(options.user === undefined ? {} : { user: options.user }),
+		...(options.token === undefined ? {} : { token: options.token }),
 		...(options.fetchFn === undefined ? {} : { fetch: options.fetchFn }),
 	});
 	const terminal = options.terminal ?? new ProcessTerminal();
@@ -204,6 +211,7 @@ export async function launchTuiShell(
 		watchOptions: {
 			baseUrl: options.baseUrl,
 			...(options.user === undefined ? {} : { user: options.user }),
+			...(options.token === undefined ? {} : { token: options.token }),
 		},
 		...(options.editor === undefined ? {} : { editor: options.editor }),
 		theme,
@@ -425,11 +433,53 @@ function defaultBaseUrl(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * The bin's `main`: resolve server (`--server` > `SIGRUN_SERVER` > the
- * localhost default) and user (`--user` > `SIGRUN_USER`, absent = the
- * server's naive mode), then run {@link launchTuiShell}. Returns the
+ * Resolve the bin's launch options from its parsed flags + environment
+ * (Task 7): server (`--server` > `SIGRUN_SERVER` > the localhost default),
+ * user (`--user` > `SIGRUN_USER`), token (`SIGRUN_TOKEN` ONLY — there is
+ * deliberately no `--token` flag; a credential never rides argv), and
+ * the tui.json UI fields the CLI threads through as flags.
+ */
+export function launchOptionsFrom(
+	args: TuiLaunchArgs,
+	env: NodeJS.ProcessEnv,
+): LaunchTuiShellOptions {
+	const token = env.SIGRUN_TOKEN?.trim();
+	return {
+		baseUrl: args.server ?? env.SIGRUN_SERVER ?? defaultBaseUrl(env),
+		...(args.user === undefined && env.SIGRUN_USER === undefined
+			? {}
+			: { user: (args.user ?? env.SIGRUN_USER) as string }),
+		...(token === undefined || token === "" ? {} : { token }),
+		...(args.palette === undefined ? {} : { palette: args.palette }),
+		...(args.accent === undefined ? {} : { accent: args.accent }),
+		...(args.mode === undefined ? {} : { mode: args.mode }),
+		...(args.keymap === undefined ? {} : { keymap: args.keymap }),
+		...(args.editor === undefined ? {} : { editor: args.editor }),
+	};
+}
+
+/**
+ * The dedicated startup-failure message for a server still in its
+ * unclaimed state (Task 7): a standalone `sigrun-tui` that hits the
+ * setup gate exits with the `sigrun attach` onboarding hint instead of
+ * a bare 403. Any other failure maps to `undefined` (the generic path).
+ */
+export function tuiStartupMessage(error: unknown): string | undefined {
+	if (error instanceof SigrunApiError && error.status === 403) {
+		const body = error.body as { error?: unknown } | undefined;
+		if (body?.error === "setup_required") {
+			return "server is not set up — run `sigrun attach` to onboard";
+		}
+	}
+	return undefined;
+}
+
+/**
+ * The bin's `main`: resolve the launch options (flags + env, see
+ * {@link launchOptionsFrom}) and run {@link launchTuiShell}. Returns the
  * process exit code (0 clean; 1 on a usage error or a boot failure,
- * with the message printed).
+ * with the message printed — the setup-gate failure carries its own
+ * `sigrun attach` onboarding hint).
  */
 export async function tuiMain(
 	argv: readonly string[] = process.argv.slice(2),
@@ -444,21 +494,18 @@ export async function tuiMain(
 		return 1;
 	}
 	try {
-		await launchTuiShell({
-			baseUrl: args.server ?? env.SIGRUN_SERVER ?? defaultBaseUrl(env),
-			...(args.user === undefined && env.SIGRUN_USER === undefined
-				? {}
-				: { user: (args.user ?? env.SIGRUN_USER) as string }),
-			...(args.palette === undefined ? {} : { palette: args.palette }),
-			...(args.accent === undefined ? {} : { accent: args.accent }),
-			...(args.mode === undefined ? {} : { mode: args.mode }),
-			...(args.keymap === undefined ? {} : { keymap: args.keymap }),
-			...(args.editor === undefined ? {} : { editor: args.editor }),
-		});
+		await launchTuiShell(launchOptionsFrom(args, env));
 		return 0;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		io.error(message.startsWith("sigrun-tui:") ? message : `sigrun-tui: ${message}`);
+		const startup = tuiStartupMessage(error);
+		io.error(
+			startup === undefined
+				? message.startsWith("sigrun-tui:")
+					? message
+					: `sigrun-tui: ${message}`
+				: `sigrun-tui: ${startup}`,
+		);
 		return 1;
 	}
 }

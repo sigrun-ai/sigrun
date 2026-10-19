@@ -42,12 +42,16 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { resolveStoreRoots } from "./harness/stores.js";
+import * as readline from "node:readline/promises";
+import { Writable } from "node:stream";
+import { resolveStoreRoots, writeFileAtomic } from "./harness/stores.js";
+import { openIdentityStores } from "./harness/identity/index.js";
 import { pathToFileURL } from "node:url";
 import type { Env } from "./config.js";
+import type { ClaimResponse, OnboardingState } from "@sigrun/shared/views";
 import { serve, type BootedServer } from "./serve.js";
 import {
 	ACCENT_NAMES,
@@ -61,7 +65,12 @@ import {
 
 export const USAGE_TEXT = `usage: sigrun [--user <name>]
        sigrun serve
-       sigrun attach [--server <url>] [--user <name>]`;
+       sigrun attach [--server <url>] [--user <name>]
+       sigrun token create <name> --user <user>
+       sigrun token list
+       sigrun token revoke <id>
+       sigrun user add <user> [--admin] [--name <n>] [--email <e>]
+       sigrun user list`;
 
 /** The marker prefix on usage-error messages. */
 const USAGE_ERROR_PREFIX = "usage:";
@@ -74,9 +83,21 @@ export const USAGE_ERROR_PATTERN = /^usage:/;
 
 /** The parse result: which command, plus the flag-carried overrides. */
 export interface ParsedArgs {
-	readonly command: "run" | "serve" | "attach";
+	readonly command: "run" | "serve" | "attach" | "token" | "user";
 	readonly server?: string;
 	readonly user?: string;
+	/** The `token`/`user` subcommand: create | list | revoke | add. */
+	readonly sub?: "create" | "list" | "revoke" | "add";
+	/** `token create <name>` — the token's display name. */
+	readonly tokenName?: string;
+	/** `token revoke <id>` — the record id to remove. */
+	readonly id?: string;
+	/** `user add --admin`. */
+	readonly admin?: boolean;
+	/** `user add --name <n>` — the display name. */
+	readonly name?: string;
+	/** `user add --email <e>`. */
+	readonly email?: string;
 }
 
 function usageError(message: string): Error {
@@ -84,12 +105,129 @@ function usageError(message: string): Error {
 }
 
 /**
+ * Parse `token <sub> …` (Task 7): `create <name> --user <u>`, `list`,
+ * `revoke <id>`. The positional/flag grammar is strict — anything else
+ * is a usage error.
+ */
+function parseTokenArgs(argv: readonly string[]): ParsedArgs {
+	const sub = argv[0];
+	if (sub === "list") {
+		if (argv.length !== 1) {
+			throw usageError("token list takes no arguments");
+		}
+		return { command: "token", sub: "list" };
+	}
+	if (sub === "revoke") {
+		if (argv.length !== 2) {
+			throw usageError("token revoke takes exactly one <id>");
+		}
+		return { command: "token", sub: "revoke", id: argv[1] };
+	}
+	if (sub === "create") {
+		let tokenName: string | undefined;
+		let user: string | undefined;
+		let index = 1;
+		while (index < argv.length) {
+			const arg = argv[index] as string;
+			if (arg === "--user") {
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("--")) {
+					throw usageError("--user requires a value");
+				}
+				user = value;
+				index += 2;
+				continue;
+			}
+			if (tokenName === undefined && !arg.startsWith("--")) {
+				tokenName = arg;
+				index += 1;
+				continue;
+			}
+			throw usageError(`unexpected argument ${JSON.stringify(arg)}`);
+		}
+		if (tokenName === undefined) {
+			throw usageError("token create requires a <name>");
+		}
+		if (user === undefined) {
+			throw usageError("token create requires --user");
+		}
+		return { command: "token", sub: "create", tokenName, user };
+	}
+	throw usageError(
+		`unknown token subcommand ${JSON.stringify(sub ?? "")} (create, list, revoke)`,
+	);
+}
+
+/**
+ * Parse `user <sub> …` (Task 7): `add <user> [--admin] [--name <n>]
+ * [--email <e>]`, `list`. One positional (the username), flags anywhere.
+ */
+function parseUserArgs(argv: readonly string[]): ParsedArgs {
+	const sub = argv[0];
+	if (sub === "list") {
+		if (argv.length !== 1) {
+			throw usageError("user list takes no arguments");
+		}
+		return { command: "user", sub: "list" };
+	}
+	if (sub === "add") {
+		let user: string | undefined;
+		let admin = false;
+		let name: string | undefined;
+		let email: string | undefined;
+		let index = 1;
+		while (index < argv.length) {
+			const arg = argv[index] as string;
+			if (arg === "--admin") {
+				admin = true;
+				index += 1;
+				continue;
+			}
+			if (arg === "--name" || arg === "--email") {
+				const value = argv[index + 1];
+				if (value === undefined || value.startsWith("--")) {
+					throw usageError(`${arg} requires a value`);
+				}
+				if (arg === "--name") name = value;
+				else email = value;
+				index += 2;
+				continue;
+			}
+			if (user === undefined && !arg.startsWith("--")) {
+				user = arg;
+				index += 1;
+				continue;
+			}
+			throw usageError(`unexpected argument ${JSON.stringify(arg)}`);
+		}
+		if (user === undefined) {
+			throw usageError("user add requires a <user>");
+		}
+		return {
+			command: "user",
+			sub: "add",
+			user,
+			...(admin ? { admin } : {}),
+			...(name === undefined ? {} : { name }),
+			...(email === undefined ? {} : { email }),
+		};
+	}
+	throw usageError(
+		`unknown user subcommand ${JSON.stringify(sub ?? "")} (add, list)`,
+	);
+}
+
+/**
  * Parse argv (post-node slices — no `node`/`cli.ts` entries). A pure
- * function: bare → `run`; `serve`/`attach` as subcommands; `--user` is
- * valid on every command, `--server` only on `attach`. Unknown
- * subcommands/flags and missing flag values throw usage errors.
+ * function: bare → `run`; `serve`/`attach` as subcommands; `token`/`user`
+ * dispatch to their own sub-parsers (Task 7 — they must be the FIRST
+ * argument); `--user` is valid on every command, `--server` only on
+ * `attach`. Unknown subcommands/flags and missing flag values throw
+ * usage errors.
  */
 export function parseArgs(argv: readonly string[]): ParsedArgs {
+	if (argv[0] === "token") return parseTokenArgs(argv.slice(1));
+	if (argv[0] === "user") return parseUserArgs(argv.slice(1));
 	let command: ParsedArgs["command"] | undefined;
 	let server: string | undefined;
 	let user: string | undefined;
@@ -127,18 +265,21 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 }
 
 /**
- * The `tui.json` client file: the TUI's own small config (room to grow an
- * OAuth section later), read from `SIGRUN_CONFIG_DIR`/tui.json (the same
- * dir `settings.json` lives in — `SIGRUN_CONFIG_DIR` stays env-only and
- * locates the file itself). `{ user?, server? }` plus the UI refresh's
- * client fields (C1): `palette`/`accent`/`mode` (theme), `keymap`
+ * The tui.json client file: the TUI's own small config, read from
+ * `SIGRUN_CONFIG_DIR`/tui.json (the same dir `settings.json` lives in —
+ * `SIGRUN_CONFIG_DIR` stays env-only and locates the file itself).
+ * `{ user?, server?, token? }` plus the UI refresh's client fields
+ * (C1): `palette`/`accent`/`mode` (theme), `keymap`
  * (standard/vim/emacs — bindings land in C3), `editor` (external editor
  * command, validated in C4). Absent dir/file → `{}`. Fail-loud on a
- * malformed file (the settings.json posture).
+ * malformed file (the settings.json posture). `token` (Task 7) is the
+ * attach credential the onboarding claim wrote — 0600 material; env
+ * `SIGRUN_TOKEN` wins over it at launch time.
  */
 export interface TuiFile {
 	readonly user?: string;
 	readonly server?: string;
+	readonly token?: string;
 	readonly palette?: PaletteName;
 	readonly accent?: AccentName;
 	readonly mode?: ModeName;
@@ -185,11 +326,15 @@ export async function loadTuiFile(env: Env): Promise<TuiFile> {
 	const record = parsed as Record<string, unknown>;
 	const user = record.user;
 	const server = record.server;
+	const token = record.token;
 	if (user !== undefined && typeof user !== "string") {
 		throw new Error(`tui.json: user must be a string`);
 	}
 	if (server !== undefined && typeof server !== "string") {
 		throw new Error(`tui.json: server must be a string`);
+	}
+	if (token !== undefined && typeof token !== "string") {
+		throw new Error(`tui.json: token must be a string`);
 	}
 	// UI refresh (C1): validate each client field, failing loud naming the
 	// key — the shared themes module owns the palette/accent name sets.
@@ -226,6 +371,7 @@ export async function loadTuiFile(env: Env): Promise<TuiFile> {
 	return {
 		...(user === undefined ? {} : { user }),
 		...(server === undefined ? {} : { server }),
+		...(token === undefined ? {} : { token }),
 		...(palette === undefined ? {} : { palette }),
 		...(accent === undefined ? {} : { accent }),
 		...(mode === undefined ? {} : { mode }),
@@ -234,12 +380,36 @@ export async function loadTuiFile(env: Env): Promise<TuiFile> {
 	};
 }
 
+/**
+ * Merge `update` into `tui.json` and write it atomically at mode 0600
+ * (Task 7: the onboarding claim stores its `token` here — credential
+ * material never lands world-readable, and a pre-existing wider mode is
+ * tightened by the rewrite). The file's other fields (theme, keymap,
+ * editor) survive verbatim.
+ */
+export async function writeTuiFile(update: TuiFile, env: Env): Promise<void> {
+	const dir = defaultConfigDir(env);
+	await mkdir(dir, { recursive: true });
+	const merged: TuiFile = { ...(await loadTuiFile(env)), ...update };
+	await writeFileAtomic(
+		join(dir, "tui.json"),
+		`${JSON.stringify(merged, null, "\t")}\n`,
+		0o600,
+	);
+}
+
 /** The launch surface the TUI entry (Task 6/8) provides. */
 export interface LaunchTuiOptions {
 	/** The server's base URL (`SigrunClient`'s `baseUrl`). */
 	readonly baseUrl: string;
 	/** The `X-Sigrun-User` identity; absent = the server's naive mode. */
 	readonly user?: string;
+	/**
+	 * A bearer token for an authenticated server (Task 7): rides the
+	 * child as env `SIGRUN_TOKEN` — NEVER argv (a process list must never
+	 * show credentials). The TUI bin reads it from its environment.
+	 */
+	readonly token?: string;
 	/** The UI refresh's tui.json client fields (C1), threaded through. */
 	readonly palette?: PaletteName;
 	readonly accent?: AccentName;
@@ -261,10 +431,15 @@ export interface TuiChildProcess {
 	kill(signal?: NodeJS.Signals): void;
 }
 
-/** The spawn seam (tests inject a fake; production uses node's spawn). */
+/**
+ * The spawn seam (tests inject a fake; production uses node's spawn).
+ * The options carry the child's `env` — the SIGRUN_TOKEN path (the
+ * token NEVER rides argv).
+ */
 export type TuiSpawnFn = (
 	command: string,
 	args: readonly string[],
+	options?: { readonly env?: NodeJS.ProcessEnv },
 ) => TuiChildProcess;
 
 /** The bin-resolver seam: returns the ABSOLUTE path of the tui bin. */
@@ -324,7 +499,13 @@ export async function launchTuiProcess(
 ): Promise<void> {
 	const doSpawn: TuiSpawnFn =
 		seams?.spawn ??
-		((command, args) => nodeSpawn(command, [...args], { stdio: "inherit" }));
+		((command, args, spawnOptions) =>
+			nodeSpawn(command, [...args], {
+				stdio: "inherit",
+				...(spawnOptions?.env === undefined
+					? {}
+					: { env: spawnOptions.env }),
+			}));
 	const resolveBin = seams?.resolveTuiBin ?? resolveTuiBin;
 	let bin: string;
 	try {
@@ -336,7 +517,16 @@ export async function launchTuiProcess(
 			})`,
 		);
 	}
-	const child = doSpawn(process.execPath, [bin, ...tuiArgv(options)]);
+	const child = doSpawn(
+		process.execPath,
+		[bin, ...tuiArgv(options)],
+		// The token's ONLY route into the child: the environment (an
+		// explicit env REPLACES process.env in node's spawn — spread the
+		// parent's through so PATH and friends survive).
+		options.token === undefined
+			? {}
+			: { env: { ...process.env, SIGRUN_TOKEN: options.token } },
+	);
 	const code = await new Promise<number | null>((resolve, reject) => {
 		child.on("exit", (exitCode: number | null) => resolve(exitCode));
 		child.on("error", (error: Error) => reject(error));
@@ -380,7 +570,7 @@ export interface CliDeps {
 	 * Defaults to node's `spawn` with `stdio: "inherit"` (the TUI owns
 	 * the terminal).
 	 */
-	spawn?(command: string, args: readonly string[]): TuiChildProcess;
+	spawn?(command: string, args: readonly string[], options?: { readonly env?: NodeJS.ProcessEnv }): TuiChildProcess;
 	/** TEST SEAM: the `@sigrun/tui` bin resolver (see {@link resolveTuiBin}). */
 	resolveTuiBin?(): string;
 	/**
@@ -389,11 +579,84 @@ export interface CliDeps {
 	 * Defaults to `process.exit`; tests inject a capture.
 	 */
 	exit?(code: number): never;
+	/**
+	 * TEST SEAM (Task 7): the interactive prompt over the real TTY
+	 * (readline/promises). Production ({@link ttyPrompt}) echoes answers;
+	 * `{secret: true}` swaps in a muted output stream. The onboarding
+	 * flow prompts the setup code, username, name, and email through it.
+	 */
+	prompt?(question: string, opts?: { secret?: boolean }): Promise<string>;
+	/**
+	 * TEST SEAM (Task 7): the onboarding HTTP leg (`GET /v1/onboarding`,
+	 * `POST /v1/onboarding/claim`). Defaults to the ambient `fetch`.
+	 */
+	fetch?: CliFetch;
+}
+
+/**
+ * The fetch surface the onboarding flow needs (a structural slice of the
+ * ambient `fetch` — tests stub it with plain object responders).
+ */
+export type CliFetch = (
+	url: string,
+	init?: {
+		readonly method?: string;
+		readonly headers?: Record<string, string>;
+		readonly body?: string;
+	},
+) => Promise<{
+	readonly ok: boolean;
+	readonly status: number;
+	json(): Promise<unknown>;
+}>;
+
+/**
+ * The production prompt (Task 7): one readline question per call on the
+ * real stdin/stdout. `secret: true` answers with the echo muted — the
+ * question itself still prints, the typed text does not.
+ */
+export async function ttyPrompt(
+	question: string,
+	opts?: { secret?: boolean },
+): Promise<string> {
+	if (opts?.secret === true) {
+		process.stdout.write(question);
+		// A black-hole output stream: readline echoes what it writes to its
+		// output — pointing that at a sink mutes the typing without raw-mode
+		// games (the standard readline muted-input idiom).
+		const muted = new Writable({
+			write: (_chunk, _encoding, callback) => {
+				callback();
+			},
+		});
+		const rl = readline.createInterface({ input: process.stdin, output: muted });
+		try {
+			return await rl.question("");
+		} finally {
+			rl.close();
+			process.stdout.write("\n");
+		}
+	}
+	const rl = readline.createInterface({
+		input: process.stdin,
+		output: process.stdout,
+	});
+	try {
+		return await rl.question(question);
+	} finally {
+		rl.close();
+	}
 }
 
 /** The sink for usage/boot error lines (tests capture it). */
 export interface CliIO {
 	error(text: string): void;
+	/**
+	 * Data output — `token create`'s one-time secret, `token list`/
+	 * `user list` rows (Task 7). Absent drops the data (error-only
+	 * callers); the production default prints to stdout.
+	 */
+	out?(text: string): void;
 }
 
 /** Resolve the attach/run user: `--user` > `SIGRUN_USER` > tui.json. */
@@ -449,6 +712,180 @@ function resolveServer(
 }
 
 /**
+ * Run the `token`/`user` subcommands (Task 7, spec §5.4): the identity
+ * stores DIRECTLY over the resolved roots — no server needed, honored
+ * live by a running one (the stores re-read on mtime change).
+ *
+ * - `token create` checks the user exists first (a token IS its user);
+ * - `token list`/`user list` print one row per record, no secrets (the
+ *   secret exists only at create time);
+ * - `token revoke` fails loud on an unknown id.
+ */
+async function runIdentityCommand(
+	parsed: ParsedArgs,
+	env: NodeJS.ProcessEnv,
+	io: CliIO,
+): Promise<number> {
+	const stores = openIdentityStores(resolveStoreRoots(env));
+	if (parsed.command === "token") {
+		switch (parsed.sub) {
+			case "create": {
+				const user = parsed.user as string;
+				if (stores.users.get(user) === undefined) {
+					throw new Error(
+						`unknown user "${user}" — add it first: sigrun user add ${user}`,
+					);
+				}
+				const { token } = await stores.tokens.create(
+					parsed.tokenName as string,
+				user,
+				);
+				// The one-time secret: printed ONCE, never stored.
+				io.out?.(token);
+				return 0;
+			}
+			case "list": {
+				for (const record of stores.tokens.list()) {
+					io.out?.(
+						[
+							record.name,
+							record.user,
+							record.id,
+							new Date(record.createdAt).toISOString(),
+						].join("\t"),
+					);
+				}
+				return 0;
+			}
+			case "revoke": {
+				const revoked = await stores.tokens.revoke(parsed.id as string);
+				if (!revoked) {
+					throw new Error(`no token with id ${parsed.id}`);
+				}
+				return 0;
+			}
+		}
+	}
+	switch (parsed.sub) {
+		case "add": {
+			await stores.users.add({
+				user: parsed.user as string,
+				admin: parsed.admin ?? false,
+				...(parsed.name === undefined ? {} : { name: parsed.name }),
+				...(parsed.email === undefined ? {} : { email: parsed.email }),
+				source: "cli",
+			});
+			return 0;
+		}
+		case "list": {
+			for (const record of stores.users.list()) {
+				io.out?.(
+					[
+						record.admin ? "admin" : "-",
+						record.user,
+						...(record.name === undefined ? [] : [record.name]),
+						...(record.email === undefined ? [] : [record.email]),
+					].join("\t"),
+				);
+			}
+			return 0;
+		}
+	}
+	// parseArgs guarantees one of the cases above.
+	throw new Error(`unhandled ${parsed.command} subcommand`);
+}
+
+/** What a successful onboarding claim returned (Task 7, spec §5.8). */
+interface OnboardedIdentity {
+	readonly user: string;
+	/** The one-time token (present when the claim sent issueToken). */
+	readonly token?: string;
+}
+
+/**
+ * The pre-launch onboarding flow (Task 7, spec §5.8): `attach`/`run`
+ * ask the server its state; an UNCLAIMED server gets the interactive
+ * claim — setup code (when the GET said one is required), username,
+ * name, email — then `POST /v1/onboarding/claim {…, issueToken: true}`.
+ *
+ * Returns `undefined` whenever the flow does not apply (claimed server,
+ * unreachable server, a non-setup GET failure): the TUI launches on the
+ * old path and surfaces whatever the server says. A failed CLAIM is
+ * loud (the server's error body, exit 1) — the operator re-runs.
+ */
+async function onboardIfUnclaimed(
+	server: string,
+	prompt: (question: string, opts?: { secret?: boolean }) => Promise<string>,
+	fetchImpl: CliFetch,
+): Promise<OnboardedIdentity | undefined> {
+	let state: OnboardingState | undefined;
+	try {
+		const response = await fetchImpl(`${server}/v1/onboarding`, {
+			method: "GET",
+			headers: { accept: "application/json" },
+		});
+		if (response.ok) {
+			state = (await response.json()) as OnboardingState;
+		} else if (response.status === 403) {
+			// "a setup_required arrives later": a public-path GET that still
+			// answers setup_required means unclaimed with a code required.
+			const body = (await response.json().catch(() => undefined)) as
+				| { error?: unknown }
+				| undefined;
+			if (body?.error !== "setup_required") return undefined;
+			state = { state: "unclaimed", methods: [], codeRequired: true };
+		} else {
+			return undefined;
+		}
+	} catch {
+		// Unreachable server: not this flow's business — the TUI reports it.
+		return undefined;
+	}
+	if (state.state !== "unclaimed") return undefined;
+
+	let code: string | undefined;
+	if (state.codeRequired) {
+		code = (await prompt("setup code: ")).trim();
+		if (code === "") {
+			throw new Error("onboarding: a setup code is required for this server");
+		}
+	}
+	const user = (await prompt("username: ")).trim();
+	if (user === "") {
+		throw new Error("onboarding: a username is required");
+	}
+	const name = (await prompt("name (optional): ")).trim();
+	const email = (await prompt("email (optional): ")).trim();
+
+	const response = await fetchImpl(`${server}/v1/onboarding/claim`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			...(code === undefined ? {} : { code }),
+			user,
+			...(name === "" ? {} : { name }),
+			...(email === "" ? {} : { email }),
+			issueToken: true,
+		}),
+	});
+	if (!response.ok) {
+		const body = (await response.json().catch(() => undefined)) as
+			| { error?: unknown }
+			| undefined;
+		throw new Error(
+			`onboarding claim failed: ${
+				typeof body?.error === "string" ? body.error : `status ${response.status}`
+			}`,
+		);
+	}
+	const claimed = (await response.json()) as ClaimResponse;
+	return {
+		user: claimed.user.user,
+		...(claimed.token === undefined ? {} : { token: claimed.token }),
+	};
+}
+
+/**
  * The dispatch. Returns the intended process exit code (0 clean, 1 on a
  * usage error or a boot/launch failure) — the module scope below maps it
  * onto `process.exit`. Env and deps are injectable: unit tests pass a
@@ -458,7 +895,10 @@ export async function cliMain(
 	argv: readonly string[],
 	env: NodeJS.ProcessEnv = process.env,
 	deps?: CliDeps,
-	io: CliIO = { error: (text) => console.error(text) },
+	io: CliIO = {
+		error: (text) => console.error(text),
+		out: (text) => console.log(text),
+	},
 ): Promise<number> {
 	const realDeps: CliDeps = {
 		...(deps ?? {}),
@@ -501,6 +941,14 @@ export async function cliMain(
 					: { resolveTuiBin: realDeps.resolveTuiBin }),
 			}));
 
+	const prompt =
+		realDeps.prompt ??
+		((question: string, opts?: { secret?: boolean }) => ttyPrompt(question, opts));
+	const fetchImpl =
+		realDeps.fetch ??
+		((url: string, init?: Parameters<CliFetch>[1]) =>
+			globalThis.fetch(url, init));
+
 	let parsed: ParsedArgs;
 	try {
 		parsed = parseArgs(argv);
@@ -515,11 +963,34 @@ export async function cliMain(
 				await realDeps.serve(env);
 				return 0;
 			}
+			case "token":
+			case "user": {
+				// The identity commands (Task 7): stores directly, server or not.
+				return await runIdentityCommand(parsed, env, io);
+			}
 			case "attach": {
 				const file = await loadTuiFile(env);
+				const server = resolveServer(parsed, env, file);
+				const onboarded = await onboardIfUnclaimed(server, prompt, fetchImpl);
+				if (onboarded !== undefined) {
+					// The claim's carry-home: identity + where it was claimed + the
+					// one-time token (0600, merged over any existing fields).
+					await writeTuiFile(
+						{
+							user: onboarded.user,
+							server,
+							...(onboarded.token === undefined ? {} : { token: onboarded.token }),
+						},
+						env,
+					);
+				}
+				// Token precedence (spec §5.4): env SIGRUN_TOKEN > tui.json > claim.
+				const token = env.SIGRUN_TOKEN ?? file.token ?? onboarded?.token;
+				const user = resolveUser(parsed, env, file) ?? onboarded?.user;
 				await launchTui({
-					baseUrl: resolveServer(parsed, env, file),
-					user: resolveUser(parsed, env, file),
+					baseUrl: server,
+					...(user === undefined ? {} : { user }),
+					...(token === undefined || token === "" ? {} : { token }),
 					...tuiThemeFields(file),
 				});
 				return 0;
@@ -528,7 +999,6 @@ export async function cliMain(
 				// The flags are parsed; the model spec fails loud inside boot
 				// (loadConfig names SIGRUN_DEFAULT_MODEL).
 				const file = await loadTuiFile(env);
-				const user = resolveUser(parsed, env, file);
 				// Workstation mode binds loopback only: the TUI dials
 				// 127.0.0.1, and the naive-identity API has no business
 				// answering the LAN.
@@ -550,9 +1020,18 @@ export async function cliMain(
 				process.on("SIGTERM", stop);
 				process.on("SIGINT", stop);
 				try {
+					const server = `http://localhost:${booted.port}`;
+					// Loopback onboarding (Task 7): no code (loopback is the trust);
+					// tui.json gains ONLY the user — workstation run stays
+					// unauthenticated, so there is no token to keep.
+					const onboarded = await onboardIfUnclaimed(server, prompt, fetchImpl);
+					if (onboarded !== undefined) {
+						await writeTuiFile({ user: onboarded.user }, env);
+					}
+					const user = resolveUser(parsed, env, file) ?? onboarded?.user;
 					await launchTui({
-						baseUrl: `http://localhost:${booted.port}`,
-						user,
+						baseUrl: server,
+						...(user === undefined ? {} : { user }),
 						...tuiThemeFields(file),
 					});
 				} finally {

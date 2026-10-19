@@ -125,3 +125,28 @@ describe("launchTuiShell (C1b fullscreen shell)", () => {
 		expect(scroll?.grow).toBe(1);
 	});
 });
+
+describe("launchTuiShell token threading (Task 7)", () => {
+	test("a token rides every boot request as authorization: Bearer", async () => {
+		const headers: Record<string, string>[] = [];
+		const captureThenFail = (
+			_input: string,
+			init?: { headers?: Record<string, string> },
+		): Promise<never> => {
+			if (init?.headers !== undefined) headers.push(init.headers);
+			return Promise.reject(new Error("stop after capture"));
+		};
+		await expect(
+			launchTuiShell({
+				baseUrl: "http://tui-launch-test.example",
+				user: "alice",
+				token: "sgr_shell_token",
+				terminal: fakeTerminal(),
+				screen: recordingScreen({ args: undefined }),
+				fetchFn: captureThenFail,
+			}),
+		).rejects.toThrow("stop after capture");
+		expect(headers.length).toBeGreaterThanOrEqual(1);
+		expect(headers[0]?.authorization).toBe("Bearer sgr_shell_token");
+	});
+});
