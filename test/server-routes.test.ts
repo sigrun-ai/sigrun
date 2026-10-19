@@ -7,7 +7,8 @@
  * Two pins:
  *
  * - `route table is unchanged` — every path the server exposes today
- *   (the 22 `/v1` paths + the two probes), each with its method, checked
+ *   (the 22 `/v1` paths + the two probes + `/metrics`), each with its
+ *   method, checked
  *   through `app.hasRoute` and the printed route tree. Registration ORDER
  *   is pinned structurally by `createServer` (identity hook → webui
  *   bundle → probe/meta modules → the rest), matching today's shape.
@@ -46,6 +47,7 @@ import type { FastifyInstance } from "fastify";
 const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/healthz"],
 	["GET", "/readyz"],
+	["GET", "/metrics"],
 	["GET", "/v1/meta"],
 	["GET", "/v1/commands"],
 	["GET", "/v1/auth/check"],
@@ -289,6 +291,7 @@ describe("server route table", () => {
 			[
 				"/healthz",
 				"/readyz",
+				"/metrics",
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/check",

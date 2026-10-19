@@ -15,12 +15,15 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { AuthStatus } from "@sigrun/shared/views";
 import {
 	effectiveServerSection,
 	type Env,
 	type SigrunConfig,
 } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
+import { OPENAI_API_KEY_ENV } from "../harness/providers/index.js";
 import { SessionMetaDoc } from "./session-meta.js";
 import {
 	serializeConversationView,
@@ -214,6 +217,68 @@ export async function conversationEnv(
 
 /** The upload read cap for `files/content` (binary-safe; 1 MiB). */
 export const FILE_CONTENT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * One provider's auth readiness, derived from boot-retained state (spec
+ * §6.4 + provider plugins Task 6): the same three-priority chain
+ * `GET /v1/auth/check` serves — (1) the owning contributor's readiness
+ * tracker (three-state vocabulary, verbatim), (2) a tracker-less
+ * contributor's legacy §3 producer mapping (ok→ready, degraded→invalid,
+ * absent→not_ready), (3) the degenerate env provider's key-presence
+ * mapping (auth.json "default"/own entry over `OPENAI_API_KEY`).
+ * `producersByName` is the caller's per-request index of
+ * `opened.providerHealth` (a producer is per-contributor, not
+ * per-provider, so the owning contributor's producer is looked up by
+ * name). Extracted for W2 Task 8: `GET /metrics` reports the same
+ * per-provider statuses as `sigrun_provider_ready{provider,status}` —
+ * ONE derivation, never two that can drift.
+ */
+export function providerAuthStatus(
+	opened: OpenedHarness,
+	providerId: string,
+	producersByName: ReadonlyMap<
+		string,
+		{ readonly name: string; readonly health: () => "ok" | "degraded" }
+	>,
+): { readonly status: AuthStatus; readonly detail?: string } {
+	const tracker = opened.providerReadiness.get(providerId);
+	if (tracker !== undefined) {
+		const readiness = tracker();
+		return readiness.detail === undefined
+			? { status: readiness.status }
+			: { status: readiness.status, detail: readiness.detail };
+	}
+	const owner = opened.providerOwnership.get(providerId);
+	if (owner !== undefined) {
+		const producer = producersByName.get(owner);
+		const status: AuthStatus =
+			producer === undefined
+				? "not_ready"
+				: producer.health() === "ok"
+					? "ready"
+					: "invalid";
+		return { status };
+	}
+	// The degenerate provider's key resolves auth.json (the "default"
+	// magic key or the provider's own entry) BEFORE the OPENAI_API_KEY
+	// env fallback. Presence only — key material never leaves the store. A
+	// malformed auth file reads as no key rather than failing the caller.
+	let storedKey = false;
+	try {
+		const authFile = opened.auth.read();
+		storedKey =
+			authFile[DEFAULT_AUTH_KEY]?.apiKey !== undefined ||
+			authFile[providerId]?.apiKey !== undefined;
+	} catch {
+		storedKey = false;
+	}
+	return {
+		status:
+			storedKey || (opened.providerEnv[OPENAI_API_KEY_ENV] ?? "").trim() !== ""
+				? "ready"
+				: "not_ready",
+	};
+}
 
 /**
  * One `scanConversations` page size for the listing route. Not a client

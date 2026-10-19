@@ -128,6 +128,16 @@ export interface WebuiConfig {
 	bundle?: string;
 }
 
+/**
+ * The metrics-scrape gate (W2 Task 8 / W1 Task 1): whether `GET /metrics`
+ * stays public once W1's auth pipeline lands. Parsed HERE (W2 landed
+ * first — the strict `SIGRUN_WEBUI` pattern) so the chart's
+ * `SIGRUN_METRICS_PUBLIC: "true"` resolves; W1 keeps this parse and adds
+ * the `server.metrics.public` file tier. Until the pipeline exists,
+ * `/metrics` is unconditionally public (there is no auth on this branch).
+ * Carried by {@link SigrunConfig.metricsPublic}.
+ */
+
 export interface SigrunConfig {
 	/**
 	 * The upload/import body-limit knob (spec §6.2):
@@ -215,6 +225,12 @@ export interface SigrunConfig {
 	 * greater than zero.
 	 */
 	providers: ProviderRuntimeConfig;
+	/**
+	 * `SIGRUN_METRICS_PUBLIC` (strict true/false), default `false` — see the
+	 * metrics-scrape gate doc above the config. Consumed by W1's pipeline
+	 * (the public-scrape exemption); inert until then.
+	 */
+	metricsPublic: boolean;
 }
 
 /** The provider id used when the model spec carries no `provider/` prefix. */
@@ -426,6 +442,26 @@ function parseWebuiEnabled(env: Env): boolean | undefined {
 	if (lowered === "false") return false;
 	throw new Error(
 		`SIGRUN_WEBUI must be "true" or "false", got ${JSON.stringify(raw)}`,
+	);
+}
+
+/**
+ * Parse `SIGRUN_METRICS_PUBLIC` ("true"/"false", case-insensitive) — the
+ * strict `SIGRUN_WEBUI` pattern (empty counts as unset, anything else
+ * fails loud naming the variable). ENV-ONLY by design (W2 landed first):
+ * projecting the value into the bootstrap's `server.metrics.public` would
+ * write a settings key `validateServer` does not accept yet (W1 Task 1
+ * owns that file tier); the chart re-asserts the env every boot, so
+ * persistence buys nothing meanwhile.
+ */
+function parseMetricsPublic(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_METRICS_PUBLIC;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true") return true;
+	if (lowered === "false") return false;
+	throw new Error(
+		`SIGRUN_METRICS_PUBLIC must be "true" or "false", got ${JSON.stringify(raw)}`,
 	);
 }
 
@@ -1056,6 +1092,9 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				server?.providers?.refreshIntervalMinutes,
 			),
 		},
+		// The metrics-scrape gate: strict env parse, default false (W1 owns
+		// the file tier; see parseMetricsPublic).
+		metricsPublic: parseMetricsPublic(env) ?? false,
 		// The webui surface (build-and-webui Task 4): the NEW shape the
 		// serve-time seam resolves (Task 5, src/server/static.ts). `enabled`
 		// is the strict env gate over the file's `server.webui.enabled`, default
