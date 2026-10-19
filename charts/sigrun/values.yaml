@@ -98,6 +98,18 @@ controllers:
           # All extension env lives there too — extensions read the whole
           # environment (§4.4: "every enabled extension can read every env
           # secret").
+          #
+          # Auth (core hardening W1): the container's non-loopback bind
+          # makes ["token"] the effective default, so a deployment either
+          # drives onboarding (GET /v1/onboarding + claim) or pins a
+          # service token. The auth keys live in the same sigrun-env
+          # Secret, e.g.:
+          #   SIGRUN_API_TOKEN=sgr_...   # env service token (admin,
+          #                               # outside the user directory)
+          #   SIGRUN_PROXY_SECRET=...    # forward-auth shared secret
+          #                               # (proxy method)
+          # Upgrade note: an existing deployment upgrades into onboarding
+          # (the setup code is in the pod log and /cache/setup-code).
           - secretRef:
               name: sigrun-env
         ports:

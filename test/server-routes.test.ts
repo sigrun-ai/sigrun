@@ -50,6 +50,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/meta"],
 	["GET", "/v1/commands"],
 	["GET", "/v1/auth/check"],
+	// The W1 Task 6 provider-readiness home + the deprecated alias.
+	["GET", "/v1/providers"],
 	// The W1 Task 3 auth surface (routes/auth.ts).
 	["POST", "/v1/auth/login"],
 	["POST", "/v1/auth/logout"],
@@ -306,6 +308,7 @@ describe("server route table", () => {
 				"/v1/models",
 				"/v1/onboarding",
 				"/v1/onboarding/claim",
+				"/v1/providers",
 				"/v1/settings",
 				"/v1/users",
 				"/v1/users/:user",

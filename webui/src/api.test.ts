@@ -47,6 +47,7 @@ const META: MetaResponse = {
 	schemaVersion: "s-0",
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },
+	auth: { methods: [], claimed: true },
 	capabilities: { backup: false, channels: ["webui"] },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [] },
