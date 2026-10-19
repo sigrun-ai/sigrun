@@ -131,18 +131,25 @@ export interface SigrunConfig {
 	/**
 	 * The webui channel-bundle directory (spec §4.1/§6, Task 20), resolved
 	 * from `SIGRUN_WEBUI_BUNDLE` over the file's `server.webuiBundle` over
-	 * the default `webui/dist`. Relative paths resolve against the process
-	 * cwd (the repo/deploy root). An absent default bundle is a supported
-	 * API-only deploy, while an explicit-but-missing bundle is a boot
-	 * error (see {@link SigrunConfig.webuiBundleExplicit}).
+	 * the default `webui/dist`. EXPLICIT relative paths resolve against
+	 * the process cwd (operator intent); the DEFAULT anchors to the
+	 * PACKAGE ROOT (see `webuiBundleDir` in src/server/static.ts — an
+	 * installed CLI serves the bundle it ships from any working
+	 * directory). An absent default bundle is a supported API-only deploy,
+	 * while an explicit-but-missing bundle is a boot error (see
+	 * {@link SigrunConfig.webuiBundleExplicit}).
 	 */
 	webuiBundle: string;
 	/**
 	 * True iff {@link SigrunConfig.webuiBundle} was configured EXPLICITLY
-	 * (the env var or the file's `server.webuiBundle` — both count). The
-	 * server fails loud when an explicit bundle path has no `index.html`
-	 * (a misconfigured deploy intended the webui), and serves API-only
-	 * when the DEFAULT path is absent (no webui was ever intended).
+	 * with a value OTHER than the default (the env var or the file's
+	 * `server.webuiBundle` — both count). The server fails loud when an
+	 * explicit bundle path has no `index.html` (a misconfigured deploy
+	 * intended the webui), and serves API-only when the DEFAULT path is
+	 * absent (no webui was ever intended). A configured value EQUAL to
+	 * the default keeps the default's semantics — the settings bootstrap
+	 * mirrors the resolved default into the file on first boot, and that
+	 * mirror must not turn every booted deployment explicit.
 	 */
 	webuiBundleExplicit: boolean;
 	/**
@@ -678,11 +685,22 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				server?.providers?.refreshIntervalMinutes,
 			),
 		},
-		// Ruling 4: env wins; the file's `server.webuiBundle` next; the code
-		// default last. A file value counts as EXPLICIT (missing index.html
-		// is a boot error), exactly like a set env var.
+		// Ruling 4 (build Task 3 refinement): env wins; the file's
+		// `server.webuiBundle` next; the code default last. A configured
+		// value EQUAL to the default keeps the DEFAULT's semantics —
+		// non-explicit: the bundle resolves from the package root and an
+		// absent default stays the supported API-only deploy (the settings
+		// bootstrap mirrors the resolved default into the file on first
+		// boot; treating that mirror as explicit would pin every booted
+		// deployment to cwd-relative resolution and retire the API-only
+		// fallback). Any OTHER value counts as EXPLICIT (cwd-relative; a
+		// missing index.html is a boot error), exactly like a set env var.
 		webuiBundle: envWebui ?? fileWebui ?? DEFAULT_WEBUI_BUNDLE,
-		webuiBundleExplicit: envWebui !== undefined || fileWebui !== undefined,
+		webuiBundleExplicit:
+			(envWebui !== undefined && envWebui !== DEFAULT_WEBUI_BUNDLE) ||
+			(envWebui === undefined &&
+				fileWebui !== undefined &&
+				fileWebui !== DEFAULT_WEBUI_BUNDLE),
 		// Ruling 7: the degenerate provider's endpoint. `undefined` when
 		// neither env nor file sets it — the provider layer applies the
 		// OpenAI public default there.

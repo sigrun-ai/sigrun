@@ -783,7 +783,18 @@ const display = label ?? entry;
 						// (paths, file:// URLs, dev checkouts, app-tree packages). The
 						// packages dir is an unrelated node_modules tree — Node's
 						// upward walk never finds it from sigrun's own imports, so it
-						// must be consulted explicitly.
+						// 					// consulted explicitly.
+					// A resolved entry ending in `.ts` is rejected BEFORE the import
+					// (build-and-webui Task 3, BREAKING): the built server ships no
+					// loader — a `.ts` entry is a from-source artifact whose behavior
+					// depends on the host node's type-stripping flags (newer node
+					// loads it, older node crashes with ERR_UNKNOWN_FILE_EXTENSION).
+					// Sources must ship a BUILT entry; the quarantine names it.
+					if (/\.ts$/.test(loaded)) {
+						throw new Error(
+							`the resolved entry is a TypeScript source (${loaded}) — build the package and ship its built entry (dist/index.js); the built server loads JavaScript`,
+						);
+					}
 			const module = (await import(loaded)) as ExtensionModule;
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its

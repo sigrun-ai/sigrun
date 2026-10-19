@@ -370,14 +370,17 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		};
 		const first = loadConfig(env);
 		const section = resolvedServerSection(first);
-		// Second boot: env over the bootstrapped file resolves the same,
-		// EXCEPT webuiBundleExplicit — the bootstrap records the resolved
-		// (default) webuiBundle in the file, and a file value counts as
-		// explicit by design (ruling 4: the file records reality; recording
-		// the default path makes the API-only fallback unreachable while
-		// the file carries it — the documented bootstrap behavior).
+		// Second boot: env over the bootstrapped file resolves the same —
+		// INCLUDING webuiBundleExplicit. The bootstrap records the resolved
+		// (default) webuiBundle in the file, and a file value EQUAL to the
+		// default stays NON-explicit (build Task 3: the default bundle
+		// anchors to the package root and an absent default stays the
+		// supported API-only deploy across boots — treating the mirrored
+		// value as explicit would freeze every booted deployment to
+		// cwd-relative resolution and retire the API-only fallback). An
+		// operator wanting a different bundle writes a different path.
 		const second = loadConfig(env, { server: section });
-		expect(second).toEqual({ ...first, webuiBundleExplicit: true });
+		expect(second).toEqual(first);
 		// Env dropped: the bootstrapped file alone reproduces the section.
 		const fromFile = loadConfig({ ...MODEL_ENV }, { server: section });
 		expect(fromFile.port).toBe(4080);
