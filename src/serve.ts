@@ -118,7 +118,10 @@ export async function serve(
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(config.workspace.path, { recursive: true });
 	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
-	const app = await createServer(opened, config);
+	// The contributed-bundle registry (build-and-webui Task 6): boot folded
+	// the loader's extension contributions into the name-keyed registry;
+	// the server's serve-time NAME-selector resolution reads it here.
+	const app = await createServer(opened, config, opened.webuiBundles);
 	const host = options?.host ?? "0.0.0.0";
 	await app.listen({ port: config.port, host });
 	// Machine-greppable: the deploy-entry test waits for this line, and an

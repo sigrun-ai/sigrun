@@ -500,15 +500,24 @@ export async function createServer(
 				interactions: [...opened.seamKinds]
 					.filter(([, kinds]) => (kinds.interaction?.length ?? 0) > 0)
 					.map(([name, kinds]) => ({
-						extension: name,
-						kinds: [...(kinds.interaction ?? [])],
-					})),
+					extension: name,
+					kinds: [...(kinds.interaction ?? [])],
+				})),
 				ambient: [...opened.seamKinds]
 					.filter(([, kinds]) => (kinds.ambient?.length ?? 0) > 0)
 					.map(([name, kinds]) => ({
-						extension: name,
-						keys: [...(kinds.ambient ?? [])],
-					})),
+					extension: name,
+					keys: [...(kinds.ambient ?? [])],
+				})),
+			},
+			// Boot-merge collisions (build-and-webui Task 6): name collisions
+			// among extension-contributed webui bundles, plus the provider-merge
+			// sink (retained since Task 6 of the provider plan but never read —
+			// the same field carries both). Last-registered-wins everywhere; the
+			// record is operator visibility, never an error.
+			collisions: {
+				webui: opened.webuiBundleCollisions,
+				providers: opened.providerCollisions,
 			},
 		};
 	});

@@ -155,7 +155,7 @@ describe("a NAME selector", () => {
 		);
 		const { app } = await bootServer(
 			{ SIGRUN_WEBUI_BUNDLE: "custom-ui" },
-			[{ name: "custom-ui", dir: contributedDir }],
+			[{ name: "custom-ui", dir: contributedDir, extension: "fixture-contributor" }],
 		);
 		const root = await app.inject({ method: "GET", url: "/" });
 		expect(root.statusCode).toBe(200);
@@ -167,7 +167,7 @@ describe("a NAME selector", () => {
 			SIGRUN_WEBUI_BUNDLE: "custom-ui",
 		});
 		const bundle = await resolveWebuiBundle(config, [
-			{ name: "custom-ui", dir: contributedDir },
+			{ name: "custom-ui", dir: contributedDir, extension: "fixture-contributor" },
 		]);
 		expect(bundle?.dir).toBe(contributedDir);
 	});
@@ -280,7 +280,7 @@ describe("capabilities.channels reports the selected bundle's name", () => {
 		);
 		const named = await bootServer(
 			{ SIGRUN_WEBUI_BUNDLE: "custom-ui" },
-			[{ name: "custom-ui", dir: contributedDir }],
+			[{ name: "custom-ui", dir: contributedDir, extension: "fixture-contributor" }],
 		);
 		expect(await channels(named.app)).toEqual(["custom-ui"]);
 		const byPath = await bootServer({ SIGRUN_WEBUI_BUNDLE: pathDir });

@@ -442,6 +442,35 @@ export interface MetaResponse {
 			readonly keys: readonly string[];
 		}[];
 	};
+	/**
+	 * Boot-merge collisions (build-and-webui Task 6): name collisions among
+	 * extension-contributed webui bundles, plus the provider-catalog merge
+	 * sink. Both merges are last-registered-wins by design — the record is
+	 * the operator's visibility into a co-installed replacement, never an
+	 * error; empty arrays are the no-collision boot.
+	 */
+	readonly collisions: {
+		readonly webui: readonly {
+			readonly kind: "webui-bundle";
+			/** The bundle name that collided. */
+			readonly name: string;
+			/** Extension slug that previously owned the name. */
+			readonly previous: string;
+			/** Extension slug whose contribution won. */
+			readonly contributor: string;
+		}[];
+		readonly providers: readonly {
+			readonly kind: "provider";
+			/** The provider id that collided. */
+			readonly provider: string;
+			/** Model ids present in both the previous and replacing catalog. */
+			readonly modelIds: readonly string[];
+			/** Contributor name that previously owned the provider. */
+			readonly previous: string;
+			/** Contributor name whose contribution won. */
+			readonly contributor: string;
+		}[];
+	};
 }
 
 /**

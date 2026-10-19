@@ -40,6 +40,7 @@ function makeMeta(init?: {
 		health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 		capabilities: { backup: false, channels: ["webui"] },
 		seam: { interactions: [], ambient: [] },
+		collisions: { webui: [], providers: [] },
 	};
 }
 
