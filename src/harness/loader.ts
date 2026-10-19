@@ -55,12 +55,14 @@
  * host context (src/harness/seam-host.ts — the interaction/ambient seam
  * handles plus the scoped extension-stores handle `stores` (spec §5:
  * get/set on the extension's OWN secrets section and settings file, and
- * its own raw data/cache/state paths; src/harness/stores.ts). Zero-arg
- * factories keep working (extra arguments are inert in
- * JS), and the factory-result `interactionKinds`/`ambientKinds` string
- * arrays declare which seam kinds/keys the extension writes — validated
- * fail-loud here and consumed by the seam host's write gate and the
- * /v1/meta inventory. Only factory results can carry a health producer,
+ * its own raw data/cache/state paths; src/harness/stores.ts). The host
+ * is passed only to factories with `factory.length > 0` — a length-0
+ * factory may carry a defaulted first parameter that would consume the
+ * host as a real dependency — and the factory-result
+ * `interactionKinds`/`ambientKinds` string arrays declare which seam
+ * kinds/keys the extension writes — validated fail-loud here and
+ * consumed by the seam host's write gate and the /v1/meta inventory.
+ * Only factory results can carry a health producer,
  * submit pass-through, or kind declarations (the direct-`Extension` forms
  * have no factory result to read one from). A `health`/`submit` field that
  * is present but not the expected shape, or kinds that are not string

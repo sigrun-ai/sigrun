@@ -163,7 +163,7 @@ export function registerConversationRoutes(
 		): Promise<ConversationCreateResponse> => {
 			const conversation = request.conversation;
 			// Absent body is valid (`at` defaults to the newest entry); the
-		// object may carry ONLY `at` — the compact/configure convention.
+			// object may carry ONLY `at` — the compact/configure convention.
 			const body: unknown = request.body;
 			let at: number | undefined;
 			if (body !== undefined && body !== null) {
@@ -462,5 +462,4 @@ export function registerConversationRoutes(
 			}, BACKGROUND_CONTEXT);
 		},
 	);
-
 }
