@@ -77,4 +77,11 @@ services:
 
 volumes:
   # The sqlite + workspace data — the compose analogue of the sigrun-data PVC.
+  # Ownership: the image runs as the node user (uid 1000, spec §6.10) and
+  # /data is chowned node:node in the image, so a FRESH named volume
+  # inherits that ownership from the image dir on first mount — the
+  # non-root server can write it with no manual chown. If you pre-seed the
+  # volume from a host path or restore into it, chown -R 1000:1000 it
+  # first (a root-owned tree would make the server fail its storage
+  # writes).
   sigrun-data:

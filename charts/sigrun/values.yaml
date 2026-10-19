@@ -30,6 +30,16 @@ controllers:
     strategy: Recreate
     # -- (optional) PodDisruptionBudget for the server controller.
     podDisruptionBudget: null
+    # Pod security context (spec §6.10): the image runs as the base
+    # image's node user (uid/gid 1000) — runAsNonRoot refuses a root
+    # schedule, fsGroup 1000 makes the kubelet chown the sigrun-data PVC
+    # to the same uid on mount.
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
     containers:
       main:
         image:
@@ -160,6 +170,15 @@ controllers:
       successfulJobsHistory: 3
       failedJobsHistory: 7
       backoffLimit: 1
+    # Same pod security pin as the main controller (spec §6.10): uid 1000,
+    # non-root — the backup job writes tars + the sqlite copy to the SAME
+    # PVC the fsGroup chowns to 1000.
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
     containers:
       backup:
         image:

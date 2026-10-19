@@ -472,6 +472,44 @@ describe("chart backup CronJob", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Pod security (§6.10): non-root uid 1000 on BOTH controllers
+// ---------------------------------------------------------------------------
+
+describe("chart pod securityContext (§6.10)", () => {
+	type PodSpec = { securityContext?: Record<string, number | boolean> };
+
+	test("main Deployment pod: runAsNonRoot, uid/gid/fsGroup 1000 (the image's node user)", async () => {
+		// Spec §6.10: the image runs as the base image's node user (uid 1000) —
+		// the chart must refuse to schedule it as root, and the fsGroup makes
+		// the kubelet chown the sigrun-data PVC to 1000 on mount.
+		const deployment = docOf(await render(), "Deployment") as {
+			spec: { template: { spec: PodSpec } };
+		};
+		const sc = deployment.spec.template.spec.securityContext;
+		expect(sc?.runAsNonRoot).toBe(true);
+		expect(sc?.runAsUser).toBe(1000);
+		expect(sc?.runAsGroup).toBe(1000);
+		expect(sc?.fsGroup).toBe(1000);
+	});
+
+	test("backup CronJob pod: runAsNonRoot, uid/gid/fsGroup 1000", async () => {
+		// Same pin on the backup job's pod — it mounts the SAME PVC and
+		// must write tars + the sqlite copy as the same non-root uid.
+		const cronjob = docOf(
+			await render(["controllers.backup.enabled=true"]),
+			"CronJob",
+		) as {
+			spec: { jobTemplate: { spec: { template: { spec: PodSpec } } } };
+		};
+		const sc = cronjob.spec.jobTemplate.spec.template.spec.securityContext;
+		expect(sc?.runAsNonRoot).toBe(true);
+		expect(sc?.runAsUser).toBe(1000);
+		expect(sc?.runAsGroup).toBe(1000);
+		expect(sc?.fsGroup).toBe(1000);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // ServiceMonitor + PrometheusRule (metrics scoping: scrape /metrics)
 // ---------------------------------------------------------------------------
 
