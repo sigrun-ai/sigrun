@@ -811,3 +811,77 @@ describe("GET /v1/settings toolRoster", () => {
 		);
 	});
 });
+describe("PATCH /v1/settings admin gate (core hardening W1 final review)", () => {
+	/**
+	 * A token-method boot with TWO directory users: `tester` (admin, the
+	 * seed) and `pleb` (non-admin, added here). PATCH /v1/settings is
+	 * admin-only (spec §5.6 — it edits `extensions[]`, which is code
+	 * execution at next boot); GET stays open to any authenticated user.
+	 */
+	async function bootTokenServer(): Promise<{
+		app: FastifyInstance;
+		plebToken: string;
+		adminToken: string;
+	}> {
+		const { app, opened } = await bootServer({ SIGRUN_AUTH: "token" });
+		await opened.identity.users.add({
+			user: "pleb",
+			admin: false,
+			source: "cli",
+		});
+		const { token: plebToken } = await opened.identity.tokens.create(
+			"pleb-cli",
+			"pleb",
+		);
+		const { token: adminToken } = await opened.identity.tokens.create(
+			"tester-cli",
+			"tester",
+		);
+		return { app, plebToken, adminToken };
+	}
+
+	test("a non-admin token PATCH → 403 {error: forbidden}, nothing applied", async () => {
+		const { app, plebToken } = await bootTokenServer();
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/settings",
+			headers: { authorization: `Bearer ${plebToken}` },
+			payload: { steeringMode: "all" },
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toEqual({ error: "forbidden" });
+		// The rejection precedes the store: nothing was applied.
+		const after = await app.inject({
+			method: "GET",
+			url: "/v1/settings",
+			headers: { authorization: `Bearer ${plebToken}` },
+		});
+		expect((after.json() as { steeringMode?: unknown }).steeringMode).toBe(
+			undefined,
+		);
+	});
+
+	test("an admin token PATCH → 200 (the operator path unchanged)", async () => {
+		const { app, adminToken } = await bootTokenServer();
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/settings",
+			headers: { authorization: `Bearer ${adminToken}` },
+			payload: { steeringMode: "all" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect((response.json() as { steeringMode?: unknown }).steeringMode).toBe(
+			"all",
+		);
+	});
+
+	test("GET stays open to the non-admin (spec gates PATCH only)", async () => {
+		const { app, plebToken } = await bootTokenServer();
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/settings",
+			headers: { authorization: `Bearer ${plebToken}` },
+		});
+		expect(response.statusCode).toBe(200);
+	});
+});

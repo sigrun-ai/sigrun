@@ -138,9 +138,10 @@ export function registerAuthRoutes(
 		const principal = request.principal;
 		const query = request.query as { user?: string };
 		// `?user=` is the admin-only window into another's tokens; a
-		// non-admin asking for anyone (even themselves — same answer as no
-		// query) is refused before the store is read.
-			if (query.user !== undefined) {
+		// non-admin may pass their OWN name (the same payload as no query —
+		// the identity is theirs either way) but anyone ELSE's is refused
+		// before the store is read.
+		if (query.user !== undefined) {
 			if (!principal.admin && query.user !== principal.user) {
 				return await reply.code(403).send({ error: "forbidden" });
 			}
