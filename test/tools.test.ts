@@ -105,11 +105,11 @@ async function bootToolsServer(responses: unknown[]): Promise<TestServer> {
 		extensions: [contributor],
 		env: {},
 	});
+	// API-only shape (channels: []): the gate OFF, never depending on a
+	// built webui bundle (server.test.ts's hermetic override).
 	const app = await createServer(opened, {
 		...config,
-		// API-only shape (channels: []): never depends on a built webui bundle.
-		webuiBundle: join(dir, "no-webui-bundle"),
-		webuiBundleExplicit: false,
+		webui: { ...config.webui, enabled: false },
 	});
 	const teardown = async () => {
 		await app.close();

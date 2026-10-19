@@ -46,12 +46,15 @@ interface TestServer {
 
 /**
  * Boot a hermetic harness + server in a tmpdir (the server-probes pattern).
- * `webuiBundle` overrides the config's bundle path AFTER loadConfig so the
- * absent-bundle case never depends on the repo's real webui/dist state.
+ * The bundle selector is driven through `SIGRUN_WEBUI_BUNDLE` (a PATH) or
+ * `SIGRUN_WEBUI` (the gate) — never post-loadConfig overrides — so every
+ * case here is hermetic regardless of the repo's real webui/dist state
+ * (the default's present/absent contract is pinned state-adaptively in
+ * test/webui-resolution.test.ts).
  */
 async function bootServer(options?: {
 	webuiBundleEnv?: string;
-	webuiBundleOverride?: { path: string; explicit: boolean };
+	webuiEnabledEnv?: string;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-static-"));
 	const faux = fauxProvider({
@@ -72,14 +75,10 @@ async function bootServer(options?: {
 	if (options?.webuiBundleEnv !== undefined) {
 		env.SIGRUN_WEBUI_BUNDLE = options.webuiBundleEnv;
 	}
-	let config = loadConfig(env);
-	if (options?.webuiBundleOverride !== undefined) {
-		config = {
-			...config,
-			webuiBundle: options.webuiBundleOverride.path,
-			webuiBundleExplicit: options.webuiBundleOverride.explicit,
-		};
+	if (options?.webuiEnabledEnv !== undefined) {
+		env.SIGRUN_WEBUI = options.webuiEnabledEnv;
 	}
+	const config = loadConfig(env);
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
@@ -96,36 +95,6 @@ async function bootServer(options?: {
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
-});
-
-// ---------------------------------------------------------------------------
-// Config parsing
-// ---------------------------------------------------------------------------
-
-describe("SIGRUN_WEBUI_BUNDLE config", () => {
-	test("defaults to webui/dist and marks itself non-explicit", () => {
-		const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "faux/m" });
-		expect(config.webuiBundle).toBe("webui/dist");
-		expect(config.webuiBundleExplicit).toBe(false);
-	});
-
-	test("an explicit env value wins and marks itself explicit", () => {
-		const config = loadConfig({
-			SIGRUN_DEFAULT_MODEL: "faux/m",
-			SIGRUN_WEBUI_BUNDLE: "/srv/sigrun/webui",
-		});
-		expect(config.webuiBundle).toBe("/srv/sigrun/webui");
-		expect(config.webuiBundleExplicit).toBe(true);
-	});
-
-	test("an empty env value falls back to the default (the shell's unset-adjacent value)", () => {
-		const config = loadConfig({
-			SIGRUN_DEFAULT_MODEL: "faux/m",
-			SIGRUN_WEBUI_BUNDLE: "",
-		});
-		expect(config.webuiBundle).toBe("webui/dist");
-		expect(config.webuiBundleExplicit).toBe(false);
-	});
 });
 
 // ---------------------------------------------------------------------------
@@ -161,20 +130,14 @@ describe("webui bundle present", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bundle absent (supported API-only deploy)
+// API-only (gate off): the positively API-only deploy
 // ---------------------------------------------------------------------------
 
-describe("webui bundle absent", () => {
-	test("GET / is Fastify's default 404 JSON (the stock no-bundle surface)", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "sigrun-static-absent-"));
-		cleanups.push(async () => {
-			await rm(dir, { recursive: true, force: true });
-		});
+describe("webui gate off (SIGRUN_WEBUI=false)", () => {
+	test("GET / is Fastify's default 404 JSON (no mount, the stock no-bundle surface)", async () => {
 		const { app } = await bootServer({
-			webuiBundleOverride: {
-				path: join(dir, "no-such-bundle"),
-				explicit: false,
-			},
+			webuiEnabledEnv: "false",
+			webuiBundleEnv: FIXTURE_BUNDLE,
 		});
 		const response = await app.inject({ method: "GET", url: "/" });
 		expect(response.statusCode).toBe(404);
@@ -184,16 +147,7 @@ describe("webui bundle absent", () => {
 	});
 
 	test("/v1/meta capabilities.channels is []", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "sigrun-static-absent-"));
-		cleanups.push(async () => {
-			await rm(dir, { recursive: true, force: true });
-		});
-		const { app } = await bootServer({
-			webuiBundleOverride: {
-				path: join(dir, "no-such-bundle"),
-				explicit: false,
-			},
-		});
+		const { app } = await bootServer({ webuiEnabledEnv: "false" });
 		const response = await app.inject({ method: "GET", url: "/v1/meta" });
 		expect(response.statusCode).toBe(200);
 		const meta = response.json() as {

@@ -107,11 +107,11 @@ export interface ProviderRuntimeConfig {
  * The webui channel surface (build-and-webui Task 4): the enable gate
  * and the bundle selector. `enabled` defaults true (`false` = a
  * positively API-only deploy); `bundle` is the SELECTOR — a string the
- * serve-time resolution (Task 5) discriminates syntactically into a
- * contributed-bundle NAME or a directory PATH. Task 4 only stores and
- * validates it. `bundle` is ABSENT when nothing selects (the built-in
- * default bundle; an absent default stays the supported API-only
- * deploy).
+ * serve-time resolution (src/server/static.ts, Task 5) discriminates
+ * syntactically into a contributed-bundle NAME or a directory PATH. Task
+ * 4 only stores and validates it. `bundle` is ABSENT when nothing selects
+ * (the built-in default bundle; an absent default stays the supported
+ * API-only deploy).
  */
 export interface WebuiConfig {
 	/** From `SIGRUN_WEBUI` (strict true/false) over `server.webui.enabled`. */
@@ -155,39 +155,12 @@ export interface SigrunConfig {
 	 * is the positive API-only deploy) and the bundle selector. The
 	 * selector chain: `SIGRUN_WEBUI_BUNDLE` over the file's
 	 * `server.webui.bundle` over the LEGACY `server.webuiBundle`
-	 * (deprecated alias, one release) over the built-in default. Task 4
-	 * stores/validates the selector; serve-time name/path discrimination
-	 * is Task 5.
+	 * (deprecated alias, one release) over the built-in default. The
+	 * serve-time seam (`src/server/static.ts`, Task 5) resolves the
+	 * selector: syntactic name/path discrimination, the contributed-bundle
+	 * registry, and the default's package-root anchor.
 	 */
 	webui: WebuiConfig;
-	/**
-	 * The webui channel-bundle directory (spec §4.1/§6, Task 20), resolved
-	 * from `SIGRUN_WEBUI_BUNDLE` over the file's `server.webui.bundle`
-	 * over the legacy `server.webuiBundle` over the default `webui/dist`.
-	 * EXPLICIT relative paths resolve against the process cwd (operator
-	 * intent); the DEFAULT anchors to the PACKAGE ROOT (see
-	 * `webuiBundleDir` in src/server/static.ts — an installed CLI serves
-	 * the bundle it ships from any working directory). An absent default
-	 * bundle is a supported API-only deploy, while an explicit-but-missing
-	 * bundle is a boot error (see {@link SigrunConfig.webuiBundleExplicit}).
-	 * Superseded by {@link SigrunConfig.webui} (the new surface; Task 5
-	 * migrates the serve-time seam onto it).
-	 */
-	webuiBundle: string;
-	/**
-	 * True iff the webui bundle was configured EXPLICITLY with a value
-	 * OTHER than the default (`SIGRUN_WEBUI_BUNDLE`, the file's
-	 * `server.webui.bundle`, or the legacy `server.webuiBundle` — the
-	 * first slot that supplies a value, all count). The server fails loud
-	 * when an explicit bundle path has no `index.html` (a misconfigured
-	 * deploy intended the webui), and serves API-only when the DEFAULT
-	 * path is absent (no webui was ever intended). A configured value
-	 * EQUAL to the default keeps the default's semantics — the settings
-	 * bootstrap omits the defaulted webui keys entirely on first boot,
-	 * and any surviving default-valued mirror must not turn every booted
-	 * deployment explicit.
-	 */
-	webuiBundleExplicit: boolean;
 	/**
 	 * The env-driven OpenAI-compatible provider's endpoint (ruling 7):
 	 * `OPENAI_BASE_URL` over the file's `defaultProvider.baseUrl` over
@@ -691,7 +664,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 	// `server.webui.bundle` over the LEGACY `server.webuiBundle` (a
 	// deprecated read-side alias, one release) over nothing (the built-in
 	// default bundle — `webui.bundle` stays ABSENT so serve-time resolution
-	// (Task 5) can tell "unset" from "set to the default's value"). The
+	// can tell "unset" from "set to the default's value"). The
 	// enable gate is its own two-slot chain (strict env parse over the
 	// file's `server.webui.enabled`, default true).
 	const envWebui = env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined;
@@ -764,10 +737,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			),
 		},
 		// The webui surface (build-and-webui Task 4): the NEW shape the
-		// serve-time seam migrates onto (Task 5). `enabled` is the strict
-		// env gate over the file's `server.webui.enabled`, default true;
-		// `bundle` is the four-slot selector — ABSENT when nothing selects
-		// (the built-in default bundle; Task 5's resolution reads absence,
+		// serve-time seam resolves (Task 5, src/server/static.ts). `enabled`
+		// is the strict env gate over the file's `server.webui.enabled`, default
+		// true; `bundle` is the four-slot selector — ABSENT when nothing selects
+		// (the built-in default bundle; serve-time resolution reads absence,
 		// never a mirrored default value).
 		webui: {
 			enabled: parseWebuiEnabled(env) ?? server?.webui?.enabled ?? true,
@@ -775,22 +748,6 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				? {}
 				: { bundle: envWebui ?? fileWebui }),
 		},
-		// The resolved pair the serve-time seam consumes TODAY (Task 5
-		// migrates it onto `webui`): the same four-slot selector with the
-		// default filled in, plus Task 3's explicitness classification —
-		// a configured value EQUAL to the default keeps the DEFAULT's
-		// semantics (package-root anchored; absent = the supported
-		// API-only deploy), any OTHER value counts as EXPLICIT (cwd-relative;
-		// a missing index.html is a boot error). The bootstrap omits the
-		// defaulted keys entirely, so a surviving default-valued mirror
-		// (a hand-edited file) must not pin every booted deployment to
-		// cwd-relative resolution.
-		webuiBundle: envWebui ?? fileWebui ?? DEFAULT_WEBUI_BUNDLE,
-		webuiBundleExplicit:
-			(envWebui !== undefined && envWebui !== DEFAULT_WEBUI_BUNDLE) ||
-			(envWebui === undefined &&
-				fileWebui !== undefined &&
-				fileWebui !== DEFAULT_WEBUI_BUNDLE),
 		// Ruling 7: the degenerate provider's endpoint. `undefined` when
 		// neither env nor file sets it — the provider layer applies the
 		// OpenAI public default there.
