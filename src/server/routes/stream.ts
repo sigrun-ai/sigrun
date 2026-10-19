@@ -16,19 +16,27 @@ import {
 	serializeConversationView,
 	type ConversationViewWire,
 } from "../views.js";
+import {
+	diffViews,
+	isEmptyDelta,
+	type ViewDelta,
+} from "@sigrun/shared/view-delta";
 
 /** Register the SSE view stream route. */
 export function registerStreamRoutes(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
-	// SSE view stream (spec §5 "Views + watch frames over SSE"): one
-	// Server-Sent Events stream per conversation, hand-rolled over `reply.raw`
-	// (no @fastify/sse dependency). Event shape: `event: snapshot` with the
-	// wire view on connect, then `event: view` per watch revision — every
-	// frame is a FULL immutable ConversationView, so a reconnect's fresh
-	// snapshot subsumes any missed frame (the spec's reconnect contract
-	// collapses to "fresh snapshot on (re)connect"; see the Appendix C
+	// SSE view stream (spec §5 "Views + watch frames over SSE", §7.3 ruling
+	// 11): one Server-Sent Events stream per conversation, hand-rolled over
+	// `reply.raw` (no @fastify/sse dependency). Event shape: `event: snapshot`
+	// with the wire view on connect, then per watch revision the diff against
+	// the last-sent view: a representable change rides as `event: delta`
+	// (entry append/remove + changed docs; empty deltas are skipped), a
+	// NON-representable one (a compaction's new head marker, any reorder)
+	// falls back to a fresh `event: snapshot` — so a reconnect's snapshot and
+	// the fallback are the same frame, and the client's rule stays
+	// "snapshot REPLACES, delta folds" (see the Appendix C
 	// named-verification record). `Last-Event-ID` is therefore accepted and
 	// deliberately ignored. Heartbeat: a `: ping` comment every 15s (proxy/
 	// LB idle-timeout survival). Lifecycle: exactly one owner (`finish` below)
@@ -59,10 +67,13 @@ export function registerStreamRoutes(
 			// cannot crash the process with an unhandled 'error' event.
 			raw.on("error", () => {});
 			let nextId = 1;
-			const send = (event: string, view: ConversationViewWire): void => {
+			const send = (
+				event: string,
+				payload: ConversationViewWire | ViewDelta,
+			): void => {
 				// Single data line: JSON.stringify escapes newlines in strings.
 				raw.write(
-					`id: ${nextId++}\nevent: ${event}\ndata: ${JSON.stringify(view)}\n\n`,
+					`id: ${nextId++}\nevent: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
 				);
 			};
 			let finished = false;
@@ -105,11 +116,25 @@ export function registerStreamRoutes(
 			}
 			// Snapshot FIRST (from the acquisition revision), then install the
 			// listener — pending frames flow after the snapshot because start
-			// never invokes the listener inline.
-			send("snapshot", serializeConversationView(watch.value));
+			// never invokes the listener inline. `prev` is the last-sent wire
+			// view the diff loop measures against.
+			let prev = serializeConversationView(watch.value);
+			send("snapshot", prev);
 			watch.start(async (value) => {
 				if (finished) return; // the stream is over; drop the frame
-				send("view", serializeConversationView(value));
+				const next = serializeConversationView(value);
+				const delta = diffViews(prev, next);
+				prev = next;
+				// Not representable as entries append/remove + changed docs (a
+				// reorder or a compaction's new head marker) → a fresh snapshot.
+				if (delta === undefined) {
+					send("snapshot", next);
+					return;
+				}
+				// Nothing changed on the wire (a revision the serializer flattens
+				// away) — skip the frame entirely.
+				if (isEmptyDelta(delta)) return;
+				send("delta", delta);
 			});
 		},
 	);
