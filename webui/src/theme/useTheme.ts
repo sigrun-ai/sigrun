@@ -1,6 +1,6 @@
 /**
  * useTheme (B2, UI refresh): the mode/palette/accent theme system over
- * `src/shared/themes.ts` (the B1 pure module — the single palette/accent
+ * `@sigrun/shared/themes` (the B1 pure module — the single palette/accent
  * data source; nothing here duplicates it).
  *
  * Three values, each persisted under its own storage key and applied to
@@ -42,9 +42,9 @@ import {
 	type AccentName,
 	type ModeName,
 	type PaletteName,
-} from "../../../src/shared/themes.js";
+} from "@sigrun/shared/themes";
 
-export type { AccentName, ModeName, PaletteName } from "../../../src/shared/themes.js";
+export type { AccentName, ModeName, PaletteName } from "@sigrun/shared/themes";
 
 /** The selectable mode: an explicit colour scheme, or follow the OS. */
 export type ThemeMode = "dark" | "light" | "system";

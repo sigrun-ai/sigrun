@@ -1,10 +1,11 @@
 /**
  * The TUI's typed §5 HTTP client (Task 4).
  *
- * Wire shapes are the server's own serializers — imported from
- * `src/server/views.ts` (plus `SessionMeta`/`SlashCommand` siblings), the
- * controller-ruled single source of truth; the tui workspace is NodeNext
- * like the server, so unlike the webui it can share the types directly.
+ * Wire shapes are the channel contract — imported from the
+ * `@sigrun/shared` package (`views`, plus `SessionMeta`/`SlashCommand`
+ * siblings), the single source of truth shared with the server and the
+ * webui (build-and-webui Task 1: the tui is a pure client of the wire,
+ * never a relative importer of server source).
  *
  * Identity seam (Task 2): the configured `user` rides EVERY request as the
  * `X-Sigrun-User` header; absent/empty user omits it entirely — the
@@ -15,8 +16,8 @@
  * silent `undefined` the UI could misrender as empty state.
  */
 
-import type { CommandsResponse } from "../../src/server/commands.js";
-import type { SessionMeta, SessionMetaPatch } from "../../src/server/session-meta.js";
+import type { CommandsResponse } from "@sigrun/shared/commands";
+import type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 import type {
 	AbortResponse,
 	AmbientList,
@@ -31,7 +32,7 @@ import type {
 	ModelsResponse,
 	SettingsResponse,
 	SubmissionResponse,
-} from "../../src/server/views.js";
+} from "@sigrun/shared/views";
 
 export type {
 	AbortResponse,
@@ -51,9 +52,9 @@ export type {
 	ModelsResponse,
 	SettingsResponse,
 	SubmissionResponse,
-} from "../../src/server/views.js";
-export type { CommandsResponse, SlashCommand } from "../../src/server/commands.js";
-export type { SessionMeta, SessionMetaPatch } from "../../src/server/session-meta.js";
+} from "@sigrun/shared/views";
+export type { CommandsResponse, SlashCommand } from "@sigrun/shared/commands";
+export type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 
 /** One answer to a pending interaction (the ONE generic route's body). */
 export interface InteractionAnswerInput {

@@ -49,7 +49,7 @@ import {
 	activityLabel,
 	groupTurns,
 	type Turn,
-} from "../../../src/shared/turns.js";
+} from "@sigrun/shared/turns";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { ConversationViewWire } from "../api.js";
 

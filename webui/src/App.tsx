@@ -25,8 +25,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { displayName } from "../../src/shared/conversations.js";
-import { groupTurns } from "../../src/shared/turns.js";
+import { displayName } from "@sigrun/shared/conversations";
+import { groupTurns } from "@sigrun/shared/turns";
 import {
 	createClient,
 	type ConversationSummary,

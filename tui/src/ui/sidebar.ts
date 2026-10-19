@@ -35,7 +35,7 @@ import {
 	displayName,
 	formatAge,
 	type TreeNode,
-} from "../../../src/shared/conversations.js";
+} from "@sigrun/shared/conversations";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { ConversationSummary, SigrunClient } from "../api.js";
 

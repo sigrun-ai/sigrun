@@ -1,7 +1,7 @@
 /**
  * Task B1 (UI refresh): the shared theme data.
  *
- * `src/shared/themes.ts` is pure colour data copied verbatim from the
+ * `@sigrun/shared/themes` is pure colour data copied verbatim from the
  * palette mockup (docs/superpowers/specs/assets/2026-10-17-ui-refresh/
  * palettes.html). These tests pin the SHAPE completely (every palette
  * carries a full dark/light token set, every accent a dark/light pair)
@@ -23,7 +23,7 @@ import {
 	isPaletteName,
 	type AccentName,
 	type PaletteName,
-} from "../src/shared/themes.js";
+} from "@sigrun/shared/themes";
 
 const TOKENS = [
 	"bg",

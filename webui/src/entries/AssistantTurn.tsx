@@ -8,7 +8,7 @@
  */
 
 import type { ConversationEntryWire, SigrunClient, ToolSlotWire } from "../api";
-import type { ToolCall } from "../../../src/shared/turns.js";
+import type { ToolCall } from "@sigrun/shared/turns";
 import { ActivityLine } from "./ActivityLine";
 import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
