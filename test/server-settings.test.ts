@@ -37,6 +37,7 @@ import {
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { settingsPath } from "../src/harness/settings.js";
+import type { SettingsFile } from "@sigrun/shared/settings";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
@@ -79,13 +80,19 @@ async function bootServer(
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
 	};
-	const config = loadConfig({
+	const bootEnv = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 		...env,
-	});
+	};
+	// The serve path's final resolution shape: env over the (pre-written)
+	// file — so a file-sourced server key's RESOLVED value (what the
+	// `effective` block reports) reflects the file, not the code default.
+	const file: SettingsFile | undefined =
+		opts.file === undefined ? undefined : (JSON.parse(opts.file) as SettingsFile);
+	const config = loadConfig(bootEnv, file);
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
@@ -93,7 +100,10 @@ async function bootServer(
 		settingsDir: dir,
 		settings: opts.settings,
 	});
-	const app = await createServer(opened, config);
+	// The boot env threads into the server (the /v1/settings `effective`
+	// block classifies env-sourced keys against it — the deploy entry
+	// passes the real `process.env` here).
+	const app = await createServer(opened, config, [], { env: bootEnv });
 	const teardown = async () => {
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
@@ -174,8 +184,12 @@ describe("GET /v1/settings", () => {
 		const response = await app.inject({ method: "GET", url: "/v1/settings" });
 		expect(response.statusCode).toBe(200);
 		// Every store key defaults — the only content is the server-computed
-		// roster (never persisted; not a settings-file key).
-		expect(response.json()).toEqual({ toolRoster: expect.any(Array) });
+		// roster and the `effective` block (both computed per request, never
+		// persisted).
+		expect(response.json()).toEqual({
+			toolRoster: expect.any(Array),
+			effective: expect.any(Object),
+		});
 	});
 
 	test("serves the file's contents when present", async () => {
@@ -189,6 +203,59 @@ describe("GET /v1/settings", () => {
 		expect(response.json()).toEqual(
 			expect.objectContaining({ steeringMode: "all" }),
 		);
+	});
+
+	test("the effective block classifies env / file / default per flattened server key", async () => {
+		const port = 4080;
+		const { app } = await bootServer({ SIGRUN_PORT: String(port) });
+		const response = await app.inject({ method: "GET", url: "/v1/settings" });
+		expect(response.statusCode).toBe(200);
+		const { effective } = response.json() as {
+			effective: Record<string, { value: unknown; source: string }>;
+		};
+		// SIGRUN_PORT was set at boot → env; nothing set compaction → the
+		// code default; storagePath/workspacePath were env-set too (the
+		// harness's hermetic tmp roots).
+		expect(effective["server.port"]).toEqual({ value: port, source: "env" });
+		expect(effective["server.compaction.reserveTokens"]).toEqual({
+			value: 16384,
+			source: "default",
+		});
+		expect(effective["server.storagePath"]).toEqual({
+			value: expect.stringContaining("sigrun.db"),
+			source: "env",
+		});
+	});
+
+	test("the effective block reads file-sourced keys from the settings file", async () => {
+		const { app } = await bootServer(
+			{},
+			{
+				file: JSON.stringify({
+					server: { compaction: { reserveTokens: 4096 } },
+				}),
+			},
+		);
+		const response = await app.inject({ method: "GET", url: "/v1/settings" });
+		const { effective } = response.json() as {
+			effective: Record<string, { value: unknown; source: string }>;
+		};
+		expect(effective["server.compaction.reserveTokens"]).toEqual({
+			value: 4096,
+			source: "file",
+		});
+		// A file PATCH lands as a file source on the NEXT GET (the block is
+		// computed per request over the fresh file read) — while the VALUE
+		// stays the boot-resolved one: `server.*` is restart-required (the
+		// running boot never re-resolves it), so the block honestly reports
+		// what boot used + where the NEXT boot takes the key from.
+		await patch(app, { server: { port: 5050 } });
+		const after = (await app.inject({ method: "GET", url: "/v1/settings" }))
+			.json() as { effective: Record<string, { value: unknown; source: string }> };
+		expect(after.effective["server.port"]).toEqual({
+			value: 3000,
+			source: "file",
+		});
 	});
 });
 
@@ -233,7 +300,10 @@ describe("PATCH /v1/settings", () => {
 		const { app } = await bootServer();
 		await patch(app, { steeringMode: "all" });
 		const response = await patch(app, { steeringMode: null });
-		expect(response.json()).toEqual({ toolRoster: expect.any(Array) });
+		expect(response.json()).toEqual({
+			toolRoster: expect.any(Array),
+			effective: expect.any(Object),
+		});
 	});
 
 	test("unknown key → 400 invalid_field naming it", async () => {
@@ -298,7 +368,11 @@ describe("PATCH /v1/settings", () => {
 		const { app, settingsDir } = await bootServer();
 		const response = await patch(app, { server: { port: 4080 } });
 		expect(response.statusCode).toBe(200);
-		expect(response.json()).toEqual({ server: { port: 4080 }, toolRoster: expect.any(Array) });
+		expect(response.json()).toEqual({
+			server: { port: 4080 },
+			toolRoster: expect.any(Array),
+			effective: expect.any(Object),
+		});
 		// Persisted to the file…
 		const file = JSON.parse(
 			await (await import("node:fs/promises")).readFile(
@@ -315,6 +389,7 @@ describe("PATCH /v1/settings", () => {
 		expect(readBack.json()).toEqual({
 			server: { port: 4080 },
 			toolRoster: expect.any(Array),
+			effective: expect.any(Object),
 		});
 		// Invalid server fields → 400 invalid_field naming the key.
 		for (const [body, field] of [
@@ -349,6 +424,7 @@ describe("PATCH /v1/settings", () => {
 			defaultProvider: { baseUrl: "https://gw.example/v1" },
 			server: { webuiBundle: "ui/dist" },
 			toolRoster: expect.any(Array),
+			effective: expect.any(Object),
 		});
 		// Persisted to the file (restart-required: the running boot keeps
 		// its resolved values; these land on the NEXT boot).

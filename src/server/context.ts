@@ -15,7 +15,7 @@ import type {
 	Conversation,
 	ConversationId,
 } from "@earendil-works/pi-durable";
-import type { SigrunConfig } from "../config.js";
+import type { Env, SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
@@ -33,6 +33,7 @@ export interface ServerContext {
 	/** The resolved webui bundle; `undefined` on an API-only deploy. */
 	readonly webuiBundle: WebuiBundle | undefined;
 	/**
+	/**
 	 * The listen host the server binds (W1 Task 3): the pipeline's Host
 	 * check is strict on loopback binds, and `createServer` derives the
 	 * default method list from it. Defaults to `"0.0.0.0"`.
@@ -45,6 +46,14 @@ export interface ServerContext {
 	 * path.
 	 */
 	readonly methods: readonly ("token" | "proxy")[];
+	/**
+	 * The boot env (the deploy entry's `process.env`; the CLI passes the
+	 * same env `serve` resolved). The `/v1/settings` `effective` block
+	 * classifies env-sourced server keys against it (spec §6.6) — the
+	 * one consumer today; it is the env boot actually resolved, never a
+	 * per-request read.
+	 */
+	readonly env: Env;
 }
 
 declare module "fastify" {

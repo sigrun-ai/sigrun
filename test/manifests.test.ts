@@ -5,7 +5,7 @@
  * §4.4 portable invariants (single replica + Recreate + RWO PVC mounted
  * at the storage path + probes wired to /healthz//readyz + envFrom the
  * sigrun Secret + backup CronJob on the same PVC + ServiceMonitor
- * scraping /readyz + PrometheusRule alerts), and (c) the values toggles
+ * scraping /metrics + PrometheusRule alerts), and (c) the values toggles
  * actually toggle (backup off by default, monitoring off by default,
  * storage class override).
  *
@@ -472,7 +472,45 @@ describe("chart backup CronJob", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ServiceMonitor + PrometheusRule (metrics scoping: scrape /readyz)
+// Pod security (§6.10): non-root uid 1000 on BOTH controllers
+// ---------------------------------------------------------------------------
+
+describe("chart pod securityContext (§6.10)", () => {
+	type PodSpec = { securityContext?: Record<string, number | boolean> };
+
+	test("main Deployment pod: runAsNonRoot, uid/gid/fsGroup 1000 (the image's node user)", async () => {
+		// Spec §6.10: the image runs as the base image's node user (uid 1000) —
+		// the chart must refuse to schedule it as root, and the fsGroup makes
+		// the kubelet chown the sigrun-data PVC to 1000 on mount.
+		const deployment = docOf(await render(), "Deployment") as {
+			spec: { template: { spec: PodSpec } };
+		};
+		const sc = deployment.spec.template.spec.securityContext;
+		expect(sc?.runAsNonRoot).toBe(true);
+		expect(sc?.runAsUser).toBe(1000);
+		expect(sc?.runAsGroup).toBe(1000);
+		expect(sc?.fsGroup).toBe(1000);
+	});
+
+	test("backup CronJob pod: runAsNonRoot, uid/gid/fsGroup 1000", async () => {
+		// Same pin on the backup job's pod — it mounts the SAME PVC and
+		// must write tars + the sqlite copy as the same non-root uid.
+		const cronjob = docOf(
+			await render(["controllers.backup.enabled=true"]),
+			"CronJob",
+		) as {
+			spec: { jobTemplate: { spec: { template: { spec: PodSpec } } } };
+		};
+		const sc = cronjob.spec.jobTemplate.spec.template.spec.securityContext;
+		expect(sc?.runAsNonRoot).toBe(true);
+		expect(sc?.runAsUser).toBe(1000);
+		expect(sc?.runAsGroup).toBe(1000);
+		expect(sc?.fsGroup).toBe(1000);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ServiceMonitor + PrometheusRule (metrics scoping: scrape /metrics)
 // ---------------------------------------------------------------------------
 
 describe("chart ServiceMonitor + PrometheusRule", () => {
@@ -483,7 +521,7 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		docs = await render(ENABLED);
 	});
 
-	test("ServiceMonitor scrapes /readyz on the http port of Service sigrun", () => {
+	test("ServiceMonitor scrapes /metrics on the http port of Service sigrun", () => {
 		const monitor = docOf(docs, "ServiceMonitor") as {
 			spec: {
 				jobLabel: string;
@@ -496,11 +534,13 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 			"sigrun",
 		);
 		expect(monitor.spec.endpoints[0].port).toBe("http");
-		expect(monitor.spec.endpoints[0].path).toBe("/readyz");
+		// W2 Task 8 (spec §6.9): the scrape target is the full exposition, not
+		// the readiness probe — the alerts below key on sigrun_* series.
+		expect(monitor.spec.endpoints[0].path).toBe("/metrics");
 		expect(monitor.spec.endpoints[0].interval).toBe("30s");
 	});
 
-	test("PrometheusRule alerts on scrape failure (readiness 503 ⇒ up=0)", () => {
+	test("SigrunNotReady keys on scrape death or sigrun_up 0 (the /metrics exposition)", () => {
 		const rule = docOf(docs, "PrometheusRule") as {
 			spec: { groups: { name: string; rules: { alert: string; expr: string }[] }[] };
 		};
@@ -509,7 +549,71 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 			.sort((a, b) => a.alert.localeCompare(b.alert));
 		expect(alerts.map((r) => r.alert)).toContain("SigrunNotReady");
 		expect(alerts.map((r) => r.alert)).toContain("SigrunNoScrape");
-		expect(alerts[0].expr).toMatch(/up\{job="sigrun"\}/);
+		// W2 final-review fix: the scrape is /metrics (answers 200 always —
+		// even a harness-closed process serves sigrun_up 0), so up==0 alone
+		// only fires on scrape death. The app's own down signal (sigrun_up 0,
+		// the inspection failure class) is OR-ed in.
+		const notReady = alerts.find((r) => r.alert === "SigrunNotReady");
+		expect(notReady?.expr).toBe(
+			'up{job="sigrun"} == 0 or sigrun_up == 0',
+		);
+	});
+
+	test("the four §6.9 alerts render (backup stale gated on backup enabled)", async () => {
+		const withBackup = await render([...ENABLED, "controllers.backup.enabled=true"]);
+		const rule = docOf(withBackup, "PrometheusRule") as {
+			spec: {
+				groups: {
+				name: string;
+				rules: { alert: string; expr: string; for?: string }[];
+			}[];
+			};
+		};
+		const byName = new Map(
+			rule.spec.groups.flatMap((g) => g.rules).map((r) => [r.alert, r]),
+		);
+		const names = [...byName.keys()];
+		for (const name of [
+			"SigrunSubmissionWedged",
+			"SigrunProviderNotReady",
+			"SigrunBackupStale",
+			"SigrunJobFailed",
+		]) {
+			expect(names, `${name} must render when monitoring is on`).toContain(name);
+		}
+		expect(byName.get("SigrunSubmissionWedged")?.expr).toBe(
+			"sigrun_inflight_submission_oldest_seconds > 1800",
+		);
+		expect(byName.get("SigrunSubmissionWedged")?.for).toBe("5m");
+		expect(byName.get("SigrunProviderNotReady")?.expr).toBe(
+			'sigrun_provider_ready{status!="ready"} == 1',
+		);
+		expect(byName.get("SigrunProviderNotReady")?.for).toBe("15m");
+		expect(byName.get("SigrunBackupStale")?.expr).toBe(
+			"time() - sigrun_backup_last_success_timestamp_seconds > 36*3600",
+		);
+		// W4 defines the counter; the rule ships here and matches nothing
+		// until then (a deliberate inert alert).
+		expect(byName.get("SigrunJobFailed")?.expr).toBe(
+			'increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0',
+		);
+
+		// The backup alert's gate: backup disabled in values ⇒ the rule is
+		// absent (an unbacked deploy would page forever on a series the
+		// server legitimately omits); the other three stay.
+		const off = await render(ENABLED);
+		const offRule = docOf(off, "PrometheusRule") as {
+			spec: { groups: { rules: { alert: string }[] }[] };
+		};
+		const offNames = offRule.spec.groups.flatMap((g) => g.rules.map((r) => r.alert));
+		expect(offNames).not.toContain("SigrunBackupStale");
+		for (const name of [
+			"SigrunSubmissionWedged",
+			"SigrunProviderNotReady",
+			"SigrunJobFailed",
+		]) {
+			expect(offNames).toContain(name);
+		}
 	});
 
 	test("the ServiceMonitor + PrometheusRule are independently gated", async () => {
@@ -521,6 +625,27 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		const ruleOnly = await render(["monitoring.prometheusRule.enabled=true"]);
 		expect(ruleOnly.some((d) => d.kind === "ServiceMonitor")).toBe(false);
 		expect(ruleOnly.some((d) => d.kind === "PrometheusRule")).toBe(true);
+	});
+
+	test("the main container pins SIGRUN_METRICS_PUBLIC=true (the scrape stays public across W1's pipeline)", async () => {
+		// W2 Task 8: the chart scrapes in-cluster; the env pins the W1
+		// `metricsPublic` gate true so the pipeline (W1 Task 1) keeps serving
+		// the scrape without a principal once it lands.
+		const deployment = docOf(await render(), "Deployment") as {
+			spec: {
+				template: {
+					spec: {
+						containers: { name: string; env: { name: string; value?: string }[] }[];
+					};
+				};
+			};
+		};
+		const main = deployment.spec.template.spec.containers.find(
+			(c) => c.name === "main",
+		);
+		expect(
+			main?.env.find((e) => e.name === "SIGRUN_METRICS_PUBLIC")?.value,
+		).toBe("true");
 	});
 });
 

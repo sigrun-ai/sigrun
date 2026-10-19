@@ -4,19 +4,19 @@
  * longer pins the personal git+ssh package, so this fixture mirrors its
  * contract and the degenerate-memory semantics the sigrun tests exercise:
  * the loader-install name (`sigrun-memory`), the `memory_recall` tool, the
- * `long-term-memory` section, and the factory-result `submit` pass-through
- * that binds the conversation as the recall source at the submit boundary.
+ * `long-term-memory` section, and the retired factory-result `submit`
+ * pass-through.
  *
  * LEGACY CONTRACT: the real package (sigrun-ext-memory-markdown 0.2+) retired
  * its `submit` pass-through — capture rides the host's `runSettled` seam event
- * and the recall source arrives with that delivery. This fixture KEEPS the
- * legacy `{ extension, submit }` factory shape on purpose: it pins the
- * loader's legacy submit pass-through contract (`OpenedHarness.memorySubmit`),
- * which the loader still supports for pre-seam extensions.
+ * and the recall source arrives with that delivery — and core hardening §6.7
+ * retired the loader surface too. This fixture KEEPS the legacy
+ * `{ extension, submit }` factory shape on purpose: it is the vehicle for
+ * the loader's one-warning retirement pin (present-but-ignored, never
+ * quarantined — old packages keep loading).
  *
  * Plain JavaScript so `import(specifier)` resolves it directly — the same
- * dynamic-import path the loader uses for installed packages. Contract: the
- * default export is a factory returning `{ extension, submit }` (LEGACY).
+ * dynamic-import path the loader uses for installed packages.
  *
  * Mirrors: sigrun-ext-memory-markdown dist/degenerate.js pre-seam (the
  * current real package captures via runSettled — do not port that here).

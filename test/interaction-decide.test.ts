@@ -1,12 +1,12 @@
 /**
- * The security-parity e2e (spec slice 3, Task 7 step 1(2)): an
- * approvals-gated tool called FROM A CODEMODE SCRIPT prompts — the nested
- * `executeTool` runs the ToolTask `beforeTool` hooks, which is the whole
- * point of the pi-durable 1.2.0 upgrade (1.0.2's in-VM tool surface never
- * reached the harness hooks).
+ * The interaction-seam decide round-trip e2e (spec slice 3, Task 7 step
+ * 1(2), renamed from approvals-parity by §6.7): a gated tool called FROM A
+ * CODEMODE SCRIPT prompts — the nested `executeTool` runs the ToolTask
+ * `beforeTool` hooks, which is the whole point of the pi-durable 1.2.0
+ * upgrade (1.0.2's in-VM tool surface never reached the harness hooks).
  *
  * This is a PARITY LOCK on shipped behavior (the pieces exist: pi-durable
- * 1.2.0 + the approvals extension + the codemode extension), not new
+ * 1.2.0 + the gating extension + the codemode extension), not new
  * behavior — so unlike the loader-collision test it is expected to pass
  * once wired; its value is that it fails if any layer stops routing nested
  * calls through the hooks.
@@ -17,9 +17,9 @@
  *     relative path (`~/repos/sigrun-ext-codemode/dist/index.js`; the
  *     worktree sits one level deeper than the main checkout, hence four
  *     `..` segments — the loader contract's factory, called directly), and
- *   - the approvals extension (the sigrun tree's devDependency pin), with
+ *   - a gating extension (the sigrun tree's devDependency pin), with
  *     `onPending` capturing what the gate surfaces (the record the server
- *     lists as the approval prompt),
+ *     lists as the interaction prompt),
  *   - a fixture extension owning `guarded_write`, a tool that is NOT in the
  *     default policy's readOnlyTools, so the gate holds it.
  *
@@ -107,8 +107,8 @@ beforeAll(async () => {
 /** A marker the guarded tool's execute writes into the script's result. */
 const GUARDED_MARKER = "guarded-write-executed";
 
-test("an approvals-gated tool called from a codemode script PROMPTS, then runs after allow", { timeout: 60_000 }, async () => {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-approvals-parity-"));
+test("a gated tool called from a codemode script PROMPTS, then runs after allow", { timeout: 60_000 }, async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-interaction-decide-"));
 	const workspace = join(dir, "workspace");
 	await mkdir(workspace, { recursive: true });
 

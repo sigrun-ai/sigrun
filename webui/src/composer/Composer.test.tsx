@@ -74,7 +74,7 @@ function makeHarness(init?: {
 	readonly draftAttachments?: string[];
 	readonly models?: readonly ModelEntry[];
 }) {
-	const calls: { input: string; method?: string; body?: string }[] = [];
+	const calls: { input: string; method?: string; body?: string | Uint8Array }[] = [];
 	const meta: ConversationMeta = {
 		pinned: false,
 		tagged: [],
@@ -92,9 +92,10 @@ function makeHarness(init?: {
 		else if (input === "/v1/commands") body = { commands: COMMANDS };
 		else if (input.endsWith("/meta")) body = meta;
 
-		else if (input.endsWith("/uploads")) {
-			const parsed = JSON.parse(init2?.body as string) as { name: string };
-			body = { path: `uploads/1/${parsed.name}` };
+		else if (input.includes("/uploads/")) {
+			// The raw PUT: the name rides the route param (percent-encoded).
+			const name = decodeURIComponent(input.slice(input.lastIndexOf("/") + 1));
+			body = { path: `uploads/1/${name}` };
 		} else if (input.endsWith("/submissions")) {
 			body = { id: 9, conversationId: 1, type: "input", status: "done" };
 		} else if (input.endsWith("/export")) {
@@ -120,11 +121,11 @@ function makeHarness(init?: {
 			ok: true,
 			status: input.endsWith("/submissions")
 				? 202
-				: input.endsWith("/uploads")
+				: input.includes("/uploads/")
 					? 201
 				: input.endsWith("/compact")
-						? 202
-						: 200,
+					? 202
+					: 200,
 			json: () => Promise.resolve(body),
 			text: () => Promise.resolve(String(body)),
 		});
@@ -546,15 +547,13 @@ describe("Composer", () => {
 					type: "image/png",
 				}),
 			]);
-			const uploads = calls.filter((c) => c.input.endsWith("/uploads"));
+			const uploads = calls.filter((c) => c.method === "PUT");
 			expect(uploads).toEqual([
 				{
-					input: "/v1/conversations/1/uploads",
-					method: "POST",
-					body: JSON.stringify({
-						name: "pic.png",
-						contentBase64: "aGk=",
-					}),
+					input: "/v1/conversations/1/uploads/pic.png",
+					method: "PUT",
+					// The raw bytes, not a base64 body (spec §6.2).
+					body: new Uint8Array([104, 105]),
 				},
 			]);
 			// The tray shows the uploaded path's basename.

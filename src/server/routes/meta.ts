@@ -7,6 +7,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { aggregateHealth } from "../../harness/health.js";
+import { isBackupMarkerStale, readBackupMarker } from "../../backup/marker.js";
 import { SLASH_COMMANDS, type CommandsResponse } from "../commands.js";
 import type { ServerContext } from "../context.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "../schema-fixture.js";
@@ -23,6 +24,21 @@ export function registerMetaRoutes(
 		// over the process lifetime); quarantined extensions never
 		// registered, so a name miss just yields no workers.
 		const workerStatuses = opened.workerStatuses();
+		// §6.8 backup honesty: the last-success marker is read PER REQUEST
+		// from config.stateDir (the CronJob is a separate process — the only
+		// fresh-enough view is the filesystem). Unconfigured stays
+		// presence-derived; configured degrades when the marker is absent,
+		// corrupt, or older than server.backup.staleAfterHours (default 36 h).
+		const backupConfigured = config.backup !== undefined;
+		const marker = backupConfigured
+			? await readBackupMarker(config.stateDir)
+			: undefined;
+		const backupHealth: MetaResponse["health"]["backup"] = !backupConfigured
+			? "unconfigured"
+			: marker === undefined ||
+					isBackupMarkerStale(marker, config.backupStaleAfterHours)
+				? "degraded"
+				: "configured";
 		return {
 			harnessVersion: HARNESS_VERSION,
 			schemaVersion: SCHEMA_VERSION,
@@ -38,15 +54,14 @@ export function registerMetaRoutes(
 				};
 			}),
 			// §5 health: pure aggregation over boot-retained §3 producers —
-			// backup from config presence ("configured" iff set; no runtime
-			// backup health signal exists in v1 — the CronJob is external,
-			// so "degraded" is deliberately NOT introduced), memory from the
-			// memory extension's producer ("ok" for the no-op default —
-			// quarantines surface via extensions[].status, never
+			// memory from the memory extension's producer ("ok" for the no-op
+			// default — quarantines surface via extensions[].status, never
 			// double-reported here), providers aggregated across
-			// contributors (empty → "ok").
+			// contributors (empty → "ok"), and backup from the §6.8 marker
+			// derivation above ("configured" only while a fresh success
+			// exists — the one storage read this route makes).
 			health: {
-				backup: config.backup === undefined ? "unconfigured" : "configured",
+				backup: backupHealth,
 				memory: opened.memoryHealth?.() ?? "ok",
 				providers: aggregateHealth(opened.providerHealth),
 			},
@@ -57,6 +72,14 @@ export function registerMetaRoutes(
 				methods: ctx.methods,
 				claimed: opened.identity.users.isClaimed(),
 			},
+			// §6.8: the marker's timestamp — when the last successful backup
+			// ran, whenever one is recorded against a configured target (a
+			// STALE marker still surfaces: "when was the last success" is
+			// exactly what a degraded badge begs for).
+			backup:
+				marker === undefined
+					? {}
+					: { lastSuccessAt: marker.at },
 			// §5 capabilities: backup affordances exist iff a target is
 			// configured (the badge, not an error, when absent).
 			capabilities: {

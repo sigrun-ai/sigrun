@@ -32,7 +32,19 @@ RUN npm run build && npm run build:webui
 # Runtime: the app + the built tree.
 FROM base
 ENV NODE_ENV=production
-COPY --from=build /app /app
+# Agent tooling (spec §6.10): git (required by git: extension sources),
+# sqlite3 (path-target backups + db diagnostics; S3 targets keep an
+# awscli image), ca-certificates (TLS to model gateways). tar ships in
+# the base. Deliberately no curl/wget — probes use node's fetch.
+RUN apt-get update && apt-get install -y --no-install-recommends git sqlite3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build --chown=node:node /app /app
+# The volume mount points (chart PVC at /data, cache emptyDir at /cache):
+# owned by node BEFORE the USER switch (still root here) so unmounted
+# local `docker run`s work — and a fresh named volume inherits the image
+# dir's ownership (uid 1000), matching the chart's fsGroup.
+RUN mkdir -p /data /cache && chown node:node /data /cache
+USER node
 EXPOSE 3000
 # Plain node (no npm in the signal path): SIGTERM reaches the entry's
 # graceful shutdown — server close, event-bus drain, harness close,

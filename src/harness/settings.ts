@@ -65,7 +65,9 @@ import type {
 
 export type {
 	DefaultProviderSettings,
+	EffectiveServerSetting,
 	ExtensionSpec,
+	ServerSettingSource,
 	ServerSettings,
 	SettingsFile,
 } from "@sigrun/shared/settings";
@@ -120,6 +122,20 @@ function warnDeprecatedWebuiBundle(): void {
 	deprecatedWebuiBundleWarned = true;
 	console.warn(
 		"settings: server.webuiBundle is deprecated, use server.webui.bundle (reads as the same selector for one release)",
+	);
+}
+
+/**
+ * Warn once per process when the file carries the retired
+ * `server.extensionsDir` key (§6.7): accepted for one release so existing
+ * files keep validating, warned because nothing reads it.
+ */
+let deprecatedExtensionsDirWarned = false;
+function warnDeprecatedExtensionsDir(): void {
+	if (deprecatedExtensionsDirWarned) return;
+	deprecatedExtensionsDirWarned = true;
+	console.warn(
+		"settings: server.extensionsDir is deprecated and ignored (nothing reads the extensions dir)",
 	);
 }
 
@@ -373,6 +389,7 @@ function validateServer(server: unknown): void {
 		"workspacePath",
 		"storagePath",
 		"extensionsDir",
+		"maxUploadBytes",
 		"dataDir",
 		"cacheDir",
 		"stateDir",
@@ -388,10 +405,27 @@ function validateServer(server: unknown): void {
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
 		throw new SettingsValidationError("server.port", "must be a positive integer");
 	}
+	// The upload knob (spec §6.2): same rule as the env parse — a positive
+	// integer; `Math.ceil(max*4/3)+4096` derives the base64/import limits.
+	if (
+		record.maxUploadBytes !== undefined &&
+		!isPositiveInt(record.maxUploadBytes)
+	) {
+		throw new SettingsValidationError(
+			"server.maxUploadBytes",
+			"must be a positive integer",
+		);
+	}
 	for (const key of ["workspacePath", "storagePath", "extensionsDir", "dataDir", "cacheDir", "stateDir"]) {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
 		}
+	}
+	// The retired `extensionsDir` key (§6.7) stays ACCEPTED for one
+	// release (existing files keep validating) but warns — never throws —
+	// exactly like the legacy `webuiBundle` alias below; nothing reads it.
+	if (record.extensionsDir !== undefined) {
+		warnDeprecatedExtensionsDir();
 	}
 	// The webui channel surface (build-and-webui Task 4). The LEGACY
 	// `webuiBundle` key stays ACCEPTED for one release (a read-side alias
@@ -578,11 +612,24 @@ function validateServer(server: unknown): void {
 		if (backup === undefined) {
 			throw new SettingsValidationError("server.backup", "must be an object");
 		}
-		checkKeys("server.backup.", backup, ["path", "s3"]);
+		checkKeys("server.backup.", backup, ["path", "s3", "staleAfterHours"]);
 		if (backup.path !== undefined && backup.s3 !== undefined) {
 			throw new SettingsValidationError(
 				"server.backup",
 				"must carry exactly one target (path or s3, not both)",
+			);
+		}
+		// §6.8: the honesty knob — a positive NUMBER (not integer-only:
+		// a sub-hour window like 0.5 is a legal tuning), defaulting to 36
+		// at resolution; not a target, so it may ride either shape or sit
+		// alone (a no-target backup section holding only the knob is inert).
+		if (
+			backup.staleAfterHours !== undefined &&
+			!isPositiveNumber(backup.staleAfterHours)
+		) {
+			throw new SettingsValidationError(
+				"server.backup.staleAfterHours",
+				"must be a positive number",
 			);
 		}
 		if (backup.path !== undefined && !isNonEmptyString(backup.path)) {
@@ -622,6 +669,15 @@ function isPositiveInt(value: unknown): boolean {
 	return (
 		typeof value === "number" &&
 		Number.isInteger(value) &&
+		value > 0
+	);
+}
+
+/** A positive finite number (§6.8's `server.backup.staleAfterHours`). */
+function isPositiveNumber(value: unknown): boolean {
+	return (
+		typeof value === "number" &&
+		Number.isFinite(value) &&
 		value > 0
 	);
 }
@@ -679,17 +735,18 @@ export class SettingsStore {
 	}
 
 	/**
-	 * First-boot initialization (the settings bootstrap): when the file is
-	 * ABSENT, write the RESOLVED boot configuration — `server` (the
-	 * section `loadConfig` resolved from env + code defaults), plus the
-	 * top-level `extensions` list and `defaultModel` when the env provided
-	 * them — so the file exists from boot one as an operator-visible,
-	 * hand-editable record of reality (ruling 9: the file records what
-	 * boot actually resolved, env-provided or defaulted). When the file
-	 * already exists (any content), bootstrap is a no-op: the file is
-	 * never overwritten, and env vars continue to win over it on the next
-	 * boot (env-over-file precedence). Idempotent: bootstrapping twice
-	 * leaves the file byte-identical.
+	 * First-boot initialization (the settings bootstrap, ruling 5 /
+	 * spec §6.6): when the file is ABSENT, write ONLY what the
+	 * environment set — the env-sourced `server` fields (the
+	 * `envServerSection` projection) plus the top-level `extensions`
+	 * list and `defaultModel` when env supplied them. Defaults are
+	 * NEVER persisted, so later releases' default changes reach existing
+	 * installs; a `server` section with zero entries is omitted entirely
+	 * (a nothing-env-set boot writes at most the top-level keys). When
+	 * the file already exists (any content), bootstrap is a no-op: the
+	 * file is never overwritten, and env vars continue to win over it on
+	 * the next boot (env-over-file precedence). Idempotent: bootstrapping
+	 * twice leaves the file byte-identical.
 	 */
 	bootstrap(
 		resolvedServer: ServerSettings,
@@ -707,7 +764,9 @@ export class SettingsStore {
 			...(resolved?.defaultModel !== undefined
 				? { defaultModel: resolved.defaultModel }
 				: {}),
-			server: resolvedServer,
+			...(Object.keys(resolvedServer).length === 0
+				? {}
+				: { server: resolvedServer }),
 		};
 		writeFileSync(
 			this.path,

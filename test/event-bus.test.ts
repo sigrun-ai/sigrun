@@ -512,3 +512,57 @@ describe("lifecycle detection", () => {
 		]);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Wedge-gauge source (W2 Task 8, spec §6.9)
+// ---------------------------------------------------------------------------
+
+describe("oldestLiveAdmissionMs (the /metrics wedge-gauge source)", () => {
+	test("undefined with no live run; the age of the oldest live run while one runs", async () => {
+		const { bus, root } = await bootBus({
+			responses: [
+				// One tool round (bash sleeps 2s — the live window), then the
+				// answer: the run is live between placement and settlement.
+				fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 2" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("the answer"),
+			],
+		});
+		// No run yet: the gauge source is undefined (the route renders 0).
+		expect(bus.oldestLiveAdmissionMs()).toBeUndefined();
+
+		const before = Date.now();
+		const submission = await root.submit(
+			{ type: "input", content: "hello" },
+			BACKGROUND_CONTEXT,
+		);
+		// While the run is live: a non-negative age, anchored at the
+		// admission instant (which lies between `before` and `after`).
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		const after = Date.now();
+		const age = bus.oldestLiveAdmissionMs(after + 5_000);
+		expect(age).toBeDefined();
+		expect(age!).toBeGreaterThanOrEqual(5_000);
+		expect(age!).toBeLessThanOrEqual(5_000 + (after - before));
+
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		// Settled: back to undefined — a settled conversation stops feeding
+		// the wedge gauge.
+		expect(bus.oldestLiveAdmissionMs()).toBeUndefined();
+	});
+
+	test("a settled conversation's admission no longer counts (only live runs feed the gauge)", async () => {
+		const { bus, root } = await bootBus({
+			responses: [fauxAssistantMessage("done at once")],
+		});
+		await runTurn(root, "hello");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		// The admission map still holds the conversation's timestamp; the
+		// LIVE gate must exclude it (a far-past settled admission reading
+		// as a wedge is exactly the false alarm the gate exists for).
+		expect(bus.oldestLiveAdmissionMs(Date.now() + 10 * 60_000)).toBeUndefined();
+	});
+});

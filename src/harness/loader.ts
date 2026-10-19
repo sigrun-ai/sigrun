@@ -24,32 +24,34 @@
  * The sigrun extension-package contract: a package's default export is a
  * factory returning an object with an `extension: Extension` field, plus an
  * optional §3 `health` producer (spec §3 — the memory-backend form; Task
- * 9e retains it for the §5 meta `health.memory` aggregation), an optional
- * `submit` pass-through (the memory wiring's submit — Task 26a retains it so
- * boot can expose it as `OpenedHarness.memorySubmit`; it binds the
- * conversation as the memory_recall source at the submit boundary), and an
- * optional `submit` pass-through. A factory result may also carry a
- * `providers` array (`ProviderContribution[]`, provider plugins Task 1):
- * boot feeds every loaded contributor into `collectProviders` after the
- * `options.extensions` seam — and a result carrying `providers` with NO
- * `extension` is a valid PROVIDER-ONLY contributor (the model-plugin shape:
- * no pi-durable surface, identified by its `name` field). A result may
- * likewise carry a `webuiBundles` array (`{name, dir}[]`, build-and-webui
- * Task 6): the loader validates it fail-loud, anchors each `dir` at the
- * extension module's URL, and collects the entries attributed to the slug
- * for boot's contributed-bundle registry — the same contributor-only form
- * applies (a `webuiBundles` result with no `extension` needs a `name`).
- * Factories may
+ * 9e retains it for the §5 meta `health.memory` aggregation). A factory
+ * result may also carry a `providers` array (`ProviderContribution[]`,
+ * provider plugins Task 1): boot feeds every loaded contributor into
+ * `collectProviders` after the `options.extensions` seam — and a result
+ * carrying `providers` with NO `extension` is a valid PROVIDER-ONLY
+ * contributor (the model-plugin shape: no pi-durable surface, identified
+ * by its `name` field). A result may likewise carry a `webuiBundles`
+ * array (`{name, dir}[]`, build-and-webui Task 6): the loader validates it
+ * fail-loud, anchors each `dir` at the extension module's URL, and
+ * collects the entries attributed to the slug for boot's
+ * contributed-bundle registry — the same contributor-only form applies (a
+ * `webuiBundles` result with no `extension` needs a `name`). Factories may
  * return a Promise (the plugins read their scoped settings store inside the
  * factory); the loader awaits the result. Packages that predate the settled
  * contract export named factories (`createMemory`) whose results carry the
  * same `.extension` field, so the loader resolves, in order:
  *
  * 1. the default export, if it is a factory returning `{ extension,
- *    health?, submit? }` or is itself an `Extension` (named `name`),
- * 2. a named `createMemory` factory (the bridge for the pre-contract
- *    memory package),
- * 3. a named `extension` export.
+ *    health? }` or is itself an `Extension` (named `name`) — the supported
+ *    form,
+ * 2. a named `createMemory` factory (DEPRECATED bridge for the
+ *    pre-contract memory package — one warning per load; deletion is the
+ *    next release),
+ * 3. a named `extension` export (DEPRECATED the same way).
+ *
+ * A factory result still carrying a `submit` pass-through (the retired
+ * pre-seam memory wiring) is IGNORED with one warning — never
+ * quarantined, so pre-seam packages keep loading.
  *
  * A factory MAY declare an arity-1 signature: the loader then passes the
  * host context (src/harness/seam-host.ts — the interaction/ambient seam
@@ -62,24 +64,17 @@
  * `interactionKinds`/`ambientKinds` string arrays declare which seam
  * kinds/keys the extension writes — validated fail-loud here and
  * consumed by the seam host's write gate and the /v1/meta inventory.
- * Only factory results can carry a health producer,
- * submit pass-through, or kind declarations (the direct-`Extension` forms
- * have no factory result to read one from). A `health`/`submit` field that
- * is present but not the expected shape, or kinds that are not string
- * arrays, is a contract violation — quarantined, never silently ignored.
+ * Only factory results can carry a health producer or kind declarations
+ * (the direct-`Extension` forms have no factory result to read one from).
+ * A `health` field that is present but not the expected shape, or kinds
+ * that are not string arrays, is a contract violation — quarantined,
+ * never silently ignored.
  * A `providers` entry whose `provider` has no string `id` is the same class
  * of violation (a plugin that THINKS it contributed a provider must not
  * silently lose it).
  */
 
-import type { Context } from "@earendil-works/chord";
-import type {
-	Conversation,
-	Extension,
-	Registry,
-	Submission,
-	SubmissionDraft,
-} from "@earendil-works/pi-durable";
+import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
 	ExtensionEventHandlers,
 	ExtensionRunSettledHandler,
@@ -87,11 +82,18 @@ import type {
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DeclaredKinds } from "./seam-host.js";
-import { readPackageName, resolveExtensionEntry } from "./packages.js";
+import {
+	HOST_RUNTIME_MODULES,
+	hostModuleVersion,
+	readPackageName,
+	resolveExtensionEntry,
+} from "./packages.js";
+import { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
@@ -103,19 +105,6 @@ export interface ExtensionOutcome {
 	/** The failure message; present only when `status === "quarantined"`. */
 	readonly error?: string;
 }
-
-/**
- * A factory-result submit pass-through (the memory wiring's `submit`,
- * Task 26a): binds the conversation as the memory_recall source at the
- * submit boundary, then admits the submission. Boot exposes the
- * memory-surface owner's as `OpenedHarness.memorySubmit`; the §5 server
- * submits through it when present.
- */
-export type ExtensionSubmit = (
-	conversation: Conversation,
-	submission: SubmissionDraft,
-	context: Context,
-) => Promise<Submission>;
 
 /**
  * A §3 health producer retained from an extension factory result (Task
@@ -131,22 +120,10 @@ export interface ExtensionHealthProducer {
 }
 
 /**
- * A factory-result submit pass-through retained from an extension factory
- * result (Task 26a) — paired with the resolved `Extension` exactly like
- * `ExtensionHealthProducer`, so boot identity-matches it to the
- * memory-surface owner.
- */
-export interface ExtensionSubmitBinding {
-	/** The extension the factory result carried the submit for. */
-	readonly extension: Extension;
-	readonly submit: ExtensionSubmit;
-}
-
-/**
  * A factory-result `runSettled` handler retained from an extension factory
  * result (memory-seam Task 3) — paired with the resolved `Extension` like
- * the health/submit bindings, so boot registers it on the event bus under
- * the extension's final name.
+ * the health binding, so boot registers it on the event bus under the
+ * extension's final name.
  */
 export interface ExtensionRunSettledBinding {
 	/** The extension the factory result carried the handler for. */
@@ -216,11 +193,6 @@ export interface LoadedExtensions {
 	 */
 	readonly healthProducers: readonly ExtensionHealthProducer[];
 	/**
-	 * Submit pass-throughs from factory results (Task 26a), one per loaded
-	 * extension that carried one; quarantined extensions contribute none.
-	 */
-	readonly submitBindings: readonly ExtensionSubmitBinding[];
-	/**
 	 * `runSettled` handlers from factory results (memory-seam Task 3), one
 	 * per loaded extension that carried one; quarantined extensions
 	 * contribute none. Boot registers each on the event bus under the
@@ -262,10 +234,9 @@ interface ExtensionModule {
 }
 
 /**
- * What the contract resolution yields: the `Extension` plus the optional §3
- * health producer / submit pass-through a factory
- * result carried alongside it. Only factory results can carry one; the
- * direct-`Extension` forms resolve without.
+ * What `resolveExtension` yields: the `Extension` plus the optional §3
+ * health producer a factory result carried alongside it. Only factory
+ * results can carry one; the direct-`Extension` forms resolve without.
  */
 export interface ResolvedExtension {
 	/**
@@ -284,8 +255,21 @@ export interface ResolvedExtension {
 	readonly name?: string;
 	/** Present only when resolution came from a factory result carrying one. */
 	readonly health?: () => HealthStatus;
-	/** Present only when the factory result carried one (the memory wiring's submit). */
-	readonly submit?: ExtensionSubmit;
+	/**
+	 * Set when the factory result carried a `submit` pass-through — the
+	 * RETIRED pre-seam memory wiring (§6.7). The submit itself is ignored;
+	 * the flag drives the loader's one-time retirement warning. Never
+	 * quarantines: old packages keep loading.
+	 */
+	readonly retiredSubmit?: true;
+	/**
+	 * Which NAMED-EXPORT bridge resolved this module (§6.7 deprecation):
+	 * `"createMemory"`/`"createApprovals"` (the pre-contract named
+	 * factories) or `"extension"` (the named `extension` export). Absent
+	 * for the supported default-export forms. Drives the deprecation
+	 * warning; behavior is otherwise unchanged.
+	 */
+	readonly resolvedVia?: "createMemory" | "createApprovals" | "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
@@ -304,6 +288,15 @@ export interface ResolvedExtension {
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
 }
+
+/**
+ * The reserved-key membership probe (spec §6.5 R11): a `Set` because the
+ * `as const` tuple's `includes` narrows its parameter to the literal
+ * union, which a section's `string` key can never satisfy.
+ */
+const RESERVED_SECTION_KEY_SET: ReadonlySet<string> = new Set(
+	RESERVED_CORE_SECTION_KEYS,
+);
 
 /** A structural check for "looks like a pi-durable Extension". */
 function isExtension(value: unknown): value is Extension {
@@ -487,6 +480,156 @@ function validateWebuiBundles(
 }
 
 /**
+ * The one host module whose version must match the host EXACTLY (spec
+ * §6.4 R6): an extension's `Extension`/tool objects flow into the HOST's
+ * pi-durable registry under structural typing — a different pi-durable
+ * is the classic silent-breakage trap (identity never matches, hooks
+ * never fire), so any difference at all quarantines. Every other host
+ * module only shares the major (a minor/patch difference warns).
+ */
+const EXACT_HOST_MODULES: ReadonlySet<string> = new Set([
+	"@earendil-works/pi-durable",
+]);
+
+/** The major segment of a semver-ish version string (`"1.2.0"` → `"1"`). */
+function majorSegment(version: string): string {
+	return version.split(".")[0] ?? version;
+}
+
+/**
+ * The nearest `package.json` at or above `dir` (bounded walk) — the
+ * manifest owning a resolved module ENTRY file. `undefined` at the walk
+ * bound or filesystem root.
+ */
+function nearestManifest(dir: string): string | undefined {
+	let current = dir;
+	for (let hops = 0; hops < 6; hops++) {
+		const candidate = join(current, "package.json");
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+	return undefined;
+}
+
+/**
+ * The nearest `node_modules/<name>/package.json` walking up from `dir` —
+ * the package-directory form of Node's own lookup (which copy of `<name>`
+ * a module at `dir` resolves). Bounded like every walk here; `undefined`
+ * when no ancestor tree carries the package.
+ */
+function nearestModuleManifest(dir: string, name: string): string | undefined {
+	let current = dir;
+	for (let hops = 0; hops < 10; hops++) {
+		const candidate = join(current, "node_modules", ...name.split("/"), "package.json");
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+	return undefined;
+}
+
+/**
+ * The version of one host runtime module as an extension's tree resolves
+ * it, anchored at the extension ENTRY's directory — the exact resolution
+ * the extension's own bare imports use (a nested `node_modules` copy
+ * counts, and so does the host's copy when the walk finds nothing
+ * nearer). `undefined` when the extension's tree resolves no copy at
+ * all: the extension does not depend on the module, and the guard
+ * skips it.
+ *
+ * Two resolution forms, in order: `<name>/package.json` (explicit, and
+ * the only form for manifest-less trees), falling back to the module
+ * ENTRY + nearest manifest above it — some host modules' exports maps
+ * (pi-ai, typebox) do not expose the `./package.json` subpath, which
+ * `require.resolve("<name>/package.json")"` reports as
+ * ERR_PACKAGE_PATH_NOT_EXPORTED even though the package itself resolves
+ * fine; without the fallback those modules would be invisible to the
+ * guard, the exact R6 blind spot it exists to close.
+ */
+function moduleVersionFrom(moduleDir: string, name: string): string | undefined {
+	// Node's ESM loader realpaths the referrer before resolving ITS bare
+	// imports (preserveSymlinks is off by default) — anchor the walk at the
+	// realpath'd dir so the tree examined is the tree the extension's own
+	// imports resolve from, not the symlink path that named it (a `file:`
+	// dir install symlinks node_modules/<pkg> → the checkout).
+	let anchor = moduleDir;
+	try {
+		anchor = realpathSync(moduleDir);
+	} catch {
+		// Not realpath-able — the literal dir is the best anchor available.
+	}
+	const req = createRequire(join(anchor, "package.json"));
+	let manifestPath: string | undefined;
+	try {
+		manifestPath = req.resolve(`${name}/package.json`);
+	} catch {
+		// No package.json subpath from here — either the exports map gates
+		// it or the tree carries no copy: the fallbacks below decide.
+	}
+	if (manifestPath === undefined) {
+		try {
+			manifestPath = nearestManifest(dirname(req.resolve(name)));
+		} catch {
+			// The entry itself is not require-resolvable — pi-ai's exports
+			// map carries ONLY `import`/`types` conditions, so createRequire
+			// cannot resolve the package AT ALL even though extensions
+			// import it fine. Fall back to the node_modules DIRECTORY walk
+			// (the package-dir form of Node's lookup); without it pi-ai skew
+			// would be invisible to the guard — the exact R6 blind spot.
+			manifestPath = nearestModuleManifest(anchor, name);
+		}
+	}
+	if (manifestPath === undefined) return undefined;
+	try {
+		const parsed = JSON.parse(
+			readFileSync(manifestPath, "utf8"),
+		) as { version?: unknown };
+		return typeof parsed.version === "string" ? parsed.version : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The host-module version guard (spec §6.4 R6, core-hardening Task 5):
+ * every host runtime module the extension's tree RESOLVES must agree
+ * with the copy the host runs — `@earendil-works/pi-durable` EXACTLY
+ * (else quarantine), the others in the major (a minor/patch difference
+ * warns, a major difference quarantines). Runs at LOAD, immediately
+ * after the import and before anything is keyed, collected, or
+ * installed: a skewing extension quarantines with this message and
+ * leaves no trace in the registry, the seam hosts, or any binding.
+ *
+ * @param moduleDir the extension ENTRY's directory (the tree its bare
+ * imports resolve from — `extensionModuleDir` above).
+ * @throws the quarantine message on a disallowed difference.
+ */
+function checkHostModules(moduleDir: string): void {
+	for (const name of HOST_RUNTIME_MODULES) {
+		const extVersion = moduleVersionFrom(moduleDir, name);
+		if (extVersion === undefined) continue; // not a dependency of this extension
+		const hostVersion = hostModuleVersion(name);
+		if (hostVersion === undefined) continue; // no host copy to compare against
+		if (extVersion === hostVersion) continue;
+		if (
+			EXACT_HOST_MODULES.has(name) ||
+			majorSegment(extVersion) !== majorSegment(hostVersion)
+		) {
+			throw new Error(
+				`host module skew: ${name} resolves to ${extVersion} from ${moduleDir}, host runs ${hostVersion}`,
+			);
+		}
+		console.warn(
+			`host module minor skew: ${name} resolves to ${extVersion} from ${moduleDir}, ` +
+				`host runs ${hostVersion} (same major, allowed)`,
+		);
+	}
+}
+
+/**
  * The extension module's DIRECTORY — the anchor a contributed bundle's
  * relative `dir` resolves against (build-and-webui Task 6: an
  * npm-installed extension's bundle lives in its own package, so the dir
@@ -522,12 +665,13 @@ function extensionModuleDir(loaded: string): string | undefined {
 }
 
 /**
- * Call an unknown-typed factory and validate the `{ extension, health?,
- * submit? }` result. A `health`/`submit` field that
- * is present but not the expected shape is a contract violation — thrown,
- * so the loader quarantines the extension (fail-loud: a package that THINKS
- * it reports health or owns a submit boundary must not read as healthy or
- * lose submissions from a broken capability).
+ * Call an unknown-typed factory and validate the `{ extension, health? }`
+ * result. A `health` field that is present but not the expected shape is a
+ * contract violation — thrown, so the loader quarantines the extension
+ * (fail-loud: a package that THINKS it reports health must not read as
+ * healthy). A `submit` field is IGNORED with a flag (§6.7: the
+ * pass-through is retired; the loader warns, never quarantines — old
+ * packages keep loading).
  *
  * The factory result may be a Promise (provider plugins read their scoped
  * settings store inside the factory) — awaited before validation. A result
@@ -604,14 +748,6 @@ async function resolvedFromFactory(
 		);
 	}
 	if (
-		candidate.submit !== undefined &&
-		typeof candidate.submit !== "function"
-	) {
-		throw new Error(
-			"extension factory returned a submit field that is not a function",
-		);
-	}
-	if (
 		candidate.runSettled !== undefined &&
 		typeof candidate.runSettled !== "function"
 	) {
@@ -653,7 +789,7 @@ async function resolvedFromFactory(
 			: { health: candidate.health as () => HealthStatus }),
 		...(candidate.submit === undefined
 			? {}
-			: { submit: candidate.submit as ExtensionSubmit }),
+			: { retiredSubmit: true as const }),
 		...(candidate.runSettled === undefined
 			? {}
 			: { runSettled: candidate.runSettled as ExtensionRunSettledHandler }),
@@ -687,26 +823,33 @@ export async function resolveExtension(
 	module: ExtensionModule,
 	hostContext: unknown = undefined,
 ): Promise<ResolvedExtension | undefined> {
-	// 1. Default export: factory returning `{ extension, health? }`, or the Extension itself.
+	// 1. Default export: factory returning `{ extension, health? }`, or the
+	//    Extension itself — the supported forms.
 	const defaultExport = module.default;
 	if (isExtension(defaultExport)) return { extension: defaultExport };
 	const fromDefault = await resolvedFromFactory(defaultExport, hostContext);
 	if (fromDefault !== undefined) return fromDefault;
 
-	// 2. Named real-package factories (bridge for the pre-contract packages).
-	// A package whose factory result carries extra capabilities (approvals,
-	// future insight/seam fields) resolves fine: only health and submit are
-	// validated and retained; everything else is the extension's own business.
+	// 2. Named real-package factories (DEPRECATED bridge for the
+	// pre-contract packages — one warning per load at the caller; deletion
+	// is the next release). A package whose factory result carries extra
+	// capability fields (approvals, future insight/seam fields) resolves
+	// fine: only health is validated and retained; everything else is the
+	// extension's own business.
 	const fromMemory = await resolvedFromFactory(module.createMemory, hostContext);
-	if (fromMemory !== undefined) return fromMemory;
+	if (fromMemory !== undefined) return { ...fromMemory, resolvedVia: "createMemory" };
 	const fromApprovals = await resolvedFromFactory(
 		module.createApprovals,
 		hostContext,
 	);
-	if (fromApprovals !== undefined) return fromApprovals;
+	if (fromApprovals !== undefined) {
+		return { ...fromApprovals, resolvedVia: "createApprovals" };
+	}
 
-	// 3. Named `extension` export.
-	if (isExtension(module.extension)) return { extension: module.extension };
+	// 3. Named `extension` export (DEPRECATED the same way).
+	if (isExtension(module.extension)) {
+		return { extension: module.extension, resolvedVia: "extension" };
+	}
 
 	return undefined;
 }
@@ -875,7 +1018,6 @@ const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
 const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
-const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
@@ -913,6 +1055,15 @@ const display = label ?? entry;
 							);
 						}
 			const module = (await import(loaded)) as ExtensionModule;
+			// Host-module version guard (spec §6.4 R6): the module tree the
+			// extension's bare imports resolve from must agree with the copy
+			// the host runs — checked immediately after the import, BEFORE any
+			// host keying or contract resolution, so a skewing extension leaves
+			// no trace (no seam host, no bindings, no registry entry). A throw
+			// here rides the existing per-extension try (quarantine, boot
+			// continues) exactly like the reserved-section check below.
+			const moduleDir = extensionModuleDir(loaded);
+			if (moduleDir !== undefined) checkHostModules(moduleDir);
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its
 			// RESULT. The loader therefore invokes the host factory TWICE with
@@ -987,6 +1138,25 @@ const display = label ?? entry;
 					resolved.extension === undefined
 						? undefined
 						: { ...resolved.extension, name: slug };
+				// Reserved core section keys (spec §6.5 R11): a section under one
+				// of them is a LOAD-TIME quarantine, checked HERE — after the slug
+				// is final and BEFORE anything is collected. The registry would
+				// otherwise accept the duplicate (sections are last-writer-wins
+				// across extensions), silently replacing a core surface; the
+				// existing catch quarantines with this message instead, leaving
+				// nothing installed (no registry entry), no post-resolution host
+				// re-key (boot's seamHosts never files the entry), and no
+				// provider/health/submit/runSettled/lifecycle/worker/webui
+				// binding collected. Boot's post-install walk over
+				// RESERVED_CORE_SECTION_OWNERS stays as a core-only assertion.
+				const reservedSectionKey = extension?.sections?.find((section) =>
+					RESERVED_SECTION_KEY_SET.has(section.key),
+				)?.key;
+				if (reservedSectionKey !== undefined) {
+					throw new Error(
+						`extension "${slug}" declares reserved core section "${reservedSectionKey}"`,
+					);
+				}
 				// The post-resolution call re-keys the captured host instance in
 				// place with the slug + declared kinds (boot's
 				// hostContextFactory; see src/harness/boot.ts) — the instance is
@@ -1013,19 +1183,28 @@ const display = label ?? entry;
 				// for the next boot's specifier list.
 				slugs.set(slug, declared);
 				outcomes.push({ name: slug, status: "ok" });
-				if (extension !== undefined && resolved.health !== undefined) {
-					healthProducers.push({
-						extension,
-						health: resolved.health,
-					});
-				}
-				if (extension !== undefined && resolved.submit !== undefined) {
-					submitBindings.push({
-						extension,
-					submit: resolved.submit,
-					});
-				}
-				if (extension !== undefined && resolved.runSettled !== undefined) {
+			if (extension !== undefined && resolved.health !== undefined) {
+				healthProducers.push({
+				extension,
+				health: resolved.health,
+			});
+			}
+			// §6.7 retirements, warned ONCE at load (never quarantined): a
+			// result resolved through a named-export bridge, and a result still
+			// carrying the retired submit pass-through. Both keep loading —
+			// deletion of the bridge is the next release, and the submit is
+			// simply ignored (the memory seam owns capture now).
+			if (resolved.resolvedVia !== undefined) {
+				console.warn(
+					`extension ${display}: named-export factory "${resolved.resolvedVia}" is deprecated — export it as default`,
+				);
+			}
+			if (resolved.retiredSubmit === true) {
+				console.warn(
+					`extension "${slug}": the submit pass-through was retired; ignoring`,
+				);
+			}
+			if (extension !== undefined && resolved.runSettled !== undefined) {
 					runSettledBindings.push({
 						extension,
 					runSettled: resolved.runSettled,
@@ -1095,7 +1274,6 @@ const display = label ?? entry;
 		providerContributors,
 		webuiBundles,
 		healthProducers,
-		submitBindings,
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,

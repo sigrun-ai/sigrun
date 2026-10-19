@@ -53,6 +53,13 @@ export interface ServerSettings {
 	/** `SIGRUN_EXTENSIONS_DIR` — a non-empty path. */
 	readonly extensionsDir?: string;
 	/**
+	 * `SIGRUN_MAX_UPLOAD_BYTES` — a positive integer. The raw-upload
+	 * PUT route's body limit; the base64 POST and the JSONL import derive
+	 * theirs from it (the 4/3 base64 inflation plus the JSON wrapper).
+	 * Default 64 MiB (spec §6.2).
+	 */
+	readonly maxUploadBytes?: number;
+	/**
 	 * `SIGRUN_DATA_DIR` — a non-empty path. Applied where the env var is
 	 * absent; the env-or-file value wins VERBATIM (no `/sigrun` suffix),
 	 * exactly like the stores resolver's explicit tier. The DB default
@@ -151,17 +158,40 @@ export interface ServerSettings {
 	readonly metrics?: { readonly public?: boolean };
 	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
-	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`).
+	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`), plus
+	 * the §6.8 honesty knob: `staleAfterHours`, how old the
+	 * `backup/last-success.json` marker may be before `health.backup`
+	 * reports `"degraded"` (positive number; no env var exists — file or
+	 * the 36 h code default).
 	 */
 	readonly backup?:
-		| { readonly path?: string }
+		| { readonly path?: string; readonly staleAfterHours?: number }
 		| {
 				readonly s3?: {
 					readonly bucket?: string;
 					readonly prefix?: string;
 					readonly endpoint?: string;
 				};
-		  };
+				readonly staleAfterHours?: number;
+			};
+}
+
+/**
+ * Which tier supplied a resolved server key (the `/v1/settings`
+ * `effective` block, spec §6.6): the env var was set (`"env"`), the
+ * settings file's `server` section set it (`"file"`), or neither and
+ * the code default applied (`"default"`).
+ */
+export type ServerSettingSource = "env" | "file" | "default";
+
+/**
+ * One `effective` entry: the RESOLVED value (what boot actually used)
+ * plus the {@link ServerSettingSource} that won. Keys are flattened
+ * dotted paths (`"server.port"`, `"server.compaction.reserveTokens"`).
+ */
+export interface EffectiveServerSetting {
+	readonly value: unknown;
+	readonly source: ServerSettingSource;
 }
 
 /**

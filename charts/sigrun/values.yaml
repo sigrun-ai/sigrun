@@ -30,6 +30,16 @@ controllers:
     strategy: Recreate
     # -- (optional) PodDisruptionBudget for the server controller.
     podDisruptionBudget: null
+    # Pod security context (spec §6.10): the image runs as the base
+    # image's node user (uid/gid 1000) — runAsNonRoot refuses a root
+    # schedule, fsGroup 1000 makes the kubelet chown the sigrun-data PVC
+    # to the same uid on mount.
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
     containers:
       main:
         image:
@@ -89,6 +99,14 @@ controllers:
           # Must match the service.main port.
           - name: SIGRUN_PORT
             value: "3000"
+          # W2 Task 8 (spec §6.9): keep the metrics scrape public. The
+          # ServiceMonitor below scrapes in-cluster; this pins the W1
+          # `metricsPublic` gate (strict true/false env, default false)
+          # true so the scrape keeps working once W1's auth pipeline
+          # lands — an operator who wants the pipeline to guard /metrics
+          # flips this to "false" and fronts the scrape with a principal.
+          - name: SIGRUN_METRICS_PUBLIC
+            value: "true"
         envFrom:
           # Everything else config-shaped comes from the Secret
           # (envFrom): SIGRUN_DEFAULT_MODEL (required; SIGRUN_MODEL
@@ -164,6 +182,15 @@ controllers:
       successfulJobsHistory: 3
       failedJobsHistory: 7
       backoffLimit: 1
+    # Same pod security pin as the main controller (spec §6.10): uid 1000,
+    # non-root — the backup job writes tars + the sqlite copy to the SAME
+    # PVC the fsGroup chowns to 1000.
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
     containers:
       backup:
         image:
@@ -282,11 +309,10 @@ persistence:
       - path: /cache
 
 serviceMonitor:
-  # -- M1 observability (spec §4.4). In M1 the readiness probe IS the
-  # scrape target: GET /readyz answers 200 with a single
-  # Prometheus-exposition gauge line when ready, 503 when not — a degraded
-  # harness or an unreachable storage line collapses into a failed scrape
-  # (up == 0), which the PrometheusRule alerts on.
+  # -- M1 observability (spec §4.4) + W2 Task 8 (spec §6.9): the scrape
+  # target is the full `GET /metrics` exposition (the readiness probe's
+  # single gauge line was the M1 stand-in). The PrometheusRule's
+  # sigrun_* alerts key on the exposition families.
   main:
     enabled: false
     # -- Extra labels on the ServiceMonitor (e.g. release:
@@ -296,10 +322,10 @@ serviceMonitor:
     # -- Selector for the Service(s) to scrape. Defaults to the chart's own
     # main Service.
     selector: {}
-    # -- The /readyz scrape endpoint.
+    # -- The /metrics scrape endpoint.
     endpoints:
       - port: http
-        path: /readyz
+        path: /metrics
         interval: 30s
         scrapeTimeout: 10s
 

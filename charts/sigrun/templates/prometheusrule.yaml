@@ -6,6 +6,9 @@ NO PrometheusRule class, so the alert rules stay a small hand template,
 gated on monitoring.prometheusRule.enabled (independent of the
 ServiceMonitor toggle — a consumer may alert on a scrape target the chart
 did not create, or vice versa).
+
+W2 Task 8 (spec §6.9) adds the four exposition alerts; they key on the
+GET /metrics families the ServiceMonitor scrapes.
 */}}
 {{- if .Values.monitoring.prometheusRule.enabled }}
 apiVersion: monitoring.coreos.com/v1
@@ -22,20 +25,28 @@ spec:
     - name: sigrun
       rules:
         - alert: SigrunNotReady
-          # Degraded T9e health ⇒ /readyz 503 ⇒ up == 0, so
-          # "meta-degraded" folds into SigrunNotReady: process down OR
-          # harness not ready (storage unreachable, memory/provider health
-          # degraded).
-          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0
+          # W2 final-review fix: the scrape moved to /metrics (Task 8), which
+          # answers 200 ALWAYS — even a harness-closed process serves the
+          # exposition with sigrun_up 0 (Review Focus 5) — and /readyz's 503
+          # is no longer scraped at all. So `up == 0` alone covers only
+          # scrape death (process down / port gone); the app's own down
+          # signal — sigrun_up 0, i.e. harness inspection failing (a closed
+          # or storage-unreachable session) — is OR-ed in. Residual, out of
+          # scope here: a STORAGE-read failure with a healthy session line
+          # (the /readyz 503 class) does not page until a follow-up gauge
+          # exposes it; /readyz remains the k8s readiness probe's channel.
+          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0 or sigrun_up == 0
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: sigrun scrape failing (process down or harness not ready)
+            summary: sigrun is down (scrape failing or the harness is not answering)
             description: >-
-              The sigrun /readyz scrape has failed for 10m — the process is
-              down, or readiness is failing (storage read, memory/provider
-              health). Check the pod and GET /v1/meta for the health block.
+              Either the /metrics scrape has failed for 10m (process down,
+              port gone) or the scrape is healthy but sigrun_up == 0 — the
+              harness fails its own inspection (closed session, storage
+              unreachable from the app). Check the pod, then GET /metrics
+              and GET /v1/meta for the health block.
         - alert: SigrunNoScrape
           # The series is absent for 30m — the ServiceMonitor/Prometheus
           # wiring itself broke (SigrunNotReady cannot fire when nothing
@@ -50,4 +61,68 @@ spec:
               No up{job="sigrun"} series for 30m — the ServiceMonitor or
               Prometheus discovery wiring broke (SigrunNotReady cannot
               fire when nothing scrapes the target).
+        - alert: SigrunSubmissionWedged
+          # W2 Task 8 (spec §6.9): the oldest in-flight submission has been
+          # admitted for > 30m — a run that is live but making no progress
+          # (the event bus's admission clock; the gauge is 0 when no run
+          # is live, so absence never fires this).
+          expr: sigrun_inflight_submission_oldest_seconds > 1800
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: a sigrun submission has been in flight for over 30 minutes
+            description: >-
+              sigrun_inflight_submission_oldest_seconds has exceeded 1800s
+              for 5m — a live run is wedged (model hang, stuck tool). Check
+              GET /v1/meta and the conversation's stream; abort the run if
+              it is genuinely stuck.
+        - alert: SigrunProviderNotReady
+          # Any provider sitting at a non-ready auth status for 15m —
+          # credential failure or a persistently failing refresh, not a
+          # blip (the readiness vocabulary: not_ready | invalid |
+          # not_configured | degraded).
+          expr: sigrun_provider_ready{status!="ready"} == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: a sigrun provider is not ready
+            description: >-
+              sigrun_provider_ready reports a non-ready status for 15m —
+              check GET /v1/auth/check for the provider and its detail,
+              then the credential in the sigrun-env Secret (or the plugin's
+              auth.json entry).
+        - alert: SigrunJobFailed
+          # W4 defines sigrun_job_runs_total; the rule ships here (W2
+          # Task 8) and deliberately matches nothing until W4 lands —
+          # an inert alert is the plan's shape, not a bug.
+          expr: increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: a sigrun job run failed
+            description: >-
+              sigrun_job_runs_total{outcome="failed"} increased within the
+              last hour — a scheduled job failed. Check the job's
+              conversation (the failure reason is in its transcript) and
+              the scheduler's logs.
+{{- if .Values.controllers.backup.enabled }}
+        - alert: SigrunBackupStale
+          # Gated on backup ENABLED in values: an unbacked deploy (backup
+          # deliberately off) omits the marker family entirely — alerting
+          # on an absent series there would page forever. 36h tolerates a
+          # nightly CronJob missing one run (the §6.8 honesty window's
+          # default).
+          expr: time() - sigrun_backup_last_success_timestamp_seconds > 36*3600
+          labels:
+            severity: warning
+          annotations:
+            summary: sigrun backup is stale
+            description: >-
+              The last successful backup marker is older than 36h while
+              backup is enabled — the CronJob is failing or was never
+              scheduled. Check the backup jobs and the target; the badge
+              in GET /v1/meta reports the same state.
+{{- end }}
 {{- end }}

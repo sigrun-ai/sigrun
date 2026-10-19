@@ -22,7 +22,7 @@ import { renderAsync, StubEventSource, textContent } from "../test-utils";
 import { AuthGate } from "./AuthGate";
 
 /** One recorded fetch (input + init), for body/path asserts. */
-type Call = { input: string; method?: string; body?: string };
+type Call = { input: string; method?: string; body?: string | Uint8Array };
 
 const META: MetaResponse = {
 	harnessVersion: "1.0.2",
@@ -30,6 +30,7 @@ const META: MetaResponse = {
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 	auth: { methods: ["token"], claimed: true },
+	backup: {},
 	capabilities: { backup: false, channels: ["webui"] },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [] },
@@ -213,7 +214,7 @@ describe("AuthGate", () => {
 			call.input.endsWith("/v1/onboarding/claim"),
 		);
 		expect(claim).toBeDefined();
-		expect(JSON.parse(claim!.body!)).toEqual({
+		expect(JSON.parse(String(claim!.body))).toEqual({
 			code: "ABCD-EFGH",
 			user: "alice",
 			name: "Alice Doe",
@@ -256,7 +257,7 @@ describe("AuthGate", () => {
 		const claim = harness.calls.find((call) =>
 			call.input.endsWith("/v1/onboarding/claim"),
 		);
-		expect(JSON.parse(claim!.body!)).toEqual({});
+		expect(JSON.parse(String(claim!.body))).toEqual({});
 		expect(
 			renderer.root.findAllByProps({ className: "session-list" }),
 		).toHaveLength(1);
@@ -283,7 +284,7 @@ describe("AuthGate", () => {
 		const login = harness.calls.find((call) =>
 			call.input.endsWith("/v1/auth/login"),
 		);
-		expect(JSON.parse(login!.body!)).toEqual({ token: "sig-secret-token" });
+		expect(JSON.parse(String(login!.body))).toEqual({ token: "sig-secret-token" });
 		// The re-fetch: whoami ran TWICE (the 401 probe + the post-login
 		// re-probe), and the second one's identity feeds the shell.
 		expect(

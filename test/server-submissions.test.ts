@@ -36,12 +36,6 @@ import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
-import { pathToFileURL } from "node:url";
-
-/** The fixture memory extension (the memory-surface stand-in — publish prep 2.2). */
-const MEMORY_FIXTURE_SPECIFIER = pathToFileURL(
-	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
-).href;
 
 /** A 1x1 red PNG (base64), for the image round-trip. */
 const PNG_BASE64 =
@@ -522,65 +516,6 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			const response = await pending;
 			expect(response.statusCode).toBe(202);
 			expect(response.json().status).toBe("done");
-		},
-	);
-
-	test(
-		"a server-driven submit binds the memory recall source (memory_recall answers)",
-		{ timeout: 60_000 },
-		async () => {
-			// Memory-seam port (Task 7): the real memory extension retired its
-			// submit pass-through (capture + the recall-source binding ride the
-			// host's runSettled event). This test pins the LEGACY loader contract:
-			// the fixture keeps its factory-result submit, boot still exposes it
-			// as OpenedHarness.memorySubmit (identity-matched to the section owner
-			// like memoryHealth), and the server still routes submissions through
-			// it when present — a pre-seam extension's recall binding must keep
-			// working.
-			const { app, opened, faux } = await bootExtendedServer({
-				extensionSpecifiers: [MEMORY_FIXTURE_SPECIFIER],
-			});
-			// Boot exposed the memory wiring's legacy submit (identity-matched).
-			expect(opened.memorySubmit).toBeDefined();
-			faux.setResponses([
-				fauxAssistantMessage("an unremarkable answer"),
-			]);
-			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
-				agent: { model: opened.defaultModel },
-			});
-			const response = await submit(app, root.id, "hello");
-			expect(response.statusCode).toBe(202);
-			expect(response.json().status).toBe("done");
-			// Drive the registered memory_recall tool directly: its execute
-			// ignores the api/context params (degenerate.js recallTool: `_api`,
-			// `_context`), so a direct call exercises exactly the binding gate
-			// plus the transcript scan — the user entry the server submit wrote.
-			const tool = opened.registry
-				.snapshot()
-				.tools()
-				.find((entry) => entry.tool.name === "memory_recall")?.tool;
-			expect(tool).toBeDefined();
-			const result = await tool!.execute(
-				{ query: "hello" },
-				undefined as never,
-				BACKGROUND_CONTEXT,
-			);
-			expect(result.isError).toBeUndefined();
-			// The fixture speaks the LEGACY (pre-seam) tool-result shape — its
-			// execute returns `content` — while seam-era extensions return
-			// pi-durable 1.2's `output`; read whichever channel the direct call
-			// actually returned (the assertion is the transcript read, not the
-			// result envelope).
-			const raw = result as { output?: unknown; content?: unknown };
-			const blocks = (raw.output ?? raw.content ?? []) as {
-				type: string;
-				text?: string;
-			}[];
-			const text = blocks
-				.map((block) => (block.type === "text" ? block.text : ""))
-				.join("");
-			expect(text).toContain("hello");
-			expect(text).not.toContain("No conversation bound");
 		},
 	);
 

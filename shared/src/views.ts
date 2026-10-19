@@ -55,7 +55,7 @@ import type {
 	AmbientRecord,
 	AmbientRow,
 } from "./ambient.js";
-import type { SettingsFile } from "./settings.js";
+import type { EffectiveServerSetting, SettingsFile } from "./settings.js";
 
 // ─── Upstream view shapes (structural) ───────────────────────────────────
 // The pi-durable conversation view family, as the channel reads it. The
@@ -386,6 +386,18 @@ export type {
 export interface SettingsResponse extends SettingsFile {
 	/** The live registry snapshot's composed tool names, deduplicated. */
 	readonly toolRoster: readonly string[];
+	/**
+	 * The resolved server section per flattened dotted key
+	 * (`"server.port"`, `"server.compaction.reserveTokens"`, …), each
+	 * with its resolved value and which tier supplied it — `"env"`,
+	 * `"file"`, or `"default"` (spec §6.6: the generalization of the
+	 * build spec's webui-key special case; since the bootstrap persists
+	 * only env-set values, this block is where the full resolved section
+	 * is visible). Computed per request, never persisted. NOT a settable
+	 * key: the store's validation rejects it on PATCH (400
+	 * `invalid_field`), and the wire patch type Omits it.
+	 */
+	readonly effective: Readonly<Record<string, EffectiveServerSetting>>;
 }
 
 /** Spec §3 health status: ok unless the surface knows it is degraded. */
@@ -418,14 +430,19 @@ export interface MetaResponse {
 	}[];
 	/**
 	 * §5 health: pure aggregation over boot-retained §3 producers (spec
-	 * §3) — synchronous status reads, never network or storage.
+	 * §3) — synchronous status reads, never network. The one deliberate
+	 * exception is `backup` (§6.8): its §6.8 derivation reads the small
+	 * `backup/last-success.json` marker from the state root per request
+	 * (the CronJob is a separate process; the filesystem is the only
+	 * fresh-enough view).
 	 */
 	readonly health: {
 		/**
-		 * Derived from `config.backup` presence. T11 deliberately emits only
-		 * "configured"/"unconfigured" (no runtime backup health signal exists
-		 * in v1 — the CronJob is an external process); the "degraded" literal
-		 * stays in the spec §5 union for a future runtime signal.
+		 * §6.8 backup honesty: presence-derived when no target is
+		 * configured ("unconfigured"); with a target, "configured" only
+		 * while the last-success marker is present and younger than
+		 * `server.backup.staleAfterHours` (default 36 h) — absent, corrupt,
+		 * or stale all read "degraded".
 		 */
 		readonly backup: "configured" | "unconfigured" | "degraded";
 		/** The memory extension's §3 producer, else "ok" (no-op default). */
@@ -433,6 +450,7 @@ export interface MetaResponse {
 		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
 		readonly providers: HealthStatus;
 	};
+	/**
 	/**
 	 * The auth block (core hardening W1 Task 6, spec §5.7): the effective
 	 * authenticator list (`ctx.methods` — loopback-derived or explicit) and
@@ -444,6 +462,13 @@ export interface MetaResponse {
 		readonly methods: readonly ("token" | "proxy")[];
 		readonly claimed: boolean;
 	};
+	/**
+	 * §6.8: the last successful backup's timestamp (the marker's `at`),
+	 * surfaced whenever a readable marker exists against a configured
+	 * target — including a STALE one (the degraded badge's "when was the
+	 * last success"). Absent otherwise.
+	 */
+	readonly backup: { readonly lastSuccessAt?: string };
 	readonly capabilities: {
 		readonly backup: boolean;
 		readonly channels: readonly string[];

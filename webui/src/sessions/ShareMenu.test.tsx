@@ -12,7 +12,7 @@ import { createClient, type ConversationSummary, type FetchLike } from "../api";
 import { renderAsync, textContent } from "../test-utils";
 import { ShareMenu } from "./ShareMenu";
 
-type Call = { input: string; method?: string; body?: string };
+type Call = { input: string; method?: string; body?: string | Uint8Array };
 
 function makeHarness() {
 	const calls: Call[] = [];
@@ -50,7 +50,7 @@ function patchBodies(calls: readonly Call[]): unknown[] {
 			(call) =>
 				call.input === "/v1/conversations/5/meta" && call.method === "PATCH",
 		)
-		.map((call) => JSON.parse(call.body ?? "{}") as Record<string, unknown>);
+		.map((call) => JSON.parse(String(call.body ?? "{}")) as Record<string, unknown>);
 }
 
 /** Click the one button whose label text is exactly `label`. */
