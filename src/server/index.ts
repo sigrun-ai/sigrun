@@ -1,5 +1,5 @@
 /**
- * The §5 HTTP server foundation (spec §5, Task 9a).
+ * The §5 HTTP server foundation (spec §5).
  *
  * `createServer` builds a Fastify app over one `OpenedHarness` — a thin
  * layer: conversation endpoints serialize pi-durable's native
@@ -7,29 +7,26 @@
  * The factory registers routes and returns; it never listens (the deploy
  * entry listens; tests use `app.inject()`).
  *
- * Endpoints in THIS slice: `POST /v1/conversations`, `GET
- * /v1/conversations`, `GET /v1/conversations/:id`, `GET /v1/meta` (T9a);
- * `POST .../submissions` (content-part resolution), `POST .../uploads`, `GET
- * .../files`, `GET .../files/content`, `GET /v1/models` (T9b); `POST
- * .../configure`, `POST .../abort` (T9c-i); `GET .../stream` — the SSE view
- * stream (T9d); `GET /v1/meta` real health aggregation (T9e); `GET/PATCH
- * .../meta` — the session-meta sidebar resource (T10); `GET /healthz` +
- * `GET /readyz` — the deploy probes, liveness vs readiness (T13);
- * `GET /v1/auth/check` — the secret-free per-provider auth readiness
- * report (T6); `GET /v1/commands` — the slash-command catalog (Task 7,
- * pi parity: thin metadata over the endpoints Tasks 4–6 built).
+ * Route modules registered here, each a pure `(app, ctx)` registrar over
+ * the shared `ServerContext`: the deploy probes (`routes/probes.ts`),
+ * the boot-fact routes (`routes/meta.ts`), the conversation lifecycle +
+ * session-meta routes incl. the JSONL import parser
+ * (`routes/conversations.ts`), the SSE view stream (`routes/stream.ts`),
+ * and the submission lifecycle routes (`routes/submissions.ts`).
  *
- * NOTE (T9d): the SSE endpoint is exercised over a REAL socket — it hijacks
- * the reply and writes raw frames, which `app.inject()` cannot observe
- * (light-my-request settles only on `end()`). Deploy listens; the SSE tests
- * listen on an ephemeral loopback port.
+ * Routes still registered inline below: `GET /v1/auth/check` (the
+ * secret-free per-provider auth readiness report), the interaction +
+ * ambient seam routes (docs/approval-ux-seams.md), the workspace file
+ * routes (`POST .../uploads`, `GET .../files`, `GET .../files/content`),
+ * `GET /v1/models`, and `GET`/`PATCH /v1/settings`.
  *
- * **Conversation listing (durable):** `GET /v1/conversations` scans
- * storage — `scanConversations` over the handle `openHarness` exposes —
- * so the listing is the DURABLE set: conversations other processes or
- * earlier servers created (a restart forgets nothing), and conversations
- * tasks/tools created inside pi-durable (the cron case) all list. The
- * harness itself has no enumeration; the storage scan is authoritative.
+ * **Conversation listing (durable):** `GET /v1/conversations` (in
+ * `routes/conversations.ts`) scans storage — `scanConversations` over the
+ * handle `openHarness` exposes — so the listing is the DURABLE set:
+ * conversations other processes or earlier servers created (a restart
+ * forgets nothing), and conversations tasks/tools created inside
+ * pi-durable (the cron case) all list. The harness itself has no
+ * enumeration; the storage scan is authoritative.
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
@@ -37,7 +34,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	AmbientDoc,
 	AmbientOwnersDoc,
-	validateAmbient,
 	type AmbientRecord,
 } from "../harness/ambient.js";
 import {
@@ -45,83 +41,47 @@ import {
 	InteractionsIndexDoc,
 	applyAnswer,
 	indexSettled,
-	validateInteraction,
 	type InteractionAnswer,
 	type InteractionRecord,
 } from "../harness/interactions.js";
-import type {
-	Cursor,
-	EntryDraft,
-	EntryId,
-	InputSubmissionDraft,
-	ModelRef,
-} from "@earendil-works/pi-durable";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
-import { touchActivity } from "../harness/activity.js";
-import { SettingsStore, SettingsValidationError } from "../harness/settings.js";
-import { OPENAI_API_KEY_ENV, UnservedModelError } from "../harness/providers/index.js";
-import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
+import { SettingsValidationError } from "../harness/settings.js";
+import { OPENAI_API_KEY_ENV } from "../harness/providers/index.js";
 import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
 import type { ServerContext } from "./context.js";
 import {
-	THINKING_LEVELS,
-	WHEN_BUSY_MODES,
-	type WhenBusyMode,
 	storeAgentChange,
 	ID_PARAMS_SCHEMA,
 	settingsResponse,
 	conversationId,
-	readView,
-	stampSessionOwner,
 	conversationEnv,
 	FILE_CONTENT_MAX_BYTES,
-	SCAN_PAGE_SIZE,
 	decodeBase64Strict,
 } from "./helpers.js";
+import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerProbeRoutes } from "./routes/probes.js";
+import { registerStreamRoutes } from "./routes/stream.js";
+import { registerSubmissionRoutes } from "./routes/submissions.js";
 import {
 	resolveWebuiBundle,
 	serveWebuiBundle,
 	type ContributedWebuiBundle,
 } from "./static.js";
+import { isConfinedPath } from "./content-parts.js";
 import {
-	isConfinedPath,
-	parseSubmissionInput,
-	resolveParts,
-} from "./content-parts.js";
-import {
-	applySessionMetaPatch,
-	DEFAULT_SESSION_META,
-	SessionMetaDoc,
-	validateSessionMetaPatch,
-	type SessionMeta,
-} from "./session-meta.js";
-import {
-	serializeConversationView,
 	type AmbientList,
 	type AuthCheckProvider,
 	type AuthCheckResponse,
 	type AuthStatus,
 	type InteractionAnswered,
 	type InteractionList,
-	type AbortResponse,
-	type ConversationCreateResponse,
-	type ConversationImportResponse,
-	type ConversationList,
-	type ConversationSummary,
-	type ConversationViewWire,
-	type ConfigureResponse,
-	type CompactResponse,
 	type FileContentResponse,
 	type FileListResponse,
-	JSONL_CONTENT_TYPE,
 	type ModelEntry,
 	type ModelsResponse,
 	type SettingsResponse,
-	type SubmissionResponse,
 	type UploadResponse,
 } from "./views.js";
 
@@ -193,41 +153,9 @@ export async function createServer(
 	const ctx: ServerContext = { opened, config, rootId, webuiBundle };
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
-
-	app.post(
-		"/v1/conversations",
-		async (request, reply): Promise<ConversationCreateResponse> => {
-			// T9a create takes no fields (model/thinking changes arrive with
-			// the configure endpoint, T9c): an absent body is valid, an
-			// object with any field is a fail-loud 400.
-			const body: unknown = request.body;
-			if (
-				body !== undefined &&
-				(typeof body !== "object" ||
-					Object.keys(body as Record<string, unknown>).length > 0)
-			) {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			const conversation = await opened.harness.createConversation(
-				{
-					ownership: { kind: "ownerless" },
-					// A conversation with no agent model cannot generate
-					// (no_model): server-created conversations start on the
-					// boot default model, like the root conversation, and
-					// carry the store's defaultTools/perModelThinking (Task
-					// 8b) — re-read per create, so PATCHes reach new
-					// conversations without a restart.
-					agent: storeAgentChange(opened, opened.defaultModel),
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// The identity seam: stamp the caller as owner when the request
-			// carried one (naive mode — no header, no write).
-			await stampSessionOwner(conversation, request.sigrunUser);
-			const view = await readView(conversation);
-			return await reply.code(201).send({ id: conversation.id, view });
-		},
-	);
+	registerConversationRoutes(app, ctx);
+	registerStreamRoutes(app, ctx);
+	registerSubmissionRoutes(app, ctx);
 
 	// Auth readiness (T6, spec §6.4: "The API never accepts or returns
 	// credentials"): a SECRET-FREE report. The response carries ONLY a
@@ -317,453 +245,6 @@ export async function createServer(
 		}
 		return { providers };
 	});
-
-	app.get("/v1/conversations", async (): Promise<ConversationList> => {
-		// Durable enumeration (Task 3): the storage scan is authoritative —
-		// conversations this process never created (before a restart, in
-		// another process, or by tasks/tools inside pi-durable) all list.
-		// `scanConversations` pages ascending by id (creation order); this
-		// route is unpaginated v1, so one page at a generous limit covers a
-		// deployment-scale set, and the loop below walks the continuation
-		// cursor to completion so nothing truncates silently.
-		const conversations: ConversationSummary[] = [];
-		let cursor: Cursor | undefined = undefined;
-		do {
-			const page = await opened.storage.scanConversations(
-				{ order: "ascending" },
-			SCAN_PAGE_SIZE,
-			cursor,
-			BACKGROUND_CONTEXT,
-			);
-			for (const record of page.items) {
-				const conversation = await opened.harness.conversation(
-					record.id,
-					BACKGROUND_CONTEXT,
-				);
-				// Unresolvable ids (dropped elsewhere) are skipped, not listed.
-				if (conversation === undefined) continue;
-				const view = await readView(conversation);
-				// The session-meta owner rides the summary when stamped (Task
-				// 2's doc; defaults serve nothing — no owner key when unset),
-				// and so do the sidebar fields (UI refresh A1): the display
-				// name (user name over auto name), the activity stamp, and the
-				// archive/pin flags — one request, no per-row meta fetch.
-				const meta = await opened.harness.snapshot(
-					SessionMetaDoc,
-					conversation.id,
-					BACKGROUND_CONTEXT,
-				);
-				const name = meta?.name ?? meta?.autoName;
-				conversations.push({
-					id: conversation.id,
-					root: conversation.id === rootId,
-					entryCount: view.entries.length,
-					...(meta?.owner === undefined ? {} : { owner: meta.owner }),
-					...(name === undefined ? {} : { name }),
-					...(meta?.lastActivityAt === undefined
-						? {}
-						: { lastActivityAt: meta.lastActivityAt }),
-					// Fork lineage from the durable record (the scan page item);
-					// a root or plainly created conversation has none.
-					...(record.parent === undefined
-						? {}
-						: {
-								parent: {
-									id: record.parent.conversationId,
-									at: record.parent.at,
-								},
-							}),
-					archived: meta?.archived ?? false,
-					pinned: meta?.pinned ?? false,
-				});
-			}
-			cursor = page.next;
-		} while (cursor !== undefined);
-		return { conversations };
-	});
-
-	app.get(
-		"/v1/conversations/:id",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply) => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			return readView(conversation);
-		},
-	);
-
-	// SSE view stream (T9d, spec §5 "Views + watch frames over SSE"): one
-	// Server-Sent Events stream per conversation, hand-rolled over `reply.raw`
-	// (no @fastify/sse dependency). Event shape: `event: snapshot` with the
-	// wire view on connect, then `event: view` per watch revision — every
-	// frame is a FULL immutable ConversationView, so a reconnect's fresh
-	// snapshot subsumes any missed frame (the spec's reconnect contract
-	// collapses to "fresh snapshot on (re)connect"; see the Appendix C
-	// named-verification record). `Last-Event-ID` is therefore accepted and
-	// deliberately ignored. Heartbeat: a `: ping` comment every 15s (proxy/
-	// LB idle-timeout survival). Lifecycle: exactly one owner (`finish` below)
-	// stops the watch and clears the interval on client disconnect or watch
-	// termination.
-	app.get(
-		"/v1/conversations/:id/stream",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply) => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				// Before the SSE upgrade: plain JSON 404, the shared pattern.
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			// Acquire the watch BEFORE hijacking: an acquisition failure then
-			// lands on Fastify's fail-loud 500 path — a hijacked stream has no
-			// error event. `value` is the acquisition revision (the snapshot
-			// source); frames published between here and start() are held by the
-			// watch's bounded pending delivery, so nothing is lost.
-			const watch = await conversation.watch(BACKGROUND_CONTEXT);
-			reply.hijack();
-			const raw = reply.raw;
-			raw.writeHead(200, {
-				"content-type": "text/event-stream",
-				"cache-control": "no-cache",
-				"connection": "keep-alive",
-				"x-accel-buffering": "no",
-			});
-			raw.flushHeaders();
-			// Socket-level write errors after teardown have no consumer (the
-			// close path owns teardown); swallow them so a mid-write disconnect
-			// cannot crash the process with an unhandled 'error' event.
-			raw.on("error", () => {});
-			let nextId = 1;
-			const send = (event: string, view: ConversationViewWire): void => {
-				// Single data line: JSON.stringify escapes newlines in strings.
-				raw.write(
-					`id: ${nextId++}\nevent: ${event}\ndata: ${JSON.stringify(view)}\n\n`,
-				);
-			};
-			let finished = false;
-			const heartbeat = setInterval(() => {
-				raw.write(": ping\n\n");
-			}, 15_000);
-			// The single cleanup owner: client disconnect (response close =
-			// socket termination — NOT `request.raw.on("close")`, which on
-			// Node 26 fires at request-message completion, i.e. immediately for
-			// a bodyless GET) or watch termination (`watch.closed`). The flag
-			// makes it exactly-once even though both paths can race.
-			const finish = (fromWatchEnd: boolean): void => {
-				if (finished) return;
-				finished = true;
-				clearInterval(heartbeat);
-				if (!fromWatchEnd) {
-					// stop() is idempotent upstream; fire-and-forget because the
-					// stream is ending regardless and a stop() rejection after a
-					// dead socket has no consumer to fail loud to.
-					void watch.stop().catch(() => {});
-				}
-				raw.end();
-			};
-			raw.on("close", () => finish(false));
-			// Upstream resolves `closed` with a WatchEnd for every terminal
-			// state (failures included); a rejection would be an upstream
-			// contract violation — catch it so one stream's anomaly ends that
-			// stream instead of taking the process down as an unhandled
-			// rejection.
-			void watch.closed.then(
-				() => finish(true),
-				() => finish(true),
-			);
-			// The client may have disconnected while the watch was being
-			// acquired (before the close listener existed): `destroyed` covers
-			// that window — stop the just-acquired watch instead of leaking it.
-			if (raw.destroyed) {
-				finish(false);
-				return;
-			}
-			// Snapshot FIRST (from the acquisition revision), then install the
-			// listener — pending frames flow after the snapshot because start
-			// never invokes the listener inline.
-			send("snapshot", serializeConversationView(watch.value));
-			watch.start(async (value) => {
-				if (finished) return; // the stream is over; drop the frame
-				send("view", serializeConversationView(value));
-			});
-		},
-	);
-
-	// Submissions: content-part resolution + upstream idempotence (T9b);
-	// `whenBusy` pass-through + memory-wiring submit (T26a).
-	// Conversation resolution is storage-backed (`harness.conversation`),
-	// so any durable id works — the listing's scan sees it too (Task 3).
-	app.post(
-		"/v1/conversations/:id/submissions",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<SubmissionResponse> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			const body = request.body as Record<string, unknown> | undefined;
-			if (
-				body === undefined ||
-				typeof body !== "object" ||
-				Array.isArray(body)
-			) {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			const parsed = parseSubmissionInput(body.input);
-			if (!parsed.ok) {
-				return await reply.code(400).send({ error: "invalid_input" });
-			}
-			// Spec §2/§3 binding contract (Review Focus #2): a conversation
-			// pinned to an unserved model fails explicitly AT SUBMIT — 4xx with
-			// the available ids — never a silent fallback, and never a settled
-			// no_model run surfaced only later. Resolution goes through the
-			// refresh-on-miss wrapper (provider plugins Task 4): ONE bounded
-			// refresh of the named provider + re-resolve on the miss, so a
-			// model gained upstream since the last interval tick is
-			// immediately usable; still absent → the UnservedModelError
-			// carrying the catalog maps to 400. The auto-namer's resolution
-			// deliberately stays on bare `requireServedModel` (background
-			// lane — no refresh there).
-			const agent = await conversation.agent(BACKGROUND_CONTEXT);
-			try {
-				if (agent.model !== undefined) {
-					await resolveServedModelRefreshing(opened.models, agent.model);
-				}
-			} catch (error) {
-				if (error instanceof UnservedModelError) {
-					return await reply.code(400).send({
-						error: "unserved_model",
-						model: `${error.ref.provider}/${error.ref.modelId}`,
-						available: error.available,
-					});
-				}
-				throw error;
-			}
-			const requestId =
-				body.requestId === undefined ? undefined : String(body.requestId);
-			// T26a: `whenBusy` is the steer affordance (spec §7 item 3) — validate
-			// it against pi-durable's union and pass it through; unknown values
-			// are a client error, never a silent default.
-			const whenBusy = body.whenBusy;
-			if (
-				whenBusy !== undefined &&
-				(typeof whenBusy !== "string" || !WHEN_BUSY_MODES.includes(whenBusy))
-			) {
-				return await reply
-					.code(400)
-					.send({ error: "invalid_field", field: "whenBusy" });
-			}
-			// Resolve path-parts to inline content NOW, against the live
-			// workspace (Review Focus #1: missing paths become explicit error
-			// parts; other workspace failures throw → Fastify 500, fail-loud).
-			const env = await conversationEnv(opened, conversation);
-			const content = await resolveParts(
-				parsed.parts,
-				env,
-				BACKGROUND_CONTEXT,
-			);
-			const draft: InputSubmissionDraft = {
-				type: "input",
-				content,
-				...(requestId === undefined ? {} : { requestId }),
-				...(whenBusy === undefined
-					? {}
-					: { whenBusy: whenBusy as WhenBusyMode }),
-			};
-			// T26a Fix B: submit through the memory extension's wiring when one
-			// is loaded — its submit binds the conversation as the memory_recall
-			// source at the submit boundary (degenerate.js). No memory wiring →
-			// submit directly (the no-op default carries no submit).
-			const submission =
-				opened.memorySubmit === undefined
-					? await conversation.submit(draft, BACKGROUND_CONTEXT)
-					: await opened.memorySubmit(conversation, draft, BACKGROUND_CONTEXT);
-			// Admission stamps activity (UI refresh A1): the sidebar's activity
-			// sort must move the moment a prompt lands — before the run settles.
-			await touchActivity(
-				opened.harness,
-				conversation.id,
-				opened.now,
-				BACKGROUND_CONTEXT,
-			);
-			// v1 waits for settlement server-side (the watch stream is T9d);
-			// `wait()` resolves with the settled record either way.
-			const settled = await submission.wait(BACKGROUND_CONTEXT);
-			return await reply.code(202).send(settled);
-		},
-	);
-
-	// Configure: change the conversation's model and/or thinking level (T9c-i).
-	// v1 accepts EXACTLY `model` + `thinking` — any other key is a fail-loud
-	// 400 (the agent's other knobs are not wire surface yet).
-	app.post(
-		"/v1/conversations/:id/configure",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<ConfigureResponse> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			const body = request.body as Record<string, unknown> | undefined;
-			if (
-				body === undefined ||
-				body === null ||
-				typeof body !== "object" ||
-				Array.isArray(body)
-			) {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			const unknownKey = Object.keys(body).find(
-				(key) => key !== "model" && key !== "thinking",
-			);
-			if (unknownKey !== undefined) {
-				return await reply
-					.code(400)
-					.send({ error: "invalid_field", field: unknownKey });
-			}
-			const model = body.model;
-			const thinking = body.thinking;
-			if (model === undefined && thinking === undefined) {
-				// A configure that changes nothing is a client error, not a no-op.
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			// `model` is `"provider/modelId"`, split on the FIRST `/` (a modelId
-			// may itself contain slashes); both parts must be non-empty.
-			let parsedModel: ModelRef | undefined;
-			if (model !== undefined) {
-				if (typeof model !== "string" || !model.includes("/")) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "model" });
-				}
-				const slash = model.indexOf("/");
-				const provider = model.slice(0, slash);
-				const modelId = model.slice(slash + 1);
-				if (provider.length === 0 || modelId.length === 0) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "model" });
-				}
-				parsedModel = { provider, modelId };
-			}
-			if (
-				thinking !== undefined &&
-				(typeof thinking !== "string" ||
-					!THINKING_LEVELS.includes(thinking))
-			) {
-				return await reply
-					.code(400)
-					.send({ error: "invalid_field", field: "thinking" });
-			}
-			// perModelThinking (Task 8b): a model change re-applies the store's
-			// override for the NEW model unless the request pins `thinking` —
-			// the map is the deployment default, the explicit field the caller's
-			// win. Read from the store here, so a PATCH reaches later configures.
-			const storeThinking =
-				parsedModel === undefined
-					? undefined
-					: opened.settings.read().perModelThinking?.[
-							`${parsedModel.provider}/${parsedModel.modelId}`
-					];
-			await conversation.configure(
-				{
-					...(parsedModel === undefined ? {} : { model: parsedModel }),
-					...(thinking !== undefined
-						? { thinkingLevel: thinking as ModelThinkingLevel }
-						: storeThinking === undefined
-							? {}
-							: { thinkingLevel: storeThinking as ModelThinkingLevel }),
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// Read the agent back and project the configured surface only —
-			// resolved extensions/tools/sections stay server-side.
-			const agent = await conversation.agent(BACKGROUND_CONTEXT);
-			return {
-				...(agent.model === undefined ? {} : { model: agent.model }),
-				thinkingLevel: agent.thinkingLevel,
-			};
-		},
-	);
-
-	// Abort: withdraw/settle the conversation's active submission (T9c-i).
-	// `inspect()` is the read-only union of placed run inputs and queued inbox
-	// items (all conversations); filtered to this conversation, the LOWEST id
-	// is the active one — anything queued behind a busy conversation was
-	// admitted later and has a higher id.
-	app.post(
-		"/v1/conversations/:id/abort",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<AbortResponse> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			const inspection = await opened.harness.inspect(BACKGROUND_CONTEXT);
-			// Lowest live id = oldest admitted = the placed run input over later-
-			// queued inbox items. reduce() with a first-element seed is ordering-
-			// independent (a future pi-durable inspect() ordering change cannot
-			// silently target the wrong submission); empty → undefined.
-			const active = inspection.submissions
-				.filter((s) => s.conversationId === conversation.id)
-				.reduce<(typeof inspection.submissions)[number] | undefined>(
-					(min, s) => (min === undefined || s.id < min.id ? s : min),
-					undefined,
-				);
-			if (active === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "no_active_submission" });
-			}
-			const result = await opened.harness.abortSubmission(
-				active.id,
-				BACKGROUND_CONTEXT,
-				conversation.id,
-			);
-			// `not_found` means the submission's record vanished between `inspect`
-			// and `abort` — the conversation is no longer busy, so the honest answer
-			// is the same as nothing-active.
-			if (result === "not_found") {
-				return await reply
-					.code(404)
-					.send({ error: "no_active_submission" });
-			}
-			// `already_placed`/`settled` are still 200: abort is idempotent and
-			// the body reports which state the submission was found in.
-			return { result, submissionId: active.id };
-		},
-	);
 
 	// ─── Interaction seam (docs/approval-ux-seams.md) ────────────────────
 	// One generic surface shared by every extension: pending interactions
@@ -950,424 +431,6 @@ export async function createServer(
 				}
 			}
 			return { ambient: surfaces };
-		},
-	);
-
-	// Manual compaction: `POST .../compact` (Task 4, pi parity).
-	// `Conversation.compact(instructions)` (pi-durable's own manual-
-	// compaction admission, dist/harness/types.d.ts) creates a
-	// conversation-owned durable compaction task with `reason: "manual"`:
-	// it compacts even when the conversation is idle — a user's explicit
-	// intent — and places its summary through a write submission (at the
-	// next boundary when busy). Manual compaction ignores the policy's
-	// `enabled` (upstream doc: "manual compaction ignores `enabled`");
-	// `compact()` resumes the scheduler itself. The task id is handed back —
-	// the SSE stream carries the `pi.compaction` entry when the summary
-	// lands.
-	app.post(
-		"/v1/conversations/:id/compact",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<CompactResponse> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			// Absent body is valid (no instructions); an object may carry
-			// ONLY `instructions` — any other key is a fail-loud 400, the
-			// configure convention.
-			const body: unknown = request.body;
-			let instructions: string | undefined;
-			if (body !== undefined && body !== null) {
-				if (typeof body !== "object" || Array.isArray(body)) {
-					return await reply.code(400).send({ error: "invalid_body" });
-				}
-				const record = body as Record<string, unknown>;
-				const unknownKey = Object.keys(record).find(
-					(key) => key !== "instructions",
-				);
-				if (unknownKey !== undefined) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: unknownKey });
-				}
-				if (
-					record.instructions !== undefined &&
-					typeof record.instructions !== "string"
-				) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "instructions" });
-				}
-				instructions =
-					record.instructions === undefined || record.instructions === ""
-						? undefined
-						: record.instructions;
-			}
-			const taskId = await conversation.compact(
-				instructions,
-				BACKGROUND_CONTEXT,
-			);
-			// 202: like submissions, the compaction is admitted, not settled —
-			// the task runs asynchronously and its summary lands as a view
-			// revision (the SSE stream).
-			return await reply.code(202).send({ taskId });
-		},
-	);
-
-	// Fork: a history fork at one visible entry (Task 5a, spec §5 session
-	// management). `at` is the LAST entry id the fork keeps; absent = the
-	// newest entry (resolved through the entries query — never 0, which is
-	// not a real entry id). The fork inherits the parent's agent model and
-	// the same ownerless ownership the create route uses; the response is
-	// the create shape: 201 `{id, view}`.
-	app.post(
-		"/v1/conversations/:id/fork",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (
-			request,
-			reply,
-		): Promise<ConversationCreateResponse> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			// Absent body is valid (`at` defaults to the newest entry); the
-		// object may carry ONLY `at` — the compact/configure convention.
-			const body: unknown = request.body;
-			let at: number | undefined;
-			if (body !== undefined && body !== null) {
-				if (typeof body !== "object" || Array.isArray(body)) {
-					return await reply.code(400).send({ error: "invalid_body" });
-				}
-				const record = body as Record<string, unknown>;
-				const unknownKey = Object.keys(record).find((key) => key !== "at");
-				if (unknownKey !== undefined) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: unknownKey });
-				}
-				if (
-					record.at !== undefined &&
-					typeof record.at !== "number"
-				) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "at" });
-				}
-				at = record.at;
-			}
-			if (at === undefined) {
-				// The entries query is newest-first: the first item of the first
-				// page is the newest entry. An empty page means there is nothing
-				// to fork — the parent conversation has no history at all.
-				const page = await conversation.entries(
-					{},
-					1,
-					undefined,
-					BACKGROUND_CONTEXT,
-				);
-				if (page.items.length === 0) {
-					return await reply.code(400).send({ error: "empty_conversation" });
-				}
-				at = page.items[0].id;
-			} else {
-				// Validate `at` against the parent's own history: `fork()` accepts
-				// any EntryId, but an id this conversation never had is a client
-				// error, not a silent empty fork.
-				const page = await conversation.entries(
-					{ maxEntryId: at as EntryId },
-					1,
-					undefined,
-					BACKGROUND_CONTEXT,
-				);
-				const newest = page.items[0];
-				if (newest === undefined || newest.id !== at) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "at" });
-				}
-			}
-			// The fork inherits the parent's agent model — read the resolved
-			// agent, fall back to the boot default like create.
-			const agent = await conversation.agent(BACKGROUND_CONTEXT);
-			const fork = await conversation.fork(
-				at as EntryId,
-				{
-					ownership: { kind: "ownerless" },
-					agent: { model: agent.model ?? opened.defaultModel },
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// The fork's sidebar identity (UI refresh A2): the copied meta doc
-			// carries the source's name/autoName and the namer's attempt count;
-			// ONE commit drops all three (a fork is a new conversation, not the
-			// source's name — and it starts naming-fresh: inheriting an exhausted
-			// attempt count would make the fork forever unnameable, the plan's
-			// Task D deviation (c)), re-seeds it with "<source display name> (fork)"
-			// as its AUTO name when the source had one, and stamps activity so
-			// the fresh fork sorts where it happened.
-			const sourceMeta = await opened.harness.snapshot(
-				SessionMetaDoc,
-				conversation.id,
-				BACKGROUND_CONTEXT,
-			);
-			const sourceName = sourceMeta?.name ?? sourceMeta?.autoName;
-			await fork.commit(async (tx) => {
-				const draft = await tx.doc(SessionMetaDoc, fork.id);
-				delete draft.name;
-				delete draft.autoName;
-				delete draft.autoNameAttempts;
-				if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
-				draft.lastActivityAt = opened.now().toISOString();
-			}, BACKGROUND_CONTEXT);
-			// The fork's identity is the CALLER's, not the source's: the doc
-			// copied the parent's owner ("current" fork semantics), the stamp
-			// overwrites it; no header → the copy stands.
-			await stampSessionOwner(fork, request.sigrunUser);
-			const view = await readView(fork);
-			return await reply.code(201).send({ id: fork.id, view });
-		},
-	);
-
-	// Export: the conversation's history as JSONL (Task 5b) — pi's portable
-	// format. One entry JSON object per line (the same per-entry
-	// serialization the view serves), OLDEST-first (the reverse of the
-	// newest-first entries query), so an import replays the transcript in
-	// order. All history pages, not just the active view.
-	app.get(
-		"/v1/conversations/:id/export",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply) => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			const lines: string[] = [];
-			let cursor: Cursor | undefined;
-			// Newest-first pages accumulate reversed; emit oldest-first.
-			const collected: unknown[] = [];
-			do {
-				const page = await conversation.entries(
-					{},
-					200,
-					cursor,
-					BACKGROUND_CONTEXT,
-				);
-				collected.push(...page.items);
-				cursor = page.next;
-			} while (cursor !== undefined);
-			for (let i = collected.length - 1; i >= 0; i--) {
-				lines.push(JSON.stringify(collected[i]));
-			}
-			return await reply
-				.header("content-type", JSONL_CONTENT_TYPE)
-				.send(lines.join("\n") + "\n");
-		},
-	);
-
-	// Import: create a new conversation from JSONL (Task 5c). The body is
-	// the RAW JSONL text (the export format, round-tripped); parse line by
-	// line, create the conversation the create-route way, then append each
-	// parsed entry IN ORDER (oldest-first) inside one commit — fresh entry
-	// ids are assigned by storage (`EntryDraft` carries no id).
-	app.post(
-		"/v1/conversations/import",
-		async (
-			request,
-			reply,
-		): Promise<ConversationImportResponse> => {
-			const raw = request.body;
-			if (typeof raw !== "string") {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			const textLines = raw.split("\n");
-			// A trailing newline is the export terminator, not an empty line.
-			const lines =
-				textLines[textLines.length - 1] === ""
-					? textLines.slice(0, -1)
-					: textLines;
-			if (lines.length === 0) {
-					return await reply.code(400).send({ error: "invalid_body" });
-			}
-			const drafts: EntryDraft[] = [];
-			for (const [index, line] of lines.entries()) {
-				if (line.trim() === "") {
-					return await reply.code(400).send({ error: "invalid_body" });
-				}
-				let parsed: unknown;
-				try {
-					parsed = JSON.parse(line);
-				} catch {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_body", line: index + 1 });
-				}
-				if (typeof parsed !== "object" || parsed === null) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_body", line: index + 1 });
-			}
-				const record = parsed as Record<string, unknown>;
-				// An entry line carries `kind` plus the optional model/data/
-				// edits payloads — the EntryDraft shape. Stale identity fields
-				// (id/conversationId/byTaskId) are dropped: storage assigns
-				// fresh ones. A stale `head` EntryId would point at the OLD
-				// numbering — drop it too; the default active-context pointer
-				// starts at the newest appended entry.
-				const draft: EntryDraft = {
-					kind: String(record.kind),
-					...(Array.isArray(record.model)
-						? { model: record.model as EntryDraft["model"] }
-						: {}),
-					...("data" in record
-						? { data: record.data as EntryDraft["data"] }
-						: {}),
-					...(Array.isArray(record.edits)
-						? { edits: record.edits as EntryDraft["edits"] }
-						: {}),
-			};
-				if (draft.kind === "") {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_body", line: index + 1 });
-				}
-				drafts.push(draft);
-			}
-			const conversation = await opened.harness.createConversation(
-				{
-					ownership: { kind: "ownerless" },
-					agent: storeAgentChange(opened, opened.defaultModel),
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// One commit appends every entry in order; the conversation's own
-			// commit binds the transaction to this conversation.
-			await conversation.commit(async (tx) => {
-				for (const draft of drafts) {
-					await tx.appendEntry(conversation.id, draft);
-				}
-			}, BACKGROUND_CONTEXT);
-			// The imported conversation is the IMPORTER's, not the source's
-			// (the JSONL never carries meta — the stamp is the only owner).
-			await stampSessionOwner(conversation, request.sigrunUser);
-			const view = await readView(conversation);
-			return await reply.code(201).send({ id: conversation.id, view });
-		},
-	);
-
-	// JSONL bodies (the import route above): raw text, never JSON-parsed —
-	// the route itself parses line by line so a bad line is a 400
-	// invalid_body, not Fastify's 415 Unsupported Media Type. Content-type-
-	// only: onRequest hooks (deploy auth etc.) keep their hook semantics.
-	for (const type of [JSONL_CONTENT_TYPE, "text/plain"]) {
-		app.addContentTypeParser(
-			type,
-			{ parseAs: "string" },
-			(_request, body, done) => done(null, body),
-		);
-	}
-
-	// Session meta: the conversation-scoped sidebar resource (T10, spec §5).
-	// GET serves the doc — or the defaults when it was never written; a read
-	// NEVER materializes the doc (defaults are free; a write-per-read would
-	// churn a doc revision on every sidebar poll). PATCH merges per the spec
-	// table (null clears, draft sub-merges, tagged replaces wholesale) inside
-	// ONE commit callback — the read-modify-write pattern keeps concurrent
-	// patches from losing each other's fields (the mutation line serializes
-	// commits, mirroring the T9c-ii decide pattern).
-	app.get(
-		"/v1/conversations/:id/meta",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<SessionMeta> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			// Absent doc → DEFAULT_SESSION_META: served, not written.
-			return (
-				(await opened.harness.snapshot(
-					SessionMetaDoc,
-					conversation.id,
-					BACKGROUND_CONTEXT,
-				)) ?? DEFAULT_SESSION_META
-			);
-		},
-	);
-
-	app.patch(
-		"/v1/conversations/:id/meta",
-		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request, reply): Promise<SessionMeta> => {
-			const { id } = request.params as { id: number };
-			const conversation = await opened.harness.conversation(
-				conversationId(id),
-				BACKGROUND_CONTEXT,
-			);
-			if (conversation === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "conversation_not_found" });
-			}
-			// Validate FIRST — a rejected patch never touches the doc.
-			const validated = validateSessionMetaPatch(request.body);
-			if ("error" in validated) {
-				return await reply.code(400).send(validated);
-			}
-			// Read-modify-write inside ONE commit: tx.doc materializes the doc
-			// (initial()) when absent, the patch mutates the tracked draft, and the
-			// return value — a plain projection, since the draft handle dies at
-			// callback return — is exactly what the commit stores.
-			return await conversation.commit(async (tx) => {
-				const draft = await tx.doc(SessionMetaDoc, conversation.id);
-				applySessionMetaPatch(draft, validated);
-				return {
-					pinned: draft.pinned,
-					tagged: [...draft.tagged],
-					archived: draft.archived,
-					source: draft.source,
-					draft: {
-						text: draft.draft.text,
-						attachments: [...draft.draft.attachments],
-					},
-					...(draft.owner === undefined ? {} : { owner: draft.owner }),
-					...(draft.name === undefined ? {} : { name: draft.name }),
-					// The server-owned trio rides the projection when present —
-					// a patch must never lose them from the served doc.
-					...(draft.autoName === undefined
-						? {}
-						: { autoName: draft.autoName }),
-					...(draft.autoNameAttempts === undefined
-						? {}
-						: { autoNameAttempts: draft.autoNameAttempts }),
-					...(draft.lastActivityAt === undefined
-						? {}
-						: { lastActivityAt: draft.lastActivityAt }),
-				};
-			}, BACKGROUND_CONTEXT);
 		},
 	);
 
