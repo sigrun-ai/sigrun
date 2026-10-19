@@ -43,6 +43,7 @@ describe("@sigrun/shared resolves to the built package", () => {
 			"ambient",
 			"settings",
 			"views",
+			"view-delta",
 		]) {
 			const resolved = require.resolve(`@sigrun/shared/${subpath}`);
 			expect(resolved, `@sigrun/shared/${subpath}`).toContain(
@@ -81,6 +82,7 @@ describe("the moved modules no longer live under src/shared", () => {
 			"ambient.ts",
 			"settings.ts",
 			"views.ts",
+			"view-delta.ts",
 		]) {
 			expect(existsSync(join(PACKAGE_ROOT, "src", module)), module).toBe(true);
 		}
@@ -110,6 +112,7 @@ describe("the moved modules no longer live under src/shared", () => {
 			"./ambient",
 			"./settings",
 			"./views",
+			"./view-delta",
 		]) {
 			expect(exportsMap[subpath], `exports[${subpath}]`).toBeDefined();
 		}
