@@ -1,6 +1,10 @@
 import type { CompactionPolicy } from "@earendil-works/pi-durable";
 import { isAbsolute, join } from "node:path";
-import type { SettingsFile, ServerSettings } from "./harness/settings.js";
+import type {
+	EffectiveServerSetting,
+	SettingsFile,
+	ServerSettings,
+} from "./harness/settings.js";
 import { resolveStoreRoots } from "./harness/stores.js";
 import { isLoopbackHost } from "./server/auth/loopback.js";
 
@@ -163,6 +167,16 @@ export interface AuthConfig {
 
 export interface SigrunConfig {
 	/**
+	 * The upload/import body-limit knob (spec §6.2):
+	 * `SIGRUN_MAX_UPLOAD_BYTES` over the file's `server.maxUploadBytes`
+	 * over {@link DEFAULT_MAX_UPLOAD_BYTES} (64 MiB). The raw PUT route
+	 * uses it verbatim as its Fastify `bodyLimit`; the base64 POST and the
+	 * JSONL import use {@link base64BodyLimit} (the 4/3 base64 inflation
+	 * of the capped content plus the JSON wrapper). Over any of them the
+	 * app-level error handler answers `413 {error:"too_large", maxBytes}`.
+	 */
+	maxUploadBytes: number;
+	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
 	 * data, cache, and state directories, resolved once here through the
 	 * one `resolveStoreRoots` chain (`SIGRUN_{DATA,CACHE,STATE}_DIR` over
@@ -179,13 +193,21 @@ export interface SigrunConfig {
 	stateDir: string;
 	storagePath: string;
 	models: SigrunModels;
-	extensionsDir: string;
 	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS` or the file's top-level `extensions`. */
 	extensions: readonly string[];
 	port: number;
 	/** Root of the static local workspace (spec §4.5 `defaultWorkspace`). */
 	workspace: LocalWorkspace;
 	backup?: BackupConfig;
+	/**
+	 * The backup honesty window (§6.8): `server.backup.staleAfterHours`
+	 * from the settings file over {@link DEFAULT_BACKUP_STALE_AFTER_HOURS}
+	 * (36). Consumed by the meta route's `health.backup` derivation — a
+	 * configured target whose last-success marker is absent or older than
+	 * this many hours reports `"degraded"`. Meaningful only when
+	 * {@link backup} is configured, but resolved unconditionally.
+	 */
+	backupStaleAfterHours: number;
 	/**
 	 * The webui channel surface (build-and-webui Task 4): the enable gate
 	 * (`SIGRUN_WEBUI` over `server.webui.enabled`, default true — `false`
@@ -252,12 +274,23 @@ export const DEFAULT_PROVIDER = "openai";
  * `SIGRUN_STORAGE_PATH` values that stay verbatim).
  */
 export const STORAGE_FILE_NAME = "sigrun.db";
-export const DEFAULT_EXTENSIONS_DIR = "extensions";
 export const DEFAULT_PORT = 3000;
-/** Spec §4.5: core ships `{ defaultWorkspace: { type: "local", path: "/home/sigrun" } }`. */
-export const DEFAULT_WORKSPACE_PATH = "/home/sigrun";
 /** Spec §4.1/§6: the built webui workspace package's output. */
 export const DEFAULT_WEBUI_BUNDLE = "webui/dist";
+
+/**
+ * The workspace default (spec §6.3/R5): `<dataDir>/workspace` — the
+ * static workspace rides the SAME root chain as every other durable
+ * path instead of the old fixed `/home/sigrun` (a container-image
+ * assumption that leaked into every non-container boot). Chart and
+ * compose deploys set `SIGRUN_WORKSPACE_PATH` explicitly and are
+ * unaffected. Used only as the LAST tier of the workspace resolution
+ * (`SIGRUN_WORKSPACE_PATH` over `server.workspacePath` over this) — a
+ * default that is never persisted (spec §6.6).
+ */
+export function defaultWorkspacePath(dataDir: string): string {
+	return join(dataDir, "workspace");
+}
 
 /**
  * Sigrun's compaction defaults, deliberately equal to pi-durable's
@@ -289,6 +322,22 @@ export const DEFAULT_MEMORY_SEAM: MemorySeamConfig = {
 
 /** The env var carrying the interval refresh cadence (Task 5). */
 export const PROVIDER_REFRESH_MINUTES_ENV = "SIGRUN_PROVIDER_REFRESH_MINUTES";
+
+/** The env var carrying the upload body-limit knob (spec §6.2). */
+export const MAX_UPLOAD_BYTES_ENV = "SIGRUN_MAX_UPLOAD_BYTES";
+
+/** The upload knob's default (spec §6.2): 64 MiB. */
+export const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The body limit the base64 POST upload and the JSONL import routes use
+ * (spec §6.2, verbatim): `Math.ceil(max*4/3)+4096` — the base64 inflation
+ * of the knob-capped content plus headroom for the JSON wrapper (the
+ * POST body) or the JSONL text itself (import).
+ */
+export function base64BodyLimit(maxUploadBytes: number): number {
+	return Math.ceil((maxUploadBytes * 4) / 3) + 4096;
+}
 
 /** The interval refresh cadence default (minutes); `0` disables. */
 export const DEFAULT_PROVIDER_REFRESH_MINUTES = 15;
@@ -327,6 +376,16 @@ export function effectiveMethods(
 	if (auth.methods !== undefined) return auth.methods;
 	return isLoopbackHost(listenHost) ? [] : ["token"];
 }
+
+/**
+ * The backup honesty window's default (§6.8): how old the
+ * `backup/last-success.json` marker may be, in hours, before a CONFIGURED
+ * backup target reports `health.backup: "degraded"`. File-only knob
+ * (`server.backup.staleAfterHours`) — no env var exists — over this
+ * default. 36 h tolerates a nightly Cadence missing one run before the
+ * badge flips.
+ */
+export const DEFAULT_BACKUP_STALE_AFTER_HOURS = 36;
 
 export type Env = Record<string, string | undefined>;
 
@@ -375,8 +434,8 @@ export function parseModelSpec(
  * The default model is REQUIRED: `SIGRUN_DEFAULT_MODEL` (deprecated alias
  * `SIGRUN_MODEL`) wins, then the file's top-level `defaultModel` — with
  * neither, boot fails loud (see {@link parseModelSpec} for the format).
- * Optional overrides: `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`,
- * `SIGRUN_EXTENSIONS`, `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`,
+ * Optional overrides: `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS`,
+ * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`,
  * `SIGRUN_WEBUI_BUNDLE`, `OPENAI_BASE_URL`, the `SIGRUN_COMPACTION_*`
  * knobs of the context-management policy, and the backup target variables
  * (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+
@@ -408,6 +467,19 @@ function warnDeprecatedModelEnv(): void {
 	console.warn(
 		"SIGRUN_MODEL is deprecated, use SIGRUN_DEFAULT_MODEL",
 	);
+}
+
+/**
+ * Warn once per process when the retired `SIGRUN_EXTENSIONS_DIR` env var
+ * is set (§6.7: the knob was parsed but never read — the config carries no
+ * `extensionsDir` field at all now). Same once-per-process guard as the
+ * `SIGRUN_MODEL` alias.
+ */
+let extensionsDirWarned = false;
+function warnDeprecatedExtensionsDirEnv(): void {
+	if (extensionsDirWarned) return;
+	extensionsDirWarned = true;
+	console.warn("SIGRUN_EXTENSIONS_DIR is deprecated and ignored");
 }
 
 /** Parse `SIGRUN_COMPACTION_ENABLED` ("true"/"false", case-insensitive). */
@@ -571,6 +643,8 @@ function parseAuth(env: Env, server?: ServerSettings["auth"]): AuthConfig {
 }
 
 /**
+
+
  * Parse one `SIGRUN_COMPACTION_*` token count. `minimum` is 1 for all knobs
  * except `backgroundTokens`, where 0 is the designed "background off" value
  * (upstream starts a background compaction only when `backgroundTokens > 0`).
@@ -718,6 +792,36 @@ function parseMemorySeamCount(env: Env, key: MemorySeamEnvKey): number | undefin
 }
 
 /**
+ * Parse one STRICT positive-integer env knob (the `SIGRUN_PORT`
+ * posture): `""` counts as unset, anything non-integer or ≤ 0 fails
+ * loud naming the variable. Shared by `loadConfig` and
+ * {@link envServerSection} so both parse identically.
+ */
+function parsePositiveIntEnv(env: Env, key: string): number | undefined {
+	const raw = env[key];
+	if (raw === undefined || raw === "") return undefined;
+	const parsed = Number(raw);
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error(`${key} must be a positive integer, got ${raw}`);
+	}
+	return parsed;
+}
+
+/**
+ * Parse one STRICT non-negative-integer env knob (0 is a designed
+ * value): the {@link parsePositiveIntEnv} posture with the floor at 0.
+ */
+function parseNonNegativeIntEnv(env: Env, key: string): number | undefined {
+	const raw = env[key];
+	if (raw === undefined || raw === "") return undefined;
+	const parsed = Number(raw);
+	if (!Number.isInteger(parsed) || parsed < 0) {
+		throw new Error(`${key} must be a non-negative integer, got ${raw}`);
+	}
+	return parsed;
+}
+
+/**
  * Parse the interval refresh cadence (Task 5): `SIGRUN_PROVIDER_REFRESH_MINUTES`
  * — a NON-NEGATIVE integer (0 is the designed disable, unlike the
  * memory-seam positive-only knobs), `""` counts as unset, anything else
@@ -728,17 +832,26 @@ function parseRefreshIntervalMinutes(
 	env: Env,
 	file?: number,
 ): number {
-	const raw = env[PROVIDER_REFRESH_MINUTES_ENV];
-	if (raw !== undefined && raw !== "") {
-		const parsed = Number(raw);
-		if (!Number.isInteger(parsed) || parsed < 0) {
-			throw new Error(
-				`${PROVIDER_REFRESH_MINUTES_ENV} must be a non-negative integer, got ${raw}`,
-			);
-		}
-		return parsed;
-	}
-	return file ?? DEFAULT_PROVIDER_REFRESH_MINUTES;
+	return (
+		parseNonNegativeIntEnv(env, PROVIDER_REFRESH_MINUTES_ENV) ??
+		file ??
+		DEFAULT_PROVIDER_REFRESH_MINUTES
+	);
+}
+
+/**
+ * Parse `SIGRUN_MAX_UPLOAD_BYTES` (spec §6.2) — the strict positive-integer
+ * pattern (the `SIGRUN_PORT` posture): `""` counts as unset, anything
+ * non-integer or ≤ 0 fails loud naming the variable. The file's
+ * `server.maxUploadBytes` applies where the env var is absent; the 64 MiB
+ * default last.
+ */
+function parseMaxUploadBytes(env: Env, file?: number): number {
+	return (
+		parsePositiveIntEnv(env, MAX_UPLOAD_BYTES_ENV) ??
+		file ??
+		DEFAULT_MAX_UPLOAD_BYTES
+	);
 }
 
 function parseMemorySeam(
@@ -767,6 +880,30 @@ function parseMemorySeam(
 			server?.queueMax ??
 			DEFAULT_MEMORY_SEAM.queueMax,
 	};
+}
+
+/** The `BackupConfig` → file-shape projection (the two-shape union). */
+function backupFileShape(config: BackupConfig): ServerSettings["backup"] {
+	return config.target === "path"
+		? { path: config.path }
+		: {
+				s3: {
+					bucket: config.bucket,
+					...(config.prefix === undefined ? {} : { prefix: config.prefix }),
+					...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
+				},
+			};
+}
+
+/** Copy only the defined entries; `undefined` when none survive. */
+function pickDefined(
+	source: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	const out: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(source)) {
+		if (value !== undefined) out[key] = value;
+	}
+	return Object.keys(out).length === 0 ? undefined : out;
 }
 
 /**
@@ -883,7 +1020,6 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		port: config.port,
 		workspacePath: config.workspace.path,
 		storagePath: config.storagePath,
-		extensionsDir: config.extensionsDir,
 		dataDir: config.dataDir,
 		cacheDir: config.cacheDir,
 		stateDir: config.stateDir,
@@ -897,6 +1033,236 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 	};
 }
 
+/**
+ * Project the ENV-SET server values into the settings file's `server`
+ * section — the object the first-boot bootstrap persists (ruling 5 /
+ * spec §6.6: the file records INTENT, not reality). Only keys whose env
+ * var is set (non-empty) appear; defaults are never projected, so later
+ * releases' default changes reach existing installs. Each value uses
+ * the SAME typed parser `loadConfig` uses (an invalid env value fails
+ * loud here exactly as it would at resolution). `SIGRUN_EXTENSIONS_DIR`
+ * is RETIRED (§6.7): set → one deprecation warning, then ignored — the
+ * config carries no `extensionsDir` field at all.
+ *
+ * The env-var → key table:
+ *
+ * | env var | key |
+ * |---|---|
+ * | `SIGRUN_PORT` | `port` |
+ * | `SIGRUN_WORKSPACE_PATH` | `workspacePath` |
+ * | `SIGRUN_STORAGE_PATH` | `storagePath` |
+ * | `SIGRUN_DATA_DIR` | `dataDir` |
+ * | `SIGRUN_CACHE_DIR` | `cacheDir` |
+ * | `SIGRUN_STATE_DIR` | `stateDir` |
+ * | `SIGRUN_WEBUI` | `webui.enabled` |
+ * | `SIGRUN_WEBUI_BUNDLE` | `webui.bundle` |
+ * | `SIGRUN_COMPACTION_ENABLED` | `compaction.enabled` |
+ * | `SIGRUN_COMPACTION_RESERVE_TOKENS` | `compaction.reserveTokens` |
+ * | `SIGRUN_COMPACTION_KEEP_RECENT_TOKENS` | `compaction.keepRecentTokens` |
+ * | `SIGRUN_COMPACTION_BACKGROUND_TOKENS` | `compaction.backgroundTokens` |
+ * | `SIGRUN_HOOK_DEADLINE` | `memorySeam.hookDeadlineMs` |
+ * | `SIGRUN_IDLE_THRESHOLD` | `memorySeam.idleThresholdMs` |
+ * | `SIGRUN_WORKER_DEADLINE` | `memorySeam.workerDeadlineMs` |
+ * | `SIGRUN_QUEUE_MAX` | `memorySeam.queueMax` |
+ * | `SIGRUN_PROVIDER_REFRESH_MINUTES` | `providers.refreshIntervalMinutes` |
+ * | `SIGRUN_BACKUP_*` | `backup` |
+ * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
+ */
+export function envServerSection(env: Env): ServerSettings {
+	const section: Record<string, unknown> = {};
+	const port = parsePositiveIntEnv(env, "SIGRUN_PORT");
+	if (port !== undefined) section.port = port;
+	// Paths: verbatim when set — the exact reading `loadConfig` applies
+	// (`""` counts as unset; no trimming, no suffixing).
+	for (const [key, envKey] of [
+		["workspacePath", "SIGRUN_WORKSPACE_PATH"],
+		["storagePath", "SIGRUN_STORAGE_PATH"],
+		["dataDir", "SIGRUN_DATA_DIR"],
+		["cacheDir", "SIGRUN_CACHE_DIR"],
+		["stateDir", "SIGRUN_STATE_DIR"],
+	] as const) {
+		const value = env[envKey] || undefined;
+		if (value !== undefined) section[key] = value;
+	}
+	const maxUploadBytes = parsePositiveIntEnv(env, MAX_UPLOAD_BYTES_ENV);
+	if (maxUploadBytes !== undefined) section.maxUploadBytes = maxUploadBytes;
+	const webui = pickDefined({
+		enabled: parseWebuiEnabled(env),
+		bundle: env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined,
+	});
+	if (webui !== undefined) section.webui = webui;
+	const compaction = pickDefined({
+		enabled: parseCompactionEnabled(env),
+		reserveTokens: parseTokenCount(env, "SIGRUN_COMPACTION_RESERVE_TOKENS", 1),
+		keepRecentTokens: parseTokenCount(env, "SIGRUN_COMPACTION_KEEP_RECENT_TOKENS", 1),
+		backgroundTokens: parseTokenCount(env, "SIGRUN_COMPACTION_BACKGROUND_TOKENS", 0),
+	});
+	if (compaction !== undefined) section.compaction = compaction;
+	const memorySeam = pickDefined({
+		hookDeadlineMs: parseMemorySeamCount(env, "SIGRUN_HOOK_DEADLINE"),
+		idleThresholdMs: parseMemorySeamCount(env, "SIGRUN_IDLE_THRESHOLD"),
+		workerDeadlineMs: parseMemorySeamCount(env, "SIGRUN_WORKER_DEADLINE"),
+		queueMax: parseMemorySeamCount(env, "SIGRUN_QUEUE_MAX"),
+	});
+	if (memorySeam !== undefined) section.memorySeam = memorySeam;
+	const refreshIntervalMinutes = parseNonNegativeIntEnv(
+		env,
+		PROVIDER_REFRESH_MINUTES_ENV,
+	);
+	if (refreshIntervalMinutes !== undefined) {
+		section.providers = { refreshIntervalMinutes };
+	}
+	const backup = parseBackupConfig(env);
+	if (backup !== undefined) section.backup = backupFileShape(backup);
+	return section as ServerSettings;
+}
+
+
+/**
+ * Build the `/v1/settings` `effective` block (spec §6.6): every server
+ * section key — flattened to its dotted wire name (`"server.port"`,
+ * `"server.compaction.reserveTokens"`, …) — with the RESOLVED value
+ * (from the config boot actually used) and the SOURCE that won:
+ * `"env"` when {@link envServerSection} projects the key (the env var
+ * was set), else `"file"` when the file's `server` section sets it
+ * (the LEGACY `webuiBundle` key counts as the file source for
+ * `webui.bundle` — it resolves as the same selector), else `"default"`.
+ * This generalizes the build spec's webui-key special case: since the
+ * bootstrap no longer persists defaults, the block is where the full
+ * resolved section (and each key's provenance) is visible. Unset
+ * optional keys (`webui.bundle`, the `backup` leaves) are omitted —
+ * there is no resolved value to report.
+ */
+export function effectiveServerSection(
+	env: Env,
+	fileServer: ServerSettings | undefined,
+	config: SigrunConfig,
+): Record<string, EffectiveServerSetting> {
+	const envSection = envServerSection(env);
+	const leaf = (source: unknown, path: readonly string[]): boolean => {
+		let node: unknown = source;
+		for (const key of path) {
+			if (typeof node !== "object" || node === null) return false;
+			node = (node as Record<string, unknown>)[key];
+		}
+		return node !== undefined;
+	};
+	const sourceOf = (
+		path: readonly string[],
+		legacyFileKeys: readonly string[] = [],
+	): "env" | "file" | "default" => {
+		if (leaf(envSection, path)) return "env";
+		if (
+			fileServer !== undefined &&
+			(leaf(fileServer, path) ||
+				legacyFileKeys.some((key) => leaf(fileServer, [key])))
+		) {
+			return "file";
+		}
+		return "default";
+	};
+	const out: Record<string, EffectiveServerSetting> = {};
+	const emit = (
+		key: string,
+		value: unknown,
+		path: readonly string[],
+		legacyFileKeys: readonly string[] = [],
+	): void => {
+		out[`server.${key}`] = { value, source: sourceOf(path, legacyFileKeys) };
+	};
+
+	emit("port", config.port, ["port"]);
+	emit("workspacePath", config.workspace.path, ["workspacePath"]);
+	emit("storagePath", config.storagePath, ["storagePath"]);
+	emit("maxUploadBytes", config.maxUploadBytes, ["maxUploadBytes"]);
+	emit("dataDir", config.dataDir, ["dataDir"]);
+	emit("cacheDir", config.cacheDir, ["cacheDir"]);
+	emit("stateDir", config.stateDir, ["stateDir"]);
+	emit("webui.enabled", config.webui.enabled, ["webui", "enabled"]);
+	if (config.webui.bundle !== undefined) {
+		emit("webui.bundle", config.webui.bundle, ["webui", "bundle"], [
+			"webuiBundle",
+		]);
+	}
+	emit("compaction.enabled", config.compaction.enabled, [
+		"compaction",
+		"enabled",
+	]);
+	emit(
+		"compaction.reserveTokens",
+		config.compaction.reserveTokens,
+		["compaction", "reserveTokens"],
+	);
+	emit(
+		"compaction.keepRecentTokens",
+		config.compaction.keepRecentTokens,
+		["compaction", "keepRecentTokens"],
+	);
+	emit(
+		"compaction.backgroundTokens",
+		config.compaction.backgroundTokens,
+		["compaction", "backgroundTokens"],
+	);
+	emit(
+		"memorySeam.hookDeadlineMs",
+		config.memorySeam.hookDeadlineMs,
+		["memorySeam", "hookDeadlineMs"],
+	);
+	emit(
+		"memorySeam.idleThresholdMs",
+		config.memorySeam.idleThresholdMs,
+		["memorySeam", "idleThresholdMs"],
+	);
+	emit(
+		"memorySeam.workerDeadlineMs",
+		config.memorySeam.workerDeadlineMs,
+		["memorySeam", "workerDeadlineMs"],
+	);
+	emit("memorySeam.queueMax", config.memorySeam.queueMax, [
+		"memorySeam",
+		"queueMax",
+	]);
+	emit(
+		"providers.refreshIntervalMinutes",
+		config.providers.refreshIntervalMinutes,
+		["providers", "refreshIntervalMinutes"],
+	);
+	if (config.backup?.target === "path") {
+		emit("backup.path", config.backup.path, ["backup", "path"]);
+		emit(
+			"backup.staleAfterHours",
+			config.backupStaleAfterHours,
+			["backup", "staleAfterHours"],
+		);
+	} else if (config.backup?.target === "s3") {
+		emit("backup.s3.bucket", config.backup.bucket, [
+			"backup",
+			"s3",
+			"bucket",
+		]);
+		if (config.backup.prefix !== undefined) {
+			emit("backup.s3.prefix", config.backup.prefix, [
+				"backup",
+				"s3",
+				"prefix",
+			]);
+		}
+		if (config.backup.endpoint !== undefined) {
+			emit("backup.s3.endpoint", config.backup.endpoint, [
+				"backup",
+				"s3",
+				"endpoint",
+			]);
+		}
+		emit(
+			"backup.staleAfterHours",
+			config.backupStaleAfterHours,
+			["backup", "staleAfterHours"],
+		);
+	}
+	return out;
+}
+
 export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig {
 	// Env is parsed FIRST (fail-loud on an invalid env value even when the
 	// file carries a valid one) and always WINS: a file field applies only
@@ -905,6 +1271,13 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 	// the OpenAI credentials (`OPENAI_API_KEY`, plus the sibling `auth.json`
 	// the provider layer reads — settings.json never carries key material).
 	const server = settingsFile?.server;
+
+	// §6.7: `SIGRUN_EXTENSIONS_DIR` is retired — the knob was parsed but
+	// never read. Set (non-empty) → one warning, then ignored; the file's
+	// `server.extensionsDir` likewise only warns (src/harness/settings.ts).
+	if (env.SIGRUN_EXTENSIONS_DIR) {
+		warnDeprecatedExtensionsDirEnv();
+	}
 
 	// The boot default model (ruling 3): env wins, the file's top-level
 	// `defaultModel` is next, and there is NO code default — the model is
@@ -933,12 +1306,9 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 	);
 
 	let port = server?.port ?? DEFAULT_PORT;
-	if (env.SIGRUN_PORT !== undefined && env.SIGRUN_PORT !== "") {
-		const parsed = Number(env.SIGRUN_PORT);
-		if (!Number.isInteger(parsed) || parsed <= 0) {
-			throw new Error(`SIGRUN_PORT must be a positive integer, got ${env.SIGRUN_PORT}`);
-		}
-		port = parsed;
+	const envPort = parsePositiveIntEnv(env, "SIGRUN_PORT");
+	if (envPort !== undefined) {
+		port = envPort;
 	}
 
 	// The webui surface (build-and-webui Task 4). The bundle selector's
@@ -984,7 +1354,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		stateDir,
 		storagePath,
 		models,
-		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
+		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
 		// next; empty otherwise.
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
@@ -1000,7 +1370,13 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		port,
 		workspace: {
 			type: "local",
-			path: env.SIGRUN_WORKSPACE_PATH || server?.workspacePath || DEFAULT_WORKSPACE_PATH,
+			// Spec §6.3: the default rides the data root (<dataDir>/workspace);
+			// env over file over that — and the default is never persisted
+			// (spec §6.6, the envServerSection projection).
+			path:
+			env.SIGRUN_WORKSPACE_PATH ||
+			server?.workspacePath ||
+			defaultWorkspacePath(dataDir),
 		},
 		// Sections (Task 7): `SIGRUN_BACKUP_SECTIONS` is env-only and
 		// applies to the FILE-sourced target too — the env knob selects
@@ -1011,6 +1387,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				server?.backup,
 				parseBackupSections(env.SIGRUN_BACKUP_SECTIONS),
 			),
+		// §6.8: the honesty window — file-only tier over the 36 h default
+		// (no env var exists for this key).
+		backupStaleAfterHours:
+			server?.backup?.staleAfterHours ?? DEFAULT_BACKUP_STALE_AFTER_HOURS,
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
 		providers: {

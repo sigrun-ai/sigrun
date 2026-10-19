@@ -20,18 +20,19 @@ test("bare model id defaults to the env OpenAI-compat provider", () => {
   expect(config.models).toEqual({ provider: "openai", modelId: "gpt-4o" });
 });
 
-test("defaults: storage path under the data root, extensions dir, port, no backup", () => {
+test("defaults: storage path under the data root, port, no backup", () => {
   const config = loadConfig({ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" });
   // Task 6's clean break: the DB default moved from the cwd-relative
   // "data/sigrun.db" to <dataDir>/sigrun.db (absolute).
   expect(config.storagePath).toBe(join(config.dataDir, "sigrun.db"));
   expect(isAbsolute(config.storagePath)).toBe(true);
-  expect(config.extensionsDir).toBe("extensions");
   expect(config.port).toBe(3000);
   expect(config.backup).toBeUndefined();
+  // §6.7: extensionsDir is retired — the config carries no field at all.
+  expect("extensionsDir" in config).toBe(false);
 });
 
-test("SIGRUN_* overrides apply", () => {
+test("SIGRUN_* overrides apply; SIGRUN_EXTENSIONS_DIR is ignored (retired)", () => {
   const config = loadConfig({
     SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
     SIGRUN_STORAGE_PATH: "/var/lib/sigrun/sigrun.db",
@@ -39,7 +40,7 @@ test("SIGRUN_* overrides apply", () => {
     SIGRUN_PORT: "8080",
   });
   expect(config.storagePath).toBe("/var/lib/sigrun/sigrun.db");
-  expect(config.extensionsDir).toBe("/opt/sigrun/extensions");
+  expect("extensionsDir" in config).toBe(false);
   expect(config.port).toBe(8080);
 });
 

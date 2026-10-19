@@ -154,13 +154,16 @@ export interface LoginResponse {
 /**
  * A PATCH body for `/v1/settings`: a merge where an explicit `null` CLEARS
  * the key. The server validates per key (unknown key / wrong type → 400
- * `invalid_field`). `toolRoster` is deliberately OMITTED — it is
- * server-computed, not a settable key; sending it would 400 (`is not a
- * settable field`), and the type-level Omit makes that unrepresentable
- * here.
+ * `invalid_field`). `toolRoster` and `effective` are deliberately
+ * OMITTED — both are server-computed per request, not settable keys;
+ * sending either would 400 (`is not a settable field`), and the
+ * type-level Omit makes that unrepresentable here.
  */
 export type SettingsPatchWire = {
-	readonly [K in keyof Omit<SettingsWire, "toolRoster">]?: SettingsWire[K] | null;
+	readonly [K in keyof Omit<
+		SettingsWire,
+		"toolRoster" | "effective"
+	>]?: SettingsWire[K] | null;
 };
 
 /**
@@ -364,8 +367,10 @@ export interface SigrunClient {
 		path: string,
 	): Promise<FileContentResponseWire>;
 	/**
-	 * Materialize an upload (`POST .../uploads` with `{name, contentBase64}`);
-	 * resolves to the workspace-relative path a submission part consumes.
+	 * Materialize an upload (`PUT .../uploads/<name>` with the raw bytes as
+	 * `application/octet-stream` — no base64 inflation, so a phone photo
+	 * fits the server's `server.maxUploadBytes`); resolves to the
+	 * workspace-relative path a submission part consumes.
 	 */
 	upload(
 		conversationId: number,
@@ -440,7 +445,8 @@ export type FetchLike = (
 	init?: {
 		readonly method?: string;
 		readonly headers?: Record<string, string>;
-		readonly body?: string;
+		/** Raw upload bodies are bytes (the octet-stream PUT); everything else is text. */
+		readonly body?: string | Uint8Array;
 	},
 ) => Promise<{
 	readonly ok: boolean;
@@ -462,17 +468,30 @@ export interface SigrunClientOptions {
 }
 
 /**
- * Bytes → base64 for the uploads body's `contentBase64`. Chunked: spreading
- * the full array into `String.fromCharCode` blows the call stack on large
- * files. `btoa` is a global in browsers AND in Node ≥16 (the test runner).
+ * PUT a RAW byte body (the upload route — `application/octet-stream`, the
+ * server-side `server.maxUploadBytes` is the limit); fail-loud on
+ * non-2xx. Returns the parsed JSON response.
  */
-function bytesToBase64(bytes: Uint8Array): string {
-	const CHUNK = 0x8000;
-	let binary = "";
-	for (let offset = 0; offset < bytes.length; offset += CHUNK) {
-		binary += String.fromCharCode(...bytes.subarray(offset, offset + CHUNK));
+async function putBytes(
+	fetchImpl: FetchLike,
+	base: string,
+	path: string,
+	bytes: Uint8Array,
+): Promise<unknown> {
+	const response = await fetchImpl(`${base}${path}`, {
+		method: "PUT",
+		headers: {
+			accept: "application/json",
+			"content-type": "application/octet-stream",
+		},
+		body: bytes,
+	});
+	if (!response.ok) {
+		throw new Error(
+			`sigrun api: PUT ${path} failed with status ${response.status}`,
+		);
 	}
-	return btoa(binary);
+	return response.json();
 }
 
 /**
@@ -509,7 +528,9 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 	const fetchImpl: FetchLike =
 		options.fetch ??
 		(((input, init) =>
-			globalThis.fetch(input, init)) as FetchLike);
+			// `Uint8Array` is a valid `BodyInit` at runtime; the lib's newer
+			// `Uint8Array<ArrayBufferLike>` generic just can't prove it.
+			globalThis.fetch(input, init as RequestInit | undefined)) as FetchLike);
 
 	async function get<T>(path: string): Promise<T> {
 		const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -620,10 +641,12 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			),
 		upload: async (conversationId, file) => {
 			const bytes = new Uint8Array(await file.arrayBuffer());
-			return (await send("POST", `/v1/conversations/${conversationId}/uploads`, {
-				name: file.name,
-				contentBase64: bytesToBase64(bytes),
-			})) as UploadResponseWire;
+			return (await putBytes(
+				fetchImpl,
+				baseUrl,
+				`/v1/conversations/${conversationId}/uploads/${encodeURIComponent(file.name)}`,
+				bytes,
+			)) as UploadResponseWire;
 		},
 		compact: (conversationId, instructions) =>
 			send("POST", `/v1/conversations/${conversationId}/compact`, {

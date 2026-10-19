@@ -1,26 +1,30 @@
 /**
- * Task 13: probe endpoints — `GET /healthz` (liveness) + `GET /readyz`
+ * Probe endpoints — `GET /healthz` (liveness) + `GET /readyz`
  * (readiness), spec §4.4 "distinguishes process-up from harness-ready".
  *
- * Shapes (task-13 brief):
+ * Shapes:
  * - `/healthz`: 200 ALWAYS once listening — no aggregation, no storage; the
  *   dead-simple "the event loop answers" signal. Body is a single
  *   Prometheus-exposition line (`sigrun_liveness 1`) so the endpoint is
  *   scrape-compatible (the M1 ServiceMonitor story; see the task report's
  *   metrics scoping decision).
- * - `/readyz`: 200 with `sigrun_readiness 1` only when (a) T9e health
- *   aggregation says not-degraded (memory + providers) AND (b) a cheap REAL
- *   storage read succeeds — resolving the reserved root conversation through
- *   the session line. 503 + `{ ready: false, checks: {...} }` otherwise.
+ * - `/readyz` (W2 §6.1, storage-only): 200 with `sigrun_readiness 1` when
+ *   booted AND a cheap REAL storage read succeeds — resolving the reserved
+ *   root conversation through the session line. 503 +
+ *   `{ ready: false, checks: { storage } }` otherwise. Provider and memory
+ *   health do NOT gate readiness ("a degraded upstream is never a Service
+ *   outage") — they stay visible in `/v1/meta`, `/v1/providers`, and
+ *   `/metrics`.
  *
  * Hermetic pattern (server-meta-health.test.ts): a faux provider serves
  * `faux/m` through a provider contributor; `openHarness(config, {
 		identity: await seededIdentity(dir), env: {} })`
  * boots in a tmpdir; `createServer` builds the Fastify app; `app.inject()`
- * exercises the routes in-process. Degraded health is driven through the T9e
- * seams (`contributorHealth` / the fixture memory extension's factory
- * producer); storage failure is driven by closing the harness under the
- * server (the session line then refuses reads).
+ * exercises the routes in-process. Degraded health is driven through the
+ * degraded fixtures (a provider contributor, a memory-surface extension,
+ * a non-memory extension — all three must leave readiness alone); storage
+ * failure is driven by closing the harness under the server (the session
+ * line then refuses reads).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -44,6 +48,11 @@ import type { FastifyInstance } from "fastify";
 /** Fixture: memory-surface extension carrying a degraded §3 producer. */
 const FIXTURE_MEMORY = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-memory-degraded", "index.js"),
+).href;
+
+/** Fixture: NON-memory extension carrying a degraded §3 producer. */
+const FIXTURE_EXT = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-ext-degraded", "index.js"),
 ).href;
 
 /** One hermetic server: harness + faux provider + Fastify app. */
@@ -113,12 +122,13 @@ describe("GET /healthz", () => {
 	});
 
 	test("stays 200 even while readiness would fail (process-up only)", async () => {
-		// Liveness must NOT aggregate health or touch storage: a degraded
-		// provider flips /readyz to 503 while /healthz keeps answering 200 —
-		// the kubelet must not restart a process that is merely degraded.
-		const { app } = await bootServer({
+		// Liveness must NOT aggregate health or touch storage: a closed harness
+		// (storage dead, /readyz 503) leaves /healthz answering 200 — refusing
+		// readiness is readiness's job; the kubelet restarts nothing.
+		const { app, opened } = await bootServer({
 			contributorHealth: () => "degraded",
 		});
+		await opened.harness.close(BACKGROUND_CONTEXT);
 		const response = await app.inject({ method: "GET", url: "/healthz" });
 		expect(response.statusCode).toBe(200);
 	});
@@ -137,31 +147,21 @@ describe("GET /readyz", () => {
 		expect(response.headers["content-type"]).toContain("text/plain");
 	});
 
-	test("503 + JSON checks when a provider contributor reports degraded", async () => {
+	test("stays 200 when a provider and memory report degraded", async () => {
+		// W2 §6.1: readiness = boot complete + a real storage read. Provider
+		// and memory health leave readiness (they stay visible in /v1/meta,
+		// /v1/providers, and /metrics) — a degraded upstream is never a
+		// Service outage, so no endpoint gap and no pod eviction.
 		const { app } = await bootServer({
 			contributorHealth: () => "degraded",
+			extensionSpecifiers: [FIXTURE_MEMORY, FIXTURE_EXT],
 		});
 		const response = await app.inject({ method: "GET", url: "/readyz" });
-		expect(response.statusCode).toBe(503);
-		expect(response.json()).toEqual({
-			ready: false,
-			checks: { memory: "ok", providers: "degraded", storage: "ok" },
-		});
+		expect(response.statusCode).toBe(200);
+		expect(response.body).toBe("sigrun_readiness 1\n");
 	});
 
-	test("503 + JSON checks when the memory extension's producer reports degraded", async () => {
-		const { app } = await bootServer({
-			extensionSpecifiers: [FIXTURE_MEMORY],
-		});
-		const response = await app.inject({ method: "GET", url: "/readyz" });
-		expect(response.statusCode).toBe(503);
-		expect(response.json()).toEqual({
-			ready: false,
-			checks: { memory: "degraded", providers: "ok", storage: "ok" },
-		});
-	});
-
-	test("503 + JSON checks when the storage read fails (harness closed under the server)", async () => {
+	test("503 + `{ storage: failed }` when the storage read fails (harness closed under the server)", async () => {
 		const { app, opened } = await bootServer();
 		// The server outlives its harness: closing the session line makes the
 		// root-conversation resolution fail — exactly the "storage not
@@ -171,10 +171,6 @@ describe("GET /readyz", () => {
 		expect(response.statusCode).toBe(503);
 		const body = response.json();
 		expect(body.ready).toBe(false);
-		expect(body.checks).toEqual({
-			memory: "ok",
-			providers: "ok",
-			storage: "failed",
-		});
+		expect(body.checks).toEqual({ storage: "failed" });
 	});
 });

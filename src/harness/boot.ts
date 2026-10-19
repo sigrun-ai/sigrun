@@ -22,7 +22,7 @@ import type { Env, SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
-import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
+import { loadExtensions, type ExtensionOutcome, type ResolvedExtensionInput } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
 import {
@@ -77,24 +77,20 @@ import {
 const IDLE_SWEEP_MS = 1_000;
 
 /**
- * The prompt-section keys the core surfaces own (system-prompt Task 3).
- * The registry itself permits duplicate section keys across extensions
- * (last-writer-wins at render), so a loaded extension could silently
- * replace a core surface — boot asserts ownership instead (below).
+ * The prompt-section keys the core surfaces own live in
+ * `./reserved-sections.ts` (spec §6.5 R11): the loader reads them for the
+ * load-time quarantine — an extension declaring one fails its LOAD,
+ * never this boot — and this module re-exports the constant for existing
+ * importers.
  */
-export const RESERVED_CORE_SECTION_KEYS = [
-	"identity",
-	"persona",
-	"workspace-instructions",
-	"skills",
-	"tool-guidance",
-	"execution-guidance",
-] as const;
+export { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
 
 /**
- * Reserved key → the one core extension that may own it. Anything else
- * owning a reserved key fails boot loud (the walk after the guidance
- * install below).
+ * Reserved key → the one core extension that may own it. The loader's
+ * quarantine already rejects any loaded extension declaring a reserved
+ * key, so the post-install walk below (which reads THIS map) is a
+ * CORE-ONLY assertion — it can fire only on a core bug (a core extension
+ * replaced by or mis-registered under another name).
  */
 export const RESERVED_CORE_SECTION_OWNERS: Readonly<Record<string, string>> = {
 	identity: "sigrun.context-files",
@@ -226,16 +222,6 @@ export interface OpenedHarness {
 	 * `extensionOutcomes`; no double-report).
 	 */
 	readonly memoryHealth: (() => HealthStatus) | undefined;
-	/**
-	 * The loaded memory extension's factory-result submit pass-through
-	 * (Task 26a), identity-matched to the memory-surface owner exactly like
-	 * `memoryHealth`. The §5 submissions route submits through it when
-	 * present — the memory wiring's submit binds the conversation as the
-	 * memory_recall source at the submit boundary (degenerate.js) — and
-	 * submits directly when `undefined` (the no-op memory default, a
-	 * quarantined memory extension, or a submit-less memory extension).
-	 */
-	readonly memorySubmit: ExtensionSubmit | undefined;
 	/**
 	 * Extension name -> seam host (the interaction/ambient handles the
 	 * loader handed each factory). Quarantined extensions have no entry;
@@ -405,9 +391,7 @@ export interface OpenHarnessOptions {
  * producers are retained at boot — contributor producers on
  * `providerHealth`, the memory extension's producer on `memoryHealth` — for
  * the §5 meta `health` aggregation (Task 9e), a pure synchronous derivation
- * over this state; the memory extension's factory-result submit pass-through
- * is likewise retained on `memorySubmit` (Task 26a), identity-matched to the
- * memory-surface owner, for the §5 submissions route.
+ * over this state.
  */
 export async function openHarness(
 	config: SigrunConfig,
@@ -480,8 +464,7 @@ export async function openHarness(
 	registry.install(searchToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
-	// factory-result producers are retained alongside the outcomes (Task 9e);
-	// factory-result submit pass-throughs likewise (Task 26a).
+	// factory-result producers are retained alongside the outcomes (Task 9e).
 	// The packages dir: the deployment-installed extension root the
 	// loader resolves against FIRST (the settings file's `packages`
 	// declarations install here — see src/harness/packages.ts).
@@ -512,7 +495,6 @@ export async function openHarness(
 	const {
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
-		submitBindings: extensionSubmits,
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,
@@ -596,13 +578,14 @@ export async function openHarness(
 	// and disappear with the matched model as trailing patch rows instead
 	// of re-emitting the whole prompt on a mid-conversation model swap.
 	registry.install(modelGuidanceExtension);
-	// The reserved-core-section assertion (Task 3), walked AFTER
-	// `loadExtensions` and the guidance install: any non-core extension
-	// owning a reserved key — including one that last-writer-wins REPLACED
-	// a core section, which `sections.set` makes the snapshot owner — fails
-	// boot loud, naming the extension and the key. Prompt-section shape is
-	// core-owned surface (spec §3); a silent takeover is not a valid
-	// configuration.
+	// The reserved-core-section assertion (Task 3; §6.5 R11 narrows it to a
+	// CORE-ONLY guard), walked AFTER `loadExtensions` and the guidance
+	// install: the loader already quarantines any loaded extension that
+	// DECLARES a reserved key, so a mismatch here means a core extension
+	// was replaced by or registered under the wrong name — a core bug,
+	// failing boot loud naming the extension and the key. Prompt-section
+	// shape is core-owned surface (spec §3); a silent takeover is not a
+	// valid configuration.
 	for (const entry of registry.snapshot().sections()) {
 		const expectedOwner = RESERVED_CORE_SECTION_OWNERS[entry.section.key];
 		if (expectedOwner !== undefined && entry.extension.name !== expectedOwner) {
@@ -618,12 +601,6 @@ export async function openHarness(
 	const memoryHealth = extensionHealth.find(
 		(producer) => producer.extension === memoryOwner,
 	)?.health;
-	// §5 memory submit (Task 26a): the memory extension's retained submit
-	// pass-through — the same identity-matching as memoryHealth. No match →
-	// undefined → the server submits directly.
-	const memorySubmit = extensionSubmits.find(
-		(binding) => binding.extension === memoryOwner,
-	)?.submit;
 	const sink = createProviderMergeSink();
 	// `config.models` is the already-validated default-model resolution
 	// (loadConfig refuses to boot without env or file); restating it for
@@ -842,7 +819,6 @@ export async function openHarness(
 		auth: authStore,
 		identity,
 		memoryHealth,
-		memorySubmit,
 		settings: settingsStore,
 		packagesDir,
 		seamHosts,

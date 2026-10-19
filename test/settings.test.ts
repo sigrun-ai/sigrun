@@ -232,7 +232,20 @@ describe("SettingsStore", () => {
 		);
 	});
 
-	test("bootstrap writes the resolved extensions list and defaultModel (the file records reality)", async () => {
+	test("bootstrap omits an empty server section (ruling 5: nothing env-set → a {} file)", async () => {
+		const { store, dir } = freshStore();
+		// A first boot with no env-set server values bootstraps an EMPTY
+		// section; the persisted file carries no `server` key at all (a
+		// `server: {}` placeholder would round-trip as an empty object —
+		// harmless, but the omission keeps the file exactly the env intent).
+		store.bootstrap({});
+		expect(JSON.parse(readFileSync(settingsPath(dir), "utf8"))).toEqual({});
+		// Still idempotent: a second bootstrap leaves the {} file alone.
+		store.bootstrap({ port: 9999 });
+		expect(JSON.parse(readFileSync(settingsPath(dir), "utf8"))).toEqual({});
+	});
+
+	test("bootstrap writes the resolved extensions list and defaultModel (ruling 5: only env-supplied values)", async () => {
 		const { store, dir } = freshStore();
 		const section = {
 			port: 3000,
@@ -281,6 +294,12 @@ describe("SettingsStore", () => {
 		expect(store.read().server?.backup).toEqual({
 			s3: { bucket: "b", prefix: "p/" },
 		});
+		// §6.8: staleAfterHours rides EITHER target shape (positive number).
+		store.update({ server: { backup: { path: "/x", staleAfterHours: 48 } } });
+		expect(store.read().server?.backup).toEqual({
+			path: "/x",
+			staleAfterHours: 48,
+		});
 		// Bad shapes throw naming the field (same error class as the rest).
 		const bad: Array<[Record<string, unknown>, RegExp]> = [
 			[{ server: { port: 0 } }, /server\.port/],
@@ -295,9 +314,13 @@ describe("SettingsStore", () => {
 			[{ server: { memorySeam: { idleThresholdMs: 0 } } }, /server\.memorySeam\.idleThresholdMs/],
 			[{ server: { memorySeam: { workerDeadlineMs: -5 } } }, /server\.memorySeam\.workerDeadlineMs/],
 			[{ server: { memorySeam: { queueMax: 1.5 } } }, /server\.memorySeam\.queueMax/],
+			[{ server: { maxUploadBytes: 0 } }, /server\.maxUploadBytes must be a positive integer/],
+			[{ server: { maxUploadBytes: "4096" } }, /server\.maxUploadBytes must be a positive integer/],
 			[{ server: { memorySeam: { unknownKnob: 1 } } }, /server\.memorySeam\.unknownKnob/],
 			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, /server\.backup/],
 			[{ server: { backup: { s3: {} } } }, /server\.backup\.s3\.bucket/],
+			[{ server: { backup: { staleAfterHours: 0 } } }, /server\.backup\.staleAfterHours/],
+			[{ server: { backup: { staleAfterHours: "36" } } }, /server\.backup\.staleAfterHours/],
 			// The model, extension list, and provider endpoint are NOT
 			// server.* keys (they are top-level file fields / auth.json).
 			[{ server: { model: "openai/gpt-4o" } }, /server\.model/],

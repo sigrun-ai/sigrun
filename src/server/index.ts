@@ -16,8 +16,9 @@
  * interaction + ambient seam routes (docs/approval-ux-seams.md,
  * `routes/interactions.ts`), the workspace file routes
  * (`routes/files.ts`), the provider surface routes
- * (`routes/providers.ts`), and the settings store routes
- * (`routes/settings.ts`). This module only composes: the Fastify
+ * (`routes/providers.ts`), the settings store routes
+ * (`routes/settings.ts`), and the Prometheus text exposition
+ * (`routes/metrics.ts`, W2 Task 8). This module only composes: the Fastify
  * instance, the identity hook, the webui mount, the reserved-root
  * ensure, and the register calls — no route handler lives here.
  *
@@ -32,7 +33,7 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { effectiveMethods, type SigrunConfig } from "../config.js";
+import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { registerAuthPipeline } from "./auth/pipeline.js";
 import { isLoopbackHost } from "./auth/loopback.js";
@@ -44,6 +45,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMetaRoutes } from "./routes/meta.js";
+import { registerMetricsRoutes } from "./routes/metrics.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
@@ -80,15 +82,36 @@ import {
  * (build-and-webui Task 6 threads it here from boot; the serve-time
  * resolution (Task 5) selects a NAME selector against it — an empty
  * registry is the no-extension deploy).
+ * @param options.env the boot env (`process.env` at the deploy entry) — the
+ * `/v1/settings` `effective` block classifies env-sourced server keys
+ * against it (spec §6.6). Defaults to `{}` for hand-built test servers
+ * (every key then reports file/default, which is accurate for an
+ * env-less boot).
  */
 export async function createServer(
 	opened: OpenedHarness,
 	config: SigrunConfig,
 	contributedBundles: readonly ContributedWebuiBundle[] = [],
-	options?: { listenHost?: string },
+	options?: { listenHost?: string; env?: Env },
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
 	const listenHost = options?.listenHost ?? "0.0.0.0";
+	const env = options?.env ?? {};
+	// The one body-limit error shape (spec §6.2, W2): Fastify's
+	// `FST_ERR_CTP_BODY_TOO_LARGE` (raised by any route's `bodyLimit` — the
+	// raw upload PUT, the base64 POST, the JSONL import) becomes the
+	// sigrun `413 {error: "too_large", maxBytes}` with the limit the
+	// failing route actually enforced. Everything else passes through the
+	// default error serialization unchanged.
+	app.setErrorHandler((error: { code?: string }, request, reply) => {
+		if (error.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+			return reply.code(413).send({
+				error: "too_large",
+				maxBytes: request.routeOptions.bodyLimit,
+			});
+		}
+		return reply.send(error);
+	});
 	const methods = effectiveMethods(config.auth, listenHost);
 	// The auth posture warnings (W1 Task 3, the plan's Global
 	// Constraints): once per server, never per request.
@@ -132,7 +155,20 @@ export async function createServer(
 		agent: storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
-	const ctx: ServerContext = { opened, config, rootId, webuiBundle, listenHost, methods };
+	// The shared context every route module receives: the opened harness,
+	// the config, the root id (computed once, never per request), the
+	// resolved webui bundle, the auth-derivation inputs (listenHost + the
+	// effective method list), and the boot env (the settings routes'
+	// `effective` block reads it).
+	const ctx: ServerContext = {
+		opened,
+		config,
+		rootId,
+		webuiBundle,
+		listenHost,
+		methods,
+		env,
+	};
 	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
 	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
 	// env service token, the setup gate, and method resolution stamp
@@ -143,6 +179,7 @@ export async function createServer(
 	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
+	registerMetricsRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
 	registerStreamRoutes(app, ctx);
 	registerSubmissionRoutes(app, ctx);

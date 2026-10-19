@@ -24,13 +24,15 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 		input: string;
 		method?: string;
 		accept?: string;
-		body?: string;
+		contentType?: string;
+		body?: string | Uint8Array;
 	}[] = [];
 	const fetchImpl: FetchLike = (input, request) => {
 		calls.push({
 			input,
 			method: request?.method,
 			accept: request?.headers?.["accept"],
+			contentType: request?.headers?.["content-type"],
 			body: request?.body,
 		});
 		return Promise.resolve({
@@ -49,6 +51,7 @@ const META: MetaResponse = {
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 	auth: { methods: [], claimed: true },
+	backup: {},
 	capabilities: { backup: false, channels: ["webui"] },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [] },
@@ -148,6 +151,7 @@ describe("createClient", () => {
 				input: "/v1/onboarding/claim",
 				method: "POST",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({
 					code: "ABCD-EFGH",
 					user: "alice",
@@ -166,6 +170,7 @@ describe("createClient", () => {
 				input: "/v1/auth/login",
 				method: "POST",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({ token: "sig-token" }),
 			});
 		});
@@ -178,6 +183,7 @@ describe("createClient", () => {
 				input: "/v1/auth/logout",
 				method: "POST",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({}),
 			});
 		});
@@ -234,6 +240,7 @@ describe("createClient", () => {
 				input: "/v1/conversations/2/submissions",
 				method: "POST",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({
 					input: [{ type: "text", text: "hello there" }],
 					requestId: "req-1",
@@ -285,6 +292,7 @@ describe("createClient", () => {
 				input: "/v1/conversations/7/meta",
 				method: "PATCH",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({ archived: true }),
 			},
 		]);
@@ -301,6 +309,7 @@ describe("createClient", () => {
 				input: "/v1/conversations",
 				method: "POST",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({}),
 			},
 		]);
@@ -350,7 +359,7 @@ describe("createClient", () => {
 		);
 	});
 
-	test("upload POSTs {name, contentBase64} and returns the workspace-relative path", async () => {
+	test("upload PUTs the raw bytes with an octet-stream content-type and returns the workspace-relative path", async () => {
 		const { calls, fetchImpl } = stubFetch(
 			{ path: "uploads/4/note.txt" },
 			{ status: 201 },
@@ -358,7 +367,7 @@ describe("createClient", () => {
 		const client = createClient({ fetch: fetchImpl });
 		const file = {
 			name: "note.txt",
-			// "hi" = 0x68 0x69 → base64 "aGk="
+			// "hi" = 0x68 0x69 — sent RAW (the raw PUT route), not base64.
 			arrayBuffer: () =>
 				Promise.resolve(new Uint8Array([104, 105]).buffer),
 		};
@@ -366,12 +375,27 @@ describe("createClient", () => {
 		expect(uploaded).toEqual({ path: "uploads/4/note.txt" });
 		expect(calls).toEqual([
 			{
-				input: "/v1/conversations/4/uploads",
-				method: "POST",
+				input: "/v1/conversations/4/uploads/note.txt",
+				method: "PUT",
 				accept: "application/json",
-				body: JSON.stringify({ name: "note.txt", contentBase64: "aGk=" }),
+				contentType: "application/octet-stream",
+				body: new Uint8Array([104, 105]),
 			},
 		]);
+	});
+
+	test("upload percent-encodes the file name into the route param", async () => {
+		const { calls, fetchImpl } = stubFetch(
+			{ path: "uploads/4/my file.png" },
+			{ status: 201 },
+		);
+		const client = createClient({ fetch: fetchImpl });
+		const file = {
+			name: "my file.png",
+			arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer),
+		};
+		await client.upload(4, file);
+		expect(calls[0]?.input).toBe("/v1/conversations/4/uploads/my%20file.png");
 	});
 
 	test("compact POSTs the compact endpoint and parses the task id", async () => {
@@ -384,6 +408,7 @@ describe("createClient", () => {
 				input: "/v1/conversations/7/compact",
 				method: "POST",
 				accept: "application/json",
+				contentType: "application/json",
 				body: JSON.stringify({}),
 			},
 		]);

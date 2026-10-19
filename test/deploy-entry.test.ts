@@ -129,9 +129,13 @@ test(
 				OPENAI_API_KEY: "smoke-test-key-never-sent",
 				OPENAI_BASE_URL: "http://127.0.0.1:9",
 				SIGRUN_PORT: String(port),
-				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-				SIGRUN_WORKSPACE_PATH: dir,
 				SIGRUN_CONFIG_DIR: join(dir, "config"),
+				// HOME (not SIGRUN_*_PATH vars) keeps the data root hermetic:
+			// the store-root chain falls back to `$HOME/.local/share/sigrun`,
+			// so the DB, the workspace default, and the ensured roots all land
+			// under the tmp dir WITHOUT setting any server-path env var —
+			// which is the point of this test's bootstrap assertions.
+				HOME: dir,
 			}),
 		);
 		try {
@@ -148,40 +152,23 @@ test(
 			// The probe endpoints exist on the real listener too.
 			const healthz = await fetch(`http://127.0.0.1:${port}/healthz`);
 			expect(healthz.status).toBe(200);
-			// Settings bootstrap: first boot wrote the resolved boot
-			// configuration (server section — env + code defaults — plus the
-			// resolved extension list and defaultModel: the file records
-			// reality) under SIGRUN_CONFIG_DIR.
+			// Settings bootstrap (ruling 5 / spec §6.6): first boot writes
+			// ONLY what the environment set — here `SIGRUN_PORT` (a server
+		// key) and `SIGRUN_DEFAULT_MODEL` (the top-level defaultModel).
+			// NO defaults are persisted: no extensionsDir, no compaction, no
+			// maxUploadBytes, no dataDir, and no extensions list (nothing
+			// env-supplied it — an empty `extensions: []` is not written
+			// either). HOME/SIGRUN_CONFIG_DIR/OPENAI_* are not server keys.
 			const bootstrapped = JSON.parse(
 				await readFile(
 						join(dir, "config", "settings.json"),
-						"utf8",
-				),
-			) as {
-				server: Record<string, unknown>;
-				defaultModel?: string;
-				extensions?: string[];
-			};
-			expect(bootstrapped.server).toMatchObject({
-				port,
-				storagePath: join(dir, "sigrun.db"),
-				workspacePath: dir,
+					"utf8",
+					),
+			) as Record<string, unknown>;
+			expect(bootstrapped).toEqual({
+				defaultModel: "openai/gpt-4o",
+				server: { port },
 			});
-			// The webui keys are OMITTED on a defaulted first boot
-			// (build-and-webui Task 4): a mirrored `webuiBundle: "webui/dist"`
-			// would read as an explicit selection on the next boot and make
-			// absent-default → API-only unreachable. Neither key may appear.
-			expect(bootstrapped.server.webui).toBeUndefined();
-			expect(bootstrapped.server.webuiBundle).toBeUndefined();
-			// Defaults are recorded too (extensionsDir/compaction even though no
-			// env set them), plus the env-provided model and the resolved
-			// (empty) extension list.
-			expect(bootstrapped.server.extensionsDir).toBe("extensions");
-			expect(bootstrapped.server.compaction).toMatchObject({
-				enabled: true,
-			});
-			expect(bootstrapped.defaultModel).toBe("openai/gpt-4o");
-			expect(bootstrapped.extensions).toEqual([]);
 		} finally {
 			entry.child.kill("SIGTERM");
 			const exit = await entry.exited;

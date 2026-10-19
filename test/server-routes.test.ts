@@ -7,7 +7,8 @@
  * Two pins:
  *
  * - `route table is unchanged` — every path the server exposes today
- *   (the 22 `/v1` paths + the two probes), each with its method, checked
+ *   (the 22 `/v1` paths + the two probes + `/metrics`), each with its
+ *   method, checked
  *   through `app.hasRoute` and the printed route tree. Registration ORDER
  *   is pinned structurally by `createServer` (identity hook → webui
  *   bundle → probe/meta modules → the rest), matching today's shape.
@@ -47,6 +48,7 @@ import type { FastifyInstance } from "fastify";
 const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/healthz"],
 	["GET", "/readyz"],
+	["GET", "/metrics"],
 	["GET", "/v1/meta"],
 	["GET", "/v1/commands"],
 	["GET", "/v1/auth/check"],
@@ -88,16 +90,19 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/conversations/:id/meta"],
 	["PATCH", "/v1/conversations/:id/meta"],
 	["POST", "/v1/conversations/:id/uploads"],
+	["PUT", "/v1/conversations/:id/uploads/:name"],
 	["GET", "/v1/conversations/:id/files"],
 	["GET", "/v1/conversations/:id/files/content"],
 ];
 
 /** One unknown-id probe: where the route requires a body, a VALID one. */
 interface UnknownIdCase {
-	readonly method: "GET" | "POST" | "PATCH";
+	readonly method: "GET" | "POST" | "PATCH" | "PUT";
 	readonly url: string;
 	/** A body that passes the route's own validation (so only the lookup can answer). */
 	readonly payload?: unknown;
+	/** The payload's content type (JSON by default; the raw PUT sends octet-stream). */
+	readonly contentType?: string;
 	readonly status: number;
 	readonly body: unknown;
 }
@@ -207,6 +212,16 @@ const UNKNOWN_ID_CASES: readonly UnknownIdCase[] = [
 		body: { error: "conversation_not_found" },
 	},
 	{
+		// The raw §6.2 upload route: an octet-stream body, so only the
+		// conversation lookup can answer.
+		method: "PUT",
+		url: `/v1/conversations/${UNKNOWN_ID}/uploads/x.txt`,
+		payload: Buffer.from("x"),
+		contentType: "application/octet-stream",
+		status: 404,
+		body: { error: "conversation_not_found" },
+	},
+	{
 		method: "GET",
 		url: `/v1/conversations/${UNKNOWN_ID}/files`,
 		status: 404,
@@ -297,6 +312,7 @@ describe("server route table", () => {
 			[
 				"/healthz",
 				"/readyz",
+				"/metrics",
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/check",
@@ -328,6 +344,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id/export",
 				"/v1/conversations/:id/meta",
 				"/v1/conversations/:id/uploads",
+				"/v1/conversations/:id/uploads/:name",
 				"/v1/conversations/:id/files",
 				"/v1/conversations/:id/files/content",
 			].sort(),
@@ -353,7 +370,9 @@ describe("unknown conversation id", () => {
 					? {}
 					: {
 							payload: testCase.payload as Record<string, unknown>,
-							headers: { "content-type": "application/json" },
+							headers: {
+								"content-type": testCase.contentType ?? "application/json",
+							},
 						}),
 			});
 			expect(

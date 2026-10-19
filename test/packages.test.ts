@@ -3,11 +3,13 @@
  * plus packages-dir-first extension resolution (`resolveExtensionEntry`).
  *
  * Hermetic: installs use a `file:` specifier against the on-disk fixture
- * package (test/fixtures/fixture-pkg) — no network. The fixture's own
- * dependencies (`@earendil-works/pi-durable`, `@earendil-works/pi-ai`,
- * both "*") resolve from the caller's node_modules — sigrun's own — so
- * `npm install --prefix <tmp>` hard-links them from the local store
- * instead of fetching.
+ * package (test/fixtures/fixture-pkg) — no network. The fixture's host
+ * runtime modules (pi-durable, pi-ai) are devDependencies-only (the
+ * provider-plugins posture): npm installs a `file:` directory as a bare
+ * symlink (no dependencies materialize) and a tarball without its
+ * devDependencies, so every install shape leaves the packages dir's
+ * HOST-MODULE LINKS as the resolution for the fixture's bare imports —
+ * and the loader's host-module guard sees the host's own versions.
  */
 
 import {
@@ -27,13 +29,14 @@ import { execFile, execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { SettingsValidationError } from "../src/harness/settings.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
 import {
 	GitSyncError,
+	HOST_RUNTIME_MODULES,
 	PackageSyncError,
 	ensureHostModuleLinks,
 	findExtEntry,
@@ -430,6 +433,12 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 		).toBe(before);
 	});
 
+	test("chord joins the host runtime modules (linked into packages dirs)", () => {
+		// Core-hardening Task 5: chord is host-shipped (the context module
+		// extensions type against), so it links like pi-ai/pi-durable/typebox.
+		expect(HOST_RUNTIME_MODULES).toContain("@earendil-works/chord");
+	});
+
 	test("ensureHostModuleLinks replaces a broken link and clears it for relinking", () => {
 		const packagesDir = join(freshDir("sigrun-hostmod-broken-"), "packages");
 		const nodeModules = join(packagesDir, "node_modules", "@earendil-works");
@@ -442,6 +451,36 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 		const relinked = join(nodeModules, "pi-ai");
 		expect(lstatSync(relinked).isSymbolicLink()).toBe(true);
 		expect(existsSync(relinked)).toBe(true);
+	});
+
+	test("a real copy whose version differs from the host warns and is left in place", () => {
+		// Spec §6.4 R6 surfacing: npm's real copy still wins over the link
+		// (the sync never fights npm's tree), but a copy whose version
+		// differs from the host's is no longer silent — the loader's guard
+		// quarantines the extensions that RESOLVE it; this warn covers the
+		// packages tree itself.
+		const packagesDir = join(freshDir("sigrun-hostmod-skew-"), "packages");
+		const chordDir = join(packagesDir, "node_modules", "@earendil-works", "chord");
+		mkdirSync(chordDir, { recursive: true });
+		writeFileSync(
+			join(chordDir, "package.json"),
+			JSON.stringify({ name: "@earendil-works/chord", version: "0.0.1" }),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			ensureHostModuleLinks(packagesDir);
+			// Left in place: still npm's real copy, not replaced by a link.
+			expect(lstatSync(chordDir).isSymbolicLink()).toBe(false);
+			const warnings = warn.mock.calls.map((call) => String(call[0]));
+			const skewWarning = warnings.find((text) =>
+				text.includes("@earendil-works/chord@0.0.1"),
+			);
+			expect(skewWarning).toBeDefined();
+			expect(skewWarning).toContain("differs from host");
+			expect(skewWarning).toContain(packagesDir);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

@@ -254,6 +254,7 @@ describe("GET /v1/meta", () => {
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 			auth: { methods: [], claimed: true },
+			backup: {},
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [] },

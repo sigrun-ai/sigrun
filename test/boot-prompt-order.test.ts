@@ -1,6 +1,6 @@
 /**
  * System-prompt Task 3: boot wiring — guidance LAST + the reserved-key
- * boot assertion.
+ * quarantine.
  *
  * `openHarness` installs the core prompt-section extensions first
  * (context-files, skills), then loads extension packages, then the
@@ -9,12 +9,13 @@
  * disappear with the matched model; trailing placement keeps those
  * transitions minimal patches instead of full prompt re-emits).
  *
- * The reserved-key assertion walks `registry.snapshot().sections()` AFTER
- * `loadExtensions` and after the guidance install: any non-core extension
- * owning one of `RESERVED_CORE_SECTION_KEYS` — including one that
- * last-writer-wins REPLACED a core section — fails boot loud, naming the
- * extension and the key. Sections are registry state that shapes every
- * conversation's prompt; a silent takeover is not a valid configuration.
+ * The reserved-key check is the loader's post-resolve validation (spec
+ * §6.5 R11): any extension whose sections declare one of
+ * `RESERVED_CORE_SECTION_KEYS` is QUARANTINED at load — nothing
+ * installed, no provider/seam-host/health/event-bus/worker binding
+ * collected — and boot continues. Boot keeps a post-install walk over
+ * `RESERVED_CORE_SECTION_OWNERS` as a CORE-ONLY assertion (a core-bug
+ * guard, unreachable through the loader).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -93,19 +94,41 @@ test("core section order: identity first, guidance after long-term-memory", asyn
 	}
 });
 
-test("an extension declaring persona fails boot loud", async () => {
-	// The collision fixture installs cleanly (the registry allows duplicate
-	// section keys across extensions — last-writer-wins at render); boot
-	// must throw AFTER loadExtensions, naming the extension and the key.
+test("an extension declaring a reserved section key is quarantined and boot continues", async () => {
+	// The collision fixture resolves cleanly (the registry would accept the
+	// duplicate section — last-writer-wins at render), so the loader's
+	// post-resolve validation is the only gate: the extension is
+	// quarantined BEFORE the registry install and before any binding is
+	// collected, and boot resolves. The fixture also contributes a faux
+	// provider, so "no contributor collected" is observable on the provider
+	// surface (`providerOwnership` keys by provider id).
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-boot-order-"));
 	try {
-		const boot = openHarness(configWith(dir), {
+		const opened = await openHarness(configWith(dir), {
 			env: {},
 			extensionSpecifiers: [SECTION_COLLISION_SPECIFIER],
 		});
-		await expect(boot).rejects.toThrow(
-			'extension "sigrun-fixture-section-collision" declares reserved core section "persona"',
-		);
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: SECTION_COLLISION_SPECIFIER,
+					status: "quarantined",
+					error: expect.stringMatching(
+						/^extension "sigrun-fixture-section-collision" declares reserved core section "persona"$/,
+					),
+				},
+			]);
+			// Nothing was installed: the registry has no entry under the slug.
+			expect(
+				opened.registry.snapshot().extension("sigrun-fixture-section-collision"),
+			).toBeUndefined();
+			// No provider contributor was collected for it.
+			expect(opened.providerOwnership.has("fixture-section-collision-gw")).toBe(false);
+			// No seam host was filed (the post-resolution host call never ran).
+			expect(opened.seamHosts.has("sigrun-fixture-section-collision")).toBe(false);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

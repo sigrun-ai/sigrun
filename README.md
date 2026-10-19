@@ -13,8 +13,7 @@ and capabilities at boot.
 - **pi-durable core** — the harness primitives (conversations, inbox
   steering/follow-up modes, retries, streaming, compaction) come from
   pi-durable; sigrun is the deployable shell around them.
-- **Extensions** — separate npm packages (e.g. the approvals and memory
-  extensions) loaded from `SIGRUN_EXTENSIONS` (or the settings file's
+- **Extensions** — separate npm packages loaded from `SIGRUN_EXTENSIONS` (or the settings file's
   top-level `extensions` list); a failing extension is quarantined and
   reported, never a boot abort.
 - **Web UI** — a static bundle served from `SIGRUN_WEBUI_BUNDLE` (or the
@@ -101,12 +100,17 @@ When an env var and the settings file both set a knob, the env var wins
 — this is documented behavior, not enforced: sigrun never warns about or
 detects env/file conflicts.
 
-On first boot (settings file absent), sigrun writes the resolved
-configuration — the `server` section (env values plus defaults) plus the
-resolved `extensions` list and `defaultModel` — into `settings.json`, so
-the effective configuration is visible and hand-editable (the file
-records reality). On later boots the file is never rewritten by
-bootstrap: edit it, and env vars still override it per field.
+On first boot (settings file absent), sigrun writes only what the
+environment explicitly set — the env-sourced `server` fields plus
+`extensions` and `defaultModel` when env supplied them — into
+`settings.json`; defaults are never persisted, so later releases'
+default changes reach existing installs (the file records intent, not
+reality). The full resolved server section is visible instead in
+`GET /v1/settings`'s `effective` block: every flattened server key
+(`server.port`, `server.compaction.reserveTokens`, …) with its resolved
+value and its source — `"env"`, `"file"`, or `"default"`. On later
+boots the file is never rewritten by bootstrap: edit it, and env vars
+still override it per field.
 
 | Variable | Type | Default | File key | Purpose |
 |---|---|---|---|---|
@@ -115,11 +119,10 @@ bootstrap: edit it, and env vars still override it per field.
 | `OPENAI_BASE_URL` | URL | OpenAI | `defaultProvider.baseUrl` | Endpoint for the env-driven provider (any compatible host). |
 | `SIGRUN_PORT` | positive int | `3000` | `server.port` | HTTP listen port. |
 | `SIGRUN_STORAGE_PATH` | path | `<dataDir>/sigrun.db` | `server.storagePath` | SQLite database location. Relative values resolve against the data root (absolute values verbatim; the cwd-relative `data/sigrun.db` default is retired). |
-| `SIGRUN_WORKSPACE_PATH` | path | `/home/sigrun` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. |
+| `SIGRUN_WORKSPACE_PATH` | path | `<dataDir>/workspace` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. The default rides the data root (chart/compose deploys set the path explicitly); it is never persisted on first boot. |
 | `SIGRUN_DATA_DIR` | path | `$XDG_DATA_HOME/sigrun` or `~/.local/share/sigrun` | `server.dataDir` | Data root (the DB default and extension data dirs). Env/file values win verbatim. |
 | `SIGRUN_CACHE_DIR` | path | `$XDG_CACHE_HOME/sigrun` or `~/.cache/sigrun` | `server.cacheDir` | Cache root (regenerable; never ensured at boot). Env/file values win verbatim. |
 | `SIGRUN_STATE_DIR` | path | `$XDG_STATE_HOME/sigrun` or `~/.local/state/sigrun` | `server.stateDir` | State root (operational bookkeeping). Env/file values win verbatim. |
-| `SIGRUN_EXTENSIONS_DIR` | path | `extensions` | `server.extensionsDir` | Directory for extension package resolution. |
 | `SIGRUN_EXTENSIONS` | csv | *(none)* | `extensions` (top-level list) | Deploy-time extension list (string entries; env wins over the file). |
 | — | — | *(none)* | `gitDir` is always `<configDir>/git` | Git extension checkouts clone here (pi layout). Not env-configurable. |
 | `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | `server.webuiBundle` | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
@@ -139,7 +142,7 @@ bootstrap: edit it, and env vars still override it per field.
 {
   "defaultModel": "openai/gpt-4o-mini", // non-empty provider/model-id; bare id = openai provider
   "extensions": [ // the desired install+load state — see Extensions
-    "sigrun-ext-approvals@^0.1.0",              // npm specifier
+    "@acme/sigrun-ext-example@^0.1.0",         // npm specifier
     "git:github.com/obra/superpowers@main",     // git source (or {source, ref, entry})
     { "source": "./dev-checkout", "enabled": false }  // object form
   ],
@@ -153,7 +156,6 @@ bootstrap: edit it, and env vars still override it per field.
     "dataDir": "/var/lib/sigrun",   // non-empty path (SIGRUN_DATA_DIR; verbatim)
     "cacheDir": "/var/cache/sigrun", // non-empty path (SIGRUN_CACHE_DIR; verbatim)
     "stateDir": "/var/lib/sigrun/state", // non-empty path (SIGRUN_STATE_DIR; verbatim)
-    "extensionsDir": "extensions",   // non-empty path
     "webuiBundle": "webui/dist",     // non-empty path
     "compaction": {
       "enabled": true,
@@ -161,7 +163,9 @@ bootstrap: edit it, and env vars still override it per field.
       "keepRecentTokens": 20000,     // positive integer
       "backgroundTokens": 32768      // non-negative integer (0 = off)
     },
-    "backup": { "path": "/backups" } // XOR { "s3": { "bucket": "...", "prefix": "...", "endpoint": "..." } }
+    "backup": { // target: { "path": "/backups" } XOR { "s3": { "bucket": "...", "prefix": "...", "endpoint": "..." } }
+      "staleAfterHours": 36            // positive number: health.backup degrades past this marker age
+    }
   }
 }
 ```
@@ -260,6 +264,60 @@ owner can share one — household-wide or with named users, `read` or
 lets a recipient submit, answer, and fork, but only the owner can
 re-share. Household sharing defaults to `read`.
 
+## Backup
+
+Set a target (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+`SIGRUN_BACKUP_S3_PREFIX`,
+via env or `server.backup` in `settings.json`) and schedule the backup
+script — the chart ships a nightly CronJob; bare deployments run
+`npx tsx src/backup/run-backup.ts` (or the built `dist/backup/run-backup.js`)
+with `SIGRUN_STORAGE_PATH` pointing at the database. Each run takes an
+online-safe `sqlite3 .backup`, ships it to the target (`sigrun-<UTC
+timestamp>.db`), and folds in any enabled `SIGRUN_BACKUP_SECTIONS`
+tarballs (config/secrets/data/state — see
+[`docs/extending.md`](docs/extending.md)).
+
+**Retention differs by target kind:**
+
+- **Path targets** retain in-process: each run prunes `sigrun-*.db`
+  files older than 30 days from the target directory (mtime-based;
+  non-matching files are never touched).
+- **S3 targets are pruned by the BUCKET, not the script** — configure a
+  lifecycle rule expiring the backup objects after 30 days. The rule's
+  filter must match your key layout: object keys are
+  `<SIGRUN_BACKUP_S3_PREFIX>sigrun-….db` (plus `<section>-….tar.gz` when
+  sections are enabled — cover those too, or drop the filter on a
+  dedicated bucket):
+
+  ```json
+  {
+    "Rules": [
+      {
+        "ID": "sigrun-backup-retention",
+        "Status": "Enabled",
+        "Filter": { "Prefix": "sigrun-" },
+        "Expiration": { "Days": 30 }
+      }
+    ]
+  }
+  ```
+
+  Applied with `aws s3api put-bucket-lifecycle-configuration --bucket
+  <bucket> --lifecycle-configuration file://rule.json` (adjust `Prefix`
+  to your `SIGRUN_BACKUP_S3_PREFIX`, or remove `Filter` on a dedicated
+  bucket). S3-compatible stores accept the same rule shape through
+  their own tooling, with `--endpoint-url` selecting yours.
+
+**Backup honesty (`GET /v1/meta`):** a configured target reports
+`health.backup: "configured"` only while backups actually SUCCEED — the
+script writes `<stateDir>/backup/last-success.json` after each
+successful run, and `/v1/meta` reads it per request: absent, corrupt,
+or older than `server.backup.staleAfterHours` (default 36 h) reports
+`"degraded"`, with the last success's timestamp in `backup.lastSuccessAt`.
+This requires the server and the CronJob to resolve the SAME state root
+— set `SIGRUN_STATE_DIR` on both (the chart does); with it unset on the
+job, the script warns and skips the marker (the backup itself still
+succeeds), and the badge honestly reads `"degraded"`.
+
 ## Extensions
 
 One list in `settings.json` — **`extensions`** — is the desired
@@ -278,7 +336,7 @@ Entry grammar:
 ```jsonc
 {
   "extensions": [
-    "sigrun-ext-approvals@^0.1.0",
+    "@acme/sigrun-ext-example@^0.1.0",
     "git:github.com/obra/superpowers@main",
     { "source": "./my-dev-checkout", "enabled": false }
   ]
