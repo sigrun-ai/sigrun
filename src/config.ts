@@ -163,6 +163,15 @@ export interface SigrunConfig {
 	workspace: LocalWorkspace;
 	backup?: BackupConfig;
 	/**
+	 * The backup honesty window (§6.8): `server.backup.staleAfterHours`
+	 * from the settings file over {@link DEFAULT_BACKUP_STALE_AFTER_HOURS}
+	 * (36). Consumed by the meta route's `health.backup` derivation — a
+	 * configured target whose last-success marker is absent or older than
+	 * this many hours reports `"degraded"`. Meaningful only when
+	 * {@link backup} is configured, but resolved unconditionally.
+	 */
+	backupStaleAfterHours: number;
+	/**
 	 * The webui channel surface (build-and-webui Task 4): the enable gate
 	 * (`SIGRUN_WEBUI` over `server.webui.enabled`, default true — `false`
 	 * is the positive API-only deploy) and the bundle selector. The
@@ -286,6 +295,16 @@ export function base64BodyLimit(maxUploadBytes: number): number {
 
 /** The interval refresh cadence default (minutes); `0` disables. */
 export const DEFAULT_PROVIDER_REFRESH_MINUTES = 15;
+
+/**
+ * The backup honesty window's default (§6.8): how old the
+ * `backup/last-success.json` marker may be, in hours, before a CONFIGURED
+ * backup target reports `health.backup: "degraded"`. File-only knob
+ * (`server.backup.staleAfterHours`) — no env var exists — over this
+ * default. 36 h tolerates a nightly Cadence missing one run before the
+ * badge flips.
+ */
+export const DEFAULT_BACKUP_STALE_AFTER_HOURS = 36;
 
 export type Env = Record<string, string | undefined>;
 
@@ -867,6 +886,11 @@ export function effectiveServerSection(
 	);
 	if (config.backup?.target === "path") {
 		emit("backup.path", config.backup.path, ["backup", "path"]);
+		emit(
+			"backup.staleAfterHours",
+			config.backupStaleAfterHours,
+			["backup", "staleAfterHours"],
+		);
 	} else if (config.backup?.target === "s3") {
 		emit("backup.s3.bucket", config.backup.bucket, [
 			"backup",
@@ -887,6 +911,11 @@ export function effectiveServerSection(
 				"endpoint",
 			]);
 		}
+		emit(
+			"backup.staleAfterHours",
+			config.backupStaleAfterHours,
+			["backup", "staleAfterHours"],
+		);
 	}
 	return out;
 }
@@ -956,7 +985,8 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 	// mirror. An env-or-file value wins VERBATIM (no suffix, no `~`
 	// expansion); the fallback runs Task 1's resolver over the env. Env
 	// `""` counts as unset (the stores module's own reading).
-	const resolvedRoots = resolveStoreRoots(env);	const rootDir = (kind: "data" | "cache" | "state"): string =>
+	const resolvedRoots = resolveStoreRoots(env);
+	const rootDir = (kind: "data" | "cache" | "state"): string =>
 		env[`SIGRUN_${kind.toUpperCase()}_DIR`] ||
 		server?.[`${kind}Dir`] ||
 		resolvedRoots[`${kind}Dir`];
@@ -1014,6 +1044,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 				server?.backup,
 				parseBackupSections(env.SIGRUN_BACKUP_SECTIONS),
 			),
+		// §6.8: the honesty window — file-only tier over the 36 h default
+		// (no env var exists for this key).
+		backupStaleAfterHours:
+			server?.backup?.staleAfterHours ?? DEFAULT_BACKUP_STALE_AFTER_HOURS,
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
 		providers: {

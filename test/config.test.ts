@@ -29,6 +29,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { join } from "node:path";
 import {
+	DEFAULT_BACKUP_STALE_AFTER_HOURS,
 	DEFAULT_COMPACTION,
 	DEFAULT_MAX_UPLOAD_BYTES,
 	DEFAULT_MEMORY_SEAM,
@@ -268,6 +269,34 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			bucket: "b",
 			endpoint: "https://s3.example.invalid",
 		});
+	});
+
+	test("backup: staleAfterHours resolves from the file over the 36 h default (no env var exists)", () => {
+		expect(loadConfig({ ...MODEL_ENV }).backupStaleAfterHours).toBe(
+			DEFAULT_BACKUP_STALE_AFTER_HOURS,
+		);
+		expect(DEFAULT_BACKUP_STALE_AFTER_HOURS).toBe(36);
+		// The file tier sets it — riding EITHER target shape, and with no
+		// target at all (the knob resolves regardless; health consults it
+		// only when a target is configured).
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{ server: { backup: { path: "/x", staleAfterHours: 48 } } },
+			).backupStaleAfterHours,
+		).toBe(48);
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{ server: { backup: { s3: { bucket: "b" }, staleAfterHours: 12 } } },
+			).backupStaleAfterHours,
+		).toBe(12);
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{ server: { backup: { staleAfterHours: 6 } } },
+			).backupStaleAfterHours,
+		).toBe(6);
 	});
 
 	test("extensions: env CSV wins over the file's top-level array", () => {

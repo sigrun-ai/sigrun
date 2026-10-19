@@ -25,6 +25,16 @@
  *  3. No backup target env → exit 1 with a config error (the CronJob must
  *     not silently do nothing).
  *
+ * Last-success marker (§6.8 backup honesty): after a run succeeds — the
+ * db rename/upload AND every enabled section — the script writes
+ * `<SIGRUN_STATE_DIR>/backup/last-success.json` (`{at, target, bytes}`, 0644,
+ * atomic; see `marker.ts`), which `GET /v1/meta` reads per request to
+ * derive `health.backup` (absent or older than `server.backup.staleAfterHours`,
+ * default 36 h → "degraded"). With `SIGRUN_STATE_DIR` unset the script WARNS
+ * and skips the marker — the backup itself still succeeds; refusing to
+ * guess the state root matters because a marker written where the server
+ * does not read it would read as fresh backups that exist nowhere.
+ *
  * The script deliberately touches NOTHING but the db file and the target —
  * no pi-durable internals, no lock negotiation; that is the whole point of
  * `sqlite3 .backup` over an application-level snapshot.
@@ -38,6 +48,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseBackupConfig, type BackupConfig, type BackupSections } from "../config.js";
 import { resolveStoreRoots, type StoreRoots } from "../harness/stores.js";
+import { writeBackupMarker } from "./marker.js";
 
 /** Retention floor (spec §4.3: "retention ≥ 30 days"). */
 export const BACKUP_RETENTION_DAYS = 30;
@@ -132,10 +143,17 @@ async function s3Upload(
  * One backup run: take the sqlite backup, then ship it to the target.
  * Exported for the test's direct (in-process) invocation; the script's
  * main() wraps it with env parsing and process exit codes.
+ *
+ * `stateDir` (§6.8): where the last-success marker is written after the
+ * WHOLE run settles (db + sections) — a run whose section leg failed must
+ * not refresh the marker, or the badge would hide the failure the exit
+ * code records. `undefined` skips the marker with a warning (the run
+ * itself still succeeds).
  */
 export async function runBackup(
 	dbPath: string,
 	backup: BackupConfig,
+	stateDir?: string,
 ): Promise<void> {
 	if (!dbPath) {
 		throw new Error("SIGRUN_STORAGE_PATH is required (the db to back up)");
@@ -158,8 +176,13 @@ export async function runBackup(
 		await mkdtemp(join(tempDir, ".sigrun-backup-")),
 		`backup-${timestampSegment()}.db`,
 	);
+	// The shipped size for the marker — captured inside the try after the
+	// sqlite step, read by the marker write below (rename/upload/cleanup all
+	// consume the temp file, so the size must be taken while it exists).
+	let bytes = 0;
 	try {
 		await sqliteBackup(dbPath, tempFile);
+		bytes = (await stat(tempFile)).size;
 		if (backup.target === "path") {
 			const dest = join(backup.path, `sigrun-${timestampSegment()}.db`);
 			await rename(tempFile, dest);
@@ -177,6 +200,21 @@ export async function runBackup(
 	// enabled the loop is a no-op and the run is byte-identical to the
 	// DB-only contract.
 	await backupSections(backup);
+	// §6.8: the marker — after EVERYTHING above succeeded (see the
+	// docblock for why a sections failure must leave it stale).
+	if (stateDir === undefined) {
+		console.warn(
+			"SIGRUN_STATE_DIR is not set — skipping the backup last-success marker " +
+				"(the backup itself succeeded; set SIGRUN_STATE_DIR on the CronJob and " +
+				"the server to the same root so health.backup can see it)",
+		);
+		return;
+	}
+	await writeBackupMarker(stateDir, {
+		at: new Date().toISOString(),
+		target: backup.target,
+		bytes,
+	});
 }
 
 /** The store root each backup section tars. */
@@ -288,17 +326,21 @@ const invokedAsScript = (() => {
 })();
 
 if (invokedAsScript) {
-	const backup = parseBackupConfig(process.env);
-	if (backup === undefined) {
-		console.error(
-			"No backup target configured: set SIGRUN_BACKUP_PATH or SIGRUN_BACKUP_S3_BUCKET",
-		);
-		process.exit(1);
-	}
-	try {
-		await runBackup(DB_PATH, backup);
-	} catch (error) {
-		console.error(`sigrun backup failed: ${String(error)}`);
-		process.exit(1);
-	}
+const backup = parseBackupConfig(process.env);
+if (backup === undefined) {
+console.error(
+"No backup target configured: set SIGRUN_BACKUP_PATH or SIGRUN_BACKUP_S3_BUCKET",
+);
+process.exit(1);
+}
+try {
+await runBackup(
+DB_PATH,
+backup,
+process.env.SIGRUN_STATE_DIR?.trim() || undefined,
+);
+} catch (error) {
+console.error(`sigrun backup failed: ${String(error)}`);
+process.exit(1);
+}
 }

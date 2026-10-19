@@ -20,7 +20,7 @@
  * - fail-loud: sqlite3 failure → non-zero exit + stderr + no output file
  */
 
-import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,14 +92,25 @@ afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
 });
 
-/** Invoke the backup script as a child process (as the CronJob would). */
+/**
+ * Invoke the backup script as a child process (as the CronJob would).
+ * `omitEnv` deletes keys the parent environment may leak into the child
+ * (the marker-skip test needs `SIGRUN_STATE_DIR` genuinely unset).
+ */
 async function runScript(
 	dbPath: string,
 	backupEnv: Record<string, string>,
+	omitEnv: readonly string[] = [],
 ): Promise<{ code: number; stdout: string; stderr: string }> {
 	const { spawnSync } = await import("node:child_process");
 	// Full parent env + overrides: the child needs PATH for sqlite3/aws and
 	// the repo's node_modules resolution for tsx.
+	const env: Record<string, string> = {
+		...process.env,
+		...backupEnv,
+		SIGRUN_STORAGE_PATH: dbPath,
+	};
+	for (const key of omitEnv) delete env[key];
 	const result = spawnSync(
 		process.execPath,
 		[
@@ -108,7 +119,7 @@ async function runScript(
 			SCRIPT,
 		],
 		{
-			env: { ...process.env, ...backupEnv, SIGRUN_STORAGE_PATH: dbPath },
+			env,
 			encoding: "utf8",
 		},
 	);
@@ -198,17 +209,44 @@ describe("GET /v1/meta backup fields", () => {
 		expect(meta.health.backup).toBe("unconfigured");
 	});
 
-	test("configured (env-parsed): capabilities.backup true + health.backup configured", async () => {
+	test("configured (env-parsed) + a real script run's marker → configured (read per request)", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
 		cleanups.push(() => rm(dir, { recursive: true, force: true }));
-		const { app } = await bootHarness({
-			SIGRUN_BACKUP_PATH: join(dir, "backups"),
+		const stateDir = join(dir, "state");
+		const backupDir = join(dir, "backups");
+		// The path target must exist (the deployment provides it — a mounted
+		// PVC dir; the script never creates the target).
+		await (await import("node:fs/promises")).mkdir(backupDir, {
+			recursive: true,
 		});
+		const { app, dbPath } = await bootHarness({
+			SIGRUN_BACKUP_PATH: backupDir,
+			SIGRUN_STATE_DIR: stateDir,
+		});
+		// No marker yet: a configured target with no successful run is
+		// DEGRADED — the honesty §6.8 exists for (the badge used to lie).
+		const before = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
+		expect(before.capabilities.backup).toBe(true);
+		expect(before.health.backup).toBe("degraded");
+		// A real script run (the CronJob shape) writes the marker into the
+		// SAME state root the server resolves...
+		const result = await runScript(dbPath, {
+			SIGRUN_BACKUP_PATH: backupDir,
+			SIGRUN_STATE_DIR: stateDir,
+		});
+		expect(result.stderr).toBe("");
+		expect(result.code).toBe(0);
+		// ...and the meta route reads it PER REQUEST: the same live server
+		// flips to configured without a restart.
 		const response = await app.inject({ method: "GET", url: "/v1/meta" });
 		expect(response.statusCode).toBe(200);
 		const meta = response.json();
 		expect(meta.capabilities.backup).toBe(true);
 		expect(meta.health.backup).toBe("configured");
+		expect(typeof meta.backup.lastSuccessAt).toBe("string");
+		expect(Date.parse(meta.backup.lastSuccessAt)).toBeGreaterThan(
+			Date.now() - 60_000,
+		);
 	});
 });
 
@@ -232,8 +270,11 @@ describe("runBackup (path target, live harness)", () => {
 
 		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
 		cleanups.push(() => rm(backupDir, { recursive: true, force: true }));
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
 		const result = await runScript(dbPath, {
 			SIGRUN_BACKUP_PATH: backupDir,
+			SIGRUN_STATE_DIR: stateDir,
 		});
 		expect(result.stderr).toBe("");
 		expect(result.code).toBe(0);
@@ -242,6 +283,36 @@ describe("runBackup (path target, live harness)", () => {
 		);
 		expect(files).toHaveLength(1);
 		expect(files[0]).toMatch(/^sigrun-\d{4}-\d{2}-\d{2}T.+\.db$/);
+		// §6.8: the last-success marker — shape `{at, target, bytes}`, mode
+		// 0644, under `<stateDir>/backup/`, written after the rename+retention.
+		const markerPath = join(stateDir, "backup", "last-success.json");
+		const marker = JSON.parse(await readFile(markerPath, "utf8"));
+		expect(Object.keys(marker).sort()).toEqual(["at", "bytes", "target"]);
+		expect(marker.target).toBe("path");
+		expect(Date.parse(marker.at)).toBeGreaterThan(Date.now() - 60_000);
+		expect(marker.bytes).toBe(
+			(await stat(join(backupDir, files[0]))).size,
+		);
+		expect((await stat(markerPath)).mode & 0o777).toBe(0o644);
+	});
+
+	test("SIGRUN_STATE_DIR unset → backup still succeeds, marker skipped with a warning", async () => {
+		const { dbPath } = await bootHarness();
+		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(backupDir, { recursive: true, force: true }));
+		const result = await runScript(
+			dbPath,
+			{ SIGRUN_BACKUP_PATH: backupDir },
+			["SIGRUN_STATE_DIR"],
+		);
+		expect(result.code).toBe(0);
+		expect(result.stderr).toMatch(/SIGRUN_STATE_DIR.*marker/s);
+		// The backup itself succeeded (the marker is observability, never a
+		// gate); nothing was created anywhere in the tmp tree for it.
+		const files = await import("node:fs/promises").then((fs) =>
+			fs.readdir(backupDir),
+		);
+		expect(files).toHaveLength(1);
 	});
 
 	test("retention prunes files older than 30 days, keeps fresh ones", async () => {
@@ -346,8 +417,11 @@ describe("restore drill: live-harness backup resumes", () => {
 		// Backup against the live (still-open, WAL) harness.
 		const backupDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
 		cleanups.push(() => rm(backupDir, { recursive: true, force: true }));
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
 		const result = await runScript(dbPath, {
 			SIGRUN_BACKUP_PATH: backupDir,
+			SIGRUN_STATE_DIR: stateDir,
 		});
 		expect(result.code).toBe(0);
 		expect(result.stderr).toBe("");
@@ -431,12 +505,15 @@ describe("runBackup (s3 target, stubbed aws)", () => {
 			{ mode: 0o755 },
 		);
 		const { dbPath } = await bootHarness();
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
 		const result = await runScript(dbPath, {
 			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
 			SIGRUN_BACKUP_S3_PREFIX: "nightly/",
 			// The S3-compatible-store leg (spec §4.3's pluggable target):
 			// the endpoint lands as aws's --endpoint-url.
 			SIGRUN_BACKUP_S3_ENDPOINT: "https://s3.example.test:3900",
+			SIGRUN_STATE_DIR: stateDir,
 			// The stub dir PREPENDS to PATH: `aws` resolves to the stub while
 			// sqlite3 still resolves through the parent PATH.
 			PATH: `${binDir}:${process.env.PATH}`,
