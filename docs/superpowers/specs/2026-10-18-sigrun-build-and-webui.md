@@ -1,6 +1,6 @@
 # Sigrun build, packaging, and webui channel surface
 
-Status: draft for review. Date: 2026-10-18.
+Status: implemented 2026-10-19 (feat/build-webui). Date: 2026-10-18.
 
 ## Why
 
