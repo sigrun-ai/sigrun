@@ -29,6 +29,7 @@ function summary(
 		entryCount: 1,
 		archived: false,
 		pinned: false,
+		access: "write",
 		...fields,
 	};
 }

@@ -32,6 +32,10 @@
 			"types": "./dist/ambient.d.ts",
 			"default": "./dist/ambient.js"
 		},
+		"./access": {
+			"types": "./dist/access.d.ts",
+			"default": "./dist/access.js"
+		},
 		"./settings": {
 			"types": "./dist/settings.d.ts",
 			"default": "./dist/settings.js"

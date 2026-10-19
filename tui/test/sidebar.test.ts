@@ -32,6 +32,7 @@ function summary(
 		entryCount: 0,
 		archived: init?.archived ?? false,
 		pinned: false,
+		access: "write",
 		...(init?.name === undefined ? {} : { name: init.name }),
 		...(init?.parent === undefined
 			? {}

@@ -40,7 +40,7 @@ export function registerSubmissionRoutes(
 	// `whenBusy` pass-through + memory-wiring submit.
 	app.post(
 		"/v1/conversations/:id/submissions",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<SubmissionResponse> => {
 			const conversation = request.conversation;
 			const body = request.body as Record<string, unknown> | undefined;
@@ -140,7 +140,7 @@ export function registerSubmissionRoutes(
 	// 400 (the agent's other knobs are not wire surface yet).
 	app.post(
 		"/v1/conversations/:id/configure",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<ConfigureResponse> => {
 			const conversation = request.conversation;
 			const body = request.body as Record<string, unknown> | undefined;
@@ -232,7 +232,7 @@ export function registerSubmissionRoutes(
 	// admitted later and has a higher id.
 	app.post(
 		"/v1/conversations/:id/abort",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<AbortResponse> => {
 			const conversation = request.conversation;
 			const inspection = await opened.harness.inspect(BACKGROUND_CONTEXT);
@@ -283,7 +283,7 @@ export function registerSubmissionRoutes(
 	// lands.
 	app.post(
 		"/v1/conversations/:id/compact",
-		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
+		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<CompactResponse> => {
 			const conversation = request.conversation;
 			// Absent body is valid (no instructions); an object may carry

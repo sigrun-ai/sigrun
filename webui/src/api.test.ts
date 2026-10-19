@@ -67,7 +67,7 @@ describe("createClient", () => {
 	test("listConversations GETs /v1/conversations", async () => {
 		const body: ConversationList = {
 			conversations: [
-				{ id: 1, root: true, entryCount: 0, archived: false, pinned: false },
+				{ id: 1, root: true, entryCount: 0, archived: false, pinned: false, access: "write" },
 			],
 		};
 		const { calls, fetchImpl } = stubFetch(body);

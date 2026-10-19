@@ -8,10 +8,18 @@
  * `loadConversation` in `conversation-handler.ts`): a channel polling a
  * torn-down conversation must not error, so they read the seam index
  * docs directly and answer 200 with an empty list for an absent
- * conversation. The answer route is a write: it resolves its
- * conversation through the `loadConversation` pre-handler like every
- * other `:id` route, with a params schema covering BOTH `id` and
- * `callId` so Fastify's param validation cannot mask the lookup.
+ * conversation. They are still §5.9 `:id` routes, so each handler applies
+ * the VISIBILITY half of the access rule itself (`visibleTo`): a caller
+ * with `accessOf === "none"` gets the hidden-is-404
+ * `conversation_not_found`, exactly as the pre-handler would give (read
+ * access suffices — these routes can never write).
+ *
+ * The answer route is a write: it resolves its conversation through the
+ * `loadConversation(ctx, "write")` pre-handler like every other write
+ * `:id` route, with a params schema covering BOTH `id` and `callId` so
+ * Fastify's param validation cannot mask the lookup. A human answer
+ * stamps `answeredByUser` with the principal's user (spec §5.9: who
+ * answered matters to every participant a conversation is shared with).
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -32,6 +40,9 @@ import {
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import { ID_PARAMS_SCHEMA, conversationId } from "../helpers.js";
+import { accessOf } from "@sigrun/shared/access";
+import { isSuperuser, type Principal } from "../auth/principal.js";
+import { SessionMetaDoc } from "../session-meta.js";
 import type {
 	AmbientList,
 	InteractionAnswered,
@@ -51,6 +62,31 @@ const ANSWER_PARAMS_SCHEMA = {
 	additionalProperties: false,
 } as const;
 
+/**
+ * The §5.9 visibility half of the access rule for the pre-handler-free
+ * polling GETs: resolve the conversation's session-meta and answer
+ * whether the caller may SEE it (`accessOf !== "none"`). Absent doc →
+ * defaults → ownerless → visible. These routes are read-only by
+ * construction, so read/write need never be distinguished here.
+ */
+async function visibleTo(
+	ctx: ServerContext,
+	convId: ReturnType<typeof conversationId>,
+	principal: Principal,
+): Promise<boolean> {
+	const meta = await ctx.opened.harness.snapshot(
+		SessionMetaDoc,
+		convId,
+		BACKGROUND_CONTEXT,
+	);
+	return (
+		accessOf(
+			{ user: principal.user, superuser: isSuperuser(principal) },
+			meta ?? {},
+		) !== "none"
+	);
+}
+
 /** Register the interaction-seam and ambient-surface routes. */
 export function registerInteractionRoutes(
 	app: FastifyInstance,
@@ -67,9 +103,16 @@ export function registerInteractionRoutes(
 	app.get(
 		"/v1/conversations/:id/interactions",
 		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request): Promise<InteractionList> => {
+		async (request, reply): Promise<InteractionList> => {
 			const { id } = request.params as { id: number };
 			const convId = conversationId(id);
+			// §5.9 visibility (the pre-handler-free polling convention means
+			// the rule is applied HERE): hidden → 404 conversation_not_found.
+			if (!(await visibleTo(ctx, convId, request.principal))) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
 			// Absent conversation → empty list (the ambient list's convention:
 			// a channel polling a torn-down conversation must not error).
 			const index = await opened.harness.snapshot(
@@ -100,7 +143,7 @@ export function registerInteractionRoutes(
 		"/v1/conversations/:id/interactions/:callId/answer",
 		{
 			schema: { params: ANSWER_PARAMS_SCHEMA },
-			preHandler: loadConversation(ctx),
+			preHandler: loadConversation(ctx, "write"),
 		},
 		async (request, reply): Promise<InteractionAnswered> => {
 			const { callId } = request.params as { callId: string };
@@ -182,7 +225,13 @@ export function registerInteractionRoutes(
 				// Unknown callId: the doc materializes empty — detect via kind
 				// never having been seeded (an empty seed has kind "").
 				if (draft.kind === "") return { found: false } as const;
-				const applied = applyAnswer(draft, answer, "human", Date.now());
+				const applied = applyAnswer(
+					draft,
+					answer,
+					"human",
+					Date.now(),
+					request.principal.user,
+				);
 				if (!applied) return { found: true, applied: false } as const;
 				// NEVER re-read a mutated draft field (even before the next
 				// await): reading a newly-set nested value off the tracked
@@ -216,9 +265,15 @@ export function registerInteractionRoutes(
 	app.get(
 		"/v1/conversations/:id/ambient",
 		{ schema: { params: ID_PARAMS_SCHEMA } },
-		async (request): Promise<AmbientList> => {
+		async (request, reply): Promise<AmbientList> => {
 			const { id } = request.params as { id: number };
 			const convId = conversationId(id);
+			// §5.9 visibility, applied in-handler like the interactions list.
+			if (!(await visibleTo(ctx, convId, request.principal))) {
+				return await reply
+					.code(404)
+					.send({ error: "conversation_not_found" });
+			}
 			const index = await opened.harness.snapshot(
 				AmbientOwnersDoc,
 				BACKGROUND_CONTEXT,

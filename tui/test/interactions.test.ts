@@ -45,6 +45,7 @@ function summary(id: number): ConversationSummary {
 		entryCount: 0,
 		archived: false,
 		pinned: false,
+		access: "write",
 		lastActivityAt: new Date(2026, 0, 1, 0, 0, -id).toISOString(),
 	};
 }
@@ -113,6 +114,7 @@ function stubClient(init?: {
 		getMeta(_id: number) {
 			return Promise.resolve({
 				pinned: false,
+				access: "write",
 				tagged: [],
 				archived: false,
 				draft: { text: "", attachments: [] },
