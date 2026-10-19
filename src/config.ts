@@ -156,7 +156,6 @@ export interface SigrunConfig {
 	stateDir: string;
 	storagePath: string;
 	models: SigrunModels;
-	extensionsDir: string;
 	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS` or the file's top-level `extensions`. */
 	extensions: readonly string[];
 	port: number;
@@ -220,7 +219,6 @@ export const DEFAULT_PROVIDER = "openai";
  * `SIGRUN_STORAGE_PATH` values that stay verbatim).
  */
 export const STORAGE_FILE_NAME = "sigrun.db";
-export const DEFAULT_EXTENSIONS_DIR = "extensions";
 export const DEFAULT_PORT = 3000;
 /** Spec §4.1/§6: the built webui workspace package's output. */
 export const DEFAULT_WEBUI_BUNDLE = "webui/dist";
@@ -336,8 +334,8 @@ export function parseModelSpec(
  * The default model is REQUIRED: `SIGRUN_DEFAULT_MODEL` (deprecated alias
  * `SIGRUN_MODEL`) wins, then the file's top-level `defaultModel` — with
  * neither, boot fails loud (see {@link parseModelSpec} for the format).
- * Optional overrides: `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS_DIR`,
- * `SIGRUN_EXTENSIONS`, `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`,
+ * Optional overrides: `SIGRUN_STORAGE_PATH`, `SIGRUN_EXTENSIONS`,
+ * `SIGRUN_PORT`, `SIGRUN_WORKSPACE_PATH`,
  * `SIGRUN_WEBUI_BUNDLE`, `OPENAI_BASE_URL`, the `SIGRUN_COMPACTION_*`
  * knobs of the context-management policy, and the backup target variables
  * (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+
@@ -369,6 +367,19 @@ function warnDeprecatedModelEnv(): void {
 	console.warn(
 		"SIGRUN_MODEL is deprecated, use SIGRUN_DEFAULT_MODEL",
 	);
+}
+
+/**
+ * Warn once per process when the retired `SIGRUN_EXTENSIONS_DIR` env var
+ * is set (§6.7: the knob was parsed but never read — the config carries no
+ * `extensionsDir` field at all now). Same once-per-process guard as the
+ * `SIGRUN_MODEL` alias.
+ */
+let extensionsDirWarned = false;
+function warnDeprecatedExtensionsDirEnv(): void {
+	if (extensionsDirWarned) return;
+	extensionsDirWarned = true;
+	console.warn("SIGRUN_EXTENSIONS_DIR is deprecated and ignored");
 }
 
 /** Parse `SIGRUN_COMPACTION_ENABLED` ("true"/"false", case-insensitive). */
@@ -669,8 +680,8 @@ function pickDefined(
  * releases' default changes reach existing installs. Each value uses
  * the SAME typed parser `loadConfig` uses (an invalid env value fails
  * loud here exactly as it would at resolution). `SIGRUN_EXTENSIONS_DIR`
- * is deliberately NOT a row of this table (like `SIGRUN_CONFIG_DIR`, it
- * is not projected — the extensions dir resolution is env/file-only).
+ * is RETIRED (§6.7): set → one deprecation warning, then ignored — the
+ * config carries no `extensionsDir` field at all.
  *
  * The env-var → key table:
  *
@@ -801,7 +812,6 @@ export function effectiveServerSection(
 	emit("port", config.port, ["port"]);
 	emit("workspacePath", config.workspace.path, ["workspacePath"]);
 	emit("storagePath", config.storagePath, ["storagePath"]);
-	emit("extensionsDir", config.extensionsDir, ["extensionsDir"]);
 	emit("maxUploadBytes", config.maxUploadBytes, ["maxUploadBytes"]);
 	emit("dataDir", config.dataDir, ["dataDir"]);
 	emit("cacheDir", config.cacheDir, ["cacheDir"]);
@@ -890,6 +900,13 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 	// the provider layer reads — settings.json never carries key material).
 	const server = settingsFile?.server;
 
+	// §6.7: `SIGRUN_EXTENSIONS_DIR` is retired — the knob was parsed but
+	// never read. Set (non-empty) → one warning, then ignored; the file's
+	// `server.extensionsDir` likewise only warns (src/harness/settings.ts).
+	if (env.SIGRUN_EXTENSIONS_DIR) {
+		warnDeprecatedExtensionsDirEnv();
+	}
+
 	// The boot default model (ruling 3): env wins, the file's top-level
 	// `defaultModel` is next, and there is NO code default — the model is
 	// genuinely required, so neither-source fails loud exactly like the
@@ -939,8 +956,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 	// mirror. An env-or-file value wins VERBATIM (no suffix, no `~`
 	// expansion); the fallback runs Task 1's resolver over the env. Env
 	// `""` counts as unset (the stores module's own reading).
-	const resolvedRoots = resolveStoreRoots(env);
-	const rootDir = (kind: "data" | "cache" | "state"): string =>
+	const resolvedRoots = resolveStoreRoots(env);	const rootDir = (kind: "data" | "cache" | "state"): string =>
 		env[`SIGRUN_${kind.toUpperCase()}_DIR`] ||
 		server?.[`${kind}Dir`] ||
 		resolvedRoots[`${kind}Dir`];
@@ -966,7 +982,6 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		storagePath,
 		models,
 		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
-		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
 		// next; empty otherwise.
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array

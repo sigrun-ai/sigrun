@@ -7,10 +7,9 @@
  * `isConfinedPath` (server/content-parts.ts) is an HTTP-submission-layer
  * check only; the model-driven tools may touch any path the conversation's
  * `ExecutionEnv` can reach. Sigrun's security model is policy-gated: an
- * installed gating extension (approvals/permissions, if the deploy adds
- * one) gates write/exec-class calls; with none installed, tool calls
- * proceed ungated (fail open — core ships no approvals of its own). No
- * filesystem confinement is claimed here.
+ * installed gating extension gates write/exec-class calls; with none
+ * installed, tool calls proceed ungated (fail open — core ships no gate of
+ * its own). No filesystem confinement is claimed here.
  *
  * Two extensions install here:
  *

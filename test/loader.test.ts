@@ -35,7 +35,7 @@ const FIXTURE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),
 ).href;
 
-/** The fixture memory extension, imported by specifier (contract: factory + submit). */
+/** The fixture memory extension (contract: factory; its legacy `submit` is the retirement-warning vehicle). */
 const MEMORY_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
 ).href;
@@ -59,6 +59,15 @@ const SKEW_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-skew", "index.js"),
 ).href;
 
+/**
+ * The pre-contract fixture (core hardening §6.7): a named `createMemory`
+ * factory + a retired `submit` pass-through — loads ok with BOTH
+ * deprecation warnings.
+ */
+const LEGACY_NAMED_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-legacy-named", "index.js"),
+).href;
+
 /** The collision fixture package: registers `fixture_marker` under a second extension. */
 const COLLISION_SPECIFIER = pathToFileURL(
 	join(
@@ -77,10 +86,10 @@ function configWith(dir: string) {
 	});
 }
 
-test("a factory result may carry capability fields beyond health/submit — they resolve and are ignored", async () => {
-	// The capability-freedom ruling: core retains only health + submit;
-	// an approvals extension may return extra fields (its own doc tooling,
-	// future seams) and those are the extension's business, never core's.
+test("a factory result may carry capability fields beyond health — they resolve and are ignored", async () => {
+	// The capability-freedom ruling: core retains only health; a gating
+	// extension may return extra fields (its own doc tooling, future seams)
+	// and those are the extension's business, never core's.
 	const ext = { name: "sigrun.approvals", hooks: [], tools: [] } as never;
 	const result = await resolveExtension({
 		createApprovals: () => ({
@@ -337,8 +346,9 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 					(entry) => entry.section.key === "long-term-memory",
 				),
 			).toBe(true);
-			// The factory result carried a submit pass-through: boot retains it.
-			expect(opened.memorySubmit).toBeDefined();
+			// The fixture's legacy `submit` pass-through is RETIRED (§6.7):
+			// the load stays `ok` and boot exposes no submit surface.
+			expect((opened as unknown as { memorySubmit?: unknown }).memorySubmit).toBeUndefined();
 			// A memory extension owns the section: the no-op default must NOT be installed.
 			expect(
 				snapshot
@@ -352,6 +362,77 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
 	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a factory result carrying submit loads ok and warns (retired pass-through)", async () => {
+	// §6.7: the submit pass-through is retired. sigrun-ext-memory-markdown
+	// dropped its `submit` in 1ae6c90, so the surface is gone — but a result
+	// still carrying one must NOT quarantine (old packages keep loading):
+	// it is ignored with exactly one warning naming the extension slug.
+	// fixture-memory keeps the legacy `{ extension, submit }` shape on
+	// purpose — the vehicle for this pin.
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-submit-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [MEMORY_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "sigrun-memory", status: "ok" },
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+		const retirementWarnings = warn.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.includes("the submit pass-through was retired"));
+		expect(retirementWarnings).toEqual([
+			'extension "sigrun-memory": the submit pass-through was retired; ignoring',
+		]);
+	} finally {
+		warn.mockRestore();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a named-export package loads ok but warns (deprecated bridge)", async () => {
+	// §6.7: the named-export bridges (createMemory/createApprovals, named
+	// `extension`) are deprecated — one more release of load-with-warning,
+	// then deletion. The fixture resolves through `createMemory` and its
+	// factory result ALSO carries a retired `submit`: both warnings fire
+	// on the same load, and the extension still installs `ok`.
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-named-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [LEGACY_NAMED_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "sigrun-legacy-named", status: "ok" },
+			]);
+			expect(
+				opened.registry.snapshot().extension("sigrun-legacy-named"),
+			).toBeDefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+		const lines = warn.mock.calls.map((call) => String(call[0]));
+		expect(
+				lines.includes(
+					`extension ${LEGACY_NAMED_SPECIFIER}: named-export factory "createMemory" is deprecated — export it as default`,
+			),
+		).toBe(true);
+		expect(lines).toContain(
+			'extension "sigrun-legacy-named": the submit pass-through was retired; ignoring',
+		);
+	} finally {
+		warn.mockRestore();
 		await rm(dir, { recursive: true, force: true });
 	}
 });

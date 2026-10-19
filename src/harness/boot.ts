@@ -22,7 +22,7 @@ import type { Env, SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
-import { loadExtensions, type ExtensionOutcome, type ExtensionSubmit, type ResolvedExtensionInput } from "./loader.js";
+import { loadExtensions, type ExtensionOutcome, type ResolvedExtensionInput } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
 import { MEMORY_SECTION_KEY, noopMemoryExtension } from "./memory-default.js";
@@ -208,16 +208,6 @@ export interface OpenedHarness {
 	 */
 	readonly memoryHealth: (() => HealthStatus) | undefined;
 	/**
-	 * The loaded memory extension's factory-result submit pass-through
-	 * (Task 26a), identity-matched to the memory-surface owner exactly like
-	 * `memoryHealth`. The §5 submissions route submits through it when
-	 * present — the memory wiring's submit binds the conversation as the
-	 * memory_recall source at the submit boundary (degenerate.js) — and
-	 * submits directly when `undefined` (the no-op memory default, a
-	 * quarantined memory extension, or a submit-less memory extension).
-	 */
-	readonly memorySubmit: ExtensionSubmit | undefined;
-	/**
 	 * Extension name -> seam host (the interaction/ambient handles the
 	 * loader handed each factory). Quarantined extensions have no entry;
 	 * extensions that took no host context neither. The server's seam
@@ -378,9 +368,7 @@ export interface OpenHarnessOptions {
  * producers are retained at boot — contributor producers on
  * `providerHealth`, the memory extension's producer on `memoryHealth` — for
  * the §5 meta `health` aggregation (Task 9e), a pure synchronous derivation
- * over this state; the memory extension's factory-result submit pass-through
- * is likewise retained on `memorySubmit` (Task 26a), identity-matched to the
- * memory-surface owner, for the §5 submissions route.
+ * over this state.
  */
 export async function openHarness(
 	config: SigrunConfig,
@@ -433,8 +421,7 @@ export async function openHarness(
 	registry.install(searchToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
-	// factory-result producers are retained alongside the outcomes (Task 9e);
-	// factory-result submit pass-throughs likewise (Task 26a).
+	// factory-result producers are retained alongside the outcomes (Task 9e).
 	// The packages dir: the deployment-installed extension root the
 	// loader resolves against FIRST (the settings file's `packages`
 	// declarations install here — see src/harness/packages.ts).
@@ -465,7 +452,6 @@ export async function openHarness(
 	const {
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
-		submitBindings: extensionSubmits,
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,
@@ -572,12 +558,6 @@ export async function openHarness(
 	const memoryHealth = extensionHealth.find(
 		(producer) => producer.extension === memoryOwner,
 	)?.health;
-	// §5 memory submit (Task 26a): the memory extension's retained submit
-	// pass-through — the same identity-matching as memoryHealth. No match →
-	// undefined → the server submits directly.
-	const memorySubmit = extensionSubmits.find(
-		(binding) => binding.extension === memoryOwner,
-	)?.submit;
 	const sink = createProviderMergeSink();
 	// `config.models` is the already-validated default-model resolution
 	// (loadConfig refuses to boot without env or file); restating it for
@@ -795,7 +775,6 @@ export async function openHarness(
 		providerEnv: effectiveEnv,
 		auth: authStore,
 		memoryHealth,
-		memorySubmit,
 		settings: settingsStore,
 		packagesDir,
 		seamHosts,

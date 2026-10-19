@@ -126,6 +126,20 @@ function warnDeprecatedWebuiBundle(): void {
 }
 
 /**
+ * Warn once per process when the file carries the retired
+ * `server.extensionsDir` key (§6.7): accepted for one release so existing
+ * files keep validating, warned because nothing reads it.
+ */
+let deprecatedExtensionsDirWarned = false;
+function warnDeprecatedExtensionsDir(): void {
+	if (deprecatedExtensionsDirWarned) return;
+	deprecatedExtensionsDirWarned = true;
+	console.warn(
+		"settings: server.extensionsDir is deprecated and ignored (nothing reads the extensions dir)",
+	);
+}
+
+/**
  * Default settings directory: the ONE config-root chain
  * (`resolveStoreRoots`, spec Decision 3) — `SIGRUN_CONFIG_DIR` →
  * `$XDG_CONFIG_HOME`/sigrun → `~/.config/sigrun`.
@@ -404,6 +418,12 @@ function validateServer(server: unknown): void {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
 		}
+	}
+	// The retired `extensionsDir` key (§6.7) stays ACCEPTED for one
+	// release (existing files keep validating) but warns — never throws —
+	// exactly like the legacy `webuiBundle` alias below; nothing reads it.
+	if (record.extensionsDir !== undefined) {
+		warnDeprecatedExtensionsDir();
 	}
 	// The webui channel surface (build-and-webui Task 4). The LEGACY
 	// `webuiBundle` key stays ACCEPTED for one release (a read-side alias

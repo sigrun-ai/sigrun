@@ -26,11 +26,10 @@
  *   block, spec §6.6).
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { join } from "node:path";
 import {
 	DEFAULT_COMPACTION,
-	DEFAULT_EXTENSIONS_DIR,
 	DEFAULT_MAX_UPLOAD_BYTES,
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
@@ -114,7 +113,6 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			server: {
 				workspacePath: "/srv/workspace",
 				storagePath: "/srv/sigrun.db",
-				extensionsDir: "/srv/extensions",
 			},
 		};
 		const fromFile = loadConfig({ ...MODEL_ENV }, file);
@@ -123,7 +121,6 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			path: "/srv/workspace",
 		});
 		expect(fromFile.storagePath).toBe("/srv/sigrun.db");
-		expect(fromFile.extensionsDir).toBe("/srv/extensions");
 
 		const mixed = loadConfig(
 			{ ...MODEL_ENV, SIGRUN_STORAGE_PATH: "/env/db.sqlite" },
@@ -132,7 +129,6 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		expect(mixed.storagePath).toBe("/env/db.sqlite");
 		// The unset-in-env fields still come from the file.
 		expect(mixed.workspace.path).toBe("/srv/workspace");
-		expect(mixed.extensionsDir).toBe("/srv/extensions");
 
 		// No file: the code defaults (the pre-file behavior, unchanged) —
 		// except storagePath, whose default moved under the data root
@@ -141,7 +137,6 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		expect(bare.port).toBe(DEFAULT_PORT);
 		expect(bare.storagePath).toBe(join(bare.dataDir, STORAGE_FILE_NAME));
 		expect(bare.workspace.path).toBe(defaultWorkspacePath(bare.dataDir));
-		expect(bare.extensionsDir).toBe(DEFAULT_EXTENSIONS_DIR);
 	});
 
 	test("compaction: env per-knob over file per-knob over defaults", () => {
@@ -461,6 +456,28 @@ describe("envServerSection (the env-only bootstrap projection, ruling 5)", () =>
 
 	test("SIGRUN_EXTENSIONS_DIR is not a table row — never projected", () => {
 		expect(envServerSection({ SIGRUN_EXTENSIONS_DIR: "/x" })).toEqual({});
+	});
+
+	test("SIGRUN_EXTENSIONS_DIR warns and is absent from the config (deprecated)", () => {
+		// §6.7: the knob is dead — parsed by nothing. It warns once and the
+		// config carries no `extensionsDir` field at all.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const config = loadConfig({
+				...MODEL_ENV,
+				SIGRUN_EXTENSIONS_DIR: "/opt/sigrun/extensions",
+			});
+			expect(
+				warn.mock.calls.some((call) =>
+					String(call[0]).includes(
+						"SIGRUN_EXTENSIONS_DIR is deprecated and ignored",
+					),
+				),
+			).toBe(true);
+			expect("extensionsDir" in config).toBe(false);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	test("empty-string values count as unset (the loadConfig reading)", () => {

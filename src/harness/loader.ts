@@ -24,32 +24,34 @@
  * The sigrun extension-package contract: a package's default export is a
  * factory returning an object with an `extension: Extension` field, plus an
  * optional §3 `health` producer (spec §3 — the memory-backend form; Task
- * 9e retains it for the §5 meta `health.memory` aggregation), an optional
- * `submit` pass-through (the memory wiring's submit — Task 26a retains it so
- * boot can expose it as `OpenedHarness.memorySubmit`; it binds the
- * conversation as the memory_recall source at the submit boundary), and an
- * optional `submit` pass-through. A factory result may also carry a
- * `providers` array (`ProviderContribution[]`, provider plugins Task 1):
- * boot feeds every loaded contributor into `collectProviders` after the
- * `options.extensions` seam — and a result carrying `providers` with NO
- * `extension` is a valid PROVIDER-ONLY contributor (the model-plugin shape:
- * no pi-durable surface, identified by its `name` field). A result may
- * likewise carry a `webuiBundles` array (`{name, dir}[]`, build-and-webui
- * Task 6): the loader validates it fail-loud, anchors each `dir` at the
- * extension module's URL, and collects the entries attributed to the slug
- * for boot's contributed-bundle registry — the same contributor-only form
- * applies (a `webuiBundles` result with no `extension` needs a `name`).
- * Factories may
+ * 9e retains it for the §5 meta `health.memory` aggregation). A factory
+ * result may also carry a `providers` array (`ProviderContribution[]`,
+ * provider plugins Task 1): boot feeds every loaded contributor into
+ * `collectProviders` after the `options.extensions` seam — and a result
+ * carrying `providers` with NO `extension` is a valid PROVIDER-ONLY
+ * contributor (the model-plugin shape: no pi-durable surface, identified
+ * by its `name` field). A result may likewise carry a `webuiBundles`
+ * array (`{name, dir}[]`, build-and-webui Task 6): the loader validates it
+ * fail-loud, anchors each `dir` at the extension module's URL, and
+ * collects the entries attributed to the slug for boot's
+ * contributed-bundle registry — the same contributor-only form applies (a
+ * `webuiBundles` result with no `extension` needs a `name`). Factories may
  * return a Promise (the plugins read their scoped settings store inside the
  * factory); the loader awaits the result. Packages that predate the settled
  * contract export named factories (`createMemory`) whose results carry the
  * same `.extension` field, so the loader resolves, in order:
  *
  * 1. the default export, if it is a factory returning `{ extension,
- *    health?, submit? }` or is itself an `Extension` (named `name`),
- * 2. a named `createMemory` factory (the bridge for the pre-contract
- *    memory package),
- * 3. a named `extension` export.
+ *    health? }` or is itself an `Extension` (named `name`) — the supported
+ *    form,
+ * 2. a named `createMemory` factory (DEPRECATED bridge for the
+ *    pre-contract memory package — one warning per load; deletion is the
+ *    next release),
+ * 3. a named `extension` export (DEPRECATED the same way).
+ *
+ * A factory result still carrying a `submit` pass-through (the retired
+ * pre-seam memory wiring) is IGNORED with one warning — never
+ * quarantined, so pre-seam packages keep loading.
  *
  * A factory MAY declare an arity-1 signature: the loader then passes the
  * host context (src/harness/seam-host.ts — the interaction/ambient seam
@@ -62,24 +64,17 @@
  * `interactionKinds`/`ambientKinds` string arrays declare which seam
  * kinds/keys the extension writes — validated fail-loud here and
  * consumed by the seam host's write gate and the /v1/meta inventory.
- * Only factory results can carry a health producer,
- * submit pass-through, or kind declarations (the direct-`Extension` forms
- * have no factory result to read one from). A `health`/`submit` field that
- * is present but not the expected shape, or kinds that are not string
- * arrays, is a contract violation — quarantined, never silently ignored.
+ * Only factory results can carry a health producer or kind declarations
+ * (the direct-`Extension` forms have no factory result to read one from).
+ * A `health` field that is present but not the expected shape, or kinds
+ * that are not string arrays, is a contract violation — quarantined,
+ * never silently ignored.
  * A `providers` entry whose `provider` has no string `id` is the same class
  * of violation (a plugin that THINKS it contributed a provider must not
  * silently lose it).
  */
 
-import type { Context } from "@earendil-works/chord";
-import type {
-	Conversation,
-	Extension,
-	Registry,
-	Submission,
-	SubmissionDraft,
-} from "@earendil-works/pi-durable";
+import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
 	ExtensionEventHandlers,
 	ExtensionRunSettledHandler,
@@ -112,19 +107,6 @@ export interface ExtensionOutcome {
 }
 
 /**
- * A factory-result submit pass-through (the memory wiring's `submit`,
- * Task 26a): binds the conversation as the memory_recall source at the
- * submit boundary, then admits the submission. Boot exposes the
- * memory-surface owner's as `OpenedHarness.memorySubmit`; the §5 server
- * submits through it when present.
- */
-export type ExtensionSubmit = (
-	conversation: Conversation,
-	submission: SubmissionDraft,
-	context: Context,
-) => Promise<Submission>;
-
-/**
  * A §3 health producer retained from an extension factory result (Task
  * 9e). The producer is paired with the resolved `Extension` — the same
  * object the loader installs — so boot can correlate it with the
@@ -138,22 +120,10 @@ export interface ExtensionHealthProducer {
 }
 
 /**
- * A factory-result submit pass-through retained from an extension factory
- * result (Task 26a) — paired with the resolved `Extension` exactly like
- * `ExtensionHealthProducer`, so boot identity-matches it to the
- * memory-surface owner.
- */
-export interface ExtensionSubmitBinding {
-	/** The extension the factory result carried the submit for. */
-	readonly extension: Extension;
-	readonly submit: ExtensionSubmit;
-}
-
-/**
  * A factory-result `runSettled` handler retained from an extension factory
  * result (memory-seam Task 3) — paired with the resolved `Extension` like
- * the health/submit bindings, so boot registers it on the event bus under
- * the extension's final name.
+ * the health binding, so boot registers it on the event bus under the
+ * extension's final name.
  */
 export interface ExtensionRunSettledBinding {
 	/** The extension the factory result carried the handler for. */
@@ -222,11 +192,6 @@ export interface LoadedExtensions {
 	 */
 	readonly healthProducers: readonly ExtensionHealthProducer[];
 	/**
-	 * Submit pass-throughs from factory results (Task 26a), one per loaded
-	 * extension that carried one; quarantined extensions contribute none.
-	 */
-	readonly submitBindings: readonly ExtensionSubmitBinding[];
-	/**
 	 * `runSettled` handlers from factory results (memory-seam Task 3), one
 	 * per loaded extension that carried one; quarantined extensions
 	 * contribute none. Boot registers each on the event bus under the
@@ -268,10 +233,9 @@ interface ExtensionModule {
 }
 
 /**
- * What the contract resolution yields: the `Extension` plus the optional §3
- * health producer / submit pass-through a factory
- * result carried alongside it. Only factory results can carry one; the
- * direct-`Extension` forms resolve without.
+ * What `resolveExtension` yields: the `Extension` plus the optional §3
+ * health producer a factory result carried alongside it. Only factory
+ * results can carry one; the direct-`Extension` forms resolve without.
  */
 export interface ResolvedExtension {
 	/**
@@ -290,8 +254,21 @@ export interface ResolvedExtension {
 	readonly name?: string;
 	/** Present only when resolution came from a factory result carrying one. */
 	readonly health?: () => HealthStatus;
-	/** Present only when the factory result carried one (the memory wiring's submit). */
-	readonly submit?: ExtensionSubmit;
+	/**
+	 * Set when the factory result carried a `submit` pass-through — the
+	 * RETIRED pre-seam memory wiring (§6.7). The submit itself is ignored;
+	 * the flag drives the loader's one-time retirement warning. Never
+	 * quarantines: old packages keep loading.
+	 */
+	readonly retiredSubmit?: true;
+	/**
+	 * Which NAMED-EXPORT bridge resolved this module (§6.7 deprecation):
+	 * `"createMemory"`/`"createApprovals"` (the pre-contract named
+	 * factories) or `"extension"` (the named `extension` export). Absent
+	 * for the supported default-export forms. Drives the deprecation
+	 * warning; behavior is otherwise unchanged.
+	 */
+	readonly resolvedVia?: "createMemory" | "createApprovals" | "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
@@ -687,12 +664,13 @@ function extensionModuleDir(loaded: string): string | undefined {
 }
 
 /**
- * Call an unknown-typed factory and validate the `{ extension, health?,
- * submit? }` result. A `health`/`submit` field that
- * is present but not the expected shape is a contract violation — thrown,
- * so the loader quarantines the extension (fail-loud: a package that THINKS
- * it reports health or owns a submit boundary must not read as healthy or
- * lose submissions from a broken capability).
+ * Call an unknown-typed factory and validate the `{ extension, health? }`
+ * result. A `health` field that is present but not the expected shape is a
+ * contract violation — thrown, so the loader quarantines the extension
+ * (fail-loud: a package that THINKS it reports health must not read as
+ * healthy). A `submit` field is IGNORED with a flag (§6.7: the
+ * pass-through is retired; the loader warns, never quarantines — old
+ * packages keep loading).
  *
  * The factory result may be a Promise (provider plugins read their scoped
  * settings store inside the factory) — awaited before validation. A result
@@ -768,14 +746,6 @@ async function resolvedFromFactory(
 		);
 	}
 	if (
-		candidate.submit !== undefined &&
-		typeof candidate.submit !== "function"
-	) {
-		throw new Error(
-			"extension factory returned a submit field that is not a function",
-		);
-	}
-	if (
 		candidate.runSettled !== undefined &&
 		typeof candidate.runSettled !== "function"
 	) {
@@ -817,7 +787,7 @@ async function resolvedFromFactory(
 			: { health: candidate.health as () => HealthStatus }),
 		...(candidate.submit === undefined
 			? {}
-			: { submit: candidate.submit as ExtensionSubmit }),
+			: { retiredSubmit: true as const }),
 		...(candidate.runSettled === undefined
 			? {}
 			: { runSettled: candidate.runSettled as ExtensionRunSettledHandler }),
@@ -851,26 +821,33 @@ export async function resolveExtension(
 	module: ExtensionModule,
 	hostContext: unknown = undefined,
 ): Promise<ResolvedExtension | undefined> {
-	// 1. Default export: factory returning `{ extension, health? }`, or the Extension itself.
+	// 1. Default export: factory returning `{ extension, health? }`, or the
+	//    Extension itself — the supported forms.
 	const defaultExport = module.default;
 	if (isExtension(defaultExport)) return { extension: defaultExport };
 	const fromDefault = await resolvedFromFactory(defaultExport, hostContext);
 	if (fromDefault !== undefined) return fromDefault;
 
-	// 2. Named real-package factories (bridge for the pre-contract packages).
-	// A package whose factory result carries extra capabilities (approvals,
-	// future insight/seam fields) resolves fine: only health and submit are
-	// validated and retained; everything else is the extension's own business.
+	// 2. Named real-package factories (DEPRECATED bridge for the
+	// pre-contract packages — one warning per load at the caller; deletion
+	// is the next release). A package whose factory result carries extra
+	// capability fields (approvals, future insight/seam fields) resolves
+	// fine: only health is validated and retained; everything else is the
+	// extension's own business.
 	const fromMemory = await resolvedFromFactory(module.createMemory, hostContext);
-	if (fromMemory !== undefined) return fromMemory;
+	if (fromMemory !== undefined) return { ...fromMemory, resolvedVia: "createMemory" };
 	const fromApprovals = await resolvedFromFactory(
 		module.createApprovals,
 		hostContext,
 	);
-	if (fromApprovals !== undefined) return fromApprovals;
+	if (fromApprovals !== undefined) {
+		return { ...fromApprovals, resolvedVia: "createApprovals" };
+	}
 
-	// 3. Named `extension` export.
-	if (isExtension(module.extension)) return { extension: module.extension };
+	// 3. Named `extension` export (DEPRECATED the same way).
+	if (isExtension(module.extension)) {
+		return { extension: module.extension, resolvedVia: "extension" };
+	}
 
 	return undefined;
 }
@@ -1039,7 +1016,6 @@ const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
 const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
-const submitBindings: ExtensionSubmitBinding[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
@@ -1205,19 +1181,28 @@ const display = label ?? entry;
 				// for the next boot's specifier list.
 				slugs.set(slug, declared);
 				outcomes.push({ name: slug, status: "ok" });
-				if (extension !== undefined && resolved.health !== undefined) {
-					healthProducers.push({
-						extension,
-						health: resolved.health,
-					});
-				}
-				if (extension !== undefined && resolved.submit !== undefined) {
-					submitBindings.push({
-						extension,
-					submit: resolved.submit,
-					});
-				}
-				if (extension !== undefined && resolved.runSettled !== undefined) {
+			if (extension !== undefined && resolved.health !== undefined) {
+				healthProducers.push({
+				extension,
+				health: resolved.health,
+			});
+			}
+			// §6.7 retirements, warned ONCE at load (never quarantined): a
+			// result resolved through a named-export bridge, and a result still
+			// carrying the retired submit pass-through. Both keep loading —
+			// deletion of the bridge is the next release, and the submit is
+			// simply ignored (the memory seam owns capture now).
+			if (resolved.resolvedVia !== undefined) {
+				console.warn(
+					`extension ${display}: named-export factory "${resolved.resolvedVia}" is deprecated — export it as default`,
+				);
+			}
+			if (resolved.retiredSubmit === true) {
+				console.warn(
+					`extension "${slug}": the submit pass-through was retired; ignoring`,
+				);
+			}
+			if (extension !== undefined && resolved.runSettled !== undefined) {
 					runSettledBindings.push({
 						extension,
 					runSettled: resolved.runSettled,
@@ -1287,7 +1272,6 @@ const display = label ?? entry;
 		providerContributors,
 		webuiBundles,
 		healthProducers,
-		submitBindings,
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,
