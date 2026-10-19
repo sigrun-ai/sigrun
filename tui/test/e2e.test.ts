@@ -36,6 +36,7 @@ import { loadConfig } from "../../src/config.js";
 import { openHarness, type OpenedHarness } from "../../src/harness/boot.js";
 import type { ProviderContributor } from "../../src/harness/providers/index.js";
 import { createServer } from "../../src/server/index.js";
+import { seededIdentity } from "../../test/helpers/identity.js";
 import { SigrunClient, type ConversationViewWire } from "../src/api.js";
 import { watchConversation, type WatchHandlers } from "../src/sse.js";
 
@@ -88,8 +89,18 @@ async function bootServer(responses?: unknown[]): Promise<TestServer> {
 		// vitest setupFiles pin lives in the repo root's config — this
 		// workspace's own runner needs its own env).
 		SIGRUN_CACHE_DIR: join(dir, "cache"),
+		// The W1 auth posture (final-review fix): `app.listen({ host:
+		// "127.0.0.1" })` below would derive methods ["token"] and gate
+		// every request behind the unclaimed claim. This e2e drives the
+		// WIRE (SSE frames, submissions, interactions), not auth — the
+		// root-suite helpers' claimed + `none` posture keeps it that way:
+		// a seeded claimed directory passes the setup gate, and the empty
+		// method list keeps the header-driven identity the assertions pin
+		// (`X-Sigrun-User` stamps owner; its absence leaves owner absent).
+		SIGRUN_AUTH: "none",
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		extensionSpecifiers: [FIXTURE_SPECIFIER],
 		env: {},
