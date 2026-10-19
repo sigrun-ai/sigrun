@@ -325,6 +325,66 @@ Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-ollama)
 [sigrun-pareto](https://github.com/sigrun-ai/sigrun-pareto) (scoped-settings
 base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-bifrost)
 (multi-surface discovery).
+
+## Contributing webui bundles
+
+An extension can ship a replacement web UI as a **contributed bundle**: a
+factory-result field, the same contributor pathway as `providers`. The
+result carries a `webuiBundles` array of `{ name, dir }` entries —
+
+```ts
+import { defineExtension } from "@earendil-works/pi-durable";
+
+export default function createAcmeWebui() {
+	return {
+		extension: defineExtension({
+			name: "@acme/webui", // slugs to "acme-webui"
+			sections: [],
+		}),
+		webuiBundles: [{ name: "acme-webui", dir: "../webui" }],
+	};
+}
+```
+
+- **`name` is the selection key** and must match `^[a-z][a-z0-9_-]*$`
+  (lowercase first letter, then lowercase letters, digits, `-`, `_`). A
+  malformed `webuiBundles` field — not an array, a name outside the
+  grammar, a missing or empty `dir` — **quarantines the extension at
+  load**, fail-loud: a package that thinks it contributed a bundle must
+  never silently lose it.
+- **`dir` is the bundle root** — the directory containing `index.html`
+  and its assets — and a relative value resolves against the
+  **extension ENTRY FILE's directory**, your package, never the
+  server's cwd. The npm footgun: a package whose entry is
+  `dist/index.js` anchors at `<pkg>/dist`, so a bundle shipped at
+  `<pkg>/webui` is `"../webui"` (or build the bundle under `dist/`
+  beside the entry and say `"./webui"`). Absolute dirs pass through
+  verbatim.
+- **The server owns the `index.html` check.** A contributed bundle
+  lacking `index.html` fails at SERVE time with a boot error naming
+  your extension — not at load; the loader stays filesystem-free by
+  contract.
+- **Name collisions are last-registered-wins** with a `console.warn`
+  and a retained record surfaced at `/v1/meta` under `collisions.webui`
+  — a co-installed replacement bundle is a deployer-visible choice,
+  never a silent shadowing.
+- **Selection is configuration, resolved at serve time** (contributed
+  bundles only exist after extensions load): set the selector to your
+  name — `server.webui.bundle: "acme-webui"` or
+  `SIGRUN_WEBUI_BUNDLE=acme-webui`. An explicit name that matches no
+  contributed bundle is a boot error naming it. The gate applies first:
+  `server.webui.enabled: false` (`SIGRUN_WEBUI=false`) mounts nothing
+  at all, contributed or built-in.
+- **A selected contributed bundle mounts exactly like the built-in
+  one** — same static + SPA-fallback seam, `/v1/*` API precedence
+  unchanged, no separate service or port — and `/v1/meta`'s
+  `capabilities.channels` reports the selected bundle's name
+  (`"webui"` for the built-in default and explicit paths, your `name`
+  for yours), so a client can identify the UI it is talking to.
+- **A bundle-only contributor needs a `name`.** As with `providers`, a
+  factory result carrying `webuiBundles` and no `extension` is a valid
+  contributor — identified by its `name` field.
+
 ## Prompt sections: six keys are reserved
 
 pi-durable composes the system message from **sections** — a key plus

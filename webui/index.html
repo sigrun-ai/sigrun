@@ -9,9 +9,9 @@
 			// dataset keys before the stylesheet paints so a persisted light mode
 			// or accent doesn't flash the dark defaults in `color-scheme`-driven
 			// chrome. The full token set is applied by useTheme at mount (the
-			// palette data lives only in src/shared/themes.ts — nothing is
-			// duplicated here); app.css's :root carries the default palette's
-			// dark values as the pre-mount fallback.
+			// palette data lives only in @sigrun/shared (shared/src/themes.ts) —
+			// nothing is duplicated here); app.css's :root carries the default
+			// palette's dark values as the pre-mount fallback.
 			try {
 				const mode = localStorage.getItem("sigrun.theme");
 				document.documentElement.dataset.mode =
