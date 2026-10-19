@@ -39,6 +39,7 @@ import type {
 	ProviderReadiness,
 } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** One hermetic server: harness + Fastify app, torn down after all tests. */
@@ -69,9 +70,11 @@ async function bootServer(options: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: options.model ?? "acme/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: options.contributors,
 		env: options.env ?? {},
 	});

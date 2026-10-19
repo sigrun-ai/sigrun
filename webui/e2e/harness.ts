@@ -36,6 +36,7 @@ import { loadConfig } from "../../src/config.js";
 import { openHarness, type OpenedHarness } from "../../src/harness/boot.js";
 import type { ProviderContributor } from "../../src/harness/providers/index.js";
 import { createServer } from "../../src/server/index.js";
+import { seededIdentity } from "../../test/helpers/identity.js";
 
 /** The built bundle this E2E server serves (webui/e2e → webui/dist). */
 const WEBUI_DIST = fileURLToPath(new URL("../dist", import.meta.url));
@@ -141,6 +142,9 @@ async function bootOnDir(
 		...loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			// W1 Task 3: the naive workstation path — claimed identity below,
+			// no authenticators.
+			SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: dir,
 		}),
 		webuiBundle: WEBUI_DIST,
@@ -159,6 +163,10 @@ async function bootOnDir(
 		);
 	}
 	const opened = await openHarness(config, {
+		// The unclaimed gate 403s an empty directory under every method —
+		// the e2e boots a claimed admin ("tester") exactly like the
+		// in-process suites' test/helpers/identity.ts seam.
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 		settingsDir,

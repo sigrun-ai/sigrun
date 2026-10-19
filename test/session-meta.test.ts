@@ -31,6 +31,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import {
 	DEFAULT_SESSION_META,
 	SessionMetaDoc,
@@ -58,9 +59,11 @@ async function bootServer(): Promise<TestServer> {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 	});
@@ -428,9 +431,14 @@ describe("session-meta durability", () => {
 		const config = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: dir,
 		});
+		// One claimed identity shared by BOTH opens (the reopen must not
+		// re-seed — the directory survives on disk).
+		const identity = await seededIdentity(dir);
 		const first = await openHarness(config, {
+			identity,
 			extensions: [contributor],
 			env: {},
 		});
@@ -452,6 +460,7 @@ describe("session-meta durability", () => {
 			// Re-open the SAME storage path: the doc lives in storage, so the
 			// meta survives restart by construction (documents are durable).
 			const reopened = await openHarness(config, {
+				identity,
 				extensions: [contributor],
 				env: {},
 			});

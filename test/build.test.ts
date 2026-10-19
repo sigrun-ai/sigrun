@@ -60,9 +60,15 @@ function childEnv(overrides: Record<string, string>): NodeJS.ProcessEnv {
 	return {
 		PATH: process.env.PATH ?? "",
 		HOME: process.env.HOME,
+		// W1 Task 3 spawned-process pattern: the env service token gets a
+		// caller past the unclaimed setup gate; requests send it as Bearer.
+		SIGRUN_API_TOKEN: "sgr_test_env",
 		...overrides,
 	};
 }
+
+/** The Bearer header every spawned-entry request sends (W1 Task 3). */
+const SERVICE_BEARER = { authorization: "Bearer sgr_test_env" };
 
 interface BuiltEntry {
 	child: ReturnType<typeof spawn>;
@@ -309,7 +315,9 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 			// Boot SURVIVED the quarantine (the loader never throws).
 			expect(await entry.listening).toBe(port);
 			const meta = (await (
-				await fetch(`http://127.0.0.1:${port}/v1/meta`)
+				await fetch(`http://127.0.0.1:${port}/v1/meta`, {
+					headers: SERVICE_BEARER,
+				})
 			).json()) as {
 				extensions: readonly { name: string; status: string; error?: string }[];
 			};

@@ -9,7 +9,8 @@
  * extension outcomes) plus the static healthy shape (aggregation is T9e).
  *
  * Hermetic pattern (compaction.test.ts): a faux provider serves `faux/m`
- * through a provider contributor; `openHarness(config, { env: {} })` boots in
+ * through a provider contributor; `openHarness(config, {
+		identity: await seededIdentity(dir), env: {} })` boots in
  * a tmpdir; `createServer` builds the Fastify app; `app.inject()` exercises
  * routes in-process — no port, no network.
  */
@@ -29,6 +30,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { SCHEMA_VERSION } from "../src/server/schema-fixture.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** The pi-durable version `GET /v1/meta` must report (pinned dependency). */
@@ -66,6 +68,7 @@ async function bootServer(options?: {
 	const config0 = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	// This suite asserts the API-only shape (channels: []): the webui gate
@@ -77,6 +80,7 @@ async function bootServer(options?: {
 		webui: { ...config0.webui, enabled: false },
 	};
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 		extensionSpecifiers: options?.extensionSpecifiers,

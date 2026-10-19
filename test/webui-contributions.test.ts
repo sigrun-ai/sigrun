@@ -26,6 +26,7 @@ import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** The fixture package roots (dirs carry the bundle dirs the entries name). */
 const FIXTURE_WEBUI_DIR = join(import.meta.dirname, "fixtures", "fixture-webui");
@@ -48,6 +49,7 @@ function configWith(dir: string, extra: Record<string, string> = {}) {
 	return loadConfig({
 		SIGRUN_MODEL: "openai/gpt-4o",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 		...extra,
 	});
@@ -70,6 +72,7 @@ async function withOpenedHarness(
 	let opened: OpenedHarness | undefined;
 	try {
 		opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 			env: {},
 			extensionSpecifiers: specifiers,
 			...(options.contributors === undefined
@@ -92,6 +95,7 @@ async function bootServer(
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-webui-contrib-srv-"));
 	const config = configWith(dir, envExtra);
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		env: {},
 		extensionSpecifiers: specifiers,
 		...(options.contributors === undefined
@@ -134,6 +138,7 @@ test("an extension contributing webuiBundles registers them", async () => {
 	});
 	const config = configWith(dir, { SIGRUN_WEBUI_BUNDLE: "fixture-ui" });
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		env: {},
 		extensionSpecifiers: [SPECIFIER_WEBUI],
 	});
@@ -228,6 +233,7 @@ test("a contributed dir lacking index.html fails at serve time naming the extens
 	});
 	const config = configWith(dir, { SIGRUN_WEBUI_BUNDLE: "fixture-noindex" });
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		env: {},
 		extensionSpecifiers: [SPECIFIER_NOINDEX],
 	});

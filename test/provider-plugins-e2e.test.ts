@@ -49,6 +49,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { packagesDirOf, syncPackages } from "../src/harness/packages.js";
 import { SettingsStore } from "../src/harness/settings.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 // ---------------------------------------------------------------------------
 // The four real plugin repos (integration inputs)
@@ -180,6 +181,7 @@ function bootEnv(): Record<string, string> {
 		SIGRUN_STATE_DIR: join(configDir, "state"),
 		SIGRUN_WORKSPACE_PATH: join(configDir, "workspace"),
 		SIGRUN_PROVIDER_REFRESH_MINUTES: "0",
+		SIGRUN_AUTH: "none",
 	};
 }
 
@@ -197,6 +199,7 @@ async function bootDeployment(): Promise<Deployment> {
 	const packagesDir = packagesDirOf(configDir);
 	const resolutions = await syncPackages(settingsFile.extensions ?? [], packagesDir);
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(configDir),
 		extensionEntries: resolutions,
 		env,
 		settingsDir: configDir,

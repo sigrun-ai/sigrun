@@ -36,6 +36,7 @@ import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
 import { BACKUP_RETENTION_DAYS } from "../src/backup/run-backup.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** The backup script under test, resolved through the repo (tsx runs TS). */
 const SCRIPT = join(
@@ -70,10 +71,12 @@ async function bootHarness(backupEnv?: Record<string, string>): Promise<TestHarn
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 		...backupEnv,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 	});
@@ -108,7 +111,12 @@ async function runScript(
 			SCRIPT,
 		],
 		{
-			env: { ...process.env, ...backupEnv, SIGRUN_STORAGE_PATH: dbPath },
+			env: {
+				...process.env,
+				...backupEnv,
+				SIGRUN_STORAGE_PATH: dbPath,
+				SIGRUN_AUTH: "none",
+			},
 			encoding: "utf8",
 		},
 	);
@@ -374,6 +382,7 @@ describe("restore drill: live-harness backup resumes", () => {
 		const restoredConfig = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: restoredDb,
+			SIGRUN_AUTH: "none",
 			SIGRUN_WORKSPACE_PATH: scratchDir,
 		});
 		const restored = await openHarness(restoredConfig, {

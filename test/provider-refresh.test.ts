@@ -52,6 +52,7 @@ import {
 	type SessionMeta,
 } from "../src/server/session-meta.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 // ---------------------------------------------------------------------------
@@ -164,10 +165,12 @@ async function bootServer(
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "acme/m1",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_DATA_DIR: join(dir, "data"),
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [fixture.contributor],
 		env: {},
 		settingsDir: dir,

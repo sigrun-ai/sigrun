@@ -14,7 +14,8 @@
  *   the session line. 503 + `{ ready: false, checks: {...} }` otherwise.
  *
  * Hermetic pattern (server-meta-health.test.ts): a faux provider serves
- * `faux/m` through a provider contributor; `openHarness(config, { env: {} })`
+ * `faux/m` through a provider contributor; `openHarness(config, {
+		identity: await seededIdentity(dir), env: {} })`
  * boots in a tmpdir; `createServer` builds the Fastify app; `app.inject()`
  * exercises the routes in-process. Degraded health is driven through the T9e
  * seams (`contributorHealth` / the fixture memory extension's factory
@@ -37,6 +38,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import type { HealthStatus } from "../src/harness/health.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** Fixture: memory-surface extension carrying a degraded §3 producer. */
@@ -74,9 +76,11 @@ async function bootServer(options?: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 		extensionSpecifiers: options?.extensionSpecifiers,
