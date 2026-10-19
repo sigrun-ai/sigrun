@@ -362,9 +362,11 @@ describe("GET /v1/conversations/:id/stream", () => {
 		try {
 			await connection.waitFor((event) => event.event === "snapshot");
 			// Submit through the endpoint WITHOUT awaiting settlement — the
-			// frames must arrive while the (gated) run is in flight.
+			// frames must arrive while the (gated) run is in flight. The §7.1
+			// `waitMs` makes THIS leg wait, so the assertion at the end reads
+			// the settled record.
 			const settled = fetch(
-				`http://127.0.0.1:${server.port}/v1/conversations/${root.id}/submissions`,
+				`http://127.0.0.1:${server.port}/v1/conversations/${root.id}/submissions?waitMs=5000`,
 				{
 					method: "POST",
 					headers: { "content-type": "application/json" },
@@ -372,7 +374,7 @@ describe("GET /v1/conversations/:id/stream", () => {
 				},
 			).then(async (response) => {
 				expect(response.status).toBe(202);
-				return (await response.json()) as { status: string };
+				return (await response.json()) as { submission: { status: string } };
 			});
 			// Mid-run frame: the run control is live (pi.live.run present).
 			const busyFrame = await connection.waitFor(
@@ -391,7 +393,7 @@ describe("GET /v1/conversations/:id/stream", () => {
 					),
 			);
 			expect(wireOf(settledFrame).conversation).toEqual({ id: root.id });
-			expect((await settled).status).toBe("done");
+			expect((await settled).submission.status).toBe("done");
 		} finally {
 			connection.destroy();
 		}

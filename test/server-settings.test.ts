@@ -485,9 +485,9 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 			{ type: "input", content: "first turn (busy lever)" },
 			BACKGROUND_CONTEXT,
 		);
-		// Submit the steers through the server route; the routes settle only
-		// after their steered rounds run, so they are started (not awaited)
-		// while the observation loop watches the inbox.
+		// Submit the steers through the server route; the routes return at
+		// admission (§7.1), so they are started (not awaited) while the
+		// observation loop watches the inbox.
 		const pending = Array.from({ length: count }, (_, i) =>
 			app.inject({
 				method: "POST",
@@ -519,7 +519,11 @@ describe("the steering testable: a PATCHed steeringMode changes the next submiss
 		const results = await Promise.all(pending);
 		for (const result of results) {
 			expect(result.statusCode).toBe(202);
-			expect(result.json().status).toBe("done");
+			// The §7.1 admission record: queued behind the busy turn (or placed
+			// by the boundary) — the settled state is the loop's observable.
+			expect(["queued", "placed"]).toContain(
+				result.json().submission.status,
+			);
 		}
 		expect((await first.wait(BACKGROUND_CONTEXT)).status).toBe("done");
 		return samples;

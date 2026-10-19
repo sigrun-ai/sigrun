@@ -11,6 +11,7 @@ import type {
 	ConversationId,
 	InputSubmissionDraft,
 	ModelRef,
+	SubmissionId,
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -156,6 +157,11 @@ export function settingsResponse(
 /** Re-brand a route id as a ConversationId (the branded Id type is a number). */
 export function conversationId(id: number): ConversationId {
 	return id as ConversationId;
+}
+
+/** Re-brand a route id as a SubmissionId (the branded Id type is a number). */
+export function submissionId(id: number): SubmissionId {
+	return id as SubmissionId;
 }
 
 /** Read one conversation's current view frame; disposes the state handle. */

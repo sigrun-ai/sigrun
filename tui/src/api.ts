@@ -185,8 +185,10 @@ export class SigrunClient {
 	}
 
 	/**
-	 * `POST /v1/conversations/:id/submissions` — plain text input; the
-	 * server waits for settlement server-side (202 + the settled record).
+	 * `POST /v1/conversations/:id/submissions` — plain text input; 202 at
+	 * ADMISSION (§7.1) with the record as it stands. The TUI is
+	 * fire-and-forget: the reply arrives as view revisions on the stream,
+	 * not from this response.
 	 */
 	submit(
 		id: number,

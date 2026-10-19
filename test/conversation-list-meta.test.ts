@@ -122,6 +122,8 @@ async function createViaRoute(app: FastifyInstance): Promise<number> {
 }
 
 /** Submit one input and settle it; returns the settled record. */
+/** Submit one input and settle it (the §7.1 bounded wait); returns the
+ *  settled record. */
 async function submit(
 	app: FastifyInstance,
 	conversationId: number,
@@ -129,7 +131,7 @@ async function submit(
 ) {
 	const response = await app.inject({
 		method: "POST",
-		url: `/v1/conversations/${conversationId}/submissions`,
+		url: `/v1/conversations/${conversationId}/submissions?waitMs=5000`,
 		payload: { input },
 		headers: { "content-type": "application/json" },
 	});
@@ -223,8 +225,8 @@ describe("GET /v1/conversations list metadata", () => {
 			agent: { model: opened.defaultModel },
 		});
 		const settled = await submit(app, root.id, "hello");
-		expect(settled.status).toBe("done");
-		const at = settled.answer;
+		expect(settled.submission.status).toBe("done");
+		const at = settled.submission.answer;
 		expect(typeof at).toBe("number");
 		const forked = await app.inject({
 			method: "POST",
@@ -269,8 +271,8 @@ describe("GET /v1/conversations list metadata", () => {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
-		// The route waits for settlement, so fire it and hold the run open:
-		// while the generation is gated, the stamp must ALREADY be there.
+		// The route returns at admission (§7.1), so fire it and hold the run
+		// open: while the generation is gated, the stamp must ALREADY be there.
 		const pending = app.inject({
 			method: "POST",
 			url: `/v1/conversations/${root.id}/submissions`,

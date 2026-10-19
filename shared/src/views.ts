@@ -227,20 +227,32 @@ export type ConversationForkResponse = ConversationCreateResponse;
 export type ConversationImportResponse = ConversationCreateResponse;
 
 /**
- * The admit response of `POST /v1/conversations/:id/submissions` (Task 9b):
- * the durable submission record (`SubmissionRecord` — id, conversationId,
- * requestId?, type, status, entry?/answer?/reason?) after waiting for
- * settlement. v1 waits server-side (SSE watch is T9d); the record is the
- * wire shape.
+ * The durable submission record on the wire (§7.1): the record as it
+ * stands when read — `status` is `queued` | `placed` | `done` |
+ * `unanswered`; `entry`/`answer`/`reason`/`detail` appear per status.
  */
-export interface SubmissionResponse {
+export interface SubmissionRecordWire {
 	readonly id: number;
 	readonly conversationId: number;
+	/** Host-provided deduplication key, scoped to the conversation. */
+	readonly requestId?: string;
 	readonly type: string;
 	readonly status: string;
 	readonly entry?: number;
 	readonly answer?: number;
 	readonly reason?: string;
+	readonly detail?: unknown;
+}
+
+/**
+ * The admit response of `POST /v1/conversations/:id/submissions` (§7.1):
+ * `202 {submission}` AT ADMISSION — the record as it stands the moment
+ * the submission is admitted. `?waitMs=<n>` (a positive int ≤ 60 000)
+ * opts into a bounded settlement wait; `GET …/submissions/:submissionId`
+ * polls the record later.
+ */
+export interface SubmissionResponse {
+	readonly submission: SubmissionRecordWire;
 }
 
 /** The upload response of `POST /v1/conversations/:id/uploads` (Task 9b). */

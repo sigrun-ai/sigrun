@@ -1,13 +1,19 @@
 /**
- * Submission lifecycle routes: submit (content-part resolution +
- * server-side settlement wait), configure (model/thinking change), abort
- * (withdraw the active submission), and compact (manual compaction).
+ * Submission lifecycle routes: submit (content-part resolution + the §7.1
+ * async admit shape — 202 at admission, optional `waitMs`, status route),
+ * configure (model/thinking change), abort (withdraw the active
+ * submission), and compact (manual compaction).
  * Every route resolves its conversation through the `loadConversation`
  * pre-handler (404 for an unknown id) before touching the body.
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { InputSubmissionDraft, ModelRef } from "@earendil-works/pi-durable";
+import type {
+	InputSubmissionDraft,
+	ModelRef,
+	Submission,
+	SubmissionRecord,
+} from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { FastifyInstance } from "fastify";
 import { touchActivity } from "../../harness/activity.js";
@@ -21,6 +27,7 @@ import {
 	THINKING_LEVELS,
 	WHEN_BUSY_MODES,
 	conversationEnv,
+	submissionId,
 	type WhenBusyMode,
 } from "../helpers.js";
 import type {
@@ -29,6 +36,46 @@ import type {
 	ConfigureResponse,
 	SubmissionResponse,
 } from "../views.js";
+
+/** The §7.1 ceiling for `?waitMs` — a positive integer at most this. */
+const WAIT_MS_MAX = 60_000;
+
+/** Integer path params for the submission status route (§7.1). */
+const SUBMISSION_PARAMS_SCHEMA = {
+	type: "object",
+	properties: { id: { type: "integer" }, submissionId: { type: "integer" } },
+	required: ["id", "submissionId"],
+	additionalProperties: false,
+} as const;
+
+/**
+ * Race `submission.wait` against a `waitMs` timer (§7.1): the wait winning
+ * returns the settled record; the timer winning returns whichever record is
+ * CURRENT (mid-run). The losing wait's eventual rejection is never left
+ * unhandled.
+ */
+async function waitForSubmission(
+	submission: Submission,
+	waitMs: number,
+): Promise<SubmissionRecord> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const timeout = new Promise<true>((resolve) => {
+			timer = setTimeout(() => resolve(true), waitMs);
+		});
+		const wait = submission.wait(BACKGROUND_CONTEXT);
+		const winner = await Promise.race([wait, timeout]);
+		if (winner !== true) {
+			return winner;
+		}
+		// The timer won: hand back the CURRENT record; a late rejection of
+		// the abandoned wait must not surface as unhandled.
+		void wait.catch(() => undefined);
+		return await submission.status(BACKGROUND_CONTEXT);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
 
 /** Register the submission/configure/abort/compact routes. */
 export function registerSubmissionRoutes(
@@ -81,6 +128,27 @@ export function registerSubmissionRoutes(
 				}
 				throw error;
 			}
+			// `waitMs` (§7.1) is the opt-in bounded settlement wait for
+			// scripts — a positive integer ≤ 60 000; anything else is a
+			// fail-loud client error BEFORE anything is admitted.
+			const waitMsRaw = (
+				request.query as Record<string, unknown> | undefined
+			)?.waitMs;
+			let waitMs: number | undefined;
+			if (waitMsRaw !== undefined) {
+				const parsedWait =
+					typeof waitMsRaw === "number" ? waitMsRaw : Number(waitMsRaw);
+				if (
+					!Number.isInteger(parsedWait) ||
+					parsedWait <= 0 ||
+					parsedWait > WAIT_MS_MAX
+				) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: "waitMs" });
+				}
+				waitMs = parsedWait;
+			}
 			const requestId =
 				body.requestId === undefined ? undefined : String(body.requestId);
 			// `whenBusy` is the steer affordance (spec §7 item 3) — validate
@@ -126,10 +194,49 @@ export function registerSubmissionRoutes(
 				opened.now,
 				BACKGROUND_CONTEXT,
 			);
-			// v1 waits for settlement server-side; `wait()` resolves with the
-			// settled record either way.
-			const settled = await submission.wait(BACKGROUND_CONTEXT);
-			return await reply.code(202).send(settled);
+			// §7.1: 202 AT ADMISSION — the record as it stands the moment the
+			// submission is admitted (queued or placed). `?waitMs` opts into
+			// the bounded settlement race; the status route polls the record.
+			const record =
+				waitMs === undefined
+					? await submission.status(BACKGROUND_CONTEXT)
+					: await waitForSubmission(submission, waitMs);
+			return await reply.code(202).send({ submission: record });
+		},
+	);
+
+	// Submission status (§7.1): the record as it stands — the poll
+	// counterpart of the admission-202 submit. The submission must belong
+	// to THIS conversation: an unknown id and another conversation's id
+	// are the same 404 (never a cross-conversation leak).
+	app.get(
+		"/v1/conversations/:id/submissions/:submissionId",
+		{
+			schema: { params: SUBMISSION_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx, "read"),
+		},
+		async (request, reply): Promise<SubmissionResponse> => {
+			const conversation = request.conversation;
+			const { submissionId: rawSubmissionId } = request.params as {
+				submissionId: number;
+			};
+			const submission = await opened.harness.submission(
+				submissionId(rawSubmissionId),
+				BACKGROUND_CONTEXT,
+			);
+			const record =
+				submission === undefined
+					? undefined
+					: await submission.status(BACKGROUND_CONTEXT);
+			if (
+				record === undefined ||
+				record.conversationId !== conversation.id
+			) {
+				return await reply
+					.code(404)
+					.send({ error: "submission_not_found" });
+			}
+			return { submission: record };
 		},
 	);
 
