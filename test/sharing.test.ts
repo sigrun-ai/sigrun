@@ -515,10 +515,11 @@ describe("fork resets to private", () => {
 			headers: auth(bobToken),
 		});
 		const id: number = created.json().id;
-		// A fork needs at least one entry — submit one first.
+		// A fork needs at least one entry — submit one first and settle it
+		// (the §7.1 bounded wait).
 		const submit = await app.inject({
 			method: "POST",
-			url: `/v1/conversations/${id}/submissions`,
+			url: `/v1/conversations/${id}/submissions?waitMs=5000`,
 			payload: { input: "seed" },
 			headers: authJson(bobToken),
 		});

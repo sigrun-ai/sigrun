@@ -256,12 +256,12 @@ describe("tui e2e smoke (attach-mode wire path)", () => {
 				expect(snapshot.conversation.id).toBe(created.id);
 				expect(snapshot.steer).toEqual({ busy: false, queued: 0 });
 
-				// ── submit: the server settles; the stream renders revisions ──
+				// ── submit: the server admits (§7.1); the stream renders revisions ──
 				const submission = await client.submit(
 					created.id,
 					"hello from the e2e",
 				);
-				expect(submission.status).toBe("done");
+				expect(["queued", "placed"]).toContain(submission.submission.status);
 				// Streaming observed: a busy frame landed before settlement.
 				// Wait (never a sync check): the submit response and the SSE
 				// frame travel on separate connections, so arrival order is not
