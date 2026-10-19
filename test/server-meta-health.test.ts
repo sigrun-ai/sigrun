@@ -45,7 +45,7 @@ import {
 	type HealthStatus,
 } from "../src/harness/health.js";
 import { createServer } from "../src/server/index.js";
-import { seededIdentity } from "./helpers/identity.js";
+import { seededIdentity, unclaimedIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** Fixture: memory-surface extension carrying a degraded §3 producer. */
@@ -81,6 +81,10 @@ async function getMeta(app: FastifyInstance): Promise<{
 		memory: string;
 		providers: string;
 	};
+	auth: {
+		methods: string[];
+		claimed: boolean;
+	};
 	extensions: { name: string; status: string; error?: string }[];
 }> {
 	const response = await app.inject({ method: "GET", url: "/v1/meta" });
@@ -104,6 +108,8 @@ async function bootServer(options?: {
 	contributors?: (faux: ReturnType<typeof fauxProvider>) => readonly ProviderContributor[];
 	model?: string;
 	env?: Record<string, string | undefined>;
+	/** Boot UNCLAIMED (no seeded directory user) — the setup-code posture. */
+	unclaimed?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-meta-"));
 	const faux = fauxProvider({
@@ -124,9 +130,15 @@ async function bootServer(options?: {
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
+		// The env record feeds BOTH config parsing and the boot env — the
+		// service-token test needs `SIGRUN_API_TOKEN` parsed into
+		// `config.auth.serviceToken`, not just present to providers.
+		...options?.env,
 	});
 	const opened = await openHarness(config, {
-		identity: await seededIdentity(dir),
+		identity: options?.unclaimed
+			? await unclaimedIdentity(dir)
+			: await seededIdentity(dir),
 		extensions: contributors,
 		env: options?.env ?? {},
 		extensionSpecifiers: options?.extensionSpecifiers,
@@ -303,6 +315,42 @@ describe("aggregateHealth (the §3 pure aggregation)", () => {
 // ---------------------------------------------------------------------------
 // GET /v1/meta health block
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// GET /v1/meta auth block (W1 Task 6, spec §5.7)
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/meta auth", () => {
+	test("claimed boot: auth.claimed true + the effective method list", async () => {
+		const { app } = await bootServer();
+		const meta = await getMeta(app);
+		// SIGRUN_AUTH: "none" in the test config → the derived method list
+		// is EMPTY (the naive workstation path); the seeded directory user
+		// claims the server.
+		expect(meta.auth).toEqual({ methods: [], claimed: true });
+	});
+
+	test("unclaimed boot: auth.claimed false (read via the env service token — the setup gate holds every other path)", async () => {
+		const SERVICE_TOKEN = "sgr-test-service-token-fixture";
+		const { app } = await bootServer({
+			unclaimed: true,
+			env: { SIGRUN_API_TOKEN: SERVICE_TOKEN },
+		});
+		// Without a credential the setup gate (403 setup_required) owns
+		// /v1/meta — the auth block is only readable once trust resolves.
+		const gated = await app.inject({ method: "GET", url: "/v1/meta" });
+		expect(gated.statusCode).toBe(403);
+		expect(gated.json()).toEqual({ error: "setup_required" });
+		// The env service token skips the gate (pipeline stage 3).
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/meta",
+			headers: { authorization: `Bearer ${SERVICE_TOKEN}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().auth).toEqual({ methods: [], claimed: false });
+	});
+});
 
 describe("GET /v1/meta health", () => {
 	test("default boot: present-healthy producer, no memory extension, no backup", async () => {

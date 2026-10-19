@@ -253,6 +253,7 @@ describe("GET /v1/meta", () => {
 			schemaVersion: SCHEMA_VERSION,
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
+			auth: { methods: [], claimed: true },
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [] },

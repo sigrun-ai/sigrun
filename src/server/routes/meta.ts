@@ -50,6 +50,13 @@ export function registerMetaRoutes(
 				memory: opened.memoryHealth?.() ?? "ok",
 				providers: aggregateHealth(opened.providerHealth),
 			},
+			// The auth block (W1 Task 6, spec §5.7): the effective method list
+			// (resolved once in `createServer`) + the onboarding state — both
+			// pure derivations, never per-request negotiation.
+			auth: {
+				methods: ctx.methods,
+				claimed: opened.identity.users.isClaimed(),
+			},
 			// §5 capabilities: backup affordances exist iff a target is
 			// configured (the badge, not an error, when absent).
 			capabilities: {

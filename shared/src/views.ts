@@ -433,6 +433,17 @@ export interface MetaResponse {
 		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
 		readonly providers: HealthStatus;
 	};
+	/**
+	 * The auth block (core hardening W1 Task 6, spec §5.7): the effective
+	 * authenticator list (`ctx.methods` — loopback-derived or explicit) and
+	 * the onboarding state (`claimed` = the user directory has its first
+	 * user). A pure boot+store derivation, like the rest of meta — clients
+	 * may cache it only per boot, since the claim flips it.
+	 */
+	readonly auth: {
+		readonly methods: readonly ("token" | "proxy")[];
+		readonly claimed: boolean;
+	};
 	readonly capabilities: {
 		readonly backup: boolean;
 		readonly channels: readonly string[];
@@ -511,6 +522,18 @@ export interface AuthCheckProvider {
 	readonly provider: string;
 	readonly status: AuthStatus;
 	readonly detail?: string;
+}
+
+/**
+ * The `GET /v1/providers` payload (core hardening W1 Task 6, spec
+ * §5.7/§7.6): the auth-check derivation under its new home — `/v1/auth`
+ * is API auth only, and the secret-free readiness report lives at
+ * `/v1/providers`. `GET /v1/auth/check` serves this same payload as a
+ * deprecated alias for one release (its responses carry a `Deprecation`
+ * header).
+ */
+export interface ProvidersResponse {
+	readonly providers: readonly AuthCheckProvider[];
 }
 
 /** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */
