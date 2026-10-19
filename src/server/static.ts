@@ -91,14 +91,35 @@ export function webuiBundleDir(config: SigrunConfig): string {
  * A webui bundle contributed by an extension (build-and-webui Task 6
  * collects these into a registry at boot; Task 5 resolves them here).
  * `name` is the selection key; `dir` is the bundle root, resolved by the
- * CONTRIBUTOR against its extension module URL — the server only owns the
- * `index.html` existence check.
+ * LOADER at collection time against the extension module's URL (the
+ * factory contributes a relative-or-absolute `dir`; the loader pairs the
+ * entry with the extension slug and anchors it) — the server only owns
+ * the `index.html` existence check, and names `extension` in that error.
  */
 export interface ContributedWebuiBundle {
 	/** Matches `^[a-z][a-z0-9_-]*$` (the loader validates at collection). */
 	readonly name: string;
-	/** The bundle root (contains `index.html` + assets). */
+	/** The bundle root (contains `index.html` + assets), module-anchored. */
 	readonly dir: string;
+	/** The contributing extension's slug (the loader's attribution). */
+	readonly extension: string;
+}
+
+/**
+ * Two extensions contributed a bundle under the same NAME; the later one
+ * won (build-and-webui Task 6). Mirrors the provider-merge collision
+ * shape (`ProviderCollision`, src/harness/providers/index.ts):
+ * last-registered-wins with a `console.warn` and this retained record —
+ * `/v1/meta`'s `collisions.webui` reads it.
+ */
+export interface WebuiBundleCollision {
+	readonly kind: "webui-bundle";
+	/** The bundle name that collided. */
+	readonly name: string;
+	/** Extension slug that previously owned the name. */
+	readonly previous: string;
+	/** Extension slug whose contribution won (last-registered-wins). */
+	readonly contributor: string;
 }
 
 /** A resolved webui bundle, ready to serve. */
@@ -202,7 +223,7 @@ export async function resolveWebuiBundle(
 	return await readBundle(
 		contributed.dir,
 		contributed.name,
-		`webui bundle ${JSON.stringify(selector)}`,
+		`webui bundle ${JSON.stringify(selector)} contributed by extension ${JSON.stringify(contributed.extension)}`,
 	);
 }
 

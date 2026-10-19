@@ -29,7 +29,8 @@ function makeMeta(init?: {
 		},
 		capabilities: { backup: false, channels: ["webui"] },
 		seam: { interactions: [], ambient: [] },
-	};
+		collisions: { webui: [], providers: [] },
+		};
 }
 
 describe("Rail", () => {
