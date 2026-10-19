@@ -163,7 +163,9 @@ still override it per field.
       "keepRecentTokens": 20000,     // positive integer
       "backgroundTokens": 32768      // non-negative integer (0 = off)
     },
-    "backup": { "path": "/backups" } // XOR { "s3": { "bucket": "...", "prefix": "...", "endpoint": "..." } }
+    "backup": { // target: { "path": "/backups" } XOR { "s3": { "bucket": "...", "prefix": "...", "endpoint": "..." } }
+      "staleAfterHours": 36            // positive number: health.backup degrades past this marker age
+    }
   }
 }
 ```
@@ -200,6 +202,60 @@ key *presence* only).
 `PATCH /v1/settings` — apply on the **next boot** only; the live
 settings (`steeringMode`, `retry`, `stream`, `defaultTools`,
 `perModelThinking`) take effect immediately on the next submission.
+
+## Backup
+
+Set a target (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+`SIGRUN_BACKUP_S3_PREFIX`,
+via env or `server.backup` in `settings.json`) and schedule the backup
+script — the chart ships a nightly CronJob; bare deployments run
+`npx tsx src/backup/run-backup.ts` (or the built `dist/backup/run-backup.js`)
+with `SIGRUN_STORAGE_PATH` pointing at the database. Each run takes an
+online-safe `sqlite3 .backup`, ships it to the target (`sigrun-<UTC
+timestamp>.db`), and folds in any enabled `SIGRUN_BACKUP_SECTIONS`
+tarballs (config/secrets/data/state — see
+[`docs/extending.md`](docs/extending.md)).
+
+**Retention differs by target kind:**
+
+- **Path targets** retain in-process: each run prunes `sigrun-*.db`
+  files older than 30 days from the target directory (mtime-based;
+  non-matching files are never touched).
+- **S3 targets are pruned by the BUCKET, not the script** — configure a
+  lifecycle rule expiring the backup objects after 30 days. The rule's
+  filter must match your key layout: object keys are
+  `<SIGRUN_BACKUP_S3_PREFIX>sigrun-….db` (plus `<section>-….tar.gz` when
+  sections are enabled — cover those too, or drop the filter on a
+  dedicated bucket):
+
+  ```json
+  {
+    "Rules": [
+      {
+        "ID": "sigrun-backup-retention",
+        "Status": "Enabled",
+        "Filter": { "Prefix": "sigrun-" },
+        "Expiration": { "Days": 30 }
+      }
+    ]
+  }
+  ```
+
+  Applied with `aws s3api put-bucket-lifecycle-configuration --bucket
+  <bucket> --lifecycle-configuration file://rule.json` (adjust `Prefix`
+  to your `SIGRUN_BACKUP_S3_PREFIX`, or remove `Filter` on a dedicated
+  bucket). S3-compatible stores accept the same rule shape through
+  their own tooling, with `--endpoint-url` selecting yours.
+
+**Backup honesty (`GET /v1/meta`):** a configured target reports
+`health.backup: "configured"` only while backups actually SUCCEED — the
+script writes `<stateDir>/backup/last-success.json` after each
+successful run, and `/v1/meta` reads it per request: absent, corrupt,
+or older than `server.backup.staleAfterHours` (default 36 h) reports
+`"degraded"`, with the last success's timestamp in `backup.lastSuccessAt`.
+This requires the server and the CronJob to resolve the SAME state root
+— set `SIGRUN_STATE_DIR` on both (the chart does); with it unset on the
+job, the script warns and skips the marker (the backup itself still
+succeeds), and the badge honestly reads `"degraded"`.
 
 ## Extensions
 

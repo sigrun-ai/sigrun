@@ -530,11 +530,24 @@ function validateServer(server: unknown): void {
 		if (backup === undefined) {
 			throw new SettingsValidationError("server.backup", "must be an object");
 		}
-		checkKeys("server.backup.", backup, ["path", "s3"]);
+		checkKeys("server.backup.", backup, ["path", "s3", "staleAfterHours"]);
 		if (backup.path !== undefined && backup.s3 !== undefined) {
 			throw new SettingsValidationError(
 				"server.backup",
 				"must carry exactly one target (path or s3, not both)",
+			);
+		}
+		// §6.8: the honesty knob — a positive NUMBER (not integer-only:
+		// a sub-hour window like 0.5 is a legal tuning), defaulting to 36
+		// at resolution; not a target, so it may ride either shape or sit
+		// alone (a no-target backup section holding only the knob is inert).
+		if (
+			backup.staleAfterHours !== undefined &&
+			!isPositiveNumber(backup.staleAfterHours)
+		) {
+			throw new SettingsValidationError(
+				"server.backup.staleAfterHours",
+				"must be a positive number",
 			);
 		}
 		if (backup.path !== undefined && !isNonEmptyString(backup.path)) {
@@ -574,6 +587,15 @@ function isPositiveInt(value: unknown): boolean {
 	return (
 		typeof value === "number" &&
 		Number.isInteger(value) &&
+		value > 0
+	);
+}
+
+/** A positive finite number (§6.8's `server.backup.staleAfterHours`). */
+function isPositiveNumber(value: unknown): boolean {
+	return (
+		typeof value === "number" &&
+		Number.isFinite(value) &&
 		value > 0
 	);
 }

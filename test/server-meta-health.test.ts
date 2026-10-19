@@ -26,7 +26,7 @@
  * credential material (spec §6.4).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -39,6 +39,7 @@ import {
 import { loadConfig, type BackupConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
+import type { SettingsFile } from "../src/harness/settings.js";
 import {
 	aggregateHealth,
 	type HealthStatus,
@@ -79,6 +80,7 @@ async function getMeta(app: FastifyInstance): Promise<{
 		memory: string;
 		providers: string;
 	};
+	backup: { lastSuccessAt?: string };
 	extensions: { name: string; status: string; error?: string }[];
 }> {
 	const response = await app.inject({ method: "GET", url: "/v1/meta" });
@@ -102,8 +104,18 @@ async function bootServer(options?: {
 	contributors?: (faux: ReturnType<typeof fauxProvider>) => readonly ProviderContributor[];
 	model?: string;
 	env?: Record<string, string | undefined>;
+	/** An explicit state root (§6.8: where the marker is read from). */
+	stateDir?: string;
+	/** A settings file to resolve through (the `server.*` file tier). */
+	settings?: SettingsFile;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-meta-"));
+	if (options?.settings !== undefined) {
+		await writeFile(
+			join(dir, "settings.json"),
+			`${JSON.stringify(options.settings, null, "\t")}\n`,
+		);
+	}
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
@@ -117,18 +129,27 @@ async function bootServer(options?: {
 				health: options?.contributorHealth ?? (() => "ok"),
 			},
 		];
-	const config = loadConfig({
-		SIGRUN_DEFAULT_MODEL: options?.model ?? "faux/m",
-		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_WORKSPACE_PATH: dir,
-	});
+	const config = loadConfig(
+		{
+			SIGRUN_DEFAULT_MODEL: options?.model ?? "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			...(options?.stateDir === undefined
+				? {}
+				: { SIGRUN_STATE_DIR: options.stateDir }),
+			...(options?.settings === undefined
+				? {}
+				: { SIGRUN_CONFIG_DIR: dir }),
+		},
+		options?.settings,
+	);
 	const opened = await openHarness(config, {
 		extensions: contributors,
 		env: options?.env ?? {},
 		extensionSpecifiers: options?.extensionSpecifiers,
 	});
-	// `config.backup` has no env parsing yet (T11); hand-set it to exercise
-	// the presence-derived backup health.
+	// The §6.8 derivation tests hand-set `backup` (no target env here);
+	// the marker reads happen against the state root resolved above.
 	const app = await createServer(
 		opened,
 		options?.backup === undefined ? config : { ...config, backup: options.backup },
@@ -397,9 +418,13 @@ describe("GET /v1/meta health", () => {
 		});
 	});
 
-	test("config.backup presence derives backup health (T11 owns degraded)", async () => {
+	test("a configured target with a fresh marker derives configured (§6.8)", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		await writeMarker(stateDir, new Date().toISOString());
 		const { app } = await bootServer({
 			backup: { target: "path", path: "/tmp/sigrun-backups" },
+			stateDir,
 		});
 		const meta = await getMeta(app);
 		expect(meta.health).toEqual({
@@ -407,5 +432,121 @@ describe("GET /v1/meta health", () => {
 			memory: "ok",
 			providers: "ok",
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// GET /v1/meta health.backup — §6.8 backup honesty (the last-success marker)
+// ---------------------------------------------------------------------------
+
+/** Fabricate `<stateDir>/backup/last-success.json` (§6.8's shape). */
+async function writeMarker(
+	stateDir: string,
+	at: string,
+	target: "path" | "s3" = "path",
+): Promise<void> {
+	const { mkdir } = await import("node:fs/promises");
+	await mkdir(join(stateDir, "backup"), { recursive: true });
+	await writeFile(
+			join(stateDir, "backup", "last-success.json"),
+			`${JSON.stringify({ at, target, bytes: 4096 }, null, "\t")}\n`,
+		);
+}
+
+const HOUR = 60 * 60 * 1000;
+
+describe("GET /v1/meta health.backup (§6.8 marker honesty)", () => {
+	test("configured + a fresh marker → configured, lastSuccessAt surfaces", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		const at = new Date().toISOString();
+		await writeMarker(stateDir, at);
+		const { app } = await bootServer({
+			backup: { target: "path", path: "/tmp/sigrun-backups" },
+			stateDir,
+		});
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("configured");
+		expect(meta.backup.lastSuccessAt).toBe(at);
+	});
+
+	test("a marker 37 h old → degraded (the 36 h default window)", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		const at = new Date(Date.now() - 37 * HOUR).toISOString();
+		await writeMarker(stateDir, at);
+		const { app } = await bootServer({
+			backup: { target: "s3", bucket: "sigrun-backups" },
+			stateDir,
+		});
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("degraded");
+		// The stale timestamp still surfaces — the operator's "when WAS the
+		// last success" is exactly what a degraded badge begs for.
+		expect(meta.backup.lastSuccessAt).toBe(at);
+	});
+
+	test("no marker → degraded (the badge no longer lies about silent failure)", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		const { app } = await bootServer({
+			backup: { target: "path", path: "/tmp/sigrun-backups" },
+			stateDir,
+		});
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("degraded");
+		expect(meta.backup.lastSuccessAt).toBeUndefined();
+	});
+
+	test("unconfigured → unconfigured (a marker alone claims nothing)", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		await writeMarker(stateDir, new Date().toISOString());
+		const { app } = await bootServer({ stateDir });
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("unconfigured");
+	});
+
+	test("server.backup.staleAfterHours (file) retunes the window: 37 h old, 48 h window → configured", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		const at = new Date(Date.now() - 37 * HOUR).toISOString();
+		await writeMarker(stateDir, at);
+		const { app } = await bootServer({
+			backup: { target: "path", path: "/tmp/sigrun-backups" },
+			stateDir,
+			settings: { server: { backup: { staleAfterHours: 48 } } },
+		});
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("configured");
+		expect(meta.backup.lastSuccessAt).toBe(at);
+	});
+
+	test("a corrupt marker degrades (never a 500): unparseable JSON", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		const { mkdir } = await import("node:fs/promises");
+		await mkdir(join(stateDir, "backup"), { recursive: true });
+		await writeFile(join(stateDir, "backup", "last-success.json"), "{not json");
+		const { app } = await bootServer({
+			backup: { target: "path", path: "/tmp/sigrun-backups" },
+			stateDir,
+		});
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("degraded");
+		expect(meta.backup.lastSuccessAt).toBeUndefined();
+	});
+
+	test("a wrong-shape marker degrades: `at` that is not a timestamp", async () => {
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-meta-marker-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		await writeMarker(stateDir, "yesterday, probably");
+		const { app } = await bootServer({
+			backup: { target: "path", path: "/tmp/sigrun-backups" },
+			stateDir,
+		});
+		const meta = await getMeta(app);
+		expect(meta.health.backup).toBe("degraded");
+		expect(meta.backup.lastSuccessAt).toBeUndefined();
 	});
 });

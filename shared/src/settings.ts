@@ -129,17 +129,22 @@ export interface ServerSettings {
 	};
 	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
-	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`).
+	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`), plus
+	 * the §6.8 honesty knob: `staleAfterHours`, how old the
+	 * `backup/last-success.json` marker may be before `health.backup`
+	 * reports `"degraded"` (positive number; no env var exists — file or
+	 * the 36 h code default).
 	 */
 	readonly backup?:
-		| { readonly path?: string }
+		| { readonly path?: string; readonly staleAfterHours?: number }
 		| {
 				readonly s3?: {
 					readonly bucket?: string;
 					readonly prefix?: string;
 					readonly endpoint?: string;
 				};
-		  };
+				readonly staleAfterHours?: number;
+			};
 }
 
 /**

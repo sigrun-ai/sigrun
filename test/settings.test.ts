@@ -294,6 +294,12 @@ describe("SettingsStore", () => {
 		expect(store.read().server?.backup).toEqual({
 			s3: { bucket: "b", prefix: "p/" },
 		});
+		// §6.8: staleAfterHours rides EITHER target shape (positive number).
+		store.update({ server: { backup: { path: "/x", staleAfterHours: 48 } } });
+		expect(store.read().server?.backup).toEqual({
+			path: "/x",
+			staleAfterHours: 48,
+		});
 		// Bad shapes throw naming the field (same error class as the rest).
 		const bad: Array<[Record<string, unknown>, RegExp]> = [
 			[{ server: { port: 0 } }, /server\.port/],
@@ -313,6 +319,8 @@ describe("SettingsStore", () => {
 			[{ server: { memorySeam: { unknownKnob: 1 } } }, /server\.memorySeam\.unknownKnob/],
 			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, /server\.backup/],
 			[{ server: { backup: { s3: {} } } }, /server\.backup\.s3\.bucket/],
+			[{ server: { backup: { staleAfterHours: 0 } } }, /server\.backup\.staleAfterHours/],
+			[{ server: { backup: { staleAfterHours: "36" } } }, /server\.backup\.staleAfterHours/],
 			// The model, extension list, and provider endpoint are NOT
 			// server.* keys (they are top-level file fields / auth.json).
 			[{ server: { model: "openai/gpt-4o" } }, /server\.model/],
