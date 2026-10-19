@@ -6,9 +6,9 @@
  * is stored) plus an `AuthContext` (ambient `env`/`fileExists` access).
  * Sigrun's credentials are operator-provisioned through auth.json (the
  * 2026-10-13 config-surface ruling), so the bridge is READ-ONLY: reads
- * project the file into `api_key` credentials using the same `"default"`
- * -first order as the degenerate env provider's
- * {@link resolveDegenerateApiKey}, and every write path refuses loudly
+ * project the file into `api_key` credentials, with the `"default"`
+ * entry scoped to the default model's provider only (one key must never
+ * leak across plugin providers), and every write path refuses loudly
  * rather than pretending the harness owns credential lifecycle.
  *
  * The `CredentialStore`/`AuthContext`/credential shapes below are
@@ -65,19 +65,26 @@ export function operatorProvisionedError(): Error {
 /**
  * Adapt an {@link AuthStore} into a pi-ai `CredentialStore`.
  *
- * `read(providerId)` returns `{type:"api_key", key}` from auth.json —
- * the `"default"` entry first, then the provider's own entry (the same
- * order as the degenerate env provider) — or `undefined` when neither
- * exists. `list()` maps the file's provider keys. `modify`/`delete` throw:
- * credentials are operator-provisioned.
+ * `read(providerId)` returns `{type:"api_key", key}` from auth.json.
+ * The `"default"` entry applies ONLY when `providerId` is the resolved
+ * default model's provider (`defaultProviderId()`, consulted per read,
+ * never cached); for it the order is `"default"` → own entry. Every
+ * other provider reads only its own entry; `undefined` when nothing
+ * matches. `list()` maps the file's provider keys. `modify`/`delete`
+ * throw: credentials are operator-provisioned.
  */
-export function authStoreCredentialStore(auth: AuthStore): CredentialStore {
+export function authStoreCredentialStore(
+	auth: AuthStore,
+	defaultProviderId: () => string | undefined,
+): CredentialStore {
 	return {
 		read: async (providerId) => {
 			const file = auth.read();
-			const fromDefault = file[DEFAULT_AUTH_KEY]?.apiKey;
-			if (fromDefault !== undefined) {
-				return { type: "api_key", key: fromDefault };
+			if (providerId === defaultProviderId()) {
+				const fromDefault = file[DEFAULT_AUTH_KEY]?.apiKey;
+				if (fromDefault !== undefined) {
+					return { type: "api_key", key: fromDefault };
+				}
 			}
 			const fromProvider = file[providerId]?.apiKey;
 			if (fromProvider !== undefined) {
