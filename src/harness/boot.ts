@@ -118,7 +118,7 @@ export interface OpenedHarness {
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
 	readonly defaultModel: ModelRef;
-	/** Provider-merge collisions; the sink `GET /v1/meta` reads (Task 9). */
+	/** Provider-merge collisions; the sink `GET /v1/meta`'s `collisions.providers` reads. */
 	readonly providerCollisions: readonly ProviderCollision[];
 	/**
 	 * The extension-contributed webui-bundle registry (build-and-webui

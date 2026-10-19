@@ -74,8 +74,9 @@ const PACKAGE_ROOT = resolve(
  * what they wrote, wherever sigrun was started from. The DEFAULT
  * (`webui/dist`) anchors to the PACKAGE ROOT: an installed `sigrun` CLI run
  * from an arbitrary working directory must find the bundle it ships, not
- * the operator's cwd (absolute paths pass through `join` unchanged, so a
- * non-explicit absolute path keeps its own meaning). A selector UNSET or
+ * the operator's cwd (an ABSOLUTE selector never reaches the `join` — it
+ * takes the `resolve` branch, which passes it through unchanged). A
+ * selector UNSET or
  * EQUAL to the default keeps the default's anchor — the classification
  * that pins the bootstrap mirror story (a mirrored `webui/dist` must not
  * read as an explicit cwd-relative selection).

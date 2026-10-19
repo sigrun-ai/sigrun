@@ -304,6 +304,19 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			{ server: { webuiBundle: "ui/dist" } },
 		);
 		expect(mixed.webui.bundle).toBe("env/ui");
+		// A set-but-EMPTY env value counts as UNSET (the `?.trim() ||
+		// undefined` normalization) — it falls through to the file slot,
+		// never selecting "" as a literal (empty-string) bundle name.
+		const emptyEnvFallsThrough = loadConfig(
+			{ ...MODEL_ENV, SIGRUN_WEBUI_BUNDLE: "" },
+			{ server: { webuiBundle: "ui/dist" } },
+		);
+		expect(emptyEnvFallsThrough.webui.bundle).toBe("ui/dist");
+		const emptyEnvAlone = loadConfig({
+			...MODEL_ENV,
+			SIGRUN_WEBUI_BUNDLE: "",
+		});
+		expect(emptyEnvAlone.webui.bundle).toBeUndefined();
 		// Neither: no selector at all (the built-in default bundle — serve
 		// time reads absence, never a mirrored default value).
 		const bare = loadConfig({ ...MODEL_ENV });

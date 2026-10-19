@@ -40,6 +40,9 @@ const SPECIFIER_BAD = pathToFileURL(
 const SPECIFIER_NOINDEX = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-webui-noindex", "index.js"),
 ).href;
+const SPECIFIER_ONLY = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-webui-only", "index.js"),
+).href;
 
 function configWith(dir: string, extra: Record<string, string> = {}) {
 	return loadConfig({
@@ -250,6 +253,35 @@ test("a contributed dir lacking index.html fails at serve time naming the extens
 	await expect(
 		createServer(opened, config, opened.webuiBundles),
 	).rejects.toThrow(/fixture-noindex/);
+});
+
+test("a contributor-only webuiBundles result (no extension field) registers", async () => {
+	await withOpenedHarness([SPECIFIER_ONLY], async (opened) => {
+		// The contributor-only gate accepts providers OR webuiBundles: this
+		// result carries only the latter, with a `name` — it loads clean
+		// (final-review tripwire: if the gate regresses to providers-only,
+		// the contribution silently disappears and this test fails).
+		expect(opened.extensionOutcomes).toEqual([
+			{ name: "sigrun-fixture-webui-only", status: "ok" },
+		]);
+		// Nothing pi-durable behind it — no registry entry by that name.
+		expect(
+			opened.registry.snapshot().extension("sigrun-fixture-webui-only"),
+		).toBeUndefined();
+		// And the contribution REGISTERED: slug-attributed, anchored at the
+		// fixture module's directory.
+		expect(opened.webuiBundles).toEqual([
+			{
+				name: "fixture-only-ui",
+				dir: join(
+					dirname(fileURLToPath(SPECIFIER_ONLY)),
+					"webui",
+					),
+				extension: "sigrun-fixture-webui-only",
+			},
+		]);
+		expect(opened.webuiBundleCollisions).toEqual([]);
+	});
 });
 
 test("/v1/meta reports the collisions (webui + provider sinks)", async () => {
