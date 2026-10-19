@@ -1364,7 +1364,7 @@ contract type).
 | U4 | settings: `apply`, `settings.changed`, `onSettingsChanged`, `pendingRestart`, restart route, supervised detection, core sections rebuilt, extension sections | U0, U1, U2, U3 |
 | U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and the state family, chat surface routes, edits, change notes in the submit path, answers | U0, U1, U2, U3 |
 | U6 | interactions and ambient on trees: record schemas carry trees only, `{values}` answers, channel renderers switched to trees, core seam fixtures rewritten | U1, U2 |
-| U7 | image proxy (signing, vetted-address fetching, cache, `sharp` PNG conversion), icon set, docs | U0 (U1/U2 consume the icons) |
+| U7 | image proxy (signing, vetted-address fetching, cache, `sharp` PNG conversion), docs | U0, U3 (icon names are in U0; U1 and U2 draw them) |
 
 U1 and U2 can run in parallel; so can U3 and U7 once U0 lands. U5 follows U3 (chat surfaces reuse its routes, access cache and watcher registry).
 
