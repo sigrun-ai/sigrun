@@ -78,7 +78,8 @@ export function registerFileRoutes(
 		"/v1/conversations/:id/uploads/:name",
 		{
 			schema: { params: UPLOAD_PARAMS_SCHEMA },
-			preHandler: loadConversation(ctx),
+			// Uploads mutate the conversation: write access (spec §6.2).
+			preHandler: loadConversation(ctx, "write"),
 			bodyLimit: config.maxUploadBytes,
 			onRequest: async (request) => {
 				if (request.headers["content-type"] === undefined) {
