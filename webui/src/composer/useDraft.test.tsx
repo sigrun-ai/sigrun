@@ -27,7 +27,7 @@ function metaWithDraft(text: string, attachments: string[] = []): ConversationMe
 }
 
 function makeHarness() {
-	const calls: { input: string; method?: string; body?: string }[] = [];
+	const calls: { input: string; method?: string; body?: string | Uint8Array }[] = [];
 	const metaById = new Map<number, ConversationMeta>();
 	const fetchImpl: FetchLike = (input, init) => {
 		calls.push({ input, method: init?.method, body: init?.body });

@@ -24,6 +24,7 @@ import { join } from "node:path";
 import {
 	DEFAULT_COMPACTION,
 	DEFAULT_EXTENSIONS_DIR,
+	DEFAULT_MAX_UPLOAD_BYTES,
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
 	DEFAULT_PROVIDER_REFRESH_MINUTES,
@@ -365,6 +366,7 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 			workspacePath: DEFAULT_WORKSPACE_PATH,
 			storagePath: join(config.dataDir, STORAGE_FILE_NAME),
 			extensionsDir: DEFAULT_EXTENSIONS_DIR,
+			maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
 			dataDir: config.dataDir,
 			cacheDir: config.cacheDir,
 			stateDir: config.stateDir,

@@ -373,6 +373,7 @@ function validateServer(server: unknown): void {
 		"workspacePath",
 		"storagePath",
 		"extensionsDir",
+		"maxUploadBytes",
 		"dataDir",
 		"cacheDir",
 		"stateDir",
@@ -385,6 +386,17 @@ function validateServer(server: unknown): void {
 	]);
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
 		throw new SettingsValidationError("server.port", "must be a positive integer");
+	}
+	// The upload knob (spec §6.2): same rule as the env parse — a positive
+	// integer; `Math.ceil(max*4/3)+4096` derives the base64/import limits.
+	if (
+		record.maxUploadBytes !== undefined &&
+		!isPositiveInt(record.maxUploadBytes)
+	) {
+		throw new SettingsValidationError(
+			"server.maxUploadBytes",
+			"must be a positive integer",
+		);
 	}
 	for (const key of ["workspacePath", "storagePath", "extensionsDir", "dataDir", "cacheDir", "stateDir"]) {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {

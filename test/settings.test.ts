@@ -295,6 +295,8 @@ describe("SettingsStore", () => {
 			[{ server: { memorySeam: { idleThresholdMs: 0 } } }, /server\.memorySeam\.idleThresholdMs/],
 			[{ server: { memorySeam: { workerDeadlineMs: -5 } } }, /server\.memorySeam\.workerDeadlineMs/],
 			[{ server: { memorySeam: { queueMax: 1.5 } } }, /server\.memorySeam\.queueMax/],
+			[{ server: { maxUploadBytes: 0 } }, /server\.maxUploadBytes must be a positive integer/],
+			[{ server: { maxUploadBytes: "4096" } }, /server\.maxUploadBytes must be a positive integer/],
 			[{ server: { memorySeam: { unknownKnob: 1 } } }, /server\.memorySeam\.unknownKnob/],
 			[{ server: { backup: { path: "/x", s3: { bucket: "b" } } } }, /server\.backup/],
 			[{ server: { backup: { s3: {} } } }, /server\.backup\.s3\.bucket/],

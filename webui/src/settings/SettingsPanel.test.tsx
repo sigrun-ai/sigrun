@@ -24,7 +24,7 @@ import { usePrefs } from "./usePrefs";
 interface Call {
 	readonly input: string;
 	readonly method?: string;
-	readonly body?: string;
+	readonly body?: string | Uint8Array;
 }
 
 function makeHarness(init?: {

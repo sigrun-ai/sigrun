@@ -126,6 +126,16 @@ export interface WebuiConfig {
 
 export interface SigrunConfig {
 	/**
+	 * The upload/import body-limit knob (spec §6.2):
+	 * `SIGRUN_MAX_UPLOAD_BYTES` over the file's `server.maxUploadBytes`
+	 * over {@link DEFAULT_MAX_UPLOAD_BYTES} (64 MiB). The raw PUT route
+	 * uses it verbatim as its Fastify `bodyLimit`; the base64 POST and the
+	 * JSONL import use {@link base64BodyLimit} (the 4/3 base64 inflation
+	 * of the capped content plus the JSON wrapper). Over any of them the
+	 * app-level error handler answers `413 {error:"too_large", maxBytes}`.
+	 */
+	maxUploadBytes: number;
+	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
 	 * data, cache, and state directories, resolved once here through the
 	 * one `resolveStoreRoots` chain (`SIGRUN_{DATA,CACHE,STATE}_DIR` over
@@ -243,6 +253,22 @@ export const DEFAULT_MEMORY_SEAM: MemorySeamConfig = {
 
 /** The env var carrying the interval refresh cadence (Task 5). */
 export const PROVIDER_REFRESH_MINUTES_ENV = "SIGRUN_PROVIDER_REFRESH_MINUTES";
+
+/** The env var carrying the upload body-limit knob (spec §6.2). */
+export const MAX_UPLOAD_BYTES_ENV = "SIGRUN_MAX_UPLOAD_BYTES";
+
+/** The upload knob's default (spec §6.2): 64 MiB. */
+export const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The body limit the base64 POST upload and the JSONL import routes use
+ * (spec §6.2, verbatim): `Math.ceil(max*4/3)+4096` — the base64 inflation
+ * of the knob-capped content plus headroom for the JSON wrapper (the
+ * POST body) or the JSONL text itself (import).
+ */
+export function base64BodyLimit(maxUploadBytes: number): number {
+	return Math.ceil((maxUploadBytes * 4) / 3) + 4096;
+}
 
 /** The interval refresh cadence default (minutes); `0` disables. */
 export const DEFAULT_PROVIDER_REFRESH_MINUTES = 15;
@@ -528,6 +554,27 @@ function parseRefreshIntervalMinutes(
 	return file ?? DEFAULT_PROVIDER_REFRESH_MINUTES;
 }
 
+/**
+ * Parse `SIGRUN_MAX_UPLOAD_BYTES` (spec §6.2) — the strict positive-integer
+ * pattern (the `SIGRUN_PORT` posture): `""` counts as unset, anything
+ * non-integer or ≤ 0 fails loud naming the variable. The file's
+ * `server.maxUploadBytes` applies where the env var is absent; the 64 MiB
+ * default last.
+ */
+function parseMaxUploadBytes(env: Env, file?: number): number {
+	const raw = env[MAX_UPLOAD_BYTES_ENV];
+	if (raw !== undefined && raw !== "") {
+		const parsed = Number(raw);
+		if (!Number.isInteger(parsed) || parsed <= 0) {
+			throw new Error(
+				`${MAX_UPLOAD_BYTES_ENV} must be a positive integer, got ${raw}`,
+			);
+		}
+		return parsed;
+	}
+	return file ?? DEFAULT_MAX_UPLOAD_BYTES;
+}
+
 function parseMemorySeam(
 	env: Env,
 	server?: ServerSettings["memorySeam"],
@@ -603,6 +650,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		workspacePath: config.workspace.path,
 		storagePath: config.storagePath,
 		extensionsDir: config.extensionsDir,
+		maxUploadBytes: config.maxUploadBytes,
 		dataDir: config.dataDir,
 		cacheDir: config.cacheDir,
 		stateDir: config.stateDir,
@@ -701,6 +749,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		stateDir,
 		storagePath,
 		models,
+		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
 		extensionsDir: env.SIGRUN_EXTENSIONS_DIR || server?.extensionsDir || DEFAULT_EXTENSIONS_DIR,
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
 		// next; empty otherwise.

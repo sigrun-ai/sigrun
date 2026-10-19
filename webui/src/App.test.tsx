@@ -25,7 +25,7 @@ import {
 	textMessage,
 } from "./test-utils";
 
-type Call = { input: string; method?: string; body?: string };
+type Call = { input: string; method?: string; body?: string | Uint8Array };
 
 function makeMeta(init?: {
 	readonly schemaVersion?: string;
@@ -123,7 +123,9 @@ function makeHarness(init?: {
 			if (init2?.method === "PATCH") {
 				// The server-side merge: a name/archived patch updates the
 				// summary the list serves (the reload re-reads it).
-				const patch = JSON.parse(init2.body ?? "{}") as {
+				const patch = JSON.parse(
+					typeof init2.body === "string" ? init2.body : "{}",
+				) as {
 					name?: string;
 					archived?: boolean;
 				};
