@@ -77,6 +77,21 @@ export async function createServer(
 	contributedBundles: readonly ContributedWebuiBundle[] = [],
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
+	// The one body-limit error shape (spec §6.2): Fastify's
+	// `FST_ERR_CTP_BODY_TOO_LARGE` (raised by any route's `bodyLimit` — the
+	// raw upload PUT, the base64 POST, the JSONL import) becomes the
+	// sigrun `413 {error: "too_large", maxBytes}` with the limit the
+	// failing route actually enforced. Everything else passes through the
+	// default error serialization unchanged.
+	app.setErrorHandler((error: { code?: string }, request, reply) => {
+		if (error.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
+			return reply.code(413).send({
+				error: "too_large",
+				maxBytes: request.routeOptions.bodyLimit,
+			});
+		}
+		return reply.send(error);
+	});
 	// The identity seam (spec §5 / TUI plan): resolve the caller on EVERY
 	// request — the trimmed `X-Sigrun-User` header, `undefined` when absent
 	// or empty. Naive mode: the hook VERIFIES nothing (trusted-network

@@ -33,6 +33,7 @@ import {
 	type ConversationList,
 	type ConversationSummary,
 } from "../views.js";
+import { base64BodyLimit } from "../../config.js";
 
 /** Register the conversation lifecycle + session-meta routes. */
 export function registerConversationRoutes(
@@ -300,6 +301,10 @@ export function registerConversationRoutes(
 	// ids are assigned by storage (`EntryDraft` carries no id).
 	app.post(
 		"/v1/conversations/import",
+		// Same knob-derived ceiling as the base64 upload route (spec §6.2):
+		// the JSONL text may be as large as the knob-derived body without
+		// hitting Fastify's 1 MiB default.
+		{ bodyLimit: base64BodyLimit(ctx.config.maxUploadBytes) },
 		async (
 			request,
 			reply,

@@ -53,6 +53,13 @@ export interface ServerSettings {
 	/** `SIGRUN_EXTENSIONS_DIR` — a non-empty path. */
 	readonly extensionsDir?: string;
 	/**
+	 * `SIGRUN_MAX_UPLOAD_BYTES` — a positive integer. The raw-upload
+	 * PUT route's body limit; the base64 POST and the JSONL import derive
+	 * theirs from it (the 4/3 base64 inflation plus the JSON wrapper).
+	 * Default 64 MiB (spec §6.2).
+	 */
+	readonly maxUploadBytes?: number;
+	/**
 	 * `SIGRUN_DATA_DIR` — a non-empty path. Applied where the env var is
 	 * absent; the env-or-file value wins VERBATIM (no `/sigrun` suffix),
 	 * exactly like the stores resolver's explicit tier. The DB default
