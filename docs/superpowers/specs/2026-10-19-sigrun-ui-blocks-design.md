@@ -146,8 +146,11 @@ type Block = { type: string; id?: string; visibleAt?: WidthCondition;
     and `toText` (§14.3): pure code with no imports outside `shared/`;
   - `src/blocks/` holds the typebox schemas and `validateTree` (§14.2),
     and is re-exported by `sigrun/blocks` (§14.1);
-  - the purity test scans `shared/src/` recursively, so the new
-    subdirectory is covered.
+  - U0 changes the purity test (today it reads only top-level files and
+    allows only `./` imports, `test/views-purity.test.ts:54,107`): it scans
+    `shared/src/` recursively, and allows `../` imports that resolve
+    inside `shared/src/`, so `blocks/` can import `../json.js`;
+  - `shared/package.json` gains a `./blocks` entry in its `exports` map.
 - `id` is required on blocks that carry actions or inputs, and must be
   unique within the tree. Channels use it to route actions and keep
   focus and scroll across re-renders.
@@ -169,7 +172,8 @@ type Binding = { $: string };   // a JSON Pointer into the data model, e.g. "/jo
   object (`{$: "./title"}` is the item's `title`); this is the one
   extension to JSON Pointer.
 - **Structural props are literals,** never bindings: `type`, `id`,
-  `display`, `groupBy`, `reorder`, `select`, `mode`, field `name`s, and
+  `display`, `groupBy`, `groups`, `reorder`, `select`, `mode`, field
+  `name`s, `columns`, and
   every handler name (§6.1). A view that switches structure (a board/list
   toggle) does it with `navigate(params)`, and `render` returns the other
   tree. Content props (text, values, items, options, series) may bind.
@@ -187,13 +191,17 @@ type DataOp =
   | { op: "remove"; path: string }
   | { op: "insert"; path: string; value: JsonValue }   // path ends in an array index or "-"
   | { op: "move"; from: string; path: string };        // array reorder / cross-array move
-type DataUpdate = { rev: number; ops: DataOp[] };
+type DataOps = { ops: DataOp[] };                     // what extensions and tools hand the server
+type DataUpdate = { rev: number; ops: DataOp[] };     // what the server sends channels
 ```
 
 - A surface's data has a monotonic `rev`, **assigned by the server**.
-  Extensions and tools submit ops without a rev; the server applies them
-  in arrival order, increments `rev` once per update, and that is the
-  `rev` channels see. A channel that sees a gap fetches the full data
+  Extensions and tools hand the server `DataOps` (no rev); the server
+  applies them in arrival order, increments `rev` once per update, and
+  sends channels `DataUpdate`s carrying that `rev`.
+- `rev` is one counter per surface instance, whatever kind of surface it
+  is. It also increments when an extension calls `changed` without ops,
+  and when a move is accepted without ops (§6.3). A channel that sees a gap fetches the full data
   again.
 - `move` exists so collection reorders don't re-send the moved item.
 - The tree changes rarely. When it does, the surface's `treeRev`
@@ -270,7 +278,7 @@ Width tokens `s`/`m`/`l` are channel-defined (the webui maps them to
 | `chart` | §5.4 |
 | `meter` | `value`, `min?` (0), `max?` (1), `label?`, `format?`, `thresholds?: {at, tone}[]` |
 | `log` | `lines` (binding to `{at?, level?, text}[]`), `follow?`, `wrap?`, `tones?: {[level]: Tone}` (default: `error`→`bad`, `warn`→`warn`, `info`→`neutral`, `debug`→subtle) |
-| `tree` | `nodes` (binding to `{id, label, icon?, hasChildren?, children?}[]`), `onExpand?` (handler for lazy children; it returns a `DataUpdate` inserting them), `onActivate?` |
+| `tree` | `nodes` (binding to `{id, label, icon?, hasChildren?, children?}[]`), `onExpand?` (handler for lazy children; it returns `DataOps` inserting them), `onActivate?` |
 | `diff` | `before`, `after`, `path?`, `lang?` (the existing interaction primitive) |
 | `details` | `value` (opaque JSON; shown collapsed and pretty-printed) |
 
@@ -416,7 +424,7 @@ type Action =
   | { type: "navigate"; params?: JsonObject; target?: CoreTarget }
   | { type: "move"; name: string; turn?: boolean }
   | { type: "edit"; name: string; turn?: boolean }       // checkbox toggles, inline field edits
-  | { type: "open"; url: string }                        // http(s) only, new tab / OSC 8 link
+  | { type: "open"; url: string }                        // https, http or mailto; new tab / OSC 8 link
   | { type: "copy"; text: string | Binding }
   | { type: "restart"; confirm?: Confirm };              // core, admin, settings only
 type Confirm = { title: string; body?: string; tone?: "bad" | "warn"; confirmLabel?: string };
@@ -469,20 +477,27 @@ applied on top.
 2. It sends `{action, payload: {itemId, from: {group?, index}, to: {group?,
    index?, start?, end?}}, actionId}`.
 3. The handler accepts or rejects:
-   - **accept with an update** → the server applies the ops, assigns the
-     next `rev`, returns it, and announces it to other viewers (§7.3).
-     The channel applies the ops to confirmed data and drops that
-     action's overlay entry.
-   - **accept without an update** (`{ok: true}`) → the handler took the
-     move as sent. The server applies the move itself as a `DataOp.move`,
-     so the next `rev` and every other viewer see it. Without this, the
-     next refetch would silently undo the drag.
+   - **accept with ops** (`{ok: true, update: {ops}}`) → the server
+     applies the ops, assigns the next `rev`, and announces it to other
+     viewers (§7.3). The action response is `{ok: true, rev, ops}` (the
+     server wraps the handler's result). The channel applies the ops to
+     confirmed data and drops that action's overlay entry.
+   - **accept without ops** (`{ok: true}`) → the handler stored the move as
+     sent. What happens next depends on who owns the data:
+     - **chat** (core owns the data, §8.2): core applies the move itself
+       as a `DataOp.move`, and continues as for "accept with ops";
+     - **extension surfaces** (the extension owns the data): the server
+       increments `rev`, responds `{ok: true, rev}`, and announces the
+       change. The channel keeps the overlay entry until it has fetched
+       data at that `rev` or later, then drops it, so the item stays where
+       the user dropped it with no snap-back flicker. Extensions never
+       have to build ops just to confirm a move.
    - **reject** → `{error: {message}}`. The channel drops the overlay
      entry (the item snaps back) and shows the message as a toast.
 4. A handler that hasn't answered in 10 s counts as a reject.
-5. Server ops always apply to confirmed data, never to the overlay, so an
-   update that arrives while a move is pending can't duplicate or lose an
-   item.
+5. Server ops and fetched data always replace or update confirmed data,
+   never the overlay, so an update that arrives while a move is pending
+   can't duplicate or lose an item.
 
 Concurrent moves need no locking: the server applies them in arrival
 order, and the resulting updates converge every viewer.
@@ -564,7 +579,7 @@ interface UploadedFile {                     // the payload of an onUpload handl
 }
 
 type ActionResult =
-  | { ok: true; update?: DataUpdate; navigate?: Action & { type: "navigate" }; toast?: string }
+  | { ok: true; update?: DataOps; navigate?: Action & { type: "navigate" }; toast?: string }
   | { ok: false; error: { message: string; field?: string } };
 ```
 
@@ -605,18 +620,25 @@ The extension stays loaded.
   `key` identifies the instance (a board id, a calendar id): the same
   string `instanceKey(params)` returns for that instance.
 - **Watchers.** The server keeps a registry of who is looking at what:
-  - an entry is `(stream, slug, id, key)`, where `stream` is a
-    `/v1/events` connection. Its id is sent in the stream's first frame,
-    and channels send it as `X-Sigrun-Stream` on surface and data fetches;
+  - an entry is `(stream, slug, id, key, access)`, where `stream` is a
+    `/v1/events` connection and `access` is what the principal's last
+    fetch returned. Events use the stored `access`, so an event never
+    triggers a re-render per watcher;
+  - **this amends W3 §7.4:** `/v1/events` sends `event: hello` with
+    `{streamId}` as its first frame. Channels send that id as
+    `X-Sigrun-Stream` on surface and data fetches, and after a reconnect
+    (new `streamId`) re-fetch every visible surface, which re-registers it;
   - a fetch creates or refreshes the entry. It is dropped when its stream
     closes, or 10 minutes after the last fetch. Channels make a `since`
     fetch every 5 minutes while a surface is visible, which keeps the entry
     alive and costs nothing when nothing changed;
-  - only principals with a registry entry get the event, and only after
-    their cached access (§6.5) for that instance is not `none`.
+  - only streams with a registry entry whose stored access is not `none`
+    get the event.
 - The event is `surface.changed {slug, id, k, rev, treeRev}`, where `k` is
   `sha256(slug + "\0" + id + "\0" + key)` in hex. Params never appear in
-  events. **The event carries no data.**
+  events. **The event carries no data.** (Chat surfaces' events carry
+  their conversation and entry ids instead, §8.2: those are no secret to
+  watchers of that conversation.)
 - Event types are an open set: channels ignore types they don't know.
   This spec adds `surface.changed` and `settings.changed` (§13.2) to W3's
   §7.4 list.
@@ -624,14 +646,18 @@ The extension stays loaded.
   This is why events don't carry data: `render` and `data` are
   principal-specific, so pushing one principal's data to another would
   leak it.
-- When `update` is passed to `changed`, the server keeps the ops (last
-  100 per instance) so `since` fetches return only ops. Otherwise the
-  fetch returns full data.
-- Ops are only kept for surfaces declared `sharedData: true`: every
-  principal with access sees the same data (a shared board, a household
-  shopping list). For principal-specific surfaces, `update` is ignored
-  and each channel refetches full data, because one principal's ops
-  could describe rows another can't see.
+- **What a data fetch returns:**
+  - **principal-specific surfaces** (the default): every data fetch calls
+    the extension's `data()` for that principal and returns `{rev,
+    treeRev, data}`. The server keeps no data or ops for them, because
+    one principal's ops could describe rows another can't see; ops passed
+    to `changed` are ignored, and only `rev` increments;
+  - **`sharedData: true` surfaces** (every principal with access sees the
+    same data: a shared board, a household shopping list): the server
+    keeps the ops passed to `changed` and accepted actions (last 100 per
+    instance), and a `since` fetch within that window returns `{rev,
+    treeRev, ops}`. A full fetch, or a `since` older than the window,
+    calls `data()`.
 - When `treeRev` changed, the channel fetches the whole surface.
 - `refreshMs` surfaces (dashboards) refetch data on that interval while
   visible, as their own principal, without any event.
@@ -724,17 +750,27 @@ needs an immediate reply."
     starts the turn is submitted;
   - **How:** a `type: "write"` submission whose entry
     (`kind: "sigrun.blocks.note"`) carries the note as a `model` user
-    message. pi-durable appends it at once when the conversation is idle,
-    and queues it in `pi.inbox` ahead of the input when it's busy, so the
-    note always precedes the input it belongs to (a steer included);
+    message. When the conversation is idle, pi-durable appends it at
+    once. When it's busy, both the note and the input queue in
+    `pi.inbox`, which is durable; at each boundary pi-durable places
+    every queued write before any queued user item (`harness/inbox.js`),
+    so the note always precedes its input, a steer included;
   - **Exactly once:** the write's `requestId` is
-    `blocks-note:<conversationId>:<sha of the noted (entryId, seq) set>`.
-    `notedThrough` advances after the write is admitted. A crash between
-    the two re-sends the same note under the same `requestId`, which
-    pi-durable deduplicates (`submissionByRequest`);
-  - **Mid-run inputs:** a note queued while busy is placed at the next
-    boundary along with its input, so the agent sees it mid-run, exactly
-    when it sees the steer. That is the intended behaviour.
+    `blocks-note:<conversationId>:<sha of the (entryId, notedThrough)
+    pairs before advancing>`. That key depends only on the positions
+    before this note, not on which changes it carries, so it is stable
+    even if new edits arrive. `notedThrough` advances after the write is
+    admitted. A crash in between re-sends under the same `requestId`, and
+    pi-durable returns the existing submission (`submissionByRequest`);
+    admission is durable, so a queued note survives a restart;
+  - **Busy timing:** pi-durable places writes at the earliest boundary
+    (after tools) but a `followUp` input only at the run's end. So a note
+    written for a follow-up can reach the agent during the current run,
+    before the follow-up itself. That is harmless: the note describes the
+    UI as it is;
+  - **Block answers** skip this step for their own surface: §8.4 folds
+    that surface's changes into the answer first, so `notedThrough` has
+    already advanced. Changes on other surfaces still get a note.
 
   The note reads:
 
@@ -771,8 +807,9 @@ needs an immediate reply."
   - `content` is what the model sees. The `entry` (pi-durable's
     `InputEntry`) is what channels show, and what agents and extensions
     reading structure use.
-  - The surface's unnoted change records are folded into `content` and
-    `notedThrough` advances, so they aren't sent again in a change note.
+  - The surface's unnoted change records are folded into `content`
+    first, and `notedThrough` advances, before the §8.3 note step runs.
+    So that turn sends no separate note for this surface.
   - `requestId` makes a double click one turn.
 
 ### 8.5 Worked example: ranking songs
@@ -811,12 +848,16 @@ needs an immediate reply."
 
 - `tone` values use the block tones: today's `danger` becomes `bad`, `ok`
   becomes `good`; `warn` and `neutral` are unchanged.
-- **The envelope is unchanged:** `kind`, `callId`, `status`, timestamps
-  (`createdAt`, `expiresAt?`, `answeredAt?`), `answeredBy?`, `answer`,
-  and first-answer-wins. The extension still declares its kinds through
+- **The envelope is unchanged** (`shared/src/interactions.ts`): `kind`,
+  `callId`, `status`, `createdAt`, `expiresAt?`, `settledAt?`,
+  `answeredBy?`, `answeredByUser?`, `answer?`, `details?`, and
+  first-answer-wins. The extension still declares its kinds through
   the factory result's `interactionKinds`.
 - **The answer route keeps its path; its body becomes `{values}`.**
-  Nothing depends on the old shape once approvals is deleted.
+  `InteractionAnswer` becomes `{values: Readonly<Record<string,
+  JsonValue>>}` (today `values` allows only strings, numbers and
+  booleans), so `multi` id lists and `{other}` objects fit. Nothing
+  depends on the old shape once approvals is deleted.
 - **No compatibility layer** (ruling 16). The only extension that writes
   interaction records today is `sigrun-ext-approvals`, which is being
   deleted (core-hardening §1). No other `sigrun-ext-*` repo writes
@@ -854,7 +895,7 @@ needs an immediate reply."
   |---|---|
   | `line {text}` / `segments[]` | one-line `markdown`; segments are a `columns` of one-line `markdown`s |
   | derived metrics with `format` | `stat` with `format` |
-  | `rows[]` (status, severity, quiet, depth, deps, spinnerLabel, metrics) | `collection(display: list)`: `status` (with `spinner`), `tone`, `quiet`, `children` (depth), `deps`, `metrics` |
+  | `rows[]` (status, severity, quiet, depth, deps, spinnerLabel, detail, metrics) | `collection(display: list)`: `status` (with `spinner`), `tone` from `severity` (0 → `bad`, 1 → `warn`, 2 → `neutral`), `quiet`, `children` (depth), `deps`, `body` (detail), `metrics` |
   | `gauge` | `meter`, plus `log` for `recentOutput` and a nested `collection` for `checks` |
   | `ledger[]` | `log` |
   | `details` | `details` |
@@ -882,7 +923,7 @@ needs an immediate reply."
 - Icons are names from a closed set. The webui draws them from a bundled
   subset of Lucide (MIT, already the style of `webui/src/layout/icons.tsx`).
   The TUI maps each name to a Unicode glyph with an ASCII fallback.
-- v1 set (60 names) covers navigation and actions (add, edit, delete,
+- The v1 set (49 names) covers navigation and actions (add, edit, delete,
   refresh, search, filter, share, copy, link, external, more, check,
   close, drag), objects (file, folder, calendar, clock, user, users, tag,
   list, board, chart, image, book, cart, home, bell, lock, key), status
@@ -941,20 +982,25 @@ needs an immediate reply."
   - 10 s total timeout, 10 MiB cap;
   - the body must sniff as PNG, JPEG, GIF or WebP.
 - **Cache:** `<cacheDir>/images/` (pod-local and outside backups, like the
-  other cache roots), keyed by URL hash, 256 MiB LRU, `max-age` clamped to
+  other cache roots), keyed by `sha256(u)` plus the `as` variant (never
+  the signed URL, whose signature changes on every serve), 256 MiB LRU, `max-age` clamped to
   between 1 hour and 7 days.
 - **PNG conversion (ruling 17):** with `as=png`, the server converts the
   image to PNG with `sharp` (a server dependency) and caches the result
   beside the original. The TUI asks for it; the webui doesn't.
+- **A second form for already-validated sources:** `GET
+  /v1/image?src=<asset:slug/path | data:…>&as=png` (authenticated, no
+  signature). Assets pass the §11.1 containment check and data URLs the
+  §11.1 type and size checks, so there is nothing to sign. The TUI uses
+  it for non-PNG assets and data URLs; a `data:` source too long for a
+  URL is POSTed to the same path as the body instead.
 - Responses carry `X-Content-Type-Options: nosniff`. The webui's own CSP
   (`img-src 'self' data:`) is what stops images loading from elsewhere.
 - Failures render the block's `alt` text.
 
 ### 11.3 In the TUI (ruling 13)
 
-- The TUI fetches images with the user's credentials (proxied URLs with
-  `as=png`; assets and data URLs converted the same way through
-  `GET /v1/image?as=png&src=asset:…` for non-PNG files) and renders them
+- The TUI fetches images with the user's credentials and renders them
   with pi-tui's `Image` component when `getCapabilities().images` is
   `"kitty"` or `"iterm2"`. pi-tui draws only PNG on Kitty without a
   registered transcoder; converting server-side avoids needing one.
@@ -978,7 +1024,7 @@ view's main area, a detail pane, a TUI pane.
 |---|---|---|
 | `compact` | < 40 rem | < 80 |
 | `regular` | 40–75 rem | 80–139 |
-| `wide` | ≥ 75 rem | ≥ 140 |
+| `wide` | > 75 rem | ≥ 140 |
 
 - The webui measures containers with CSS container queries and a
   `ResizeObserver` for blocks that switch structure.
@@ -1108,12 +1154,12 @@ import { page, collection, card, form, choice, chart, bind } from "sigrun/blocks
 
 render: async ({ principal, params }) => ({
   access: "write",
-  data: { cards: await board.cards(params.board), lanes: LANES },
+  data: { cards: await board.cards(params.board) },
   tree: page({
     title: "Board",
     main: collection({
       id: "cards", items: bind("/cards"), display: "lanes",
-      groupBy: "status", groups: bind("/lanes"),
+      groupBy: "status", groups: LANES,
       reorder: { within: true, across: true }, onMove: "move",
       item: card({ title: bind("./title"), meta: [{ person: bind("./assignee") }] }),
     }),
@@ -1122,6 +1168,17 @@ render: async ({ principal, params }) => ({
 ```
 
 - Builders return plain JSON; there is no runtime besides them.
+- **How extensions get it.** `sigrun/blocks` must be the same code the
+  server runs, so the builders emit the server's block-set version:
+  - extensions list `sigrun` as a `peerDependency` (`"*"`), never a
+    dependency, matching how pi-durable and pi-ai are handled;
+  - `sigrun` joins `HOST_RUNTIME_MODULES` (`src/harness/packages.ts`), so
+    the server links its own copy into the packages directory and every
+    extension's import resolves to it;
+  - this assumes sigrun is published (`"private": true` removed, an
+    `exports` map with `./blocks`), which is planned for when
+    core-hardening wraps up. U0 adds the `exports` map; the publish
+    itself is outside this spec.
 - Event props (`onMove`, `onSubmit`, `onCheck`, `onActivate`) name
   handlers in the surface's `actions` map. A name with no handler fails
   validation at load where it can be checked statically, and at render
@@ -1147,8 +1204,9 @@ render: async ({ principal, params }) => ({
   - the default `fallback` text;
   - extension unit tests (snapshot the text at 80 and 160 columns);
   - logs and notifications.
-- It is deterministic: the same input gives the same bytes, which keeps
-  model context cacheable.
+- It is deterministic per locale: the same input and locale give the
+  same bytes, which keeps model context cacheable. The model projection
+  always uses the server's locale.
 
 ### 14.4 The gallery
 
@@ -1208,8 +1266,9 @@ section, a dashboard).
   route; `sharedData: false` surfaces never return ops; channels ignore
   an unknown event type.
 - **Moves:** optimistic apply; accept with an update (it reaches a second
-  client); accept without an update (the server applies the move, and a
-  refetch keeps it); reject (snap back + toast); timeout (snap back); an
+  client); accept without ops on a chat surface (core applies the move)
+  and on an extension surface (`rev` advances, the overlay is kept until
+  data at that `rev` arrives, and the refetch shows the move); reject (snap back + toast); timeout (snap back); an
   update arriving while a move is pending (no duplicate or lost item);
   two clients moving concurrently converge.
 - **Access:** two principals on one surface instance with `read` and
@@ -1230,9 +1289,12 @@ section, a dashboard).
     turn, and a double click makes one turn (`actionId`);
   - change notes are appended after earlier entries (the earlier prompt
     bytes are unchanged);
-  - a note while the agent is busy is queued ahead of the steer that
+  - a note while the agent is busy is placed ahead of the steer that
     triggers it; a crash between the note write and `notedThrough`
-    advancing re-sends nothing new (`requestId` dedup);
+    advancing, followed by a new edit, re-sends the same `requestId`
+    (the key is stable) and makes no second note;
+  - a block answer carries its surface's changes and writes no separate
+    note for that surface;
   - changes by two users name both authors;
   - a fork from an earlier entry shows each block's data as it was when
     the fork was created (not as first rendered, and not as at the
@@ -1295,7 +1357,7 @@ contract type).
 
 | id | delivers | depends on |
 |---|---|---|
-| U0 | `shared/src/blocks/` (types, `applyOps`, `toText`) and `src/blocks/` (schemas, `validateTree`, placements, limits, the `sigrun/blocks` builders and `exports` map); recursive purity test | — |
+| U0 | `shared/src/blocks/` (types, `applyOps`, `toText`) and `src/blocks/` (schemas, `validateTree`, placements, limits, the `sigrun/blocks` builders and `exports` map, `sigrun` in `HOST_RUNTIME_MODULES`); recursive purity test | — (assumes sigrun is published) |
 | U1 | webui renderer for every block, display, field and width fallback; the gallery view | U0 |
 | U2 | TUI renderer for the same, keymap bindings, inline images | U0 |
 | U3 | extension surfaces: contract field, routes (reserved prefixes), per-principal access cache, watcher registry and `surface.changed`, data fetch with `since`, optimistic-move server side, actions, uploads, assets, rail and panel registration | U0 |
@@ -1342,5 +1404,23 @@ Every claim against the code was checked before folding.
   (glm's simpler option for B2). Even without data, it would tell users
   which instances other people are viewing.
 - **Ruled by the user:** `sharp` (17); superseding core-hardening's
-  restart rule without editing it (18); fork semantics (19); the answer
-  shape (20).
+  restart rule without editing it (18); fork semantics (19, revised:
+  state as of fork creation); the answer shape (20).
+
+**Round 2** (`reviews/2026-10-19-ui-blocks-review-2-*`; deepseek BLOCK,
+glm OK with notes):
+
+- **Folded:** accept-without-ops split by data owner (§6.3); data-fetch
+  freshness per surface kind (§7.3); a stable note `requestId` and the
+  answer-before-note order (§8.3, §8.4); the `hello {streamId}` frame as
+  an explicit W3 amendment (§7.3); `JsonValue` answer values and the
+  corrected envelope (§9.1); the purity test's `../` rule and the
+  `./blocks` export (§4.1); `DataOps` versus `DataUpdate` (§4.3, §7.1);
+  `groups` and `columns` as literals (§4.2); `sigrun` as a host runtime
+  module and a peer dependency (§14.1); the unsigned `src=` image form
+  (§11.2); severity mapping, icon count, the `open` comment, the `wide`
+  boundary, the image cache key, per-locale determinism, stored watcher
+  access (§9.2, §10.2, §6.1, §12.1, §11.2, §14.3, §7.3).
+- **Rejected:** that a note queued while busy can be lost in a crash.
+  pi-durable admits queued items durably (`admitSubmission` in
+  `harness/submissions.js`), so a queued note is placed after a restart.
