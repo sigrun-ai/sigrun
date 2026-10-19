@@ -31,6 +31,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { loadConfig, type Env } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
@@ -66,12 +67,16 @@ async function bootServer(env: Env = {}): Promise<TestServer> {
 		// Hermetic: a dev checkout with a built `webui/dist` would otherwise
 		// register the catch-all static route.
 		SIGRUN_WEBUI: "false",
+		// W1 posture: naive identity over a claimed directory — the upload
+		// routes exercise size limits and name validation, not auth.
+		SIGRUN_AUTH: "none",
 		...env,
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
 		settingsDir: dir,
+		identity: await seededIdentity(dir),
 	});
 	const app = await createServer(opened, config);
 	cleanups.push(async () => {
