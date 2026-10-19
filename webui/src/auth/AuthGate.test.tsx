@@ -119,7 +119,6 @@ function makeHarness(init?: {
 					{
 						id: 1,
 						root: true,
-						entryCount: 0,
 						access: "write",
 						owner: "alice",
 						archived: false,

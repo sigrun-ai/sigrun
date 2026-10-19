@@ -34,7 +34,6 @@ function conversation(init?: {
 	return {
 		id: 5,
 		root: false,
-		entryCount: 0,
 		access: "write",
 		owner: "alice",
 		archived: false,

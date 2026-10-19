@@ -33,7 +33,6 @@ function summary(
 ): ConversationSummary {
 	return {
 		root: false,
-		entryCount: 1,
 		archived: false,
 		pinned: false,
 		access: "write",

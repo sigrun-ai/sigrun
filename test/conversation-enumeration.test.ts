@@ -110,7 +110,6 @@ async function listConversations(app: FastifyInstance) {
 	return response.json().conversations as {
 		id: number;
 		root: boolean;
-		entryCount: number;
 		owner?: string;
 	}[];
 }
@@ -134,12 +133,11 @@ describe("GET /v1/conversations across a restart", () => {
 				const conversations = await listConversations(second.app);
 				const ids = conversations.map((c) => c.id);
 				expect(ids).toContain(created);
-				// The summary fields survive the restart: root flag, entry
-				// count, and the stamped owner (Task 2's doc is durable).
+				// The summary fields survive the restart: root flag and the
+				// stamped owner (Task 2's doc is durable).
 				const summary = conversations.find((c) => c.id === created);
 				expect(summary).toBeDefined();
 				expect(summary!.root).toBe(false);
-				expect(typeof summary!.entryCount).toBe("number");
 				expect(summary!.owner).toBe("alice");
 			} finally {
 				await second.close();
@@ -172,7 +170,7 @@ describe("GET /v1/conversations × harness-created conversations", () => {
 		expect("owner" in summary!).toBe(false);
 	});
 
-	test("summaries keep id/root/entryCount for every durable conversation", async () => {
+	test("summaries keep id/root for every durable conversation", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-enum-shape-"));
 		const { app, opened, close } = await bootServer(join(dir, "sigrun.db"));
 		cleanups.push(close);
@@ -189,7 +187,6 @@ describe("GET /v1/conversations × harness-created conversations", () => {
 		expect(roots.map((c) => c.id)).toEqual([root.id]);
 		for (const conversation of conversations) {
 			expect(typeof conversation.id).toBe("number");
-			expect(typeof conversation.entryCount).toBe("number");
 		}
 	});
 });

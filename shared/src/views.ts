@@ -157,8 +157,6 @@ export interface ConversationSummary {
 	readonly id: number;
 	/** The conversation this summary describes is the reserved root. */
 	readonly root: boolean;
-	/** Live active-entry count at list time (a cheap liveness signal). */
-	readonly entryCount: number;
 	/**
 	 * The conversation's session-meta owner, when stamped (Task 2's
 	 * `X-Sigrun-User` seam — Task 3 surfaced it here so a picker can show

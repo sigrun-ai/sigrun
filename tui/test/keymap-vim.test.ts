@@ -204,7 +204,6 @@ function vimStubClient() {
 					{
 						id: 7,
 						root: false,
-						entryCount: 1,
 						archived: false,
 						pinned: false,
 						lastActivityAt: "2026-01-02T00:00:00.000Z",
@@ -213,7 +212,6 @@ function vimStubClient() {
 					{
 						id: 3,
 						root: false,
-						entryCount: 1,
 						archived: false,
 						pinned: false,
 						lastActivityAt: "2026-01-01T00:00:00.000Z",

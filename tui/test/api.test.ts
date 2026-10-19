@@ -48,7 +48,7 @@ const BASE = "http://sigrun.example.invalid";
 describe("SigrunClient request shaping", () => {
 	test("listConversations GETs /v1/conversations with the X-Sigrun-User header", async () => {
 		const body = {
-			conversations: [{ id: 1, root: true, entryCount: 0, owner: "acme-agent" }],
+			conversations: [{ id: 1, root: true, owner: "acme-agent" }],
 		};
 		const { calls, fetchImpl } = stubFetch(body);
 		const client = new SigrunClient({
