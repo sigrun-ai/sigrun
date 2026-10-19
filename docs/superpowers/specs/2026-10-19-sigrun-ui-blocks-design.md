@@ -87,6 +87,10 @@ dashboards, extension-to-extension actions, i18n of extension strings.
 15. **Settings say how they apply.** Every field declares `apply: "live"
     | "restart"`. Restart-only changes show as pending, and admins get a
     Restart button.
+16. **No legacy interaction or ambient shapes.** `sigrun-ext-approvals`
+    is deleted rather than migrated; its replacements (ports of
+    `rpiv-ask-user-question` and `pi-warden`) are written against block
+    trees from the start.
 
 ## 3. Concepts
 
@@ -322,6 +326,11 @@ the item.
 | `submit?` | the submit action (§6) and its `label` |
 | `children` | fields and `section`s grouping them |
 
+**`choice` options for interactions:** `preview` is markdown shown
+beside the options while one is focused (the webui shows it
+side by side when there's room, the TUI below the list); `allowOther`
+adds a free-text answer row whose value is returned as `{other: text}`.
+
 **Field props, shared by all field types:** `name`, `label`, `help?`,
 `placeholder?`, `required?`, `disabled?`, `apply?` (§13; settings only),
 validation (`min`, `max`, `minLength`, `maxLength`, `pattern`), and a
@@ -333,7 +342,7 @@ server error the host shows under the field.
 | `longtext` | `syntax?: plain \| markdown \| code`, `lang?`, `rows?` |
 | `number` | `step?`, `format?` |
 | `toggle` | |
-| `choice` | `options` (literal or binding): `{id, label, description?, tone?, recommended?}[]`, `multi?`, `display?: auto \| radio \| select \| chips` |
+| `choice` | `options` (literal or binding): `{id, label, description?, tone?, recommended?, preview?}[]`, `multi?`, `allowOther?: {label?}`, `display?: auto \| radio \| select \| chips` |
 | `date`, `datetime` | `min?`, `max?` |
 | `daterange` | `presets?: {id, label, duration}[]` |
 | `secret` | write-only; the host shows `set (stored)` / `set (env)` / `not set` from a bound status |
@@ -611,8 +620,8 @@ needs an immediate reply."
 
 ### 9.1 Interaction records
 
-- Records gain `body: Tree` (placement `interaction`): a root `form`
-  whose `submit` is the answer.
+- Records carry `body: Tree` (placement `interaction`): a root `form`
+  whose `submit` is the answer. The old body fields are removed.
 - Mapping from today's body (all channels render only trees after this
   spec):
 
@@ -627,10 +636,28 @@ needs an immediate reply."
 
 - The envelope (`key`, `interactionKinds`, `expiresAt`, `answeredBy`,
   first-answer-wins) is unchanged. The answer route is unchanged.
-- **Compatibility:** core converts legacy-shaped records to trees when
-  it reads them (`fromLegacyInteraction`), so extensions migrate at their
-  own pace. The converter is deleted once every `sigrun-ext-*` repo
-  writes trees; this spec's plan migrates the approvals extension.
+- **No compatibility layer** (ruling 16). The only extension that writes
+  interaction records today is `sigrun-ext-approvals`, which is being
+  deleted (core-hardening §1). No other `sigrun-ext-*` repo writes
+  interaction or ambient records (checked 2026-10-19). Legacy-shaped
+  records fail validation, and core's seam fixtures (`fixture-seam`,
+  `fixture-seam-visual`, `fixture-seam-bad-kinds`, and the decide fixture
+  W2 renames from `fixture-approvals`) are rewritten as trees.
+- **The planned ports are the evidence check.** The replacement
+  extensions are ports of `@juicesharp/rpiv-ask-user-question` and
+  `pi-warden`. The interaction subset covers both:
+  - ask-user-question: 1–4 questions, each a `section` (its short header
+    as the title) holding one `choice` with 2–4 options, `multi`,
+    per-option `description` and `preview`, and a free-text answer
+    (`allowOther`). `preview` and `allowOther` are the two `choice`
+    props added for it (§5.6);
+  - pi-warden: an allow/deny `choice` with tones, a `longtext` reason,
+    `markdown` for the matched rule and command, and its verdict stack
+    as an ambient `collection` with severity tones.
+- When an interaction form has more than one `section` holding a
+  `choice`, channels may present the sections one at a time (a step
+  through, with a review before submit). That's a host presentation of
+  the same tree, not a new block.
 
 ### 9.2 Ambient surfaces
 
@@ -649,7 +676,7 @@ needs an immediate reply."
 
 - `place: status` allows one line: a single `markdown` or one `columns`
   of one-line blocks. Validation enforces it.
-- Same compatibility converter (`fromLegacyAmbient`) and deletion rule.
+- No compatibility layer, as for interactions: records carry trees only.
 
 ## 10. Styling and icons
 
@@ -955,9 +982,11 @@ section, a dashboard).
   - change notes are appended after earlier entries (the earlier prompt
     bytes are unchanged);
   - a fork copies the state.
-- **Interactions and ambient:** every legacy fixture converts to a tree
-  and renders identically in the text projection; answers keep their
-  `{ids, values, text}` shape.
+- **Interactions and ambient:** a legacy-shaped record fails
+  validation; the rewritten seam fixtures render in both channels;
+  answers keep their `{ids, values, text}` shape; a four-question
+  ask-user-question tree (with `preview` and `allowOther`) answers in
+  one submit.
 - **Settings:** a live key applies without restart and fires
   `onSettingsChanged`; a restart key shows in `pendingRestart`; restart
   is hidden when unsupervised; `POST /v1/admin/restart` is admin-only.
@@ -1005,11 +1034,11 @@ contract type).
 | U3 | extension surfaces: contract field, routes, `surface.changed`, data fetch with `since`, actions, uploads, assets, rail and panel registration | U0 |
 | U4 | settings: `apply`, `settings.changed`, `onSettingsChanged`, `pendingRestart`, restart route, supervised detection, core sections rebuilt, extension sections | U0, U1, U2, U3 |
 | U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and state, edits, change notes, answers | U0, U1, U2 |
-| U6 | interactions and ambient on trees: converters, channel renderers switched to trees, approvals extension migrated | U1, U2 |
+| U6 | interactions and ambient on trees: record schemas carry trees only, channel renderers switched to trees, core seam fixtures rewritten | U1, U2 |
 | U7 | image proxy, icon set, docs | U0 (U1/U2 consume the icons) |
 
 U1 and U2 can run in parallel; so can U3, U5 and U7 once U0 lands.
 
 ## 19. Open questions
 
-None. Rulings 1–15 settle the design questions raised so far.
+None. Rulings 1–16 settle the design questions raised so far.
