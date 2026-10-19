@@ -7,10 +7,10 @@ export default defineConfig({
 		// @sigrun/webui / @sigrun/tui); each suite runs exactly once, and
 		// the workspace suites do not inherit the server's node-environment
 		// config.
-			// `.docker-ext/**`: build-time vendored scratch (gitignored; created by
-			// scripts/docker-vendor-exts.sh for the image build) — never a test
-			// source; its vendored tests mirror the real ones and their deps differ.
-			exclude: [...defaultExclude, "webui/**", "tui/**", ".worktrees/**", ".docker-ext/**"],
+		// `.docker-ext/**`: build-time vendored scratch (gitignored; created by
+		// scripts/docker-vendor-exts.sh for the image build) — never a test
+		// source; its vendored tests mirror the real ones and their deps differ.
+		exclude: [...defaultExclude, "webui/**", "tui/**", ".worktrees/**", ".docker-ext/**"],
 		// The suite-wide env pin (test/setup.ts): the unclaimed-boot setup-code
 		// write lands in a tmp cache root, never the developer's ~/.cache/sigrun.
 		setupFiles: ["./test/setup.ts"],

@@ -28,6 +28,13 @@ export function registerSettingsRoutes(
 	});
 
 	app.patch("/v1/settings", async (request, reply): Promise<SettingsResponse> => {
+		// Admin-only (spec §5.6): PATCH edits `extensions[]`, which is code
+		// execution at the next boot — a non-admin (any authenticated
+		// token-method user, a non-admin proxy user) gets 403 before the
+		// body is even read. GET stays ungated (spec lists only PATCH).
+		if (!request.principal.admin) {
+			return await reply.code(403).send({ error: "forbidden" });
+		}
 		const body = request.body as Record<string, unknown> | undefined;
 		if (
 			body === undefined ||
