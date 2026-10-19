@@ -101,12 +101,17 @@ When an env var and the settings file both set a knob, the env var wins
 — this is documented behavior, not enforced: sigrun never warns about or
 detects env/file conflicts.
 
-On first boot (settings file absent), sigrun writes the resolved
-configuration — the `server` section (env values plus defaults) plus the
-resolved `extensions` list and `defaultModel` — into `settings.json`, so
-the effective configuration is visible and hand-editable (the file
-records reality). On later boots the file is never rewritten by
-bootstrap: edit it, and env vars still override it per field.
+On first boot (settings file absent), sigrun writes only what the
+environment explicitly set — the env-sourced `server` fields plus
+`extensions` and `defaultModel` when env supplied them — into
+`settings.json`; defaults are never persisted, so later releases'
+default changes reach existing installs (the file records intent, not
+reality). The full resolved server section is visible instead in
+`GET /v1/settings`'s `effective` block: every flattened server key
+(`server.port`, `server.compaction.reserveTokens`, …) with its resolved
+value and its source — `"env"`, `"file"`, or `"default"`. On later
+boots the file is never rewritten by bootstrap: edit it, and env vars
+still override it per field.
 
 | Variable | Type | Default | File key | Purpose |
 |---|---|---|---|---|
@@ -115,7 +120,7 @@ bootstrap: edit it, and env vars still override it per field.
 | `OPENAI_BASE_URL` | URL | OpenAI | `defaultProvider.baseUrl` | Endpoint for the env-driven provider (any compatible host). |
 | `SIGRUN_PORT` | positive int | `3000` | `server.port` | HTTP listen port. |
 | `SIGRUN_STORAGE_PATH` | path | `<dataDir>/sigrun.db` | `server.storagePath` | SQLite database location. Relative values resolve against the data root (absolute values verbatim; the cwd-relative `data/sigrun.db` default is retired). |
-| `SIGRUN_WORKSPACE_PATH` | path | `/home/sigrun` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. |
+| `SIGRUN_WORKSPACE_PATH` | path | `<dataDir>/workspace` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. The default rides the data root (chart/compose deploys set the path explicitly); it is never persisted on first boot. |
 | `SIGRUN_DATA_DIR` | path | `$XDG_DATA_HOME/sigrun` or `~/.local/share/sigrun` | `server.dataDir` | Data root (the DB default and extension data dirs). Env/file values win verbatim. |
 | `SIGRUN_CACHE_DIR` | path | `$XDG_CACHE_HOME/sigrun` or `~/.cache/sigrun` | `server.cacheDir` | Cache root (regenerable; never ensured at boot). Env/file values win verbatim. |
 | `SIGRUN_STATE_DIR` | path | `$XDG_STATE_HOME/sigrun` or `~/.local/state/sigrun` | `server.stateDir` | State root (operational bookkeeping). Env/file values win verbatim. |

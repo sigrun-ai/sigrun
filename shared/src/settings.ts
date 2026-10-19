@@ -143,6 +143,24 @@ export interface ServerSettings {
 }
 
 /**
+ * Which tier supplied a resolved server key (the `/v1/settings`
+ * `effective` block, spec §6.6): the env var was set (`"env"`), the
+ * settings file's `server` section set it (`"file"`), or neither and
+ * the code default applied (`"default"`).
+ */
+export type ServerSettingSource = "env" | "file" | "default";
+
+/**
+ * One `effective` entry: the RESOLVED value (what boot actually used)
+ * plus the {@link ServerSettingSource} that won. Keys are flattened
+ * dotted paths (`"server.port"`, `"server.compaction.reserveTokens"`).
+ */
+export interface EffectiveServerSetting {
+	readonly value: unknown;
+	readonly source: ServerSettingSource;
+}
+
+/**
  * The degenerate env-driven provider's static configuration (ruling 7).
  * Only the endpoint is here — credentials live in `auth.json`.
  */

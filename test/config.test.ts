@@ -14,9 +14,16 @@
  *   baseUrl are file-configurable (top-level `extensions`, the
  *   `server.webui` section with its deprecated `server.webuiBundle`
  *   alias, `defaultProvider.baseUrl`) under env;
- * - `resolvedServerSection` projects a resolved config (defaults
- *   included) into the file's `server` shape — what the first-boot
- *   bootstrap persists.
+ * - `defaultWorkspacePath` puts the workspace default under the data
+ *   root (spec §6.3: `<dataDir>/workspace`; chart/compose set the path
+ *   explicitly);
+ * - `envServerSection` projects ONLY env-set values into the file's
+ *   `server` shape — what the first-boot bootstrap persists (ruling 5:
+ *   defaults are never persisted, so later releases' default changes
+ *   reach existing installs);
+ * - `effectiveServerSection` classifies every resolved server key's
+ *   source as env, file, or default (the `/v1/settings` `effective`
+ *   block, spec §6.6).
  */
 
 import { describe, expect, test } from "vitest";
@@ -28,11 +35,12 @@ import {
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
 	DEFAULT_PROVIDER_REFRESH_MINUTES,
-	DEFAULT_WORKSPACE_PATH,
 	STORAGE_FILE_NAME,
+	defaultWorkspacePath,
+	effectiveServerSection,
+	envServerSection,
 	loadConfig,
 	parseBackupConfig,
-	resolvedServerSection,
 } from "../src/config.js";
 import type { SettingsFile } from "../src/harness/settings.js";
 
@@ -132,7 +140,7 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 		const bare = loadConfig({ ...MODEL_ENV });
 		expect(bare.port).toBe(DEFAULT_PORT);
 		expect(bare.storagePath).toBe(join(bare.dataDir, STORAGE_FILE_NAME));
-		expect(bare.workspace.path).toBe(DEFAULT_WORKSPACE_PATH);
+		expect(bare.workspace.path).toBe(defaultWorkspacePath(bare.dataDir));
 		expect(bare.extensionsDir).toBe(DEFAULT_EXTENSIONS_DIR);
 	});
 
@@ -357,51 +365,220 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 	});
 });
 
-	describe("resolvedServerSection (the bootstrap projection)", () => {
-	test("includes the defaults (the file records the full effective section; webui omitted when defaulted)", () => {
+	describe("defaultWorkspacePath (spec §6.3: the workspace default rides the data root)", () => {
+	test("SIGRUN_DATA_DIR anchors the workspace at <dataDir>/workspace", () => {
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "acme/m",
+			SIGRUN_DATA_DIR: "/srv/data",
+		});
+		expect(config.workspace.path).toBe(join("/srv/data", "workspace"));
+	});
+
+	test("the bare default (no env, no file) is the data root's workspace", () => {
 		const config = loadConfig({ ...MODEL_ENV });
-		const section = resolvedServerSection(config);
+		expect(config.workspace.path).toBe(join(config.dataDir, "workspace"));
+	});
+
+	test("SIGRUN_WORKSPACE_PATH still wins env-first", () => {
+		const config = loadConfig(
+			{ ...MODEL_ENV, SIGRUN_WORKSPACE_PATH: "/explicit/ws" },
+			{ server: { workspacePath: "/file/ws" } },
+		);
+		expect(config.workspace.path).toBe("/explicit/ws");
+	});
+});
+
+describe("envServerSection (the env-only bootstrap projection, ruling 5)", () => {
+	test("empty env projects {} — no default is ever persisted", () => {
+		expect(envServerSection({})).toEqual({});
+	});
+
+	test("SIGRUN_PORT alone → {port}", () => {
+		expect(envServerSection({ SIGRUN_PORT: "4000" })).toEqual({ port: 4000 });
+	});
+
+	test("one compaction knob → a one-key sub-object, not the full section", () => {
+		expect(
+			envServerSection({ SIGRUN_COMPACTION_RESERVE_TOKENS: "9000" }),
+		).toEqual({ compaction: { reserveTokens: 9000 } });
+	});
+
+	test("every table row maps, with its typed parser (values verbatim)", () => {
+		const section = envServerSection({
+			SIGRUN_PORT: "4000",
+			SIGRUN_WORKSPACE_PATH: "/w",
+			SIGRUN_STORAGE_PATH: "/s/sigrun.db",
+			SIGRUN_DATA_DIR: "/d",
+			SIGRUN_CACHE_DIR: "/c",
+			SIGRUN_STATE_DIR: "/st",
+			SIGRUN_WEBUI: "false",
+			SIGRUN_WEBUI_BUNDLE: "/opt/ui",
+			SIGRUN_COMPACTION_ENABLED: "false",
+			SIGRUN_COMPACTION_RESERVE_TOKENS: "9000",
+			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "8000",
+			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+			SIGRUN_HOOK_DEADLINE: "1000",
+			SIGRUN_IDLE_THRESHOLD: "2000",
+			SIGRUN_WORKER_DEADLINE: "3000",
+			SIGRUN_QUEUE_MAX: "10",
+			SIGRUN_PROVIDER_REFRESH_MINUTES: "0",
+			SIGRUN_BACKUP_S3_BUCKET: "b",
+			SIGRUN_BACKUP_S3_PREFIX: "p",
+			SIGRUN_BACKUP_S3_ENDPOINT: "http://e",
+			SIGRUN_MAX_UPLOAD_BYTES: "1024",
+		});
 		expect(section).toEqual({
-			port: DEFAULT_PORT,
-			workspacePath: DEFAULT_WORKSPACE_PATH,
-			storagePath: join(config.dataDir, STORAGE_FILE_NAME),
-			extensionsDir: DEFAULT_EXTENSIONS_DIR,
-			maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
-			dataDir: config.dataDir,
-			cacheDir: config.cacheDir,
-			stateDir: config.stateDir,
-			// The webui keys are the deliberate exception (build-and-webui
-			// Task 4): a DEFAULTED webui is omitted entirely — a mirrored
-			// `webuiBundle: "webui/dist"` would read as an explicit selection
-			// on the next boot and make absent-default → API-only
-			// unreachable (test/webui-settings.test.ts pins the omission).
-			compaction: { ...DEFAULT_COMPACTION },
-			memorySeam: { ...DEFAULT_MEMORY_SEAM },
-			providers: { refreshIntervalMinutes: DEFAULT_PROVIDER_REFRESH_MINUTES },
+			port: 4000,
+			workspacePath: "/w",
+			storagePath: "/s/sigrun.db",
+			dataDir: "/d",
+			cacheDir: "/c",
+			stateDir: "/st",
+			maxUploadBytes: 1024,
+			webui: { enabled: false, bundle: "/opt/ui" },
+			compaction: {
+				enabled: false,
+				reserveTokens: 9000,
+				keepRecentTokens: 8000,
+				backgroundTokens: 0,
+			},
+			memorySeam: {
+				hookDeadlineMs: 1000,
+				idleThresholdMs: 2000,
+				workerDeadlineMs: 3000,
+				queueMax: 10,
+			},
+			providers: { refreshIntervalMinutes: 0 },
+			backup: { s3: { bucket: "b", prefix: "p", endpoint: "http://e" } },
 		});
 	});
 
-	test("round-trips through loadConfig: bootstrap values re-resolve identically", () => {
+	test("SIGRUN_BACKUP_PATH maps to the path target (the two-shape union)", () => {
+		expect(envServerSection({ SIGRUN_BACKUP_PATH: "/backups" })).toEqual({
+			backup: { path: "/backups" },
+		});
+	});
+
+	test("SIGRUN_EXTENSIONS_DIR is not a table row — never projected", () => {
+		expect(envServerSection({ SIGRUN_EXTENSIONS_DIR: "/x" })).toEqual({});
+	});
+
+	test("empty-string values count as unset (the loadConfig reading)", () => {
+		expect(
+			envServerSection({
+				SIGRUN_PORT: "",
+				SIGRUN_WEBUI: "",
+				SIGRUN_WEBUI_BUNDLE: "",
+				SIGRUN_STORAGE_PATH: "",
+			}),
+		).toEqual({});
+	});
+
+	test("invalid values fail loud naming the variable (the same parsers as loadConfig)", () => {
+		expect(() => envServerSection({ SIGRUN_PORT: "abc" })).toThrow(
+			/SIGRUN_PORT must be a positive integer/,
+		);
+		expect(() => envServerSection({ SIGRUN_WEBUI: "yes" })).toThrow(
+			/SIGRUN_WEBUI must be "true" or "false"/,
+		);
+		expect(() =>
+				envServerSection({ SIGRUN_COMPACTION_RESERVE_TOKENS: "0" }),
+		).toThrow(/SIGRUN_COMPACTION_RESERVE_TOKENS must be a positive integer/);
+		expect(() => envServerSection({ SIGRUN_QUEUE_MAX: "0" })).toThrow(
+			/SIGRUN_QUEUE_MAX must be a positive integer/,
+		);
+		expect(() => envServerSection({ SIGRUN_MAX_UPLOAD_BYTES: "0" })).toThrow(
+			/SIGRUN_MAX_UPLOAD_BYTES must be a positive integer/,
+		);
+		expect(() =>
+			envServerSection({ SIGRUN_PROVIDER_REFRESH_MINUTES: "-1" }),
+		).toThrow(/SIGRUN_PROVIDER_REFRESH_MINUTES must be a non-negative integer/);
+	});
+
+	test("booting twice with the same env yields equal loadConfig results", () => {
 		const env = {
 			...MODEL_ENV,
 			SIGRUN_PORT: "4080",
 			SIGRUN_BACKUP_S3_BUCKET: "b",
 		};
 		const first = loadConfig(env);
-		const section = resolvedServerSection(first);
-		// Second boot: env over the bootstrapped file resolves the same. The
-		// bootstrap OMITS the defaulted webui keys entirely (build Task 4),
-		// and a surviving default-valued mirror (a hand-edited file) keeps
-		// the default's serve-time semantics (build Task 3/5: the default bundle anchors to the package root and an absent default
-		// stays the supported API-only deploy across boots — treating the
-		// mirrored value as explicit would freeze every booted deployment to
-		// cwd-relative resolution and retire the API-only fallback). An
-		// operator wanting a different bundle writes a different selector.
-		const second = loadConfig(env, { server: section });
+		// What a first boot persists (serve.ts): the env-set server keys
+		// plus defaultModel — nothing else.
+		const bootstrapped: SettingsFile = {
+			defaultModel: "openai/gpt-4o",
+			server: envServerSection(env),
+		};
+		// Second boot: env over the bootstrapped file resolves the same.
+		const second = loadConfig(env, bootstrapped);
 		expect(second).toEqual(first);
-		// Env dropped: the bootstrapped file alone reproduces the section.
-		const fromFile = loadConfig({ ...MODEL_ENV }, { server: section });
+		// And the bootstrapped file alone (env dropped) carries the env-set
+		// values forward — the persisted intent survives a reboot without env.
+		const fromFile = loadConfig({ ...MODEL_ENV }, bootstrapped);
 		expect(fromFile.port).toBe(4080);
 		expect(fromFile.backup).toEqual({ target: "s3", bucket: "b" });
+	});
+});
+
+describe("effectiveServerSection (the /v1/settings effective block, spec §6.6)", () => {
+	test("classifies env, file, and default per flattened dotted key", () => {
+		const env = { ...MODEL_ENV, SIGRUN_PORT: "4080" };
+		const file: SettingsFile = {
+			server: { compaction: { reserveTokens: 4096 } },
+		};
+		const config = loadConfig(env, file);
+		const effective = effectiveServerSection(env, file.server, config);
+		expect(effective["server.port"]).toEqual({ value: 4080, source: "env" });
+		expect(effective["server.compaction.reserveTokens"]).toEqual({
+			value: 4096,
+			source: "file",
+		});
+		expect(effective["server.compaction.keepRecentTokens"]).toEqual({
+			value: DEFAULT_COMPACTION.keepRecentTokens,
+			source: "default",
+		});
+		expect(effective["server.webui.enabled"]).toEqual({
+			value: true,
+			source: "default",
+		});
+		expect(effective["server.maxUploadBytes"]).toEqual({
+			value: DEFAULT_MAX_UPLOAD_BYTES,
+			source: "default",
+		});
+		expect(effective["server.providers.refreshIntervalMinutes"]).toEqual({
+			value: DEFAULT_PROVIDER_REFRESH_MINUTES,
+			source: "default",
+		});
+		// Unset backup: no leaf keys at all.
+		expect(
+			Object.keys(effective).filter((key) => key.startsWith("server.backup")),
+		).toEqual([]);
+	});
+
+	test("env wins over file for the same key", () => {
+		const env = { ...MODEL_ENV, SIGRUN_PORT: "4080" };
+		const file: SettingsFile = { server: { port: 9999 } };
+		const config = loadConfig(env, file);
+		const effective = effectiveServerSection(env, file.server, config);
+		expect(effective["server.port"]).toEqual({ value: 4080, source: "env" });
+	});
+
+	test("the legacy webuiBundle file key counts as the file source for webui.bundle", () => {
+		const file: SettingsFile = { server: { webuiBundle: "/ui" } };
+		const config = loadConfig({ ...MODEL_ENV }, file);
+		const effective = effectiveServerSection({}, file.server, config);
+		expect(effective["server.webui.bundle"]).toEqual({
+			value: "/ui",
+			source: "file",
+		});
+	});
+
+	test("a configured backup flattens to its target leaves", () => {
+		const env = { ...MODEL_ENV, SIGRUN_BACKUP_S3_BUCKET: "b" };
+		const config = loadConfig(env);
+		const effective = effectiveServerSection(env, undefined, config);
+		expect(effective["server.backup.s3.bucket"]).toEqual({
+			value: "b",
+			source: "env",
+		});
 	});
 });

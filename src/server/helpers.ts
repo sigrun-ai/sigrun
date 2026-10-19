@@ -15,6 +15,11 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import {
+	effectiveServerSection,
+	type Env,
+	type SigrunConfig,
+} from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { SessionMetaDoc } from "./session-meta.js";
 import {
@@ -119,16 +124,29 @@ export const ID_PARAMS_SCHEMA = {
 } as const;
 
 /** The settings response over the live store + registry snapshot. */
-export function settingsResponse(opened: OpenedHarness): SettingsResponse {
+/**
+ * The `/v1/settings` payload (GET and the post-PATCH readback): the
+ * file's effective contents, the registry-computed `toolRoster`, and
+ * the `effective` block (spec §6.6) — every server key's resolved value
+ * and source, computed PER REQUEST over the fresh file read (a PATCH
+ * lands as a `file` source on the next GET) and the boot env/config.
+ */
+export function settingsResponse(
+	opened: OpenedHarness,
+	config: SigrunConfig,
+	env: Env,
+): SettingsResponse {
 	const names = opened.registry
 		.snapshot()
 		.tools()
 		.map((entry) => entry.tool.name);
 	// Names may repeat across extensions (RegistrySnapshot.tools); the
 	// panel keys checkboxes by name, so dedupe.
+	const file = opened.settings.read();
 	return {
-		...opened.settings.read(),
+		...file,
 		toolRoster: [...new Set(names)],
+		effective: effectiveServerSection(env, file.server, config),
 	};
 }
 

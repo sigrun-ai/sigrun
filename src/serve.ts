@@ -11,13 +11,13 @@
  * `loadConfig(process.env)` → settings bootstrap → `openHarness` →
  * `createServer` → listen.
  *
- * The settings bootstrap (the settings-file parity piece): env resolves
- * the server section ONCE (`loadConfig(env)` — env-only, exactly the
- * pre-file resolution); the store then writes that resolved section on
- * first boot only, and the FINAL config re-resolves env over the
- * (possibly just-written) file (`loadConfig(env, file)`) — env always
- * wins, the file fills only what env leaves unset. `SIGRUN_CONFIG_DIR`
- * stays env-only (it locates the file itself).
+ * The settings bootstrap (ruling 5 / spec §6.6): on first boot the
+ * store writes ONLY what the environment set (the env-sourced `server`
+ * fields plus `extensions`/`defaultModel` when env supplied them —
+ * defaults are never persisted), and the FINAL config re-resolves env
+ * over the (possibly just-written) file (`loadConfig(env, file)`) — env
+ * always wins, the file fills only what env leaves unset.
+ * `SIGRUN_CONFIG_DIR` stays env-only (it locates the file itself).
  *
  * Fail-loud is the contract (the task brief): any boot error rejects the
  * boot promise; callers print it and exit 1 — a wedged deploy must crash,
@@ -25,7 +25,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { loadConfig, resolvedServerSection } from "./config.js";
+import { envServerSection, loadConfig } from "./config.js";
 import { openHarness } from "./harness/boot.js";
 import { packagesDirOf, syncPackages } from "./harness/packages.js";
 import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
@@ -85,15 +85,26 @@ export async function serve(
 	// 1. Env-only resolution (the pre-file behavior — fail-loud on a bad
 	//    env value before anything is written).
 	const envConfig = loadConfig(env);
-	// 2. First-boot bootstrap: absent settings file → write the RESOLVED
-	//    boot configuration (server section incl. webui, plus the
-	//    resolved extension list, and defaultModel when the env provided
-	//    it) as the deployment's visible baseline — the file records
-	//    reality. A present file is never touched.
+	// 2. First-boot bootstrap (ruling 5 / spec §6.6): absent settings file
+	//    → write ONLY what the environment explicitly set — the env-sourced
+	//    `server` fields (`envServerSection`) plus `extensions` and
+	//    `defaultModel` when env supplied them. Defaults are NEVER
+	//    persisted, so later releases' default changes reach existing
+	//    installs (the file records intent, not reality); a `server`
+	//    section with zero entries is omitted entirely. A present file is
+	//    never touched.
+	const envModel =
+		env.SIGRUN_DEFAULT_MODEL?.trim() || env.SIGRUN_MODEL?.trim() || undefined;
 	const settingsStore = new SettingsStore({ dir: defaultSettingsDir() });
-	settingsStore.bootstrap(resolvedServerSection(envConfig), {
-		extensions: envConfig.extensions,
-		defaultModel: `${envConfig.models.provider}/${envConfig.models.modelId}`,
+	settingsStore.bootstrap(envServerSection(env), {
+		extensions:
+			env.SIGRUN_EXTENSIONS?.trim() === undefined
+				? undefined
+				: envConfig.extensions,
+		defaultModel:
+			envModel === undefined
+				? undefined
+				: `${envConfig.models.provider}/${envConfig.models.modelId}`,
 	});
 	// 3. Final resolution: env over the file over code defaults. The file
 	//    re-read picks up whatever bootstrap wrote (or what was already
@@ -121,7 +132,7 @@ export async function serve(
 	// The contributed-bundle registry (build-and-webui Task 6): boot folded
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
-	const app = await createServer(opened, config, opened.webuiBundles);
+	const app = await createServer(opened, config, opened.webuiBundles, env);
 	const host = options?.host ?? "0.0.0.0";
 	await app.listen({ port: config.port, host });
 	// Machine-greppable: the deploy-entry test waits for this line, and an

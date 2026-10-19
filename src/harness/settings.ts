@@ -65,7 +65,9 @@ import type {
 
 export type {
 	DefaultProviderSettings,
+	EffectiveServerSetting,
 	ExtensionSpec,
+	ServerSettingSource,
 	ServerSettings,
 	SettingsFile,
 } from "@sigrun/shared/settings";
@@ -602,17 +604,18 @@ export class SettingsStore {
 	}
 
 	/**
-	 * First-boot initialization (the settings bootstrap): when the file is
-	 * ABSENT, write the RESOLVED boot configuration — `server` (the
-	 * section `loadConfig` resolved from env + code defaults), plus the
-	 * top-level `extensions` list and `defaultModel` when the env provided
-	 * them — so the file exists from boot one as an operator-visible,
-	 * hand-editable record of reality (ruling 9: the file records what
-	 * boot actually resolved, env-provided or defaulted). When the file
-	 * already exists (any content), bootstrap is a no-op: the file is
-	 * never overwritten, and env vars continue to win over it on the next
-	 * boot (env-over-file precedence). Idempotent: bootstrapping twice
-	 * leaves the file byte-identical.
+	 * First-boot initialization (the settings bootstrap, ruling 5 /
+	 * spec §6.6): when the file is ABSENT, write ONLY what the
+	 * environment set — the env-sourced `server` fields (the
+	 * `envServerSection` projection) plus the top-level `extensions`
+	 * list and `defaultModel` when env supplied them. Defaults are
+	 * NEVER persisted, so later releases' default changes reach existing
+	 * installs; a `server` section with zero entries is omitted entirely
+	 * (a nothing-env-set boot writes at most the top-level keys). When
+	 * the file already exists (any content), bootstrap is a no-op: the
+	 * file is never overwritten, and env vars continue to win over it on
+	 * the next boot (env-over-file precedence). Idempotent: bootstrapping
+	 * twice leaves the file byte-identical.
 	 */
 	bootstrap(
 		resolvedServer: ServerSettings,
@@ -630,7 +633,9 @@ export class SettingsStore {
 			...(resolved?.defaultModel !== undefined
 				? { defaultModel: resolved.defaultModel }
 				: {}),
-			server: resolvedServer,
+			...(Object.keys(resolvedServer).length === 0
+				? {}
+				: { server: resolvedServer }),
 		};
 		writeFileSync(
 			this.path,

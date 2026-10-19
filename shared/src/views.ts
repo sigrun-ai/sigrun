@@ -54,7 +54,7 @@ import type {
 	AmbientRecord,
 	AmbientRow,
 } from "./ambient.js";
-import type { SettingsFile } from "./settings.js";
+import type { EffectiveServerSetting, SettingsFile } from "./settings.js";
 
 // ─── Upstream view shapes (structural) ───────────────────────────────────
 // The pi-durable conversation view family, as the channel reads it. The
@@ -374,6 +374,18 @@ export type {
 export interface SettingsResponse extends SettingsFile {
 	/** The live registry snapshot's composed tool names, deduplicated. */
 	readonly toolRoster: readonly string[];
+	/**
+	 * The resolved server section per flattened dotted key
+	 * (`"server.port"`, `"server.compaction.reserveTokens"`, …), each
+	 * with its resolved value and which tier supplied it — `"env"`,
+	 * `"file"`, or `"default"` (spec §6.6: the generalization of the
+	 * build spec's webui-key special case; since the bootstrap persists
+	 * only env-set values, this block is where the full resolved section
+	 * is visible). Computed per request, never persisted. NOT a settable
+	 * key: the store's validation rejects it on PATCH (400
+	 * `invalid_field`), and the wire patch type Omits it.
+	 */
+	readonly effective: Readonly<Record<string, EffectiveServerSetting>>;
 }
 
 /** Spec §3 health status: ok unless the surface knows it is degraded. */
