@@ -79,8 +79,37 @@ export const NPM_TIMEOUT_MS = 120_000;
 export const HOST_RUNTIME_MODULES: readonly string[] = [
 	"@earendil-works/pi-ai",
 	"@earendil-works/pi-durable",
+	"@earendil-works/chord",
 	"typebox",
 ];
+
+/**
+ * Read the `version` field of the package at `moduleDir` (following
+ * links — a linked entry reads its target's manifest). `undefined` when
+ * the dir carries no readable manifest: callers treat that as "nothing
+ * to compare", never as a mismatch.
+ */
+function installedVersionAt(moduleDir: string): string | undefined {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(join(moduleDir, "package.json"), "utf8"),
+		) as { version?: unknown };
+		return typeof parsed.version === "string" ? parsed.version : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The version of the HOST's own copy of a runtime module (the tree
+ * sigrun itself runs from), or `undefined` when sigrun's tree does not
+ * carry it. The loader's host-module guard compares every extension's
+ * resolution against THIS value (spec §6.4 R6).
+ */
+export function hostModuleVersion(name: string): string | undefined {
+	const dir = resolveHostModuleDir(name);
+	return dir === undefined ? undefined : installedVersionAt(dir);
+}
 
 /**
  * Resolve a host runtime module's package dir from sigrun's own tree: the
@@ -122,7 +151,27 @@ export function ensureHostModuleLinks(packagesDir: string): void {
 		const linkPath = join(nodeModules, ...name.split("/"));
 		// existsSync follows links: an INTACT link (or a real npm-installed
 		// copy) reads true and is left alone.
-		if (existsSync(linkPath)) continue;
+		if (existsSync(linkPath)) {
+			// A present entry whose version differs from the host's is
+			// SURFACED, not replaced (spec §6.4 R6): the sync never fights
+			// npm's tree — an npm-installed copy still wins over the link —
+			// but a skewing copy must not sit silently. The loader's guard
+			// quarantines the extensions that RESOLVE a skewing module; this
+			// warn covers the packages tree itself (same version reads equal
+			// for an intact host link, so links never trip it).
+			const present = installedVersionAt(linkPath);
+			const host = hostModuleVersion(name);
+			if (
+				present !== undefined &&
+				host !== undefined &&
+				present !== host
+			) {
+				console.warn(
+					`packages: ${name}@${present} installed in ${packagesDir} differs from host ${host}`,
+				);
+			}
+			continue;
+		}
 		let stat: ReturnType<typeof lstatSync>;
 		try {
 			stat = lstatSync(linkPath);

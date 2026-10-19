@@ -1,5 +1,8 @@
 .worktrees/
 node_modules/
+# The host-module skew fixture carries a NESTED fake pi-durable as its
+# discriminator — re-include that one node_modules dir so it is tracked.
+!test/fixtures/fixture-skew/node_modules/
 dist/
 data/
 webui/test-results/

@@ -87,11 +87,17 @@ import type {
 } from "./event-bus.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DeclaredKinds } from "./seam-host.js";
-import { readPackageName, resolveExtensionEntry } from "./packages.js";
+import {
+	HOST_RUNTIME_MODULES,
+	hostModuleVersion,
+	readPackageName,
+	resolveExtensionEntry,
+} from "./packages.js";
 import { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
@@ -493,6 +499,156 @@ function validateWebuiBundles(
 		}
 	}
 	return value as readonly { name: string; dir: string }[];
+}
+
+/**
+ * The one host module whose version must match the host EXACTLY (spec
+ * §6.4 R6): an extension's `Extension`/tool objects flow into the HOST's
+ * pi-durable registry under structural typing — a different pi-durable
+ * is the classic silent-breakage trap (identity never matches, hooks
+ * never fire), so any difference at all quarantines. Every other host
+ * module only shares the major (a minor/patch difference warns).
+ */
+const EXACT_HOST_MODULES: ReadonlySet<string> = new Set([
+	"@earendil-works/pi-durable",
+]);
+
+/** The major segment of a semver-ish version string (`"1.2.0"` → `"1"`). */
+function majorSegment(version: string): string {
+	return version.split(".")[0] ?? version;
+}
+
+/**
+ * The nearest `package.json` at or above `dir` (bounded walk) — the
+ * manifest owning a resolved module ENTRY file. `undefined` at the walk
+ * bound or filesystem root.
+ */
+function nearestManifest(dir: string): string | undefined {
+	let current = dir;
+	for (let hops = 0; hops < 6; hops++) {
+		const candidate = join(current, "package.json");
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+	return undefined;
+}
+
+/**
+ * The nearest `node_modules/<name>/package.json` walking up from `dir` —
+ * the package-directory form of Node's own lookup (which copy of `<name>`
+ * a module at `dir` resolves). Bounded like every walk here; `undefined`
+ * when no ancestor tree carries the package.
+ */
+function nearestModuleManifest(dir: string, name: string): string | undefined {
+	let current = dir;
+	for (let hops = 0; hops < 10; hops++) {
+		const candidate = join(current, "node_modules", ...name.split("/"), "package.json");
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+	return undefined;
+}
+
+/**
+ * The version of one host runtime module as an extension's tree resolves
+ * it, anchored at the extension ENTRY's directory — the exact resolution
+ * the extension's own bare imports use (a nested `node_modules` copy
+ * counts, and so does the host's copy when the walk finds nothing
+ * nearer). `undefined` when the extension's tree resolves no copy at
+ * all: the extension does not depend on the module, and the guard
+ * skips it.
+ *
+ * Two resolution forms, in order: `<name>/package.json` (explicit, and
+ * the only form for manifest-less trees), falling back to the module
+ * ENTRY + nearest manifest above it — some host modules' exports maps
+ * (pi-ai, typebox) do not expose the `./package.json` subpath, which
+ * `require.resolve("<name>/package.json")"` reports as
+ * ERR_PACKAGE_PATH_NOT_EXPORTED even though the package itself resolves
+ * fine; without the fallback those modules would be invisible to the
+ * guard, the exact R6 blind spot it exists to close.
+ */
+function moduleVersionFrom(moduleDir: string, name: string): string | undefined {
+	// Node's ESM loader realpaths the referrer before resolving ITS bare
+	// imports (preserveSymlinks is off by default) — anchor the walk at the
+	// realpath'd dir so the tree examined is the tree the extension's own
+	// imports resolve from, not the symlink path that named it (a `file:`
+	// dir install symlinks node_modules/<pkg> → the checkout).
+	let anchor = moduleDir;
+	try {
+		anchor = realpathSync(moduleDir);
+	} catch {
+		// Not realpath-able — the literal dir is the best anchor available.
+	}
+	const req = createRequire(join(anchor, "package.json"));
+	let manifestPath: string | undefined;
+	try {
+		manifestPath = req.resolve(`${name}/package.json`);
+	} catch {
+		// No package.json subpath from here — either the exports map gates
+		// it or the tree carries no copy: the fallbacks below decide.
+	}
+	if (manifestPath === undefined) {
+		try {
+			manifestPath = nearestManifest(dirname(req.resolve(name)));
+		} catch {
+			// The entry itself is not require-resolvable — pi-ai's exports
+			// map carries ONLY `import`/`types` conditions, so createRequire
+			// cannot resolve the package AT ALL even though extensions
+			// import it fine. Fall back to the node_modules DIRECTORY walk
+			// (the package-dir form of Node's lookup); without it pi-ai skew
+			// would be invisible to the guard — the exact R6 blind spot.
+			manifestPath = nearestModuleManifest(anchor, name);
+		}
+	}
+	if (manifestPath === undefined) return undefined;
+	try {
+		const parsed = JSON.parse(
+			readFileSync(manifestPath, "utf8"),
+		) as { version?: unknown };
+		return typeof parsed.version === "string" ? parsed.version : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The host-module version guard (spec §6.4 R6, core-hardening Task 5):
+ * every host runtime module the extension's tree RESOLVES must agree
+ * with the copy the host runs — `@earendil-works/pi-durable` EXACTLY
+ * (else quarantine), the others in the major (a minor/patch difference
+ * warns, a major difference quarantines). Runs at LOAD, immediately
+ * after the import and before anything is keyed, collected, or
+ * installed: a skewing extension quarantines with this message and
+ * leaves no trace in the registry, the seam hosts, or any binding.
+ *
+ * @param moduleDir the extension ENTRY's directory (the tree its bare
+ * imports resolve from — `extensionModuleDir` above).
+ * @throws the quarantine message on a disallowed difference.
+ */
+function checkHostModules(moduleDir: string): void {
+	for (const name of HOST_RUNTIME_MODULES) {
+		const extVersion = moduleVersionFrom(moduleDir, name);
+		if (extVersion === undefined) continue; // not a dependency of this extension
+		const hostVersion = hostModuleVersion(name);
+		if (hostVersion === undefined) continue; // no host copy to compare against
+		if (extVersion === hostVersion) continue;
+		if (
+			EXACT_HOST_MODULES.has(name) ||
+			majorSegment(extVersion) !== majorSegment(hostVersion)
+		) {
+			throw new Error(
+				`host module skew: ${name} resolves to ${extVersion} from ${moduleDir}, host runs ${hostVersion}`,
+			);
+		}
+		console.warn(
+			`host module minor skew: ${name} resolves to ${extVersion} from ${moduleDir}, ` +
+				`host runs ${hostVersion} (same major, allowed)`,
+		);
+	}
 }
 
 /**
@@ -921,6 +1077,15 @@ const display = label ?? entry;
 							);
 						}
 			const module = (await import(loaded)) as ExtensionModule;
+			// Host-module version guard (spec §6.4 R6): the module tree the
+			// extension's bare imports resolve from must agree with the copy
+			// the host runs — checked immediately after the import, BEFORE any
+			// host keying or contract resolution, so a skewing extension leaves
+			// no trace (no seam host, no bindings, no registry entry). A throw
+			// here rides the existing per-extension try (quarantine, boot
+			// continues) exactly like the reserved-section check below.
+			const moduleDir = extensionModuleDir(loaded);
+			if (moduleDir !== undefined) checkHostModules(moduleDir);
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its
 			// RESULT. The loader therefore invokes the host factory TWICE with
