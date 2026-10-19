@@ -59,6 +59,7 @@ import {
 	type ModeName,
 	type PaletteName,
 } from "@sigrun/shared/themes";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { SigrunClient, type FetchLike } from "./api.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
@@ -464,10 +465,27 @@ export async function tuiMain(
 
 // Script detection (the bin entry): only run main when node invoked THIS
 // file (dist/launch.js) — an import (tests, the old in-process path)
-// leaves it inert.
+// leaves it inert. npm bin entries are SYMLINKS (…/.bin/sigrun-tui → the
+// package's dist/launch.js): node realpaths the main module by default
+// (import.meta.url is the REAL path) while process.argv[1] keeps the
+// INVOKED path — the comparison must realpath the argv side, or a
+// .bin/npx invocation never matches and the bin exits 0 silently.
+/** Realpath argv[1], or undefined when it is not a file on disk (an
+ * argv[1] that doesn't exist can never be this module — e.g. exotic
+ * wrapper invocations). */
+function invokedEntryPath(): string | undefined {
+	if (process.argv[1] === undefined) return undefined;
+	try {
+		return realpathSync(process.argv[1]);
+	} catch {
+		return undefined;
+	}
+}
+
+const invokedEntry = invokedEntryPath();
 const invokedAsBin =
-	process.argv[1] !== undefined &&
-	import.meta.url === pathToFileURL(process.argv[1]).href;
+	invokedEntry !== undefined &&
+	import.meta.url === pathToFileURL(invokedEntry).href;
 if (invokedAsBin) {
 	void tuiMain().then((code) => {
 		process.exit(code);

@@ -16,9 +16,16 @@
  *   does not have.
  */
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -75,5 +82,33 @@ describe("tui packaging (Task 2: the spawned @sigrun/tui bin)", () => {
 		buildTui();
 		const head = readFileSync(join(TUI_ROOT, "dist", "launch.js"), "utf8");
 		expect(head.startsWith("#!/usr/bin/env node")).toBe(true);
+	});
+
+	it("runs main when invoked through a symlinked .bin entry (regression)", () => {
+		// npm bin entries are SYMLINKS (…/.bin/sigrun-tui → the package's
+		// dist/launch.js). Node realpaths the main module by default — so
+		// import.meta.url inside the bin is the REAL path — while
+		// process.argv[1] keeps the INVOKED symlink path. If the bin-entry
+		// detection compares those two raw, a .bin/npx invocation mismatches,
+		// main never runs, and the process exits 0 SILENTLY (the published
+		// bin's canonical invocation). Reproduce that exact shape here: spawn
+		// the built bin THROUGH a symlink and prove main ran — the unknown
+		// flag makes tuiMain print usage and exit 1, which only happens if
+		// the entry detection matched.
+		buildTui();
+		const dir = mkdtempSync(join(tmpdir(), "sigrun-tui-bin-"));
+		try {
+			const link = join(dir, "sigrun-tui");
+			symlinkSync(join(TUI_ROOT, "dist", "launch.js"), link);
+			const result = spawnSync(process.execPath, [link, "--nonsense"], {
+				encoding: "utf8",
+			});
+			// Silent exit 0 (status 0, empty stderr) is the regression.
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("unknown argument");
+			expect(result.stderr).toContain("usage: sigrun-tui");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
