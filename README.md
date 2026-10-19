@@ -13,8 +13,7 @@ and capabilities at boot.
 - **pi-durable core** — the harness primitives (conversations, inbox
   steering/follow-up modes, retries, streaming, compaction) come from
   pi-durable; sigrun is the deployable shell around them.
-- **Extensions** — separate npm packages (e.g. the approvals and memory
-  extensions) loaded from `SIGRUN_EXTENSIONS` (or the settings file's
+- **Extensions** — separate npm packages loaded from `SIGRUN_EXTENSIONS` (or the settings file's
   top-level `extensions` list); a failing extension is quarantined and
   reported, never a boot abort.
 - **Web UI** — a static bundle served from `SIGRUN_WEBUI_BUNDLE` (or the
@@ -124,7 +123,6 @@ still override it per field.
 | `SIGRUN_DATA_DIR` | path | `$XDG_DATA_HOME/sigrun` or `~/.local/share/sigrun` | `server.dataDir` | Data root (the DB default and extension data dirs). Env/file values win verbatim. |
 | `SIGRUN_CACHE_DIR` | path | `$XDG_CACHE_HOME/sigrun` or `~/.cache/sigrun` | `server.cacheDir` | Cache root (regenerable; never ensured at boot). Env/file values win verbatim. |
 | `SIGRUN_STATE_DIR` | path | `$XDG_STATE_HOME/sigrun` or `~/.local/state/sigrun` | `server.stateDir` | State root (operational bookkeeping). Env/file values win verbatim. |
-| `SIGRUN_EXTENSIONS_DIR` | path | `extensions` | `server.extensionsDir` | Directory for extension package resolution. |
 | `SIGRUN_EXTENSIONS` | csv | *(none)* | `extensions` (top-level list) | Deploy-time extension list (string entries; env wins over the file). |
 | — | — | *(none)* | `gitDir` is always `<configDir>/git` | Git extension checkouts clone here (pi layout). Not env-configurable. |
 | `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | `server.webuiBundle` | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
@@ -144,7 +142,7 @@ still override it per field.
 {
   "defaultModel": "openai/gpt-4o-mini", // non-empty provider/model-id; bare id = openai provider
   "extensions": [ // the desired install+load state — see Extensions
-    "sigrun-ext-approvals@^0.1.0",              // npm specifier
+    "@acme/sigrun-ext-example@^0.1.0",         // npm specifier
     "git:github.com/obra/superpowers@main",     // git source (or {source, ref, entry})
     { "source": "./dev-checkout", "enabled": false }  // object form
   ],
@@ -158,7 +156,6 @@ still override it per field.
     "dataDir": "/var/lib/sigrun",   // non-empty path (SIGRUN_DATA_DIR; verbatim)
     "cacheDir": "/var/cache/sigrun", // non-empty path (SIGRUN_CACHE_DIR; verbatim)
     "stateDir": "/var/lib/sigrun/state", // non-empty path (SIGRUN_STATE_DIR; verbatim)
-    "extensionsDir": "extensions",   // non-empty path
     "webuiBundle": "webui/dist",     // non-empty path
     "compaction": {
       "enabled": true,
@@ -222,7 +219,7 @@ Entry grammar:
 ```jsonc
 {
   "extensions": [
-    "sigrun-ext-approvals@^0.1.0",
+    "@acme/sigrun-ext-example@^0.1.0",
     "git:github.com/obra/superpowers@main",
     { "source": "./my-dev-checkout", "enabled": false }
   ]

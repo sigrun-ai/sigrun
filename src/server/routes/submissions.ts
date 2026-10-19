@@ -37,7 +37,7 @@ export function registerSubmissionRoutes(
 ): void {
 	const { opened } = ctx;
 	// Submissions: content-part resolution + upstream idempotence;
-	// `whenBusy` pass-through + memory-wiring submit.
+	// `whenBusy` pass-through.
 	app.post(
 		"/v1/conversations/:id/submissions",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
@@ -112,14 +112,12 @@ export function registerSubmissionRoutes(
 					? {}
 					: { whenBusy: whenBusy as WhenBusyMode }),
 			};
-			// Submit through the memory extension's wiring when one
-			// is loaded — its submit binds the conversation as the memory_recall
-			// source at the submit boundary (degenerate.js). No memory wiring →
-			// submit directly (the no-op default carries no submit).
-			const submission =
-				opened.memorySubmit === undefined
-					? await conversation.submit(draft, BACKGROUND_CONTEXT)
-					: await opened.memorySubmit(conversation, draft, BACKGROUND_CONTEXT);
+			// The submit pass-through is retired (§6.7): the memory seam's
+			// runSettled owns capture, so submissions admit directly.
+			const submission = await conversation.submit(
+				draft,
+				BACKGROUND_CONTEXT,
+			);
 			// Admission stamps activity: the sidebar's activity
 			// sort must move the moment a prompt lands — before the run settles.
 			await touchActivity(
