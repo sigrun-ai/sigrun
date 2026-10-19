@@ -2,8 +2,8 @@
  * Task 2 (provider plugins): the auth.json → pi-ai credential bridge.
  *
  * `authStoreCredentialStore` adapts the operator-owned `AuthStore`
- * (auth.json) into pi-ai's `CredentialStore`: read-only, `"default"`-first
- * resolution order mirroring the degenerate provider's, `modify`/`delete`
+ * (auth.json) into pi-ai's `CredentialStore`: read-only, `"default"`
+ * scoped to the default model's provider, `modify`/`delete`
  * refusing loudly (credentials are operator-provisioned). And
  * `collectProviders` hands that store plus an `AuthContext`
  * (env-from-the-options-seam, fileExists via node:fs) to `createModels`,
@@ -40,7 +40,7 @@ test("read returns the provider's apiKey from auth.json", async () => {
 	const { dir, store } = freshAuthDir();
 	try {
 		writeAuth(dir, { bifrost: { apiKey: "sk-bifrost" } });
-		const credentials = authStoreCredentialStore(store);
+		const credentials = authStoreCredentialStore(store, () => undefined);
 		const credential = await credentials.read("bifrost");
 		expect(credential).toEqual({ type: "api_key", key: "sk-bifrost" });
 		// list() surfaces every provider key in the file.
@@ -50,25 +50,38 @@ test("read returns the provider's apiKey from auth.json", async () => {
 	}
 });
 
-test("read falls back to the default key then the provider key", async () => {
+test("a non-default provider reads only its own entry", async () => {
 	const { dir, store } = freshAuthDir();
 	try {
-		// Both entries: "default" wins (the degenerate provider's order).
-		writeAuth(dir, {
-			default: { apiKey: "sk-from-default" },
-			acme: { apiKey: "sk-from-acme" },
-		});
-		const credentials = authStoreCredentialStore(store);
-		expect(await credentials.read("acme")).toEqual({
-			type: "api_key",
-			key: "sk-from-default",
-		});
-		// Provider's own entry serves when "default" is absent.
-		writeAuth(dir, { acme: { apiKey: "sk-from-acme" } });
-		expect(await credentials.read("acme")).toEqual({
-			type: "api_key",
-			key: "sk-from-acme",
-		});
+		writeAuth(dir, { default: { apiKey: "sk-from-default" }, acme: { apiKey: "sk-from-acme" } });
+		const credentials = authStoreCredentialStore(store, () => "openai");
+		expect(await credentials.read("acme")).toEqual({ type: "api_key", key: "sk-from-acme" });
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("the default model's provider reads default first, then its own entry", async () => {
+	const { dir, store } = freshAuthDir();
+	try {
+		writeAuth(dir, { default: { apiKey: "sk-from-default" }, bifrost: { apiKey: "sk-from-bifrost" } });
+		const credentials = authStoreCredentialStore(store, () => "bifrost");
+		expect(await credentials.read("bifrost")).toEqual({ type: "api_key", key: "sk-from-default" });
+		writeAuth(dir, { bifrost: { apiKey: "sk-from-bifrost" } });
+		expect(await credentials.read("bifrost")).toEqual({ type: "api_key", key: "sk-from-bifrost" });
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a non-default provider without its own entry gets nothing, even with a default entry", async () => {
+	const { dir, store } = freshAuthDir();
+	try {
+		writeAuth(dir, { default: { apiKey: "sk-from-default" } });
+		const credentials = authStoreCredentialStore(store, () => "openai");
+		expect(await credentials.read("acme")).toBeUndefined();
+		// No default resolved yet: "default" applies to nobody.
+		expect(await authStoreCredentialStore(store, () => undefined).read("openai")).toBeUndefined();
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -78,7 +91,7 @@ test("read returns undefined when no entry exists", async () => {
 	const { dir, store } = freshAuthDir();
 	try {
 		// No file at all…
-		const credentials = authStoreCredentialStore(store);
+		const credentials = authStoreCredentialStore(store, () => undefined);
 		expect(await credentials.read("bifrost")).toBeUndefined();
 		// …and a file with only other providers.
 		writeAuth(dir, { other: { apiKey: "sk-other" } });
@@ -95,7 +108,7 @@ test("modify and delete throw operator-provisioned", async () => {
 	const { dir, store } = freshAuthDir();
 	try {
 		writeAuth(dir, { bifrost: { apiKey: "sk-bifrost" } });
-		const credentials = authStoreCredentialStore(store);
+		const credentials = authStoreCredentialStore(store, () => undefined);
 		await expect(credentials.modify("bifrost", async () => undefined)).rejects.toThrow(
 			/operator-provisioned/,
 		);

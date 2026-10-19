@@ -8,6 +8,8 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { createProvider } from "@earendil-works/pi-ai/models";
 import { loadConfig, type Env } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
 import { authPath, AuthStore } from "../src/harness/auth.js";
@@ -227,6 +229,24 @@ function freshAuthDir(): { dir: string; store: AuthStore } {
 	return { dir, store: new AuthStore({ dir }) };
 }
 
+/** A provider whose apiKey auth resolves from the stored credential. */
+function keyedProvider(id: string) {
+	return createProvider({
+		id,
+		name: id,
+		models: [],
+		auth: {
+			apiKey: {
+				name: "key",
+				resolve: async ({ credential }) =>
+					credential?.key ? { auth: { apiKey: credential.key } } : undefined,
+			},
+		},
+		// checkAuth/getAuth never stream, but a provider requires an api.
+		api: openAICompletionsApi(),
+	});
+}
+
 test("auth.json \"default\" key supplies the degenerate provider's key", async () => {
 	const { dir, store } = freshAuthDir();
 	try {
@@ -275,6 +295,31 @@ test("auth.json \"default\" key wins over the provider's own entry (ruling order
 		expect((await models.getAuth("acme"))?.auth).toMatchObject({
 			apiKey: "sk-from-default",
 		});
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("auth.json \"default\" reaches only the default model's provider, never other plugins", async () => {
+	const { dir, store } = freshAuthDir();
+	try {
+		writeFileSync(authPath(dir), JSON.stringify({
+			default: { apiKey: "sk-default" },
+			acme: { apiKey: "sk-acme" },
+		}), "utf8");
+		const contributor = { name: "plugins", providers: [
+			{ provider: keyedProvider("acme") },
+			{ provider: keyedProvider("other") },
+			{ provider: keyedProvider("third") },
+		] };
+		const { models } = collectProviders([contributor], { SIGRUN_DEFAULT_MODEL: "other/m" },
+			createProviderMergeSink(), { auth: store });
+		// Own entry only — the "default" key never crosses provider boundaries.
+		expect((await models.getAuth("acme"))?.auth).toMatchObject({ apiKey: "sk-acme" });
+		// The default model's provider: "default" → own entry (none here).
+		expect((await models.getAuth("other"))?.auth).toMatchObject({ apiKey: "sk-default" });
+		// No entry, not the default: nothing.
+		expect(await models.getAuth("third")).toBeUndefined();
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

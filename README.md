@@ -185,8 +185,10 @@ API keys live in `<config-dir>/auth.json` — the same directory as
 The env-driven OpenAI-compatible provider resolves its key in this
 order: `auth.json`'s `"default"` entry → the resolved provider's own
 `auth.json` entry → the `OPENAI_API_KEY` environment variable (compat
-fallback, still honored). With no key anywhere the provider registers
-unconfigured — requests fail loud, boot does not. The file is created
+fallback, still honored). `"default"` is used only by the provider of
+the resolved default model; every other provider reads its own entry.
+With no key anywhere the provider registers unconfigured — requests
+fail loud, boot does not. The file is created
 with mode `0600` (owner-only) whenever sigrun writes it. Key material is
 never logged, echoed, or served by the API (`GET /v1/auth/check` reports
 key *presence* only).
