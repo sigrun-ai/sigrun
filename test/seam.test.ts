@@ -20,6 +20,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { resolveExtension } from "../src/harness/loader.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 const FIXTURE_SPECIFIER = pathToFileURL(
@@ -47,6 +48,7 @@ function configWith(dir: string) {
 	return loadConfig({
 		SIGRUN_MODEL: "openai/gpt-4o",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 }
@@ -61,7 +63,8 @@ async function bootWith(
 ): Promise<Boot> {
 	const dir = await tempDir();
 	const config = configWith(dir);
-	const opened = await openHarness(config, { env: {}, extensionSpecifiers: [...specifiers] });
+	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir), env: {}, extensionSpecifiers: [...specifiers] });
 	const app = await createServer(opened, config);
 	return { opened, app };
 }

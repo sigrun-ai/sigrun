@@ -15,7 +15,8 @@
  *   Task 11 owns the "degraded" case).
  *
  * Hermetic pattern (server.test.ts): a faux provider serves `faux/m`
- * through a provider contributor; `openHarness(config, { env: {} })` boots
+ * through a provider contributor; `openHarness(config, {
+		identity: await seededIdentity(dir), env: {} })` boots
  * in a tmpdir; `createServer` builds the Fastify app; `app.inject()`
  * exercises the meta route in-process. Memory-extension fixtures drive the
  * loader seam (`extensionSpecifiers`).
@@ -44,6 +45,7 @@ import {
 	type HealthStatus,
 } from "../src/harness/health.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** Fixture: memory-surface extension carrying a degraded §3 producer. */
@@ -120,9 +122,11 @@ async function bootServer(options?: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: options?.model ?? "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: contributors,
 		env: options?.env ?? {},
 		extensionSpecifiers: options?.extensionSpecifiers,

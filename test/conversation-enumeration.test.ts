@@ -32,6 +32,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** One hermetic server: harness + faux provider + Fastify app. */
@@ -59,6 +60,7 @@ async function bootServer(storagePath: string): Promise<TestServer> {
 	const config0 = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: storagePath,
+		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	// API-only shape (server.test.ts's hermetic override): the gate OFF,
@@ -68,6 +70,7 @@ async function bootServer(storagePath: string): Promise<TestServer> {
 		webui: { ...config0.webui, enabled: false },
 	};
 	const opened = await openHarness(config, {
+		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
 	});
