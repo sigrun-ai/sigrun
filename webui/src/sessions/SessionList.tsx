@@ -35,7 +35,7 @@ import {
 	formatAge,
 	type AgeGroup,
 	type TreeNode,
-} from "../../../src/shared/conversations.js";
+} from "@sigrun/shared/conversations";
 import { MoreIcon, PlusIcon } from "../layout/icons";
 import { useDismiss } from "../useDismiss";
 import type { ConversationSummary } from "../api";

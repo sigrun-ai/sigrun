@@ -1,6 +1,12 @@
 /**
  * The session-meta document (spec §5): conversation-scoped sidebar state.
  *
+ * SPLIT (build-and-webui Task 1): the WIRE types (`SessionMeta`,
+ * `SessionMetaPatch`, `SessionMetaPatchError`) live in the
+ * `@sigrun/shared` package (`shared/src/session-meta.ts` — the canonical
+ * declarations both clients import); this module owns the document and
+ * patch RUNTIME and re-exports the types for server-side importers.
+ *
  * One latest-only singleton doc per conversation (kind
  * `"sigrun.session-meta"`): pin/tag/archive flags, the composer draft
  * (survives reloads — `draft.attachments` are workspace-relative paths from
@@ -31,42 +37,17 @@
 
 import type { Draft } from "@earendil-works/chord";
 import { defineDoc } from "@earendil-works/pi-durable";
+import type {
+	SessionMeta,
+	SessionMetaPatch,
+	SessionMetaPatchError,
+} from "@sigrun/shared/session-meta";
 
-/** The per-conversation session metadata (spec §5). */
-export type SessionMeta = {
-	/** Sidebar pin (pinned conversations float to the top). */
-	pinned: boolean;
-	/** Sidebar tags; a PATCH replaces the array wholesale. */
-	tagged: string[];
-	/** Archived/hidden from the default sidebar listing. */
-	archived: boolean;
-	/** The composer draft; survives a reload. */
-	draft: { text: string; attachments: string[] };
-	/** Who created the session: interactive use or a cron job. */
-	source: "user" | "cron";
-	/**
-	 * Multi-user seam (spec §5): PATCH accepts it, GET serves it, the auth
-	 * hook writes it (create/fork/import), and the listing route reads it
-	 * — there is no interactive flow around it in v1 beyond that plumbing.
-	 */
-	owner?: string;
-	/** The user-facing session name; absent = unnamed (T5d). */
-	name?: string;
-	/**
-	 * Server-owned automatic name (the auto-namer writes it, A2); the
-	 * listing serves it only while `name` is unset. NEVER patchable — the
-	 * strict validator rejects the key as `invalid_field`.
-	 */
-	autoName?: string;
-	/** Server-owned: the auto-namer's attempt count (A2). Never patchable. */
-	autoNameAttempts?: number;
-	/**
-	 * Server-owned: the last activity instant, ISO 8601 (`activity.ts`
-	 * stamps it at submission admission and run settlement). Never
-	 * patchable — the strict validator rejects the key as `invalid_field`.
-	 */
-	lastActivityAt?: string;
-};
+export type {
+	SessionMeta,
+	SessionMetaPatch,
+	SessionMetaPatchError,
+} from "@sigrun/shared/session-meta";
 
 /** What a never-written doc — and every explicit `null` clear — means. */
 export const DEFAULT_SESSION_META: SessionMeta = {
@@ -96,25 +77,6 @@ export const SessionMetaDoc = defineDoc<SessionMeta>({
 		},
 	}),
 });
-
-/** A validated PATCH body: present keys apply, `null` clears to default. */
-export interface SessionMetaPatch {
-	readonly pinned?: boolean | null;
-	readonly tagged?: readonly string[] | null;
-	readonly archived?: boolean | null;
-	readonly draft?: {
-		readonly text?: string | null;
-		readonly attachments?: readonly string[] | null;
-	} | null;
-	readonly source?: "user" | "cron" | null;
-	readonly owner?: string | null;
-	readonly name?: string | null;
-}
-
-/** Why a PATCH body was rejected (the configure endpoint's error contract). */
-export type SessionMetaPatchError =
-	| { readonly error: "invalid_body" }
-	| { readonly error: "invalid_field"; readonly field: string };
 
 /**
  * Validate a PATCH body strictly (mirroring the configure endpoint):

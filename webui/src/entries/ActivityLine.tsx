@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from "react";
 import type { ConversationEntryWire, ToolSlotWire } from "../api";
-import { activityLabel, type ToolCall } from "../../../src/shared/turns.js";
+import { activityLabel, type ToolCall } from "@sigrun/shared/turns";
 import { ToolRow } from "./ToolResultEntry";
 
 function storage(): Storage | undefined {

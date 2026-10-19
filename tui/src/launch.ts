@@ -43,7 +43,7 @@ import {
 	type TUI,
 	type TuiAltScreenOptions,
 } from "@earendil-works/pi-tui";
-import type { AccentName, ModeName, PaletteName } from "../../src/shared/themes.js";
+import type { AccentName, ModeName, PaletteName } from "@sigrun/shared/themes";
 import { SigrunClient, type FetchLike } from "./api.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";

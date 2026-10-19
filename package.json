@@ -9,7 +9,8 @@
 	},
 	"workspaces": [
 		"webui",
-		"tui"
+		"tui",
+		"shared"
 	],
 	"engines": {
 		"node": ">=22.19.0"
@@ -29,6 +30,7 @@
 		"@earendil-works/pi-durable": "1.2.0",
 		"@earendil-works/pi-tui": "^1.1.0",
 		"@fastify/static": "^9.1.0",
+		"@sigrun/shared": "*",
 		"fastify": "^5.12.5",
 		"tsx": "^4.23.15"
 	},

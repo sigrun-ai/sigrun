@@ -62,6 +62,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { WorkerStatus } from "@sigrun/shared/views";
 import {
 	AssistantEntry,
 	UserEntry,
@@ -228,12 +229,13 @@ export type ExtensionWorker = {
  * appears at the first run's start; `lastError` carries the last failure
  * (rejection or deadline abandonment) and clears on the next success. Both
  * absent until the worker first runs.
+ *
+ * SPLIT (build-and-webui Task 1): the canonical declaration lives in the
+ * `@sigrun/shared` package (`shared/src/views.ts` — it rides the §5
+ * `meta.extensions[].workers` wire); re-exported here for bus/boot-side
+ * importers.
  */
-export type WorkerStatus = {
-	readonly name: string;
-	readonly lastRunAt?: number;
-	readonly lastError?: string;
-};
+export type { WorkerStatus } from "@sigrun/shared/views";
 
 /**
  * Everything one loaded extension may register on the bus (the loader's

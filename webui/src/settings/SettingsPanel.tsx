@@ -51,7 +51,7 @@ import {
 	ACCENT_NAMES,
 	PALETTES,
 	PALETTE_NAMES,
-} from "../../../src/shared/themes.js";
+} from "@sigrun/shared/themes";
 import type {
 	QueueModeWire,
 	SettingsWire,

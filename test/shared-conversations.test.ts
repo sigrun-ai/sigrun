@@ -1,7 +1,7 @@
 /**
  * Task B1 (UI refresh): the conversation list tree and age shaping.
  *
- * `src/shared/conversations.ts` builds the sidebar's forest: forks
+ * `@sigrun/shared/conversations` builds the sidebar's forest: forks
  * nest under their parent when the parent is in the (filtered) set,
  * each node carries the newest activity of its whole subtree, roots
  * sort pinned-first then newest-first, and `formatAge` renders the
@@ -19,7 +19,7 @@ import {
 	formatAge,
 	type ListRow,
 	type TreeNode,
-} from "../src/shared/conversations.js";
+} from "@sigrun/shared/conversations";
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;

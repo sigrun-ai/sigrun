@@ -42,7 +42,7 @@ import {
 	type AccentName,
 	type ModeName,
 	type PaletteName,
-} from "./shared/themes.js";
+} from "@sigrun/shared/themes";
 
 export const USAGE_TEXT = `usage: sigrun [--user <name>]
        sigrun serve

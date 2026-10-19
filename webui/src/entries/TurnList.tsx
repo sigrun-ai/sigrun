@@ -32,7 +32,7 @@ import {
 	toolPreview,
 	type ToolCall,
 	type Turn,
-} from "../../../src/shared/turns.js";
+} from "@sigrun/shared/turns";
 import { AssistantTurn } from "./AssistantTurn";
 import { CompactionEntry } from "./CompactionEntry";
 import { SystemEntry } from "./SystemEntry";

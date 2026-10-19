@@ -1,6 +1,6 @@
 /**
  * useTheme (B2, UI refresh): the mode/palette/accent theme system over
- * `src/shared/themes.ts`. The hook resolves the stored triple, migrates
+ * `@sigrun/shared/themes`. The hook resolves the stored triple, migrates
  * legacy accents, follows `prefers-color-scheme` LIVE in system mode, and
  * applies the palette's tokens as CSS custom properties plus
  * `data-mode`/`data-palette`/`data-accent` attributes on the root.

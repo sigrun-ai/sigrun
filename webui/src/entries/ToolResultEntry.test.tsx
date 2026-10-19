@@ -12,7 +12,7 @@
 
 import { act, createElement as h } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { ToolCall } from "../../../src/shared/turns.js";
+import type { ToolCall } from "@sigrun/shared/turns";
 import {
 	findButton,
 	render,

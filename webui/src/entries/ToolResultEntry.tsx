@@ -18,7 +18,7 @@ import type {
 	MessageWire,
 	ToolSlotWire,
 } from "../api";
-import { previewArgument, type ToolCall } from "../../../src/shared/turns.js";
+import { previewArgument, type ToolCall } from "@sigrun/shared/turns";
 import { copyText } from "./MessageActions";
 import { messageText } from "./content";
 

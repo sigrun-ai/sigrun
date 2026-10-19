@@ -1,0 +1,62 @@
+{
+	"name": "@sigrun/shared",
+	"version": "0.1.0",
+	"description": "sigrun shared leaf package — theme tokens, turn/conversation shaping, and the channel wire types (pure leaf, zero dependencies)",
+	"type": "module",
+	"exports": {
+		"./themes": {
+			"types": "./dist/themes.d.ts",
+			"default": "./dist/themes.js"
+		},
+		"./conversations": {
+			"types": "./dist/conversations.d.ts",
+			"default": "./dist/conversations.js"
+		},
+		"./turns": {
+			"types": "./dist/turns.d.ts",
+			"default": "./dist/turns.js"
+		},
+		"./session-meta": {
+			"types": "./dist/session-meta.d.ts",
+			"default": "./dist/session-meta.js"
+		},
+		"./commands": {
+			"types": "./dist/commands.d.ts",
+			"default": "./dist/commands.js"
+		},
+		"./interactions": {
+			"types": "./dist/interactions.d.ts",
+			"default": "./dist/interactions.js"
+		},
+		"./ambient": {
+			"types": "./dist/ambient.d.ts",
+			"default": "./dist/ambient.js"
+		},
+		"./settings": {
+			"types": "./dist/settings.d.ts",
+			"default": "./dist/settings.js"
+		},
+		"./views": {
+			"types": "./dist/views.d.ts",
+			"default": "./dist/views.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json"
+	},
+	"devDependencies": {
+		"typescript": "^7.0.2"
+	},
+	"files": [
+		"dist"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "github",
+		"url": "git+https://github.com/sigrun-ai/sigrun.git"
+	},
+	"bugs": {
+		"url": "https://github.com/sigrun-ai/sigrun/issues"
+	},
+	"homepage": "https://github.com/sigrun-ai/sigrun#readme"
+}

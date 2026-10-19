@@ -9,10 +9,17 @@
  * contributors implement the contract; a degenerate implementation reports
  * `"ok"`, and BY CONVENTION the absence of a producer means the same — a
  * degenerate surface need not synthesize a constant producer.
+ *
+ * SPLIT (build-and-webui Task 1): the `HealthStatus` union's canonical
+ * declaration lives in the `@sigrun/shared` package
+ * (`shared/src/views.ts` — it rides the §5 `meta.health` wire); this
+ * module owns the producer contract and aggregation runtime, re-exporting
+ * the union for server-side importers.
  */
 
-/** Spec §3 health status: ok unless the surface knows it is degraded. */
-export type HealthStatus = "ok" | "degraded";
+import type { HealthStatus } from "@sigrun/shared/views";
+
+export type { HealthStatus } from "@sigrun/shared/views";
 
 /** One named §3 health producer (the provider-contributor form). */
 export interface HealthProducer {

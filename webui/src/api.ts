@@ -49,7 +49,7 @@ import type {
 	CommandsResponse as CommandsResponseWire,
 	SlashCommand as CommandWire,
 	SessionMeta as ConversationMeta,
-} from "../../src/server/views.js";
+} from "@sigrun/shared/views";
 
 export type {
 	MetaResponse,
@@ -75,7 +75,7 @@ export type {
 	CommandsResponse as CommandsResponseWire,
 	SlashCommand as CommandWire,
 	SessionMeta as ConversationMeta,
-} from "../../src/server/views.js";
+} from "@sigrun/shared/views";
 
 // The interaction/ambient seam sub-shapes — the seam records ARE the wire
 // (never projected), so their constituent primitives are the contract too.
@@ -92,7 +92,7 @@ export type {
 	AmbientGauge as AmbientGaugeWire,
 	AmbientLedgerEntry as AmbientLedgerEntryWire,
 	AmbientBody as AmbientBodyWire,
-} from "../../src/server/views.js";
+} from "@sigrun/shared/views";
 
 /** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
 export type QueueModeWire = "all" | "one-at-a-time";
