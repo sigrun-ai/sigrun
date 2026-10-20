@@ -13,6 +13,7 @@ import type TestRenderer from "react-test-renderer";
 import { describe, expect, test } from "vitest";
 import {
 	createClient,
+	type ExtensionInfoWire,
 	type FetchLike,
 	type SettingsWire,
 } from "../api";
@@ -27,15 +28,35 @@ interface Call {
 	readonly body?: string | Uint8Array;
 }
 
+/** The extension fixtures the Extensions-section tests serve. */
+interface ExtensionsHarness {
+	readonly list: readonly ExtensionInfoWire[];
+	/** GET bodies per slug (absent → {}). */
+	readonly settings?: Readonly<Record<string, Record<string, unknown>>>;
+	/** GET bodies per slug (absent → no keys). */
+	readonly secrets?: Readonly<
+		Record<string, readonly { key: string; source: string }[]>
+	>;
+}
+
 function makeHarness(init?: {
 	readonly settings?: SettingsWire;
 	/** The GET body served AFTER a successful PATCH (defaults to the patch). */
 	readonly settingsAfterSave?: SettingsWire;
+	/** The Extensions-section fixtures (serves the /v1/extensions surface). */
+	readonly extensions?: ExtensionsHarness;
 }) {
 	const calls: Call[] = [];
 	const settings = init?.settings ?? {};
+	const ext = init?.extensions;
+	// The mutable secret-key state the PUT/DELETE paths read back through
+	// the GET responses (the UI refreshes from the write responses).
+	const secretState = new Map<string, readonly { key: string; source: string }[]>(
+		Object.entries(ext?.secrets ?? {}).map(([slug, keys]) => [slug, [...keys]]),
+	);
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
+		let m: RegExpMatchArray | null;
 		let body: unknown = {};
 		if (input === "/v1/settings" && init2?.method === "PATCH") {
 			// The server returns the new effective settings; echo a sensible
@@ -46,6 +67,33 @@ function makeHarness(init?: {
 			};
 		} else if (input === "/v1/settings") {
 			body = settings;
+		} else if (input === "/v1/extensions") {
+			body = { extensions: ext?.list ?? [] };
+		} else if ((m = input.match(/^\/v1\/extensions\/([^/]+)\/settings$/)) !== null) {
+			const slug = decodeURIComponent(m[1]);
+			if (init2?.method === "PUT") {
+				// Echo the stored object (the server's response shape).
+				body = JSON.parse(init2.body as string);
+			} else {
+				body = ext?.settings?.[slug] ?? {};
+			}
+		} else if ((m = input.match(/^\/v1\/extensions\/([^/]+)\/secrets$/)) !== null) {
+			const slug = decodeURIComponent(m[1]);
+			body = { secrets: secretState.get(slug) ?? [] };
+		} else if (
+			(m = input.match(/^\/v1\/extensions\/([^/]+)\/secrets\/([^/]+)$/)) !== null
+		) {
+			const slug = decodeURIComponent(m[1]);
+			const key = decodeURIComponent(m[2]);
+			const keys = [...(secretState.get(slug) ?? [])].filter(
+				(row) => row.key !== key,
+			);
+			if (init2?.method === "PUT") {
+				keys.push({ key, source: "stored" });
+				keys.sort((a, b) => a.key.localeCompare(b.key));
+			}
+			secretState.set(slug, keys);
+			body = { secrets: keys };
 		} else {
 			throw new Error(`unexpected fetch ${init2?.method ?? "GET"} ${input}`);
 		}
@@ -422,6 +470,7 @@ describe("SettingsPanel", () => {
 			"Tools",
 			"Interface",
 			"Advanced",
+			"Extensions",
 		]);
 		// General renders steering; Interface does NOT.
 		expect(
@@ -534,5 +583,199 @@ describe("SettingsPanel", () => {
 		expect(textContent(renderer.toJSON())).toContain(
 			"Show thinking text inside activity details",
 		);
+	});
+});
+
+// ─── Extensions section (W3 Task 7, spec §7.7) ─────────────────────────────
+
+describe("SettingsPanel Extensions section", () => {
+	const EXTENSIONS: readonly ExtensionInfoWire[] = [
+		{
+			name: "acme-tool",
+			status: "ok",
+			interactionKinds: [],
+			ambientKeys: [],
+			workers: [],
+		},
+		{
+			name: "acme-settings-tool",
+			status: "ok",
+			version: "0.0.0",
+			interactionKinds: [],
+			ambientKeys: [],
+			workers: [],
+		},
+	];
+
+	async function renderExtensions(harness: ReturnType<typeof makeHarness>) {
+		const renderer = await renderPanel(harness.client);
+		await openSection(renderer, "Extensions");
+		return renderer;
+	}
+
+	test("renders a row per extension (name, status, version) with the settings + secrets blocks", async () => {
+		const harness = makeHarness({
+			extensions: {
+				list: EXTENSIONS,
+				settings: { "acme-tool": { theme: "dark" } },
+				secrets: { "acme-tool": [{ key: "api-key", source: "stored" }] },
+			},
+		});
+		const renderer = await renderExtensions(harness);
+		// One fieldset per extension, keyed by slug.
+		const rows = renderer.root.findAllByType("fieldset").filter(
+			(node) => node.props.className === "settings-ext",
+		);
+		expect(rows.map((node) => node.props["data-ext"] as string)).toEqual([
+			"acme-tool",
+			"acme-settings-tool",
+		]);
+		// The inventory rode the GET; the version renders on its row only.
+		expect(
+			harness.calls.some((call) => call.input === "/v1/extensions"),
+		).toBe(true);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("acme-tool");
+		expect(text).toContain("v0.0.0");
+		// The settings textarea carries the fetched object; the secrets row
+		// carries the key + source.
+		expect(
+			renderer.root.findAllByType("textarea")[0].props.value,
+		).toContain('"theme": "dark"');
+		expect(text).toContain("api-key");
+		expect(text).toContain("(stored)");
+	});
+
+	test("editing the settings textarea PUTs the parsed object", async () => {
+		const harness = makeHarness({
+			extensions: { list: EXTENSIONS.slice(0, 1) },
+		});
+		const renderer = await renderExtensions(harness);
+		await act(async () => {
+			find(renderer, "settings-ext-settings").props.onChange({
+				target: { value: '{ "retries": 2 }' },
+			});
+		});
+		await act(async () => {
+			await find(renderer, "settings-ext-save").props.onClick();
+		});
+		const put = harness.calls.find(
+				(call) =>
+					call.input === "/v1/extensions/acme-tool/settings" &&
+				call.method === "PUT",
+		);
+		expect(put).toBeDefined();
+		expect(JSON.parse(put!.body as string)).toEqual({ retries: 2 });
+		expect(renderer.root.findByProps({ role: "status" })).toBeDefined();
+	});
+
+	test("invalid settings JSON refuses to save (no PUT fired)", async () => {
+		const harness = makeHarness({
+			extensions: { list: EXTENSIONS.slice(0, 1) },
+		});
+		const renderer = await renderExtensions(harness);
+		await act(async () => {
+			find(renderer, "settings-ext-settings").props.onChange({
+					target: { value: "{not json" },
+			});
+		});
+		await act(async () => {
+			await find(renderer, "settings-ext-save").props.onClick();
+		});
+		expect(
+			harness.calls.some(
+				(call) =>
+					call.input === "/v1/extensions/acme-tool/settings" &&
+					call.method === "PUT",
+			),
+		).toBe(false);
+		expect(renderer.root.findByProps({ role: "alert" })).toBeDefined();
+	});
+
+	test("the secret input sends PUT with the value and never displays stored values", async () => {
+		const harness = makeHarness({
+			extensions: {
+				list: EXTENSIONS.slice(0, 1),
+				secrets: { "acme-tool": [{ key: "api-key", source: "stored" }] },
+			},
+		});
+		const renderer = await renderExtensions(harness);
+		// The write-only input renders EMPTY (the API returns keys only;
+		// there is no stored value to display) and is masked.
+		const input = find(renderer, "settings-ext-secret-value");
+		expect(input.props.type).toBe("password");
+		expect(input.props.value).toBe("");
+		expect(
+			renderer.root
+				.findAllByType("input")
+				.every((node) => (node.props.value ?? "") === ""),
+		).toBe(true);
+		await act(async () => {
+			input.props.onChange({ target: { value: "hunter2" } });
+		});
+		await act(async () => {
+			await find(renderer, "settings-ext-secret-set").props.onClick();
+		});
+		const put = harness.calls.find(
+				(call) =>
+					call.input === "/v1/extensions/acme-tool/secrets/api-key" &&
+				call.method === "PUT",
+		);
+		expect(put).toBeDefined();
+		expect(JSON.parse(put!.body as string)).toEqual({ value: "hunter2" });
+		// The write cleared the input — the value does not linger on screen.
+		expect(find(renderer, "settings-ext-secret-value").props.value).toBe("");
+	});
+
+	test("the add-new row sets a fresh key; Delete removes one", async () => {
+		const harness = makeHarness({
+			extensions: {
+				list: EXTENSIONS.slice(0, 1),
+				secrets: { "acme-tool": [{ key: "api-key", source: "stored" }] },
+			},
+		});
+		const renderer = await renderExtensions(harness);
+		await act(async () => {
+			find(renderer, "settings-ext-new-key").props.onChange({
+				target: { value: "token" },
+			});
+		});
+		await act(async () => {
+			find(renderer, "settings-ext-new-value").props.onChange({
+				target: { value: "tok-value" },
+			});
+		});
+		await act(async () => {
+			await find(renderer, "settings-ext-secret-add").props.onClick();
+		});
+		expect(
+				harness.calls.some(
+					(call) =>
+						call.input === "/v1/extensions/acme-tool/secrets/token" &&
+					call.method === "PUT" &&
+					(call.body as string).includes("tok-value"),
+			),
+		).toBe(true);
+		// Delete the stored key: DELETE fires and the row disappears.
+		await act(async () => {
+			await renderer.root
+				.findByProps({
+					className: "settings-ext-secret-delete",
+					"data-secret-key": "api-key",
+				})
+				.props.onClick();
+		});
+		expect(
+			harness.calls.some(
+				(call) =>
+					call.input === "/v1/extensions/acme-tool/secrets/api-key" &&
+				call.method === "DELETE",
+			),
+		).toBe(true);
+		// Exactly one secret row remains: the added key (stored now), never
+		// the deleted one (the response's refreshed list drove the render).
+		expect(
+			renderer.root.findAllByProps({ className: "settings-ext-key" }).length,
+		).toBe(1);
 	});
 });

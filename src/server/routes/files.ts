@@ -11,6 +11,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
+import { extname } from "node:path";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import { isConfinedPath } from "../content-parts.js";
@@ -51,6 +52,32 @@ const UPLOAD_PARAMS_SCHEMA = {
 	required: ["id", "name"],
 	additionalProperties: false,
 } as const;
+
+/**
+ * The extension→mime map for the raw file read (spec §7.8): the common
+ * workspace-file extensions a client renders inline. A file whose
+ * extension is absent from the map serves `application/octet-stream`.
+ * The KEY is the LOWERCASE extension including the dot (the lookup
+ * lowercases, so `Photo.PNG` maps too).
+ */
+const MIME_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
+	[".png", "image/png"],
+	[".jpg", "image/jpeg"],
+	[".jpeg", "image/jpeg"],
+	[".gif", "image/gif"],
+	[".webp", "image/webp"],
+	[".svg", "image/svg+xml"],
+	[".pdf", "application/pdf"],
+	[".txt", "text/plain"],
+	[".md", "text/markdown"],
+	[".json", "application/json"],
+	[".html", "text/html"],
+	[".css", "text/css"],
+	[".js", "text/javascript"],
+]);
+
+/** The raw read's streaming chunk size (1 MiB): bounds reader memory. */
+const RAW_READ_CHUNK_BYTES = 1024 * 1024;
 
 /** Register the upload/listing/content workspace file routes. */
 export function registerFileRoutes(
@@ -224,12 +251,10 @@ export function registerFileRoutes(
 				throw info.error;
 			}
 			if (info.value.size > FILE_CONTENT_MAX_BYTES) {
-				return await reply
-					.code(413)
-					.send({
-							error: "file_too_large",
-						maxBytes: FILE_CONTENT_MAX_BYTES,
-					});
+				return await reply.code(413).send({
+					error: "file_too_large",
+					maxBytes: FILE_CONTENT_MAX_BYTES,
+				});
 			}
 			const read = await env.readBinaryFile(path, BACKGROUND_CONTEXT);
 			if (!read.ok) {
@@ -250,6 +275,103 @@ export function registerFileRoutes(
 					content: Buffer.from(bytes).toString("base64"),
 					size: bytes.length,
 				};
+			}
+		},
+	);
+
+	// Files raw (spec §7.8, core hardening W3 Task 7): the bounded raw
+	// read the workspace file surface serves when a file is bigger (or
+	// binary-er) than files/content's 1 MiB text/base64 cap — phone photos
+	// a client wants to RENDER, export blobs, whatever the agent wrote.
+	// Semantics: `isConfinedPath` (the content route's rule — `../x` and
+	// absolute paths are 400 `invalid_path`); a directory is 400
+	// `invalid_path` (Review Focus 5: rejected explicitly, never streamed);
+	// over `server.maxFileReadBytes` is 413 `file_too_large` + `maxBytes`;
+	// otherwise CHUNKS from `env.openBinaryReader` (never `readBinaryFile`
+	// — the whole point is not buffering the file in memory) stream into
+	// `reply.raw` with the extension-derived `content-type` and an exact
+	// `content-length`. The symlink policy is unchanged from
+	// files/content: the default (follows-symlinks) reader.
+	app.get(
+		"/v1/conversations/:id/files/raw",
+		{
+			schema: { params: ID_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx),
+		},
+		async (request, reply) => {
+			const conversation = request.conversation;
+			const query = request.query as { path?: string };
+			const path = query.path ?? "";
+			if (!isConfinedPath(path) || path.length === 0 || path === ".") {
+				return await reply.code(400).send({ error: "invalid_path" });
+			}
+			const env = await conversationEnv(opened, conversation);
+			const info = await env.fileInfo(path, BACKGROUND_CONTEXT);
+			if (!info.ok) {
+				if (info.error.code === "not_found") {
+					return await reply.code(404).send({ error: "not_found" });
+				}
+				throw info.error;
+			}
+			if (info.value.kind === "directory") {
+				return await reply.code(400).send({ error: "invalid_path" });
+			}
+			const maxBytes = config.maxFileReadBytes;
+			if (info.value.size > maxBytes) {
+				return await reply
+					.code(413)
+					.send({ error: "file_too_large", maxBytes });
+			}
+			const readerOpened = await env.openBinaryReader(
+				path,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			if (!readerOpened.ok) {
+				if (readerOpened.error.code === "not_found") {
+					return await reply.code(404).send({ error: "not_found" });
+				}
+				throw readerOpened.error;
+			}
+			const reader = readerOpened.value;
+			// Hijack BEFORE the first write: every reply.send above ran on the
+			// normal path, but from here the response is raw bytes the JSON
+			// layer must not touch. All headers are known by now (size is).
+			reply.hijack();
+			const raw = reply.raw;
+			raw.on("error", () => {});
+			try {
+				raw.writeHead(200, {
+					"content-type":
+						MIME_BY_EXTENSION.get(extname(path).toLowerCase()) ??
+						"application/octet-stream",
+					"content-length": String(info.value.size),
+				});
+				for (
+					let offset = 0;
+					offset < info.value.size;
+					offset += RAW_READ_CHUNK_BYTES
+				) {
+					const chunk = await reader.read(
+						offset,
+						Math.min(RAW_READ_CHUNK_BYTES, info.value.size - offset),
+						BACKGROUND_CONTEXT,
+					);
+					if (!chunk.ok) throw chunk.error;
+					raw.write(Buffer.from(chunk.value));
+				}
+				raw.end();
+			} catch (error) {
+				// The raw 'error' handler above already swallows socket teardown;
+			// anything reaching THIS catch is a read-side failure mid-stream
+				// (headers already sent — the log is the honest record, the
+				// destroy the honest wire signal).
+				console.warn(
+					`sigrun: files/raw ${path}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				raw.destroy();
+			} finally {
+				await reader.close(BACKGROUND_CONTEXT).catch(() => {});
 			}
 		},
 	);
