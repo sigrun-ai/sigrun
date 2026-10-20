@@ -1,3 +1,4 @@
+import { isIanaTimeZone } from "./jobs/spec.js";
 import type { CompactionPolicy } from "@earendil-works/pi-durable";
 import { isAbsolute, join } from "node:path";
 import type {
@@ -270,6 +271,14 @@ export interface SigrunConfig {
 	auth: AuthConfig;
 	/** `/metrics` without a principal — `SIGRUN_METRICS_PUBLIC` (strict) over `server.metrics.public`, default false. */
 	metricsPublic: boolean;
+	/**
+	 * The jobs default timezone (§8.2): `SIGRUN_TIMEZONE` over the file's
+	 * `server.timezone` over the process TZ
+	 * (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Cron schedules
+	 * that declare no `timezone` resolve in this one; an invalid name fails
+	 * LOUD at boot (the same `isIanaTimeZone` gate the spec validator runs).
+	 */
+	timezone: string;
 }
 
 /** The provider id used when the model spec carries no `provider/` prefix. */
@@ -1149,6 +1158,10 @@ export function envServerSection(env: Env): ServerSettings {
 	}
 	const backup = parseBackupConfig(env);
 	if (backup !== undefined) section.backup = backupFileShape(backup);
+	// The jobs default timezone (§8.2): `SIGRUN_TIMEZONE` — verbatim when
+	// set (validated as an IANA name by the settings/store consumers).
+	const timezone = env.SIGRUN_TIMEZONE?.trim() || undefined;
+	if (timezone !== undefined) section.timezone = timezone;
 	return section as ServerSettings;
 }
 
@@ -1439,6 +1452,12 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		auth: parseAuth(env, server?.auth),
 		metricsPublic:
 			parseMetricsPublic(env) ?? server?.metrics?.public ?? false,
+		// The jobs default timezone (§8.2): env over file over the process
+		// TZ, validated loud (a bad name would otherwise crash the scheduler
+		// at evaluation time instead of failing boot).
+		timezone: resolveTimezone(
+			env.SIGRUN_TIMEZONE?.trim() || server?.timezone,
+		),
 		// The webui surface (build-and-webui Task 4): the NEW shape the
 		// serve-time seam resolves (Task 5, src/server/static.ts). `enabled`
 		// is the strict env gate over the file's `server.webui.enabled`, default
@@ -1457,6 +1476,22 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		defaultProviderBaseUrl:
 			env.OPENAI_BASE_URL?.trim() || settingsFile?.defaultProvider?.baseUrl,
 	};
+}
+
+/**
+ * The jobs default timezone resolution (§8.2): env over file over the
+ * process TZ. A configured name that is not IANA fails LOUD — the same
+ * gate `validateJobSpec` runs on a spec's own `timezone`.
+ */
+function resolveTimezone(configured: string | undefined): string {
+	const fallback = Intl.DateTimeFormat().resolvedOptions().timeZone;
+	if (configured === undefined || configured === "") return fallback;
+	if (!isIanaTimeZone(configured)) {
+		throw new Error(
+			`SIGRUN_TIMEZONE / server.timezone must be an IANA name (got ${JSON.stringify(configured)})`,
+		);
+	}
+	return configured;
 }
 
 /**

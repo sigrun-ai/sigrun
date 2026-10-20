@@ -80,6 +80,8 @@ import type {
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
 } from "./event-bus.js";
+import type { JobSpec } from "@sigrun/shared/jobs";
+import { validateJobSpec } from "../jobs/spec.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -221,6 +223,13 @@ export interface LoadedExtensions {
  */
 	readonly workerBindings: readonly ExtensionWorkerBinding[];
 	/**
+	 * Declared jobs from factory results (jobs §8.3 — the `extension`
+	 * source), one entry per loaded extension whose result carried `jobs`;
+	 * quarantined extensions contribute none. Boot reconciliation folds
+	 * these into job records under `ext:<slug>:<name>` ids.
+	 */
+	readonly jobBindings: readonly { extension: string; jobs: readonly JobSpec[] }[];
+	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
 	 * extension — each `{name, dir, extension}` with `dir` resolved against
@@ -292,6 +301,11 @@ export interface ResolvedExtension {
 	 * against the extension module's URL when collecting.
 	 */
 	readonly webuiBundles?: readonly { name: string; dir: string }[];
+	/**
+	 * Declared jobs (jobs §8.3 — the `extension` source), validated
+	 * fail-loud with `validateJobSpec` (a malformed entry quarantines).
+	 */
+	readonly jobs?: readonly JobSpec[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -406,6 +420,42 @@ function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined
 		}
 	}
 	return value as readonly ExtensionWorker[];
+}
+
+/**
+ * Validate a factory result's `jobs` declaration (jobs §8.3 — the
+ * `extension` source). Absent → undefined (no jobs). Present but
+ * malformed → throw; the loader quarantines the extension with the
+ * thrown message (fail-loud: an extension that THINKS it declared a job
+ * must not silently lose it). Each entry is a full `validateJobSpec` run
+ * (the §8.2 grammar), and duplicate names within one extension are
+ * rejected (they would collide on the `ext:<slug>:<name>` id).
+ */
+function validateJobs(value: unknown): readonly JobSpec[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a jobs field that is not an array",
+		);
+	}
+	const seen = new Set<string>();
+	const specs: JobSpec[] = [];
+	for (const entry of value) {
+		const result = validateJobSpec(entry);
+		if (!result.ok) {
+			throw new Error(
+				`extension factory returned a job whose ${result.field} ${result.message}`,
+			);
+		}
+		if (seen.has(result.spec.name)) {
+			throw new Error(
+				`extension factory returned a duplicate job name "${result.spec.name}"`,
+			);
+		}
+		seen.add(result.spec.name);
+		specs.push(result.spec);
+	}
+	return specs;
 }
 
 /**
@@ -714,6 +764,7 @@ async function resolvedFromFactory(
 		name?: unknown;
 		providers?: unknown;
 		webuiBundles?: unknown;
+		jobs?: unknown;
 		health?: unknown;
 		submit?: unknown;
 		runSettled?: unknown;
@@ -728,6 +779,7 @@ async function resolvedFromFactory(
 	};
 	const providers = validateProviders(candidate.providers);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
+	const jobs = validateJobs(candidate.jobs);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -818,6 +870,7 @@ async function resolvedFromFactory(
 		...(workers === undefined ? {} : { workers }),
 		...(providers === undefined ? {} : { providers }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
+		...(jobs === undefined ? {} : { jobs }),
 	};
 }
 
@@ -1029,6 +1082,9 @@ const healthProducers: ExtensionHealthProducer[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
+// Jobs Task 3: declared jobs, attributed to the extension slug (the
+// `ext:<slug>:<name>` id's namespace).
+const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
@@ -1240,6 +1296,9 @@ const display = label ?? entry;
 					workers: resolved.workers,
 					});
 				}
+				if (resolved.jobs !== undefined) {
+					jobBindings.push({ extension: slug, jobs: resolved.jobs });
+				}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1295,5 +1354,6 @@ const display = label ?? entry;
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,
+		jobBindings,
 	};
 }

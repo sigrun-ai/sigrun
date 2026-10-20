@@ -20,6 +20,11 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
+import type { JobRuntimeDeps } from "../jobs/fire.js";
+import { createScheduleTask } from "../jobs/task.js";
+import { createJobsService, type JobsService } from "../jobs/index.js";
+import { reconcileJobs } from "../jobs/reconcile.js";
+import type { JobSpec } from "@sigrun/shared/jobs";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ResolvedExtensionInput } from "./loader.js";
@@ -285,6 +290,14 @@ export interface OpenedHarness {
 	 */
 	readonly autoNamer: AutoNamer;
 	/**
+	 * The jobs service (W4 Task 3, spec §8): the record-family surface
+	 * (list/get/runs/revisions, createApi/updateApi/deleteApi, runNow,
+	 * reconcile) over the same harness/storage the boot owns. Task 4's
+	 * routes consume it; the ownership participant's jobs transfer runs
+	 * through it.
+	 */
+	readonly jobs: JobsService;
+	/**
 	 * The boot refresh (provider plugins Task 4): the in-flight (or done)
 	 * deadline-bounded catalog refresh started right after
 	 * `collectProviders`. Boot NEVER awaits it — it runs concurrently with
@@ -537,6 +550,7 @@ export async function openHarness(
 		workerBindings,
 		providerContributors,
 		webuiBundles: extensionWebuiBundles,
+		jobBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -674,6 +688,31 @@ export async function openHarness(
 			modelsStore,
 		},
 	);
+	// The jobs core extension (jobs Task 3, spec §8.1 "The executor"):
+	// ONE registry install carrying the `sigrun.schedule` task, BEFORE
+	// `Harness.open` reads the registry (the same slot as the other core
+	// extensions). The task is a pure definition over the runtime deps —
+	// the clock seam (options.now) and `config.timezone` (§8.2) — so it
+	// installs here, before the open, and nothing else keyed on it. The
+	// deps object is shared with `fireJob`'s run-now and the JobsService
+	// below (one clock, one tz, one models store).
+	const jobRuntimeDeps: JobRuntimeDeps = {
+		// SAFETY: harness + storage are assigned right after `Harness.open`
+		// returns below (the open needs the task registered, so the deps
+		// object is created first with placeholders). Every read — task
+		// phases, fireJob, the JobsService — happens post-assignment.
+		harness: undefined as unknown as Harness,
+		storage: undefined as unknown as Storage,
+		registry,
+		models,
+		defaultModel,
+		now: () => clockNow().getTime(),
+		defaultTz: config.timezone,
+	};
+	registry.install({
+		name: "sigrun.jobs",
+		tasks: [createScheduleTask(jobRuntimeDeps)],
+	});
 	// The host event hub (W3 Task 4, spec §7.4): ONE per opened harness.
 	// The event bus's commit-derived events subscribe below (after the bus
 	// opens); the provider refresh paths observe readiness here — each
@@ -820,6 +859,12 @@ export async function openHarness(
 	// after boot completes finds the harness immediately; one issued from a
 	// post-open async factory path waits on this same promise.
 	bindHarness(harness);
+	// The job runtime deps' harness/storage binding resolves the same way
+	// (the placeholders the pre-open install needed): the harness exists
+	// from here on, and every job read — task phases, fireJob, the
+	// JobsService — happens after this point.
+	jobRuntimeDeps.harness = harness;
+	jobRuntimeDeps.storage = storage;
 	// The memory-seam event bus (Tasks 2-4): subscribe BEFORE `resume()` so
 	// recovery settles (faulted/orphaned submissions the scheduler drains)
 	// are observed like any other commit. Extension handlers register under
@@ -912,12 +957,55 @@ export async function openHarness(
 	// ordered path src/index.ts runs) closes the bus first, making this a
 	// no-op on the normal path.
 	harness.subscribeClose(() => eventBus.close());
+	// The jobs service (W4 Task 3): the declared sources are read LIVE
+	// per reconcile — the settings store re-reads (a file edit lands on
+	// the next reconcile) and the loader's job bindings snapshot at boot
+	// (an extension's declaration is its boot-time declaration).
+	const fileJobs = (): readonly JobSpec[] => settingsStore.read().jobs ?? [];
+	const jobsSources = () => ({ file: fileJobs(), extensions: jobBindings });
+	// The root conversation — the schedule tasks' owner (spec §8.1).
+	// `Harness.root` is idempotent (creates with `agent` on first call,
+	// returns the reserved root thereafter), so the server's own
+	// root-ensure later sees the same conversation. Reconciliation needs
+	// it BEFORE creating any executor.
+	const rootConversation = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: defaultModel },
+	});
+	const rootConversationId = rootConversation.id as number;
+	const jobs = createJobsService({
+		harness,
+		storage,
+		runtime: jobRuntimeDeps,
+		rootId: rootConversationId,
+		sources: jobsSources,
+		settings: () => settingsStore.read(),
+	});
+	// Reconcile BEFORE resume: the scheduler is still disabled, so the
+	// executor creations/aborts land durably and only then start running
+	// (the spec §8.3 boot order — "reconcile after resume()" — holds in
+	// effect: resume is the very next line). Awaiting a reconcile AFTER
+	// resume would delay openHarness's return past the scheduler's first
+	// drain microtask, racing post-boot registry installs against
+	// recovered-task agent resolution (the battery's hook-refire driver
+	// installs its hook extension right after boot — the recovered
+	// generation must resolve its agent AFTER that install).
+	await reconcileJobs(
+		{
+			harness,
+			storage,
+			runtime: jobRuntimeDeps,
+			rootId: rootConversationId,
+			sources: jobsSources,
+		},
+		BACKGROUND_CONTEXT,
+	);
 	harness.resume();
 	return {
 		harness,
 		storage,
 		registry,
 		models,
+		jobs,
 		defaultModel,
 		providerCollisions: sink.collisions,
 		webuiBundles,

@@ -288,14 +288,18 @@ export async function patchJob(
  * is written: retire the oldest runs beyond `limits.runs` and the oldest
  * revisions beyond `limits.revisions`, EXCEPT a revision any retained run
  * references (a run's outcome must always map to its exact definition).
+ *
+ * The storage handle is a PARAMETER (the Task-3 carry-forward): callers
+ * thread `OpenedHarness.storage` — the private-field reach this function
+ * used to make is deleted.
  */
 export async function pruneHistory(
+	storage: Storage,
 	harness: Harness,
 	jobId: string,
 	limits: { runs: number; revisions: number },
 	ctx: Context,
 ): Promise<void> {
-	const storage = harnessStorage(harness);
 	const runs = await listRuns(storage, jobId, Number.MAX_SAFE_INTEGER, ctx);
 	const revisions = await listRevisions(storage, jobId, ctx);
 	const keptRuns = runs.slice(0, Math.max(0, limits.runs));
@@ -321,22 +325,6 @@ export async function pruneHistory(
 			await tx.retireDoc(JobRevisionDoc, `${jobId}:${revision.version}`);
 		}
 	}, ctx);
-}
-
-/**
- * The storage handle a Harness runs over. `OpenedHarness.storage` is the
- * boot-exposed instance; inside `fireJob`/`pruneHistory` we only have the
- * Harness, so we reach the storage through the one private field pi-
- * durable keeps on the object (the same instance — the harness closes
- * it). This is the one sanctioned reach; a future Harness.storage getter
- * replaces it.
- */
-function harnessStorage(harness: Harness): Storage {
-	const withStorage = harness as unknown as { storage?: Storage };
-	if (withStorage.storage === undefined) {
-		throw new Error("the harness exposes no storage handle");
-	}
-	return withStorage.storage;
 }
 
 /**
