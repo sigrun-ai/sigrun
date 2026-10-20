@@ -192,6 +192,13 @@ describe("POST/GET/PATCH/DELETE /v1/jobs — the CRUD round trip as alice", () =
 			status: 404,
 			json: { error: "job_not_found" },
 		});
+		// Run-now, like PATCH/DELETE, requires a LIVE record: a retired job
+		// (revision-resolvable for the history routes) 404s, never the
+		// fire's blocked-200 (fix round 1).
+		expect(await call(app, "POST", `/v1/jobs/${job.id}/run`, alice)).toMatchObject({
+			status: 404,
+			json: { error: "job_not_found" },
+		});
 		// Retired jobs keep answering the history routes until retention
 		// trims them (spec §8.4) — with read access over the newest
 		// revision's owner/sharing.

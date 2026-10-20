@@ -250,11 +250,20 @@ export function registerJobRoutes(
 	});
 
 	// POST /v1/jobs/:id/run — write access; fires now (overlap honored).
+	// A LIVE record is required (like PATCH/DELETE): a retired job's
+	// revision never satisfies run-now — 404, never fireJob's blocked-200
+	// (a deleted job must not be re-triggerable through its history tail).
 	app.post("/v1/jobs/:id/run", async (request, reply) => {
 		const { id } = request.params as { id: string };
-		const resolved = await visible(request, reply, id);
-		if ("denied" in resolved) return;
-		if (resolved.access !== "write") {
+		const wire = await jobs.get(id);
+		if (wire === undefined) {
+			return await deny(reply, "job_not_found");
+		}
+		const access = accessOf(accessPrincipal(request), resourceOf(wire));
+		if (access === "none") {
+			return await deny(reply, "job_not_found");
+		}
+		if (access === "read") {
 			return await deny(reply, "forbidden");
 		}
 		return await jobs.runNow(id);
