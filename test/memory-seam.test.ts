@@ -406,10 +406,7 @@ describe("runSettled contract", () => {
 // ─── Task 4: lifecycle handlers + conversationIdle + harnessShutdown ──────
 
 describe("conversation lifecycle contract", () => {
-	test(
-		"the fixture extension receives conversationCreated/Forked and NOT archived for an inherited-archive fork",
-		{ timeout: 75_000 },
-		async () => {
+	test("the fixture extension receives conversationCreated/Forked and NOT archived for an inherited-archive fork", async () => {
 		const { opened, fixture } = await bootFixture({
 			responses: [fauxAssistantMessage("turn one")],
 		});
@@ -433,38 +430,32 @@ describe("conversation lifecycle contract", () => {
 			BACKGROUND_CONTEXT,
 		);
 
-		// Four deliveries in order: created(root) [root() in runTurn],
-		// archived(root, true), created(child), forked(child, root, at).
-		// W4's jobs boot work (harness.root + reconcile + observers + the
-		// commit subscriptions) runs during this window and starves the
-		// delivery lane — under the full-suite's parallel load the four
-		// deliveries take 15–26s+. 60s is the observed bound with headroom;
-		// the test timeout carries the extra margin. The assertion below is
-		// the pin; the timeout is the measurement budget.
+		// Three deliveries: archived(root, true), created(child), forked(child,
+		// root, at). W4 moved root-conversation creation INTO openHarness (the
+		// schedule tasks' owner must exist before any executor), so the boot's
+		// created(root) delivery lands BEFORE bootFixture's resetEvents() wipes
+		// it — the test's observation window starts after that reset. The
+		// remaining three are this test's subject; no budget gymnastics needed
+		// (the delivery lane is fast; the old 60s waitFor papered over this).
 		await vi.waitFor(
-			() => expect(fixture.lifecycle).toHaveLength(4),
-			{ timeout: 60_000, interval: 100 },
+			() => expect(fixture.lifecycle).toHaveLength(3),
+			{ timeout: 5_000, interval: 100 },
 		);
 		expect(fixture.lifecycle.map((one) => one.handler)).toEqual([
-			"conversationCreated",
 			"conversationArchived",
 			"conversationCreated",
 			"conversationForked",
 		]);
 		expect(fixture.lifecycle[0]).toMatchObject({
-			handler: "conversationCreated",
-			conversationId: root.id,
-		});
-		expect(fixture.lifecycle[1]).toMatchObject({
 			handler: "conversationArchived",
 			conversationId: root.id,
 			archived: true,
 		});
-		expect(fixture.lifecycle[2]).toMatchObject({
+		expect(fixture.lifecycle[1]).toMatchObject({
 			handler: "conversationCreated",
 			conversationId: child.id,
 		});
-		expect(fixture.lifecycle[3]).toEqual({
+		expect(fixture.lifecycle[2]).toEqual({
 			handler: "conversationForked",
 			childId: child.id,
 			parentId: root.id,
