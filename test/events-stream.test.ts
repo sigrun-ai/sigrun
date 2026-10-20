@@ -541,6 +541,60 @@ describe("GET /v1/events (W3 Task 4)", () => {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
 	});
+
+	test("job.changed arrives after create and run-now, with access added per principal", { timeout: 20_000 }, async () => {
+		// W4 Task 4 (§8.4/§7.4): every job-record change fans out through the
+		// hub as `job.changed` carrying the JobWire summary; the stream
+		// computes `access` per principal before delivery. Under auth "none"
+		// the naive principal is the superuser and the created job is
+		// ownerless → household write.
+		const { port } = await bootServer({ auth: "none", extensions: false });
+		const stream = new EventsConnection(port);
+		try {
+			await stream.ready();
+			const create = await fetch(`http://127.0.0.1:${port}/v1/jobs`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					name: "nightly",
+					schedule: { every: "3600s" },
+					action: { kind: "prompt", prompt: "hi", conversation: "new" },
+				}),
+			});
+			expect(create.status).toBe(201);
+			const { job } = (await create.json()) as { job: { id: string } };
+			const created = await stream.waitFor(
+				(f) =>
+					f.event === "job.changed" &&
+					f.data.type === "job.changed" &&
+					f.data.job.id === job.id,
+			);
+			if (created.data.type === "job.changed") {
+				// The hub's copy is access-neutral; the stream adds the
+				// per-principal access before delivery (W4 Task 4).
+				expect((created.data.job as unknown as { access: string }).access).toBe(
+					"write",
+				);
+			}
+			// Run-now patches the record's lastRun — a second job.changed
+			// lands carrying it.
+			const run = await fetch(`http://127.0.0.1:${port}/v1/jobs/${job.id}/run`, {
+				method: "POST",
+			});
+			expect(run.status).toBe(200);
+			const fired = await stream.waitFor(
+				(f) =>
+					f.event === "job.changed" &&
+					f.data.type === "job.changed" &&
+					f.data.job.id === job.id &&
+					f.data.job.lastRun?.manual === true,
+			);
+			expect(fired.event).toBe("job.changed");
+		} finally {
+			stream.destroy();
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
