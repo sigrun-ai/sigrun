@@ -400,6 +400,10 @@ export interface OpenHarnessOptions {
 	/**
 	 * The activity clock (UI refresh A1), default `() => new Date()` — the
 	 * seam `lastActivityAt` stamps come from, overridable so tests pin time.
+	 * Jobs Task 2: the SAME seam feeds `HarnessOptions.now` (the harness
+	 * clock `runtime.sleep`/`runtime.now()` read), so a test that pins
+	 * `now` pins BOTH the activity stamps and the schedule task's durable
+	 * waits (the jobs tests step the clock instead of waiting 60s).
 	 */
 	readonly now?: () => Date;
 }
@@ -766,12 +770,18 @@ export async function openHarness(
 	const settingsStore = new SettingsStore({ dir: options.settingsDir });
 	const fileSettings = settingsStore.harnessSettings();
 	const callerSettings = options.settings;
+	// The ONE boot clock (options.now ?? real): the activity stamper AND
+	// the harness clock share it (the schedule task's `runtime.sleep`
+	// reads the harness clock; pinning the seam pins both — the jobs
+	// tests' time-injection lever).
+	const clockNow = options.now ?? (() => new Date());
 	const harness = await Harness.open(
 		storage,
 		{
 			models,
 			registry,
 			env: envBuilder,
+			now: () => clockNow().getTime(),
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
 			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the
@@ -839,7 +849,7 @@ export async function openHarness(
 	// submissions route). Registered directly after the bus opens — host-owned
 	// machinery, ahead of every extension registration (install order = run
 	// order). The bus's close stops delivery; the unsubscribe is unused.
-	const now = options.now ?? (() => new Date());
+	const now = clockNow;
 	wireActivity(eventBus, harness, now);
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {

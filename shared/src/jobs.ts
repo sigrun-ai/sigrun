@@ -44,7 +44,7 @@ export type JobAction =
 	| { kind: "task"; task: string; input?: JsonValue };
 
 /** A job's declared shape — what every source (api/file/extension) supplies. */
-export interface JobSpec {
+export type JobSpec = {
 	name: string;
 	schedule: JobSchedule;
 	action: JobAction;
@@ -56,7 +56,7 @@ export interface JobSpec {
 }
 
 /** One job as `GET /v1/jobs` serves it (the list row and the detail). */
-export interface JobWire {
+export type JobWire = {
 	id: string;
 	name: string;
 	source: "api" | "file" | "extension";
@@ -75,7 +75,7 @@ export interface JobWire {
 }
 
 /** One fire of a job, as the job's `lastRun` copy serves it. */
-export interface JobRunWire {
+export type JobRunWire = {
 	jobId: string;
 	version: number;
 	fireAt: string;
@@ -92,7 +92,7 @@ export interface JobRunWire {
  * One immutable revision of a job (`sigrun.job.revision`, keyed
  * `<jobId>:<version>`): the spec exactly as it stood at that version.
  */
-export interface JobRevisionWire {
+export type JobRevisionWire = {
 	jobId: string;
 	version: number;
 	source: "api" | "file" | "extension";
