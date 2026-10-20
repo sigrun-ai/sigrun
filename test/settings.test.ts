@@ -363,19 +363,26 @@ describe("SettingsStore", () => {
 		}
 	});
 
-	test("the new top-level sections validate (extensions, defaultModel, defaultProvider)", async () => {
+	test("the new top-level sections validate (extensions, defaultModel, defaultProvider, skills)", async () => {
 		const { store, dir } = freshStore();
 		// Good shapes round-trip.
 		store.update({
 			extensions: ["@acme/ext-a", "./local-ext"],
 			defaultModel: "acme/model-1",
 			defaultProvider: { baseUrl: "https://gw.example/v1" },
+			skills: { sectionMaxBytes: 200 },
 		});
 		expect(store.read().extensions).toEqual(["@acme/ext-a", "./local-ext"]);
 		expect(store.read().defaultModel).toBe("acme/model-1");
 		expect(store.read().defaultProvider).toEqual({
 			baseUrl: "https://gw.example/v1",
 		});
+		expect(store.read().skills).toEqual({ sectionMaxBytes: 200 });
+		// The skills section sub-merges per-key; a null sub-field clears it.
+		store.update({ skills: {} });
+		expect(store.read().skills).toEqual({ sectionMaxBytes: 200 });
+		store.update({ skills: { sectionMaxBytes: null } });
+		expect(store.read().skills).toBeUndefined();
 		// Bad shapes throw naming the field.
 		const bad: Array<[Record<string, unknown>, RegExp]> = [
 			[{ extensions: "@acme/ext-a" }, /extensions/],
@@ -389,6 +396,10 @@ describe("SettingsStore", () => {
 			[{ defaultProvider: "https://gw.example/v1" }, /defaultProvider/],
 			[{ defaultProvider: { apiKey: "k" } }, /defaultProvider\.apiKey/],
 			[{ defaultProvider: { baseUrl: "" } }, /defaultProvider\.baseUrl/],
+			[{ skills: 4096 }, /skills/],
+			[{ skills: { cap: 1 } }, /skills\.cap/],
+			[{ skills: { sectionMaxBytes: 0 } }, /skills\.sectionMaxBytes/],
+			[{ skills: { sectionMaxBytes: 1.5 } }, /skills\.sectionMaxBytes/],
 		];
 		for (const [patch, pattern] of bad) {
 			expect(() => store.update(patch)).toThrow(pattern);

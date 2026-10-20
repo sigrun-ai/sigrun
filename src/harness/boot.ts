@@ -9,6 +9,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { join } from "node:path";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
@@ -51,7 +52,7 @@ import {
 } from "./seam-host.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
-import { skillsExtension } from "../skills/index.js";
+import { createSkillsExtension } from "../skills/index.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
@@ -276,6 +277,14 @@ export interface OpenedHarness {
 	 * nothing.
 	 */
 	readonly extensionCommands: readonly ExtensionCommandBinding[];
+	/**
+	 * Skill directories contributed by loaded packages (core hardening W5
+	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
+	 * `{extension, dir}` per contributed dir, in load order. Boot threads
+	 * this into the skills section's package-roots option (live: the
+	 * section renders per request).
+	 */
+	readonly skillRoots: readonly { extension: string; dir: string }[];
 	/**
 	 * The memory-seam event bus (Tasks 2-4): opened on the booted harness
 	 * BEFORE `resume()` (recovery settles are observed), with each loaded
@@ -533,15 +542,37 @@ export async function openHarness(
 	}
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
+	// The skills convention's package roots (W5 Task 4, spec §9.4): a LATE
+	// array — the extension packages that contribute skill dirs load BELOW
+	// (after this install), and the section renders per REQUEST, so the
+	// closure below observes whatever the loader collected without the
+	// install order changing (core sections lead the prompt).
+	const collectedSkillRoots: { extension: string; dir: string }[] = [];
+	// The settings store the live cap reads. Declared further down (the
+	// file-backed store needs `options.settingsDir` only); the closure
+	// reads it at RENDER time, long after the assignment — the skills cap
+	// is a live setting (`skills.sectionMaxBytes`, default 4KB).
+	let skillsSettings: { read(): { skills?: { sectionMaxBytes?: number } } } | undefined;
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
 	// skills convention, and the core tool surface (plan Task 1: coding
 	// tools read/write/edit/bash + search tools find/grep/ls) are all
 	// core-owned surfaces (spec §3): every conversation gets them, so they
 	// install before `Harness.open` reads the registry — never through the
 	// extension loader, never quarantined. install() publishes at once and
-	// replaces any same-name extension in place.
+	// replaces any same-name extension in place. The skills extension is
+	// BUILT here (W5 Task 4): three discovery roots — workspace (env), the
+	// user dir `<configDir>/skills/`, and the package roots the loader
+	// collects — with workspace > user > packages precedence and the live
+	// per-render cap.
 	registry.install(contextFilesExtension);
-	registry.install(skillsExtension);
+	registry.install(
+		createSkillsExtension({
+			userDir: join(roots.configDir, "skills"),
+			packageRoots: () => collectedSkillRoots,
+			sectionMaxBytes: () =>
+				skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
+		}),
+	);
 	registry.install(codingToolsExtension);
 	registry.install(searchToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
@@ -584,6 +615,7 @@ export async function openHarness(
 		workerBindings,
 		providerContributors,
 		webuiBundles: extensionWebuiBundles,
+		skillRoots: extensionSkillRoots,
 		jobBindings,
 		routeBindings,
 		commandBindings,
@@ -622,7 +654,13 @@ export async function openHarness(
 				return host;
 			},
 		},
-	);
+);
+// The late fill (W5 Task 4): the skills extension installed BEFORE the
+// loader ran, holding an empty package-roots array by reference — the
+// collected roots land HERE, and the section (which renders per request)
+// observes them from its next render on. Core sections still lead the
+// prompt; only the discovery content is late.
+collectedSkillRoots.push(...extensionSkillRoots);
 	// The contributed-bundle registry (build-and-webui Task 6): the loader's
 	// flat, slug-attributed collection folded into one entry per NAME.
 	// Collision semantics mirror the provider merge EXACTLY —
@@ -843,6 +881,9 @@ export async function openHarness(
 	// submission — absent = every default. A malformed file throws HERE, at
 	// boot, exactly like a bad `SIGRUN_*` value (loadConfig's posture).
 	const settingsStore = new SettingsStore({ dir: options.settingsDir });
+	// The skills extension's live cap reads THIS store (the closure built
+	// above resolves it per render — `skills.sectionMaxBytes`, default 4KB).
+	skillsSettings = settingsStore;
 	const fileSettings = settingsStore.harnessSettings();
 	const callerSettings = options.settings;
 	// The ONE boot clock (options.now ?? real): the activity stamper AND
@@ -1167,6 +1208,7 @@ export async function openHarness(
 		seamKinds,
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
+		skillRoots: extensionSkillRoots,
 		eventBus,
 		events,
 		workerStatuses: () => eventBus.workerStatuses(),

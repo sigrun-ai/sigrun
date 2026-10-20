@@ -143,7 +143,8 @@ still override it per field.
   "defaultModel": "openai/gpt-4o-mini", // non-empty provider/model-id; bare id = openai provider
   "extensions": [ // the desired install+load state — see Extensions
     "@acme/sigrun-ext-example@^0.1.0",         // npm specifier
-    "git:github.com/obra/superpowers@main",     // git source (or {source, ref, entry})
+    "git:github.com/obra/superpowers@main",     // git skills-only package: its SKILL.md
+                                               // dirs load; its .ts pi extension is skipped
     { "source": "./dev-checkout", "enabled": false }  // object form
   ],
   "defaultProvider": {
@@ -201,7 +202,8 @@ key *presence* only).
 `defaultModel`, and `defaultProvider` changes — whether by hand edit or
 `PATCH /v1/settings` — apply on the **next boot** only; the live
 settings (`steeringMode`, `retry`, `stream`, `defaultTools`,
-`perModelThinking`) take effect immediately on the next submission.
+`perModelThinking`, `skills.sectionMaxBytes`) take effect immediately on
+the next submission.
 
 ## Authentication
 
@@ -354,8 +356,21 @@ Entry grammar:
   checkout `FETCH_HEAD`; present without a ref → fetch only (the
   checkout stays where you left it). Entry discovery: the object form's
   `entry` → a `sigrun` manifest (`{"sigrun": {"extension": "./index.js"}}`)
-  → a pi-compat manifest (first `pi.extensions` entry, warned) →
-  `dist/index.js` → `index.ts`.
+  → a pi-compat manifest (the first non-`.ts` `pi.extensions` entry; each
+  `.ts` entry is skipped with one warning — it cannot load under plain
+  node) → `dist/index.js`.
+- **Skills from packages** — a package may ship skills instead of (or
+  beside) extension code: manifest `sigrun.skills` or pi-compat
+  `pi.skills` (`["./skills"]`, the same SKILL.md format), or a
+  factory-result `skills` field (absolute dirs). A package that declares
+  skills and has no loadable entry is a valid **skills-only** package
+  (`git:github.com/obra/superpowers` is exactly this shape): outcome `ok`,
+  nothing imported. A declared entry that does not resolve still
+  quarantines. Discovery merges three roots — the workspace's `skills/`,
+  the user dir `<config-dir>/skills/`, and package roots in install order
+  — with workspace > user > packages precedence (a collision keeps the
+  higher root and logs). The section cap is `skills.sectionMaxBytes`
+  (default 4096, live).
 - **Resolution** — npm/file names resolve against the packages dir
   first (the deployment's declared version wins over anything the image
   bundles); `git` entries resolve to their discovered checkout entry;

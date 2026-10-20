@@ -1,0 +1,10 @@
+{
+	"name": "fixture-skills-only",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture skills-only package (obra/superpowers shape): a pi-compat manifest declaring a TypeScript pi extension (never importable under plain node) and a skills dir. The loader must record outcome ok, skip the .ts with one warning, and serve the skills.",
+	"pi": {
+		"extensions": ["./.pi/extensions/x.ts"],
+		"skills": ["./skills"]
+	}
+}

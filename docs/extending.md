@@ -59,10 +59,12 @@ story to guess.
   mandates nothing about their contents — not file formats, not
   structure. The surface is "a directory that is yours."
 - The config root's other top-level entries are named, not litter:
-  `packages/` and `git/` (the extension install machinery), the
-  identity surfaces `users.json` and `api-tokens.json` (mode 0600,
-  sigrun-owned — user accounts and token digests), and channel client
-  configs such as `tui.json`.
+  `packages/` and `git/` (the extension install machinery), `skills/`
+  (your user-wide skills — the same SKILL.md convention the workspace
+  ships, listed under the reserved `skills` section for every
+  conversation), the identity surfaces `users.json` and `api-tokens.json`
+  (mode 0600, sigrun-owned — user accounts and token digests), and
+  channel client configs such as `tui.json`.
 
 ## One resolution chain — workstation and container
 
@@ -246,7 +248,7 @@ what core does with each, and where its rules are documented:
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
-| `skills` | `readonly string[]` | absolute skill directories your package contributes | lands in Task 4 |
+| `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to | lands in Task 6 |
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
@@ -589,7 +591,7 @@ core-owned surface:
 | `identity` | `sigrun.context-files` | static identity paragraph (runtime facts) |
 | `persona` | `sigrun.context-files` | `SOUL.md`, else the shipped default persona |
 | `workspace-instructions` | `sigrun.context-files` | `AGENTS.md` from the conversation cwd (absent file → section omitted) |
-| `skills` | `sigrun.skills` | declared skills |
+| `skills` | `sigrun.skills` | the three-root skill list (see [Skills](#skills)) |
 | `tool-guidance` | `sigrun.model-guidance` | per-model tool guidance |
 | `execution-guidance` | `sigrun.model-guidance` | per-model execution guidance |
 
@@ -623,6 +625,45 @@ never declare a section yourself:
   an empty file — owns the `persona` section outright, and an absent
   `SOUL.md` (or no env) renders the shipped `DEFAULT_PERSONA`. The
   default is never merged with a user file.
+
+## Skills
+
+The reserved `skills` section (owned by the core `sigrun.skills`
+extension) lists skills from THREE roots, first-wins in this order:
+
+1. **the workspace** — `skills/<dir>/SKILL.md` under the conversation's
+   workspace;
+2. **the user dir** — `<configDir>/skills/<dir>/SKILL.md`, your
+   deployment-wide skills (a named config-root entry; no extension
+   involved);
+3. **package roots** — skills your package ships, in `extensions[]`
+   install order.
+
+A name present in several roots keeps the higher root's copy and logs
+the shadowing. `load_skill` serves the winning copy.
+
+A package ships skills either through its manifest —
+
+```json
+{
+  "name": "my-skill-pack",
+  "sigrun": { "skills": ["./skills"] }
+}
+```
+
+(the pi-compat `pi.skills` spells the same thing) — or through the
+factory-result `skills` field (absolute directories, useful when the
+dirs only exist at runtime). Manifest dirs resolve against the package
+root; nonexistent entries are dropped. A package that declares skills
+and ships **no loadable entry** is a valid **skills-only** package:
+outcome `ok`, nothing imported — this is how
+`git:github.com/obra/superpowers` loads (its only pi extension is
+TypeScript, which plain node cannot import; each `.ts` pi entry is
+skipped with one warning). A package that declares an entry which does
+not resolve still quarantines.
+
+The rendered section is capped at `skills.sectionMaxBytes` (default
+4096, a live setting) with a truncation notice.
 
 ## Uninstall
 

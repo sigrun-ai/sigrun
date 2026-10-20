@@ -54,11 +54,12 @@ import {
 	mkdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionSpec } from "./settings.js";
 
@@ -566,16 +567,36 @@ export interface SyncPackagesOptions {
 }
 
 /**
- * One loadable extension resolution from the sync: the `entry` is an
- * absolute `file://` URL (npm/bare/path packages, discovered git
- * checkouts) or the original load specifier (paths changed nothing);
+ * One loadable extension resolution from the sync (W5 Task 4: a UNION —
+ * an entry-bearing package, or a skills-only package with no loadable
+ * entry but declared skill dirs):
+ *
+ * - `entry`: the `entry` is an absolute `file://` URL (npm/bare/path
+ *   packages, discovered git checkouts) or the original load specifier
+ *   (paths changed nothing); `skills` carries the package's manifest
+ *   skill dirs (existing directories only, resolved against the package
+ *   root) when it declared any.
+ * - `skills-only`: a package that declares skills and has NO loadable
+ *   entry (spec §9.4 — e.g. a pi-compat package whose only pi extension
+ *   is TypeScript, unimportable under plain node): nothing is imported;
+ *   the loader records outcome `ok` and serves only the skills.
+ *
  * `enabled` mirrors the source spec (always true from the sync —
  * disabled entries never reach the loader).
  */
-export interface ExtensionResolution {
-	readonly entry: string;
-	readonly enabled: boolean;
-}
+export type ExtensionResolution =
+	| {
+			readonly kind: "entry";
+			readonly entry: string;
+			readonly enabled: boolean;
+			readonly skills?: readonly string[];
+		}
+	| {
+			readonly kind: "skills-only";
+			readonly name: string;
+			readonly skills: readonly string[];
+			readonly enabled: boolean;
+	  };
 
 /**
  * Reconcile the packages dir with the settings file's `packages` intent.
@@ -611,7 +632,7 @@ export async function syncPackages(
 		if (kind === "git") {
 			const { source, ref } = splitGitRef(spec.source, spec.ref);
 			const repoDir = await syncGit(source, ref, gitDir, options);
-			let entry: string;
+			let entry: string | undefined;
 			try {
 				entry = findExtEntry(repoDir, spec.entry);
 			} catch (cause) {
@@ -621,11 +642,46 @@ export async function syncPackages(
 						)
 					: cause;
 			}
-			resolutions.push({ entry: pathToFileURL(entry).href, enabled: true });
-			continue;
+			// The §9.4 three cases: a discoverable entry resolves entry-kind
+			// (carrying any manifest skills); NO entry + declared skills is the
+			// valid skills-only package; NO entry and NO skills keeps today's
+			// loud throw.
+			const skills = manifestSkills(repoDir);
+			if (entry !== undefined) {
+				resolutions.push({
+					kind: "entry",
+					entry: pathToFileURL(entry).href,
+					enabled: true,
+					...(skills.length === 0 ? {} : { skills }),
+				});
+				continue;
+			}
+			if (skills.length > 0) {
+				resolutions.push({
+					kind: "skills-only",
+					name: readPackageName(repoDir) ?? basename(repoDir),
+					skills,
+					enabled: true,
+				});
+				continue;
+			}
+			throw new GitSyncError(
+				`git extension ${sanitizeUrl(spec.source)}: no loadable entry (no sigrun manifest, no dist/index.js) — ship a built entry; a .ts source cannot load under plain node`,
+			);
 		}
-		// path kind: load in place (nothing installed)
-		resolutions.push({ entry: spec.source, enabled: true });
+		// path kind: load in place (nothing installed). A path package's
+		// manifest skills still ride along (the path target is its root).
+		const pathRoot =
+			sourceKind(spec.source) === "path" && statIsDirectory(spec.source)
+				? spec.source
+				: undefined;
+		const pathSkills = pathRoot === undefined ? [] : manifestSkills(pathRoot);
+		resolutions.push({
+			kind: "entry",
+			entry: spec.source,
+			enabled: true,
+			...(pathSkills.length === 0 ? {} : { skills: pathSkills }),
+		});
 	}
 	await syncPackagesFlat(npmSpecs, packagesDir, options);
 	// npm-path resolutions (bare names, file: forms): resolved through the
@@ -634,20 +690,50 @@ export async function syncPackages(
 		if (!spec.enabled) continue;
 		if (sourceKind(spec.source) !== "npm") continue;
 		const explicitEntry = spec.entry;
+		const root = manifestRootOf(spec.source, packagesDir);
+		const skills = root === undefined ? [] : manifestSkills(root);
+		const pushSkillsOnly = (): void => {
+			resolutions.push({
+				kind: "skills-only",
+				name: root === undefined ? spec.source : (readPackageName(root) ?? basename(root)),
+				skills,
+				enabled: true,
+			});
+		};
 		const resolved = resolveExtensionEntry(spec.source, packagesDir);
 		if (resolved === undefined) {
-			if (spec.source.includes("/") && !spec.source.startsWith("@")) {
-				// A scoped/bare name the trees can't produce — fail loud now
-				// (install claimed success earlier or it's a vendor name).
+			// Nothing resolvable: skills-only when the package declares skills,
+			// else today's shape (the specifier verbatim — the import fails
+			// loud at load, the quarantine).
+			if (skills.length > 0) {
+				pushSkillsOnly();
+				continue;
 			}
-			resolutions.push({ entry: spec.source, enabled: true });
+			resolutions.push({ kind: "entry", entry: spec.source, enabled: true });
+			continue;
+		}
+		// A resolved DIRECTORY is packageEntry's "nothing discoverable"
+		// fallback (no self-resolvable entry, no manifest entry, no
+		// convention file): with declared skills that is the skills-only
+		// package; without, keep today's loud dir-import failure.
+		const resolvedPath = resolved.startsWith("file://")
+			? fileURLToPath(resolved)
+			: resolved;
+		if (statIsDirectory(resolvedPath)) {
+			if (skills.length > 0) {
+				pushSkillsOnly();
+				continue;
+			}
+			resolutions.push({ kind: "entry", entry: resolved, enabled: true });
 			continue;
 		}
 		resolutions.push({
+			kind: "entry",
 			entry: explicitEntry === undefined
 				? resolved
 				: pathToFileURL(join(dirname(resolved), explicitEntry)).href,
 			enabled: true,
+			...(skills.length === 0 ? {} : { skills }),
 		});
 	}
 	return resolutions;
@@ -821,13 +907,20 @@ function packageEntry(pkgDir: string, name: string): string {
 		);
 	} catch {
 		// No self-resolvable entry (no exports, no main) — probe the
-		// conventions in priority order.
+		// manifest and conventions in priority order.
 	}
+	// W5 Task 4: the manifest entry (sigrun.extension, else the first
+	// non-`.ts` pi entry — {@link manifestEntry} warns each `.ts` skip).
+	const manifest = manifestEntry(pkgDir);
+	if (manifest !== undefined) return importableEntry(manifest);
 	for (const entry of ["index.js", "dist/index.js", "index.ts"]) {
 		if (existsSync(join(pkgDir, entry))) {
 			return importableEntry(join(pkgDir, entry));
 		}
 	}
+	// The package DIR is today's loud fallback: an unimportable entry the
+	// loader quarantines naming the path (the sync's caller decides
+	// skills-only when the package declared skill dirs).
 	return importableEntry(pkgDir);
 }
 
@@ -955,19 +1048,141 @@ export async function syncGit(
 }
 
 /**
-	 * Entry discovery for a synced git checkout, in priority order: the
-	 * object form's explicit `entry`, a `sigrun` manifest
-	 * (`{"sigrun": {"extension": "./x.js"}}`), a pi-compat manifest
-	 * (`"pi": {"extensions": [...]}` — first entry, warned), or
-	 * `dist/index.js`. No `.ts` fallback (build-and-webui Task 3, BREAKING):
-	 * the built server runs plain node, which cannot load a `.ts` entry —
-	 * npm/git/path sources must ship a built entry; a `.ts`-only checkout
-	 * fails loud here instead of importing-and-crashing at load time.
-	 */
+ * The pi-compat `.ts` skip warning (spec §9.4): a `pi.extensions` entry
+ * ending in `.ts` cannot load under plain node (the build spec removed
+ * the `.ts` entry fallback) — it is skipped, keeping the package's
+ * skills loadable. ONE line per skipped entry, per discovery.
+ */
+function warnTsPiExtension(entry: string): void {
+	console.warn(
+		`pi-compat: skipping TypeScript pi extension ${entry} (not loadable under node); loading the package's skills only`,
+	);
+}
+
+/** The manifest fields the entry/skill discovery reads. */
+interface DiscoveryManifest {
+	readonly sigrun?: { readonly extension?: unknown; readonly skills?: unknown };
+	readonly pi?: { readonly extensions?: unknown; readonly skills?: unknown };
+}
+
+/** Read one package root's manifest (absent/unreadable → undefined). */
+function readDiscoveryManifest(pkgRoot: string): DiscoveryManifest | undefined {
+	const manifestPath = join(pkgRoot, "package.json");
+	if (!existsSync(manifestPath)) return undefined;
+	try {
+		return JSON.parse(readFileSync(manifestPath, "utf8")) as DiscoveryManifest;
+	} catch {
+		return undefined;
+	}
+}
+
+/** A string-array manifest field (skills lists), else undefined. */
+function manifestStringArray(value: unknown): readonly string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	return value.every((entry) => typeof entry === "string")
+		? (value as readonly string[])
+		: undefined;
+}
+
+/**
+ * A package root's manifest skill dirs (spec §9.4): `sigrun.skills`
+ * (string[]) else pi-compat `pi.skills` (string[] — same SKILL.md format,
+ * so no warning), each resolved against the package root, keeping only
+ * EXISTING directories. No manifest, no field, or nothing existing → [].
+ */
+export function manifestSkills(pkgRoot: string): readonly string[] {
+	const manifest = readDiscoveryManifest(pkgRoot);
+	if (manifest === undefined) return [];
+	const declared =
+		manifestStringArray(manifest.sigrun?.skills) ??
+		manifestStringArray(manifest.pi?.skills);
+	if (declared === undefined) return [];
+	const dirs: string[] = [];
+	for (const dir of declared) {
+		const resolved = resolve(pkgRoot, dir);
+		if (statIsDirectory(resolved)) dirs.push(resolved);
+	}
+	return dirs;
+}
+
+/** Whether `path` is an existing directory (never throws). */
+function statIsDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A package root's manifest ENTRY (the discovery both git checkouts and
+ * packages-dir packages run, W5 Task 4): the `sigrun.extension` manifest
+ * value VERBATIM (an entry that does not resolve keeps today's loud
+ * load-time failure — never a silent skills-only downgrade), else the
+ * FIRST `pi.extensions` entry that does not end in `.ts` (each `.ts` skip
+ * warns once; a `.ts`-only list discovers no entry — the package loads
+ * its skills only). `undefined` when the manifest declares no usable
+ * entry.
+ */
+export function manifestEntry(pkgRoot: string): string | undefined {
+	const manifest = readDiscoveryManifest(pkgRoot);
+	if (manifest === undefined) return undefined;
+	const sigrunEntry = manifest.sigrun?.extension;
+	if (typeof sigrunEntry === "string" && sigrunEntry !== "") {
+		return join(pkgRoot, sigrunEntry);
+	}
+	const piEntries = manifestStringArray(manifest.pi?.extensions);
+	if (piEntries !== undefined) {
+		for (const entry of piEntries) {
+			if (/\.ts$/.test(entry)) {
+				warnTsPiExtension(join(pkgRoot, entry));
+				continue;
+			}
+			return join(pkgRoot, entry);
+		}
+		console.warn(
+			`pi-compat: no loadable pi extension in ${pkgRoot} (all entries are TypeScript); loading the package's skills only`,
+		);
+	}
+	return undefined;
+}
+
+/**
+ * The package ROOT a resolution's manifest skills read from, for
+ * npm/file-shaped sources: the packages-dir install (`node_modules/<name>`
+ * under the packages dir — npm keys path-shaped installs by the target
+ * package's own manifest name), else the path target itself when it is a
+ * package dir. `undefined` when neither carries a manifest (a bare
+ * app-tree resolution — no root to read skills from; such a package
+ * contributes skills through its factory result instead).
+ */
+function manifestRootOf(
+	specifier: string,
+	packagesDir: string,
+): string | undefined {
+	const id = identifySpecifier(specifier);
+	const name = id.pathShaped ? (readPackageName(id.range) ?? id.name) : id.name;
+	const installed = join(packagesDir, "node_modules", ...name.split("/"));
+	if (existsSync(join(installed, "package.json"))) return installed;
+	if (id.pathShaped && existsSync(join(id.range, "package.json"))) return id.range;
+	return undefined;
+}
+
+/**
+ * Entry discovery for a synced git checkout, in priority order: the
+ * object form's explicit `entry` (must exist — a declared entry that
+ * does not resolve is today's loud failure), the manifest entry
+ * (`sigrun.extension` verbatim, else the first non-`.ts` pi entry — see
+ * {@link manifestEntry}), or `dist/index.js`. Returns `undefined` when
+ * nothing is discoverable: the CALLER then decides skills-only (declared
+ * skills) vs today's loud throw. No `.ts` fallback (build-and-webui Task
+ * 3, BREAKING): the built server runs plain node, which cannot load a
+ * `.ts` entry — npm/git/path sources must ship a built entry.
+ */
 export function findExtEntry(
 	repoDir: string,
 	explicitEntry: string | undefined,
-): string {
+): string | undefined {
 	if (explicitEntry !== undefined) {
 		const entry = join(repoDir, explicitEntry);
 		if (!existsSync(entry)) {
@@ -977,31 +1192,9 @@ export function findExtEntry(
 		}
 		return entry;
 	}
-	const manifestPath = join(repoDir, "package.json");
-	if (existsSync(manifestPath)) {
-		try {
-			const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-				sigrun?: { extension?: unknown };
-				pi?: { extensions?: unknown };
-			};
-			const sigrunEntry = manifest.sigrun?.extension;
-			if (typeof sigrunEntry === "string") {
-				return join(repoDir, sigrunEntry);
-			}
-			const piEntries = manifest.pi?.extensions;
-			if (Array.isArray(piEntries) && typeof piEntries[0] === "string") {
-				console.warn(
-					"git: pi-compat manifest — using the first pi entry as the extension",
-				);
-				return join(repoDir, piEntries[0]);
-			}
-		} catch {
-			// Unreadable manifest — fall through to the dist/root conventions.
-		}
-	}
+	const manifest = manifestEntry(repoDir);
+	if (manifest !== undefined) return manifest;
 	const dist = join(repoDir, "dist", "index.js");
 	if (existsSync(dist)) return dist;
-	throw new GitSyncError(
-		"git source has no loadable entry (no sigrun manifest, no dist/index.js) — ship a built entry; a .ts source cannot load under plain node",
-	);
+	return undefined;
 }

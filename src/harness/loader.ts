@@ -98,7 +98,7 @@ import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContributor } from "./providers/index.js";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -293,10 +293,19 @@ export interface LoadedExtensions {
 	 * the contributing module's URL (the loader's attribution; the factory
 	 * contributes `{name, dir}` only). Boot folds this flat list into the
 	 * name-keyed registry (last-registered-wins + the collision sink) that
-	 `createServer`'s NAME-selector resolution reads. Quarantined
+ `createServer`'s NAME-selector resolution reads. Quarantined
 	 * extensions contribute none.
 	 */
 	readonly webuiBundles: readonly ContributedWebuiBundle[];
+	/**
+	 * Skill directories from loaded packages (core hardening W5 Task 4,
+	 * spec §9.4), in load order — skills-only resolutions, entry-bearing
+	 * packages' manifest skills, and factory-result `skills` fields — each
+	 * `{extension, dir}` attributed to the extension slug. Boot threads
+	 * this into the skills section's package-roots option; quarantined
+	 * packages contribute none.
+	 */
+	readonly skillRoots: readonly { extension: string; dir: string }[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -376,6 +385,13 @@ export interface ResolvedExtension {
 	 * command reaches the merged catalog.
 	 */
 	commands?: readonly ExtensionCommandContribution[];
+	/**
+	 * Skill directories (core hardening W5 Task 4, spec §9.4), validated
+	 * fail-loud — absolute EXISTING directories; a malformed or nonexistent
+	 * entry quarantines (a package that THINKS it contributed skills must
+	 * not silently lose them).
+	 */
+	skills?: readonly string[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -455,6 +471,15 @@ function isExtension(value: unknown): value is Extension {
 		value !== null &&
 		typeof (value as Extension).name === "string"
 	);
+}
+
+/** Whether `dir` is an EXISTING directory (never throws). */
+function existingDirectory(dir: string): boolean {
+	try {
+		return statSync(dir).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -741,6 +766,41 @@ function validateCommands(
 		}
 	}
 	return value as readonly ExtensionCommandContribution[];
+}
+
+/**
+ * Validate a factory result's `skills` declaration (core hardening W5
+ * Task 4, spec §9.4). Absent → undefined (no contributions). Present but
+ * malformed → throw; the loader quarantines the extension with the thrown
+ * message (fail-loud: an extension that THINKS it contributed skills must
+ * not silently lose them — the providers/health class). Per entry: an
+ * absolute path naming an EXISTING directory.
+ */
+function validateSkills(value: unknown): readonly string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a skills field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		if (typeof entry !== "string" || entry.length === 0) {
+			throw new Error(
+				"extension factory returned a skills entry that is not a non-empty string",
+			);
+		}
+		if (!isAbsolute(entry)) {
+			throw new Error(
+				`extension factory returned a skills entry that is not an absolute directory: ${entry}`,
+			);
+		}
+		if (!existingDirectory(entry)) {
+			throw new Error(
+				`extension factory returned a skills entry that is not an existing directory: ${entry}`,
+			);
+		}
+	}
+	return value as readonly string[];
 }
 
 /**
@@ -1054,6 +1114,7 @@ async function resolvedFromFactory(
 	const jobs = validateJobs(candidate.jobs);
 	const routes = validateRoutes(candidate.routes);
 	const commands = validateCommands(candidate.commands);
+	const skills = validateSkills(candidate.skills);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -1146,6 +1207,7 @@ async function resolvedFromFactory(
 		...(jobs === undefined ? {} : { jobs }),
 		...(routes === undefined ? {} : { routes }),
 		...(commands === undefined ? {} : { commands }),
+		...(skills === undefined ? {} : { skills }),
 	};
 }
 
@@ -1229,8 +1291,15 @@ export interface LoadExtensionsOptions {
 export interface ResolvedExtensionInput {
 	/** Optional display name (the source specifier; drives quarantine names). */
 	readonly name?: string;
-	/** The module entry: an absolute `file://` URL or any import() specifier. */
-	readonly entry: string;
+	/**
+	 * The module entry: an absolute `file://` URL or any import() specifier.
+	 * ABSENT for a skills-only resolution (W5 Task 4): the package declared
+	 * skill dirs and no loadable entry, so nothing is imported — `skills`
+	 * carries the dirs and the outcome records `ok`.
+	 */
+	readonly entry?: string;
+	/** Manifest skill dirs (existing directories), resolved by the sync. */
+	readonly skills?: readonly string[];
 }
 
 /**
@@ -1343,12 +1412,13 @@ options: LoadExtensionsOptions = {},
 ): Promise<LoadedExtensions> {
 // Normalize: the caller may hand pre-resolved entries (the boot flow,
 // syncPackages consumer) or raw specifiers (the test seam, env-only
-// deploys). Each becomes {entry, label} — label drives the warning
-// name exactly as specifiers did.
+// deploys). Each becomes {entry, label, skills} — label drives the warning
+// name exactly as specifiers did; an ABSENT entry with skills is the
+// skills-only resolution (§9.4).
 const entries = specifiers.map((spec) =>
 typeof spec === "string"
-? { name: undefined as string | undefined, entry: spec }
-: { name: spec.name, entry: spec.entry },
+? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined }
+: { name: spec.name, entry: spec.entry, skills: spec.skills },
 );
 const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
@@ -1364,12 +1434,52 @@ const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
 const routeBindings: ExtensionRouteBinding[] = [];
 // Slash commands (W5 Task 3), attributed the same way.
 const commandBindings: ExtensionCommandBinding[] = [];
+// Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
+// contributed — skills-only resolutions, entry-bearing packages' manifest
+// skills, and factory-result `skills` fields — in load order, attributed
+// to the extension slug. Boot threads this to the skills section's
+// package-roots option.
+const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
-for (const { name: label, entry } of entries) {
-const display = label ?? entry;
+for (const { name: label, entry, skills } of entries) {
+const display = label ?? entry ?? "skills-only";
 				try {
+				// Skills-only resolution (§9.4): the package declared skill dirs and
+				// has NO loadable entry — nothing is imported. The outcome records
+				// `ok` under the slug of the package name; the dirs (validated as
+				// existing directories — the sync filtered, a violation here is a
+				// contract break) append to skillRoots. Inside the per-entry try so
+				// a bad declaration QUARANTINES instead of aborting the boot.
+				if (entry === undefined) {
+					if (skills === undefined || skills.length === 0) {
+						throw new Error(
+							"a pre-resolved input carried neither an entry nor skill directories",
+						);
+					}
+					const skillsOnlyName = label ?? "skills-only";
+					const slug = slugifyName(skillsOnlyName);
+					if (slug === "") {
+						throw new Error(
+								`skills-only package name "${skillsOnlyName}" sanitizes to an empty slug (nothing survives [a-z0-9_-] folding); refusing to load`,
+						);
+					}
+					for (const dir of skills) {
+						if (!existingDirectory(dir)) {
+							throw new Error(
+									`skills: contributed directory ${dir} does not exist (or is not a directory)`,
+							);
+						}
+					}
+					// All-or-nothing (the quarantined-contributions invariant): the
+					// dirs append only once every one validated.
+					for (const dir of skills) {
+						skillRoots.push({ extension: slug, dir });
+					}
+					outcomes.push({ name: slug, status: "ok" });
+					continue;
+				}
 						// Pre-resolved entries (the boot flow) import verbatim;
 						// raw specifiers (the test seam) resolve through the
 						// packages dir first, then bare import resolution.
@@ -1500,6 +1610,22 @@ const display = label ?? entry;
 						`extension "${slug}" declares reserved core section "${reservedSectionKey}"`,
 					);
 				}
+				// Skill contributions (W5 Task 4), validated HERE — before the
+				// install/outcome, so a bad declaration quarantines with nothing
+				// installed and exactly one outcome (the same point as every
+				// other fail-loud contract check). The factory-result dirs were
+				// already validated at read time (validateSkills, all-or-nothing);
+				// the MANIFEST dirs (the sync's resolution, existing by
+				// construction) are re-checked because a hand-built pre-resolved
+				// input skips the sync.
+				const contributed = [...(resolved.skills ?? []), ...(skills ?? [])];
+				for (const dir of contributed) {
+					if (!existingDirectory(dir)) {
+						throw new Error(
+							`skills: contributed directory ${dir} does not exist (or is not a directory)`,
+						);
+					}
+				}
 				// The post-resolution call re-keys the captured host instance in
 				// place with the slug + declared kinds (boot's
 				// hostContextFactory; see src/harness/boot.ts) — the instance is
@@ -1613,6 +1739,12 @@ const display = label ?? entry;
 					});
 				}
 			}
+			// Skill contributions (W5 Task 4): the validated combined list
+			// (factory-result + manifest dirs — validated above, before the
+			// install), attributed to the extension slug, in load order.
+			for (const dir of contributed) {
+				skillRoots.push({ extension: slug, dir });
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -1635,6 +1767,7 @@ const display = label ?? entry;
 		outcomes,
 		providerContributors,
 		webuiBundles,
+		skillRoots,
 		healthProducers,
 		runSettledBindings,
 		lifecycleBindings,
