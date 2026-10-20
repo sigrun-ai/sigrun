@@ -356,12 +356,20 @@ const WAKE_EVENTS = new Set([
 ]);
 
 /**
+ * The `every` retirement message (ruling 12, jobs Task 3): jobs are the
+ * only time-based scheduler — an extension that needs a timer declares a
+ * job with a `task` action (spec §8.1a).
+ */
+const EVERY_RETIRED = "workers.every was retired — declare a job with a task action";
+
+/**
  * Validate a factory result's `workers` declaration (memory-seam Task 5,
- * the curator contract). Absent → undefined (no workers). Present but
- * malformed → throw; the loader quarantines the extension with the thrown
- * message (fail-loud: an extension that THINKS it declared a curator must
- * not silently lose it). Validation order per worker: name, duplicate,
- * run, every, wakeOn, at-least-one-trigger.
+ * the curator contract, post-`every`-retirement). Absent → undefined (no
+ * workers). Present but malformed → throw; the loader quarantines the
+ * extension with the thrown message (fail-loud: an extension that THINKS
+ * it declared a curator must not silently lose it). Validation order per
+ * worker: name, duplicate, run, every-retired, wakeOn,
+ * wakeOn-required-non-empty.
  */
 function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined {
 	if (value === undefined) return undefined;
@@ -393,29 +401,31 @@ function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined
 				`extension factory returned a worker whose worker "${name}" has a run field that is not a function`,
 			);
 		}
-		const every = worker?.every as { ms?: unknown } | undefined;
-		if (
-			every !== undefined &&
-			!(typeof every?.ms === "number" && every.ms > 0)
-		) {
-			throw new Error(
-				`extension factory returned a worker whose worker "${name}" has every.ms <= 0`,
-			);
+		// Ruling 12: `every` is RETIRED — a worker carrying it quarantines
+		// with the retirement message (jobs are the only timer).
+		if (worker?.every !== undefined) {
+			throw new Error(EVERY_RETIRED);
 		}
 		if (
-			worker?.wakeOn !== undefined &&
-			(!Array.isArray(worker.wakeOn) ||
-				worker.wakeOn.some(
-					(event) => typeof event !== "string" || !WAKE_EVENTS.has(event),
-				))
+			worker?.wakeOn === undefined ||
+			!Array.isArray(worker.wakeOn) ||
+			worker.wakeOn.length === 0 ||
+			worker.wakeOn.some(
+				(event) => typeof event !== "string" || !WAKE_EVENTS.has(event),
+			)
 		) {
+			if (worker?.wakeOn !== undefined && Array.isArray(worker.wakeOn) && worker.wakeOn.length === 0) {
+				throw new Error(
+					`extension factory returned a worker whose worker "${name}" has an empty wakeOn (declare at least one wake event)`,
+				);
+			}
+			if (worker?.wakeOn === undefined) {
+				throw new Error(
+					"extension factory returned a worker that declares a worker with neither every nor wakeOn",
+				);
+			}
 			throw new Error(
 				`extension factory returned a worker whose worker "${name}" has an invalid wakeOn entry`,
-			);
-		}
-		if (every === undefined && worker?.wakeOn === undefined) {
-			throw new Error(
-				"extension factory returned a worker that declares a worker with neither every nor wakeOn",
 			);
 		}
 	}

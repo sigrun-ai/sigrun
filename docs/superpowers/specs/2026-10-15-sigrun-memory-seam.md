@@ -2,6 +2,14 @@
 
 **Date:** 2026-10-15
 **Status:** draft for approval
+
+> **Amendment (2026-10-19, core-hardening W4 ruling 12):** the idle
+> worker's `every` timer is RETIRED. Workers keep `wakeOn` (required,
+> non-empty), their deadline, coalescing, and the `/v1/meta` projection;
+> a worker declaring `every` quarantines its extension with
+> `workers.every was retired — declare a job with a task action`. Jobs
+> (the W4 scheduler) are the only time-based scheduler. See
+> `docs/superpowers/specs/2026-10-19-sigrun-core-hardening-design.md` §8.1a.
 **Evidence base:** `docs/interaction-seam-survey/memory-comparison.md` (21
 extensions inspected, 2026-10-15) + this session's rulings.
 

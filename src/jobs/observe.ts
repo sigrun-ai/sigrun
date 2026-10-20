@@ -27,7 +27,7 @@ import type { JobRunWire } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "../harness/settings.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { EventBus, type RunSettledEvent } from "../harness/event-bus.js";
-import { JobRunDoc, listRuns, patchJob, pruneHistory } from "./docs.js";
+import { JobDoc, JobRunDoc, listRuns, patchJob, pruneHistory } from "./docs.js";
 import type { JobRuntimeDeps } from "./fire.js";
 
 /** The `sigrun.job.run` key a run record was written under. */
@@ -136,8 +136,29 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 	// work runs on a microtask side lane (the listener contract is
 	// no-blocking-work); each settle is idempotent, so ordering with the
 	// drain loop's deliveries does not matter.
+	//
+	// LOAD GUARD: tool-call tasks (every bash/read/write a conversation
+	// runs) also produce terminal task writes — a jobs-harnessing scan per
+	// terminal task would tax every busy conversation. The listener first
+	// checks `jobsMayExist`, a conservative flag: false only until the
+	// first `sigrun.job` document write is observed (the commit
+	// subscription below — job records appear ONLY through writes), and
+	// never reset afterwards (retirement is not a return to no-jobs for
+	// this process). A no-jobs harness pays ONE boolean check per terminal
+	// task, never a scan.
+	let jobsMayExist = false;
+	const offJobWrites = deps.harness.subscribeCommits((publication) => {
+		for (const change of publication.changes) {
+			if (change.type !== "document") continue;
+			if (change.record.kind === JobDoc.definition.kind) {
+				jobsMayExist = true;
+				return;
+			}
+		}
+	});
 	const offTaskSettled = deps.eventBus.onHostEvent((event) => {
 		if (event.type !== "taskSettled") return;
+		if (!jobsMayExist) return;
 		const { taskId, status, error } = event;
 		void (async () => {
 			try {
@@ -164,7 +185,7 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 					const settled: JobRunWire = {
 						...run,
 						outcome: succeeded ? "succeeded" : "failed",
-						settledAt: nowIso(),
+							settledAt: nowIso(),
 						...(succeeded || error === undefined ? {} : { error }),
 					};
 					await settleRun(deps, run, settled, ctx);
@@ -179,5 +200,6 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 	return () => {
 		unregister();
 		offTaskSettled();
+		offJobWrites();
 	};
 }
