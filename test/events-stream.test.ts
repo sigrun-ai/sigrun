@@ -548,7 +548,14 @@ describe("GET /v1/events (W3 Task 4)", () => {
 		// computes `access` per principal before delivery. Under auth "none"
 		// the naive principal is the superuser and the created job is
 		// ownerless → household write.
-		const { port } = await bootServer({ auth: "none", extensions: false });
+		const { opened, port } = await bootServer({ auth: "none", extensions: false });
+		// Fix round 1 pin: subscribe the HUB directly (in-process, pre-SSE)
+		// — the hub's own copy must be ACCESS-NEUTRAL (no fabricated
+		// `access` key for future non-SSE subscribers); the stream adds it.
+		const hubFrames: HostEventWire[] = [];
+		const offHub = opened.events.subscribe((event) => {
+			if (event.type === "job.changed") hubFrames.push(event);
+		});
 		const stream = new EventsConnection(port);
 		try {
 			await stream.ready();
@@ -590,7 +597,16 @@ describe("GET /v1/events (W3 Task 4)", () => {
 					f.data.job.lastRun?.manual === true,
 			);
 			expect(fired.event).toBe("job.changed");
+			// The hub-side copies never carried `access` (any value would be a
+		// fabrication — only the stream may stamp it per principal).
+			expect(hubFrames.length).toBeGreaterThan(0);
+			for (const frame of hubFrames) {
+				if (frame.type === "job.changed") {
+					expect("access" in frame.job).toBe(false);
+				}
+			}
 		} finally {
+			offHub();
 			stream.destroy();
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}

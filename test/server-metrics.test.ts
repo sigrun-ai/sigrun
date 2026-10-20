@@ -121,7 +121,7 @@ function parseExposition(body: string): string[] {
 		expect(line, `sample line must parse: ${line}`).toMatch(SAMPLE_LINE);
 		const name = line.split(" ")[0]!.split("{")[0]!;
 		expect(helps.has(name), `${name} must carry a # HELP line`).toBe(true);
-		expect(types.has(name), `${name} must carry a # TYPE gauge line`).toBe(
+		expect(types.has(name), `${name} must carry a # TYPE gauge|counter line`).toBe(
 			true,
 		);
 		samples.push(line);

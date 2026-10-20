@@ -1011,9 +1011,16 @@ export async function openHarness(
 				BACKGROUND_CONTEXT,
 			);
 			if (record !== undefined) {
+				// The hub's copy is ACCESS-NEUTRAL by contract (the wire's
+				// `Omit<JobWire, "access">`): `jobWireOf`'s row carries the
+				// service's neutral placeholder, so it is STRIPPED here — the
+				// SSE stream computes `accessOf` per principal and adds it. A
+				// future in-process hub subscriber must never read a fabricated
+				// access off the hub's copy.
+				const { access: _dropped, ...row } = jobWireOf(jobId, record);
 				events.publish({
 					type: "job.changed",
-					job: jobWireOf(jobId, record),
+					job: row,
 				});
 				return;
 			}
