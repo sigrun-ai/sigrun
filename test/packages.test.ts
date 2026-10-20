@@ -545,11 +545,14 @@ describe("git sources in the unified extensions list", () => {
 		);
 		expect(resolutions).toHaveLength(1);
 		expect(resolutions[0].enabled).toBe(true);
+		// Entry-kind (the fixture declares a loadable sigrun entry).
+		expect(resolutions[0].kind).toBe("entry");
+		const entry = resolutions[0].kind === "entry" ? resolutions[0].entry : "";
 		// The discovered entry lives INSIDE the clone (host/path layout).
-		expect(resolutions[0].entry).toContain("/git/");
-		expect(existsSync(new URL(resolutions[0].entry)));
+		expect(entry).toContain("/git/");
+		expect(existsSync(new URL(entry))).toBe(true);
 		// The manifest's sigrun entry was the source.
-		expect(resolutions[0].entry.endsWith("ext.js")).toBe(true);
+		expect(entry.endsWith("ext.js")).toBe(true);
 	});
 
 	test("a declared ref checks out to that commit on re-sync", async () => {
@@ -565,7 +568,9 @@ describe("git sources in the unified extensions list", () => {
 			encoding: "utf8",
 		});
 		expect(checkedOut.trim()).toBe(fixture.firstSha);
-		expect(resolutions[0].entry).toContain("ext.js");
+		expect(
+			resolutions[0].kind === "entry" ? resolutions[0].entry : "",
+		).toContain("ext.js");
 	}, 60_000);
 
 	test("re-sync without a ref makes no checkout change (fetch only)", async () => {
@@ -604,7 +609,7 @@ describe("git sources in the unified extensions list", () => {
 		);
 	});
 
-	test("entry discovery order: manifest > dist/index.js; a .ts-only checkout fails loud", () => {
+	test("entry discovery order: manifest > dist/index.js; no entry → undefined (the sync decides skills-only vs throw)", () => {
 		// The fixture's manifest names ./ext.js — discover without explicit.
 		expect(findExtEntry(fixture.dir, undefined)).toBe(join(fixture.dir, "ext.js"));
 		// dist/index.js discovered when it exists and no manifest.
@@ -612,15 +617,17 @@ describe("git sources in the unified extensions list", () => {
 		mkdirSync(join(bare, "dist"), { recursive: true });
 		writeFileSync(join(bare, "dist", "index.js"), "// js entry\n");
 		expect(findExtEntry(bare, undefined)).toBe(join(bare, "dist", "index.js"));
-		// A .ts-only checkout fails loud (build Task 3: no implicit .ts
-		// fallback — the built server runs plain node, which cannot load a
-		// .ts entry; git sources must ship dist/index.js).
+		// A .ts-only checkout discovers NO entry (build Task 3: no implicit
+		// .ts fallback — the built server runs plain node). W5 Task 4: the
+		// undefined return now reaches the SYNC, which downgrades to
+		// skills-only when the package declared skills and keeps today's
+		// loud throw otherwise (covered above).
 		rmSync(join(bare, "dist"), { recursive: true });
 		writeFileSync(join(bare, "index.ts"), "// ts entry\n");
-		expect(() => findExtEntry(bare, undefined)).toThrow(/dist\/index\.js/);
-		// Nothing → fail loud.
+		expect(findExtEntry(bare, undefined)).toBeUndefined();
+		// Nothing at all → still undefined (same caller decision).
 		rmSync(join(bare, "index.ts"));
-		expect(() => findExtEntry(bare, undefined)).toThrow(GitSyncError);
+		expect(findExtEntry(bare, undefined)).toBeUndefined();
 	});
 
 	test("sanitizeUrl strips userinfo credentials (and leaves plain ssh)", () => {
@@ -685,3 +692,256 @@ describe("the unified extensions list (settings surface)", () => {
 	});
 });
 
+
+// ---------------------------------------------------------------------------
+// Core hardening W5 Task 4 (spec §9.4): manifest skill dirs, the
+// ExtensionResolution union, skills-only packages, and the pi-compat .ts
+// extension skip.
+// ---------------------------------------------------------------------------
+
+/** The skills-only fixture package (obra/superpowers shape). */
+const SKILLS_ONLY_DIR = join(import.meta.dirname, "fixtures", "fixture-skills-only");
+
+/** A git repo built from a source dir (the hermetic clone target). */
+function gitRepoFrom(sourceDir: string, name: string): string {
+	const dir = freshDir(name);
+	cpSync(sourceDir, dir, { recursive: true });
+	const git = (args: string[]): string =>
+		execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+			cwd: dir,
+			encoding: "utf8",
+			env: {
+				...process.env,
+				GIT_AUTHOR_NAME: "fixture",
+				GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+				GIT_COMMITTER_NAME: "fixture",
+				GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+				GIT_CONFIG_GLOBAL: "/dev/null",
+			},
+		});
+	git(["init", "-q", "-b", "main"]);
+	git(["add", "."]);
+	git(["commit", "-q", "-m", "fixture"]);
+	return dir;
+}
+
+describe("manifest skill dirs + the ExtensionResolution union (W5 Task 4)", () => {
+	test("a git package declaring only a .ts pi extension resolves skills-only, with one skip warning", async () => {
+		const repo = gitRepoFrom(SKILLS_ONLY_DIR, "sigrun-git-skills-");
+		const configDir = freshDir("sigrun-skills-cfg-");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const resolutions = await syncPackages([`git:file://${repo}`], packagesDirOf(configDir), {
+				log: false,
+				configDir,
+			});
+			// The skills live INSIDE the clone (the git dir's target), not the
+			// source repo — clone-side paths are what the loader serves.
+			const cloneDir = gitTargetDir(gitDirOf(configDir), `git:file://${repo}`);
+			expect(resolutions).toEqual([
+				{
+					kind: "skills-only",
+					name: "fixture-skills-only",
+					enabled: true,
+					skills: [join(cloneDir, "skills")],
+				},
+			]);
+			// Exactly one warning, naming the skipped .ts entry.
+			const skips = warn.mock.calls
+				.map((call) => String(call[0]))
+				.filter((line) => line.includes("pi-compat: skipping TypeScript pi extension"));
+			expect(skips).toHaveLength(1);
+			expect(skips[0]).toContain(".pi/extensions/x.ts");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a git package with a loadable entry AND manifest skills resolves entry-kind carrying the skills", async () => {
+		const repo = freshDir("sigrun-git-skills-entry-");
+		cpSync(SKILLS_ONLY_DIR, join(repo, "skills"), { recursive: true });
+		writeFileSync(
+			join(repo, "package.json"),
+			JSON.stringify({
+				name: "git-skills-entry",
+				sigrun: { extension: "./ext.js", skills: ["./skills"] },
+			}),
+		);
+		writeFileSync(join(repo, "ext.js"), "export default () => ({ extension: { name: 'x' } });\n");
+		const git = (args: string[]): string =>
+			execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+				cwd: repo,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+					GIT_COMMITTER_NAME: "fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+			});
+		git(["init", "-q", "-b", "main"]);
+		git(["add", "."]);
+		git(["commit", "-q", "-m", "fixture"]);
+
+		const configDir = freshDir("sigrun-skills-cfg-");
+		const resolutions = await syncPackages([`git:file://${repo}`], packagesDirOf(configDir), {
+			log: false,
+			configDir,
+		});
+		expect(resolutions).toEqual([
+			{
+				kind: "entry",
+				enabled: true,
+				entry: pathToFileURL(join(gitTargetDir(gitDirOf(configDir), `git:file://${repo}`), "ext.js")).href,
+				skills: [join(gitTargetDir(gitDirOf(configDir), `git:file://${repo}`), "skills")],
+			},
+		]);
+	});
+
+	test("a git package declaring an entry that does not resolve keeps today's loud failure", async () => {
+		// "Declares an entry that does not resolve" → quarantine: the sync
+		// still yields the declared entry (today's shape) and the LOAD fails
+		// loud on the missing file (covered end-to-end in loader.test.ts).
+		const repo = freshDir("sigrun-git-skills-missing-");
+		writeFileSync(
+			join(repo, "package.json"),
+			JSON.stringify({ name: "git-skills-missing", sigrun: { extension: "./missing.js" } }),
+		);
+		const git = (args: string[]): string =>
+			execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+				cwd: repo,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+					GIT_COMMITTER_NAME: "fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+			});
+		git(["init", "-q", "-b", "main"]);
+		git(["add", "."]);
+		git(["commit", "-q", "-m", "fixture"]);
+
+		const configDir = freshDir("sigrun-skills-cfg-");
+		const resolutions = await syncPackages([`git:file://${repo}`], packagesDirOf(configDir), {
+			log: false,
+			configDir,
+		});
+		expect(resolutions).toEqual([
+			{
+				kind: "entry",
+				enabled: true,
+				entry: pathToFileURL(join(gitTargetDir(gitDirOf(configDir), `git:file://${repo}`), "missing.js")).href,
+			},
+		]);
+	});
+
+	test("a git package declaring neither entry nor skills fails loud (today's throw)", async () => {
+		const repo = freshDir("sigrun-git-skills-neither-");
+		writeFileSync(join(repo, "README.md"), "nothing loadable here\n");
+		const git = (args: string[]): string =>
+			execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+				cwd: repo,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+					GIT_COMMITTER_NAME: "fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+			});
+		git(["init", "-q", "-b", "main"]);
+		git(["add", "."]);
+		git(["commit", "-q", "-m", "fixture"]);
+
+		const configDir = freshDir("sigrun-skills-cfg-");
+		await expect(
+			syncPackages([`git:file://${repo}`], packagesDirOf(configDir), {
+				log: false,
+				configDir,
+			}),
+		).rejects.toThrow(GitSyncError);
+	});
+
+	test("a file: skills-only package resolves skills-only through the packages dir", async () => {
+		const packagesDir = join(freshDir("sigrun-pkg-skills-"), "packages");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const resolutions = await syncPackages([`file:${SKILLS_ONLY_DIR}`], packagesDir, {
+				log: false,
+			});
+			// The skills resolve from the packages-dir INSTALL (npm symlinks a
+			// file: target under its manifest name — the deployment's copy is
+			// what serves).
+			expect(resolutions).toEqual([
+				{
+					kind: "skills-only",
+					name: "fixture-skills-only",
+					enabled: true,
+					skills: [join(packagesDir, "node_modules", "fixture-skills-only", "skills")],
+				},
+			]);
+			const skips = warn.mock.calls
+				.map((call) => String(call[0]))
+				.filter((line) => line.includes("pi-compat: skipping TypeScript pi extension"));
+			expect(skips).toHaveLength(1);
+		} finally {
+			warn.mockRestore();
+		}
+	}, 60_000);
+
+	test("manifest skill dirs resolve against the package root and keep only existing directories", async () => {
+		const repo = freshDir("sigrun-git-skills-filter-");
+		mkdirSync(join(repo, "skills", "real"), { recursive: true });
+		// git tracks no empty directories — the fixture needs a file inside.
+		writeFileSync(
+			join(repo, "skills", "real", "SKILL.md"),
+			"---\nname: real\ndescription: the surviving dir\n---\nbody\n",
+		);
+		writeFileSync(
+			join(repo, "package.json"),
+			JSON.stringify({
+				name: "git-skills-filter",
+				sigrun: { skills: ["./skills", "./not-there"] },
+			}),
+		);
+		const git = (args: string[]): string =>
+			execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+				cwd: repo,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+					GIT_COMMITTER_NAME: "fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+			});
+		git(["init", "-q", "-b", "main"]);
+		git(["add", "."]);
+		git(["commit", "-q", "-m", "fixture"]);
+
+		const configDir = freshDir("sigrun-skills-cfg-");
+		const resolutions = await syncPackages([`git:file://${repo}`], packagesDirOf(configDir), {
+			log: false,
+			configDir,
+		});
+		// The nonexistent dir is dropped; the existing one survives, and the
+		// package is skills-only (no entry declared).
+		expect(resolutions).toEqual([
+			{
+				kind: "skills-only",
+				name: "git-skills-filter",
+				enabled: true,
+				skills: [join(gitTargetDir(gitDirOf(configDir), `git:file://${repo}`), "skills")],
+			},
+		]);
+	});
+});

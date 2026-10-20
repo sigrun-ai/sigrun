@@ -86,9 +86,20 @@ export function describeCommandError(action: string, error: unknown): string {
 			typeof (body as { readonly error?: unknown }).error === "string"
 				? (body as { readonly error: string }).error
 				: undefined;
+		// A failed extension command/run names its contributor (W5 Task 3's
+		// `command_failed` + `extension` body) — the slug is what the operator
+		// needs next, so it rides the same line.
+		const extension =
+			typeof body === "object" &&
+			body !== null &&
+			"extension" in body &&
+			typeof (body as { readonly extension?: unknown }).extension === "string"
+				? (body as { readonly extension: string }).extension
+				: undefined;
+		const suffix = extension === undefined ? "" : ` (${extension})`;
 		return detail === undefined
 			? `${action} failed (${error.status})`
-			: `${action} failed (${error.status}): ${detail}`;
+			: `${action} failed (${error.status}): ${detail}${suffix}`;
 	}
 	const message = error instanceof Error ? error.message : String(error);
 	return `${action} failed: ${message}`;

@@ -176,6 +176,13 @@ export interface ConversationSummary {
 	 */
 	readonly autoName?: string;
 	/**
+	 * The session-meta source — who created the session (spec §9.5):
+	 * `"user"` for HTTP creates, the extension slug for channel-bridge
+	 * creates through `host.conversations`. Absent when the doc was never
+	 * written (defaults are free).
+	 */
+	readonly source?: string;
+	/**
 	 * The last activity instant, ISO 8601 (activity.ts stamps it at
 	 * submission admission and run settlement). Absent on a conversation
 	 * that was never used.
@@ -544,10 +551,14 @@ export interface MetaResponse {
 	};
 	/**
 	 * Boot-merge collisions (build-and-webui Task 6): name collisions among
-	 * extension-contributed webui bundles, plus the provider-catalog merge
-	 * sink. Both merges are last-registered-wins by design — the record is
-	 * the operator's visibility into a co-installed replacement, never an
-	 * error; empty arrays are the no-collision boot.
+	 * extension-contributed webui bundles, the provider-catalog merge sink,
+	 * and extension COMMAND names (W5 Task 3). All three merges are
+	 * last-registered-wins by design — the record is the operator's
+	 * visibility into a co-installed replacement, never an error; empty
+	 * arrays are the no-collision boot. A command colliding with a CORE
+	 * name is DROPPED with a boot warning and deliberately NOT recorded
+	 * here (core commands are reserved, not replaceable — there is no
+	 * "winner" to report).
 	 */
 	readonly collisions: {
 		readonly webui: readonly {
@@ -568,6 +579,15 @@ export interface MetaResponse {
 			/** Contributor name that previously owned the provider. */
 			readonly previous: string;
 			/** Contributor name whose contribution won. */
+			readonly contributor: string;
+		}[];
+		readonly commands: readonly {
+			readonly kind: "command";
+			/** The command name that collided. */
+			readonly name: string;
+			/** Extension slug that previously owned the name. */
+			readonly previous: string;
+			/** Extension slug whose contribution won. */
 			readonly contributor: string;
 		}[];
 	};
@@ -630,9 +650,11 @@ export interface AuthCheckResponse {
 
 /**
  * One `GET /v1/extensions` entry: a loaded outcome enriched with the
- * declared seam kinds, the idle-worker projection, and the package
+ * declared seam kinds, the idle-worker projection, the package
  * manifest `version` (absent when the entry carries no readable
- * manifest). The webui's Extensions settings section renders this list.
+ * manifest), and the declared HTTP routes (W5 Task 2 — present on
+ * every served entry, empty when the extension declared none). The
+ * webui's Extensions settings section renders this list.
  */
 export interface ExtensionInfo {
 	readonly name: string;
@@ -645,6 +667,16 @@ export interface ExtensionInfo {
 	readonly ambientKeys: readonly string[];
 	/** The extension's idle workers (empty when it declared none). */
 	readonly workers: readonly WorkerStatus[];
+	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
+	routes?: readonly ExtensionRouteInfo[];
+}
+
+/** One `GET /v1/extensions` entry's route rows (W5 Task 2, spec §9.2). */
+export interface ExtensionRouteInfo {
+	readonly method: string;
+	/** The declared relative path — mounted at `/v1/ext/<slug>/<path>`. */
+	readonly path: string;
+	readonly auth: string;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */
@@ -671,7 +703,7 @@ export interface ExtensionSecretsResponse {
 // The slash-command catalog and session-meta wire shapes live in their own
 // shared leaf modules; re-exported here (type-only, erased at compile) so
 // this module is the single contract entry point for every §5 wire shape.
-export type { CommandsResponse, SlashCommand } from "./commands.js";
+export type { CommandsResponse, CommandRunResponse, SlashCommand } from "./commands.js";
 export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
 
 /**

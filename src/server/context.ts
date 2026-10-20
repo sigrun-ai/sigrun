@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Env, SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import type { CommandCatalog } from "./commands.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
 
@@ -32,6 +33,15 @@ export interface ServerContext {
 	readonly rootId: ConversationId;
 	/** The resolved webui bundle; `undefined` on an API-only deploy. */
 	readonly webuiBundle: WebuiBundle | undefined;
+	/**
+	 * The merged slash-command catalog (core hardening W5 Task 3):
+	 * `buildCommandCatalog`'s one-time result over the core table and
+	 * `opened.extensionCommands` — the served `/v1/commands` list, the
+	 * `/v1/meta` `collisions.commands` record, and the invoke route's
+	 * name→run resolution. A boot constant (computed once in
+	 * `createServer`, warned once there), like the rest of this record.
+	 */
+	readonly commandCatalog: CommandCatalog;
 	/**
 	/**
 	 * The listen host the server binds (W1 Task 3): the pipeline's Host
@@ -54,6 +64,15 @@ export interface ServerContext {
 	 * per-request read.
 	 */
 	readonly env: Env;
+	/**
+	 * Live `/stream` watchers per conversation (core hardening W5 Task 6,
+	 * spec §9.6): the stream route increments on attach and decrements in
+	 * its exactly-once `finish` cleanup. The notifications surface's
+	 * `"unwatched"` runSettled rule reads it — a conversation with an
+	 * attached client is watched, and the away-from-desk notification is
+	 * suppressed.
+	 */
+	readonly watchersByConversation: Map<ConversationId, number>;
 }
 
 declare module "fastify" {
@@ -69,5 +88,17 @@ declare module "fastify" {
 		 * only read on routes that declare that pre-handler.
 		 */
 		conversation: Conversation;
+	}
+
+	/**
+		 * The per-route config the extension-route mount stamps (W5 Task 2,
+		 * spec §9.2): the route contribution's declared `auth`, read by the
+		 * auth pipeline — `public` skips the authentication stage ONLY
+		 * (Host/Origin and the unclaimed gate still ran). Absent on every
+		 * core route and on unrouted (`/v1/ext/...` paths no extension
+		 * declared) requests.
+		 */
+	interface FastifyContextConfig {
+		extAuth?: "user" | "admin" | "public";
 	}
 }

@@ -491,3 +491,227 @@ test("the factory-captured host is the final host (re-key mutates in place)", as
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+// ---------------------------------------------------------------------------
+// Core hardening W5 Task 4 (spec §9.4): skills-only packages, the
+// skillsRoots collection, and package skills in the prompt section.
+// ---------------------------------------------------------------------------
+
+test("a skills-only git package loads ok: the .ts pi extension is skipped with one warning, its skills serve", async () => {
+	// Review Focus 4: the fixture is shaped like obra/superpowers — a
+	// pi-compat manifest whose only extension entry is TypeScript with a
+	// SYNTAX ERROR inside, proving the module is never imported.
+	const fixtureDir = join(import.meta.dirname, "fixtures", "fixture-skills-only");
+	const repoDir = await (async () => {
+		const { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
+		const { execFileSync } = await import("node:child_process");
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-git-skillsonly-"));
+		cpSync(fixtureDir, dir, { recursive: true });
+		rmSync(join(dir, ".git"), { recursive: true, force: true });
+		const git = (args: string[]): string =>
+			execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+				cwd: dir,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "fixture",
+					GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+					GIT_COMMITTER_NAME: "fixture",
+					GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+				},
+			});
+		git(["init", "-q", "-b", "main"]);
+		git(["add", "."]);
+		git(["commit", "-q", "-m", "fixture"]);
+		return dir;
+	})();
+
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-skills-"));
+	try {
+		const { syncPackages } = await import("../src/harness/packages.js");
+		const resolutions = await syncPackages([`git:file://${repoDir}`], join(dir, "packages"), {
+			log: false,
+			configDir: dir,
+		});
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionEntries: resolutions,
+		});
+		try {
+			// Outcome ok under the slug of the package name — nothing
+			// quarantined, nothing imported.
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "fixture-skills-only", status: "ok" },
+			]);
+			const skips = warn.mock.calls
+				.map((call) => String(call[0]))
+				.filter((line) => line.includes("pi-compat: skipping TypeScript pi extension"));
+			expect(skips).toHaveLength(1);
+			expect(skips[0]).toContain(".pi/extensions/x.ts");
+
+			// The package's skills reached the reserved skills section.
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			const submission = await root.submit(
+				{ type: "input", content: "hello" },
+				BACKGROUND_CONTEXT,
+			);
+			await submission.wait(BACKGROUND_CONTEXT);
+			const view = await root.context(BACKGROUND_CONTEXT);
+			const system = view.messages.find((message) => message.role === "system");
+			const sections = (system as { sections?: Record<string, string> } | undefined)
+				?.sections;
+			expect(sections?.skills).toContain("- demo:");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		warn.mockRestore();
+		await rm(dir, { recursive: true, force: true });
+		await rm(repoDir, { recursive: true, force: true });
+	}
+});
+
+test("a package declaring an entry that does not resolve is quarantined (skills or none)", async () => {
+	const fixtureDir = await mkdtemp(join(tmpdir(), "sigrun-missing-entry-"));
+	const { mkdirSync, writeFileSync } = await import("node:fs");
+	mkdirSync(fixtureDir, { recursive: true });
+	writeFileSync(
+		join(fixtureDir, "package.json"),
+		JSON.stringify({ name: "missing-entry-pkg", sigrun: { extension: "./missing.js" } }),
+	);
+	const { execFileSync } = await import("node:child_process");
+	const git = (args: string[]): string =>
+		execFileSync("git", [...args, ...(args[0] === "commit" ? ["--no-gpg-sign"] : [])], {
+			cwd: fixtureDir,
+			encoding: "utf8",
+			env: {
+				...process.env,
+				GIT_AUTHOR_NAME: "fixture",
+				GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+				GIT_COMMITTER_NAME: "fixture",
+				GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+				GIT_CONFIG_GLOBAL: "/dev/null",
+			},
+		});
+	git(["init", "-q", "-b", "main"]);
+	git(["add", "."]);
+	git(["commit", "-q", "-m", "fixture"]);
+
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-missing-"));
+	try {
+		const { syncPackages } = await import("../src/harness/packages.js");
+		const resolutions = await syncPackages(
+			[`git:file://${fixtureDir}`],
+			join(dir, "packages"),
+			{ log: false, configDir: dir },
+		);
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionEntries: resolutions,
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: expect.stringContaining("missing.js"),
+					status: "quarantined",
+					error: expect.any(String),
+				},
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+		await rm(fixtureDir, { recursive: true, force: true });
+	}
+});
+
+test("a factory result's skills field contributes skill dirs under the extension slug", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-factoryskills-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [
+				pathToFileURL(
+					join(import.meta.dirname, "fixtures", "fixture-skills-factory", "index.js"),
+				).href,
+			],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "sigrun-fixture-skills-factory", status: "ok", version: "0.1.0" },
+			]);
+			expect(opened.skillRoots).toEqual([
+				{
+					extension: "sigrun-fixture-skills-factory",
+					dir: join(
+						import.meta.dirname,
+						"fixtures",
+						"fixture-skills-only",
+						"skills",
+					),
+				},
+			]);
+			// And the dir reached the reserved skills section.
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			const submission = await root.submit(
+				{ type: "input", content: "hello" },
+				BACKGROUND_CONTEXT,
+			);
+			await submission.wait(BACKGROUND_CONTEXT);
+			const view = await root.context(BACKGROUND_CONTEXT);
+			const system = view.messages.find((message) => message.role === "system");
+			const sections = (system as { sections?: Record<string, string> } | undefined)
+				?.sections;
+			expect(sections?.skills).toContain("- demo:");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a factory result with a nonexistent skill dir is quarantined", async () => {
+	// The contract: `skills` entries are absolute EXISTING directories — a
+	// package that THINKS it contributed skills must not silently lose them.
+	const fixtureDir = await mkdtemp(join(tmpdir(), "sigrun-badskills-fixture-"));
+	const { writeFileSync } = await import("node:fs");
+	writeFileSync(
+		join(fixtureDir, "index.js"),
+		"import { defineExtension } from \"@earendil-works/pi-durable\";\n" +
+			"export default function create() {\n" +
+			"\treturn { extension: defineExtension({ name: \"sigrun-bad-skills\", sections: [], tools: [] }), skills: [\"/nonexistent-skill-dir\"] };\n" +
+		"}\n",
+	);
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-badskills-"));
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			extensionSpecifiers: [pathToFileURL(join(fixtureDir, "index.js")).href],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: pathToFileURL(join(fixtureDir, "index.js")).href,
+					status: "quarantined",
+					error: expect.stringContaining("skills"),
+				},
+			]);
+			expect(opened.skillRoots).toEqual([]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		warn.mockRestore();
+		await rm(dir, { recursive: true, force: true });
+		await rm(fixtureDir, { recursive: true, force: true });
+	}
+});

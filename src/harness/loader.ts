@@ -72,19 +72,34 @@
  * A `providers` entry whose `provider` has no string `id` is the same class
  * of violation (a plugin that THINKS it contributed a provider must not
  * silently lose it).
+ *
+ * The contract is DOCUMENTED as one types-only type surface (W5 Task 1,
+ * spec §9.1): `src/extension.ts`, shipped as the `sigrun/extension`
+ * subpath (types-only — a runtime import of it fails loud by design).
+ * This loader's validated candidate shape is DERIVED from that contract
+ * (`CandidateFactoryResult` — reading a key the contract does not declare
+ * is a compile error here), and `LoaderReadKeys` compiles only while every
+ * factory-result key the loader reads is a key of `SigrunExtensionResult`.
+ * The implementation and the contract cannot drift silently.
  */
 
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
-	ExtensionEventHandlers,
+	ExtensionCommandContribution,
+	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
-} from "./event-bus.js";
+	NotifierContribution,
+	ProviderContribution,
+	SigrunExtensionResult,
+	SigrunLifecycleHandlers,
+	WebuiBundleContribution,
+} from "../extension.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import type { HealthStatus } from "./health.js";
-import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import type { ProviderContributor } from "./providers/index.js";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -141,11 +156,53 @@ export interface ExtensionRunSettledBinding {
 	readonly runSettled: ExtensionRunSettledHandler;
 }
 
-/** The lifecycle handler fields a factory result may carry (memory-seam Task 4; `userDeleted` — W1 Task 4). */
-export type ExtensionLifecycleHandlers = Pick<
-	ExtensionEventHandlers,
-	"conversationCreated" | "conversationForked" | "conversationArchived" | "conversationIdle" | "harnessShutdown" | "userDeleted"
->;
+/**
+ * The lifecycle handler fields a factory result may carry (memory-seam
+ * Task 4; `userDeleted` — W1 Task 4). The PUBLIC contract's group type
+ * (`SigrunLifecycleHandlers`, src/extension.ts) — one declaration, no
+ * drift; boot's merge into the event bus's registration shape is the
+ * checked bridge.
+ */
+export type ExtensionLifecycleHandlers = SigrunLifecycleHandlers;
+
+/**
+ * Routes retained from one extension factory result (core hardening W5
+ * Task 2, spec §9.2), attributed to the extension slug — boot threads
+ * the list to `OpenedHarness.extensionRoutes` for the server's
+ * `/v1/ext/<slug>/<path>` mount and the `/v1/extensions` inventory.
+ */
+export interface ExtensionRouteBinding {
+	/** The slug identity (the mount prefix and the inventory key). */
+	readonly extension: string;
+	readonly routes: readonly ExtensionRouteContribution[];
+}
+
+/**
+ * Slash commands retained from one extension factory result (core
+ * hardening W5 Task 3, spec §9.3), attributed to the extension slug —
+ * boot threads the list to `OpenedHarness.extensionCommands` for the
+ * server's catalog merge (`buildCommandCatalog`) and the write-gated
+ * invoke route.
+ */
+export interface ExtensionCommandBinding {
+	/** The slug identity (the merged catalog entry's `extension` field). */
+	readonly extension: string;
+	readonly commands: readonly ExtensionCommandContribution[];
+}
+
+/**
+ * Notifier transports retained from one extension factory result (core
+ * hardening W5 Task 6, spec §9.6), attributed to the extension slug —
+ * boot threads the list to `OpenedHarness.notifierBindings` for the
+ * server's notifications surface (src/server/notifications.ts), which
+ * delivers one `NotificationEvent` per recipient to every collected
+ * notifier.
+ */
+export interface ExtensionNotifierBinding {
+	/** The slug identity (the delivery label's attribution). */
+	readonly extension: string;
+	readonly notifiers: readonly NotifierContribution[];
+}
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
@@ -230,16 +287,49 @@ export interface LoadedExtensions {
 	 */
 	readonly jobBindings: readonly { extension: string; jobs: readonly JobSpec[] }[];
 	/**
+	 * HTTP routes from factory results (core hardening W5 Task 2), one
+	 * entry per loaded extension whose result carried `routes`; the
+	 * server mounts each at `/v1/ext/<slug>/<path>`. Quarantined
+	 * extensions contribute none.
+	 */
+	readonly routeBindings: readonly ExtensionRouteBinding[];
+	/**
+	 * Slash commands from factory results (core hardening W5 Task 3), one
+	 * entry per loaded extension whose result carried `commands`; the
+	 * server's `buildCommandCatalog` merges them with the core table
+	 * (core names reserved, ext-vs-ext last-registered-wins). Quarantined
+	 * extensions contribute none.
+	 */
+	readonly commandBindings: readonly ExtensionCommandBinding[];
+	/**
+	 * Notifier transports from factory results (core hardening W5 Task 6,
+	 * spec §9.6), one entry per loaded extension whose result carried
+	 * `notifiers`; the server's notifications surface delivers one
+	 * `NotificationEvent` per recipient to every collected notifier
+	 * (best-effort, deadline-bounded). Quarantined extensions contribute
+	 * none.
+	 */
+	readonly notifierBindings: readonly ExtensionNotifierBinding[];
+	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
 	 * extension — each `{name, dir, extension}` with `dir` resolved against
 	 * the contributing module's URL (the loader's attribution; the factory
 	 * contributes `{name, dir}` only). Boot folds this flat list into the
 	 * name-keyed registry (last-registered-wins + the collision sink) that
-	 `createServer`'s NAME-selector resolution reads. Quarantined
+ `createServer`'s NAME-selector resolution reads. Quarantined
 	 * extensions contribute none.
 	 */
 	readonly webuiBundles: readonly ContributedWebuiBundle[];
+	/**
+	 * Skill directories from loaded packages (core hardening W5 Task 4,
+	 * spec §9.4), in load order — skills-only resolutions, entry-bearing
+	 * packages' manifest skills, and factory-result `skills` fields — each
+	 * `{extension, dir}` attributed to the extension slug. Boot threads
+	 * this into the skills section's package-roots option; quarantined
+	 * packages contribute none.
+	 */
+	readonly skillRoots: readonly { extension: string; dir: string }[];
 }
 
 /** Minimal module shape the contract resolution reads. */
@@ -297,19 +387,103 @@ export interface ResolvedExtension {
 	readonly providers?: readonly ProviderContribution[];
 	/**
 	 * Webui-bundle contributions (build-and-webui Task 6), validated
-	 * fail-loud — `{name, dir}` entries; the loader resolves each `dir`
-	 * against the extension module's URL when collecting.
+	 * fail-loud — the public `WebuiBundleContribution` shape
+	 * (`{name, dir}`); the loader resolves each `dir` against the extension
+	 * module's URL when collecting.
 	 */
-	readonly webuiBundles?: readonly { name: string; dir: string }[];
+	readonly webuiBundles?: readonly WebuiBundleContribution[];
 	/**
 	 * Declared jobs (jobs §8.3 — the `extension` source), validated
 	 * fail-loud with `validateJobSpec` (a malformed entry quarantines).
 	 */
 	readonly jobs?: readonly JobSpec[];
+	/**
+	 * HTTP routes (core hardening W5 Task 2, spec §9.2), validated
+	 * fail-loud — a malformed entry quarantines the extension before any
+	 * route mounts.
+	 */
+	routes?: readonly ExtensionRouteContribution[];
+	/**
+	 * Slash commands (core hardening W5 Task 3, spec §9.3), validated
+	 * fail-loud — a malformed entry quarantines the extension before any
+	 * command reaches the merged catalog.
+	 */
+	commands?: readonly ExtensionCommandContribution[];
+	/**
+	 * Skill directories (core hardening W5 Task 4, spec §9.4), validated
+	 * fail-loud — absolute EXISTING directories; a malformed or nonexistent
+	 * entry quarantines (a package that THINKS it contributed skills must
+	 * not silently lose them).
+	 */
+	skills?: readonly string[];
+	/**
+	 * Notifier transports (core hardening W5 Task 6, spec §9.6), validated
+	 * fail-loud — a malformed entry quarantines the extension before any
+	 * event reaches a transport.
+	 */
+	notifiers?: readonly NotifierContribution[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
 }
+
+/**
+ * Every factory-result key the loader reads (the full list, one place).
+ * Every key is a declared field of the public contract
+ * (`SigrunExtensionResult`, src/extension.ts) — the assertion below
+ * fails the compile the moment one drifts.
+ */
+type LoaderReadKeys =
+	| "extension"
+	| "name"
+	| "providers"
+	| "webuiBundles"
+	| "health"
+	| "runSettled"
+	| "conversationCreated"
+	| "conversationForked"
+	| "conversationArchived"
+	| "conversationIdle"
+	| "harnessShutdown"
+	| "userDeleted"
+	| "interactionKinds"
+	| "ambientKinds"
+	| "workers"
+	| "jobs"
+	| "routes"
+	| "commands"
+	| "skills"
+	| "notifiers";
+
+/**
+ * The drift assertion (W5 Task 1): compiles only while EVERY key the
+ * loader reads is a DECLARED key of the public contract. The check is
+ * `K extends keyof T` — `keyof` includes optional properties, so a
+ * field MISSING from `SigrunExtensionResult` fails here (a weaker
+ * `{ [K]?: unknown }` constraint would let an absent optional key
+ * through). On drift this resolves to a type whose only key names the
+ * problem; `CandidateFactoryResult` (keyed by the result) then loses
+ * every loader read and the compile fails loudly.
+ */
+type AssertContractKeys<T, K extends string> = K extends keyof T
+	? T
+	: {
+			readonly "CONTRACT DRIFT — declare the missing factory-result field on SigrunExtensionResult (src/extension.ts)": never;
+		};
+
+/**
+ * The unvalidated factory result as `resolvedFromFactory` reads it:
+ * every public-contract field as `unknown` (validated below), plus the
+ * RETIRED `submit` pass-through (§6.7 — read for the one-time warning,
+ * never part of the documented contract). Keyed by the asserted
+ * contract shape: a read of a key the contract does not declare is a
+ * compile error at the read site.
+ */
+type CandidateFactoryResult = Partial<
+	Record<keyof AssertContractKeys<SigrunExtensionResult, LoaderReadKeys>, unknown>
+> & {
+	readonly submit?: unknown;
+};
 
 /**
  * The reserved-key membership probe (spec §6.5 R11): a `Set` because the
@@ -327,6 +501,15 @@ function isExtension(value: unknown): value is Extension {
 		value !== null &&
 		typeof (value as Extension).name === "string"
 	);
+}
+
+/** Whether `dir` is an EXISTING directory (never throws). */
+function existingDirectory(dir: string): boolean {
+	try {
+		return statSync(dir).isDirectory();
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -469,6 +652,223 @@ function validateJobs(value: unknown): readonly JobSpec[] | undefined {
 }
 
 /**
+ * The `method`/`auth` vocabularies of a `routes` declaration (spec
+ * §9.2) — Sets because `includes` on a `const` tuple narrows to the
+ * literal union, which an `unknown` field value can never satisfy.
+ */
+const ROUTE_METHODS: ReadonlySet<string> = new Set([
+	"GET",
+	"POST",
+	"PUT",
+	"PATCH",
+	"DELETE",
+]);
+const ROUTE_AUTHS: ReadonlySet<string> = new Set(["user", "admin", "public"]);
+
+/**
+ * Validate a factory result's `routes` declaration (core hardening W5
+ * Task 2, spec §9.2). Absent → undefined (no routes). Present but
+ * malformed → throw; the loader quarantines the extension with the
+ * thrown message (fail-loud: an extension that THINKS it mounted a
+ * webhook must not silently lose it). Per entry: `method` in the five
+ * verbs, `path` a non-empty RELATIVE string (no leading `/`, no `..` —
+ * nothing may escape the `/v1/ext/<slug>/` mount), `auth` one of the
+ * three values, `bodyLimit` a positive integer when present, and
+ * `handler` a function.
+ */
+function validateRoutes(
+	value: unknown,
+): readonly ExtensionRouteContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a routes field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const route = entry as
+			| {
+						method?: unknown;
+					path?: unknown;
+					auth?: unknown;
+					bodyLimit?: unknown;
+					handler?: unknown;
+			  }
+			| null;
+		const describe = () =>
+			`route "${typeof route?.path === "string" ? route.path : String(route?.path)}"`;
+		if (typeof route?.method !== "string" || !ROUTE_METHODS.has(route.method)) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose method is not one of GET, POST, PUT, PATCH, DELETE`,
+			);
+		}
+		if (
+			typeof route?.path !== "string" ||
+			route.path === "" ||
+			route.path.startsWith("/") ||
+			route.path.includes("..")
+		) {
+			throw new Error(
+				`extension factory returned a route whose path must be a non-empty relative string (no leading "/", no "..")`,
+			);
+		}
+		if (typeof route?.auth !== "string" || !ROUTE_AUTHS.has(route.auth)) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose auth is not one of user, admin, public`,
+			);
+		}
+		if (
+			route?.bodyLimit !== undefined &&
+			(typeof route.bodyLimit !== "number" ||
+				!Number.isInteger(route.bodyLimit) ||
+				route.bodyLimit <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose bodyLimit is not a positive integer`,
+			);
+		}
+		if (typeof route?.handler !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose handler is not a function`,
+			);
+		}
+	}
+	return value as readonly ExtensionRouteContribution[];
+}
+
+/**
+ * The extension command NAME grammar (spec §9.3): `^[a-z][a-z0-9-]*$` —
+ * the same shape as every other extension-declared name (workers,
+ * bundles), so the composer's `/` menu renders one spelling of a name.
+ */
+const COMMAND_NAME = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Validate a factory result's `commands` declaration (core hardening W5
+ * Task 3, spec §9.3). Absent → undefined (no commands). Present but
+ * malformed → throw; the loader quarantines the extension with the
+ * thrown message (fail-loud: an extension that THINKS it declared a
+ * command must not silently lose it — the providers/health class). Per
+ * entry: `name` matching the grammar, `description` a string, optional
+ * `args` a string, and `run` a function. Core-name collisions are NOT a
+ * validation failure — the catalog builder drops those with a warning
+ * (they are a deployment choice, not a broken declaration).
+ */
+function validateCommands(
+	value: unknown,
+): readonly ExtensionCommandContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a commands field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const command = entry as
+			| {
+						name?: unknown;
+					description?: unknown;
+					args?: unknown;
+					run?: unknown;
+				}
+			| null;
+		const describe = () =>
+			`command "${typeof command?.name === "string" ? command.name : String(command?.name)}"`;
+		if (typeof command?.name !== "string" || !COMMAND_NAME.test(command.name)) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose name does not match ^[a-z][a-z0-9-]*$`,
+			);
+		}
+		if (typeof command?.description !== "string") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose description is missing or not a string`,
+			);
+		}
+		if (command?.args !== undefined && typeof command.args !== "string") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose args is not a string`,
+			);
+		}
+		if (typeof command?.run !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose run is not a function`,
+			);
+		}
+	}
+	return value as readonly ExtensionCommandContribution[];
+}
+
+/**
+ * Validate a factory result's `notifiers` declaration (core hardening W5
+ * Task 6, spec §9.6). Absent → undefined (no contributions). Present but
+ * malformed → throw; the loader quarantines the extension with the thrown
+ * message (fail-loud: an extension that THINKS it declared a transport
+ * must not silently lose it — the providers/health class). Per entry: a
+ * non-empty `name` and a `notify` function.
+ */
+function validateNotifiers(
+	value: unknown,
+): readonly NotifierContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a notifiers field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const notifier = entry as { name?: unknown; notify?: unknown } | null;
+		const describe = () =>
+			`notifier "${typeof notifier?.name === "string" ? notifier.name : String(notifier?.name)}"`;
+		if (typeof notifier?.name !== "string" || notifier.name.length === 0) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose name is missing or empty`,
+			);
+		}
+		if (typeof notifier?.notify !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose notify is not a function`,
+			);
+		}
+	}
+	return value as readonly NotifierContribution[];
+}
+
+/**
+ * Validate a factory result's `skills` declaration (core hardening W5
+ * Task 4, spec §9.4). Absent → undefined (no contributions). Present but
+ * malformed → throw; the loader quarantines the extension with the thrown
+ * message (fail-loud: an extension that THINKS it contributed skills must
+ * not silently lose them — the providers/health class). Per entry: an
+ * absolute path naming an EXISTING directory.
+ */
+function validateSkills(value: unknown): readonly string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a skills field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		if (typeof entry !== "string" || entry.length === 0) {
+			throw new Error(
+				"extension factory returned a skills entry that is not a non-empty string",
+			);
+		}
+		if (!isAbsolute(entry)) {
+			throw new Error(
+				`extension factory returned a skills entry that is not an absolute directory: ${entry}`,
+			);
+		}
+		if (!existingDirectory(entry)) {
+			throw new Error(
+				`extension factory returned a skills entry that is not an existing directory: ${entry}`,
+			);
+		}
+	}
+	return value as readonly string[];
+}
+
+/**
  * Validate a factory result's `providers` declaration (provider plugins
  * Task 1). Absent → undefined (no contributions). Present but malformed →
  * throw; the loader quarantines the extension with the thrown message
@@ -521,7 +921,7 @@ const WEBUI_BUNDLE_NAME = /^[a-z][a-z0-9_-]*$/;
  */
 function validateWebuiBundles(
 	value: unknown,
-): readonly { name: string; dir: string }[] | undefined {
+): readonly WebuiBundleContribution[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) {
 		throw new Error(
@@ -769,27 +1169,18 @@ async function resolvedFromFactory(
 	// synchronous result through unchanged.
 	const awaited = await result;
 	if (typeof awaited !== "object" || awaited === null) return undefined;
-	const candidate = awaited as {
-		extension?: unknown;
-		name?: unknown;
-		providers?: unknown;
-		webuiBundles?: unknown;
-		jobs?: unknown;
-		health?: unknown;
-		submit?: unknown;
-		runSettled?: unknown;
-		conversationCreated?: unknown;
-		conversationForked?: unknown;
-		conversationArchived?: unknown;
-		conversationIdle?: unknown;
-		harnessShutdown?: unknown;
-		userDeleted?: unknown;
-		interactionKinds?: unknown;
-		ambientKinds?: unknown;
-	};
+	// The candidate is keyed by the PUBLIC contract (CandidateFactoryResult):
+	// reading a field the contract does not declare is a compile error here,
+	// and the `LoaderReadKeys` assertion (above ResolvedExtension) pins the
+	// full read list to the contract's keys.
+	const candidate = awaited as CandidateFactoryResult;
 	const providers = validateProviders(candidate.providers);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
+	const routes = validateRoutes(candidate.routes);
+	const commands = validateCommands(candidate.commands);
+	const skills = validateSkills(candidate.skills);
+	const notifiers = validateNotifiers(candidate.notifiers);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -845,9 +1236,8 @@ async function resolvedFromFactory(
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
 	if (kindsProblem !== null) throw new Error(kindsProblem);
-	const workers = validateWorkers(
-		(candidate as { workers?: unknown }).workers,
-	);
+	// `workers` is a contract key — the candidate read needs no cast.
+	const workers = validateWorkers(candidate.workers);
 	return {
 		// Identity: the extension when one was carried, else the
 		// provider-only contributor's validated `name`.
@@ -881,6 +1271,10 @@ async function resolvedFromFactory(
 		...(providers === undefined ? {} : { providers }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
 		...(jobs === undefined ? {} : { jobs }),
+		...(routes === undefined ? {} : { routes }),
+		...(commands === undefined ? {} : { commands }),
+		...(skills === undefined ? {} : { skills }),
+		...(notifiers === undefined ? {} : { notifiers }),
 	};
 }
 
@@ -964,8 +1358,15 @@ export interface LoadExtensionsOptions {
 export interface ResolvedExtensionInput {
 	/** Optional display name (the source specifier; drives quarantine names). */
 	readonly name?: string;
-	/** The module entry: an absolute `file://` URL or any import() specifier. */
-	readonly entry: string;
+	/**
+	 * The module entry: an absolute `file://` URL or any import() specifier.
+	 * ABSENT for a skills-only resolution (W5 Task 4): the package declared
+	 * skill dirs and no loadable entry, so nothing is imported — `skills`
+	 * carries the dirs and the outcome records `ok`.
+	 */
+	readonly entry?: string;
+	/** Manifest skill dirs (existing directories), resolved by the sync. */
+	readonly skills?: readonly string[];
 }
 
 /**
@@ -1078,12 +1479,13 @@ options: LoadExtensionsOptions = {},
 ): Promise<LoadedExtensions> {
 // Normalize: the caller may hand pre-resolved entries (the boot flow,
 // syncPackages consumer) or raw specifiers (the test seam, env-only
-// deploys). Each becomes {entry, label} — label drives the warning
-// name exactly as specifiers did.
+// deploys). Each becomes {entry, label, skills} — label drives the warning
+// name exactly as specifiers did; an ABSENT entry with skills is the
+// skills-only resolution (§9.4).
 const entries = specifiers.map((spec) =>
 typeof spec === "string"
-? { name: undefined as string | undefined, entry: spec }
-: { name: spec.name, entry: spec.entry },
+? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined }
+: { name: spec.name, entry: spec.entry, skills: spec.skills },
 );
 const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
@@ -1095,12 +1497,59 @@ const workerBindings: ExtensionWorkerBinding[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
 const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
+// HTTP routes (W5 Task 2), attributed to the slug like the job bindings.
+const routeBindings: ExtensionRouteBinding[] = [];
+// Slash commands (W5 Task 3), attributed the same way.
+const commandBindings: ExtensionCommandBinding[] = [];
+// Notifier transports (W5 Task 6, spec §9.6), attributed the same way —
+// the server's notifications surface delivers to every collected entry.
+const notifierBindings: ExtensionNotifierBinding[] = [];
+// Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
+// contributed — skills-only resolutions, entry-bearing packages' manifest
+// skills, and factory-result `skills` fields — in load order, attributed
+// to the extension slug. Boot threads this to the skills section's
+// package-roots option.
+const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
-for (const { name: label, entry } of entries) {
-const display = label ?? entry;
+for (const { name: label, entry, skills } of entries) {
+const display = label ?? entry ?? "skills-only";
 				try {
+				// Skills-only resolution (§9.4): the package declared skill dirs and
+				// has NO loadable entry — nothing is imported. The outcome records
+				// `ok` under the slug of the package name; the dirs (validated as
+				// existing directories — the sync filtered, a violation here is a
+				// contract break) append to skillRoots. Inside the per-entry try so
+				// a bad declaration QUARANTINES instead of aborting the boot.
+				if (entry === undefined) {
+					if (skills === undefined || skills.length === 0) {
+						throw new Error(
+							"a pre-resolved input carried neither an entry nor skill directories",
+						);
+					}
+					const skillsOnlyName = label ?? "skills-only";
+					const slug = slugifyName(skillsOnlyName);
+					if (slug === "") {
+						throw new Error(
+								`skills-only package name "${skillsOnlyName}" sanitizes to an empty slug (nothing survives [a-z0-9_-] folding); refusing to load`,
+						);
+					}
+					for (const dir of skills) {
+						if (!existingDirectory(dir)) {
+							throw new Error(
+									`skills: contributed directory ${dir} does not exist (or is not a directory)`,
+							);
+						}
+					}
+					// All-or-nothing (the quarantined-contributions invariant): the
+					// dirs append only once every one validated.
+					for (const dir of skills) {
+						skillRoots.push({ extension: slug, dir });
+					}
+					outcomes.push({ name: slug, status: "ok" });
+					continue;
+				}
 						// Pre-resolved entries (the boot flow) import verbatim;
 						// raw specifiers (the test seam) resolve through the
 						// packages dir first, then bare import resolution.
@@ -1231,6 +1680,22 @@ const display = label ?? entry;
 						`extension "${slug}" declares reserved core section "${reservedSectionKey}"`,
 					);
 				}
+				// Skill contributions (W5 Task 4), validated HERE — before the
+				// install/outcome, so a bad declaration quarantines with nothing
+				// installed and exactly one outcome (the same point as every
+				// other fail-loud contract check). The factory-result dirs were
+				// already validated at read time (validateSkills, all-or-nothing);
+				// the MANIFEST dirs (the sync's resolution, existing by
+				// construction) are re-checked because a hand-built pre-resolved
+				// input skips the sync.
+				const contributed = [...(resolved.skills ?? []), ...(skills ?? [])];
+				for (const dir of contributed) {
+					if (!existingDirectory(dir)) {
+						throw new Error(
+							`skills: contributed directory ${dir} does not exist (or is not a directory)`,
+						);
+					}
+				}
 				// The post-resolution call re-keys the captured host instance in
 				// place with the slug + declared kinds (boot's
 				// hostContextFactory; see src/harness/boot.ts) — the instance is
@@ -1309,6 +1774,15 @@ const display = label ?? entry;
 				if (resolved.jobs !== undefined) {
 					jobBindings.push({ extension: slug, jobs: resolved.jobs });
 				}
+				if (resolved.routes !== undefined) {
+					routeBindings.push({ extension: slug, routes: resolved.routes });
+				}
+				if (resolved.commands !== undefined) {
+					commandBindings.push({ extension: slug, commands: resolved.commands });
+				}
+				if (resolved.notifiers !== undefined) {
+					notifierBindings.push({ extension: slug, notifiers: resolved.notifiers });
+				}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1338,6 +1812,12 @@ const display = label ?? entry;
 					});
 				}
 			}
+			// Skill contributions (W5 Task 4): the validated combined list
+			// (factory-result + manifest dirs — validated above, before the
+			// install), attributed to the extension slug, in load order.
+			for (const dir of contributed) {
+				skillRoots.push({ extension: slug, dir });
+			}
 		} catch (cause) {
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
@@ -1360,10 +1840,14 @@ const display = label ?? entry;
 		outcomes,
 		providerContributors,
 		webuiBundles,
+		skillRoots,
 		healthProducers,
 		runSettledBindings,
 		lifecycleBindings,
 		workerBindings,
 		jobBindings,
+		routeBindings,
+		commandBindings,
+		notifierBindings,
 	};
 }

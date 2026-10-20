@@ -8,12 +8,12 @@ data/
 webui/test-results/
 .docker-ext/
 
-# agent/dev artifacts
+# agent/dev artifacts (repo root only — a fixture may carry a tracked .pi/)
 .superpowers/
 REPORT.md
 .vitest/
 *.tgz
-.pi/
+/.pi/
 coverage/
 .env
 .vcc/

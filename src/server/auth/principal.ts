@@ -5,18 +5,20 @@
  * verified token ("token"), or a trusted forward-auth header set
  * ("proxy"). `service` marks the env service token (it skips the
  * setup gate; it is not a directory user).
+ *
+ * SINGLE-SOURCE BRIDGE (core hardening W5 Task 2, the Task 1 review's
+ * binding carry-forward): the shape is DECLARED ONCE, on the extension
+ * contract (`Principal` in src/extension.ts, shipped as the types-only
+ * `sigrun/extension` subpath) — this server-side name is a re-export of
+ * it, so the pipeline, the routes, and every extension handler share
+ * one spelling that cannot drift. The bridge lives HERE (server-side)
+ * because the contract's import allowlist is pi-durable/pi-ai/shared:
+ * the contract cannot import this module.
  */
 
-export interface Principal {
-	/** The directory username; `undefined` under the naive method with no header. */
-	readonly user: string | undefined;
-	readonly name?: string;
-	readonly email?: string;
-	readonly admin: boolean;
-	/** True for the `SIGRUN_API_TOKEN` service principal. */
-	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy";
-}
+import type { Principal as ContractPrincipal } from "../../extension.js";
+
+export type Principal = ContractPrincipal;
 
 /**
  * Whether `p` may act as the superuser (spec §5.8): the unauthenticated

@@ -268,11 +268,16 @@ describe("the default webui bundle resolves from the package root", () => {
 // ---------------------------------------------------------------------------
 
 describe("a .ts extension entry is a clear error (no implicit fallback)", () => {
-	test("a git checkout with only index.ts fails entry discovery naming the built entry", () => {
+	test("a git checkout with only index.ts discovers no entry (the sync decides)", () => {
+		// W5 Task 4 (spec §9.4): findExtEntry returns undefined for a
+		// .ts-only checkout — the CALLER downgrades to skills-only when the
+		// package declared skills, else keeps today's loud throw (the
+		// sync-level contract is covered in test/packages.test.ts: "declares
+		// neither" → GitSyncError, skills-only → ok).
 		const bare = mkdtempSync(join(tmpdir(), "sigrun-tsentry-"));
 		try {
 			writeFileSync(join(bare, "index.ts"), "export default 1;\n");
-			expect(() => findExtEntry(bare, undefined)).toThrow(/dist\/index\.js/);
+			expect(findExtEntry(bare, undefined)).toBeUndefined();
 		} finally {
 			rmSync(bare, { recursive: true, force: true });
 		}

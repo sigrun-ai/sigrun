@@ -480,6 +480,18 @@ export class EventBus {
 		}
 	}
 
+	/**
+	 * Run one call under the SAME deadline bound every extension handler
+	 * call runs under (W5 Task 6, spec §9.6): the notifications surface's
+	 * side lane — host-owned delivery concerns kicked from the event hub,
+	 * never bus queue events (so they must not ride the drain loop). The
+	 * promise ALWAYS resolves: a throwing or over-deadline call is logged
+	 * and abandoned, exactly like an extension handler's.
+	 */
+	public runBounded(label: string, call: () => void | Promise<void>): Promise<void> {
+		return this.#bounded(label, call);
+	}
+
 	/** Register a settled-run handler (install order = run order); returns its unsubscribe. */
 	public onSettled(
 		handler: (event: SettleGroup) => void | Promise<void>,
