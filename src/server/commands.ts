@@ -100,6 +100,11 @@ export const SLASH_COMMANDS: ReadonlyMap<string, SlashCommand> = new Map(
 					path: "/v1/conversations/:id/configure",
 				},
 			},
+			{
+				name: "jobs",
+				description: "List jobs (name, next run, last outcome)",
+				endpoint: { method: "GET", path: "/v1/jobs" },
+			},
 		] as const
 	).map((command) => [command.name, command]),
 );

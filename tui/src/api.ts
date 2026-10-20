@@ -18,6 +18,15 @@
  */
 
 import type { CommandsResponse } from "@sigrun/shared/commands";
+import type {
+	JobsResponse,
+	JobRunResponse,
+} from "@sigrun/shared/views";
+import type {
+	JobRevisionWire,
+	JobRunWire,
+	JobWire,
+} from "@sigrun/shared/jobs";
 import type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 import type {
 	AbortResponse,
@@ -55,6 +64,15 @@ export type {
 	SubmissionResponse,
 } from "@sigrun/shared/views";
 export type { CommandsResponse, SlashCommand } from "@sigrun/shared/commands";
+export type {
+	JobSpec,
+	JobSchedule,
+	JobAction,
+	JobWire,
+	JobRunWire,
+	JobRevisionWire,
+} from "@sigrun/shared/jobs";
+export type { JobsResponse, JobRunResponse } from "@sigrun/shared/views";
 export type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 
 /** One answer to a pending interaction (the ONE generic route's body). */
@@ -62,6 +80,16 @@ export interface InteractionAnswerInput {
 	readonly ids?: readonly string[];
 	readonly values?: Readonly<Record<string, string | number | boolean>>;
 	readonly text?: string;
+}
+
+/** `GET /v1/jobs/:id/runs`: the job's runs, newest first. */
+export interface JobRunsResponse {
+	readonly runs: readonly JobRunWire[];
+}
+
+/** `GET /v1/jobs/:id/revisions`: the job's revisions, newest first. */
+export interface JobRevisionsResponse {
+	readonly revisions: readonly JobRevisionWire[];
 }
 
 /** The `whenBusy` admission modes the server accepts (spec §7 item 3). */
@@ -276,5 +304,28 @@ export class SigrunClient {
 		body: { readonly model?: string; readonly thinking?: string },
 	): Promise<ConfigureResponse> {
 		return this.#send("POST", `/v1/conversations/${id}/configure`, body);
+	}
+
+	/** `GET /v1/jobs` — the caller-visible jobs (`/jobs`, W4 Task 5). */
+	listJobs(): Promise<JobsResponse> {
+		return this.#get("/v1/jobs");
+	}
+
+	/** `POST /v1/jobs/:id/run` — fire a job now (write access). */
+	runJob(id: string): Promise<JobRunResponse> {
+		return this.#send("POST", `/v1/jobs/${encodeURIComponent(id)}/run`, {});
+	}
+
+	/** `GET /v1/jobs/:id/runs` — the job's runs, newest first. */
+	listJobRuns(id: string, limit?: number): Promise<JobRunsResponse> {
+		return this.#get(
+			`/v1/jobs/${encodeURIComponent(id)}/runs` +
+				(limit === undefined ? "" : `?limit=${limit}`),
+		);
+	}
+
+	/** `GET /v1/jobs/:id/revisions` — the job's revisions, newest first. */
+	listJobRevisions(id: string): Promise<JobRevisionsResponse> {
+		return this.#get(`/v1/jobs/${encodeURIComponent(id)}/revisions`);
 	}
 }
