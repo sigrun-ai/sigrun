@@ -169,6 +169,12 @@ export interface ConversationSummary {
 	 */
 	readonly name?: string;
 	/**
+	 * The server-owned auto-generated name (A2), when written and no user
+	 * `name` overrides it. Surfaced so `conversation.changed` events can
+	 * report an auto-name landing without a user edit.
+	 */
+	readonly autoName?: string;
+	/**
 	 * The last activity instant, ISO 8601 (activity.ts stamps it at
 	 * submission admission and run settlement). Absent on a conversation
 	 * that was never used.
@@ -667,3 +673,53 @@ export interface TokenCreateResponse {
 	readonly token: string;
 	readonly record: TokenWire;
 }
+
+// ─── Host events (GET /v1/events, core hardening W3 Task 4, spec §7.4) ───
+
+/**
+ * One host event on the `GET /v1/events` SSE wire: `event: <type>` plus
+ * this object as the single-line `data:` JSON. Conversation-scoped
+ * events are delivered only when the connecting principal's `accessOf`
+ * against a FRESH SessionMeta snapshot is not `"none"` (per-event
+ * re-check: share → delivered, un-share → withheld);
+ * `providers.changed` reaches every authenticated principal;
+ * `job.changed` carries `unknown` until W4 narrows it to `JobWire`.
+ * No replay: a client that reconnects refetches (the list GET); the
+ * stream only nudges.
+ */
+export type HostEventWire =
+	| { readonly type: "conversation.created"; readonly conversationId: number }
+	| {
+			readonly type: "conversation.changed";
+			readonly conversationId: number;
+			/** The summary fields that changed, with their new values. */
+			readonly fields: Partial<ConversationSummary>;
+		}
+	| {
+			readonly type: "run.admitted";
+			readonly conversationId: number;
+			readonly submissionId: number;
+		}
+	| {
+			readonly type: "run.settled";
+			readonly conversationId: number;
+			readonly outcome: "answered" | "unanswered";
+			readonly reason?: string;
+		}
+	| {
+			readonly type: "interaction.pending" | "interaction.settled";
+			readonly conversationId: number;
+			readonly callId: string;
+			readonly kind: string;
+		}
+	| {
+			readonly type: "ambient.changed";
+			readonly conversationId: number;
+			readonly key: string;
+		}
+	| {
+			readonly type: "providers.changed";
+			readonly provider: string;
+			readonly status: string;
+		}
+	| { readonly type: "job.changed"; readonly job: unknown }; // W4 narrows to JobWire

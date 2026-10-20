@@ -155,12 +155,32 @@ export async function serve(
 			failures.push(error);
 		}
 		try {
-			// The interval refresh scheduler (provider plugins Task 5) stops
-			// BEFORE the harness closes, and the T4 boot refresh promise —
-			// never-rejecting by contract — joins here if still in flight, so
-			// no catalog fetch outlives the ordered shutdown.
-			opened.stopProviderRefresh();
-			await opened.bootRefresh;
+		// The interval refresh scheduler (provider plugins Task 5) stops
+		// BEFORE the harness closes. The T4 boot refresh promise is raced
+		// against a bounded join: a wedged catalog fetch must not hold the
+		// ordered shutdown (and the SSE test harness's `app.close`) — the
+		// refresh contract already treats abandon as a retained-catalog
+		// warn, never a boot failure.
+		opened.stopProviderRefresh();
+		let joined = false;
+		const join = opened.bootRefresh
+			.then(() => {
+				joined = true;
+			})
+			.catch(() => {});
+		const BOOT_REFRESH_JOIN_MS = 2_000;
+		await Promise.race([
+			join,
+			new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, BOOT_REFRESH_JOIN_MS);
+				timer.unref?.();
+			}),
+		]);
+		if (!joined) {
+			console.warn(
+				`sigrun: boot refresh still in flight after ${BOOT_REFRESH_JOIN_MS}ms at shutdown — abandoning the join`,
+			);
+		}
 		} catch (error) {
 			failures.push(error);
 		}

@@ -29,6 +29,7 @@
  */
 
 import type { Models } from "@earendil-works/pi-ai";
+import { refreshReadinessSnapshot } from "./refresh.js";
 
 /** Options for {@link startProviderRefresh}. */
 export interface ProviderRefreshOptions {
@@ -43,6 +44,22 @@ export interface ProviderRefreshOptions {
 	 * convention — no shared logger; `refresh.ts` warns the same way).
 	 */
 	readonly log?: (message: string) => void;
+	/**
+	 * Readiness observer (core hardening W3 Task 4, spec §7.4): invoked
+	 * after every completed tick with a per-provider readiness snapshot
+	 * (provider id → status string); the caller (boot wiring) diffs it
+	 * against the last snapshot and publishes `providers.changed`. Never
+	 * invoked for a tick that threw before refreshing (a wedge holds the
+	 * previous snapshot).
+	 */
+	readonly onReadinessChange?: (
+		readiness: ReadonlyMap<string, string>,
+	) => void;
+	/**
+	 * The readiness derivation (boot wiring supplies it); absent = the
+	 * bare provider-id → `"ready"` map (`refreshReadinessSnapshot`).
+	 */
+	readonly snapshotReadiness?: (models: Models) => ReadonlyMap<string, string>;
 }
 
 /** The scheduler handle: {@link ProviderRefreshHandle.stop} clears it. */
@@ -86,6 +103,18 @@ export function startProviderRefresh(
 			}
 		} catch (error) {
 			failure = error instanceof Error ? error.message : String(error);
+		}
+		// The readiness observation runs for EVERY completed tick — success
+		// or failure — so a provider that flips either way is observed; a
+		// tick that threw before refreshing holds the previous snapshot.
+		try {
+			opts.onReadinessChange?.(
+				(opts.snapshotReadiness ?? refreshReadinessSnapshot)(models),
+			);
+		} catch (error) {
+			log(
+				`provider readiness observation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		if (failure === undefined) {
 			inOutage = false;
