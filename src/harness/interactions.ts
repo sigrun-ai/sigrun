@@ -85,8 +85,11 @@ export const InteractionsIndexDoc = defineDoc<InteractionsIndex>({
 	initial: () => ({ pending: {} }),
 });
 
-/** Terminal statuses: answering one of these is a no-op (first wins). */
-const TERMINAL: ReadonlySet<string> = new Set([
+/** Terminal statuses: answering one of these is a no-op (first wins).
+ * Exported for the event bus (W3 Task 4): the `interaction.pending` /
+ * `interaction.settled` host-event split derives from the SAME set — one
+ * definition, never two. */
+export const TERMINAL: ReadonlySet<string> = new Set([
 	"answered",
 	"skipped",
 	"expired",

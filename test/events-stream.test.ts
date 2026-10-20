@@ -426,6 +426,57 @@ describe("GET /v1/events (W3 Task 4)", () => {
 		}
 	});
 
+	test("a skipped settle emits interaction.settled (terminal set shared with interactions.ts)", { timeout: 20_000 }, async () => {
+		const { opened, port } = await bootServer();
+		const stream = new EventsConnection(port);
+		try {
+			await stream.ready();
+			const id = await createConversation(port);
+			await stream.waitFor(
+				(f) =>
+					f.event === "conversation.created" &&
+					f.data.type === "conversation.created" &&
+					f.data.conversationId === id,
+			);
+			const host = seamHost(opened);
+			await host.seedInteraction(
+				id as never,
+				{
+					kind: "fixture.ask",
+					callId: "call-skip",
+					status: "pending",
+					createdAt: Date.now(),
+					body: { text: "later?" },
+				},
+				BACKGROUND_CONTEXT,
+			);
+			await stream.waitFor(
+				(f) =>
+					f.event === "interaction.pending" &&
+					f.data.type === "interaction.pending" &&
+					f.data.callId === "call-skip",
+			);
+			// "skipped" is a terminal status: the wire event must be
+			// interaction.settled, NOT a second pending (fix round 1).
+			await host.settleInteraction(
+				id as never,
+				"call-skip",
+				"skipped",
+				BACKGROUND_CONTEXT,
+			);
+			const settled = await stream.waitFor(
+				(f) =>
+					f.event === "interaction.settled" &&
+					f.data.type === "interaction.settled" &&
+					f.data.callId === "call-skip",
+			);
+			expect(settled.data.type).toBe("interaction.settled");
+		} finally {
+			stream.destroy();
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	});
+
 	test("an ambient write emits ambient.changed with the slot key", { timeout: 20_000 }, async () => {
 		const { opened, port } = await bootServer();
 		const stream = new EventsConnection(port);

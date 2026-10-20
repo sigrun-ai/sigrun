@@ -79,7 +79,7 @@ import {
 	type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "../server/session-meta.js";
-import { InteractionDoc } from "./interactions.js";
+import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
@@ -124,13 +124,7 @@ function metaBasisOf(value: {
 	return basis;
 }
 
-/** The interaction doc-family terminal statuses (mirror of interactions.ts's TERMINAL — kept local: the bus reads raw record status). */
-const INTERACTION_TERMINAL: ReadonlySet<string> = new Set([
-	"answered",
-	"expired",
-	"cancelled",
-	"superseded",
-]);
+/** The interaction terminal statuses are interactions.ts's exported TERMINAL (imported above) — one definition, no drift. */
 
 /** One settled run: every input submission one run settled, in admission (id) order. */
 export type SettleGroup = {
@@ -1061,6 +1055,10 @@ export class EventBus {
 					if (next.autoName !== basis.autoName) {
 						moved.autoName = next.autoName === undefined ? null : next.autoName;
 					}
+					// archived/pinned too (fix round 1): a conversation
+					// materialized already-pinned/-archived is real changed news.
+					if (next.archived !== basis.archived) moved.archived = next.archived;
+					if (next.pinned !== basis.pinned) moved.pinned = next.pinned;
 					if (next.lastActivityAt !== basis.lastActivityAt) {
 						moved.lastActivityAt =
 							next.lastActivityAt === undefined ? null : next.lastActivityAt;
