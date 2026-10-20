@@ -177,6 +177,15 @@ export interface SigrunConfig {
 	 */
 	maxUploadBytes: number;
 	/**
+	 * The raw file-read cap (spec §7.8, core hardening W3 Task 7):
+	 * `SIGRUN_MAX_FILE_READ_BYTES` over the file's
+	 * `server.maxFileReadBytes` over {@link DEFAULT_MAX_FILE_READ_BYTES}
+	 * (16 MiB). `GET .../files/raw` serves at most this many bytes per
+	 * file (413 `file_too_large` beyond it) — the agent writes workspace
+	 * files, so nothing else bounds them.
+	 */
+	maxFileReadBytes: number;
+	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
 	 * data, cache, and state directories, resolved once here through the
 	 * one `resolveStoreRoots` chain (`SIGRUN_{DATA,CACHE,STATE}_DIR` over
@@ -328,6 +337,27 @@ export const MAX_UPLOAD_BYTES_ENV = "SIGRUN_MAX_UPLOAD_BYTES";
 
 /** The upload knob's default (spec §6.2): 64 MiB. */
 export const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+
+/** The env var carrying the raw file-read cap (spec §7.8). */
+export const MAX_FILE_READ_BYTES_ENV = "SIGRUN_MAX_FILE_READ_BYTES";
+
+/** The raw file-read cap's default (spec §7.8): 16 MiB. */
+export const DEFAULT_MAX_FILE_READ_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Parse `SIGRUN_MAX_FILE_READ_BYTES` (spec §7.8) — the strict
+ * positive-integer pattern (the `SIGRUN_MAX_UPLOAD_BYTES` posture): `""`
+ * counts as unset, anything non-integer or ≤ 0 fails loud naming the
+ * variable. The file's `server.maxFileReadBytes` applies where the env
+ * var is absent; the 16 MiB default last.
+ */
+function parseMaxFileReadBytes(env: Env, file?: number): number {
+	return (
+		parsePositiveIntEnv(env, MAX_FILE_READ_BYTES_ENV) ??
+		file ??
+		DEFAULT_MAX_FILE_READ_BYTES
+	);
+}
 
 /**
  * The body limit the base64 POST upload and the JSONL import routes use
@@ -1067,6 +1097,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_PROVIDER_REFRESH_MINUTES` | `providers.refreshIntervalMinutes` |
  * | `SIGRUN_BACKUP_*` | `backup` |
  * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
+ * | `SIGRUN_MAX_FILE_READ_BYTES` | `maxFileReadBytes` |
  */
 export function envServerSection(env: Env): ServerSettings {
 	const section: Record<string, unknown> = {};
@@ -1086,6 +1117,10 @@ export function envServerSection(env: Env): ServerSettings {
 	}
 	const maxUploadBytes = parsePositiveIntEnv(env, MAX_UPLOAD_BYTES_ENV);
 	if (maxUploadBytes !== undefined) section.maxUploadBytes = maxUploadBytes;
+	const maxFileReadBytes = parsePositiveIntEnv(env, MAX_FILE_READ_BYTES_ENV);
+	if (maxFileReadBytes !== undefined) {
+		section.maxFileReadBytes = maxFileReadBytes;
+	}
 	const webui = pickDefined({
 		enabled: parseWebuiEnabled(env),
 		bundle: env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined,
@@ -1175,6 +1210,7 @@ export function effectiveServerSection(
 	emit("workspacePath", config.workspace.path, ["workspacePath"]);
 	emit("storagePath", config.storagePath, ["storagePath"]);
 	emit("maxUploadBytes", config.maxUploadBytes, ["maxUploadBytes"]);
+	emit("maxFileReadBytes", config.maxFileReadBytes, ["maxFileReadBytes"]);
 	emit("dataDir", config.dataDir, ["dataDir"]);
 	emit("cacheDir", config.cacheDir, ["cacheDir"]);
 	emit("stateDir", config.stateDir, ["stateDir"]);
@@ -1355,6 +1391,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		storagePath,
 		models,
 		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
+		maxFileReadBytes: parseMaxFileReadBytes(env, server?.maxFileReadBytes),
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
 		// next; empty otherwise.
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array

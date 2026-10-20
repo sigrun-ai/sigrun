@@ -390,6 +390,7 @@ function validateServer(server: unknown): void {
 		"storagePath",
 		"extensionsDir",
 		"maxUploadBytes",
+		"maxFileReadBytes",
 		"dataDir",
 		"cacheDir",
 		"stateDir",
@@ -413,6 +414,17 @@ function validateServer(server: unknown): void {
 	) {
 		throw new SettingsValidationError(
 			"server.maxUploadBytes",
+			"must be a positive integer",
+		);
+	}
+	// The raw file-read cap (spec §7.8): same rule as the upload knob — a
+	// positive integer.
+	if (
+		record.maxFileReadBytes !== undefined &&
+		!isPositiveInt(record.maxFileReadBytes)
+	) {
+		throw new SettingsValidationError(
+			"server.maxFileReadBytes",
 			"must be a positive integer",
 		);
 	}

@@ -108,6 +108,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["PUT", "/v1/conversations/:id/uploads/:name"],
 	["GET", "/v1/conversations/:id/files"],
 	["GET", "/v1/conversations/:id/files/content"],
+	// The W3 Task 7 bounded raw file read (spec §7.8).
+	["GET", "/v1/conversations/:id/files/raw"],
 ];
 
 /** One unknown-id probe: where the route requires a body, a VALID one. */
@@ -377,6 +379,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id/uploads/:name",
 				"/v1/conversations/:id/files",
 				"/v1/conversations/:id/files/content",
+				"/v1/conversations/:id/files/raw",
 			].sort(),
 		);
 		// And every method binds to its path.
