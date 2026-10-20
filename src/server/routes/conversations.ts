@@ -12,11 +12,16 @@ import type { Cursor, EntryDraft, EntryId } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { accessOf } from "@sigrun/shared/access";
 import { isSuperuser } from "../auth/principal.js";
+import {
+	createConversationOp,
+	listConversationsOp,
+	readMetaOp,
+	type ListConversationsFilters,
+} from "../conversation-ops.js";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import {
 	ID_PARAMS_SCHEMA,
-	SCAN_PAGE_SIZE,
 	readView,
 	stampSessionOwner,
 	storeAgentChange,
@@ -33,7 +38,6 @@ import {
 	type ConversationCreateResponse,
 	type ConversationImportResponse,
 	type ConversationList,
-	type ConversationSummary,
 } from "../views.js";
 import { base64BodyLimit } from "../../config.js";
 
@@ -42,7 +46,7 @@ export function registerConversationRoutes(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
-	const { opened, rootId } = ctx;
+	const { opened } = ctx;
 	app.post(
 		"/v1/conversations",
 		async (request, reply): Promise<ConversationCreateResponse> => {
@@ -57,24 +61,17 @@ export function registerConversationRoutes(
 			) {
 				return await reply.code(400).send({ error: "invalid_body" });
 			}
-			const conversation = await opened.harness.createConversation(
-				{
-					ownership: { kind: "ownerless" },
-					// A conversation with no agent model cannot generate
-					// (no_model): server-created conversations start on the
-					// boot default model, like the root conversation, and
-					// carry the store's defaultTools/perModelThinking —
-					// re-read per create, so PATCHes reach new
-					// conversations without a restart.
-					agent: storeAgentChange(opened, opened.defaultModel),
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// The identity seam: stamp the caller as owner when the request
-			// carried one (naive mode — no header, no write).
-			await stampSessionOwner(conversation, request.principal.user);
-			const view = await readView(conversation);
-			return await reply.code(201).send({ id: conversation.id, view });
+			// The shared create op (W5 Task 5): the SAME code path the
+			// extension host bridge drives — ownerless ownership, the boot
+			// default model + store agent settings, and the identity seam's
+			// owner stamp. The source is the HTTP-create label ("user").
+			const created = await createConversationOp(ctx, {
+				...(request.principal.user === undefined
+					? {}
+					: { owner: request.principal.user }),
+				source: "user",
+			});
+			return await reply.code(201).send(created);
 		},
 	);
 
@@ -82,27 +79,16 @@ export function registerConversationRoutes(
 		// Durable enumeration: the storage scan is authoritative —
 		// conversations this process never created (before a restart, in
 		// another process, or by tasks/tools inside pi-durable) all list.
-		// `scanConversations` pages ascending by id (creation order); this
-		// route is unpaginated v1, so one page at a generous limit covers a
-		// deployment-scale set, and the loop below walks the continuation
-		// cursor to completion so nothing truncates silently.
 		// §5.9: the list is PER-CALLER — conversations the caller may not
 		// see (accessOf "none") are filtered out entirely (hidden is absent
 		// from lists, not just 404s), and every served row carries the
 		// caller's resolved access.
 		//
-		// Lean by construction (spec §7.2 / W3 Task 2): every row is built
-		// from the scan record + the SessionMetaDoc snapshot ALONE — no
-		// per-row conversation resolution, no view read. The sidebar polls
-		// this route on a cadence, so a per-row `viewState` would re-read
-		// every transcript every poll; the summary fields W1 added (owner,
-		// name, activity, parent, archive/pin, sharing, access) all come
-		// from the record or the doc, and `entryCount` is gone with the
-		// view read (no production client read it).
-		const principal = {
-			user: request.principal.user,
-			superuser: isSuperuser(request.principal),
-		};
+		// The shared list op (W5 Task 5): the SAME code path the extension
+		// host bridge drives — lean by construction (spec §7.2 / W3 Task 2:
+		// scan record + SessionMetaDoc snapshot alone, no per-row view
+		// read, so a sidebar poll never re-reads transcripts).
+		//
 		// Query filters: `archived=true|false` (absent = all) and
 		// `mine=true` (owner === the caller). Strict booleans — anything
 		// else is a fail-loud 400, the same posture as body validation.
@@ -117,75 +103,27 @@ export function registerConversationRoutes(
 				return await reply.code(400).send({ error: "invalid_field", field });
 			}
 		}
-		const archivedOnly =
-			query.archived === undefined ? undefined : query.archived === "true";
-		const mine = query.mine === "true";
-		const conversations: ConversationSummary[] = [];
-		let cursor: Cursor | undefined = undefined;
-		do {
-			const page = await opened.storage.scanConversations(
-				{ order: "ascending" },
-			SCAN_PAGE_SIZE,
-			cursor,
-			BACKGROUND_CONTEXT,
-			);
-			for (const record of page.items) {
-				// The session-meta owner rides the summary when stamped
-				// (defaults serve nothing — no owner key when unset), and so
-				// do the sidebar fields: the display name (user name over
-				// auto name), the activity stamp, and the archive/pin flags —
-				// one request, no per-row meta fetch.
-				const meta = await opened.harness.snapshot(
-					SessionMetaDoc,
-					record.id,
-					BACKGROUND_CONTEXT,
-				);
-				const access = accessOf(principal, meta ?? {});
-				// Hidden is absent from the list (spec §5.9).
-				if (access === "none") continue;
-				// The archived filter (absent = all).
-				if (
-					archivedOnly !== undefined &&
-					(meta?.archived ?? false) !== archivedOnly
-				) {
-					continue;
-				}
-				// `mine`: the caller's own rows (owner === principal.user).
-				if (mine && meta?.owner !== principal.user) continue;
-				const name = meta?.name ?? meta?.autoName;
-				conversations.push({
-					id: record.id,
-					root: record.id === rootId,
-					access,
-					...(meta?.sharing === undefined ? {} : { sharing: meta.sharing }),
-					...(meta?.owner === undefined ? {} : { owner: meta.owner }),
-					...(name === undefined ? {} : { name }),
-					...(meta?.lastActivityAt === undefined
-						? {}
-						: { lastActivityAt: meta.lastActivityAt }),
-					// Fork lineage from the durable record (the scan page item);
-					// a root or plainly created conversation has none.
-					...(record.parent === undefined
-						? {}
-						: {
-									parent: {
-										id: record.parent.conversationId,
-										at: record.parent.at,
-									},
-								}),
-					archived: meta?.archived ?? false,
-					pinned: meta?.pinned ?? false,
-				});
-			}
-			cursor = page.next;
-		} while (cursor !== undefined);
+		const filters: ListConversationsFilters = {
+			...(query.archived === undefined
+				? {}
+				: { archivedOnly: query.archived === "true" }),
+			...(query.mine === "true" ? { mine: true } : {}),
+		};
+		const conversations = await listConversationsOp(
+			ctx,
+			{
+				user: request.principal.user,
+				superuser: isSuperuser(request.principal),
+			},
+			filters,
+		);
 		return { conversations };
 	});
 
 	app.get(
 		"/v1/conversations/:id",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
-		async (request, reply) => {
+		async (request) => {
 			const conversation = request.conversation;
 			return readView(conversation);
 		},
@@ -459,16 +397,12 @@ export function registerConversationRoutes(
 	app.get(
 		"/v1/conversations/:id/meta",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx) },
-		async (request, reply): Promise<SessionMeta> => {
+		async (request): Promise<SessionMeta> => {
 			const conversation = request.conversation;
-			// Absent doc → DEFAULT_SESSION_META: served, not written.
-			return (
-				(await opened.harness.snapshot(
-					SessionMetaDoc,
-					conversation.id,
-					BACKGROUND_CONTEXT,
-				)) ?? DEFAULT_SESSION_META
-			);
+			// The shared read op (W5 Task 5): absent doc → defaults, served
+			// (never written — a read that wrote would churn a doc revision
+			// on every sidebar poll).
+			return await readMetaOp(opened, conversation.id);
 		},
 	);
 

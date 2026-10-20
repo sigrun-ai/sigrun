@@ -176,6 +176,13 @@ export interface ConversationSummary {
 	 */
 	readonly autoName?: string;
 	/**
+	 * The session-meta source — who created the session (spec §9.5):
+	 * `"user"` for HTTP creates, the extension slug for channel-bridge
+	 * creates through `host.conversations`. Absent when the doc was never
+	 * written (defaults are free).
+	 */
+	readonly source?: string;
+	/**
 	 * The last activity instant, ISO 8601 (activity.ts stamps it at
 	 * submission admission and run settlement). Absent on a conversation
 	 * that was never used.

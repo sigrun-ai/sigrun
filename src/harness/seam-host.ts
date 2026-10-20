@@ -19,6 +19,8 @@
 
 import type { Context } from "@earendil-works/chord";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
+import type { HostBridge } from "../server/host-bridge.js";
+import type { SigrunHost } from "../extension.js";
 import {
 	AmbientDoc,
 	AmbientOwnersDoc,
@@ -144,6 +146,31 @@ export interface SeamHost {
 		key: string,
 		context: Context,
 	): Promise<void>;
+	/**
+	 * Drive conversations in-process over the SAME code paths the HTTP
+	 * routes run (spec §9.5): create/submit/watch/list/meta. Extensions
+	 * are trusted in-process code — they may act for any user, and
+	 * mapping a channel's users to sigrun users is the extension's own
+	 * config. Binds lazily (the harness promise + the server-provided
+	 * bridge): a call before the boot completes and the server exists
+	 * WAITS, exactly like the seam methods above.
+	 */
+	readonly conversations: SigrunHost["conversations"];
+	/** The user directory (§9.7): list/get in admin wire form. */
+	readonly users: SigrunHost["users"];
+	/** Resolve one principal's access to one shared resource (§9.7). */
+	readonly access: SigrunHost["access"];
+	/** The conversation's owner — who the agent acts for (§9.7). */
+	readonly identity: SigrunHost["identity"];
+	/**
+	 * Bind the server-provided host bridge (W5 Task 5): `createServer`
+	 * calls `OpenedHarness.bindHostBridge` once its `ServerContext`
+	 * exists, which sets the ONE bridge on every seam host — the
+	 * `conversations`/`users`/`access`/`identity` members above then run
+	 * the server's shared conversation ops. Extensions never call this;
+	 * it is not part of the extension-facing surface.
+	 */
+	bindBridge(bridge: HostBridge): void;
 }
 
 /**
@@ -181,6 +208,22 @@ export function createSeamHost(
 		context.abortSignal?.throwIfAborted();
 		return h;
 	}
+
+	// The server-provided host bridge (W5 Task 5): the conversation/
+	// identity/users/access surface binds LATER than the harness — the
+	// bridge only exists once `createServer` builds it — so the same
+	// lazy-promise discipline applies: every call awaits the harness
+	// assignment AND the bridge assignment, so a factory-body call waits
+	// (never a silent drop, never an early resolution before the server
+	// exists), and a call after the binding resolves immediately.
+	let bridgeReleased!: (bridge: HostBridge) => void;
+	const bridgePromise = new Promise<HostBridge>((resolve) => {
+		bridgeReleased = resolve;
+	});
+	const hostBridge = async (): Promise<HostBridge> => {
+		await bind.harness();
+		return bridgePromise;
+	};
 
 	return {
 		get stores() {
@@ -330,6 +373,63 @@ export function createSeamHost(
 				mutable.body = undefined;
 				mutable.details = undefined;
 			}, context);
+		},
+
+		// The host conversation/identity/users/access surface (W5 Task 5,
+		// spec §9.5/§9.7): each member awaits the harness + bridge bindings
+		// (the lazy discipline above) and delegates to the server bridge —
+		// the SAME code paths the HTTP routes run. `create` injects the
+		// source default: the CALLING extension's slug (identity.name — the
+		// re-keyed current slug, read at call time).
+		conversations: {
+			async create(opts = {}) {
+				const bridge = await hostBridge();
+				return bridge.conversations.create({
+					...(opts.owner === undefined ? {} : { owner: opts.owner }),
+					...(opts.sharing === undefined ? {} : { sharing: opts.sharing }),
+					...(opts.name === undefined ? {} : { name: opts.name }),
+					// The source default: the CALLING extension's slug (spec §9.5).
+					source: opts.source ?? identity.name,
+				});
+			},
+			async submit(id, input, opts) {
+				const bridge = await hostBridge();
+				return bridge.conversations.submit(id, input, opts);
+			},
+			async watch(id, listener) {
+				const bridge = await hostBridge();
+				return bridge.conversations.watch(id, listener);
+			},
+			async list(opts) {
+				const bridge = await hostBridge();
+				return bridge.conversations.list(opts);
+			},
+			async meta(id) {
+				const bridge = await hostBridge();
+				return bridge.conversations.meta(id);
+			},
+		},
+		users: {
+			async list() {
+				return (await hostBridge()).users.list();
+			},
+			async get(user) {
+				return (await hostBridge()).users.get(user);
+			},
+		},
+		access: {
+			async accessOf(principal, resource) {
+				return (await hostBridge()).access.accessOf(principal, resource);
+			},
+		},
+		identity: {
+			async actingUser(conversationId) {
+				return (await hostBridge()).identity.actingUser(conversationId);
+			},
+		},
+
+		bindBridge(bridge) {
+			bridgeReleased(bridge);
 		},
 	};
 }

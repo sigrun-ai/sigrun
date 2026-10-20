@@ -41,6 +41,7 @@ import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
 import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
+import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
@@ -184,6 +185,14 @@ export async function createServer(
 		methods,
 		env,
 	};
+	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
+	// server's context, bound onto every seam host — the extension-facing
+	// conversations/users/access/identity surface then runs the SAME
+	// conversation ops the routes below run (never a second
+	// implementation). Bound here, after the context exists and before any
+	// route or extension code can serve a request; calls issued earlier
+	// (a factory body) have been waiting on exactly this assignment.
+	opened.bindHostBridge(createHostBridge(ctx));
 	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
 	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
 	// env service token, the setup gate, and method resolution stamp
