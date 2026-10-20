@@ -1,0 +1,1 @@
+const = deliberate syntax error {{{

@@ -240,7 +240,18 @@ export interface DefaultProviderSettings {
 	readonly baseUrl?: string;
 }
 
-/** The persisted shape: HarnessSettings pass-throughs + sigrun fields. */
+/**
+ * The skills surface's settings (core hardening W5 Task 4, spec §9.4) —
+ * live, read per skills-section render.
+ */
+export interface SkillsSettings {
+	/** The rendered-section byte cap (default 4096, notice included). */
+	readonly sectionMaxBytes?: number;
+}
+
+/**
+ * The persisted shape: HarnessSettings pass-throughs + sigrun fields.
+ */
 export interface SettingsFile {
 	/** pi-durable `HarnessSettings.steeringMode`. */
 	readonly steeringMode?: "all" | "one-at-a-time";
@@ -329,6 +340,13 @@ export interface SettingsFile {
 	 * (ruling 7), applied when `OPENAI_BASE_URL` is absent.
 	 */
 	readonly defaultProvider?: DefaultProviderSettings;
+	/**
+	 * Sigrun: the skills surface's knob (core hardening W5 Task 4, spec
+	 * §9.4). `sectionMaxBytes` caps the rendered skills section (default
+	 * 4096, truncation notice included). LIVE — read per render, so a
+	 * PATCH reaches the next prompt without a restart.
+	 */
+	readonly skills?: SkillsSettings;
 	/**
 	 * Sigrun: the static boot configuration (see {@link ServerSettings}).
 	 * Deployment defaults under env — changes require a restart.

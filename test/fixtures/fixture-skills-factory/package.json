@@ -1,0 +1,7 @@
+{
+	"name": "fixture-skills-factory",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension whose factory result contributes skill dirs (the factory-result skills field, spec §9.4) pointing at fixture-skills-only's skills dir.",
+	"main": "index.js"
+}

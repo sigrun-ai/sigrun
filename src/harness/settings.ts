@@ -64,6 +64,7 @@ import type {
 	JobHistorySettings,
 	ServerSettings,
 	SettingsFile,
+	SkillsSettings,
 } from "@sigrun/shared/settings";
 
 export type {
@@ -74,6 +75,7 @@ export type {
 	ServerSettingSource,
 	ServerSettings,
 	SettingsFile,
+	SkillsSettings,
 } from "@sigrun/shared/settings";
 
 export interface SettingsStoreOptions {
@@ -112,6 +114,7 @@ const SETTING_KEYS = [
 	"defaultModel",
 	"namingModel",
 	"defaultProvider",
+	"skills",
 	"server",
 ] as const;
 
@@ -415,6 +418,24 @@ function validate(value: Record<string, unknown>): void {
 			throw new SettingsValidationError(
 				"defaultProvider.baseUrl",
 				"must be a non-empty string",
+			);
+		}
+	}
+	// The skills surface (W5 Task 4, spec §9.4): a live, flat section —
+	// `sectionMaxBytes` a positive integer.
+	if (value.skills !== undefined) {
+		const skills = asRecord(value.skills);
+		if (skills === undefined) {
+			throw new SettingsValidationError("skills", "must be an object");
+		}
+		checkKeys("skills.", skills, ["sectionMaxBytes"]);
+		if (
+			skills.sectionMaxBytes !== undefined &&
+			!isPositiveInt(skills.sectionMaxBytes)
+		) {
+			throw new SettingsValidationError(
+				"skills.sectionMaxBytes",
+				"must be a positive integer",
 			);
 		}
 	}
@@ -1118,6 +1139,26 @@ export class SettingsStore {
 				)) {
 					if (level === null) delete sub[model];
 					else sub[model] = level;
+				}
+				if (Object.keys(sub).length === 0) delete merged[key];
+				else merged[key] = sub;
+				continue;
+			}
+			if (
+				key === "skills" &&
+				typeof value === "object" &&
+				value !== null
+			) {
+				// Same sub-merge as defaultProvider: the live skills section
+				// merges per-key (a null sub-field clears just that knob).
+				const sub: Record<string, unknown> = {
+					...((merged[key] as Record<string, unknown>) ?? {}),
+				};
+				for (const [subKey, subValue] of Object.entries(
+					value as Record<string, unknown>,
+				)) {
+					if (subValue === null) delete sub[subKey];
+					else sub[subKey] = subValue;
 				}
 				if (Object.keys(sub).length === 0) delete merged[key];
 				else merged[key] = sub;
