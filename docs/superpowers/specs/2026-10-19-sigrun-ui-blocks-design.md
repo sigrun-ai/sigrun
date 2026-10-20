@@ -602,7 +602,7 @@ All under W5's extension prefix, with W1's auth pipeline:
 | `GET /v1/ext/<slug>/surfaces/<id>?params=<json>` | `{tree, data, rev, treeRev, access}` |
 | `GET /v1/ext/<slug>/surfaces/<id>/data?params=<json>&since=<rev>` | `{rev, treeRev, data}`, or `{rev, treeRev, ops}` when the server holds the ops since `since` |
 | `POST /v1/ext/<slug>/surfaces/<id>/actions` | body `{action, payload, actionId, params}` → `ActionResult` |
-| `POST /v1/ext/<slug>/surfaces/<id>/uploads?field=<name>&params=<json>` | raw `application/octet-stream` body with an `X-Filename` header (the same shape as core uploads, core-hardening W2), capped by the field's `maxBytes` and `server.maxUploadBytes` → `ActionResult` |
+| `PUT /v1/ext/<slug>/surfaces/<id>/uploads/<field>/<name>?params=<json>` | raw `application/octet-stream` body (the same shape as core's `PUT /v1/conversations/:id/uploads/:name`), capped by the field's `maxBytes` and `server.maxUploadBytes` → `ActionResult` |
 | `GET /v1/ext/<slug>/assets/<path>` | static files from the package's declared `assets` dir (§11) |
 
 - **Reserved prefixes.** `surfaces/` and `assets/` under
@@ -744,10 +744,11 @@ needs an immediate reply."
   '…'".
 - **Before the agent's next turn,** core writes one change note covering
   every surface with records above `notedThrough`:
-  - **Where:** in core's submit path (the one every turn starter goes
-    through: the composer route, block answers, jobs and W5's
-    `host.conversations.submit`), immediately before the input that
-    starts the turn is submitted;
+  - **Where:** in core's submit path, immediately before the input that
+    starts the turn is submitted. Today that is `submitOp`
+    (`src/server/conversation-ops.ts`, used by the composer route and
+    W5's `host.conversations.submit`) plus W4's `fireJob`, which submits
+    directly; block answers go through `submitOp` too;
   - **How:** a `type: "write"` submission whose entry
     (`kind: "sigrun.blocks.note"`) carries the note as a `model` user
     message. When the conversation is idle, pi-durable appends it at

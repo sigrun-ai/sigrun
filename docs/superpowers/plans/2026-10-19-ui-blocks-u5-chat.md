@@ -7,7 +7,7 @@
 **Architecture:**
 - A `show_blocks` call appends a typed `sigrun.blocks` entry; its live state is a conversation-scoped document family `sigrun.blocks.state`, keyed by entry id, `history: "latest", fork: "current"` (ruling 19).
 - **Chat surfaces reuse U3's machinery** (routes, access cache, watcher registry, action dedup), addressed by `(conversationId, entryId)`. Core is the action handler: it applies moves, checks and edits itself and appends change records.
-- **One core submit function,** `submitTurn`, becomes the only way a turn starts. Every turn starter calls it: the composer route, block answers, W4's `fireJob`, and W5's `host.conversations.submit`. It writes the pending change note (a `type: "write"` submission with a stable `requestId`) before the input.
+- **The note step lives where turns are admitted.** Core-hardening already funnels the composer route and W5's `host.conversations.submit` through `submitOp` (`src/server/conversation-ops.ts`); W4's `fireJob` (`src/jobs/fire.ts`) calls `conversation.submit` directly in two places. A new `writePendingNote` runs immediately before each of those three `conversation.submit` calls. Block answers go through `submitOp`, which gains an `entry` option for the `InputEntry`.
 
 **Tech Stack:** pi-durable 1.2.0 (`defineEntry`/typed entries, `defineDocFamily`, `SubmissionDraft` with `requestId` and `InputEntry`, `submissionByRequest`), U0 (`validateTree`, `applyOps`, `toText`), U3 (surface service).
 
@@ -84,22 +84,21 @@
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** Summaries use the labels the user saw: the item's `title` slot value, its 1-based position, the group's `title`, and the field's `label`.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `git commit -m "chat blocks: surface routes with core as handler; moves, checks, edits; authored change records"`.
 
-### Task 3: `submitTurn`, change notes, answers
+### Task 3: Change notes in the submit path, answers
 
 **Files:**
 - Create: `src/server/turns/submit-turn.ts`, `src/server/blocks/notes.ts`, `src/server/blocks/answers.ts`
-- Modify: `src/server/routes/submissions.ts` (call `submitTurn`), `src/jobs/fire.ts` (W4 `fireJob` calls `submitTurn`), `src/server/host-bridge.ts` (W5 `host.conversations.submit` calls `submitTurn`)
+- Modify: `src/server/conversation-ops.ts` (`submitOp` calls `writePendingNote` before `conversation.submit`; `SubmitOpOptions` gains `entry?: InputEntry` and `skipNoteFor?: string`), `src/jobs/fire.ts` (both `conversation.submit` call sites call `writePendingNote` first)
 - Test: `test/blocks-notes.test.ts`, `test/blocks-answers.test.ts`, `test/submit-turn-callers.test.ts`
 
 **Interfaces:**
 - Produces:
   ```ts
-  export function submitTurn(ctx: ServerContext, conversationId: number, draft: InputSubmissionDraft,
-    opts: { principal?: Principal; skipNoteFor?: string /* entryId */ }): Promise<Submission>;
+  export function writePendingNote(harness: Harness, conversation: Conversation, skipEntry: string | undefined, ctx: Context): Promise<void>;
   export function pendingNote(harness: Harness, conversationId: number, skipEntry: string | undefined, ctx: Context):
     Promise<{ text: string; requestId: string; advance: { entryId: string; through: number }[] } | undefined>;
   ```
-- `submitTurn` order: compute `pendingNote`; if present, `conversation.submit({type: "write", entry: {kind: "sigrun.blocks.note", model: [userMessage(text)]}, requestId})`, then advance each `notedThrough` in one commit; then submit the input.
+- `writePendingNote` order: compute `pendingNote`; if present, `conversation.submit({type: "write", entry: {kind: "sigrun.blocks.note", model: [userMessage(text)]}, requestId})`, then advance each `notedThrough` in one commit. The caller then submits the input.
 
 - [ ] **Step 1: Write failing tests** (the §8.5 ranking example end to end with the faux provider):
   - three moves make no turns (submission count unchanged);
@@ -110,9 +109,9 @@
   - crash between the note write and `notedThrough` advancing (inject a throw after admission), then a new edit, then another message: the retry computes the same `requestId` from the pre-advance positions, pi-durable returns the existing submission, and exactly one note entry exists;
   - Review Focus 1: with the agent busy (faux provider holding a tool call), an edit followed by a steer queues the note write and the steer; at the boundary the note entry is placed before the steer entry;
   - Review Focus 4: an answer from a `read` principal → 403, no submission;
-  - every turn starter (composer route, `fireJob`, `host.conversations.submit`) goes through `submitTurn` (spy), so each writes pending notes.
+  - every turn starter writes pending notes: the composer route and `host.conversations.submit` (both via `submitOp`) and `fireJob` on a fixed-conversation job (spy on `writePendingNote`); a grep-style test asserts `conversation.submit(` with `type: "input"` appears in `src/` only at those three call sites, so a new turn starter can't skip notes silently.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
-- [ ] **Step 5: Commit** `git commit -m "chat blocks: submitTurn writes change notes with a stable requestId; block answers as InputEntry turns; all turn starters routed through it"`.
+- [ ] **Step 5: Commit** `git commit -m "chat blocks: change notes written before every turn admission (submitOp, fireJob) with a stable requestId; block answers as InputEntry turns"`.
 
 ### Task 4: Transcript rendering and transports in both channels
 

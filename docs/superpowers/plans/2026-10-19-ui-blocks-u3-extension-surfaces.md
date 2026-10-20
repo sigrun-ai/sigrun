@@ -22,7 +22,7 @@
   - `GET /v1/ext/<slug>/surfaces/<id>?params=<json>` → `{tree, data, rev, treeRev, access}`;
   - `GET /v1/ext/<slug>/surfaces/<id>/data?params=<json>&since=<rev>` → `{rev, treeRev, data}` or `{rev, treeRev, ops}`;
   - `POST /v1/ext/<slug>/surfaces/<id>/actions` body `{action, payload, actionId, params}` → `{ok: true, rev, ops?, navigate?, toast?}` or `{ok: false, error: {message, field?}}`;
-  - `POST /v1/ext/<slug>/surfaces/<id>/uploads?field=<name>&params=<json>`, raw `application/octet-stream`, `X-Filename` header;
+  - `PUT /v1/ext/<slug>/surfaces/<id>/uploads/<field>/<name>?params=<json>`, raw `application/octet-stream` (the shape of core's `PUT /v1/conversations/:id/uploads/:name`; reuse its `validUploadName` and octet-stream default);
   - `GET /v1/ext/<slug>/assets/<path>`.
 - `access: "none"` → `404 surface_not_found` on all four surface routes. `read` → actions `403`.
 - Access cache: key `(slug, id, key, principal.user)`, TTL 60 s; a miss re-renders for that principal before deciding.
@@ -51,7 +51,7 @@
 **Files:**
 - Modify: `src/extension.ts` (types: `SurfaceDef`, `SurfaceContext`, `UploadedFile`, `ActionResult`, `SurfacesContribution`; `SigrunExtensionResult.surfaces?`; `SigrunHost.surfaces: { changed(id: string, key: string, update?: DataOps): void }`)
 - Modify: `src/harness/loader.ts` (collect `surfaces`; validate ids, titles, icons, placements, `refreshMs ≥ 5000`, `data()` present when `refreshMs` is set; collected as `LoadedExtensions.surfaces: {extension: slug, defs}[]`)
-- Modify: `src/server/routes/extension-routes.ts` (W5) — quarantine an extension declaring a route path starting `surfaces/` or `assets/`
+- Modify: `src/harness/loader.ts` route validation (the W5 check near the `route.path.startsWith("/")` rule) — quarantine an extension declaring a route path starting `surfaces/` or `assets/`
 - Test: `test/surfaces-contract.test.ts`, `test/fixtures/fixture-surfaces/` (a view `board` with lanes and a panel `stats`), `test/fixtures/fixture-surfaces-bad/`, `test/fixtures/fixture-surfaces-route-clash/`
 
 **Interfaces:**
@@ -107,7 +107,7 @@
   - accept with `update: {ops}` → `{ok: true, rev: 1, ops}`; for a `sharedData` surface the ops are in the log; for a principal-specific one only `rev` advances;
   - accept without ops → `{ok: true, rev: <next>}` and no ops recorded (extension surfaces own their data, §6.3);
   - `navigate` and `toast` pass through;
-  - upload: `fixture-surfaces`' `onUpload` receives `{field, name: "a.png", mime: "image/png", bytes}` with the MIME sniffed (a `.png` name over JPEG bytes reports `image/jpeg`); `X-Filename: ../../etc/passwd` arrives as `passwd`; over the field's `maxBytes` → `413` without reading the whole body (Review Focus 5: a chunked body larger than the cap, assert the socket is closed before the end is sent);
+  - upload: `fixture-surfaces`' `onUpload` receives `{field, name: "a.png", mime: "image/png", bytes}` with the MIME sniffed (a `.png` name over JPEG bytes reports `image/jpeg`); a `<name>` failing `validUploadName` (e.g. `..`) → `400`; over the field's `maxBytes` → `413` without reading the whole body (Review Focus 5: a chunked body larger than the cap, assert the socket is closed before the end is sent);
   - assets: `GET …/assets/img/a.png` serves the file with a sniffed type and `X-Content-Type-Options: nosniff`; `…/assets/../package.json` and a symlink inside `assets/` pointing outside it both → `404` (realpath containment).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** The package's assets dir comes from `package.json` `sigrun.assets`; absent → every asset request is 404.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `git commit -m "surfaces: actions (dedup, rate limit, timeout, move accept rules), uploads, contained asset serving"`.
@@ -116,7 +116,7 @@
 
 **Files:**
 - Create: `src/server/surfaces/watchers.ts`
-- Modify: `src/server/routes/events.ts` (W3: first frame `event: hello` / `data: {"streamId": "<uuid>"}`; per-stream filter hook), `src/server/events/hub.ts` (`HostEventWire` gains `{type: "surface.changed"; slug: string; id: string; k: string; rev: number; treeRev: number}`), `src/harness/seam-host.ts` (`host.surfaces.changed` bound through the existing lazy-binding contract)
+- Modify: `src/server/routes/events.ts` (W3: first frame `event: hello` / `data: {"streamId": "<uuid>"}`; `visible()` gets an explicit `surface.changed` branch that delivers only to streams in the watcher registry — its default branch treats any other event as conversation-scoped and must not see this one), `shared/src/views.ts` (`HostEventWire`, which lives there since W3, gains `{type: "surface.changed"; slug: string; id: string; k: string; rev: number; treeRev: number}`), `src/harness/seam-host.ts` (`host.surfaces.changed` bound through the existing lazy-binding contract)
 - Modify: `webui/src/api.ts` / the shared `EventSource` from W3 (store `streamId`; send `X-Sigrun-Stream`), `tui/src/sse.ts` (same)
 - Test: `test/surfaces-events.test.ts`, `webui/src/stream.test.ts`, `tui/test/sse.test.ts`
 

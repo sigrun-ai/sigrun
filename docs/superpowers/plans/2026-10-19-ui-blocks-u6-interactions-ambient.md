@@ -51,7 +51,8 @@
 
 **Files:**
 - Modify: `src/server/routes/interactions.ts` (body schema `{values}`; secret fields' values are passed to the extension's answer handler and stripped from the stored `answer`, replaced by `"[secret]"`)
-- Modify: `test/fixtures/fixture-seam/`, `test/fixtures/fixture-seam-visual/`, `test/fixtures/fixture-seam-bad-kinds/`, `test/fixtures/fixture-gate/` (W2's rename of `fixture-approvals`) — rewrite every record they write as trees built with `sigrun/blocks` builders
+- Modify: `test/fixtures/fixture-seam/`, `test/fixtures/fixture-seam-visual/`, `test/fixtures/fixture-seam-bad-kinds/` — rewrite every record they write as trees built with `sigrun/blocks` builders
+- Create (if the core-hardening follow-up hasn't already): `test/fixtures/fixture-gate/`, an in-repo gating extension (a `beforeTool` hook that writes an allow/deny interaction) replacing `test/interaction-decide.test.ts`'s import of the sibling `~/repos/sigrun-ext-approvals/dist`, which is being deleted
 - Test: `test/interaction-decide.test.ts`, `test/server-configure.test.ts` (any interaction assertions)
 
 - [ ] **Step 1: Write failing tests:** the decide flow answers with `{values: {decision: "allow", reason: "ok"}}` and the extension sees exactly that; Review Focus 1 (two concurrent POSTs: one 200, one 409 carrying the stored answer); Review Focus 4 (a form with `secret` named `token`: the extension's handler receives the value, `GET` of the record shows `"[secret]"`, and the server log never contains the value — assert on a captured log stream); a four-question ask-user-question-shaped fixture (sections with one `choice` each, `preview`, `allowOther`) answers in one POST as `{values: {q1, q2, q3, q4}}`.
