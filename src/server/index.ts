@@ -40,6 +40,7 @@ import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
 import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
+import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
@@ -195,6 +196,15 @@ export async function createServer(
 	// conversations transfer before any extension's `userDeleted`
 	// observer runs (W4's jobs participant registers behind it).
 	registerCoreOwnershipParticipant(ctx);
+	// The jobs ownership participant (W4 Task 3, spec §5.8/§8.3): every
+	// `api` job record owned by the deleted user moves to the transferee
+	// through `writeJobChange` (a NEW hash — the owner rides the spec
+	// identity — so version bumps + a `changedBy:"transfer"` revision,
+	// and the follow-up reconcile recreates the executor task). File jobs
+	// whose DECLARED owner was the deleted user are not touched here; the
+	// next boot's reconciliation warns (the declared owner no longer
+	// exists — the job runs ownerless until the file is edited).
+	registerJobsOwnershipParticipant(ctx);
 
 	return app;
 }

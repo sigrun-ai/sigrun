@@ -24,6 +24,7 @@ import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, type JobsService } from "../jobs/index.js";
 import { reconcileJobs } from "../jobs/reconcile.js";
+import { registerJobObservers } from "../jobs/observe.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
@@ -937,6 +938,19 @@ export async function openHarness(
 	eventBus.registerExtension("sigrun:auto-name", {
 		runSettled: autoNamer.runSettled,
 	});
+	// The jobs run-status observers (W4 Task 3, §8.1): the runSettled
+	// handler registered as `sigrun:jobs` (after every loaded extension,
+	// like the auto-namer — a job observation never delays an extension's)
+	// + the taskSettled host-event listener (task-action runs). Registered
+	// BEFORE `resume()` so recovery settles are observed; the unsubscribe
+	// rides the bus's own close (host machinery, booted with the bus).
+	registerJobObservers({
+		harness,
+		storage,
+		runtime: jobRuntimeDeps,
+		settings: () => settingsStore.read(),
+		eventBus,
+	});
 	// Delivery scheduling: the bus itself stays passive (Task 2's
 	// contract — `drain()` is the only pump); boot owns when drains run.
 	// Every commit (bus events or not) schedules one debounced drain on
@@ -999,6 +1013,20 @@ export async function openHarness(
 		},
 		BACKGROUND_CONTEXT,
 	);
+	// The deleted-owner warning (§8.3): a declared job whose `owner` names
+	// a user no longer in the directory runs OWNERLESS until its source is
+	// edited (household-write by the §5.9 rule) — surfaced at boot, never
+	// silently. Only checked on a claimed directory (an unclaimed boot
+	// has no users to check against).
+	if (identity.users.isClaimed()) {
+		const known = new Set(identity.users.list().map((user) => user.user));
+		for (const spec of [...fileJobs(), ...jobBindings.flatMap((binding) => binding.jobs)]) {
+			if (spec.owner === undefined || known.has(spec.owner)) continue;
+			console.warn(
+				`jobs: declared job "${spec.name}" names owner "${spec.owner}" who is not in the user directory — it runs ownerless until its source is edited`,
+			);
+		}
+	}
 	harness.resume();
 	return {
 		harness,

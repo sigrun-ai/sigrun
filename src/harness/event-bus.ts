@@ -1148,6 +1148,33 @@ export class EventBus {
 				ConversationId,
 				SettleGroup["settled"][number][]
 			>();
+			// Jobs Task 3 (§8.1): a `task` table write whose status is TERMINAL
+			// reduces to a host-level `taskSettled` — the jobs observer's input
+			// for settling `task`-action run records. Emitted from the SAME
+			// synchronous filter (the no-blocking-work contract), never queued:
+			// it is host machinery (withheld from the SSE wire), and its
+			// consumer runs on the drain loop.
+			for (const change of publication.changes) {
+				if (change.type !== "task") continue;
+				const task = change.value;
+				if (task.state.status !== "terminal" && task.state.status !== "completing") {
+					continue;
+				}
+				// `completing` is decided-but-not-finalized; the jobs observer
+				// waits for the terminal receipt — emit only on `terminal`.
+				if (task.state.status !== "terminal") continue;
+				const outcome = task.state.outcome;
+				this.#emitHost({
+					type: "taskSettled",
+					// SAFETY: TaskId is the branded number the wire's plain `number`
+					// field carries; the observer compares by === across both forms.
+					taskId: task.id as unknown as number,
+					status: outcome.status,
+					...(outcome.status !== "completed" && "error" in outcome && outcome.error !== undefined
+						? { error: outcome.error.message }
+						: {}),
+				});
+			}
 			for (const change of publication.changes) {
 				if (change.type !== "submission") continue;
 				const value = change.value;

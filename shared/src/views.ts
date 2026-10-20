@@ -791,4 +791,11 @@ export type HostEventWire =
 			readonly provider: string;
 			readonly status: string;
 		}
+	| {
+			/** A task table write with a TERMINAL status (jobs Task 3, §8.1): the jobs observer settles `task`-action run records from it — `completed` → `succeeded`, any other terminal → `failed` + `error`. Hub-side only (not an SSE wire event): the task table is host machinery, not principal-facing surface. */
+			readonly type: "taskSettled";
+			readonly taskId: number;
+			readonly status: string;
+			readonly error?: string;
+		}
 	| { readonly type: "job.changed"; readonly job: unknown }; // W4 narrows to JobWire

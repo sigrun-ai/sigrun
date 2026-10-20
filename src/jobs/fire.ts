@@ -106,8 +106,18 @@ export async function fireJob(
 	// is running) — reuse its conversation/task and never double-create.
 	const prior = await deps.harness.snapshot(JobRunDoc, fireKey, context);
 	if (prior !== undefined) {
+		if (prior.outcome === "skipped") return { outcome: "skipped" };
 		if (prior.outcome !== "running") {
-			return { outcome: prior.outcome === "skipped" ? "skipped" : "running" };
+			// Already settled (succeeded/failed): the Task-3 re-entry fix —
+			// a re-entered fire whose run record already settled reports
+			// the SETTLED outcome, never "running" (a crash-recovered fire
+			// re-entering after the observer settled must not re-admit).
+			return {
+				outcome: "blocked",
+				...(prior.conversationId === undefined
+					? {}
+					: { conversationId: prior.conversationId }),
+			};
 		}
 		// Still running: re-submit (the requestId dedups) or nothing (task
 		// runs re-admit by re-creating with the same record — see below).
@@ -350,9 +360,16 @@ async function fireTaskAction(
 		}, context);
 		run.taskId = taskId as unknown as number;
 	} else {
+		// Run-now (no schedule-task runtime): the child task is
+		// conversation-owned on the ROOT conversation — Task 3's spec for
+		// the run-now path (Task 2's shape omitted the conversationId and
+		// threw on a Session commit, which requires it for a
+		// conversation-owned task).
+		const rootConversation = await deps.harness.root(context);
 		await deps.harness.commit(async (tx) => {
 			const taskId = await tx.createTask(target as never, (action.input ?? {}) as never, {
 				ownership: { kind: "conversation" },
+				conversationId: rootConversation.id,
 			});
 			await tx.doc(JobRunDoc, fireKey, {
 				...run,

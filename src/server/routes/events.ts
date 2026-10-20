@@ -69,6 +69,9 @@ export function registerEventRoutes(
 		const visible = async (event: HostEventWire): Promise<boolean> => {
 			if (event.type === "providers.changed") return true;
 			if (event.type === "job.changed") return false;
+			// taskSettled is host machinery (the jobs observer's input), never
+			// a principal-facing wire event.
+			if (event.type === "taskSettled") return false;
 			let meta;
 			try {
 				meta = await opened.harness.snapshot(
