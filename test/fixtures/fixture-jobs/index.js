@@ -29,12 +29,15 @@ export const completions = [];
 export const controls = {
 	/** The next fixture-tick run throws (the task-action failure case). */
 	boom: false,
+	/** The next fixture-tick run parks forever (the abort-settle rig). */
+	hangTask: false,
 };
 
 /** Reset the records + controls (tests own their fixtures' state). */
 export function resetFixtureJobs() {
 	completions.length = 0;
 	controls.boom = false;
+	controls.hangTask = false;
 }
 
 /** The task the `tasked` job's action targets. */
@@ -45,6 +48,13 @@ const fixtureTick = defineTask({
 	phases: {
 		run: async (task, runtime, context) => {
 			completions.push({ input: task.input });
+			if (controls.hangTask) {
+				// The abort-settle rig: park until the abort signal fires (an
+				// uninterruptible park would wedge abortTask's join forever).
+				await new Promise((resolve) => {
+					runtime.signal.addEventListener("abort", () => resolve(undefined));
+				});
+			}
 			if (controls.boom) {
 				throw new Error("fixture-tick boom");
 			}

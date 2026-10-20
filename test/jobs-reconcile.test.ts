@@ -713,6 +713,52 @@ describe("jobHistory retention", () => {
 	});
 });
 
+// ─── Fix round 1: the aborted-task error text ──────────────────────────────
+
+describe("an aborted task-action run settles failed WITH the error text", () => {
+	test("aborting the live child task → failed with the abort reason", async () => {
+		const fixture = (await import(FIXTURE_JOBS_SPECIFIER)) as {
+			resetFixtureJobs: () => void;
+			controls: { boom: boolean; hangTask: boolean };
+		};
+		fixture.resetFixtureJobs();
+		// Park the fixture task mid-run so the abort has a live task to
+		// signal: the fixture's abort handler commits terminal (aborted,
+		// reason "aborted"), the taskSettled reduction carries the reason
+		// (the fix: the aborted shape has `reason`, not `error`), and the
+		// observer settles the run failed WITH the text.
+		fixture.controls.hangTask = true;
+		const rig = await bootRig({ extensions: [FIXTURE_JOBS_SPECIFIER] });
+		const id = "ext:fixture-jobs:tasked";
+		const fired = await rig.jobs.runNow(id);
+		expect(fired.outcome).toBe("running");
+		// The run record carries the child task id.
+		const deadline = Date.now() + 5_000;
+		let taskId: number | undefined;
+		for (;;) {
+			const runs = await rig.jobs.runs(id, 20);
+			taskId = runs[0]?.taskId;
+			if (taskId !== undefined) break;
+			if (Date.now() > deadline) throw new Error("run record never carried the task id");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		await rig.opened.harness.abortTask(taskId as never, BACKGROUND_CONTEXT);
+		const settleDeadline = Date.now() + 10_000;
+		for (;;) {
+			const runsNow = await rig.jobs.runs(id, 20);
+			if (runsNow[0]?.outcome === "failed") break;
+			if (Date.now() > settleDeadline) {
+				throw new Error("aborted task run never settled failed");
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		const settled = (await rig.jobs.runs(id, 20))[0]!;
+		expect(settled.outcome).toBe("failed");
+		expect(settled.error).toBe("aborted");
+		fixture.resetFixtureJobs();
+	});
+});
+
 // ─── Stage 2: fire re-entry semantics (the Task-2 deferred fix) ────────────
 
 describe("fireJob re-entry on a settled run record", () => {

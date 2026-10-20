@@ -243,7 +243,6 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 							// by writeJobChange's draft-merge; state resets to
 							// waiting so a re-enable's executor re-derives it.
 							state: enabled ? "waiting" : "disabled",
-							...(prior.reason === undefined && enabled ? {} : {}),
 						},
 						changedBy,
 						nowIso,
