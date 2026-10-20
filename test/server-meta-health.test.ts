@@ -205,8 +205,9 @@ describe("GET /v1/auth/check", () => {
 		});
 		const response = await getAuthCheck(app);
 		expect(response.statusCode).toBe(200);
+		// W3 Task 6 enrichment: `models` (count) + `owner` when contributed.
 		expect(response.json()).toEqual({
-			providers: [{ provider: "openai", status: "ready" }],
+			providers: [{ provider: "openai", status: "ready", models: 1 }],
 		});
 		// §6.4: statuses only — the key material never appears.
 		expect(response.body).not.toContain(DUMMY_OPENAI_KEY);
@@ -221,7 +222,7 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "openai", status: "not_ready" }],
+			providers: [{ provider: "openai", status: "not_ready", models: 1 }],
 		});
 	});
 
@@ -233,7 +234,7 @@ describe("GET /v1/auth/check", () => {
 		});
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "openai", status: "not_ready" }],
+			providers: [{ provider: "openai", status: "not_ready", models: 1 }],
 		});
 	});
 
@@ -242,7 +243,9 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "faux", status: "ready" }],
+			providers: [
+				{ provider: "faux", status: "ready", models: 1, owner: "ext-faux" },
+			],
 		});
 	});
 
@@ -252,7 +255,9 @@ describe("GET /v1/auth/check", () => {
 		});
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "faux", status: "invalid" }],
+			providers: [
+				{ provider: "faux", status: "invalid", models: 1, owner: "ext-faux" },
+			],
 		});
 	});
 
@@ -264,7 +269,9 @@ describe("GET /v1/auth/check", () => {
 		});
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "faux", status: "not_ready" }],
+			providers: [
+				{ provider: "faux", status: "not_ready", models: 1, owner: "ext-faux" },
+			],
 		});
 	});
 
@@ -278,8 +285,8 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
 			providers: [
-				{ provider: "faux", status: "ready" },
-				{ provider: "openai", status: "ready" },
+				{ provider: "faux", status: "ready", models: 1, owner: "ext-faux" },
+			{ provider: "openai", status: "ready", models: 1 },
 			],
 		});
 	});
@@ -297,7 +304,13 @@ describe("GET /v1/auth/check", () => {
 		const body = response.json();
 		expect(Object.keys(body)).toEqual(["providers"]);
 		for (const entry of body.providers) {
-			expect(Object.keys(entry).sort()).toEqual(["provider", "status"]);
+			// W3 Task 6: `models` joined the entry; still no credential
+			// material — every field is status/count/ownership.
+			expect(Object.keys(entry).sort()).toEqual([
+				"models",
+				"provider",
+				"status",
+			]);
 		}
 		expect(response.body).not.toContain(DUMMY_OPENAI_KEY);
 		expect(response.body).not.toContain("auth-check-fixture.invalid");

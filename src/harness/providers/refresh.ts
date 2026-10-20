@@ -101,6 +101,31 @@ export interface ResolveRefreshingOptions {
 }
 
 /**
+ * One bounded single-provider refresh (core hardening W3 Task 6, spec
+ * §7.6): the exact refresh {@link resolveServedModelRefreshing} runs on
+ * a miss, exposed for the provider ROUTES (`POST
+ * /v1/providers/:id/refresh` and the credential write paths) — never a
+ * second policy. Accepts the same {@link RefreshBound} fields the boot
+ * and interval refreshes take (boot wiring passes its readiness
+ * observer so a flipped provider publishes `providers.changed`); every
+ * field is optional with the policy defaults applying. Like every
+ * policy refresh: never rejects — failures/aborts warn once and the
+ * catalog holds its last-known state.
+ */
+export async function refreshProvider(
+	models: Models,
+	providerId: string,
+	opts: Partial<RefreshBound> = {},
+): Promise<void> {
+	await refreshBounded(models, {
+		label: `provider refresh (${providerId})`,
+		...opts,
+		timeoutMs: opts.timeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS,
+		providers: [providerId],
+	});
+}
+
+/**
  * `requireServedModel` with ONE refresh+retry: on an
  * {@link UnservedModelError}, refresh the named provider (bounded; its
  * failures only warn — a failed refresh is not a submit error) and

@@ -54,6 +54,11 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/auth/check"],
 	// The W1 Task 6 provider-readiness home + the deprecated alias.
 	["GET", "/v1/providers"],
+	// The W3 Task 6 provider mutations (refresh + admin credential
+	// write/remove).
+	["POST", "/v1/providers/:id/refresh"],
+	["PUT", "/v1/providers/:id/credential"],
+	["DELETE", "/v1/providers/:id/credential"],
 	// The W1 Task 3 auth surface (routes/auth.ts).
 	["POST", "/v1/auth/login"],
 	["POST", "/v1/auth/logout"],
@@ -334,6 +339,8 @@ describe("server route table", () => {
 				"/v1/onboarding",
 				"/v1/onboarding/claim",
 				"/v1/providers",
+				"/v1/providers/:id/credential",
+				"/v1/providers/:id/refresh",
 				"/v1/events",
 				"/v1/settings",
 				"/v1/interactions",

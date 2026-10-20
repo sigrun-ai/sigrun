@@ -56,6 +56,7 @@ import { providerAuthStatus } from "../server/helpers.js";
 import {
 	bootRefresh,
 	DEFAULT_REFRESH_TIMEOUT_MS,
+	refreshProvider,
 } from "./providers/refresh.js";
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
@@ -283,6 +284,17 @@ export interface OpenedHarness {
 	 * join it if still in flight.
 	 */
 	readonly bootRefresh: Promise<void>;
+	/**
+	 * One bounded single-provider refresh (core hardening W3 Task 6,
+	 * spec §7.6), boot-wired with the SAME readiness observation as the
+	 * boot and interval refreshes (a flipped provider publishes
+	 * `providers.changed`). The provider ROUTES call this — `POST
+	 * /v1/providers/:id/refresh` and the credential write paths — so a
+	 * route-triggered refresh behaves exactly like every other refresh
+	 * path. Never rejects; failures warn and the catalog holds its
+	 * last-known state.
+	 */
+	readonly refreshProvider: (providerId: string) => Promise<void>;
 	/**
 	 * Stop the interval refresh scheduler (provider plugins Task 5): the
 	 * host-owned cadence re-running `models.refresh()` over every dynamic
@@ -707,6 +719,16 @@ export async function openHarness(
 		onReadinessChange: observeReadiness,
 		snapshotReadiness,
 	});
+	// The boot-wired single-provider refresh (W3 Task 6): the route
+	// surface's refresh — the same bound policy `resolveServedModelRefreshing`
+	// runs on a miss, with the same readiness observation so a provider a
+	// credential write flips publishes `providers.changed` like every
+	// other refresh path does.
+	const refreshOneProvider = (providerId: string): Promise<void> =>
+		refreshProvider(models, providerId, {
+			onReadinessChange: observeReadiness,
+			snapshotReadiness,
+		});
 	// The interval refresh scheduler (Task 5, refresh policy 2): the cadence
 	// keeping the catalogs current after the boot refresh. Started only
 	// when the resolved interval is greater than zero (0 = the designed
@@ -898,6 +920,7 @@ export async function openHarness(
 		now,
 		autoNamer,
 		bootRefresh: bootRefreshDone,
+		refreshProvider: refreshOneProvider,
 		stopProviderRefresh,
 	};
 }
