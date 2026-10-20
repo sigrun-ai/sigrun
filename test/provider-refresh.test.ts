@@ -264,14 +264,14 @@ describe("refresh-on-miss at the submit call site", () => {
 		expect(configured.statusCode).toBe(200);
 		const response = await app.inject({
 			method: "POST",
-			url: `/v1/conversations/${root.id}/submissions`,
+			url: `/v1/conversations/${root.id}/submissions?waitMs=5000`,
 			payload: { input: "hello" },
 			headers: { "content-type": "application/json" },
 		});
 		// The miss refreshed the named provider once and re-resolved: no
 		// 4xx, the submission ran and answered through the gained model.
 		expect(response.statusCode).toBe(202);
-		expect(response.json().status).toBe("done");
+		expect(response.json().submission.status).toBe("done");
 		expect(fixture.calls()).toBe(2);
 		const view = (
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })

@@ -24,12 +24,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { InboxDoc } from "@earendil-works/pi-durable";
+import { InboxDoc, type SubmissionId } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -153,16 +154,20 @@ afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
 });
 
-/** Submit `input` to `conversationId`; returns the parsed response. */
+/** Submit `input` to `conversationId`; returns the parsed response.
+ *  `waitMs` opts into the §7.1 bounded settlement wait — tests that
+ *  assert settled state pass 5000 (the faux provider settles in ms). */
 async function submit(
 	app: FastifyInstance,
 	conversationId: number,
 	input: unknown,
 	requestId?: string,
+	waitMs?: number,
 ) {
+	const query = waitMs === undefined ? "" : `?waitMs=${waitMs}`;
 	return app.inject({
 		method: "POST",
-		url: `/v1/conversations/${conversationId}/submissions`,
+		url: `/v1/conversations/${conversationId}/submissions${query}`,
 		payload: requestId === undefined ? { input } : { input, requestId },
 		headers: { "content-type": "application/json" },
 	});
@@ -211,11 +216,11 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
-		const response = await submit(app, root.id, "hello");
+		const response = await submit(app, root.id, "hello", undefined, 5000);
 		expect(response.statusCode).toBe(202);
 		const body = response.json();
-		expect(body.conversationId).toBe(root.id);
-		expect(body.status).toBe("done");
+		expect(body.submission.conversationId).toBe(root.id);
+		expect(body.submission.status).toBe("done");
 		const view = (
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
@@ -375,10 +380,16 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			await submit(app, root.id, [{ type: "text", text: "once" }], "req-1")
 		).json();
 		const second = (
-			await submit(app, root.id, [{ type: "text", text: "once again" }], "req-1")
+			await submit(
+				app,
+				root.id,
+				[{ type: "text", text: "once again" }],
+				"req-1",
+				5000,
+			)
 		).json();
-		expect(second.id).toBe(first.id);
-		expect(second.status).toBe("done");
+		expect(second.submission.id).toBe(first.submission.id);
+		expect(second.submission.status).toBe("done");
 		// Only ONE user turn was placed: the duplicate was deduped upstream.
 		const view = (
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
@@ -407,9 +418,9 @@ describe("POST /v1/conversations/:id/submissions", () => {
 				(c: { id: number }) => c.id === conversation.id,
 			),
 		).toBe(true);
-		const response = await submit(app, conversation.id, "still works");
+		const response = await submit(app, conversation.id, "still works", undefined, 5000);
 		expect(response.statusCode).toBe(202);
-		expect(response.json().status).toBe("done");
+		expect(response.json().submission.status).toBe("done");
 	});
 
 	test("404s for an unknown conversation id", async () => {
@@ -469,14 +480,15 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 				agent: { model: opened.defaultModel },
 			});
-			// Start the busy turn directly through the harness — the server route
-			// waits for settlement, which would serialize the observation.
+			// Start the busy turn directly through the harness — the route
+			// returns at admission (§7.1), which would let the steer submit
+			// race the busy-turn start.
 			const first = await root.submit(
 				{ type: "input", content: "first turn (busy lever)" },
 				BACKGROUND_CONTEXT,
 			);
-			// The server-driven steer submit: admitted (queued) at once; the
-			// route's settlement wait resolves after the steered round answers.
+			// The server-driven steer submit: admitted (queued) at once — the
+			// §7.1 admission response, not a settled record.
 			const pending = app.inject({
 				method: "POST",
 				url: `/v1/conversations/${root.id}/submissions`,
@@ -515,7 +527,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			expect(observedModes).toContain("steer");
 			const response = await pending;
 			expect(response.statusCode).toBe(202);
-			expect(response.json().status).toBe("done");
+			expect(["queued", "placed"]).toContain(response.json().submission.status);
 		},
 	);
 
@@ -547,6 +559,194 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			{ type: "file", path: "../outside.txt" },
 		]);
 		expect(dotDot.statusCode).toBe(400);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// POST /v1/conversations/:id/submissions — async admit (spec §7.1)
+// ---------------------------------------------------------------------------
+
+describe("POST /v1/conversations/:id/submissions — async admit (§7.1)", () => {
+	/** A gated faux response: the run cannot settle until `release()`. */
+	function gatedResponse() {
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("gated answer"));
+		});
+		return {
+			step: () => gate,
+			release: () => release(),
+		};
+	}
+
+	/** Settle a still-running submission by id (teardown cleanliness). */
+	async function settleById(opened: OpenedHarness, id: number): Promise<void> {
+		const handle = await opened.harness.submission(
+			id as SubmissionId,
+			BACKGROUND_CONTEXT,
+		);
+		await handle?.wait(BACKGROUND_CONTEXT);
+	}
+
+	test("returns 202 at admission BEFORE the run settles (queued|placed)", async () => {
+		const { app, opened, faux } = await bootServer();
+		const gate = gatedResponse();
+		faux.setResponses([gate.step]);
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const response = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/submissions`,
+			payload: { input: "held open" },
+			headers: { "content-type": "application/json" },
+		});
+		// The response is in hand while the gate is STILL held: 202 at
+		// admission, the record not yet settled.
+		expect(response.statusCode).toBe(202);
+		const body = response.json();
+		expect(body.submission.conversationId).toBe(root.id);
+		expect(["queued", "placed"]).toContain(body.submission.status);
+		gate.release();
+		await settleById(opened, body.submission.id);
+	});
+
+	test("?waitMs waits for settlement and returns the settled record", async () => {
+		const { app, opened, faux } = await bootServer();
+		const gate = gatedResponse();
+		faux.setResponses([gate.step]);
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const pending = app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/submissions?waitMs=5000`,
+			payload: { input: "wait for me" },
+			headers: { "content-type": "application/json" },
+		});
+		// Let the route admit + the run reach the gate, then release: the
+		// route must WAIT for settlement (an admission-only shape would
+		// still read queued|placed).
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		gate.release();
+		const response = await pending;
+		expect(response.statusCode).toBe(202);
+		expect(response.json().submission.status).toBe("done");
+	});
+
+	test("a waitMs that expires first returns the CURRENT (unsettled) record", async () => {
+		const { app, opened, faux } = await bootServer();
+		const gate = gatedResponse();
+		faux.setResponses([gate.step]);
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const response = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/submissions?waitMs=100`,
+			payload: { input: "slow" },
+			headers: { "content-type": "application/json" },
+		});
+		// The timer beat the gated run: the CURRENT record, not settled.
+		expect(response.statusCode).toBe(202);
+		expect(["queued", "placed"]).toContain(
+			response.json().submission.status,
+		);
+		gate.release();
+		await settleById(opened, response.json().submission.id);
+	});
+
+	test("rejects an out-of-range waitMs fail-loud (400 invalid_field); nothing is admitted", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		for (const waitMs of ["70000", "0", "-5", "abc", "1.5"]) {
+			const response = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${root.id}/submissions?waitMs=${waitMs}`,
+				payload: { input: "hello" },
+				headers: { "content-type": "application/json" },
+			});
+			expect(response.statusCode, `waitMs=${waitMs}`).toBe(400);
+			expect(response.json()).toEqual({
+				error: "invalid_field",
+				field: "waitMs",
+			});
+		}
+		// A rejected waitMs never admitted anything: no user entries.
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		expect(
+			view.entries.filter((e: { kind: string }) => e.kind === "pi.user"),
+		).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// GET /v1/conversations/:id/submissions/:submissionId (spec §7.1)
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/conversations/:id/submissions/:submissionId", () => {
+	test("returns the submission record (read access suffices)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const admitted = (
+			await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${root.id}/submissions?waitMs=5000`,
+				payload: { input: "hello" },
+				headers: { "content-type": "application/json" },
+			})
+		).json();
+		expect(admitted.submission.status).toBe("done");
+		const response = await app.inject({
+			method: "GET",
+			url: `/v1/conversations/${root.id}/submissions/${admitted.submission.id}`,
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().submission).toEqual(admitted.submission);
+	});
+
+	test("404 submission_not_found for an unknown id", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: `/v1/conversations/${root.id}/submissions/999999`,
+		});
+		expect(response.statusCode).toBe(404);
+		expect(response.json()).toEqual({ error: "submission_not_found" });
+	});
+
+	test("404 for ANOTHER conversation's submission id (never a cross-conversation leak)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const sibling = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const admitted = (
+			await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${root.id}/submissions?waitMs=5000`,
+				payload: { input: "hello" },
+				headers: { "content-type": "application/json" },
+			})
+		).json();
+		const response = await app.inject({
+			method: "GET",
+			url: `/v1/conversations/${sibling.id}/submissions/${admitted.submission.id}`,
+		});
+		expect(response.statusCode).toBe(404);
+		expect(response.json()).toEqual({ error: "submission_not_found" });
 	});
 });
 

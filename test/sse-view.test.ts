@@ -3,8 +3,11 @@
  * SSE").
  *
  * `GET /v1/conversations/:id/stream` serves Server-Sent Events over the raw
- * hijacked reply: `event: snapshot` with the wire view on connect, then
- * `event: view` per watch revision, a `: ping` heartbeat every 15s, and
+ * hijacked reply: `event: snapshot` with the wire view on connect, then per
+ * watch revision an `event: delta` frame (spec §7.3 ruling 11: entry
+ * append/remove + changed docs; empty diffs skipped) — or a fresh
+ * `event: snapshot` when the change is not representable (a compaction's new
+ * head marker, any reorder). A `: ping` heartbeat every 15s, and
  * exactly-one-owner cleanup (stop the watch + clear the interval) on client
  * disconnect or watch termination. Each wire view carries the derived
  * `steer: { busy, queued }` field (submit-while-busy queue semantics).
@@ -18,7 +21,7 @@
  * hang the vitest worker (the suite exiting cleanly IS the no-leak test).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -39,6 +42,8 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { applyDelta, type ViewDelta } from "@sigrun/shared/view-delta";
+import type { ConversationViewWire } from "@sigrun/shared/views";
 import type { FastifyInstance } from "fastify";
 
 /**
@@ -83,21 +88,32 @@ interface TestServer {
 }
 
 /** Boot a hermetic server with a gated first response (a holdable run). */
-async function bootServer(options?: { gate?: Gate }): Promise<TestServer> {
+async function bootServer(options?: {
+	gate?: Gate;
+	env?: Record<string, string>;
+	/** Slow the faux token stream so live generation partials become their own revisions. */
+	tokensPerSecond?: number;
+	responses?: Parameters<
+		ReturnType<typeof fauxProvider>["setResponses"]
+	>[0];
+}): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-sse-"));
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
+		tokensPerSecond: options?.tokensPerSecond,
 	});
-	faux.setResponses([
-		async () => {
-			// Hold the generation open until the test releases the gate: the
-			// busy frame (pi.live.run present) must be observable mid-run.
-			if (options?.gate !== undefined) await options.gate.promise;
-			return fauxAssistantMessage("gated answer");
-		},
-		fauxAssistantMessage("second answer"),
-	]);
+	faux.setResponses(
+		options?.responses ?? [
+			async () => {
+				// Hold the generation open until the test releases the gate: the
+				// busy frame (pi.live.run present) must be observable mid-run.
+				if (options?.gate !== undefined) await options.gate.promise;
+				return fauxAssistantMessage("gated answer");
+			},
+			fauxAssistantMessage("second answer"),
+		],
+	);
 	const contributor: ProviderContributor = {
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
@@ -107,11 +123,17 @@ async function bootServer(options?: { gate?: Gate }): Promise<TestServer> {
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
+		...options?.env,
 	});
+	// The auto-namer would consume a scripted faux response (the compaction
+	// test's disableAutoNaming pattern) — the suites here pin the exact
+	// response sequence.
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
+		settingsDir: dir,
 	});
 	const app = await createServer(opened, config);
 	// Capture every WatchHandle the server acquires (see TestServer.watches).
@@ -278,14 +300,36 @@ class SseConnection {
 	}
 }
 
-/** Parse a frame's data payload as the wire view (view + steer). */
-function wireOf(event: SseEvent): {
-	conversation: { id: number };
-	entries: { kind: string }[];
-	docs: Record<string, unknown>;
-	steer: { busy: boolean; queued: number };
-} {
-	return JSON.parse(event.data);
+/**
+ * Fold a connection's received frames into the current view — the client's
+ * rule (spec §7.3): `snapshot` REPLACES, `delta` folds via `applyDelta`.
+ * Re-folded from scratch per call (frames are tiny; the fold must reflect
+ * EXACTLY the frames observed so far, never a cached fold that could hide
+ * a missed frame).
+ */
+function foldFrames(events: readonly SseEvent[]): ConversationViewWire {
+	let view: ConversationViewWire | undefined;
+	for (const event of events) {
+		if (event.event === "snapshot") {
+			view = JSON.parse(event.data) as ConversationViewWire;
+		} else if (event.event === "delta") {
+			if (view === undefined)
+				throw new Error("a delta frame arrived before any snapshot");
+			view = applyDelta(view, JSON.parse(event.data) as ViewDelta);
+		}
+	}
+	if (view === undefined) throw new Error("no snapshot frame received yet");
+	return view;
+}
+
+/** The folded view of every frame a connection has received so far. */
+function folded(connection: SseConnection): ConversationViewWire {
+	return foldFrames(connection.eventsSoFar());
+}
+
+/** Parse one delta frame's payload. */
+function deltaOf(event: SseEvent): ViewDelta {
+	return JSON.parse(event.data) as ViewDelta;
 }
 
 async function rootOf(server: TestServer): Promise<Conversation> {
@@ -343,7 +387,7 @@ describe("GET /v1/conversations/:id/stream", () => {
 			const snapshot = await connection.waitFor(
 				(event) => event.event === "snapshot",
 			);
-			const view = wireOf(snapshot);
+			const view = foldFrames([snapshot]);
 			expect(view.conversation).toEqual({ id: root.id });
 			expect(view.steer).toEqual({ busy: false, queued: 0 });
 		} finally {
@@ -351,9 +395,17 @@ describe("GET /v1/conversations/:id/stream", () => {
 		}
 	});
 
-	test("view events arrive per revision: busy mid-run, settled after", async () => {
-		const gate = makeGate();
-		const server = await bootServer({ gate });
+	test("delta frames arrive per revision: busy mid-run, settled after", async () => {
+		// A slow token stream makes the throttled generation partials their
+		// own watch revisions, so the docs-only delta shape is observable.
+		const server = await bootServer({
+			tokensPerSecond: 40,
+			responses: [
+				fauxAssistantMessage(
+					"a streaming answer long enough to span several live revisions",
+				),
+			],
+		});
 		const root = await rootOf(server);
 		const connection = new SseConnection(
 			server.port,
@@ -362,9 +414,11 @@ describe("GET /v1/conversations/:id/stream", () => {
 		try {
 			await connection.waitFor((event) => event.event === "snapshot");
 			// Submit through the endpoint WITHOUT awaiting settlement — the
-			// frames must arrive while the (gated) run is in flight.
+			// frames must arrive while the run is in flight. The §7.1 `waitMs`
+			// makes THIS leg wait, so the assertion at the end reads the settled
+			// record.
 			const settled = fetch(
-				`http://127.0.0.1:${server.port}/v1/conversations/${root.id}/submissions`,
+				`http://127.0.0.1:${server.port}/v1/conversations/${root.id}/submissions?waitMs=15000`,
 				{
 					method: "POST",
 					headers: { "content-type": "application/json" },
@@ -372,30 +426,50 @@ describe("GET /v1/conversations/:id/stream", () => {
 				},
 			).then(async (response) => {
 				expect(response.status).toBe(202);
-				return (await response.json()) as { status: string };
+				return (await response.json()) as { submission: { status: string } };
 			});
-			// Mid-run frame: the run control is live (pi.live.run present).
-			const busyFrame = await connection.waitFor(
-				(event) => event.event === "view" && wireOf(event).steer.busy,
-			);
-			const busyView = wireOf(busyFrame);
-			expect(busyView.steer).toEqual({ busy: true, queued: 0 });
-			expect(busyView.conversation).toEqual({ id: root.id });
-			gate.release();
-			const settledFrame = await connection.waitFor(
+			// Mid-run: a delta whose folded view is busy.
+			await connection.waitFor(
 				(event) =>
-					event.event === "view" &&
-					!wireOf(event).steer.busy &&
-					wireOf(event).entries.some(
+					event.event === "delta" && folded(connection).steer.busy,
+			);
+			// Streaming text rides in docs alone (§7.3 ruling 11): at least one
+			// mid-run delta carries docs.set with ONLY `pi.live` and no entries
+			// at all.
+			const liveOnly = await connection.waitFor(
+				(event) =>
+					event.event === "delta" &&
+					folded(connection).steer.busy &&
+					deltaOf(event).entries === undefined &&
+					Object.keys(deltaOf(event).docs?.set ?? {}).length === 1 &&
+					deltaOf(event).docs?.set?.["pi.live"] !== undefined,
+				15_000,
+			);
+			expect(deltaOf(liveOnly).entries).toBeUndefined();
+			const busyView = folded(connection);
+			expect(busyView.steer.busy).toBe(true);
+			expect(busyView.conversation).toEqual({ id: root.id });
+			await connection.waitFor(
+				(event) =>
+					event.event === "delta" &&
+					!folded(connection).steer.busy &&
+					folded(connection).entries.some(
 						(entry) => entry.kind === "pi.assistant",
 					),
+				15_000,
 			);
-			expect(wireOf(settledFrame).conversation).toEqual({ id: root.id });
-			expect((await settled).status).toBe("done");
+			expect(folded(connection).conversation).toEqual({ id: root.id });
+			expect((await settled).submission.status).toBe("done");
+			// The retired `view` event name never appears on the stream.
+			expect(
+				connection.eventsSoFar().every(
+					(event) => event.event === "snapshot" || event.event === "delta",
+				),
+			).toBe(true);
 		} finally {
 			connection.destroy();
 		}
-	});
+	}, 30_000);
 
 	test("a steer-queued input shows queued > 0 while the run holds", async () => {
 		const gate = makeGate();
@@ -410,17 +484,17 @@ describe("GET /v1/conversations/:id/stream", () => {
 			// First submission: gated, so the conversation stays busy.
 			const first = submit(server, root.id, "first, gated");
 			await connection.waitFor(
-				(event) => event.event === "view" && wireOf(event).steer.busy,
+				(event) => event.event === "delta" && folded(connection).steer.busy,
 			);
 			// Second submission: submit-while-busy queues in pi.inbox.
 			const second = submit(server, root.id, "second, queued");
-			const queuedFrame = await connection.waitFor(
+			await connection.waitFor(
 				(event) =>
-					event.event === "view" &&
-					wireOf(event).steer.busy &&
-					wireOf(event).steer.queued > 0,
+					event.event === "delta" &&
+					folded(connection).steer.busy &&
+					folded(connection).steer.queued > 0,
 			);
-			expect(wireOf(queuedFrame).steer).toEqual({ busy: true, queued: 1 });
+			expect(folded(connection).steer).toEqual({ busy: true, queued: 1 });
 			gate.release();
 			// Both settle: the queued input is placed after the first run
 			// (the second faux response serves it).
@@ -461,7 +535,11 @@ describe("GET /v1/conversations/:id/stream", () => {
 				);
 				// Per-connection id counter restarts at 1.
 				expect(secondSnapshot.id).toBe(1);
-				expect(wireOf(secondSnapshot).docs["pi.agent"]).toEqual({
+				expect(
+					(JSON.parse(secondSnapshot.data) as ConversationViewWire).docs[
+						"pi.agent"
+					],
+				).toEqual({
 					model: { provider: "faux", modelId: "m" },
 					thinkingLevel: "high",
 				});
@@ -497,7 +575,9 @@ describe("GET /v1/conversations/:id/stream", () => {
 			try {
 				await second.waitFor((event) => event.event === "snapshot");
 				await root.configure({ thinkingLevel: "low" }, BACKGROUND_CONTEXT);
-				await second.waitFor((event) => event.event === "view");
+				// A configure revision streams as a delta (docs set) on the
+				// second connection.
+				await second.waitFor((event) => event.event === "delta");
 			} finally {
 				second.destroy();
 			}
@@ -508,6 +588,121 @@ describe("GET /v1/conversations/:id/stream", () => {
 			});
 		} finally {
 			first.destroy();
+		}
+	});
+
+	test("a forced compaction mid-stream falls back to a fresh snapshot frame", async () => {
+		// Review Focus 1: the blocking threshold is contextWindow −
+		// reserveTokens = 600 tokens (the compaction.test.ts pattern), so turn
+		// two's transcript crosses it; compaction rewrites the entry list with
+		// a NEW head marker first — not a suffix append — so diffViews returns
+		// undefined and the stream sends `event: snapshot` instead of a delta.
+		const server = await bootServer({
+			env: {
+				SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
+				SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
+				SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+			},
+			responses: [
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("compacted history summary"),
+				fauxAssistantMessage("second answer"),
+			],
+		});
+		const root = await rootOf(server);
+		const connection = new SseConnection(
+			server.port,
+			`/v1/conversations/${root.id}/stream`,
+		);
+		try {
+			await connection.waitFor((event) => event.event === "snapshot");
+			const longInput = `seed. ${"filler ".repeat(180)}`;
+			const first = submit(server, root.id, longInput);
+			await connection.waitFor(
+				(event) =>
+					event.event === "delta" &&
+					!folded(connection).steer.busy &&
+					folded(connection).entries.some(
+						(entry) => entry.kind === "pi.assistant",
+					),
+			);
+			expect(await first).toBe(202);
+			// Turn two crosses the threshold: the compaction rewrite lands as a
+			// SECOND snapshot frame (the fallback), and the folded view carries
+			// the pi.compaction summary entry.
+			const second = submit(
+				server,
+				root.id,
+				`second question ${"context ".repeat(160)}`,
+			);
+			await connection.waitFor(
+				(event) =>
+					event.event === "snapshot" &&
+					connection.eventsSoFar().filter((e) => e.event === "snapshot")
+						.length >= 2 &&
+					folded(connection).entries.some(
+						(entry) => entry.kind === "pi.compaction",
+					),
+				15_000,
+			);
+			await connection.waitFor(
+				() =>
+					folded(connection).entries.some(
+						(entry) =>
+							entry.kind === "pi.assistant" &&
+							JSON.stringify(entry).includes("second answer"),
+					),
+				15_000,
+			);
+			expect(await second).toBe(202);
+			expect(
+				connection.eventsSoFar().filter((e) => e.event === "snapshot")
+					.length,
+			).toBe(2);
+			expect(
+				folded(connection).entries.some(
+					(entry) => entry.kind === "pi.compaction",
+				),
+			).toBe(true);
+		} finally {
+			connection.destroy();
+		}
+	}, 30_000);
+
+	test("folding every received frame equals a fresh GET /v1/conversations/:id", async () => {
+		const gate = makeGate();
+		const server = await bootServer({ gate });
+		const root = await rootOf(server);
+		const connection = new SseConnection(
+			server.port,
+			`/v1/conversations/${root.id}/stream`,
+		);
+		try {
+			await connection.waitFor((event) => event.event === "snapshot");
+			const done = submit(server, root.id, "fold me");
+			await connection.waitFor(
+				(event) => event.event === "delta" && folded(connection).steer.busy,
+			);
+			gate.release();
+			await connection.waitFor(
+				(event) =>
+					event.event === "delta" &&
+					!folded(connection).steer.busy &&
+					folded(connection).entries.some(
+						(entry) => entry.kind === "pi.assistant",
+					),
+			);
+			expect(await done).toBe(202);
+			// The stream is settled and quiet: the fold of EVERY frame (snapshot
+			// + deltas, order preserved) must deep-equal the HTTP read.
+			const response = await fetch(
+				`http://127.0.0.1:${server.port}/v1/conversations/${root.id}`,
+			);
+			expect(response.status).toBe(200);
+			const fetched = (await response.json()) as ConversationViewWire;
+			expect(folded(connection)).toEqual(fetched);
+		} finally {
+			connection.destroy();
 		}
 	});
 
@@ -523,11 +718,12 @@ describe("GET /v1/conversations/:id/stream", () => {
 			await connection.waitFor((event) => event.event === "snapshot");
 			void submit(server, root.id, "ids");
 			await connection.waitFor(
-				(event) => event.event === "view" && wireOf(event).steer.busy,
+				(event) => event.event === "delta" && folded(connection).steer.busy,
 			);
 			gate.release();
 			await connection.waitFor(
-				(event) => event.event === "view" && !wireOf(event).steer.busy,
+				(event) =>
+					event.event === "delta" && !folded(connection).steer.busy,
 			);
 			const ids = connection.eventsSoFar().map((event) => event.id);
 			// At least snapshot + busy + settled.

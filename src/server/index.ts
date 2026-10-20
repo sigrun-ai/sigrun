@@ -42,6 +42,8 @@ import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { registerEventRoutes } from "./routes/events.js";
+import { registerExtensionRoutes } from "./routes/extensions.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMetaRoutes } from "./routes/meta.js";
@@ -182,11 +184,13 @@ export async function createServer(
 	registerMetricsRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
 	registerStreamRoutes(app, ctx);
+	registerEventRoutes(app, ctx);
 	registerSubmissionRoutes(app, ctx);
 	registerInteractionRoutes(app, ctx);
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
+	registerExtensionRoutes(app, ctx);
 	// The core ownership participant (W1 Task 4): registered FIRST so
 	// conversations transfer before any extension's `userDeleted`
 	// observer runs (W4's jobs participant registers behind it).

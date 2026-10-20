@@ -157,8 +157,6 @@ export interface ConversationSummary {
 	readonly id: number;
 	/** The conversation this summary describes is the reserved root. */
 	readonly root: boolean;
-	/** Live active-entry count at list time (a cheap liveness signal). */
-	readonly entryCount: number;
 	/**
 	 * The conversation's session-meta owner, when stamped (Task 2's
 	 * `X-Sigrun-User` seam — Task 3 surfaced it here so a picker can show
@@ -170,6 +168,12 @@ export interface ConversationSummary {
 	 * `meta.autoName` (A2's auto-namer). Absent when neither was written.
 	 */
 	readonly name?: string;
+	/**
+	 * The server-owned auto-generated name (A2), when written and no user
+	 * `name` overrides it. Surfaced so `conversation.changed` events can
+	 * report an auto-name landing without a user edit.
+	 */
+	readonly autoName?: string;
 	/**
 	 * The last activity instant, ISO 8601 (activity.ts stamps it at
 	 * submission admission and run settlement). Absent on a conversation
@@ -227,20 +231,32 @@ export type ConversationForkResponse = ConversationCreateResponse;
 export type ConversationImportResponse = ConversationCreateResponse;
 
 /**
- * The admit response of `POST /v1/conversations/:id/submissions` (Task 9b):
- * the durable submission record (`SubmissionRecord` — id, conversationId,
- * requestId?, type, status, entry?/answer?/reason?) after waiting for
- * settlement. v1 waits server-side (SSE watch is T9d); the record is the
- * wire shape.
+ * The durable submission record on the wire (§7.1): the record as it
+ * stands when read — `status` is `queued` | `placed` | `done` |
+ * `unanswered`; `entry`/`answer`/`reason`/`detail` appear per status.
  */
-export interface SubmissionResponse {
+export interface SubmissionRecordWire {
 	readonly id: number;
 	readonly conversationId: number;
+	/** Host-provided deduplication key, scoped to the conversation. */
+	readonly requestId?: string;
 	readonly type: string;
 	readonly status: string;
 	readonly entry?: number;
 	readonly answer?: number;
 	readonly reason?: string;
+	readonly detail?: unknown;
+}
+
+/**
+ * The admit response of `POST /v1/conversations/:id/submissions` (§7.1):
+ * `202 {submission}` AT ADMISSION — the record as it stands the moment
+ * the submission is admitted. `?waitMs=<n>` (a positive int ≤ 60 000)
+ * opts into a bounded settlement wait; `GET …/submissions/:submissionId`
+ * polls the record later.
+ */
+export interface SubmissionResponse {
+	readonly submission: SubmissionRecordWire;
 }
 
 /** The upload response of `POST /v1/conversations/:id/uploads` (Task 9b). */
@@ -329,6 +345,26 @@ export type InteractionWire = InteractionRecord;
 /** The response of `GET /v1/conversations/:id/interactions`. */
 export interface InteractionList {
 	readonly interactions: readonly InteractionWire[];
+}
+
+/**
+ * One pending interaction in the cross-conversation inbox (§7.5): the
+ * record plus the conversation it waits in, so a client can answer
+ * without opening each conversation (answers still go through the
+ * per-conversation answer route).
+ */
+export type InboxInteraction = InteractionWire & {
+	readonly conversationId: number;
+};
+
+/**
+ * The response of `GET /v1/interactions?status=pending` (§7.5): every
+ * pending interaction in a conversation the caller can see, sorted by
+ * `createdAt` ascending. `pending` is the only indexed (and accepted)
+ * status.
+ */
+export interface InboxResponse {
+	readonly interactions: readonly InboxInteraction[];
 }
 
 /** The response of `POST .../interactions/:callId/answer`. */
@@ -539,13 +575,21 @@ export type AuthStatus =
 	| "degraded";
 
 /**
- * One `GET /v1/auth/check` provider entry — provider id + status, nothing
- * else. `detail` (provider plugins Task 6) is the optional tracker-facing
- * operator detail; the legacy derivations never set it.
+ * One `GET /v1/providers` entry — provider id + status, never key
+ * material. `detail` (provider plugins Task 6) is the optional
+ * tracker-facing operator detail; the legacy derivations never set it.
+ * Core hardening W3 Task 6 (spec §7.6) adds the catalog `models` count
+ * and the owning extension `owner` (absent for the env-degenerate
+ * provider) — the deprecated `/v1/auth/check` alias serves this same
+ * entry, one shape for both routes.
  */
 export interface AuthCheckProvider {
 	readonly provider: string;
 	readonly status: AuthStatus;
+	/** How many models the provider currently serves (best-effort count). */
+	readonly models: number;
+	/** The owning contributor's name; absent for the env-degenerate provider. */
+	readonly owner?: string;
 	readonly detail?: string;
 }
 
@@ -564,6 +608,47 @@ export interface ProvidersResponse {
 /** The `GET /v1/auth/check` payload (Task 6): per-provider statuses, never credentials. */
 export interface AuthCheckResponse {
 	readonly providers: readonly AuthCheckProvider[];
+}
+
+// ─── Extensions (core hardening W3 Task 7, spec §7.7) ─────────────────────
+
+/**
+ * One `GET /v1/extensions` entry: a loaded outcome enriched with the
+ * declared seam kinds, the idle-worker projection, and the package
+ * manifest `version` (absent when the entry carries no readable
+ * manifest). The webui's Extensions settings section renders this list.
+ */
+export interface ExtensionInfo {
+	readonly name: string;
+	readonly status: string;
+	readonly error?: string;
+	readonly version?: string;
+	/** The interaction kinds the factory declared (empty when none). */
+	readonly interactionKinds: readonly string[];
+	/** The ambient surface keys the factory declared (empty when none). */
+	readonly ambientKeys: readonly string[];
+	/** The extension's idle workers (empty when it declared none). */
+	readonly workers: readonly WorkerStatus[];
+}
+
+/** The `GET /v1/extensions` payload (spec §7.7). */
+export interface ExtensionsResponse {
+	readonly extensions: readonly ExtensionInfo[];
+}
+
+/**
+ * A `GET /v1/extensions/:slug/secrets` entry: the key and its winning
+ * source — NEVER the value (the API lists and writes secrets; it never
+ * returns them).
+ */
+export interface ExtensionSecret {
+	readonly key: string;
+	readonly source: "stored" | "env";
+}
+
+/** The `GET`/`PUT`/`DELETE `/v1/extensions/:slug/secrets` payloads: the key list. */
+export interface ExtensionSecretsResponse {
+	readonly secrets: readonly ExtensionSecret[];
 }
 
 // ─── Sibling leaf re-exports ──────────────────────────────────────────────
@@ -657,3 +742,53 @@ export interface TokenCreateResponse {
 	readonly token: string;
 	readonly record: TokenWire;
 }
+
+// ─── Host events (GET /v1/events, core hardening W3 Task 4, spec §7.4) ───
+
+/**
+ * One host event on the `GET /v1/events` SSE wire: `event: <type>` plus
+ * this object as the single-line `data:` JSON. Conversation-scoped
+ * events are delivered only when the connecting principal's `accessOf`
+ * against a FRESH SessionMeta snapshot is not `"none"` (per-event
+ * re-check: share → delivered, un-share → withheld);
+ * `providers.changed` reaches every authenticated principal;
+ * `job.changed` carries `unknown` until W4 narrows it to `JobWire`.
+ * No replay: a client that reconnects refetches (the list GET); the
+ * stream only nudges.
+ */
+export type HostEventWire =
+	| { readonly type: "conversation.created"; readonly conversationId: number }
+	| {
+			readonly type: "conversation.changed";
+			readonly conversationId: number;
+			/** The summary fields that changed, with their new values. */
+			readonly fields: Partial<ConversationSummary>;
+		}
+	| {
+			readonly type: "run.admitted";
+			readonly conversationId: number;
+			readonly submissionId: number;
+		}
+	| {
+			readonly type: "run.settled";
+			readonly conversationId: number;
+			readonly outcome: "answered" | "unanswered";
+			readonly reason?: string;
+		}
+	| {
+			readonly type: "interaction.pending" | "interaction.settled";
+			readonly conversationId: number;
+			readonly callId: string;
+			readonly kind: string;
+		}
+	| {
+			readonly type: "ambient.changed";
+			readonly conversationId: number;
+			readonly key: string;
+		}
+	| {
+			readonly type: "providers.changed";
+			readonly provider: string;
+			readonly status: string;
+		}
+	| { readonly type: "job.changed"; readonly job: unknown }; // W4 narrows to JobWire

@@ -43,6 +43,10 @@
 		"./views": {
 			"types": "./dist/views.d.ts",
 			"default": "./dist/views.js"
+		},
+		"./view-delta": {
+			"types": "./dist/view-delta.d.ts",
+			"default": "./dist/view-delta.js"
 		}
 	},
 	"scripts": {

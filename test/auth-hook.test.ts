@@ -110,11 +110,12 @@ async function fetchMeta(app: FastifyInstance, id: number) {
 	return response.json();
 }
 
-/** Submit one input and settle it (forks need a parent with history). */
+/** Submit one input and settle it (the §7.1 bounded wait) — forks need
+ *  a parent with history. */
 async function submit(app: FastifyInstance, id: number, input: string) {
 	const response = await app.inject({
 		method: "POST",
-		url: `/v1/conversations/${id}/submissions`,
+		url: `/v1/conversations/${id}/submissions?waitMs=5000`,
 		payload: { input },
 		headers: { "content-type": "application/json" },
 	});

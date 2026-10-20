@@ -20,16 +20,15 @@
  * bar; ledgers render newest-first. Ambient surfaces are read-only (the
  * seam routes actions through interaction records).
  *
- * Fetching: on conversation connect + rescheduled after each fetch at the
- * smallest `refreshMs` the current records declare (the record's
- * re-render hint becomes the re-fetch cadence); when NO record declares
- * one — the zero-record bootstrap included — a 30s fallback cadence arms
- * so a surface that appears later is still picked up (a declared
- * `refreshMs` always wins once known). Fetch failures are QUIET
+ * Fetching (W3 Task 4 — the timer cadence is RETIRED): on conversation
+ * connect, and on `ambient.changed` host events for the live
+ * conversation (the app wires `watchEvents` to {@link kick}; an event
+ * for another conversation is ignored). A record's declared `refreshMs`
+ * no longer drives a poll — the extension that declares it owns its
+ * writes, and each write emits the event. Fetch failures are QUIET
  * (best-effort chrome; stream transport health is reported separately by
  * the watcher's error/open transition notices — the launcher's
- * stream-health wiring) and the cadence re-arms after them — one dropped
- * fetch must not stop the refresh chain for the conversation's lifetime.
+ * stream-health wiring).
  *
  * Expiry: `expires: "idle"` surfaces render only while the conversation
  * has a live run ({@link setBusy}, driven by the stream's `steer.busy`);
@@ -53,9 +52,6 @@ type AmbientRow = NonNullable<NonNullable<AmbientWire["body"]>["rows"]>[number];
 /** The gauge bar width (text cells). */
 const GAUGE_CELLS = 10;
 
-/** The cadence when no served record declares a refreshMs (fix wave A4). */
-const FALLBACK_REFRESH_MS = 30_000;
-
 export class AmbientChrome implements Component {
 	readonly #client: SigrunClient;
 
@@ -66,7 +62,6 @@ export class AmbientChrome implements Component {
 	#records: readonly AmbientWire[] = [];
 	/** Whether the conversation has a live run (stream `steer.busy`). */
 	#busy = false;
-	#timer: ReturnType<typeof setTimeout> | undefined;
 
 	/** Rendered-state changes (the app requests a repaint). */
 	onChanged?: () => void;
@@ -82,17 +77,27 @@ export class AmbientChrome implements Component {
 
 	/**
 	 * Retarget the chrome: reset state and fetch immediately (the brief's
-	 * "fetch on connect"). `undefined` clears the chrome and stops timers.
+	 * "fetch on connect"). `undefined` clears the chrome. (W3 Task 4: no
+	 * timer cadence — `ambient.changed` host events own the refreshes.)
 	 */
 	setConversation(id: number | undefined): void {
 		this.#gen += 1;
 		this.#conversationId = id;
 		this.#records = [];
-		this.#clearTimer();
 		if (id === undefined) {
 			this.#changed();
 			return;
 		}
+		void this.#refresh();
+	}
+
+	/**
+	 * Refetch when an `ambient.changed` host event names the LIVE
+	 * conversation (the app's events wiring calls this; other
+	 * conversations' events are ignored).
+	 */
+	kick(conversationId: number): void {
+		if (conversationId !== this.#conversationId) return;
 		void this.#refresh();
 	}
 
@@ -136,69 +141,29 @@ export class AmbientChrome implements Component {
 		);
 	}
 
-	/** Generation-guarded fetch; the refreshMs cadence re-arms in ALL
-	 * outcomes (success, quiet failure) while this refresh still belongs
-	 * to the live conversation — a switch/dispose owns its own timers. */
+	/** Generation-guarded fetch (quiet failures keep the last surfaces). */
 	async #refresh(): Promise<void> {
 		const id = this.#conversationId;
 		const gen = this.#gen;
 		if (id === undefined) return;
+		let list;
 		try {
-			let list;
-			try {
-				list = await this.#client.getAmbient(id);
-			} catch {
-				return; // quiet: keep the last surfaces
-			}
-			if (gen !== this.#gen) return; // stale — a switch happened
-			this.#records = list.ambient;
-			this.#changed();
-		} finally {
-			// One dropped fetch must NOT kill the cadence for the
-			// conversation's lifetime (ambient has no interval and no
-			// frame-triggered re-fetch — this timer chain IS the cadence).
-			if (gen === this.#gen && this.#conversationId !== undefined) {
-				this.#reschedule();
-			}
+			list = await this.#client.getAmbient(id);
+		} catch {
+			return; // quiet: keep the last surfaces
 		}
-	}
-
-	/** Re-fetch at the smallest refreshMs the current records declare;
-	 * with NO declared refreshMs (the zero-record bootstrap included),
-	 * arm the 30s fallback cadence (fix wave A4) — a declared refreshMs
-	 * always wins once one is known. */
-	#reschedule(): void {
-		this.#clearTimer();
-		let soonest: number | undefined;
-		for (const record of this.#records) {
-			if (record.refreshMs === undefined) continue;
-			if (soonest === undefined || record.refreshMs < soonest) {
-				soonest = record.refreshMs;
-			}
-		}
-		this.#timer = setTimeout(() => {
-			this.#timer = undefined;
-			void this.#refresh();
-		}, soonest ?? FALLBACK_REFRESH_MS);
-		// Never keep the process alive for chrome polling.
-		this.#timer.unref();
-	}
-
-	#clearTimer(): void {
-		if (this.#timer !== undefined) {
-			clearTimeout(this.#timer);
-			this.#timer = undefined;
-		}
+		if (gen !== this.#gen) return; // stale — a switch happened
+		this.#records = list.ambient;
+		this.#changed();
 	}
 
 	#changed(): void {
 		this.onChanged?.();
 	}
 
-	/** Stop timers (the app calls this on dispose). */
+	/** Detach (the app calls this on dispose): stale fetches never land. */
 	dispose(): void {
 		this.#gen += 1;
-		this.#clearTimer();
 	}
 
 	/** The chrome: panel blocks, then footer lines, then the statusline. */

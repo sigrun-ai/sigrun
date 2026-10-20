@@ -92,7 +92,8 @@ async function fetchView(app: FastifyInstance, id: number) {
 	return response.json();
 }
 
-/** Submit one input and settle it; returns the settled record. */
+/** Submit one input and settle it (the §7.1 bounded wait); returns the
+ *  settled record. */
 async function submit(
 	app: FastifyInstance,
 	conversationId: number,
@@ -100,7 +101,7 @@ async function submit(
 ) {
 	const response = await app.inject({
 		method: "POST",
-		url: `/v1/conversations/${conversationId}/submissions`,
+		url: `/v1/conversations/${conversationId}/submissions?waitMs=5000`,
 		payload: { input },
 		headers: { "content-type": "application/json" },
 	});
@@ -371,7 +372,7 @@ describe("POST /v1/conversations/import", () => {
 		// the import produced a working conversation, not a dead transcript.
 		faux.setResponses([fauxAssistantMessage("continued answer")]);
 		const continued = await submit(app, body.id, "continue");
-		expect(continued.status).toBe("done");
+		expect(continued.submission.status).toBe("done");
 		const continuedView = await fetchView(app, body.id);
 		expect(
 			continuedView.entries.some(

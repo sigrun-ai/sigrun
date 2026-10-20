@@ -52,6 +52,10 @@ import type {
 	OnboardingState,
 	ClaimResponse,
 	WhoamiResponse,
+	ExtensionsResponse as ExtensionsResponseWire,
+	ExtensionInfo as ExtensionInfoWire,
+	ExtensionSecret as ExtensionSecretWire,
+	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
 } from "@sigrun/shared/views";
 import type { Sharing } from "@sigrun/shared/access";
 
@@ -82,6 +86,10 @@ export type {
 	OnboardingState,
 	ClaimResponse,
 	WhoamiResponse,
+	ExtensionsResponse as ExtensionsResponseWire,
+	ExtensionInfo as ExtensionInfoWire,
+	ExtensionSecret as ExtensionSecretWire,
+	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
 } from "@sigrun/shared/views";
 
 /** A conversation's sharing grant (spec §5.9) — the shared leaf's shape,
@@ -437,6 +445,32 @@ export interface SigrunClient {
 	logout(): Promise<void>;
 	/** The resolved principal (`GET /v1/auth/whoami`). */
 	whoami(): Promise<WhoamiResponse>;
+	/** The loaded-extension inventory (`GET /v1/extensions`). */
+	listExtensions(): Promise<ExtensionsResponseWire>;
+	/** One extension's settings object (`GET /v1/extensions/:slug/settings`). */
+	getExtensionSettings(
+		slug: string,
+	): Promise<Record<string, unknown>>;
+	/** Replace one extension's settings object (`PUT`, admin). */
+	putExtensionSettings(
+		slug: string,
+		value: Record<string, unknown>,
+	): Promise<Record<string, unknown>>;
+	/** One extension's secret keys with their sources (`GET .../secrets`). */
+	listExtensionSecrets(
+		slug: string,
+	): Promise<ExtensionSecretsResponseWire>;
+	/** Set one secret (`PUT .../secrets/:key`, admin; values are never read back). */
+	putExtensionSecret(
+		slug: string,
+		key: string,
+		value: string,
+	): Promise<ExtensionSecretsResponseWire>;
+	/** Delete one secret (`DELETE .../secrets/:key`, admin). */
+	deleteExtensionSecret(
+		slug: string,
+		key: string,
+	): Promise<ExtensionSecretsResponseWire>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -543,9 +577,9 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		return (await response.json()) as T;
 	}
 
-	/** POST/PATCH a JSON body; fail-loud on non-2xx. `parsed` returns the body. */
+	/** Send a JSON body with any method; fail-loud on non-2xx. Returns the parsed body. */
 	async function send(
-		method: "POST" | "PATCH",
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
 		path: string,
 		body: unknown,
 	): Promise<unknown> {
@@ -689,5 +723,32 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			send("POST", "/v1/auth/login", { token }) as Promise<LoginResponse>,
 		logout: () => sendVoid("POST", "/v1/auth/logout", {}),
 		whoami: () => get<WhoamiResponse>("/v1/auth/whoami"),
+		listExtensions: () => get<ExtensionsResponseWire>("/v1/extensions"),
+		getExtensionSettings: (slug) =>
+			get<Record<string, unknown>>(
+				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
+			),
+		putExtensionSettings: (slug, value) =>
+			send(
+				"PUT",
+				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
+				value,
+			) as Promise<Record<string, unknown>>,
+		listExtensionSecrets: (slug) =>
+			get<ExtensionSecretsResponseWire>(
+				`/v1/extensions/${encodeURIComponent(slug)}/secrets`,
+			),
+		putExtensionSecret: (slug, key, value) =>
+			send(
+				"PUT",
+				`/v1/extensions/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(key)}`,
+				{ value },
+			) as Promise<ExtensionSecretsResponseWire>,
+		deleteExtensionSecret: (slug, key) =>
+			send(
+				"DELETE",
+				`/v1/extensions/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(key)}`,
+				{},
+			) as Promise<ExtensionSecretsResponseWire>,
 	};
 }

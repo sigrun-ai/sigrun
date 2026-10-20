@@ -51,9 +51,12 @@ import type {
 	ContributedWebuiBundle,
 	WebuiBundleCollision,
 } from "../server/static.js";
+import { EventHub } from "../server/events/hub.js";
+import { providerAuthStatus } from "../server/helpers.js";
 import {
 	bootRefresh,
 	DEFAULT_REFRESH_TIMEOUT_MS,
+	refreshProvider,
 } from "./providers/refresh.js";
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
@@ -64,6 +67,7 @@ import {
 	ensureStoreRoots,
 	resolveStoreRoots,
 	sharedExtensionStores,
+	type SharedExtensionStores,
 	type StoreRoots,
 } from "./stores.js";
 import {
@@ -208,6 +212,14 @@ export interface OpenedHarness {
 	 */
 	readonly settings: SettingsStore;
 	/**
+	 * The boot-shared extension store trio (core hardening W3 Task 7,
+	 * spec §7.7): the `/v1/extensions` settings/secrets routes ride its
+	 * slug-addressed admin surface — the SAME `secrets.json` sections and
+	 * `settings/<slug>.json` files every scoped handle reads, so an API
+	 * write is visible to the extension with no restart.
+	 */
+	readonly extensionStores: SharedExtensionStores;
+	/**
 	 * The packages dir (`<config-dir>/packages`) the loader resolved
 	 * extension specifiers against — where `syncPackages` installs the
 	 * settings file's `packages` declarations. Exposed for the §5 meta
@@ -245,6 +257,14 @@ export interface OpenedHarness {
 	 */
 	readonly eventBus: EventBus;
 	/**
+	 * The host event hub (W3 Task 4, spec §7.4): the single fan-out point
+	 * `GET /v1/events` subscribes to. Fed by the event bus's
+	 * commit-derived host events (conversations/runs/interactions/ambient)
+	 * and the provider refresh paths' readiness diffs
+	 * (`providers.changed`).
+	 */
+	readonly events: EventHub;
+	/**
 	 * The idle-worker projection (memory-seam Task 5) for `GET /v1/meta`:
 	 * extension name → per-worker `{name, lastRunAt?, lastError?}` — a live
 	 * function (statuses change over the process lifetime), re-derived per
@@ -273,6 +293,17 @@ export interface OpenedHarness {
 	 * join it if still in flight.
 	 */
 	readonly bootRefresh: Promise<void>;
+	/**
+	 * One bounded single-provider refresh (core hardening W3 Task 6,
+	 * spec §7.6), boot-wired with the SAME readiness observation as the
+	 * boot and interval refreshes (a flipped provider publishes
+	 * `providers.changed`). The provider ROUTES call this — `POST
+	 * /v1/providers/:id/refresh` and the credential write paths — so a
+	 * route-triggered refresh behaves exactly like every other refresh
+	 * path. Never rejects; failures warn and the catalog holds its
+	 * last-known state.
+	 */
+	readonly refreshProvider: (providerId: string) => Promise<void>;
 	/**
 	 * Stop the interval refresh scheduler (provider plugins Task 5): the
 	 * host-owned cadence re-running `models.refresh()` over every dynamic
@@ -489,7 +520,9 @@ export async function openHarness(
 	// ExtensionSettingsStore over the roots resolved at the top of boot;
 	// each seam host scopes it to its extension's slug (cheap, no I/O —
 	// the cache dir materializes lazily on first `paths.cache` access).
-	const sharedStores = sharedExtensionStores(roots);
+	// The boot env feeds the admin surface's env-secret listing (the
+	// `SIGRUN_EXT_<SLUG>_` fallbacks — never written down, listed only).
+	const sharedStores = sharedExtensionStores(roots, env);
 	const seamHosts = new Map<string, SeamHost>();
 	const seamKinds = new Map<string, DeclaredKinds>();
 	const {
@@ -637,6 +670,56 @@ export async function openHarness(
 			modelsStore,
 		},
 	);
+	// The host event hub (W3 Task 4, spec §7.4): ONE per opened harness.
+	// The event bus's commit-derived events subscribe below (after the bus
+	// opens); the provider refresh paths observe readiness here — each
+	// completed refresh re-derives the per-provider readiness through the
+	// shared `providerAuthStatus` derivation and publishes one
+	// `providers.changed` per provider whose status moved.
+	const events = new EventHub();
+	// SAFETY: `providerAuthStatus` reads ONLY the five readiness inputs
+	// (providerReadiness/providerOwnership/providerHealth/auth/providerEnv)
+	// — all boot-complete at this point; the cast supplies the unrelated
+	// OpenedHarness fields as `unknown` placeholders nothing here reads.
+	const provisionalOpened = {
+		providerReadiness,
+		providerOwnership,
+		providerHealth,
+		auth: authStore,
+		providerEnv: effectiveEnv,
+	} as unknown as OpenedHarness;
+	const producersByName = new Map(
+		providerHealth.map((producer) => [producer.name, producer]),
+	);
+	const snapshotReadiness = (): ReadonlyMap<string, string> => {
+		const snapshot = new Map<string, string>();
+		for (const { id } of models.getProviders()) {
+			snapshot.set(
+				id,
+				providerAuthStatus(provisionalOpened, id, producersByName).status,
+			);
+		}
+		return snapshot;
+	};
+	let lastReadiness: ReadonlyMap<string, string> | undefined;
+	const observeReadiness = (snapshot: ReadonlyMap<string, string>): void => {
+		const prior = lastReadiness;
+		lastReadiness = snapshot;
+		if (prior === undefined) return; // the first snapshot only baselines
+		for (const [provider, status] of snapshot) {
+			if (prior.get(provider) === status) continue;
+			events.publish({ type: "providers.changed", provider, status });
+		}
+		for (const provider of prior.keys()) {
+			if (snapshot.has(provider)) continue;
+			// A provider that vanished from the catalog degrades out.
+			events.publish({
+				type: "providers.changed",
+				provider,
+				status: "not_ready",
+			});
+		}
+	};
 	// The boot refresh (Task 4, spec refresh policy 1): one network-allowed
 	// refresh of every dynamic provider, started HERE and never awaited on
 	// the boot path — it runs concurrently with `Harness.open` and listen.
@@ -644,7 +727,19 @@ export async function openHarness(
 	// (never blocks boot). The tracked promise rides on the returned handle.
 	const bootRefreshDone = bootRefresh(models, {
 		timeoutMs: DEFAULT_REFRESH_TIMEOUT_MS,
+		onReadinessChange: observeReadiness,
+		snapshotReadiness,
 	});
+	// The boot-wired single-provider refresh (W3 Task 6): the route
+	// surface's refresh — the same bound policy `resolveServedModelRefreshing`
+	// runs on a miss, with the same readiness observation so a provider a
+	// credential write flips publishes `providers.changed` like every
+	// other refresh path does.
+	const refreshOneProvider = (providerId: string): Promise<void> =>
+		refreshProvider(models, providerId, {
+			onReadinessChange: observeReadiness,
+			snapshotReadiness,
+		});
 	// The interval refresh scheduler (Task 5, refresh policy 2): the cadence
 	// keeping the catalogs current after the boot refresh. Started only
 	// when the resolved interval is greater than zero (0 = the designed
@@ -654,6 +749,8 @@ export async function openHarness(
 		config.providers.refreshIntervalMinutes > 0
 			? startProviderRefresh(models, {
 					intervalMinutes: config.providers.refreshIntervalMinutes,
+					onReadinessChange: observeReadiness,
+					snapshotReadiness,
 				}).stop
 			: (): void => {};
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
@@ -731,6 +828,11 @@ export async function openHarness(
 		idleThresholdMs: options.eventBus?.idleThresholdMs ?? memorySeam.idleThresholdMs,
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
+		// W3 Task 4: the hub's subscription is installed at open —
+		// synchronous, no-blocking-work (the SSE route's filtering side
+		// lane does its own async work). Exposed so the bus's open() can
+		// wire it before any commit lands.
+		onHostEvent: (event) => events.publish(event),
 	});
 	// Activity stamping (UI refresh A1): every settled run stamps its
 	// conversation's `lastActivityAt` (the admission-side stamp lives in the
@@ -820,14 +922,17 @@ export async function openHarness(
 		identity,
 		memoryHealth,
 		settings: settingsStore,
+		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,
 		seamKinds,
 		eventBus,
+		events,
 		workerStatuses: () => eventBus.workerStatuses(),
 		now,
 		autoNamer,
 		bootRefresh: bootRefreshDone,
+		refreshProvider: refreshOneProvider,
 		stopProviderRefresh,
 	};
 }

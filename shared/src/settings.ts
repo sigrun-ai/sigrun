@@ -60,6 +60,13 @@ export interface ServerSettings {
 	 */
 	readonly maxUploadBytes?: number;
 	/**
+	 * `SIGRUN_MAX_FILE_READ_BYTES` — a positive integer. The raw
+	 * file-read cap (`GET .../files/raw`): 413 `file_too_large` beyond
+	 * it. Default 16 MiB (spec §7.8) — the agent writes workspace
+	 * files, so nothing else bounds them.
+	 */
+	readonly maxFileReadBytes?: number;
+	/**
 	 * `SIGRUN_DATA_DIR` — a non-empty path. Applied where the env var is
 	 * absent; the env-or-file value wins VERBATIM (no `/sigrun` suffix),
 	 * exactly like the stores resolver's explicit tier. The DB default

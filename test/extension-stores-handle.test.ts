@@ -207,6 +207,9 @@ test("a factory-time settings read resolves the REAL slug's file (provisional pr
 		expect(opened.extensionOutcomes).toContainEqual({
 			name: "acme-settings-tool",
 			status: "ok",
+			// The fixture package's manifest version (W3 Task 7: outcomes
+			// carry the manifest version for the /v1/extensions inventory).
+			version: "0.0.0",
 		});
 		expect(seen.__fixtureSettingsSeen).toEqual({
 			baseUrl: "https://acme.example.invalid/v1",

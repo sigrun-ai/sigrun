@@ -58,7 +58,6 @@ function makeTurnClient(init?: { readonly forkId?: number }): {
 		Promise.resolve({
 			id: 11,
 			root: true,
-			entryCount: 0,
 			archived: false,
 			pinned: false,
 		}),

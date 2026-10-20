@@ -17,7 +17,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -50,10 +50,13 @@ interface TestServer {
 }
 
 /** Boot a hermetic server. `now` pins the activity clock; `gate` holds the
- * first generation open until released. */
+ * first generation open until released; `auth`/`users` boot the token
+ * posture (directory users beyond the seeded admin, for the mine filter). */
 async function bootServer(options?: {
 	now?: () => Date;
 	gate?: { readonly promise: Promise<void> };
+	auth?: "none" | "token";
+	users?: readonly string[];
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-listmeta-"));
 	const faux = fauxProvider({
@@ -72,14 +75,20 @@ async function bootServer(options?: {
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
 	};
+	const identity = await seededIdentity(dir);
+	for (const user of options?.users ?? []) {
+		if (identity.users.get(user) === undefined) {
+			await identity.users.add({ user, admin: false, source: "cli" });
+		}
+	}
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "none",
+		SIGRUN_AUTH: options?.auth ?? "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const opened = await openHarness(config, {
-		identity: await seededIdentity(dir),
+		identity,
 		extensions: [contributor],
 		env: {},
 		...(options?.now === undefined ? {} : { now: options.now }),
@@ -121,7 +130,8 @@ async function createViaRoute(app: FastifyInstance): Promise<number> {
 	return response.json().id as number;
 }
 
-/** Submit one input and settle it; returns the settled record. */
+/** Submit one input and settle it (the §7.1 bounded wait); returns the
+ *  settled record. */
 async function submit(
 	app: FastifyInstance,
 	conversationId: number,
@@ -129,7 +139,7 @@ async function submit(
 ) {
 	const response = await app.inject({
 		method: "POST",
-		url: `/v1/conversations/${conversationId}/submissions`,
+		url: `/v1/conversations/${conversationId}/submissions?waitMs=5000`,
 		payload: { input },
 		headers: { "content-type": "application/json" },
 	});
@@ -223,8 +233,8 @@ describe("GET /v1/conversations list metadata", () => {
 			agent: { model: opened.defaultModel },
 		});
 		const settled = await submit(app, root.id, "hello");
-		expect(settled.status).toBe("done");
-		const at = settled.answer;
+		expect(settled.submission.status).toBe("done");
+		const at = settled.submission.answer;
 		expect(typeof at).toBe("number");
 		const forked = await app.inject({
 			method: "POST",
@@ -269,8 +279,8 @@ describe("GET /v1/conversations list metadata", () => {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
-		// The route waits for settlement, so fire it and hold the run open:
-		// while the generation is gated, the stamp must ALREADY be there.
+		// The route returns at admission (§7.1), so fire it and hold the run
+		// open: while the generation is gated, the stamp must ALREADY be there.
 		const pending = app.inject({
 			method: "POST",
 			url: `/v1/conversations/${root.id}/submissions`,
@@ -292,5 +302,132 @@ describe("GET /v1/conversations list metadata", () => {
 		}
 		const response = await pending;
 		expect(response.statusCode).toBe(202);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The lean list (core hardening W3 Task 2): scan records + session-meta
+// snapshots only — no view reads, no entryCount, archived/mine filters.
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/conversations lean list", () => {
+	test("summaries carry no entryCount key", async () => {
+		const { app } = await bootServer();
+		await createViaRoute(app);
+		await createViaRoute(app);
+		const rows = await listRows(app);
+		expect(rows.length).toBeGreaterThanOrEqual(2);
+		for (const row of rows) {
+			expect("entryCount" in row).toBe(false);
+		}
+	});
+
+	test("?archived=false omits archived; ?archived=true only archived; absent = all", async () => {
+		const { app } = await bootServer();
+		const live = await createViaRoute(app);
+		const archived = await createViaRoute(app);
+		expect((await patchMeta(app, archived, { archived: true })).statusCode).toBe(200);
+		const rows = await listRows(app);
+		expect(rows.map((row) => row.id)).toEqual(
+			expect.arrayContaining([live, archived]),
+		);
+		const active = await app.inject({
+			method: "GET",
+			url: "/v1/conversations?archived=false",
+		});
+		expect(active.statusCode).toBe(200);
+		const activeRows = active.json().conversations as Row[];
+		expect(activeRows.map((row) => row.id)).toContain(live);
+		expect(activeRows.map((row) => row.id)).not.toContain(archived);
+		for (const row of activeRows) expect(row.archived).toBe(false);
+		const onlyArchived = await app.inject({
+			method: "GET",
+			url: "/v1/conversations?archived=true",
+		});
+		expect(onlyArchived.statusCode).toBe(200);
+		expect((onlyArchived.json().conversations as Row[]).map((row) => row.id)).toEqual([
+			archived,
+		]);
+	});
+
+	test("a non-boolean archived value is a fail-loud 400", async () => {
+		const { app } = await bootServer();
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/conversations?archived=maybe",
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_field", field: "archived" });
+	});
+
+	test("?mine=true returns only the caller's conversations (token identities)", async () => {
+		const { app, opened } = await bootServer({
+			auth: "token",
+			users: ["alice", "bob"],
+		});
+		const aliceToken = (await opened.identity.tokens.create("t", "alice")).token;
+		const bobToken = (await opened.identity.tokens.create("t", "bob")).token;
+		const createAs = async (token: string): Promise<number> => {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/conversations",
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(response.statusCode).toBe(201);
+			return response.json().id as number;
+		};
+		const aliceId = await createAs(aliceToken);
+		const bobId = await createAs(bobToken);
+		// A conversation alice can SEE but does not own (household read
+		// sharing) — without it the unfiltered and mine lists would coincide
+		// (a non-owner's private rows are hidden, not listed).
+		const shared = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${bobId}/meta`,
+			payload: { sharing: { scope: "household", level: "read" } },
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${bobToken}`,
+			},
+		});
+		expect(shared.statusCode).toBe(200);
+		const listAs = async (token: string, query = ""): Promise<number[]> => {
+			const response = await app.inject({
+				method: "GET",
+				url: `/v1/conversations${query}`,
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(response.statusCode).toBe(200);
+			return (response.json().conversations as Row[]).map((row) => row.id as number);
+		};
+		// Unfiltered, alice sees her own, the shared one, and the boot root
+		// (ownerless); ?mine narrows to exactly her own row.
+		const unfiltered = await listAs(aliceToken);
+		expect(unfiltered).toEqual(expect.arrayContaining([aliceId, bobId]));
+		expect(await listAs(aliceToken, "?mine=true")).toEqual([aliceId]);
+		expect(await listAs(bobToken, "?mine=true")).toEqual([bobId]);
+	});
+
+	test("GET /v1/conversations performs zero view reads", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		await createViaRoute(app);
+		// Every conversation handle shares ConversationImpl's prototype, so
+		// ONE spy there observes viewState on every instance the route (or
+		// anything else in this request) could resolve.
+		const proto = Object.getPrototypeOf(root) as {
+			viewState: (context: unknown) => Promise<unknown>;
+		};
+		const spy = vi.spyOn(proto, "viewState");
+		try {
+			const response = await app.inject({ method: "GET", url: "/v1/conversations" });
+			expect(response.statusCode).toBe(200);
+			expect((response.json().conversations as Row[]).length).toBeGreaterThanOrEqual(2);
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

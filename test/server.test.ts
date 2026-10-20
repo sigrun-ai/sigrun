@@ -168,7 +168,6 @@ describe("GET /v1/conversations", () => {
 		]);
 		for (const conversation of body.conversations) {
 			expect(typeof conversation.id).toBe("number");
-			expect(typeof conversation.entryCount).toBe("number");
 		}
 	});
 

@@ -48,7 +48,7 @@ const BASE = "http://sigrun.example.invalid";
 describe("SigrunClient request shaping", () => {
 	test("listConversations GETs /v1/conversations with the X-Sigrun-User header", async () => {
 		const body = {
-			conversations: [{ id: 1, root: true, entryCount: 0, owner: "acme-agent" }],
+			conversations: [{ id: 1, root: true, owner: "acme-agent" }],
 		};
 		const { calls, fetchImpl } = stubFetch(body);
 		const client = new SigrunClient({
@@ -148,17 +148,20 @@ describe("SigrunClient request shaping", () => {
 	});
 
 	test("submit POSTs the text input parts and whenBusy", async () => {
-		const settled = {
-			id: 11,
-			conversationId: 2,
-			type: "input",
-			status: "done",
+		const admitted = {
+			submission: {
+				id: 11,
+				conversationId: 2,
+				type: "input",
+				status: "placed",
+				entry: 4,
+			},
 		};
-		const { calls, fetchImpl } = stubFetch(settled, { status: 202 });
+		const { calls, fetchImpl } = stubFetch(admitted, { status: 202 });
 		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
 		const whenBusy: WhenBusyMode = "steer";
 		const result = await client.submit(2, "hello there", whenBusy);
-		expect(result).toEqual(settled);
+		expect(result).toEqual(admitted);
 		expect(calls[0]).toMatchObject({
 			input: `${BASE}/v1/conversations/2/submissions`,
 			method: "POST",
@@ -170,7 +173,9 @@ describe("SigrunClient request shaping", () => {
 	});
 
 	test("submit without whenBusy omits the field", async () => {
-		const { calls, fetchImpl } = stubFetch({ id: 1 });
+		const { calls, fetchImpl } = stubFetch({
+			submission: { id: 1, conversationId: 2, type: "input", status: "queued" },
+		});
 		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
 		await client.submit(2, "plain");
 		expect(calls[0]?.body).toBe(

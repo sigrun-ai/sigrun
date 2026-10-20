@@ -97,7 +97,9 @@ function makeHarness(init?: {
 			const name = decodeURIComponent(input.slice(input.lastIndexOf("/") + 1));
 			body = { path: `uploads/1/${name}` };
 		} else if (input.endsWith("/submissions")) {
-			body = { id: 9, conversationId: 1, type: "input", status: "done" };
+			body = {
+				submission: { id: 9, conversationId: 1, type: "input", status: "done" },
+			};
 		} else if (input.endsWith("/export")) {
 			// text(), not json(): the export route serves raw JSONL.
 			const jsonl =
@@ -271,6 +273,27 @@ describe("Composer", () => {
 			},
 		]);
 		expect(composerTextarea(renderer).props.value).toBe("");
+	});
+
+	test("two rapid clicks while not busy admit ONE submission (§7.1 admission-flight guard)", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderComposer(client, makeView());
+		await typeText(renderer, "double click");
+		const button = sendButton(renderer);
+		await act(async () => {
+			// Two clicks in ONE synchronous burst: the first admission is
+			// in flight (the 202 has not landed), so the second must be a
+			// no-op — React state is not committed between the two clicks.
+			void button.props.onClick();
+			void button.props.onClick();
+		});
+		const posts = () => calls.filter((c) => c.input.endsWith("/submissions"));
+		expect(posts()).toHaveLength(1);
+		// The guard releases once the admission resolves: a later click
+		// (with fresh text) sends again.
+		await typeText(renderer, "and again");
+		await clickSend(renderer);
+		expect(posts()).toHaveLength(2);
 	});
 
 	test("steer.busy flips the button to Steer and submits with whenBusy:steer", async () => {

@@ -263,7 +263,8 @@ async function rootConversation(opened: OpenedHarness) {
 }
 
 /**
- * Submit one input, deliver the settle event, and wait out the background
+ * Submit one input (the §7.1 bounded settlement wait — the faux provider
+ * settles in ms), deliver the settle event, and wait out the background
  * naming call. Boot schedules its drain a macrotask after the commit;
  * pumping `drain` directly makes the delivery deterministic, and
  * `autoNamer.idle()` waits for the naming it dispatched.
@@ -275,14 +276,14 @@ async function submitAndName(
 ): Promise<{ status: string }> {
 	const response = await server.app.inject({
 		method: "POST",
-		url: `/v1/conversations/${conversationId}/submissions`,
+		url: `/v1/conversations/${conversationId}/submissions?waitMs=5000`,
 		payload: { input },
 		headers: { "content-type": "application/json" },
 	});
 	expect(response.statusCode).toBe(202);
 	await server.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
 	await server.opened.autoNamer.idle();
-	return response.json() as { status: string };
+	return (response.json() as { submission: { status: string } }).submission;
 }
 
 /** The listing row of one conversation (untyped: assertions ARE the shape). */

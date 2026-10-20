@@ -72,7 +72,7 @@ describe("createClient", () => {
 	test("listConversations GETs /v1/conversations", async () => {
 		const body: ConversationList = {
 			conversations: [
-				{ id: 1, root: true, entryCount: 0, archived: false, pinned: false, access: "write" },
+				{ id: 1, root: true, archived: false, pinned: false, access: "write" },
 			],
 		};
 		const { calls, fetchImpl } = stubFetch(body);
@@ -220,21 +220,24 @@ describe("createClient", () => {
 		});
 	});
 
-	test("submit POSTs the §5 submission body (input parts + requestId + whenBusy) and parses the settled record", async () => {
-		const settled = {
-			id: 7,
-			conversationId: 2,
-			type: "input",
-			status: "done",
+	test("submit POSTs the §7.1 submission body (input parts + requestId + whenBusy) and parses the admission record", async () => {
+		const admitted = {
+			submission: {
+				id: 7,
+				conversationId: 2,
+				type: "input",
+				status: "placed",
+				entry: 5,
+			},
 		};
-		const { calls, fetchImpl } = stubFetch(settled, { status: 202 });
+		const { calls, fetchImpl } = stubFetch(admitted, { status: 202 });
 		const client = createClient({ fetch: fetchImpl });
 		const result = await client.submit(
-			2,
-			[{ type: "text", text: "hello there" }],
-			{ requestId: "req-1", whenBusy: "steer" },
+				2,
+				[{ type: "text", text: "hello there" }],
+				{ requestId: "req-1", whenBusy: "steer" },
 		);
-		expect(result).toEqual(settled);
+		expect(result).toEqual(admitted);
 		expect(calls).toEqual([
 			{
 				input: "/v1/conversations/2/submissions",
@@ -251,7 +254,9 @@ describe("createClient", () => {
 	});
 
 	test("submit omits requestId/whenBusy when the options are absent", async () => {
-		const { calls, fetchImpl } = stubFetch({ id: 1 });
+		const { calls, fetchImpl } = stubFetch({
+			submission: { id: 1, conversationId: 3, type: "input", status: "queued" },
+		});
 		const client = createClient({ fetch: fetchImpl });
 		await client.submit(3, [{ type: "text", text: "plain" }]);
 		expect(calls[0]?.input).toBe("/v1/conversations/3/submissions");
@@ -299,7 +304,7 @@ describe("createClient", () => {
 	});
 
 	test("createConversation POSTs /v1/conversations and parses the created summary", async () => {
-		const body = { id: 42, root: false, entryCount: 0, archived: false, pinned: false };
+		const body = { id: 42, root: false, archived: false, pinned: false };
 		const { calls, fetchImpl } = stubFetch(body);
 		const client = createClient({ fetch: fetchImpl });
 		const created = await client.createConversation();

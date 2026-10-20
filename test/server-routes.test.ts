@@ -54,6 +54,11 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/auth/check"],
 	// The W1 Task 6 provider-readiness home + the deprecated alias.
 	["GET", "/v1/providers"],
+	// The W3 Task 6 provider mutations (refresh + admin credential
+	// write/remove).
+	["POST", "/v1/providers/:id/refresh"],
+	["PUT", "/v1/providers/:id/credential"],
+	["DELETE", "/v1/providers/:id/credential"],
 	// The W1 Task 3 auth surface (routes/auth.ts).
 	["POST", "/v1/auth/login"],
 	["POST", "/v1/auth/logout"],
@@ -73,12 +78,22 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/models"],
 	["GET", "/v1/settings"],
 	["PATCH", "/v1/settings"],
+	// The W3 Task 7 extension settings/secrets surface (spec §7.7).
+	["GET", "/v1/extensions"],
+	["GET", "/v1/extensions/:slug/settings"],
+	["PUT", "/v1/extensions/:slug/settings"],
+	["GET", "/v1/extensions/:slug/secrets"],
+	["PUT", "/v1/extensions/:slug/secrets/:key"],
+	["DELETE", "/v1/extensions/:slug/secrets/:key"],
+	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
+	["GET", "/v1/interactions"],
 	["POST", "/v1/conversations"],
 	["GET", "/v1/conversations"],
 	["POST", "/v1/conversations/import"],
 	["GET", "/v1/conversations/:id"],
 	["GET", "/v1/conversations/:id/stream"],
 	["POST", "/v1/conversations/:id/submissions"],
+	["GET", "/v1/conversations/:id/submissions/:submissionId"],
 	["POST", "/v1/conversations/:id/configure"],
 	["POST", "/v1/conversations/:id/abort"],
 	["GET", "/v1/conversations/:id/interactions"],
@@ -93,6 +108,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["PUT", "/v1/conversations/:id/uploads/:name"],
 	["GET", "/v1/conversations/:id/files"],
 	["GET", "/v1/conversations/:id/files/content"],
+	// The W3 Task 7 bounded raw file read (spec §7.8).
+	["GET", "/v1/conversations/:id/files/raw"],
 ];
 
 /** One unknown-id probe: where the route requires a body, a VALID one. */
@@ -132,6 +149,12 @@ const UNKNOWN_ID_CASES: readonly UnknownIdCase[] = [
 		method: "POST",
 		url: `/v1/conversations/${UNKNOWN_ID}/submissions`,
 		payload: { input: [{ type: "text", text: "x" }] },
+		status: 404,
+		body: { error: "conversation_not_found" },
+	},
+	{
+		method: "GET",
+		url: `/v1/conversations/${UNKNOWN_ID}/submissions/1`,
 		status: 404,
 		body: { error: "conversation_not_found" },
 	},
@@ -325,7 +348,15 @@ describe("server route table", () => {
 				"/v1/onboarding",
 				"/v1/onboarding/claim",
 				"/v1/providers",
+				"/v1/providers/:id/credential",
+				"/v1/providers/:id/refresh",
+				"/v1/events",
+				"/v1/extensions",
+				"/v1/extensions/:slug/secrets",
+				"/v1/extensions/:slug/secrets/:key",
+				"/v1/extensions/:slug/settings",
 				"/v1/settings",
+				"/v1/interactions",
 				"/v1/users",
 				"/v1/users/:user",
 				"/v1/users/invites",
@@ -334,6 +365,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id",
 				"/v1/conversations/:id/stream",
 				"/v1/conversations/:id/submissions",
+				"/v1/conversations/:id/submissions/:submissionId",
 				"/v1/conversations/:id/configure",
 				"/v1/conversations/:id/abort",
 				"/v1/conversations/:id/interactions",
@@ -347,6 +379,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id/uploads/:name",
 				"/v1/conversations/:id/files",
 				"/v1/conversations/:id/files/content",
+				"/v1/conversations/:id/files/raw",
 			].sort(),
 		);
 		// And every method binds to its path.

@@ -1,13 +1,15 @@
 /**
- * The TUI's §5 conversation stream watcher (Task 4): a Node-side SSE
- * client over `GET /v1/conversations/:id/stream` carrying `snapshot` and
- * `view` frames.
+ * The TUI's §5 conversation stream watcher (Task 4; delta frames in core
+ * hardening W3 Task 3, spec §7.3 ruling 11): a Node-side SSE client over
+ * `GET /v1/conversations/:id/stream` carrying `snapshot` and `delta` frames.
  *
- * Frame contract (verified against src/server/index.ts): every frame is a
- * FULL immutable `ConversationViewWire` revision — the consumer replaces,
- * never accumulates. The server sends a fresh `snapshot` on EVERY connect,
- * so a reconnect's snapshot SUBSUMES any frame missed while disconnected —
- * no replay, no stale merge (Review Focus 1).
+ * This watcher is the TUI's delta folder: `snapshot` REPLACES the held view
+ * wholesale, `delta` folds into it via the shared `applyDelta`, and every
+ * accepted frame surfaces to the consumer as a FULL immutable
+ * `ConversationViewWire` revision — the consumer replaces, never
+ * accumulates. The server sends a fresh `snapshot` on EVERY connect, so a
+ * reconnect's snapshot SUBSUMES any frame missed while disconnected — no
+ * replay, no stale merge (Review Focus 1).
  *
  * Node 22 global fetch + manual frame parsing: `:` lines are comments,
  * `data:` lines accumulate until a blank line dispatches the frame;
@@ -26,11 +28,17 @@
  */
 
 import type { ConversationViewWire } from "./api.js";
+import { applyDelta, type ViewDelta } from "@sigrun/shared/view-delta";
+import type { HostEventWire } from "@sigrun/shared/views";
 
 export interface WatchHandlers {
 	/** A `snapshot` frame arrived (the full view on connect/re-attach). */
 	readonly onSnapshot?: (view: ConversationViewWire) => void;
-	/** A `view` frame arrived (a full revision — replace, never accumulate). */
+	/**
+	 * A full revision arrived — either the connect snapshot or the fold of
+	 * every `delta` since it. The view is ALWAYS a full immutable
+	 * `ConversationViewWire`: replace, never accumulate.
+	 */
 	readonly onView?: (view: ConversationViewWire) => void;
 	/**
 	 * A failure: a malformed frame (stream stays open) or a transport
@@ -66,8 +74,8 @@ export interface WatchOptions {
 /** The watcher handle: `unwatch()` closes the stream, idempotent. */
 export type Unwatch = () => void;
 
-/** Parse a frame; `undefined` when the payload is not a view object. */
-function parseFrame(data: string): ConversationViewWire | undefined {
+/** Parse a frame; `undefined` when the payload is not an object. */
+function parseFrame(data: string): unknown | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(data);
@@ -77,7 +85,7 @@ function parseFrame(data: string): ConversationViewWire | undefined {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		return undefined;
 	}
-	return parsed as ConversationViewWire;
+	return parsed;
 }
 
 /**
@@ -165,6 +173,12 @@ export function watchConversation(
 	let abort: AbortController | undefined;
 	/** Per-attempt onError dedupe (fix wave A10); cleared on open. */
 	let reportedTransportError = false;
+	/**
+	 * The held view: the last snapshot, folded with every accepted delta
+	 * since. `undefined` before the first snapshot — a delta arriving then
+	 * is malformed (there is nothing to fold into).
+	 */
+	let currentView: ConversationViewWire | undefined;
 
 	function scheduleReconnect(): void {
 		attempts += 1;
@@ -221,19 +235,29 @@ export function watchConversation(
 
 		const parser = createFrameParser((frame) => {
 			if (closed) return;
-			const view = parseFrame(frame.data);
-			if (view === undefined) {
+			const parsed = parseFrame(frame.data);
+			if (parsed === undefined) {
 				handlers.onError?.(
 					`malformed ${frame.event === "" ? "message" : frame.event} frame (not a view object)`,
 				);
 				return;
 			}
 			if (frame.event === "snapshot") {
-				// A fresh snapshot SUBSUMES anything missed — the consumer
-				// replaces state wholesale; nothing here merges.
-				handlers.onSnapshot?.(view);
-			} else if (frame.event === "view") {
-				handlers.onView?.(view);
+				// A fresh snapshot SUBSUMES anything missed — the fold re-bases
+				// on it wholesale; nothing here merges.
+				currentView = parsed as ConversationViewWire;
+				handlers.onSnapshot?.(currentView);
+			} else if (frame.event === "delta") {
+				if (currentView === undefined) {
+					handlers.onError?.(
+						"malformed delta frame (arrived before any snapshot)",
+					);
+					return;
+				}
+				// Fold, then surface the FULL revision: the consumer's contract
+				// stays "replace, never accumulate".
+				currentView = applyDelta(currentView, parsed as ViewDelta);
+				handlers.onView?.(currentView);
 			} else {
 				handlers.onError?.(`unknown stream event "${frame.event}"`);
 			}
@@ -262,6 +286,175 @@ export function watchConversation(
 			if (!reportedTransportError) {
 				reportedTransportError = true;
 				handlers.onError?.("conversation stream closed by the server");
+			}
+			scheduleReconnect();
+		}
+	}
+
+	void connect();
+
+	return () => {
+		if (closed) return;
+		closed = true;
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			timer = undefined;
+		}
+		abort?.abort();
+		abort = undefined;
+	};
+}
+
+/**
+ * The host events reader (core hardening W3 Task 4, spec §7.4): a
+ * Node-side SSE client over `GET /v1/events` carrying `HostEventWire`
+ * frames (`event: <type>` + single-line `data:` JSON). The TUI's launch
+ * wiring subscribes ONCE per process: `conversation.*` events refetch the
+ * conversation list, `interaction.*` kicks the prompter, `ambient.changed`
+ * refetches the ambient chrome — the old list/interaction/ambient poll
+ * timers are gone.
+ *
+ * Same transport discipline as `watchConversation`: backoff ladder
+ * (250ms doubling, 4s cap, ±30% jitter), one `onError` per failed
+ * connection, give up after 10 consecutive failures, malformed frames
+ * report + keep the stream open. There is no replay — a reconnect's
+ * first post-connect frame suffices because the handlers REFETCH (the
+ * list/interaction/ambient GETs), never merge.
+ */
+export interface EventsHandlers {
+	/** A host event arrived (already JSON-parsed). */
+	readonly onEvent: (event: HostEventWire) => void;
+	/** A failure: malformed frame (stays open) or transport error (reconnects). */
+	readonly onError?: (message: string) => void;
+	/** The underlying connection (re)opened with an OK response. */
+	readonly onOpen?: () => void;
+}
+
+/** Loose parse: the launch wiring only branches on `type`. */
+function parseEvent(data: string): HostEventWire | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(data);
+	} catch {
+		return undefined;
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		Array.isArray(parsed) ||
+		typeof (parsed as { type?: unknown }).type !== "string"
+	) {
+		return undefined;
+	}
+	return parsed as HostEventWire;
+}
+
+/** Subscribe to the global events stream. Returns the unsubscribe. */
+export function watchEvents(
+	handlers: EventsHandlers,
+	options: WatchOptions,
+): Unwatch {
+	const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+	const baseMs = options.reconnectBaseMs ?? 250;
+	const maxMs = options.reconnectMaxMs ?? 4_000;
+	const maxAttempts = 10;
+	const user = options.user?.trim();
+	const token = options.token?.trim();
+	const headers: Record<string, string> = {
+		accept: "text/event-stream",
+		...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
+		...(token === undefined || token === ""
+			? {}
+			: { authorization: `Bearer ${token}` }),
+	};
+	const url = `${options.baseUrl}/v1/events`;
+
+	let closed = false;
+	let attempts = 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let abort: AbortController | undefined;
+	let reportedTransportError = false;
+
+	function scheduleReconnect(): void {
+		attempts += 1;
+		const base = Math.min(baseMs * 2 ** (attempts - 1), maxMs);
+		const delay = base * (1 + (Math.random() * 0.6 - 0.3));
+		timer = setTimeout(() => {
+			timer = undefined;
+			void connect();
+		}, delay);
+	}
+
+	async function connect(): Promise<void> {
+		if (closed) return;
+		if (attempts >= maxAttempts) {
+			handlers.onError?.(
+				`events stream: giving up after ${maxAttempts} failed reconnects`,
+			);
+			return;
+		}
+		const controller = new AbortController();
+		abort = controller;
+		let response;
+		try {
+			response = await fetchImpl(url, {
+				method: "GET",
+				headers,
+				signal: controller.signal,
+			});
+		} catch (error) {
+			if (closed) return;
+			handlers.onError?.(
+				`events stream connect failed: ${(error as Error).message}`,
+			);
+			scheduleReconnect();
+			return;
+		}
+		if (!response.ok || response.body === null) {
+			if (closed) return;
+			handlers.onError?.(
+				`events stream responded with status ${response.status}`,
+			);
+			scheduleReconnect();
+			return;
+		}
+		attempts = 0;
+		reportedTransportError = false;
+		handlers.onOpen?.();
+
+		const parser = createFrameParser((frame) => {
+			if (closed) return;
+			const event = parseEvent(frame.data);
+			if (event === undefined) {
+				handlers.onError?.(
+					`malformed ${frame.event === "" ? "message" : frame.event} frame (not an event object)`,
+				);
+				return;
+			}
+			handlers.onEvent(event);
+		});
+
+		const decoder = new TextDecoder();
+		try {
+			const reader = response.body.getReader();
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				parser(decoder.decode(value, { stream: true }));
+			}
+		} catch (error) {
+			if (closed) return;
+			if (!reportedTransportError) {
+				reportedTransportError = true;
+				handlers.onError?.(
+					`events stream read failed: ${(error as Error).message}`,
+				);
+			}
+		}
+		if (!closed) {
+			if (!reportedTransportError) {
+				reportedTransportError = true;
+				handlers.onError?.("events stream closed by the server");
 			}
 			scheduleReconnect();
 		}

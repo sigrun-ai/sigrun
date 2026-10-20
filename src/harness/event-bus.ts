@@ -79,6 +79,52 @@ import {
 	type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
+import { AmbientDoc } from "./ambient.js";
+import type { HostEventWire } from "@sigrun/shared/views";
+
+/** The internal host-event payload: the wire union plus the hub-only `providers.changed`/`job.changed` variants boot publishes directly. */
+export type HostEvent = HostEventWire;
+
+/**
+ * The tracked SessionMeta summary fields (W3 Task 4): the per-conversation
+ * baseline `conversation.changed` diffs against. The bus already kept an
+ * archive-flip baseline per conversation; this record generalizes it.
+ */
+interface MetaBasis {
+	name?: string;
+	autoName?: string;
+	archived: boolean;
+	pinned: boolean;
+	lastActivityAt?: string;
+	owner?: string;
+	/** The sharing snapshot — compared by JSON (small, closed shape). */
+	sharing?: string;
+}
+
+/** Project a SessionMeta doc value into the tracked basis. */
+function metaBasisOf(value: {
+	readonly name?: string;
+	readonly autoName?: string;
+	readonly archived?: boolean;
+	readonly pinned?: boolean;
+	readonly lastActivityAt?: string;
+	readonly owner?: string;
+	readonly sharing?: unknown;
+}): MetaBasis {
+	const basis: MetaBasis = {
+		archived: value.archived === true,
+		pinned: value.pinned === true,
+	};
+	if (value.name !== undefined) basis.name = value.name;
+	if (value.autoName !== undefined) basis.autoName = value.autoName;
+	if (value.lastActivityAt !== undefined) basis.lastActivityAt = value.lastActivityAt;
+	if (value.owner !== undefined) basis.owner = value.owner;
+	if (value.sharing !== undefined) basis.sharing = JSON.stringify(value.sharing);
+	return basis;
+}
+
+/** The interaction terminal statuses are interactions.ts's exported TERMINAL (imported above) — one definition, no drift. */
 
 /** One settled run: every input submission one run settled, in admission (id) order. */
 export type SettleGroup = {
@@ -300,6 +346,14 @@ export interface EventBusOptions {
 	 * keeps executing with its late writes unguarded (accepted, spec §3).
 	 */
 	readonly workerDeadlineMs: number;
+	/**
+	 * The host-event sink (W3 Task 4): when given, installed as the
+	 * FIRST `onHostEvent` listener inside the constructor — before any
+	 * commit can publish — so the hub never misses an event between the
+	 * bus's open and the caller's subscription (resume-era settles
+	 * included).
+	 */
+	readonly onHostEvent?: (event: HostEvent) => void;
 }
 
 /** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
@@ -348,6 +402,15 @@ export class EventBus {
 	#extensions = new Map<string, ExtensionEventHandlers>();
 	/** Per-conversation `archived` flip baseline (the last value a change was measured against). */
 	#archivedBasis = new Map<ConversationId, boolean>();
+	/** Per-conversation SessionMeta summary baseline (W3 Task 4): the last
+	 * tracked summary values a `conversation.changed` diff was measured
+	 * against. `#archivedBasis` stays the archive-flip baseline; this is
+	 * the generalized form for the remaining summary fields. */
+	#metaBasis = new Map<ConversationId, MetaBasis>();
+	/** The host-event listeners (W3 Task 4): fed SYNCHRONOUSLY from the
+	 * commit reduction — the contract is no-blocking-work (hub-side
+	 * delivery concerns live in the hub). */
+	#hostListeners: ((event: HostEvent) => void)[] = [];
 	/** Per-conversation wall clock of the last input admission (the idle clock's anchor). */
 	#lastAdmission = new Map<ConversationId, number>();
 	/** Per-conversation count of placed-but-unsettled inputs (live runs). */
@@ -369,6 +432,9 @@ export class EventBus {
 		this.#hookDeadlineMs = options.hookDeadlineMs;
 		this.#idleThresholdMs = options.idleThresholdMs;
 		this.#workerDeadlineMs = options.workerDeadlineMs;
+		if (options.onHostEvent !== undefined) {
+			this.onHostEvent(options.onHostEvent);
+		}
 		this.#unsubscribe = harness.subscribeCommits((publication) => {
 			this.observe(publication);
 		});
@@ -387,6 +453,35 @@ export class EventBus {
 				}
 			}, options.idleSweepMs);
 			this.#sweep.unref?.();
+		}
+	}
+
+	/**
+	 * Subscribe to the host-event surface (W3 Task 4, spec §7.4): every
+	 * event the commit reduction derives — `conversation.created` /
+	 * `conversation.changed` (SessionMeta summary diffs) / `run.admitted` /
+	 * `run.settled` / `interaction.pending` / `interaction.settled` /
+	 * `ambient.changed` — delivered SYNCHRONOUSLY inside the commit
+	 * observation. The listener contract: NO blocking work, no Session
+	 * API calls (the hub's delivery is its own side lane). Returns the
+	 * unsubscribe.
+	 */
+	public onHostEvent(listener: (event: HostEvent) => void): () => void {
+		this.#hostListeners.push(listener);
+		return () => {
+			const index = this.#hostListeners.indexOf(listener);
+			if (index >= 0) this.#hostListeners.splice(index, 1);
+		};
+	}
+
+	/** Emit one host event to every listener; a throwing listener is logged, never propagated into the Session listener. */
+	#emitHost(event: HostEvent): void {
+		for (const listener of this.#hostListeners) {
+			try {
+				listener(event);
+			} catch (error) {
+				console.error("event-bus: host-event listener failed:", error);
+			}
 		}
 	}
 
@@ -843,6 +938,11 @@ export class EventBus {
 					type: "conversationCreated",
 					conversationId: record.id,
 				});
+				// W3 Task 4: the host event mirrors the creation detection.
+				this.#emitHost({
+					type: "conversation.created",
+					conversationId: record.id,
+				});
 				if (record.parent !== undefined) {
 					forkParents.set(record.id, record.parent.conversationId);
 					lifecycle.push({
@@ -854,34 +954,133 @@ export class EventBus {
 				}
 			}
 			for (const change of publication.changes) {
-				if (
-					change.type !== "document" &&
-					change.type !== "document.copy"
-				)
+				if (change.type !== "document" && change.type !== "document.copy") {
 					continue;
-				if (change.record.kind !== SessionMetaDoc.definition.kind) continue;
+				}
+				const kind = change.record.kind;
+				if (kind !== SessionMetaDoc.definition.kind) {
+					// W3 Task 4: the interaction + ambient seam doc families feed
+					// their host events here (ordinary document changes only — a
+					// fork's document.copy carries no status transition).
+					if (
+						change.type === "document" &&
+						kind === InteractionDoc.definition.kind &&
+						change.conversationId !== undefined &&
+						change.value !== null
+					) {
+						const record = change.value as {
+							kind?: unknown;
+							callId?: unknown;
+							status?: unknown;
+						};
+						if (
+							typeof record.callId === "string" &&
+							typeof record.kind === "string" &&
+							typeof record.status === "string"
+						) {
+							this.#emitHost({
+								type: INTERACTION_TERMINAL.has(record.status)
+									? "interaction.settled"
+									: "interaction.pending",
+								conversationId: change.conversationId,
+								callId: record.callId,
+								kind: record.kind,
+							});
+						}
+					} else if (
+						change.type === "document" &&
+						kind === AmbientDoc.definition.kind &&
+						change.conversationId !== undefined &&
+						typeof change.record.key === "string"
+					) {
+						this.#emitHost({
+							type: "ambient.changed",
+							conversationId: change.conversationId,
+							key: change.record.key,
+						});
+					}
+					continue;
+				}
 				const conversationId = change.conversationId;
 				if (conversationId === undefined) continue;
 				if (change.type === "document.copy") {
 					// The fork initializes the child from the parent's current
 					// state: seed the child's baseline, never fire.
 					const parent = forkParents.get(conversationId);
-					this.#archivedBasis.set(
-						conversationId,
+					const inherited =
 						parent === undefined
 							? false
-							: (this.#archivedBasis.get(parent) ?? false),
-					);
+							: (this.#archivedBasis.get(parent) ?? false);
+					this.#archivedBasis.set(conversationId, inherited);
+					// W3 Task 4: seed the child's summary basis from the parent's
+					// (fork: "current" — the child starts from the parent's
+					// current doc; owner is NOT inherited — the auth hook stamps
+					// the forker's own owner in a separate change that diffs
+					// against this basis).
+					const parentBasis =
+						parent === undefined ? undefined : this.#metaBasis.get(parent);
+					const childBasis: MetaBasis = {
+						archived: inherited,
+						pinned: parentBasis?.pinned ?? false,
+					};
+					if (parentBasis?.name !== undefined) childBasis.name = parentBasis.name;
+					if (parentBasis?.autoName !== undefined) childBasis.autoName = parentBasis.autoName;
+					if (parentBasis?.lastActivityAt !== undefined) childBasis.lastActivityAt = parentBasis.lastActivityAt;
+					if (parentBasis?.sharing !== undefined) childBasis.sharing = parentBasis.sharing;
+					this.#metaBasis.set(conversationId, childBasis);
 					continue;
 				}
 				if (change.value === null) {
 					this.#archivedBasis.delete(conversationId);
+					this.#metaBasis.delete(conversationId);
 					continue;
 				}
 				const archived = change.value.archived === true;
+				// W3 Task 4: the summary basis — seed the ARCHIVE flip baseline on
+				// creation, but the generalized diff below still runs against the
+				// PRIOR basis (default for a first patch): the creation patch
+				// materializes the doc WITH its fields (e.g. a create-time name),
+				// and those fields are real `conversation.changed` news.
 				if (change.record.createdAt === publication.seq) {
-					// Creation (the first patch materializes the doc): seed.
 					this.#archivedBasis.set(conversationId, archived);
+					const basis = this.#metaBasis.get(conversationId) ?? {
+						archived: false,
+						pinned: false,
+					};
+					const next = metaBasisOf(change.value);
+					const moved: Record<string, unknown> = {};
+					if (next.name !== basis.name) {
+						moved.name = next.name === undefined ? null : next.name;
+					}
+					if (next.autoName !== basis.autoName) {
+						moved.autoName = next.autoName === undefined ? null : next.autoName;
+					}
+					// archived/pinned too (fix round 1): a conversation
+					// materialized already-pinned/-archived is real changed news.
+					if (next.archived !== basis.archived) moved.archived = next.archived;
+					if (next.pinned !== basis.pinned) moved.pinned = next.pinned;
+					if (next.lastActivityAt !== basis.lastActivityAt) {
+						moved.lastActivityAt =
+							next.lastActivityAt === undefined ? null : next.lastActivityAt;
+					}
+					if (next.owner !== basis.owner) {
+						moved.owner = next.owner === undefined ? null : next.owner;
+					}
+					if (next.sharing !== basis.sharing) {
+						moved.sharing =
+							next.sharing === undefined ? null : JSON.parse(next.sharing);
+					}
+					this.#metaBasis.set(conversationId, next);
+					if (Object.keys(moved).length > 0) {
+						this.#emitHost({
+							type: "conversation.changed",
+							conversationId,
+							fields: moved as Extract<
+								HostEventWire,
+								{ type: "conversation.changed" }
+							>["fields"],
+						});
+					}
 					continue;
 				}
 				const prior = this.#archivedBasis.get(conversationId) ?? false;
@@ -891,6 +1090,57 @@ export class EventBus {
 						type: "conversationArchived",
 						conversationId,
 						archived,
+					});
+				}
+				// W3 Task 4: the generalized summary diff — ANY tracked field
+				// that moved against the baseline emits one `conversation.changed`
+				// carrying exactly the moved fields' new values. The default
+				// basis (absent doc / predating this process) compares against
+				// the materialization defaults (archived/pinned false), mirroring
+				// the archive-flip rule above.
+				const basis = this.#metaBasis.get(conversationId) ?? {
+					archived: false,
+					pinned: false,
+				};
+				const next = metaBasisOf(change.value);
+				// Built through a mutable mirror (the wire fields are readonly);
+				// cleared keys ride as null (explicit-clear semantics).
+				const moved: Record<string, unknown> = {};
+				if (next.name !== basis.name) {
+					moved.name = next.name === undefined ? null : next.name;
+				}
+				if (next.autoName !== basis.autoName) {
+					moved.autoName = next.autoName === undefined ? null : next.autoName;
+				}
+				if (next.archived !== basis.archived) moved.archived = next.archived;
+				if (next.pinned !== basis.pinned) moved.pinned = next.pinned;
+				if (next.lastActivityAt !== basis.lastActivityAt) {
+					moved.lastActivityAt =
+						next.lastActivityAt === undefined ? null : next.lastActivityAt;
+				}
+				if (next.owner !== basis.owner) {
+					moved.owner = next.owner === undefined ? null : next.owner;
+				}
+				if (next.sharing !== basis.sharing) {
+					moved.sharing =
+						next.sharing === undefined ? null : JSON.parse(next.sharing);
+				}
+				this.#metaBasis.set(conversationId, next);
+				const movedKeys = Object.keys(moved);
+				if (movedKeys.length > 0) {
+					const fields: Extract<
+						HostEventWire,
+						{ type: "conversation.changed" }
+					>["fields"] = {};
+					for (const key of movedKeys) {
+						// Keyed assignment through the mutable mirror above; the
+						// wire type's readonly is the CONSUMER-side contract.
+						(fields as Record<string, unknown>)[key] = moved[key];
+					}
+					this.#emitHost({
+						type: "conversation.changed",
+						conversationId,
+						fields,
 					});
 				}
 			}
@@ -941,6 +1191,30 @@ export class EventBus {
 							);
 						}
 					}
+				}
+				// W3 Task 4: host events for run admission and settlement. The
+				// status arms map verbatim: placed → run.admitted, done →
+				// run.settled answered, unanswered → run.settled unanswered with
+				// the record's reason.
+				if (value.status === "placed") {
+					this.#emitHost({
+						type: "run.admitted",
+						conversationId: value.conversationId,
+						submissionId: value.id,
+					});
+				} else if (value.status === "done") {
+					this.#emitHost({
+						type: "run.settled",
+						conversationId: value.conversationId,
+						outcome: "answered",
+					});
+				} else if (value.status === "unanswered") {
+					this.#emitHost({
+						type: "run.settled",
+						conversationId: value.conversationId,
+						outcome: "unanswered",
+						...(value.reason === undefined ? {} : { reason: value.reason }),
+					});
 				}
 				if (value.status !== "done" && value.status !== "unanswered")
 					continue;

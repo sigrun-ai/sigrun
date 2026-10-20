@@ -1,10 +1,11 @@
 /**
  * The `useConversationView` hook driven by a stubbed EventSource factory
  * (Task 21) — no real server, no DOM (react-test-renderer). Covers the hook
- * contract: null id → idle; snapshot sets the view; view frames REPLACE it
- * (full revision, never accumulate); malformed frame → error status, stream
- * survives; transport error → reconnect → fresh snapshot; unmount closes;
- * id change closes the old stream and opens a new one.
+ * contract: null id → idle; snapshot sets the view; delta frames fold into
+ * it (the stream wrapper surfaces full folded revisions — never accumulate);
+ * malformed frame → error status, stream survives; transport error →
+ * reconnect → fresh snapshot; unmount closes; id change closes the old
+ * stream and opens a new one.
  */
 
 import { createElement, act } from "react";
@@ -106,7 +107,7 @@ describe("useConversationView", () => {
 		h.unmount();
 	});
 
-	test("snapshot sets the view; view frames replace it (full revision)", () => {
+	test("snapshot sets the view; delta frames fold into the held revision", () => {
 		const h = harness();
 		h.setId(7);
 		expect(h.urls).toEqual(["/v1/conversations/7/stream"]);
@@ -115,13 +116,29 @@ describe("useConversationView", () => {
 		expect(h.state().status).toBe("snapshot");
 		expect(h.state().frames).toBe(1);
 		const firstView = h.state().view;
-		h.emit("view", JSON.stringify(view(7, "second")));
+		// A delta folds: the held view becomes the folded FULL revision.
+		h.emit("delta", JSON.stringify({
+			entries: {
+				append: [
+					{
+						id: 2,
+						conversationId: 7,
+						kind: "pi.assistant",
+						model: [
+							{ role: "assistant", content: [{ type: "text", text: "second" }] },
+						],
+					},
+				],
+			},
+		}));
 		expect(h.state().status).toBe("live");
 		expect(h.state().frames).toBe(2);
-		// Full replace: a different object carrying the new content, no merge.
+		// Folded revision: a different object carrying both entries, no
+		// in-place merge.
 		expect(h.state().view).not.toBe(firstView);
+		expect(h.state().view?.entries.map((entry) => entry.id)).toEqual([1, 2]);
 		expect(
-			h.state().view?.entries[0]?.model?.[0]?.content,
+			h.state().view?.entries[1]?.model?.[0]?.content,
 		).toEqual([{ type: "text", text: "second" }]);
 		h.unmount();
 	});
@@ -130,7 +147,7 @@ describe("useConversationView", () => {
 		const h = harness();
 		h.setId(7);
 		h.emit("snapshot", JSON.stringify(view(7, "good")));
-		h.emit("view", "{broken");
+		h.emit("delta", "{broken");
 		expect(h.state().status).toBe("error");
 		expect(h.state().error).toMatch(/malformed/i);
 		expect(h.state().frames).toBe(1); // the bad frame did not count
@@ -138,9 +155,10 @@ describe("useConversationView", () => {
 			{ type: "text", text: "good" },
 		]);
 		expect(h.sources[0]?.closed).toBe(false); // stream survives
-		h.emit("view", JSON.stringify(view(7, "recovered")));
+		h.emit("delta", JSON.stringify({ steer: { busy: true, queued: 0 } }));
 		expect(h.state().status).toBe("live");
 		expect(h.state().error).toBeNull();
+		expect(h.state().view?.steer).toEqual({ busy: true, queued: 0 });
 		expect(h.state().frames).toBe(2);
 		h.unmount();
 	});

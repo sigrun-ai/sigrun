@@ -2827,3 +2827,71 @@ body {
 	color: var(--warn);
 	font-size: 0.8rem;
 }
+
+/* ── Extensions section (W3 Task 7, spec §7.7) ─────────────────────────── */
+
+.settings-ext-list {
+	gap: 0.75rem;
+}
+
+.settings-ext {
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.5rem 0.75rem 0.75rem;
+	margin: 0;
+}
+
+.settings-ext-name {
+	font-weight: 600;
+	padding: 0 0.35rem;
+}
+
+.settings-ext-meta {
+	font-weight: 400;
+	font-size: 11px;
+	color: var(--muted);
+	margin-left: 0.4rem;
+}
+
+.settings-ext-settings {
+	font-family: var(--mono);
+	font-size: 12px;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.4rem;
+	resize: vertical;
+	width: 100%;
+	box-sizing: border-box;
+	max-width: 100%;
+}
+
+.settings-ext-row {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin-top: 0.35rem;
+	flex-wrap: wrap;
+}
+
+.settings-ext-key {
+	font-family: var(--mono);
+	font-size: 12px;
+}
+
+.settings-ext-source {
+	color: var(--muted);
+	font-size: 11px;
+}
+
+.settings-ext-row input {
+	font-family: var(--mono);
+	font-size: 12px;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0.25rem 0.4rem;
+	min-width: 8rem;
+}

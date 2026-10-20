@@ -42,6 +42,39 @@ export interface RefreshBound {
 	readonly timeoutMs: number;
 	/** Caller cancellation (e.g. request abort), OR-ed into the deadline. */
 	readonly signal?: AbortSignal;
+	/**
+	 * Readiness observer (core hardening W3 Task 4, spec §7.4): invoked
+	 * after every completed refresh with a per-provider readiness snapshot
+	 * derived through `snapshotReadiness`; the caller (boot wiring) diffs
+	 * it against the last snapshot and publishes `providers.changed`. Never
+	 * invoked when the refresh threw before completing (a wedge holds the
+	 * previous snapshot).
+	 */
+	readonly onReadinessChange?: (
+		readiness: ReadonlyMap<string, string>,
+	) => void;
+	/**
+	 * The readiness derivation (boot wiring supplies it): pi-ai's
+	 * `Provider` carries no readiness field, so the snapshot derives from
+	 * sigrun's boot-retained state (`providerAuthStatus`). Absent = the
+	 * observer receives the bare provider-id → `"ready"` catalog map.
+	 */
+	readonly snapshotReadiness?: (models: Models) => ReadonlyMap<string, string>;
+}
+
+/**
+ * The fallback readiness snapshot (no derivation wired): provider id →
+ * `"ready"` for every catalog provider. Boot always wires
+ * `snapshotReadiness`; this keeps the option structurally optional.
+ */
+export function refreshReadinessSnapshot(
+	models: Models,
+): ReadonlyMap<string, string> {
+	const snapshot = new Map<string, string>();
+	for (const provider of models.getProviders()) {
+		snapshot.set(provider.id, "ready");
+	}
+	return snapshot;
 }
 
 /**
@@ -65,6 +98,31 @@ export interface ResolveRefreshingOptions {
 	readonly timeoutMs?: number;
 	/** Caller cancellation, threaded into the retry refresh. */
 	readonly signal?: AbortSignal;
+}
+
+/**
+ * One bounded single-provider refresh (core hardening W3 Task 6, spec
+ * §7.6): the exact refresh {@link resolveServedModelRefreshing} runs on
+ * a miss, exposed for the provider ROUTES (`POST
+ * /v1/providers/:id/refresh` and the credential write paths) — never a
+ * second policy. Accepts the same {@link RefreshBound} fields the boot
+ * and interval refreshes take (boot wiring passes its readiness
+ * observer so a flipped provider publishes `providers.changed`); every
+ * field is optional with the policy defaults applying. Like every
+ * policy refresh: never rejects — failures/aborts warn once and the
+ * catalog holds its last-known state.
+ */
+export async function refreshProvider(
+	models: Models,
+	providerId: string,
+	opts: Partial<RefreshBound> = {},
+): Promise<void> {
+	await refreshBounded(models, {
+		label: `provider refresh (${providerId})`,
+		...opts,
+		timeoutMs: opts.timeoutMs ?? DEFAULT_REFRESH_TIMEOUT_MS,
+		providers: [providerId],
+	});
 }
 
 /**
@@ -149,6 +207,18 @@ async function refreshBounded(
 				.join("; ");
 			console.warn(
 				`${opts.label} failed for ${result.errors.size} provider(s): ${failed}`,
+			);
+		}
+		// The readiness observation runs for EVERY completed refresh
+		// (success or partial failure) so a provider that flips either way
+		// is observed; a refresh that threw before completing holds the
+		// previous snapshot (the catch below skips the observer).
+		try {
+			const snapshot = (opts.snapshotReadiness ?? refreshReadinessSnapshot)(models);
+			opts.onReadinessChange?.(snapshot);
+		} catch (error) {
+			console.warn(
+				`${opts.label}: readiness observation failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	} catch (error) {

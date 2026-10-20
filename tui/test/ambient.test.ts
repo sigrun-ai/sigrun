@@ -12,12 +12,15 @@
  *   mirrored in text).
  *
  * Records are generic — the chrome never knows what a "todo" or a "goal"
- * is. `refreshMs` schedules a re-fetch; `expires: "idle"` entries are
+ * is. Refetches arrive on conversation connect and on `ambient.changed`
+ * host events via `kick(conversationId)` (W3 Task 4 — the refreshMs
+ * timer cadence is retired; a record's `refreshMs` no longer drives a
+ * client poll). `expires: "idle"` entries are
  * visible only while a run is live and disappear when the conversation
  * goes idle.
  */
 
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
 import { TuiApp } from "../src/ui/app.js";
 import { AmbientChrome } from "../src/ui/ambient.js";
@@ -40,7 +43,6 @@ function summary(id: number): ConversationSummary {
 	return {
 		id,
 		root: false,
-		entryCount: 0,
 		archived: false,
 		pinned: false,
 		access: "write",
@@ -312,88 +314,85 @@ describe("AmbientChrome", () => {
 		chrome.dispose();
 	});
 
-	test("refreshMs schedules a re-fetch", async () => {
+	test("W3: no timer cadence — ambient.changed host events refetch via kick()", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
 		try {
 			const stub = stubClient();
 			stub.setSurfaces([ambient("clock", { place: "status", refreshMs: 500, line: { text: "tick" } })]);
-			const chrome = new AmbientChrome(stub.client);
-			chrome.setConversation(1);
-			await vi.advanceTimersByTimeAsync(0);
-			const atBoot = stub.ambientCalls();
-			expect(atBoot).toBe(1);
-			await vi.advanceTimersByTimeAsync(500);
-			expect(stub.ambientCalls()).toBe(2);
-			await vi.advanceTimersByTimeAsync(500);
-			expect(stub.ambientCalls()).toBe(3);
-			chrome.dispose();
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	test("the refreshMs cadence survives a transient fetch failure", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
-		try {
-			const stub = stubClient();
-			stub.setSurfaces([ambient("clock", { place: "status", refreshMs: 500, line: { text: "tick" } })]);
-			let failNext = false;
-			let attempts = 0;
-			const flaky = {
-				...stub.client,
-				getAmbient(id: number): Promise<AmbientList> {
-					attempts += 1;
-					if (failNext) {
-						failNext = false;
-						return Promise.reject(new Error("boom"));
-					}
-					return stub.client.getAmbient(id);
-				},
-			} as unknown as SigrunClient;
-			const chrome = new AmbientChrome(flaky);
-			chrome.setConversation(1);
-			await vi.advanceTimersByTimeAsync(0);
-			expect(attempts).toBe(1);
-			// The first scheduled refresh fails; the cadence must re-arm.
-			failNext = true;
-			await vi.advanceTimersByTimeAsync(500);
-			expect(attempts).toBe(2); // the failed attempt happened
-			await vi.advanceTimersByTimeAsync(500);
-			expect(attempts).toBe(3); // cadence survived the failure
-			expect(stub.ambientCalls()).toBe(2); // two fetches succeeded
-			chrome.dispose();
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	test("zero records arm the 30s fallback cadence; a later refreshMs record takes it over (fix wave A4)", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
-		try {
-			const stub = stubClient();
-			// Zero records: no refreshMs is known…
-			stub.setSurfaces([]);
 			const chrome = new AmbientChrome(stub.client);
 			chrome.setConversation(1);
 			await vi.advanceTimersByTimeAsync(0);
 			expect(stub.ambientCalls()).toBe(1);
-			// …but the fallback cadence still polls (a surface that appears
-			// later must be picked up without a conversation switch).
-			await vi.advanceTimersByTimeAsync(30_000);
+			// The retired cadence: advancing time fires NO fetches (not even
+			// the declared refreshMs — the extension's writes carry the event).
+			await vi.advanceTimersByTimeAsync(120_000);
+			expect(stub.ambientCalls()).toBe(1);
+			// The host-event path: an ambient.changed for the LIVE conversation
+			// refetches; another conversation's event is ignored.
+			chrome.kick(2);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(stub.ambientCalls()).toBe(1);
+			chrome.kick(1);
+			await vi.advanceTimersByTimeAsync(0);
 			expect(stub.ambientCalls()).toBe(2);
-			// A record declaring refreshMs arrives on a poll: the declared
-			// cadence WINS over the fallback.
-			stub.setSurfaces([ambient("clock", { place: "status", refreshMs: 500, line: { text: "tick" } })]);
-			await vi.advanceTimersByTimeAsync(30_000);
-			expect(stub.ambientCalls()).toBe(3); // the poll that served the record
-			await vi.advanceTimersByTimeAsync(500);
-			expect(stub.ambientCalls()).toBe(4); // now on the 500ms cadence
-			await vi.advanceTimersByTimeAsync(500);
-			expect(stub.ambientCalls()).toBe(5);
 			chrome.dispose();
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	test("a failed fetch keeps the last surfaces and the next kick recovers", async () => {
+		const stub = stubClient();
+		stub.setSurfaces([ambient("clock", { place: "status", line: { text: "tick" } })]);
+		let failNext = false;
+		let attempts = 0;
+		const flaky = {
+			...stub.client,
+			getAmbient(id: number): Promise<AmbientList> {
+				attempts += 1;
+				if (failNext) {
+					failNext = false;
+					return Promise.reject(new Error("boom"));
+				}
+				return stub.client.getAmbient(id);
+			},
+		} as unknown as SigrunClient;
+		const chrome = new AmbientChrome(flaky);
+		chrome.setConversation(1);
+		await flush();
+		expect(attempts).toBe(1);
+		// A kicked fetch fails quiet: the last surfaces stay.
+		failNext = true;
+		chrome.kick(1);
+		await flush();
+		expect(attempts).toBe(2);
+		expect(chrome.statusline()).toContain("tick");
+		// The next kick recovers (no cadence to kill — each event refetches).
+		stub.setSurfaces([ambient("clock", { place: "status", line: { text: "tock" } })]);
+		chrome.kick(1);
+		await flush();
+		expect(attempts).toBe(3);
+		expect(chrome.statusline()).toContain("tock");
+		chrome.dispose();
+	});
+
+	test("zero records: a surface that appears later lands via the ambient.changed kick", async () => {
+		const stub = stubClient();
+		// Zero records at connect…
+		stub.setSurfaces([]);
+		const chrome = new AmbientChrome(stub.client);
+		chrome.setConversation(1);
+		await flush();
+		expect(stub.ambientCalls()).toBe(1);
+		expect(chrome.statusline()).toBe("");
+		// …the extension writes a surface, which emits ambient.changed —
+		// the kick picks it up (the retired fallback cadence's role).
+		stub.setSurfaces([ambient("clock", { place: "status", line: { text: "tick" } })]);
+		chrome.kick(1);
+		await flush();
+		expect(stub.ambientCalls()).toBe(2);
+		expect(chrome.statusline()).toContain("tick");
+		chrome.dispose();
 	});
 
 	test("expires: idle entries disappear when the conversation is idle", async () => {

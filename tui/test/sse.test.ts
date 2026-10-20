@@ -1,9 +1,11 @@
 /**
- * The TUI SSE watcher (Task 4) against a real `node:http` server writing
- * `text/event-stream` frames: `watchConversation` delivers the connect
- * snapshot then `view` frames; killing the connection triggers a reconnect
- * whose fresh snapshot REPLACES state wholesale (Review Focus 1 — a
- * snapshot subsumes any missed frame; no stale merge).
+ * The TUI SSE watcher (Task 4; delta frames in core hardening W3 Task 3)
+ * against a real `node:http` server writing `text/event-stream` frames:
+ * `watchConversation` delivers the connect snapshot, folds each `delta`
+ * frame via the shared `applyDelta`, and surfaces full folded revisions on
+ * `onView`; killing the connection triggers a reconnect whose fresh
+ * snapshot REPLACES state wholesale (Review Focus 1 — a snapshot subsumes
+ * any missed frame; no stale merge).
  */
 
 import http from "node:http";
@@ -108,9 +110,9 @@ function snapshotFrame(view: unknown): string {
 	return `event: snapshot\ndata: ${JSON.stringify(view)}\n\n`;
 }
 
-function viewFrame(view: unknown, id?: string): string {
+function deltaFrame(delta: unknown, id?: string): string {
 	const idLine = id === undefined ? "" : `id: ${id}\n`;
-	return `${idLine}event: view\ndata: ${JSON.stringify(view)}\n\n`;
+	return `${idLine}event: delta\ndata: ${JSON.stringify(delta)}\n\n`;
 }
 
 const servers: { close(): Promise<void> }[] = [];
@@ -120,12 +122,12 @@ afterEach(async () => {
 });
 
 describe("watchConversation", () => {
-	test("delivers the connect snapshot then view frames", async () => {
+	test("delivers the connect snapshot then folds delta frames into full revisions", async () => {
 		const server = fakeSseServer([
 			{
 				frames: [
-					snapshotFrame({ conversation: { id: 1 }, entries: [] }),
-					viewFrame({ conversation: { id: 1 }, entries: [{ id: 1 }] }, "2"),
+					snapshotFrame({ conversation: { id: 1 }, entries: [], docs: {}, steer: { busy: false, queued: 0 } }),
+					deltaFrame({ entries: { append: [{ id: 1, kind: "pi.user" }] }, steer: { busy: true, queued: 0 } }, "2"),
 				],
 			},
 		]);
@@ -142,25 +144,33 @@ describe("watchConversation", () => {
 			"snapshot",
 			"view",
 		]);
+		// The delta folded: the surfaced revision carries the appended entry
+		// AND the folded steer field.
+		const folded = collector.events[1]?.view as {
+			entries: { id: number }[];
+			steer: { busy: boolean };
+		};
+		expect(folded.entries.map((entry) => entry.id)).toEqual([1]);
+		expect(folded.steer.busy).toBe(true);
 		expect(collector.errors).toEqual([]);
 		expect(server.requests).toEqual(["/v1/conversations/1/stream"]);
 	});
 
 	test("a reconnect's fresh snapshot replaces state wholesale (no stale merge)", async () => {
-		// Connection 1: snapshot rev-1 plus one view frame, then the server
+		// Connection 1: snapshot rev-1 plus one delta frame, then the server
 		// kills the connection. Revisions 3..7 happen while disconnected.
 		// Connection 2: a fresh snapshot at rev-8 — it SUBSUMES the gap; the
-		// client must not try to merge or replay.
+		// fold re-bases on it (the connection-1 delta is gone).
 		const server = fakeSseServer([
 			{
 				frames: [
-					snapshotFrame({ revision: 1, entries: [{ id: 1 }] }),
-					viewFrame({ revision: 2, entries: [{ id: 1 }, { id: 2 }] }),
+					snapshotFrame({ revision: 1, entries: [{ id: 1 }], docs: {}, steer: { busy: false, queued: 0 } }),
+					deltaFrame({ entries: { append: [{ id: 2, kind: "pi.user" }] } }),
 				],
 				closeAfter: true,
 			},
 			{
-				frames: [snapshotFrame({ revision: 8, entries: [{ id: 1 }] })],
+				frames: [snapshotFrame({ revision: 8, entries: [{ id: 1 }], docs: {}, steer: { busy: false, queued: 0 } })],
 			},
 		]);
 		servers.push(server);
@@ -170,7 +180,8 @@ describe("watchConversation", () => {
 			baseUrl: base,
 			reconnectBaseMs: 10,
 		});
-		// snapshot(1), view(2), then after the drop + reconnect snapshot(8).
+		// snapshot(1), folded delta (rev 2: entries 1+2), then after the
+		// drop + reconnect snapshot(8) — the replacement carries entry 1 ONLY.
 		await collector.waitFor(() => collector.events.length === 3);
 		unwatch();
 		expect(collector.events.map((event) => event.kind)).toEqual([
@@ -178,8 +189,14 @@ describe("watchConversation", () => {
 			"view",
 			"snapshot",
 		]);
-		const last = collector.events.at(-1)?.view as { revision: number };
+		const foldedMid = collector.events[1]?.view as { entries: { id: number }[] };
+		expect(foldedMid.entries.map((entry) => entry.id)).toEqual([1, 2]);
+		const last = collector.events.at(-1)?.view as {
+			revision: number;
+			entries: { id: number }[];
+		};
 		expect(last.revision).toBe(8);
+		expect(last.entries.map((entry) => entry.id)).toEqual([1]);
 		expect(server.requests).toHaveLength(2);
 	});
 
@@ -237,9 +254,9 @@ describe("watchConversation", () => {
 		const server = fakeSseServer([
 			{
 				frames: [
-					snapshotFrame({ conversation: { id: 1 } }),
-					"event: view\ndata: {not json\n\n",
-					viewFrame({ conversation: { id: 1 }, entries: [{ id: 2 }] }),
+					snapshotFrame({ conversation: { id: 1 }, entries: [], docs: {}, steer: { busy: false, queued: 0 } }),
+					"event: delta\ndata: {not json\n\n",
+					deltaFrame({ entries: { append: [{ id: 2, kind: "pi.user" }] } }),
 				],
 			},
 		]);
@@ -256,7 +273,40 @@ describe("watchConversation", () => {
 			"snapshot",
 			"view",
 		]);
+		// The folded revision carries the appended entry.
+		const folded = collector.events[1]?.view as { entries: { id: number }[] };
+		expect(folded.entries.map((entry) => entry.id)).toEqual([2]);
 		expect(collector.errors).toHaveLength(1);
+	});
+
+	test("a delta before any snapshot is malformed; the stream survives", async () => {
+		const server = fakeSseServer([
+			{
+				frames: [
+					deltaFrame({ steer: { busy: true, queued: 0 } }),
+					snapshotFrame({ conversation: { id: 1 }, entries: [], docs: {}, steer: { busy: false, queued: 0 } }),
+					deltaFrame({ steer: { busy: true, queued: 0 } }),
+				],
+			},
+		]);
+		servers.push(server);
+		const base = await server.start();
+		const collector = collect();
+		const unwatch = watchConversation(1, collector.handlers, {
+			baseUrl: base,
+			reconnectBaseMs: 10,
+		});
+		await collector.waitFor(() => collector.events.length === 2);
+		unwatch();
+		expect(collector.events.map((event) => event.kind)).toEqual([
+			"snapshot",
+			"view",
+		]);
+		// One error for the orphan delta; the post-snapshot delta folded.
+		expect(collector.errors).toHaveLength(1);
+		expect(collector.errors[0]).toMatch(/before any snapshot/i);
+		const folded = collector.events.at(-1)?.view as { steer: { busy: boolean } };
+		expect(folded.steer.busy).toBe(true);
 	});
 
 	test("unwatch stops the stream and cancels any pending reconnect", async () => {

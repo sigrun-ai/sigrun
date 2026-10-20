@@ -57,12 +57,20 @@ import type {
 	SettingsWire,
 	SettingsPatchWire,
 	SigrunClient,
+	ExtensionInfoWire,
+	ExtensionSecretWire,
 } from "../api";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
 import { type PrefKey, type PrefsState } from "./usePrefs";
 
 /** The settings sections, in nav order. */
-const SECTIONS = ["General", "Tools", "Interface", "Advanced"] as const;
+const SECTIONS = [
+	"General",
+	"Tools",
+	"Interface",
+	"Advanced",
+	"Extensions",
+] as const;
 type Section = (typeof SECTIONS)[number];
 
 /**
@@ -242,6 +250,326 @@ const MODE_OPTIONS: readonly {
 	{ value: "dark", label: "Dark" },
 	{ value: "light", label: "Light" },
 ];
+
+// ─── Extensions (W3 Task 7, spec §7.7) ─────────────────────────────────────
+
+/** One extension's editor state (the settings textarea + the secret rows). */
+interface ExtensionDraft {
+	/** The settings object as raw JSON text (the textarea's value). */
+	settingsText: string;
+	/** The last listed secret keys, sources included. */
+	secrets: readonly ExtensionSecretWire[];
+	/** Write-only values per listed key (never pre-filled — the API never
+	 * returns values, so there is nothing to display). */
+	secretValues: Record<string, string>;
+	/** The add-a-new-secret row's key + write-only value. */
+	newKey: string;
+	newValue: string;
+	/** Per-extension note (save outcome / a server error message). */
+	note?: { readonly kind: "ok" | "error"; readonly message: string };
+}
+
+/** Serialize a settings object for the textarea (stable pretty-print). */
+function settingsToText(value: Record<string, unknown>): string {
+	const keys = Object.keys(value);
+	if (keys.length === 0) return "";
+	return JSON.stringify(value, null, 2);
+}
+
+/** Validate the raw settings JSON: empty ("{}") or a JSON object. */
+function parseSettingsText(
+	raw: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; message: string } {
+	const trimmed = raw.trim();
+	if (trimmed === "") return { ok: true, value: {} };
+	try {
+		const parsed: unknown = JSON.parse(trimmed);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			return { ok: false, message: "settings must be a JSON object" };
+		}
+		return { ok: true, value: parsed as Record<string, unknown> };
+	} catch (error) {
+		return {
+			ok: false,
+			message: `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+}
+
+/**
+ * The Extensions section (spec §7.7): the loaded-extension list with a
+ * raw JSON settings editor and a write-only secret key list per
+ * extension. Values an extension reads at factory time apply at restart
+ * (the section's note says so); secrets are never displayed — the API
+ * returns keys + sources only, and the inputs start empty by design.
+ */
+function ExtensionsSection(props: { readonly client: SigrunClient }) {
+	const { client } = props;
+	const [load, setLoad] = useState<
+		| { readonly status: "loading" }
+		| { readonly status: "error"; readonly message: string }
+		| { readonly status: "ready"; readonly extensions: readonly ExtensionInfoWire[] }
+	>({ status: "loading" });
+	const [drafts, setDrafts] = useState<Record<string, ExtensionDraft>>({});
+
+	useEffect(() => {
+		let cancelled = false;
+		client
+			.listExtensions()
+			.then(async (list) => {
+				// Settings + secrets per extension load in parallel; a failure of
+				// one extension's fetches fails the section (fail-loud client).
+				const entries = await Promise.all(
+					list.extensions.map(async (extension) => {
+					const [settings, secrets] = await Promise.all([
+						client.getExtensionSettings(extension.name),
+						client.listExtensionSecrets(extension.name),
+					]);
+					const draft: ExtensionDraft = {
+						settingsText: settingsToText(settings),
+						secrets: secrets.secrets,
+						secretValues: {},
+						newKey: "",
+						newValue: "",
+					};
+					return [extension.name, draft] as const;
+				}),
+			);
+				if (cancelled) return;
+				setLoad({ status: "ready", extensions: list.extensions });
+				setDrafts(Object.fromEntries(entries));
+			})
+			.catch((error: unknown) => {
+				if (cancelled) return;
+				setLoad({
+					status: "error",
+					message: error instanceof Error ? error.message : String(error),
+				});
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [client]);
+
+	/** Patch one extension's draft (a shallow per-slug merge). */
+	const patchDraft = (slug: string, patch: Partial<ExtensionDraft>): void => {
+		setDrafts((prev) => ({ ...prev, [slug]: { ...prev[slug], ...patch } }));
+	};
+
+	/** Save one extension's settings (PUT the parsed object). */
+	const saveSettings = async (slug: string): Promise<void> => {
+		const draft = drafts[slug];
+		if (draft === undefined) return;
+		const parsed = parseSettingsText(draft.settingsText);
+		if (!parsed.ok) {
+			patchDraft(slug, { note: { kind: "error", message: parsed.message } });
+			return;
+		}
+		try {
+			await client.putExtensionSettings(slug, parsed.value);
+			patchDraft(slug, { note: { kind: "ok", message: "saved" } });
+		} catch (error: unknown) {
+			patchDraft(slug, {
+				note: {
+					kind: "error",
+					message: error instanceof Error ? error.message : String(error),
+				},
+			});
+		}
+	};
+
+	/** Set one secret (a listed key or the add-new row) and refresh the list. */
+	const setSecret = async (slug: string, key: string, value: string): Promise<void> => {
+		if (key === "" || value === "") return;
+		try {
+			const { secrets } = await client.putExtensionSecret(slug, key, value);
+			patchDraft(slug, {
+				secrets,
+				secretValues: { ...drafts[slug].secretValues, [key]: "" },
+				newKey: "",
+				newValue: "",
+				note: { kind: "ok", message: `secret ${key} set` },
+			});
+		} catch (error: unknown) {
+			patchDraft(slug, {
+				note: {
+					kind: "error",
+					message: error instanceof Error ? error.message : String(error),
+				},
+			});
+		}
+	};
+
+	/** Delete one secret and refresh the list. */
+	const deleteSecret = async (slug: string, key: string): Promise<void> => {
+		try {
+			const { secrets } = await client.deleteExtensionSecret(slug, key);
+			patchDraft(slug, { secrets, note: { kind: "ok", message: `secret ${key} deleted` } });
+		} catch (error: unknown) {
+			patchDraft(slug, {
+				note: {
+					kind: "error",
+					message: error instanceof Error ? error.message : String(error),
+				},
+			});
+		}
+	};
+
+	if (load.status === "loading") {
+		return <p className="settings-note">loading extensions…</p>;
+	}
+	if (load.status === "error") {
+		return (
+			<p className="settings-note" role="alert">
+				{load.message}
+			</p>
+		);
+	}
+	if (load.extensions.length === 0) {
+		return (
+			<div className="settings-body">
+				<p className="settings-note">no extensions are configured</p>
+			</div>
+		);
+	}
+	return (
+		<div className="settings-body settings-ext-list">
+			<p className="settings-note">
+				settings are the extension's own JSON (read at factory time →
+			applies at restart); secrets list keys only — values are write-only
+			and never displayed
+			</p>
+			{load.extensions.map((extension) => {
+			const draft = drafts[extension.name];
+			if (draft === undefined) return null;
+			return (
+				<fieldset key={extension.name} className="settings-ext" data-ext={extension.name}>
+					<legend className="settings-ext-name">
+						{extension.name}
+						<span className="settings-ext-meta">
+							{extension.status}
+							{extension.version === undefined
+								? ""
+								: ` · v${extension.version}`}
+						</span>
+					</legend>
+					<label className="settings-field">
+						<span className="settings-label">Settings (raw JSON)</span>
+						<textarea
+							className="settings-ext-settings"
+							rows={4}
+							spellCheck={false}
+							placeholder="{}"
+							value={draft.settingsText}
+							onChange={(event) =>
+								patchDraft(extension.name, {
+									settingsText: event.target.value,
+								})
+							}
+						/>
+						<div className="settings-ext-row">
+							<button
+								type="button"
+								className="settings-ext-save"
+								onClick={() => void saveSettings(extension.name)}
+							>
+								Save settings
+							</button>
+							{draft.note !== undefined && (
+								<span
+									className="settings-note"
+									role={draft.note.kind === "ok" ? "status" : "alert"}
+								>
+									{draft.note.message}
+								</span>
+							)}
+						</div>
+					</label>
+					<div className="settings-field">
+						<span className="settings-label">Secrets</span>
+						{draft.secrets.length === 0 && (
+							<p className="settings-note">no secrets set</p>
+						)}
+						{draft.secrets.map((secret) => (
+							<div key={secret.key} className="settings-ext-row">
+								<span className="settings-ext-key">
+									{secret.key} <span className="settings-ext-source">({secret.source})</span>
+								</span>
+								<input
+									type="password"
+									className="settings-ext-secret-value"
+									data-secret-key={secret.key}
+									placeholder="new value"
+									value={draft.secretValues[secret.key] ?? ""}
+									onChange={(event) =>
+									patchDraft(extension.name, {
+										secretValues: {
+											...draft.secretValues,
+											[secret.key]: event.target.value,
+										},
+									})
+									}
+								/>
+								<button
+									type="button"
+									className="settings-ext-secret-set"
+									data-secret-key={secret.key}
+									onClick={() =>
+										void setSecret(
+											extension.name,
+											secret.key,
+											draft.secretValues[secret.key] ?? "",
+										)
+									}
+								>
+									Set
+								</button>
+								<button
+									type="button"
+									className="settings-ext-secret-delete"
+									data-secret-key={secret.key}
+									onClick={() => void deleteSecret(extension.name, secret.key)}
+								>
+									Delete
+								</button>
+							</div>
+						))}
+						<div className="settings-ext-row">
+							<input
+								type="text"
+								className="settings-ext-new-key"
+								placeholder="new key"
+								value={draft.newKey}
+								onChange={(event) =>
+									patchDraft(extension.name, { newKey: event.target.value })
+							}
+							/>
+							<input
+								type="password"
+								className="settings-ext-new-value"
+								placeholder="value"
+								value={draft.newValue}
+								onChange={(event) =>
+									patchDraft(extension.name, { newValue: event.target.value })
+							}
+							/>
+							<button
+								type="button"
+								className="settings-ext-secret-add"
+								onClick={() =>
+									void setSecret(extension.name, draft.newKey, draft.newValue)
+								}
+							>
+								Set
+								</button>
+						</div>
+					</div>
+				</fieldset>
+			);
+		})}
+		</div>
+	);
+}
 
 export function SettingsPanel(props: {
 	readonly client: SigrunClient;
@@ -487,6 +815,8 @@ export function SettingsPanel(props: {
 					sent to the server)
 				</p>
 			</div>
+		) : section === "Extensions" ? (
+			<ExtensionsSection client={client} />
 		) : (
 			<div className="settings-body">
 				<label className="settings-field settings-checkbox">

@@ -40,7 +40,7 @@
  *   optional `onNavigate` prop (App wires it to the active-id flip).
  */
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
 	type CommandWire,
 	type ConversationViewWire,
@@ -274,6 +274,10 @@ export function Composer(props: {
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
+	// The SYNCHRONOUS twin of `sending` (§7.1): React state is not committed
+	// between two clicks in one burst, so the admission-flight guard reads
+	// a ref — set before the first await, released in the finally.
+	const sendingRef = useRef(false);
 	const [uploading, setUploading] = useState(false);
 	const [commands, setCommands] = useState<readonly CommandWire[]>([]);
 	const [highlight, setHighlight] = useState(0);
@@ -593,13 +597,14 @@ export function Composer(props: {
 			await executeCommand(name, args);
 			return;
 		}
-		// T26b-iii (ship-gate item 3): the submissions route awaits full
-		// settlement server-side, so `sending` stays true for the WHOLE busy
-		// turn — gating on `sending` alone made Steer unclickable exactly while
-		// a session runs. While busy, a click is a STEER (a distinct
-		// submission), never a double-send of the in-flight draft: allow it.
-		if (conversationId === null || (sending && !busy)) return;
+		// §7.1: submit returns at ADMISSION, so `sending` spans only the
+		// in-flight admit (not the whole run). The guard holds from the click
+		// until the admission resolves (answered or errored) — synchronous via
+		// the ref, so a double-click admits ONE submission. While `busy` (the
+		// view's steer report), a click is a STEER, never a double-send.
+		if (conversationId === null || (sendingRef.current && !busy)) return;
 		if (text === "" && draft.attachments.length === 0) return;
+		sendingRef.current = true;
 		setSending(true);
 		setError(null);
 		try {
@@ -619,6 +624,7 @@ export function Composer(props: {
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
+			sendingRef.current = false;
 			setSending(false);
 		}
 	}
@@ -632,8 +638,8 @@ export function Composer(props: {
 
 	// The send button's disabled state (aria-disabled + class — see the
 	// toolbar comment): no conversation, a read-only share, an in-flight
-	// non-steer submit, or nothing to send. A busy conversation keeps it
-	// LIVE (a click steers).
+	// admission (while not steering), or nothing to send. A busy conversation
+	// keeps it LIVE (a click steers).
 	const sendDisabled =
 		readOnly ||
 		conversationId === null ||

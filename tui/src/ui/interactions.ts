@@ -30,9 +30,11 @@
  * - Option `tone` is a color/severity hint; the shell pins a no-color
  *   theme (styling is a later task), so tone is not rendered.
  *
- * Polling: {@link kick} on each stream frame (a revision may change the
- * pending set) plus a short interval while a conversation is active.
- * Kicks coalesce (one fetch in flight, one queued). Poll failures are
+ * Refetch triggers (W3 Task 4 — the 2s poll interval is RETIRED): kicks
+ * arrive on each stream frame (a revision may change the pending set) and
+ * on `interaction.*` host events (the app wires `watchEvents`'s
+ * `interaction.pending`/`interaction.settled` to {@link kick}). Kicks
+ * coalesce (one fetch in flight, one queued). Poll failures are
  * QUIET — the prompt keeps its last state; stream transport health is
  * reported separately by the watcher's error/open transition notices
  * (the launcher's stream-health wiring). Answer failures (user-initiated)
@@ -48,20 +50,11 @@ import type {
 } from "../api.js";
 import { describeCommandError } from "./composer.js";
 
-/** The default interaction poll interval (the brief's "short interval"). */
-const DEFAULT_POLL_MS = 2_000;
-
 /** The answer-mode option pick keys: digits 1-9. */
 const DIGIT = /^[1-9]$/;
 
-export interface InteractionPrompterOptions {
-	/** Poll interval while a conversation is active (default 2s). */
-	readonly pollMs?: number;
-}
-
 export class InteractionPrompter implements Component {
 	readonly #client: SigrunClient;
-	readonly #pollMs: number;
 
 	#conversationId: number | undefined;
 	/** Monotonic per-conversation generation: stale fetches never land. */
@@ -78,7 +71,6 @@ export class InteractionPrompter implements Component {
 	#answerCallId: string | undefined;
 	/** The multi-select working set (option ids), pre-seeded recommended. */
 	#selected: ReadonlySet<string> = new Set();
-	#timer: ReturnType<typeof setInterval> | undefined;
 	/** Coalescing poll state: one fetch in flight, at most one queued. */
 	#inFlight = false;
 	#queued = false;
@@ -88,9 +80,8 @@ export class InteractionPrompter implements Component {
 	/** Rendered-state changes (the app requests a repaint). */
 	onChanged?: () => void;
 
-	constructor(client: SigrunClient, options?: InteractionPrompterOptions) {
+	constructor(client: SigrunClient) {
 		this.#client = client;
-		this.#pollMs = options?.pollMs ?? DEFAULT_POLL_MS;
 	}
 
 	/** The latest pending list (top of stack first). */
@@ -104,15 +95,15 @@ export class InteractionPrompter implements Component {
 	}
 
 	/**
-	 * Retarget the prompter: reset state, fetch immediately, and start the
-	 * poll interval. `undefined` clears the prompt and stops polling.
+	 * Retarget the prompter: reset state and fetch immediately.
+	 * `undefined` clears the prompt. (W3 Task 4: no poll interval —
+	 * stream frames and `interaction.*` host events own the refreshes.)
 	 */
 	setConversation(id: number | undefined): void {
 		this.#gen += 1;
 		this.#conversationId = id;
 		this.#pending = [];
 		this.#exitAnswer();
-		this.#stopTimer();
 		// A fetch from the OLD conversation may still be in flight (or stuck);
 		// its result is fenced by the generation guard, so its promise is
 		// orphaned — the new conversation must not queue behind it.
@@ -122,9 +113,6 @@ export class InteractionPrompter implements Component {
 			this.#changed();
 			return;
 		}
-		this.#timer = setInterval(() => this.kick(), this.#pollMs);
-		// Never keep the process alive for chrome polling.
-		this.#timer.unref();
 		void this.#refresh();
 	}
 
@@ -286,21 +274,13 @@ export class InteractionPrompter implements Component {
 		}
 	}
 
-	#stopTimer(): void {
-		if (this.#timer !== undefined) {
-			clearInterval(this.#timer);
-			this.#timer = undefined;
-		}
-	}
-
 	#changed(): void {
 		this.onChanged?.();
 	}
 
-	/** Stop polling (the app calls this on dispose). */
+	/** Detach (the app calls this on dispose): stale fetches never land. */
 	dispose(): void {
 		this.#gen += 1;
-		this.#stopTimer();
 	}
 
 	/**
