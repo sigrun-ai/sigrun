@@ -29,7 +29,12 @@ import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
-import { loadExtensions, type ExtensionOutcome, type ResolvedExtensionInput } from "./loader.js";
+import {
+	loadExtensions,
+	type ExtensionOutcome,
+	type ExtensionRouteBinding,
+	type ResolvedExtensionInput,
+} from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
 import { AuthStore } from "./auth.js";
 import {
@@ -251,6 +256,15 @@ export interface OpenedHarness {
 	readonly seamHosts: ReadonlyMap<string, SeamHost>;
 	/** The kinds each loaded extension declared, keyed by extension name. */
 	readonly seamKinds: ReadonlyMap<string, DeclaredKinds>;
+	/**
+	 * HTTP routes the loaded extensions declared (core hardening W5
+	 * Task 2, spec §9.2): one binding per extension whose factory result
+	 * carried `routes`, slug-attributed — `createServer` mounts each at
+	 * `/v1/ext/<slug>/<path>` (src/server/routes/extension-routes.ts)
+	 * and `GET /v1/extensions` inventories the entries. Quarantined
+	 * extensions contribute nothing.
+	 */
+	readonly extensionRoutes: readonly ExtensionRouteBinding[];
 	/**
 	 * The memory-seam event bus (Tasks 2-4): opened on the booted harness
 	 * BEFORE `resume()` (recovery settles are observed), with each loaded
@@ -560,6 +574,7 @@ export async function openHarness(
 		providerContributors,
 		webuiBundles: extensionWebuiBundles,
 		jobBindings,
+		routeBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -1138,6 +1153,7 @@ export async function openHarness(
 		packagesDir,
 		seamHosts,
 		seamKinds,
+		extensionRoutes: routeBindings,
 		eventBus,
 		events,
 		workerStatuses: () => eventBus.workerStatuses(),

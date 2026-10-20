@@ -244,7 +244,7 @@ what core does with each, and where its rules are documented:
 | `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
-| `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | lands in Task 2 |
+| `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | lands in Task 3 |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes | lands in Task 4 |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to | lands in Task 6 |
@@ -469,6 +469,46 @@ Each entry is a full job spec (the §8.2 grammar of the core design doc:
 `prompt` or `task` action). Extension-declared jobs are read-only through
 the API — edit the extension to change them. A malformed declaration
 ( bad grammar, duplicate names) quarantines the extension at load.
+
+## HTTP routes
+
+A factory result may declare `routes` — HTTP endpoints sigrun mounts at
+`/v1/ext/<slug>/<path>` (webhooks, OAuth callbacks) using web-standard
+`Request`/`Response` (Node ≥ 22; no server type crosses the contract):
+
+```js
+routes: [
+	{
+		method: "POST",            // GET | POST | PUT | PATCH | DELETE
+		path: "webhook",           // RELATIVE: no leading "/", no ".."
+		auth: "public",             // "user" | "admin" | "public"
+		bodyLimit: 262144,         // optional; default 1 MiB
+		async handler(request, ctx) {
+			// ctx.principal is present on user/admin routes, absent on public
+			return new Response(await request.text(), { status: 200 });
+		},
+	},
+]
+```
+
+- **`public` skips authentication only** — the Host/Origin checks and
+  the unclaimed-server gate still apply, and no principal is attached.
+  The handler verifies its own caller (a webhook signature, an OAuth
+  `state`). `user` routes require a credential; `admin` additionally
+  requires an admin principal (403 otherwise).
+- The handler receives a fresh `Request` per call, its URL absolute
+  (`server.publicUrl` / `SIGRUN_PUBLIC_URL` when set, else
+  `http://<Host header>`); its body may be read **once** per the web
+  standard (a second `text()` rejects).
+- Return a `Response` (or throw): a throw or a non-`Response` return
+  answers `500 {error: "extension_route_failed", extension}` — logged,
+  never a crash.
+- A body over `bodyLimit` (default 1 MiB) answers `413 too_large`.
+- A malformed declaration (bad verb, escaping path, unknown `auth`)
+  quarantines the extension at load.
+- `server.publicUrl` (`SIGRUN_PUBLIC_URL`, settings `server.publicUrl`)
+  is the deployment's absolute base URL — trailing slashes are
+  stripped; without it, notification deep links are omitted.
 
 ## Idle workers: `wakeOn` only
 

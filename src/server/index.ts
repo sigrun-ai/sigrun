@@ -44,7 +44,8 @@ import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
-import { registerExtensionRoutes } from "./routes/extensions.js";
+import { registerExtensionRoutes as registerExtensionSettingsRoutes } from "./routes/extensions.js";
+import { registerExtensionRoutes as mountExtensionRoutes } from "./routes/extension-routes.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
@@ -192,7 +193,12 @@ export async function createServer(
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
-	registerExtensionRoutes(app, ctx);
+	registerExtensionSettingsRoutes(app, ctx);
+	// The extension HTTP routes (W5 Task 2, spec §9.2): every collected
+	// `routes` contribution mounted at `/v1/ext/<slug>/<path>` behind the
+	// web-standard Request/Response adapter — per-route auth rides the
+	// pipeline's stage-4b public skip and this module's admin check.
+	mountExtensionRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable

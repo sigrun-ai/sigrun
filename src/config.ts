@@ -168,6 +168,16 @@ export interface AuthConfig {
 
 export interface SigrunConfig {
 	/**
+	 * The deployment's absolute base URL (core hardening W5 Task 2,
+	 * spec §9.2): `SIGRUN_PUBLIC_URL` over the file's
+	 * `server.publicUrl` — an absolute http(s) URL with trailing
+	 * slashes stripped, `undefined` when neither source sets it. The
+	 * extension-route adapter bases the handlers' absolute `Request`
+	 * URLs on it (else `http://<Host header>`); notification deep links
+	 * are omitted without it.
+	 */
+	publicUrl?: string;
+	/**
 	 * The upload/import body-limit knob (spec §6.2):
 	 * `SIGRUN_MAX_UPLOAD_BYTES` over the file's `server.maxUploadBytes`
 	 * over {@link DEFAULT_MAX_UPLOAD_BYTES} (64 MiB). The raw PUT route
@@ -343,6 +353,50 @@ export const PROVIDER_REFRESH_MINUTES_ENV = "SIGRUN_PROVIDER_REFRESH_MINUTES";
 
 /** The env var carrying the upload body-limit knob (spec §6.2). */
 export const MAX_UPLOAD_BYTES_ENV = "SIGRUN_MAX_UPLOAD_BYTES";
+
+/** The env var carrying the deployment's absolute base URL (W5 Task 2). */
+export const PUBLIC_URL_ENV = "SIGRUN_PUBLIC_URL";
+
+/**
+ * Whether `value` parses as an ABSOLUTE http(s) URL with a hostname
+ * (the `server.publicUrl` grammar, W5 Task 2) — the shared predicate
+ * behind {@link parsePublicUrl} and the settings-file validation
+ * (src/harness/settings.ts), so both gates accept the same shapes.
+ */
+export function isAbsoluteHttpUrl(value: string): boolean {
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return false;
+	}
+	return (
+		(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+		parsed.hostname !== ""
+	);
+}
+
+/**
+ * Parse one `server.publicUrl` / `SIGRUN_PUBLIC_URL` value (W5 Task 2,
+ * spec §9.2): an absolute http(s) URL — validated by
+ * {@link isAbsoluteHttpUrl} — with any TRAILING SLASHES stripped (the
+ * value consumers concatenate paths onto,
+ * `${server.publicUrl}/v1/ext/<slug>/…`). Unset/empty → `undefined`;
+ * anything else fails loud naming `source`.
+ */
+export function parsePublicUrl(
+	raw: string | undefined,
+	source: string,
+): string | undefined {
+	const trimmed = raw?.trim() ?? "";
+	if (trimmed === "") return undefined;
+	if (!isAbsoluteHttpUrl(trimmed)) {
+		throw new Error(
+			`${source} must be an absolute http(s) URL, got ${JSON.stringify(raw)}`,
+		);
+	}
+	return trimmed.replace(/\/+$/, "");
+}
 
 /** The upload knob's default (spec §6.2): 64 MiB. */
 export const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
@@ -1062,6 +1116,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		dataDir: config.dataDir,
 		cacheDir: config.cacheDir,
 		stateDir: config.stateDir,
+		...(config.publicUrl === undefined ? {} : { publicUrl: config.publicUrl }),
 		...(webui === undefined ? {} : { webui }),
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
@@ -1107,6 +1162,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_BACKUP_*` | `backup` |
  * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
  * | `SIGRUN_MAX_FILE_READ_BYTES` | `maxFileReadBytes` |
+ * | `SIGRUN_PUBLIC_URL` | `publicUrl` |
  */
 export function envServerSection(env: Env): ServerSettings {
 	const section: Record<string, unknown> = {};
@@ -1130,6 +1186,8 @@ export function envServerSection(env: Env): ServerSettings {
 	if (maxFileReadBytes !== undefined) {
 		section.maxFileReadBytes = maxFileReadBytes;
 	}
+	const publicUrl = parsePublicUrl(env[PUBLIC_URL_ENV], PUBLIC_URL_ENV);
+	if (publicUrl !== undefined) section.publicUrl = publicUrl;
 	const webui = pickDefined({
 		enabled: parseWebuiEnabled(env),
 		bundle: env.SIGRUN_WEBUI_BUNDLE?.trim() || undefined,
@@ -1227,6 +1285,9 @@ export function effectiveServerSection(
 	emit("dataDir", config.dataDir, ["dataDir"]);
 	emit("cacheDir", config.cacheDir, ["cacheDir"]);
 	emit("stateDir", config.stateDir, ["stateDir"]);
+	if (config.publicUrl !== undefined) {
+		emit("publicUrl", config.publicUrl, ["publicUrl"]);
+	}
 	emit("webui.enabled", config.webui.enabled, ["webui", "enabled"]);
 	if (config.webui.bundle !== undefined) {
 		emit("webui.bundle", config.webui.bundle, ["webui", "bundle"], [
@@ -1405,6 +1466,13 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		models,
 		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
 		maxFileReadBytes: parseMaxFileReadBytes(env, server?.maxFileReadBytes),
+		// W5 Task 2 (spec §9.2): the deployment's absolute base URL — env
+		// parsed first (fail loud on an invalid env value even when the
+		// file carries a valid one), the file's `server.publicUrl` next,
+		// unset when neither source sets it.
+		publicUrl:
+			parsePublicUrl(env[PUBLIC_URL_ENV], PUBLIC_URL_ENV) ??
+			parsePublicUrl(server?.publicUrl, "server.publicUrl"),
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array
 		// next; empty otherwise.
 		// Ruling 1: env CSV wins; the file's top-level `extensions` array

@@ -19,6 +19,12 @@
  *     setup gate.
  *  4. **Unclaimed gate.** `!users.isClaimed()` → 403 `setup_required`
  *     (onboarding is the only usable surface until the first claim).
+ *  4b. **Extension-route public skip** (W5 Task 2, spec §9.2). A request
+ *     ROUTED to a mounted `/v1/ext/<slug>/<path>` route whose
+ *     contribution declared `auth: "public"` skips stage 5 — webhooks
+ *     and OAuth callbacks verify their own caller. Stages 1-4 still
+ *     applied (an unclaimed server answers a public route 403
+ *     `setup_required`, spec §5.8); the request carries no principal.
  *  5. **Methods, in `ctx.methods` order.** `proxy`: trusted peer CIDR +
  *     (when configured) the shared-secret header (deleted from the
  *     request before handlers run) + a non-empty user header; a
@@ -284,7 +290,22 @@ export function registerAuthPipeline(
 		// Stage 4: the setup gate (the brief's "never 401 before 403").
 		if (!ctx.opened.identity.users.isClaimed()) {
 			return await reply.code(403).send({ error: "setup_required" });
-		}		// Stage 5/6: the configured methods, in order; the empty list is
+		}
+		// Stage 4b: the extension-route public skip (W5 Task 2, spec §9.2).
+		// The request is already ROUTED — Fastify resolved it to a route
+		// before lifecycle hooks run — so `routeOptions.config.extAuth` is
+		// the mounted route's declared auth, exactly. A `public` route
+		// (a webhook, an OAuth callback) skips stage 5; its handler sees no
+		// principal and verifies its own caller. Everything else
+		// (`user`/`admin`, core routes, unrouted paths) falls through to the
+		// normal authentication stages.
+		if (
+			request.url.startsWith("/v1/ext/") &&
+			request.routeOptions.config.extAuth === "public"
+		) {
+			return;
+		}
+		// Stage 5/6: the configured methods, in order; the empty list is
 		// the naive loopback path.
 		if (ctx.methods.length === 0) {
 			request.principal = {
