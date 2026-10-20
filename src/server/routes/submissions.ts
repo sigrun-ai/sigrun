@@ -8,28 +8,22 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type {
-	InputSubmissionDraft,
-	ModelRef,
-	Submission,
-	SubmissionRecord,
-} from "@earendil-works/pi-durable";
+import type { ModelRef } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { FastifyInstance } from "fastify";
 import type { SigrunHost } from "../../extension.js";
-import { touchActivity } from "../../harness/activity.js";
 import { UnservedModelError } from "../../harness/providers/index.js";
-import { resolveServedModelRefreshing } from "../../harness/providers/refresh.js";
-import { parseSubmissionInput, resolveParts } from "../content-parts.js";
+import {
+	ConversationOpError,
+	submitOp,
+} from "../conversation-ops.js";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import {
 	ID_PARAMS_SCHEMA,
 	THINKING_LEVELS,
-	WHEN_BUSY_MODES,
-	conversationEnv,
+	storeAgentChange,
 	submissionId,
-	type WhenBusyMode,
 } from "../helpers.js";
 import type {
 	AbortResponse,
@@ -37,9 +31,6 @@ import type {
 	ConfigureResponse,
 	SubmissionResponse,
 } from "../views.js";
-
-/** The §7.1 ceiling for `?waitMs` — a positive integer at most this. */
-const WAIT_MS_MAX = 60_000;
 
 /** Integer path params for the submission status route (§7.1). */
 const SUBMISSION_PARAMS_SCHEMA = {
@@ -57,35 +48,6 @@ const COMMAND_INVOKE_PARAMS_SCHEMA = {
 	additionalProperties: false,
 } as const;
 
-/**
- * Race `submission.wait` against a `waitMs` timer (§7.1): the wait winning
- * returns the settled record; the timer winning returns whichever record is
- * CURRENT (mid-run). The losing wait's eventual rejection is never left
- * unhandled.
- */
-async function waitForSubmission(
-	submission: Submission,
-	waitMs: number,
-): Promise<SubmissionRecord> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		const timeout = new Promise<true>((resolve) => {
-			timer = setTimeout(() => resolve(true), waitMs);
-		});
-		const wait = submission.wait(BACKGROUND_CONTEXT);
-		const winner = await Promise.race([wait, timeout]);
-		if (winner !== true) {
-			return winner;
-		}
-		// The timer won: hand back the CURRENT record; a late rejection of
-		// the abandoned wait must not surface as unhandled.
-		void wait.catch(() => undefined);
-		return await submission.status(BACKGROUND_CONTEXT);
-	} finally {
-		if (timer !== undefined) clearTimeout(timer);
-	}
-}
-
 /** Register the submission/configure/abort/compact routes. */
 export function registerSubmissionRoutes(
 	app: FastifyInstance,
@@ -93,7 +55,10 @@ export function registerSubmissionRoutes(
 ): void {
 	const { opened } = ctx;
 	// Submissions: content-part resolution + upstream idempotence;
-	// `whenBusy` pass-through.
+	// `whenBusy` pass-through. The shared submit op (W5 Task 5) is the
+	// SAME code path the extension host bridge drives — content-part
+	// resolution, the served-model check, and activity stamping are
+	// identical by construction; this route owns the HTTP mapping only.
 	app.post(
 		"/v1/conversations/:id/submissions",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
@@ -107,27 +72,26 @@ export function registerSubmissionRoutes(
 			) {
 				return await reply.code(400).send({ error: "invalid_body" });
 			}
-			const parsed = parseSubmissionInput(body.input);
-			if (!parsed.ok) {
-				return await reply.code(400).send({ error: "invalid_input" });
-			}
-			// Spec §2/§3 binding contract: a conversation
-			// pinned to an unserved model fails explicitly AT SUBMIT — 4xx with
-			// the available ids — never a silent fallback, and never a settled
-			// no_model run surfaced only later. Resolution goes through the
-			// refresh-on-miss wrapper: ONE bounded refresh of the named
-			// provider + re-resolve on the miss, so a
-			// model gained upstream since the last interval tick is
-			// immediately usable; still absent → the UnservedModelError
-			// carrying the catalog maps to 400. The auto-namer's resolution
-			// deliberately stays on bare `requireServedModel` (background
-			// lane — no refresh there).
-			const agent = await conversation.agent(BACKGROUND_CONTEXT);
 			try {
-				if (agent.model !== undefined) {
-					await resolveServedModelRefreshing(opened.models, agent.model);
-				}
+				const record = await submitOp(ctx, conversation, body.input, {
+				...(body.requestId === undefined
+					? {}
+					: { requestId: String(body.requestId) }),
+				...(body.whenBusy === undefined ? {} : { whenBusy: body.whenBusy }),
+				...( (request.query as Record<string, unknown> | undefined)?.waitMs ===
+				undefined
+					? {}
+					: {
+							waitMs: (
+								request.query as Record<string, unknown>
+							).waitMs,
+						}),
+				});
+				return await reply.code(202).send({ submission: record });
 			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(400).send(error.body);
+			}
 				if (error instanceof UnservedModelError) {
 					return await reply.code(400).send({
 						error: "unserved_model",
@@ -137,80 +101,6 @@ export function registerSubmissionRoutes(
 				}
 				throw error;
 			}
-			// `waitMs` (§7.1) is the opt-in bounded settlement wait for
-			// scripts — a positive integer ≤ 60 000; anything else is a
-			// fail-loud client error BEFORE anything is admitted.
-			const waitMsRaw = (
-				request.query as Record<string, unknown> | undefined
-			)?.waitMs;
-			let waitMs: number | undefined;
-			if (waitMsRaw !== undefined) {
-				const parsedWait =
-					typeof waitMsRaw === "number" ? waitMsRaw : Number(waitMsRaw);
-				if (
-					!Number.isInteger(parsedWait) ||
-					parsedWait <= 0 ||
-					parsedWait > WAIT_MS_MAX
-				) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "waitMs" });
-				}
-				waitMs = parsedWait;
-			}
-			const requestId =
-				body.requestId === undefined ? undefined : String(body.requestId);
-			// `whenBusy` is the steer affordance (spec §7 item 3) — validate
-			// it against pi-durable's union and pass it through; unknown values
-			// are a client error, never a silent default.
-			const whenBusy = body.whenBusy;
-			if (
-				whenBusy !== undefined &&
-				(typeof whenBusy !== "string" || !WHEN_BUSY_MODES.includes(whenBusy))
-			) {
-				return await reply
-					.code(400)
-					.send({ error: "invalid_field", field: "whenBusy" });
-			}
-			// Resolve path-parts to inline content NOW, against the live
-			// workspace: missing paths become explicit error parts; other
-			// workspace failures throw → Fastify 500, fail-loud.
-			const env = await conversationEnv(opened, conversation);
-			const content = await resolveParts(
-				parsed.parts,
-				env,
-				BACKGROUND_CONTEXT,
-			);
-			const draft: InputSubmissionDraft = {
-				type: "input",
-				content,
-				...(requestId === undefined ? {} : { requestId }),
-				...(whenBusy === undefined
-					? {}
-					: { whenBusy: whenBusy as WhenBusyMode }),
-			};
-			// The submit pass-through is retired (§6.7): the memory seam's
-			// runSettled owns capture, so submissions admit directly.
-			const submission = await conversation.submit(
-				draft,
-				BACKGROUND_CONTEXT,
-			);
-			// Admission stamps activity: the sidebar's activity
-			// sort must move the moment a prompt lands — before the run settles.
-			await touchActivity(
-				opened.harness,
-				conversation.id,
-				opened.now,
-				BACKGROUND_CONTEXT,
-			);
-			// §7.1: 202 AT ADMISSION — the record as it stands the moment the
-			// submission is admitted (queued or placed). `?waitMs` opts into
-			// the bounded settlement race; the status route polls the record.
-			const record =
-				waitMs === undefined
-					? await submission.status(BACKGROUND_CONTEXT)
-					: await waitForSubmission(submission, waitMs);
-			return await reply.code(202).send({ submission: record });
 		},
 	);
 

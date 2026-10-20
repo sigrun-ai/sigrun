@@ -50,6 +50,7 @@ import {
 	type DeclaredKinds,
 	type SeamHost,
 } from "./seam-host.js";
+import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
 import { createSkillsExtension } from "../skills/index.js";
@@ -258,6 +259,18 @@ export interface OpenedHarness {
 	readonly seamHosts: ReadonlyMap<string, SeamHost>;
 	/** The kinds each loaded extension declared, keyed by extension name. */
 	readonly seamKinds: ReadonlyMap<string, DeclaredKinds>;
+	/**
+	 * Bind the server-provided host bridge (W5 Task 5, spec §9.5/§9.7):
+	 * `createServer` calls this once its `ServerContext` exists, setting
+	 * the ONE bridge on every seam host — each host's
+	 * `conversations`/`users`/`access`/`identity` members then run the
+	 * server's shared conversation ops (src/server/conversation-ops.ts —
+	 * the same code paths as the HTTP routes). Calls issued before the
+	 * binding wait on the host side (the lazy seam discipline), so a
+	 * host.conversations call from a factory body never resolves before
+	 * the server exists.
+	 */
+	readonly bindHostBridge: (bridge: HostBridge) => void;
 	/**
 	 * HTTP routes the loaded extensions declared (core hardening W5
 	 * Task 2, spec §9.2): one binding per extension whose factory result
@@ -1206,6 +1219,9 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		packagesDir,
 		seamHosts,
 		seamKinds,
+		bindHostBridge: (bridge: HostBridge): void => {
+			for (const host of seamHosts.values()) host.bindBridge(bridge);
+		},
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
 		skillRoots: extensionSkillRoots,
