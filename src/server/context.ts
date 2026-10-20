@@ -64,6 +64,15 @@ export interface ServerContext {
 	 * per-request read.
 	 */
 	readonly env: Env;
+	/**
+	 * Live `/stream` watchers per conversation (core hardening W5 Task 6,
+	 * spec §9.6): the stream route increments on attach and decrements in
+	 * its exactly-once `finish` cleanup. The notifications surface's
+	 * `"unwatched"` runSettled rule reads it — a conversation with an
+	 * attached client is watched, and the away-from-desk notification is
+	 * suppressed.
+	 */
+	readonly watchersByConversation: Map<ConversationId, number>;
 }
 
 declare module "fastify" {

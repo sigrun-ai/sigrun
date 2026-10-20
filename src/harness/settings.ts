@@ -89,6 +89,19 @@ export interface SettingsStoreOptions {
 /** The queue modes pi-durable accepts (its `QueueMode`). */
 const QUEUE_MODES: readonly string[] = ["all", "one-at-a-time"];
 
+/**
+ * The `notifications.runSettled` vocabulary (W5 Task 6, spec §9.6) — a
+ * list for the same reason `QUEUE_MODES` is one: `includes` on a `const`
+ * tuple narrows to the literal union, which an unknown file value can
+ * never satisfy.
+ */
+const RUN_SETTLED_MODES: readonly string[] = [
+	"unwatched",
+	"cron",
+	"always",
+	"never",
+];
+
 /** The thinking levels the configure surface accepts (pi-ai's union). */
 const THINKING_LEVELS: readonly string[] = [
 	"off",
@@ -115,6 +128,7 @@ const SETTING_KEYS = [
 	"namingModel",
 	"defaultProvider",
 	"skills",
+	"notifications",
 	"server",
 ] as const;
 
@@ -436,6 +450,25 @@ function validate(value: Record<string, unknown>): void {
 			throw new SettingsValidationError(
 				"skills.sectionMaxBytes",
 				"must be a positive integer",
+			);
+		}
+	}
+	// The notifications surface (W5 Task 6, spec §9.6): a live section —
+	// `runSettled` one of the four modes.
+	if (value.notifications !== undefined) {
+		const notifications = asRecord(value.notifications);
+		if (notifications === undefined) {
+			throw new SettingsValidationError("notifications", "must be an object");
+		}
+		checkKeys("notifications.", notifications, ["runSettled"]);
+		if (
+			notifications.runSettled !== undefined &&
+			(typeof notifications.runSettled !== "string" ||
+				!RUN_SETTLED_MODES.includes(notifications.runSettled))
+		) {
+			throw new SettingsValidationError(
+				"notifications.runSettled",
+				`must be one of ${RUN_SETTLED_MODES.join(", ")}`,
 			);
 		}
 	}

@@ -89,6 +89,7 @@ import type {
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
+	NotifierContribution,
 	ProviderContribution,
 	SigrunExtensionResult,
 	SigrunLifecycleHandlers,
@@ -189,6 +190,20 @@ export interface ExtensionCommandBinding {
 	readonly commands: readonly ExtensionCommandContribution[];
 }
 
+/**
+ * Notifier transports retained from one extension factory result (core
+ * hardening W5 Task 6, spec §9.6), attributed to the extension slug —
+ * boot threads the list to `OpenedHarness.notifierBindings` for the
+ * server's notifications surface (src/server/notifications.ts), which
+ * delivers one `NotificationEvent` per recipient to every collected
+ * notifier.
+ */
+export interface ExtensionNotifierBinding {
+	/** The slug identity (the delivery label's attribution). */
+	readonly extension: string;
+	readonly notifiers: readonly NotifierContribution[];
+}
+
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
 	"conversationCreated",
@@ -286,6 +301,15 @@ export interface LoadedExtensions {
 	 * extensions contribute none.
 	 */
 	readonly commandBindings: readonly ExtensionCommandBinding[];
+	/**
+	 * Notifier transports from factory results (core hardening W5 Task 6,
+	 * spec §9.6), one entry per loaded extension whose result carried
+	 * `notifiers`; the server's notifications surface delivers one
+	 * `NotificationEvent` per recipient to every collected notifier
+	 * (best-effort, deadline-bounded). Quarantined extensions contribute
+	 * none.
+	 */
+	readonly notifierBindings: readonly ExtensionNotifierBinding[];
 	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
@@ -392,6 +416,12 @@ export interface ResolvedExtension {
 	 * not silently lose them).
 	 */
 	skills?: readonly string[];
+	/**
+	 * Notifier transports (core hardening W5 Task 6, spec §9.6), validated
+	 * fail-loud — a malformed entry quarantines the extension before any
+	 * event reaches a transport.
+	 */
+	notifiers?: readonly NotifierContribution[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -399,9 +429,9 @@ export interface ResolvedExtension {
 
 /**
  * Every factory-result key the loader reads (the full list, one place).
- * `routes`/`commands`/`skills`/`notifiers` are included NOW — ahead of
- * their implementing tasks (W5 Tasks 2/3/4/6) — so the contract must
- * already declare them.
+ * Every key is a declared field of the public contract
+ * (`SigrunExtensionResult`, src/extension.ts) — the assertion below
+ * fails the compile the moment one drifts.
  */
 type LoaderReadKeys =
 	| "extension"
@@ -769,6 +799,41 @@ function validateCommands(
 }
 
 /**
+ * Validate a factory result's `notifiers` declaration (core hardening W5
+ * Task 6, spec §9.6). Absent → undefined (no contributions). Present but
+ * malformed → throw; the loader quarantines the extension with the thrown
+ * message (fail-loud: an extension that THINKS it declared a transport
+ * must not silently lose it — the providers/health class). Per entry: a
+ * non-empty `name` and a `notify` function.
+ */
+function validateNotifiers(
+	value: unknown,
+): readonly NotifierContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a notifiers field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const notifier = entry as { name?: unknown; notify?: unknown } | null;
+		const describe = () =>
+			`notifier "${typeof notifier?.name === "string" ? notifier.name : String(notifier?.name)}"`;
+		if (typeof notifier?.name !== "string" || notifier.name.length === 0) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose name is missing or empty`,
+			);
+		}
+		if (typeof notifier?.notify !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose notify is not a function`,
+			);
+		}
+	}
+	return value as readonly NotifierContribution[];
+}
+
+/**
  * Validate a factory result's `skills` declaration (core hardening W5
  * Task 4, spec §9.4). Absent → undefined (no contributions). Present but
  * malformed → throw; the loader quarantines the extension with the thrown
@@ -1115,6 +1180,7 @@ async function resolvedFromFactory(
 	const routes = validateRoutes(candidate.routes);
 	const commands = validateCommands(candidate.commands);
 	const skills = validateSkills(candidate.skills);
+	const notifiers = validateNotifiers(candidate.notifiers);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -1208,6 +1274,7 @@ async function resolvedFromFactory(
 		...(routes === undefined ? {} : { routes }),
 		...(commands === undefined ? {} : { commands }),
 		...(skills === undefined ? {} : { skills }),
+		...(notifiers === undefined ? {} : { notifiers }),
 	};
 }
 
@@ -1434,6 +1501,9 @@ const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
 const routeBindings: ExtensionRouteBinding[] = [];
 // Slash commands (W5 Task 3), attributed the same way.
 const commandBindings: ExtensionCommandBinding[] = [];
+// Notifier transports (W5 Task 6, spec §9.6), attributed the same way —
+// the server's notifications surface delivers to every collected entry.
+const notifierBindings: ExtensionNotifierBinding[] = [];
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -1710,6 +1780,9 @@ const display = label ?? entry ?? "skills-only";
 				if (resolved.commands !== undefined) {
 					commandBindings.push({ extension: slug, commands: resolved.commands });
 				}
+				if (resolved.notifiers !== undefined) {
+					notifierBindings.push({ extension: slug, notifiers: resolved.notifiers });
+				}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1775,5 +1848,6 @@ const display = label ?? entry ?? "skills-only";
 		jobBindings,
 		routeBindings,
 		commandBindings,
+		notifierBindings,
 	};
 }

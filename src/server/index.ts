@@ -58,6 +58,7 @@ import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerStreamRoutes } from "./routes/stream.js";
+import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
@@ -184,6 +185,7 @@ export async function createServer(
 		listenHost,
 		methods,
 		env,
+		watchersByConversation: new Map(),
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
@@ -193,6 +195,14 @@ export async function createServer(
 	// route or extension code can serve a request; calls issued earlier
 	// (a factory body) have been waiting on exactly this assignment.
 	opened.bindHostBridge(createHostBridge(ctx));
+	// The notifications surface (W5 Task 6, spec §9.6): one hub
+	// subscription turning host events into per-recipient
+	// NotificationEvents for every collected notifier contribution,
+	// delivered on the event bus's bounded side lane. Started after the
+	// host bridge binds (a notify ctx's `host` serves real calls from
+	// the first event) and never stopped — the surface rides the server
+	// lifetime, like the routes above.
+	startNotifications(ctx);
 	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
 	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
 	// env service token, the setup gate, and method resolution stamp

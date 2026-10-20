@@ -249,7 +249,7 @@ what core does with each, and where its rules are documented:
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
-| `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to | lands in Task 6 |
+| `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
 above — **never a defaulted options object**. Sigrun passes the host only
@@ -664,6 +664,64 @@ not resolve still quarantines.
 
 The rendered section is capped at `skills.sectionMaxBytes` (default
 4096, a live setting) with a truncation notice.
+
+## Notifiers
+
+A factory result may declare `notifiers` — transports core delivers
+events to. **Core ships none**: every transport (ntfy, Signal, web
+push, ...) lives in an extension.
+
+```js
+notifiers: [
+	{
+		name: "ntfy",
+		async notify(event, ctx) {
+			// ctx.host is your seam host; event is one notification
+			await fetch(`https://ntfy.example/${event.user ?? "sigrun"}`, {
+				method: "POST",
+				body: `${event.title} — ${event.body}`,
+			});
+		},
+	},
+]
+```
+
+Core emits one event per **recipient** (`user` is who it is for):
+
+```ts
+{
+	type: "interaction.pending" | "job.failed" | "run.settled",
+	conversationId?: number,   // the conversation, when one is involved
+	jobId?: string,            // the failed job's id
+	user: string | undefined,  // the recipient
+	title: string,
+	body: string,
+	url?: string,              // `${server.publicUrl}/#/c/<id>` when set
+}
+```
+
+- **Emitted events.** `interaction.pending` — always (an agent needs a
+  human). `job.failed` — always, once per failed run. `run.settled` —
+  per the `notifications.runSettled` setting: `"unwatched"` (default)
+  only when no client stream is attached to the conversation (the
+  away-from-desk case), `"cron"` only for job-run conversations,
+  `"always"` every settle, `"never"` none. The setting is live — a
+  `settings.json` PATCH reaches the next settle without a restart.
+- **Recipients.** Each event goes to the resource's owner. For
+  `interaction.pending` it also goes to every directory user with
+  `write` access — anyone who can answer.
+- **Titles.** `interaction.pending` → `"Sigrun needs you"` with the
+  conversation's display name; `job.failed` → `"Job <name> failed"`
+  with the run's error; `run.settled` → `"Reply ready"` with the
+  display name. The display name is `name ?? autoName ??
+  "Conversation <id>"`.
+- **Delivery is best-effort.** Each `notify` call runs deadline-bounded
+  on the event bus's side lane; a throwing or over-deadline notifier is
+  logged and isolated — the other notifiers still receive the event —
+  and nothing is retried durably (reliability is a notifier's own
+  concern).
+- A malformed declaration (missing name, non-function `notify`)
+  quarantines the extension at load.
 
 ## Uninstall
 
