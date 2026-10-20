@@ -53,6 +53,14 @@ export function registerStreamRoutes(
 			// source); frames published between here and start() are held by the
 			// watch's bounded pending delivery, so nothing is lost.
 			const watch = await conversation.watch(BACKGROUND_CONTEXT);
+			// Watcher bookkeeping (W5 Task 6, spec §9.6): one attached client.
+			// The exactly-once `finish` below decrements — the notifications
+			// surface's `"unwatched"` runSettled rule reads this count.
+			const watchers = ctx.watchersByConversation;
+			watchers.set(
+				conversation.id,
+				(watchers.get(conversation.id) ?? 0) + 1,
+			);
 			reply.hijack();
 			const raw = reply.raw;
 			raw.writeHead(200, {
@@ -89,6 +97,12 @@ export function registerStreamRoutes(
 				if (finished) return;
 				finished = true;
 				clearInterval(heartbeat);
+				// Watcher bookkeeping (W5 Task 6): the paired decrement — exactly
+				// once per increment by the `finished` guard, floored at removal
+				// so a stray double path can never drive the count negative.
+				const remaining = (watchers.get(conversation.id) ?? 1) - 1;
+				if (remaining <= 0) watchers.delete(conversation.id);
+				else watchers.set(conversation.id, remaining);
 				if (!fromWatchEnd) {
 					// stop() is idempotent upstream; fire-and-forget because the
 					// stream is ending regardless and a stop() rejection after a

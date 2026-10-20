@@ -59,10 +59,12 @@ story to guess.
   mandates nothing about their contents — not file formats, not
   structure. The surface is "a directory that is yours."
 - The config root's other top-level entries are named, not litter:
-  `packages/` and `git/` (the extension install machinery), the
-  identity surfaces `users.json` and `api-tokens.json` (mode 0600,
-  sigrun-owned — user accounts and token digests), and channel client
-  configs such as `tui.json`.
+  `packages/` and `git/` (the extension install machinery), `skills/`
+  (your user-wide skills — the same SKILL.md convention the workspace
+  ships, listed under the reserved `skills` section for every
+  conversation), the identity surfaces `users.json` and `api-tokens.json`
+  (mode 0600, sigrun-owned — user accounts and token digests), and
+  channel client configs such as `tui.json`.
 
 ## One resolution chain — workstation and container
 
@@ -212,6 +214,56 @@ What the snippet encodes:
 - **Settings have no env bootstrap.** The store is their only source;
   the env pattern below is for secrets.
 
+## The factory result
+
+The factory's return value is ONE documented contract type, shipped
+from the main package as the **types-only** subpath `sigrun/extension`.
+Consume it with `import type`, so nothing loads at runtime:
+
+```ts
+import type { SigrunExtensionResult, SigrunHost } from "sigrun/extension";
+```
+
+There is no runtime entry behind the subpath — importing it as a value
+fails loud by design. Every field is optional; the fields, their types,
+what core does with each, and where its rules are documented:
+
+| field | type | what core does with it | documented in |
+|---|---|---|---|
+| `extension` | pi-durable `Extension` | installed into the registry before `Harness.open`; its declared name is the slug source | this page ("The stores handle", "Prompt sections") |
+| `name` | `string` | the identity of a contributor-only result (no `extension`) | "Contributing model providers" |
+| `providers` | `readonly ProviderContribution[]` | merged into the boot model catalog; last-registered-wins, collisions recorded and surfaced | "Contributing model providers" |
+| `webuiBundles` | `readonly WebuiBundleContribution[]` | each `dir` anchored at the entry; the name-keyed registry `server.webui.bundle` selects from | "Contributing webui bundles" |
+| `health` | `() => HealthStatus` | aggregated into `/v1/meta` `health` — any `"degraded"` degrades the surface | "Contributing model providers" |
+| `runSettled` | `ExtensionRunSettledHandler` | registered on the event bus; one call per settled run, deadline-bounded | this table |
+| `conversationCreated` | `ExtensionLifecycleHandler<"conversationCreated">` | fired when a conversation is created (fork children included) | this table |
+| `conversationForked` | `ExtensionLifecycleHandler<"conversationForked">` | fired with the child, parent, and fork point | this table |
+| `conversationArchived` | `ExtensionLifecycleHandler<"conversationArchived">` | fired on archive flips (both directions) | this table |
+| `conversationIdle` | `ExtensionLifecycleHandler<"conversationIdle">` | fired per quiet period once the idle threshold passes and no run is live | this table |
+| `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the ordered flush window (handlers may commit); runs after workers stop | this table |
+| `userDeleted` | `ExtensionUserDeletedHandler` | fired after a user delete transferred ownership — move your per-user records here | this table |
+| `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
+| `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
+| `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
+| `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
+| `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
+| `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
+| `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
+| `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
+
+**The host rule.** The factory's first parameter is the host — `SigrunHost`
+above — **never a defaulted options object**. Sigrun passes the host only
+when `factory.length > 0`: a factory that wants the host must DECLARE the
+parameter, and a length-0 factory may carry a defaulted first parameter
+(a real dependency) that would otherwise consume the host and break the
+extension at runtime. The host's conversation/identity/access members bind
+lazily post-open — call them from tools, hooks, routes, commands, workers,
+and jobs, never from a factory body.
+
+A malformed field (wrong shape, wrong element type) quarantines the
+extension at load — a package that THINKS it declared something must
+never silently lose it.
+
 ## Secrets precedence: stored wins, env bootstraps
 
 For every secret, the resolution order is:
@@ -315,8 +367,9 @@ The contract rules, all load-bearing:
   from your package name, so a factory-time read resolves your file
   when the declared `name` matches the package name.)
 
-**Dependency posture.** Declare `@earendil-works/pi-ai` (and
-`@earendil-works/pi-durable` if you use its types) as **devDependencies
+**Dependency posture.** Declare `@earendil-works/pi-ai`,
+`@earendil-works/pi-durable`, and `@sigrun/shared` (whose types the
+`sigrun/extension` contract references) as **devDependencies
 only**. Sigrun ships them at runtime, the packages-dir install omits dev
 dependencies, and the loader links the host's own copies into the
 packages dir so your bare imports resolve — you consume the SAME module
@@ -419,6 +472,87 @@ Each entry is a full job spec (the §8.2 grammar of the core design doc:
 the API — edit the extension to change them. A malformed declaration
 ( bad grammar, duplicate names) quarantines the extension at load.
 
+## HTTP routes
+
+A factory result may declare `routes` — HTTP endpoints sigrun mounts at
+`/v1/ext/<slug>/<path>` (webhooks, OAuth callbacks) using web-standard
+`Request`/`Response` (Node ≥ 22; no server type crosses the contract):
+
+```js
+routes: [
+	{
+		method: "POST",            // GET | POST | PUT | PATCH | DELETE
+		path: "webhook",           // RELATIVE: no leading "/", no ".."
+		auth: "public",             // "user" | "admin" | "public"
+		bodyLimit: 262144,         // optional; default 1 MiB
+		async handler(request, ctx) {
+			// ctx.principal is present on user/admin routes, absent on public
+			return new Response(await request.text(), { status: 200 });
+		},
+	},
+]
+```
+
+- **`public` skips authentication only** — the Host/Origin checks and
+  the unclaimed-server gate still apply, and no principal is attached.
+  The handler verifies its own caller (a webhook signature, an OAuth
+  `state`). `user` routes require a credential; `admin` additionally
+  requires an admin principal (403 otherwise).
+- The handler receives a fresh `Request` per call, its URL absolute
+  (`server.publicUrl` / `SIGRUN_PUBLIC_URL` when set, else
+  `http://<Host header>`); its body may be read **once** per the web
+  standard (a second `text()` rejects).
+- Return a `Response` (or throw): a throw or a non-`Response` return
+  answers `500 {error: "extension_route_failed", extension}` — logged,
+  never a crash.
+- A body over `bodyLimit` (default 1 MiB) answers `413 too_large`.
+- A malformed declaration (bad verb, escaping path, unknown `auth`)
+  quarantines the extension at load.
+- `server.publicUrl` (`SIGRUN_PUBLIC_URL`, settings `server.publicUrl`)
+  is the deployment's absolute base URL — trailing slashes are
+  stripped; without it, notification deep links are omitted.
+
+## Slash commands
+
+A factory result may declare `commands` — slash commands that appear in
+the clients' `/` menu (`GET /v1/commands` merges them after the core
+table). Unlike core commands, an extension command executes ON THE
+SERVER: the client POSTs the invoke route and renders the returned
+notice (a transient banner in the webui, a status-bar flash in the TUI).
+
+```js
+commands: [
+	{
+		name: "standup",        // ^[a-z][a-z0-9-]*$; core names reserved
+		description: "Post today's standup summary",
+		args: "[team]",           // optional argument hint for the / menu
+		async run(ctx) {
+			// ctx: { conversationId, args, principal, host }
+			// args is the raw text after the command word ("" when absent)
+			return { notice: "posted" };   // {notice?} — optional
+		},
+	},
+]
+```
+
+- The invoke endpoint is `POST /v1/conversations/:id/commands/<name>`
+  with body `{args?: string}` — **write-gated** (a read-only sharee gets
+  403; the conversation must exist, else 404).
+- `ctx.host` is the same seam host `routes` receive; `ctx.principal` is
+  the caller.
+- A throw answers `500 {error: "command_failed", extension}` naming
+  your slug — logged, never a crash.
+- **Core command names are reserved** (`new`, `fork`, `compact`,
+  `export`, `import`, `name`, `model`, `thinking`, `jobs`): a command
+  naming one is DROPPED at boot with one warning — it never appears in
+  the menu and invoking its name is 404.
+- Two extensions declaring the same name: **last-registered-wins**
+  (load order), warned at boot and recorded in `GET /v1/meta`
+  `collisions.commands` — a co-installed replacement is a deployment
+  choice the operator can see, never a silent shadowing.
+- A malformed declaration (bad name shape, missing `description`,
+  non-function `run`) quarantines the extension at load.
+
 ## Idle workers: `wakeOn` only
 
 A factory result may also declare `workers` — in-process handlers woken
@@ -457,7 +591,7 @@ core-owned surface:
 | `identity` | `sigrun.context-files` | static identity paragraph (runtime facts) |
 | `persona` | `sigrun.context-files` | `SOUL.md`, else the shipped default persona |
 | `workspace-instructions` | `sigrun.context-files` | `AGENTS.md` from the conversation cwd (absent file → section omitted) |
-| `skills` | `sigrun.skills` | declared skills |
+| `skills` | `sigrun.skills` | the three-root skill list (see [Skills](#skills)) |
 | `tool-guidance` | `sigrun.model-guidance` | per-model tool guidance |
 | `execution-guidance` | `sigrun.model-guidance` | per-model execution guidance |
 
@@ -491,6 +625,103 @@ never declare a section yourself:
   an empty file — owns the `persona` section outright, and an absent
   `SOUL.md` (or no env) renders the shipped `DEFAULT_PERSONA`. The
   default is never merged with a user file.
+
+## Skills
+
+The reserved `skills` section (owned by the core `sigrun.skills`
+extension) lists skills from THREE roots, first-wins in this order:
+
+1. **the workspace** — `skills/<dir>/SKILL.md` under the conversation's
+   workspace;
+2. **the user dir** — `<configDir>/skills/<dir>/SKILL.md`, your
+   deployment-wide skills (a named config-root entry; no extension
+   involved);
+3. **package roots** — skills your package ships, in `extensions[]`
+   install order.
+
+A name present in several roots keeps the higher root's copy and logs
+the shadowing. `load_skill` serves the winning copy.
+
+A package ships skills either through its manifest —
+
+```json
+{
+  "name": "my-skill-pack",
+  "sigrun": { "skills": ["./skills"] }
+}
+```
+
+(the pi-compat `pi.skills` spells the same thing) — or through the
+factory-result `skills` field (absolute directories, useful when the
+dirs only exist at runtime). Manifest dirs resolve against the package
+root; nonexistent entries are dropped. A package that declares skills
+and ships **no loadable entry** is a valid **skills-only** package:
+outcome `ok`, nothing imported — this is how
+`git:github.com/obra/superpowers` loads (its only pi extension is
+TypeScript, which plain node cannot import; each `.ts` pi entry is
+skipped with one warning). A package that declares an entry which does
+not resolve still quarantines.
+
+The rendered section is capped at `skills.sectionMaxBytes` (default
+4096, a live setting) with a truncation notice.
+
+## Notifiers
+
+A factory result may declare `notifiers` — transports core delivers
+events to. **Core ships none**: every transport (ntfy, Signal, web
+push, ...) lives in an extension.
+
+```js
+notifiers: [
+	{
+		name: "ntfy",
+		async notify(event, ctx) {
+			// ctx.host is your seam host; event is one notification
+			await fetch(`https://ntfy.example/${event.user ?? "sigrun"}`, {
+				method: "POST",
+				body: `${event.title} — ${event.body}`,
+			});
+		},
+	},
+]
+```
+
+Core emits one event per **recipient** (`user` is who it is for):
+
+```ts
+{
+	type: "interaction.pending" | "job.failed" | "run.settled",
+	conversationId?: number,   // the conversation, when one is involved
+	jobId?: string,            // the failed job's id
+	user: string | undefined,  // the recipient
+	title: string,
+	body: string,
+	url?: string,              // `${server.publicUrl}/#/c/<id>` when set
+}
+```
+
+- **Emitted events.** `interaction.pending` — always (an agent needs a
+  human). `job.failed` — always, once per failed run. `run.settled` —
+  per the `notifications.runSettled` setting: `"unwatched"` (default)
+  only when no client stream is attached to the conversation (the
+  away-from-desk case), `"cron"` only for job-run conversations,
+  `"always"` every settle, `"never"` none. The setting is live — a
+  `settings.json` PATCH reaches the next settle without a restart.
+- **Recipients.** Each event goes to the resource's owner. For
+  `interaction.pending` it also goes to every directory user with
+  `write` access — anyone who can answer.
+- **Titles.** `interaction.pending` → `"Sigrun needs you"` with the
+  conversation's display name; `job.failed` → `"Job <name> failed"`
+  with the run's error; `run.settled` → `"Reply ready"` with the
+  display name. The display name is `name ?? autoName ??
+  "Conversation <id>"`.
+- **Delivery is best-effort.** Each `notify` call runs deadline-bounded
+  on the event bus's side lane; a throwing or over-deadline notifier is
+  logged and isolated — the other notifiers still receive the event —
+  and nothing is retried durably (reliability is a notifier's own
+  concern).
+- A malformed declaration (missing name, non-function `notify`)
+  quarantines the extension at load.
 
 ## Uninstall
 

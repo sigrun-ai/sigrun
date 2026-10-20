@@ -58,11 +58,13 @@ import {
 import { dirname, join } from "node:path";
 
 import { resolveStoreRoots } from "./stores.js";
+import { isAbsoluteHttpUrl } from "../config.js";
 import { isIanaTimeZone, validateJobSpec } from "../jobs/spec.js";
 import type {
 	JobHistorySettings,
 	ServerSettings,
 	SettingsFile,
+	SkillsSettings,
 } from "@sigrun/shared/settings";
 
 export type {
@@ -73,6 +75,7 @@ export type {
 	ServerSettingSource,
 	ServerSettings,
 	SettingsFile,
+	SkillsSettings,
 } from "@sigrun/shared/settings";
 
 export interface SettingsStoreOptions {
@@ -85,6 +88,19 @@ export interface SettingsStoreOptions {
 
 /** The queue modes pi-durable accepts (its `QueueMode`). */
 const QUEUE_MODES: readonly string[] = ["all", "one-at-a-time"];
+
+/**
+ * The `notifications.runSettled` vocabulary (W5 Task 6, spec §9.6) — a
+ * list for the same reason `QUEUE_MODES` is one: `includes` on a `const`
+ * tuple narrows to the literal union, which an unknown file value can
+ * never satisfy.
+ */
+const RUN_SETTLED_MODES: readonly string[] = [
+	"unwatched",
+	"cron",
+	"always",
+	"never",
+];
 
 /** The thinking levels the configure surface accepts (pi-ai's union). */
 const THINKING_LEVELS: readonly string[] = [
@@ -111,6 +127,8 @@ const SETTING_KEYS = [
 	"defaultModel",
 	"namingModel",
 	"defaultProvider",
+	"skills",
+	"notifications",
 	"server",
 ] as const;
 
@@ -417,6 +435,43 @@ function validate(value: Record<string, unknown>): void {
 			);
 		}
 	}
+	// The skills surface (W5 Task 4, spec §9.4): a live, flat section —
+	// `sectionMaxBytes` a positive integer.
+	if (value.skills !== undefined) {
+		const skills = asRecord(value.skills);
+		if (skills === undefined) {
+			throw new SettingsValidationError("skills", "must be an object");
+		}
+		checkKeys("skills.", skills, ["sectionMaxBytes"]);
+		if (
+			skills.sectionMaxBytes !== undefined &&
+			!isPositiveInt(skills.sectionMaxBytes)
+		) {
+			throw new SettingsValidationError(
+				"skills.sectionMaxBytes",
+				"must be a positive integer",
+			);
+		}
+	}
+	// The notifications surface (W5 Task 6, spec §9.6): a live section —
+	// `runSettled` one of the four modes.
+	if (value.notifications !== undefined) {
+		const notifications = asRecord(value.notifications);
+		if (notifications === undefined) {
+			throw new SettingsValidationError("notifications", "must be an object");
+		}
+		checkKeys("notifications.", notifications, ["runSettled"]);
+		if (
+			notifications.runSettled !== undefined &&
+			(typeof notifications.runSettled !== "string" ||
+				!RUN_SETTLED_MODES.includes(notifications.runSettled))
+		) {
+			throw new SettingsValidationError(
+				"notifications.runSettled",
+				`must be one of ${RUN_SETTLED_MODES.join(", ")}`,
+			);
+		}
+	}
 	if (value.server !== undefined) {
 		validateServer(value.server);
 	}
@@ -444,6 +499,7 @@ function validateServer(server: unknown): void {
 		"dataDir",
 		"cacheDir",
 		"stateDir",
+		"publicUrl",
 		"timezone",
 		"webui",
 		"webuiBundle",
@@ -498,6 +554,19 @@ function validateServer(server: unknown): void {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
 		}
+	}
+	// The absolute base URL (W5 Task 2): the `SIGRUN_PUBLIC_URL` grammar —
+	// an absolute http(s) URL with a hostname. A trailing slash is NOT a
+	// validation error (config resolution strips it); a non-URL is.
+	if (
+		record.publicUrl !== undefined &&
+		(typeof record.publicUrl !== "string" ||
+			!isAbsoluteHttpUrl(record.publicUrl as string))
+	) {
+		throw new SettingsValidationError(
+			"server.publicUrl",
+			"must be an absolute http(s) URL",
+		);
 	}
 	// The retired `extensionsDir` key (§6.7) stays ACCEPTED for one
 	// release (existing files keep validating) but warns — never throws —
@@ -1103,6 +1172,26 @@ export class SettingsStore {
 				)) {
 					if (level === null) delete sub[model];
 					else sub[model] = level;
+				}
+				if (Object.keys(sub).length === 0) delete merged[key];
+				else merged[key] = sub;
+				continue;
+			}
+			if (
+				key === "skills" &&
+				typeof value === "object" &&
+				value !== null
+			) {
+				// Same sub-merge as defaultProvider: the live skills section
+				// merges per-key (a null sub-field clears just that knob).
+				const sub: Record<string, unknown> = {
+					...((merged[key] as Record<string, unknown>) ?? {}),
+				};
+				for (const [subKey, subValue] of Object.entries(
+					value as Record<string, unknown>,
+				)) {
+					if (subValue === null) delete sub[subKey];
+					else sub[subKey] = subValue;
 				}
 				if (Object.keys(sub).length === 0) delete merged[key];
 				else merged[key] = sub;

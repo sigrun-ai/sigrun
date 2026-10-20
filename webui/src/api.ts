@@ -47,6 +47,7 @@ import type {
 	SubmissionResponse as SubmissionResponseWire,
 	ConfigureResponse as ConfigureResponseWire,
 	CommandsResponse as CommandsResponseWire,
+	CommandRunResponse as CommandRunResponseWire,
 	SlashCommand as CommandWire,
 	SessionMeta as ConversationMeta,
 	OnboardingState,
@@ -88,6 +89,7 @@ export type {
 	SubmissionResponse as SubmissionResponseWire,
 	ConfigureResponse as ConfigureResponseWire,
 	CommandsResponse as CommandsResponseWire,
+	CommandRunResponse as CommandRunResponseWire,
 	SlashCommand as CommandWire,
 	SessionMeta as ConversationMeta,
 	OnboardingState,
@@ -426,6 +428,17 @@ export interface SigrunClient {
 	): Promise<CompactResponseWire>;
 	/** The slash-command catalog (`GET /v1/commands` — a boot constant). */
 	listCommands(): Promise<CommandsResponseWire>;
+	/**
+	 * Invoke an extension slash command (`POST .../commands/:name`, W5
+	 * Task 3): the server runs the winning extension declaration and
+	 * resolves with its optional `{notice}` — rendered as a transient
+	 * banner.
+	 */
+	runCommand(
+		conversationId: number,
+		name: string,
+		args?: string,
+	): Promise<CommandRunResponseWire>;
 	/** Fork at an entry (`POST .../fork`; absent `at` = the newest entry). */
 	fork(conversationId: number, at?: number): Promise<ConversationCreatedWire>;
 	/** The whole history as JSONL text (`GET .../export`). */
@@ -730,6 +743,12 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 					: { instructions }),
 			}) as Promise<CompactResponseWire>,
 		listCommands: () => get<CommandsResponseWire>("/v1/commands"),
+		runCommand: (conversationId, name, args) =>
+			send(
+				"POST",
+				`/v1/conversations/${conversationId}/commands/${encodeURIComponent(name)}`,
+				{ args: args ?? "" },
+			) as Promise<CommandRunResponseWire>,
 		fork: (conversationId, at) =>
 			send("POST", `/v1/conversations/${conversationId}/fork`, {
 				...(at === undefined ? {} : { at }),

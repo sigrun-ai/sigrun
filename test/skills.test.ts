@@ -1,19 +1,25 @@
 /**
  * Task 7: the skills convention (spec §3.2) — core-owned surface.
+ * (Core hardening W5 Task 4: the surface grew from workspace-only to
+ * three roots — workspace (ExecutionEnv), the user dir
+ * `<configDir>/skills/`, and package-shipped skills — built through
+ * `createSkillsExtension`; the precedence/cap tests live here, the
+ * package/loader integration in packages.test.ts + loader.test.ts.)
  *
  * `skills/<dir>/SKILL.md` files under the conversation workspace are
  * scanned through the conversation's `ExecutionEnv` — `PromptInput.env`
  * for the `skills` section, `ToolExecutionApi.env` for `load_skill` — so
  * discovery follows the resolved workspace. The section lists each valid
- * skill's frontmatter name + description, capped at 4KB total with a
- * truncation notice; `load_skill(name)` returns the SKILL.md body. An
- * absent or empty `skills/` directory is the designed empty case (no
- * section, no error). Frontmatter `name` and `description` are required —
- * a SKILL.md missing either (or the frontmatter block) is skipped with a
- * log; duplicate names resolve first-wins with a log; a skill with
- * `disable-model-invocation: true` is hidden from the model entirely
- * (not listed, unknown to load_skill). Each entry carries the skill's
- * path so the model can also read the SKILL.md directly.
+ * skill's frontmatter name + description, capped (default 4KB, live via
+ * `sectionMaxBytes`) with a truncation notice; `load_skill(name)` returns
+ * the SKILL.md body. An absent or empty `skills/` directory is the
+ * designed empty case (no section, no error). Frontmatter `name` and
+ * `description` are required — a SKILL.md missing either (or the
+ * frontmatter block) is skipped with a log; duplicate names resolve
+ * first-wins with a log; a skill with `disable-model-invocation: true` is
+ * hidden from the model entirely (not listed, unknown to load_skill).
+ * Each entry carries the skill's path so the model can also read the
+ * SKILL.md directly.
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -36,8 +42,29 @@ import {
 import {
 	SKILLS_SECTION_KEY,
 	SKILLS_SECTION_LIMIT_BYTES,
-	skillsExtension,
+	createSkillsExtension,
+	type SkillsOptions,
 } from "../src/skills/index.js";
+
+/** One built skills extension (per-test overrides over inert defaults). */
+type SkillsExtension = ReturnType<typeof createSkillsExtension>;
+
+/**
+ * Build the core skills extension with inert defaults: a user dir that
+ * does not exist, no package roots, the default 4KB cap — tests override
+ * exactly the root they exercise.
+ */
+function makeSkills(overrides: Partial<SkillsOptions> = {}): SkillsExtension {
+	return createSkillsExtension({
+		userDir:
+			overrides.userDir ?? join(tmpdir(), "sigrun-skills-user-absent"),
+		packageRoots:
+			overrides.packageRoots ??
+			((): readonly { extension: string; dir: string }[] => []),
+		sectionMaxBytes:
+			overrides.sectionMaxBytes ?? (() => SKILLS_SECTION_LIMIT_BYTES),
+	});
+}
 
 /** Minimal conversation stand-in (T3 seam): only the id matters to v1. */
 const conversation = { id: ROOT_CONVERSATION_ID };
@@ -56,9 +83,16 @@ function promptInput(env: ExecutionEnv | undefined): PromptInput {
 	};
 }
 
+/**
+ * The default extension for the workspace-root tests: a user dir that
+ * does not exist, no package roots, the default 4KB cap — each test that
+ * exercises another root builds its own with `makeSkills({…})`.
+ */
+const defaultExt = makeSkills();
+
 /** Look up one section of the extension by key. */
-function sectionByKey(key: string) {
-	const found = skillsExtension.sections?.find(
+function sectionByKey(key: string, ext: SkillsExtension = defaultExt) {
+	const found = ext.sections?.find(
 		(section) => section.key === key,
 	);
 	if (found === undefined) throw new Error(`no section keyed ${key}`);
@@ -66,8 +100,8 @@ function sectionByKey(key: string) {
 }
 
 /** The extension's `load_skill` tool registration. */
-function loadSkillTool() {
-	const found = skillsExtension.tools?.find((tool) => tool.name === "load_skill");
+function loadSkillTool(ext: SkillsExtension = defaultExt) {
+	const found = ext.tools?.find((tool) => tool.name === "load_skill");
 	if (found === undefined) throw new Error("no load_skill tool");
 	return found;
 }
@@ -521,8 +555,9 @@ test("openHarness installs the skills section and load_skill tool", async () => 
 			expect(
 				snapshot.tools().some((entry) => entry.tool.name === "load_skill"),
 			).toBe(true);
-			// The installed extension is the one this module defines.
-			expect(snapshot.extension(skillsExtension.name)).toBe(skillsExtension);
+			// The installed extension still carries the core name (the
+			// reserved-section owner is unchanged by the factory).
+			expect(snapshot.extension(defaultExt.name)).toBeDefined();
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
@@ -569,6 +604,281 @@ test("harness generation includes the skills section from the workspace", async 
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Core hardening W5 Task 4 (spec §9.4): the user dir, package skills, and
+// the precedence order workspace > user > packages.
+// ---------------------------------------------------------------------------
+
+/** Write one SKILL.md fixture under an arbitrary ROOT (user/package shape). */
+async function writeRootSkill(
+	root: string,
+	dir: string,
+	name: string,
+	description: string,
+	body: string,
+) {
+	const skillDir = join(root, dir);
+	await mkdir(skillDir, { recursive: true });
+	await writeFile(
+		join(skillDir, "SKILL.md"),
+		`---\nname: ${name}\ndescription: ${description}\n---\n${body}`,
+	);
+}
+
+test("skills under the user dir are listed and loadable", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-user-"));
+	const workspacePath = join(dir, "workspace");
+	const userDir = join(dir, "user-skills");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		await writeRootSkill(
+			userDir,
+			"housekeeping",
+			"housekeeping",
+			"User-wide deployment skill.",
+			"# User body\n",
+		);
+		const ext = makeSkills({ userDir });
+		const env = await workspaceEnv(workspacePath);
+		const text = await sectionByKey(SKILLS_SECTION_KEY, ext).render(
+			promptInput(env),
+			BACKGROUND_CONTEXT,
+		);
+		expect(text).toContain("- housekeeping: User-wide deployment skill.");
+		// The entry carries the SKILL.md's real path so the model can also
+		// read it directly.
+		expect(text).toContain(join(userDir, "housekeeping"));
+
+		const { api, chunks } = toolApi(env);
+		const result = await loadSkillTool(ext).execute(
+			{ name: "housekeeping" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(chunks.join("")).toBe("# User body\n");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("an absent user dir is the designed empty case (no section, no error)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-user-"));
+	const workspacePath = join(dir, "workspace");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		const ext = makeSkills({ userDir: join(dir, "no-such-user-skills") });
+		expect(
+			await sectionByKey(SKILLS_SECTION_KEY, ext).render(
+				promptInput(await workspaceEnv(workspacePath)),
+				BACKGROUND_CONTEXT,
+			),
+		).toBeUndefined();
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("package-shipped skills are listed and loadable, in install order", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-pkg-"));
+	const workspacePath = join(dir, "workspace");
+	const pkgA = join(dir, "pkg-a", "skills");
+	const pkgB = join(dir, "pkg-b", "skills");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		await writeRootSkill(
+			pkgA,
+			"linter",
+			"linter",
+			"Package A's linter skill.",
+			"# A body\n",
+		);
+		await writeRootSkill(
+			pkgB,
+			"deployer",
+			"deployer",
+			"Package B's deployer skill.",
+			"# B body\n",
+		);
+		const ext = makeSkills({
+			packageRoots: () => [
+				{ extension: "fixture-pkg-a", dir: pkgA },
+				{ extension: "fixture-pkg-b", dir: pkgB },
+			],
+		});
+		const env = await workspaceEnv(workspacePath);
+		const text = await sectionByKey(SKILLS_SECTION_KEY, ext).render(
+			promptInput(env),
+			BACKGROUND_CONTEXT,
+		);
+		expect(text).toContain("- linter: Package A's linter skill.");
+		expect(text).toContain("- deployer: Package B's deployer skill.");
+
+		const { api, chunks } = toolApi(env);
+		const result = await loadSkillTool(ext).execute(
+			{ name: "deployer" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(chunks.join("")).toBe("# B body\n");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("precedence: workspace > user > packages; the losing roots log the shadowing", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-prec-"));
+	const workspacePath = join(dir, "workspace");
+	const userDir = join(dir, "user-skills");
+	const pkgDir = join(dir, "pkg", "skills");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		await writeSkill(
+			workspacePath,
+			"deploy",
+			"name: shared\ndescription: The workspace copy.",
+			"# Workspace body\n",
+		);
+		await writeRootSkill(
+			userDir,
+			"deploy",
+			"shared",
+			"The user copy.",
+			"# User body\n",
+		);
+		await writeRootSkill(
+			pkgDir,
+			"deploy",
+			"shared",
+			"The package copy.",
+			"# Package body\n",
+		);
+		const ext = makeSkills({
+			userDir,
+			packageRoots: () => [{ extension: "fixture-pkg", dir: pkgDir }],
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const env = await workspaceEnv(workspacePath);
+			const text = await sectionByKey(SKILLS_SECTION_KEY, ext).render(
+				promptInput(env),
+				BACKGROUND_CONTEXT,
+			);
+			expect(text).toContain("- shared: The workspace copy.");
+			expect(text).not.toContain("The user copy.");
+			expect(text).not.toContain("The package copy.");
+
+			const { api, chunks } = toolApi(env);
+			const result = await loadSkillTool(ext).execute(
+				{ name: "shared" },
+				api,
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.isError).toBeUndefined();
+			expect(chunks.join("")).toBe("# Workspace body\n");
+
+			// Both lower roots are named in the collision logs.
+			const logged = warn.mock.calls.map((call) => String(call[0]));
+			expect(
+				logged.some(
+					(line) =>
+						line.includes("skills:") &&
+						line.includes('"shared"') &&
+						line.includes("shadowed"),
+				),
+			).toBe(true);
+		} finally {
+			warn.mockRestore();
+		}
+
+		// Removing the workspace copy hands the name to the user root —
+		// discovery is per render, so no rebuild is needed.
+		await rm(join(workspacePath, "skills", "deploy"), {
+			recursive: true,
+			force: true,
+		});
+		const env = await workspaceEnv(workspacePath);
+		const text = await sectionByKey(SKILLS_SECTION_KEY, ext).render(
+			promptInput(env),
+			BACKGROUND_CONTEXT,
+		);
+		expect(text).toContain("- shared: The user copy.");
+		const { api, chunks } = toolApi(env);
+		const result = await loadSkillTool(ext).execute(
+			{ name: "shared" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(chunks.join("")).toBe("# User body\n");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("skills.sectionMaxBytes is read live per render", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-cap-"));
+	const workspacePath = join(dir, "workspace");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		for (let i = 0; i < 8; i++) {
+			await writeSkill(
+				workspacePath,
+				`skill-${String(i).padStart(2, "0")}`,
+				`name: skill-${String(i).padStart(2, "0")}\ndescription: ${"d".repeat(60)}`,
+			);
+		}
+		// The cap is a GETTER: flipping the value between renders takes
+		// effect with no rebuild (boot wires settingsStore.read()).
+		let cap = SKILLS_SECTION_LIMIT_BYTES;
+		const ext = makeSkills({ sectionMaxBytes: () => cap });
+		const env = await workspaceEnv(workspacePath);
+		const render = () =>
+			sectionByKey(SKILLS_SECTION_KEY, ext).render(
+				promptInput(env),
+				BACKGROUND_CONTEXT,
+			);
+		expect((await render()) ?? "").toContain("skill-07:");
+		cap = 200;
+		const truncated = await render();
+		expect(truncated).toContain("truncated");
+		expect(truncated).not.toContain("skill-07:");
+		expect(byteLength(truncated ?? "")).toBeLessThanOrEqual(200);
+		cap = SKILLS_SECTION_LIMIT_BYTES;
+		expect((await render()) ?? "").toContain("skill-07:");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("the truncation notice may shrink the section to the notice alone", async () => {
+	// A cap smaller than the header + one line drops every line; when even
+	// the header cannot fit, the NOTICE alone renders — the model still
+	// learns skills exist and how many were cut.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-cap0-"));
+	const workspacePath = join(dir, "workspace");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		await writeSkill(
+			workspacePath,
+			"one",
+			"name: one\ndescription: first skill",
+		);
+		const ext = makeSkills({ sectionMaxBytes: () => 60 });
+		const text = await sectionByKey(SKILLS_SECTION_KEY, ext).render(
+			promptInput(await workspaceEnv(workspacePath)),
+			BACKGROUND_CONTEXT,
+		);
+		expect(text).not.toContain("- one:");
+		expect(text).toContain("truncated");
+		expect(text).toContain("load_skill");
+		expect(byteLength(text ?? "")).toBeLessThanOrEqual(200);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

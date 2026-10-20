@@ -690,6 +690,22 @@ export class TuiApp implements Component, ActionHost {
 					return;
 				}
 				default:
+					// An extension-contributed command (W5 Task 3): the catalog entry
+					// carries its slug — POST the invoke endpoint and flash the
+					// returned notice in the status bar (the client surface for
+					// extension notices). A failure rejects through the surrounding
+					// catch: the pane error line carries the server's words
+					// (`command_failed` + the extension slug).
+					if (command.extension !== undefined) {
+						const id = this.#activeId;
+						if (id === undefined) {
+							this.pane.showError(`/${parsed.name} needs an active conversation`);
+							return;
+						}
+						const result = await this.#client.runCommand(id, parsed.name, parsed.args);
+						if (result.notice !== undefined) this.#flashStatus(result.notice);
+						return;
+					}
 					this.pane.showError(
 						`/${parsed.name} is not supported by the TUI composer`,
 					);

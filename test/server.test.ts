@@ -256,7 +256,7 @@ describe("GET /v1/meta", () => {
 			backup: {},
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },
-			collisions: { webui: [], providers: [] },
+			collisions: { webui: [], providers: [], commands: [] },
 		});
 	});
 

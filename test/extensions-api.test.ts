@@ -158,6 +158,7 @@ describe("GET /v1/extensions", () => {
 					interactionKinds: [],
 					ambientKeys: [],
 					workers: [],
+					routes: [],
 				},
 				// fixture-stores-read: the manifest's version rides the outcome.
 				{
@@ -167,6 +168,7 @@ describe("GET /v1/extensions", () => {
 					interactionKinds: [],
 					ambientKeys: [],
 					workers: [],
+					routes: [],
 				},
 			],
 		});

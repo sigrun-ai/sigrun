@@ -57,7 +57,9 @@ const MODELS: readonly ModelEntry[] = [
 	},
 ];
 
-/** The `/` menu's catalog fixture (the Task 7 server set, metadata only). */
+/** The `/` menu's catalog fixture (the Task 7 server set, metadata only) —
+ *  plus ONE extension-contributed entry (W5 Task 3: `extension` set, the
+ *  invoke endpoint). */
 const COMMANDS = [
 	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
 	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
@@ -67,6 +69,7 @@ const COMMANDS = [
 	{ name: "name", description: "Name", argsHint: "<name>", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
 	{ name: "model", description: "Switch model", argsHint: "<provider/model>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
 	{ name: "thinking", description: "Set thinking level", argsHint: "<level>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
+	{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-commands", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
 ];
 
 function makeHarness(init?: {
@@ -118,6 +121,10 @@ function makeHarness(init?: {
 			};
 		} else if (input.endsWith("/configure")) {
 			body = { model: "faux/one", thinkingLevel: "off" };
+		} else if (input.endsWith("/commands/hello")) {
+			// The extension invoke endpoint: the notice echoes the args.
+			const parsed = JSON.parse(String(init2?.body ?? "{}")) as { args?: string };
+			body = { notice: `hi ${parsed.args ?? ""}` };
 		} else throw new Error(`unexpected fetch ${input}`);
 		return Promise.resolve({
 			ok: true,
@@ -720,6 +727,7 @@ describe("Composer", () => {
 				"/name",
 				"/model",
 				"/thinking",
+				"/hello",
 			]);
 		});
 
@@ -848,6 +856,17 @@ describe("Composer", () => {
 			const exportCall = calls.find((c) => c.input.endsWith("/export"));
 			expect(exportCall?.method).toBe("GET");
 			expect(textContent(renderer.toJSON())).toContain("exported 2 entries");
+		});
+
+		test("an extension command POSTs its invoke endpoint and renders the returned notice (W5 Task 3)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/hello bob");
+			const invokeCall = calls.find((c) => c.input.endsWith("/commands/hello"));
+			expect(invokeCall?.method).toBe("POST");
+			expect(invokeCall?.body).toBe(JSON.stringify({ args: "bob" }));
+			// The returned notice renders as the transient status banner.
+			expect(textContent(renderer.toJSON())).toContain("hi bob");
 		});
 
 		test("`/import` POSTs the raw JSONL to the import route and navigates", async () => {
