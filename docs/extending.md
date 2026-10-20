@@ -212,6 +212,56 @@ What the snippet encodes:
 - **Settings have no env bootstrap.** The store is their only source;
   the env pattern below is for secrets.
 
+## The factory result
+
+The factory's return value is ONE documented contract type, shipped
+from the main package as the **types-only** subpath `sigrun/extension`.
+Consume it with `import type`, so nothing loads at runtime:
+
+```ts
+import type { SigrunExtensionResult, SigrunHost } from "sigrun/extension";
+```
+
+There is no runtime entry behind the subpath — importing it as a value
+fails loud by design. Every field is optional; the fields, their types,
+what core does with each, and where its rules are documented:
+
+| field | type | what core does with it | documented in |
+|---|---|---|---|
+| `extension` | pi-durable `Extension` | installed into the registry before `Harness.open`; its declared name is the slug source | this page ("The stores handle", "Prompt sections") |
+| `name` | `string` | the identity of a contributor-only result (no `extension`) | "Contributing model providers" |
+| `providers` | `readonly ProviderContribution[]` | merged into the boot model catalog; last-registered-wins, collisions recorded and surfaced | "Contributing model providers" |
+| `webuiBundles` | `readonly WebuiBundleContribution[]` | each `dir` anchored at the entry; the name-keyed registry `server.webui.bundle` selects from | "Contributing webui bundles" |
+| `health` | `() => HealthStatus` | aggregated into `/v1/meta` `health` — any `"degraded"` degrades the surface | "Contributing model providers" |
+| `runSettled` | `ExtensionRunSettledHandler` | registered on the event bus; one call per settled run, deadline-bounded | this table |
+| `conversationCreated` | `ExtensionLifecycleHandler<"conversationCreated">` | fired when a conversation is created (fork children included) | this table |
+| `conversationForked` | `ExtensionLifecycleHandler<"conversationForked">` | fired with the child, parent, and fork point | this table |
+| `conversationArchived` | `ExtensionLifecycleHandler<"conversationArchived">` | fired on archive flips (both directions) | this table |
+| `conversationIdle` | `ExtensionLifecycleHandler<"conversationIdle">` | fired per quiet period once the idle threshold passes and no run is live | this table |
+| `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the ordered flush window (handlers may commit); runs after workers stop | this table |
+| `userDeleted` | `ExtensionUserDeletedHandler` | fired after a user delete transferred ownership — move your per-user records here | this table |
+| `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
+| `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
+| `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
+| `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
+| `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | lands in Task 2 |
+| `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | lands in Task 3 |
+| `skills` | `readonly string[]` | absolute skill directories your package contributes | lands in Task 4 |
+| `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to | lands in Task 6 |
+
+**The host rule.** The factory's first parameter is the host — `SigrunHost`
+above — **never a defaulted options object**. Sigrun passes the host only
+when `factory.length > 0`: a factory that wants the host must DECLARE the
+parameter, and a length-0 factory may carry a defaulted first parameter
+(a real dependency) that would otherwise consume the host and break the
+extension at runtime. The host's conversation/identity/access members bind
+lazily post-open — call them from tools, hooks, routes, commands, workers,
+and jobs, never from a factory body.
+
+A malformed field (wrong shape, wrong element type) quarantines the
+extension at load — a package that THINKS it declared something must
+never silently lose it.
+
 ## Secrets precedence: stored wins, env bootstraps
 
 For every secret, the resolution order is:
@@ -315,8 +365,9 @@ The contract rules, all load-bearing:
   from your package name, so a factory-time read resolves your file
   when the declared `name` matches the package name.)
 
-**Dependency posture.** Declare `@earendil-works/pi-ai` (and
-`@earendil-works/pi-durable` if you use its types) as **devDependencies
+**Dependency posture.** Declare `@earendil-works/pi-ai`,
+`@earendil-works/pi-durable`, and `@sigrun/shared` (whose types the
+`sigrun/extension` contract references) as **devDependencies
 only**. Sigrun ships them at runtime, the packages-dir install omits dev
 dependencies, and the loader links the host's own copies into the
 packages dir so your bare imports resolve — you consume the SAME module

@@ -72,18 +72,30 @@
  * A `providers` entry whose `provider` has no string `id` is the same class
  * of violation (a plugin that THINKS it contributed a provider must not
  * silently lose it).
+ *
+ * The contract is DOCUMENTED as one types-only type surface (W5 Task 1,
+ * spec §9.1): `src/extension.ts`, shipped as the `sigrun/extension`
+ * subpath (types-only — a runtime import of it fails loud by design).
+ * This loader's validated candidate shape is DERIVED from that contract
+ * (`CandidateFactoryResult` — reading a key the contract does not declare
+ * is a compile error here), and `LoaderReadKeys` compiles only while every
+ * factory-result key the loader reads is a key of `SigrunExtensionResult`.
+ * The implementation and the contract cannot drift silently.
  */
 
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
-	ExtensionEventHandlers,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
-} from "./event-bus.js";
+	ProviderContribution,
+	SigrunExtensionResult,
+	SigrunLifecycleHandlers,
+	WebuiBundleContribution,
+} from "../extension.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import type { HealthStatus } from "./health.js";
-import type { ProviderContribution, ProviderContributor } from "./providers/index.js";
+import type { ProviderContributor } from "./providers/index.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -141,11 +153,14 @@ export interface ExtensionRunSettledBinding {
 	readonly runSettled: ExtensionRunSettledHandler;
 }
 
-/** The lifecycle handler fields a factory result may carry (memory-seam Task 4; `userDeleted` — W1 Task 4). */
-export type ExtensionLifecycleHandlers = Pick<
-	ExtensionEventHandlers,
-	"conversationCreated" | "conversationForked" | "conversationArchived" | "conversationIdle" | "harnessShutdown" | "userDeleted"
->;
+/**
+ * The lifecycle handler fields a factory result may carry (memory-seam
+ * Task 4; `userDeleted` — W1 Task 4). The PUBLIC contract's group type
+ * (`SigrunLifecycleHandlers`, src/extension.ts) — one declaration, no
+ * drift; boot's merge into the event bus's registration shape is the
+ * checked bridge.
+ */
+export type ExtensionLifecycleHandlers = SigrunLifecycleHandlers;
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
@@ -297,10 +312,11 @@ export interface ResolvedExtension {
 	readonly providers?: readonly ProviderContribution[];
 	/**
 	 * Webui-bundle contributions (build-and-webui Task 6), validated
-	 * fail-loud — `{name, dir}` entries; the loader resolves each `dir`
-	 * against the extension module's URL when collecting.
+	 * fail-loud — the public `WebuiBundleContribution` shape
+	 * (`{name, dir}`); the loader resolves each `dir` against the extension
+	 * module's URL when collecting.
 	 */
-	readonly webuiBundles?: readonly { name: string; dir: string }[];
+	readonly webuiBundles?: readonly WebuiBundleContribution[];
 	/**
 	 * Declared jobs (jobs §8.3 — the `extension` source), validated
 	 * fail-loud with `validateJobSpec` (a malformed entry quarantines).
@@ -310,6 +326,64 @@ export interface ResolvedExtension {
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
 }
+
+/**
+ * Every factory-result key the loader reads (the full list, one place).
+ * `routes`/`commands`/`skills`/`notifiers` are included NOW — ahead of
+ * their implementing tasks (W5 Tasks 2/3/4/6) — so the contract must
+ * already declare them.
+ */
+type LoaderReadKeys =
+	| "extension"
+	| "name"
+	| "providers"
+	| "webuiBundles"
+	| "health"
+	| "runSettled"
+	| "conversationCreated"
+	| "conversationForked"
+	| "conversationArchived"
+	| "conversationIdle"
+	| "harnessShutdown"
+	| "userDeleted"
+	| "interactionKinds"
+	| "ambientKinds"
+	| "workers"
+	| "jobs"
+	| "routes"
+	| "commands"
+	| "skills"
+	| "notifiers";
+
+/**
+ * The drift assertion (W5 Task 1): compiles only while EVERY key the
+ * loader reads is a DECLARED key of the public contract. The check is
+ * `K extends keyof T` — `keyof` includes optional properties, so a
+ * field MISSING from `SigrunExtensionResult` fails here (a weaker
+ * `{ [K]?: unknown }` constraint would let an absent optional key
+ * through). On drift this resolves to a type whose only key names the
+ * problem; `CandidateFactoryResult` (keyed by the result) then loses
+ * every loader read and the compile fails loudly.
+ */
+type AssertContractKeys<T, K extends string> = K extends keyof T
+	? T
+	: {
+			readonly "CONTRACT DRIFT — declare the missing factory-result field on SigrunExtensionResult (src/extension.ts)": never;
+		};
+
+/**
+ * The unvalidated factory result as `resolvedFromFactory` reads it:
+ * every public-contract field as `unknown` (validated below), plus the
+ * RETIRED `submit` pass-through (§6.7 — read for the one-time warning,
+ * never part of the documented contract). Keyed by the asserted
+ * contract shape: a read of a key the contract does not declare is a
+ * compile error at the read site.
+ */
+type CandidateFactoryResult = Partial<
+	Record<keyof AssertContractKeys<SigrunExtensionResult, LoaderReadKeys>, unknown>
+> & {
+	readonly submit?: unknown;
+};
 
 /**
  * The reserved-key membership probe (spec §6.5 R11): a `Set` because the
@@ -521,7 +595,7 @@ const WEBUI_BUNDLE_NAME = /^[a-z][a-z0-9_-]*$/;
  */
 function validateWebuiBundles(
 	value: unknown,
-): readonly { name: string; dir: string }[] | undefined {
+): readonly WebuiBundleContribution[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) {
 		throw new Error(
@@ -769,24 +843,11 @@ async function resolvedFromFactory(
 	// synchronous result through unchanged.
 	const awaited = await result;
 	if (typeof awaited !== "object" || awaited === null) return undefined;
-	const candidate = awaited as {
-		extension?: unknown;
-		name?: unknown;
-		providers?: unknown;
-		webuiBundles?: unknown;
-		jobs?: unknown;
-		health?: unknown;
-		submit?: unknown;
-		runSettled?: unknown;
-		conversationCreated?: unknown;
-		conversationForked?: unknown;
-		conversationArchived?: unknown;
-		conversationIdle?: unknown;
-		harnessShutdown?: unknown;
-		userDeleted?: unknown;
-		interactionKinds?: unknown;
-		ambientKinds?: unknown;
-	};
+	// The candidate is keyed by the PUBLIC contract (CandidateFactoryResult):
+	// reading a field the contract does not declare is a compile error here,
+	// and the `LoaderReadKeys` assertion (above ResolvedExtension) pins the
+	// full read list to the contract's keys.
+	const candidate = awaited as CandidateFactoryResult;
 	const providers = validateProviders(candidate.providers);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
@@ -845,9 +906,8 @@ async function resolvedFromFactory(
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
 	if (kindsProblem !== null) throw new Error(kindsProblem);
-	const workers = validateWorkers(
-		(candidate as { workers?: unknown }).workers,
-	);
+	// `workers` is a contract key — the candidate read needs no cast.
+	const workers = validateWorkers(candidate.workers);
 	return {
 		// Identity: the extension when one was carried, else the
 		// provider-only contributor's validated `name`.
