@@ -58,6 +58,7 @@ import {
 import { dirname, join } from "node:path";
 
 import { resolveStoreRoots } from "./stores.js";
+import { isAbsoluteHttpUrl } from "../config.js";
 import { isIanaTimeZone, validateJobSpec } from "../jobs/spec.js";
 import type {
 	JobHistorySettings,
@@ -444,6 +445,7 @@ function validateServer(server: unknown): void {
 		"dataDir",
 		"cacheDir",
 		"stateDir",
+		"publicUrl",
 		"timezone",
 		"webui",
 		"webuiBundle",
@@ -498,6 +500,19 @@ function validateServer(server: unknown): void {
 		if (record[key] !== undefined && !isNonEmptyString(record[key])) {
 			throw new SettingsValidationError(`server.${key}`, "must be a non-empty string");
 		}
+	}
+	// The absolute base URL (W5 Task 2): the `SIGRUN_PUBLIC_URL` grammar —
+	// an absolute http(s) URL with a hostname. A trailing slash is NOT a
+	// validation error (config resolution strips it); a non-URL is.
+	if (
+		record.publicUrl !== undefined &&
+		(typeof record.publicUrl !== "string" ||
+			!isAbsoluteHttpUrl(record.publicUrl as string))
+	) {
+		throw new SettingsValidationError(
+			"server.publicUrl",
+			"must be an absolute http(s) URL",
+		);
 	}
 	// The retired `extensionsDir` key (§6.7) stays ACCEPTED for one
 	// release (existing files keep validating) but warns — never throws —

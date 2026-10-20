@@ -630,9 +630,11 @@ export interface AuthCheckResponse {
 
 /**
  * One `GET /v1/extensions` entry: a loaded outcome enriched with the
- * declared seam kinds, the idle-worker projection, and the package
+ * declared seam kinds, the idle-worker projection, the package
  * manifest `version` (absent when the entry carries no readable
- * manifest). The webui's Extensions settings section renders this list.
+ * manifest), and the declared HTTP routes (W5 Task 2 — present on
+ * every served entry, empty when the extension declared none). The
+ * webui's Extensions settings section renders this list.
  */
 export interface ExtensionInfo {
 	readonly name: string;
@@ -645,6 +647,16 @@ export interface ExtensionInfo {
 	readonly ambientKeys: readonly string[];
 	/** The extension's idle workers (empty when it declared none). */
 	readonly workers: readonly WorkerStatus[];
+	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
+	routes?: readonly ExtensionRouteInfo[];
+}
+
+/** One `GET /v1/extensions` entry's route rows (W5 Task 2, spec §9.2). */
+export interface ExtensionRouteInfo {
+	readonly method: string;
+	/** The declared relative path — mounted at `/v1/ext/<slug>/<path>`. */
+	readonly path: string;
+	readonly auth: string;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */

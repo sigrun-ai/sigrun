@@ -92,6 +92,15 @@ export interface ServerSettings {
 	/** `SIGRUN_STATE_DIR` — a non-empty path, verbatim (see `dataDir`). */
 	readonly stateDir?: string;
 	/**
+	 * `SIGRUN_PUBLIC_URL` (core hardening W5 Task 2, spec §9.2): the
+	 * deployment's absolute base URL — http(s) with a hostname, any
+	 * trailing slash stripped at resolution. `undefined` when neither
+	 * env nor file sets it; the extension-route adapter bases handlers'
+	 * absolute `Request` URLs on it and notification deep links are
+	 * omitted without it.
+	 */
+	publicUrl?: string;
+	/**
 	 * The webui channel's gate + bundle selector (build-and-webui Task 4):
 	 * `SIGRUN_WEBUI` maps to `enabled` (strict true/false parse), the
 	 * selector comes from `SIGRUN_WEBUI_BUNDLE` over `bundle` over the

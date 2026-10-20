@@ -39,16 +39,19 @@ export function registerExtensionRoutes(
 	const isKnownSlug = (slug: string): boolean =>
 		opened.extensionOutcomes.some((outcome) => outcome.name === slug);
 
-	// The inventory: outcomes + declared kinds + workers, one entry per
-	// configured extension, in load order. Pure synchronous derivations
-	// over boot-retained state (the /v1/meta discipline) — a client may
-	// cache it per boot.
+	// The inventory: outcomes + declared kinds + workers + routes, one
+	// entry per configured extension, in load order. Pure synchronous
+	// derivations over boot-retained state (the /v1/meta discipline) — a
+	// client may cache it per boot.
 	app.get("/v1/extensions", async (): Promise<ExtensionsResponse> => {
 		const workerStatuses = opened.workerStatuses();
 		const extensions: ExtensionInfo[] = opened.extensionOutcomes.map(
 			(outcome) => {
 				const kinds = opened.seamKinds.get(outcome.name);
 				const workers = workerStatuses.get(outcome.name);
+				const routes = opened.extensionRoutes.find(
+					(binding) => binding.extension === outcome.name,
+				);
 				return {
 					name: outcome.name,
 					status: outcome.status,
@@ -59,6 +62,12 @@ export function registerExtensionRoutes(
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],
+					routes:
+						routes?.routes.map((route) => ({
+							method: route.method,
+							path: route.path,
+							auth: route.auth,
+						})) ?? [],
 				};
 			},
 		);

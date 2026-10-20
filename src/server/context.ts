@@ -70,4 +70,16 @@ declare module "fastify" {
 		 */
 		conversation: Conversation;
 	}
+
+	/**
+		 * The per-route config the extension-route mount stamps (W5 Task 2,
+		 * spec §9.2): the route contribution's declared `auth`, read by the
+		 * auth pipeline — `public` skips the authentication stage ONLY
+		 * (Host/Origin and the unclaimed gate still ran). Absent on every
+		 * core route and on unrouted (`/v1/ext/...` paths no extension
+		 * declared) requests.
+		 */
+	interface FastifyContextConfig {
+		extAuth?: "user" | "admin" | "public";
+	}
 }

@@ -85,6 +85,7 @@
 
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
+	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
 	ProviderContribution,
@@ -161,6 +162,18 @@ export interface ExtensionRunSettledBinding {
  * checked bridge.
  */
 export type ExtensionLifecycleHandlers = SigrunLifecycleHandlers;
+
+/**
+ * Routes retained from one extension factory result (core hardening W5
+ * Task 2, spec §9.2), attributed to the extension slug — boot threads
+ * the list to `OpenedHarness.extensionRoutes` for the server's
+ * `/v1/ext/<slug>/<path>` mount and the `/v1/extensions` inventory.
+ */
+export interface ExtensionRouteBinding {
+	/** The slug identity (the mount prefix and the inventory key). */
+	readonly extension: string;
+	readonly routes: readonly ExtensionRouteContribution[];
+}
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
@@ -245,6 +258,13 @@ export interface LoadedExtensions {
 	 */
 	readonly jobBindings: readonly { extension: string; jobs: readonly JobSpec[] }[];
 	/**
+	 * HTTP routes from factory results (core hardening W5 Task 2), one
+	 * entry per loaded extension whose result carried `routes`; the
+	 * server mounts each at `/v1/ext/<slug>/<path>`. Quarantined
+	 * extensions contribute none.
+	 */
+	readonly routeBindings: readonly ExtensionRouteBinding[];
+	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
 	 * extension — each `{name, dir, extension}` with `dir` resolved against
@@ -322,6 +342,12 @@ export interface ResolvedExtension {
 	 * fail-loud with `validateJobSpec` (a malformed entry quarantines).
 	 */
 	readonly jobs?: readonly JobSpec[];
+	/**
+	 * HTTP routes (core hardening W5 Task 2, spec §9.2), validated
+	 * fail-loud — a malformed entry quarantines the extension before any
+	 * route mounts.
+	 */
+	routes?: readonly ExtensionRouteContribution[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -540,6 +566,91 @@ function validateJobs(value: unknown): readonly JobSpec[] | undefined {
 		specs.push(result.spec);
 	}
 	return specs;
+}
+
+/**
+ * The `method`/`auth` vocabularies of a `routes` declaration (spec
+ * §9.2) — Sets because `includes` on a `const` tuple narrows to the
+ * literal union, which an `unknown` field value can never satisfy.
+ */
+const ROUTE_METHODS: ReadonlySet<string> = new Set([
+	"GET",
+	"POST",
+	"PUT",
+	"PATCH",
+	"DELETE",
+]);
+const ROUTE_AUTHS: ReadonlySet<string> = new Set(["user", "admin", "public"]);
+
+/**
+ * Validate a factory result's `routes` declaration (core hardening W5
+ * Task 2, spec §9.2). Absent → undefined (no routes). Present but
+ * malformed → throw; the loader quarantines the extension with the
+ * thrown message (fail-loud: an extension that THINKS it mounted a
+ * webhook must not silently lose it). Per entry: `method` in the five
+ * verbs, `path` a non-empty RELATIVE string (no leading `/`, no `..` —
+ * nothing may escape the `/v1/ext/<slug>/` mount), `auth` one of the
+ * three values, `bodyLimit` a positive integer when present, and
+ * `handler` a function.
+ */
+function validateRoutes(
+	value: unknown,
+): readonly ExtensionRouteContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a routes field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const route = entry as
+			| {
+						method?: unknown;
+					path?: unknown;
+					auth?: unknown;
+					bodyLimit?: unknown;
+					handler?: unknown;
+			  }
+			| null;
+		const describe = () =>
+			`route "${typeof route?.path === "string" ? route.path : String(route?.path)}"`;
+		if (typeof route?.method !== "string" || !ROUTE_METHODS.has(route.method)) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose method is not one of GET, POST, PUT, PATCH, DELETE`,
+			);
+		}
+		if (
+			typeof route?.path !== "string" ||
+			route.path === "" ||
+			route.path.startsWith("/") ||
+			route.path.includes("..")
+		) {
+			throw new Error(
+				`extension factory returned a route whose path must be a non-empty relative string (no leading "/", no "..")`,
+			);
+		}
+		if (typeof route?.auth !== "string" || !ROUTE_AUTHS.has(route.auth)) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose auth is not one of user, admin, public`,
+			);
+		}
+		if (
+			route?.bodyLimit !== undefined &&
+			(typeof route.bodyLimit !== "number" ||
+				!Number.isInteger(route.bodyLimit) ||
+				route.bodyLimit <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose bodyLimit is not a positive integer`,
+			);
+		}
+		if (typeof route?.handler !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose handler is not a function`,
+			);
+		}
+	}
+	return value as readonly ExtensionRouteContribution[];
 }
 
 /**
@@ -851,6 +962,7 @@ async function resolvedFromFactory(
 	const providers = validateProviders(candidate.providers);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
+	const routes = validateRoutes(candidate.routes);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -941,6 +1053,7 @@ async function resolvedFromFactory(
 		...(providers === undefined ? {} : { providers }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
 		...(jobs === undefined ? {} : { jobs }),
+		...(routes === undefined ? {} : { routes }),
 	};
 }
 
@@ -1155,6 +1268,8 @@ const workerBindings: ExtensionWorkerBinding[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
 const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
+// HTTP routes (W5 Task 2), attributed to the slug like the job bindings.
+const routeBindings: ExtensionRouteBinding[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
@@ -1369,6 +1484,9 @@ const display = label ?? entry;
 				if (resolved.jobs !== undefined) {
 					jobBindings.push({ extension: slug, jobs: resolved.jobs });
 				}
+				if (resolved.routes !== undefined) {
+					routeBindings.push({ extension: slug, routes: resolved.routes });
+				}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1425,5 +1543,6 @@ const display = label ?? entry;
 		lifecycleBindings,
 		workerBindings,
 		jobBindings,
+		routeBindings,
 	};
 }
