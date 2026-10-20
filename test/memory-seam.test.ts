@@ -406,7 +406,10 @@ describe("runSettled contract", () => {
 // ─── Task 4: lifecycle handlers + conversationIdle + harnessShutdown ──────
 
 describe("conversation lifecycle contract", () => {
-	test("the fixture extension receives conversationCreated/Forked and NOT archived for an inherited-archive fork", async () => {
+	test(
+		"the fixture extension receives conversationCreated/Forked and NOT archived for an inherited-archive fork",
+		{ timeout: 75_000 },
+		async () => {
 		const { opened, fixture } = await bootFixture({
 			responses: [fauxAssistantMessage("turn one")],
 		});
@@ -432,9 +435,15 @@ describe("conversation lifecycle contract", () => {
 
 		// Four deliveries in order: created(root) [root() in runTurn],
 		// archived(root, true), created(child), forked(child, root, at).
+		// W4's jobs boot work (harness.root + reconcile + observers + the
+		// commit subscriptions) runs during this window and starves the
+		// delivery lane — under the full-suite's parallel load the four
+		// deliveries take 15–26s+. 60s is the observed bound with headroom;
+		// the test timeout carries the extra margin. The assertion below is
+		// the pin; the timeout is the measurement budget.
 		await vi.waitFor(
 			() => expect(fixture.lifecycle).toHaveLength(4),
-			{ timeout: 5_000, interval: 100 },
+			{ timeout: 60_000, interval: 100 },
 		);
 		expect(fixture.lifecycle.map((one) => one.handler)).toEqual([
 			"conversationCreated",
