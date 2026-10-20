@@ -91,6 +91,7 @@ import {
 	HOST_RUNTIME_MODULES,
 	hostModuleVersion,
 	readPackageName,
+	readPackageVersion,
 	resolveExtensionEntry,
 } from "./packages.js";
 import { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
@@ -104,6 +105,13 @@ export interface ExtensionOutcome {
 	readonly status: "ok" | "quarantined";
 	/** The failure message; present only when `status === "quarantined"`. */
 	readonly error?: string;
+	/**
+	 * The loaded package's manifest version (spec §7.7), read from the
+	 * entry's `package.json` via `readPackageVersion`; absent when the
+	 * entry carries no readable manifest (a bare fixture entry) or the
+	 * load quarantined before a module resolved.
+	 */
+	readonly version?: string;
 }
 
 /**
@@ -1182,7 +1190,17 @@ const display = label ?? entry;
 				// later stage's quarantine (never loaded) leaves the slug free
 				// for the next boot's specifier list.
 				slugs.set(slug, declared);
-				outcomes.push({ name: slug, status: "ok" });
+				// The manifest version for the §7.7 inventory: read off the
+				// module's own directory (a bare entry with no manifest stays
+				// versionless — the field is optional by design).
+				const versionDir = extensionModuleDir(loaded);
+				const version =
+						versionDir === undefined ? undefined : readPackageVersion(versionDir);
+				outcomes.push({
+					name: slug,
+					status: "ok",
+					...(version === undefined ? {} : { version }),
+				});
 			if (extension !== undefined && resolved.health !== undefined) {
 				healthProducers.push({
 				extension,

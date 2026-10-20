@@ -475,11 +475,36 @@ export interface ExtensionStores {
  * be shared freely; every operation reads-modifies-writes the file) plus
  * the resolved roots. Built ONCE per boot from the roots `openHarness`
  * already resolved (never re-resolved from env).
+ *
+ * The ADMIN surface (spec §7.7, core hardening W3 Task 7): the
+ * slug-addressed operations the `/v1/extensions` routes ride — settings
+ * get/set on the same `settings/<slug>.json` the scoped handle reads,
+ * secret-key listing (stored keys plus the `SIGRUN_EXT_<SLUG>_`-prefixed
+ * env fallbacks that resolve), and secret set/delete. The env parameter
+ * feeds ONLY the env-secret listing (the resolver's precedence stays
+ * `resolveSecretFor`'s — stored wins; env values are never written down).
  */
 export interface SharedExtensionStores {
 	readonly secrets: SecretsStore;
 	readonly settings: ExtensionSettingsStore;
 	readonly roots: StoreRoots;
+	/** One slug's settings file get/set (the API's verbatim object store). */
+	settingsFor(slug: string): {
+		get(): Promise<Record<string, unknown>>;
+		set(value: Record<string, unknown>): Promise<void>;
+	};
+	/** One slug's secret keys with their winning source (never values). */
+	secretKeys(slug: string): Promise<readonly ExtensionSecretKey[]>;
+	/** Set one secret in the slug's stored section (the API write path). */
+	setSecret(slug: string, key: string, value: string): Promise<void>;
+	/** Delete one secret from the slug's stored section (idempotent). */
+	deleteSecret(slug: string, key: string): Promise<void>;
+}
+
+/** One listed secret key: the key name and its winning source, never the value. */
+export interface ExtensionSecretKey {
+	readonly key: string;
+	readonly source: "stored" | "env";
 }
 
 /** The `secrets.json` file name at the config root (spec §3 map). */
@@ -488,13 +513,58 @@ const SECRETS_FILE_NAME = "secrets.json";
 /** Build the shared trio from resolved roots (cheap, no I/O). */
 export function sharedExtensionStores(
 	roots: StoreRoots,
+	env: Env = {},
 ): SharedExtensionStores {
+	const settings = new ExtensionSettingsStore(
+		join(roots.configDir, SETTINGS_DIR_NAME),
+	);
+	const secrets = new SecretsStore(join(roots.configDir, SECRETS_FILE_NAME));
 	return {
-		secrets: new SecretsStore(join(roots.configDir, SECRETS_FILE_NAME)),
-		settings: new ExtensionSettingsStore(
-			join(roots.configDir, SETTINGS_DIR_NAME),
-		),
+		secrets,
+		settings,
 		roots,
+		settingsFor: (slug) => ({
+			get: () => settings.read(slug),
+			set: (value) => settings.write(slug, value),
+		}),
+		secretKeys: async (slug) => {
+			// Stored keys first (the resolver's winning source), then the
+			// `SIGRUN_EXT_<SLUG>_`-prefixed env fallbacks that are not stored.
+			// A stored key with an env twin lists ONCE as stored — exactly
+			// `resolveSecretFor`'s precedence, never two entries for one key.
+			const section = await secrets.readSection(slug);
+			const keys: ExtensionSecretKey[] = Object.keys(section).map((key) => ({
+				key,
+				source: "stored",
+			}));
+			const prefix = `${SECRET_ENV_PREFIX}${slug
+				.toUpperCase()
+				.replace(/-/g, "_")}_`;
+			for (const name of Object.keys(env)) {
+				if (!name.startsWith(prefix)) continue;
+				// The resolver's ""-means-unset reading applies to the listing
+				// too: an empty env var is no secret at all.
+				if (env[name] === undefined || env[name] === "") continue;
+				// The inverse of `secretEnvName`'s key map (upper, `-`→`_`):
+				// lower, `_`→`-` — kebab keys round-trip exactly; a snake key
+				// still forward-resolves (both map to the same env name).
+				const key = name.slice(prefix.length).toLowerCase().replace(/_/g, "-");
+				if (key === "" || section[key] !== undefined) continue;
+				keys.push({ key, source: "env" });
+			}
+			return keys;
+		},
+		setSecret: async (slug, key, value) => {
+			const section = await secrets.readSection(slug);
+			section[key] = value;
+			await secrets.writeSection(slug, section);
+		},
+		deleteSecret: async (slug, key) => {
+			const section = await secrets.readSection(slug);
+			if (section[key] === undefined) return;
+			delete section[key];
+			await secrets.writeSection(slug, section);
+		},
 	};
 }
 
