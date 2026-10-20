@@ -1,8 +1,9 @@
 /**
- * Memory-seam Task 5 (idle workers — the curator contract): the
- * factory-declared `workers` surface — host-owned `every` timers, wake-on-
- * lifecycle fan-out with queued+coalesced pending wakes, one-run-at-a-time,
- * deadline abandonment, the loader's six validation rejections, the
+ * Memory-seam Task 5 (idle workers — the curator contract) + the
+ * `every` retirement (jobs Task 3 / ruling 12): the factory-declared
+ * `workers` surface — wake-on-lifecycle fan-out with queued+coalesced
+ * pending wakes, one-run-at-a-time, deadline abandonment, the loader's
+ * validation rejections (incl. the `every` retirement quarantine), the
  * /v1/meta projection, and the shutdown ordering (workers stop BEFORE
  * harnessShutdown handlers).
  *
@@ -10,9 +11,8 @@
  * `openHarness` — real `node:sqlite` storage, real run loop, no network.
  * The fixture extension records worker runs module-side; the test imports
  * the FIXTURE MODULE through the same `file://` URL the loader imported,
- * so both hold one module instance. Real timers with small ms (the repo's
- * convention): the fixture's ticker declares every.ms 60, and the idle
- * tests inject `idleThresholdMs`/`idleSweepMs` through the boot seam.
+ * so both hold one module instance. The idle tests inject
+ * `idleThresholdMs`/`idleSweepMs` through the boot seam.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -28,6 +28,7 @@ import {
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Conversation } from "@earendil-works/pi-durable";
 import type { ResolvedExtensionInput } from "../src/harness/loader.js";
+import type { ExtensionWorker } from "../src/harness/event-bus.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { createServer } from "../src/server/index.js";
@@ -162,24 +163,43 @@ async function patchMeta(
 // ─── The contract ─────────────────────────────────────────────────────────
 
 describe("idle workers — the curator contract", () => {
-	test("a worker with every.ms runs periodically (small real timers)", async () => {
-		const { fixture } = await bootFixture();
-		// The ticker's 60ms host-owned interval fires without any run or
-		// event — several runs accumulate with the host's cadence.
-		await vi.waitFor(
-			() =>
-				expect(
-					fixture.runs.filter((run) => run.worker === "ticker").length,
-				).toBeGreaterThanOrEqual(2),
-			{ timeout: 5_000, interval: 20 },
+	test("a worker declaring every is quarantined with the retirement message", async () => {
+		// Ruling 12 (jobs Task 3): jobs are the only time-based scheduler —
+		// a worker carrying `every` is a contract violation, quarantined
+		// with the exact retirement message.
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-workers-"));
+		dirs.push(dir);
+		const badEntry = join(dir, "index.mjs");
+		await (await import("node:fs/promises")).writeFile(
+			badEntry,
+			`export default function bad() {
+	return {
+		extension: { name: "sigrun-fixture-every-worker" },
+		workers: [{ name: "ticker", every: { ms: 60 }, run: async () => {} }],
+	};
+}
+`,
 		);
-		// Every-tick runs carry NO wake argument.
-		const tickerRuns = fixture.runs.filter((run) => run.worker === "ticker");
-		expect(tickerRuns.every((run) => run.wake === undefined)).toBe(true);
-		// The tick counter ascends one per run (no overlap — see the skip test).
-		expect(tickerRuns.map((run) => run.tick)).toEqual(
-			tickerRuns.map((_, index) => index + 1),
-		);
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_AUTH: "none",
+			SIGRUN_WORKSPACE_PATH: dir,
+		});
+		const opened = await openHarness(config, {
+			env: {},
+			extensionEntries: [
+				{ name: "sigrun-fixture-every-worker", entry: pathToFileURL(badEntry).href },
+			],
+		});
+		closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
+		expect(opened.extensionOutcomes).toEqual([
+			{
+				name: "sigrun-fixture-every-worker",
+				status: "quarantined",
+				error: 'workers.every was retired — declare a job with a task action',
+			},
+		]);
 	});
 
 	test("a worker with wakeOn:[conversationIdle] runs on idle, receiving the wake", async () => {
@@ -233,7 +253,8 @@ describe("idle workers — the curator contract", () => {
 				).toHaveLength(1),
 			{ timeout: 5_000, interval: 20 },
 		);
-		expect(fixture.runs[0]!.wake).toMatchObject({
+		const [firstArchRun] = fixture.runs.filter((run) => run.worker === "arch-ear");
+		expect(firstArchRun!.wake).toMatchObject({
 			event: "conversationArchived",
 			conversationId: root.id,
 		});
@@ -268,14 +289,20 @@ describe("idle workers — the curator contract", () => {
 		});
 	});
 
-	test("one run at a time: a still-running worker skips its next tick (no overlap)", async () => {
+	test("one run at a time: a still-running worker queues its next wake (no overlap)", async () => {
 		const { opened, fixture } = await bootFixture({
 			eventBus: { workerDeadlineMs: 10_000 },
 		});
-		// Hang the ticker: the first tick starts a run that never settles;
-		// the next several 60ms ticks must be SKIPPED (no overlap, no queue).
+		// Hang the ticker (wakes on conversationCreated) BEFORE the wake:
+		// the first wake starts a run that never settles; a second wake
+		// arrives while the run is in flight and lands in the coalesced
+		// pending slot — exactly one run STARTS, the follow-up waits.
 		fixture.controls.hangTicker = true;
 		try {
+			await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" } },
+				BACKGROUND_CONTEXT,
+			);
 			await vi.waitFor(
 				() =>
 					expect(
@@ -283,29 +310,42 @@ describe("idle workers — the curator contract", () => {
 					).toHaveLength(1),
 				{ timeout: 5_000, interval: 20 },
 			);
+			// A second conversation (a fresh wake) arrives mid-run.
+			await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" } },
+				BACKGROUND_CONTEXT,
+			);
 			await new Promise((resolve) => setTimeout(resolve, 250));
-			// ~4 ticks elapsed while the run was in flight — still exactly one run.
+			// Still exactly one run — the in-flight run holds the slot and
+			// the wake coalesced into the pending slot (delivered later).
 			expect(fixture.runs.filter((run) => run.worker === "ticker")).toHaveLength(
 				1,
 			);
 		} finally {
 			fixture.controls.hangTicker = false;
 			// The 10s-deadline zombie outlives the test: stop the workers NOW
-			// so its ticks do not leak into later tests' module-side records.
+			// so its runs do not leak into later tests' module-side records.
 			opened.eventBus.close();
 		}
 	});
 
-	test("a timed-out run is abandoned and logged; the next tick still runs", async () => {
+	test("a timed-out run is abandoned and logged; the next wake still runs", async () => {
 		const { opened, fixture } = await bootFixture({
 			eventBus: { workerDeadlineMs: 80 },
 		});
 		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
-			// Hang the ticker past the 80ms worker deadline: the host abandons
-			// the run (logs the deadline as the failure), and a LATER tick
-			// starts a fresh run — the worker is not wedged by the zombie.
+			// Hang the ticker (wakes on conversationCreated) past the 80ms
+			// worker deadline: the host abandons the run (logs the deadline as
+			// the failure), and a LATER wake starts a fresh run — the worker is
+			// not wedged by the zombie.
+			const { root } = await runTurn(opened, "hello");
+			void root;
 			fixture.controls.hangTicker = true;
+			await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" } },
+				BACKGROUND_CONTEXT,
+			);
 			await vi.waitFor(
 				() =>
 					expect(
@@ -332,9 +372,14 @@ describe("idle workers — the curator contract", () => {
 				},
 				{ timeout: 5_000, interval: 20 },
 			);
-			// The deadline fired while the ticker was hung: un-hang it and the
-			// NEXT tick starts a second run (the abandoned one freed the slot).
+			// The deadline fired while the ticker was hung: un-hang it and a
+			// NEW conversation (a fresh wake) starts a second run (the
+			// abandoned one freed the slot).
 			fixture.controls.hangTicker = false;
+			await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" } },
+				BACKGROUND_CONTEXT,
+			);
 			await vi.waitFor(
 				() =>
 					expect(
@@ -354,11 +399,11 @@ describe("idle workers — the curator contract", () => {
 			// NOW so their ticks do not leak into later tests' records.
 			opened.eventBus.close();
 		}
-		// Timer-driven waits (60ms ticks + 80ms deadlines + boot) exceed the
-		// 5s default when the runner is loaded.
+		// Boot + a settled turn + the 80ms deadline + the follow-up wake
+		// exceed the 5s default when the runner is loaded.
 	}, 15_000);
 
-	test("validation: no-name / duplicate / run-not-function / every<=0 / bad-wakeOn / no-trigger all quarantine", async () => {
+	test("validation: no-name / duplicate / run-not-function / every-retired / bad-wakeOn / no-trigger / empty-wakeOn all quarantine", async () => {
 		// Each bad declaration quarantines with its exact message (the
 		// loader's fail-loud contract); one boot per case via extensionEntries.
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-workers-"));
@@ -376,18 +421,22 @@ describe("idle workers — the curator contract", () => {
 			},
 			{
 				workers: [
-					{ name: "curator", every: { ms: 100 }, run: async () => {} },
-					{ name: "curator", every: { ms: 200 }, run: async () => {} },
+					{ name: "curator", wakeOn: ["conversationIdle"], run: async () => {} },
+					{ name: "curator", wakeOn: ["conversationIdle"], run: async () => {} },
 				],
 				error: 'extension factory returned a worker with a duplicate worker name "curator"',
 			},
 			{
-				workers: [{ name: "curator", every: { ms: 100 }, run: 42 }],
+				workers: [
+					{ name: "curator", wakeOn: ["conversationIdle"], run: 42 },
+				],
 				error: 'extension factory returned a worker whose worker "curator" has a run field that is not a function',
 			},
 			{
-				workers: [{ name: "curator", every: { ms: 0 }, run: async () => {} }],
-				error: 'extension factory returned a worker whose worker "curator" has every.ms <= 0',
+				workers: [
+					{ name: "curator", every: { ms: 0 }, run: async () => {} },
+				],
+				error: "workers.every was retired — declare a job with a task action",
 			},
 			{
 				workers: [
@@ -403,6 +452,11 @@ describe("idle workers — the curator contract", () => {
 				workers: [{ name: "curator", run: async () => {} }],
 				error:
 					"extension factory returned a worker that declares a worker with neither every nor wakeOn",
+			},
+			{
+				workers: [{ name: "curator", wakeOn: [], run: async () => {} }],
+				error:
+					'extension factory returned a worker whose worker "curator" has an empty wakeOn (declare at least one wake event)',
 			},
 		];
 		for (const { workers, error } of cases) {
@@ -447,7 +501,11 @@ describe("idle workers — the curator contract", () => {
 
 	test("/v1/meta carries worker names + lastRunAt", async () => {
 		const { opened, fixture } = await bootFixture();
-		// The ticker runs within its first 60ms tick.
+		// The ticker runs on its first wake (a conversation creation).
+		await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
 		await vi.waitFor(
 			() =>
 				expect(
@@ -499,6 +557,10 @@ describe("idle workers — the curator contract", () => {
 		// registration's workers (the #extensions delete was guarded; the
 		// worker stop was not).
 		const { opened, fixture } = await bootFixture();
+		await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
 		await vi.waitFor(
 			() =>
 				expect(
@@ -509,48 +571,52 @@ describe("idle workers — the curator contract", () => {
 
 		const bus = opened.eventBus;
 		const reRunSettled: string[] = [];
+		const wakeWorker = (
+			name: string,
+			push: string,
+		): ExtensionWorker => ({
+			name,
+			wakeOn: ["conversationCreated"],
+			async run() {
+				// Registration-era marker — the FIRST registration's worker
+				// must NEVER run: the replacement stops it at re-register time.
+				reRunSettled.push(push);
+			},
+		});
 		const staleUnsub = bus.registerExtension("sigrun.re-register", {
-			workers: [
-				{
-					name: "first-ticker",
-					every: { ms: 40 },
-					async run() {
-						// Registration-era marker — must NEVER run: the
-						// replacement stops the old worker at re-register time.
-						reRunSettled.push("first-worker");
-					},
-				},
-			],
+			workers: [wakeWorker("first-worker", "first-worker")],
 		});
 		const currentUnsub = bus.registerExtension("sigrun.re-register", {
-			workers: [
-				{
-					name: "second-ticker",
-					every: { ms: 40 },
-					async run() {
-						reRunSettled.push("second-worker");
-					},
-				},
-			],
+			workers: [wakeWorker("second-worker", "second-worker")],
 			runSettled(event) {
 				reRunSettled.push(`runSettled:${event.conversationId}`);
 			},
 		});
 
 		// The replacement stopped the FIRST registration's worker at
-		// re-register time; the current one ticks.
+		// re-register time; the current one runs on the wake.
+		const wakeConversation = async (): Promise<void> => {
+			await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" } },
+				BACKGROUND_CONTEXT,
+			);
+			// Let the lifecycle event dispatch (the boot-scheduled drain).
+			await new Promise((resolve) => setTimeout(resolve, 150));
+		};
+		await wakeConversation();
 		await vi.waitFor(
 			() => expect(reRunSettled).toContain("second-worker"),
 			{ timeout: 5_000, interval: 20 },
 		);
 		expect(reRunSettled).not.toContain("first-worker");
 
-		// The STALE unsubscribe is a no-op: the current worker keeps ticking
+		// The STALE unsubscribe is a no-op: the current worker keeps waking
 		// and the current registration's handlers stay registered.
 		staleUnsub();
 		const before = reRunSettled.length;
+		await wakeConversation();
 		await vi.waitFor(
-			() => expect(reRunSettled.length).toBeGreaterThan(before + 1),
+			() => expect(reRunSettled.length).toBeGreaterThan(before),
 			{ timeout: 5_000, interval: 20 },
 		);
 		const { root } = await runTurn(opened, "still registered");
@@ -574,7 +640,16 @@ describe("idle workers — the curator contract", () => {
 		const { opened, fixture } = await bootFixture({
 			eventBus: { workerDeadlineMs: 150 },
 		});
-		// A ticker run lands so the worker machinery is warm.
+		// A ticker run lands so the worker machinery is warm (a conversation
+		// wakes the ticker — post-retirement, wakes are the only trigger).
+		const wakeTicker = async (): Promise<void> => {
+			await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" } },
+				BACKGROUND_CONTEXT,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 150));
+		};
+		await wakeTicker();
 		await vi.waitFor(
 			() =>
 				expect(
@@ -588,6 +663,7 @@ describe("idle workers — the curator contract", () => {
 		// must be stopped BEFORE it delivers.
 		fixture.controls.hangTicker = true;
 		try {
+			await wakeTicker();
 			await vi.waitFor(
 				() =>
 					expect(
@@ -608,7 +684,7 @@ describe("idle workers — the curator contract", () => {
 		} finally {
 			fixture.controls.hangTicker = false;
 		}
-		// Boot + two ticker waits + the shutdown sequence exceed the 5s
+		// Boot + the wake waits + the shutdown sequence exceed the 5s
 		// default when the runner is loaded.
 	}, 15_000);
 });

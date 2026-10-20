@@ -281,10 +281,8 @@ export type WorkerWake = {
 export type ExtensionWorker = {
 	/** Unique within the extension; surfaces in /v1/meta. */
 	readonly name: string;
-	/** Periodic cadence; a tick is skipped while a run is in flight. */
-	readonly every?: { readonly ms: number };
-	/** Lifecycle events that wake the worker. */
-	readonly wakeOn?: readonly WorkerWakeEvent[];
+	/** Lifecycle events that wake the worker (REQUIRED, non-empty — the `every` timer was RETIRED by ruling 12, jobs Task 3: jobs are the only time-based scheduler). */
+	readonly wakeOn: readonly WorkerWakeEvent[];
 	/** The work; rejects (or overruns the worker deadline) to fail the run. */
 	run(context: Context, wake?: WorkerWake): Promise<void>;
 };
@@ -364,8 +362,6 @@ interface WorkerState {
 	readonly extension: string;
 	readonly worker: ExtensionWorker;
 	readonly deadlineMs: number;
-	/** The host-owned `every` timer, when the worker declares one. */
-	timer: ReturnType<typeof setInterval> | undefined;
 	/** True while a run is in flight (host-side; a zombie counts as not running). */
 	running: boolean;
 	/** True once shutdown/close stopped the worker (no further runs). */
@@ -537,13 +533,12 @@ export class EventBus {
 		};
 	}
 
-	/** Start one worker: the host-owned `every` timer, unref'd like the sweep. */
+	/** Register one worker (no timer — the `every` path was retired by ruling 12; wakes are the only trigger). */
 	#addWorker(extension: string, worker: ExtensionWorker): void {
 		const state: WorkerState = {
 			extension,
 			worker,
 			deadlineMs: this.#workerDeadlineMs,
-			timer: undefined,
 			running: false,
 			stopped: this.#closed,
 			pendingWake: undefined,
@@ -551,25 +546,15 @@ export class EventBus {
 			lastRunAt: undefined,
 			lastError: undefined,
 		};
-		if (worker.every !== undefined && !state.stopped) {
-			state.timer = setInterval(() => {
-				this.#tick(state);
-			}, worker.every.ms);
-			state.timer.unref?.();
-		}
 		this.#workers.push(state);
 	}
 
-	/** Stop every worker of one extension (timers cleared; in-flight runs abandoned host-side). */
+	/** Stop every worker of one extension (in-flight runs abandoned host-side). */
 	#stopExtensionWorkers(extension: string): void {
 		for (const state of this.#workers) {
 			if (state.extension !== extension) continue;
 			state.stopped = true;
 			state.pendingWake = undefined;
-			if (state.timer !== undefined) {
-				clearInterval(state.timer);
-				state.timer = undefined;
-			}
 		}
 	}
 
@@ -746,14 +731,10 @@ export class EventBus {
 			this.#sweep = undefined;
 		}
 		// Workers stop too (a failed-session teardown must not leak their
-		// timers); in-flight runs are abandoned host-side — close is sync.
+		// runs); in-flight runs are abandoned host-side — close is sync.
 		for (const state of this.#workers) {
 			state.stopped = true;
 			state.pendingWake = undefined;
-			if (state.timer !== undefined) {
-				clearInterval(state.timer);
-				state.timer = undefined;
-			}
 		}
 		// A running pump observes `#closed` at its next iteration and exits;
 		// its in-flight handler call is abandoned at the hook deadline at
@@ -784,19 +765,7 @@ export class EventBus {
 		return statuses;
 	}
 
-	/**
-	 * One `every` tick: SKIPPED while a run is in flight (spec §3's one-run-
-	 * at-a-time — no queueing, no overlap). A pending wake (defensive: wakes
-	 * queue only while running, so this is normally undefined) rides along.
-	 */
-	#tick(state: WorkerState): void {
-		if (state.stopped || state.running) return;
-		const wake = state.pendingWake;
-		state.pendingWake = undefined;
-		this.#startRun(state, wake, BACKGROUND_CONTEXT);
-	}
-
-	/**
+/**
 	 * Wake every worker whose `wakeOn` names this lifecycle event (memory-
 	 * seam Task 5; taps the dispatch fan-out — detection is the listener's).
 	 * A wake on an idle worker starts a run at once; a wake during an
@@ -895,10 +864,6 @@ export class EventBus {
 		for (const state of this.#workers) {
 			state.stopped = true;
 			state.pendingWake = undefined;
-			if (state.timer !== undefined) {
-				clearInterval(state.timer);
-				state.timer = undefined;
-			}
 		}
 		const inflight = this.#workers
 			.map((state) => state.inflight)
