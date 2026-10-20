@@ -668,6 +668,27 @@ export class TuiApp implements Component, ActionHost {
 					);
 					return;
 				}
+				case "jobs": {
+					// W4 Task 5: the job table into the pane's notice area — one
+					// row per job (name, next run, last outcome), framed by a
+					// header/footer so the list reads as a table, not stray lines.
+					const { jobs } = await this.#client.listJobs();
+					if (jobs.length === 0) {
+						this.pane.showNotice("jobs: none");
+						return;
+					}
+					this.pane.showNotice(
+							`jobs: ${jobs.length} (name · next run · last outcome)`,
+						);
+					for (const job of jobs) {
+						const next = job.nextRun ?? "no next run";
+						const last = job.lastRun?.outcome ?? "never run";
+						this.pane.showNotice(
+								`  ${job.name} · ${next} · ${last}`,
+						);
+					}
+					return;
+				}
 				default:
 					this.pane.showError(
 						`/${parsed.name} is not supported by the TUI composer`,

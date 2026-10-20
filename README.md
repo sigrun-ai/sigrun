@@ -397,11 +397,69 @@ wins, env bootstraps). The author-facing contract — the store taxonomy,
 the directory map, the slug rule, the `host.stores` handle, uninstall
 and backup posture — is [`docs/extending.md`](docs/extending.md).
 
+## Jobs
+
+A job is a schedule plus an action, durable by construction — one
+SQLite-backed record per job, one immutable revision per change, and
+one record per run. Jobs are the only time-based scheduler in sigrun
+(extensions that need a timer declare a job with a `task` action).
+
+**Three sources:**
+
+| source | where it is declared | id | mutable via the API |
+|---|---|---|---|
+| `api` | `POST /v1/jobs` | `api:<uuid>` | yes (owner or admin) |
+| `file` | the settings file's `jobs[]` list | `file:<name>` | no — edit the file |
+| `extension` | an installed extension's factory result | `ext:<slug>:<name>` | no |
+
+`file` and `extension` declarations reconcile into job records at
+boot and on change; the declaration is the source of truth, so the API
+is read-only for them (`PATCH`/`DELETE` return `409 job_declared`).
+
+**The shape** (spec §8.2):
+
+```jsonc
+{
+  "name": "morning-brief",
+  "schedule": { "cron": "0 7 * * *", "timezone": "America/Toronto" }, // or { "every": "15m" } or { "at": "<ISO 8601>" }
+  "action": { "kind": "prompt", "prompt": "Summarize …", "model": "bifrost/glm-5.3-flash",
+              "conversation": "new" },  // or a fixed conversation id
+  "overlap": "skip",     // default; "queue" admits anyway (the conversation's inbox queues it)
+  "catchUp": "once",     // default; "none" skips fires missed while the server was down
+  "enabled": true
+}
+```
+
+A `prompt` action submits its prompt as a conversation — `"new"`
+creates one per fire (ownerless, `source: "cron"`), a fixed id submits
+into that conversation (the job's `model`/`thinking` apply only to
+`"new"`). A `task` action creates a pi-durable task owned by the
+schedule task (deleting the job cascades): `{"kind": "task",
+"task": "<registered task name>", "input": …}`.
+
+**Runs:** a cron run is an ORDINARY CONTINUABLE CONVERSATION — open the
+run conversation in either UI and keep talking; it is never a
+disposable side effect. `overlap: "skip"` (the default) records a
+`skipped` run when the previous fire is still live; `catchUp: "once"`
+(the default) fires once after downtime, `"none"` skips missed fires
+entirely. Runs carry the job `version` that fired them, so an outcome
+always maps to the exact definition it ran.
+
+**Run now:** `POST /v1/jobs/{id}/run` (write access) fires immediately
+— the same hook external triggers (CI, Alertmanager) use with a token.
+In the web UI the Jobs panel (the clock icon in the header) lists jobs
+with a “Run now” button; in the TUI `/jobs` prints the table (name,
+next run, last outcome).
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, auth posture
   (`methods`, `claimed`), capabilities.
 - `GET`/`PATCH /v1/settings` — the settings file (see above).
+- `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
+  the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
+  now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are
+  the history (newest first).
 - `POST /v1/conversations`, `POST /v1/conversations/{id}/submissions`,
   `GET /v1/conversations/{id}` — the durable conversation surface
   (SSE streaming views included).

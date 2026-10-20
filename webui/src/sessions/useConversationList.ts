@@ -10,7 +10,9 @@
  *   `eventsSource` below): `conversation.*` events trigger a refetch
  *   (coalesced — one reload in flight); the server-side stream is
  *   already access-filtered per principal, so every event the client
- *   sees is listable state;
+ *   sees is listable state; a `job.changed` event (W4 Task 5) calls the
+ *   optional `onJobChanged` callback on the SAME source — the jobs
+ *   panel never opens its own EventSource;
  * - on a busy → idle transition reload IMMEDIATELY, then again after
  *   5 s, so a name the server auto-generated at run settlement appears
  *   without a manual reload (belt for the run.settled event's list
@@ -42,13 +44,15 @@ export type ListEventSourceFactory = (url: string) => EventSourceLike;
 
 /**
  * Open the ONE shared `/v1/events` source for the app (W3 Task 4):
- * conversation.* events call `onConversationEvent`. Returns the close.
- * The browser's native EventSource auto-reconnects; a malformed frame is
- * dropped (the stream only nudges — a dropped nudge is healed by the
- * next event or a busy-settle reload).
+ * conversation.* events call `onConversationEvent`; `job.changed` calls
+ * `onJobChanged` (W4 Task 5 — the jobs panel rides the SAME source).
+ * Returns the close. The browser's native EventSource auto-reconnects;
+ * a malformed frame is dropped (the stream only nudges — a dropped
+ * nudge is healed by the next event or a busy-settle reload).
  */
 function subscribeHostEvents(
 	onConversationEvent: () => void,
+	onJobChanged: () => void,
 	createEventSource?: ListEventSourceFactory,
 ): () => void {
 	// The native EventSource exists only in the browser; the hook's unit
@@ -73,6 +77,7 @@ function subscribeHostEvents(
 	const onAny = (): void => onConversationEvent();
 	source.addEventListener("conversation.created", onAny);
 	source.addEventListener("conversation.changed", onAny);
+	source.addEventListener("job.changed", onJobChanged);
 	return () => source.close();
 }
 
@@ -82,6 +87,9 @@ export function useConversationList(
 		busy: boolean;
 		/** Test seam: inject a stub EventSource factory. */
 		createEventSource?: ListEventSourceFactory;
+		/** `job.changed` nudge (W4 Task 5): the jobs panel's refetch token,
+		 *  delivered on the SAME shared source — never a second EventSource. */
+		onJobChanged?: () => void;
 	},
 ): UseConversationListResult {
 	const busy = options.busy;
@@ -106,12 +114,17 @@ export function useConversationList(
 	// the hook is mounted once (App), so the hook's effect IS the shared
 	// subscription. A conversation.* event refetches the list; bursts
 	// coalesce by fetch latency (reloads overlap harmlessly — last write
-	// wins, and the server's list is cheap).
+	// wins, and the server's list is cheap). `job.changed` (W4 Task 5)
+	// rides the same source into the jobs panel's nudge callback.
 	useEffect(() => {
-		return subscribeHostEvents(() => {
-			void reload();
-		}, options.createEventSource);
-	}, [reload, options.createEventSource]);
+		return subscribeHostEvents(
+			() => {
+				void reload();
+			},
+			options.onJobChanged ?? (() => {}),
+			options.createEventSource,
+		);
+	}, [reload, options.createEventSource, options.onJobChanged]);
 
 	// The busy → idle transition: an immediate reload plus a settle reload
 	// 5 s later (auto names land at run settlement, shortly after idle).
