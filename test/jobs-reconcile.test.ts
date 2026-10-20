@@ -532,3 +532,229 @@ describe("listing — records only, never tasks", () => {
 		expect(listed.map((job) => job.id)).toContain(id);
 	});
 });
+
+// ─── Stage 2: the run-status observers ─────────────────────────────────────
+
+describe("the runSettled observer — prompt runs", () => {
+	test("a cron run answering → lastRun.outcome succeeded with settledAt", async () => {
+		const rig = await bootRig({
+			responses: [fauxAssistantMessage("tick answer")],
+		});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		const fired = await rig.jobs.runNow(job.id);
+		expect(fired.outcome).toBe("running");
+		// Let the run settle and the observer deliver.
+		await rig.opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await rig.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
+		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
+		expect(record!.lastRun).toBeDefined();
+		expect(record!.lastRun!.outcome).toBe("succeeded");
+		expect(record!.lastRun!.settledAt).toBeDefined();
+		expect(record!.lastRun!.conversationId).toBe(fired.conversationId);
+		const runs = await rig.jobs.runs(job.id, 20);
+		expect(runs[0]!.outcome).toBe("succeeded");
+		expect(runs[0]!.settledAt).toBeDefined();
+	});
+
+	test("a faux error turn → failed with the error", async () => {
+		const rig = await bootRig({
+			responses: [
+				fauxAssistantMessage("boom", {
+					stopReason: "error",
+					errorMessage: "faux provider failure",
+				}),
+			],
+		});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		await rig.jobs.runNow(job.id);
+		await rig.opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await rig.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
+		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
+		expect(record!.lastRun!.outcome).toBe("failed");
+		expect(record!.lastRun!.error).toBeDefined();
+	});
+});
+
+describe("the taskSettled observer — task-action runs", () => {
+	test("a fixture task completing → its run record becomes succeeded", async () => {
+		const fixture = await (await import(FIXTURE_JOBS_SPECIFIER)) as {
+			resetFixtureJobs: () => void;
+		};
+		fixture.resetFixtureJobs();
+		const rig = await bootRig({ extensions: [FIXTURE_JOBS_SPECIFIER] });
+		const id = "ext:fixture-jobs:tasked";
+		const fired = await rig.jobs.runNow(id);
+		expect(fired.outcome).toBe("running");
+		// The child task runs to terminal; the observer settles the run.
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const runs = await rig.jobs.runs(id, 20);
+			if (runs[0]?.outcome === "succeeded") break;
+			if (Date.now() > deadline) throw new Error("task run never settled succeeded");
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
+		expect(record!.lastRun!.outcome).toBe("succeeded");
+	});
+
+	test("a fixture task throwing → failed with the error", async () => {
+		const fixture = await (await import(FIXTURE_JOBS_SPECIFIER)) as {
+			resetFixtureJobs: () => void;
+			controls: { boom: boolean };
+		};
+		fixture.resetFixtureJobs();
+		fixture.controls.boom = true;
+		const rig = await bootRig({ extensions: [FIXTURE_JOBS_SPECIFIER] });
+		const id = "ext:fixture-jobs:tasked";
+		const fired = await rig.jobs.runNow(id);
+		expect(fired.outcome).toBe("running");
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const runs = await rig.jobs.runs(id, 20);
+			if (runs[0]?.outcome === "failed") break;
+			if (Date.now() > deadline) throw new Error("task run never settled failed");
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		const runs = await rig.jobs.runs(id, 20);
+		expect(runs[0]!.error).toBeDefined();
+		fixture.controls.boom = false;
+		fixture.resetFixtureJobs();
+	});
+});
+
+// ─── Stage 2: ownership transfer ───────────────────────────────────────────
+
+describe("the jobs ownership participant", () => {
+	test("transferOwnership(bob → alice) rewrites the record, bumps version, recreates the task", async () => {
+		const { createServer } = await import("../src/server/index.js");
+		const rig = await bootRig({});
+		// Seed bob (the job owner, deletable) and alice (the transferee,
+		// admin — she performs the delete).
+		await rig.opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			source: "cli",
+		});
+		await rig.opened.identity.users.add({
+			user: "alice",
+			admin: true,
+			source: "cli",
+		});
+		const job = await rig.jobs.createApi(tickSpec(), "bob");
+		const oldTask = (await liveScheduleTasks(rig, job.id))[0]!;
+		const app = await createServer(rig.opened, loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(rig.dir, "sigrun.db"),
+			SIGRUN_AUTH: "token",
+			SIGRUN_WORKSPACE_PATH: rig.dir,
+		}), [], { listenHost: "127.0.0.1" });
+		try {
+			const { token } = await rig.opened.identity.tokens.create("test", "alice");
+			const response = await app.inject({
+				method: "DELETE",
+				url: `/v1/users/bob?transferTo=alice`,
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(response.statusCode).toBe(204);
+		} finally {
+			await app.close();
+		}
+		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
+		expect(record!.owner).toBe("alice");
+		expect(record!.version).toBe(2);
+		const revisions = await rig.jobs.revisions(job.id);
+		expect(revisions[0]!.changedBy).toBe("transfer");
+		// The new hash → a NEW task; the old one aborted.
+		await waitTerminal(rig, oldTask.id);
+		const live = await liveScheduleTasks(rig, job.id);
+		expect(live).toHaveLength(1);
+		expect(String(live[0]!.id)).not.toBe(String(oldTask.id));
+	});
+});
+
+// ─── Stage 2: retention ────────────────────────────────────────────────────
+
+describe("jobHistory retention", () => {
+	test("runs capped at jobHistory.runs; revisions at jobHistory.revisions plus referenced", async () => {
+		const rig = await bootRig({
+			responses: Array.from({ length: 8 }, () => fauxAssistantMessage("tick")),
+			settings: { jobHistory: { runs: 3, revisions: 2 } },
+		});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		// 4 settled runs (the clock advances per fire — distinct manual
+		// fire keys, one run record each).
+		for (let index = 0; index < 4; index++) {
+			rig.setNow(T0 + (index + 1) * 60_000);
+			await rig.jobs.runNow(job.id);
+			await rig.opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+			await rig.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
+		}
+		const runs = await rig.jobs.runs(job.id, 100);
+		expect(runs).toHaveLength(3);
+		// 3 edits → versions 1..4; revisions keep the newest 2 plus any a
+		// retained run references.
+		for (let index = 0; index < 3; index++) {
+			await rig.jobs.updateApi(
+				job.id,
+				{ action: { kind: "prompt", prompt: `v${index + 2}`, conversation: "new" } },
+				"alice",
+			);
+		}
+		const revisions = await rig.jobs.revisions(job.id);
+		expect(revisions.length).toBeLessThanOrEqual(4);
+		expect(revisions[0]!.version).toBe(4);
+		const retained = new Set(runs.map((run) => run.version));
+		for (const revision of revisions) {
+			// A revision beyond the limit survives ONLY when referenced.
+			if (!retained.has(revision.version)) {
+				expect(revisions.indexOf(revision)).toBeLessThan(2);
+			}
+		}
+	});
+});
+
+// ─── Stage 2: fire re-entry semantics (the Task-2 deferred fix) ────────────
+
+describe("fireJob re-entry on a settled run record", () => {
+	test("a re-entered fire whose run settled returns blocked, not running", async () => {
+		const rig = await bootRig({
+			responses: [fauxAssistantMessage("tick")],
+		});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		await rig.jobs.runNow(job.id);
+		await rig.opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await rig.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
+		const runs = await rig.jobs.runs(job.id, 20);
+		expect(runs[0]!.outcome).toBe("succeeded");
+		// Re-fire the SAME key (a crash-recovered schedule task re-entering
+		// after the observer settled): the settled record must not read as
+		// "running" — the fire reports its terminal state.
+		const now = Date.parse(runs[0]!.startedAt);
+		const reentered = await rig.jobs.runNow(job.id);
+		void now;
+		// The re-entry uses a NEW manual key (fresh now), so exercise the
+		// exact path: call fireJob directly with the settled record's key.
+		const { fireJob } = await import("../src/jobs/fire.js");
+		const settledKey = runs[0]!.manual
+			? `${job.id}:manual:${Date.parse(runs[0]!.startedAt)}`
+			: `${job.id}:${Date.parse(runs[0]!.fireAt)}`;
+		const outcome = await fireJob(
+			{
+				harness: rig.opened.harness,
+				storage: rig.opened.storage,
+				registry: rig.opened.registry,
+				models: rig.opened.models,
+				defaultModel: rig.opened.defaultModel,
+				now: rig.now,
+				defaultTz: "UTC",
+			},
+			job.id,
+			settledKey,
+			Date.parse(runs[0]!.fireAt),
+			BACKGROUND_CONTEXT,
+		);
+		expect(outcome.outcome).toBe("blocked");
+		expect(outcome.conversationId).toBe(runs[0]!.conversationId);
+		void reentered;
+	});
+});

@@ -298,14 +298,13 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			outcome: "running" | "skipped" | "blocked";
 			conversationId?: number;
 		}> {
-			const fireKey = `${id}:manual:${deps.runtime.now()}`;
-			return await fireJob(
-				deps.runtime,
-				id,
-				fireKey,
-				deps.runtime.now(),
-				ctx,
-			);
+			// ONE clock reading: the manual fire key and the run's fireAt must
+			// agree — the settle path re-derives the run-record key from
+			// fireAt, and two readings would write the settle under a
+			// different key than the fire stored the run under.
+			const now = deps.runtime.now();
+			const fireKey = `${id}:manual:${now}`;
+			return await fireJob(deps.runtime, id, fireKey, now, ctx);
 		},
 
 		reconcile: reconcileOne,
