@@ -318,7 +318,9 @@ describe("loader + packages dir integration", () => {
 				snapshot.tools().some((entry) => entry.tool.name === "fixture_marker"),
 			).toBe(true);
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun-fixture-ext", status: "ok" },
+				// The installed fixture package's manifest carries a version
+				// (W3 Task 7: outcomes surface it on /v1/extensions).
+				{ name: "sigrun-fixture-ext", status: "ok", version: "0.1.0" },
 			]);
 			expect(opened.packagesDir).toBe(packagesDir);
 		} finally {

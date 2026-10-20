@@ -610,6 +610,47 @@ export interface AuthCheckResponse {
 	readonly providers: readonly AuthCheckProvider[];
 }
 
+// ─── Extensions (core hardening W3 Task 7, spec §7.7) ─────────────────────
+
+/**
+ * One `GET /v1/extensions` entry: a loaded outcome enriched with the
+ * declared seam kinds, the idle-worker projection, and the package
+ * manifest `version` (absent when the entry carries no readable
+ * manifest). The webui's Extensions settings section renders this list.
+ */
+export interface ExtensionInfo {
+	readonly name: string;
+	readonly status: string;
+	readonly error?: string;
+	readonly version?: string;
+	/** The interaction kinds the factory declared (empty when none). */
+	readonly interactionKinds: readonly string[];
+	/** The ambient surface keys the factory declared (empty when none). */
+	readonly ambientKeys: readonly string[];
+	/** The extension's idle workers (empty when it declared none). */
+	readonly workers: readonly WorkerStatus[];
+}
+
+/** The `GET /v1/extensions` payload (spec §7.7). */
+export interface ExtensionsResponse {
+	readonly extensions: readonly ExtensionInfo[];
+}
+
+/**
+ * A `GET /v1/extensions/:slug/secrets` entry: the key and its winning
+ * source — NEVER the value (the API lists and writes secrets; it never
+ * returns them).
+ */
+export interface ExtensionSecret {
+	readonly key: string;
+	readonly source: "stored" | "env";
+}
+
+/** The `GET`/`PUT`/`DELETE `/v1/extensions/:slug/secrets` payloads: the key list. */
+export interface ExtensionSecretsResponse {
+	readonly secrets: readonly ExtensionSecret[];
+}
+
 // ─── Sibling leaf re-exports ──────────────────────────────────────────────
 // The slash-command catalog and session-meta wire shapes live in their own
 // shared leaf modules; re-exported here (type-only, erased at compile) so

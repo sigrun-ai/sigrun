@@ -67,6 +67,7 @@ import {
 	ensureStoreRoots,
 	resolveStoreRoots,
 	sharedExtensionStores,
+	type SharedExtensionStores,
 	type StoreRoots,
 } from "./stores.js";
 import {
@@ -210,6 +211,14 @@ export interface OpenedHarness {
 	 * submission without a restart).
 	 */
 	readonly settings: SettingsStore;
+	/**
+	 * The boot-shared extension store trio (core hardening W3 Task 7,
+	 * spec §7.7): the `/v1/extensions` settings/secrets routes ride its
+	 * slug-addressed admin surface — the SAME `secrets.json` sections and
+	 * `settings/<slug>.json` files every scoped handle reads, so an API
+	 * write is visible to the extension with no restart.
+	 */
+	readonly extensionStores: SharedExtensionStores;
 	/**
 	 * The packages dir (`<config-dir>/packages`) the loader resolved
 	 * extension specifiers against — where `syncPackages` installs the
@@ -511,7 +520,9 @@ export async function openHarness(
 	// ExtensionSettingsStore over the roots resolved at the top of boot;
 	// each seam host scopes it to its extension's slug (cheap, no I/O —
 	// the cache dir materializes lazily on first `paths.cache` access).
-	const sharedStores = sharedExtensionStores(roots);
+	// The boot env feeds the admin surface's env-secret listing (the
+	// `SIGRUN_EXT_<SLUG>_` fallbacks — never written down, listed only).
+	const sharedStores = sharedExtensionStores(roots, env);
 	const seamHosts = new Map<string, SeamHost>();
 	const seamKinds = new Map<string, DeclaredKinds>();
 	const {
@@ -911,6 +922,7 @@ export async function openHarness(
 		identity,
 		memoryHealth,
 		settings: settingsStore,
+		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,
 		seamKinds,

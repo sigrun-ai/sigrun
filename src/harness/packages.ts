@@ -355,19 +355,21 @@ function canonicalizePath(spec: string, base: string): string {
 }
 
 /**
- * The `name` of a path-shaped specifier's target package, when readable.
- * A directory's `package.json` reads directly; a `.tgz` tarball's
- * `package/package.json` reads by listing the archive (npm keys a tarball
- * install by the packed manifest's name too). Exported for the loader's
- * provisional-identity derivation (the nearest manifest above a load
- * entry names the package).
+ * The minimal manifest fields sigrun reads off a package's
+ * `package.json` (the name for install identity, the version for the
+ * `GET /v1/extensions` inventory).
  */
-export function readPackageName(absPath: string): string | undefined {
+interface PackageManifest {
+	readonly name?: string;
+	readonly version?: string;
+}
+
+/** Read a package's manifest: the directory form, else the tarball form. */
+function readManifest(absPath: string): PackageManifest | undefined {
 	try {
-		const pkg = JSON.parse(
+		return JSON.parse(
 			readFileSync(join(absPath, "package.json"), "utf8"),
-		) as { name?: unknown };
-		if (typeof pkg.name === "string" && pkg.name !== "") return pkg.name;
+		) as PackageManifest;
 	} catch {
 		// Not a readable directory manifest — try the tarball form.
 	}
@@ -376,16 +378,40 @@ export function readPackageName(absPath: string): string | undefined {
 			const out = execFileSync(
 				"tar",
 				["-xzOf", absPath, "package/package.json"],
-				{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
 			);
-			const pkg = JSON.parse(out) as { name?: unknown };
-			if (typeof pkg.name === "string" && pkg.name !== "") return pkg.name;
+			return JSON.parse(out) as PackageManifest;
 		} catch {
 			// Unreadable tarball — the name is unknown; the install itself
 			// will fail loud if the specifier is bad.
 		}
 	}
 	return undefined;
+}
+
+/**
+ * The `name` of a path-shaped specifier's target package, when readable.
+ * A directory's `package.json` reads directly; a `.tgz` tarball's
+ * `package/package.json` reads by listing the archive (npm keys a tarball
+ * install by the packed manifest's name too). Exported for the loader's
+ * provisional-identity derivation (the nearest manifest above a load
+ * entry names the package).
+ */
+export function readPackageName(absPath: string): string | undefined {
+	const name = readManifest(absPath)?.name;
+	return typeof name === "string" && name !== "" ? name : undefined;
+}
+
+/**
+ * The `version` of a path-shaped specifier's target package, when
+ * readable — `readPackageName`'s sibling over the SAME manifests
+ * (directory `package.json`, else the tarball's `package/package.json`).
+ * Exported for the loader's outcome recording: the extension inventory
+ * (`GET /v1/extensions`, spec §7.7) surfaces the manifest version.
+ */
+export function readPackageVersion(absPath: string): string | undefined {
+	const version = readManifest(absPath)?.version;
+	return typeof version === "string" && version !== "" ? version : undefined;
 }
 
 interface SpecifierIdentity {
