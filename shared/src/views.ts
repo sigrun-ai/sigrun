@@ -575,13 +575,21 @@ export type AuthStatus =
 	| "degraded";
 
 /**
- * One `GET /v1/auth/check` provider entry — provider id + status, nothing
- * else. `detail` (provider plugins Task 6) is the optional tracker-facing
- * operator detail; the legacy derivations never set it.
+ * One `GET /v1/providers` entry — provider id + status, never key
+ * material. `detail` (provider plugins Task 6) is the optional
+ * tracker-facing operator detail; the legacy derivations never set it.
+ * Core hardening W3 Task 6 (spec §7.6) adds the catalog `models` count
+ * and the owning extension `owner` (absent for the env-degenerate
+ * provider) — the deprecated `/v1/auth/check` alias serves this same
+ * entry, one shape for both routes.
  */
 export interface AuthCheckProvider {
 	readonly provider: string;
 	readonly status: AuthStatus;
+	/** How many models the provider currently serves (best-effort count). */
+	readonly models: number;
+	/** The owning contributor's name; absent for the env-degenerate provider. */
+	readonly owner?: string;
 	readonly detail?: string;
 }
 

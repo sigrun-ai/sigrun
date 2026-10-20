@@ -24,8 +24,10 @@ import {
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { defaultSettingsDir } from "./settings.js";
+import { writeFileAtomic } from "./stores.js";
 
 /** The magic provider key meaning "the resolved default provider's key". */
 export const DEFAULT_AUTH_KEY = "default";
@@ -114,9 +116,57 @@ export class AuthStore {
 	 * on the first write.
 	 */
 	write(file: AuthFile): void {
-		mkdirSync(join(this.path, ".."), { recursive: true });
+		mkdirSync(dirname(this.path), { recursive: true });
 		writeFileSync(this.path, `${JSON.stringify(file, null, "\t")}\n`, {
 			mode: 0o600,
 		});
+	}
+
+	/**
+	 * Set one key's api key (core hardening W3 Task 6, spec §7.6): the
+	 * server's credential ROUTE writes through this — read-modify-write
+	 * over the current file (other entries untouched), staged through
+	 * {@link writeFileAtomic} at 0600 so a crash or concurrent reader only
+	 * ever sees the old or new complete file. `key` is the auth.json
+	 * provider key (`<id>`, or the magic `"default"` for the default
+	 * model's provider); `apiKey` must be a non-empty string — anything
+	 * else is refused HERE rather than written as a file the store's own
+	 * `read()` would reject. The pi-ai bridge stays read-only; this method
+	 * is the server's single write seam.
+	 */
+	async setApiKey(key: string, apiKey: string): Promise<void> {
+		if (typeof apiKey !== "string" || apiKey === "") {
+			throw new AuthValidationError(
+				`${key}.apiKey`,
+				"must be a non-empty string",
+			);
+		}
+		const file = { ...this.read() };
+		file[key] = { ...file[key], apiKey };
+		await mkdir(dirname(this.path), { recursive: true });
+		await writeFileAtomic(
+			this.path,
+			`${JSON.stringify(file, null, "\t")}\n`,
+			0o600,
+		);
+	}
+
+	/**
+	 * Remove one key's entry entirely (spec §7.6: "DELETE removes the
+	 * entry") — atomic and 0600 like every write. Idempotent: an absent
+	 * key writes nothing (DELETE of a never-set credential is a no-op,
+	 * not an error).
+	 */
+	async deleteApiKey(key: string): Promise<void> {
+		const file = this.read();
+		if (file[key] === undefined) return;
+		const next = { ...file };
+		delete next[key];
+		await mkdir(dirname(this.path), { recursive: true });
+		await writeFileAtomic(
+			this.path,
+			`${JSON.stringify(next, null, "\t")}\n`,
+			0o600,
+		);
 	}
 }

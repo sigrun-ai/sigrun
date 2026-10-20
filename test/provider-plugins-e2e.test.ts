@@ -227,11 +227,22 @@ async function listModelIds(app: FastifyInstance): Promise<string[]> {
 /** GET /v1/auth/check entries by provider id. */
 async function authCheck(
 	app: FastifyInstance,
-): Promise<Map<string, { provider: string; status: string; detail?: string }>> {
+): Promise<
+	Map<
+		string,
+		{ provider: string; status: string; models: number; owner?: string; detail?: string }
+	>
+> {
 	const response = await app.inject({ method: "GET", url: "/v1/auth/check" });
 	expect(response.statusCode).toBe(200);
 	const body = response.json() as {
-		providers: { provider: string; status: string; detail?: string }[];
+		providers: {
+			provider: string;
+			status: string;
+			models: number;
+			owner?: string;
+			detail?: string;
+		}[];
 	};
 	return new Map(body.providers.map((entry) => [entry.provider, entry]));
 }
@@ -384,6 +395,8 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				expect(readiness.get(provider)).toEqual({
 					provider,
 					status: "not_configured",
+					models: 0,
+					owner: `sigrun-${provider}`,
 				});
 			}
 		},
@@ -438,11 +451,33 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				path: "/v1/models",
 				authorization: `Bearer ${KEYS.bifrost}`,
 			});
-			// Readiness: every tracker reports ready.
+			// Readiness: every tracker reports ready (with the W3 Task 6
+			// enrichment: the populated catalog count + owning plugin).
 			const readiness = await authCheck(deployment.app);
-			for (const provider of ["bifrost", "ollama", "opencode", "pareto"]) {
-				expect(readiness.get(provider)).toEqual({ provider, status: "ready" });
-			}
+			expect(readiness.get("bifrost")).toEqual({
+				provider: "bifrost",
+				status: "ready",
+				models: 2,
+				owner: "sigrun-bifrost",
+			});
+			expect(readiness.get("ollama")).toEqual({
+				provider: "ollama",
+				status: "ready",
+				models: 2,
+				owner: "sigrun-ollama",
+			});
+			expect(readiness.get("opencode")).toEqual({
+				provider: "opencode",
+				status: "ready",
+				models: 1,
+				owner: "sigrun-opencode",
+			});
+			expect(readiness.get("pareto")).toEqual({
+				provider: "pareto",
+				status: "ready",
+				models: 2,
+				owner: "sigrun-pareto",
+			});
 			// The refresh persisted every catalog (the phase-C precondition).
 			for (const provider of ["bifrost", "ollama", "opencode", "pareto"]) {
 				expect(
@@ -518,7 +553,12 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					authorization: `Bearer ${KEYS.pareto}`,
 				});
 				const readiness = await authCheck(deployment.app);
-				expect(readiness.get("pareto")).toEqual({ provider: "pareto", status: "ready" });
+				expect(readiness.get("pareto")).toEqual({
+					provider: "pareto",
+					status: "ready",
+					models: 1,
+					owner: "sigrun-pareto",
+				});
 			} finally {
 				await moved.close();
 			}
