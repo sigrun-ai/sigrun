@@ -33,6 +33,7 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { registerAuthPipeline } from "./auth/pipeline.js";
@@ -148,6 +149,14 @@ export async function createServer(
 	if (webuiBundle !== undefined) {
 		await serveWebuiBundle(app, webuiBundle);
 	}
+	// The merged slash-command catalog (W5 Task 3): ONE build here — the
+	// core table plus every loaded extension's `commands` declarations —
+	// so the catalog route, the meta collision record, and the invoke
+	// route share one merge (and its warnings fire once, not per route).
+	const commandCatalog = buildCommandCatalog(
+		SLASH_COMMANDS,
+		opened.extensionCommands,
+	);
 	// The reserved root is ensured before any route runs. The listing is
 	// durable (the module docstring's "Conversation listing (durable)"
 	// section): it scans storage, so this server serves every recorded
@@ -170,6 +179,7 @@ export async function createServer(
 		config,
 		rootId,
 		webuiBundle,
+		commandCatalog,
 		listenHost,
 		methods,
 		env,

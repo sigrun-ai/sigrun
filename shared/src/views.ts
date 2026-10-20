@@ -544,10 +544,14 @@ export interface MetaResponse {
 	};
 	/**
 	 * Boot-merge collisions (build-and-webui Task 6): name collisions among
-	 * extension-contributed webui bundles, plus the provider-catalog merge
-	 * sink. Both merges are last-registered-wins by design — the record is
-	 * the operator's visibility into a co-installed replacement, never an
-	 * error; empty arrays are the no-collision boot.
+	 * extension-contributed webui bundles, the provider-catalog merge sink,
+	 * and extension COMMAND names (W5 Task 3). All three merges are
+	 * last-registered-wins by design — the record is the operator's
+	 * visibility into a co-installed replacement, never an error; empty
+	 * arrays are the no-collision boot. A command colliding with a CORE
+	 * name is DROPPED with a boot warning and deliberately NOT recorded
+	 * here (core commands are reserved, not replaceable — there is no
+	 * "winner" to report).
 	 */
 	readonly collisions: {
 		readonly webui: readonly {
@@ -568,6 +572,15 @@ export interface MetaResponse {
 			/** Contributor name that previously owned the provider. */
 			readonly previous: string;
 			/** Contributor name whose contribution won. */
+			readonly contributor: string;
+		}[];
+		readonly commands: readonly {
+			readonly kind: "command";
+			/** The command name that collided. */
+			readonly name: string;
+			/** Extension slug that previously owned the name. */
+			readonly previous: string;
+			/** Extension slug whose contribution won. */
 			readonly contributor: string;
 		}[];
 	};
@@ -683,7 +696,7 @@ export interface ExtensionSecretsResponse {
 // The slash-command catalog and session-meta wire shapes live in their own
 // shared leaf modules; re-exported here (type-only, erased at compile) so
 // this module is the single contract entry point for every §5 wire shape.
-export type { CommandsResponse, SlashCommand } from "./commands.js";
+export type { CommandsResponse, CommandRunResponse, SlashCommand } from "./commands.js";
 export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
 
 /**

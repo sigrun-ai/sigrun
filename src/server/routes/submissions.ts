@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { FastifyInstance } from "fastify";
+import type { SigrunHost } from "../../extension.js";
 import { touchActivity } from "../../harness/activity.js";
 import { UnservedModelError } from "../../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../../harness/providers/refresh.js";
@@ -45,6 +46,14 @@ const SUBMISSION_PARAMS_SCHEMA = {
 	type: "object",
 	properties: { id: { type: "integer" }, submissionId: { type: "integer" } },
 	required: ["id", "submissionId"],
+	additionalProperties: false,
+} as const;
+
+/** Path params for the extension-command invoke route (W5 Task 3). */
+const COMMAND_INVOKE_PARAMS_SCHEMA = {
+	type: "object",
+	properties: { id: { type: "integer" }, name: { type: "string" } },
+	required: ["id", "name"],
 	additionalProperties: false,
 } as const;
 
@@ -430,6 +439,88 @@ export function registerSubmissionRoutes(
 			// the task runs asynchronously and its summary lands as a view
 			// revision (the SSE stream).
 			return await reply.code(202).send({ taskId });
+		},
+	);
+
+	// Extension-command invocation (core hardening W5 Task 3, spec §9.3):
+	// `POST /v1/conversations/:id/commands/:name {args?}` runs the winning
+	// extension declaration for `name` (the merged catalog's `runnable`
+	// map — core names and dropped/collided losers resolve to 404
+	// `command_not_found`, never a run). WRITE-gated like every other
+	// conversation-mutating route (`loadConversation(ctx, "write")`: a
+	// read-only sharee gets 403). The body is at most `{args: string}`
+	// (absent body = empty args); the run ctx mirrors the ext-route
+	// adapter's — the caller's principal and the extension's seam host
+	// (`ctx.host` may be undefined for arity-0 factories, same Task 2
+	// semantics). A THROWING run is 500 `command_failed` naming the
+	// extension (logged; the server lives on); a normal return is 200
+	// with the command's optional `{notice}`.
+	app.post(
+		"/v1/conversations/:id/commands/:name",
+		{
+			schema: { params: COMMAND_INVOKE_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx, "write"),
+		},
+		async (request, reply): Promise<void> => {
+			const conversation = request.conversation;
+			const { name } = request.params as { name: string };
+			// The body convention of configure/compact: absent is valid (no
+			// args); an object may carry ONLY `args`, a non-string `args` is a
+			// fail-loud 400.
+			const body: unknown = request.body;
+			let args: string | undefined;
+			if (body !== undefined && body !== null) {
+				if (typeof body !== "object" || Array.isArray(body)) {
+					return await reply.code(400).send({ error: "invalid_body" });
+				}
+				const record = body as Record<string, unknown>;
+				const unknownKey = Object.keys(record).find((key) => key !== "args");
+				if (unknownKey !== undefined) {
+						return await reply
+							.code(400)
+							.send({ error: "invalid_field", field: unknownKey });
+				}
+				if (record.args !== undefined && typeof record.args !== "string") {
+						return await reply
+							.code(400)
+							.send({ error: "invalid_field", field: "args" });
+				}
+				args = record.args as string | undefined;
+			}
+			const merged = ctx.commandCatalog.runnable.get(name);
+			if (merged === undefined) {
+				return await reply.code(404).send({ error: "command_not_found" });
+			}
+			// The extension's seam host — the Task 2 ext-route semantics: the
+			// captured host instance, cast across the not-yet-bridged members
+			// (and possibly undefined when the loader ran without a host
+			// context factory).
+			const host = ctx.opened.seamHosts.get(merged.extension) as
+				| SigrunHost
+				| undefined;
+			try {
+				const result = await merged.run({
+					conversationId: conversation.id,
+					args: args ?? "",
+					principal: request.principal,
+					host: host as SigrunHost,
+				});
+				return await reply.code(200).send(
+					result === undefined || result.notice === undefined
+						? {}
+						: { notice: result.notice },
+				);
+			} catch (cause) {
+				console.warn(
+					`extension command failed: ${merged.extension} ${name}: ${
+						cause instanceof Error ? cause.message : String(cause)
+					}`,
+				);
+				return await reply.code(500).send({
+					error: "command_failed",
+					extension: merged.extension,
+				});
+			}
 		},
 	);
 }

@@ -41,10 +41,28 @@ export interface SlashCommand {
 	readonly description: string;
 	/** Argument shape shown in the menu/usage errors; absent = no args. */
 	readonly argsHint?: string;
+	/**
+	 * The contributing extension's slug (W5 Task 3); ABSENT on core
+	 * commands. An extension entry's `endpoint` is its invoke route
+	 * (`POST /v1/conversations/:id/commands/<name>`) — the client POSTs
+	 * there with `{args}` and renders a returned `notice`.
+	 */
+	readonly extension?: string;
 	readonly endpoint: SlashCommandEndpoint;
 }
 
 /** The `GET /v1/commands` response (spec §5 response conventions). */
 export interface CommandsResponse {
 	readonly commands: readonly SlashCommand[];
+}
+
+/**
+ * The `POST /v1/conversations/:id/commands/:name` response (W5 Task 3,
+ * extension commands): the command's optional human-facing notice —
+ * the client renders it as a transient banner (webui) / status-bar
+ * flash (tui). An empty body means the command returned nothing to
+ * say.
+ */
+export interface CommandRunResponse {
+	readonly notice?: string;
 }

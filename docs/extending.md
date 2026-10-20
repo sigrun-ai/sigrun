@@ -245,7 +245,7 @@ what core does with each, and where its rules are documented:
 | `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
-| `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | lands in Task 3 |
+| `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes | lands in Task 4 |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to | lands in Task 6 |
 
@@ -509,6 +509,47 @@ routes: [
 - `server.publicUrl` (`SIGRUN_PUBLIC_URL`, settings `server.publicUrl`)
   is the deployment's absolute base URL — trailing slashes are
   stripped; without it, notification deep links are omitted.
+
+## Slash commands
+
+A factory result may declare `commands` — slash commands that appear in
+the clients' `/` menu (`GET /v1/commands` merges them after the core
+table). Unlike core commands, an extension command executes ON THE
+SERVER: the client POSTs the invoke route and renders the returned
+notice (a transient banner in the webui, a status-bar flash in the TUI).
+
+```js
+commands: [
+	{
+		name: "standup",        // ^[a-z][a-z0-9-]*$; core names reserved
+		description: "Post today's standup summary",
+		args: "[team]",           // optional argument hint for the / menu
+		async run(ctx) {
+			// ctx: { conversationId, args, principal, host }
+			// args is the raw text after the command word ("" when absent)
+			return { notice: "posted" };   // {notice?} — optional
+		},
+	},
+]
+```
+
+- The invoke endpoint is `POST /v1/conversations/:id/commands/<name>`
+  with body `{args?: string}` — **write-gated** (a read-only sharee gets
+  403; the conversation must exist, else 404).
+- `ctx.host` is the same seam host `routes` receive; `ctx.principal` is
+  the caller.
+- A throw answers `500 {error: "command_failed", extension}` naming
+  your slug — logged, never a crash.
+- **Core command names are reserved** (`new`, `fork`, `compact`,
+  `export`, `import`, `name`, `model`, `thinking`, `jobs`): a command
+  naming one is DROPPED at boot with one warning — it never appears in
+  the menu and invoking its name is 404.
+- Two extensions declaring the same name: **last-registered-wins**
+  (load order), warned at boot and recorded in `GET /v1/meta`
+  `collisions.commands` — a co-installed replacement is a deployment
+  choice the operator can see, never a silent shadowing.
+- A malformed declaration (bad name shape, missing `description`,
+  non-function `run`) quarantines the extension at load.
 
 ## Idle workers: `wakeOn` only
 

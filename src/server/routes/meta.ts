@@ -8,7 +8,7 @@
 import type { FastifyInstance } from "fastify";
 import { aggregateHealth } from "../../harness/health.js";
 import { isBackupMarkerStale, readBackupMarker } from "../../backup/marker.js";
-import { SLASH_COMMANDS, type CommandsResponse } from "../commands.js";
+import type { CommandsResponse } from "../commands.js";
 import type { ServerContext } from "../context.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "../schema-fixture.js";
 import type { MetaResponse } from "../views.js";
@@ -18,7 +18,7 @@ export function registerMetaRoutes(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
-	const { opened, config, webuiBundle } = ctx;
+	const { opened, config, webuiBundle, commandCatalog } = ctx;
 	app.get("/v1/meta", async (): Promise<MetaResponse> => {
 		// Idle-worker projection: re-derived per request (statuses change
 		// over the process lifetime); quarantined extensions never
@@ -107,12 +107,15 @@ export function registerMetaRoutes(
 				})),
 			},
 			// Boot-merge collisions: name collisions among
-			// extension-contributed webui bundles, plus the provider-merge
-			// sink (the same field carries both). Last-registered-wins
-			// everywhere; the record is operator visibility, never an error.
+			// extension-contributed webui bundles, the provider-merge sink,
+			// and extension command names (W5 Task 3). Last-registered-wins
+			// everywhere; the record is operator visibility, never an error
+			// (a core-name command collision is dropped + warned at build,
+			// deliberately absent here).
 			collisions: {
 				webui: opened.webuiBundleCollisions,
 				providers: opened.providerCollisions,
+				commands: commandCatalog.collisions,
 			},
 		};
 	});
@@ -120,9 +123,11 @@ export function registerMetaRoutes(
 	// The slash-command catalog: the thin metadata list the composer's `/`
 	// menu consumes — name, description, args hint, and the endpoint each
 	// command drives (pi parity: thin metadata over the endpoints the other
-	// routes serve). A boot constant (like /v1/models), so a client may
-	// cache it. See `commands.ts` for the scope rulings.
+	// routes serve). Since W5 Task 3 this is the MERGED catalog (the core
+	// table + extension entries, each carrying its `extension` slug and
+	// invoke endpoint) — still a boot constant (like /v1/models), so a
+	// client may cache it. See `commands.ts` for the scope rulings.
 	app.get("/v1/commands", async (): Promise<CommandsResponse> => {
-		return { commands: [...SLASH_COMMANDS.values()] };
+		return { commands: commandCatalog.commands };
 	});
 }

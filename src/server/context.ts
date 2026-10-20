@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Env, SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import type { CommandCatalog } from "./commands.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
 
@@ -32,6 +33,15 @@ export interface ServerContext {
 	readonly rootId: ConversationId;
 	/** The resolved webui bundle; `undefined` on an API-only deploy. */
 	readonly webuiBundle: WebuiBundle | undefined;
+	/**
+	 * The merged slash-command catalog (core hardening W5 Task 3):
+	 * `buildCommandCatalog`'s one-time result over the core table and
+	 * `opened.extensionCommands` — the served `/v1/commands` list, the
+	 * `/v1/meta` `collisions.commands` record, and the invoke route's
+	 * name→run resolution. A boot constant (computed once in
+	 * `createServer`, warned once there), like the rest of this record.
+	 */
+	readonly commandCatalog: CommandCatalog;
 	/**
 	/**
 	 * The listen host the server binds (W1 Task 3): the pipeline's Host
