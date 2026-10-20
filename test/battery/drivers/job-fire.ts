@@ -70,6 +70,10 @@ async function writeJobState(dir: string, state: JobScenario): Promise<void> {
 function depsOf(opened: Awaited<ReturnType<typeof bootScenarioHarness>>) {
 	return {
 		harness: opened.harness,
+		// The Task-3 carry-forward: storage + registry from the PUBLIC
+		// OpenedHarness fields, never a private-field reach.
+		storage: opened.storage,
+		registry: opened.registry,
 		models: opened.models,
 		defaultModel: opened.defaultModel as ModelRef,
 		now: () => Date.now(),

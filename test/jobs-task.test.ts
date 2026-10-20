@@ -110,6 +110,10 @@ async function bootRig(options?: {
 	const defaultModel: ModelRef = opened.defaultModel;
 	const deps: JobRuntimeDeps = {
 		harness: opened.harness,
+		// The Task-3 carry-forward: storage + registry from the PUBLIC
+		// OpenedHarness fields, never a private-field reach.
+		storage: opened.storage,
+		registry: opened.registry,
 		models: opened.models as Models,
 		defaultModel,
 		now: () => clock,

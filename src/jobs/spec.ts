@@ -254,7 +254,7 @@ function validateAction(
  * the same resolver croner's evaluation path uses — and throws on
  * everything else.
  */
-function isIanaTimeZone(name: string): boolean {
+export function isIanaTimeZone(name: string): boolean {
 	try {
 		new Intl.DateTimeFormat("en-US", { timeZone: name });
 		return true;

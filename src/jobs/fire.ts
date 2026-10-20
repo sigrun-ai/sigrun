@@ -41,6 +41,8 @@ import type {
 	ConversationId,
 	Harness,
 	ModelRef,
+	Registry,
+	Storage,
 	TaskId,
 	TaskRuntime,
 } from "@earendil-works/pi-durable";
@@ -53,6 +55,10 @@ import type { ScheduleInput, ScheduleState } from "./task.js";
 /** What `fireJob` needs beyond the record it reads itself. */
 export interface JobRuntimeDeps {
 	harness: Harness;
+	/** The storage handle — sigrun's boot-exposed instance (`OpenedHarness.storage`), threaded here instead of a private-field reach. */
+	storage: Storage;
+	/** The application-owned registry (`OpenedHarness.registry`) — the run-now task-action lookup's snapshot source. */
+	registry: Registry;
 	models: Models;
 	defaultModel: ModelRef;
 	/** Epoch ms — the injectable clock (tests pin it). */
@@ -363,23 +369,18 @@ async function fireTaskAction(
 /**
  * The registry snapshot the task-action lookup reads: the driving
  * runtime's when inside the schedule task (the phase's snapshot), else
- * the harness's. Both are registry-owned, never a private scan.
+ * the `registry` threaded through `JobRuntimeDeps` (sigrun's boot-owned
+ * `OpenedHarness.registry` — the BINDING Task-3 carry-forward, replacing
+ * the harness private-field reach).
  */
 function depsRegistry(
 	deps: JobRuntimeDeps,
 	runtime: TaskRuntime<ScheduleInput, ScheduleState, void, object> | undefined,
 ): { task(name: string): unknown } {
 	if (runtime !== undefined) return runtime.registry;
-	// Outside a task (run-now), read the registry through the harness's
-	// root conversation's registry — the harness keeps none on its public
-	// surface, so we reach the one the registry publishes through the
-	// session (the registry is what Harness.open consumed; the handle is
-	// stable for the process).
-	const withRegistry = deps.harness as unknown as {
-		registry?: { snapshot(): { task(name: string): unknown } };
-	};
-	if (withRegistry.registry === undefined) {
-		throw new Error("fireJob: no registry snapshot available outside a task");
+	const registry = deps.registry;
+	if (registry === undefined) {
+		throw new Error("fireJob: no registry available outside a task");
 	}
-	return withRegistry.registry.snapshot();
+	return registry.snapshot();
 }
