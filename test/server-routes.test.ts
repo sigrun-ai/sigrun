@@ -332,6 +332,7 @@ describe("server route table", () => {
 				"/v1/onboarding",
 				"/v1/onboarding/claim",
 				"/v1/providers",
+				"/v1/events",
 				"/v1/settings",
 				"/v1/users",
 				"/v1/users/:user",
