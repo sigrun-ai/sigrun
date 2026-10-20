@@ -28,7 +28,10 @@
  *      settles it honestly);
  *    - disabled records get `state: "disabled"`.
  *
- * Boot calls `reconcile` after `resume()`; every API write calls it for
+ * Boot calls `reconcile` immediately before `resume()` (the scheduler
+ * starts executors at resume, the next line — awaiting anything after
+ * resume would race post-boot registry installs against recovered agent
+ * resolution); every API write calls it for
  * one job. It is IDEMPOTENT — a second run with unchanged state creates
  * nothing, aborts nothing, writes nothing.
  */
@@ -39,17 +42,15 @@ import type {
 	Cursor,
 	Harness,
 	Storage,
-	TaskId,
 	TaskRecord,
 } from "@earendil-works/pi-durable";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import {
 	JobDoc,
-	JobRunDoc,
 	writeJobChange,
 	type JobRecord,
 } from "./docs.js";
-import { fireJob, type JobRuntimeDeps } from "./fire.js";
+import type { JobRuntimeDeps } from "./fire.js";
 import { nextFireAt } from "./schedule.js";
 import { specHash } from "./spec.js";
 import { createScheduleTask } from "./task.js";
@@ -377,57 +378,4 @@ async function createExecutor(
 		},
 		ctx,
 	);
-}
-
-/**
- * The run-now entry the JobsService exposes: `fireJob` with the manual
- * fire key (no runtime — the child task action creates conversation-
- * owned). Exported so the service stays a thin composition.
- */
-export async function runJobNow(
-	deps: JobRuntimeDeps,
-	id: string,
-	ctx: Context = BACKGROUND_CONTEXT,
-): Promise<{ outcome: "running" | "skipped" | "blocked"; conversationId?: number }> {
-	const fireKey = `${id}:manual:${deps.now()}`;
-	return await fireJob(deps, id, fireKey, deps.now(), ctx);
-}
-
-/**
- * The shared task-settle hook: match a `taskId` among the job's run
- * records (the `sigrun.job.run` family) and settle the first RUNNING one.
- * Exported for the JobsService's taskSettled observer wiring.
- */
-export async function settleTaskRun(
-	deps: JobRuntimeDeps & { harness: Harness },
-	jobId: string | undefined,
-	taskId: number,
-	outcome: { status: string; error?: string },
-	ctx: Context = BACKGROUND_CONTEXT,
-): Promise<void> {
-	if (jobId === undefined) return;
-	// Find the running run record whose taskId matches.
-	const { listRuns, patchJob } = await import("./docs.js");
-	const runs = await listRuns(deps.storage, jobId, Number.MAX_SAFE_INTEGER, ctx);
-	const run = runs.find(
-		(one) => one.outcome === "running" && one.taskId === taskId,
-	);
-	if (run === undefined) return;
-	const succeeded = outcome.status === "completed";
-	const settled = {
-		...run,
-		outcome: (succeeded ? "succeeded" : "failed") as
-			| "succeeded"
-			| "failed",
-		settledAt: new Date(deps.now()).toISOString(),
-		...(succeeded || outcome.error === undefined
-			? {}
-			: { error: outcome.error }),
-	};
-	await deps.harness.commit(async (tx) => {
-		await tx.doc(JobRunDoc, `${jobId}:${Date.parse(run.fireAt)}`, settled);
-	}, ctx);
-	await patchJob(deps.harness, jobId, (draft) => {
-		draft.lastRun = settled;
-	}, ctx);
 }

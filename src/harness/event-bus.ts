@@ -263,7 +263,7 @@ export type ExtensionUserDeletedHandler = (
  */
 export type WorkerWakeEvent = Exclude<keyof ExtensionLifecyclePayload, never>;
 
-/** The wake argument of an event-triggered worker run (absent on every-tick runs). */
+/** The wake argument of an event-triggered worker run (always present — wakes are the only trigger post-`every`-retirement). */
 export type WorkerWake = {
 	readonly event: string;
 	readonly conversationId: ConversationId;
@@ -272,11 +272,10 @@ export type WorkerWake = {
 /**
  * One factory-declared idle worker (memory-seam Task 5 — the curator
  * contract), as the loader validated it. Host-owned lifecycle: the bus
- * starts the `every` timer at registration and taps the lifecycle fan-out
- * for `wakeOn` matches. One run at a time per worker (a tick during an
- * in-flight run is SKIPPED); a wake during an in-flight run is queued +
- * coalesced (one pending-wake slot, last wins) and delivered as the next
- * run's `wake`.
+ * taps the lifecycle fan-out for `wakeOn` matches (the `every` timer was
+ * RETIRED by ruling 12 — wakes are the only trigger). One run at a time
+ * per worker; a wake during an in-flight run is queued + coalesced (one
+ * pending-wake slot, last wins) and delivered as the next run's `wake`.
  */
 export type ExtensionWorker = {
 	/** Unique within the extension; surfaces in /v1/meta. */
@@ -651,9 +650,9 @@ export class EventBus {
 	 * `app.close()` and `harness.close()`):
 	 *
 	 * 1. stop the idle sweep (no new events from here on);
-	 * 2. stop idle workers FIRST (Task 5, spec §3): timers cleared, pending
-	 *    wakes dropped, in-flight runs awaited up to 30s then abandoned — a
-	 *    curator is not competing with the flush handlers for the window;
+	 * 2. stop idle workers FIRST (Task 5, spec §3): pending wakes dropped,
+	 *    in-flight runs awaited up to 30s then abandoned — a curator is not
+	 *    competing with the flush handlers for the window;
 	 * 3. drain pending settles — a run that settled just before shutdown
 	 *    delivers before the shutdown flush (the ordering constraint);
 	 * 4. deliver `harnessShutdown` to every extension in install order,
@@ -765,7 +764,7 @@ export class EventBus {
 		return statuses;
 	}
 
-/**
+	/**
 	 * Wake every worker whose `wakeOn` names this lifecycle event (memory-
 	 * seam Task 5; taps the dispatch fan-out — detection is the listener's).
 	 * A wake on an idle worker starts a run at once; a wake during an
@@ -855,10 +854,10 @@ export class EventBus {
 	}
 
 	/**
-	 * Stop every worker (spec §3 shutdown ordering): timers cleared, pending
-	 * wakes dropped, in-flight runs awaited up to 30s then abandoned. Runs
-	 * before the harnessShutdown delivery — a curator is not competing with
-	 * the flush handlers for the same window.
+	 * Stop every worker (spec §3 shutdown ordering): pending wakes dropped,
+	 * in-flight runs awaited up to 30s then abandoned. Runs before the
+	 * harnessShutdown delivery — a curator is not competing with the flush
+	 * handlers for the same window.
 	 */
 	async #stopWorkers(): Promise<void> {
 		for (const state of this.#workers) {
@@ -1122,22 +1121,29 @@ export class EventBus {
 			for (const change of publication.changes) {
 				if (change.type !== "task") continue;
 				const task = change.value;
-				if (task.state.status !== "terminal" && task.state.status !== "completing") {
-					continue;
-				}
 				// `completing` is decided-but-not-finalized; the jobs observer
 				// waits for the terminal receipt — emit only on `terminal`.
 				if (task.state.status !== "terminal") continue;
 				const outcome = task.state.outcome;
+				// The error text rides whichever field the outcome shape
+				// carries: `failed` has `error` (a TaskOutcomeError), `aborted`
+				// has `reason` (§8.1: an aborted task-action run settles
+				// failed WITH the text, never empty).
+				const errorText =
+					outcome.status === "completed"
+						? undefined
+						: "error" in outcome
+							? outcome.error?.message
+							: "reason" in outcome
+								? outcome.reason
+								: undefined;
 				this.#emitHost({
 					type: "taskSettled",
 					// SAFETY: TaskId is the branded number the wire's plain `number`
 					// field carries; the observer compares by === across both forms.
 					taskId: task.id as unknown as number,
 					status: outcome.status,
-					...(outcome.status !== "completed" && "error" in outcome && outcome.error !== undefined
-						? { error: outcome.error.message }
-						: {}),
+					...(errorText === undefined ? {} : { error: errorText }),
 				});
 			}
 			for (const change of publication.changes) {
