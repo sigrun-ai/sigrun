@@ -62,6 +62,7 @@ import {
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
+import { watchEvents } from "./sse.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
 import { createEmacsKeymap } from "./keymaps/emacs.js";
@@ -295,13 +296,38 @@ export async function launchTuiShell(
 
 	await app.refresh();
 
-	// The sidebar polls the listing (C2): names/ages/forks drift while
-	// the TUI is open, and the summary fields ride the ONE list request.
-	// Unref'd so the timer never holds the process open; dispose clears it.
-	const poll = setInterval(() => {
-		void app.refresh().catch(() => {}); // a failed poll fails quiet
-	}, 10_000);
-	poll.unref();
+	// The host events subscription (core hardening W3 Task 4, spec §7.4):
+	// ONE stream per process replaces the poll timers — `conversation.*`
+	// refetches the sidebar listing, `interaction.*` kicks the prompter,
+	// `ambient.changed` refetches the ambient chrome. A transport failure
+	// surfaces as a pane notice (the same posture as the conversation
+	// watcher's stream-health wiring); the events stream only NUDGES, so
+	// a dropped frame heals on the next event.
+	const unwatchEvents = watchEvents(
+		{
+			onEvent: (event) => {
+				if (
+					event.type === "conversation.created" ||
+					event.type === "conversation.changed"
+				) {
+					void app.refresh().catch(() => {}); // a failed refetch fails quiet
+				} else if (
+					event.type === "interaction.pending" ||
+					event.type === "interaction.settled"
+				) {
+					app.interactions.kick();
+				} else if (event.type === "ambient.changed") {
+					app.ambient.kick(event.conversationId);
+				}
+			},
+			onError: (message) => app.pane.showNotice(message),
+		},
+		{
+			baseUrl: options.baseUrl,
+			...(options.user === undefined ? {} : { user: options.user }),
+			...(options.token === undefined ? {} : { token: options.token }),
+		},
+	);
 
 	const done = new Promise<void>((resolve) => {
 		app.onQuit = resolve;
@@ -334,7 +360,7 @@ export async function launchTuiShell(
 	try {
 		await done;
 	} finally {
-		clearInterval(poll);
+		unwatchEvents();
 		app.dispose();
 		tui.stop();
 	}

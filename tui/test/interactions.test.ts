@@ -12,7 +12,8 @@
  *   with digits and submit the accumulated set on enter.
  * - records without options render without an answer affordance (the
  *   webui's no-affordance rule; form fields render read-only).
- * - polling: on stream frames (via the app) and on a short interval;
+ * - refetch triggers: stream frames (via the app) and `interaction.*`
+ *   host events (W3 Task 4 — the 2s poll interval is retired);
  *   a stale list response never lands after a conversation switch.
  * - answer failures render an `[error]` line in the pane (user-initiated
  *   actions fail loud; background polls fail quiet).
@@ -386,16 +387,21 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
-	test("the poll interval re-fetches the pending list", async () => {
+	test("W3: no poll interval — timers alone never refetch; kick() does", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
 		try {
 			const stub = stubClient();
-			const prompter = new InteractionPrompter(stub.client, { pollMs: 1000 });
+			const prompter = new InteractionPrompter(stub.client);
 			prompter.setConversation(1);
 			await vi.advanceTimersByTimeAsync(0);
 			const atBoot = stub.listCalls();
-			await vi.advanceTimersByTimeAsync(2000);
-			expect(stub.listCalls()).toBeGreaterThanOrEqual(atBoot + 2);
+			// The retired poll interval: advancing time fires NO fetches.
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(stub.listCalls()).toBe(atBoot);
+			// The host-event path (the app wires interaction.* to kick).
+			prompter.kick();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(stub.listCalls()).toBe(atBoot + 1);
 			prompter.dispose();
 		} finally {
 			vi.useRealTimers();
@@ -490,26 +496,22 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
-	test("setConversation(undefined) clears the prompt and stops polling", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
-		try {
-			const stub = stubClient();
-			stub.setPending([
-				interaction("c1", { text: "pick", options: [{ id: "a", label: "A" }] }),
-			]);
-			const prompter = new InteractionPrompter(stub.client, { pollMs: 1000 });
-			prompter.setConversation(1);
-			await vi.advanceTimersByTimeAsync(0);
-			expect(prompter.render(60).join("\n")).toContain("pick");
-			prompter.setConversation(undefined);
-			expect(prompter.render(60).join("\n")).not.toContain("pick");
-			const calls = stub.listCalls();
-			await vi.advanceTimersByTimeAsync(5000);
-			expect(stub.listCalls()).toBe(calls);
-			prompter.dispose();
-		} finally {
-			vi.useRealTimers();
-		}
+	test("setConversation(undefined) clears the prompt; stale kicks no-op", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", { text: "pick", options: [{ id: "a", label: "A" }] }),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		expect(prompter.render(60).join("\n")).toContain("pick");
+		prompter.setConversation(undefined);
+		expect(prompter.render(60).join("\n")).not.toContain("pick");
+		const calls = stub.listCalls();
+		prompter.kick();
+		await flush();
+		expect(stub.listCalls()).toBe(calls);
+		prompter.dispose();
 	});
 });
 
