@@ -13,7 +13,7 @@
  */
 
 import { useRef, useState } from "react";
-import { MenuIcon, MoreIcon, OutlineIcon, WorkspaceIcon } from "./icons";
+import { MenuIcon, MoreIcon, OutlineIcon, WorkspaceIcon, JobsIcon } from "./icons";
 import type { PanelMode } from "./RightPanel";
 import { useDismiss } from "../useDismiss";
 
@@ -133,6 +133,17 @@ export function ChatHeader(props: {
 				onClick={() => onPanel("workspace")}
 			>
 				<WorkspaceIcon />
+			</button>
+			<button
+				type="button"
+				className="icon-btn"
+				data-panel="jobs"
+				title="Jobs"
+				aria-label="jobs"
+				aria-pressed={panel === "jobs"}
+				onClick={() => onPanel("jobs")}
+			>
+				<JobsIcon />
 			</button>
 			<span className="chat-menu-slot" ref={menuSlot}>
 				<button

@@ -20,6 +20,13 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Env, SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
+import type { JobRuntimeDeps } from "../jobs/fire.js";
+import { createScheduleTask } from "../jobs/task.js";
+import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
+import { reconcileJobs } from "../jobs/reconcile.js";
+import { registerJobObservers } from "../jobs/observe.js";
+import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
+import type { JobSpec } from "@sigrun/shared/jobs";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
 import { loadExtensions, type ExtensionOutcome, type ResolvedExtensionInput } from "./loader.js";
@@ -285,6 +292,21 @@ export interface OpenedHarness {
 	 */
 	readonly autoNamer: AutoNamer;
 	/**
+	 * The jobs service (W4 Task 3, spec §8): the record-family surface
+	 * (list/get/runs/revisions, createApi/updateApi/deleteApi, runNow,
+	 * reconcile) over the same harness/storage the boot owns. Task 4's
+	 * routes consume it; the ownership participant's jobs transfer runs
+	 * through it.
+	 */
+	readonly jobs: JobsService;
+	/**
+	 * The in-process job-run outcome counts (W4 Task 4, §6.9): outcome →
+	 * count for `sigrun_job_runs_total{outcome}` — counted from run-record
+	 * commits in THIS process (reset on restart, by design; the durable
+	 * history lives in the run records). Re-derived live per read.
+	 */
+	readonly jobRunTotals: () => ReadonlyMap<string, number>;
+	/**
 	 * The boot refresh (provider plugins Task 4): the in-flight (or done)
 	 * deadline-bounded catalog refresh started right after
 	 * `collectProviders`. Boot NEVER awaits it — it runs concurrently with
@@ -400,6 +422,10 @@ export interface OpenHarnessOptions {
 	/**
 	 * The activity clock (UI refresh A1), default `() => new Date()` — the
 	 * seam `lastActivityAt` stamps come from, overridable so tests pin time.
+	 * Jobs Task 2: the SAME seam feeds `HarnessOptions.now` (the harness
+	 * clock `runtime.sleep`/`runtime.now()` read), so a test that pins
+	 * `now` pins BOTH the activity stamps and the schedule task's durable
+	 * waits (the jobs tests step the clock instead of waiting 60s).
 	 */
 	readonly now?: () => Date;
 }
@@ -533,6 +559,7 @@ export async function openHarness(
 		workerBindings,
 		providerContributors,
 		webuiBundles: extensionWebuiBundles,
+		jobBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -670,6 +697,31 @@ export async function openHarness(
 			modelsStore,
 		},
 	);
+	// The jobs core extension (jobs Task 3, spec §8.1 "The executor"):
+	// ONE registry install carrying the `sigrun.schedule` task, BEFORE
+	// `Harness.open` reads the registry (the same slot as the other core
+	// extensions). The task is a pure definition over the runtime deps —
+	// the clock seam (options.now) and `config.timezone` (§8.2) — so it
+	// installs here, before the open, and nothing else keyed on it. The
+	// deps object is shared with `fireJob`'s run-now and the JobsService
+	// below (one clock, one tz, one models store).
+	const jobRuntimeDeps: JobRuntimeDeps = {
+		// SAFETY: harness + storage are assigned right after `Harness.open`
+		// returns below (the open needs the task registered, so the deps
+		// object is created first with placeholders). Every read — task
+		// phases, fireJob, the JobsService — happens post-assignment.
+		harness: undefined as unknown as Harness,
+		storage: undefined as unknown as Storage,
+		registry,
+		models,
+		defaultModel,
+		now: () => clockNow().getTime(),
+		defaultTz: config.timezone,
+	};
+	registry.install({
+		name: "sigrun.jobs",
+		tasks: [createScheduleTask(jobRuntimeDeps)],
+	});
 	// The host event hub (W3 Task 4, spec §7.4): ONE per opened harness.
 	// The event bus's commit-derived events subscribe below (after the bus
 	// opens); the provider refresh paths observe readiness here — each
@@ -766,12 +818,18 @@ export async function openHarness(
 	const settingsStore = new SettingsStore({ dir: options.settingsDir });
 	const fileSettings = settingsStore.harnessSettings();
 	const callerSettings = options.settings;
+	// The ONE boot clock (options.now ?? real): the activity stamper AND
+	// the harness clock share it (the schedule task's `runtime.sleep`
+	// reads the harness clock; pinning the seam pins both — the jobs
+	// tests' time-injection lever).
+	const clockNow = options.now ?? (() => new Date());
 	const harness = await Harness.open(
 		storage,
 		{
 			models,
 			registry,
 			env: envBuilder,
+			now: () => clockNow().getTime(),
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
 			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the
@@ -810,6 +868,12 @@ export async function openHarness(
 	// after boot completes finds the harness immediately; one issued from a
 	// post-open async factory path waits on this same promise.
 	bindHarness(harness);
+	// The job runtime deps' harness/storage binding resolves the same way
+	// (the placeholders the pre-open install needed): the harness exists
+	// from here on, and every job read — task phases, fireJob, the
+	// JobsService — happens after this point.
+	jobRuntimeDeps.harness = harness;
+	jobRuntimeDeps.storage = storage;
 	// The memory-seam event bus (Tasks 2-4): subscribe BEFORE `resume()` so
 	// recovery settles (faulted/orphaned submissions the scheduler drains)
 	// are observed like any other commit. Extension handlers register under
@@ -839,7 +903,7 @@ export async function openHarness(
 	// submissions route). Registered directly after the bus opens — host-owned
 	// machinery, ahead of every extension registration (install order = run
 	// order). The bus's close stops delivery; the unsubscribe is unused.
-	const now = options.now ?? (() => new Date());
+	const now = clockNow;
 	wireActivity(eventBus, harness, now);
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
@@ -882,6 +946,19 @@ export async function openHarness(
 	eventBus.registerExtension("sigrun:auto-name", {
 		runSettled: autoNamer.runSettled,
 	});
+	// The jobs run-status observers (W4 Task 3, §8.1): the runSettled
+	// handler registered as `sigrun:jobs` (after every loaded extension,
+	// like the auto-namer — a job observation never delays an extension's)
+	// + the taskSettled host-event listener (task-action runs). Registered
+	// BEFORE `resume()` so recovery settles are observed; the unsubscribe
+	// rides the bus's own close (host machinery, booted with the bus).
+	registerJobObservers({
+		harness,
+		storage,
+		runtime: jobRuntimeDeps,
+		settings: () => settingsStore.read(),
+		eventBus,
+	});
 	// Delivery scheduling: the bus itself stays passive (Task 2's
 	// contract — `drain()` is the only pump); boot owns when drains run.
 	// Every commit (bus events or not) schedules one debounced drain on
@@ -902,12 +979,147 @@ export async function openHarness(
 	// ordered path src/index.ts runs) closes the bus first, making this a
 	// no-op on the normal path.
 	harness.subscribeClose(() => eventBus.close());
+	// The jobs service (W4 Task 3): the declared sources are read LIVE
+	// per reconcile — the settings store re-reads (a file edit lands on
+	// the next reconcile) and the loader's job bindings snapshot at boot
+	// (an extension's declaration is its boot-time declaration).
+	const fileJobs = (): readonly JobSpec[] => settingsStore.read().jobs ?? [];
+	const jobsSources = () => ({ file: fileJobs(), extensions: jobBindings });
+	// The root conversation — the schedule tasks' owner (spec §8.1).
+	// `Harness.root` is idempotent (creates with `agent` on first call,
+	// returns the reserved root thereafter), so the server's own
+	// root-ensure later sees the same conversation. Reconciliation needs
+	// it BEFORE creating any executor.
+	const rootConversation = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: defaultModel },
+	});
+	const rootConversationId = rootConversation.id as number;
+	// The `job.changed` publication (W4 Task 4, §7.4/§8.4): the jobs
+	// service's onChange hook (fired from its `sigrun.job` commit
+	// subscription — every record change, any writer) publishes the
+	// changed job's wire row through the hub WITHOUT `access` (the SSE
+	// stream computes accessOf per principal and adds it; a hidden job's
+	// event is withheld entirely). The read runs on a microtask side lane
+	// (the commit-listener contract is no-blocking-work); a RETIRED record
+	// (the delete path) is served from its newest revision so clients
+	// still get the nudge to refetch.
+	const publishJobChanged = async (jobId: string): Promise<void> => {
+		try {
+			const record = await harness.snapshot(
+				JobDoc,
+				jobId,
+				BACKGROUND_CONTEXT,
+			);
+			if (record !== undefined) {
+				// The hub's copy is ACCESS-NEUTRAL by contract (the wire's
+				// `Omit<JobWire, "access">`): `jobWireOf`'s row carries the
+				// service's neutral placeholder, so it is STRIPPED here — the
+				// SSE stream computes `accessOf` per principal and adds it. A
+				// future in-process hub subscriber must never read a fabricated
+				// access off the hub's copy.
+				const { access: _dropped, ...row } = jobWireOf(jobId, record);
+				events.publish({
+					type: "job.changed",
+					job: row,
+				});
+				return;
+			}
+			const [newest] = await listRevisions(
+				storage,
+				jobId,
+				BACKGROUND_CONTEXT,
+			);
+			if (newest === undefined) return;
+			events.publish({
+				type: "job.changed",
+				job: {
+					id: jobId,
+					name: newest.spec.name,
+					source: newest.source,
+					...(newest.owner === undefined ? {} : { owner: newest.owner }),
+					...(newest.sharing === undefined ? {} : { sharing: newest.sharing }),
+					schedule: newest.spec.schedule,
+					action: newest.spec.action,
+					enabled: newest.enabled,
+					// The retired row's status is gone with the record; the
+					// nudge only needs identity + definition (clients refetch).
+					state: "disabled",
+					version: newest.version,
+				},
+			});
+		} catch (error) {
+			console.error("jobs: job.changed publication failed:", error);
+		}
+	};
+	// The in-process job-run outcome counter (W4 Task 4, §6.9): counted
+	// from `sigrun.job.run` document commits in THIS process — reset on
+	// restart by design (the durable history lives in the run records;
+	// the counter feeds `sigrun_job_runs_total{outcome}`). A creation
+	// write of an already-settled run (the overlap skip, the catch-up
+	// skip) counts once at creation; a `running` run counts at its settle;
+	// prune retirements (value null) never count.
+	const jobRunTotals = new Map<string, number>();
+	harness.subscribeCommits((publication) => {
+		for (const change of publication.changes) {
+			if (change.type !== "document") continue;
+			if (change.record.kind !== JobRunDoc.definition.kind) continue;
+			const outcome = (change.value as { outcome?: unknown } | null)?.outcome;
+			if (typeof outcome !== "string" || outcome === "running") continue;
+			jobRunTotals.set(outcome, (jobRunTotals.get(outcome) ?? 0) + 1);
+		}
+	});
+	const jobs = createJobsService({
+		harness,
+		storage,
+		runtime: jobRuntimeDeps,
+		rootId: rootConversationId,
+		sources: jobsSources,
+		settings: () => settingsStore.read(),
+		onChange: (jobId) => {
+			void publishJobChanged(jobId);
+		},
+	});
+	// Reconcile BEFORE resume: the scheduler is still disabled, so the
+	// executor creations/aborts land durably and only then start running
+	// (the spec §8.3 boot order — "reconcile after resume()" — holds in
+	// effect: resume is the very next line). Awaiting a reconcile AFTER
+	// resume would delay openHarness's return past the scheduler's first
+	// drain microtask, racing post-boot registry installs against
+	// recovered-task agent resolution (the battery's hook-refire driver
+	// installs its hook extension right after boot — the recovered
+	// generation must resolve its agent AFTER that install).
+	await reconcileJobs(
+		{
+			harness,
+			storage,
+			runtime: jobRuntimeDeps,
+			rootId: rootConversationId,
+			sources: jobsSources,
+		},
+		BACKGROUND_CONTEXT,
+	);
+	// The deleted-owner warning (§8.3): a declared job whose `owner` names
+	// a user no longer in the directory runs OWNERLESS until its source is
+	// edited (household-write by the §5.9 rule) — surfaced at boot, never
+	// silently. Only checked on a claimed directory (an unclaimed boot
+	// has no users to check against).
+	if (identity.users.isClaimed()) {
+		const known = new Set(identity.users.list().map((user) => user.user));
+		for (const spec of [...fileJobs(), ...jobBindings.flatMap((binding) => binding.jobs)]) {
+			if (spec.owner === undefined || known.has(spec.owner)) continue;
+			console.warn(
+				`jobs: declared job "${spec.name}" names owner "${spec.owner}" who is not in the user directory — it runs ownerless until its source is edited`,
+			);
+		}
+	}
 	harness.resume();
 	return {
 		harness,
 		storage,
 		registry,
 		models,
+		jobs,
+		jobRunTotals: () => jobRunTotals,
 		defaultModel,
 		providerCollisions: sink.collisions,
 		webuiBundles,

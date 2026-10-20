@@ -10,8 +10,9 @@
  * the default export is an arity-1 factory returning `{ extension, workers,
  * harnessShutdown }`.
  *
- * Workers:
- * - `ticker` — every 60ms; may hang or fail via the controls.
+ * Workers (post-`every`-retirement, jobs Task 3 / ruling 12 — wakeOn only):
+ * - `ticker` — wakes on conversationCreated; may hang or fail via the
+ *   controls (the abandon/lastError rigs).
  * - `idle-ear` — wakes on conversationIdle.
  * - `arch-ear` — wakes on conversationArchived; `blockArch` makes its run
  *   wait on a test-held release (the in-flight wake-coalescing rig).
@@ -76,7 +77,7 @@ export default function createFixtureWorkers(host) {
 		workers: [
 			{
 				name: "ticker",
-				every: { ms: 60 },
+				wakeOn: ["conversationCreated"],
 				async run(context, wake) {
 					void context;
 					runs.push({ worker: "ticker", wake, tick: ++tickerTick });

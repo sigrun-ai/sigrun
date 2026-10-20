@@ -37,6 +37,7 @@
 
 import type { JsonObject } from "./json.js";
 import type { Sharing } from "./access.js";
+import type { JobWire } from "./jobs.js";
 import type {
 	InteractionAnswer,
 	InteractionBody,
@@ -212,6 +213,21 @@ export interface ConversationList {
 export interface ConversationCreateResponse {
 	readonly id: number;
 	readonly view: ConversationViewWire;
+}
+
+// ─── Jobs (W4 Task 4, spec §8.4) ────────────────────────────────────────────
+
+/** `GET /v1/jobs`: the caller-visible jobs (`accessOf ≠ "none"`), each row
+ *  carrying the caller's resolved `access`. */
+export interface JobsResponse {
+	readonly jobs: readonly JobWire[];
+}
+
+/** `POST /v1/jobs/:id/run`: the fire outcome plus the run's conversation
+ *  when one exists (a skipped/blocked fire may have none). */
+export interface JobRunResponse {
+	readonly outcome: "running" | "skipped" | "blocked";
+	readonly conversationId?: number;
 }
 
 /** The `Content-Type` of the JSONL export/import wire (Task 5b/5c). */
@@ -752,7 +768,9 @@ export interface TokenCreateResponse {
  * against a FRESH SessionMeta snapshot is not `"none"` (per-event
  * re-check: share → delivered, un-share → withheld);
  * `providers.changed` reaches every authenticated principal;
- * `job.changed` carries `unknown` until W4 narrows it to `JobWire`.
+ * `job.changed` carries the changed job's `JobWire` summary WITHOUT
+ * `access` — the events stream computes and adds it per principal before
+ * delivery (the hub's copy is access-neutral).
  * No replay: a client that reconnects refetches (the list GET); the
  * stream only nudges.
  */
@@ -791,4 +809,15 @@ export type HostEventWire =
 			readonly provider: string;
 			readonly status: string;
 		}
-	| { readonly type: "job.changed"; readonly job: unknown }; // W4 narrows to JobWire
+	| {
+			/** A task table write with a TERMINAL status (jobs Task 3, §8.1): the jobs observer settles `task`-action run records from it — `completed` → `succeeded`, any other terminal → `failed` + `error`. Hub-side only (not an SSE wire event): the task table is host machinery, not principal-facing surface. */
+			readonly type: "taskSettled";
+			readonly taskId: number;
+			readonly status: string;
+			readonly error?: string;
+		}
+	| {
+			/** W4 Task 4 (§8.4): the changed job's summary, WITHOUT `access` — the events stream computes `accessOf` per principal and adds it before delivery (a hidden job's event is withheld entirely). */
+			readonly type: "job.changed";
+			readonly job: Omit<JobWire, "access">;
+		};

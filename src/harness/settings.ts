@@ -58,7 +58,9 @@ import {
 import { dirname, join } from "node:path";
 
 import { resolveStoreRoots } from "./stores.js";
+import { isIanaTimeZone, validateJobSpec } from "../jobs/spec.js";
 import type {
+	JobHistorySettings,
 	ServerSettings,
 	SettingsFile,
 } from "@sigrun/shared/settings";
@@ -67,6 +69,7 @@ export type {
 	DefaultProviderSettings,
 	EffectiveServerSetting,
 	ExtensionSpec,
+	JobHistorySettings,
 	ServerSettingSource,
 	ServerSettings,
 	SettingsFile,
@@ -103,6 +106,8 @@ const SETTING_KEYS = [
 	"defaultTools",
 	"perModelThinking",
 	"extensions",
+	"jobs",
+	"jobHistory",
 	"defaultModel",
 	"namingModel",
 	"defaultProvider",
@@ -309,6 +314,51 @@ function validate(value: Record<string, unknown>): void {
 			}
 		}
 	}
+	// The file-declared job list (jobs §8.3): each entry is a full
+	// `validateJobSpec` run (the §8.2 grammar), plus the source-level
+	// rules — duplicate names are a validation error, and the whole list
+	// is restart-required like `extensions` (boot reconciliation owns it).
+	if (value.jobs !== undefined) {
+		const jobs = value.jobs;
+		if (!Array.isArray(jobs)) {
+			throw new SettingsValidationError("jobs", "must be an array of job specs");
+		}
+		const seen = new Set<string>();
+		for (const entry of jobs) {
+			const result = validateJobSpec(entry);
+			if (!result.ok) {
+				throw new SettingsValidationError(
+					`jobs`,
+					`${result.field} ${result.message}`,
+				);
+			}
+			if (seen.has(result.spec.name)) {
+				throw new SettingsValidationError(
+					"jobs",
+					`duplicate job name "${result.spec.name}"`,
+				);
+			}
+			seen.add(result.spec.name);
+		}
+	}
+	// The live job-history retention knobs (§8.1, ruling 14): both
+	// positive integers when present.
+	if (value.jobHistory !== undefined) {
+		const jobHistory = asRecord(value.jobHistory);
+		if (jobHistory === undefined) {
+			throw new SettingsValidationError("jobHistory", "must be an object");
+		}
+		checkKeys("jobHistory.", jobHistory, ["runs", "revisions"]);
+		for (const key of ["runs", "revisions"] as const) {
+			const v = jobHistory[key];
+			if (v !== undefined && !isPositiveInt(v)) {
+				throw new SettingsValidationError(
+					`jobHistory.${key}`,
+					"must be a positive integer",
+				);
+			}
+		}
+	}
 	if (value.defaultModel !== undefined) {
 		const spec = value.defaultModel;
 		if (typeof spec !== "string" || spec.trim() === "") {
@@ -394,6 +444,7 @@ function validateServer(server: unknown): void {
 		"dataDir",
 		"cacheDir",
 		"stateDir",
+		"timezone",
 		"webui",
 		"webuiBundle",
 		"compaction",
@@ -403,6 +454,21 @@ function validateServer(server: unknown): void {
 		"metrics",
 		"backup",
 	]);
+	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
+	// exactly the names croner's evaluation path resolves, and throws on
+	// everything else, so the gate is one construction. Narrowed to a
+	// string first: `asRecord`'s unknown value type flows `null` here
+	// otherwise.
+	const timezone =
+		record.timezone === undefined || record.timezone === null
+			? undefined
+			: (record.timezone as string);
+	if (timezone !== undefined && !isIanaTimeZone(timezone)) {
+		throw new SettingsValidationError(
+			"server.timezone",
+			`must be an IANA name (got ${JSON.stringify(record.timezone)})`,
+		);
+	}
 	if (record.port !== undefined && !isPositiveInt(record.port)) {
 		throw new SettingsValidationError("server.port", "must be a positive integer");
 	}

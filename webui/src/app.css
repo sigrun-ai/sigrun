@@ -1844,6 +1844,164 @@ body {
 	font-size: 0.8rem;
 }
 
+/* ── jobs panel (the Jobs tab's content, W4 Task 5) ─────────────────── */
+
+.jobs-panel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	height: 100%;
+	padding: 0.6rem 0.8rem;
+}
+
+.jobs-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	overflow-y: auto;
+	flex: 1;
+	min-height: 0;
+}
+
+.job-row {
+	border-bottom: 1px solid var(--border);
+	padding: 0.35rem 0;
+}
+
+.job-summary {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 1px;
+	border: none;
+	background: transparent;
+	text-align: left;
+	padding: 2px 4px;
+	cursor: pointer;
+	border-radius: 5px;
+	font: inherit;
+}
+
+.job-summary:hover {
+	background: var(--surface-2);
+}
+
+.job-name {
+	color: var(--text);
+	font-size: 12.5px;
+	font-weight: 500;
+}
+
+.job-schedule,
+.job-next,
+.job-last {
+	color: var(--muted);
+	font-size: 11.5px;
+	font-family: var(--mono);
+}
+
+.job-summary-side {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 0.4rem;
+	padding: 0 4px 0.25rem;
+}
+
+.job-conversation {
+	background: none;
+	border: none;
+	color: var(--accent);
+	font: 11.5px var(--mono);
+	cursor: pointer;
+	padding: 0;
+	text-decoration: underline;
+}
+
+.job-runnow {
+	background: transparent;
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	color: var(--text);
+	font: 11px var(--sans);
+	padding: 1px 8px;
+	cursor: pointer;
+}
+
+.job-runnow:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.job-detail {
+	padding: 0.3rem 0.4rem 0.5rem;
+}
+
+.job-section-title {
+	margin: 0.4rem 0 0.25rem;
+	font-weight: 600;
+	font-size: 10.5px;
+	color: var(--faint);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.job-run-row,
+.job-revision-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	align-items: baseline;
+	font: 11px var(--mono);
+	color: var(--muted);
+	padding: 1px 0;
+}
+
+.job-run-version,
+.job-revision-version {
+	color: var(--faint);
+}
+
+.job-run-manual {
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0 4px;
+	font-size: 10px;
+}
+
+.job-run-outcome[data-outcome="failed"],
+.job-run-error {
+	color: var(--danger);
+}
+
+.job-run-outcome[data-outcome="succeeded"] {
+	color: var(--ok);
+}
+
+.job-run-error {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
+.job-revision-row {
+	margin: 0.25rem 0;
+}
+
+.job-revision-changedBy {
+	color: var(--text);
+}
+
+.job-revision-row .interaction-diff {
+	margin: 0.25rem 0;
+}
+
+.job-empty {
+	color: var(--faint);
+	font-size: 11.5px;
+	margin: 0.1rem 0;
+}
+
 /* ── backdrops (the ≤900px overlays' click-outside surfaces) ────────── */
 
 .drawer-backdrop,

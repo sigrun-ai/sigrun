@@ -34,6 +34,8 @@ import { seededIdentity } from "./helpers/identity.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
+import { patchJob } from "../src/jobs/docs.js";
+import type { JobSpec } from "@sigrun/shared/jobs";
 
 /** One exposition sample line: `name` / `name{…}` then the value. */
 const SAMPLE_LINE = /^[a-z_]+(\{[^}]*\})? -?[0-9.e+]+$/;
@@ -96,7 +98,8 @@ async function getMetrics(app: FastifyInstance): Promise<string> {
 }
 
 /** Parse the exposition: every sample line matches, and every family
- * named by a sample carries both a HELP and a `gauge` TYPE line. Returns
+ * named by a sample carries both a HELP and a TYPE line (gauge or
+ * counter — the job runs_total family is the one counter). Returns
  * the sample lines (comments stripped). */
 function parseExposition(body: string): string[] {
 	const lines = body.split("\n").filter((line) => line !== "");
@@ -108,7 +111,7 @@ function parseExposition(body: string): string[] {
 		} else if (line.startsWith("# TYPE ")) {
 			const rest = line.slice("# TYPE ".length);
 			const [name, kind] = rest.split(" ");
-			expect(kind, `# TYPE of ${name}`).toBe("gauge");
+			expect(["gauge", "counter"], `# TYPE of ${name}`).toContain(kind);
 			types.add(name!);
 		}
 	}
@@ -118,7 +121,7 @@ function parseExposition(body: string): string[] {
 		expect(line, `sample line must parse: ${line}`).toMatch(SAMPLE_LINE);
 		const name = line.split(" ")[0]!.split("{")[0]!;
 		expect(helps.has(name), `${name} must carry a # HELP line`).toBe(true);
-		expect(types.has(name), `${name} must carry a # TYPE gauge line`).toBe(
+		expect(types.has(name), `${name} must carry a # TYPE gauge|counter line`).toBe(
 			true,
 		);
 		samples.push(line);
@@ -191,5 +194,85 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 				line.startsWith("sigrun_provider_ready{"),
 			),
 		).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The job families (W4 Task 4, spec §6.9)
+// ---------------------------------------------------------------------------
+
+describe("GET /metrics job families (W4 Task 4)", () => {
+	/** Poll until the job's lastRun settles (the observer lands it async). */
+	async function waitSettled(
+		opened: OpenedHarness,
+		jobId: string,
+	): Promise<void> {
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const job = await opened.jobs.get(jobId);
+			if (job?.lastRun?.outcome === "succeeded") return;
+			if (Date.now() > deadline) {
+				throw new Error(
+					`job ${jobId} never settled (lastRun=${JSON.stringify(job?.lastRun)})`,
+				);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+	}
+
+	test("serves next/last-run gauges and the runs_total counter for an api job", { timeout: 20_000 }, async () => {
+		const { app, opened } = await bootServer();
+		const spec: JobSpec = {
+			name: "metrics-job",
+			schedule: { every: "600s" },
+			action: { kind: "prompt", prompt: "say ok", conversation: "new" },
+		};
+		const job = await opened.jobs.createApi(spec, "tester");
+		// The executor writes `nextRun` onto the record after its first fire;
+		// the route renders whatever the record carries — pin it directly so
+		// the scrape is deterministic (the schedule loop is jobs-task's suite).
+		await patchJob(
+			opened.harness,
+			job.id,
+			(draft) => {
+				draft.nextRun = "2026-10-20T00:00:00.000Z";
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const fired = await opened.jobs.runNow(job.id);
+		expect(fired.outcome).toBe("running");
+		await waitSettled(opened, job.id);
+
+		const body = await getMetrics(app);
+		const samples = parseExposition(body);
+		// next_run: one sample per job with a nextRun, the epoch seconds.
+		expect(
+			samples.some(
+				(line) =>
+					line.startsWith(`sigrun_job_next_run_timestamp_seconds{job="${job.id}"} `) &&
+					line.endsWith(` ${Math.floor(Date.parse("2026-10-20T00:00:00.000Z") / 1000)}`),
+			),
+		).toBe(true);
+		// last_run: {job,outcome} at the settle timestamp.
+		expect(
+			samples.some((line) =>
+				line.startsWith(
+					`sigrun_job_last_run_timestamp_seconds{job="${job.id}",outcome="succeeded"}`,
+				),
+			),
+		).toBe(true);
+		// runs_total: the in-process counter, TYPE counter, one settled run.
+		expect(samples).toContain('sigrun_job_runs_total{outcome="succeeded"} 1');
+		expect(body).toContain("# TYPE sigrun_job_runs_total counter");
+	});
+
+	test("a deploy with no jobs serves none of the job families", async () => {
+		const { app } = await bootServer();
+		const body = await getMetrics(app);
+		expect(body).not.toContain("sigrun_job_next_run_timestamp_seconds");
+		expect(body).not.toContain("sigrun_job_last_run_timestamp_seconds");
+		// The counter family is in-process state: zero outcomes observed →
+		// no samples → omitted entirely (the backup-marker convention).
+		expect(body).not.toContain("sigrun_job_runs_total");
 	});
 });
