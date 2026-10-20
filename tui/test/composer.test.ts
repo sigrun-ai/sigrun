@@ -10,6 +10,8 @@
 
 import { describe, expect, test } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
+import { StatusBar } from "../src/ui/status-bar.js";
+import { plainTuiTheme } from "../src/theme.js";
 import { TuiApp } from "../src/ui/app.js";
 import {
 	SigrunApiError,
@@ -46,13 +48,16 @@ function view(id: number, entries: unknown[], busy = false): ConversationViewWir
 	} as unknown as ConversationViewWire;
 }
 
-/** The catalog the stub serves (a subset of the server's `SLASH_COMMANDS`). */
+/** The catalog the stub serves (a subset of the server's `SLASH_COMMANDS`,
+ *  plus ONE extension-contributed entry — W5 Task 3). */
 const STUB_COMMANDS = [
 	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
 	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
 	{ name: "compact", description: "Compact this conversation", argsHint: "[instructions]", endpoint: { method: "POST", path: "/v1/conversations/:id/compact" } },
 	// In the catalog but with no client method the composer can drive.
 	{ name: "export", description: "Download this conversation as JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
+	// An extension-contributed command (the invoke endpoint drives it).
+	{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-ext", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
 ] as const;
 
 function stubClient(init?: {
@@ -67,6 +72,7 @@ function stubClient(init?: {
 	const abortCalls: number[] = [];
 	const compactCalls: { id: number; instructions: string | undefined }[] = [];
 	const forkCalls: number[] = [];
+	const invokeCalls: { id: number; name: string; args: string | undefined }[] = [];
 	let getCommandsCalls = 0;
 	let forkSerial = 100;
 	const watchCalls: number[] = [];
@@ -112,6 +118,10 @@ function stubClient(init?: {
 			compactCalls.push({ id, instructions });
 			return Promise.resolve({ taskId: 7 });
 		},
+		runCommand(id: number, name: string, args?: string) {
+			invokeCalls.push({ id, name, args });
+			return Promise.resolve({ notice: `hi ${args ?? ""}` });
+		},
 		getCommands() {
 			getCommandsCalls += 1;
 			return Promise.resolve({ commands: [...STUB_COMMANDS] });
@@ -126,6 +136,7 @@ function stubClient(init?: {
 		abortCalls,
 		compactCalls,
 		forkCalls,
+		invokeCalls,
 		watchCalls,
 		watchRegistry,
 		getCommandsCalls: () => getCommandsCalls,
@@ -147,6 +158,8 @@ function stubWatch(
 
 /** A render target stand-in: Editor needs one; the shell is tested headless. */
 const fakeTui = { requestRender: () => {} } as unknown as TUI;
+
+const stripAnsi = (line: string): string => line.replace(/\u001b\[[0-9;]*m/g, "");
 
 /** Flush the microtask queue (one macrotask drains every chained promise). */
 function flush(): Promise<void> {
@@ -404,6 +417,43 @@ describe("composer slash commands", () => {
 		app.editor.onSubmit?.("/export");
 		await flush();
 		expect(app.pane.render(60).join("\n")).toContain("/export is not supported by the TUI composer");
+	});
+
+	test("an extension command POSTs the invoke route and flashes the returned notice in the status bar (W5 Task 3)", async () => {
+		const stub = stubClient();
+		const registry = new Map<number, WatchHandlers>();
+		const app = new TuiApp(stub.client, { tui: fakeTui, watch: stubWatch(registry, stub.watchCalls) });
+		// The notice lands in the STATUS BAR (the Task 3 client surface), so
+		// the boot attaches one (the actions.test.ts pattern) — without it
+		// #flashStatus no-ops and the notice would be unobservable.
+		const statusBar = new StatusBar({ theme: plainTuiTheme(), messageMs: 60_000 });
+		app.setStatusBar(statusBar);
+		await app.refresh();
+		app.editor.onSubmit?.("/hello bob");
+		await flush();
+		expect(stub.invokeCalls).toEqual([{ id: 1, name: "hello", args: "bob" }]);
+		expect(stripAnsi(statusBar.render(120)[0] ?? "")).toContain("hi bob");
+	});
+
+	test("an extension command failing on the invoke route shows the server's error", async () => {
+		const stub = stubClient();
+		(stub.client as unknown as { runCommand: unknown }).runCommand = () =>
+			Promise.reject(
+				new SigrunApiError("POST", "/v1/conversations/1/commands/hello", 500, {
+					error: "command_failed",
+				extension: "fixture-ext",
+			}),
+		);
+		const app = new TuiApp(stub.client, {
+			tui: fakeTui,
+			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
+		});
+		await app.refresh();
+		app.editor.onSubmit?.("/hello bob");
+		await flush();
+		const lines = app.pane.render(60).join("\n");
+		expect(lines).toContain("command_failed");
+		expect(lines).toContain("fixture-ext");
 	});
 
 	test("a command needing a conversation fails clearly when none is active", async () => {

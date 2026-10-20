@@ -17,7 +17,7 @@
  * silent `undefined` the UI could misrender as empty state.
  */
 
-import type { CommandsResponse } from "@sigrun/shared/commands";
+import type { CommandRunResponse, CommandsResponse } from "@sigrun/shared/commands";
 import type {
 	JobsResponse,
 	JobRunResponse,
@@ -63,7 +63,7 @@ export type {
 	SettingsResponse,
 	SubmissionResponse,
 } from "@sigrun/shared/views";
-export type { CommandsResponse, SlashCommand } from "@sigrun/shared/commands";
+export type { CommandRunResponse, CommandsResponse, SlashCommand } from "@sigrun/shared/commands";
 export type {
 	JobSpec,
 	JobSchedule,
@@ -282,6 +282,17 @@ export class SigrunClient {
 	/** `GET /v1/commands` — the slash-command catalog (a boot constant). */
 	getCommands(): Promise<CommandsResponse> {
 		return this.#get("/v1/commands");
+	}
+
+	/**
+	 * `POST /v1/conversations/:id/commands/:name` — invoke an extension
+	 * slash command (W5 Task 3): the server runs the winning declaration
+	 * and resolves with its optional `{notice}`.
+	 */
+	runCommand(id: number, name: string, args?: string): Promise<CommandRunResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/commands/${encodeURIComponent(name)}`, {
+			args: args ?? "",
+		});
 	}
 
 	/** `GET /v1/settings` — the effective settings (absent file = `{}`). */

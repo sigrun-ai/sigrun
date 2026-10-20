@@ -31,6 +31,7 @@ import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./even
 import type { HealthProducer, HealthStatus } from "./health.js";
 import {
 	loadExtensions,
+	type ExtensionCommandBinding,
 	type ExtensionOutcome,
 	type ExtensionRouteBinding,
 	type ResolvedExtensionInput,
@@ -265,6 +266,16 @@ export interface OpenedHarness {
 	 * extensions contribute nothing.
 	 */
 	readonly extensionRoutes: readonly ExtensionRouteBinding[];
+	/**
+	 * Slash commands the loaded extensions declared (core hardening W5
+	 * Task 3, spec §9.3): one binding per extension whose factory result
+	 * carried `commands`, slug-attributed — `createServer`'s catalog
+	 * build (`buildCommandCatalog`) merges them with the core table for
+	 * `GET /v1/commands`, the `/v1/meta` collision record, and the
+	 * write-gated invoke route. Quarantined extensions contribute
+	 * nothing.
+	 */
+	readonly extensionCommands: readonly ExtensionCommandBinding[];
 	/**
 	 * The memory-seam event bus (Tasks 2-4): opened on the booted harness
 	 * BEFORE `resume()` (recovery settles are observed), with each loaded
@@ -575,6 +586,7 @@ export async function openHarness(
 		webuiBundles: extensionWebuiBundles,
 		jobBindings,
 		routeBindings,
+		commandBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -1154,6 +1166,7 @@ export async function openHarness(
 		seamHosts,
 		seamKinds,
 		extensionRoutes: routeBindings,
+		extensionCommands: commandBindings,
 		eventBus,
 		events,
 		workerStatuses: () => eventBus.workerStatuses(),

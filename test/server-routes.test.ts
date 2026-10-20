@@ -376,6 +376,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id/interactions",
 				"/v1/conversations/:id/interactions/:callId/answer",
 				"/v1/conversations/:id/ambient",
+				"/v1/conversations/:id/commands/:name",
 				"/v1/conversations/:id/compact",
 				"/v1/conversations/:id/fork",
 				"/v1/conversations/:id/export",

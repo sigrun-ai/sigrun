@@ -544,6 +544,21 @@ export function Composer(props: {
 					setNotice(`thinking set to ${args}`);
 					break;
 				}
+				default: {
+					// An extension-contributed command (W5 Task 3): the catalog
+					// entry carries its slug — POST the invoke endpoint and render
+					// the returned notice as the transient status banner. A command
+					// with neither a core case nor an extension is inert (existing
+					// behavior — the menu never offers one).
+					if (command.extension === undefined) break;
+					const result = await client.runCommand(
+						conversationId,
+						command.name,
+						args,
+					);
+					setNotice(result.notice ?? `/${command.name} done`);
+					break;
+				}
 			}
 			// Like a sent message: the command line must not resurrect from a
 			// late debounce flush or a reload.

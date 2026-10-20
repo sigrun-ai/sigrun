@@ -85,6 +85,7 @@
 
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
+	ExtensionCommandContribution,
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
@@ -173,6 +174,19 @@ export interface ExtensionRouteBinding {
 	/** The slug identity (the mount prefix and the inventory key). */
 	readonly extension: string;
 	readonly routes: readonly ExtensionRouteContribution[];
+}
+
+/**
+ * Slash commands retained from one extension factory result (core
+ * hardening W5 Task 3, spec §9.3), attributed to the extension slug —
+ * boot threads the list to `OpenedHarness.extensionCommands` for the
+ * server's catalog merge (`buildCommandCatalog`) and the write-gated
+ * invoke route.
+ */
+export interface ExtensionCommandBinding {
+	/** The slug identity (the merged catalog entry's `extension` field). */
+	readonly extension: string;
+	readonly commands: readonly ExtensionCommandContribution[];
 }
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
@@ -265,6 +279,14 @@ export interface LoadedExtensions {
 	 */
 	readonly routeBindings: readonly ExtensionRouteBinding[];
 	/**
+	 * Slash commands from factory results (core hardening W5 Task 3), one
+	 * entry per loaded extension whose result carried `commands`; the
+	 * server's `buildCommandCatalog` merges them with the core table
+	 * (core names reserved, ext-vs-ext last-registered-wins). Quarantined
+	 * extensions contribute none.
+	 */
+	readonly commandBindings: readonly ExtensionCommandBinding[];
+	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
 	 * extension — each `{name, dir, extension}` with `dir` resolved against
@@ -348,6 +370,12 @@ export interface ResolvedExtension {
 	 * route mounts.
 	 */
 	routes?: readonly ExtensionRouteContribution[];
+	/**
+	 * Slash commands (core hardening W5 Task 3, spec §9.3), validated
+	 * fail-loud — a malformed entry quarantines the extension before any
+	 * command reaches the merged catalog.
+	 */
+	commands?: readonly ExtensionCommandContribution[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -651,6 +679,68 @@ function validateRoutes(
 		}
 	}
 	return value as readonly ExtensionRouteContribution[];
+}
+
+/**
+ * The extension command NAME grammar (spec §9.3): `^[a-z][a-z0-9-]*$` —
+ * the same shape as every other extension-declared name (workers,
+ * bundles), so the composer's `/` menu renders one spelling of a name.
+ */
+const COMMAND_NAME = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Validate a factory result's `commands` declaration (core hardening W5
+ * Task 3, spec §9.3). Absent → undefined (no commands). Present but
+ * malformed → throw; the loader quarantines the extension with the
+ * thrown message (fail-loud: an extension that THINKS it declared a
+ * command must not silently lose it — the providers/health class). Per
+ * entry: `name` matching the grammar, `description` a string, optional
+ * `args` a string, and `run` a function. Core-name collisions are NOT a
+ * validation failure — the catalog builder drops those with a warning
+ * (they are a deployment choice, not a broken declaration).
+ */
+function validateCommands(
+	value: unknown,
+): readonly ExtensionCommandContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a commands field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const command = entry as
+			| {
+						name?: unknown;
+					description?: unknown;
+					args?: unknown;
+					run?: unknown;
+				}
+			| null;
+		const describe = () =>
+			`command "${typeof command?.name === "string" ? command.name : String(command?.name)}"`;
+		if (typeof command?.name !== "string" || !COMMAND_NAME.test(command.name)) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose name does not match ^[a-z][a-z0-9-]*$`,
+			);
+		}
+		if (typeof command?.description !== "string") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose description is missing or not a string`,
+			);
+		}
+		if (command?.args !== undefined && typeof command.args !== "string") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose args is not a string`,
+			);
+		}
+		if (typeof command?.run !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose run is not a function`,
+			);
+		}
+	}
+	return value as readonly ExtensionCommandContribution[];
 }
 
 /**
@@ -963,6 +1053,7 @@ async function resolvedFromFactory(
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
 	const routes = validateRoutes(candidate.routes);
+	const commands = validateCommands(candidate.commands);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -1054,6 +1145,7 @@ async function resolvedFromFactory(
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
 		...(jobs === undefined ? {} : { jobs }),
 		...(routes === undefined ? {} : { routes }),
+		...(commands === undefined ? {} : { commands }),
 	};
 }
 
@@ -1270,6 +1362,8 @@ const workerBindings: ExtensionWorkerBinding[] = [];
 const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
 // HTTP routes (W5 Task 2), attributed to the slug like the job bindings.
 const routeBindings: ExtensionRouteBinding[] = [];
+// Slash commands (W5 Task 3), attributed the same way.
+const commandBindings: ExtensionCommandBinding[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
@@ -1487,6 +1581,9 @@ const display = label ?? entry;
 				if (resolved.routes !== undefined) {
 					routeBindings.push({ extension: slug, routes: resolved.routes });
 				}
+				if (resolved.commands !== undefined) {
+					commandBindings.push({ extension: slug, commands: resolved.commands });
+				}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1544,5 +1641,6 @@ const display = label ?? entry;
 		workerBindings,
 		jobBindings,
 		routeBindings,
+		commandBindings,
 	};
 }
