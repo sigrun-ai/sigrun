@@ -250,6 +250,20 @@ export interface SkillsSettings {
 }
 
 /**
+ * The notifications surface's settings (core hardening W5 Task 6, spec
+ * §9.6) — live, read per event.
+ */
+export interface NotificationsSettings {
+	/**
+	 * When a `run.settled` notification fires: `"unwatched"` (default)
+	 * only when no client stream is attached to the conversation (the
+	 * away-from-desk case), `"cron"` only for job-run conversations,
+	 * `"always"` every settle, `"never"` none.
+	 */
+	readonly runSettled?: "unwatched" | "cron" | "always" | "never";
+}
+
+/**
  * The persisted shape: HarnessSettings pass-throughs + sigrun fields.
  */
 export interface SettingsFile {
@@ -347,6 +361,13 @@ export interface SettingsFile {
 	 * PATCH reaches the next prompt without a restart.
 	 */
 	readonly skills?: SkillsSettings;
+	/**
+	 * Sigrun: the notifications surface's knob (core hardening W5 Task 6,
+	 * spec §9.6). `runSettled` gates when a settled run notifies (default
+	 * `"unwatched"`). LIVE — read per event, so a PATCH reaches the next
+	 * settle without a restart.
+	 */
+	readonly notifications?: NotificationsSettings;
 	/**
 	 * Sigrun: the static boot configuration (see {@link ServerSettings}).
 	 * Deployment defaults under env — changes require a restart.

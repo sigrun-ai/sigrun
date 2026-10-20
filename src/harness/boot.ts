@@ -33,6 +33,7 @@ import type { HealthProducer, HealthStatus } from "./health.js";
 import {
 	loadExtensions,
 	type ExtensionCommandBinding,
+	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
 	type ExtensionRouteBinding,
 	type ResolvedExtensionInput,
@@ -290,6 +291,16 @@ export interface OpenedHarness {
 	 * nothing.
 	 */
 	readonly extensionCommands: readonly ExtensionCommandBinding[];
+	/**
+	 * Notifier transports the loaded extensions declared (core hardening
+	 * W5 Task 6, spec §9.6): one binding per extension whose factory result
+	 * carried `notifiers`, slug-attributed — `createServer`'s notifications
+	 * surface (src/server/notifications.ts) turns hub events into
+	 * per-recipient `NotificationEvent`s and delivers them to every
+	 * collected notifier (best-effort, deadline-bounded). Quarantined
+	 * extensions contribute nothing.
+	 */
+	readonly notifierBindings: readonly ExtensionNotifierBinding[];
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -632,6 +643,7 @@ export async function openHarness(
 		jobBindings,
 		routeBindings,
 		commandBindings,
+		notifierBindings,
 	} = await loadExtensions(
 		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
 		registry,
@@ -1224,6 +1236,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		},
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
+		notifierBindings,
 		skillRoots: extensionSkillRoots,
 		eventBus,
 		events,
