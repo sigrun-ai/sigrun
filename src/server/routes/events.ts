@@ -11,8 +11,10 @@
  * ambient.*) is delivered iff `accessOf(principal, meta)` ≠ `"none"` with
  * the SessionMeta RE-SNAPSHOTTED per event — a share makes the NEXT event
  * arrive, an un-share withholds the one after. `providers.changed` reaches
- * every authenticated principal. `job.changed` stays out of scope until
- * W4's job access rule lands (the hub never publishes it yet).
+ * every authenticated principal. `job.changed` (W4 Task 4) resolves
+ * `accessOf` against the EVENT's own owner/sharing (the hub's copy is
+ * access-neutral) and is delivered with the caller's `access` ADDED to
+ * the job row — a hidden job's event is withheld entirely, no extra read.
  *
  * The async re-snapshot runs in the route's own side lane (the bus/hub
  * listener contract is no-blocking-work): each stream keeps a per-event
@@ -25,6 +27,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import { accessOf } from "@sigrun/shared/access";
+import type { JobWire } from "@sigrun/shared/jobs";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { ServerContext } from "../context.js";
 import { SessionMetaDoc } from "../session-meta.js";
@@ -63,15 +66,30 @@ export function registerEventRoutes(
 		/**
 		 * Whether THIS principal may see one event (Review Focus 3):
 		 * conversation-scoped events re-snapshot the SessionMeta PER EVENT;
-		 * providers.changed is broadcast; job.changed is withheld until W4's
-		 * job access rule exists.
+		 * providers.changed is broadcast; job.changed (W4 Task 4) resolves
+		 * against the event's own owner/sharing and, when visible, ENRICHES
+		 * the row with the caller's `access` (the hub's copy is
+		 * access-neutral by contract — the stream adds it per principal);
+		 * taskSettled is host machinery (never principal-facing).
 		 */
-		const visible = async (event: HostEventWire): Promise<boolean> => {
-			if (event.type === "providers.changed") return true;
-			if (event.type === "job.changed") return false;
+		const visible = async (event: HostEventWire): Promise<HostEventWire | undefined> => {
+			if (event.type === "providers.changed") return event;
+			if (event.type === "job.changed") {
+				const access = accessOf(principal, {
+					...(event.job.owner === undefined ? {} : { owner: event.job.owner }),
+					...(event.job.sharing === undefined
+						? {}
+						: { sharing: event.job.sharing }),
+				});
+				if (access === "none") return undefined;
+				// The delivered row carries the caller's access (the wire adds
+				// what the hub's access-neutral copy omits).
+				const enriched: JobWire = { ...event.job, access };
+				return { ...event, job: enriched };
+			}
 			// taskSettled is host machinery (the jobs observer's input), never
 			// a principal-facing wire event.
-			if (event.type === "taskSettled") return false;
+			if (event.type === "taskSettled") return undefined;
 			let meta;
 			try {
 				meta = await opened.harness.snapshot(
@@ -84,9 +102,9 @@ export function registerEventRoutes(
 					"events route: SessionMeta snapshot failed:",
 					error,
 				);
-				return false; // a raced read withholds that one event
+				return undefined; // a raced read withholds that one event
 			}
-			return accessOf(principal, meta ?? {}) !== "none";
+			return accessOf(principal, meta ?? {}) !== "none" ? event : undefined;
 		};
 		// The per-connection side lane: serial promise chain, so frames for
 		// one connection stay in publish order while the hub listener itself
@@ -95,9 +113,9 @@ export function registerEventRoutes(
 		const unsubscribe = opened.events.subscribe((event) => {
 			lane = lane.then(async () => {
 				if (finished) return;
-				if (!(await visible(event))) return;
-				if (finished) return;
-				send(event);
+				const deliverable = await visible(event);
+				if (deliverable === undefined || finished) return;
+				send(deliverable);
 			});
 		});
 		const finish = (): void => {

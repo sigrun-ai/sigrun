@@ -22,9 +22,10 @@ import type { Env, SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
-import { createJobsService, type JobsService } from "../jobs/index.js";
+import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
 import { reconcileJobs } from "../jobs/reconcile.js";
 import { registerJobObservers } from "../jobs/observe.js";
+import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
 import type { HealthProducer, HealthStatus } from "./health.js";
@@ -298,6 +299,13 @@ export interface OpenedHarness {
 	 * through it.
 	 */
 	readonly jobs: JobsService;
+	/**
+	 * The in-process job-run outcome counts (W4 Task 4, §6.9): outcome →
+	 * count for `sigrun_job_runs_total{outcome}` — counted from run-record
+	 * commits in THIS process (reset on restart, by design; the durable
+	 * history lives in the run records). Re-derived live per read.
+	 */
+	readonly jobRunTotals: () => ReadonlyMap<string, number>;
 	/**
 	 * The boot refresh (provider plugins Task 4): the in-flight (or done)
 	 * deadline-bounded catalog refresh started right after
@@ -986,6 +994,73 @@ export async function openHarness(
 		agent: { model: defaultModel },
 	});
 	const rootConversationId = rootConversation.id as number;
+	// The `job.changed` publication (W4 Task 4, §7.4/§8.4): the jobs
+	// service's onChange hook (fired from its `sigrun.job` commit
+	// subscription — every record change, any writer) publishes the
+	// changed job's wire row through the hub WITHOUT `access` (the SSE
+	// stream computes accessOf per principal and adds it; a hidden job's
+	// event is withheld entirely). The read runs on a microtask side lane
+	// (the commit-listener contract is no-blocking-work); a RETIRED record
+	// (the delete path) is served from its newest revision so clients
+	// still get the nudge to refetch.
+	const publishJobChanged = async (jobId: string): Promise<void> => {
+		try {
+			const record = await harness.snapshot(
+				JobDoc,
+				jobId,
+				BACKGROUND_CONTEXT,
+			);
+			if (record !== undefined) {
+				events.publish({
+					type: "job.changed",
+					job: jobWireOf(jobId, record),
+				});
+				return;
+			}
+			const [newest] = await listRevisions(
+				storage,
+				jobId,
+				BACKGROUND_CONTEXT,
+			);
+			if (newest === undefined) return;
+			events.publish({
+				type: "job.changed",
+				job: {
+					id: jobId,
+					name: newest.spec.name,
+					source: newest.source,
+					...(newest.owner === undefined ? {} : { owner: newest.owner }),
+					...(newest.sharing === undefined ? {} : { sharing: newest.sharing }),
+					schedule: newest.spec.schedule,
+					action: newest.spec.action,
+					enabled: newest.enabled,
+					// The retired row's status is gone with the record; the
+					// nudge only needs identity + definition (clients refetch).
+					state: "disabled",
+					version: newest.version,
+				},
+			});
+		} catch (error) {
+			console.error("jobs: job.changed publication failed:", error);
+		}
+	};
+	// The in-process job-run outcome counter (W4 Task 4, §6.9): counted
+	// from `sigrun.job.run` document commits in THIS process — reset on
+	// restart by design (the durable history lives in the run records;
+	// the counter feeds `sigrun_job_runs_total{outcome}`). A creation
+	// write of an already-settled run (the overlap skip, the catch-up
+	// skip) counts once at creation; a `running` run counts at its settle;
+	// prune retirements (value null) never count.
+	const jobRunTotals = new Map<string, number>();
+	harness.subscribeCommits((publication) => {
+		for (const change of publication.changes) {
+			if (change.type !== "document") continue;
+			if (change.record.kind !== JobRunDoc.definition.kind) continue;
+			const outcome = (change.value as { outcome?: unknown } | null)?.outcome;
+			if (typeof outcome !== "string" || outcome === "running") continue;
+			jobRunTotals.set(outcome, (jobRunTotals.get(outcome) ?? 0) + 1);
+		}
+	});
 	const jobs = createJobsService({
 		harness,
 		storage,
@@ -993,6 +1068,9 @@ export async function openHarness(
 		rootId: rootConversationId,
 		sources: jobsSources,
 		settings: () => settingsStore.read(),
+		onChange: (jobId) => {
+			void publishJobChanged(jobId);
+		},
 	});
 	// Reconcile BEFORE resume: the scheduler is still disabled, so the
 	// executor creations/aborts land durably and only then start running
@@ -1034,6 +1112,7 @@ export async function openHarness(
 		registry,
 		models,
 		jobs,
+		jobRunTotals: () => jobRunTotals,
 		defaultModel,
 		providerCollisions: sink.collisions,
 		webuiBundles,

@@ -46,6 +46,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerExtensionRoutes } from "./routes/extensions.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerJobRoutes } from "./routes/jobs.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerMetricsRoutes } from "./routes/metrics.js";
@@ -192,6 +193,12 @@ export async function createServer(
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
 	registerExtensionRoutes(app, ctx);
+	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
+	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
+	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable
+	// (409 `job_declared`); the history routes answer for retired jobs
+	// until retention trims them.
+	registerJobRoutes(app, ctx);
 	// The core ownership participant (W1 Task 4): registered FIRST so
 	// conversations transfer before any extension's `userDeleted`
 	// observer runs (W4's jobs participant registers behind it).

@@ -27,9 +27,14 @@
  *   process; the filesystem is the only fresh-enough view). OMITTED when
  *   backup is unconfigured or no marker exists — absence is what the
  *   `SigrunBackupStale` alert's chart gate keys on.
- *
- * W4 adds the `sigrun_job_*` families (last/next-run timestamps and the
- * `sigrun_job_runs_total` counter the `SigrunJobFailed` alert selects).
+ * - W4 Task 4's job families: `sigrun_job_last_run_timestamp_seconds
+ *   {job,outcome}` and `sigrun_job_next_run_timestamp_seconds{job}` —
+ *   per-record gauges re-read per scrape (the same scrape-rate posture
+ *   as the inspect families); `sigrun_job_runs_total{outcome}` — a
+ *   COUNTER over the boot's in-process run-settle observation (reset on
+ *   restart by design; the durable history lives in the run records).
+ *   Families with no samples are omitted (the backup-marker
+ *   convention).
  *
  * ACCESS (the plan's documented interim): `/metrics` is unconditionally
  * public on this branch — there is no auth pipeline to gate it with.
@@ -37,14 +42,16 @@
  * becomes the gate once W1 lands; the chart already pins the env `true`
  * so the in-cluster scrape survives that switch.
  *
- * FORMAT: every family carries `# HELP` + `# TYPE … gauge` lines; label
- * values escape backslash, quote, and newline per the exposition format;
- * the content type is `text/plain; version=0.0.4; charset=utf-8`.
+ * FORMAT: every family carries `# HELP` + `# TYPE` lines (gauge, or
+ * counter for the one cumulative family); label values escape
+ * backslash, quote, and newline per the exposition format; the content
+ * type is `text/plain; version=0.0.4; charset=utf-8`.
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import { readBackupMarker } from "../../backup/marker.js";
+import { scanJobs } from "../../jobs/docs.js";
 import { providerAuthStatus } from "../helpers.js";
 import type { ServerContext } from "../context.js";
 
@@ -86,10 +93,11 @@ export function registerMetricsRoutes(
 				readonly labels: Readonly<Record<string, string>>;
 				readonly value: number;
 			}[],
+			type: "gauge" | "counter" = "gauge",
 		): void => {
 			if (samples.length === 0) return;
 			lines.push(`# HELP ${name} ${help}`);
-			lines.push(`# TYPE ${name} gauge`);
+			lines.push(`# TYPE ${name} ${type}`);
 			for (const sample of samples) {
 				lines.push(`${name}${renderLabels(sample.labels)} ${sample.value}`);
 			}
@@ -146,6 +154,43 @@ export function registerMetricsRoutes(
 					value: count,
 				})),
 			);
+			// W4 Task 4's job families — record-derived gauges, scrape-rate
+			// reads over the same records-only scan the jobs service lists
+			// through (inside the inspect guard: a closed harness degrades to
+				// omission, never a 500).
+			const jobRecords = await scanJobs(opened.storage, BACKGROUND_CONTEXT);
+			const epochSeconds = (iso: string): number =>
+				Math.floor(Date.parse(iso) / 1000);
+			family(
+				"sigrun_job_last_run_timestamp_seconds",
+				"Unix time of each job's last run (by outcome)",
+				jobRecords.flatMap(({ id, record }) =>
+					record.lastRun === undefined
+						? []
+						: [
+								{
+									labels: { job: id, outcome: record.lastRun.outcome },
+									value: epochSeconds(
+										record.lastRun.settledAt ?? record.lastRun.startedAt,
+									),
+								},
+							],
+				),
+			);
+			family(
+				"sigrun_job_next_run_timestamp_seconds",
+				"Unix time of each job's next scheduled fire",
+				jobRecords.flatMap(({ id, record }) =>
+						record.nextRun === undefined
+							? []
+							: [
+									{
+										labels: { job: id },
+										value: epochSeconds(record.nextRun),
+									},
+								],
+				),
+			);
 		} catch (error) {
 			up = 0;
 			console.error("metrics: harness inspection failed:", error);
@@ -185,6 +230,19 @@ export function registerMetricsRoutes(
 				labels: { status },
 				value: count,
 			})),
+		);
+
+		// The in-process run counter (§6.9): boot counts run SETTLES from
+		// `sigrun.job.run` commits in this process — reset on restart by
+		// design; the alert's `increase(…[1h])` reads the deltas.
+		family(
+			"sigrun_job_runs_total",
+			"Job runs settled by outcome since process start",
+			[...opened.jobRunTotals()].map(([outcome, count]) => ({
+				labels: { outcome },
+				value: count,
+			})),
+			"counter",
 		);
 
 		// Task 7's marker, read per request like meta.ts (the CronJob is a

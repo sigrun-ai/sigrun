@@ -69,6 +69,15 @@ export class JobNotFoundError extends Error {
 	}
 }
 
+/**
+ * The `job.changed` publish hook (W4 Task 4): invoked with the job id
+ * after EVERY job-record change — from ANY path (this service's API
+ * writes, the executor's status patches, the observers' settles, the
+ * transfer rewrites, reconciliation, retirements). Boot wires the
+ * EventHub publish here; injected so the service stays hub-agnostic.
+ */
+export type JobOnChange = (jobId: string) => void;
+
 /** The live `jobHistory` limits (spec §8.1, ruling 14 — read per call). */
 function historyLimits(
 	settings: () => SettingsFile,
@@ -80,8 +89,10 @@ function historyLimits(
 	};
 }
 
-/** The wire row of a record (access left for the route). */
-function toWire(id: string, record: JobRecord): JobWire {
+/** The wire row of a record (access left for the caller: the ROUTE
+ *  computes it per principal; the raw row carries the neutral default).
+ *  Exported for boot's `job.changed` publication (W4 Task 4). */
+export function jobWireOf(id: string, record: JobRecord): JobWire {
 	return {
 		id,
 		name: record.spec.name,
@@ -118,6 +129,14 @@ export interface JobsServiceDeps {
 	readonly sources: () => ReconcileSources;
 	/** The settings store's live read (jobHistory). */
 	readonly settings: () => SettingsFile;
+	/**
+	 * The `job.changed` publish hook (W4 Task 4): called with the job id
+	 * after every `sigrun.job` record change the harness commits, from
+	 * any writer. Boot wires the EventHub publish. Optional so pre-wire
+	 * callers (Task 3's tests) boot unchanged — absent means no
+	 * observation, never partial observation.
+	 */
+	readonly onChange?: JobOnChange;
 }
 
 export interface JobsService {
@@ -145,6 +164,29 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 	const limits = (): { runs: number; revisions: number } =>
 		historyLimits(deps.settings);
 
+	// `job.changed` observation (W4 Task 4): ONE commit subscription over
+	// the `sigrun.job` family invokes the injected hook after EVERY record
+	// change — the service's own API writes, the executor's status patches
+	// (task.ts), the run-settle observers, the ownership transfer, and
+	// reconciliation's declared upserts/retires all land through
+	// `harness.commit` on this doc family, so no call-site threading can
+	// miss a path. Per-call-site hooks would double-publish against this;
+	// the subscription is the only publish trigger.
+	if (deps.onChange !== undefined) {
+		const onChange = deps.onChange;
+		deps.harness.subscribeCommits((publication) => {
+			const seen = new Set<string>();
+			for (const change of publication.changes) {
+				if (change.type !== "document") continue;
+				if (change.record.kind !== JobDoc.definition.kind) continue;
+				const jobId = change.record.key;
+				if (jobId === undefined || seen.has(jobId)) continue;
+				seen.add(jobId);
+				onChange(jobId);
+			}
+		});
+	}
+
 	/** Reconcile that one job's executor after a write. */
 	const reconcileOne = async (): Promise<void> =>
 		await reconcileJobs(
@@ -161,12 +203,12 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 	return {
 		async list(): Promise<JobWire[]> {
 			const records = await scanJobs(deps.storage, ctx);
-			return records.map(({ id, record }) => toWire(id, record));
+			return records.map(({ id, record }) => jobWireOf(id, record));
 		},
 
 		async get(id: string): Promise<JobWire | undefined> {
 			const record = await readJob(deps.harness, id, ctx);
-			return record === undefined ? undefined : toWire(id, record);
+			return record === undefined ? undefined : jobWireOf(id, record);
 		},
 
 		async createApi(
@@ -184,7 +226,13 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 						{
 							source: "api",
 							spec: JSON.parse(JSON.stringify(spec)),
+							// The record's owner is the SERVER-STAMPED creator (the
+						// route passes principal.user; a body-carried spec.owner
+						// never reaches here — the route strips it, §5.9). The
+						// record's sharing mirrors spec.sharing exactly like a
+						// declared record (the PATCH share surface).
 							...(owner === undefined ? {} : { owner }),
+							...(spec.sharing === undefined ? {} : { sharing: spec.sharing }),
 							enabled: spec.enabled ?? true,
 							createdAt: nowIso,
 							hash,
@@ -206,7 +254,7 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			await reconcileOne();
 			const record = await readJob(deps.harness, id, ctx);
 			if (record === undefined) throw new JobNotFoundError(id);
-			return toWire(id, record);
+			return jobWireOf(id, record);
 		},
 
 		async updateApi(
@@ -232,10 +280,14 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 						{
 							source: "api",
 							spec: JSON.parse(JSON.stringify(spec)),
+							// The record's owner is preserved (the transfer path and
+						// the create stamp own it; a PATCH body carrying `owner` is
+						// rejected at the route, §5.9's server-stamped posture),
+							// while sharing mirrors the MERGED spec's sharing — the
+						// PATCH share surface (a patch without `sharing` keeps the
+						// prior share through the spread merge).
 							...(prior.owner === undefined ? {} : { owner: prior.owner }),
-							...(prior.sharing === undefined
-								? {}
-								: { sharing: prior.sharing }),
+							...(spec.sharing === undefined ? {} : { sharing: spec.sharing }),
 							enabled,
 							createdAt: prior.createdAt,
 							hash,
@@ -260,7 +312,7 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			await reconcileOne();
 			const record = await readJob(deps.harness, id, ctx);
 			if (record === undefined) throw new JobNotFoundError(id);
-			return toWire(id, record);
+			return jobWireOf(id, record);
 		},
 
 		async runs(id: string, limit: number): Promise<JobRunWire[]> {
