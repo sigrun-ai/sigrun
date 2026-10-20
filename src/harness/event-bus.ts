@@ -263,7 +263,7 @@ export type ExtensionUserDeletedHandler = (
  */
 export type WorkerWakeEvent = Exclude<keyof ExtensionLifecyclePayload, never>;
 
-/** The wake argument of an event-triggered worker run (absent on every-tick runs). */
+/** The wake argument of an event-triggered worker run (always present — wakes are the only trigger post-`every`-retirement). */
 export type WorkerWake = {
 	readonly event: string;
 	readonly conversationId: ConversationId;
@@ -272,19 +272,16 @@ export type WorkerWake = {
 /**
  * One factory-declared idle worker (memory-seam Task 5 — the curator
  * contract), as the loader validated it. Host-owned lifecycle: the bus
- * starts the `every` timer at registration and taps the lifecycle fan-out
- * for `wakeOn` matches. One run at a time per worker (a tick during an
- * in-flight run is SKIPPED); a wake during an in-flight run is queued +
- * coalesced (one pending-wake slot, last wins) and delivered as the next
- * run's `wake`.
+ * taps the lifecycle fan-out for `wakeOn` matches (the `every` timer was
+ * RETIRED by ruling 12 — wakes are the only trigger). One run at a time
+ * per worker; a wake during an in-flight run is queued + coalesced (one
+ * pending-wake slot, last wins) and delivered as the next run's `wake`.
  */
 export type ExtensionWorker = {
 	/** Unique within the extension; surfaces in /v1/meta. */
 	readonly name: string;
-	/** Periodic cadence; a tick is skipped while a run is in flight. */
-	readonly every?: { readonly ms: number };
-	/** Lifecycle events that wake the worker. */
-	readonly wakeOn?: readonly WorkerWakeEvent[];
+	/** Lifecycle events that wake the worker (REQUIRED, non-empty — the `every` timer was RETIRED by ruling 12, jobs Task 3: jobs are the only time-based scheduler). */
+	readonly wakeOn: readonly WorkerWakeEvent[];
 	/** The work; rejects (or overruns the worker deadline) to fail the run. */
 	run(context: Context, wake?: WorkerWake): Promise<void>;
 };
@@ -364,8 +361,6 @@ interface WorkerState {
 	readonly extension: string;
 	readonly worker: ExtensionWorker;
 	readonly deadlineMs: number;
-	/** The host-owned `every` timer, when the worker declares one. */
-	timer: ReturnType<typeof setInterval> | undefined;
 	/** True while a run is in flight (host-side; a zombie counts as not running). */
 	running: boolean;
 	/** True once shutdown/close stopped the worker (no further runs). */
@@ -537,13 +532,12 @@ export class EventBus {
 		};
 	}
 
-	/** Start one worker: the host-owned `every` timer, unref'd like the sweep. */
+	/** Register one worker (no timer — the `every` path was retired by ruling 12; wakes are the only trigger). */
 	#addWorker(extension: string, worker: ExtensionWorker): void {
 		const state: WorkerState = {
 			extension,
 			worker,
 			deadlineMs: this.#workerDeadlineMs,
-			timer: undefined,
 			running: false,
 			stopped: this.#closed,
 			pendingWake: undefined,
@@ -551,25 +545,15 @@ export class EventBus {
 			lastRunAt: undefined,
 			lastError: undefined,
 		};
-		if (worker.every !== undefined && !state.stopped) {
-			state.timer = setInterval(() => {
-				this.#tick(state);
-			}, worker.every.ms);
-			state.timer.unref?.();
-		}
 		this.#workers.push(state);
 	}
 
-	/** Stop every worker of one extension (timers cleared; in-flight runs abandoned host-side). */
+	/** Stop every worker of one extension (in-flight runs abandoned host-side). */
 	#stopExtensionWorkers(extension: string): void {
 		for (const state of this.#workers) {
 			if (state.extension !== extension) continue;
 			state.stopped = true;
 			state.pendingWake = undefined;
-			if (state.timer !== undefined) {
-				clearInterval(state.timer);
-				state.timer = undefined;
-			}
 		}
 	}
 
@@ -666,9 +650,9 @@ export class EventBus {
 	 * `app.close()` and `harness.close()`):
 	 *
 	 * 1. stop the idle sweep (no new events from here on);
-	 * 2. stop idle workers FIRST (Task 5, spec §3): timers cleared, pending
-	 *    wakes dropped, in-flight runs awaited up to 30s then abandoned — a
-	 *    curator is not competing with the flush handlers for the window;
+	 * 2. stop idle workers FIRST (Task 5, spec §3): pending wakes dropped,
+	 *    in-flight runs awaited up to 30s then abandoned — a curator is not
+	 *    competing with the flush handlers for the window;
 	 * 3. drain pending settles — a run that settled just before shutdown
 	 *    delivers before the shutdown flush (the ordering constraint);
 	 * 4. deliver `harnessShutdown` to every extension in install order,
@@ -746,14 +730,10 @@ export class EventBus {
 			this.#sweep = undefined;
 		}
 		// Workers stop too (a failed-session teardown must not leak their
-		// timers); in-flight runs are abandoned host-side — close is sync.
+		// runs); in-flight runs are abandoned host-side — close is sync.
 		for (const state of this.#workers) {
 			state.stopped = true;
 			state.pendingWake = undefined;
-			if (state.timer !== undefined) {
-				clearInterval(state.timer);
-				state.timer = undefined;
-			}
 		}
 		// A running pump observes `#closed` at its next iteration and exits;
 		// its in-flight handler call is abandoned at the hook deadline at
@@ -782,18 +762,6 @@ export class EventBus {
 			statuses.set(state.extension, list);
 		}
 		return statuses;
-	}
-
-	/**
-	 * One `every` tick: SKIPPED while a run is in flight (spec §3's one-run-
-	 * at-a-time — no queueing, no overlap). A pending wake (defensive: wakes
-	 * queue only while running, so this is normally undefined) rides along.
-	 */
-	#tick(state: WorkerState): void {
-		if (state.stopped || state.running) return;
-		const wake = state.pendingWake;
-		state.pendingWake = undefined;
-		this.#startRun(state, wake, BACKGROUND_CONTEXT);
 	}
 
 	/**
@@ -886,19 +854,15 @@ export class EventBus {
 	}
 
 	/**
-	 * Stop every worker (spec §3 shutdown ordering): timers cleared, pending
-	 * wakes dropped, in-flight runs awaited up to 30s then abandoned. Runs
-	 * before the harnessShutdown delivery — a curator is not competing with
-	 * the flush handlers for the same window.
+	 * Stop every worker (spec §3 shutdown ordering): pending wakes dropped,
+	 * in-flight runs awaited up to 30s then abandoned. Runs before the
+	 * harnessShutdown delivery — a curator is not competing with the flush
+	 * handlers for the same window.
 	 */
 	async #stopWorkers(): Promise<void> {
 		for (const state of this.#workers) {
 			state.stopped = true;
 			state.pendingWake = undefined;
-			if (state.timer !== undefined) {
-				clearInterval(state.timer);
-				state.timer = undefined;
-			}
 		}
 		const inflight = this.#workers
 			.map((state) => state.inflight)
@@ -1148,6 +1112,40 @@ export class EventBus {
 				ConversationId,
 				SettleGroup["settled"][number][]
 			>();
+			// Jobs Task 3 (§8.1): a `task` table write whose status is TERMINAL
+			// reduces to a host-level `taskSettled` — the jobs observer's input
+			// for settling `task`-action run records. Emitted from the SAME
+			// synchronous filter (the no-blocking-work contract), never queued:
+			// it is host machinery (withheld from the SSE wire), and its
+			// consumer runs on the drain loop.
+			for (const change of publication.changes) {
+				if (change.type !== "task") continue;
+				const task = change.value;
+				// `completing` is decided-but-not-finalized; the jobs observer
+				// waits for the terminal receipt — emit only on `terminal`.
+				if (task.state.status !== "terminal") continue;
+				const outcome = task.state.outcome;
+				// The error text rides whichever field the outcome shape
+				// carries: `failed` has `error` (a TaskOutcomeError), `aborted`
+				// has `reason` (§8.1: an aborted task-action run settles
+				// failed WITH the text, never empty).
+				const errorText =
+					outcome.status === "completed"
+						? undefined
+						: "error" in outcome
+							? outcome.error?.message
+							: "reason" in outcome
+								? outcome.reason
+								: undefined;
+				this.#emitHost({
+					type: "taskSettled",
+					// SAFETY: TaskId is the branded number the wire's plain `number`
+					// field carries; the observer compares by === across both forms.
+					taskId: task.id as unknown as number,
+					status: outcome.status,
+					...(errorText === undefined ? {} : { error: errorText }),
+				});
+			}
 			for (const change of publication.changes) {
 				if (change.type !== "submission") continue;
 				const value = change.value;

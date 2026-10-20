@@ -9,7 +9,7 @@
 
 import type { ReactNode } from "react";
 
-export type PanelMode = "outline" | "workspace";
+export type PanelMode = "outline" | "workspace" | "jobs";
 
 export function RightPanel(props: {
 	/** The open mode, or null when the panel is closed. */
@@ -18,16 +18,18 @@ export function RightPanel(props: {
 	readonly outline: ReactNode;
 	/** The workspace panel's content (rendered when mode === "workspace"). */
 	readonly workspace: ReactNode;
+	/** The jobs panel's content (rendered when mode === "jobs"). */
+	readonly jobs: ReactNode;
 }) {
-	const { mode, outline, workspace } = props;
+	const { mode, outline, workspace, jobs } = props;
 	if (mode === null) return null;
 	return (
 		<aside
 			className="right-panel"
 			data-panel={mode}
-			aria-label={mode === "outline" ? "outline panel" : "workspace panel"}
+			aria-label={`${mode} panel`}
 		>
-			{mode === "outline" ? outline : workspace}
+			{mode === "outline" ? outline : mode === "jobs" ? jobs : workspace}
 		</aside>
 	);
 }

@@ -276,7 +276,13 @@ describe("App shell", () => {
 		expect(composer.findAllByProps({ className: "composer" })).toHaveLength(
 			1,
 		);
-		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
+		// The events source rides FIRST (the list hook's shared /v1/events —
+		// the jobs panel's job.changed nudge rides it too, W4 Task 5), then
+		// the boot-selected root conversation's stream.
+		expect(sources.map((s) => s.url)).toEqual([
+			"/v1/events",
+			"/v1/conversations/1/stream",
+		]);
 		// The right panel is closed by default (mode null renders nothing).
 		expect(
 			renderer.root.findAllByProps({ className: "right-panel" }),
@@ -321,16 +327,21 @@ describe("App shell", () => {
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
-		// The boot default selected the root (id 1) and opened its stream.
-		expect(sources.map((s) => s.url)).toEqual(["/v1/conversations/1/stream"]);
+		// The boot default selected the root (id 1) and opened its stream
+		// (sources[0] is the shared /v1/events source).
+		expect(sources.map((s) => s.url)).toEqual([
+			"/v1/events",
+			"/v1/conversations/1/stream",
+		]);
 		await clickConversation(renderer, "Moor line inspection");
 		expect(sources.map((s) => s.url)).toEqual([
+			"/v1/events",
 			"/v1/conversations/1/stream",
 			"/v1/conversations/2/stream",
 		]);
-		// sources[1] is conversation 2's stream (sources[0] is the boot-selected root).
+		// sources[2] is conversation 2's stream.
 		act(() => {
-			sources[1]?.source.emit(
+			sources[2]?.source.emit(
 				"snapshot",
 				JSON.stringify(
 					makeView({
@@ -366,11 +377,12 @@ describe("App shell", () => {
 		await clickConversation(renderer, "Tide table rewrite");
 		await clickConversation(renderer, "Moor line inspection");
 		expect(sources.map((s) => s.url)).toEqual([
+			"/v1/events",
 			"/v1/conversations/1/stream",
 			"/v1/conversations/2/stream",
 		]);
-		expect(sources[0]?.source.closed).toBe(true);
-		expect(sources[1]?.source.closed).toBe(false);
+		expect(sources[1]?.source.closed).toBe(true);
+		expect(sources[2]?.source.closed).toBe(false);
 	});
 
 	test("renaming from the header persists the name and updates the title", async () => {
@@ -445,8 +457,8 @@ describe("App shell", () => {
 			<App client={client} createEventSource={createEventSource} />,
 		);
 		act(() => {
-			sources[0]?.source.emit(
-				"snapshot",
+			sources[1]?.source.emit(
+			"snapshot",
 				JSON.stringify(
 					makeView({
 						id: 1,

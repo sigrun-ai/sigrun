@@ -45,6 +45,7 @@ import {
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
+import { JobsPanel } from "./jobs/JobsPanel";
 import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
@@ -74,7 +75,9 @@ function loadPanel(): PanelMode | null {
 	).localStorage;
 	try {
 		const value = stored?.getItem(PANEL_STORAGE_KEY) ?? null;
-		return value === "outline" || value === "workspace" ? value : null;
+		return value === "outline" || value === "workspace" || value === "jobs"
+			? value
+			: null;
 	} catch {
 		return null;
 	}
@@ -253,8 +256,16 @@ export function App(options: AppOptions = {}) {
 	// sidebar, the header title, and the transcript's fork parents. `busy`
 	// (the view's steer state) drives the post-run reloads — a name the
 	// auto-namer writes at settlement appears without a manual reload.
+	const [jobChanged, setJobChanged] = useState(0);
 	const list = useConversationList(client, {
 		busy: view?.steer.busy ?? false,
+		createEventSource: options.createEventSource,
+		// W4 Task 5: `job.changed` rides the hook's ONE shared
+		// `/v1/events` source — the bump is the JobsPanel's refetch token
+		// (never a second EventSource per app).
+		onJobChanged: useCallback(() => {
+			setJobChanged((token) => token + 1);
+		}, []),
 	});
 	// The transcript's fork lineage (B4): the active conversation's fork
 	// parent, named from the lifted rows — one hook owns every name the UI
@@ -569,19 +580,26 @@ export function App(options: AppOptions = {}) {
 							/>
 						</footer>
 					</div>
-					<RightPanel
-						mode={panel}
-						outline={
-							<OutlinePanel scrollRoot={scrollRoot} turns={outlineTurns} />
-						}
-						workspace={
-							<WorkspaceBrowser
-								client={client}
-								conversationId={activeId}
-								onClose={closePanel}
-							/>
-						}
+			<RightPanel
+				mode={panel}
+				outline={
+					<OutlinePanel scrollRoot={scrollRoot} turns={outlineTurns} />
+				}
+				workspace={
+					<WorkspaceBrowser
+						client={client}
+						conversationId={activeId}
+							onClose={closePanel}
 					/>
+				}
+				jobs={
+					<JobsPanel
+						client={client}
+						onNavigate={onSelect}
+						refreshToken={jobChanged}
+					/>
+				}
+			/>
 				</div>
 			</main>
 			{/* The ≤900px overlays' backdrops (CSS: hidden at desktop widths).

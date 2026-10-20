@@ -126,6 +126,16 @@ export function MoreIcon(props: IconProps) {
 	);
 }
 
+/** Jobs panel toggle (a clock face — the schedule glyph). */
+export function JobsIcon(props: IconProps) {
+	return (
+		<Svg {...props}>
+			<circle cx="12" cy="12" r="8.5" />
+			<path d="M12 7.5V12l3 2.5" />
+		</Svg>
+	);
+}
+
 /** The composer's send/steer action (an up arrow, the mockup's glyph). */
 export function SendIcon(props: IconProps) {
 	return (

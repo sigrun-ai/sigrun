@@ -44,6 +44,7 @@ import { cleanTitle, createAutoNamer } from "../src/harness/naming.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import {
 	DEFAULT_SESSION_META,
+	SessionMetaDoc,
 	type SessionMeta,
 } from "../src/server/session-meta.js";
 import { createServer } from "../src/server/index.js";
@@ -426,6 +427,35 @@ describe("auto-naming through the booted harness", () => {
 		const settled = await submitAndName(server, root.id, "hello");
 		expect(settled.status).toBe("unanswered");
 		expect("name" in (await listRow(server.app, root.id))).toBe(false);
+		expect(server.faux.getPendingResponseCount()).toBe(1);
+	});
+
+	test("cron conversations (SessionMeta.source === \"cron\") are never named", async () => {
+		const server = await bootServer({
+			responses: [
+				fauxAssistantMessage("tick"),
+				fauxAssistantMessage("Would-be auto name"),
+			],
+		});
+		// Create a conversation stamped source:"cron" (the jobs path's meta).
+		const conversation = await server.opened.harness.createConversation(
+			{
+				ownership: { kind: "ownerless" },
+				agent: { model: server.opened.defaultModel },
+				init: async (tx, id) => {
+					const meta = await tx.doc(SessionMetaDoc, id);
+					meta.source = "cron";
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const settled = await submitAndName(server, conversation.id as number, "say tick");
+		expect(settled.status).toBe("done");
+		// The namer must skip it entirely: no autoName, no attempts recorded,
+		// and the naming response stays unconsumed.
+		const meta = await readMeta(server.app, conversation.id as number);
+		expect(meta.autoName).toBeUndefined();
+		expect(meta.autoNameAttempts).toBeUndefined();
 		expect(server.faux.getPendingResponseCount()).toBe(1);
 	});
 });

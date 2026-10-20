@@ -393,6 +393,55 @@ export default function createAcmeWebui() {
   factory result carrying `webuiBundles` and no `extension` is a valid
   contributor — identified by its `name` field.
 
+## Declaring jobs (the only time-based scheduler)
+
+A factory result may declare `jobs` — scheduled work sigrun runs for you,
+surviving restarts:
+
+```js
+export default function createMyExtension() {
+	return {
+		extension: defineExtension({ name: "acme" }),
+		jobs: [
+			{
+				name: "nightly-prune",                    // ext:acme:nightly-prune
+				schedule: { cron: "0 3 * * *" },          // or { every: "15m" } / { at: "<ISO>" }
+				action: { kind: "task", task: "prune" },  // a task YOUR extension registers
+			},
+		],
+	};
+}
+```
+
+Each entry is a full job spec (the §8.2 grammar of the core design doc:
+`name`, exactly one of `cron`+optional `timezone` / `every` / `at`, and a
+`prompt` or `task` action). Extension-declared jobs are read-only through
+the API — edit the extension to change them. A malformed declaration
+( bad grammar, duplicate names) quarantines the extension at load.
+
+## Idle workers: `wakeOn` only
+
+A factory result may also declare `workers` — in-process handlers woken
+by conversation lifecycle events (a curator reacting to
+`conversationIdle`):
+
+```js
+workers: [
+	{
+		name: "curator",
+		wakeOn: ["conversationIdle"],   // REQUIRED, non-empty
+		async run(context, wake) { /* … */ },
+	},
+]
+```
+
+**`every` is retired** (2026-10-19, ruling 12): a worker declaring
+`every` quarantines its extension with `workers.every was retired —
+declare a job with a task action`. Jobs are the only time-based
+scheduler; an extension that needs a timer declares a job with a `task`
+action (see above). Workers keep their run deadline, queued+coalesced
+wakes, and the `/v1/meta` status projection.
+
 ## Prompt sections: six keys are reserved
 
 pi-durable composes the system message from **sections** — a key plus

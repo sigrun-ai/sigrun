@@ -12,10 +12,12 @@
  * The file is a JSON document at `<config-dir>/settings.json`. It
  * carries the `HarnessSettings` pass-throughs (`steeringMode`,
  * `followUpMode`, `retry`, `stream`) plus sigrun's own resolved fields
- * (`defaultTools`, `perModelThinking`, `extensions`, `defaultModel`,
- * `namingModel`, `defaultProvider`, `server`). Credentials never live
- * here (they live in the sibling `auth.json`).
+ * (`defaultTools`, `perModelThinking`, `extensions`, `jobs`, `jobHistory`,
+ * `defaultModel`, `namingModel`, `defaultProvider`, `server`). Credentials
+ * never live here (they live in the sibling `auth.json`).
  */
+
+import type { JobSpec } from "./jobs.js";
 
 /**
  * One entry of the unified `extensions` list: an install-and-load
@@ -35,6 +37,18 @@ export type ExtensionSpec =
 			/** Default true; `false` = directory state retained, not loaded. */
 			readonly enabled?: boolean;
 	  };
+
+/**
+ * The job-history retention limits (spec §8.1, ruling 14), applied per
+ * job at run-settle and revision-write: keep the newest `runs` run
+ * records and the newest `revisions` revisions (plus any revision a
+ * retained run references). Live settings — both positive integers,
+ * default 50.
+ */
+export interface JobHistorySettings {
+	readonly runs?: number;
+	readonly revisions?: number;
+}
 
 /**
  * The `server` section: static boot configuration mirrored from the
@@ -106,6 +120,13 @@ export interface ServerSettings {
 	 * @deprecated use `webui.bundle`
 	 */
 	readonly webuiBundle?: string;
+	/**
+	 * The timezone `SIGRUN_TIMEZONE` mirrors (jobs §8.2): an IANA name —
+	 * the default timezone for cron schedules that declare none (default:
+	 * the process TZ). Validated as an IANA name (an `Intl.DateTimeFormat`
+	 * construction succeeds).
+	 */
+	readonly timezone?: string;
 	/** The `SIGRUN_COMPACTION_*` policy knobs. */
 	readonly compaction?: {
 		readonly enabled?: boolean;
@@ -262,6 +283,22 @@ export interface SettingsFile {
 	 * Changes require a restart.
 	 */
 	readonly extensions?: readonly ExtensionSpec[];
+	/**
+	 * Sigrun: the file-declared job list (spec §8.3 — the `file` source).
+	 * Each entry is a `JobSpec` validated with `validateJobSpec` (the
+	 * jobs §8.2 grammar); names double as the id suffix (`file:<name>`).
+	 * Duplicate names are a validation error. Restart-required: like
+	 * `extensions`, the list resolves at boot reconciliation.
+	 */
+	readonly jobs?: readonly JobSpec[];
+	/**
+	 * Sigrun: per-job history retention (spec §8.1, ruling 14) — LIVE
+	 * (read per prune, not restart-required): keep the newest `runs` run
+	 * records and the newest `revisions` revisions per job, plus any
+	 * revision a retained run references. Both positive integers,
+	 * default 50 each.
+	 */
+	readonly jobHistory?: JobHistorySettings;
 	/**
 	 * Sigrun: the boot default model (ruling 3), a non-empty
 	 * `provider/model-id` spec parsed exactly like `SIGRUN_DEFAULT_MODEL`

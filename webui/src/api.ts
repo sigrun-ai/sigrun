@@ -56,7 +56,14 @@ import type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	JobsResponse,
+	JobRunResponse,
 } from "@sigrun/shared/views";
+import type {
+	JobRevisionWire,
+	JobRunWire,
+	JobWire,
+} from "@sigrun/shared/jobs";
 import type { Sharing } from "@sigrun/shared/access";
 
 export type {
@@ -90,7 +97,30 @@ export type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	JobsResponse,
+	JobRunResponse,
 } from "@sigrun/shared/views";
+
+/** The jobs channel wire shapes (W4, spec §8.2/§8.4) — the shared leaf's
+ *  contract module, re-exported so the jobs UI and the server agree. */
+export type {
+	JobSpec,
+	JobSchedule,
+	JobAction,
+	JobWire,
+	JobRunWire,
+	JobRevisionWire,
+} from "@sigrun/shared/jobs";
+
+/** `GET /v1/jobs/:id/runs`: the job's runs, newest first. */
+export interface JobRunsResponse {
+	readonly runs: readonly JobRunWire[];
+}
+
+/** `GET /v1/jobs/:id/revisions`: the job's revisions, newest first. */
+export interface JobRevisionsResponse {
+	readonly revisions: readonly JobRevisionWire[];
+}
 
 /** A conversation's sharing grant (spec §5.9) — the shared leaf's shape,
  *  re-exported so the share UI and the patch type agree with the server. */
@@ -471,6 +501,17 @@ export interface SigrunClient {
 		slug: string,
 		key: string,
 	): Promise<ExtensionSecretsResponseWire>;
+	/** The caller-visible jobs (`GET /v1/jobs`; access-stamped per row). */
+	listJobs(): Promise<JobsResponse>;
+	/** Fire a job now (`POST /v1/jobs/:id/run`; write access). */
+	runJob(id: string): Promise<JobRunResponse>;
+	/** One job's runs, newest first (`GET /v1/jobs/:id/runs?limit=`). */
+	listJobRuns(
+		id: string,
+		limit?: number,
+	): Promise<JobRunsResponse>;
+	/** One job's revisions, newest first (`GET /v1/jobs/:id/revisions`). */
+	listJobRevisions(id: string): Promise<JobRevisionsResponse>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -750,5 +791,19 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				`/v1/extensions/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(key)}`,
 				{},
 			) as Promise<ExtensionSecretsResponseWire>,
+		listJobs: () => get<JobsResponse>("/v1/jobs"),
+		runJob: (id) =>
+			send("POST", `/v1/jobs/${encodeURIComponent(id)}/run`, {}) as Promise<
+				JobRunResponse
+		>,
+		listJobRuns: (id, limit) =>
+			get<JobRunsResponse>(
+				`/v1/jobs/${encodeURIComponent(id)}/runs` +
+					(limit === undefined ? "" : `?limit=${limit}`),
+			),
+		listJobRevisions: (id) =>
+			get<JobRevisionsResponse>(
+				`/v1/jobs/${encodeURIComponent(id)}/revisions`,
+			),
 	};
 }
