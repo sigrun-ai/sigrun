@@ -347,6 +347,26 @@ export interface InteractionList {
 	readonly interactions: readonly InteractionWire[];
 }
 
+/**
+ * One pending interaction in the cross-conversation inbox (§7.5): the
+ * record plus the conversation it waits in, so a client can answer
+ * without opening each conversation (answers still go through the
+ * per-conversation answer route).
+ */
+export type InboxInteraction = InteractionWire & {
+	readonly conversationId: number;
+};
+
+/**
+ * The response of `GET /v1/interactions?status=pending` (§7.5): every
+ * pending interaction in a conversation the caller can see, sorted by
+ * `createdAt` ascending. `pending` is the only indexed (and accepted)
+ * status.
+ */
+export interface InboxResponse {
+	readonly interactions: readonly InboxInteraction[];
+}
+
 /** The response of `POST .../interactions/:callId/answer`. */
 export interface InteractionAnswered {
 	readonly callId: string;

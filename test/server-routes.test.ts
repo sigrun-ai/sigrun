@@ -73,6 +73,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/models"],
 	["GET", "/v1/settings"],
 	["PATCH", "/v1/settings"],
+	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
+	["GET", "/v1/interactions"],
 	["POST", "/v1/conversations"],
 	["GET", "/v1/conversations"],
 	["POST", "/v1/conversations/import"],
@@ -334,6 +336,7 @@ describe("server route table", () => {
 				"/v1/providers",
 				"/v1/events",
 				"/v1/settings",
+				"/v1/interactions",
 				"/v1/users",
 				"/v1/users/:user",
 				"/v1/users/invites",

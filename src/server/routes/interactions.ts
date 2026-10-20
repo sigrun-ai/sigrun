@@ -20,6 +20,17 @@
  * Fastify's param validation cannot mask the lookup. A human answer
  * stamps `answeredByUser` with the principal's user (spec §5.9: who
  * answered matters to every participant a conversation is shared with).
+ *
+ * The cross-conversation inbox (`GET /v1/interactions?status=pending`,
+ * spec §7.5) also lives here. It has NO `:id`, so no pre-handler — it
+ * snapshots the session-singleton `InteractionsIndexDoc` once per
+ * request (seed/answer/expire commits maintain it; there is no cache to
+ * invalidate), then applies the visibility half of the access rule per
+ * conversation (`accessOf` against its SessionMeta — hidden is ABSENT
+ * from the list, the list-side half of §5.9's hidden-is-404) before
+ * reading each pending record. This is how "answer the agent from my
+ * phone" works without opening each conversation; answers still go
+ * through the per-conversation answer route above.
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -47,6 +58,8 @@ import type {
 	AmbientList,
 	InteractionAnswered,
 	InteractionList,
+	InboxInteraction,
+	InboxResponse,
 } from "../views.js";
 
 /**
@@ -98,6 +111,57 @@ export function registerInteractionRoutes(
 	// One generic surface shared by every extension: pending interactions
 	// (list) and answers (the ONE generic route). Resolution semantics stay
 	// extension-owned — the route only writes the envelope's answer field.
+
+	// ─── Cross-conversation inbox (spec §7.5) ──────────────────────
+	// ONE list over every conversation the caller can see: a single
+	// snapshot of the session-singleton index (seed/answer/expire commits
+	// maintain it — nothing to invalidate), §5.9 visibility per
+	// conversation (hidden is ABSENT, the list-side half of the rule),
+	// then the still-pending records. `pending` is the only indexed
+	// status: any other query value is a fail-loud 400 (absent means
+	// pending).
+	app.get(
+		"/v1/interactions",
+		async (request, reply): Promise<InboxResponse> => {
+			const query = request.query as Record<string, unknown>;
+			if (query.status !== undefined && query.status !== "pending") {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: "status" });
+			}
+			const index = await opened.harness.snapshot(
+				InteractionsIndexDoc,
+				BACKGROUND_CONTEXT,
+			);
+			const pending = index?.pending ?? {};
+			const interactions: InboxInteraction[] = [];
+			for (const key of Object.keys(pending)) {
+				const id = Number(key);
+				const convId = conversationId(id);
+				// §5.9 visibility, applied in-handler (a no-`:id` route has no
+				// pre-handler): a hidden conversation contributes nothing.
+				if (!(await visibleTo(ctx, convId, request.principal))) {
+					continue;
+				}
+				for (const callId of pending[key] ?? []) {
+					const record = await opened.harness.snapshot(
+						InteractionDoc,
+						convId,
+						callId,
+						BACKGROUND_CONTEXT,
+					);
+					// The index is maintained in the same commits as the records,
+					// but a raced settle can leave a stale entry — serve only
+					// what still reads pending (the per-conversation list's guard).
+					if (record !== undefined && record.status === "pending") {
+						interactions.push({ ...record, conversationId: id });
+					}
+				}
+			}
+			interactions.sort((a, b) => a.createdAt - b.createdAt);
+			return { interactions };
+		},
+	);
 
 	/** The list route's wire record: envelope + body + details, unmodified. */
 	app.get(
