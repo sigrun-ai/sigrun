@@ -331,6 +331,25 @@ describe("expansion at admission (POST .../submissions)", () => {
 		expect(user?.model?.[0]?.content).toEqual([{ type: "text", text: "/fork" }]);
 	});
 
+	test("an unterminated quote in template args is a 400, not a 500 (fix round)", async () => {
+		const { app, opened } = await bootExpansionServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		// `/review "oops` is ordinary user input — a malformed submission,
+		// never a server crash: the 400 carries the invalid_input shape the
+		// rest of the submit path uses, and NOTHING is admitted.
+		const response = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/submissions`,
+			payload: { input: "/review \"oops" },
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_input" });
+		const view = await readView(app, root.id as number);
+		expect(view.entries).toHaveLength(0);
+	});
+
 	test("an input with attachments expands only the text part", async () => {
 		const { app, opened, workspace } = await bootExpansionServer();
 		await writeFile(join(workspace, "shot.png"), Buffer.from(RED_PNG, "base64"));

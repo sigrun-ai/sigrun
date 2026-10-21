@@ -81,6 +81,9 @@ function makeHarness(init?: {
 	readonly draftText?: string;
 	readonly draftAttachments?: string[];
 	readonly models?: readonly ModelEntry[];
+	/** The commands served on every GET /v1/commands AFTER the mount fetch
+	 *  (the live-catalog fix round: a template appearing mid-session). */
+	readonly laterCommands?: readonly unknown[];
 }) {
 	const calls: { input: string; method?: string; body?: string | Uint8Array }[] = [];
 	const meta: ConversationMeta = {
@@ -97,7 +100,18 @@ function makeHarness(init?: {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let body: unknown;
 		if (input === "/v1/models") body = { models: init?.models ?? MODELS };
-		else if (input === "/v1/commands") body = { commands: COMMANDS };
+		else if (input === "/v1/commands") {
+			// The mount fetch serves the mount catalog; every later GET (the
+			// send-path refetch) serves the LIVE catalog — the second and
+			// subsequent responses gain the `laterCommands` entries.
+			const fetchCount = calls.filter(
+					(call) => call.input === "/v1/commands",
+				).length;
+			body =
+					fetchCount > 1 && init?.laterCommands !== undefined
+						? { commands: [...COMMANDS, ...init.laterCommands] }
+						: { commands: COMMANDS };
+		}
 		else if (input.endsWith("/meta")) body = meta;
 
 		else if (input.includes("/uploads/")) {
@@ -1009,6 +1023,50 @@ describe("Composer", () => {
 			expect(
 				renderer.root.findAllByProps({ role: "alert" }),
 			).toHaveLength(0);
+		});
+
+		// ── Live catalog (fix round): the server re-scans per request, the
+		// client's mount cache must not mask a template added mid-session ──
+
+		test("a template added mid-session becomes submittable after one refetch (no unknown-command error)", async () => {
+			const { calls, client } = makeHarness({
+				laterCommands: [
+					{ name: "deploy", description: "Deploy the thing", argsHint: "<target>", kind: "expand" },
+				],
+			});
+			const renderer = await renderComposer(client, makeView());
+			// Not in the mount catalog: the send path must REFETCH once and
+			// re-evaluate before deciding "unknown command".
+			await submitLine(renderer, "/deploy prod");
+			const gets = calls.filter((c) => c.input === "/v1/commands");
+			expect(gets.length).toBeGreaterThanOrEqual(2);
+			expect(
+				calls.filter((c) => c.input.endsWith("/submissions")).map((c) => c.body),
+			).toEqual([
+				JSON.stringify({ input: [{ type: "text", text: "/deploy prod" }] }),
+			]);
+			expect(textContent(renderer.toJSON())).not.toContain("unknown command: /deploy");
+			expect(
+				renderer.root.findAllByProps({ role: "alert" }),
+			).toHaveLength(0);
+			// The refetched catalog also lands in state: the menu offers it now.
+			await typeText(renderer, "/dep");
+			const menu = renderer.root.findAllByProps({
+				className: "composer-command-name",
+			});
+			expect(menu.map((item) => item.children.join(""))).toEqual(["/deploy"]);
+		});
+
+		test("a genuinely unknown command still errors after the refetch (the refetch is not a free pass)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/bogus now");
+			// One mount fetch + one refetch, then the honest error.
+			expect(calls.filter((c) => c.input === "/v1/commands").length).toBe(2);
+			expect(
+				calls.filter((c) => c.input.endsWith("/submissions")),
+			).toEqual([]);
+			expect(textContent(renderer.toJSON())).toContain("unknown command: /bogus");
 		});
 	});
 });

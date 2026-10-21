@@ -48,6 +48,20 @@ import type { SubmissionPart } from "../server/content-parts.js";
 /** The user entry kind an expanded input is placed as. */
 export const EXPANDED_ENTRY_KIND = "sigrun.user.expanded";
 
+/**
+ * A malformed command line the user typed (an unterminated quote in
+ * template arguments) — the one usage error the expansion path raises.
+ * Typed so the submit path can map it to a client 400 (the
+ * `invalid_input` shape) without string-matching messages, while any
+ * OTHER failure still surfaces as a genuine server error.
+ */
+export class CommandUsageError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CommandUsageError";
+	}
+}
+
 /** What `expandInput` needs: the two root sets plus the reserved command names. */
 export interface CommandExpansion {
 	/** The skills-discovery roots (the same options the section renders with). */
@@ -110,7 +124,7 @@ export function parseCommandArgs(argsString: string): string[] {
 		}
 	}
 	if (inQuote !== null) {
-		throw new Error(
+		throw new CommandUsageError(
 			`unterminated quote in command arguments: ${argsString}`,
 		);
 	}

@@ -35,7 +35,12 @@ import { touchActivity } from "../harness/activity.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { parseSubmissionInput, resolveParts } from "./content-parts.js";
-import { expandInput, EXPANDED_ENTRY_KIND } from "../commands/expand.js";
+import {
+	CommandUsageError,
+	expandInput,
+	EXPANDED_ENTRY_KIND,
+	type ExpansionResult,
+} from "../commands/expand.js";
 import type { ServerContext } from "./context.js";
 import {
 	conversationEnv,
@@ -258,13 +263,25 @@ export async function submitOp(
 	// `sigrun.user.expanded` entry). Non-`/` inputs, `/command` inputs,
 	// and unknown skills pass through untouched — every channel and the
 	// HTTP API behave identically because this is the one admission path.
+	// A MALFORMED command line (an unterminated quote in template args) is
+	// ordinary user input: it maps to the same `invalid_input` 400 shape
+	// `parseSubmissionInput` uses, never a 500. Anything else expansion
+	// throws is a genuine bug and still falls through as one.
 	const env = await conversationEnv(opened, conversation);
-	const expansion = await expandInput(
-		parsed.parts,
-		opened.commandExpansion,
-		env,
-		BACKGROUND_CONTEXT,
-	);
+	let expansion: ExpansionResult;
+	try {
+		expansion = await expandInput(
+			parsed.parts,
+			opened.commandExpansion,
+			env,
+			BACKGROUND_CONTEXT,
+		);
+	} catch (error) {
+		if (error instanceof CommandUsageError) {
+			throw new ConversationOpError({ error: "invalid_input" });
+		}
+		throw error;
+	}
 	const content = await resolveParts(expansion.parts, env, BACKGROUND_CONTEXT);
 	const draft: InputSubmissionDraft = {
 		type: "input",
