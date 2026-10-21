@@ -27,7 +27,7 @@
  *    skip path is exercisable with `SIGRUN_TEST_HIDE_SIBLINGS=1`.
  *
  * Case 2 is a PARITY LOCK on shipped behavior (the pieces exist:
- * pi-durable 1.2.0 + the fixture gate + the codemode extension), not
+ * pi-durable 1.3.0 + the fixture gate + the codemode extension), not
  * new behavior — its value is that it fails if any layer stops routing
  * nested calls through the hooks.
  */

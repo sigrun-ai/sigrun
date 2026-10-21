@@ -771,7 +771,7 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 			BACKGROUND_CONTEXT,
 		);
 		const agent = await conversation!.agent(BACKGROUND_CONTEXT);
-		// The offered set is exactly the filter (1.2.0's modelTools array
+		// The offered set is exactly the filter (1.3.0's modelTools array
 		// form: "exactly these, in order")...
 		expect(agent.tools.map((tool) => tool.name)).toEqual(["read"]);
 		// ...and the filter is the MODEL-offered one, not the ENABLED one:

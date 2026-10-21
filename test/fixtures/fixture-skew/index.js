@@ -1,7 +1,7 @@
 /**
  * Test-fixture extension package (core-hardening Task 5): carries its OWN
  * nested `node_modules/@earendil-works/pi-durable` whose manifest says
- * version 0.0.1 — while the host runs 1.2.0.
+ * version 0.0.1 — while the host runs 1.3.0.
  *
  * The entry itself imports NOTHING: the guard compares the version
  * resolution anchored at this file's directory (the tree the package's

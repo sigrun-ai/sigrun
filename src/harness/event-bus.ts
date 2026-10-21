@@ -193,7 +193,7 @@ export type RunSettledEvent = {
  * The narrowed read surface a `runSettled` handler receives: exactly
  * `entry` / `entries` / `document` over the settled conversation — no
  * `taskId`, no `memo`, no `conversationId` (the event carries those).
- * Structural rather than a `Pick`: pi-durable 1.2.0's `DocumentReader` is
+ * Structural rather than a `Pick`: pi-durable 1.3.0's `DocumentReader` is
  * itself `Pick<Session, "snapshot" | "snapshotAsOf">`, so the brief's
  * member set is expressed directly. `entries` mirrors `Conversation.entries`
  * (the conversation is implicit); `document` is the committed conversation

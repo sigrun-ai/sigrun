@@ -286,7 +286,7 @@ export interface SettingsFile {
 	};
 	/**
 	 * Sigrun: tool-name filter applied at conversation creation; maps to
-	 * pi-durable 1.2.0's `AgentChange.modelTools` (the model-offered
+	 * pi-durable 1.3.0's `AgentChange.modelTools` (the model-offered
 	 * filter — never the enabled filter `AgentChange.tools`).
 	 */
 	readonly defaultTools?: readonly string[];
