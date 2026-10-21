@@ -720,6 +720,310 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 	});
 });
 
+// ─── provider subcommands (release 0.1 Task 2b: credentials without curl) ──
+
+describe("parseArgs: provider subcommands (release 0.1)", () => {
+	test("provider list", () => {
+		expect(parseArgs(["provider", "list"])).toEqual({
+			command: "provider",
+			sub: "list",
+		});
+	});
+
+	test("provider key <id> --url --token", () => {
+		expect(
+			parseArgs([
+				"provider", "key", "acme",
+				"--url", "https://sigrun.example.invalid",
+				"--token", "sgr_cli_test",
+			]),
+		).toEqual({
+			command: "provider",
+			sub: "key",
+			id: "acme",
+			url: "https://sigrun.example.invalid",
+			token: "sgr_cli_test",
+		});
+	});
+
+	test("provider clear <id>", () => {
+		expect(parseArgs(["provider", "clear", "acme"])).toEqual({
+			command: "provider",
+			sub: "clear",
+			id: "acme",
+		});
+	});
+
+	test("flags may come before the positional", () => {
+		expect(
+			parseArgs(["provider", "key", "--url", "https://sigrun.example.invalid", "acme"]),
+		).toEqual({
+			command: "provider",
+			sub: "key",
+			id: "acme",
+			url: "https://sigrun.example.invalid",
+		});
+	});
+
+	test("provider with an unknown sub is a usage error", () => {
+		expect(() => parseArgs(["provider", "bogus"])).toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("provider key/clear without an <id> is a usage error", () => {
+		expect(() => parseArgs(["provider", "key"])).toThrowError(USAGE_ERROR_PATTERN);
+		expect(() => parseArgs(["provider", "clear"])).toThrowError(USAGE_ERROR_PATTERN);
+	});
+
+	test("provider list rejects positionals and unknown flags fail loud", () => {
+		expect(() => parseArgs(["provider", "list", "extra"])).toThrowError(USAGE_ERROR_PATTERN);
+		expect(() => parseArgs(["provider", "key", "acme", "--bogus"])).toThrowError(
+			USAGE_ERROR_PATTERN,
+		);
+		expect(() => parseArgs(["provider", "key", "acme", "--url"])).toThrowError(
+			USAGE_ERROR_PATTERN,
+		);
+	});
+
+	test("a positional secret typo never echoes (stderr is captured; shell history is not)", () => {
+		// The mistake: pasting the key as a second positional. The usage
+		// error must name the problem and the accepted shape — reproducing
+		// the token would leak it into CI logs, issue reports, scrollback.
+		const secret = "acme-test-key";
+		let thrown: Error | undefined;
+		try {
+			parseArgs(["provider", "key", "acme", secret]);
+		} catch (error) {
+			thrown = error instanceof Error ? error : new Error(String(error));
+		}
+		expect(thrown).toBeDefined();
+		expect(thrown!.message).not.toContain(secret);
+		expect(thrown!.message).toMatch(USAGE_ERROR_PATTERN);
+		expect(thrown!.message).toContain("stdin");
+		expect(thrown!.message).toContain("--url <base>");
+	});
+});
+
+/**
+ * The providers fetch stub (release 0.1 Task 2b): records every call
+ * (url, method, headers, body) and serves the §7.6 surface the CLI
+ * drives — GET /v1/providers, PUT/DELETE the credential, POST refresh.
+ */
+function providerFetchStub(options?: {
+	/** Simulate nothing listening (fetch rejects). */
+	readonly unreachable?: boolean;
+	/** Serve every call this non-2xx status + error body. */
+	readonly status?: number;
+	readonly errorBody?: unknown;
+}): {
+	fetch: NonNullable<CliDeps["fetch"]>;
+	calls: {
+		url: string;
+		method?: string;
+		headers?: Record<string, string>;
+		body?: string;
+	}[];
+} {
+	const calls: {
+		url: string;
+		method?: string;
+		headers?: Record<string, string>;
+		body?: string;
+	}[] = [];
+	// The served readiness: writes flip it (the server's post-write
+	// refresh decides the new status — the stub's stand-in).
+	const entries = new Map<string, Record<string, unknown>>([
+		["acme", { provider: "acme", status: "not_configured", models: 0 }],
+		["acme2", { provider: "acme2", status: "ready", models: 2 }],
+	]);
+	const fetchImpl = (async (url: string, init?: {
+		method?: string;
+		headers?: Record<string, string>;
+		body?: string;
+	}) => {
+		calls.push({
+			url,
+			method: init?.method,
+			headers: init?.headers,
+			body: init?.body,
+		});
+		if (options?.unreachable === true) {
+			throw new TypeError("fetch failed");
+		}
+		if (options?.status !== undefined) {
+			return {
+				ok: false,
+				status: options.status,
+				json: () => Promise.resolve(options.errorBody ?? { error: "forbidden" }),
+			};
+		}
+		let body: unknown;
+		let m: RegExpMatchArray | null;
+		if (url.endsWith("/v1/providers") && (init?.method ?? "GET") === "GET") {
+			body = { providers: [...entries.values()] };
+		} else if (
+			(m = url.match(/\/v1\/providers\/([^/]+)\/credential$/)) !== null
+		) {
+			const id = m[1] as string;
+			// PUT → ready with a live catalog (one refresh ran); DELETE → back
+			// to not_configured (the tracker re-seeds on the refresh).
+			entries.set(id, {
+				provider: id,
+				status: init?.method === "PUT" ? "ready" : "not_configured",
+				models: 2,
+			});
+			body = entries.get(id);
+		} else if (
+			(m = url.match(/\/v1\/providers\/([^/]+)\/refresh$/)) !== null &&
+			init?.method === "POST"
+		) {
+			const id = m[1] as string;
+			body = entries.get(id) ?? { provider: id, status: "ready", models: 0 };
+		} else {
+			throw new Error(`unexpected fetch ${init?.method ?? "GET"} ${url}`);
+		}
+		return { ok: true, status: 200, json: () => Promise.resolve(body) };
+	}) as NonNullable<CliDeps["fetch"]>;
+	return { fetch: fetchImpl, calls };
+}
+
+describe("cliMain provider subcommands (API clients — never a server)", () => {
+	test("provider list prints id, readiness, model count — one tab-separated row each", async () => {
+		const { fetch } = providerFetchStub();
+		const { deps } = stubDeps({ fetch });
+		const { out, io } = captureIo();
+		const code = await cliMain(
+			[
+				"provider", "list",
+				"--url", "https://sigrun.example.invalid",
+				"--token", "sgr_cli_test",
+			],
+			{},
+			deps,
+			io,
+		);
+		expect(code).toBe(0);
+		expect(out).toEqual(["acme\tnot_configured\t0", "acme2\tready\t2"]);
+	});
+
+	test("no --url defaults to localhost on SIGRUN_PORT (3000 default); --token rides as bearer", async () => {
+		const { fetch, calls } = providerFetchStub();
+		const { deps } = stubDeps({ fetch });
+		const { io } = captureIo();
+		await cliMain(["provider", "list"], {}, deps, io);
+		expect(calls[0]?.url).toBe("http://localhost:3000/v1/providers");
+		expect(calls[0]?.headers?.authorization).toBeUndefined();
+
+		const ported = providerFetchStub();
+		const { deps: portedDeps } = stubDeps({ fetch: ported.fetch });
+		await cliMain(["provider", "list"], { SIGRUN_PORT: "4444" }, portedDeps, captureIo().io);
+		expect(ported.calls[0]?.url).toBe("http://localhost:4444/v1/providers");
+
+		const tokened = providerFetchStub();
+		const { deps: tokenedDeps } = stubDeps({ fetch: tokened.fetch });
+		await cliMain(
+			["provider", "list", "--token", "sgr_cli_test"],
+			{},
+			tokenedDeps,
+			captureIo().io,
+		);
+		expect(tokened.calls[0]?.headers?.authorization).toBe("Bearer sgr_cli_test");
+	});
+
+	test("provider key reads the secret from stdin, PUTs it, prints the readiness row — never the key", async () => {
+		const { fetch, calls } = providerFetchStub();
+		const { deps } = stubDeps({
+			fetch,
+			readSecret: async () => "acme-test-key\n",
+		});
+		const { out, errors, io } = captureIo();
+		const code = await cliMain(
+			[
+				"provider", "key", "acme",
+				"--url", "https://sigrun.example.invalid",
+				"--token", "sgr_cli_test",
+			],
+			{},
+			deps,
+			io,
+		);
+		expect(code).toBe(0);
+		const put = calls.find((call) => call.method === "PUT");
+		expect(put?.url).toBe("https://sigrun.example.invalid/v1/providers/acme/credential");
+		expect(JSON.parse(put?.body ?? "{}")).toEqual({ apiKey: "acme-test-key" });
+		expect(put?.headers?.authorization).toBe("Bearer sgr_cli_test");
+		// The output is the readiness row only — the key appears nowhere
+		// (stdout, stderr, not even masked).
+		expect(out).toEqual(["acme\tready\t2"]);
+		expect(`${out.join("\n")}\n${errors.join("\n")}`).not.toContain("acme-test-key");
+	});
+
+	test("provider clear DELETEs and prints the resulting readiness row", async () => {
+		const { fetch, calls } = providerFetchStub();
+		const { deps } = stubDeps({ fetch });
+		const { out, io } = captureIo();
+		const code = await cliMain(
+			["provider", "clear", "acme", "--url", "https://sigrun.example.invalid"],
+			{},
+			deps,
+			io,
+		);
+		expect(code).toBe(0);
+		expect(calls[0]).toMatchObject({
+			url: "https://sigrun.example.invalid/v1/providers/acme/credential",
+			method: "DELETE",
+		});
+		expect(out).toEqual(["acme\tnot_configured\t2"]);
+	});
+
+	test("nothing listening fails loud naming the URL — the command never starts a server", async () => {
+		const { fetch } = providerFetchStub({ unreachable: true });
+		const { deps } = stubDeps({ fetch });
+		const { errors, out, io } = captureIo();
+		const code = await cliMain(
+			["provider", "list", "--url", "https://down.example.invalid"],
+			{},
+			deps,
+			io,
+		);
+		expect(code).toBe(1);
+		expect(out).toEqual([]);
+		const message = errors.join("\n");
+		expect(message).toContain("https://down.example.invalid");
+		expect(message).toMatch(/never starts? a server/);
+	});
+
+	test("a non-2xx response fails loud with the status and the server's error code", async () => {
+		const { fetch } = providerFetchStub({ status: 403, errorBody: { error: "forbidden" } });
+		const { deps } = stubDeps({ fetch });
+		const { errors, io } = captureIo();
+		const code = await cliMain(
+			["provider", "key", "acme", "--url", "https://sigrun.example.invalid"],
+			{},
+		{ ...deps, readSecret: async () => "acme-test-key" },
+			io,
+		);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toMatch(/403/);
+		expect(errors.join("\n")).toMatch(/forbidden/);
+	});
+
+	test("empty stdin for provider key fails loud (nothing is sent)", async () => {
+		const { fetch, calls } = providerFetchStub();
+		const { deps } = stubDeps({ fetch, readSecret: async () => "  " });
+		const { errors, out, io } = captureIo();
+		const code = await cliMain(
+			["provider", "key", "acme", "--url", "https://sigrun.example.invalid"],
+			{},
+			deps,
+			io,
+		);
+		expect(code).toBe(1);
+		expect(out).toEqual([]);
+		expect(calls).toEqual([]);
+		expect(errors.join("\n")).toMatch(/api key/);
+	});
+});
+
 /** A scripted prompt seam: pops answers in order, records the questions. */
 function scriptedPrompt(answers: string[]): {
 	questions: string[];

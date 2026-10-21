@@ -624,6 +624,7 @@ export function App(options: AppOptions = {}) {
 					client={client}
 					prefsState={prefsState}
 					theme={theme}
+					admin={identity?.admin}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}
