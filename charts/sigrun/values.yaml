@@ -48,7 +48,7 @@ controllers:
           # core tsc build, chained with the shared workspace build) and
           # webui/dist (the vite bundle). tsx is dev-only (from-source
           # runs); the runtime is plain node against dist/.
-          repository: REPLACEME-node22-sigrun-image
+          repository: ghcr.io/sigrun-ai/sigrun
           # -- Image tag (defaults to the chart appVersion).
           tag: ""
           # -- Image pull policy.
@@ -194,10 +194,11 @@ controllers:
     containers:
       backup:
         image:
-          # Must carry sqlite3 + awscli (the target's client); the backup
-          # script runs as the BUILT dist/backup/run-backup.js under plain
-          # node — no tsx (dev-only, from-source runs).
-          repository: REPLACEME-sqlite3-awscli-image
+          # The same published image: it carries sqlite3 (the snapshot)
+          # and the S3 client is an npm dependency, so no second image is
+          # needed. The backup script runs as the BUILT
+          # dist/backup/run-backup.js under plain node — no tsx.
+          repository: ghcr.io/sigrun-ai/sigrun
           tag: ""
           pullPolicy: IfNotPresent
         # Nightly `sqlite3 .backup` against the LIVE harness database —

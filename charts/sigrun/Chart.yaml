@@ -12,8 +12,13 @@ keywords:
   - assistant
   - agent
   - llm
+home: https://github.com/sigrun-ai/sigrun
+sources:
+  - https://github.com/sigrun-ai/sigrun
+icon: https://raw.githubusercontent.com/sigrun-ai/sigrun/main/charts/sigrun/icon.svg
 maintainers:
   - name: sigrun-ai
+    url: https://github.com/sigrun-ai
 dependencies:
   - name: common
     version: 5.2.1

@@ -35,13 +35,17 @@ import { beforeAll, describe, expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 
 const CHART_DIR = join(import.meta.dirname, "..", "charts", "sigrun");
+const COMPOSE_FILE = join(
+	import.meta.dirname,
+	"..",
+	"docker",
+	"docker-compose.yaml",
+);
 
-/** The image tags are values-shaped (REPLACEME repos, empty tags) — every
- * render passes explicit tags so the library's image validation passes. */
-const TAGS = [
-	"controllers.main.containers.main.image.tag=v0.1.0-test",
-	"controllers.backup.containers.backup.image.tag=v0.1.0-test",
-];
+/** The published image every deploy artifact names. The chart's tags
+ * default to the appVersion, so a default render carries this exact
+ * reference — no explicit --set needed (and no REPLACEME to work around). */
+const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.1.0";
 
 /** helm presence — a hard env requirement (no kubectl/kustomize fallback
  * exists: the manifests are templates, not static yaml). */
@@ -70,7 +74,7 @@ async function render(
 		true,
 	);
 	const args = ["template", "sigrun", CHART_DIR, "--namespace", "sigrun"];
-	for (const flag of [...TAGS, ...set]) args.push("--set", flag);
+	for (const flag of set) args.push("--set", flag);
 	if (valuesFile) args.push("-f", valuesFile);
 	const { stdout } = await execFileAsync("helm", args, {
 		maxBuffer: 16 * 1024 * 1024,
@@ -130,6 +134,42 @@ describe("charts/sigrun lint + default render", () => {
 		// "0 ... failed" is the PASS shape, so assert it positively (a
 		// not.match(/failed/i) would match the zero-count success line).
 		expect(`${stdout}${stderr}`).toMatch(/1 chart\(s\) linted, 0 chart\(s\) failed/);
+	});
+
+	test("the default render names the published image and carries no REPLACEME", async () => {
+		// The chart ships pointing at the release's own image: the tag
+		// defaults to the appVersion, so a plain `helm template` (no --set)
+		// must carry the exact published reference. REPLACEME is the
+		// placeholder this release removed — its return would be a
+		// deploy-time 404 on an image that does not exist.
+		const { stdout } = await execFileAsync(
+			"helm",
+			["template", "sigrun", CHART_DIR, "--namespace", "sigrun"],
+			{ maxBuffer: 16 * 1024 * 1024, timeout: 30_000 },
+		);
+		expect(stdout).not.toMatch(/REPLACEME/);
+		expect(stdout).toContain(`image: ${PUBLISHED_IMAGE}`);
+	});
+
+	test("the backup CronJob renders the same published image", async () => {
+		const docs = await render(["controllers.backup.enabled=true"]);
+		const cron = docs.find((doc) => doc.kind === "CronJob");
+		expect(cron).toBeDefined();
+		const containers = (
+			cron as {
+				spec: {
+					jobTemplate: {
+						spec: { template: { spec: { containers: Array<{ image: string }> } } };
+					};
+				};
+			}
+		).spec.jobTemplate.spec.template.spec.containers;
+		// One image for the whole deployment: the backup sidecar runs the
+		// sigrun image itself (sqlite3 for the snapshot, the S3 client as an
+		// npm dependency) rather than a second published image.
+		expect(containers.map((container) => container.image)).toEqual([
+			PUBLISHED_IMAGE,
+		]);
 	});
 
 	test("default render: backup + monitoring off, core five kinds", async () => {
@@ -751,5 +791,26 @@ describe("values toggles", () => {
 		expect(service.metadata.annotations["example-annotation"]).toBe(
 			"example-value",
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// docker/docker-compose.yaml — the smoke / single-node path
+// ---------------------------------------------------------------------------
+
+describe("docker compose reference", () => {
+	test("parses, and its service names the published image with no build stanza", async () => {
+		// `docker compose config` is the parser (it validates interpolation
+		// and the schema); SIGRUN_DEFAULT_MODEL is a required variable, so
+		// the render passes a synthetic one — the literal is this test's own.
+		const { stdout } = await execFileAsync(
+			"docker",
+			["compose", "-f", COMPOSE_FILE, "config"],
+			{ timeout: 30_000, env: { ...process.env, SIGRUN_DEFAULT_MODEL: "acme/model" } },
+		);
+		expect(stdout).toContain(`image: ${PUBLISHED_IMAGE}`);
+		// The default is a PULL, not a local build: a friend running
+		// `docker compose up` gets the release's image.
+		expect(stdout).not.toMatch(/^\s+build:/m);
 	});
 });

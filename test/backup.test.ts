@@ -15,8 +15,8 @@
  *   restores and resumes — the App C named verification "live-harness
  *   backup resumes", automated as a test
  * - retention: fabricated >30-day-old files are pruned; fresh ones stay
- * - the s3 upload leg via a stubbed `aws` binary on PATH (records argv;
-   no real S3 is touched)
+ * - the s3 upload leg via an INJECTED client factory (an in-process fake
+   records the PutObject calls; no real S3, no network, no aws binary)
  * - fail-loud: sqlite3 failure → non-zero exit + stderr + no output file
  */
 
@@ -35,7 +35,12 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
-import { BACKUP_RETENTION_DAYS } from "../src/backup/run-backup.js";
+import {
+	BACKUP_RETENTION_DAYS,
+	runBackup,
+	setS3ClientFactory,
+} from "../src/backup/run-backup.js";
+import { parseBackupConfig } from "../src/config.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 /** The backup script under test, resolved through the repo (tsx runs TS). */
@@ -132,6 +137,64 @@ async function runScript(
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
 	};
+}
+
+/**
+ * Install a fake S3 client factory for the duration of one test; returns a
+ * restore function. The factory receives the real client config, so a test
+ * can assert what the deployment path would have used (endpoint,
+ * path-style) without ever constructing a client.
+ */
+function useFakeS3(
+	factory: (
+		config: unknown,
+	) => { send: (command: never) => Promise<unknown>; destroy: () => void },
+): () => Promise<void> {
+	setS3ClientFactory(factory as never);
+	return async () => {
+		// `undefined` restores the module's own production factory.
+		setS3ClientFactory();
+	};
+}
+
+/**
+ * Run `runBackup` in-process (the injected client only works in-process —
+ * a child process would build its own factory). Mirrors the script's own
+ * env parsing and exit-code discipline: a throw is a non-zero exit with
+ * the message on stderr.
+ */
+async function runInProcess(
+	dbPath: string,
+	backupEnv: Record<string, string>,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+	const saved: Record<string, string | undefined> = {};
+	for (const [key, value] of Object.entries(backupEnv)) {
+		saved[key] = process.env[key];
+		process.env[key] = value;
+	}
+	const savedStorage = process.env.SIGRUN_STORAGE_PATH;
+	process.env.SIGRUN_STORAGE_PATH = dbPath;
+	try {
+		const backup = parseBackupConfig(process.env);
+		if (backup === undefined) {
+			return { code: 1, stdout: "", stderr: "no backup target configured" };
+		}
+		await runBackup(dbPath, backup, process.env.SIGRUN_STATE_DIR);
+		return { code: 0, stdout: "", stderr: "" };
+	} catch (error) {
+		return {
+			code: 1,
+			stdout: "",
+			stderr: error instanceof Error ? error.message : String(error),
+		};
+	} finally {
+		for (const [key, value] of Object.entries(saved)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		if (savedStorage === undefined) delete process.env.SIGRUN_STORAGE_PATH;
+		else process.env.SIGRUN_STORAGE_PATH = savedStorage;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -515,57 +578,87 @@ describe("restore drill: live-harness backup resumes", () => {
 });
 
 // ---------------------------------------------------------------------------
-// S3 upload leg via a stubbed aws binary
+// S3 upload leg via the injected client factory (an in-process fake: no
+// real bucket, no network, no aws binary)
 // ---------------------------------------------------------------------------
 
-describe("runBackup (s3 target, stubbed aws)", () => {
-	test("uploads via aws s3 cp with bucket/prefix key; fails loud when aws fails", async () => {
-		const binDir = await mkdtemp(join(tmpdir(), "sigrun-bin-"));
-		cleanups.push(() => rm(binDir, { recursive: true, force: true }));
-		// The fake `aws`: records argv to a file, then exits with the
-		// AWS_STUB_EXIT env value (default 0).
-		const logFile = join(binDir, "argv.json");
-		await writeFile(
-			join(binDir, "aws"),
-			[
-				"#!/bin/sh",
-				`echo "$@" > "${logFile}"`,
-				`exit "\${AWS_STUB_EXIT:-0}"`,
-				"",
-			].join("\n"),
-			{ mode: 0o755 },
-		);
+describe("runBackup (s3 target, fake PutObject client)", () => {
+	test("uploads the snapshot and the marker with the bucket/prefix key; honours the endpoint; fails loud", async () => {
 		const { dbPath } = await bootHarness();
 		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
 		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
-		const result = await runScript(dbPath, {
+		const puts: Array<{ bucket: string; key: string; body: Uint8Array }> = [];
+		const configs: Array<Record<string, unknown>> = [];
+		const restore = useFakeS3((config) => {
+			configs.push(config as Record<string, unknown>);
+			return {
+				send: async (command: { input: Record<string, unknown> }) => {
+					puts.push({
+						bucket: command.input.Bucket as string,
+						key: command.input.Key as string,
+						body: command.input.Body as Uint8Array,
+					});
+					return {};
+				},
+				destroy: () => {},
+			};
+		});
+		cleanups.push(async () => restore());
+		const result = await runInProcess(dbPath, {
 			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
 			SIGRUN_BACKUP_S3_PREFIX: "nightly/",
-			// The S3-compatible-store leg (spec §4.3's pluggable target):
-			// the endpoint lands as aws's --endpoint-url.
+			// An S3-compatible store (spec §4.3's pluggable target): the
+			// endpoint must reach the client config with path-style addressing,
+			// or virtual-host resolution fails against MinIO/RustFS.
 			SIGRUN_BACKUP_S3_ENDPOINT: "https://s3.example.test:3900",
 			SIGRUN_STATE_DIR: stateDir,
-			// The stub dir PREPENDS to PATH: `aws` resolves to the stub while
-			// sqlite3 still resolves through the parent PATH.
-			PATH: `${binDir}:${process.env.PATH}`,
 		});
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe("");
-		const fs = await import("node:fs/promises");
-		const argv = (await fs.readFile(logFile, "utf8")).trim();
-		expect(argv).toContain("s3 cp");
-		expect(argv).toContain("s3://sigrun-backups/nightly/sigrun-");
-		expect(argv).toContain("--endpoint-url https://s3.example.test:3900");
+		expect(configs).toHaveLength(1);
+		expect(configs[0]).toMatchObject({
+			endpoint: "https://s3.example.test:3900",
+			forcePathStyle: true,
+		});
+		// The snapshot: prefix + generated name, carrying the sqlite bytes.
+		const snapshot = puts.find((put) => put.key.endsWith(".db"));
+		expect(snapshot).toBeDefined();
+		expect(snapshot!.bucket).toBe("sigrun-backups");
+		expect(snapshot!.key).toMatch(/^nightly\/sigrun-.*\.db$/);
+		expect(snapshot!.body.byteLength).toBeGreaterThan(0);
 
-		// And the fail-loud leg: aws exits non-zero → script fails, no
+		// And the fail-loud leg: an upload rejection fails the run, no
 		// silent success.
-		await fs.rm(logFile);
-		const failed = await runScript(dbPath, {
+		const failing = useFakeS3(() => ({
+			send: async () => {
+				throw new Error("acme: access denied");
+			},
+			destroy: () => {},
+		}));
+		cleanups.push(async () => failing());
+		const failed = await runInProcess(dbPath, {
 			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
-			PATH: `${binDir}:${process.env.PATH}`,
-			AWS_STUB_EXIT: "1",
+			SIGRUN_STATE_DIR: stateDir,
 		});
 		expect(failed.code).not.toBe(0);
-		expect(failed.stderr).toMatch(/aws/);
+		expect(failed.stderr).toMatch(/acme: access denied/);
+	});
+
+	test("no endpoint means AWS's own endpoints (no forcePathStyle)", async () => {
+		const { dbPath } = await bootHarness();
+		const stateDir = await mkdtemp(join(tmpdir(), "sigrun-backup-"));
+		cleanups.push(() => rm(stateDir, { recursive: true, force: true }));
+		const configs: Array<Record<string, unknown>> = [];
+		const restore = useFakeS3((config) => {
+			configs.push(config as Record<string, unknown>);
+			return { send: async () => ({}), destroy: () => {} };
+		});
+		cleanups.push(async () => restore());
+		const result = await runInProcess(dbPath, {
+			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
+			SIGRUN_STATE_DIR: stateDir,
+		});
+		expect(result.code).toBe(0);
+		expect(configs[0]?.forcePathStyle).toBeUndefined();
+		expect(configs[0]?.endpoint).toBeUndefined();
 	});
 });
