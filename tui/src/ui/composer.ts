@@ -17,6 +17,27 @@ export interface SlashInput {
 	readonly args: string;
 }
 
+/** Whether a command name is the skills channel (`/skill:name`, Task 2c):
+ *  expansion is server-side at admission, and an UNKNOWN skill passes
+ *  through unchanged — so a `skill:`-prefixed line is ALWAYS a submission,
+ *  never an endpoint command or a local error. (Checked on the LOWERCASED
+ *  parse; the line itself is submitted verbatim either way.) */
+export function isSkillCommandName(name: string): boolean {
+	return name.startsWith("skill:");
+}
+
+/** The text a command-picker selection inserts into the composer: an
+ *  EXPAND entry (Task 2c — a prompt template or a skill) inserts
+ *  `/name ` ALWAYS (args are its whole point; a skill carries no argsHint
+ *  but takes them), an arg-taking endpoint command inserts `/name ` for
+ *  its args, and an argless endpoint command inserts bare `/name` for
+ *  immediate execution. */
+export function commandInsertText(command: SlashCommand): string {
+	return command.kind === "expand" || command.argsHint !== undefined
+		? `/${command.name} `
+		: `/${command.name}`;
+}
+
 /**
  * Parse a slash-prefixed composer line; `undefined` when the input is not
  * a command (only a LEADING slash routes — "look at /etc" stays a message).

@@ -176,6 +176,17 @@ function countJsonlLines(jsonl: string): number | null {
 	return trimmed.length;
 }
 
+/** Whether a submitted command line is an EXPAND input (Task 2c) — one the
+ *  SERVER rewrites at admission (`kind: "expand"` catalog entries: prompt
+ *  templates and skills) — so the composer submits it as message text and
+ *  never calls an endpoint or errors locally. Any `skill:`-prefixed name
+ *  qualifies even when the catalog does not list it: an unknown skill is a
+ *  server-side pass-through, never a client-side unknown-command error. */
+function isExpandLine(name: string, commands: readonly CommandWire[]): boolean {
+	if (name.startsWith("skill:")) return true;
+	return commands.find((command) => command.name === name)?.kind === "expand";
+}
+
 /**
  * An attachment path → its §5 submission part: a known image extension
  * yields `{type:"image", path, mime}` (the mime is derivable from the path,
@@ -423,14 +434,17 @@ export function Composer(props: {
 	const menuOpen = slashQuery !== null && commands.length > 0;
 	const clampedHighlight = Math.min(highlight, Math.max(0, filteredCommands.length - 1));
 
-	/** Menu selection (click or menu-Enter): argless → execute; else insert. */
+	/** Menu selection (click or menu-Enter): argless → execute; else insert.
+	 *  An EXPAND entry (Task 2c) always inserts `/name ` — args are its
+	 *  whole point, and there is no endpoint to call: the server expands
+	 *  the submitted line at admission. */
 	function selectCommand(command: CommandWire): void {
-		if (command.argsHint === undefined) {
-			void executeCommand(command.name, "");
+		if (command.kind === "expand" || command.argsHint !== undefined) {
+			setHighlight(0);
+			draft.setText(`/${command.name} `);
 			return;
 		}
-		setHighlight(0);
-		draft.setText(`/${command.name} `);
+		void executeCommand(command.name, "");
 	}
 
 	/**
@@ -606,11 +620,16 @@ export function Composer(props: {
 		const text = draft.text.trim();
 		// A `/command args` line is a COMMAND, not a submission (Task 7): the
 		// slash path owns the Send button too — an unknown command errors
-		// visibly instead of being submitted as message text.
+		// visibly instead of being submitted as message text. EXCEPT an
+		// expand input (Task 2c — `/skill:name`, a prompt template): that IS
+		// a submission — the server expands the text at admission — so it
+		// falls through to the normal submit path below, verbatim.
 		if (text.startsWith("/")) {
 			const { name, args } = parseCommandLine(draft.text);
-			await executeCommand(name, args);
-			return;
+			if (!isExpandLine(name, commands)) {
+				await executeCommand(name, args);
+				return;
+			}
 		}
 		// §7.1: submit returns at ADMISSION, so `sending` spans only the
 		// in-flight admit (not the whole run). The guard holds from the click

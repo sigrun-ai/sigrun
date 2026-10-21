@@ -219,6 +219,33 @@ describe("runSettled contract", () => {
 		expect(event.outcome).toHaveProperty("answerEntryId");
 	});
 
+	// Task 2c: an expanded submission is placed as a `sigrun.user.expanded`
+	// entry (NOT `pi.user`) whose `model` carries the EXPANDED text — the
+	// seam must still resolve it (that text is what the model received).
+	test("an expanded submission's inputTexts resolve the admitted (expanded) text", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("greetings")],
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const submission = await root.submit(
+			{
+				type: "input",
+				content: "Greet with: hej",
+				entry: {
+					kind: "sigrun.user.expanded",
+					data: { typed: "/skill:greet hej", command: "skill:greet" },
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+		const [event] = await nextDelivered(fixture);
+		expect(event.inputTexts).toEqual(["Greet with: hej"]);
+	});
+
 	test("a factory runSettled that is not a function is quarantined with the reason", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-seam-"));
 		dirs.push(dir);

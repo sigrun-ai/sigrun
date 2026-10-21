@@ -98,13 +98,18 @@ export function textContent(
 export function makeEntry(
 	kind: string,
 	model: readonly MessageWire[],
-	init?: { readonly id?: number; readonly conversationId?: number },
+	init?: {
+		readonly id?: number;
+		readonly conversationId?: number;
+		readonly data?: unknown;
+	},
 ): ConversationEntryWire {
 	return {
 		id: init?.id ?? 1,
 		conversationId: init?.conversationId ?? 1,
 		kind,
 		model,
+		...(init?.data === undefined ? {} : { data: init.data }),
 	};
 }
 

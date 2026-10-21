@@ -109,7 +109,9 @@ export interface HandlerContext {
 export type RunSettledEvent = {
 	readonly conversationId: ConversationId;
 	readonly inputs: readonly SubmissionId[];
-	/** Text blocks of each input's `pi.user` entry, concatenated; unresolvable/withdrawn → "" at that position. */
+	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
+	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
+	 *  unresolvable/withdrawn → "" at that position. */
 	readonly inputTexts: readonly string[];
 	readonly outcome:
 		| {

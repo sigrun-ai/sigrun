@@ -70,6 +70,11 @@ const COMMANDS = [
 	{ name: "model", description: "Switch model", argsHint: "<provider/model>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
 	{ name: "thinking", description: "Set thinking level", argsHint: "<level>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
 	{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-commands", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
+	// Task 2c expand entries: a prompt template (with its argument-hint as
+	// argsHint) and a skill (no hint) — no endpoint; the server expands at
+	// admission.
+	{ name: "review", description: "Review the change", argsHint: "<focus>", kind: "expand" },
+	{ name: "skill:greet", description: "Greet a person warmly", kind: "expand" },
 ];
 
 function makeHarness(init?: {
@@ -728,6 +733,8 @@ describe("Composer", () => {
 				"/model",
 				"/thinking",
 				"/hello",
+				"/review",
+				"/skill:greet",
 			]);
 		});
 
@@ -911,6 +918,97 @@ describe("Composer", () => {
 			// USAGE error (client-side); a VALID level reaches the failing call.
 			await submitLine(renderer, "/thinking high");
 			expect(textContent(renderer.toJSON())).toContain("failed with status 400");
+		});
+
+		// ── Expand commands (Task 2c): /skill:name and prompt templates ──
+		// The menu offers them like any command, but selecting INSERTS and
+		// submitting SENDS the line — the server expands at admission, so
+		// the composer never calls an endpoint and never errors locally.
+
+		test("the menu shows expand entries with their argument-hint, filtered by prefix", async () => {
+			const { client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/re");
+			expect(menuNames(renderer)).toEqual(["/review"]);
+			// The template's argument-hint renders in the option (the menu is
+			// the only text on screen with `/review` in it right now).
+			expect(textContent(renderer.toJSON())).toContain("<focus>");
+			await typeText(renderer, "/skill:g");
+			expect(menuNames(renderer)).toEqual(["/skill:greet"]);
+		});
+
+		test("selecting an expand template from the menu inserts `/review ` and does NOT submit", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/re");
+			const option = renderer.root.findByProps({
+				className: "composer-command-name",
+			});
+			await act(async () => {
+				option.parent!.props.onClick();
+			});
+			expect(composerTextarea(renderer).props.value).toBe("/review ");
+			// Nothing was called — insertion only (the server expands on send).
+			expect(
+				calls.filter((c) => c.input.endsWith("/submissions")),
+			).toEqual([]);
+		});
+
+		test("selecting a skill from the menu inserts `/skill:greet ` (trailing space even with no argsHint)", async () => {
+			const { client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await typeText(renderer, "/skill:g");
+			const option = renderer.root.findByProps({
+				className: "composer-command-name",
+			});
+			await act(async () => {
+				option.parent!.props.onClick();
+			});
+			expect(composerTextarea(renderer).props.value).toBe("/skill:greet ");
+		});
+
+		test("sending `/review concurrency` SUBMITS the line (the server expands at admission)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/review concurrency");
+			const posts = calls.filter((c) => c.input.endsWith("/submissions"));
+			expect(posts).toEqual([
+				{
+					input: "/v1/conversations/1/submissions",
+					method: "POST",
+					body: JSON.stringify({
+						input: [{ type: "text", text: "/review concurrency" }],
+					}),
+				},
+			]);
+			// No endpoint call, no alert — expansion is the server's job.
+			expect(textContent(renderer.toJSON())).not.toContain("unknown command");
+			expect(
+				renderer.root.findAllByProps({ role: "alert" }),
+			).toHaveLength(0);
+		});
+
+		test("sending `/skill:greet hej` submits the line verbatim", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/skill:greet hej");
+			const posts = calls.filter((c) => c.input.endsWith("/submissions"));
+			expect(posts.map((post) => post.body)).toEqual([
+				JSON.stringify({ input: [{ type: "text", text: "/skill:greet hej" }] }),
+			]);
+		});
+
+		test("an UNKNOWN skill name is never an unknown-command error — it submits (the server passes it through)", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/skill:nope x");
+			expect(
+				calls.filter((c) => c.input.endsWith("/submissions")).length,
+			).toBe(1);
+			expect(textContent(renderer.toJSON())).not.toContain("unknown command");
+			expect(
+				renderer.root.findAllByProps({ role: "alert" }),
+			).toHaveLength(0);
 		});
 	});
 });

@@ -79,6 +79,7 @@ import {
 	type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
 import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
 import type { HostEventWire } from "@sigrun/shared/views";
@@ -178,7 +179,9 @@ export type LifecycleEvent = {
 export type RunSettledEvent = {
 	readonly conversationId: ConversationId;
 	readonly inputs: readonly SubmissionId[];
-	/** Text blocks of each input's `pi.user` entry, concatenated; unresolvable/withdrawn → "" at that position. */
+	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
+	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
+	 *  unresolvable/withdrawn → "" at that position. */
 	readonly inputTexts: readonly string[];
 	readonly outcome:
 		| {
@@ -1461,14 +1464,22 @@ export class EventBus {
 		}
 	}
 
-	/** The input text of one entry: `pi.user` `model[0]`'s text blocks joined. */
+	/** The input text of one entry: a `pi.user` (or an expanded input's
+	 *  `sigrun.user.expanded`) entry's `model[0]` text blocks joined — for
+	 *  an expanded input that is the ADMITTED text (what the model
+	 *  received), exactly what `runSettled` hands its handlers. */
 	async #entryText(
 		conversationId: ConversationId,
 		id: EntryId,
 		context: Context,
 	): Promise<string> {
 		const entry = await this.#readEntry(conversationId, id, context);
-		if (entry === undefined || !UserEntry.is(entry)) return "";
+		if (entry === undefined) return "";
+		// An expanded input REPLACES the `pi.user` kind (Task 2c's
+		// `entry: {kind: …}` placement) — both kinds are input entries.
+		if (!UserEntry.is(entry) && entry.kind !== EXPANDED_ENTRY_KIND) {
+			return "";
+		}
 		const message = entry.model?.[0];
 		if (message === undefined || message.role !== "user") return "";
 		if (typeof message.content === "string") return message.content;
