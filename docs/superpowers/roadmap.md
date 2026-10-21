@@ -54,7 +54,7 @@ These are the extensions on the user's own pi install. Porting them makes a sigr
 
 ### 2e. Compression: VCC and/or OptChat
 
-- **Needs:** pi-durable's `CompactionHooks.beforeCompact` (decline, or return a summary). That is the only compaction seam (pi-parity spec slice 4); pi-vcc's per-model thresholds need a policy override that pi-durable 1.2.0 doesn't expose.
+- **Needs:** pi-durable's `CompactionHooks.beforeCompact` (decline, or return a summary). That is the only compaction seam (pi-parity spec slice 4); pi-vcc's per-model thresholds need a policy override that pi-durable 1.3.0 doesn't expose.
 - **Doesn't need UI blocks.**
 - **Decide:** VCC (deterministic summary, overrides compaction thresholds) versus OptChat (replaces compaction with a sliding view). OptChat needs a context-shaping hook pi-durable may not have; check before choosing. A per-model threshold may need an upstream pi-durable change; file it if so.
 - **First step:** a spike: implement a VCC-style `beforeCompact` summary in an extension and measure against the default summarizer on a long fixture conversation.

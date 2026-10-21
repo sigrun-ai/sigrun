@@ -9,7 +9,7 @@
 - **Chat surfaces reuse U3's machinery** (routes, access cache, watcher registry, action dedup), addressed by `(conversationId, entryId)`. Core is the action handler: it applies moves, checks and edits itself and appends change records.
 - **The note step lives where turns are admitted.** Core-hardening already funnels the composer route and W5's `host.conversations.submit` through `submitOp` (`src/server/conversation-ops.ts`); W4's `fireJob` (`src/jobs/fire.ts`) calls `conversation.submit` directly in two places. A new `writePendingNote` runs immediately before each of those three `conversation.submit` calls. Block answers go through `submitOp`, which gains an `entry` option for the `InputEntry`.
 
-**Tech Stack:** pi-durable 1.2.0 (`defineEntry`/typed entries, `defineDocFamily`, `SubmissionDraft` with `requestId` and `InputEntry`, `submissionByRequest`), U0 (`validateTree`, `applyOps`, `toText`), U3 (surface service).
+**Tech Stack:** pi-durable 1.3.0 (release Task 0; `defineEntry`/typed entries, `defineDocFamily`, `SubmissionDraft` with `requestId` and `InputEntry`, `submissionByRequest`), U0 (`validateTree`, `applyOps`, `toText`), U3 (surface service).
 
 **Spec:** `docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md` §8 (all), §6.2–§6.4 (chat rows), ruling 19, §16 (Chat blocks).
 
