@@ -59,7 +59,12 @@ test("core section order: identity first, guidance after long-term-memory", asyn
 	// end — the order is the deliverable (install order = render order).
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-boot-order-"));
 	try {
-		const opened = await openHarness(configWith(dir), { env: {} });
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			// Hermetic: this suite pins the CORE section order, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
+		});
 		try {
 			const sections = opened.registry.snapshot().sections();
 			expect(sections.map((entry) => entry.section.key)).toEqual([
@@ -106,6 +111,9 @@ test("an extension declaring a reserved section key is quarantined and boot cont
 	try {
 		const opened = await openHarness(configWith(dir), {
 			env: {},
+			// Hermetic: this suite pins the CORE section order, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			extensionSpecifiers: [SECTION_COLLISION_SPECIFIER],
 		});
 		try {
@@ -143,6 +151,9 @@ test("guidance sections install after loadExtensions (memory section precedes th
 	try {
 		const opened = await openHarness(configWith(dir), {
 			env: {},
+			// Hermetic: this suite pins the CORE section order, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			extensionSpecifiers: [FIXTURE_SPECIFIER],
 		});
 		try {

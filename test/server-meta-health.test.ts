@@ -162,6 +162,10 @@ async function bootServer(options?: {
 			: await seededIdentity(dir),
 		extensions: contributors,
 		env: options?.env ?? {},
+		// Hermetic: this suite pins memory-health + quarantine outcomes for
+		// its FIXTURE extensions, not the built-in surface (builtins: false
+		// = the pre-Task-2 boot shape).
+		builtins: false,
 		extensionSpecifiers: options?.extensionSpecifiers,
 	});
 	// The §6.8 derivation tests hand-set `backup` (no target env here);

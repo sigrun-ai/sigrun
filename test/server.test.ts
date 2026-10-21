@@ -83,6 +83,11 @@ async function bootServer(options?: {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
+		// Hermetic: this suite pins the server surface's outcomes for its
+		// fixture extensions, not the built-in surface (builtins: false =
+		// the pre-Task-2 boot shape — test/builtins.test.ts owns the
+		// default-install /v1/extensions + /v1/meta rows).
+		builtins: false,
 		extensionSpecifiers: options?.extensionSpecifiers,
 	});
 	const app = await createServer(opened, config);

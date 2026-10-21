@@ -59,6 +59,10 @@ async function withOpenedHarness(
 	try {
 		opened = await openHarness(configWith(dir), {
 			env: {},
+			// Hermetic: this suite pins the provider pathway's outcomes for
+			// its FIXTURE specifiers, not the built-in surface (builtins:
+			// false = the pre-Task-2 boot shape).
+			builtins: false,
 			extensionSpecifiers: specifiers,
 		});
 		await run(opened);

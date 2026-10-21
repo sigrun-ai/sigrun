@@ -127,6 +127,9 @@ test("a valid fixture extension installs through the loader", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [FIXTURE_SPECIFIER],
 		});
@@ -169,6 +172,9 @@ test("an extension resolving a different pi-durable is quarantined; the healthy 
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [SKEW_SPECIFIER, FIXTURE_SPECIFIER],
 		});
@@ -212,6 +218,9 @@ test("a failing specifier is quarantined; the valid one still installs", async (
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [
 				"file:///nonexistent-package-does-not-exist.js",
@@ -245,7 +254,12 @@ test("a failing specifier is quarantined; the valid one still installs", async (
 test("zero extensions: boot succeeds with the no-op memory section present", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
-		const opened = await openHarness(configWith(dir), { env: {} });
+		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
+			env: {},
+		});
 		try {
 			const snapshot = opened.registry.snapshot();
 			const memorySections = snapshot
@@ -272,6 +286,9 @@ test("two extensions registering the same tool name: console.warn names the pair
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [FIXTURE_SPECIFIER, COLLISION_SPECIFIER],
 		});
@@ -307,6 +324,9 @@ test("no collision: distinct tool names install silently", async () => {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [FIXTURE_SPECIFIER],
 		});
@@ -334,6 +354,9 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [MEMORY_SPECIFIER],
 		});
@@ -379,6 +402,9 @@ test("a factory result carrying submit loads ok and warns (retired pass-through)
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-submit-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [MEMORY_SPECIFIER],
 		});
@@ -411,6 +437,9 @@ test("a named-export package loads ok but warns (deprecated bridge)", async () =
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-named-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [LEGACY_NAMED_SPECIFIER],
 		});
@@ -449,6 +478,9 @@ test("a zero-arg factory is invoked with NO arguments (no host leak into default
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-zeroarg-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [ZEROARG_SPECIFIER],
 		});
@@ -476,6 +508,9 @@ test("the factory-captured host is the final host (re-key mutates in place)", as
 		let opened: Awaited<ReturnType<typeof openHarness>> | undefined;
 		try {
 			opened = await openHarness(configWith(dir), {
+				// Hermetic: the loader contract is this suite's subject, not the
+				// built-in surface (builtins: false = the pre-Task-2 boot shape).
+				builtins: false,
 				env: {},
 				extensionSpecifiers: [SEAM_SPECIFIER],
 			});
@@ -538,6 +573,9 @@ test("a skills-only git package loads ok: the .ts pi extension is skipped with o
 			configDir: dir,
 		});
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionEntries: resolutions,
 		});
@@ -612,6 +650,9 @@ test("a package declaring an entry that does not resolve is quarantined (skills 
 			{ log: false, configDir: dir },
 		);
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionEntries: resolutions,
 		});
@@ -636,6 +677,9 @@ test("a factory result's skills field contributes skill dirs under the extension
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-factoryskills-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [
 				pathToFileURL(
@@ -696,6 +740,9 @@ test("a factory result with a nonexistent skill dir is quarantined", async () =>
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	try {
 		const opened = await openHarness(configWith(dir), {
+			// Hermetic: the loader contract is this suite's subject, not the
+			// built-in surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			env: {},
 			extensionSpecifiers: [pathToFileURL(join(fixtureDir, "index.js")).href],
 		});

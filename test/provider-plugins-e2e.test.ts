@@ -202,6 +202,10 @@ async function bootDeployment(): Promise<Deployment> {
 		identity: await seededIdentity(configDir),
 		extensionEntries: resolutions,
 		env,
+		// Hermetic: this suite pins the four provider plugins' boot
+		// readiness, not the built-in surface (builtins: false = the
+		// pre-Task-2 boot shape).
+		builtins: false,
 		settingsDir: configDir,
 		packagesDir,
 	});

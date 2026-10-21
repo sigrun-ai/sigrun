@@ -138,6 +138,10 @@ async function bootSwapHarness(firstModel: string): Promise<OpenedHarness> {
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		// Hermetic: scripted-response boots must not carry the built-ins'
+		// unscripted extra prompt section; the patching behavior (which
+		// sections the model requests diff) is this suite's subject.
+		builtins: false,
 		settingsDir: dir,
 	});
 	closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
