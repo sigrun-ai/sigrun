@@ -20,6 +20,7 @@
 
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../context.js";
+import { BUILTIN_EXTENSIONS } from "../../harness/builtins.js";
 import type {
 	ExtensionInfo,
 	ExtensionsResponse,
@@ -42,7 +43,12 @@ export function registerExtensionRoutes(
 	// The inventory: outcomes + declared kinds + workers + routes, one
 	// entry per configured extension, in load order. Pure synchronous
 	// derivations over boot-retained state (the /v1/meta discipline) — a
-	// client may cache it per boot.
+	// client may cache it per boot. Built-in extensions (Task 2) carry
+	// `builtin: true` from their outcomes; a REPLACED built-in (a
+	// configured extension resolved to the same package name) appends a
+	// row here — `builtin: true`, `replacedBy` the configured specifier,
+	// status "replaced" — while a DISABLED one is absent entirely
+	// (ruling 6).
 	app.get("/v1/extensions", async (): Promise<ExtensionsResponse> => {
 		const workerStatuses = opened.workerStatuses();
 		const extensions: ExtensionInfo[] = opened.extensionOutcomes.map(
@@ -59,6 +65,7 @@ export function registerExtensionRoutes(
 					...(outcome.version === undefined
 						? {}
 						: { version: outcome.version }),
+					...(outcome.builtin === true ? { builtin: true } : {}),
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],
@@ -71,6 +78,27 @@ export function registerExtensionRoutes(
 				};
 			},
 		);
+		// Replaced built-ins (Task 2 ruling 5): one row each, under the slug
+		// the built-in itself would have loaded under (`BUILTIN_EXTENSIONS
+		// .slug` — the declared extension name's slug, e.g. `sigrun-mcp` for
+		// the package `sigrun-ext-mcp`), appended after the loaded set.
+		for (const skipped of opened.builtinSkipped) {
+			if (skipped.reason !== "replaced") continue;
+			const slug = BUILTIN_EXTENSIONS.find(
+				(builtin) => builtin.key === skipped.key,
+			)?.slug;
+			if (slug === undefined) continue;
+			extensions.push({
+				name: slug,
+				status: "replaced",
+				builtin: true,
+				...(skipped.by === undefined ? {} : { replacedBy: skipped.by }),
+				interactionKinds: [],
+				ambientKeys: [],
+				workers: [],
+				routes: [],
+			});
+		}
 		return { extensions };
 	});
 

@@ -669,6 +669,16 @@ export interface ExtensionInfo {
 	readonly workers: readonly WorkerStatus[];
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
+	/**
+	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
+	 * built-in (codemode / MCP / tool search); ABSENT on configured
+	 * extensions. A replaced built-in reports its row with `builtin: true`
+	 * and `replacedBy` (its status is the skip, never `"ok"`); a disabled
+	 * built-in is absent from the list entirely.
+	 */
+	readonly builtin?: boolean;
+	/** The configured specifier that replaced this built-in (replacement rule). */
+	readonly replacedBy?: string;
 }
 
 /** One `GET /v1/extensions` entry's route rows (W5 Task 2, spec §9.2). */
