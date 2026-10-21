@@ -47,6 +47,8 @@ import type {
 import type { JobSpec } from "@sigrun/shared/jobs";
 import {
 	JobDoc,
+	patchJob,
+	scanJobs,
 	writeJobChange,
 	type JobRecord,
 } from "./docs.js";
@@ -83,7 +85,7 @@ export function extensionJobId(slug: string, name: string): string {
 }
 
 /** Every non-terminal schedule task, keyed by jobId. */
-async function liveScheduleTasksByJob(
+export async function liveScheduleTasksByJob(
 	storage: Storage,
 	ctx: Context,
 ): Promise<Map<string, TaskRecord<JsonValue, JsonValue, JsonValue>[]>> {
@@ -106,6 +108,11 @@ async function liveScheduleTasksByJob(
 			) {
 				continue;
 			}
+			// An abort-marked task is not a live executor: `abortTask`
+			// returns "marked" and completes asynchronously, so a pending
+			// abort must not count as the job's executor (reconcile would
+			// skip creating the replacement, or re-abort a settling task).
+			if (record.abortRequested === true) continue;
 			const jobId = (record.input as { jobId?: unknown }).jobId;
 			if (typeof jobId !== "string") continue;
 			const list = byJob.get(jobId) ?? [];
@@ -302,7 +309,6 @@ async function scanRecords(
 	ctx: Context,
 ): Promise<{ id: string; record: JobRecord }[]> {
 	// scanJobs already pages + reads current values.
-	const { scanJobs } = await import("./docs.js");
 	return scanJobs(storage, ctx);
 }
 
@@ -344,7 +350,6 @@ async function patchRecord(
 	change: (draft: JobRecord) => void,
 	ctx: Context,
 ): Promise<void> {
-	const { patchJob } = await import("./docs.js");
 	await patchJob(harness, id, change as never, ctx);
 }
 

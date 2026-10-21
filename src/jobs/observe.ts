@@ -27,7 +27,7 @@ import type { JobRunWire } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "../harness/settings.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { EventBus, type RunSettledEvent } from "../harness/event-bus.js";
-import { JobDoc, JobRunDoc, listRuns, patchJob, pruneHistory } from "./docs.js";
+import { JobDoc, JobRunDoc, listRuns, patchJob, pruneHistory, scanJobs } from "./docs.js";
 import type { JobRuntimeDeps } from "./fire.js";
 
 /** The `sigrun.job.run` key a run record was written under. */
@@ -168,7 +168,6 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 				// jobs whose action is `task` would need the record read per
 				// job; the scan below walks ALL live job records once, then
 				// each one's runs (the same shape reconcile's pass-2 uses).
-				const { scanJobs } = await import("./docs.js");
 				const jobs = await scanJobs(deps.storage, ctx);
 				for (const { id } of jobs) {
 					const runs = await listRuns(
