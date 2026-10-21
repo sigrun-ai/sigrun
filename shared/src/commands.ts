@@ -16,9 +16,10 @@
  * the registry only tells it what exists and where it goes. Scope
  * (controller rulings): ONLY commands mapping to EXISTING endpoints.
  * `/login`/`/logout` are core-spec §6.4 exclusions (credentials never
- * cross the API), `/skill:name` has no endpoint (deferred), and prompt
- * templates are a separate slice. `/model` and `/thinking` ARE included:
- * both map cleanly onto `POST .../configure`'s existing
+ * cross the API); `/skill:name` and prompt templates are Task 2c's
+ * `kind: "expand"` entries (no endpoint — the server expands the text
+ * at admission). `/model` and `/thinking` ARE included: both map
+ * cleanly onto `POST .../configure`'s existing
  * `{model?, thinking?}` body (each sends exactly one of the two fields).
  */
 
@@ -48,7 +49,17 @@ export interface SlashCommand {
 	 * there with `{args}` and renders a returned `notice`.
 	 */
 	readonly extension?: string;
-	readonly endpoint: SlashCommandEndpoint;
+	/**
+	 * How the composer satisfies the command. ABSENT means `"endpoint"`
+	 * (every pre-existing entry — the composer calls `endpoint`);
+	 * `"expand"` (Task 2c) means the client inserts `/name ` into the
+	 * composer and the SERVER expands the submitted text at admission
+	 * (`/skill:name` and prompt templates) — no endpoint exists and none
+	 * is needed.
+	 */
+	readonly kind?: "endpoint" | "expand";
+	/** The endpoint an `endpoint`-kind entry drives; absent when `kind === "expand"`. */
+	readonly endpoint?: SlashCommandEndpoint;
 }
 
 /** The `GET /v1/commands` response (spec §5 response conventions). */

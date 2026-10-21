@@ -5,10 +5,14 @@
  * may cache them.
  */
 
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import { aggregateHealth } from "../../harness/health.js";
 import { isBackupMarkerStale, readBackupMarker } from "../../backup/marker.js";
-import type { CommandsResponse } from "../commands.js";
+import { expandableTemplates } from "../../commands/expand.js";
+import { discoverTemplates } from "../../commands/templates.js";
+import { listSkills } from "../../skills/index.js";
+import { expandCommandEntries, type CommandsResponse } from "../commands.js";
 import type { ServerContext } from "../context.js";
 import { HARNESS_VERSION, SCHEMA_VERSION } from "../schema-fixture.js";
 import type { MetaResponse } from "../views.js";
@@ -125,9 +129,35 @@ export function registerMetaRoutes(
 	// command drives (pi parity: thin metadata over the endpoints the other
 	// routes serve). Since W5 Task 3 this is the MERGED catalog (the core
 	// table + extension entries, each carrying its `extension` slug and
-	// invoke endpoint) — still a boot constant (like /v1/models), so a
-	// client may cache it. See `commands.ts` for the scope rulings.
+	// invoke endpoint). Since Task 2c the response is built PER REQUEST:
+	// the trailing `kind: "expand"` entries (every discovered skill as
+	// `skill:<name>`, plus the templates) are re-scanned live — skills and
+	// templates appear the moment their files land, no reload command. The
+	// core + extension halves remain boot constants; see `commands.ts` for
+	// the scope rulings.
 	app.get("/v1/commands", async (): Promise<CommandsResponse> => {
-		return { commands: commandCatalog.commands };
+		// The workspace root (the first of the three) reads through a
+		// workspace env, exactly like skill discovery at generation time;
+		// the catalog scan uses the root conversation's env — the static
+		// workspace every conversation resolves to today.
+		const expansion = opened.commandExpansion;
+		const env = await opened.envBuilder(
+			{ conversationId: ctx.rootId, read: opened.harness },
+			BACKGROUND_CONTEXT,
+		);
+		if (env === undefined) {
+			throw new Error("envBuilder returned no ExecutionEnv");
+		}
+		const skills = await listSkills(env, BACKGROUND_CONTEXT, expansion.skills);
+		const templates = expandableTemplates(
+			await discoverTemplates(env, BACKGROUND_CONTEXT, expansion.templates),
+			expansion.commandNames(),
+		);
+		return {
+			commands: [
+				...commandCatalog.commands,
+				...expandCommandEntries(skills, templates),
+			],
+		};
 	});
 }

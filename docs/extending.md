@@ -665,6 +665,33 @@ not resolve still quarantines.
 The rendered section is capped at `skills.sectionMaxBytes` (default
 4096, a live setting) with a truncation notice.
 
+## Prompt templates
+
+A package may also ship **prompt templates** — the `/name` commands
+whose bodies are Markdown files — through a conventional `prompts/`
+directory at the package root:
+
+```
+my-package/
+  package.json
+  prompts/
+    review.md      → /review
+    deploy.md      → /deploy
+```
+
+No manifest field is needed: any `prompts/` directory at an installed
+package's root is discovered (attributed to the package, in
+`extensions[]` install order). Template files are direct `.md`
+children only; frontmatter `description` (else the first non-empty
+line) feeds the `/` menu and optional `argument-hint` hints the
+arguments. Templates substitute shell-quoted arguments
+(`$1`, `$@`, `${1:-default}`, `${@:N}`, `${@:N:L}`) and are expanded
+server-side at admission — see README's “Skills and prompt
+templates”. The user dir `<config-dir>/prompts/` and the workspace's
+`prompts/` are the other two roots, with the same workspace > user >
+packages precedence as skills; a template whose name collides with a
+core or extension command is skipped with one warning.
+
 ## Notifiers
 
 A factory result may declare `notifiers` — transports core delivers
