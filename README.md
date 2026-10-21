@@ -47,15 +47,14 @@ client is the optional companion package (`npm i -g @sigrun/tui` —
 
 ## Quickstart
 
-A fresh install boots with zero configuration and walks the first user
-through onboarding in the UI: open the served URL (or run `sigrun run`
-for the terminal client), follow the onboarding prompt, add a provider
-credential (any OpenAI-compatible endpoint, or one of the
-`@sigrun/provider-*` plugins), pick the default model it offers, and
-chat — the first message creates the conversation.
+**A model and a credential come first.** `sigrun serve` refuses to boot
+without a default model — `SIGRUN_DEFAULT_MODEL` (or `defaultModel` in
+`settings.json`) — and every model needs a provider credential before it
+can answer. So the real first run is: pick a provider, set the model,
+then start the server.
 
-Minimum manual configuration is a model plus OpenAI-compatible
-credentials:
+The smallest configuration that boots, using any [OI]-compatible
+endpoint:
 
 ```bash
 export SIGRUN_DEFAULT_MODEL=openai/gpt-4o-mini      # provider/model-id
@@ -68,7 +67,26 @@ sigrun serve     # listens on :3000
 (`SIGRUN_MODEL` still works as a deprecated alias for
 `SIGRUN_DEFAULT_MODEL` — one release cycle, with a boot warning.)
 
-Then open `http://localhost:3000/` (web UI) or drive the API:
+Or install a provider plugin and let it supply the catalog — then the
+only configuration is which of its models to default to:
+
+```bash
+# settings.json: { "extensions": ["@sigrun/provider-ollama@^0.1.0"] }
+export SIGRUN_DEFAULT_MODEL=ollama/glm-5.3-flash
+sigrun serve
+```
+
+**Then claim the install.** The first request opens an onboarding gate:
+the server prints a setup code to its log, and the web UI (or
+`sigrun token create`) uses it to claim the first admin account — every
+later user is an invite. Nothing else is required; the first message in
+a new conversation creates it.
+
+```bash
+grep 'setup code' <the server log>   # sigrun setup code: N42E-HB2G
+```
+
+Open `http://localhost:3000/` (web UI) or drive the API:
 
 ```bash
 curl localhost:3000/v1/meta

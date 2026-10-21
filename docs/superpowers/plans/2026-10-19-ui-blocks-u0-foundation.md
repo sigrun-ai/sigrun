@@ -172,7 +172,7 @@
 - Create: `src/blocks/builders.ts`, `src/blocks/index.ts` (re-exports builders, types, `validateTree`)
 - Modify: `package.json` (`exports["./blocks"]` → `{types: "./dist/blocks/index.d.ts", default: "./dist/blocks/index.js"}`; keep W5's `.` and `./extension`), `tsconfig.build.json` (include `src/blocks`)
 - Modify: `src/harness/packages.ts` (`HOST_RUNTIME_MODULES` gains `"@sigrun/sigrun"`), `src/harness/loader.ts` (`EXACT_HOST_MODULES` gains `"@sigrun/sigrun"`: any version difference quarantines, as for pi-durable)
-- Modify: `docs/extending.md` (one paragraph: `sigrun` is a `peerDependency: "*"`; import builders from `@sigrun/sigrun/blocks`)
+- Modify: `docs/extending.md` (one paragraph: `@sigrun/sigrun` is a `peerDependency: "*"`; import builders from `@sigrun/sigrun/blocks`)
 - Modify: `src/config.ts` (`server.dev`, env `SIGRUN_DEV`, strict `true`/`false`, default false), `src/server/routes/meta.ts` (`/v1/meta` reports `dev`); U1's gallery, U3's error bodies and U4 consume it
 - Test: `test/blocks-builders.test.ts`, `test/packages.test.ts` (host link), `test/fixtures/fixture-blocks-ext/` (an extension importing `@sigrun/sigrun/blocks`)
 
@@ -182,8 +182,8 @@
 - [ ] **Step 1: Write failing tests:**
   - `tree(page({title: "T", main: [markdown({text: "x"})]}))` deep-equals the hand-written JSON and passes `validateTree(…, {placement: "view"})`;
   - the §14.1 example (with `groups` as a literal) validates with `handlers: new Set(["move"])`;
-  - packages: after boot, `<packagesDir>/node_modules/sigrun` is a symlink to the running package root; `fixture-blocks-ext`'s factory imports `@sigrun/sigrun/blocks` and returns a tree whose `v` equals the server's `BLOCK_SET_VERSION`;
-  - an extension whose own `node_modules/sigrun` has a different version is quarantined with the same message shape pi-durable skew produces;
+  - packages: after boot, `<packagesDir>/node_modules/@sigrun/sigrun` is a symlink to the running package root; `fixture-blocks-ext`'s factory imports `@sigrun/sigrun/blocks` and returns a tree whose `v` equals the server's `BLOCK_SET_VERSION`;
+  - an extension whose own `node_modules/@sigrun/sigrun` has a different version is quarantined with the same message shape pi-durable skew produces;
   - `SIGRUN_DEV=1` → `/v1/meta` has `dev: true`; unset → `false`; `SIGRUN_DEV=yes` → boot error naming the variable.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** `npm test && npm run typecheck && npm run build` — PASS; `node -e "import('@sigrun/sigrun/blocks')"` from a scratch dir with the package linked resolves.
 - [ ] **Step 5: Commit** `git commit -m "blocks: typed builders as @sigrun/sigrun/blocks; sigrun linked as a host runtime module"`.

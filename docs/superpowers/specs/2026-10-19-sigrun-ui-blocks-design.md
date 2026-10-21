@@ -1171,7 +1171,7 @@ render: async ({ principal, params }) => ({
 - Builders return plain JSON; there is no runtime besides them.
 - **How extensions get it.** `@sigrun/sigrun/blocks` must be the same code the
   server runs, so the builders emit the server's block-set version:
-  - extensions list `sigrun` as a `peerDependency` (`"*"`), never a
+  - extensions list `@sigrun/sigrun` as a `peerDependency` (`"*"`), never a
     dependency, matching how pi-durable and pi-ai are handled;
   - `@sigrun/sigrun` joins `HOST_RUNTIME_MODULES` (`src/harness/packages.ts`), so
     the server links its own copy into the packages directory and every
