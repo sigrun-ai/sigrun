@@ -40,6 +40,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { JobDeclaredError, type JobsService } from "../src/jobs/index.js";
+import { liveScheduleTasksByJob } from "../src/jobs/reconcile.js";
 import { createScheduleTask } from "../src/jobs/task.js";
 import { patchJob, readJob } from "../src/jobs/docs.js";
 import { specHash } from "../src/jobs/spec.js";
@@ -168,7 +169,11 @@ async function reboot(
 
 type LiveTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 
-/** Live (non-terminal) schedule tasks, optionally for one job id. */
+/**
+ * Live (non-terminal) schedule tasks, optionally for one job id. A task
+ * with `abortRequested` is already aborted — `abortTask` returns
+ * "marked" and completes asynchronously — so it is not a live executor.
+ */
 async function liveScheduleTasks(
 	rig: TestRig,
 	jobId?: string,
@@ -189,6 +194,7 @@ async function liveScheduleTasks(
 			) {
 				continue;
 			}
+			if (record.abortRequested === true) continue;
 			if (
 				jobId !== undefined &&
 				(record.input as { jobId?: string } | undefined)?.jobId !== jobId
@@ -446,6 +452,71 @@ describe("api jobs — the JobsService surface", () => {
 		// The final revision is enabled:false; runs/revisions still answer.
 		const revisions = await rig.jobs.revisions(job.id);
 		expect(revisions[0]!.enabled).toBe(false);
+	});
+
+	test("disable then immediately re-enable → exactly one live executor with the record's hash", async () => {
+		// Review Focus 3: no awaits between the two updateApi calls other
+		// than the calls themselves — the abort from the disable must not
+		// leave the job executor-less, and the abort-marked old task must
+		// not be counted as live by the re-enable's reconciliation.
+		const rig = await bootRig({});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		const disabled = await rig.jobs.updateApi(job.id, { enabled: false }, "alice");
+		expect(disabled.enabled).toBe(false);
+		const enabled = await rig.jobs.updateApi(job.id, { enabled: true }, "alice");
+		expect(enabled.enabled).toBe(true);
+		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
+		// Exactly one schedule task for the job is a real live executor:
+		// not abort-marked and not terminal.
+		const live = await liveScheduleTasks(rig, job.id);
+		expect(live).toHaveLength(1);
+		expect((live[0]!.input as { hash?: unknown }).hash).toBe(record!.hash);
+		// The job must not be left without an executor: the record's state
+		// is waiting, not disabled.
+		expect(record!.state).toBe("waiting");
+	});
+
+	test("an abort-marked, not-yet-terminal task is not live in reconcile's scan", async () => {
+		// The direct check of the finding: after deleteApi, before the
+		// abort settles, liveScheduleTasksByJob must not return the
+		// abort-marked task (abortTask returns "marked" and completes
+		// asynchronously).
+		const rig = await bootRig({});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		const oldTask = (await liveScheduleTasks(rig, job.id))[0]!;
+		await rig.opened.harness.abortTask(oldTask.id as never, BACKGROUND_CONTEXT);
+		// The abort is MARKED but not yet settled: the scan must not see it.
+		const marked = await rig.opened.harness.getTask(
+			oldTask.id as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(marked!.abortRequested).toBe(true);
+		expect(marked!.state.status).not.toBe("terminal");
+		const byJob = await liveScheduleTasksByJob(
+			rig.opened.storage,
+			BACKGROUND_CONTEXT,
+		);
+		expect(byJob.get(job.id) ?? []).toHaveLength(0);
+		await waitTerminal(rig, oldTask.id);
+	});
+
+	test("reconcile creates the replacement executor while the old task's abort is still pending", async () => {
+		// The end-to-end consequence: a reconcile pass run while an abort
+		// is pending (not yet terminal) must create the replacement task —
+		// the job is never executor-less — and the pending abort must not
+		// be treated as the executor.
+		const rig = await bootRig({});
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		const oldTask = (await liveScheduleTasks(rig, job.id))[0]!;
+		await rig.opened.harness.abortTask(oldTask.id as never, BACKGROUND_CONTEXT);
+		// Reconcile with the abort pending (marked, not terminal).
+		await rig.jobs.reconcile();
+		const live = await liveScheduleTasks(rig, job.id);
+		expect(live).toHaveLength(1);
+		expect(String(live[0]!.id)).not.toBe(String(oldTask.id));
+		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
+		expect((live[0]!.input as { hash?: unknown }).hash).toBe(record!.hash);
+		await waitTerminal(rig, oldTask.id);
 	});
 });
 

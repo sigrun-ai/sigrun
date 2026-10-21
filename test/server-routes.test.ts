@@ -270,7 +270,9 @@ afterAll(async () => {
 });
 
 /** Boot a hermetic server (the `server-submissions.test.ts` shape). */
-async function bootServer(): Promise<TestServer> {
+async function bootServer(options?: {
+	readonly auth?: string;
+}): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-routes-"));
 	const faux = fauxProvider({
 		provider: "faux",
@@ -283,7 +285,7 @@ async function bootServer(): Promise<TestServer> {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "none",
+		SIGRUN_AUTH: options?.auth ?? "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 		// Hermetic: a dev checkout with a built `webui/dist` would otherwise
 		// register the catch-all static route (`*`); the table under test is
@@ -422,5 +424,64 @@ describe("unknown conversation id", () => {
 				testCase.body,
 			);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// encoded /v1 sweep — the pipeline's public branch from the matched route
+// ---------------------------------------------------------------------------
+
+/**
+ * The public GET patterns under `/v1` (the pipeline's rules 1-4): every
+ * OTHER registered GET route, requested with its first character after
+ * `/` percent-encoded (`/v1/x` → `/%761/x`, `:params` filled with `1`),
+ * must answer 401 without a credential on a token server — the raw-URL
+ * prefix check once mistook every one of these for the browser surface.
+ */
+describe("encoded /v1 route sweep", () => {
+	/** The pipeline's public GET list (mirrors `isPublicPath`'s rules). */
+	const PUBLIC_PATTERNS = new Set([
+		"/v1/onboarding",
+		// The auth-login/logout public rules are POST-only; the GET
+		// spellings of those patterns are NOT public (a GET never matched
+		// the POST route anyway — it 404s, never API data).
+	]);
+
+	test("every non-public /v1 GET route, first segment letter encoded, no credential → 401", async () => {
+		const { app } = await bootServer({ auth: "token" });
+		const encoded: string[] = [];
+		for (const [method, pattern] of ROUTES) {
+			if (method !== "GET") continue;
+			if (!pattern.startsWith("/v1/")) continue;
+			if (PUBLIC_PATTERNS.has(pattern)) continue;
+			// `/v1/settings` → `/%761/settings`; params filled with `1`.
+			const concrete = pattern
+				.replace(":id", "1")
+				.replace(":user", "1")
+				.replace(":submissionId", "1")
+				.replace(":callId", "1")
+				.replace(":name", "1")
+				.replace(":slug", "1")
+				.replace(":key", "1");
+			const slashed = concrete.split("/");
+			// `["", "v1", "settings", ...]` → encode the "v1" segment.
+			slashed[1] = "%761";
+			const url = slashed.join("/");
+			encoded.push(url);
+			const response = await app.inject({ method: "GET", url });
+			// The route matched (Fastify decoded it): no credential may
+			// reach a handler — 401 from the pipeline, never the route's
+			// own 200/404 answer.
+			expect(
+				response.statusCode,
+				`status for ${url} (pattern ${pattern})`,
+			).toBe(401);
+			expect(
+				response.json(),
+				`body for ${url} (pattern ${pattern})`,
+			).toEqual({ error: "unauthenticated" });
+		}
+		// The sweep actually swept (a regression in ROUTES would empty it).
+		expect(encoded.length).toBeGreaterThanOrEqual(20);
 	});
 });

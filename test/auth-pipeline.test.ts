@@ -16,6 +16,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
@@ -47,6 +48,8 @@ async function bootServer(options: {
 	claimed?: boolean;
 	listenHost?: string;
 	fakeTimers?: boolean;
+	webuiBundle?: string;
+	extensionSpecifiers?: string[];
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-pipeline-"));
 	const faux = fauxProvider({
@@ -64,6 +67,9 @@ async function bootServer(options: {
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: dir,
 			SIGRUN_CONFIG_DIR: join(dir, "config"),
+			...(options.webuiBundle === undefined
+				? {}
+				: { SIGRUN_WEBUI_BUNDLE: options.webuiBundle }),
 			...options.env,
 		},
 		{ server: options.file ?? {} } as Parameters<typeof loadConfig>[1],
@@ -73,6 +79,9 @@ async function bootServer(options: {
 		extensions: [contributor],
 		env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
 		...(claimed ? { identity: await seededIdentity(dir) } : {}),
+		...(options.extensionSpecifiers === undefined
+			? {}
+			: { extensionSpecifiers: options.extensionSpecifiers }),
 	});
 	const app = await createServer(opened, config, [], {
 		listenHost: options.listenHost ?? "127.0.0.1",
@@ -500,5 +509,157 @@ describe("unclaimed gate + service token", () => {
 		expect(root.statusCode).not.toBe(403);
 		const healthz = await app.inject({ method: "GET", url: "/healthz" });
 		expect(healthz.statusCode).toBe(200);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// encoded paths — the public surface is decided from the MATCHED ROUTE
+// ---------------------------------------------------------------------------
+
+/** The hand-written webui bundle fixture (the server-static pattern). */
+const WEBUI_FIXTURE = join(import.meta.dirname, "fixtures", "webui-dist");
+
+/** The fixture-routes extension entry (the extension-routes pattern). */
+const ROUTES_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-routes", "index.js"),
+).href;
+
+/**
+ * Every encoded/dotted spelling of an authenticated `/v1` GET surface.
+ * Fastify decodes the path BEFORE routing (`%76` = `v`, `%73` = `s`), so
+ * the raw-URL prefix check in `isPublicPath` misread these as the browser
+ * surface. Every one must answer 401 `unauthenticated` with no credential.
+ */
+const ENCODED_API_PATHS = [
+	"/%761/settings",
+	"/%761/extensions",
+	"/%761/providers",
+	"/%761/meta",
+	"/%761/interactions",
+	"/%761/users",
+	"/%761/jobs",
+	"/%761/conversations",
+	"/%761/auth/whoami",
+	"/v1/%73ettings",
+	"/./v1/settings",
+] as const;
+
+describe("encoded paths", () => {
+	test("encoded /v1 spellings without a credential → 401 unauthenticated", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token", SIGRUN_WEBUI: "false" },
+		});
+		for (const url of ENCODED_API_PATHS) {
+			const response = await app.inject({ method: "GET", url });
+			expect(
+				response.statusCode,
+				`status for ${url}`,
+			).toBe(401);
+			expect(response.json(), `body for ${url}`).toEqual({
+				error: "unauthenticated",
+			});
+		}
+	});
+
+	test("GET /%761/nope is the SPA (or a 404), never API data or a 500", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+			webuiBundle: WEBUI_FIXTURE,
+		});
+		const response = await app.inject({ method: "GET", url: "/%761/nope" });
+		expect(response.statusCode).not.toBe(500);
+		expect(response.statusCode).not.toBe(401);
+		const type = String(response.headers["content-type"] ?? "");
+		if (response.statusCode === 200) {
+			expect(type).toContain("text/html");
+		} else {
+			expect(response.statusCode).toBe(404);
+		}
+		// Never an API payload: no settings `effective` body leaks.
+		expect(response.body).not.toContain("effective");
+	});
+
+	test("the browser surface stays public", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+			webuiBundle: WEBUI_FIXTURE,
+		});
+		const root = await app.inject({ method: "GET", url: "/" });
+		expect(root.statusCode).toBe(200);
+		expect(String(root.headers["content-type"])).toContain("text/html");
+		const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
+		expect(asset.statusCode).toBe(200);
+		const spa = await app.inject({ method: "GET", url: "/some/spa/route" });
+		expect(spa.statusCode).toBe(200);
+		expect(String(spa.headers["content-type"])).toContain("text/html");
+		const healthz = await app.inject({ method: "GET", url: "/healthz" });
+		expect(healthz.statusCode).toBe(200);
+		const readyz = await app.inject({ method: "GET", url: "/readyz" });
+		expect(readyz.statusCode).toBe(200);
+	});
+
+	test("the static wildcard's matched-route pattern is exactly `/*`", async () => {
+		// The pipeline's rule 5 matches this string LITERALLY — pin it so
+		// a fastify-static upgrade that changes the pattern fails HERE
+		// (loudly), not as every browser request 401ing.
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+			webuiBundle: WEBUI_FIXTURE,
+		});
+		const patterns = new Set<string>();
+		app.addHook("preHandler", async (request) => {
+			patterns.add(String(request.routeOptions?.url));
+		});
+		for (const url of ["/", "/assets/app.js"]) {
+			const response = await app.inject({ method: "GET", url });
+			expect(response.statusCode).toBe(200);
+		}
+		expect([...patterns]).toContain("/*");
+	});
+
+	test("POST /v1/auth/login and GET /v1/onboarding stay public", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token", SIGRUN_WEBUI: "false" },
+		});
+		const login = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login",
+			payload: { token: "sgr_wrong" },
+		});
+		// 401 = the handler answered (the limiter's bad-token path); the
+		// pipeline let the unauthenticated POST through.
+		expect(login.statusCode).toBe(401);
+		const onboarding = await app.inject({ method: "GET", url: "/v1/onboarding" });
+		expect(onboarding.statusCode).toBe(200);
+	});
+
+	test("an encoded extension route declared auth:user → 401; auth:public stays reachable", async () => {
+		const { app } = await bootServer({
+			env: { SIGRUN_AUTH: "token", SIGRUN_WEBUI: "false" },
+			extensionSpecifiers: [ROUTES_SPECIFIER],
+		});
+		const user = await app.inject({
+			method: "GET",
+			url: "/%761/ext/fixture-routes/ping",
+		});
+		expect(user.statusCode).toBe(401);
+		expect(user.json()).toEqual({ error: "unauthenticated" });
+		// The plain spelling of the same route: identical answer (a
+		// regression here would mean the pipeline diverged per spelling).
+		const plain = await app.inject({
+			method: "GET",
+			url: "/v1/ext/fixture-routes/ping",
+		});
+		expect(plain.statusCode).toBe(401);
+		// A declared-public route under the encoded prefix still skips
+		// stage 5 (webhooks verify their own caller).
+		const hook = await app.inject({
+			method: "POST",
+			url: "/%761/ext/fixture-routes/hook",
+			headers: { "content-type": "text/plain" },
+			payload: "x",
+		});
+		expect(hook.statusCode).toBe(200);
+		expect(hook.body).toBe("x");
 	});
 });

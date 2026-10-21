@@ -7,14 +7,19 @@
  * list (the events carry no transcript state).
  *
  * Filtering (Review Focus 3 — per-event, never a connect-time snapshot):
- * a conversation-scoped event (conversation.* / run.* / interaction.* /
- * ambient.*) is delivered iff `accessOf(principal, meta)` ≠ `"none"` with
- * the SessionMeta RE-SNAPSHOTTED per event — a share makes the NEXT event
- * arrive, an un-share withholds the one after. `providers.changed` reaches
- * every authenticated principal. `job.changed` (W4 Task 4) resolves
- * `accessOf` against the EVENT's own owner/sharing (the hub's copy is
- * access-neutral) and is delivered with the caller's `access` ADDED to
- * the job row — a hidden job's event is withheld entirely, no extra read.
+ * the visibility decision is an EXHAUSTIVE per-type switch (hardening
+ * review Task 4): a conversation-scoped event (conversation.* / run.* /
+ * interaction.* / ambient.*) is delivered iff `accessOf(principal, meta)`
+ * ≠ `"none"` with the SessionMeta RE-SNAPSHOTTED per event — a share
+ * makes the NEXT event arrive, an un-share withholds the one after.
+ * `providers.changed` reaches every authenticated principal. `job.changed`
+ * (W4 Task 4) resolves `accessOf` against the EVENT's own owner/sharing
+ * (the hub's copy is access-neutral) and is delivered with the caller's
+ * `access` ADDED to the job row — a hidden job's event is withheld
+ * entirely, no extra read. `taskSettled` is never delivered. Any type the
+ * switch does not know is NEVER delivered (deny by construction — the
+ * old fall-through snapshotted a missing conversationId and broadcast
+ * the ownerless result).
  *
  * The async re-snapshot runs in the route's own side lane (the bus/hub
  * listener contract is no-blocking-work): each stream keeps a per-event
@@ -64,47 +69,80 @@ export function registerEventRoutes(
 			raw.write(": ping\n\n");
 		}, HEARTBEAT_MS);
 		/**
-		 * Whether THIS principal may see one event (Review Focus 3):
-		 * conversation-scoped events re-snapshot the SessionMeta PER EVENT;
-		 * providers.changed is broadcast; job.changed (W4 Task 4) resolves
-		 * against the event's own owner/sharing and, when visible, ENRICHES
-		 * the row with the caller's `access` (the hub's copy is
-		 * access-neutral by contract — the stream adds it per principal);
-		 * taskSettled is host machinery (never principal-facing).
+		 * Whether THIS principal may see one event (Review Focus 3): an
+		 * EXHAUSTIVE switch over the HostEventWire members — a new member
+		 * added without a case fails the typecheck (Review Focus 4;
+		 * test/events-exhaustive.typecheck.ts mirrors this dispatch) and
+		 * never falls through to the old ownerless-snapshot broadcast
+		 * (accessOf(principal, {}) === "write")). Conversation-scoped
+		 * events re-snapshot the SessionMeta PER EVENT; providers.changed is
+		 * broadcast; job.changed (W4 Task 4) resolves against the event's own
+		 * owner/sharing and, when visible, ENRICHES the row with the caller's
+		 * `access` (the hub's copy is access-neutral by contract — the stream
+		 * adds it per principal); taskSettled is host machinery (never
+		 * principal-facing).
 		 */
-		const visible = async (event: HostEventWire): Promise<HostEventWire | undefined> => {
-			if (event.type === "providers.changed") return event;
-			if (event.type === "job.changed") {
-				const access = accessOf(principal, {
-					...(event.job.owner === undefined ? {} : { owner: event.job.owner }),
-					...(event.job.sharing === undefined
-						? {}
-						: { sharing: event.job.sharing }),
-				});
-				if (access === "none") return undefined;
-				// The delivered row carries the caller's access (the wire adds
-				// what the hub's access-neutral copy omits).
-				const enriched: JobWire = { ...event.job, access };
-				return { ...event, job: enriched };
+		const visible = async (
+			event: HostEventWire,
+		): Promise<HostEventWire | undefined> => {
+			switch (event.type) {
+				// Conversation-scoped: SessionMeta access, re-snapshotted per
+				// event (share → the NEXT event arrives; un-share withholds the
+				// one after).
+				case "conversation.created":
+				case "conversation.changed":
+				case "run.admitted":
+				case "run.settled":
+				case "interaction.pending":
+				case "interaction.settled":
+				case "ambient.changed": {
+					let meta;
+					try {
+						meta = await opened.harness.snapshot(
+							SessionMetaDoc,
+							event.conversationId as ConversationId,
+							BACKGROUND_CONTEXT,
+						);
+					} catch (error) {
+						console.error(
+							"events route: SessionMeta snapshot failed:",
+							error,
+						);
+						return undefined; // a raced read withholds that one event
+					}
+					return accessOf(principal, meta ?? {}) !== "none" ? event : undefined;
+				}
+				// Broadcast: every authenticated principal.
+				case "providers.changed":
+					return event;
+				// The event's own owner/sharing decides; the delivered row
+					// carries the caller's access (the wire adds what the hub's
+					// access-neutral copy omits).
+				case "job.changed": {
+					const access = accessOf(principal, {
+						...(event.job.owner === undefined
+							? {}
+							: { owner: event.job.owner }),
+						...(event.job.sharing === undefined
+							? {}
+							: { sharing: event.job.sharing }),
+					});
+					if (access === "none") return undefined;
+					const enriched: JobWire = { ...event.job, access };
+					return { ...event, job: enriched };
+				}
+				// Host machinery (the jobs observer's input), never a
+				// principal-facing wire event.
+				case "taskSettled":
+					return undefined;
+				// An unknown member is NEVER delivered — deny by construction,
+				// not by enumerating the leak shapes. The satisfies check keeps
+				// this arm exhaustive: a new HostEventWire member without a
+				// case fails the typecheck here (and in the mirror file).
+				default:
+					event satisfies never;
+					return undefined;
 			}
-			// taskSettled is host machinery (the jobs observer's input), never
-			// a principal-facing wire event.
-			if (event.type === "taskSettled") return undefined;
-			let meta;
-			try {
-				meta = await opened.harness.snapshot(
-					SessionMetaDoc,
-					event.conversationId as ConversationId,
-					BACKGROUND_CONTEXT,
-				);
-			} catch (error) {
-				console.error(
-					"events route: SessionMeta snapshot failed:",
-					error,
-				);
-				return undefined; // a raced read withholds that one event
-			}
-			return accessOf(principal, meta ?? {}) !== "none" ? event : undefined;
 		};
 		// The per-connection side lane: serial promise chain, so frames for
 		// one connection stay in publish order while the hub listener itself

@@ -10,10 +10,14 @@
  *     non-GET/HEAD request with an `Origin` must match the effective
  *     host (`X-Forwarded-Host` from a trusted proxy peer, else `Host`)
  *     or `auth.allowedOrigins`, else 403 `origin_mismatch`.
- *  2. **Public paths.** Browser/GET surface outside `/v1/`, `/healthz`,
- *     `/readyz`, `/v1/onboarding*`, `POST /v1/auth/login`,
- *     `POST /v1/auth/logout`, and `/metrics` when
- *     `config.metricsPublic`.
+ *  2. **Public paths.** Decided from the MATCHED ROUTE PATTERN
+ *     (`request.routeOptions.url`), never the raw URL (Fastify decodes
+ *     before routing — `/%761/...` routes to `/v1/...`): `/healthz`,
+ *     `/readyz`, `/metrics` when `config.metricsPublic`,
+ *     `/v1/onboarding` (+ subpaths), `POST /v1/auth/login`,
+ *     `POST /v1/auth/logout`, and the browser surface — a GET/HEAD that
+ *     matched the static wildcard (`/*`) or no route at all (the
+ *     not-found handler serves the SPA for non-/v1 paths).
  *  3. **Env service token.** A `Bearer` equal (constant-time) to
  *     `SIGRUN_API_TOKEN` resolves the service principal and skips the
  *     setup gate.
@@ -146,23 +150,32 @@ function checkOrigin(request: FastifyRequest, ctx: ServerContext): boolean {
 	return !expectedHosts.has(originHost);
 }
 
-/** Stage 2: whether the path answers without a principal. */
+/**
+ * Stage 2: whether the request answers without a principal.
+ *
+ * Computed from the MATCHED ROUTE PATTERN (`request.routeOptions.url`,
+ * e.g. `/v1/settings`, `/v1/conversations/:id`, `/*`), never the raw
+ * URL: Fastify decodes the path BEFORE routing, so `GET /%761/settings`
+ * (`%76` = `v`) routes to `/v1/settings` while the raw URL fails a
+ * `/v1/` prefix check — the encoded-path auth bypass. A GET is public
+ * only when it matched the static plugin's wildcard (`/*`) or matched
+ * nothing (the not-found handler serves the SPA for non-/v1 paths).
+ */
 function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
-	const url = request.url.split("?", 1)[0];
-	if (url === "/healthz" || url === "/readyz") return true;
-	if (url === "/metrics" && ctx.config.metricsPublic) return true;
-	if (url === "/v1/auth/login" && request.method === "POST") return true;
-	if (url === "/v1/auth/logout" && request.method === "POST") return true;
-	if (url === "/v1/onboarding" || url.startsWith("/v1/onboarding/")) {
+	const pattern = request.routeOptions.url;
+	if (pattern === "/healthz" || pattern === "/readyz") return true;
+	if (pattern === "/metrics" && ctx.config.metricsPublic) return true;
+	if (pattern === "/v1/auth/login" && request.method === "POST") return true;
+	if (pattern === "/v1/auth/logout" && request.method === "POST") return true;
+	if (pattern === "/v1/onboarding" || pattern?.startsWith("/v1/onboarding/")) {
 		return true;
 	}
-	// The browser surface: GET/HEAD outside the API prefix.
-	if (
-		(request.method === "GET" || request.method === "HEAD") &&
-		!url.startsWith("/v1/") &&
-		url !== "/metrics"
-	) {
-		return true;
+	// The browser surface: GET/HEAD that matched the static wildcard or
+	// no route at all (the not-found handler serves the SPA). Anything
+	// that matched a real API route — under ANY spelling of its path — is
+	// not public.
+	if (request.method === "GET" || request.method === "HEAD") {
+		if (pattern === "/*" || pattern === undefined) return true;
 	}
 	return false;
 }
@@ -294,13 +307,14 @@ export function registerAuthPipeline(
 		// Stage 4b: the extension-route public skip (W5 Task 2, spec §9.2).
 		// The request is already ROUTED — Fastify resolved it to a route
 		// before lifecycle hooks run — so `routeOptions.config.extAuth` is
-		// the mounted route's declared auth, exactly. A `public` route
-		// (a webhook, an OAuth callback) skips stage 5; its handler sees no
-		// principal and verifies its own caller. Everything else
-		// (`user`/`admin`, core routes, unrouted paths) falls through to the
-		// normal authentication stages.
+		// the mounted route's declared auth, exactly (and `routeOptions.url`
+		// is the MATCHED PATTERN, immune to encoded-path spellings). A
+		// `public` route (a webhook, an OAuth callback) skips stage 5; its
+		// handler sees no principal and verifies its own caller. Everything
+		// else (`user`/`admin`, core routes, unrouted paths) falls through to
+		// the normal authentication stages.
 		if (
-			request.url.startsWith("/v1/ext/") &&
+			request.routeOptions.url?.startsWith("/v1/ext/") &&
 			request.routeOptions.config.extAuth === "public"
 		) {
 			return;
