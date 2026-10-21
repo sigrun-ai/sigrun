@@ -45,6 +45,12 @@
  *   frontmatter block); an unknown name is an explicit error listing the
  *   available skills.
  *
+ * `listSkills` (Task 2c) is the `/skill:name`-facing list: the SAME
+ * three-root discovery but WITHOUT the model-visibility filter — a
+ * `disable-model-invocation: true` skill is hidden from the section and
+ * unknown to `load_skill` yet still expands through `/skill:name`
+ * (pi's convention). It carries the flag so the section keeps
+ * filtering; nothing about the section's behaviour changes.
  * Built through `createSkillsExtension(opts)` so boot can wire the three
  * roots; it still installs as the core extension named `sigrun.skills`
  * (the reserved-section owner is unchanged) and never goes through the
@@ -267,13 +273,17 @@ async function readSkill(
  * Scan the workspace's skills through the conversation `ExecutionEnv`.
  * An absent `skills/` directory is the designed empty case; any other read
  * failure fails loud. Directories are visited in sorted name order so
- * duplicate frontmatter names resolve deterministically first-wins. A
- * skill with `disable-model-invocation: true` doesn't exist as far as the
- * model is concerned: it never reaches the section or `load_skill`.
+ * duplicate frontmatter names resolve deterministically first-wins.
+ * `includeHidden` (the `listSkills` path): a skill with
+ * `disable-model-invocation: true` is KEPT in the list carrying the
+ * flag; the default (`false`, the section and `load_skill` path) hides
+ * it from the model entirely — it never reaches the section or the
+ * tool.
  */
 export async function scanSkills(
 	env: ExecutionEnv,
 	context: Context,
+	opts?: { includeHidden?: boolean },
 ): Promise<WorkspaceSkill[]> {
 	const listing = await env.listDir(SKILLS_DIRECTORY, context);
 	if (!listing.ok) {
@@ -290,7 +300,7 @@ export async function scanSkills(
 	for (const entry of directories) {
 		const skill = await readSkill(env, entry, context);
 		if (skill === undefined) continue;
-		if (skill.disableModelInvocation) {
+		if (skill.disableModelInvocation && opts?.includeHidden !== true) {
 			console.warn(
 				`skills: hiding ${skill.dir} (disable-model-invocation)`,
 			);
@@ -311,11 +321,16 @@ export async function scanSkills(
 /**
  * Scan ONE filesystem root (the user dir or a package's skills dir).
  * Same rules as the workspace root — `SKILL.md` only, sorted directory
- * order, first-wins within the root, hidden skills skipped with a log —
- * read synchronously through `node:fs` (the root is host-local by
- * definition). An absent root is the designed empty case.
+ * order, first-wins within the root — read synchronously through
+ * `node:fs` (the root is host-local by definition). An absent root is
+ * the designed empty case. `includeHidden` keeps
+ * `disable-model-invocation: true` skills (the `listSkills` path); the
+ * default hides them with a log, exactly like the workspace root.
  */
-function scanFsRoot(root: string): WorkspaceSkill[] {
+function scanFsRoot(
+	root: string,
+	opts?: { includeHidden?: boolean },
+): WorkspaceSkill[] {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(root, { withFileTypes: true });
@@ -351,7 +366,7 @@ function scanFsRoot(root: string): WorkspaceSkill[] {
 		}
 		const skill = skillFromFile(text, join(root, entry.name), file);
 		if (skill === undefined) continue;
-		if (skill.disableModelInvocation) {
+		if (skill.disableModelInvocation && opts?.includeHidden !== true) {
 			console.warn(
 				`skills: hiding ${skill.dir} (disable-model-invocation)`,
 			);
@@ -382,11 +397,13 @@ function rootLabelOf(root: (typeof ROOT_PRECEDENCE)[number], extension?: string)
  * Merge the three roots in precedence order (workspace > user > packages,
  * packages in install order): first-wins on the skill NAME, every loss
  * logged as `skills: "<name>" from <lower root> shadowed by <higher root>`.
+ * `includeHidden` threads to each root scan (the `listSkills` path).
  */
 export async function discoverSkills(
 	env: ExecutionEnv | undefined,
 	context: Context,
 	opts: SkillsOptions,
+	options?: { includeHidden?: boolean },
 ): Promise<WorkspaceSkill[]> {
 	const byName = new Map<string, { skill: WorkspaceSkill; root: (typeof ROOT_PRECEDENCE)[number]; extension?: string }>();
 	const merge = (
@@ -417,13 +434,28 @@ export async function discoverSkills(
 		}
 	};
 	if (env !== undefined) {
-		merge(await scanSkills(env, context), "workspace");
+		merge(await scanSkills(env, context, options), "workspace");
 	}
-	merge(scanFsRoot(opts.userDir), "user dir");
+	merge(scanFsRoot(opts.userDir, options), "user dir");
 	for (const root of opts.packageRoots()) {
-		merge(scanFsRoot(root.dir), "package", root.extension);
+		merge(scanFsRoot(root.dir, options), "package", root.extension);
 	}
 	return [...byName.values()].map((entry) => entry.skill).sort(bySkillName);
+}
+
+/**
+ * The `/skill:name`-facing skill list (Task 2c): the same three-root
+ * discovery as `discoverSkills`, but `disable-model-invocation: true`
+ * skills are INCLUDED (carrying the flag) — `/skill:name` works for
+ * them while the section and `load_skill` keep them hidden. Read LIVE
+ * per call (the same posture as the section's per-render scan).
+ */
+export async function listSkills(
+	env: ExecutionEnv | undefined,
+	context: Context,
+	opts: SkillsOptions,
+): Promise<WorkspaceSkill[]> {
+	return discoverSkills(env, context, opts, { includeHidden: true });
 }
 
 /**
@@ -441,9 +473,13 @@ export function renderSkillList(
 	skills: readonly WorkspaceSkill[],
 	limitBytes: number,
 ): string | undefined {
-	if (skills.length === 0) return undefined;
+	// `disable-model-invocation: true` never reaches the section — the
+	// filter is the section's own (a hidden skill passed in through the
+	// `/skill:name` list is still invisible here).
+	const visible = skills.filter((skill) => !skill.disableModelInvocation);
+	if (visible.length === 0) return undefined;
 	const header = `${SKILLS_SECTION_HEADER}\n\n`;
-	const lines = skills.map(
+	const lines = visible.map(
 		(skill) => `- ${skill.name}: ${skill.description} (${skill.dir})`,
 	);
 	const full = header + lines.join("\n");

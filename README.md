@@ -506,6 +506,60 @@ server's `exposure` and the `SIGRUN_MCP_CONFIG` override.
 }
 ```
 
+## Skills and prompt templates
+
+Two text-expansion surfaces ship in core, pi parity: a **skill
+invocation** and a **prompt template**, both expanded SERVER-SIDE at
+admission (in `submitOp`, before content-part resolution) — so the
+webui, the TUI, the HTTP API, `host.conversations.submit`, and job
+prompts all behave identically. Expansion happens when the submitted
+text starts with `/`; everything else is admitted verbatim.
+
+**`/skill:<name> [args]`** expands to the skill's full body:
+
+```text
+<skill name="greet" location="skills/greet/SKILL.md">
+References are relative to skills/greet.
+
+Say hello to the user warmly.
+</skill>
+
+hej
+```
+
+(the blank line and the arguments only when arguments were given; the
+body is the SKILL.md with frontmatter stripped). An unknown skill
+passes through unchanged — never an error. A skill with
+`disable-model-invocation: true` stays out of the model's skill list
+but still expands here. Every skill appears in the `/` menu as
+`skill:<name>` with its description.
+
+**Prompt templates** are Markdown files whose filename is the command
+(`review.md` → `/review`). Frontmatter `description` (else the first
+non-empty line) feeds the `/` menu, optional `argument-hint` hints the
+arguments, and the body substitutes shell-quoted arguments:
+`$1`, `$2`, …; `$@` and `$ARGUMENTS` (all arguments, space-joined);
+`${1:-default}`; `${@:-default}`; `${@:N}`; `${@:N:L}`.
+`/review "API compatibility"` passes ONE argument. An unterminated
+quote is a usage error, not a silent swallow.
+
+Both are discovered from the same three roots, first-wins in this
+order (the skills convention's precedence):
+
+1. the workspace — `skills/` and `prompts/` under the conversation
+   workspace;
+2. the user dir — `<config-dir>/skills/` and `<config-dir>/prompts/`;
+3. packages — each installed package's `skills/` (manifest or
+   factory-declared) and `prompts/` directories.
+
+Both lists are re-scanned live (each `/v1/commands` request and each
+expansion) — drop a file in and it works, no restart. A template whose
+name collides with a core or extension command is skipped with one
+warning: commands keep their meaning. The transcript shows what you
+typed — the submission's user entry carries
+`{kind: "sigrun.user.expanded", data: {typed, command}}` while the
+model receives the expanded text.
+
 ## Jobs
 
 A job is a schedule plus an action, durable by construction — one

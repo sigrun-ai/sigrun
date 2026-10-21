@@ -38,6 +38,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import type {
+	Conversation,
 	ConversationId,
 	Harness,
 	ModelRef,
@@ -46,8 +47,13 @@ import type {
 	TaskId,
 	TaskRuntime,
 } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { EnvBuilder } from "../harness/workspace.js";
 import type { JobRunWire } from "@sigrun/shared/jobs";
 import { parseModelSpec } from "../config.js";
+import { expandInput } from "../commands/expand.js";
+import type { CommandExpansion } from "../commands/expand.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
 import type { ScheduleInput, ScheduleState } from "./task.js";
@@ -65,6 +71,19 @@ export interface JobRuntimeDeps {
 	now(): number;
 	/** Resolved `server.timezone` (default: the process TZ). */
 	defaultTz: string;
+	/**
+	 * The command-expansion handle (Task 2c): a job prompt `/review
+	 * nightly` sends the EXPANDED text — the same roots, the same live
+	 * reads, as the submit path. No `typed`/`command` entry is written
+	 * for job prompts (there is no user turn to attribute).
+	 */
+	commandExpansion?: CommandExpansion;
+	/**
+	 * The workspace env builder (boot's `envBuilder`) — required when
+	 * `commandExpansion` is wired (the workspace template root reads
+	 * through it, exactly like the submit op).
+	 */
+	envBuilder?: EnvBuilder;
 }
 
 export interface FireResult {
@@ -165,6 +184,65 @@ export async function fireJob(
 	);
 }
 
+/**
+ * Expand a job prompt through the wired roots (Task 2c): a prompt
+ * starting with `/` that names a skill or template becomes the expanded
+ * text the model sees; anything else is returned verbatim. Expansion
+ * errors (an unterminated quote) are LOUD — the fire fails rather than
+ * admitting a half-parsed prompt.
+ */
+async function jobPromptText(
+	deps: JobRuntimeDeps,
+	conversationId: ConversationId,
+	prompt: string,
+	context: Context,
+): Promise<string> {
+	if (deps.commandExpansion === undefined || !prompt.startsWith("/")) {
+		return prompt;
+	}
+	const conversation = await deps.harness.conversation(conversationId, context);
+	if (conversation === undefined) return prompt;
+	const env = await conversationEnv(deps, conversation);
+	const expansion = await expandInput(
+		[{ type: "text", text: prompt }],
+		deps.commandExpansion,
+		env,
+		context,
+	);
+	const part = expansion.parts[0];
+	return part !== undefined && part.type === "text" ? part.text : prompt;
+}
+
+/**
+ * The conversation workspace env for a job's conversation — the same
+ * `envBuilder` seam the harness and the submit op use (the expansion's
+ * workspace template root reads through it).
+ */
+async function conversationEnv(
+	deps: JobRuntimeDeps,
+	conversation: Conversation,
+): Promise<ExecutionEnv> {
+	const builder = deps.envBuilder;
+	if (builder === undefined) {
+		throw new Error(
+			"fireJob: no env builder wired (commandExpansion requires envBuilder)",
+		);
+	}
+	const agent = await conversation.agent(BACKGROUND_CONTEXT);
+	const built = await builder(
+		{
+			conversationId: conversation.id,
+			...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
+			read: deps.harness,
+		},
+		BACKGROUND_CONTEXT,
+	);
+	if (built === undefined) {
+		throw new Error("envBuilder returned no ExecutionEnv");
+	}
+	return built;
+}
+
 // ---------------------------------------------------------------------------
 // The prompt action
 // ---------------------------------------------------------------------------
@@ -207,7 +285,17 @@ async function firePrompt(
 		await conversation.submit(
 			{
 				type: "input",
-				content: [{ type: "text", text: action.prompt }],
+				content: [
+					{
+						type: "text",
+						text: await jobPromptText(
+							deps,
+							conversationId as number as ConversationId,
+							action.prompt,
+							context,
+						),
+					},
+				],
 				requestId: `job:${fireKey}`,
 			},
 			context,
@@ -266,7 +354,17 @@ async function firePrompt(
 	await conversation.submit(
 		{
 			type: "input",
-			content: [{ type: "text", text: action.prompt }],
+			content: [
+				{
+					type: "text",
+					text: await jobPromptText(
+						deps,
+						conversationId as ConversationId,
+						action.prompt,
+						context,
+					),
+				},
+			],
 			requestId: `job:${fireKey}`,
 		},
 		context,

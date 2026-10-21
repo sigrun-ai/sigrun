@@ -55,6 +55,9 @@ import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
 import { createSkillsExtension } from "../skills/index.js";
+import { SLASH_COMMANDS } from "../server/commands.js";
+import type { CommandExpansion } from "../commands/expand.js";
+import { packagePromptRootsOf } from "../commands/templates.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
@@ -323,6 +326,15 @@ export interface OpenedHarness {
 	 * section renders per request).
 	 */
 	readonly skillRoots: readonly { extension: string; dir: string }[];
+	/**
+	 * The command-expansion handle (Task 2c): the skills + template root
+	 * sets and the reserved command-name set, all read LIVE. The submit
+	 * op (src/server/conversation-ops.ts) and the job prompt actions
+	 * (src/jobs/fire.ts) expand `/skill:name` and template inputs through
+	 * it at admission; `GET /v1/commands` builds its `kind: "expand"`
+	 * entries from the same roots.
+	 */
+	readonly commandExpansion: CommandExpansion;
 	/**
 	 * The memory-seam event bus (Tasks 2-4): opened on the booted harness
 	 * BEFORE `resume()` (recovery settles are observed), with each loaded
@@ -602,6 +614,11 @@ export async function openHarness(
 	// closure below observes whatever the loader collected without the
 	// install order changing (core sections lead the prompt).
 	const collectedSkillRoots: { extension: string; dir: string }[] = [];
+	// The template roots (Task 2c): the SAME late-fill shape as the skill
+	// roots — the loader runs below, and both the `/v1/commands` route and
+	// each expansion read the collections LIVE, so the late fill is
+	// visible from the next read on.
+	const collectedTemplateRoots: { extension: string; dir: string }[] = [];
 	// The settings store the live cap reads. Declared further down (the
 	// file-backed store needs `options.settingsDir` only); the closure
 	// reads it at RENDER time, long after the assignment — the skills cap
@@ -618,15 +635,41 @@ export async function openHarness(
 	// user dir `<configDir>/skills/`, and the package roots the loader
 	// collects — with workspace > user > packages precedence and the live
 	// per-render cap.
+	// The skills options the EXPANSION paths share (Task 2c): the same
+	// three-root shape the section renders with — `/skill:name` and the
+	// `/` menu must see the same skills the section does (plus the hidden
+	// ones, which `listSkills` includes by design).
+	const skillsOptions = {
+		userDir: join(roots.configDir, "skills"),
+		packageRoots: (): readonly { extension: string; dir: string }[] =>
+			collectedSkillRoots,
+		sectionMaxBytes: (): number =>
+			skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
+	};
+	const templateOptions = {
+		userDir: join(roots.configDir, "prompts"),
+		packageRoots: (): readonly { extension: string; dir: string }[] =>
+			collectedTemplateRoots,
+	};
+	// The command-expansion handle (Task 2c): everything `expandInput`
+	// needs — the two root sets plus the reserved command-name set (core
+	// table + every extension command; a template colliding with any of
+	// these never expands). Read LIVE per expansion.
+	const commandExpansion: CommandExpansion = {
+		skills: skillsOptions,
+		templates: templateOptions,
+		commandNames: (): ReadonlySet<string> => {
+			const names = new Set<string>(SLASH_COMMANDS.keys());
+			for (const binding of commandBindings) {
+				for (const contribution of binding.commands) {
+					names.add(contribution.name);
+				}
+			}
+			return names;
+		},
+	};
 	registry.install(contextFilesExtension);
-	registry.install(
-		createSkillsExtension({
-			userDir: join(roots.configDir, "skills"),
-			packageRoots: () => collectedSkillRoots,
-			sectionMaxBytes: () =>
-				skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
-		}),
-	);
+	registry.install(createSkillsExtension(skillsOptions));
 	registry.install(codingToolsExtension);
 	registry.install(searchToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
@@ -765,6 +808,17 @@ export async function openHarness(
 // observes them from its next render on. Core sections still lead the
 // prompt; only the discovery content is late.
 collectedSkillRoots.push(...extensionSkillRoots);
+	// The prompt-template package roots (Task 2c): derived from the loaded
+	// entries' package roots — each package that ships a `prompts/`
+	// directory becomes an attributed root (the loader has no fs coupling
+	// by contract, so the derivation lives with the templates module).
+	collectedTemplateRoots.push(
+		...packagePromptRootsOf(
+			loaderInputs
+				.filter((input) => input.entry !== undefined)
+				.map((input) => input.entry as string),
+		),
+	);
 	// The contributed-bundle registry (build-and-webui Task 6): the loader's
 	// flat, slug-attributed collection folded into one entry per NAME.
 	// Collision semantics mirror the provider merge EXACTLY —
@@ -886,6 +940,11 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		defaultModel,
 		now: () => clockNow().getTime(),
 		defaultTz: config.timezone,
+		// Task 2c: job prompts expand `/skill:name` and template commands
+		// through the same roots the submit path uses (live reads, no
+		// `typed` entry — there is no user turn to attribute).
+		commandExpansion,
+		envBuilder: undefined as unknown as EnvBuilder,
 	};
 	registry.install({
 		name: "sigrun.jobs",
@@ -980,6 +1039,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	const workspaceService = createWorkspaceService();
 	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
+	// The job runtime's env-builder binding resolves here (the placeholder
+	// the pre-open deps object needed): job-prompt expansion reads the
+	// conversation workspace through the SAME seam tool calls use.
+	jobRuntimeDeps.envBuilder = envBuilder;
 	// The settings store (Task 8a): file-backed, live. `harnessSettings()` is
 	// the getter-backed `HarnessSettings` pi-durable re-resolves per
 	// submission — absent = every default. A malformed file throws HERE, at
@@ -1318,6 +1381,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		extensionCommands: commandBindings,
 		notifierBindings,
 		skillRoots: extensionSkillRoots,
+		commandExpansion,
 		eventBus,
 		events,
 		workerStatuses: () => eventBus.workerStatuses(),
