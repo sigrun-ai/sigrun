@@ -22,6 +22,11 @@
  * The rewrite is the ONLY difference: `dependencies` keeps every other
  * entry untouched, and the restore is byte-exact (the original specifiers
  * are recorded in the marker file, not reconstructed).
+ *
+ * RECOVERY: if a run dies mid-publish the tree may be left in registry
+ * mode (git shows the tracked package.json diff). `node
+ * scripts/publish-deps.mjs file` restores it; re-running `registry` is
+ * also safe (it re-checks the manifest, not just the marker).
  */
 import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -53,11 +58,27 @@ const mode = process.argv[2];
 
 if (mode === "registry") {
 	if (existsSync(MARKER)) {
-		// Already rewritten (a previous run died before its restore) — the
-		// marker holds the ORIGINAL specifiers, so re-running is safe.
-		process.stderr.write(
-			"publish-deps: already in registry mode; nothing to do\n",
+		// A previous run left the marker behind (it died between writing the
+		// marker and finishing, or a publish failed before its restore). The
+		// marker holds the ORIGINAL specifiers, so the restore is still safe —
+		// but do not trust that the manifest was actually rewritten: a crash
+		// between the two writes leaves file: specifiers in place, and a
+		// publish would then ship them.
+		const manifest = readManifest();
+		const stale = Object.keys(BUILTINS).filter(
+			(name) => manifest.dependencies?.[name] !== FAMILY_VERSION,
 		);
+		if (stale.length > 0) {
+			for (const name of stale) manifest.dependencies[name] = FAMILY_VERSION;
+			writeManifest(manifest);
+			process.stderr.write(
+				`publish-deps: marker present but the manifest still carried ${stale.join(", ")} — re-applied\n`,
+			);
+		} else {
+			process.stderr.write(
+				"publish-deps: already in registry mode; nothing to do\n",
+			);
+		}
 		process.exit(0);
 	}
 	const manifest = readManifest();

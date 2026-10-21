@@ -375,10 +375,10 @@ dependencies, and the loader links the host's own copies into the
 packages dir so your bare imports resolve — you consume the SAME module
 instances the host runs, matched structurally at runtime (never by
 `instanceof`). `typebox` (pi-ai's own dependency) resolves the same way.
-Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-ollama)
-(the minimal shape), [sigrun-opencode](https://github.com/sigrun-ai/sigrun-opencode),
-[sigrun-pareto](https://github.com/sigrun-ai/sigrun-pareto) (scoped-settings
-base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-bifrost)
+Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-provider-ollama)
+(the minimal shape), [sigrun-opencode](https://github.com/sigrun-ai/sigrun-provider-opencode),
+[sigrun-pareto](https://github.com/sigrun-ai/sigrun-provider-pareto) (scoped-settings
+base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-provider-bifrost)
 (multi-surface discovery).
 
 ## Contributing webui bundles
