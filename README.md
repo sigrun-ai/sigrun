@@ -316,6 +316,12 @@ timestamp>.db`), and folds in any enabled `SIGRUN_BACKUP_SECTIONS`
 tarballs (config/secrets/data/state — see
 [`docs/extending.md`](docs/extending.md)).
 
+**S3 credentials** come from the standard AWS chain — `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_REGION` in the container env (or an AWS
+config file); sigrun adds no credential settings of its own. Set
+`SIGRUN_BACKUP_S3_ENDPOINT` for an S3-compatible store (MinIO, RustFS):
+the client then uses path-style addressing, which those stores require.
+
 **Retention differs by target kind:**
 
 - **Path targets** retain in-process: each run prunes `sigrun-*.db`

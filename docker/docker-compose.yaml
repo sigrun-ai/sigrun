@@ -12,12 +12,13 @@
 
 services:
   sigrun:
-    # Either build here or pull/build the tagged image first:
+    # The published image. To run from a local checkout instead, comment the
+    # image line and uncomment the build stanza below:
     #   docker build -t sigrun:local .
-    # image: sigrun:local
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    image: ghcr.io/sigrun-ai/sigrun:0.1.0
+    # build:
+    #   context: ..
+    #   dockerfile: Dockerfile
     # Run the BUILT deploy entry (dist/index.js) under plain node — no
     # npm in the signal path, so SIGTERM reaches the entry's graceful
     # shutdown (same rule as the Helm chart's container command). tsx is
