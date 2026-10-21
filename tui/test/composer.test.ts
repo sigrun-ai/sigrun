@@ -58,6 +58,10 @@ const STUB_COMMANDS = [
 	{ name: "export", description: "Download this conversation as JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
 	// An extension-contributed command (the invoke endpoint drives it).
 	{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-ext", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
+	// Task 2c expand entries: a prompt template (argument-hint as argsHint)
+	// and a skill (no hint) — no endpoint; the server expands at admission.
+	{ name: "review", description: "Review the change", argsHint: "<focus>", kind: "expand" },
+	{ name: "skill:greet", description: "Greet a person warmly", kind: "expand" },
 ] as const;
 
 function stubClient(init?: {
@@ -506,5 +510,157 @@ describe("composer slash commands", () => {
 		app.editor.onSubmit?.("/fork");
 		await flush();
 		expect(stub.forkCalls).toEqual([1]);
+	});
+});
+
+// ── Expand commands (Task 2c): /skill:name and prompt templates ─────────
+// The catalog offers them with kind: "expand"; the composer SENDS the
+// line — the server expands at admission — instead of dispatching an
+// endpoint or erroring. Unknown skill names pass through the same way.
+
+describe("composer expand commands", () => {
+	test("a template line submits verbatim (the server expands at admission)", async () => {
+		const { app, submitCalls, compactCalls, invokeCalls } = await boot();
+		app.editor.onSubmit?.("/review concurrency");
+		await flush();
+		expect(submitCalls).toEqual([
+			{ id: 1, text: "/review concurrency", whenBusy: undefined },
+		]);
+		// No endpoint was driven and no error rendered.
+		expect(compactCalls).toEqual([]);
+		expect(invokeCalls).toEqual([]);
+		expect(app.pane.render(60).join("\n")).not.toContain("[error]");
+		// The line is consumed like any submission.
+		expect(app.editor.getText()).toBe("");
+	});
+
+	test("a skill line submits verbatim", async () => {
+		const { app, submitCalls } = await boot();
+		app.editor.onSubmit?.("/skill:greet hej");
+		await flush();
+		expect(submitCalls.map((call) => call.text)).toEqual([
+			"/skill:greet hej",
+		]);
+	});
+
+	test("an UNKNOWN skill name is never an unknown-command error — it submits (server passthrough)", async () => {
+		const { app, submitCalls, forkCalls } = await boot();
+		app.editor.onSubmit?.("/skill:nope x");
+		await flush();
+		expect(submitCalls.map((call) => call.text)).toEqual(["/skill:nope x"]);
+		expect(forkCalls).toEqual([]);
+		const lines = app.pane.render(60).join("\n");
+		expect(lines).not.toContain("unknown command");
+		expect(lines).not.toContain("[error]");
+	});
+
+	test("an expand line while a run is live steers like any message", async () => {
+		const { app, submitCalls, watchRegistry } = await boot();
+		watchRegistry.get(1)?.onSnapshot?.(view(1, [], true));
+		app.editor.onSubmit?.("/review steer me");
+		await flush();
+		expect(submitCalls).toEqual([
+			{ id: 1, text: "/review steer me", whenBusy: "steer" },
+		]);
+	});
+
+	test("an expand line with no active conversation is dropped like a message (no error)", async () => {
+		const { app, submitCalls } = await boot({ empty: true });
+		app.editor.onSubmit?.("/review anything");
+		await flush();
+		expect(submitCalls).toEqual([]);
+		expect(app.pane.render(60).join("\n")).not.toContain("[error]");
+	});
+});
+
+// ── The command picker's insert rule for expand entries (Task 2c) ───────
+
+describe("composer command picker: expand entries", () => {
+	/** A fake TUI capturing overlays: the picker component is driven
+	 *  headlessly (filter chars, then Enter picks) — picker.test.ts's idiom. */
+	function overlayTui(): {
+		tui: TUI;
+		shown: {
+			component: {
+				handleInput?: (data: string) => void;
+				render?: (width: number) => string[];
+			};
+		}[];
+	} {
+		const shown: {
+			component: {
+				handleInput?: (data: string) => void;
+				render?: (width: number) => string[];
+			};
+		}[] = [];
+		const tui = {
+			requestRender: () => {},
+			setFocus: () => {},
+			showOverlay(component: {
+				handleInput?: (data: string) => void;
+				render?: (width: number) => string[];
+			}) {
+				shown.push({ component });
+				return {
+					hide: () => {},
+					setHidden: () => {},
+					isHidden: () => false,
+				};
+			},
+		} as unknown as TUI;
+		return { tui, shown };
+	}
+
+	async function bootWithOverlay() {
+		const stub = stubClient();
+		const overlay = overlayTui();
+		const app = new TuiApp(stub.client, {
+			tui: overlay.tui,
+			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
+		});
+		await app.refresh();
+		await app.dispatch({ type: "picker", kind: "command" });
+		return { app, ...stub, ...overlay };
+	}
+
+	test("the picker offers expand entries with their description and argument-hint", async () => {
+		const { app, shown } = await bootWithOverlay();
+		expect(shown).toHaveLength(1);
+		const lines = shown[0]!.component.render!(80).join("\n");
+		expect(lines).toContain("/review");
+		expect(lines).toContain("Review the change");
+		expect(lines).toContain("<focus>");
+		expect(lines).toContain("/skill:greet");
+		app.editor.setText("");
+	});
+
+	test("picking a skill inserts `/skill:greet ` — trailing space, no submit", async () => {
+		const { app, shown, submitCalls } = await bootWithOverlay();
+		const picker = shown[0]!.component;
+		// Filter to the skill, then Enter picks it.
+		for (const character of "skill:greet") picker.handleInput!(character);
+		picker.handleInput!("\r");
+		await flush();
+		expect(app.editor.getText()).toBe("/skill:greet ");
+		expect(submitCalls).toEqual([]);
+	});
+
+	test("picking a template inserts `/review ` for its argument", async () => {
+		const { app, shown } = await bootWithOverlay();
+		const picker = shown[0]!.component;
+		for (const character of "review") picker.handleInput!(character);
+		picker.handleInput!("\r");
+		await flush();
+		expect(app.editor.getText()).toBe("/review ");
+	});
+
+	test("picking an ARGLESS endpoint command still inserts without a trailing space (unchanged)", async () => {
+		const { app, shown, forkCalls } = await bootWithOverlay();
+		const picker = shown[0]!.component;
+		for (const character of "new") picker.handleInput!(character);
+		picker.handleInput!("\r");
+		await flush();
+		expect(app.editor.getText()).toBe("/new");
+		expect(forkCalls).toEqual([]);
 	});
 });

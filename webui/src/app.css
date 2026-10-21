@@ -793,6 +793,44 @@ body {
 	margin: 0.25rem 0;
 }
 
+/* The expanded-input chip (Task 2c): under an expanded user bubble — a
+   small bordered pill naming the command (`expanded from /review`) that
+   toggles the admitted (expanded) text below it. Same conventions as the
+   composer's attachment chips: border + radius + muted, never a button's
+   full chrome. */
+
+.entry-expanded {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 0.3rem;
+}
+
+.entry-expanded-chip {
+	padding: 0.1rem 0.5rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--muted);
+	font-size: 0.75rem;
+	cursor: pointer;
+}
+
+.entry-expanded-chip:hover {
+	color: var(--text);
+}
+
+.entry-expanded-text {
+	max-width: 78%;
+	padding: 6px 10px;
+	border-radius: 8px;
+	border: 1px dashed var(--border);
+	color: var(--muted);
+	font-size: 0.8rem;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 /* The assistant turn's prose — the Markdown renderer's `prose` variant
    (serif) lives inside; the wrapper only owns flow. */
 

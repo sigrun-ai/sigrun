@@ -19,7 +19,7 @@ import {
 	userTurnEntry,
 } from "../test-utils";
 import { MessageActions } from "./MessageActions";
-import { UserEntry } from "./UserEntry";
+import { UserEntry, userText } from "./UserEntry";
 
 const noop = (): void => {};
 
@@ -108,6 +108,98 @@ describe("UserEntry", () => {
 		});
 		expect(onEdit).toHaveBeenCalledTimes(1);
 		expect(renderer.root.findAllByType(MessageActions)).toHaveLength(1);
+		renderer.unmount();
+	});
+
+	// ── Task 2c: the expanded-user chip ─────────────────────────────────
+	// An expanded submission is ONE entry (kind `sigrun.user.expanded`,
+	// `data {typed, command}`, the EXPANDED text on `model`): the bubble
+	// shows the TYPED text; a chip names the command and DISCLOSES the
+	// expanded text on demand (never by default).
+
+	/** An expanded-user entry fixture: typed `/review concurrency`, admitted
+	 *  text "Review with focus: concurrency". */
+	function expandedTurnEntry(id = 3) {
+		return makeEntry(
+			"sigrun.user.expanded",
+			[textMessage("user", "Review with focus: concurrency")],
+			{
+				id,
+				data: { typed: "/review concurrency", command: "review" },
+			},
+		);
+	}
+
+	test("an expanded entry shows the TYPED text and the chip; the expanded text stays hidden", () => {
+		const renderer = render(
+			h(UserEntry, {
+				entry: expandedTurnEntry(),
+				onFork: noop,
+				onEdit: noop,
+			}),
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("/review concurrency");
+		expect(text).toContain("expanded from /review");
+		// The admitted (expanded) text is NOT shown by default — the typed
+		// line is the bubble, the rest waits behind the chip.
+		expect(text).not.toContain("Review with focus: concurrency");
+		renderer.unmount();
+	});
+
+	test("clicking the chip reveals the full expanded text; clicking again hides it", () => {
+		const renderer = render(
+			h(UserEntry, {
+				entry: expandedTurnEntry(),
+				onFork: noop,
+				onEdit: noop,
+			}),
+		);
+		const chip = renderer.root.findByProps({ className: "entry-expanded-chip" });
+		expect(chip.props["aria-expanded"]).toBe(false);
+		act(() => {
+			chip.props.onClick();
+		});
+		expect(chip.props["aria-expanded"]).toBe(true);
+		expect(textContent(renderer.toJSON())).toContain(
+			"Review with focus: concurrency",
+		);
+		act(() => {
+			chip.props.onClick();
+		});
+		expect(textContent(renderer.toJSON())).not.toContain(
+			"Review with focus: concurrency",
+		);
+		renderer.unmount();
+	});
+
+	test("userText returns the TYPED text for an expanded entry (Copy/Edit source)", () => {
+		// Edit re-sends the COMMAND (the server re-expands), Copy copies what
+		// the user wrote — both read userText.
+		expect(userText(expandedTurnEntry())).toBe("/review concurrency");
+		expect(userText(userTurnEntry(1, "plain"))).toBe("plain");
+	});
+
+	test("an expanded entry with attachments keeps their path markers", () => {
+		const entry = makeEntry(
+			"sigrun.user.expanded",
+			[
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "Review with focus: api" },
+						{ type: "image", path: "uploads/shot.png" },
+					],
+				},
+			],
+			{ data: { typed: "/review api", command: "review" } },
+		);
+		const renderer = render(
+			h(UserEntry, { entry, onFork: noop, onEdit: noop }),
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("/review api");
+		expect(text).toContain("uploads/shot.png");
 		renderer.unmount();
 	});
 });

@@ -14,6 +14,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	activityLabel,
+	EXPANDED_USER_KIND,
+	expandedUserEntry,
 	groupTurns,
 	previewArgument,
 	toolPreview,
@@ -184,6 +186,77 @@ describe("groupTurns", () => {
 		};
 		const turns = groupTurns([wire]);
 		expect(turns[0]).toEqual({ kind: "user", entry: wire });
+	});
+
+	// Task 2c: an expanded input is placed as ONE entry — kind
+	// `sigrun.user.expanded` with `data {typed, command}` and the EXPANDED
+	// text on `model` (pi-durable's `entry` REPLACES the `pi.user` kind) —
+	// so the grouping, not the renderers, must recognise it as a user turn.
+	it("groups a sigrun.user.expanded entry as a USER turn exposing typed and expanded text", () => {
+		const expanded = {
+			id: 1,
+			kind: EXPANDED_USER_KIND,
+			data: { typed: "/review concurrency", command: "review" },
+			model: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Review with focus: concurrency" }],
+				},
+			],
+		};
+		const turns = groupTurns([expanded]);
+		expect(turns.map((turn) => turn.kind)).toEqual(["user"]);
+		const turn = turns[0]!;
+		if (turn.kind !== "user") throw new Error("expected a user turn");
+		// The entry passes through whole — both texts stay reachable.
+		expect(turn.entry).toBe(expanded);
+		expect(expandedUserEntry(turn.entry)).toEqual({
+			typed: "/review concurrency",
+			command: "review",
+		});
+		expect(turn.entry.model?.[0]?.content).toEqual([
+				{ type: "text", text: "Review with focus: concurrency" },
+			]);
+	});
+
+	it("an expanded user entry ends the assistant run like a pi.user entry", () => {
+		const turns = groupTurns([
+			userEntry(1, "First question"),
+			assistantEntry(2, [{ type: "text", text: "First answer." }]),
+			{
+				id: 3,
+				kind: EXPANDED_USER_KIND,
+				data: { typed: "/skill:greet hej", command: "skill:greet" },
+				model: [
+					{
+						role: "user",
+						content: [{ type: "text", text: "<skill name=\"greet\">…</skill>" }],
+					},
+				],
+			},
+			assistantEntry(4, [{ type: "text", text: "Second answer." }]),
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		expect(asAssistant(turns[1]!).text).toBe("First answer.");
+		expect(asAssistant(turns[3]!).text).toBe("Second answer.");
+	});
+});
+
+describe("expandedUserEntry", () => {
+	it("narrows only the expanded kind with a non-empty string typed", () => {
+		expect(expandedUserEntry({ kind: "pi.user", data: { typed: "/x" } })).toBeUndefined();
+		expect(expandedUserEntry({ kind: EXPANDED_USER_KIND })).toBeUndefined();
+		expect(
+			expandedUserEntry({ kind: EXPANDED_USER_KIND, data: { typed: "" } }),
+		).toBeUndefined();
+		expect(
+			expandedUserEntry({ kind: EXPANDED_USER_KIND, data: { typed: "/review x" } }),
+		).toEqual({ typed: "/review x" });
 	});
 });
 
