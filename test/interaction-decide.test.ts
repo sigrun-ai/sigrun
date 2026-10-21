@@ -20,11 +20,9 @@
  * 2. **The codemode-nesting case (a CODEMODE guarantee).** A gated
  *    tool called from inside a codemode script still prompts — the
  *    nested `executeTool` runs the ToolTask `beforeTool` hooks, which
- *    is the whole point of the pi-durable 1.2.0 upgrade. This depends
- *    on the sibling sigrun-ext-codemode checkout, so it runs only when
- *    that dist EXISTS (`describe.runIf`); it moves to
- *    sigrun-ext-codemode's own suite once sigrun is published. The
- *    skip path is exercisable with `SIGRUN_TEST_HIDE_SIBLINGS=1`.
+ *    is the whole point of the pi-durable 1.2.0 upgrade. Since Task 2
+ *    the codemode extension is a core `node_modules` dependency (the
+ *    built-in), so this case ALWAYS runs — no sibling-checkout gating.
  *
  * Case 2 is a PARITY LOCK on shipped behavior (the pieces exist:
  * pi-durable 1.3.0 + the fixture gate + the codemode extension), not
@@ -33,11 +31,10 @@
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -67,42 +64,10 @@ const GATE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-gate", "index.js"),
 ).href;
 
-// ─── Case 2's sibling (the codemode dist; skip when absent) ──────────────
-// The worktree sits two levels deeper than the sibling checkouts, hence
-// two `..` segments from the test dir. Static TS imports can't resolve
-// outside the package root, so the dist loads at runtime via dynamic
-// import with a computed specifier.
-const CODEMODE_PATH = join(
-	import.meta.dirname,
-	"../../sigrun-ext-codemode/dist/index.js",
-);
-const CODEMODE_PRESENT =
-	existsSync(CODEMODE_PATH) &&
-	process.env.SIGRUN_TEST_HIDE_SIBLINGS !== "1";
-if (!CODEMODE_PRESENT) {
-	console.info(
-		`interaction-decide: skipping the codemode-nesting case — ` +
-			`sigrun-ext-codemode dist not found at ${CODEMODE_PATH} ` +
-			`(or SIGRUN_TEST_HIDE_SIBLINGS=1)`,
-	);
-}
-
-/** The codemode wiring (the loader-shaped factory, called directly). */
-type CodemodeWiring = {
-	extension: import("@earendil-works/pi-durable").Extension<
-		import("@earendil-works/pi-durable").ToolRegistration
-	>;
-	close?: () => Promise<void>;
-};
-let createCodemodeWiring: () => CodemodeWiring;
-
-beforeAll(async () => {
-	if (!CODEMODE_PRESENT) return;
-	const codemodeMod = (await import(CODEMODE_PATH)) as unknown as {
-		createCodemodeWiring: () => CodemodeWiring;
-	};
-	({ createCodemodeWiring } = codemodeMod);
-});
+// ─── Case 2's codemode (a core node_modules dependency — Task 2) ────────
+// The built-in codemode extension resolves from core's own tree, so the
+// import is a plain static one and the case always runs.
+import { createCodemodeWiring } from "sigrun-ext-codemode";
 
 // ─── Case 1: the decide flow (always runs) ───────────────────────────────
 
@@ -347,10 +312,10 @@ test("a second run answered deny returns the refusal; the marker is absent", { t
 	expect(await pendingInteraction(app, root.id)).toBeUndefined();
 });
 
-// ─── Case 2: the codemode-nesting parity lock (sibling-gated) ────────────
+// ─── Case 2: the codemode-nesting parity lock (always runs) ────────────
 
-describe.runIf(CODEMODE_PRESENT)(
-	"codemode nesting (sibling present)",
+describe(
+	"codemode nesting",
 	() => {
 		/** A marker the guarded tool's execute writes into the script's result. */
 		const GUARDED_MARKER = "guarded-write-executed";

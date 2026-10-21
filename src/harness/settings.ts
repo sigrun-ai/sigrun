@@ -61,6 +61,7 @@ import { resolveStoreRoots } from "./stores.js";
 import { isAbsoluteHttpUrl } from "../config.js";
 import { isIanaTimeZone, validateJobSpec } from "../jobs/spec.js";
 import type {
+	BuiltinExtensionsSettings,
 	JobHistorySettings,
 	ServerSettings,
 	SettingsFile,
@@ -68,6 +69,7 @@ import type {
 } from "@sigrun/shared/settings";
 
 export type {
+	BuiltinExtensionsSettings,
 	DefaultProviderSettings,
 	EffectiveServerSetting,
 	ExtensionSpec,
@@ -129,6 +131,8 @@ const SETTING_KEYS = [
 	"defaultProvider",
 	"skills",
 	"notifications",
+	"builtinExtensions",
+	"autoEnableCodemode",
 	"server",
 ] as const;
 
@@ -471,6 +475,27 @@ function validate(value: Record<string, unknown>): void {
 				`must be one of ${RUN_SETTLED_MODES.join(", ")}`,
 			);
 		}
+	}
+	if (value.builtinExtensions !== undefined) {
+		const builtins = asRecord(value.builtinExtensions);
+		if (builtins === undefined) {
+			throw new SettingsValidationError("builtinExtensions", "must be an object");
+		}
+		checkKeys("builtinExtensions.", builtins, ["codemode", "mcp", "toolSearch"]);
+		for (const key of ["codemode", "mcp", "toolSearch"] as const) {
+			if (builtins[key] !== undefined && typeof builtins[key] !== "boolean") {
+				throw new SettingsValidationError(
+					`builtinExtensions.${key}`,
+					"must be a boolean",
+				);
+			}
+		}
+	}
+	if (
+		value.autoEnableCodemode !== undefined &&
+		typeof value.autoEnableCodemode !== "boolean"
+	) {
+		throw new SettingsValidationError("autoEnableCodemode", "must be a boolean");
 	}
 	if (value.server !== undefined) {
 		validateServer(value.server);

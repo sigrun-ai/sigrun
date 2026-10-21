@@ -5,6 +5,9 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, resolve } from "node:path";
 import type {
 	AgentChange,
 	Conversation,
@@ -52,6 +55,82 @@ export const WHEN_BUSY_MODES: readonly string[] = ["steer", "followUp", "reject"
 export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
 /**
+ * The MCP-driven auto-enable (Task 2, ruling 4): when at least one
+ * ENABLED MCP server's effective exposure is `codemode` (sigrun-ext-mcp's
+ * server default), the `codemode` tool stays in the model-offered set for
+ * newly created conversations; when any is `deferred`, `tool_search`
+ * stays offered. Both tools otherwise narrow OUT of the default offered
+ * set (ruling 8's pi parity: with no MCP servers they are not offered).
+ * `autoEnableCodemode: false` turns both arms off; an explicit
+ * `defaultTools` filter always wins (auto-enable only edits the DEFAULT
+ * set, never the user's named list).
+ *
+ * The registry path (ruling 3): the SAME place the extensions read it —
+ * `SIGRUN_MCP_CONFIG` when set, else `~/.config/sigrun/mcp.json`. This is
+ * deliberately NOT unified with `SIGRUN_CONFIG_DIR`: the extensions read
+ * the fixed path directly, so the auto-enable must agree with them (the
+ * divergence from the config-dir convention is a known, recorded
+ * limitation for a later task — do not "fix" it here).
+ *
+ * A create-time decision (like `defaultTools`), not a live toggle. The
+ * narrowing rides the stored `modelTools` `{remove}` EDIT form — never
+ * the array form — so pi-durable's default-offered set stays the base
+ * and `tool_search`'s `control.addTools` merge keeps working over it.
+ *
+ * A missing/unparseable registry reads as EMPTY (both tools off): a
+ * broken mcp.json must never block conversation creation.
+ */
+function autoEnableRemovals(
+	settings: { readonly autoEnableCodemode?: boolean },
+	env: Env,
+): readonly string[] {
+	if (settings.autoEnableCodemode === false) {
+		return ["codemode", "tool_search"];
+	}
+	const override = env.SIGRUN_MCP_CONFIG;
+	const path =
+		override !== undefined && override !== ""
+			? isAbsolute(override)
+				? override
+				: resolve(override)
+			: resolve(homedir(), ".config", "sigrun", "mcp.json");
+	let servers: unknown;
+	try {
+		if (!existsSync(path)) return ["codemode", "tool_search"];
+		servers = (JSON.parse(readFileSync(path, "utf8")) as { servers?: unknown })
+			.servers;
+	} catch {
+		return ["codemode", "tool_search"];
+	}
+	if (typeof servers !== "object" || servers === null || Array.isArray(servers)) {
+		return ["codemode", "tool_search"];
+	}
+	let wantsCodemode = false;
+	let wantsToolSearch = false;
+	for (const entry of Object.values(servers)) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const server = entry as {
+			enabled?: unknown;
+			disabled?: unknown;
+			exposure?: unknown;
+		};
+		if (server.enabled === false || server.disabled === true) continue;
+		// sigrun-ext-mcp's server default is "codemode"; its pi-compat
+		// alias `codemode-deferred` normalizes to "codemode".
+		const exposure =
+			server.exposure === "codemode-deferred"
+				? "codemode"
+				: (server.exposure ?? "codemode");
+		if (exposure === "codemode") wantsCodemode = true;
+		if (exposure === "deferred") wantsToolSearch = true;
+	}
+	const removals: string[] = [];
+	if (!wantsCodemode) removals.push("codemode");
+	if (!wantsToolSearch) removals.push("tool_search");
+	return removals;
+}
+
+/**
  * The agent change every server-side conversation create applies: the
  * boot default model, plus the settings store's sigrun-resolved fields —
  * `defaultTools` (a tool-NAME filter mapped to pi-durable 1.3.0's
@@ -80,6 +159,9 @@ export function storeAgentChange(
 	// dropped LOUDLY: a user writing `"my-ext-tool"` into the settings
 	// file deserves to know the name resolved to nothing.
 	let modelTools: ToolRegistration[] | undefined;
+	let modelToolsEdit:
+		| { readonly remove?: readonly ToolRegistration[] }
+		| undefined;
 	if (filter !== undefined) {
 		const registered = new Set(
 			opened.registry
@@ -98,6 +180,34 @@ export function storeAgentChange(
 			.tools()
 			.filter((entry) => filter.includes(entry.tool.name))
 			.map((entry) => entry.tool);
+	} else {
+		// No explicit filter: the auto-enable ruling narrows the DEFAULT
+		// offered set (removing codemode/tool_search unless an MCP server's
+		// exposure engages them). Registered names only — a built-in
+		// disabled via settings simply drops out of the removal list. The
+		// env is the BOOT env (`opened.providerEnv`), so the hermetic test
+		// seam's SIGRUN_MCP_CONFIG override applies and the live process
+		// env is never read.
+		const removals = autoEnableRemovals(settings, opened.providerEnv);
+		if (removals.length > 0) {
+			const registered = new Set(
+				opened.registry
+					.snapshot()
+					.tools()
+					.map((entry) => entry.tool.name),
+			);
+			const removedTools = opened.registry
+				.snapshot()
+				.tools()
+				.filter(
+					(entry) =>
+						removals.includes(entry.tool.name) && registered.has(entry.tool.name),
+				)
+				.map((entry) => entry.tool);
+			if (removedTools.length > 0) {
+				modelToolsEdit = { remove: removedTools };
+			}
+		}
 	}
 	const thinking =
 		model !== undefined
@@ -109,7 +219,9 @@ export function storeAgentChange(
 		// the model nothing — the same guard the panel's none-on note leans
 		// on), so the emit is skipped when nothing resolved.
 		...(modelTools === undefined || modelTools.length === 0
-			? {}
+			? modelToolsEdit === undefined
+				? {}
+				: { modelTools: modelToolsEdit }
 			: { modelTools }),
 		// The store validates every level against pi-ai's union, so this
 		// unsound-looking cast is checked at every write.

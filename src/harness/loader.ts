@@ -129,6 +129,12 @@ export interface ExtensionOutcome {
 	 * load quarantined before a module resolved.
 	 */
 	readonly version?: string;
+	/**
+	 * Built-in extensions (Task 2): `true` marks a core-shipped built-in
+	 * (the boot prepends its resolved entries with this flag); ABSENT on
+	 * configured extensions. `/v1/extensions` renders it verbatim.
+	 */
+	readonly builtin?: boolean;
 }
 
 /**
@@ -1359,6 +1365,27 @@ export interface ResolvedExtensionInput {
 	readonly entry?: string;
 	/** Manifest skill dirs (existing directories), resolved by the sync. */
 	readonly skills?: readonly string[];
+	/**
+	 * Built-in marker (Task 2): the boot's built-in resolution sets this on
+	 * the entries it prepends; the outcome carries it through to
+	 * `/v1/extensions`. Configured entries never set it.
+	 */
+	readonly builtin?: boolean;
+	/**
+	 * Core-tree resolution marker (Task 2, ruling 2): built-ins resolve
+	 * through core's OWN node_modules, NEVER the packages dir — when set,
+	 * the loader imports `entry` verbatim, skipping the packages-dir-first
+	 * resolution step (a user-installed package must never shadow a
+	 * built-in; replacement works by NAME, not path shadowing).
+	 */
+	readonly coreResolved?: boolean;
+	/**
+	 * The package's own DIRECTORY (Task 2): built-in resolution anchors
+	 * the loader's manifest version read at the package ROOT, not the
+	 * entry's directory (an entry in `dist/` would otherwise read no
+	 * manifest and the outcome would lack `version`).
+	 */
+	readonly packageDir?: string;
 }
 
 /**
@@ -1476,8 +1503,8 @@ options: LoadExtensionsOptions = {},
 // skills-only resolution (§9.4).
 const entries = specifiers.map((spec) =>
 typeof spec === "string"
-? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined }
-: { name: spec.name, entry: spec.entry, skills: spec.skills },
+? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined, builtin: undefined as boolean | undefined, coreResolved: undefined as boolean | undefined, packageDir: undefined as string | undefined }
+: { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir },
 );
 const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
@@ -1505,7 +1532,7 @@ const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
-for (const { name: label, entry, skills } of entries) {
+for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
 const display = label ?? entry ?? "skills-only";
 				try {
 				// Skills-only resolution (§9.4): the package declared skill dirs and
@@ -1546,11 +1573,13 @@ const display = label ?? entry ?? "skills-only";
 						// raw specifiers (the test seam) resolve through the
 						// packages dir first, then bare import resolution.
 						const loaded =
-								label !== undefined
+								coreResolved === true
 										? entry
-										: (options.packagesDir === undefined
+										: label !== undefined
 												? entry
-												: (resolveExtensionEntry(entry, options.packagesDir) ?? entry));
+												: (options.packagesDir === undefined
+														? entry
+														: (resolveExtensionEntry(entry, options.packagesDir) ?? entry));
 						// Resolution order (the packages-dir ruling): the deployment's
 						// packages dir FIRST (what `packages[]` installed wins over
 						// anything the image bundles), then bare import resolution
@@ -1716,13 +1745,14 @@ const display = label ?? entry ?? "skills-only";
 				// The manifest version for the §7.7 inventory: read off the
 				// module's own directory (a bare entry with no manifest stays
 				// versionless — the field is optional by design).
-				const versionDir = extensionModuleDir(loaded);
+				const versionDir = packageDir ?? extensionModuleDir(loaded);
 				const version =
 						versionDir === undefined ? undefined : readPackageVersion(versionDir);
 				outcomes.push({
 					name: slug,
 					status: "ok",
 					...(version === undefined ? {} : { version }),
+					...(builtin === true ? { builtin: true } : {}),
 				});
 			if (extension !== undefined && resolved.health !== undefined) {
 				healthProducers.push({
@@ -1819,6 +1849,7 @@ const display = label ?? entry ?? "skills-only";
 				name: display,
 				status: "quarantined",
 				error: message,
+				...(builtin === true ? { builtin: true } : {}),
 			});
 			// A quarantined extension contributes no health producer or submit
 			// binding: the §3 surfaces are reported through
