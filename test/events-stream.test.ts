@@ -617,6 +617,80 @@ describe("GET /v1/events (W3 Task 4)", () => {
 // Scoping (token method; bob owns, dave observes) — Review Focus 3
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Unknown event types are never delivered (exhaustive visibility —
+// hardening review Task 4, Review Focus 4)
+// ---------------------------------------------------------------------------
+
+describe("GET /v1/events unknown event types", () => {
+	test("an unhandled event type reaches no stream while providers.changed still does", { timeout: 20_000 }, async () => {
+		const { opened, port } = await bootServer({
+			auth: "token",
+			extensions: false,
+			extraUsers: ["alice", "bob"],
+		});
+		const aliceToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		const alice = new EventsConnection(port, {
+			authorization: `Bearer ${aliceToken}`,
+		});
+		const bob = new EventsConnection(port, {
+			authorization: `Bearer ${bobToken}`,
+		});
+		try {
+			await alice.ready();
+			await bob.ready();
+			// Hub events of a type no route branch knows (cast through
+			// unknown: nothing emits such an event today; the ui-blocks work
+			// will). Two shapes: one with NO conversationId (the old path
+			// threw inside snapshot), one with a conversationId that has no
+			// SessionMeta (the old path hit accessOf(principal, {}) ===
+			// "write" on the ownerless fallback and broadcast it).
+			const unknowns: HostEventWire[] = [
+				{
+					type: "unhandled.futureEvent",
+					note: "no conversation id",
+				} as unknown as HostEventWire,
+				{
+					type: "unhandled.futureEvent",
+					conversationId: 424242,
+					note: "conversation with no meta",
+				} as unknown as HostEventWire,
+			];
+			for (const unknown of unknowns) opened.events.publish(unknown);
+			// The follow-up broadcast proves both streams are alive: it lands
+			// on the same serial side lane AFTER the unknown event, so its
+			// arrival means the unknown event was already decided.
+			opened.events.publish({
+				type: "providers.changed",
+				provider: "faux",
+				status: "ready",
+			});
+			for (const stream of [alice, bob]) {
+				await stream.waitFor(
+					(f) =>
+						f.event === "providers.changed" &&
+						f.data.type === "providers.changed",
+				);
+			}
+			// The unknown events' lane decisions are settled (providers.changed
+			// arrived after them); 200ms covers any lingering async work.
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			for (const stream of [alice, bob]) {
+				expect(
+					stream.eventsSoFar().filter(
+						(f) => f.event === "unhandled.futureEvent",
+					),
+				).toEqual([]);
+			}
+		} finally {
+			alice.destroy();
+			bob.destroy();
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	});
+});
+
 describe("GET /v1/events per-event scoping", () => {
 	test("share → delivered; un-share → withheld (per-event re-snapshot)", { timeout: 20_000 }, async () => {
 		const { opened, port } = await bootServer({
