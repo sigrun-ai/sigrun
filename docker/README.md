@@ -12,8 +12,10 @@ The image is a COMMON CORE — sigrun plus its built-ins only. Extensions
 are NOT baked in: declare them in `settings.json`'s unified `extensions`
 list and restart; boot installs them into the packages dir on
 the data volume (see **Configuration** below and the repo README's
-Extensions section). Building the image is a plain `docker build -t
-sigrun:local .` — no extension access is needed at build time.
+Extensions section). The published image is
+`ghcr.io/sigrun-ai/sigrun` — `docker compose up` pulls it. To run from a
+local checkout instead, `docker build -t sigrun:local .` and swap the
+compose `image:` line; no extension access is needed at build time.
 
 ## Run
 
