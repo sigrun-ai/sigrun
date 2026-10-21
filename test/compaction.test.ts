@@ -27,8 +27,9 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 	type FauxProviderHandle,
+	type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
@@ -56,7 +57,7 @@ function fauxContributor(
 	providerId: string,
 	modelId: string,
 	contextWindow: number,
-	responses: AssistantMessage[],
+	responses: FauxResponseStep[],
 ): { contributor: ProviderContributor; faux: FauxProviderHandle } {
 	const faux = fauxProvider({
 		provider: providerId,
@@ -235,6 +236,121 @@ test("an overflowing conversation compacts and places a summary entry", async ()
 				.map(messageText)
 				.join("\n");
 			expect(liveUserText).not.toContain("sigrun-compactable");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("requests after a compaction keep the system baseline first", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-compaction-"));
+	try {
+		// pi-durable #10904 (fixed in 1.3.0): after a compaction, the system
+		// baseline could be sent as a MID-CONVERSATION system message, so a
+		// provider request went out without the initial prompt or tool set
+		// leading the transcript (Anthropic and OpenAI Codex drop everything
+		// before a system message). Response factories capture each faux
+		// request's transcript; after two answered turns, a manual compaction,
+		// and one more turn, the post-compaction request must have the system
+		// baseline as its FIRST message and no system message after an
+		// assistant message.
+		const requests: Message[][] = [];
+		const capturingAnswer = (text: string): FauxResponseStep =>
+			(context) => {
+				requests.push([...context.messages]);
+				return fauxAssistantMessage(text);
+			};
+		const { contributor } = fauxContributor("faux", "m", 128_000, [
+			capturingAnswer("first answer"),
+			capturingAnswer("second answer"),
+			capturingAnswer("compacted history summary"),
+			capturingAnswer("third answer"),
+		]);
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			// Blocking-only: a background compaction would race the scripted
+			// response queue.
+			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+			// A real cut: with the default keep-window this tiny transcript has
+			// nothing to compact, and the manual compaction would complete
+			// without placing a summary (selectCut finds no cut).
+			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
+		});
+		await disableAutoNaming(dir);
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		try {
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			// Two answered turns.
+			for (const content of ["first question", "second question"]) {
+				const turn = await root.submit(
+					{ type: "input", content },
+				BACKGROUND_CONTEXT,
+			);
+				expect((await turn.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+			}
+			// A manual compaction: the summarizer consumes one response, the
+			// task completes, and the summary entry is placed at the idle
+			// boundary before the next turn is admitted.
+			const task = await root.compact(undefined, BACKGROUND_CONTEXT);
+			const settledTask = await opened.harness.waitForTask(
+				task,
+				BACKGROUND_CONTEXT,
+			);
+			expect(settledTask.state.outcome.status).toBe("completed");
+			await root.waitForIdle(BACKGROUND_CONTEXT);
+			let compaction: EntryRecord | undefined;
+			for (
+				let attempt = 0;
+				attempt < 100 && compaction === undefined;
+				attempt++
+			) {
+				const page = await root.entries(
+					{},
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+				);
+				compaction = page.items.find(
+					(entry) => entry.kind === "pi.compaction",
+				);
+				if (compaction === undefined)
+					await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			expect(compaction).toBeDefined();
+			// One more turn: this request is the one the #10904 shape asserts on.
+			const third = await root.submit(
+				{ type: "input", content: "third question" },
+			BACKGROUND_CONTEXT,
+			);
+			expect((await third.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+
+			const after = requests.at(-1);
+			expect(after).toBeDefined();
+			// The system baseline (initial prompt + tool declarations) leads the
+			// transcript...
+			expect(after?.[0]?.role).toBe("system");
+			// ...and no system message appears after an assistant message (the
+			// transcript always carries assistant messages here — three answered
+			// turns — asserted so the ordering check can never pass vacuously).
+			const firstAssistant = after?.findIndex(
+				(message) => message.role === "assistant",
+			) as number;
+			expect(firstAssistant).toBeGreaterThan(-1);
+			expect(
+				after?.some(
+					(message, index) =>
+						message.role === "system" && index > firstAssistant,
+				),
+			).toBe(false);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}

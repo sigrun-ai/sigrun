@@ -16,7 +16,7 @@
  * - `defaultTools` — a tool-name filter applied at conversation-create
  *   time (the server reads it from the store, resolves the names against
  *   the registry, and passes them as `AgentChange.modelTools` objects —
- *   the MODEL-OFFERED filter, pi-durable 1.2.0; NOT the enabled filter,
+ *   the MODEL-OFFERED filter, pi-durable 1.3.0; NOT the enabled filter,
  *   so filtered-out tools stay callable by nested calls).
  * - `perModelThinking` — per-model thinking-level overrides (`"provider/
  *   modelId": level`), applied by the server at conversation create and

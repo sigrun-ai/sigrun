@@ -53,7 +53,7 @@ const ZEROARG_SPECIFIER = pathToFileURL(
 /**
  * The skew fixture (core-hardening Task 5): bundles its own nested
  * `node_modules/@earendil-works/pi-durable` at 0.0.1 while the host runs
- * 1.2.0 — the discriminator for the loader's host-module version guard.
+ * 1.3.0 — the discriminator for the loader's host-module version guard.
  */
 const SKEW_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-skew", "index.js"),

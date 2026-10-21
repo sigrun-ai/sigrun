@@ -54,7 +54,7 @@ export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 /**
  * The agent change every server-side conversation create applies: the
  * boot default model, plus the settings store's sigrun-resolved fields —
- * `defaultTools` (a tool-NAME filter mapped to pi-durable 1.2.0's
+ * `defaultTools` (a tool-NAME filter mapped to pi-durable 1.3.0's
  * `AgentChange.modelTools`, the MODEL-OFFERED filter — NOT
  * `AgentChange.tools`, the enabled filter: filtering the offered set never
  * disables a tool for nested calls, the two-layer-filter ruling) and
