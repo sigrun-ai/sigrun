@@ -1,6 +1,6 @@
 /**
  * Test-fixture gate extension (core hardening, task-3): the IN-REPO
- * replacement for the retired sibling-checkout approvals dependency the
+ * replacement for the retired sibling-checkout gating dependency the
  * decide round-trip used to import.
  *
  * Plain JavaScript, no build step — the loader imports it directly via

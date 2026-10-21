@@ -1,5 +1,5 @@
 /**
- * Task 9c-i: configure + abort endpoints (no approvals — separate slice).
+ * Task 9c-i: configure + abort endpoints (a separate slice from the seam).
  *
  * `POST /v1/conversations/:id/configure` changes the conversation's model
  * and/or thinking level: the body accepts EXACTLY `{ model?, thinking? }`

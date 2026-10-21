@@ -1,6 +1,6 @@
 /**
- * The interaction-seam decide round-trip e2e (spec slice 3, renamed from
- * approvals-parity by §6.7): a gated tool call PROMPTS, the human
+ * The interaction-seam decide round-trip e2e (spec slice 3): a gated
+ * tool call PROMPTS, the human
  * answers through the ONE generic answer route, and the held call
  * resolves from the answer — allow runs the tool, deny refuses it.
  *
@@ -410,7 +410,7 @@ describe.runIf(CODEMODE_PRESENT)(
 			const guardedWrite = defineTool({
 				name: "guarded_write",
 				description:
-					"Gated test tool: approvals must hold this until decided.",
+					"Gated test tool: the gate must hold this until decided.",
 				parameters: Type.Object({
 					path: Type.String({
 						description: "Path the tool pretends to write.",

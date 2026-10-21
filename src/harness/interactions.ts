@@ -20,7 +20,7 @@
  *
  * Answer transport: the generic route commits `answer` into the record.
  * First-answer-wins is enforced INSIDE the commit (the mutation line
- * serializes commits), mirroring the approvals doc-family pattern.
+ * serializes commits), mirroring the gated-doc-family pattern.
  * Resolution semantics (what allow/deny mean) stay extension-owned: the
  * extension reads the record through `api.snapshot` in its own poll loop.
  *

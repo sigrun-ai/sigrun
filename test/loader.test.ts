@@ -90,15 +90,17 @@ test("a factory result may carry capability fields beyond health — they resolv
 	// The capability-freedom ruling: core retains only health; a gating
 	// extension may return extra fields (its own doc tooling, future seams)
 	// and those are the extension's business, never core's.
-	const ext = { name: "sigrun.approvals", hooks: [], tools: [] } as never;
+	const ext = { name: "sigrun.warden", hooks: [], tools: [] } as never;
 	const result = await resolveExtension({
-		createApprovals: () => ({
+		default: () => ({
 			extension: ext,
-			approvals: { listPending: () => {}, decide: () => {} },
+			gating: { listPending: () => {}, decide: () => {} },
 		}),
 	});
 	expect(result?.extension).toBe(ext);
-	expect((result as unknown as Record<string, unknown>).approvals).toBeUndefined();
+	expect(
+		(result as unknown as Record<string, unknown>).gating,
+	).toBeUndefined();
 });
 
 test("SIGRUN_EXTENSIONS parses into config.extensions", () => {
@@ -400,7 +402,7 @@ test("a factory result carrying submit loads ok and warns (retired pass-through)
 });
 
 test("a named-export package loads ok but warns (deprecated bridge)", async () => {
-	// §6.7: the named-export bridges (createMemory/createApprovals, named
+	// §6.7: the named-export bridges (createMemory, named
 	// `extension`) are deprecated — one more release of load-with-warning,
 	// then deletion. The fixture resolves through `createMemory` and its
 	// factory result ALSO carries a retired `submit`: both warnings fire

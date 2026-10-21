@@ -1,8 +1,8 @@
 /**
  * The interaction seam's TUI renderer (Task 8 — the parity rule): the
  * pending-interaction stack rendered as an answerable prompt above the
- * composer, generic over record kinds (the TUI never knows what an
- * "approval" is). Covered here:
+ * composer, generic over record kinds (the TUI never knows what a gated
+ * kind is). Covered here:
  *
  * - a pending interaction renders its kind, prompt text, and numbered
  *   options; multiple pending items stack (the top one is the prompt).

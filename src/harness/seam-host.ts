@@ -58,7 +58,7 @@ export class SeamError extends Error {
 
 /** How the host context identifies the calling extension (owner/creator). */
 export interface HostIdentity {
-	/** The pi-durable extension name (`sigrun.approvals`, `sigrun.warden`, …). */
+	/** The pi-durable extension name (`sigrun.warden`, …). */
 	readonly name: string;
 }
 

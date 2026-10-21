@@ -79,8 +79,8 @@ export interface E2EServerOptions {
 	readonly auth?: { readonly setupCode: string };
 	/**
 	 * T26b-iii items 4 + 7: extension package specifiers to load (the
-	 * `OpenHarnessOptions.extensionSpecifiers` seam — "sigrun-ext-approvals",
-	 * "sigrun-ext-memory-markdown"). Defaults to the parsed config's list (empty in
+	 * `OpenHarnessOptions.extensionSpecifiers` seam — "@sigrun/ext-codemode",
+	 * "@sigrun/ext-memory-markdown"). Defaults to the parsed config's list (empty in
 	 * this hermetic boot).
 	 */
 	readonly extensionSpecifiers?: readonly string[];

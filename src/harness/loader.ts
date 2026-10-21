@@ -337,7 +337,6 @@ interface ExtensionModule {
 	readonly default?: unknown;
 	readonly extension?: unknown;
 	readonly createMemory?: unknown;
-	readonly createApprovals?: unknown;
 }
 
 /**
@@ -371,12 +370,12 @@ export interface ResolvedExtension {
 	readonly retiredSubmit?: true;
 	/**
 	 * Which NAMED-EXPORT bridge resolved this module (§6.7 deprecation):
-	 * `"createMemory"`/`"createApprovals"` (the pre-contract named
-	 * factories) or `"extension"` (the named `extension` export). Absent
+	 * `"createMemory"` (the pre-contract named
+	 * factory) or `"extension"` (the named `extension` export). Absent
 	 * for the supported default-export forms. Drives the deprecation
 	 * warning; behavior is otherwise unchanged.
 	 */
-	readonly resolvedVia?: "createMemory" | "createApprovals" | "extension";
+	readonly resolvedVia?: "createMemory" | "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
@@ -1155,12 +1154,12 @@ async function resolvedFromFactory(
 	if (typeof factory !== "function") return undefined;
 	// Arity gate: the host context goes ONLY to factories that declare the
 	// arity-1 signature (factory.length > 0). A length-0 factory with a
-	// defaulted first parameter (createMemory(backend = new Backend()),
-	// createApprovals(options = {})) consumes its first argument as a real
-	// dependency — passing the host unconditionally landed it in that slot
-	// and broke the extension at runtime (memory: every submit 500ed on
-	// `bindRecallSource is not a function`). Extra arguments are inert only
-	// for factories that read none; `length` is how the contract declares it.
+	// defaulted first parameter (createMemory(backend = new Backend()))
+	// consumes its first argument as a real dependency — passing the host
+	// unconditionally landed it in that slot and broke the extension at
+	// runtime (memory: every submit 500ed on `bindRecallSource is not a
+	// function`). Extra arguments are inert only for factories that read
+	// none; `length` is how the contract declares it.
 	const result =
 		factory.length > 0
 			? (factory as (host?: unknown) => unknown)(hostContext)
@@ -1298,18 +1297,11 @@ export async function resolveExtension(
 	// 2. Named real-package factories (DEPRECATED bridge for the
 	// pre-contract packages — one warning per load at the caller; deletion
 	// is the next release). A package whose factory result carries extra
-	// capability fields (approvals, future insight/seam fields) resolves
+	// capability fields (insight/seam fields, its own tooling) resolves
 	// fine: only health is validated and retained; everything else is the
 	// extension's own business.
 	const fromMemory = await resolvedFromFactory(module.createMemory, hostContext);
 	if (fromMemory !== undefined) return { ...fromMemory, resolvedVia: "createMemory" };
-	const fromApprovals = await resolvedFromFactory(
-		module.createApprovals,
-		hostContext,
-	);
-	if (fromApprovals !== undefined) {
-		return { ...fromApprovals, resolvedVia: "createApprovals" };
-	}
 
 	// 3. Named `extension` export (DEPRECATED the same way).
 	if (isExtension(module.extension)) {

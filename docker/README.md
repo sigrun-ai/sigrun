@@ -9,8 +9,8 @@ option; for a durable/persistent deployment prefer the Helm chart
 ## Build the image
 
 The image is a COMMON CORE — sigrun plus its built-ins only. Extensions
-are NOT baked in: declare them in `settings.json` (`packages` +
-`extensions`) and restart; boot installs them into the packages dir on
+are NOT baked in: declare them in `settings.json`'s unified `extensions`
+list and restart; boot installs them into the packages dir on
 the data volume (see **Configuration** below and the repo README's
 Extensions section). Building the image is a plain `docker build -t
 sigrun:local .` — no extension access is needed at build time.
@@ -50,7 +50,7 @@ Everything durable lives on the `sigrun-data` named volume, mounted at
 `/data/workspace`, and the config dir at `/data/config`
 (`SIGRUN_CONFIG_DIR`) — `settings.json`, `auth.json`, and the packages
 dir (`/data/config/packages/`) that boot installs the settings file's
-`packages` declarations into. `docker volume inspect
+`extensions` entries into. `docker volume inspect
 sigrun_sigrun-data` shows where that lands on the host. Back up the
 volume (or stop the container first) — see the backup CronJob in the
 k8s manifests for the durable setup.
@@ -58,20 +58,20 @@ k8s manifests for the durable setup.
 ### Adding an extension
 
 Edit `/data/config/settings.json` in the volume (from the host path the
-volume inspects to, or `docker compose exec sigrun ...`), listing the
-package to install and to load:
+volume inspects to, or `docker compose exec sigrun ...`), declaring the
+extension in the unified `extensions` list — one list is both the
+install and the load declaration:
 
 ```jsonc
 {
-  "packages": ["sigrun-ext-approvals@^0.1.0"],
-  "extensions": ["sigrun-ext-approvals"]
+  "extensions": ["sigrun-ext-memory-markdown@^0.1.0"]
 }
 ```
 
 Then `docker compose restart`. Boot runs `npm install` into
 `/data/config/packages` (first install needs registry access from the
 container; later boots are a no-op fast path unless the list changed).
-Removing a name from `packages` uninstalls it on the next boot. A
+Removing an entry from `extensions` uninstalls it on the next boot. A
 failed install fails the boot, naming the specifier — the container
 log says why. No image rebuild, ever.
 
