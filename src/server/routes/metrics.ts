@@ -43,11 +43,11 @@
  *   Families with no samples are omitted (the backup-marker
  *   convention).
  *
- * ACCESS (the plan's documented interim): `/metrics` is unconditionally
- * public on this branch — there is no auth pipeline to gate it with.
- * `config.metricsPublic` (strict `SIGRUN_METRICS_PUBLIC`, W1 Task 1)
- * becomes the gate once W1 lands; the chart already pins the env `true`
- * so the in-cluster scrape survives that switch.
+ * ACCESS: `/metrics` is public iff `config.metricsPublic` (strict
+ * `SIGRUN_METRICS_PUBLIC`, W1 Task 1) — the decision is made by the
+ * matched-route auth pipeline (`src/server/auth/pipeline.ts` rule 2:
+ * pattern `/metrics` and `metricsPublic` → public, else authenticated).
+ * The chart pins the env `true` so the in-cluster scrape survives.
  *
  * FORMAT: every family carries `# HELP` + `# TYPE` lines (gauge, or
  * counter for the one cumulative family); label values escape
