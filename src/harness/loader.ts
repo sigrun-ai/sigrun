@@ -38,16 +38,16 @@
  * `webuiBundles` result with no `extension` needs a `name`). Factories may
  * return a Promise (the plugins read their scoped settings store inside the
  * factory); the loader awaits the result. Packages that predate the settled
- * contract export named factories (`createMemory`) whose results carry the
- * same `.extension` field, so the loader resolves, in order:
+ * contract export a named `extension` directly, so the loader resolves,
+ * in order:
  *
  * 1. the default export, if it is a factory returning `{ extension,
  *    health? }` or is itself an `Extension` (named `name`) — the supported
  *    form,
- * 2. a named `createMemory` factory (DEPRECATED bridge for the
- *    pre-contract memory package — one warning per load; deletion is the
- *    next release),
- * 3. a named `extension` export (DEPRECATED the same way).
+ * 2. a named `extension` export (DEPRECATED bridge — one warning per
+ *    load). The pre-contract `createMemory` named-factory bridge was
+ *    deleted in release-0.1 (its last consumer, the memory package, now
+ *    exports the factory as default).
  *
  * A factory result still carrying a `submit` pass-through (the retired
  * pre-seam memory wiring) is IGNORED with one warning — never
@@ -74,7 +74,7 @@
  * silently lose it).
  *
  * The contract is DOCUMENTED as one types-only type surface (W5 Task 1,
- * spec §9.1): `src/extension.ts`, shipped as the `sigrun/extension`
+ * spec §9.1): `src/extension.ts`, shipped as the `@sigrun/sigrun/extension`
  * subpath (types-only — a runtime import of it fails loud by design).
  * This loader's validated candidate shape is DERIVED from that contract
  * (`CandidateFactoryResult` — reading a key the contract does not declare
@@ -342,7 +342,6 @@ export interface LoadedExtensions {
 interface ExtensionModule {
 	readonly default?: unknown;
 	readonly extension?: unknown;
-	readonly createMemory?: unknown;
 }
 
 /**
@@ -376,12 +375,13 @@ export interface ResolvedExtension {
 	readonly retiredSubmit?: true;
 	/**
 	 * Which NAMED-EXPORT bridge resolved this module (§6.7 deprecation):
-	 * `"createMemory"` (the pre-contract named
-	 * factory) or `"extension"` (the named `extension` export). Absent
-	 * for the supported default-export forms. Drives the deprecation
-	 * warning; behavior is otherwise unchanged.
+	 * `"extension"` (the named `extension` export; the pre-contract
+	 * `createMemory` bridge was deleted in release-0.1 — packages must
+	 * export the factory as default). Absent for the supported
+	 * default-export forms. Drives the deprecation warning; behavior is
+	 * otherwise unchanged.
 	 */
-	readonly resolvedVia?: "createMemory" | "extension";
+	readonly resolvedVia?: "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
@@ -1300,16 +1300,10 @@ export async function resolveExtension(
 	const fromDefault = await resolvedFromFactory(defaultExport, hostContext);
 	if (fromDefault !== undefined) return fromDefault;
 
-	// 2. Named real-package factories (DEPRECATED bridge for the
-	// pre-contract packages — one warning per load at the caller; deletion
-	// is the next release). A package whose factory result carries extra
-	// capability fields (insight/seam fields, its own tooling) resolves
-	// fine: only health is validated and retained; everything else is the
-	// extension's own business.
-	const fromMemory = await resolvedFromFactory(module.createMemory, hostContext);
-	if (fromMemory !== undefined) return { ...fromMemory, resolvedVia: "createMemory" };
-
-	// 3. Named `extension` export (DEPRECATED the same way).
+	// 2. Named `extension` export (DEPRECATED bridge for the pre-contract
+	// packages — one warning per load at the caller). The pre-contract
+	// `createMemory` named-factory bridge was deleted in release-0.1; its
+	// last consumer exports the factory as default now.
 	if (isExtension(module.extension)) {
 		return { extension: module.extension, resolvedVia: "extension" };
 	}
@@ -1761,10 +1755,11 @@ const display = label ?? entry ?? "skills-only";
 			});
 			}
 			// §6.7 retirements, warned ONCE at load (never quarantined): a
-			// result resolved through a named-export bridge, and a result still
+			// result resolved through the named-export bridge, and a result still
 			// carrying the retired submit pass-through. Both keep loading —
-			// deletion of the bridge is the next release, and the submit is
-			// simply ignored (the memory seam owns capture now).
+			// the pre-contract `createMemory` named-factory bridge was deleted
+			// in release-0.1 (its last consumer exports default now), and the
+			// submit is simply ignored (the memory seam owns capture now).
 			if (resolved.resolvedVia !== undefined) {
 				console.warn(
 					`extension ${display}: named-export factory "${resolved.resolvedVia}" is deprecated — export it as default`,

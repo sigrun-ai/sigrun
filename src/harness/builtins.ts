@@ -46,7 +46,7 @@ import { parsePackageSpecifier, readPackageName } from "./packages.js";
 export interface BuiltinExtension {
 	/** The settings key (`builtinExtensions.<key>`). */
 	readonly key: "codemode" | "mcp" | "toolSearch";
-	/** The npm package name (the resolution specifier; Task 3 renames to @sigrun/ext-*). */
+	/** The npm package name (the resolution specifier; `@sigrun/ext-*`). */
 	readonly specifier: string;
 	/** The `/v1/extensions` row name — the slug the built-in's DECLARED
 	 * extension name loads under (`codemode`, `sigrun.mcp` → `sigrun-mcp`,
@@ -60,15 +60,15 @@ export interface BuiltinExtension {
  * The three built-ins, in load order (codemode before tool-search: both
  * wrap pi-durable's own extensions and neither depends on the other, but
  * the order pins the tool-collision story should names ever overlap).
- * Specifiers are the CURRENT package names (Ruling 1) — npm keys a file:
+ * Specifiers are the published package names (Task 3) — npm keys a file:
  * dependency by the target's own manifest name, so the key must be the
- * name the packages publish under today; Task 3 flips all of it to
- * `@sigrun/ext-*` at exact 0.1.0 in one edit.
+ * name the packages publish under (the dev shape carries `file:` values
+ * under these same keys until Task 8 publishes exact `0.1.0`s).
  */
 export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
-	{ key: "codemode", specifier: "sigrun-ext-codemode", slug: "codemode" },
-	{ key: "mcp", specifier: "sigrun-ext-mcp", slug: "sigrun-mcp" },
-	{ key: "toolSearch", specifier: "sigrun-ext-tool-search", slug: "tool-search" },
+	{ key: "codemode", specifier: "@sigrun/ext-codemode", slug: "codemode" },
+	{ key: "mcp", specifier: "@sigrun/ext-mcp", slug: "sigrun-mcp" },
+	{ key: "toolSearch", specifier: "@sigrun/ext-tool-search", slug: "tool-search" },
 ];
 
 /** The outcome of resolving the built-ins against settings + configured extensions. */

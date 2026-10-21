@@ -81,7 +81,7 @@ export function registerExtensionRoutes(
 		// Replaced built-ins (Task 2 ruling 5): one row each, under the slug
 		// the built-in itself would have loaded under (`BUILTIN_EXTENSIONS
 		// .slug` — the declared extension name's slug, e.g. `sigrun-mcp` for
-		// the package `sigrun-ext-mcp`), appended after the loaded set.
+		// the package `@sigrun/ext-mcp`), appended after the loaded set.
 		for (const skipped of opened.builtinSkipped) {
 			if (skipped.reason !== "replaced") continue;
 			const slug = BUILTIN_EXTENSIONS.find(

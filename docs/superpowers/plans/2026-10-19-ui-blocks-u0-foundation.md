@@ -2,12 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The block set as code: wire types, the data-op applier and text projection (shared, pure), and the schemas, validator, placement rules, limits and typed builders (server-side), published to extensions as `sigrun/blocks`.
+**Goal:** The block set as code: wire types, the data-op applier and text projection (shared, pure), and the schemas, validator, placement rules, limits and typed builders (server-side), published to extensions as `@sigrun/sigrun/blocks`.
 
 **Architecture:**
 - `shared/src/blocks/` is pure, zero-dependency TypeScript used by the server, webui and TUI: the types, `applyOps`, `toText`, the icon-name list, and the formats.
 - `src/blocks/` holds runtime validation (typebox schemas, `validateTree` with JSON-path errors, the §5.7 placement table, the §4.5 limits) and the builder functions.
-- `sigrun/blocks` is an `exports` subpath of the root package. `sigrun` joins `HOST_RUNTIME_MODULES`, so extensions' imports resolve to the server's own copy.
+- `@sigrun/sigrun/blocks` is an `exports` subpath of the root package. `@sigrun/sigrun` joins `HOST_RUNTIME_MODULES`, so extensions' imports resolve to the server's own copy.
 
 **Tech Stack:** TypeScript (NodeNext), typebox (installed today only transitively; Task 2 adds it to the root `dependencies` at the version already in `package-lock.json`), vitest, fast-check (property tests; add as a root devDependency in Task 1).
 
@@ -166,15 +166,15 @@
 - [ ] **Step 3: Implement** with `Intl` only (no imports outside `shared/src/`). Object keys are visited in schema order, never insertion order.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `git commit -m "blocks: deterministic toText projection and value formats"`.
 
-### Task 4: Builders, `sigrun/blocks`, host-module link
+### Task 4: Builders, `@sigrun/sigrun/blocks`, host-module link
 
 **Files:**
 - Create: `src/blocks/builders.ts`, `src/blocks/index.ts` (re-exports builders, types, `validateTree`)
 - Modify: `package.json` (`exports["./blocks"]` → `{types: "./dist/blocks/index.d.ts", default: "./dist/blocks/index.js"}`; keep W5's `.` and `./extension`), `tsconfig.build.json` (include `src/blocks`)
-- Modify: `src/harness/packages.ts` (`HOST_RUNTIME_MODULES` gains `"sigrun"`), `src/harness/loader.ts` (`EXACT_HOST_MODULES` gains `"sigrun"`: any version difference quarantines, as for pi-durable)
-- Modify: `docs/extending.md` (one paragraph: `sigrun` is a `peerDependency: "*"`; import builders from `sigrun/blocks`)
+- Modify: `src/harness/packages.ts` (`HOST_RUNTIME_MODULES` gains `"@sigrun/sigrun"`), `src/harness/loader.ts` (`EXACT_HOST_MODULES` gains `"@sigrun/sigrun"`: any version difference quarantines, as for pi-durable)
+- Modify: `docs/extending.md` (one paragraph: `sigrun` is a `peerDependency: "*"`; import builders from `@sigrun/sigrun/blocks`)
 - Modify: `src/config.ts` (`server.dev`, env `SIGRUN_DEV`, strict `true`/`false`, default false), `src/server/routes/meta.ts` (`/v1/meta` reports `dev`); U1's gallery, U3's error bodies and U4 consume it
-- Test: `test/blocks-builders.test.ts`, `test/packages.test.ts` (host link), `test/fixtures/fixture-blocks-ext/` (an extension importing `sigrun/blocks`)
+- Test: `test/blocks-builders.test.ts`, `test/packages.test.ts` (host link), `test/fixtures/fixture-blocks-ext/` (an extension importing `@sigrun/sigrun/blocks`)
 
 **Interfaces:**
 - Produces: one builder per block and field, named as the block (`page`, `stack`, `columns`, `grid`, `section`, `markdown`, `fields`, `stat`, `callout`, `image`, `chart`, `meter`, `log`, `tree`, `diff`, `details`, `collection`, `card`, `form`, and fields `text`, `longtext`, `number`, `toggle`, `choice`, `date`, `datetime`, `daterange`, `secret`, `file`, `list`), plus `bind(pointer)` and `tree(root)` (`→ {v: BLOCK_SET_VERSION, root}`). Each takes the block's props object and returns the block. The `tree` block builder is exported as `treeBlock` to avoid the clash.
@@ -182,8 +182,8 @@
 - [ ] **Step 1: Write failing tests:**
   - `tree(page({title: "T", main: [markdown({text: "x"})]}))` deep-equals the hand-written JSON and passes `validateTree(…, {placement: "view"})`;
   - the §14.1 example (with `groups` as a literal) validates with `handlers: new Set(["move"])`;
-  - packages: after boot, `<packagesDir>/node_modules/sigrun` is a symlink to the running package root; `fixture-blocks-ext`'s factory imports `sigrun/blocks` and returns a tree whose `v` equals the server's `BLOCK_SET_VERSION`;
+  - packages: after boot, `<packagesDir>/node_modules/sigrun` is a symlink to the running package root; `fixture-blocks-ext`'s factory imports `@sigrun/sigrun/blocks` and returns a tree whose `v` equals the server's `BLOCK_SET_VERSION`;
   - an extension whose own `node_modules/sigrun` has a different version is quarantined with the same message shape pi-durable skew produces;
   - `SIGRUN_DEV=1` → `/v1/meta` has `dev: true`; unset → `false`; `SIGRUN_DEV=yes` → boot error naming the variable.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** `npm test && npm run typecheck && npm run build` — PASS; `node -e "import('sigrun/blocks')"` from a scratch dir with the package linked resolves.
-- [ ] **Step 5: Commit** `git commit -m "blocks: typed builders as sigrun/blocks; sigrun linked as a host runtime module"`.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** `npm test && npm run typecheck && npm run build` — PASS; `node -e "import('@sigrun/sigrun/blocks')"` from a scratch dir with the package linked resolves.
+- [ ] **Step 5: Commit** `git commit -m "blocks: typed builders as @sigrun/sigrun/blocks; sigrun linked as a host runtime module"`.

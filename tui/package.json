@@ -20,22 +20,31 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-tui": "^1.3.0",
-		"@sigrun/shared": "*"
+		"@sigrun/shared": "0.1.0"
 	},
 	"devDependencies": {
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3"
 	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
 	"files": [
-		"dist"
+		"dist",
+		"CHANGELOG.md"
 	],
 	"license": "MIT",
 	"repository": {
 		"type": "github",
-		"url": "git+https://github.com/sigrun-ai/sigrun.git"
+		"url": "git+https://github.com/sigrun-ai/sigrun.git",
+		"directory": "tui"
 	},
 	"bugs": {
 		"url": "https://github.com/sigrun-ai/sigrun/issues"
 	},
-	"homepage": "https://github.com/sigrun-ai/sigrun#readme"
+	"homepage": "https://github.com/sigrun-ai/sigrun/tree/main/tui#readme",
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	}
 }

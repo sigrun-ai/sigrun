@@ -26,17 +26,43 @@ and capabilities at boot.
   sidebar, streaming conversation pane, fork, the interaction and
   ambient seams, slash commands. See [Launch modes](#launch-modes).
 
+## Install
+
+The published package is `@sigrun/sigrun` (the CLI command stays
+`sigrun`):
+
+```bash
+npm i -g @sigrun/sigrun
+sigrun run          # server + terminal client on loopback
+```
+
+Node `>=22.19.0`. The web UI ships inside the package; the terminal
+client is the optional companion package (`npm i -g @sigrun/tui` —
+`sigrun run` offers an actionable install message when absent).
+
+- **Docker** — `docker/` holds a compose reference:
+  `cd docker && cp .env.example .env && docker compose up --build`.
+- **Helm** — `charts/sigrun` is the reference Kubernetes deployment
+  (a durable PVC, the config dir, and the image).
+
 ## Quickstart
 
-Minimum configuration is a model plus OpenAI-compatible credentials:
+A fresh install boots with zero configuration and walks the first user
+through onboarding in the UI: open the served URL (or run `sigrun run`
+for the terminal client), follow the onboarding prompt, add a provider
+credential (any OpenAI-compatible endpoint, or one of the
+`@sigrun/provider-*` plugins), pick the default model it offers, and
+chat — the first message creates the conversation.
+
+Minimum manual configuration is a model plus OpenAI-compatible
+credentials:
 
 ```bash
 export SIGRUN_DEFAULT_MODEL=openai/gpt-4o-mini      # provider/model-id
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1   # any compatible endpoint
 
-npm install
-npm start        # tsx src/index.ts — listens on :3000
+sigrun serve     # listens on :3000
 ```
 
 (`SIGRUN_MODEL` still works as a deprecated alias for
@@ -49,14 +75,8 @@ curl localhost:3000/v1/meta
 curl -X POST localhost:3000/v1/conversations -H 'content-type: application/json' -d '{}'
 ```
 
-Or with Docker: see [`docker/`](docker/README.md) —
-
-```bash
-cd docker && cp .env.example .env   # set SIGRUN_DEFAULT_MODEL + OPENAI_* in .env
-docker compose up --build
-```
-
-For a durable cluster deployment, use the Helm chart in `charts/`.
+From a source checkout the dev shape is `npm install && npm start`
+(`tsx src/index.ts`, same server).
 
 ## Launch modes
 
@@ -490,7 +510,7 @@ default. They join the offered set when an enabled MCP server's
   `quarantined`, in `GET /v1/meta` alongside the configured set).
 
 The MCP servers themselves live in the MCP config file — the
-`sigrun-ext-mcp` package's README documents its format, including each
+`@sigrun/ext-mcp` package's README documents its format, including each
 server's `exposure` and the `SIGRUN_MCP_CONFIG` override.
 
 ```jsonc

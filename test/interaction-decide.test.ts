@@ -67,7 +67,7 @@ const GATE_SPECIFIER = pathToFileURL(
 // ─── Case 2's codemode (a core node_modules dependency — Task 2) ────────
 // The built-in codemode extension resolves from core's own tree, so the
 // import is a plain static one and the case always runs.
-import { createCodemodeWiring } from "sigrun-ext-codemode";
+import { createCodemodeWiring } from "@sigrun/ext-codemode";
 
 // ─── Case 1: the decide flow (always runs) ───────────────────────────────
 

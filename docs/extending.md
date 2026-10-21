@@ -217,11 +217,11 @@ What the snippet encodes:
 ## The factory result
 
 The factory's return value is ONE documented contract type, shipped
-from the main package as the **types-only** subpath `sigrun/extension`.
+from the main package as the **types-only** subpath `@sigrun/sigrun/extension`.
 Consume it with `import type`, so nothing loads at runtime:
 
 ```ts
-import type { SigrunExtensionResult, SigrunHost } from "sigrun/extension";
+import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
 ```
 
 There is no runtime entry behind the subpath — importing it as a value
@@ -369,7 +369,7 @@ The contract rules, all load-bearing:
 
 **Dependency posture.** Declare `@earendil-works/pi-ai`,
 `@earendil-works/pi-durable`, and `@sigrun/shared` (whose types the
-`sigrun/extension` contract references) as **devDependencies
+`@sigrun/sigrun/extension` contract references) as **devDependencies
 only**. Sigrun ships them at runtime, the packages-dir install omits dev
 dependencies, and the loader links the host's own copies into the
 packages dir so your bare imports resolve — you consume the SAME module

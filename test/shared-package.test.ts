@@ -97,7 +97,8 @@ describe("the moved modules no longer live under src/shared", () => {
 	it("is not private and ships dist", () => {
 		expect(manifest.name).toBe("@sigrun/shared");
 		expect(manifest.private).toBeUndefined();
-		expect(manifest.files).toEqual(["dist"]);
+		// CHANGELOG.md ships with dist (npm does not auto-include it).
+		expect(manifest.files).toEqual(["dist", "CHANGELOG.md"]);
 	});
 
 	it("declares every consumed subpath in exports", () => {

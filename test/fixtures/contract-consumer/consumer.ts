@@ -4,7 +4,7 @@
  * compiled against the EMITTED `dist/extension.d.ts` through this
  * fixture's tsconfig `paths` mapping. This is the consumer's-eye check:
  * what an extension package's own `tsc` sees when it depends on
- * `sigrun` and imports the types-only subpath.
+ * `@sigrun/sigrun` and imports the types-only subpath.
  *
  * The file is COMPILED, never executed: every import of the contract is
  * `import type` — nothing loads at runtime, exactly the documented
@@ -33,7 +33,7 @@ import type {
 	SigrunExtensionResult,
 	SigrunHost,
 	WebuiBundleContribution,
-} from "sigrun/extension";
+} from "@sigrun/sigrun/extension";
 
 // ---------------------------------------------------------------------------
 // Field-level pins: the shapes are specific, not `unknown` — assignments
