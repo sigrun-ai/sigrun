@@ -381,7 +381,7 @@ describe("builtinExtensions disables", () => {
 // ---------------------------------------------------------------------------
 
 describe("replacement", () => {
-	test("a configured package named sigrun-ext-mcp replaces the built-in: skipped with replacedBy, one warning naming both, configured loads", { timeout: 60_000 }, async () => {
+	test("a configured package named @sigrun/ext-mcp replaces the built-in: skipped with replacedBy, one warning naming both, configured loads", { timeout: 60_000 }, async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { app, opened } = await bootBuiltins({
 			extensionSpecifiers: [REPLACES_MCP_SPECIFIER],
@@ -416,7 +416,7 @@ describe("replacement", () => {
 		// Exactly ONE warning naming both the built-in and the replacement.
 		const warnings = warn.mock.calls
 			.map((call) => String(call[0]))
-			.filter((line) => line.includes("sigrun-ext-mcp"));
+			.filter((line) => line.includes("@sigrun/ext-mcp"));
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain(REPLACES_MCP_SPECIFIER);
 	});

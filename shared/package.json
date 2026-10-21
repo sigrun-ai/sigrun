@@ -59,16 +59,25 @@
 	"devDependencies": {
 		"typescript": "^7.0.2"
 	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
 	"files": [
-		"dist"
+		"dist",
+		"CHANGELOG.md"
 	],
 	"license": "MIT",
 	"repository": {
 		"type": "github",
-		"url": "git+https://github.com/sigrun-ai/sigrun.git"
+		"url": "git+https://github.com/sigrun-ai/sigrun.git",
+		"directory": "shared"
 	},
 	"bugs": {
 		"url": "https://github.com/sigrun-ai/sigrun/issues"
 	},
-	"homepage": "https://github.com/sigrun-ai/sigrun#readme"
+	"homepage": "https://github.com/sigrun-ai/sigrun/tree/main/shared#readme",
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	}
 }

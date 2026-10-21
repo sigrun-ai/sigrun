@@ -64,7 +64,7 @@ install and the load declaration:
 
 ```jsonc
 {
-  "extensions": ["sigrun-ext-memory-markdown@^0.1.0"]
+  "extensions": ["@sigrun/ext-memory-markdown@^0.1.0"]
 }
 ```
 

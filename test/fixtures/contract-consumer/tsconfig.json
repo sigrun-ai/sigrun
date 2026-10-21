@@ -9,7 +9,7 @@
 		"forceConsistentCasingInFileNames": true,
 		"types": ["node"],
 		"paths": {
-			"sigrun/extension": ["../../../dist/extension.d.ts"]
+			"@sigrun/sigrun/extension": ["../../../dist/extension.d.ts"]
 		}
 	},
 	"files": ["consumer.ts"]

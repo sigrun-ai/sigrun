@@ -59,15 +59,6 @@ const SKEW_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-skew", "index.js"),
 ).href;
 
-/**
- * The pre-contract fixture (core hardening §6.7): a named `createMemory`
- * factory + a retired `submit` pass-through — loads ok with BOTH
- * deprecation warnings.
- */
-const LEGACY_NAMED_SPECIFIER = pathToFileURL(
-	join(import.meta.dirname, "fixtures", "fixture-legacy-named", "index.js"),
-).href;
-
 /** The collision fixture package: registers `fixture_marker` under a second extension. */
 const COLLISION_SPECIFIER = pathToFileURL(
 	join(
@@ -392,7 +383,7 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 });
 
 test("a factory result carrying submit loads ok and warns (retired pass-through)", async () => {
-	// §6.7: the submit pass-through is retired. sigrun-ext-memory-markdown
+	// §6.7: the submit pass-through is retired. @sigrun/ext-memory-markdown
 	// dropped its `submit` in 1ae6c90, so the surface is gone — but a result
 	// still carrying one must NOT quarantine (old packages keep loading):
 	// it is ignored with exactly one warning naming the extension slug.
@@ -427,51 +418,10 @@ test("a factory result carrying submit loads ok and warns (retired pass-through)
 	}
 });
 
-test("a named-export package loads ok but warns (deprecated bridge)", async () => {
-	// §6.7: the named-export bridges (createMemory, named
-	// `extension`) are deprecated — one more release of load-with-warning,
-	// then deletion. The fixture resolves through `createMemory` and its
-	// factory result ALSO carries a retired `submit`: both warnings fire
-	// on the same load, and the extension still installs `ok`.
-	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-named-"));
-	try {
-		const opened = await openHarness(configWith(dir), {
-			// Hermetic: the loader contract is this suite's subject, not the
-			// built-in surface (builtins: false = the pre-Task-2 boot shape).
-			builtins: false,
-			env: {},
-			extensionSpecifiers: [LEGACY_NAMED_SPECIFIER],
-		});
-		try {
-			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun-legacy-named", status: "ok" },
-			]);
-			expect(
-				opened.registry.snapshot().extension("sigrun-legacy-named"),
-			).toBeDefined();
-		} finally {
-			await opened.harness.close(BACKGROUND_CONTEXT);
-		}
-		const lines = warn.mock.calls.map((call) => String(call[0]));
-		expect(
-				lines.includes(
-					`extension ${LEGACY_NAMED_SPECIFIER}: named-export factory "createMemory" is deprecated — export it as default`,
-			),
-		).toBe(true);
-		expect(lines).toContain(
-			'extension "sigrun-legacy-named": the submit pass-through was retired; ignoring',
-		);
-	} finally {
-		warn.mockRestore();
-		await rm(dir, { recursive: true, force: true });
-	}
-});
-
 test("a zero-arg factory is invoked with NO arguments (no host leak into defaulted slots)", async () => {
 	// The seams loader passes the host context only to arity-1 factories
 	// (factory.length > 0). A length-0 factory with a defaulted first
-	// parameter (createMemory(backend = new Backend())) closes over its own
+	// parameter (e.g. createBackend(backend = new Backend())) closes over its own
 	// dependency — an argument would land in the backend slot and every
 	// later backend call would throw. The fixture fails loud at load if the
 	// loader ever passes it an argument, so an install here IS the assertion.

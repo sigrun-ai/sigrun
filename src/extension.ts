@@ -1,14 +1,14 @@
 /**
  * The documented extension contract (core hardening W5 Task 1, spec
  * §9.1): the ONE type surface an extension package programs against —
- * `sigrun/extension`, a TYPES-ONLY subpath of the main package (the
+ * `@sigrun/sigrun/extension`, a TYPES-ONLY subpath of the main package (the
  * 2026-10-13 types-in-main-package ruling; there is no separate
  * contract package).
  *
  * Authors consume it with `import type` only:
  *
  * ```ts
- * import type { SigrunExtensionResult, SigrunHost } from "sigrun/extension";
+ * import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
  * ```
  *
  * The subpath has NO runtime entry: nothing loads when an extension is

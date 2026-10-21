@@ -56,7 +56,7 @@ export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
 /**
  * The MCP-driven auto-enable (Task 2, ruling 4): when at least one
- * ENABLED MCP server's effective exposure is `codemode` (sigrun-ext-mcp's
+ * ENABLED MCP server's effective exposure is `codemode` (@sigrun/ext-mcp's
  * server default), the `codemode` tool stays in the model-offered set for
  * newly created conversations; when any is `deferred`, `tool_search`
  * stays offered. Both tools otherwise narrow OUT of the default offered
@@ -115,7 +115,7 @@ function autoEnableRemovals(
 			exposure?: unknown;
 		};
 		if (server.enabled === false || server.disabled === true) continue;
-		// sigrun-ext-mcp's server default is "codemode"; its pi-compat
+		// @sigrun/ext-mcp's server default is "codemode"; its pi-compat
 		// alias `codemode-deferred` normalizes to "codemode".
 		const exposure =
 			server.exposure === "codemode-deferred"

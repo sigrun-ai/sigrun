@@ -9,7 +9,7 @@
  * SINGLE-SOURCE BRIDGE (core hardening W5 Task 2, the Task 1 review's
  * binding carry-forward): the shape is DECLARED ONCE, on the extension
  * contract (`Principal` in src/extension.ts, shipped as the types-only
- * `sigrun/extension` subpath) — this server-side name is a re-export of
+ * `@sigrun/sigrun/extension` subpath) — this server-side name is a re-export of
  * it, so the pipeline, the routes, and every extension handler share
  * one spelling that cannot drift. The bridge lives HERE (server-side)
  * because the contract's import allowlist is pi-durable/pi-ai/shared:
