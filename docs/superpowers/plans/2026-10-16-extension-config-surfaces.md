@@ -178,7 +178,7 @@
 
 - [ ] **Step 1: Write `docs/extending.md`** — sections: the five stores (table from spec §2), directory map (spec §3 table), resolution chain (spec §4), secrets precedence with an example (env `SIGRUN_EXT_ACME_TOOL_API_KEY` + stored capture via `/settings`-style affordance note), the slug rule with the `@juicesharp/rpiv-ask-user-question` worked example, handle usage snippet (the Task 5 `host.stores` shape), uninstall posture. No private hostnames/paths — this doc ships publicly.
 - [ ] **Step 2: README + AGENTS.md touch** — README: extending section pointer. AGENTS.md: one line (`src/harness/stores.ts` = store roots, slug, secrets/settings stores; boot ensures roots).
-- [ ] **Step 3: Scrub check** — `grep -rn "personal-host.example\|personal-host.example\|personal-host.example\|/home/michael" docs/extending.md` → zero hits (repo publish posture; the global AGENTS.md in-repo discipline).
+- [ ] **Step 3: Scrub check** — grep `docs/extending.md` for the private-domain list in the global agent instructions → zero hits (repo publish posture; the global AGENTS.md in-repo discipline).
 - [ ] **Step 4: Commit** — `docs: extension-author guide — stores, slugs, resolution, precedence`
 
 ---
