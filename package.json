@@ -30,7 +30,9 @@
 		"build:webui": "npm --workspace @sigrun/webui run build",
 		"typecheck:webui": "npm --workspace @sigrun/webui run typecheck",
 		"test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e",
-		"prepublishOnly": "npm run build && npm run build:webui"
+		"prepublishOnly": "node scripts/publish-deps.mjs registry && npm run build && npm run build:webui",
+		"postpack": "node scripts/publish-deps.mjs file",
+		"postpublish": "node scripts/publish-deps.mjs file"
 	},
 	"dependencies": {
 		"@earendil-works/chord": "1.3.0",
