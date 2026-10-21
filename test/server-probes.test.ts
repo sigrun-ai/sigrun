@@ -31,7 +31,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -172,5 +172,26 @@ describe("GET /readyz", () => {
 		const body = response.json();
 		expect(body.ready).toBe(false);
 		expect(body.checks).toEqual({ storage: "failed" });
+	});
+
+	test("503 while the root read throws with the harness still open; restoring the read restores 200", async () => {
+		// Core-hardening Task 5's stub shape: ONLY the root-conversation
+		// read fails (the process stays up, inspection still answers) —
+		// the class /readyz and the /metrics sigrun_ready gauge share one
+		// derivation for, so the probe and the alert cannot disagree.
+		const { app, opened } = await bootServer();
+		const spy = vi
+			.spyOn(opened.harness, "conversation")
+			.mockRejectedValue(new Error("storage read failed"));
+		const failing = await app.inject({ method: "GET", url: "/readyz" });
+		expect(failing.statusCode).toBe(503);
+		expect(failing.json()).toEqual({
+			ready: false,
+			checks: { storage: "failed" },
+		});
+		spy.mockRestore();
+		const recovered = await app.inject({ method: "GET", url: "/readyz" });
+		expect(recovered.statusCode).toBe(200);
+		expect(recovered.body).toBe("sigrun_readiness 1\n");
 	});
 });

@@ -6,6 +6,13 @@
  *   5: a scrape racing shutdown must degrade, never 500 — a closed
  *   harness fails the inspect, the route still answers 200 with the
  *   inspect-derived families omitted);
+ * - `sigrun_ready` — core-hardening Task 5: `checkStorage` (the SAME
+ *   root-conversation read `/readyz` gates on) as a gauge — 1 when
+ *   `"ok"`, 0 when `"failed"`. Always emitted: the finding was a
+ *   storage read failing while inspection stayed healthy (`sigrun_up
+ *   1`), so `/readyz` 503'd but the scrape stayed green and nothing
+ *   paged; sharing one derivation means the gauge and the probe
+ *   cannot disagree.
  * - `sigrun_live_runs` — conversations with a placed-but-unsettled input
  *   submission (one run per conversation at a time), durable-derived
  *   from the same inspection;
@@ -54,6 +61,7 @@ import { readBackupMarker } from "../../backup/marker.js";
 import { scanJobs } from "../../jobs/docs.js";
 import { providerAuthStatus } from "../helpers.js";
 import type { ServerContext } from "../context.js";
+import { checkStorage } from "../readiness.js";
 
 /** The exposition content type (spec §6.9's format rule). */
 const EXPOSITION_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -198,6 +206,17 @@ export function registerMetricsRoutes(
 		family("sigrun_up", "1 when the harness answers inspection", [
 			{ labels: {}, value: up },
 		]);
+
+		// Core-hardening Task 5: the readiness storage check as a gauge —
+		// the exact call /readyz gates on (never throws, never omitted), so
+		// SigrunNotReady's `or sigrun_ready == 0` arm fires on a storage
+		// failure even while inspection (and the whole scrape) stays green.
+		const storage = await checkStorage(ctx);
+		family(
+			"sigrun_ready",
+			"1 when the readiness storage check (the /readyz root-conversation read) succeeds",
+			[{ labels: {}, value: storage === "ok" ? 1 : 0 }],
+		);
 
 		// Provider readiness: the shared derivation (`GET /v1/auth/check`'s
 		// exact chain), one 1-valued sample per (provider, current status).

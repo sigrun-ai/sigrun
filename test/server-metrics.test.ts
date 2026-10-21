@@ -22,7 +22,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -174,6 +174,10 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		// parses (the inspect-derived families are simply absent).
 		const samples = parseExposition(body);
 		expect(samples).toContain("sigrun_up 0");
+		// Task 5: the readiness gauge survives the same race — always
+		// emitted (the storage check catches its own failure), so the
+		// exposition never 500s and SigrunNotReady keeps its third signal.
+		expect(samples).toContain("sigrun_ready 0");
 		// The run-derived families are inspect-gated: on a closed harness
 		// they vanish rather than reporting stale zeros (SigrunNotReady is
 		// the down signal; a wedge gauge with no harness behind it would
@@ -194,6 +198,47 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 				line.startsWith("sigrun_provider_ready{"),
 			),
 		).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// sigrun_ready — the readiness storage check as a gauge (core-hardening
+// Task 5, Review Focus 5)
+// ---------------------------------------------------------------------------
+
+describe("GET /metrics sigrun_ready (the /readyz storage check)", () => {
+	test("a healthy harness reports sigrun_ready 1", async () => {
+		const { app } = await bootServer();
+		const samples = parseExposition(await getMetrics(app));
+		expect(samples).toContain("sigrun_ready 1");
+	});
+
+	test("storage failing while the process stays up: sigrun_ready 0 on a 200 scrape, /readyz 503; recovery clears both", async () => {
+		const { app, opened } = await bootServer();
+		// The finding's exact shape: the root-conversation read fails while
+		// the harness still answers inspection — sigrun_up stays 1, so
+		// WITHOUT this gauge nothing pages (the scrape is green, the
+		// process is up). The gauge and /readyz share one derivation, so
+		// they cannot disagree.
+		const spy = vi
+			.spyOn(opened.harness, "conversation")
+			.mockRejectedValue(new Error("storage read failed"));
+		const failing = parseExposition(await getMetrics(app));
+		expect(failing).toContain("sigrun_up 1");
+		expect(failing).toContain("sigrun_ready 0");
+		const readyz = await app.inject({ method: "GET", url: "/readyz" });
+		expect(readyz.statusCode).toBe(503);
+		expect(readyz.json()).toEqual({
+			ready: false,
+			checks: { storage: "failed" },
+		});
+		// Recovery: both channels clear together.
+		spy.mockRestore();
+		const recovered = parseExposition(await getMetrics(app));
+		expect(recovered).toContain("sigrun_ready 1");
+		const readyzOk = await app.inject({ method: "GET", url: "/readyz" });
+		expect(readyzOk.statusCode).toBe(200);
+		expect(readyzOk.body).toBe("sigrun_readiness 1\n");
 	});
 });
 

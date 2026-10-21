@@ -540,7 +540,7 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(monitor.spec.endpoints[0].interval).toBe("30s");
 	});
 
-	test("SigrunNotReady keys on scrape death or sigrun_up 0 (the /metrics exposition)", () => {
+	test("SigrunNotReady keys on scrape death, sigrun_up 0, or sigrun_ready 0 (the /metrics exposition)", () => {
 		const rule = docOf(docs, "PrometheusRule") as {
 			spec: { groups: { name: string; rules: { alert: string; expr: string }[] }[] };
 		};
@@ -551,11 +551,14 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(alerts.map((r) => r.alert)).toContain("SigrunNoScrape");
 		// W2 final-review fix: the scrape is /metrics (answers 200 always —
 		// even a harness-closed process serves sigrun_up 0), so up==0 alone
-		// only fires on scrape death. The app's own down signal (sigrun_up 0,
-		// the inspection failure class) is OR-ed in.
+		// only fires on scrape death. The app's own down signals are OR-ed
+		// in: sigrun_up 0 (the inspection failure class) and sigrun_ready 0
+		// (core-hardening Task 5: the storage-read failure /readyz 503s on —
+		// the process stays up and the scrape stays green, so without the
+		// gauge nothing pages).
 		const notReady = alerts.find((r) => r.alert === "SigrunNotReady");
 		expect(notReady?.expr).toBe(
-			'up{job="sigrun"} == 0 or sigrun_up == 0',
+			'up{job="sigrun"} == 0 or sigrun_up == 0 or sigrun_ready == 0',
 		);
 	});
 
