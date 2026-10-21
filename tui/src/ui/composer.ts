@@ -17,6 +17,27 @@ export interface SlashInput {
 	readonly args: string;
 }
 
+/** Whether a command name is the skills channel (`/skill:name`, Task 2c):
+ *  expansion is server-side at admission, and an UNKNOWN skill passes
+ *  through unchanged — so a `skill:`-prefixed line is ALWAYS a submission,
+ *  never an endpoint command or a local error. (Checked on the LOWERCASED
+ *  parse; the line itself is submitted verbatim either way.) */
+export function isSkillCommandName(name: string): boolean {
+	return name.startsWith("skill:");
+}
+
+/** The text a command-picker selection inserts into the composer: an
+ *  EXPAND entry (Task 2c — a prompt template or a skill) inserts
+ *  `/name ` ALWAYS (args are its whole point; a skill carries no argsHint
+ *  but takes them), an arg-taking endpoint command inserts `/name ` for
+ *  its args, and an argless endpoint command inserts bare `/name` for
+ *  immediate execution. */
+export function commandInsertText(command: SlashCommand): string {
+	return command.kind === "expand" || command.argsHint !== undefined
+		? `/${command.name} `
+		: `/${command.name}`;
+}
+
 /**
  * Parse a slash-prefixed composer line; `undefined` when the input is not
  * a command (only a LEADING slash routes — "look at /etc" stays a message).
@@ -34,9 +55,13 @@ export function parseSlashInput(input: string): SlashInput | undefined {
 }
 
 /**
- * The server's slash-command catalog, fetched once and cached (the server
- * treats it as a boot constant — `GET /v1/commands`). A failed fetch is NOT
- * cached: the rejected promise is dropped so the next `/` retries.
+ * The server's slash-command catalog, cached per session. The server
+ * re-scans its skill/template roots on every `GET /v1/commands` request —
+ * the cache is a SESSION SNAPSHOT, not a boot constant — so a lookup
+ * that misses ({@link SlashCatalog.get}) can re-check the live catalog
+ * via {@link SlashCatalog.getFresh} before declaring a name unknown. A
+ * failed fetch is NOT cached: the rejected promise is dropped so the
+ * next `/` retries.
  */
 export class SlashCatalog {
 	readonly #client: SigrunClient;
@@ -46,7 +71,8 @@ export class SlashCatalog {
 		this.#client = client;
 	}
 
-	/** The catalog entry for `name` (bare, lowercased), or undefined. */
+	/** The catalog entry for `name` (bare, lowercased) from the CACHED
+	 *  snapshot, or undefined. */
 	async get(name: string): Promise<SlashCommand | undefined> {
 		try {
 			this.#cache ??= this.#client.getCommands();
@@ -56,6 +82,16 @@ export class SlashCatalog {
 			this.#cache = undefined;
 			throw error;
 		}
+	}
+
+	/** The live-catalog re-check: refetch NOW (replacing the cache with the
+	 *  fresh response) and look `name` up again — the one retry a dispatch
+	 *  makes when the cached snapshot lacks a name (the server re-scans
+	 *  per request, so a template added mid-session becomes submittable
+	 *  without a restart). Throws through on a failed fetch, like `get`. */
+	async getFresh(name: string): Promise<SlashCommand | undefined> {
+		this.#cache = undefined;
+		return await this.get(name);
 	}
 
 	/** Every catalog name (the vim `:` Tab completion's source, C4). */

@@ -1,7 +1,7 @@
 /**
  * Task 26b-ii (refreshed B7): the seven simpler ship-gate checklist items
  * (spec §7 M2 items 1, 2, 5, 6, 8, 9, 11), driven against the proven
- * harness (T26b-i). Items 3 (steer), 4 (approvals), 7 (compaction recall),
+ * harness (T26b-i). Items 3 (steer), 4 (interactions), 7 (compaction recall),
  * 10 (restart resume) are T26b-iii — they need special server setup.
  *
  * Selectors ride the B2-B6 stable hooks: the sidebar's per-row ⋯ menu (the

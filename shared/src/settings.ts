@@ -264,6 +264,19 @@ export interface NotificationsSettings {
 }
 
 /**
+ * The built-in extensions toggles (Task 2, pi parity): codemode, MCP and
+ * tool search ship WITH core. Each key defaults to `true`; `false`
+ * removes the built-in entirely (absent from `/v1/extensions`, its config
+ * ignored with one log line). RESTART-REQUIRED: the built-in set resolves
+ * at boot, like `extensions`.
+ */
+export interface BuiltinExtensionsSettings {
+	readonly codemode?: boolean;
+	readonly mcp?: boolean;
+	readonly toolSearch?: boolean;
+}
+
+/**
  * The persisted shape: HarnessSettings pass-throughs + sigrun fields.
  */
 export interface SettingsFile {
@@ -286,7 +299,7 @@ export interface SettingsFile {
 	};
 	/**
 	 * Sigrun: tool-name filter applied at conversation creation; maps to
-	 * pi-durable 1.2.0's `AgentChange.modelTools` (the model-offered
+	 * pi-durable 1.3.0's `AgentChange.modelTools` (the model-offered
 	 * filter — never the enabled filter `AgentChange.tools`).
 	 */
 	readonly defaultTools?: readonly string[];
@@ -368,6 +381,22 @@ export interface SettingsFile {
 	 * settle without a restart.
 	 */
 	readonly notifications?: NotificationsSettings;
+	/**
+	 * Sigrun: the built-in extensions toggles (Task 2). Each defaults to
+	 * `true`. RESTART-REQUIRED (resolved at boot).
+	 */
+	readonly builtinExtensions?: BuiltinExtensionsSettings;
+	/**
+	 * Sigrun: the MCP-driven auto-enable (Task 2, ruling 4). Default
+	 * `true`: when at least one enabled MCP server's effective exposure is
+	 * `codemode`, the `codemode` tool stays in the default model-offered
+	 * set for newly created conversations; when any is `deferred`,
+	 * `tool_search` stays offered. `false` turns both arms off. An
+	 * explicit `defaultTools` filter always wins (auto-enable only edits
+	 * the DEFAULT set). LIVE — read at conversation create, like
+	 * `defaultTools`.
+	 */
+	readonly autoEnableCodemode?: boolean;
 	/**
 	 * Sigrun: the static boot configuration (see {@link ServerSettings}).
 	 * Deployment defaults under env — changes require a restart.

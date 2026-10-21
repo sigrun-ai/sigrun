@@ -51,7 +51,7 @@
 
 **Files:**
 - Modify: `src/server/routes/interactions.ts` (body schema `{values}`; secret fields' values are passed to the extension's answer handler and stripped from the stored `answer`, replaced by `"[secret]"`)
-- Modify: `test/fixtures/fixture-seam/`, `test/fixtures/fixture-seam-visual/`, `test/fixtures/fixture-seam-bad-kinds/` — rewrite every record they write as trees built with `sigrun/blocks` builders
+- Modify: `test/fixtures/fixture-seam/`, `test/fixtures/fixture-seam-visual/`, `test/fixtures/fixture-seam-bad-kinds/` — rewrite every record they write as trees built with `@sigrun/sigrun/blocks` builders
 - Modify: `test/fixtures/fixture-gate/` (added by `2026-10-21-core-hardening-review-fixes.md` Task 3) — its allow/deny interaction becomes a tree: a root `form` with a `choice` named `decision` (options `allow`/`deny`, tones `good`/`bad`) and a `longtext` named `reason`; it reads `answer.values.decision`
 - Test: `test/interaction-decide.test.ts`, `test/server-configure.test.ts` (any interaction assertions)
 
@@ -75,8 +75,8 @@
 ### Task 4: Docs
 
 **Files:**
-- Modify: `docs/approval-ux-seams.md` (replace the primitive sections with a pointer to the block set and the §9 mappings; keep the evidence tables as history), `docs/extending.md` (interaction and ambient examples rewritten with `sigrun/blocks` builders; the `{values}` answer shape)
-- Test: `test/docs-examples.test.ts` (new: extracts the TypeScript code blocks tagged `ts check` from `docs/extending.md` and type-checks them against `sigrun/blocks`)
+- Modify: `docs/approval-ux-seams.md` (replace the primitive sections with a pointer to the block set and the §9 mappings; keep the evidence tables as history), `docs/extending.md` (interaction and ambient examples rewritten with `@sigrun/sigrun/blocks` builders; the `{values}` answer shape)
+- Test: `test/docs-examples.test.ts` (new: extracts the TypeScript code blocks tagged `ts check` from `docs/extending.md` and type-checks them against `@sigrun/sigrun/blocks`)
 
 - [ ] **Step 1: Write the failing docs-example test.** **Step 2: Run** — FAIL. **Step 3: Rewrite the docs.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `git commit -m "docs: seams documented on the block set; checked examples"`.

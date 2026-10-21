@@ -38,16 +38,16 @@
  * `webuiBundles` result with no `extension` needs a `name`). Factories may
  * return a Promise (the plugins read their scoped settings store inside the
  * factory); the loader awaits the result. Packages that predate the settled
- * contract export named factories (`createMemory`) whose results carry the
- * same `.extension` field, so the loader resolves, in order:
+ * contract export a named `extension` directly, so the loader resolves,
+ * in order:
  *
  * 1. the default export, if it is a factory returning `{ extension,
  *    health? }` or is itself an `Extension` (named `name`) — the supported
  *    form,
- * 2. a named `createMemory` factory (DEPRECATED bridge for the
- *    pre-contract memory package — one warning per load; deletion is the
- *    next release),
- * 3. a named `extension` export (DEPRECATED the same way).
+ * 2. a named `extension` export (DEPRECATED bridge — one warning per
+ *    load). The pre-contract `createMemory` named-factory bridge was
+ *    deleted in release-0.1 (its last consumer, the memory package, now
+ *    exports the factory as default).
  *
  * A factory result still carrying a `submit` pass-through (the retired
  * pre-seam memory wiring) is IGNORED with one warning — never
@@ -74,7 +74,7 @@
  * silently lose it).
  *
  * The contract is DOCUMENTED as one types-only type surface (W5 Task 1,
- * spec §9.1): `src/extension.ts`, shipped as the `sigrun/extension`
+ * spec §9.1): `src/extension.ts`, shipped as the `@sigrun/sigrun/extension`
  * subpath (types-only — a runtime import of it fails loud by design).
  * This loader's validated candidate shape is DERIVED from that contract
  * (`CandidateFactoryResult` — reading a key the contract does not declare
@@ -129,6 +129,12 @@ export interface ExtensionOutcome {
 	 * load quarantined before a module resolved.
 	 */
 	readonly version?: string;
+	/**
+	 * Built-in extensions (Task 2): `true` marks a core-shipped built-in
+	 * (the boot prepends its resolved entries with this flag); ABSENT on
+	 * configured extensions. `/v1/extensions` renders it verbatim.
+	 */
+	readonly builtin?: boolean;
 }
 
 /**
@@ -336,8 +342,6 @@ export interface LoadedExtensions {
 interface ExtensionModule {
 	readonly default?: unknown;
 	readonly extension?: unknown;
-	readonly createMemory?: unknown;
-	readonly createApprovals?: unknown;
 }
 
 /**
@@ -371,12 +375,13 @@ export interface ResolvedExtension {
 	readonly retiredSubmit?: true;
 	/**
 	 * Which NAMED-EXPORT bridge resolved this module (§6.7 deprecation):
-	 * `"createMemory"`/`"createApprovals"` (the pre-contract named
-	 * factories) or `"extension"` (the named `extension` export). Absent
-	 * for the supported default-export forms. Drives the deprecation
-	 * warning; behavior is otherwise unchanged.
+	 * `"extension"` (the named `extension` export; the pre-contract
+	 * `createMemory` bridge was deleted in release-0.1 — packages must
+	 * export the factory as default). Absent for the supported
+	 * default-export forms. Drives the deprecation warning; behavior is
+	 * otherwise unchanged.
 	 */
-	readonly resolvedVia?: "createMemory" | "createApprovals" | "extension";
+	readonly resolvedVia?: "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
@@ -1155,12 +1160,12 @@ async function resolvedFromFactory(
 	if (typeof factory !== "function") return undefined;
 	// Arity gate: the host context goes ONLY to factories that declare the
 	// arity-1 signature (factory.length > 0). A length-0 factory with a
-	// defaulted first parameter (createMemory(backend = new Backend()),
-	// createApprovals(options = {})) consumes its first argument as a real
-	// dependency — passing the host unconditionally landed it in that slot
-	// and broke the extension at runtime (memory: every submit 500ed on
-	// `bindRecallSource is not a function`). Extra arguments are inert only
-	// for factories that read none; `length` is how the contract declares it.
+	// defaulted first parameter (createMemory(backend = new Backend()))
+	// consumes its first argument as a real dependency — passing the host
+	// unconditionally landed it in that slot and broke the extension at
+	// runtime (memory: every submit 500ed on `bindRecallSource is not a
+	// function`). Extra arguments are inert only for factories that read
+	// none; `length` is how the contract declares it.
 	const result =
 		factory.length > 0
 			? (factory as (host?: unknown) => unknown)(hostContext)
@@ -1295,23 +1300,10 @@ export async function resolveExtension(
 	const fromDefault = await resolvedFromFactory(defaultExport, hostContext);
 	if (fromDefault !== undefined) return fromDefault;
 
-	// 2. Named real-package factories (DEPRECATED bridge for the
-	// pre-contract packages — one warning per load at the caller; deletion
-	// is the next release). A package whose factory result carries extra
-	// capability fields (approvals, future insight/seam fields) resolves
-	// fine: only health is validated and retained; everything else is the
-	// extension's own business.
-	const fromMemory = await resolvedFromFactory(module.createMemory, hostContext);
-	if (fromMemory !== undefined) return { ...fromMemory, resolvedVia: "createMemory" };
-	const fromApprovals = await resolvedFromFactory(
-		module.createApprovals,
-		hostContext,
-	);
-	if (fromApprovals !== undefined) {
-		return { ...fromApprovals, resolvedVia: "createApprovals" };
-	}
-
-	// 3. Named `extension` export (DEPRECATED the same way).
+	// 2. Named `extension` export (DEPRECATED bridge for the pre-contract
+	// packages — one warning per load at the caller). The pre-contract
+	// `createMemory` named-factory bridge was deleted in release-0.1; its
+	// last consumer exports the factory as default now.
 	if (isExtension(module.extension)) {
 		return { extension: module.extension, resolvedVia: "extension" };
 	}
@@ -1367,6 +1359,27 @@ export interface ResolvedExtensionInput {
 	readonly entry?: string;
 	/** Manifest skill dirs (existing directories), resolved by the sync. */
 	readonly skills?: readonly string[];
+	/**
+	 * Built-in marker (Task 2): the boot's built-in resolution sets this on
+	 * the entries it prepends; the outcome carries it through to
+	 * `/v1/extensions`. Configured entries never set it.
+	 */
+	readonly builtin?: boolean;
+	/**
+	 * Core-tree resolution marker (Task 2, ruling 2): built-ins resolve
+	 * through core's OWN node_modules, NEVER the packages dir — when set,
+	 * the loader imports `entry` verbatim, skipping the packages-dir-first
+	 * resolution step (a user-installed package must never shadow a
+	 * built-in; replacement works by NAME, not path shadowing).
+	 */
+	readonly coreResolved?: boolean;
+	/**
+	 * The package's own DIRECTORY (Task 2): built-in resolution anchors
+	 * the loader's manifest version read at the package ROOT, not the
+	 * entry's directory (an entry in `dist/` would otherwise read no
+	 * manifest and the outcome would lack `version`).
+	 */
+	readonly packageDir?: string;
 }
 
 /**
@@ -1484,8 +1497,8 @@ options: LoadExtensionsOptions = {},
 // skills-only resolution (§9.4).
 const entries = specifiers.map((spec) =>
 typeof spec === "string"
-? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined }
-: { name: spec.name, entry: spec.entry, skills: spec.skills },
+? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined, builtin: undefined as boolean | undefined, coreResolved: undefined as boolean | undefined, packageDir: undefined as string | undefined }
+: { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir },
 );
 const outcomes: ExtensionOutcome[] = [];
 const providerContributors: ProviderContributor[] = [];
@@ -1513,7 +1526,7 @@ const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
-for (const { name: label, entry, skills } of entries) {
+for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
 const display = label ?? entry ?? "skills-only";
 				try {
 				// Skills-only resolution (§9.4): the package declared skill dirs and
@@ -1554,11 +1567,13 @@ const display = label ?? entry ?? "skills-only";
 						// raw specifiers (the test seam) resolve through the
 						// packages dir first, then bare import resolution.
 						const loaded =
-								label !== undefined
+								coreResolved === true
 										? entry
-										: (options.packagesDir === undefined
+										: label !== undefined
 												? entry
-												: (resolveExtensionEntry(entry, options.packagesDir) ?? entry));
+												: (options.packagesDir === undefined
+														? entry
+														: (resolveExtensionEntry(entry, options.packagesDir) ?? entry));
 						// Resolution order (the packages-dir ruling): the deployment's
 						// packages dir FIRST (what `packages[]` installed wins over
 						// anything the image bundles), then bare import resolution
@@ -1724,13 +1739,14 @@ const display = label ?? entry ?? "skills-only";
 				// The manifest version for the §7.7 inventory: read off the
 				// module's own directory (a bare entry with no manifest stays
 				// versionless — the field is optional by design).
-				const versionDir = extensionModuleDir(loaded);
+				const versionDir = packageDir ?? extensionModuleDir(loaded);
 				const version =
 						versionDir === undefined ? undefined : readPackageVersion(versionDir);
 				outcomes.push({
 					name: slug,
 					status: "ok",
 					...(version === undefined ? {} : { version }),
+					...(builtin === true ? { builtin: true } : {}),
 				});
 			if (extension !== undefined && resolved.health !== undefined) {
 				healthProducers.push({
@@ -1739,10 +1755,11 @@ const display = label ?? entry ?? "skills-only";
 			});
 			}
 			// §6.7 retirements, warned ONCE at load (never quarantined): a
-			// result resolved through a named-export bridge, and a result still
+			// result resolved through the named-export bridge, and a result still
 			// carrying the retired submit pass-through. Both keep loading —
-			// deletion of the bridge is the next release, and the submit is
-			// simply ignored (the memory seam owns capture now).
+			// the pre-contract `createMemory` named-factory bridge was deleted
+			// in release-0.1 (its last consumer exports default now), and the
+			// submit is simply ignored (the memory seam owns capture now).
 			if (resolved.resolvedVia !== undefined) {
 				console.warn(
 					`extension ${display}: named-export factory "${resolved.resolvedVia}" is deprecated — export it as default`,
@@ -1827,6 +1844,7 @@ const display = label ?? entry ?? "skills-only";
 				name: display,
 				status: "quarantined",
 				error: message,
+				...(builtin === true ? { builtin: true } : {}),
 			});
 			// A quarantined extension contributes no health producer or submit
 			// binding: the §3 surfaces are reported through

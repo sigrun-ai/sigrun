@@ -217,11 +217,11 @@ What the snippet encodes:
 ## The factory result
 
 The factory's return value is ONE documented contract type, shipped
-from the main package as the **types-only** subpath `sigrun/extension`.
+from the main package as the **types-only** subpath `@sigrun/sigrun/extension`.
 Consume it with `import type`, so nothing loads at runtime:
 
 ```ts
-import type { SigrunExtensionResult, SigrunHost } from "sigrun/extension";
+import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
 ```
 
 There is no runtime entry behind the subpath — importing it as a value
@@ -369,16 +369,16 @@ The contract rules, all load-bearing:
 
 **Dependency posture.** Declare `@earendil-works/pi-ai`,
 `@earendil-works/pi-durable`, and `@sigrun/shared` (whose types the
-`sigrun/extension` contract references) as **devDependencies
+`@sigrun/sigrun/extension` contract references) as **devDependencies
 only**. Sigrun ships them at runtime, the packages-dir install omits dev
 dependencies, and the loader links the host's own copies into the
 packages dir so your bare imports resolve — you consume the SAME module
 instances the host runs, matched structurally at runtime (never by
 `instanceof`). `typebox` (pi-ai's own dependency) resolves the same way.
-Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-ollama)
-(the minimal shape), [sigrun-opencode](https://github.com/sigrun-ai/sigrun-opencode),
-[sigrun-pareto](https://github.com/sigrun-ai/sigrun-pareto) (scoped-settings
-base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-bifrost)
+Reference plugins: [sigrun-ollama](https://github.com/sigrun-ai/sigrun-provider-ollama)
+(the minimal shape), [sigrun-opencode](https://github.com/sigrun-ai/sigrun-provider-opencode),
+[sigrun-pareto](https://github.com/sigrun-ai/sigrun-provider-pareto) (scoped-settings
+base URL), and [sigrun-bifrost](https://github.com/sigrun-ai/sigrun-provider-bifrost)
 (multi-surface discovery).
 
 ## Contributing webui bundles
@@ -664,6 +664,33 @@ not resolve still quarantines.
 
 The rendered section is capped at `skills.sectionMaxBytes` (default
 4096, a live setting) with a truncation notice.
+
+## Prompt templates
+
+A package may also ship **prompt templates** — the `/name` commands
+whose bodies are Markdown files — through a conventional `prompts/`
+directory at the package root:
+
+```
+my-package/
+  package.json
+  prompts/
+    review.md      → /review
+    deploy.md      → /deploy
+```
+
+No manifest field is needed: any `prompts/` directory at an installed
+package's root is discovered (attributed to the package, in
+`extensions[]` install order). Template files are direct `.md`
+children only; frontmatter `description` (else the first non-empty
+line) feeds the `/` menu and optional `argument-hint` hints the
+arguments. Templates substitute shell-quoted arguments
+(`$1`, `$@`, `${1:-default}`, `${@:N}`, `${@:N:L}`) and are expanded
+server-side at admission — see README's “Skills and prompt
+templates”. The user dir `<config-dir>/prompts/` and the workspace's
+`prompts/` are the other two roots, with the same workspace > user >
+packages precedence as skills; a template whose name collides with a
+core or extension command is skipped with one warning.
 
 ## Notifiers
 

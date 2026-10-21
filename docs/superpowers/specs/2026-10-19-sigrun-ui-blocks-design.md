@@ -145,7 +145,7 @@ type Block = { type: string; id?: string; visibleAt?: WidthCondition;
   - `shared/src/blocks/` holds the TypeScript types, `applyOps` (§4.3)
     and `toText` (§14.3): pure code with no imports outside `shared/`;
   - `src/blocks/` holds the typebox schemas and `validateTree` (§14.2),
-    and is re-exported by `sigrun/blocks` (§14.1);
+    and is re-exported by `@sigrun/sigrun/blocks` (§14.1);
   - U0 changes the purity test (today it reads only top-level files and
     allows only `./` imports, `test/views-purity.test.ts:54,107`): it scans
     `shared/src/` recursively, and allows `../` imports that resolve
@@ -1146,12 +1146,12 @@ interface SettingsSectionDef {
 
 ### 14.1 Builders
 
-`sigrun/blocks` (a new subpath in the package's `exports` map, next to
+`@sigrun/sigrun/blocks` (a new subpath in the package's `exports` map, next to
 W5's contract surface; the root `package.json` gains the map) exports
 typed builder functions for every block and field, plus the types:
 
 ```ts
-import { page, collection, card, form, choice, chart, bind } from "sigrun/blocks";
+import { page, collection, card, form, choice, chart, bind } from "@sigrun/sigrun/blocks";
 
 render: async ({ principal, params }) => ({
   access: "write",
@@ -1169,11 +1169,11 @@ render: async ({ principal, params }) => ({
 ```
 
 - Builders return plain JSON; there is no runtime besides them.
-- **How extensions get it.** `sigrun/blocks` must be the same code the
+- **How extensions get it.** `@sigrun/sigrun/blocks` must be the same code the
   server runs, so the builders emit the server's block-set version:
-  - extensions list `sigrun` as a `peerDependency` (`"*"`), never a
+  - extensions list `@sigrun/sigrun` as a `peerDependency` (`"*"`), never a
     dependency, matching how pi-durable and pi-ai are handled;
-  - `sigrun` joins `HOST_RUNTIME_MODULES` (`src/harness/packages.ts`), so
+  - `@sigrun/sigrun` joins `HOST_RUNTIME_MODULES` (`src/harness/packages.ts`), so
     the server links its own copy into the packages directory and every
     extension's import resolves to it;
   - this assumes sigrun is published (`"private": true` removed, an
@@ -1358,7 +1358,7 @@ contract type).
 
 | id | delivers | depends on |
 |---|---|---|
-| U0 | `shared/src/blocks/` (types, `applyOps`, `toText`) and `src/blocks/` (schemas, `validateTree`, placements, limits, the `sigrun/blocks` builders and `exports` map, `sigrun` in `HOST_RUNTIME_MODULES`); recursive purity test | — (assumes sigrun is published) |
+| U0 | `shared/src/blocks/` (types, `applyOps`, `toText`) and `src/blocks/` (schemas, `validateTree`, placements, limits, the `@sigrun/sigrun/blocks` builders and `exports` map, `@sigrun/sigrun` in `HOST_RUNTIME_MODULES`); recursive purity test | — (assumes sigrun is published) |
 | U1 | webui renderer for every block, display, field and width fallback; the gallery view | U0 |
 | U2 | TUI renderer for the same, keymap bindings, inline images | U0 |
 | U3 | extension surfaces: contract field, routes (reserved prefixes), per-principal access cache, watcher registry and `surface.changed`, data fetch with `since`, optimistic-move server side, actions, uploads, assets, rail and panel registration | U0 |

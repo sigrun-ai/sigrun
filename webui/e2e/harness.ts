@@ -79,8 +79,8 @@ export interface E2EServerOptions {
 	readonly auth?: { readonly setupCode: string };
 	/**
 	 * T26b-iii items 4 + 7: extension package specifiers to load (the
-	 * `OpenHarnessOptions.extensionSpecifiers` seam — "sigrun-ext-approvals",
-	 * "sigrun-ext-memory-markdown"). Defaults to the parsed config's list (empty in
+	 * `OpenHarnessOptions.extensionSpecifiers` seam — "@sigrun/ext-codemode",
+	 * "@sigrun/ext-memory-markdown"). Defaults to the parsed config's list (empty in
 	 * this hermetic boot).
 	 */
 	readonly extensionSpecifiers?: readonly string[];
@@ -98,6 +98,13 @@ export interface E2EServer {
 	/** The per-boot tmpdir — the conversation's workspace root (the checklist
 	 * tests write files here for the workspace-browser + upload items). */
 	readonly workspaceDir: string;
+	/**
+	 * Load the built-in extensions (Task 2). Defaults to FALSE: these specs
+	 * script exact faux response queues, and the built-ins' `codemode` prompt
+	 * section changes the token counts those scripts depend on. Opt in when
+	 * a spec is about the built-in surface.
+	 */
+	readonly builtins?: boolean;
 	/** Idempotent teardown: close the app, the harness, remove the tmpdir. */
 	readonly cleanup: () => Promise<void>;
 	/**
@@ -194,6 +201,12 @@ async function bootOnDir(
 		...(options.settings === undefined
 			? {}
 			: { settings: options.settings }),
+		// Hermetic, scripted-response boots opt out of the built-ins (Task 2):
+		// their extra `codemode` prompt section perturbs the exact faux
+		// response queues these specs script (item 7's forced-compaction
+		// thresholds count tokens). The built-in surface is
+		// test/builtins.test.ts's subject; pass `builtins: true` to opt in.
+		builtins: options.builtins === true,
 	});
 	const app = await createServer(opened, config);
 	let closed = false;

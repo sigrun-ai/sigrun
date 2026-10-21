@@ -8,9 +8,11 @@
  * Sections (2026-10-15 quick wins): the fields are grouped into a
  * left-hand nav — General (queue modes), Tools (default tools),
  * Interface (client-only prefs, localStorage — never the server file),
- * Advanced (retry + raw per-model thinking JSON). The nav is deliberately
- * HARDCODED: extension-registered sections are a future spec (recorded
- * 2026-10-15, deferred) — no seam yet, by design.
+ * Advanced (retry + raw per-model thinking JSON), Extensions (W3 Task 7),
+ * and Providers (release 0.1 Task 2b — the per-provider readiness report
+ * with the write-only credential field; hidden for a known non-admin).
+ * The nav is deliberately HARDCODED: extension-registered sections are a
+ * future spec (recorded 2026-10-15, deferred) — no seam yet, by design.
  *
  * Field shapes v1:
  * - `steeringMode` / `followUpMode`: selects over pi-durable's QueueMode,
@@ -61,6 +63,7 @@ import type {
 	ExtensionSecretWire,
 } from "../api";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
+import { ProvidersSection } from "./ProvidersSection";
 import { type PrefKey, type PrefsState } from "./usePrefs";
 
 /** The settings sections, in nav order. */
@@ -70,6 +73,7 @@ const SECTIONS = [
 	"Interface",
 	"Advanced",
 	"Extensions",
+	"Providers",
 ] as const;
 type Section = (typeof SECTIONS)[number];
 
@@ -577,9 +581,16 @@ export function SettingsPanel(props: {
 	readonly prefsState: PrefsState;
 	/** The shell's useTheme state (the Interface section's theme controls). */
 	readonly theme: ThemeState;
+	/**
+	 * The session's admin posture (release 0.1 Task 2b): `false` hides the
+	 * admin-only Providers section. Undefined (no known identity — the
+	 * naive posture, bare embeds) keeps it: the naive server makes every
+	 * caller admin.
+	 */
+	readonly admin?: boolean;
 	readonly onClose: () => void;
 }) {
-	const { client, onClose, prefsState, theme } = props;
+	const { client, onClose, prefsState, theme, admin } = props;
 	const [load, setLoad] = useState<LoadState>({ status: "loading" });
 	const [draft, setDraft] = useState<Draft | null>(null);
 	const [section, setSection] = useState<Section>("General");
@@ -817,6 +828,8 @@ export function SettingsPanel(props: {
 			</div>
 		) : section === "Extensions" ? (
 			<ExtensionsSection client={client} />
+		) : section === "Providers" ? (
+			<ProvidersSection client={client} />
 		) : (
 			<div className="settings-body">
 				<label className="settings-field settings-checkbox">
@@ -869,7 +882,12 @@ export function SettingsPanel(props: {
 				{load.status === "ready" && (
 					<div className="settings-layout">
 						<nav className="settings-nav" aria-label="settings sections">
-							{SECTIONS.map((name) => (
+							{/* A known non-admin session never sees the credential
+							    section (hidden, not read-only — the server 403s the
+							    writes anyway; the client must not pretend otherwise). */}
+							{SECTIONS.filter(
+								(name) => !(name === "Providers" && admin === false),
+							).map((name) => (
 								<button
 									key={name}
 									type="button"

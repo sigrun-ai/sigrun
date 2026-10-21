@@ -14,10 +14,13 @@
  *
  * Scope (controller rulings): ONLY commands mapping to EXISTING endpoints.
  * `/login`/`/logout` are core-spec §6.4 exclusions (credentials never cross
- * the API), `/skill:name` has no endpoint (deferred), and prompt templates
- * are a separate slice. `/model` and `/thinking` ARE included: both map
- * cleanly onto `POST .../configure`'s existing `{model?, thinking?}` body
- * (each sends exactly one of the two fields).
+ * the API), and `/skill:name` + prompt templates were this slice's
+ * deferral — Task 2c resolves them as `kind: "expand"` catalog entries
+ * (no endpoint: the composer inserts `/name ` into the text and the
+ * SERVER expands it at admission; see src/commands/expand.ts). `/model`
+ * and `/thinking` ARE included: both map cleanly onto `POST
+ * .../configure`'s existing `{model?, thinking?}` body (each sends
+ * exactly one of the two fields).
  *
  * EXTENSION COMMANDS (core hardening W5 Task 3, spec §9.3): the core
  * table below stays untouched; `buildCommandCatalog` merges the
@@ -31,6 +34,8 @@
 import type { SlashCommand } from "@sigrun/shared/commands";
 import type { ExtensionCommandContribution } from "../extension.js";
 import type { ExtensionCommandBinding } from "../harness/loader.js";
+import type { PromptTemplate } from "../commands/templates.js";
+import type { WorkspaceSkill } from "../skills/index.js";
 
 export type {
 	CommandRunResponse,
@@ -238,4 +243,41 @@ export function buildCommandCatalog(
 		}
 	}
 	return { commands, collisions, runnable };
+}
+
+// ─── The expand entries (Task 2c: /skill:name and prompt templates) ─────────
+
+/**
+ * Build the `kind: "expand"` catalog entries for the discovered skills
+ * and templates (Task 2c): every skill becomes `skill:<name>` (including
+ * model-hidden ones — `/skill:name` works for them; the description is
+ * the skill's frontmatter description, no args hint), every template
+ * becomes `{name, description, argsHint?}` from its frontmatter. The
+ * caller (the served list) appends these AFTER the core + extension
+ * commands; they carry NO endpoint — the composer inserts `/name ` into
+ * the text and the server expands the submission at admission.
+ */
+export function expandCommandEntries(
+	skills: readonly WorkspaceSkill[],
+	templates: readonly PromptTemplate[],
+): SlashCommand[] {
+	return [
+		...skills.map(
+			(skill): SlashCommand => ({
+				name: `skill:${skill.name}`,
+				description: skill.description,
+				kind: "expand",
+			}),
+		),
+		...templates.map(
+			(template): SlashCommand => ({
+				name: template.name,
+				description: template.description,
+				...(template.argsHint === undefined
+					? {}
+					: { argsHint: template.argsHint }),
+				kind: "expand",
+			}),
+		),
+	];
 }

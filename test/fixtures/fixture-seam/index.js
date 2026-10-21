@@ -1,6 +1,6 @@
 /**
- * Test-fixture extension for the seam host contract (docs/approval-ux-
- * seams.md implementation).
+ * Test-fixture extension for the seam host contract (the seam doc's
+ * implementation).
  *
  * Plain JavaScript, no build step — the loader imports it directly. The
  * factory takes the HOST CONTEXT (arity-1): it declares one interaction

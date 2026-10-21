@@ -17,7 +17,7 @@
  *     (sqlite3 leaves a 0-byte file on failure — it must not survive).
  *  2. path target: rename into `<dir>/sigrun-<UTC timestamp>.db`, then
  *     30-day retention (`applyRetention`).
- *  2'. s3 target: `aws s3 cp` the temp file to
+ *  2'. s3 target: `PutObject` the temp file to
  *     `s3://<bucket>[/<prefix>]sigrun-<UTC timestamp>.db`. Endpoint and
  *     credentials come from the environment (`AWS_*`,
  *     `SIGRUN_BACKUP_S3_ENDPOINT`) — core secrets per spec §4.3, injected
@@ -46,6 +46,12 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	PutObjectCommand,
+	S3Client,
+	type S3ClientConfig,
+} from "@aws-sdk/client-s3";
+import { readFile } from "node:fs/promises";
 import { parseBackupConfig, type BackupConfig, type BackupSections } from "../config.js";
 import { resolveStoreRoots, type StoreRoots } from "../harness/stores.js";
 import { writeBackupMarker } from "./marker.js";
@@ -112,31 +118,81 @@ export async function applyRetention(dir: string): Promise<void> {
 	}
 }
 
-/** Upload the backup to the s3 target; fail loud when aws fails. */
+/**
+ * The S3 client the uploads go through. A module-level factory with the
+ * real client as its default: the test swaps in a recording fake, and the
+ * deployment path is untouched (no public API surface beyond this seam).
+ *
+ * Credentials come from the SDK's own default provider chain — the
+ * standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+ * `AWS_REGION` env, or an AWS config file. sigrun adds no credential
+ * settings of its own.
+ */
+/** The production client factory — what a restore puts back. */
+const defaultS3ClientFactory = (config: S3ClientConfig): S3Client =>
+	new S3Client(config);
+
+let s3ClientFactory: (config: S3ClientConfig) => S3Client =
+	defaultS3ClientFactory;
+
+/** Replace the S3 client factory; `undefined` restores the production one. */
+export function setS3ClientFactory(
+	factory?: (config: S3ClientConfig) => S3Client,
+): void {
+	s3ClientFactory = factory ?? defaultS3ClientFactory;
+}
+
+/**
+ * The client config for a backup target: an endpoint means an
+ * S3-COMPATIBLE store (MinIO, RustFS, …), which needs path-style
+ * addressing — `bucket.host` virtual-host addressing does not resolve
+ * there. No endpoint = AWS's own endpoints, virtual-host style.
+ */
+function s3ClientConfig(): S3ClientConfig {
+	const endpoint = process.env.SIGRUN_BACKUP_S3_ENDPOINT;
+	return endpoint === undefined || endpoint === ""
+		? {}
+		: { endpoint, forcePathStyle: true };
+}
+
+/**
+ * Put one local file at `key` in the target bucket. The bytes are read
+ * once and sent as a Buffer: the SDK would otherwise want a stream, and
+ * the files here are a sqlite snapshot and small tarballs — reading them
+ * is the honest, testable shape. Failures reject with the SDK's error.
+ */
+async function s3Put(
+	backup: Extract<BackupConfig, { target: "s3" }>,
+	key: string,
+	file: string,
+): Promise<void> {
+	const client = s3ClientFactory(s3ClientConfig());
+	try {
+		await client.send(
+			new PutObjectCommand({
+				Bucket: backup.bucket,
+				Key: key,
+				Body: await readFile(file),
+			}),
+		);
+	} catch (cause) {
+		throw new Error(
+			`s3 upload of ${key} to ${backup.bucket} failed: ${
+				cause instanceof Error ? cause.message : String(cause)
+			}`,
+			{ cause },
+		);
+	} finally {
+		client.destroy();
+	}
+}
+
+/** Upload the backup to the s3 target; fail loud when the upload fails. */
 async function s3Upload(
 	backup: Extract<BackupConfig, { target: "s3" }>,
 	file: string,
 ): Promise<void> {
-	const key = `${backup.prefix ?? ""}sigrun-${timestampSegment()}.db`;
-	const target = `s3://${backup.bucket}/${key}`;
-	// --endpoint-url only when configured (default: AWS's own endpoints);
-	// credentials stay in the standard AWS_* env, forwarded untouched.
-	const endpointArgs =
-		process.env.SIGRUN_BACKUP_S3_ENDPOINT === undefined
-			? []
-			: ["--endpoint-url", process.env.SIGRUN_BACKUP_S3_ENDPOINT];
-	const result = await run("aws", [
-		"s3",
-		"cp",
-		file,
-		target,
-		...endpointArgs,
-	]);
-	if (result.code !== 0) {
-		throw new Error(
-			`aws s3 cp failed with exit ${result.code}: ${result.stderr.trim()}`,
-		);
-	}
+	await s3Put(backup, `${backup.prefix ?? ""}sigrun-${timestampSegment()}.db`, file);
 }
 
 /**
@@ -262,23 +318,13 @@ async function tarSection(sourceDir: string, tarball: string): Promise<void> {
 	}
 }
 
-/** Upload one section tarball to the s3 target; fail loud when aws fails. */
+/** Upload one section tarball to the s3 target; fail loud when it fails. */
 async function s3UploadSection(
 	backup: Extract<BackupConfig, { target: "s3" }>,
 	file: string,
 	name: string,
 ): Promise<void> {
-	const target = `s3://${backup.bucket}/${backup.prefix ?? ""}${name}`;
-	const endpointArgs =
-		process.env.SIGRUN_BACKUP_S3_ENDPOINT === undefined
-			? []
-			: ["--endpoint-url", process.env.SIGRUN_BACKUP_S3_ENDPOINT];
-	const result = await run("aws", ["s3", "cp", file, target, ...endpointArgs]);
-	if (result.code !== 0) {
-		throw new Error(
-			`aws s3 cp of ${name} failed with exit ${result.code}: ${result.stderr.trim()}`,
-		);
-	}
+	await s3Put(backup, `${backup.prefix ?? ""}${name}`, file);
 }
 
 /**

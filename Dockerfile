@@ -11,6 +11,16 @@
 FROM node:22-slim AS base
 WORKDIR /app
 
+# OCI metadata: where the image comes from, and what is inside it. The
+# version label is the release's; the chart's appVersion and the image tag
+# carry the same value, so a `docker inspect` and a `helm get values` agree.
+LABEL org.opencontainers.image.source="https://github.com/sigrun-ai/sigrun" \
+      org.opencontainers.image.title="sigrun" \
+      org.opencontainers.image.description="Durable personal assistant harness on pi-durable" \
+      org.opencontainers.image.version="0.1.0" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.url="https://github.com/sigrun-ai/sigrun"
+
 # Deps stage: package manifests — root + EVERY workspace the lockfile
 # links (shared/tui/webui): npm ci resolves the workspace members from
 # their package.json files, so a missing manifest silently drops that
@@ -33,9 +43,10 @@ RUN npm run build && npm run build:webui
 FROM base
 ENV NODE_ENV=production
 # Agent tooling (spec §6.10): git (required by git: extension sources),
-# sqlite3 (path-target backups + db diagnostics; S3 targets keep an
-# awscli image), ca-certificates (TLS to model gateways). tar ships in
-# the base. Deliberately no curl/wget — probes use node's fetch.
+# sqlite3 (path-target backups + the online-safe `sqlite3 .backup`
+# snapshot, S3 targets upload through the bundled @aws-sdk/client-s3),
+# ca-certificates (TLS to model gateways). tar ships in the base.
+# Deliberately no curl/wget — probes use node's fetch.
 RUN apt-get update && apt-get install -y --no-install-recommends git sqlite3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build --chown=node:node /app /app

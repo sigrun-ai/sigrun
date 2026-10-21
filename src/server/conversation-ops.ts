@@ -35,6 +35,12 @@ import { touchActivity } from "../harness/activity.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { parseSubmissionInput, resolveParts } from "./content-parts.js";
+import {
+	CommandUsageError,
+	expandInput,
+	EXPANDED_ENTRY_KIND,
+	type ExpansionResult,
+} from "../commands/expand.js";
 import type { ServerContext } from "./context.js";
 import {
 	conversationEnv,
@@ -250,14 +256,51 @@ export async function submitOp(
 	}
 	// Resolve path-parts to inline content NOW, against the live
 	// workspace: missing paths become explicit error parts; other
-	// workspace failures throw — fail-loud.
+	// workspace failures throw — fail-loud. Command expansion (Task 2c)
+	// runs BEFORE this: a text part starting with `/` that names a skill
+	// or prompt template is rewritten into the text the model sees, and
+	// the submission's entry carries what the user TYPED (the transcript's
+	// `sigrun.user.expanded` entry). Non-`/` inputs, `/command` inputs,
+	// and unknown skills pass through untouched — every channel and the
+	// HTTP API behave identically because this is the one admission path.
+	// A MALFORMED command line (an unterminated quote in template args) is
+	// ordinary user input: it maps to the same `invalid_input` 400 shape
+	// `parseSubmissionInput` uses, never a 500. Anything else expansion
+	// throws is a genuine bug and still falls through as one.
 	const env = await conversationEnv(opened, conversation);
-	const content = await resolveParts(parsed.parts, env, BACKGROUND_CONTEXT);
+	let expansion: ExpansionResult;
+	try {
+		expansion = await expandInput(
+			parsed.parts,
+			opened.commandExpansion,
+			env,
+			BACKGROUND_CONTEXT,
+		);
+	} catch (error) {
+		if (error instanceof CommandUsageError) {
+			throw new ConversationOpError({ error: "invalid_input" });
+		}
+		throw error;
+	}
+	const content = await resolveParts(expansion.parts, env, BACKGROUND_CONTEXT);
 	const draft: InputSubmissionDraft = {
 		type: "input",
 		content,
 		...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
 		...(whenBusy === undefined ? {} : { whenBusy: whenBusy as WhenBusyMode }),
+		...(expansion.typed === undefined
+			? {}
+			: {
+					entry: {
+						kind: EXPANDED_ENTRY_KIND,
+						data: {
+							typed: expansion.typed,
+							...(expansion.command === undefined
+								? {}
+								: { command: expansion.command }),
+						},
+					},
+				}),
 	};
 	// The submit pass-through is retired (§6.7): the memory seam's
 	// runSettled owns capture, so submissions admit directly.

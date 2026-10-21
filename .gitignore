@@ -19,3 +19,6 @@ coverage/
 .vcc/
 *.pem
 docs/private.md
+
+# The publish-deps rewrite marker (scripts/publish-deps.mjs)
+.publish-deps-applied.json

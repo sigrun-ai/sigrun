@@ -20,12 +20,13 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationView } from "@earendil-works/pi-durable";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
@@ -44,12 +45,18 @@ import { serializeConversationView } from "../src/server/views.js";
 
 /**
  * The fixture's capture scenario, replayed exactly: faux `faux/m` model,
- * empty workspace (so the only rendered section is the no-op memory
- * placeholder), root conversation, one settled turn.
- *
- * Returns the live view (the raw upstream ConversationView).
+ * empty workspace (core sections only — identity, persona, the no-op
+ * memory placeholder), root conversation, one settled turn. Task 2's
+ * built-ins ARE part of the capture — the fixture describes what a DEFAULT
+ * install renders (the `codemode` section and the built-ins' tools are the
+ * live shape). The MCP built-in reads `process.env.SIGRUN_MCP_CONFIG` →
+ * `~/.config/sigrun/mcp.json` directly (no boot-env seam — the recorded
+ * known limitation), so the capture pins it to THIS tmpdir's empty
+ * registry: hermetic against any workstation mcp.json (a real registry
+ * would spawn servers and add their tools to the captured
+ * `toolsAdded` variants).
  */
-async function captureLiveView() {
+async function captureLiveView(): Promise<ConversationView> {
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
@@ -60,6 +67,10 @@ async function captureLiveView() {
 		providers: [{ provider: faux.provider }],
 	};
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-schema-"));
+	const mcpPath = join(dir, "mcp.json");
+	await writeFile(mcpPath, JSON.stringify({ servers: {} }), "utf8");
+	const savedMcpConfig = process.env.SIGRUN_MCP_CONFIG;
+	process.env.SIGRUN_MCP_CONFIG = mcpPath;
 	try {
 		const config = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
@@ -87,6 +98,8 @@ async function captureLiveView() {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
 	} finally {
+		if (savedMcpConfig === undefined) delete process.env.SIGRUN_MCP_CONFIG;
+		else process.env.SIGRUN_MCP_CONFIG = savedMcpConfig;
 		await rm(dir, { recursive: true, force: true });
 	}
 }

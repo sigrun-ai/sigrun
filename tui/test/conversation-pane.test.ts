@@ -240,6 +240,64 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		expect(pane.entryIdOf(1)).toBe(4); // assistant lastEntryId
 	});
 
+	// ── Task 2c: the expanded-user chip ──────────────────────────────
+	// An expanded submission is ONE entry (kind `sigrun.user.expanded`,
+	// `data {typed, command}`, the EXPANDED text on `model`): the pane
+	// renders the TYPED text as the user turn with a dim chip line that
+	// folds the full expanded text open/closed.
+
+	/** An expanded turn: typed `/review concurrency`, admitted text
+	 *  "Review with focus: concurrency". */
+	function expandedEntries(): unknown[] {
+		return [
+			{
+				id: 1,
+				kind: "sigrun.user.expanded",
+				data: { typed: "/review concurrency", command: "review" },
+				model: [
+					{
+						role: "user",
+						content: [{ type: "text", text: "Review with focus: concurrency" }],
+					},
+				],
+			},
+			{
+				id: 2,
+				kind: "pi.assistant",
+				model: [
+					{ role: "assistant", content: [{ type: "text", text: "Reviewed." }] },
+				],
+			},
+		];
+	}
+
+	test("an expanded entry renders as a USER turn: the typed text, the accent bar, and the chip", () => {
+		const pane = new ConversationPane();
+		pane.showView(view(1, expandedEntries()));
+		expect(pane.turns().map((turn) => turn.kind)).toEqual(["user", "assistant"]);
+		const lines = pane.render(80).join("\n");
+		// The TYPED text is the bubble (with the user-turn accent bar)…
+		expect(lines).toContain("▎ /review concurrency");
+		// …the chip names the command…
+		expect(lines).toContain("expanded from /review");
+		// …and the expanded text is NOT shown by default.
+		expect(lines).not.toContain("Review with focus: concurrency");
+	});
+
+	test("toggleFold on an expanded user turn reveals and re-hides the full text; textOf copies the typed line", () => {
+		const pane = new ConversationPane();
+		pane.showView(view(1, expandedEntries()));
+		pane.toggleFold(0);
+		const open = pane.render(80).join("\n");
+		expect(open).toContain("Review with focus: concurrency");
+		pane.toggleFold(0);
+		const closed = pane.render(80).join("\n");
+		expect(closed).not.toContain("Review with focus: concurrency");
+		// The copy payload is the typed command (what the user wrote).
+		expect(pane.textOf(0)).toBe("/review concurrency");
+		expect(pane.entryIdOf(0)).toBe(1);
+	});
+
 	test("pi.compaction renders the centred divider", () => {
 		const pane = new ConversationPane();
 		pane.showView(

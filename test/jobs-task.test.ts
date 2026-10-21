@@ -409,3 +409,69 @@ describe("the schedule task", () => {
 		expect(meta?.autoNameAttempts).toBeUndefined();
 	});
 });
+
+// ─── Task 2c: job prompts expand /skill:name and template commands ─────────
+
+test("a job prompt naming a prompt template sends the expanded text", async () => {
+	const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+	// A hermetic template root (the boot's own user dir resolves to the
+	// machine's config dir — the test pins its own instead) plus the boot
+	// handle's skills roots and command names: the SAME shape
+	// `expandInput` reads on the submit path.
+	const promptsDir = await (async () => {
+		const { mkdir, writeFile } = await import("node:fs/promises");
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-prompts-"));
+		await writeFile(
+			join(dir, "review.md"),
+			"---\ndescription: Review\n---\nNightly review focus: $1\n",
+		);
+		return dir;
+	})();
+	const bootExpansion = rig.opened.commandExpansion;
+	rig.deps.commandExpansion = {
+		skills: bootExpansion.skills,
+		templates: { userDir: promptsDir, packageRoots: () => [] },
+		commandNames: bootExpansion.commandNames,
+	};
+	rig.deps.envBuilder = rig.opened.envBuilder;
+	const id = "api:job-template-prompt";
+	await seedJob(rig, id, {
+		...everyMinuteSpec(),
+		action: { kind: "prompt", prompt: "/review nightly", conversation: "new" },
+	});
+	const outcome = await fireJob(
+		rig.deps,
+		id,
+		`${id}:1000`,
+		1000,
+		BACKGROUND_CONTEXT,
+	);
+	expect(outcome.outcome).toBe("running");
+	const conversationId = outcome.conversationId as number;
+	await tick(300);
+	// The admitted text is the SUBSTITUTED template, and no
+	// sigrun.user.expanded entry is written for a job prompt (there is no
+	// user turn to attribute).
+	const conversation = await rig.opened.harness.conversation(
+		conversationId as never,
+		BACKGROUND_CONTEXT,
+	);
+	const state = await conversation!.viewState(BACKGROUND_CONTEXT);
+	const entries = state.value.entries;
+	const user = entries.find((entry) => entry.kind === "pi.user");
+	const content = user?.model?.[0]?.content;
+	const text = Array.isArray(content)
+		? content
+				.map((part: { text?: string }) => part.text ?? "")
+				.join("")
+		: String(content ?? "");
+	expect(text).toContain("Nightly review focus: nightly");
+	expect(
+		entries.some((entry) => entry.kind === "sigrun.user.expanded"),
+	).toBe(false);
+	await state.dispose();
+	await (await import("node:fs/promises")).rm(promptsDir, {
+		recursive: true,
+		force: true,
+	});
+});

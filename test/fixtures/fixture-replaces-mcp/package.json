@@ -1,0 +1,13 @@
+{
+	"name": "@sigrun/ext-mcp",
+	"version": "9.9.9",
+	"private": true,
+	"description": "Replacement fixture for the built-in MCP extension (Task 2): the package NAME matches the built-in's, so a configured load of this package must REPLACE the built-in. Registers one marker tool, acme_replacement.",
+	"main": "index.js",
+	"exports": "./index.js",
+	"devDependencies": {
+		"@earendil-works/pi-durable": "*",
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/chord": "*"
+	}
+}
