@@ -55,6 +55,9 @@ import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
 import { createSkillsExtension } from "../skills/index.js";
+import { SLASH_COMMANDS } from "../server/commands.js";
+import type { CommandExpansion } from "../commands/expand.js";
+import { packagePromptRootsOf } from "../commands/templates.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
@@ -77,6 +80,11 @@ import {
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf } from "./packages.js";
+import {
+	BUILTIN_EXTENSIONS,
+	resolveBuiltins,
+	type ResolvedBuiltins,
+} from "./builtins.js";
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
 import {
@@ -169,6 +177,15 @@ export interface OpenedHarness {
 	 * `GET /v1/meta` (Task 9) renders this as `extensions[].status`.
 	 */
 	readonly extensionOutcomes: readonly ExtensionOutcome[];
+	/**
+	 * The built-in extensions that did not load this boot (Task 2):
+	 * `replaced` entries render on `/v1/extensions` as
+	 * `{builtin: true, replacedBy}` rows (disabled built-ins are absent
+	 * entirely, per ruling 6). The route maps these names to the
+	 * resolved slug form (the loader's own sanitization) so the row key
+	 * matches what the loaded set would have used.
+	 */
+	readonly builtinSkipped: ResolvedBuiltins["skipped"];
 	/**
 	 * §3 health producers from provider contributors (Task 9e): the meta
 	 * route aggregates them into the §5 `health.providers` field — any
@@ -310,6 +327,15 @@ export interface OpenedHarness {
 	 */
 	readonly skillRoots: readonly { extension: string; dir: string }[];
 	/**
+	 * The command-expansion handle (Task 2c): the skills + template root
+	 * sets and the reserved command-name set, all read LIVE. The submit
+	 * op (src/server/conversation-ops.ts) and the job prompt actions
+	 * (src/jobs/fire.ts) expand `/skill:name` and template inputs through
+	 * it at admission; `GET /v1/commands` builds its `kind: "expand"`
+	 * entries from the same roots.
+	 */
+	readonly commandExpansion: CommandExpansion;
+	/**
 	 * The memory-seam event bus (Tasks 2-4): opened on the booted harness
 	 * BEFORE `resume()` (recovery settles are observed), with each loaded
 	 * extension's `runSettled` + lifecycle handlers registered under its
@@ -433,6 +459,22 @@ export interface OpenHarnessOptions {
 	 * the queue modes while pinning compaction.
 	 */
 	readonly settings?: HarnessSettings;
+	/**
+	 * Built-in extensions (Task 2, pi parity): codemode, MCP and tool
+	 * search load by default from core's own node_modules, BEFORE the
+	 * configured list, governed by the settings file's
+	 * `builtinExtensions` toggles. `false` skips them entirely — the
+	 * hermetic-test seam for suites asserting exact extension outcomes
+	 * over fixture-only loads (and the pre-Task-2 boot shape).
+	 */
+	readonly builtins?: boolean;
+	/**
+	 * Test-only additional built-in load specifiers (fixtures), resolved
+	 * like the real built-ins through core's own tree and reported
+	 * `builtin: true` — the quarantine path's exerciser without breaking
+	 * the shipped packages.
+	 */
+	readonly extraBuiltins?: readonly string[];
 	/**
 	 * Extension package specifiers to load, overriding `config.extensions` —
 	 * the hermetic-test seam for the loader (specifiers resolve to local
@@ -572,6 +614,11 @@ export async function openHarness(
 	// closure below observes whatever the loader collected without the
 	// install order changing (core sections lead the prompt).
 	const collectedSkillRoots: { extension: string; dir: string }[] = [];
+	// The template roots (Task 2c): the SAME late-fill shape as the skill
+	// roots — the loader runs below, and both the `/v1/commands` route and
+	// each expansion read the collections LIVE, so the late fill is
+	// visible from the next read on.
+	const collectedTemplateRoots: { extension: string; dir: string }[] = [];
 	// The settings store the live cap reads. Declared further down (the
 	// file-backed store needs `options.settingsDir` only); the closure
 	// reads it at RENDER time, long after the assignment — the skills cap
@@ -588,15 +635,41 @@ export async function openHarness(
 	// user dir `<configDir>/skills/`, and the package roots the loader
 	// collects — with workspace > user > packages precedence and the live
 	// per-render cap.
+	// The skills options the EXPANSION paths share (Task 2c): the same
+	// three-root shape the section renders with — `/skill:name` and the
+	// `/` menu must see the same skills the section does (plus the hidden
+	// ones, which `listSkills` includes by design).
+	const skillsOptions = {
+		userDir: join(roots.configDir, "skills"),
+		packageRoots: (): readonly { extension: string; dir: string }[] =>
+			collectedSkillRoots,
+		sectionMaxBytes: (): number =>
+			skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
+	};
+	const templateOptions = {
+		userDir: join(roots.configDir, "prompts"),
+		packageRoots: (): readonly { extension: string; dir: string }[] =>
+			collectedTemplateRoots,
+	};
+	// The command-expansion handle (Task 2c): everything `expandInput`
+	// needs — the two root sets plus the reserved command-name set (core
+	// table + every extension command; a template colliding with any of
+	// these never expands). Read LIVE per expansion.
+	const commandExpansion: CommandExpansion = {
+		skills: skillsOptions,
+		templates: templateOptions,
+		commandNames: (): ReadonlySet<string> => {
+			const names = new Set<string>(SLASH_COMMANDS.keys());
+			for (const binding of commandBindings) {
+				for (const contribution of binding.commands) {
+					names.add(contribution.name);
+				}
+			}
+			return names;
+		},
+	};
 	registry.install(contextFilesExtension);
-	registry.install(
-		createSkillsExtension({
-			userDir: join(roots.configDir, "skills"),
-			packageRoots: () => collectedSkillRoots,
-			sectionMaxBytes: () =>
-				skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
-		}),
-	);
+	registry.install(createSkillsExtension(skillsOptions));
 	registry.install(codingToolsExtension);
 	registry.install(searchToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
@@ -607,6 +680,55 @@ export async function openHarness(
 	// declarations install here — see src/harness/packages.ts).
 	const packagesDir =
 		options.packagesDir ?? packagesDirOf(options.settingsDir ?? defaultSettingsDir());
+	// Built-in extensions (Task 2, pi parity): codemode, MCP and tool
+	// search ship with core. Resolution needs the settings FILE (the
+	// `builtinExtensions` toggles live there), so the store is constructed
+	// HERE — before the loader — and the one instance threads on to the
+	// rest of boot (its `harnessSettings()` call below stays the single
+	// construction).
+	const settingsStore = new SettingsStore({ dir: options.settingsDir });
+	// Eager validation (the fail-loud boot posture, matching the
+	// `harnessSettings()` contract below): a malformed settings file
+	// throws HERE even when the caller seam overrides every field.
+	const bootSettings = settingsStore.read();
+	const builtinsEnabled = options.builtins !== false;
+	// Skipped entirely (no resolution, no log lines) when the caller
+	// turns built-ins off.
+	// The configured side, normalized to ResolvedExtensionInput (the
+	// loader accepts both forms, but the combined input array must be
+	// homogeneous): a plain string becomes `{ entry: spec }`.
+	const configuredInputs: readonly ResolvedExtensionInput[] = (
+		options.extensionEntries ??
+		options.extensionSpecifiers ??
+		config.extensions
+	).map((specifier) =>
+		typeof specifier === "string" ? { entry: specifier } : specifier,
+	);
+	const builtins: ResolvedBuiltins = builtinsEnabled
+		? resolveBuiltins(bootSettings, configuredInputs, options.extraBuiltins ?? [])
+		: { load: [], skipped: [] };
+	// The loader input: built-ins FIRST (pi parity — the replacement rule
+	// already removed any built-in a configured entry claims), marked
+	// `builtin: true` so their outcomes carry the flag to /v1/extensions,
+	// then the configured entries verbatim. The hermetic test seams
+	// (`extensionSpecifiers`/`extensionEntries`) still load — but with
+	// built-ins skipped entirely when `options.builtins === false`, the
+	// exact-shape outcome assertions' escape hatch.
+	const loaderInputs: readonly ResolvedExtensionInput[] = builtinsEnabled
+			? [
+					...builtins.load.map(
+						(entry): ResolvedExtensionInput => ({
+							...entry,
+							builtin: true,
+							// Built-ins resolve from core's own tree, NEVER the
+							// packages dir (ruling 2): the marker tells the loader
+							// to skip the packages-dir-first resolution step.
+							coreResolved: true,
+						}),
+					),
+					...configuredInputs,
+				]
+			: configuredInputs;
 	// The seam host's lazy harness binding: factories run before
 	// `Harness.open` (spec §3 boot order), so the host resolves the harness
 	// through a promise that boot resolves right after the open. A seam
@@ -645,7 +767,7 @@ export async function openHarness(
 		commandBindings,
 		notifierBindings,
 	} = await loadExtensions(
-		options.extensionEntries ?? options.extensionSpecifiers ?? config.extensions,
+		loaderInputs,
 		registry,
 		{
 			packagesDir,
@@ -686,6 +808,17 @@ export async function openHarness(
 // observes them from its next render on. Core sections still lead the
 // prompt; only the discovery content is late.
 collectedSkillRoots.push(...extensionSkillRoots);
+	// The prompt-template package roots (Task 2c): derived from the loaded
+	// entries' package roots — each package that ships a `prompts/`
+	// directory becomes an attributed root (the loader has no fs coupling
+	// by contract, so the derivation lives with the templates module).
+	collectedTemplateRoots.push(
+		...packagePromptRootsOf(
+			loaderInputs
+				.filter((input) => input.entry !== undefined)
+				.map((input) => input.entry as string),
+		),
+	);
 	// The contributed-bundle registry (build-and-webui Task 6): the loader's
 	// flat, slug-attributed collection folded into one entry per NAME.
 	// Collision semantics mirror the provider merge EXACTLY —
@@ -807,6 +940,11 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		defaultModel,
 		now: () => clockNow().getTime(),
 		defaultTz: config.timezone,
+		// Task 2c: job prompts expand `/skill:name` and template commands
+		// through the same roots the submit path uses (live reads, no
+		// `typed` entry — there is no user turn to attribute).
+		commandExpansion,
+		envBuilder: undefined as unknown as EnvBuilder,
 	};
 	registry.install({
 		name: "sigrun.jobs",
@@ -901,13 +1039,17 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	const workspaceService = createWorkspaceService();
 	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
+	// The job runtime's env-builder binding resolves here (the placeholder
+	// the pre-open deps object needed): job-prompt expansion reads the
+	// conversation workspace through the SAME seam tool calls use.
+	jobRuntimeDeps.envBuilder = envBuilder;
 	// The settings store (Task 8a): file-backed, live. `harnessSettings()` is
 	// the getter-backed `HarnessSettings` pi-durable re-resolves per
 	// submission — absent = every default. A malformed file throws HERE, at
 	// boot, exactly like a bad `SIGRUN_*` value (loadConfig's posture).
-	const settingsStore = new SettingsStore({ dir: options.settingsDir });
-	// The skills extension's live cap reads THIS store (the closure built
-	// above resolves it per render — `skills.sectionMaxBytes`, default 4KB).
+	// The skills extension's live cap reads the store constructed above
+	// (the closure built at the top resolves it per render —
+	// `skills.sectionMaxBytes`, default 4KB).
 	skillsSettings = settingsStore;
 	const fileSettings = settingsStore.harnessSettings();
 	const callerSettings = options.settings;
@@ -1219,6 +1361,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		webuiBundleCollisions,
 		envBuilder,
 		extensionOutcomes,
+		builtinSkipped: builtinsEnabled ? builtins.skipped : [],
 		providerHealth,
 		providerOwnership,
 		providerReadiness,
@@ -1238,6 +1381,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		extensionCommands: commandBindings,
 		notifierBindings,
 		skillRoots: extensionSkillRoots,
+		commandExpansion,
 		eventBus,
 		events,
 		workerStatuses: () => eventBus.workerStatuses(),

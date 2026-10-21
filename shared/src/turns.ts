@@ -12,7 +12,19 @@
  * form ONE assistant turn; a `pi.user` entry is its own turn; every
  * other kind (compaction records, summaries) is an `other` turn. A
  * user or other entry also ENDS the assistant run.
+ *
+ * Task 2c: an EXPANDED input (`/skill:name`, a prompt template) is
+ * placed as ONE entry whose kind REPLACES `pi.user` —
+ * {@link EXPANDED_USER_KIND}, with `data {typed, command}` and the
+ * EXPANDED text on `model` (pi-durable's `SubmissionDraft.entry`).
+ * The grouping classifies it as a user turn (the renderers show the
+ * TYPED text with a chip); the server-side twin of the kind constant
+ * is `EXPANDED_ENTRY_KIND` in `src/commands/expand.ts`.
  */
+
+/** The user-entry kind an expanded `/skill:` or template input is placed
+ *  as (see the module doc); grouping treats it exactly like `pi.user`. */
+export const EXPANDED_USER_KIND = "sigrun.user.expanded";
 
 export interface TurnBlock {
 	readonly type: string;
@@ -35,6 +47,34 @@ export interface TurnEntry {
 	readonly id: number;
 	readonly kind: string;
 	readonly model?: readonly TurnMessage[];
+	/** The entry's kind-specific JSON payload — `sigrun.user.expanded`'s
+	 *  `{typed, command}` (see {@link expandedUserEntry}). */
+	readonly data?: unknown;
+}
+
+/** The narrowed `data` of a {@link EXPANDED_USER_KIND} entry: what the
+ *  user TYPED (the bubble's text) and the command that expanded. */
+export interface ExpandedUserEntryData {
+	readonly typed: string;
+	readonly command?: string;
+}
+
+/** Narrow one entry to its expanded-user `data` — defined exactly when
+ *  the kind is {@link EXPANDED_USER_KIND} and `typed` is a non-empty
+ *  string; undefined for every other shape (a plain `pi.user`, missing
+ *  or malformed data). */
+export function expandedUserEntry(
+	entry: { readonly kind: string; readonly data?: unknown },
+): ExpandedUserEntryData | undefined {
+	if (entry.kind !== EXPANDED_USER_KIND) return undefined;
+	const data = entry.data;
+	if (typeof data !== "object" || data === null) return undefined;
+	const typed = (data as { readonly typed?: unknown }).typed;
+	if (typeof typed !== "string" || typed === "") return undefined;
+	const command = (data as { readonly command?: unknown }).command;
+	return typeof command === "string" && command !== ""
+		? { typed, command }
+		: { typed };
 }
 
 export interface ToolCall {
@@ -135,7 +175,7 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 		}
 
 		flush();
-		if (entry.kind === "pi.user") {
+		if (entry.kind === "pi.user" || entry.kind === EXPANDED_USER_KIND) {
 			turns.push({ kind: "user", entry });
 		} else {
 			turns.push({ kind: "other", entry });

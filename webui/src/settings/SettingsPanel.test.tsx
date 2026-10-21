@@ -459,7 +459,7 @@ describe("SettingsPanel", () => {
 		});
 	});
 
-	test("sections render: the nav shows all four and switches views", async () => {
+	test("sections render: the nav shows every section and switches views", async () => {
 		const { client } = makeHarness();
 		const renderer = await renderPanel(client);
 		const navItems = renderer.root
@@ -471,6 +471,7 @@ describe("SettingsPanel", () => {
 			"Interface",
 			"Advanced",
 			"Extensions",
+			"Providers",
 		]);
 		// General renders steering; Interface does NOT.
 		expect(

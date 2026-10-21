@@ -88,21 +88,21 @@ function manifestMtimeMs(packagesDir: string): number {
 
 describe("parsePackageSpecifier", () => {
 	test("bare name, ranged, and scoped forms", () => {
-		expect(parsePackageSpecifier("sigrun-ext-approvals")).toEqual({
-			name: "sigrun-ext-approvals",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode")).toEqual({
+			name: "@sigrun/ext-codemode",
 			range: "",
 		});
-		expect(parsePackageSpecifier("sigrun-ext-approvals@^0.1.0")).toEqual({
-			name: "sigrun-ext-approvals",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode@^0.1.0")).toEqual({
+			name: "@sigrun/ext-codemode",
 			range: "^0.1.0",
 		});
-		expect(parsePackageSpecifier("@sigrun/ext-approvals@^0.1.0")).toEqual({
-			name: "@sigrun/ext-approvals",
-			range: "^0.1.0",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode@2.0.0")).toEqual({
+			name: "@sigrun/ext-codemode",
+			range: "2.0.0",
 		});
-		expect(parsePackageSpecifier("@sigrun/ext-approvals")).toEqual({
-			name: "@sigrun/ext-approvals",
-			range: "",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode@beta")).toEqual({
+			name: "@sigrun/ext-codemode",
+			range: "beta",
 		});
 		// A file: specifier carries no @range → the name part is the whole
 		// specifier (npm keys the entry by the package's OWN manifest name).
@@ -307,6 +307,10 @@ describe("loader + packages dir integration", () => {
 		const opened = await openHarness(config, {
 			env: {},
 			settingsDir: configDir,
+			// Hermetic: this suite pins the packages-dir resolution path,
+			// not the built-in surface (builtins: false = the pre-Task-2
+			// boot shape).
+			builtins: false,
 			// The LOAD list names the package BARE — resolution must come from
 			// the packages dir (nothing named fixture-pkg exists in the app tree).
 			extensionSpecifiers: ["fixture-pkg"],
@@ -339,6 +343,9 @@ describe("loader + packages dir integration", () => {
 		const opened = await openHarness(config, {
 			env: {},
 			settingsDir: configDir,
+			// Hermetic: same as above — the fallback resolution path is this
+			// test's subject, not the built-in surface.
+			builtins: false,
 			extensionSpecifiers: [
 				pathToFileURL(
 					join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),
@@ -670,13 +677,13 @@ describe("the unified extensions list (settings surface)", () => {
 		const store = new SettingsStore({ dir });
 		store.update({
 			extensions: [
-				"sigrun-ext-approvals@^0.1.0",
+				"@sigrun/ext-codemode@^0.1.0",
 				{ source: "git:github.com/obra/superpowers", ref: "main" },
 				{ source: "/opt/dev/my-ext", enabled: false },
 			],
 		});
 		const read = store.read().extensions ?? [];
-		expect(read[0]).toBe("sigrun-ext-approvals@^0.1.0");
+		expect(read[0]).toBe("@sigrun/ext-codemode@^0.1.0");
 		expect(read[1]).toEqual({
 			source: "git:github.com/obra/superpowers",
 			ref: "main",

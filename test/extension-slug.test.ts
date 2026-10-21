@@ -116,6 +116,9 @@ describe("loader slug integration", () => {
 		try {
 			opened = await openHarness(configWith(dir), {
 				env: {},
+				// Hermetic: the slug identity is this test's subject, not the
+				// built-in surface (builtins: false = the pre-Task-2 boot shape).
+				builtins: false,
 				extensionSpecifiers: [SCOPED_SPECIFIER],
 			});
 			const snapshot = opened.registry.snapshot();

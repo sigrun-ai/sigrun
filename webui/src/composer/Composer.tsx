@@ -30,10 +30,12 @@
  * - Send/steer toggle: `view.steer.busy` flips the button and the submit
  *   carries `whenBusy: "steer"`; queued depth shows next to the button.
  * - Slash commands (Task 7, pi parity): typing `/` as the first character
- *   opens a menu over `GET /v1/commands` (fetched once per mount — the
- *   catalog is a server boot constant, cache-friendly); typing filters by
- *   name prefix; Enter/click selects — an argless command executes
- *   immediately, an arg-taking command inserts `/name ` for its args.
+ *   opens a menu over `GET /v1/commands` (fetched at mount, then re-fetched
+ *   whenever a submitted command name is missing from the cached catalog —
+ *   the server re-scans its roots per request, so templates and skills can
+ *   appear mid-session); typing filters by name prefix; Enter/click selects
+ *   — an argless command executes immediately, an arg-taking command
+ *   inserts `/name ` for its args.
  *   Submitting a `/command args` line performs the corresponding client
  *   call; an UNKNOWN command is a clear alert-strip error, never a silent
  *   no-op. `/new` and `/fork` navigate to the created conversation via the
@@ -176,6 +178,17 @@ function countJsonlLines(jsonl: string): number | null {
 	return trimmed.length;
 }
 
+/** Whether a submitted command line is an EXPAND input (Task 2c) — one the
+ *  SERVER rewrites at admission (`kind: "expand"` catalog entries: prompt
+ *  templates and skills) — so the composer submits it as message text and
+ *  never calls an endpoint or errors locally. Any `skill:`-prefixed name
+ *  qualifies even when the catalog does not list it: an unknown skill is a
+ *  server-side pass-through, never a client-side unknown-command error. */
+function isExpandLine(name: string, commands: readonly CommandWire[]): boolean {
+	if (name.startsWith("skill:")) return true;
+	return commands.find((command) => command.name === name)?.kind === "expand";
+}
+
 /**
  * An attachment path → its §5 submission part: a known image extension
  * yields `{type:"image", path, mime}` (the mime is derivable from the path,
@@ -284,11 +297,14 @@ export function Composer(props: {
 	const [interactions, setInteractions] = useState<readonly InteractionWire[]>([]);
 	const [ambient, setAmbient] = useState<readonly AmbientWire[]>([]);
 
-	// The slash-command catalog: fetched once per mount (a server boot
-	// constant, like the model catalog). A fetch failure leaves the menu
-	// empty — TYPED commands still execute (the menu is an affordance, not
-	// the gate) — so the failure is swallowed at the menu level, not surfaced
-	// as a boot error.
+	// The slash-command catalog: fetched at mount, then re-fetched on the
+	// send path whenever a submitted command name is missing from the
+	// cache — the server re-scans its skill/template roots on every
+	// request, so a template added mid-session must not die on the mount
+	// snapshot (the refetch lands in state, so the menu catches up too).
+	// A fetch failure leaves the menu empty — TYPED commands still execute
+	// (the menu is an affordance, not the gate) — so the failure is
+	// swallowed at the menu level, not surfaced as a boot error.
 	useEffect(() => {
 		let cancelled = false;
 		client
@@ -423,14 +439,17 @@ export function Composer(props: {
 	const menuOpen = slashQuery !== null && commands.length > 0;
 	const clampedHighlight = Math.min(highlight, Math.max(0, filteredCommands.length - 1));
 
-	/** Menu selection (click or menu-Enter): argless → execute; else insert. */
+	/** Menu selection (click or menu-Enter): argless → execute; else insert.
+	 *  An EXPAND entry (Task 2c) always inserts `/name ` — args are its
+	 *  whole point, and there is no endpoint to call: the server expands
+	 *  the submitted line at admission. */
 	function selectCommand(command: CommandWire): void {
-		if (command.argsHint === undefined) {
-			void executeCommand(command.name, "");
+		if (command.kind === "expand" || command.argsHint !== undefined) {
+			setHighlight(0);
+			draft.setText(`/${command.name} `);
 			return;
 		}
-		setHighlight(0);
-		draft.setText(`/${command.name} `);
+		void executeCommand(command.name, "");
 	}
 
 	/**
@@ -438,10 +457,16 @@ export function Composer(props: {
 	 * the catalog is metadata only (the registry's own doc). Every outcome
 	 * is LOUD: success sets a notice, failure sets the alert strip; an
 	 * unknown command or missing args is a usage error, never a silent
-	 * no-op. The draft clears (persisted) once the call resolves.
+	 * no-op. The draft clears (persisted) once the call resolves. The
+	 * lookup runs over `catalog` — the caller's freshest list (the send
+	 * path passes its just-refetched catalog when one was needed).
 	 */
-	async function executeCommand(name: string, args: string): Promise<void> {
-		const command = commands.find((c) => c.name === name);
+	async function executeCommand(
+		name: string,
+		args: string,
+		catalog: readonly CommandWire[] = commands,
+	): Promise<void> {
+		const command = catalog.find((c) => c.name === name);
 		if (command === undefined) {
 			setError(`unknown command: /${name}`);
 			setNotice(null);
@@ -606,11 +631,36 @@ export function Composer(props: {
 		const text = draft.text.trim();
 		// A `/command args` line is a COMMAND, not a submission (Task 7): the
 		// slash path owns the Send button too — an unknown command errors
-		// visibly instead of being submitted as message text.
+		// visibly instead of being submitted as message text. EXCEPT an
+		// expand input (Task 2c — `/skill:name`, a prompt template): that IS
+		// a submission — the server expands the text at admission — so it
+		// falls through to the normal submit path below, verbatim.
 		if (text.startsWith("/")) {
 			const { name, args } = parseCommandLine(draft.text);
-			await executeCommand(name, args);
-			return;
+			// Live catalog (fix round): the server re-scans its roots per
+			// request, so a name the mount snapshot lacks may be a template
+		// added mid-session. When the cached catalog does not know the
+		// name, refetch ONCE and re-evaluate before any unknown-command
+		// verdict; the refetch lands in state, so the menu catches up too.
+			// A `skill:`-prefixed name never needs this (it always submits).
+			let catalog = commands;
+			if (
+				!name.startsWith("skill:") &&
+				!commands.some((command) => command.name === name)
+			) {
+				try {
+					const fresh = await client.listCommands();
+				catalog = fresh.commands;
+				setCommands(fresh.commands);
+				} catch {
+					// A failed refetch keeps the cached verdict — the error path
+					// below reports the unknown command honestly.
+				}
+			}
+			if (!isExpandLine(name, catalog)) {
+				await executeCommand(name, args, catalog);
+				return;
+			}
 		}
 		// §7.1: submit returns at ADMISSION, so `sending` spans only the
 		// in-flight admit (not the whole run). The guard holds from the click

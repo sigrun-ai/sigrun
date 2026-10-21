@@ -9,6 +9,12 @@
  * `pi.compaction` renders the centred `── context compacted ──` divider. The `[tool]`/`[thinking]` tags of
  * the entry-era pane are gone.
  *
+ * Task 2c: an EXPANDED input (`/skill:name`, a prompt template) is one
+ * entry (`sigrun.user.expanded`, `data {typed, command}`, the expanded
+ * text on `model`) that groups as a USER turn — the body is the TYPED
+ * command with a dim `▸ expanded from /name` chip line that folds the
+ * full admitted text open/closed (closed by default).
+ *
  * Focus (the C3 action layer's seam): `focusIndex` names the focused
  * turn (`undefined` = none — the ScrollView follows the end), the
  * focused turn's FIRST line carries the `surface2` background and a `›`
@@ -47,6 +53,7 @@ import {
 } from "@earendil-works/pi-tui";
 import {
 	activityLabel,
+	expandedUserEntry,
 	groupTurns,
 	type Turn,
 } from "@sigrun/shared/turns";
@@ -76,6 +83,9 @@ export interface EntryShape {
 	readonly id: number;
 	readonly kind: string;
 	readonly model?: readonly MessageShape[];
+	/** The entry's kind-specific JSON payload — an expanded input's
+	 *  `{typed, command}` (see `expandedUserEntry`). */
+	readonly data?: unknown;
 }
 
 export interface ConversationPaneOptions {
@@ -112,6 +122,16 @@ function entryText(entry: EntryShape): string {
 		.map((message) => messageText(message))
 		.filter((part) => part !== "")
 		.join(" ");
+}
+
+/** A user entry's model-facing text (message texts + upload markers) — the
+ *  plain-turn body, and the EXPANDED text an expanded turn's chip reveals. */
+function userModelText(entry: EntryShape): string {
+	const parts = (entry.model ?? []).flatMap((message) => [
+		messageText(message),
+		...attachmentMarkers(message),
+	]);
+	return parts.filter((part) => part !== "").join("\n");
 }
 
 /** The markdown theme rides the TuiTheme's token colours. */
@@ -230,10 +250,16 @@ export class ConversationPane implements Component {
 		this.#container.invalidate();
 	}
 
-	/** Open/close an assistant turn's activity fold. */
+	/** Open/close an assistant turn's activity fold — or an expanded user
+	 *  turn's chip disclosure (Task 2c: the full admitted text hides behind
+	 *  the `expanded from /name` line, same fold state, same seam). */
 	toggleFold(index: number): void {
 		const turn = this.#turns[index];
-		if (turn === undefined || turn.kind !== "assistant") return;
+		if (turn === undefined) return;
+		const foldable =
+			turn.kind === "assistant" ||
+			(turn.kind === "user" && expandedUserEntry(turn.entry) !== undefined);
+		if (!foldable) return;
 		if (this.#open.has(index)) {
 			this.#open.delete(index);
 		} else {
@@ -257,12 +283,11 @@ export class ConversationPane implements Component {
 		if (turn === undefined) return "";
 		switch (turn.kind) {
 			case "user": {
-				const messages = turn.entry.model ?? [];
-				const parts = messages.flatMap((message) => [
-					messageText(message),
-					...attachmentMarkers(message),
-				]);
-				return parts.filter((part) => part !== "").join("\n");
+				// An expanded turn copies the TYPED command (what the user
+				// wrote — re-submitting it re-expands server-side).
+				const expanded = expandedUserEntry(turn.entry);
+				if (expanded !== undefined) return expanded.typed;
+				return userModelText(turn.entry);
 			}
 			case "assistant":
 				return turn.text;
@@ -373,6 +398,38 @@ export class ConversationPane implements Component {
 			);
 		switch (turn.kind) {
 			case "user": {
+				const expanded = expandedUserEntry(turn.entry);
+				if (expanded !== undefined) {
+					// The expanded turn (Task 2c): the TYPED command is the body
+					// (the accent bar still marks it a user turn); a dim chip line
+					// folds the full admitted text — closed by default, or
+					// `/skill:greet hej` would dump the whole skill body.
+					components.push(
+						body(new Markdown(expanded.typed, 0, 0, this.#markdownTheme)),
+					);
+					const slot = new RenderSlot();
+					slot.paint = () =>
+						this.#theme.dim(
+							`${this.#open.has(index) ? "▾" : "▸"} expanded from /${expanded.command ?? "…"}`,
+						);
+					components.push(
+						new MouseRegion(slot, (event) => {
+							if (event.type === "click" && event.button === "left") {
+								this.toggleFold(index);
+								return { handled: true };
+							}
+							return undefined;
+						}),
+					);
+					if (this.#open.has(index)) {
+						for (const line of userModelText(turn.entry).split("\n")) {
+							components.push(
+								new Text(this.#theme.dim(line), 0, 0),
+							);
+						}
+					}
+					break;
+				}
 				const text = this.textOf(index);
 				if (text !== "") {
 					components.push(body(new Markdown(text, 0, 0, this.#markdownTheme)));

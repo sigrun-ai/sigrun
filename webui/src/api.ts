@@ -57,6 +57,8 @@ import type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	AuthCheckProvider as AuthCheckProviderWire,
+	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
 	JobRunResponse,
 } from "@sigrun/shared/views";
@@ -99,6 +101,8 @@ export type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	AuthCheckProvider as AuthCheckProviderWire,
+	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
 	JobRunResponse,
 } from "@sigrun/shared/views";
@@ -514,6 +518,22 @@ export interface SigrunClient {
 		slug: string,
 		key: string,
 	): Promise<ExtensionSecretsResponseWire>;
+	/** The per-provider readiness report (`GET /v1/providers`). */
+	listProviders(): Promise<ProvidersResponseWire>;
+	/**
+	 * Write one provider's credential (`PUT .../credential`, admin): the
+	 * key rides the body and is never read back — the response is the
+	 * provider's readiness entry after the server's one post-write
+	 * refresh.
+	 */
+	putProviderCredential(
+		id: string,
+		apiKey: string,
+	): Promise<AuthCheckProviderWire>;
+	/** Remove one provider's credential (`DELETE .../credential`, admin). */
+	deleteProviderCredential(id: string): Promise<AuthCheckProviderWire>;
+	/** One bounded refresh of the named provider (`POST .../refresh`). */
+	refreshProvider(id: string): Promise<AuthCheckProviderWire>;
 	/** The caller-visible jobs (`GET /v1/jobs`; access-stamped per row). */
 	listJobs(): Promise<JobsResponse>;
 	/** Fire a job now (`POST /v1/jobs/:id/run`; write access). */
@@ -810,6 +830,25 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				`/v1/extensions/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(key)}`,
 				{},
 			) as Promise<ExtensionSecretsResponseWire>,
+		listProviders: () => get<ProvidersResponseWire>("/v1/providers"),
+		putProviderCredential: (id, apiKey) =>
+			send(
+				"PUT",
+				`/v1/providers/${encodeURIComponent(id)}/credential`,
+				{ apiKey },
+			) as Promise<AuthCheckProviderWire>,
+		deleteProviderCredential: (id) =>
+			send(
+				"DELETE",
+				`/v1/providers/${encodeURIComponent(id)}/credential`,
+				{},
+			) as Promise<AuthCheckProviderWire>,
+		refreshProvider: (id) =>
+			send(
+				"POST",
+				`/v1/providers/${encodeURIComponent(id)}/refresh`,
+				{},
+			) as Promise<AuthCheckProviderWire>,
 		listJobs: () => get<JobsResponse>("/v1/jobs"),
 		runJob: (id) =>
 			send("POST", `/v1/jobs/${encodeURIComponent(id)}/run`, {}) as Promise<

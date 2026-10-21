@@ -67,7 +67,13 @@ import type { TuiTheme } from "../theme.js";
 import type { Action, ActionHost, Focus } from "../actions.js";
 import { editInVim, resolveVimEditor } from "../editor-launch.js";
 import { copyToTerminal } from "../clipboard.js";
-import { describeCommandError, parseSlashInput, SlashCatalog } from "./composer.js";
+import {
+	commandInsertText,
+	describeCommandError,
+	isSkillCommandName,
+	parseSlashInput,
+	SlashCatalog,
+} from "./composer.js";
 import { AmbientChrome } from "./ambient.js";
 import { ConversationPane } from "./conversation-pane.js";
 import { InteractionPrompter } from "./interactions.js";
@@ -156,7 +162,8 @@ export class TuiApp implements Component, ActionHost {
 	#watchGen = 0;
 	/** The last frame's `steer.busy` — the steer gate for the next submit. */
 	#busy = false;
-	/** The slash-command catalog (fetched once, cached — a boot constant). */
+	/** The slash-command catalog (session-cached snapshot, live-rechecked
+	 * on a miss — see SlashCatalog). */
 	readonly #catalog: SlashCatalog;
 	/** The repainting surface (pickers, copy flashes, redraw). */
 	readonly #tui: TUI;
@@ -534,6 +541,14 @@ export class TuiApp implements Component, ActionHost {
 			void this.#runSlashCommand(text);
 			return;
 		}
+		this.#submitLine(text);
+	}
+
+	/** Submit one line as a MESSAGE (the composer's plain path — also the
+	 *  expand path, Task 2c: `/skill:name` and prompt-template lines go to
+	 *  the server verbatim and are expanded AT ADMISSION, so the client
+	 *  never calls an endpoint for them). */
+	#submitLine(text: string): void {
 		const id = this.#activeId;
 		if (id === undefined) return;
 		this.editor.setText("");
@@ -587,6 +602,29 @@ export class TuiApp implements Component, ActionHost {
 			command = await this.#catalog.get(parsed.name);
 		} catch (error: unknown) {
 			this.pane.showError(describeCommandError("getCommands", error));
+			return;
+		}
+		// Live-catalog re-check (fix round): the cached snapshot is a session
+		// snapshot — the server re-scans per request, and the command PICKER
+		// fetches fresh, so a template the picker just offered must also
+		// SUBMIT. One fresh fetch when the cache lacks the name, then the
+		// honest unknown-command error if it is still absent.
+		if (command === undefined) {
+			try {
+				command = await this.#catalog.getFresh(parsed.name);
+			} catch (error: unknown) {
+				this.pane.showError(describeCommandError("getCommands", error));
+				return;
+			}
+		}
+		// EXPAND inputs (Task 2c) are submissions, not dispatches: a
+		// `kind: "expand"` catalog entry (prompt template, skill) — and ANY
+		// `skill:`-prefixed name, known or not (unknown skills pass through
+		// server-side) — goes to the server verbatim; expansion happens at
+		// admission. Falling through BEFORE the unknown-command error keeps
+		// `/skill:nope x` a submission, never a local error.
+		if (command?.kind === "expand" || isSkillCommandName(parsed.name)) {
+			this.#submitLine(input);
 			return;
 		}
 		if (command === undefined) {
@@ -1082,7 +1120,13 @@ export class TuiApp implements Component, ActionHost {
 					this.#tui,
 					response.commands.map((command: SlashCommand) => ({
 						label: `/${command.name}`,
-						detail: command.description,
+						// An EXPAND entry's detail carries its argument-hint too (Task
+						// 2c — the hint IS the affordance: `/review <focus>`); endpoint
+						// rows stay exactly as before.
+						detail:
+							command.kind === "expand" && command.argsHint !== undefined
+								? `${command.description} ${command.argsHint}`
+								: command.description,
 						value: command,
 					})),
 					{
@@ -1090,9 +1134,7 @@ export class TuiApp implements Component, ActionHost {
 						onPick: (command) => {
 							this.#focus = "composer";
 							this.#applyFocusTarget();
-							this.editor.setText(
-								command.argsHint === undefined ? `/${command.name}` : `/${command.name} `,
-							);
+							this.editor.setText(commandInsertText(command));
 						},
 						onClose: close,
 					},

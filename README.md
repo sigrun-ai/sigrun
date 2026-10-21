@@ -26,37 +26,75 @@ and capabilities at boot.
   sidebar, streaming conversation pane, fork, the interaction and
   ambient seams, slash commands. See [Launch modes](#launch-modes).
 
+## Install
+
+The published package is `@sigrun/sigrun` (the CLI command stays
+`sigrun`):
+
+```bash
+npm i -g @sigrun/sigrun
+sigrun run          # server + terminal client on loopback
+```
+
+Node `>=22.19.0`. The web UI ships inside the package; the terminal
+client is the optional companion package (`npm i -g @sigrun/tui` —
+`sigrun run` offers an actionable install message when absent).
+
+- **Docker** — `docker/` holds a compose reference:
+  `cd docker && cp .env.example .env && docker compose up --build`.
+- **Helm** — `charts/sigrun` is the reference Kubernetes deployment
+  (a durable PVC, the config dir, and the image).
+
 ## Quickstart
 
-Minimum configuration is a model plus OpenAI-compatible credentials:
+**A model and a credential come first.** `sigrun serve` refuses to boot
+without a default model — `SIGRUN_DEFAULT_MODEL` (or `defaultModel` in
+`settings.json`) — and every model needs a provider credential before it
+can answer. So the real first run is: pick a provider, set the model,
+then start the server.
+
+The smallest configuration that boots, using any [OI]-compatible
+endpoint:
 
 ```bash
 export SIGRUN_DEFAULT_MODEL=openai/gpt-4o-mini      # provider/model-id
 export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1   # any compatible endpoint
 
-npm install
-npm start        # tsx src/index.ts — listens on :3000
+sigrun serve     # listens on :3000
 ```
 
 (`SIGRUN_MODEL` still works as a deprecated alias for
 `SIGRUN_DEFAULT_MODEL` — one release cycle, with a boot warning.)
 
-Then open `http://localhost:3000/` (web UI) or drive the API:
+Or install a provider plugin and let it supply the catalog — then the
+only configuration is which of its models to default to:
+
+```bash
+# settings.json: { "extensions": ["@sigrun/provider-ollama@^0.1.0"] }
+export SIGRUN_DEFAULT_MODEL=ollama/glm-5.3-flash
+sigrun serve
+```
+
+**Then claim the install.** The first request opens an onboarding gate:
+the server prints a setup code to its log, and the web UI (or
+`sigrun token create`) uses it to claim the first admin account — every
+later user is an invite. Nothing else is required; the first message in
+a new conversation creates it.
+
+```bash
+grep 'setup code' <the server log>   # sigrun setup code: N42E-HB2G
+```
+
+Open `http://localhost:3000/` (web UI) or drive the API:
 
 ```bash
 curl localhost:3000/v1/meta
 curl -X POST localhost:3000/v1/conversations -H 'content-type: application/json' -d '{}'
 ```
 
-Or with Docker: see [`docker/`](docker/README.md) —
-
-```bash
-cd docker && cp .env.example .env   # set SIGRUN_DEFAULT_MODEL + OPENAI_* in .env
-docker compose up --build
-```
-
-For a durable cluster deployment, use the Helm chart in `charts/`.
+From a source checkout the dev shape is `npm install && npm start`
+(`tsx src/index.ts`, same server).
 
 ## Launch modes
 
@@ -278,6 +316,12 @@ timestamp>.db`), and folds in any enabled `SIGRUN_BACKUP_SECTIONS`
 tarballs (config/secrets/data/state — see
 [`docs/extending.md`](docs/extending.md)).
 
+**S3 credentials** come from the standard AWS chain — `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_REGION` in the container env (or an AWS
+config file); sigrun adds no credential settings of its own. Set
+`SIGRUN_BACKUP_S3_ENDPOINT` for an S3-compatible store (MinIO, RustFS):
+the client then uses path-style addressing, which those stores require.
+
 **Retention differs by target kind:**
 
 - **Path targets** retain in-process: each run prunes `sigrun-*.db`
@@ -450,6 +494,115 @@ slug, with one resolution chain and a fixed secrets precedence (stored
 wins, env bootstraps). The author-facing contract — the store taxonomy,
 the directory map, the slug rule, the `host.stores` handle, uninstall
 and backup posture — is [`docs/extending.md`](docs/extending.md).
+
+## Built-in extensions
+
+Three extensions are built into core — **codemode**, **MCP**, and
+**tool search** — mirroring what pi 1.3.0 ships built-in. They load by
+default on every boot, with no settings entry, and resolve from core's
+own `node_modules` (they are core dependencies, never installed into
+the packages dir — `extensions` has nothing to install for them, unless
+a same-named package is deliberately installed to replace one; see
+below).
+A default install therefore has pi's tool surface without configuring
+anything. On `GET /v1/extensions` they report under the names
+`codemode`, `sigrun-mcp`, and `tool-search`.
+
+**The tools stay off until needed** (pi parity): `codemode` and
+`tool_search` are not in a new conversation's model-offered tool set by
+default. They join the offered set when an enabled MCP server's
+`exposure` needs them, or when `defaultTools` names them explicitly.
+
+- **The auto-enable rule** — with an enabled MCP server whose `exposure`
+  is `codemode` (the default), the `codemode` tool is offered; with
+  `deferred`, `tool_search` is. `"autoEnableCodemode": false` turns
+  both arms off. An explicit `defaultTools` list always wins over the
+  automatic decision (auto-enable only narrows the default set, never a
+  named list).
+- **Turning one off** — `"builtinExtensions": {"codemode": false,
+  "mcp": false, "toolSearch": false}`. Each defaults to `true`; each is
+  restart-required. A disabled built-in disappears from
+  `GET /v1/extensions` entirely — no row, not even a skipped one — and
+  its config is then ignored.
+- **Replacing one** — installing a package that resolves to the same
+  package name as a built-in replaces it: the installed copy loads, the
+  built-in is skipped, boot logs one warning naming both, and
+  `GET /v1/extensions` shows the built-in's row with `"builtin": true`
+  and a `replacedBy` field naming the configured specifier.
+- **Quarantine** — a built-in that fails to load is quarantined like
+  any other extension: boot continues, the outcome is reported (status
+  `quarantined`, in `GET /v1/meta` alongside the configured set).
+
+The MCP servers themselves live in the MCP config file — the
+`@sigrun/ext-mcp` package's README documents its format, including each
+server's `exposure` and the `SIGRUN_MCP_CONFIG` override.
+
+```jsonc
+{
+  "extensions": [ // configured extensions install + load as above
+    "@acme/sigrun-ext-example@^0.1.0"
+  ],
+  "builtinExtensions": { // all three default to true; restart required
+    "codemode": true,
+    "mcp": true,
+    "toolSearch": false
+  }
+}
+```
+
+## Skills and prompt templates
+
+Two text-expansion surfaces ship in core, pi parity: a **skill
+invocation** and a **prompt template**, both expanded SERVER-SIDE at
+admission (in `submitOp`, before content-part resolution) — so the
+webui, the TUI, the HTTP API, `host.conversations.submit`, and job
+prompts all behave identically. Expansion happens when the submitted
+text starts with `/`; everything else is admitted verbatim.
+
+**`/skill:<name> [args]`** expands to the skill's full body:
+
+```text
+<skill name="greet" location="skills/greet/SKILL.md">
+References are relative to skills/greet.
+
+Say hello to the user warmly.
+</skill>
+
+hej
+```
+
+(the blank line and the arguments only when arguments were given; the
+body is the SKILL.md with frontmatter stripped). An unknown skill
+passes through unchanged — never an error. A skill with
+`disable-model-invocation: true` stays out of the model's skill list
+but still expands here. Every skill appears in the `/` menu as
+`skill:<name>` with its description.
+
+**Prompt templates** are Markdown files whose filename is the command
+(`review.md` → `/review`). Frontmatter `description` (else the first
+non-empty line) feeds the `/` menu, optional `argument-hint` hints the
+arguments, and the body substitutes shell-quoted arguments:
+`$1`, `$2`, …; `$@` and `$ARGUMENTS` (all arguments, space-joined);
+`${1:-default}`; `${@:-default}`; `${@:N}`; `${@:N:L}`.
+`/review "API compatibility"` passes ONE argument. An unterminated
+quote is a usage error, not a silent swallow.
+
+Both are discovered from the same three roots, first-wins in this
+order (the skills convention's precedence):
+
+1. the workspace — `skills/` and `prompts/` under the conversation
+   workspace;
+2. the user dir — `<config-dir>/skills/` and `<config-dir>/prompts/`;
+3. packages — each installed package's `skills/` (manifest or
+   factory-declared) and `prompts/` directories.
+
+Both lists are re-scanned live (each `/v1/commands` request and each
+expansion) — drop a file in and it works, no restart. A template whose
+name collides with a core or extension command is skipped with one
+warning: commands keep their meaning. The transcript shows what you
+typed — the submission's user entry carries
+`{kind: "sigrun.user.expanded", data: {typed, command}}` while the
+model receives the expanded text.
 
 ## Jobs
 

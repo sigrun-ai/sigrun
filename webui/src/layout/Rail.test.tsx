@@ -20,7 +20,7 @@ function makeMeta(init?: {
 		schemaVersion: "abc123",
 		extensions: init?.extensions ?? [
 			{ name: "memory", status: "ok" },
-			{ name: "approvals", status: "ok" },
+			{ name: "gatekeeper", status: "ok" },
 		],
 		health: init?.health ?? {
 			backup: "unconfigured",
@@ -60,7 +60,7 @@ describe("Rail", () => {
 				meta={makeMeta({
 					extensions: [
 						{ name: "memory", status: "ok" },
-						{ name: "approvals", status: "quarantined" },
+						{ name: "gatekeeper", status: "quarantined" },
 					],
 				})}
 				onOpenSettings={() => {}}
@@ -94,7 +94,7 @@ describe("Rail", () => {
 				meta={makeMeta({
 					extensions: [
 						{ name: "memory", status: "ok" },
-						{ name: "approvals", status: "quarantined" },
+						{ name: "gatekeeper", status: "quarantined" },
 					],
 				})}
 				onOpenSettings={() => {}}
@@ -103,7 +103,7 @@ describe("Rail", () => {
 		const title = renderer.root.findByProps({ className: "rail-health" })
 			.props.title as string;
 		expect(title).toContain("memory: ok");
-		expect(title).toContain("approvals: quarantined");
+		expect(title).toContain("gatekeeper: quarantined");
 		expect(title).toContain("backup: unconfigured");
 	});
 

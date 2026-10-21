@@ -1,4 +1,19 @@
-{{/* bjw-s common loader (5.2.1): renders controllers, service,
-     persistence, serviceMonitor, etc. from values.yaml. */}}
+{{/*
+bjw-s common loader (5.2.1): renders controllers, service,
+persistence, serviceMonitor, etc. from values.yaml.
+
+The image tag defaults to the chart's appVersion. The library requires an
+explicit tag or digest and has no appVersion fallback of its own, so the
+default is applied here, before the loader validates: values.yaml keeps
+`tag: ""` (meaning "use the appVersion"), and a chart version bump moves
+the image tag with it unless an operator pins one.
+*/}}
+{{- range $controller := .Values.controllers }}
+{{- range $container := $controller.containers }}
+{{- if and (kindIs "map" $container.image) (empty $container.image.tag) }}
+{{- $_ := set $container.image "tag" $.Chart.AppVersion }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- include "bjw-s.common.loader.init" . }}
 {{- include "bjw-s.common.loader.generate" . }}

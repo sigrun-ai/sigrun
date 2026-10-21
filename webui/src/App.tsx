@@ -8,7 +8,7 @@
  * closes — the hook's cleanup owns that). The Composer receives the
  * latest view frame: `steer.busy` flips its send→steer toggle,
  * `docs["pi.usage"]` feeds the ring, and each new frame reference
- * refreshes the approvals strip.
+ * refreshes the pending-interaction strip.
  *
  * Boot gate (spec §5 fail-loud): the app fetches `GET /v1/meta` and
  * REFUSES to render the shell when the served `schemaVersion` differs
@@ -624,6 +624,7 @@ export function App(options: AppOptions = {}) {
 					client={client}
 					prefsState={prefsState}
 					theme={theme}
+					admin={identity?.admin}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}

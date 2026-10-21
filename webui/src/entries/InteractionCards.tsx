@@ -226,7 +226,7 @@ export function InteractionCard(props: {
 	);
 }
 
-/** The pending card stack (replaces the deleted ApprovalCard strip). */
+/** The pending card stack (replaces the old single-kind card strip). */
 export function InteractionCards(props: {
 	conversationId: number | null;
 	interactions: readonly InteractionWire[];

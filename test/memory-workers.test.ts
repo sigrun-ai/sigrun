@@ -126,6 +126,10 @@ async function bootFixture(options: {
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
+		// Hermetic: this suite pins the worker contract's outcomes for its
+		// FIXTURE workers, not the built-in surface (builtins: false = the
+		// pre-Task-2 boot shape).
+		builtins: false,
 		env: {},
 		extensionSpecifiers: [WORKERS_SPECIFIER],
 		eventBus: options.eventBus,
@@ -188,6 +192,9 @@ describe("idle workers — the curator contract", () => {
 		});
 		const opened = await openHarness(config, {
 			env: {},
+			// Hermetic: asserts ONE quarantined outcome row for the bad
+			// worker fixture, not the built-in surface.
+			builtins: false,
 			extensionEntries: [
 				{ name: "sigrun-fixture-every-worker", entry: pathToFileURL(badEntry).href },
 			],
@@ -489,6 +496,9 @@ describe("idle workers — the curator contract", () => {
 			});
 			const opened = await openHarness(badConfig, {
 				env: {},
+				// Hermetic: asserts ONE quarantined outcome row per bad
+				// worker fixture, not the built-in surface.
+				builtins: false,
 				extensionEntries: entries,
 			});
 			closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));

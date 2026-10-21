@@ -7,19 +7,13 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-	mkdtemp,
-	readdir,
-	readFile,
-	rm,
-	stat,
-	writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { parseBackupConfig } from "../src/config.js";
+import { runBackup, setS3ClientFactory } from "../src/backup/run-backup.js";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(REPO_ROOT, "src", "backup", "run-backup.ts");
@@ -247,40 +241,49 @@ describe("runBackup section tars (path target)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Section tars — s3 target via a stubbed aws binary
+// Section tars — s3 target via an injected PutObject client
 // ---------------------------------------------------------------------------
 
-describe("runBackup section tars (s3 target, stubbed aws)", () => {
-	test("aws s3 cp argv carries the DB key and the section tarball paths", async () => {
-		const binDir = await makeTmpDir("sigrun-sections-bin-");
-		const logFile = join(binDir, "argv.log");
-		await writeFile(
-			join(binDir, "aws"),
-			[
-				"#!/bin/sh",
-				`echo "$@" >> "${logFile}"`,
-				'exit "${AWS_STUB_EXIT:-0}"',
-				"",
-			].join("\n"),
-			{ mode: 0o755 },
-		);
+describe("runBackup section tars (s3 target, fake PutObject client)", () => {
+	test("every upload lands under the bucket/prefix key: the DB and one section tarball", async () => {
 		const cfgRoot = await makeTmpDir("sigrun-sections-s3-cfg-");
 		await seed(cfgRoot, "settings.json", "{}");
 		const dbPath = await seedDbFile();
-		const result = runScript(dbPath, {
-			SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
-			SIGRUN_BACKUP_S3_PREFIX: "nightly/",
-			SIGRUN_BACKUP_SECTIONS: "config",
-			SIGRUN_CONFIG_DIR: cfgRoot,
-			PATH: `${binDir}:${process.env.PATH}`,
-		});
-		expect(result.code).toBe(0);
-		const log = await readFile(logFile, "utf8");
-		const lines = log.trim().split("\n");
-		// DB upload + one section upload.
-		expect(lines).toHaveLength(2);
-		expect(log).toContain("s3://sigrun-backups/nightly/sigrun-");
-		expect(log).toMatch(/s3 cp \S*config-[^ ]*\.tar\.gz/);
-		expect(log).toContain("s3://sigrun-backups/nightly/config-");
+		const puts: Array<{ bucket: string; key: string; bytes: number }> = [];
+		// The factory is typed against the real client; the fake is
+		// structurally what the upload path uses (send + destroy).
+		setS3ClientFactory((() => ({
+			send: async (command: never) => {
+				const input = (command as { input: Record<string, unknown> }).input;
+				puts.push({
+					bucket: input.Bucket as string,
+					key: input.Key as string,
+					bytes: (input.Body as Uint8Array).byteLength,
+				});
+				return {};
+			},
+			destroy: () => {},
+		})) as never);
+		try {
+			const backup = parseBackupConfig({
+				...process.env,
+				SIGRUN_BACKUP_S3_BUCKET: "sigrun-backups",
+				SIGRUN_BACKUP_S3_PREFIX: "nightly/",
+				SIGRUN_BACKUP_SECTIONS: "config",
+				SIGRUN_CONFIG_DIR: cfgRoot,
+			});
+			expect(backup).toBeDefined();
+			await runBackup(dbPath, backup!, undefined);
+		} finally {
+			// `undefined` restores the module's own production factory.
+			setS3ClientFactory();
+		}
+		// The DB upload plus the one enabled section.
+		expect(puts).toHaveLength(2);
+		expect(puts.every((put) => put.bucket === "sigrun-backups")).toBe(true);
+		expect(puts.every((put) => put.key.startsWith("nightly/"))).toBe(true);
+		expect(puts[0]!.key).toMatch(/^nightly\/sigrun-.*\.db$/);
+		expect(puts[1]!.key).toMatch(/^nightly\/config-.*\.tar\.gz$/);
+		expect(puts.every((put) => put.bytes > 0)).toBe(true);
 	});
 });

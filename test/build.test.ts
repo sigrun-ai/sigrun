@@ -299,7 +299,13 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 		);
 		await writeFile(
 			join(configDir, "settings.json"),
-			JSON.stringify({ extensions: [tsEntry] }) + "\n",
+			// builtins off via settings (the spawn-world equivalent of
+			// openHarness's `builtins: false`): this test asserts ONE
+			// quarantined extension row, not the built-in surface.
+			JSON.stringify({
+				extensions: [tsEntry],
+				builtinExtensions: { codemode: false, mcp: false, toolSearch: false },
+			}) + "\n",
 			"utf8",
 		);
 		const port = await freePort();

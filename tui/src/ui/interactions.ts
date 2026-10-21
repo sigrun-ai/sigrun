@@ -7,7 +7,7 @@
  *
  * Genericity (the seam's whole point): this component renders the closed
  * primitives (text / options / fields / diff) and the envelope, and knows
- * NOTHING about kinds — there is no "approval" here. `details` renders as
+ * NOTHING about kinds — there is no gate-specific concept here. `details` renders as
  * one collapsed JSON line, never interpreted (the single read is the
  * webui-parity `details.multi === true` multi-select flag).
  *

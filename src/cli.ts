@@ -70,7 +70,14 @@ export const USAGE_TEXT = `usage: sigrun [--user <name>]
        sigrun token list
        sigrun token revoke <id>
        sigrun user add <user> [--admin] [--name <n>] [--email <e>]
-       sigrun user list`;
+       sigrun user list
+       sigrun provider list [--url <base>] [--token <token>]
+       sigrun provider key <id> [--url <base>] [--token <token>]
+       sigrun provider clear <id> [--url <base>] [--token <token>]
+
+provider commands are API clients: they talk to a running sigrun server
+(--url <base>, default http://localhost:$SIGRUN_PORT or 3000) and never
+start one; provider key reads the api key from stdin, never argv`;
 
 /** The marker prefix on usage-error messages. */
 const USAGE_ERROR_PREFIX = "usage:";
@@ -83,14 +90,14 @@ export const USAGE_ERROR_PATTERN = /^usage:/;
 
 /** The parse result: which command, plus the flag-carried overrides. */
 export interface ParsedArgs {
-	readonly command: "run" | "serve" | "attach" | "token" | "user";
+	readonly command: "run" | "serve" | "attach" | "token" | "user" | "provider";
 	readonly server?: string;
 	readonly user?: string;
-	/** The `token`/`user` subcommand: create | list | revoke | add. */
-	readonly sub?: "create" | "list" | "revoke" | "add";
+	/** The `token`/`user`/`provider` subcommand: create | list | revoke | add | key | clear. */
+	readonly sub?: "create" | "list" | "revoke" | "add" | "key" | "clear";
 	/** `token create <name>` — the token's display name. */
 	readonly tokenName?: string;
-	/** `token revoke <id>` — the record id to remove. */
+	/** `token revoke <id>` / `provider key|clear <id>` — the record/provider id. */
 	readonly id?: string;
 	/** `user add --admin`. */
 	readonly admin?: boolean;
@@ -98,6 +105,10 @@ export interface ParsedArgs {
 	readonly name?: string;
 	/** `user add --email <e>`. */
 	readonly email?: string;
+	/** `provider … --url <base>` — the remote server to act on. */
+	readonly url?: string;
+	/** `provider … --token <t>` — the bearer for a token-method server. */
+	readonly token?: string;
 }
 
 function usageError(message: string): Error {
@@ -218,16 +229,76 @@ function parseUserArgs(argv: readonly string[]): ParsedArgs {
 }
 
 /**
+ * Parse `provider <sub> …` (release 0.1 Task 2b): `list`, `key <id>`,
+ * `clear <id>`, each accepting `--url <base>` (a remote server; the
+ * default is `http://localhost:$SIGRUN_PORT` or 3000 — the attach
+ * shape) and `--token <t>` (the bearer for a token-method server).
+ * These commands are API clients: they NEVER start a server (the usage
+ * note says so).
+ */
+function parseProviderArgs(argv: readonly string[]): ParsedArgs {
+	const sub = argv[0];
+	if (sub !== "list" && sub !== "key" && sub !== "clear") {
+		throw usageError(
+			`unknown provider subcommand ${JSON.stringify(sub ?? "")} (list, key, clear)`,
+		);
+	}
+	let id: string | undefined;
+	let url: string | undefined;
+	let token: string | undefined;
+	let index = 1;
+	while (index < argv.length) {
+		const arg = argv[index] as string;
+		if (arg === "--url" || arg === "--token") {
+			const value = argv[index + 1];
+			if (value === undefined || value.startsWith("--")) {
+				throw usageError(`${arg} requires a value`);
+			}
+			if (arg === "--url") url = value;
+			else token = value;
+			index += 2;
+			continue;
+		}
+		if (id === undefined && !arg.startsWith("--")) {
+			id = arg;
+			index += 1;
+			continue;
+		}
+		// NEVER echo the offending token (secret-hygiene, review P2): a
+		// `provider key acme THEKEY` typo puts the key on stderr — stderr
+		// lands in CI logs, issue reports and scrollback where shell history
+		// does not. Name the problem + the accepted shape, reproduce nothing.
+		throw usageError(
+			"unexpected argument — `provider <sub> [<id>] [--url <base>] [--token <token>]` takes one id at most, and reads the api key from stdin",
+		);
+	}
+	if (sub === "list" && id !== undefined) {
+		throw usageError("provider list takes no arguments");
+	}
+	if (sub !== "list" && id === undefined) {
+		throw usageError(`provider ${sub} requires an <id>`);
+	}
+	return {
+		command: "provider",
+		sub,
+		...(id === undefined ? {} : { id }),
+		...(url === undefined ? {} : { url }),
+		...(token === undefined ? {} : { token }),
+	};
+}
+
+/**
  * Parse argv (post-node slices — no `node`/`cli.ts` entries). A pure
- * function: bare → `run`; `serve`/`attach` as subcommands; `token`/`user`
- * dispatch to their own sub-parsers (Task 7 — they must be the FIRST
- * argument); `--user` is valid on every command, `--server` only on
- * `attach`. Unknown subcommands/flags and missing flag values throw
- * usage errors.
+ * function: bare → `run`; `serve`/`attach` as subcommands; `token`/
+ * `user`/`provider` dispatch to their own sub-parsers (Task 7 + release
+ * 0.1 Task 2b — they must be the FIRST argument); `--user` is valid on
+ * every command, `--server` only on `attach`. Unknown subcommands/flags
+ * and missing flag values throw usage errors.
  */
 export function parseArgs(argv: readonly string[]): ParsedArgs {
 	if (argv[0] === "token") return parseTokenArgs(argv.slice(1));
 	if (argv[0] === "user") return parseUserArgs(argv.slice(1));
+	if (argv[0] === "provider") return parseProviderArgs(argv.slice(1));
 	let command: ParsedArgs["command"] | undefined;
 	let server: string | undefined;
 	let user: string | undefined;
@@ -591,6 +662,12 @@ export interface CliDeps {
 	 * `POST /v1/onboarding/claim`). Defaults to the ambient `fetch`.
 	 */
 	fetch?: CliFetch;
+	/**
+	 * TEST SEAM (release 0.1 Task 2b): `provider key`'s secret read — the
+	 * muted TTY prompt or all of piped stdin (see {@link readCliSecret}).
+	 * The value goes to the PUT body only; it is never printed.
+	 */
+	readSecret?(): Promise<string>;
 }
 
 /**
@@ -653,8 +730,9 @@ export interface CliIO {
 	error(text: string): void;
 	/**
 	 * Data output — `token create`'s one-time secret, `token list`/
-	 * `user list` rows (Task 7). Absent drops the data (error-only
-	 * callers); the production default prints to stdout.
+	 * `user list`/`provider …` rows (Task 7 + release 0.1 Task 2b).
+	 * Absent drops the data (error-only callers); the production default
+	 * prints to stdout.
 	 */
 	out?(text: string): void;
 }
@@ -709,6 +787,134 @@ function resolveServer(
 	if (parsed.server !== undefined) return parsed.server;
 	if (file.server !== undefined) return file.server;
 	return `http://localhost:${parsePort(env.SIGRUN_PORT) ?? 3000}`;
+}
+
+/**
+ * Read the api key for `provider key` (release 0.1 Task 2b): a muted
+ * prompt when stdin is a TTY (the typed key never echoes), otherwise
+ * ALL of piped stdin, trimmed (`printf 'k' | sigrun provider key …`).
+ * The value returns to the caller only — it is never printed, logged,
+ * or carried on argv.
+ */
+export async function readCliSecret(): Promise<string> {
+	if (process.stdin.isTTY === true) {
+		return (await ttyPrompt("api key: ", { secret: true })).trim();
+	}
+	process.stdin.setEncoding("utf8");
+	let text = "";
+	for await (const chunk of process.stdin) {
+		text += chunk as string;
+	}
+	return text.trim();
+}
+
+/**
+ * Run the `provider` subcommands (release 0.1 Task 2b, spec §7.6): API
+ * clients over the RUNNING server's credential surface — `list` prints
+ * the readiness report, `key` PUTs a secret read from stdin, `clear`
+ * DELETEs one. The command NEVER starts a server: `--url` targets a
+ * remote base, and the default is the localhost shape `attach` resolves
+ * (`SIGRUN_PORT` or 3000); nothing listening fails loud naming the URL.
+ * Output is id, readiness, model count — one tab-separated row per
+ * provider (the identity rows' style). The key rides the PUT body ONLY:
+ * it never appears in any output, error, or log line.
+ */
+async function runProviderCommand(
+	parsed: ParsedArgs,
+	env: NodeJS.ProcessEnv,
+	io: CliIO,
+	fetchImpl: CliFetch,
+	readSecret: () => Promise<string>,
+): Promise<number> {
+	const base =
+		parsed.url ?? `http://localhost:${parsePort(env.SIGRUN_PORT) ?? 3000}`;
+	/** One route call: bearer when --token was given, fail-loud on non-2xx
+	 * (the status + the server's error code — never any body value). */
+	const call = async (
+		method: "GET" | "PUT" | "DELETE" | "POST",
+		path: string,
+		body?: unknown,
+	): Promise<Record<string, unknown>> => {
+		let response: Awaited<ReturnType<CliFetch>>;
+		try {
+			response = await fetchImpl(`${base}${path}`, {
+				method,
+				headers: {
+					accept: "application/json",
+					...(parsed.token === undefined
+						? {}
+						: { authorization: `Bearer ${parsed.token}` }),
+					...(body === undefined ? {} : { "content-type": "application/json" }),
+				},
+				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+			});
+		} catch (cause) {
+			throw new Error(
+				`cannot reach a sigrun server at ${base} (${
+					cause instanceof Error ? cause.message : String(cause)
+				}) — provider commands are API clients and never start a server; start one (sigrun serve) or pass --url`,
+			);
+		}
+		const payload = (await response.json().catch(() => undefined)) as
+			| { error?: unknown }
+			| undefined;
+		if (!response.ok) {
+			throw new Error(
+				`server rejected ${method} ${path}: status ${response.status}${
+					typeof payload?.error === "string" ? ` (${payload.error})` : ""
+				}`,
+			);
+		}
+		return (payload ?? {}) as Record<string, unknown>;
+	};
+	/** One readiness row: id, status, model count — tab-separated. */
+	const rowOf = (entry: Record<string, unknown>): string =>
+		[
+			String(entry.provider ?? "?"),
+			String(entry.status ?? "?"),
+			String(entry.models ?? "?"),
+		].join("\t");
+	switch (parsed.sub) {
+		case "list": {
+			const report = await call("GET", "/v1/providers");
+			const providers = report.providers;
+			if (!Array.isArray(providers)) {
+				throw new Error("server returned a malformed providers report");
+			}
+			for (const entry of providers) {
+				if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+					throw new Error("server returned a malformed providers report");
+				}
+				io.out?.(rowOf(entry as Record<string, unknown>));
+			}
+			return 0;
+		}
+		case "key": {
+			const secret = (await readSecret()).trim();
+			if (secret === "") {
+				throw new Error(
+					"provider key: no api key was provided — pipe it on stdin or type it at the prompt",
+				);
+			}
+			const entry = await call(
+				"PUT",
+				`/v1/providers/${encodeURIComponent(parsed.id as string)}/credential`,
+				{ apiKey: secret },
+			);
+			io.out?.(rowOf(entry));
+			return 0;
+		}
+		case "clear": {
+			const entry = await call(
+				"DELETE",
+				`/v1/providers/${encodeURIComponent(parsed.id as string)}/credential`,
+			);
+			io.out?.(rowOf(entry));
+			return 0;
+		}
+	}
+	// parseArgs guarantees one of the cases above.
+	throw new Error(`unhandled provider subcommand`);
 }
 
 /**
@@ -948,6 +1154,7 @@ export async function cliMain(
 		realDeps.fetch ??
 		((url: string, init?: Parameters<CliFetch>[1]) =>
 			globalThis.fetch(url, init));
+	const readSecret = realDeps.readSecret ?? readCliSecret;
 
 	let parsed: ParsedArgs;
 	try {
@@ -967,6 +1174,11 @@ export async function cliMain(
 			case "user": {
 				// The identity commands (Task 7): stores directly, server or not.
 				return await runIdentityCommand(parsed, env, io);
+			}
+			case "provider": {
+				// The provider commands (release 0.1 Task 2b): API clients over
+				// the running server — never a boot, never a local store.
+				return await runProviderCommand(parsed, env, io, fetchImpl, readSecret);
 			}
 			case "attach": {
 				const file = await loadTuiFile(env);

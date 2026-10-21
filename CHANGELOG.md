@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-10-21
 ### Added (server)
 - Conversation list fields: name, last-activity, parent (fork lineage),
   archived and pinned on the list payload — the per-conversation meta
@@ -169,7 +171,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (whose behavior under plain node depends on the host's
   type-stripping flags). npm packages were never affected.
 
-## [0.1.0] - 2026-10-13
+### Changed (packaging)
+- Published as `@sigrun/sigrun` (CLI command stays `sigrun`) with
+  `@sigrun/shared` and `@sigrun/tui` as workspace-published companions —
+  exact intra-family pins (`0.1.0`), `publishConfig` access/provenance,
+  `repository.directory` for the workspace packages, and a manifest
+  hygiene suite (`test/package-manifest.test.ts`) pinning the published
+  shape. `webui` stays a private build input (its bundle ships inside
+  core's tarball as `webui/dist`).
+- The npm tarball is the runnable package only: `files` narrows to
+  `dist`, `webui/dist`, and the docs files — deploy assets (`scripts/`,
+  `docker/`, `charts/`, `Dockerfile`) live in the GitHub repo.
+- The three built-in extensions (`codemode`, MCP, tool search) ship as
+  core dependencies under their published names `@sigrun/ext-codemode`,
+  `@sigrun/ext-mcp`, `@sigrun/ext-tool-search` — the working tree keeps
+  `file:` dev links until the family publishes (Task 8).
+- The extension contract surface is `@sigrun/sigrun/extension`
+  (types-only subpath; every import, doc, and the consumer fixture
+  re-keyed).
+- The deprecated `createMemory` named-export loader bridge is DELETED
+  (release-0.1): packages must export the factory as default —
+  `@sigrun/ext-memory-markdown` 0.1.0 does. The named `extension`
+  export bridge remains deprecated (loads with one warning).
+
 ### Added
 - Durable personal assistant on pi-durable 1.2.0: the Harness (durable sessions,
   tasks, compaction, settings store), the §5 server + webui, the skills/search

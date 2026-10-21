@@ -202,6 +202,10 @@ async function bootDeployment(): Promise<Deployment> {
 		identity: await seededIdentity(configDir),
 		extensionEntries: resolutions,
 		env,
+		// Hermetic: this suite pins the four provider plugins' boot
+		// readiness, not the built-in surface (builtins: false = the
+		// pre-Task-2 boot shape).
+		builtins: false,
 		settingsDir: configDir,
 		packagesDir,
 	});
@@ -330,19 +334,19 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 		);
 		await mkdir(join(configDir, "settings"), { recursive: true });
 		await writeFile(
-			join(configDir, "settings", "sigrun-ollama.json"),
+			join(configDir, "settings", "provider-ollama.json"),
 			JSON.stringify({ baseUrl: upstreams.ollama.baseUrl }),
 		);
 		await writeFile(
-			join(configDir, "settings", "sigrun-opencode.json"),
+			join(configDir, "settings", "provider-opencode.json"),
 			JSON.stringify({ baseUrl: upstreams.opencode.baseUrl }),
 		);
 		await writeFile(
-			join(configDir, "settings", "sigrun-pareto.json"),
+			join(configDir, "settings", "provider-pareto.json"),
 			JSON.stringify({ baseUrl: upstreams.pareto.baseUrl }),
 		);
 		await writeFile(
-			join(configDir, "settings", "sigrun-bifrost.json"),
+			join(configDir, "settings", "provider-bifrost.json"),
 			JSON.stringify({ baseUrl: upstreams.bifrost.baseUrl }),
 		);
 	}, 180_000);
@@ -368,10 +372,10 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 			// All four packages loaded through the loader (tarball installs:
 			// packages-dir resolution + the extension-package contract).
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun-ollama", status: "ok" },
-				{ name: "sigrun-opencode", status: "ok" },
-				{ name: "sigrun-pareto", status: "ok" },
-				{ name: "sigrun-bifrost", status: "ok" },
+				{ name: "provider-ollama", status: "ok" },
+				{ name: "provider-opencode", status: "ok" },
+				{ name: "provider-pareto", status: "ok" },
+				{ name: "provider-bifrost", status: "ok" },
 			]);
 			await opened.bootRefresh;
 			// No credential resolved → pi-ai skips the fetch phase entirely:
@@ -396,7 +400,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					provider,
 					status: "not_configured",
 					models: 0,
-					owner: `sigrun-${provider}`,
+					owner: `provider-${provider}`,
 				});
 			}
 		},
@@ -458,25 +462,25 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				provider: "bifrost",
 				status: "ready",
 				models: 2,
-				owner: "sigrun-bifrost",
+				owner: "provider-bifrost",
 			});
 			expect(readiness.get("ollama")).toEqual({
 				provider: "ollama",
 				status: "ready",
 				models: 2,
-				owner: "sigrun-ollama",
+				owner: "provider-ollama",
 			});
 			expect(readiness.get("opencode")).toEqual({
 				provider: "opencode",
 				status: "ready",
 				models: 1,
-				owner: "sigrun-opencode",
+				owner: "provider-opencode",
 			});
 			expect(readiness.get("pareto")).toEqual({
 				provider: "pareto",
 				status: "ready",
 				models: 2,
-				owner: "sigrun-pareto",
+				owner: "provider-pareto",
 			});
 			// The refresh persisted every catalog (the phase-C precondition).
 			for (const provider of ["bifrost", "ollama", "opencode", "pareto"]) {
@@ -537,7 +541,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 			});
 			try {
 				await writeFile(
-					join(configDir, "settings", "sigrun-pareto.json"),
+					join(configDir, "settings", "provider-pareto.json"),
 					JSON.stringify({ baseUrl: moved.baseUrl }),
 				);
 				deployment = await bootDeployment();
@@ -557,7 +561,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					provider: "pareto",
 					status: "ready",
 					models: 1,
-					owner: "sigrun-pareto",
+					owner: "provider-pareto",
 				});
 			} finally {
 				await moved.close();

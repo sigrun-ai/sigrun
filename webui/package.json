@@ -13,7 +13,7 @@
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
-    "@sigrun/shared": "*",
+    "@sigrun/shared": "0.1.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",

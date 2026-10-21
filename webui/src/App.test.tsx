@@ -35,7 +35,7 @@ function makeMeta(init?: {
 		schemaVersion: init?.schemaVersion ?? PINNED_SCHEMA_VERSION,
 		extensions: [
 			{ name: "memory", status: "ok" },
-			{ name: "approvals", status: "ok" },
+			{ name: "gatekeeper", status: "ok" },
 		],
 		health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 		auth: { methods: [], claimed: true },

@@ -1,37 +1,43 @@
 /**
  * Boot-time extension package install (the pi-style packages dir).
  *
- * Sigrun deployments declare extension PACKAGES in the settings file's
- * top-level `packages` array (npm package specifiers) and restart — no
- * image rebuild, no manual npm. The packages live in a dedicated section
- * of the config directory (`<config-dir>/packages/`, a sibling of
- * `settings.json` and `auth.json`), which is the PVC-backed path in every
- * deployment shape, so installed packages persist across restarts.
+ * Sigrun deployments declare extensions in the settings file's unified
+ * top-level `extensions` list (an `ExtensionSpec`: a string source or
+ * `{source, entry?, ref?, enabled?}`) and restart — no image rebuild,
+ * no manual npm. The `SIGRUN_EXTENSIONS` env var (a comma-separated
+ * specifier list) REPLACES the file's list when set — env wins, validated
+ * first; it is the one environment-shaped override of the declaration.
+ *
+ * The install list is derived from the entries' sources:
+ * `normalizeExtSpec` flattens each entry, and `sourceKind` routes it —
+ * npm-shaped sources (registry names/ranges/scoped specifiers, and
+ * `file:` installable specifiers) install into the packages dir; git
+ * sources (`git:` or an https `…​.git` URL, optional `@ref`) clone/fetch
+ * into the git dir (`<config-dir>/git/`) with entry discovery; bare
+ * `./`/`../`/absolute paths LOAD IN PLACE (nothing installed). A `file:`
+ * entry is an INSTALLABLE npm specifier keyed by the TARGET's own
+ * manifest name and compared by canonical absolute path; a `file:`-less
+ * relative/absolute path never installs. `enabled: false` entries keep
+ * their directory state but produce no loadable resolution. The packages
+ * live in a dedicated section of the config directory
+ * (`<config-dir>/packages/`, a sibling of `settings.json` and
+ * `auth.json`), which is the PVC-backed path in every deployment shape,
+ * so installed packages persist across restarts.
  *
  * The directory is a REAL npm root, exactly pi's shape (`~/.pi/agent/npm`):
  * a synthetic private root `package.json` (`{"name": "sigrun-packages",
  * "private": true, "dependencies": {…}}`) plus `node_modules/`. The root
- * manifest's `dependencies` map IS the resolved state (name → range); the
- * settings file's `packages` array is the user-authored INTENT. Boot diffs
- * the two:
+ * manifest's `dependencies` map IS the resolved state (name → range);
+ * the settings file's npm-shaped `extensions` entries are the
+ * user-authored INTENT. Boot diffs the two (`planSync`):
  *
- * - a wanted specifier whose package is missing from (or whose range
- *   differs in) the dependencies map → `npm install <changed specifiers>
- *   --prefix <packagesDir>`;
+ * - a wanted specifier whose package is missing from (or whose range or
+ *   canonical path differs in) the dependencies map → `npm install
+ *   <changed specifiers> --prefix <packagesDir>`;
  * - a dependencies entry named by NO wanted specifier → `npm uninstall
  *   <name> --prefix <packagesDir>` (a removed declaration prunes);
  * - no diff → no subprocess at all (the fast path; a steady-state boot
  *   costs one file read).
- *
- * `packages` is FILE-ONLY — installing is not an env-shaped act, so there
- * is no `SIGRUN_PACKAGES` (the `SIGRUN_EXTENSIONS` env var still wins the
- * separate LOAD list; `packages` vs `extensions` is the install/load
- * distinction documented in the README: a package may be
- * installed-but-not-loaded, and the load list may name a package installed
- * some other way — a dev checkout, an image-bundled one). The settings
- * bootstrap never writes `packages` (it records resolved boot reality;
- * `packages` intent has no resolution to record — the package dir's own
- * manifest is the record).
  *
  * Fail-loud is the posture: an install or uninstall that fails, times out
  * (120s), or leaves the declared package unresolved fails the BOOT, naming
@@ -599,10 +605,12 @@ export type ExtensionResolution =
 	  };
 
 /**
- * Reconcile the packages dir with the settings file's `packages` intent.
+ * Reconcile the packages dir with the settings file's `extensions`
+ * intent (the npm-shaped entries; git/path entries never reach the npm
+ * root).
  *
- * @param packages the settings file's top-level `packages` array
- *   (already validated: non-empty strings).
+ * @param extensions the settings file's unified `extensions` array
+ *   (already validated: string or object entries).
  * @param packagesDir the packages dir (`packagesDirOf(configDir)`).
  * @throws PackageSyncError on any install/uninstall failure, timeout, or
  *   a declared specifier that does not resolve afterward.

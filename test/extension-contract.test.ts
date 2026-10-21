@@ -1,6 +1,6 @@
 /**
  * Core hardening W5 Task 1: the ONE documented contract type,
- * `sigrun/extension` (spec §9.1 — types-in-main-package ruling).
+ * `@sigrun/sigrun/extension` (spec §9.1 — types-in-main-package ruling).
  *
  * The subpath is TYPES-ONLY: `npm run build` emits `dist/extension.d.ts`
  * with no runtime `.js` beside it, and the emitted declarations import
@@ -23,7 +23,7 @@ import { describe, expect, test } from "vitest";
 /** Repo root (test/ → ..): where `npm run build` emits dist/. */
 const REPO_ROOT = realpathSync(join(import.meta.dirname, ".."));
 
-/** The consumer fixture dir (its own tsconfig maps `sigrun/extension`). */
+/** The consumer fixture dir (its own tsconfig maps `@sigrun/sigrun/extension`). */
 const CONSUMER = join(REPO_ROOT, "test", "fixtures", "contract-consumer");
 
 /** Run the root build (shared workspace build, root tsc, then the
@@ -47,13 +47,13 @@ function typecheckConsumer(): void {
 	);
 }
 
-describe("sigrun/extension (the documented contract type)", () => {
+describe("@sigrun/sigrun/extension (the documented contract type)", () => {
 	test("npm run build emits dist/extension.d.ts with NO runtime extension.js", () => {
 		rmSync(join(REPO_ROOT, "dist"), { recursive: true, force: true });
 		build();
 		expect(existsSync(join(REPO_ROOT, "dist", "extension.d.ts"))).toBe(true);
 		// Types-only subpath: no runtime entry may exist beside the d.ts —
-		// importing "sigrun/extension" at runtime fails loud by design.
+		// importing "@sigrun/sigrun/extension" at runtime fails loud by design.
 		expect(existsSync(join(REPO_ROOT, "dist", "extension.js"))).toBe(false);
 	}, 240_000);
 
