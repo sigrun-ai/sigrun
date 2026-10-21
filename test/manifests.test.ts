@@ -177,8 +177,8 @@ describe("charts/sigrun lint + default render", () => {
 		const kinds = docs.map((d) => d.kind).sort();
 		// The portable public default: the server + its PVC + service +
 		// serviceaccount. The backup CronJob and ServiceMonitor/
-		// PrometheusRule are opt-in (the backup needs an image carrying
-		// sqlite3+awscli; the monitor needs a Prometheus to scrape).
+		// PrometheusRule are opt-in (the backup needs a reachable S3
+		// target or a path; the monitor needs a Prometheus to scrape).
 		expect(kinds).toEqual([
 			"Deployment",
 			"PersistentVolumeClaim",
