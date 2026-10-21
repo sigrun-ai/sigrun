@@ -127,10 +127,15 @@ export async function bootScenarioHarness(
 	// driver's content-discriminating factories would route it to the
 	// summarizer branch and forge a marker line. Crash scenarios script
 	// exact responses; naming behavior is test/naming.test.ts's subject.
+	// Scripted-response drivers must not carry an unscripted extra prompt
+	// section: the built-ins' codemode section would drift every scripted
+	// faux request (the battery scripts EXACT response queues). The
+	// built-in surface is test/builtins.test.ts's subject, not the battery's.
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	return openHarness(config, {
 		extensions: [contributor],
 		env: {},
+		builtins: false,
 		settingsDir: dir,
 		...(settings === undefined ? {} : { settings }),
 	});

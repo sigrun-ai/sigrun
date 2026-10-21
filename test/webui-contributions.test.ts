@@ -74,6 +74,10 @@ async function withOpenedHarness(
 		opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 			env: {},
+			// Hermetic: this suite pins the webui-bundle contribution
+			// surface for its FIXTURE extensions, not the built-in
+			// surface (builtins: false = the pre-Task-2 boot shape).
+			builtins: false,
 			extensionSpecifiers: specifiers,
 			...(options.contributors === undefined
 				? {}

@@ -63,7 +63,13 @@ function configWith(dir: string) {
 test("core installs no tool that answers interactions", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-seam-tools-"));
 	try {
-		const opened = await openHarness(configWith(dir), { env: {} });
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			// Hermetic: pins the CORE tool surface (the interaction-seam
+			// guarantee), not the built-in surface (builtins: false = the
+			// pre-Task-2 boot shape).
+			builtins: false,
+		});
 		try {
 			// The exact core surface: coding tools (read/write/edit/bash),
 			// search tools (find/grep/ls), and load_skill. Context-files,

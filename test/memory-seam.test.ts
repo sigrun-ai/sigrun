@@ -131,6 +131,10 @@ async function bootFixture(options: {
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const opened = await openHarness(config, {
 		extensions: [contributor],
+		// Hermetic: scripted-response boots must not carry the built-ins'
+		// unscripted extra prompt section; the seam's own observables are
+		// this suite's subject (builtins: false = the pre-Task-2 shape).
+		builtins: false,
 		env: {},
 		settings: options.settings,
 		extensionSpecifiers: [MEMORY_EVENTS_SPECIFIER],
@@ -231,6 +235,9 @@ describe("runSettled contract", () => {
 		];
 		const opened = await openHarness(config, {
 			env: {},
+			// Hermetic: asserts ONE quarantined outcome row for the bad
+			// runSettled fixture, not the built-in surface.
+			builtins: false,
 			extensionEntries: entries,
 		});
 		closes.push(() => opened.harness.close(BACKGROUND_CONTEXT));
@@ -437,25 +444,49 @@ describe("conversation lifecycle contract", () => {
 		// it — the test's observation window starts after that reset. The
 		// remaining three are this test's subject; no budget gymnastics needed
 		// (the delivery lane is fast; the old 60s waitFor papered over this).
+		//
+		// Budget: 15s, not 5s. The lane is fast but not instant, and a 5s
+		// ceiling flaked under load (reproduced on the pre-Task-2 base, so it
+		// is not the built-ins' cost).
+		//
+		// Wait for the LAST delivery this test is about (the fork), then read
+		// the window from the archive onward. Waiting on a count would race
+		// bootFixture's resetEvents(): W4 creates the root conversation inside
+		// openHarness, and its `conversationCreated(root)` delivery lands
+		// BEFORE the reset only by luck — under load it arrives after, making
+		// the count 4 instead of 3. That boot delivery is not this test's
+		// subject; the window below starts at the archive flip.
 		await vi.waitFor(
-			() => expect(fixture.lifecycle).toHaveLength(3),
-			{ timeout: 5_000, interval: 100 },
+			() =>
+				expect(
+					fixture.lifecycle.filter(
+						(one) => one.handler === "conversationForked",
+					),
+				).toHaveLength(1),
+			{ timeout: 15_000, interval: 100 },
 		);
-		expect(fixture.lifecycle.map((one) => one.handler)).toEqual([
+		const archiveAt = fixture.lifecycle.findIndex(
+			(one) =>
+				one.handler === "conversationArchived" &&
+				one.conversationId === root.id,
+		);
+		expect(archiveAt).toBeGreaterThan(-1);
+		const window = fixture.lifecycle.slice(archiveAt);
+		expect(window.map((one) => one.handler)).toEqual([
 			"conversationArchived",
 			"conversationCreated",
 			"conversationForked",
 		]);
-		expect(fixture.lifecycle[0]).toMatchObject({
+		expect(window[0]).toMatchObject({
 			handler: "conversationArchived",
 			conversationId: root.id,
 			archived: true,
 		});
-		expect(fixture.lifecycle[1]).toMatchObject({
+		expect(window[1]).toMatchObject({
 			handler: "conversationCreated",
 			conversationId: child.id,
 		});
-		expect(fixture.lifecycle[2]).toEqual({
+		expect(window[2]).toEqual({
 			handler: "conversationForked",
 			childId: child.id,
 			parentId: root.id,
@@ -468,7 +499,7 @@ describe("conversation lifecycle contract", () => {
 				one.conversationId === child.id,
 		);
 		expect(archivedForChild).toHaveLength(0);
-	});
+	}, 20_000);
 
 	test("conversationIdle fires after the threshold of quiet (idleMs >= threshold)", async () => {
 		const { opened, fixture } = await bootFixture({

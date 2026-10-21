@@ -307,6 +307,10 @@ describe("loader + packages dir integration", () => {
 		const opened = await openHarness(config, {
 			env: {},
 			settingsDir: configDir,
+			// Hermetic: this suite pins the packages-dir resolution path,
+			// not the built-in surface (builtins: false = the pre-Task-2
+			// boot shape).
+			builtins: false,
 			// The LOAD list names the package BARE — resolution must come from
 			// the packages dir (nothing named fixture-pkg exists in the app tree).
 			extensionSpecifiers: ["fixture-pkg"],
@@ -339,6 +343,9 @@ describe("loader + packages dir integration", () => {
 		const opened = await openHarness(config, {
 			env: {},
 			settingsDir: configDir,
+			// Hermetic: same as above — the fallback resolution path is this
+			// test's subject, not the built-in surface.
+			builtins: false,
 			extensionSpecifiers: [
 				pathToFileURL(
 					join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),

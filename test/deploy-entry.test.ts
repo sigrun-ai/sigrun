@@ -265,6 +265,15 @@ test(
 			join(configDir, "settings.json"),
 			JSON.stringify({
 				extensions: [`file:${tarball}`],
+				// builtins off via settings (the spawn-world equivalent of
+				// openHarness's `builtins: false`): this test asserts the
+				// operator install+load flow's OWN outcome row, not the
+				// built-in surface.
+				builtinExtensions: {
+					codemode: false,
+					mcp: false,
+					toolSearch: false,
+				},
 			}) + "\n",
 			"utf8",
 			);

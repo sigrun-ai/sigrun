@@ -79,6 +79,11 @@ async function bootServer(
 	await identity.users.add({ user: "pleb", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
 		identity,
+		// Hermetic: this suite exercises the /v1/extensions endpoint's
+		// contract against FIXTURE extensions; the built-in rows themselves
+		// are test/builtins.test.ts's subject (builtins: false = the
+		// pre-Task-2 boot shape).
+		builtins: false,
 		extensionSpecifiers: [STORES_SPECIFIER, SETTINGS_READ_SPECIFIER],
 		// The harness env must carry the store-root vars (boot resolves the
 		// shared trio's roots from THIS env — `options.env` REPLACES

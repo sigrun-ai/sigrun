@@ -289,6 +289,9 @@ export const VIEW_SCHEMA: Shape = {
 												"persona": {
 													"kind": "string"
 												},
+												"codemode": {
+													"kind": "string"
+												},
 												"long-term-memory": {
 													"kind": "string"
 												}
@@ -297,6 +300,65 @@ export const VIEW_SCHEMA: Shape = {
 										"toolsAdded": {
 											"kind": "array",
 											"variants": [
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"code": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														},
+														"constrainedSampling": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"variants": {
+																	"kind": "object",
+																	"fields": {
+																		"openai_lark": {
+																			"kind": "string"
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
 												{
 													"kind": "object",
 													"fields": {
@@ -540,6 +602,60 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		},
 																		"offset": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"limit": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
+																		"query": {
 																			"kind": "object",
 																			"fields": {
 																				"type": {
