@@ -162,7 +162,8 @@ export class TuiApp implements Component, ActionHost {
 	#watchGen = 0;
 	/** The last frame's `steer.busy` — the steer gate for the next submit. */
 	#busy = false;
-	/** The slash-command catalog (fetched once, cached — a boot constant). */
+	/** The slash-command catalog (session-cached snapshot, live-rechecked
+	 * on a miss — see SlashCatalog). */
 	readonly #catalog: SlashCatalog;
 	/** The repainting surface (pickers, copy flashes, redraw). */
 	readonly #tui: TUI;
@@ -602,6 +603,19 @@ export class TuiApp implements Component, ActionHost {
 		} catch (error: unknown) {
 			this.pane.showError(describeCommandError("getCommands", error));
 			return;
+		}
+		// Live-catalog re-check (fix round): the cached snapshot is a session
+		// snapshot — the server re-scans per request, and the command PICKER
+		// fetches fresh, so a template the picker just offered must also
+		// SUBMIT. One fresh fetch when the cache lacks the name, then the
+		// honest unknown-command error if it is still absent.
+		if (command === undefined) {
+			try {
+				command = await this.#catalog.getFresh(parsed.name);
+			} catch (error: unknown) {
+				this.pane.showError(describeCommandError("getCommands", error));
+				return;
+			}
 		}
 		// EXPAND inputs (Task 2c) are submissions, not dispatches: a
 		// `kind: "expand"` catalog entry (prompt template, skill) — and ANY

@@ -71,6 +71,9 @@ function stubClient(init?: {
 	submitResult?: () => Promise<unknown>;
 	/** Start with no conversations (the no-active-conversation cases). */
 	empty?: boolean;
+	/** Commands served on every getCommands call AFTER the first (the
+	 *  live-catalog fix round: a template appearing mid-session). */
+	laterCommands?: unknown[];
 }) {
 	const submitCalls: { id: number; text: string; whenBusy: WhenBusyMode | undefined }[] = [];
 	const abortCalls: number[] = [];
@@ -128,7 +131,14 @@ function stubClient(init?: {
 		},
 		getCommands() {
 			getCommandsCalls += 1;
-			return Promise.resolve({ commands: [...STUB_COMMANDS] });
+			// The first call is the session's initial fetch; later calls (a
+			// picker open, a dispatch re-check) serve the LIVE catalog — the
+			// `laterCommands` entries appear mid-session.
+			const commands =
+				getCommandsCalls > 1 && init?.laterCommands !== undefined
+					? [...STUB_COMMANDS, ...init.laterCommands]
+					: [...STUB_COMMANDS];
+			return Promise.resolve({ commands });
 		},
 		getConversation(id: number) {
 			return Promise.resolve(view(id, []));
@@ -662,5 +672,45 @@ describe("composer command picker: expand entries", () => {
 		await flush();
 		expect(app.editor.getText()).toBe("/new");
 		expect(forkCalls).toEqual([]);
+	});
+
+	// ── Live catalog (fix round): the server re-scans per request; a
+	// template the PICKER offered (its own fetch) must also SUBMIT — the
+	// dispatch's cache must not be staler than the picker's view ──
+
+	test("a template the picker offered submits rather than erroring (the dispatch re-checks the live catalog)", async () => {
+		const stub = stubClient({
+			laterCommands: [
+				{ name: "deploy", description: "Deploy the thing", argsHint: "<target>", kind: "expand" },
+			],
+		});
+		const overlay = overlayTui();
+		const app = new TuiApp(stub.client, {
+			tui: overlay.tui,
+			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
+		});
+		await app.refresh();
+		// Warm the session's cached catalog WITHOUT `deploy` (fetch 1) —
+		// any dispatch populates SlashCatalog's cache.
+		app.editor.onSubmit?.("/fork");
+		await flush();
+		expect(stub.forkCalls).toEqual([1]);
+		// The picker fetches the LIVE catalog itself (fetch 2 → laterCommands)
+		// and offers `deploy`…
+		await app.dispatch({ type: "picker", kind: "command" });
+		const picker = overlay.shown[0]!.component;
+		for (const character of "deploy") picker.handleInput!(character);
+		picker.handleInput!("\r");
+		await flush();
+		expect(app.editor.getText()).toBe("/deploy ");
+		// …the critical half: submitting the line the picker built must not
+		// die on the now-stale cache — the dispatch re-checks the LIVE
+		// catalog and submits the expand line.
+		app.editor.onSubmit?.("/deploy prod");
+		await flush();
+		expect(stub.submitCalls.map((call) => call.text)).toEqual(["/deploy prod"]);
+		const lines = app.pane.render(60).join("\n");
+		expect(lines).not.toContain("unknown command");
+		expect(lines).not.toContain("[error]");
 	});
 });
