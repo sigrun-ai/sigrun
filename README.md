@@ -320,6 +320,45 @@ This requires the server and the CronJob to resolve the SAME state root
 job, the script warns and skips the marker (the backup itself still
 succeeds), and the badge honestly reads `"degraded"`.
 
+## Monitoring
+
+`GET /metrics` serves a Prometheus text exposition (scrape-compatible
+plain text, one `# HELP`/`# TYPE` pair per family). Access follows the
+auth pipeline: a principal is required unless `SIGRUN_METRICS_PUBLIC`
+(`server.metrics.public`) is set — the Helm chart sets it so the
+ServiceMonitor can scrape. `/healthz` and `/readyz` stay public probes
+(`sigrun_readiness 1`, or 503 with `{ready: false, checks: {storage:
+"failed"}}` — the same storage check as the `sigrun_ready` gauge
+below, so the probe and the alert cannot disagree).
+
+**Metrics** (families with nothing to report — no jobs, unconfigured
+backup — are omitted rather than zeroed):
+
+| family | meaning |
+|---|---|
+| `sigrun_up` | 1 when `harness.inspect()` answers; 0 on a closed or storage-unreachable session (the scrape itself still answers 200). |
+| `sigrun_ready` | 1 when the readiness storage check (the root-conversation read `/readyz` gates on) succeeds; 0 when it fails — fires even while the process and the scrape stay up. |
+| `sigrun_live_runs` | Conversations with a placed-but-unsettled input submission. |
+| `sigrun_inflight_submission_oldest_seconds` | Age of the oldest in-flight submission's admission (0 when none; in-process clock — a pre-restart run is invisible until it settles). |
+| `sigrun_tasks_live{status}` | Live tasks by scheduler state (running/ready/waiting/completing/blocked, 0s included). |
+| `sigrun_provider_ready{provider,status}` | 1 per provider at its current auth-readiness status (`ready`, `degraded`, `invalid`, `not_ready`, `not_configured`). |
+| `sigrun_extensions{status}` | Configured extensions by load outcome (`ok` / `quarantined`). |
+| `sigrun_job_last_run_timestamp_seconds{job,outcome}` | Unix time of each job's last run, by outcome. |
+| `sigrun_job_next_run_timestamp_seconds{job}` | Unix time of each job's next scheduled fire. |
+| `sigrun_job_runs_total{outcome}` (counter) | Job runs settled by outcome since process start (resets on restart; the durable history lives in the run records). |
+| `sigrun_backup_last_success_timestamp_seconds` | Unix time of the last successful backup marker; omitted when backup is unconfigured or no marker exists. |
+
+**Alerts** (the chart's `monitoring.prometheusRule.enabled` toggle ships these):
+
+| alert | fires when |
+|---|---|
+| `SigrunNotReady` | `up == 0 or sigrun_up == 0 or sigrun_ready == 0` for 10m — scrape death, harness inspection failing, or the readiness storage check failing (10m tolerates a restart). |
+| `SigrunNoScrape` | The `up{job="sigrun"}` series is absent for 30m — the ServiceMonitor/Prometheus wiring itself broke. |
+| `SigrunSubmissionWedged` | `sigrun_inflight_submission_oldest_seconds > 1800` for 5m — a live run is making no progress. |
+| `SigrunProviderNotReady` | A provider sits at a non-ready auth status for 15m. |
+| `SigrunJobFailed` | `increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0` — a scheduled job failed. |
+| `SigrunBackupStale` | The backup marker is older than 36h while backup is enabled (the rule is absent on an unbacked deploy). |
+
 ## Extensions
 
 One list in `settings.json` — **`extensions`** — is the desired

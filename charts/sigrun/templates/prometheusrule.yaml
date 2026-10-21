@@ -30,22 +30,26 @@ spec:
           # exposition with sigrun_up 0 (Review Focus 5) — and /readyz's 503
           # is no longer scraped at all. So `up == 0` alone covers only
           # scrape death (process down / port gone); the app's own down
-          # signal — sigrun_up 0, i.e. harness inspection failing (a closed
-          # or storage-unreachable session) — is OR-ed in. Residual, out of
-          # scope here: a STORAGE-read failure with a healthy session line
-          # (the /readyz 503 class) does not page until a follow-up gauge
-          # exposes it; /readyz remains the k8s readiness probe's channel.
-          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0 or sigrun_up == 0
+          # signals are OR-ed in: sigrun_up 0 — harness inspection failing
+          # (a closed or storage-unreachable session) — and, core-hardening
+          # Task 5, sigrun_ready 0 — the /readyz storage check (the root-
+          # conversation read) failing while the process stays up. The gauge
+          # shares /readyz's exact checkStorage call, so they cannot
+          # disagree.
+          expr: up{job="{{ include "bjw-s.common.lib.chart.names.name" . }}"} == 0 or sigrun_up == 0 or sigrun_ready == 0
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: sigrun is down (scrape failing or the harness is not answering)
+            summary: sigrun is down (scrape failing, harness not answering, or storage failing)
             description: >-
-              Either the /metrics scrape has failed for 10m (process down,
-              port gone) or the scrape is healthy but sigrun_up == 0 — the
+              The /metrics scrape has failed for 10m (process down, port
+              gone), or the scrape is healthy but sigrun_up == 0 — the
               harness fails its own inspection (closed session, storage
-              unreachable from the app). Check the pod, then GET /metrics
+              unreachable from the app) — or sigrun_ready == 0 — the
+              readiness storage check (/readyz's root-conversation read)
+              is failing while the process stays up. Check the pod and
+              GET /readyz (503 names the storage check), then GET /metrics
               and GET /v1/meta for the health block.
         - alert: SigrunNoScrape
           # The series is absent for 30m — the ServiceMonitor/Prometheus
