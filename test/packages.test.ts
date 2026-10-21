@@ -88,21 +88,21 @@ function manifestMtimeMs(packagesDir: string): number {
 
 describe("parsePackageSpecifier", () => {
 	test("bare name, ranged, and scoped forms", () => {
-		expect(parsePackageSpecifier("sigrun-ext-approvals")).toEqual({
-			name: "sigrun-ext-approvals",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode")).toEqual({
+			name: "@sigrun/ext-codemode",
 			range: "",
 		});
-		expect(parsePackageSpecifier("sigrun-ext-approvals@^0.1.0")).toEqual({
-			name: "sigrun-ext-approvals",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode@^0.1.0")).toEqual({
+			name: "@sigrun/ext-codemode",
 			range: "^0.1.0",
 		});
-		expect(parsePackageSpecifier("@sigrun/ext-approvals@^0.1.0")).toEqual({
-			name: "@sigrun/ext-approvals",
-			range: "^0.1.0",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode@2.0.0")).toEqual({
+			name: "@sigrun/ext-codemode",
+			range: "2.0.0",
 		});
-		expect(parsePackageSpecifier("@sigrun/ext-approvals")).toEqual({
-			name: "@sigrun/ext-approvals",
-			range: "",
+		expect(parsePackageSpecifier("@sigrun/ext-codemode@beta")).toEqual({
+			name: "@sigrun/ext-codemode",
+			range: "beta",
 		});
 		// A file: specifier carries no @range → the name part is the whole
 		// specifier (npm keys the entry by the package's OWN manifest name).
@@ -670,13 +670,13 @@ describe("the unified extensions list (settings surface)", () => {
 		const store = new SettingsStore({ dir });
 		store.update({
 			extensions: [
-				"sigrun-ext-approvals@^0.1.0",
+				"@sigrun/ext-codemode@^0.1.0",
 				{ source: "git:github.com/obra/superpowers", ref: "main" },
 				{ source: "/opt/dev/my-ext", enabled: false },
 			],
 		});
 		const read = store.read().extensions ?? [];
-		expect(read[0]).toBe("sigrun-ext-approvals@^0.1.0");
+		expect(read[0]).toBe("@sigrun/ext-codemode@^0.1.0");
 		expect(read[1]).toEqual({
 			source: "git:github.com/obra/superpowers",
 			ref: "main",

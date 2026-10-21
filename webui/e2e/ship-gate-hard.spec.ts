@@ -101,10 +101,10 @@ test.describe("item 3: steer", () => {
 // ---------------------------------------------------------------------------
 // Item 4: approve a write/exec tool; deny a write tool; see the denial.
 // ---------------------------------------------------------------------------
-test.describe("item 4: approvals (the interaction seam)", () => {
-	// POST-STRIP: the approvals IMPLEMENTATION is extension-owned
-	// (sigrun-ext-approvals was never shipped to npm; the git dep is gone
-	// from devDependencies). The webui's approval card is now the GENERIC
+test.describe("item 4: interactions (the interaction seam)", () => {
+	// POST-STRIP: the gating IMPLEMENTATION is extension-owned (the
+	// placeholder gating package was never shipped to npm; the git dep is
+	// gone from devDependencies). The webui's gating card is now the GENERIC
 	// interaction card (docs/approval-ux-seams.md) driven by the seam
 	// fixture — same human flow: an option card appears while a tool call
 	// is gated, the human allows, the next gate denies, the transcript

@@ -15,9 +15,8 @@
  * day 1; the flow does not" — written by the auth hook at create/fork/
  * import and read by the listing route; still no interactive flow in v1).
  *
- * Docs are standalone tokens: `defineDoc` needs no registry install (the
- * approvals extension's policy doc (sigrun-ext-approvals) is the
- * reference pattern). Reads serve `DEFAULT_SESSION_META` when the doc was
+ * Docs are standalone tokens: `defineDoc` needs no registry install (a
+ * gated extension's policy doc is the reference pattern). Reads serve `DEFAULT_SESSION_META` when the doc was
  * never written; only a PATCH materializes it — a read that wrote would
  * churn a doc revision on every sidebar poll, and defaults are free.
  *
