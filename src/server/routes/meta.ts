@@ -14,7 +14,11 @@ import { discoverTemplates } from "../../commands/templates.js";
 import { listSkills } from "../../skills/index.js";
 import { expandCommandEntries, type CommandsResponse } from "../commands.js";
 import type { ServerContext } from "../context.js";
-import { HARNESS_VERSION, SCHEMA_VERSION } from "../schema-fixture.js";
+import {
+	HARNESS_VERSION,
+	SCHEMA_VERSION,
+	SIGRUN_VERSION,
+} from "../schema-fixture.js";
 import type { MetaResponse } from "../views.js";
 
 /** Register `GET /v1/meta` + `GET /v1/commands`. */
@@ -44,6 +48,7 @@ export function registerMetaRoutes(
 				? "degraded"
 				: "configured";
 		return {
+			version: SIGRUN_VERSION,
 			harnessVersion: HARNESS_VERSION,
 			schemaVersion: SCHEMA_VERSION,
 			extensions: opened.extensionOutcomes.map((outcome) => {

@@ -25,7 +25,8 @@ import { AuthGate } from "./AuthGate";
 type Call = { input: string; method?: string; body?: string | Uint8Array };
 
 const META: MetaResponse = {
-	harnessVersion: "1.0.2",
+	version: "0.0.0-test",
+		harnessVersion: "1.0.2",
 	schemaVersion: PINNED_SCHEMA_VERSION,
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },

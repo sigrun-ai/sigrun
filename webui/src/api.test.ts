@@ -46,7 +46,8 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 }
 
 const META: MetaResponse = {
-	harnessVersion: "h-0",
+	version: "0.0.0-test",
+		harnessVersion: "h-0",
 	schemaVersion: "s-0",
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },

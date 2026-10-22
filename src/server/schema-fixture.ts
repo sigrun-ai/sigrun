@@ -41,6 +41,16 @@ export const HARNESS_VERSION: string = createRequire(import.meta.url)(
 	"@earendil-works/pi-durable/package.json",
 ).version as string;
 
+/**
+ * The SERVER's own version (the sigrun package manifest) — surfaced by
+ * `/v1/meta` and the boot log so an operator quotes what they run in a
+ * bug report. Same bundler-stable createRequire shape as
+ * {@link HARNESS_VERSION}.
+ */
+export const SIGRUN_VERSION: string = createRequire(import.meta.url)(
+	"../../package.json",
+).version as string;
+
 /** One leaf or node of a structural snapshot: value TYPES, never values. */
 export type Shape =
 	| { readonly kind: "null" }

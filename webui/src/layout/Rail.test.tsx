@@ -16,6 +16,7 @@ function makeMeta(init?: {
 	readonly health?: MetaResponse["health"];
 }): MetaResponse {
 	return {
+		version: "0.0.0-test",
 		harnessVersion: "1.0.2",
 		schemaVersion: "abc123",
 		extensions: init?.extensions ?? [

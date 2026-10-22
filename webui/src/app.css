@@ -3201,3 +3201,11 @@ body {
 	padding-left: 0.6rem;
 	margin-bottom: 0.4rem;
 }
+
+/* The version line in Settings → General (quiet, secondary). */
+.settings-version {
+	margin: 0.8rem 0 0;
+	color: var(--text-dim, color-mix(in srgb, var(--text) 55%, transparent));
+	font-size: 0.82rem;
+	user-select: text;
+}

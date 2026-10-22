@@ -474,6 +474,8 @@ export type WorkerStatus = {
 
 /** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
 export interface MetaResponse {
+	/** The sigrun server's own version (the package manifest). */
+	readonly version: string;
 	readonly harnessVersion: string;
 	readonly schemaVersion: string;
 	readonly extensions: readonly {
