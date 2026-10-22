@@ -31,6 +31,7 @@ function makeMeta(init?: {
 	readonly schemaVersion?: string;
 }): MetaResponse {
 	return {
+		version: "0.0.0-test",
 		harnessVersion: "1.0.2",
 		schemaVersion: init?.schemaVersion ?? PINNED_SCHEMA_VERSION,
 		extensions: [

@@ -61,6 +61,7 @@ import type {
 	SigrunClient,
 	ExtensionInfoWire,
 	ExtensionSecretWire,
+	MetaResponse,
 } from "../api";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
 import { ProvidersSection } from "./ProvidersSection";
@@ -593,6 +594,9 @@ export function SettingsPanel(props: {
 	const { client, onClose, prefsState, theme, admin } = props;
 	const [load, setLoad] = useState<LoadState>({ status: "loading" });
 	const [draft, setDraft] = useState<Draft | null>(null);
+	// The /v1/meta snapshot (the version line in General): fetched once
+	// per open; a failure leaves the line absent, never blocks settings.
+	const [meta, setMeta] = useState<MetaResponse | null>(null);
 	const [section, setSection] = useState<Section>("General");
 	const [saveState, setSaveState] = useState<{
 		readonly status: "idle" | "saving" | "saved";
@@ -601,6 +605,15 @@ export function SettingsPanel(props: {
 
 	useEffect(() => {
 		let cancelled = false;
+		client
+			.getMeta()
+			.then((snapshot) => {
+				if (!cancelled) setMeta(snapshot);
+			})
+			.catch(() => {
+				// The version line is cosmetic; a meta failure keeps the
+				// settings surface fully usable without it.
+			});
 		client
 			.getSettings()
 			.then((settings) => {
@@ -702,6 +715,15 @@ export function SettingsPanel(props: {
 						</select>
 					</span>
 				</label>
+				{/* The version line: what an operator quotes in a bug report — the
+				   SERVER's version (from /v1/meta, which reads the package
+				   manifest) plus the wire schema gate the boot already ran. */}
+				<p className="settings-version">
+					sigrun {meta?.version !== undefined ? `v${meta.version}` : ""}
+					{meta?.harnessVersion !== undefined
+						? ` · pi-durable v${meta.harnessVersion}`
+						: ""}
+				</p>
 			</div>
 		) : section === "Tools" ? (
 			<div className="settings-body">

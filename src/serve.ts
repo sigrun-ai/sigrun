@@ -29,6 +29,7 @@ import { envServerSection, loadConfig } from "./config.js";
 import { openHarness } from "./harness/boot.js";
 import { packagesDirOf, syncPackages } from "./harness/packages.js";
 import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
+import { SIGRUN_VERSION } from "./server/schema-fixture.js";
 import { createServer } from "./server/index.js";
 
 /** A booted harness+server pair: the bound port and the ordered shutdown. */
@@ -148,8 +149,11 @@ export async function serve(
 	const host = options?.host ?? "0.0.0.0";
 	await app.listen({ port: config.port, host });
 	// Machine-greppable: the deploy-entry test waits for this line, and an
-	// operator reading pod logs sees the bound port without guessing.
-	console.log(`sigrun listening on http://${host}:${config.port}`);
+	// operator reading pod logs sees the bound port without guessing. The
+	// version rides the same line (what an operator quotes in a bug report).
+	console.log(
+		`sigrun v${SIGRUN_VERSION} listening on http://${host}:${config.port}`,
+	);
 
 	const shutdown = async (): Promise<void> => {
 		const failures: unknown[] = [];
