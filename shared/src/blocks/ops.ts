@@ -35,7 +35,9 @@ export class DataOpError extends Error {
 type Container = JsonObject | JsonValue[];
 
 function isContainer(value: JsonValue): value is Container {
-	return Array.isArray(value) || typeof value === "object";
+	// `typeof null === "object"` — a JSON null is NOT a container; a path
+	// through it is a missing path (undefined), never a walk into it.
+	return Array.isArray(value) || (typeof value === "object" && value !== null);
 }
 
 /** Split an RFC 6901 pointer into unescaped reference tokens. */
@@ -303,9 +305,10 @@ function opMove(
 /**
  * Resolve an RFC 6901 `pointer` against `data`; a pointer starting
  * `./` resolves against `item` instead (spec §4.2's one extension,
- * used inside collection item templates). A missing path is
- * `undefined`, never an error — "a binding to a missing path renders
- * as empty, never as an error".
+ * used inside collection item templates). A missing path — including a
+ * path THROUGH a JSON null, and a malformed pointer (no `/` or `./`
+ * prefix) — is `undefined`, never an error: "a binding to a missing
+ * path renders as empty, never as an error".
  */
 export function resolvePointer(
 	data: JsonValue,
@@ -315,8 +318,17 @@ export function resolvePointer(
 	const base = pointer.startsWith("./") ? item : data;
 	if (base === undefined) return undefined;
 	const rest = pointer.startsWith("./") ? pointer.slice(1) : pointer;
+	let tokens: string[];
+	try {
+		tokens = pointerTokens(rest);
+	} catch {
+		// A malformed binding renders empty — the render contract is
+		// undefined-never-throws (only `applyOps`, the server-side applier,
+		// reports bad pointers, as `DataOpError`).
+		return undefined;
+	}
 	let node: JsonValue = base;
-	for (const token of pointerTokens(rest)) {
+	for (const token of tokens) {
 		if (!isContainer(node)) return undefined;
 		const next = readToken(node, token);
 		if (next === undefined) return undefined;

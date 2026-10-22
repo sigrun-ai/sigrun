@@ -240,6 +240,17 @@ describe("resolvePointer", () => {
 		expect(resolvePointer({ a: [1] }, "/a/x")).toBeUndefined();
 	});
 
+	it("a path through a JSON null is a missing path, not an error", () => {
+		expect(resolvePointer({ a: null }, "/a/b")).toBeUndefined();
+		expect(resolvePointer({ a: [null] }, "/a/0/b")).toBeUndefined();
+		expect(resolvePointer({ a: null }, "/a")).toBe(null);
+	});
+
+	it("a malformed pointer is a missing path, not a thrown error", () => {
+		expect(resolvePointer({ a: 1 }, "foo")).toBeUndefined();
+		expect(resolvePointer({ a: 1 }, "./foo", { a: 1 })).toBeUndefined();
+	});
+
 	it("the empty pointer is the root", () => {
 		const root: JsonObject = { a: 1 };
 		expect(resolvePointer(root, "")).toBe(root);
