@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/sigrun",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Durable personal assistant on pi-durable",
 	"type": "module",
 	"exports": {
@@ -31,7 +31,6 @@
 		"typecheck:webui": "npm --workspace @sigrun/webui run typecheck",
 		"test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e",
 		"prepublishOnly": "node scripts/publish-deps.mjs registry && npm run build && npm run build:webui",
-		"postpack": "node scripts/publish-deps.mjs file",
 		"postpublish": "node scripts/publish-deps.mjs file"
 	},
 	"dependencies": {
