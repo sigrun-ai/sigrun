@@ -158,32 +158,30 @@ export async function createConversationOp(
 		},
 		BACKGROUND_CONTEXT,
 	);
-	const stamps = [
-		input.owner,
-		input.sharing,
-		input.name,
-		input.source,
-	].filter((value) => value !== undefined);
-	if (stamps.length > 0) {
-		await conversation.commit(async (tx) => {
-			const draft = await tx.doc(SessionMetaDoc, conversation.id);
-			if (input.owner !== undefined) draft.owner = input.owner;
-			// Copy-on-assignment (the tracker requires alias-free roots):
-			// the people-scope array is cloned; the closed scopes spread.
-			if (input.sharing !== undefined) {
-				draft.sharing =
-					input.sharing.scope === "people"
-						? {
-								scope: "people",
-								users: [...input.sharing.users],
-								level: input.sharing.level,
-							}
-						: { ...input.sharing };
-			}
-			if (input.name !== undefined) draft.name = input.name;
-			if (input.source !== undefined) draft.source = input.source;
-		}, BACKGROUND_CONTEXT);
-	}
+	// Creation IS activity: stamp lastActivityAt now, or the sidebar's
+	// recency sort puts a never-submitted conversation at the BOTTOM of
+	// "Earlier" (epoch(undefined) = 0) until its first submission lands —
+	// a new conversation must appear at the top from the moment it exists.
+	// The optional input stamps ride the SAME commit (one write, not two).
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		draft.lastActivityAt = opened.now().toISOString();
+		if (input.owner !== undefined) draft.owner = input.owner;
+		// Copy-on-assignment (the tracker requires alias-free roots):
+		// the people-scope array is cloned; the closed scopes spread.
+		if (input.sharing !== undefined) {
+			draft.sharing =
+				input.sharing.scope === "people"
+					? {
+							scope: "people",
+							users: [...input.sharing.users],
+							level: input.sharing.level,
+						}
+					: { ...input.sharing };
+		}
+		if (input.name !== undefined) draft.name = input.name;
+		if (input.source !== undefined) draft.source = input.source;
+	}, BACKGROUND_CONTEXT);
 	const view = await readView(conversation);
 	return { id: conversation.id, view };
 }

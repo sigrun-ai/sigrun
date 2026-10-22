@@ -1112,7 +1112,15 @@ export async function cliMain(
 			deps?.serve ??
 			(async (serveEnv) => {
 				const booted = await serve(serveEnv);
+				// Second-signal force exit (the index.ts pattern): a hung
+				// graceful shutdown must never trap the operator.
+				let signaled = false;
 				const stop = (): void => {
+					if (signaled) {
+						console.error("sigrun: forcing exit (shutdown did not complete)");
+						process.exit(130);
+					}
+					signaled = true;
 					void booted.shutdownOnce().then(
 						() => process.exit(0),
 						(error: unknown) => {

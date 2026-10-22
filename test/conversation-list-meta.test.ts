@@ -252,12 +252,18 @@ describe("GET /v1/conversations list metadata", () => {
 		expect("parent" in rows.find((row) => row.id === root.id)!).toBe(false);
 	});
 
-	test("settled run stamps lastActivityAt; a never-used conversation has none", async () => {
+	test("creation and settled runs both stamp lastActivityAt", async () => {
 		const { app, opened } = await bootServer({ now: () => new Date(PINNED) });
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
 		const fresh = await createViaRoute(app);
+		// Creation IS activity: a fresh conversation sorts at the TOP from the
+		// moment it exists (it used to carry no stamp until its first submit,
+		// sorting to the bottom of "Earlier").
+		expect(
+			(await listRows(app)).find((row) => row.id === fresh)?.lastActivityAt,
+		).toBe(PINNED);
 		await submit(app, root.id, "hello");
 		await waitFor("the settle stamp", async () => {
 			const row = (await listRows(app)).find((one) => one.id === root.id);
@@ -265,9 +271,6 @@ describe("GET /v1/conversations list metadata", () => {
 		});
 		const rows = await listRows(app);
 		expect(rows.find((row) => row.id === root.id)?.lastActivityAt).toBe(PINNED);
-		expect(
-			"lastActivityAt" in rows.find((row) => row.id === fresh)!,
-		).toBe(false);
 	});
 
 	test("submission admission stamps lastActivityAt before the run settles", async () => {
