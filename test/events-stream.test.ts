@@ -761,3 +761,38 @@ describe("GET /v1/events per-event scoping", () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// The ctrl+c regression (2026-10-22): a held-open SSE stream must never
+// hang app.close() — hijacked event streams never end on their own, so the
+// SseRegistry ends them before the drain. Verified at the app level (the
+// real shutdown path's ordering: sse.endAll() before app.close()).
+// ---------------------------------------------------------------------------
+
+test("a held-open events stream does not hang app.close", async () => {
+	const { app, port, opened } = await bootServer({ auth: "token", extraUsers: ["holder"] });
+	const token = await mint(opened, "holder");
+	// Open a REAL authed events stream and hold it (a browser tab).
+	const controller = new AbortController();
+	const held = fetch(`http://127.0.0.1:${port}/v1/events`, {
+		headers: { authorization: `Bearer ${token}` },
+		signal: controller.signal,
+	});
+	// Give the response headers a moment to land, then hold the body open.
+	const response = await held;
+	expect(response.status).toBe(200);
+	// The shutdown ordering under test: endAll FIRST, then close — with a
+	// 5s ceiling (the pre-fix behavior hung forever; the test fails loudly
+	// on regression rather than timing the suite out).
+	app.sse.endAll();
+	await Promise.race([
+		app.close(),
+		new Promise((_resolve, reject) =>
+			setTimeout(
+				() => reject(new Error("app.close() hung on the held SSE stream")),
+				5_000,
+			),
+		),
+	]);
+	controller.abort();
+});

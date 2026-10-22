@@ -167,9 +167,15 @@ export function registerEventRoutes(
 		// `request.raw` close (Node 26 fires it at request-message completion,
 		// i.e. immediately for a bodyless GET).
 		raw.on("close", finish);
+		// Server shutdown terminates this stream through the registry (the
+		// ctrl+c fix): fastify's drain would otherwise wait on this
+		// never-ending request while any webui tab holds it open.
+		const deregister = ctx.sse.register({ end: finish });
+		raw.on("close", deregister);
 		// A client may have disconnected before the close listener existed.
 		if (raw.destroyed) {
 			finish();
+			deregister();
 			return;
 		}
 	});

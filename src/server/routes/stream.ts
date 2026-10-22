@@ -112,6 +112,11 @@ export function registerStreamRoutes(
 				raw.end();
 			};
 			raw.on("close", () => finish(false));
+			// Server shutdown terminates this stream through the registry (the
+			// ctrl+c fix — same as /v1/events): the fastify drain would wait on
+			// this never-ending request while a client holds it open.
+			const deregister = ctx.sse.register({ end: () => finish(false) });
+			raw.on("close", deregister);
 			// Upstream resolves `closed` with a WatchEnd for every terminal
 			// state (failures included); a rejection would be an upstream
 			// contract violation — catch it so one stream's anomaly ends that
@@ -126,6 +131,7 @@ export function registerStreamRoutes(
 			// that window — stop the just-acquired watch instead of leaking it.
 			if (raw.destroyed) {
 				finish(false);
+				deregister();
 				return;
 			}
 			// Snapshot FIRST (from the acquisition revision), then install the
