@@ -51,8 +51,30 @@ const BUILTINS = {
 	"@sigrun/ext-tool-search": "../sigrun-ext-tool-search",
 };
 
-/** The version every family package is published at. */
-const FAMILY_VERSION = "0.1.0";
+/**
+ * The version each built-in publishes: read from the sibling checkout's
+ * own manifest (the repo next door is the source of truth — versions
+ * diverge across the family once a built-in ships features on its own
+ * cadence, e.g. ext-mcp 0.2.0 while the others stay 0.1.0). Throws
+ * fail-loud naming the sibling when its manifest is missing/malformed:
+ * publishing against a guessed pin is worse than stopping.
+ */
+function familyVersion(name) {
+	const sibling = BUILTINS[name];
+	const manifestPath = join(ROOT, sibling, "package.json");
+	let version;
+	try {
+		version = JSON.parse(readFileSync(manifestPath, "utf8")).version;
+	} catch (cause) {
+		throw new Error(
+			`publish-deps: cannot read ${manifestPath} (${cause instanceof Error ? cause.message : String(cause)})`,
+		);
+	}
+	if (typeof version !== "string" || version === "") {
+		throw new Error(`publish-deps: ${manifestPath} has no version`);
+	}
+	return version;
+}
 
 function readManifest() {
 	return JSON.parse(readFileSync(MANIFEST, "utf8"));
@@ -73,11 +95,11 @@ if (mode === "registry") {
 		// between the two writes leaves file: specifiers in place, and a
 		// publish would then ship them.
 		const manifest = readManifest();
-		const stale = Object.keys(BUILTINS).filter(
-			(name) => manifest.dependencies?.[name] !== FAMILY_VERSION,
-		);
+		const stale = Object.entries(BUILTINS)
+			.filter(([name]) => manifest.dependencies?.[name] !== familyVersion(name))
+			.map(([name]) => name);
 		if (stale.length > 0) {
-			for (const name of stale) manifest.dependencies[name] = FAMILY_VERSION;
+			for (const name of stale) manifest.dependencies[name] = familyVersion(name);
 			writeManifest(manifest);
 			process.stderr.write(
 				`publish-deps: marker present but the manifest still carried ${stale.join(", ")} — re-applied\n`,
@@ -98,13 +120,12 @@ if (mode === "registry") {
 			process.exit(1);
 		}
 		original[name] = current;
-		manifest.dependencies[name] = FAMILY_VERSION;
+		manifest.dependencies[name] = familyVersion(name);
 	}
 	writeFileSync(MARKER, `${JSON.stringify(original, null, "\t")}\n`);
 	writeManifest(manifest);
-	process.stdout.write(
-		`publish-deps: registry mode (${Object.keys(BUILTINS).join(", ")} -> ${FAMILY_VERSION})\n`,
-	);
+	const pins = Object.keys(BUILTINS).map((name) => `${name}@${familyVersion(name)}`);
+	process.stdout.write(`publish-deps: registry mode (${pins.join(", ")})\n`);
 } else if (mode === "file") {
 	if (!existsSync(MARKER)) {
 		process.stderr.write("publish-deps: not in registry mode; nothing to do\n");
