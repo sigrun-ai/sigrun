@@ -88,7 +88,7 @@
 
 **Files:**
 - Create: `src/server/turns/submit-turn.ts`, `src/server/blocks/notes.ts`, `src/server/blocks/answers.ts`
-- Modify: `src/server/conversation-ops.ts` (`submitOp` calls `writePendingNote` before `conversation.submit`; `SubmitOpOptions` gains `entry?: InputEntry` and `skipNoteFor?: string`), `src/jobs/fire.ts` (both `conversation.submit` call sites call `writePendingNote` first)
+- Modify: `src/server/conversation-ops.ts` (`submitOp` calls `writePendingNote` before `conversation.submit`; `SubmitOpOptions` gains `entry?: InputEntry` and `skipNoteFor?: string`). **Order inside `submitOp`:** the pending change note, then command expansion, then the input submit — the note write precedes `expandInput`, so an expansion failure (`invalid_input`) never strands unnoted edits without at least the note decision point. **How the two `entry` uses coexist:** when `opts.entry` is set (a block answer), expansion is skipped entirely — the answer's `content` is a server-built projection that never starts with `/`, so there is nothing to expand; otherwise the expansion path sets the `sigrun.user.expanded` entry as it does today. The two are mutually exclusive by construction, and the code enforces it: a state where both the expanded entry and `opts.entry` would be set throws (a programming error, never a silent overwrite). `src/jobs/fire.ts` (both `conversation.submit` call sites call `writePendingNote` first; jobs never pass `opts.entry`)
 - Test: `test/blocks-notes.test.ts`, `test/blocks-answers.test.ts`, `test/submit-turn-callers.test.ts`
 
 **Interfaces:**
@@ -109,6 +109,7 @@
   - crash between the note write and `notedThrough` advancing (inject a throw after admission), then a new edit, then another message: the retry computes the same `requestId` from the pre-advance positions, pi-durable returns the existing submission, and exactly one note entry exists;
   - Review Focus 1: with the agent busy (faux provider holding a tool call), an edit followed by a steer queues the note write and the steer; at the boundary the note entry is placed before the steer entry;
   - Review Focus 4: an answer from a `read` principal → 403, no submission;
+  - entry disjunction: a block answer (`opts.entry` set) skips expansion (an `expandInput` spy is not called) and its submission carries `entry.kind === "sigrun.blocks.answer"`; an ordinary `/skill:name` input on the same path still expands and carries `sigrun.user.expanded`; a forced both-set state throws before any submission;
   - every turn starter writes pending notes: the composer route and `host.conversations.submit` (both via `submitOp`) and `fireJob` on a fixed-conversation job (spy on `writePendingNote`); a grep-style test asserts `conversation.submit(` with `type: "input"` appears in `src/` only at those three call sites, so a new turn starter can't skip notes silently.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `git commit -m "chat blocks: change notes written before every turn admission (submitOp, fireJob) with a stable requestId; block answers as InputEntry turns"`.
