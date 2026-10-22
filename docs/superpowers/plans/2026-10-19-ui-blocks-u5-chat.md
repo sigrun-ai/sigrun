@@ -9,7 +9,7 @@
 - **Chat surfaces reuse U3's machinery** (routes, access cache, watcher registry, action dedup), addressed by `(conversationId, entryId)`. Core is the action handler: it applies moves, checks and edits itself and appends change records.
 - **The note step lives where turns are admitted.** Core-hardening already funnels the composer route and W5's `host.conversations.submit` through `submitOp` (`src/server/conversation-ops.ts`); W4's `fireJob` (`src/jobs/fire.ts`) calls `conversation.submit` directly in two places. A new `writePendingNote` runs immediately before each of those three `conversation.submit` calls. Block answers go through `submitOp`, which gains an `entry` option for the `InputEntry`.
 
-**Tech Stack:** pi-durable 1.3.0 (release Task 0; `defineEntry`/typed entries, `defineDocFamily`, `SubmissionDraft` with `requestId` and `InputEntry`, `submissionByRequest`), U0 (`validateTree`, `applyOps`, `toText`), U3 (surface service).
+**Tech Stack:** pi-durable 1.3.0 (already the pinned version; `defineEntry`/typed entries, `defineDocFamily`, `SubmissionDraft` with `requestId` and `InputEntry`, `submissionByRequest`), U0 (`validateTree`, `applyOps`, `toText`), U3 (surface service).
 
 **Spec:** `docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md` §8 (all), §6.2–§6.4 (chat rows), ruling 19, §16 (Chat blocks).
 
@@ -41,8 +41,8 @@
 ### Task 1: Entries, state family, `show_blocks` and `update_blocks`
 
 **Files:**
-- Create: `src/harness/blocks/entries.ts` (`BlocksEntry`, `BlocksNoteEntry` tokens), `src/harness/blocks/state.ts` (`BlocksStateDoc`), `src/harness/blocks/tools.ts` (the two tools in a core pi-durable extension `sigrun.blocks`)
-- Modify: `src/harness/boot.ts` (install the extension for every agent)
+- Create: `src/harness/blocks/entries.ts` (`BlocksEntry`, `BlocksNoteEntry` tokens), `src/harness/blocks/state.ts` (`BlocksStateDoc`), `src/harness/blocks/tools.ts` (`blocksToolsExtension`: the two tools in a core pi-durable extension `sigrun.blocks`)
+- Modify: `src/harness/boot.ts` (`registry.install(blocksToolsExtension)` beside the existing `codingToolsExtension`/`searchToolsExtension` installs, so every agent has the tools)
 - Test: `test/blocks-chat-tools.test.ts`
 
 **Interfaces:**
@@ -68,7 +68,7 @@
 
 **Files:**
 - Create: `src/server/blocks/chat-surfaces.ts` (adapts a chat block to U3's `SurfaceService` with core as handler), `src/server/blocks/summaries.ts` (change-record summaries from the tree)
-- Modify: `src/server/routes/surfaces.ts` (mount the chat routes), `src/server/surfaces/service.ts` (an address type covering both `{slug, id, key}` and `{conversationId, entryId}`)
+- Modify: `src/server/routes/surfaces.ts` (mount the chat routes), `src/server/surfaces/service.ts` (an address type covering both `{slug, id, key}` and `{conversationId, entryId}`), `shared/src/views.ts` (`HostEventWire` gains `{type: "surface.changed"; conversationId: number; entryId: string; rev: number}`, a second shape beside U3's), `src/server/routes/events.ts` plus `test/events-exhaustive.typecheck.ts` (the chat shape joins the conversation-scoped cases, the ones that re-snapshot `SessionMeta` and check `accessOf` per event)
 - Test: `test/blocks-chat-routes.test.ts`, `test/blocks-summaries.test.ts`
 
 **Interfaces:**
@@ -117,11 +117,12 @@
 
 **Files:**
 - Create: `webui/src/entries/BlocksEntry.tsx`, `webui/src/blocks/chatTransport.ts`, `tui/src/blocks/chat-transport.ts`
-- Modify: `webui/src/entries/TurnList.tsx` / `ToolResultEntry.tsx` (a `show_blocks` call whose result names an `entryId` renders as the surface, not a tool row; `sigrun.blocks.note` entries render as a collapsed "UI changes sent to the agent" row; `sigrun.blocks.answer` inputs render as the user's message with a "from <title>" chip), `tui/src/ui/conversation-pane.ts` (same three)
+- Modify: `shared/src/turns.ts`. Both channels group the transcript with `groupTurns` (UI rounds 1–2: an assistant turn has a chronological `timeline` that renders in place, plus the grouped view under the `ActivityLine`). `TimelineEvent` gains `{kind: "blocks"; entryId: number}` and `{kind: "note"; entryId: number}`. A `sigrun.blocks` or `sigrun.blocks.note` entry inside a pending assistant turn appends its event and does not flush the turn; a note written at a boundary mid-run would otherwise split the turn in two. A `show_blocks` call is left out of `tools` and the timeline, so the activity line doesn't count it. A `sigrun.blocks.answer` entry is a `user` turn, like `EXPANDED_USER_KIND`.
+- Modify: `webui/src/entries/AssistantTurn.tsx` (render `blocks` events as `BlocksEntry` and `note` events as a collapsed "UI changes sent to the agent" row, in both the timeline and the grouped view; in the grouped view the surface stays outside the folded `ActivityLine`), `webui/src/entries/UserEntry.tsx` (an answer renders as the user's message with a "from <title>" chip), `tui/src/ui/conversation-pane.ts` (the same three)
 - Create: `webui/e2e/chat-blocks.spec.ts`
-- Test: `webui/src/entries/BlocksEntry.test.tsx`, `tui/test/conversation-pane.test.ts` (extend)
+- Test: `test/shared-turns.test.ts` (extend), `webui/src/entries/BlocksEntry.test.tsx`, `webui/src/entries/TurnList.test.tsx` (extend), `tui/test/conversation-pane.test.ts` (extend)
 
-- [ ] **Step 1: Write failing tests:** the block renders inline in the chat column in its compact class (a 60 rem window still renders the chat column's compact fallbacks); the tool row is not shown; a `read` viewer sees no drag handles; the note row is collapsed and expands to the note text; Playwright: drag the ranking list in one tab, the second tab (same user) updates within 2 s, then "Use this order" produces exactly one user turn in the transcript.
+- [ ] **Step 1: Write failing tests:** `groupTurns` on `[pi.user, pi.assistant(toolCall show_blocks), sigrun.blocks, pi.tool-result, sigrun.blocks.note, pi.assistant(text)]` gives one user turn and one assistant turn whose timeline is `blocks, note, text`, with `tools` empty. Build that fixture from the entry order a real `show_blocks` run produces (record it once from the Task 1 test). A `sigrun.blocks.answer` entry is a user turn. The block renders inline in the chat column in its compact class (a 60 rem window still renders the chat column's compact fallbacks), in both the timeline and the grouped view; the tool row is not shown; a `read` viewer sees no drag handles; the note row is collapsed and expands to the note text; Playwright: drag the ranking list in one tab, the second tab (same user) updates within 2 s, then "Use this order" produces exactly one user turn in the transcript.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** webui, TUI and e2e suites — PASS.
 - [ ] **Step 5: Commit** `git commit -m "chat blocks: inline rendering, note and answer rows, transports in webui and TUI"`.
 

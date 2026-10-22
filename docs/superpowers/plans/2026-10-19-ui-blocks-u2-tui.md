@@ -9,7 +9,7 @@
 - `tui/src/blocks/surface.ts` is the TUI twin of the webui's `useSurface`: the same `SurfaceTransport` interface from `@sigrun/shared/blocks` (U0) and the same overlay rules.
 - Focus and keys go through the existing keymap layer (`tui/src/keymaps/`): a block that takes focus registers its key handlers as actions, so standard, vim and emacs bindings and the help overlay pick them up.
 
-**Tech Stack:** `@earendil-works/pi-tui` (Image, Markdown, ScrollView, Input, Editor, SelectList, HStack/Stack), vitest, `@sigrun/shared/blocks`.
+**Tech Stack:** `@earendil-works/pi-tui` 1.3.0 (Image, Markdown, ScrollView, Input, Editor, SelectList, HStack/VStack), vitest, `@sigrun/shared/blocks`.
 
 **Spec:** `docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md` §5, §6.1–§6.3, §10, §11.3, §12, §16 (Width, Visual, Keyboard, Images).
 
@@ -81,7 +81,7 @@
 
 **Files:**
 - Create: `tui/src/blocks/surface.ts`, `tui/src/blocks/collection/lanes.ts`, `tui/src/blocks/collection/calendar.ts`, `tui/src/blocks/move.ts`
-- Modify: `tui/src/keymaps/standard.ts`, `vim.ts`, `emacs.ts`, `types.ts` (block actions: `blocks.pickUp`, `blocks.drop`, `blocks.cancelMove`, `blocks.select`, `blocks.actionMenu`, `blocks.check`, `blocks.rangePrev`, `blocks.rangeNext`, `blocks.today`), `tui/src/ui/help.ts`
+- Modify: `tui/src/actions.ts` (the `Action` union gains `blocks.pickUp`, `blocks.drop`, `blocks.cancelMove`, `blocks.select`, `blocks.actionMenu`, `blocks.check`, `blocks.rangePrev`, `blocks.rangeNext`, `blocks.today`; `Focus` gains `"surface"` beside `composer`/`list`/`transcript`, so keymaps route these keys only while a block surface has focus), `tui/src/keymaps/standard.ts`, `vim.ts`, `emacs.ts` (each binds the new actions and lists them in `describe()`), `tui/src/ui/help.ts`
 - Test: `tui/test/blocks-surface.test.ts`, `tui/test/blocks-lanes.test.ts`, `tui/test/blocks-calendar.test.ts`, `tui/test/keymap-*.test.ts` (extend)
 
 **Interfaces:**

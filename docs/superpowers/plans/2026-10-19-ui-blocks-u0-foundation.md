@@ -13,7 +13,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md` §3, §4, §5, §6.1, §10, §11.1 (source rules), §14.1–§14.3, §16 (Schemas, Placements, Limits, Data updates, Validation of handler names, Versions).
 
-**Depends on:** core-hardening W0–W5 merged. Assumes sigrun is published: the root `package.json` has no `"private": true` (if it still does when this starts, remove it in Task 4 and say so in the commit).
+**Depends on:** nothing pending. Core-hardening W0–W5 landed in sigrun 0.1, and the root package is published as `@sigrun/sigrun` (0.1.4, not private, `exports` has `.` and `./extension`).
 
 ## Global Constraints
 
@@ -170,8 +170,9 @@
 
 **Files:**
 - Create: `src/blocks/builders.ts`, `src/blocks/index.ts` (re-exports builders, types, `validateTree`)
-- Modify: `package.json` (`exports["./blocks"]` → `{types: "./dist/blocks/index.d.ts", default: "./dist/blocks/index.js"}`; keep W5's `.` and `./extension`), `tsconfig.build.json` (include `src/blocks`)
-- Modify: `src/harness/packages.ts` (`HOST_RUNTIME_MODULES` gains `"@sigrun/sigrun"`), `src/harness/loader.ts` (`EXACT_HOST_MODULES` gains `"@sigrun/sigrun"`: any version difference quarantines, as for pi-durable)
+- Modify: `package.json` (`exports["./blocks"]` → `{types: "./dist/blocks/index.d.ts", default: "./dist/blocks/index.js"}`; keep `.` and `./extension`). `tsconfig.build.json` already compiles all of `src/`, so it needs no change.
+- Modify: `src/harness/packages.ts`. `HOST_RUNTIME_MODULES` gains `"@sigrun/sigrun"`. `resolveHostModuleDir` and `hostModuleVersion` walk up looking for `node_modules/<name>`, but sigrun is the running package itself, so in a source checkout that walk finds nothing. For `@sigrun/sigrun`, return the nearest ancestor of `import.meta.url` whose `package.json` is named `@sigrun/sigrun`.
+- Modify: `src/harness/loader.ts` (`EXACT_HOST_MODULES` gains `"@sigrun/sigrun"`: any version difference quarantines, as for pi-durable)
 - Modify: `docs/extending.md` (one paragraph: `@sigrun/sigrun` is a `peerDependency: "*"`; import builders from `@sigrun/sigrun/blocks`)
 - Modify: `src/config.ts` (`server.dev`, env `SIGRUN_DEV`, strict `true`/`false`, default false), `src/server/routes/meta.ts` (`/v1/meta` reports `dev`); U1's gallery, U3's error bodies and U4 consume it
 - Test: `test/blocks-builders.test.ts`, `test/packages.test.ts` (host link), `test/fixtures/fixture-blocks-ext/` (an extension importing `@sigrun/sigrun/blocks`)
@@ -182,7 +183,7 @@
 - [ ] **Step 1: Write failing tests:**
   - `tree(page({title: "T", main: [markdown({text: "x"})]}))` deep-equals the hand-written JSON and passes `validateTree(…, {placement: "view"})`;
   - the §14.1 example (with `groups` as a literal) validates with `handlers: new Set(["move"])`;
-  - packages: after boot, `<packagesDir>/node_modules/@sigrun/sigrun` is a symlink to the running package root; `fixture-blocks-ext`'s factory imports `@sigrun/sigrun/blocks` and returns a tree whose `v` equals the server's `BLOCK_SET_VERSION`;
+  - packages: after boot, `<packagesDir>/node_modules/@sigrun/sigrun` is a symlink to the running package root. This holds when booted from the source checkout, which has no `node_modules/@sigrun/sigrun` anywhere above it. `fixture-blocks-ext`'s factory imports `@sigrun/sigrun/blocks` and returns a tree whose `v` equals the server's `BLOCK_SET_VERSION`. `exports` points at `dist/`, so this test needs a build first: run it from a vitest `globalSetup` that calls `npm run build`, or skip it with a message when `dist/blocks/index.js` is absent. Never point `exports` at `src/`;
   - an extension whose own `node_modules/@sigrun/sigrun` has a different version is quarantined with the same message shape pi-durable skew produces;
   - `SIGRUN_DEV=1` → `/v1/meta` has `dev: true`; unset → `false`; `SIGRUN_DEV=yes` → boot error naming the variable.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** `npm test && npm run typecheck && npm run build` — PASS; `node -e "import('@sigrun/sigrun/blocks')"` from a scratch dir with the package linked resolves.

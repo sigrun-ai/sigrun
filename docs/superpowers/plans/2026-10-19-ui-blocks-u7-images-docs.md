@@ -6,11 +6,11 @@
 
 **Architecture:**
 - **Rewriting:** `src/server/images/rewrite.ts` walks every tree and data object before it leaves the server and replaces `https://…` image sources with signed proxy URLs.
-- **Fetching:** `src/server/images/fetch.ts` resolves once, vets every address, and connects only to a vetted address through a custom `lookup` on an `undici` `Agent`.
+- **Fetching:** `src/server/images/fetch.ts` resolves once, vets every address, and connects only to a vetted address through `node:https` `request` with a custom `lookup`. `undici` is not a dependency; Node's bundled copy backs global `fetch` but can't be imported, so we use `node:https` and add no package.
 - **Caching:** `src/server/images/cache.ts` is an LRU under `<cacheDir>/images/`.
 - **Routes:** `src/server/routes/images.ts` serves `GET /v1/image` in its signed form (`u`, `e`, `s`) and its source form (`src`), plus `POST /v1/image` for data URLs too long for a query string.
 
-**Tech Stack:** Node 22 `undici` (bundled `fetch`/`Agent`), `node:dns/promises`, `node:crypto` HMAC-SHA256, `sharp` (new server dependency, ruling 17), Fastify.
+**Tech Stack:** `node:https` (per-request `lookup` and `servername`), `node:dns/promises`, `node:crypto` HMAC-SHA256, `sharp` (new server dependency, ruling 17), Fastify.
 
 **Spec:** `docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md` §11 (all), §14.5, §15 (image proxy), §16 (Images).
 
@@ -26,7 +26,7 @@
 - Accepted image types (sniffed from bytes): PNG, JPEG, GIF, WebP. SVG and AVIF refused.
 - Cache: `<cacheDir>/images/`, key `sha256(u)` plus `as` variant, 256 MiB LRU, `max-age` clamped to 1 h–7 d.
 - Response headers: `Content-Type` of the sniffed type, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=<clamped>`.
-- Webui CSP stays `img-src 'self' data:`.
+- The webui sends no CSP today. Task 3 adds `Content-Security-Policy: img-src 'self' data:` to the webui's HTML responses (`src/server/static.ts`). It has only that one directive, so scripts and styles are untouched.
 
 ## Review Focus
 
@@ -74,7 +74,7 @@
   ```
 
 - [ ] **Step 1: Write failing tests:** `isRefusedAddress` for one address in every refused range and its IPv4-mapped IPv6 form (`::ffff:10.0.0.1`), and `false` for `203.0.113.5` (a documentation range that the test's resolver uses as its stand-in public address); Review Focus 1 (the resolver returns `["203.0.113.5"]` then `["127.0.0.1"]` on any second call; the connection's remote address is the first, asserted via the test server's socket); a host resolving to several addresses where one is private → refused; Review Focus 2 (`http:` redirect refused; a redirect to a private host refused; a fourth redirect refused); Review Focus 3 (drip server cut at 10 s, fake timers); an 11 MiB body → refused at 10 MiB; SVG and AVIF bytes → refused even with an `image/png` content type.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** with an `undici` `Agent` whose `connect.lookup` returns the single vetted address for that hop; TLS `servername` stays the original host.
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** each hop as one `https.request` whose `lookup` option calls back with the single vetted address for that hop (no agent reuse across hops). `servername` and the `Host` header stay the original host. Redirects are followed by hand: never pass a `follow` option, so every hop goes through the vetting.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `git commit -m "images: rebinding-safe fetch connecting only to vetted addresses; range, redirect, size, time and type limits"`.
 
 ### Task 3: Cache, PNG conversion, routes
@@ -82,9 +82,10 @@
 **Files:**
 - Modify: `package.json` (`sharp` in `dependencies`; confirm the Dockerfile's base image runs its prebuilt binary), `Dockerfile` if needed
 - Create: `src/server/images/cache.ts`, `src/server/images/convert.ts`, `src/server/routes/images.ts`
+- Modify: `src/server/static.ts` (the webui HTML responses carry `Content-Security-Policy: img-src 'self' data:`)
 - Test: `test/images-routes.test.ts`, `test/images-cache.test.ts`
 
-- [ ] **Step 1: Write failing tests:** unauthenticated → 401; unsigned or expired signed form → 403; a valid signed fetch → 200 with the sniffed type, `nosniff`, clamped `max-age`; the second request is served from `<cacheDir>/images/` without an upstream call; `as=png` converts a JPEG to PNG (check the PNG signature) and caches both variants; the source form serves an asset (containment rules from U3 Task 3 apply: a traversal → 404) and a `data:` URL, both convertible with `as=png`; `POST /v1/image?as=png` with a 200 KiB data URL body → `413` (over the 192 KiB rule) and a 100 KiB one → 200; Review Focus 4 (two concurrent requests → one upstream fetch); Review Focus 5 (fill the cache past 256 MiB with a test-sized cap; a file being streamed is not evicted).
+- [ ] **Step 1: Write failing tests:** the webui's `index.html` response carries exactly `Content-Security-Policy: img-src 'self' data:`, and the existing e2e smoke still passes with it; unauthenticated → 401; unsigned or expired signed form → 403; a valid signed fetch → 200 with the sniffed type, `nosniff`, clamped `max-age`; the second request is served from `<cacheDir>/images/` without an upstream call; `as=png` converts a JPEG to PNG (check the PNG signature) and caches both variants; the source form serves an asset (containment rules from U3 Task 3 apply: a traversal → 404) and a `data:` URL, both convertible with `as=png`; `POST /v1/image?as=png` with a 200 KiB data URL body → `413` (over the 192 KiB rule) and a 100 KiB one → 200; Review Focus 4 (two concurrent requests → one upstream fetch); Review Focus 5 (fill the cache past 256 MiB with a test-sized cap; a file being streamed is not evicted).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** + `docker build .` locally if the Dockerfile changed — PASS.
 - [ ] **Step 5: Commit** `git commit -m "images: proxy routes, LRU cache under cacheDir, sharp PNG conversion for the TUI"`.
 

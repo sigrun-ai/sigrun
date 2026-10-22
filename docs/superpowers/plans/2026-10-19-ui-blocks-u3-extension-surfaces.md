@@ -7,7 +7,7 @@
 **Architecture:**
 - **Contract:** `surfaces` on the factory result (`src/extension.ts`), validated at load (`src/harness/loader.ts`); malformed → quarantine.
 - **Service:** `src/server/surfaces/` holds a `SurfaceService` with four parts: the per-principal access cache, the per-instance `rev` counter and (for `sharedData`) op log, the action dedup window, and the watcher registry.
-- **Routes:** `src/server/routes/surfaces.ts` mounts under `/v1/ext/<slug>/surfaces/…` and `/assets/…`, beside W5's `registerExtensionRoutes`, which now rejects the reserved prefixes.
+- **Routes:** `src/server/routes/surfaces.ts` mounts under `/v1/ext/<slug>/surfaces/…` and `/assets/…`, beside W5's extension routes (`registerExtensionRoutes` in `src/server/routes/extension-routes.ts`; `src/server/routes/extensions.ts` has an unrelated function of the same name for the list and settings routes). The reserved prefixes are rejected at load in `src/harness/loader.ts`, before any route mounts.
 - **Events:** W3's `/v1/events` gains a `hello {streamId}` first frame (spec §7.3 amendment); `surface.changed` goes through the `EventHub` with a per-stream filter supplied by the watcher registry.
 
 **Tech Stack:** Fastify 5, `@sigrun/shared/blocks`, `src/blocks/validate.ts` (U0), W1 `Principal`/`accessOf`, W3 `EventHub`, W5 `SigrunHost`.
@@ -116,9 +116,9 @@
 
 **Files:**
 - Create: `src/server/surfaces/watchers.ts`
-- Modify: `src/server/routes/events.ts` (W3: first frame `event: hello` / `data: {"streamId": "<uuid>"}`; `visible()` gets an explicit `surface.changed` branch that delivers only to streams in the watcher registry — its default branch treats any other event as conversation-scoped and must not see this one), `shared/src/views.ts` (`HostEventWire`, which lives there since W3, gains `{type: "surface.changed"; slug: string; id: string; k: string; rev: number; treeRev: number}`), `src/harness/seam-host.ts` (`host.surfaces.changed` bound through the existing lazy-binding contract)
-- Modify: `webui/src/api.ts` / the shared `EventSource` from W3 (store `streamId`; send `X-Sigrun-Stream`), `tui/src/sse.ts` (same)
-- Test: `test/surfaces-events.test.ts`, `webui/src/stream.test.ts`, `tui/test/sse.test.ts`
+- Modify: `src/server/routes/events.ts` (W3: the first frame is `event: hello` / `data: {"streamId": "<uuid>"}`, written before the hub subscription). `visible()` is an exhaustive switch whose `default` arm never delivers (`event satisfies never`). Add a `surface.changed` case that delivers only to this connection's `streamId` when the watcher registry lists it with access other than `none`. Add the same case to `test/events-exhaustive.typecheck.ts`, which mirrors the switch and fails the typecheck otherwise. `shared/src/views.ts` (`HostEventWire`) gains `{type: "surface.changed"; slug: string; id: string; k: string; rev: number; treeRev: number}`. `src/harness/seam-host.ts` binds `host.surfaces.changed` through the existing lazy-binding contract.
+- Modify: `webui/src/sessions/useConversationList.ts`, which opens the app's one shared `/v1/events` source (`App.tsx` and `jobs/JobsPanel.tsx` consume it). It stores `streamId` from `hello` and exposes it so surface fetches send `X-Sigrun-Stream`. Also `tui/src/sse.ts` (same).
+- Test: `test/surfaces-events.test.ts`, `test/events-exhaustive.typecheck.ts` (run by `npm run typecheck`), `webui/src/sessions/useConversationList.test.tsx`, `tui/test/sse.test.ts`
 
 **Interfaces:**
 - Produces: `export class WatcherRegistry { touch(stream: string, user: string, slug: string, id: string, key: string, access: SurfaceAccess): void; dropStream(stream: string): void; streamsFor(slug: string, id: string, key: string): string[] }`.

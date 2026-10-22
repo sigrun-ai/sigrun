@@ -21,7 +21,8 @@
 - Ruling 18: this replaces core-hardening §5.7's "every `server.*` key is restart-required". Do not edit the core-hardening docs.
 - Core keys:
   - `live`: `namingModel`, `server.providers.refreshIntervalMinutes` (the scheduler re-arms), `jobHistory.runs`, `jobHistory.revisions`;
-  - `restart`: listen host and port, data and config dirs, `server.auth.*`, `server.trustedProxies`, `server.webui.*` (bundle selection), the extension list;
+  - `restart`: `server.port`, the path keys (`server.dataDir`, `cacheDir`, `stateDir`, `storagePath`, `workspacePath`, `extensionsDir`), `server.auth.*` (including `server.auth.proxy.trustedProxies`), `server.webui.*` and `server.webuiBundle` (bundle selection), and `extensions`;
+  - no `apply`: the listen host (a launch option, `serve` vs `run`) and the config dir (env-only `SIGRUN_CONFIG_DIR`). Neither is a stored setting;
   - every other existing key: audit in Task 1, and record its classification in the registry with a one-line reason.
 - Extension fields default to `live`.
 - `settings.changed {scope: "server" | {extension: slug}, keys: string[]}` on the event bus and on `/v1/events`.
@@ -43,10 +44,10 @@
 
 **Files:**
 - Create: `src/settings/registry.ts` (`CORE_SETTING_KEYS: {key, apply, section, reason}[]`), `src/settings/pending.ts`
-- Modify: `src/harness/settings.ts` (writes return `{applied: string[], pending: string[]}`; publish `settings.changed`), `src/harness/providers/scheduler.ts` (re-arm on `server.providers.refreshIntervalMinutes` change), `src/server/routes/settings.ts` (`GET`/`PATCH /v1/settings` include `pendingRestart`), `src/server/routes/extensions.ts` (W3: extension settings GET includes `pendingRestart`; PUT fires `onSettingsChanged`), `shared/src/views.ts` (`settings.changed` in `HostEventWire`) and `src/server/routes/events.ts` (an explicit `settings.changed` branch in `visible()`: server-scope events to admins, extension-scope events to admins), `src/extension.ts` + `src/harness/loader.ts` (`onSettingsChanged?(keys: string[]): void | Promise<void>` on the factory result), `shared/src/settings.ts` (`SettingsResponse.pendingRestart: string[]`)
+- Modify: `src/harness/settings.ts` (writes return `{applied: string[], pending: string[]}`; publish `settings.changed`), `src/harness/providers/scheduler.ts` (re-arm on `server.providers.refreshIntervalMinutes` change), `src/server/routes/settings.ts` (`GET`/`PATCH /v1/settings` include `pendingRestart`), `src/server/routes/extensions.ts` (W3: extension settings GET includes `pendingRestart`; PUT fires `onSettingsChanged`), `shared/src/views.ts` (`settings.changed` in `HostEventWire`), `src/server/routes/events.ts` (a `settings.changed` case in the exhaustive `visible()` switch, delivering server-scope and extension-scope events to admins only) plus the same case in `test/events-exhaustive.typecheck.ts`, `src/extension.ts` + `src/harness/loader.ts` (`onSettingsChanged?(keys: string[]): void | Promise<void>` on the factory result), `shared/src/settings.ts` (`SettingsResponse.pendingRestart: string[]`)
 - Test: `test/settings-apply.test.ts`
 
-- [ ] **Step 1: Write failing tests:** every key in `ServerSettings` (walk the shared type's runtime defaults) has a registry entry (a missing one fails the test with its name); a `PATCH` of `namingModel` + `server.port` returns `applied: ["namingModel"]`, `pending: ["server.port"]` and `GET` shows `pendingRestart: ["server.port"]`; patching the port back removes it (Review Focus 2); changing `refreshIntervalMinutes` re-arms the scheduler (next fire at the new interval, fake timers) with no restart; `settings.changed` is published with `{scope: "server", keys}`; an extension's `onSettingsChanged` receives its changed keys, and one that throws is logged while the PUT still returns 200.
+- [ ] **Step 1: Write failing tests:** every key in `SettingsFile` (`shared/src/settings.ts`, nested `server.*` keys included) has a registry entry, enumerated by a literal key list in the test that a `satisfies` check ties to the type, since TypeScript types have no runtime keys (a missing entry fails the test with its name); a `PATCH` of `namingModel` + `server.port` returns `applied: ["namingModel"]`, `pending: ["server.port"]` and `GET` shows `pendingRestart: ["server.port"]`; patching the port back removes it (Review Focus 2); changing `refreshIntervalMinutes` re-arms the scheduler (next fire at the new interval, fake timers) with no restart; `settings.changed` is published with `{scope: "server", keys}`; an extension's `onSettingsChanged` receives its changed keys, and one that throws is logged while the PUT still returns 200.
 - [ ] **Step 2: Run** `npx vitest run test/settings-apply.test.ts` — FAIL.
 - [ ] **Step 3: Implement.** The boot snapshot is taken once, after settings load and before listen.
 - [ ] **Step 4: Run** — PASS. **Step 5: Commit** `git commit -m "settings: live/restart metadata for every core key, settings.changed, onSettingsChanged, pendingRestart (supersedes core-hardening §5.7 rule)"`.
@@ -55,7 +56,7 @@
 
 **Files:**
 - Create: `src/server/routes/admin.ts` (`POST /v1/admin/restart`)
-- Modify: `src/config.ts` (`server.supervised`, env `SIGRUN_SUPERVISED`, strict `true`/`false`; `server.dev` already exists from U0), `src/serve.ts` (restart = the existing graceful shutdown path, then `process.exit(0)`), `src/server/routes/meta.ts` (`/v1/meta` gains `supervised`), `charts/sigrun/values.yaml` + `charts/sigrun/templates/common.yaml` (`SIGRUN_SUPERVISED: "1"`), `docker/docker-compose.yaml` (`SIGRUN_SUPERVISED: "1"`, `restart: unless-stopped`), `README.md` (restart section)
+- Modify: `src/config.ts` (`server.supervised`, env `SIGRUN_SUPERVISED`, strict `true`/`false`; `server.dev` already exists from U0), `src/serve.ts` (restart = the existing graceful shutdown path, then `process.exit(0)`), `src/server/routes/meta.ts` (`/v1/meta` gains `supervised`), `charts/sigrun/values.yaml` (the container's `env` list gains `SIGRUN_SUPERVISED: "1"`), `docker/docker-compose.yaml` (`SIGRUN_SUPERVISED: "1"`; it already has `restart: unless-stopped`), `README.md` (restart section)
 - Modify: `webui/src/App.tsx` + `tui/src/ui/app.ts` (a "Restarting…" state after a restart call, reconnecting when `/readyz` answers)
 - Test: `test/admin-restart.test.ts`, `test/manifests.test.ts` (extend), `webui/src/App.test.tsx`, `tui/test/app.test.ts`
 
@@ -77,10 +78,10 @@
 ### Task 4: Core sections on blocks, both settings panels, search
 
 **Files:**
-- Create: `src/settings/core-sections.ts` (General, Interface, Providers, Users and invites, Jobs, Backup, Extensions as `SettingsSectionDef`s under slug `core`; Interface binds client prefs and saves them client-side)
+- Create: `src/settings/core-sections.ts` (the sections the webui has today, General, Tools, Interface, Advanced, Providers and Extensions, as `SettingsSectionDef`s under slug `core`; Interface binds client prefs (`webui/src/settings/usePrefs.ts`) and saves them client-side; Providers keeps the credential flows `ProvidersSection.tsx` has now; Jobs stays its own rail panel and gets no section)
 - Modify: `webui/src/settings/SettingsPanel.tsx` (replace the hardcoded `SECTIONS` with the list from `GET /v1/settings/sections`; each section is a `SurfaceView`; the `pendingRestart` callout with the Restart button when `supervised` and the user is an admin, otherwise "Restart sigrun to apply"), `tui/src/ui/app.ts` (a Settings view doing the same)
 - Create: `src/server/routes/settings-sections.ts` (`GET /v1/settings/sections` → `{sections: {slug, id, title, icon}[], index: {sectionId, label, help}[]}`)
-- Test: `test/settings-sections-core.test.ts`, `webui/src/settings/SettingsPanel.test.tsx`, `webui/e2e/settings-panel.spec.ts` (update), `tui/test/settings.test.ts`
+- Test: `test/settings-sections-core.test.ts`, `webui/src/settings/SettingsPanel.test.tsx`, `webui/e2e/settings-panel.spec.ts` and `webui/e2e/settings-extensions.spec.ts` (update both), `tui/test/settings.test.ts` (create; the TUI has no settings view today)
 
 - [ ] **Step 1: Write failing tests:** every core section validates as a `settings` tree; the section list orders core first then extensions alphabetically; the search index includes every field label and help string, and searching "naming" in the webui and TUI jumps to General → naming model; an extension without a section still shows its raw JSON editor under Extensions → <name> → Advanced; the restart callout lists pending keys and shows the button only for a supervised admin; Playwright: change `namingModel` (no callout) and `server.port` (callout appears).
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.**

@@ -1,6 +1,8 @@
 # Sigrun UI blocks: one block set for views, settings, chat, interactions and ambient surfaces
 
-Status: draft for review. Date: 2026-10-19.
+Status: reviewed (two rounds, §20); refreshed 2026-10-22 against sigrun
+0.1.4 (core-hardening merged, approvals deleted, `@sigrun/sigrun`
+published, webui UI rounds 1–2). Not yet implemented. Date: 2026-10-19.
 
 Inputs:
 
@@ -14,7 +16,8 @@ Inputs:
 - the core-hardening spec
   (`2026-10-19-sigrun-core-hardening-design.md`), whose W1 (principal,
   `accessOf`), W3 (`/v1/events`, extension settings) and W5 (extension
-  routes, contract type) this builds on.
+  routes, contract type) this builds on. All of W0–W5 landed in sigrun
+  0.1; W-numbers below name that spec's sections, not pending work.
 
 ## 1. Goal
 
@@ -642,6 +645,12 @@ The extension stays loaded.
 - Event types are an open set: channels ignore types they don't know.
   This spec adds `surface.changed` and `settings.changed` (§13.2) to W3's
   §7.4 list.
+- The server is the opposite: `/v1/events` delivers a type only through
+  an explicit visibility case, and an unhandled type is never sent
+  (`src/server/routes/events.ts`, kept exhaustive by
+  `test/events-exhaustive.typecheck.ts`). Each new type gets its own
+  case: `surface.changed` goes only to watching streams (above), and
+  `settings.changed` only to admins.
 - Each channel then fetches `…/data?since=<rev>` as its own principal.
   This is why events don't carry data: `render` and `data` are
   principal-specific, so pushing one principal's data to another would
@@ -678,7 +687,11 @@ Two core tools, available to every agent:
     tree and its initial data, plus the `entryId`.
   - The transcript shows the surface in place of the tool call: channels
     render a `show_blocks` tool call whose result names an `entryId` as
-    that surface, not as a separate tool row.
+    that surface, not as a separate tool row. Both channels group the
+    transcript with the shared `groupTurns` (`shared/src/turns.ts`), so
+    the surface is a timeline segment there. It shows in place in the
+    grouped view and the timeline view alike, and it is not counted as a
+    tool in the activity line.
 - **`update_blocks {entryId, ops}`** applies `DataOp`s to one of the
   conversation's own block surfaces. It records no change record (the
   agent made the change), and is how an agent keeps a progress table or
@@ -858,14 +871,14 @@ needs an immediate reply."
   `InteractionAnswer` becomes `{values: Readonly<Record<string,
   JsonValue>>}` (today `values` allows only strings, numbers and
   booleans), so `multi` id lists and `{other}` objects fit. Nothing
-  depends on the old shape once approvals is deleted.
-- **No compatibility layer** (ruling 16). The only extension that writes
-  interaction records today is `sigrun-ext-approvals`, which is being
-  deleted (core-hardening §1). No other `sigrun-ext-*` repo writes
-  interaction or ambient records (checked 2026-10-19). Legacy-shaped
-  records fail validation, and core's seam fixtures (`fixture-seam`,
-  `fixture-seam-visual`, `fixture-seam-bad-kinds`, and the decide fixture
-  W2 renames from `fixture-approvals`) are rewritten as trees.
+  outside this repo depends on the old shape.
+- **No compatibility layer** (ruling 16). `sigrun-ext-approvals` is
+  deleted (sigrun 0.1). No other extension writes interaction or ambient
+  records: not the built-ins (codemode, MCP, tool search), the memory
+  extension or the provider plugins (checked 2026-10-22). Legacy-shaped
+  records fail validation. The in-repo writers are the seam fixtures
+  (`fixture-seam`, `fixture-seam-visual`, `fixture-seam-bad-kinds`) and
+  the decide fixture `fixture-gate`, and they are rewritten as trees.
 - **The planned ports are the evidence check.** The replacement
   extensions are ports of `@juicesharp/rpiv-ask-user-question` and
   `pi-warden`. The interaction subset covers both:
@@ -995,8 +1008,13 @@ needs an immediate reply."
   §11.1 type and size checks, so there is nothing to sign. The TUI uses
   it for non-PNG assets and data URLs; a `data:` source too long for a
   URL is POSTed to the same path as the body instead.
-- Responses carry `X-Content-Type-Options: nosniff`. The webui's own CSP
-  (`img-src 'self' data:`) is what stops images loading from elsewhere.
+- Responses carry `X-Content-Type-Options: nosniff`.
+- **Images load only from sigrun.** The webui sends no
+  Content-Security-Policy today. U7 adds `Content-Security-Policy:
+  img-src 'self' data:` to the webui's HTML responses. A single
+  `img-src` directive restricts images and nothing else, so scripts and
+  styles are unaffected. That header is what stops a markdown image or
+  a missed rewrite from loading straight from another origin.
 - Failures render the block's `alt` text.
 
 ### 11.3 In the TUI (ruling 13)
@@ -1080,13 +1098,20 @@ Every channel implements these. Extensions get them without asking.
   field `restart` when its factory reads the value at load.
 - **This replaces core-hardening §5.7's rule** that every `server.*` key
   is restart-required (ruling 18). From U4 on, each core key is marked
-  individually, and the plan audits `server.*`:
+  individually, and the plan audits every key in `SettingsFile`
+  (`shared/src/settings.ts`):
   - `live`: `namingModel` (already read per use, `src/harness/naming.ts`),
-    `providers.refreshIntervalMinutes` (the scheduler re-arms),
+    `server.providers.refreshIntervalMinutes` (the scheduler re-arms),
     `jobHistory.*` (already live);
-  - stay `restart`: listen host and port, the data and config dirs,
-    `auth.*`, `trustedProxies`, the webui bundle selection, the
-    extension list.
+  - stay `restart`: `server.port`, the path keys (`server.dataDir`,
+    `cacheDir`, `stateDir`, `storagePath`, `workspacePath`,
+    `extensionsDir`), `server.auth.*` (including
+    `auth.proxy.trustedProxies`), the webui bundle selection
+    (`server.webui.*`, `server.webuiBundle`), and `extensions`.
+  - The listen host is a launch option (`serve` binds `0.0.0.0`, `run`
+    binds `127.0.0.1`), and the config dir is env-only
+    (`SIGRUN_CONFIG_DIR`). Neither is a stored setting, so neither has an
+    `apply`.
 
 ### 13.2 Change events and pending restarts
 
@@ -1132,9 +1157,12 @@ interface SettingsSectionDef {
   field, writes the object, then fires §13.2.
 - `secrets` render as `secret` fields backed by the core-hardening §7.7 secrets routes
   (write-only, showing their source).
-- Core's own sections (General, Interface, Providers, Users and invites,
-  Jobs, Backup, Extensions) are rebuilt as `SettingsSectionDef`s, so core
-  and extensions use one renderer. Client-only preferences (theme,
+- Core's own sections (today General, Tools, Interface, Advanced,
+  Providers and Extensions, `webui/src/settings/SettingsPanel.tsx`) are
+  rebuilt as `SettingsSectionDef`s, so core and extensions use one
+  renderer. Jobs stays its own rail panel (`webui/src/jobs/`). Users,
+  invites and backup have API routes and no settings section, and this
+  spec adds none. Client-only preferences (theme,
   keymap) stay client-side but render through the same blocks.
 - Extensions with no declared section keep core-hardening §7.7's raw JSON editor under
   Settings → Extensions → <name> → Advanced.
@@ -1176,10 +1204,12 @@ render: async ({ principal, params }) => ({
   - `@sigrun/sigrun` joins `HOST_RUNTIME_MODULES` (`src/harness/packages.ts`), so
     the server links its own copy into the packages directory and every
     extension's import resolves to it;
-  - this assumes sigrun is published (`"private": true` removed, an
-    `exports` map with `./blocks`), which is planned for when
-    core-hardening wraps up. U0 adds the `exports` map; the publish
-    itself is outside this spec.
+  - sigrun is published as `@sigrun/sigrun` (0.1.x), with an `exports`
+    map of `.` and `./extension`. U0 adds `./blocks`;
+  - `HOST_RUNTIME_MODULES` links modules found in a `node_modules`
+    directory above sigrun. Sigrun itself is the package root, not a
+    dependency, so in a source checkout that walk never finds it. The
+    link target for `@sigrun/sigrun` is the running package's own root.
 - Event props (`onMove`, `onSubmit`, `onCheck`, `onActivate`) name
   handlers in the surface's `actions` map. A name with no handler fails
   validation at load where it can be checked statically, and at render
@@ -1352,9 +1382,9 @@ section, a dashboard).
 
 ## 18. Workstreams
 
-All land after core-hardening W5 (they need W1's principal and access,
-W3's `/v1/events` and extension settings, and W5's extension routes and
-contract type).
+Core-hardening W1–W5 landed in sigrun 0.1, so nothing blocks U0. The
+workstreams use W1's principal and access, W3's `/v1/events` and
+extension settings, and W5's extension routes and contract type.
 
 | id | delivers | depends on |
 |---|---|---|
@@ -1365,7 +1395,7 @@ contract type).
 | U4 | settings: `apply`, `settings.changed`, `onSettingsChanged`, `pendingRestart`, restart route, supervised detection, core sections rebuilt, extension sections | U0, U1, U2, U3 |
 | U5 | chat: `show_blocks`, `update_blocks`, `sigrun.blocks` entries and the state family, chat surface routes, edits, change notes in the submit path, answers | U0, U1, U2, U3 |
 | U6 | interactions and ambient on trees: record schemas carry trees only, `{values}` answers, channel renderers switched to trees, core seam fixtures rewritten | U1, U2 |
-| U7 | image proxy (signing, vetted-address fetching, cache, `sharp` PNG conversion), docs | U0, U3 (icon names are in U0; U1 and U2 draw them) |
+| U7 | image proxy (signing, vetted-address fetching, cache, `sharp` PNG conversion), the webui `img-src` CSP, docs | U0, U3 (icon names are in U0; U1 and U2 draw them) |
 
 U1 and U2 can run in parallel; so can U3 and U7 once U0 lands. U5 follows U3 (chat surfaces reuse its routes, access cache and watcher registry).
 
@@ -1425,3 +1455,20 @@ glm OK with notes):
 - **Rejected:** that a note queued while busy can be lost in a crash.
   pi-durable admits queued items durably (`admitSubmission` in
   `harness/submissions.js`), so a queued note is placed after a restart.
+
+**Refresh 2026-10-22** (against sigrun 0.1.4; no design change):
+
+- the core-hardening, approvals-deletion and publish assumptions are now
+  facts (header, §9.1, §14.1, §18);
+- `/v1/events` never delivers an unhandled event type, so new types need
+  explicit cases (§7.3);
+- chat surfaces hook the shared `groupTurns` timeline that UI rounds 1–2
+  introduced (§8.1);
+- the webui has no CSP, so U7 adds the `img-src` one §11.2 relied on;
+- the settings key paths and section names are the real ones (§13.1,
+  §13.4);
+- the host-module link for sigrun itself is its own root (§14.1).
+- pi-durable 1.3.0 still matches every internal the spec cites
+  (`session/forks.js`, `harness/inbox.js`, `harness/view.d.ts`,
+  `submissionByRequest`, `admitSubmission`, `fork: "current"`,
+  `InputEntry`).

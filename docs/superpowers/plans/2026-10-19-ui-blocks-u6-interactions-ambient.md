@@ -27,8 +27,8 @@
 
 ## Review Focus
 
-1. **An interaction answered from two channels at once** — first-answer-wins still holds with `{values}`; the loser gets `409` and its card shows the winning answer. Owner: Task 2.
-2. **An interaction that expires while a user is mid-way through a multi-question stepper** — submitting returns `410` and the card shows "expired" without losing what they typed (it stays visible, read-only). Owner: Task 3.
+1. **An interaction answered from two channels at once** — first-answer-wins still holds with `{values}`; the loser gets the route's existing `404 {error: "not_pending"}` (the code has no 409), and its card refetches the record and shows the winning answer. Owner: Task 2.
+2. **An interaction that expires while a user is mid-way through a multi-question stepper** — submitting returns the existing `404 {error: "not_pending"}`, the card refetches and shows the record's `expired` status, without losing what they typed (it stays visible, read-only). Owner: Task 3.
 3. **An ambient `panel` with more rows than `maxRows`** — `overflow` applies (`drop` hides the rest with "N more", `summarize` shows a count line), in both channels. Owner: Task 3.
 4. **A `secret` field in an interaction** — its value is in the answer posted to the extension but never in the stored record that channels read, nor in logs. Owner: Task 2.
 5. **An extension writing a legacy-shaped record after upgrade** — the write fails loudly with the validation path in the server log and nothing is rendered; the conversation is unaffected. Owner: Task 1.
@@ -39,6 +39,7 @@
 
 **Files:**
 - Modify: `shared/src/interactions.ts` (body → `body: Tree`; `InteractionAnswer` → `{values}`; drop `InteractionOption`, `InteractionField`, `InteractionDiff` body types), `shared/src/ambient.ts` (body → `body?: Tree`; drop `AmbientBody`, `AmbientRow`, `AmbientGauge`, `AmbientLedgerEntry`, segment types)
+- Modify: `shared/src/views.ts` (it imports and re-exports `InteractionBody`, `InteractionOption`, `AmbientBody`, `AmbientRow` and the other dropped body types: remove them), `webui/src/api.ts` (its `*Wire` aliases of those types go too)
 - Modify: `src/harness/interactions.ts` (`validateInteraction` checks the envelope then `validateTree(body, {placement: "interaction"})`; `validateAnswer` accepts `{values: JsonObject}` only), `src/harness/ambient.ts` (same with `placement: "ambient"` and the one-line rule for `status`/`footer`), `src/extension.ts` (re-exported record types follow)
 - Test: `test/seam.test.ts`, `test/seam-guarantees.test.ts`, `test/interaction-decide.test.ts` (rewrite to trees)
 
@@ -52,10 +53,10 @@
 **Files:**
 - Modify: `src/server/routes/interactions.ts` (body schema `{values}`; secret fields' values are passed to the extension's answer handler and stripped from the stored `answer`, replaced by `"[secret]"`)
 - Modify: `test/fixtures/fixture-seam/`, `test/fixtures/fixture-seam-visual/`, `test/fixtures/fixture-seam-bad-kinds/` — rewrite every record they write as trees built with `@sigrun/sigrun/blocks` builders
-- Modify: `test/fixtures/fixture-gate/` (added by `2026-10-21-core-hardening-review-fixes.md` Task 3) — its allow/deny interaction becomes a tree: a root `form` with a `choice` named `decision` (options `allow`/`deny`, tones `good`/`bad`) and a `longtext` named `reason`; it reads `answer.values.decision`
+- Modify: `test/fixtures/fixture-gate/` (today it seeds a `text` + `options` body and reads `record.answer?.ids`) — its allow/deny interaction becomes a tree: a root `form` with a `choice` named `decision` (options `allow`/`deny`, tones `good`/`bad`) and a `longtext` named `reason`; it reads `answer.values.decision`
 - Test: `test/interaction-decide.test.ts`, `test/server-configure.test.ts` (any interaction assertions)
 
-- [ ] **Step 1: Write failing tests:** the decide flow answers with `{values: {decision: "allow", reason: "ok"}}` and the extension sees exactly that; Review Focus 1 (two concurrent POSTs: one 200, one 409 carrying the stored answer); Review Focus 4 (a form with `secret` named `token`: the extension's handler receives the value, `GET` of the record shows `"[secret]"`, and the server log never contains the value — assert on a captured log stream); a four-question ask-user-question-shaped fixture (sections with one `choice` each, `preview`, `allowOther`) answers in one POST as `{values: {q1, q2, q3, q4}}`.
+- [ ] **Step 1: Write failing tests:** the decide flow answers with `{values: {decision: "allow", reason: "ok"}}` and the extension sees exactly that; Review Focus 1 (two concurrent POSTs: one 200, one `404 not_pending`; a `GET` afterwards returns the winning answer); Review Focus 4 (a form with `secret` named `token`: the extension's handler receives the value, `GET` of the record shows `"[secret]"`, and the server log never contains the value — assert on a captured log stream); a four-question ask-user-question-shaped fixture (sections with one `choice` each, `preview`, `allowOther`) answers in one POST as `{values: {q1, q2, q3, q4}}`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Run** — PASS.
 - [ ] **Step 5: Commit** `git commit -m "seams: {values} answer route, secret values never stored, fixtures rewritten as block trees"`.
 
@@ -67,7 +68,7 @@
 - Modify: `webui/e2e/seam-assert.spec.ts`, `webui/e2e/seam-visual.spec.ts` (update snapshots once, reviewed)
 - Test: `webui/src/entries/SeamComponents.test.tsx`, `tui/test/interactions.test.ts`, `tui/test/ambient.test.ts`, `tui/test/status-bar.test.ts`
 
-- [ ] **Step 1: Write failing tests:** an interaction card renders its tree and submits `{values}`; a multi-question card offers the stepper with review and submits once; Review Focus 2 (expiry mid-stepper → `410`, the card shows "expired", typed values remain visible and read-only); a settled interaction renders read-only with the answer; ambient `status` renders one line in the status bar, `footer` renders left/middle/right zones, `panel` renders above the composer; Review Focus 3 (`maxRows: 3` with 5 rows: `drop` shows "2 more", `summarize` shows a count line); a `quiet` row is folded; all of the above in both channels.
+- [ ] **Step 1: Write failing tests:** an interaction card renders its tree and submits `{values}`; a multi-question card offers the stepper with review and submits once; Review Focus 2 (expiry mid-stepper → `404 not_pending`, the card refetches and shows "expired", typed values remain visible and read-only); a settled interaction renders read-only with the answer; ambient `status` renders one line in the status bar, `footer` renders left/middle/right zones, `panel` renders above the composer; Review Focus 3 (`maxRows: 3` with 5 rows: `drop` shows "2 more", `summarize` shows a count line); a `quiet` row is folded; all of the above in both channels.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement.**
 - [ ] **Step 4: Run** the full gate: `npm test && npm run typecheck && npm --workspace @sigrun/webui run test && npm run typecheck:webui && npm run build:webui && npm --workspace @sigrun/tui run test && npm --workspace @sigrun/tui run typecheck && npm run test:e2e` — PASS.
 - [ ] **Step 5: Commit** `git commit -m "channels: interactions and ambient surfaces rendered from block trees in webui and TUI"`.
