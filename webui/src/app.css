@@ -778,11 +778,21 @@ body {
 .entry-user {
 	display: flex;
 	flex-direction: column;
-	align-items: flex-end;
+	/* STRETCH, not flex-end: a flex-end column shrink-wraps to its widest
+	   child (the actions row, ~200px), and the bubble's percentage
+	   max-width then resolved against THAT — capping a 24-word sentence at
+	   ~157px and wrapping after three words. Stretch keeps the column at
+	   the turn width; the bubble caps itself (max-width + align-self). */
+	align-items: stretch;
 }
 
 .entry-user-message {
-	max-width: 78%;
+	/* Capped in ABSOLUTE ch units, never a percentage: the bubble lives
+	   inside shrink-wrapped flex-end columns (turn-user → entry-user),
+	   where a percentage max-width resolved against ~200px of actions
+	   width and wrapped a 24-char sentence after three words. 60ch is
+	   the readable cap; alignment comes from the flex-end ancestors. */
+	max-width: 60ch;
 	padding: 9px 14px;
 	border-radius: 14px 14px 4px 14px;
 	background: var(--surface-2);
@@ -821,7 +831,8 @@ body {
 }
 
 .entry-expanded-text {
-	max-width: 78%;
+	align-self: flex-end;
+	max-width: min(78%, 60ch);
 	padding: 6px 10px;
 	border-radius: 8px;
 	border: 1px dashed var(--border);
@@ -3187,19 +3198,12 @@ body {
 	white-space: pre-wrap;
 }
 
-/* ── Live thinking (expanded → folds when the response lands) ───────── */
-.live-thinking {
-	overflow: hidden;
-	/* The fold-away: max-height transitions from open to 0 when the
-	   response arrives and the thinking moves under the ActivityLine.
-	   240ms reads as a deliberate fold without delaying the answer. */
-	max-height: 40vh;
-	transition: max-height 240ms ease-in, opacity 240ms ease-in;
-}
-.live-thinking:not(:empty) {
+/* ── Streaming turns (in-place rendering) ──────────────────────────────
+   Live turns render timeline-style: a left rule marks the growing turn
+   while it streams. */
+.turn-assistant[data-live="true"] .turn-timeline {
 	border-left: 2px solid color-mix(in srgb, var(--border) 80%, transparent);
 	padding-left: 0.6rem;
-	margin-bottom: 0.4rem;
 }
 
 /* The version line in Settings → General (quiet, secondary). */

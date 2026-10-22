@@ -56,6 +56,7 @@ import { usePrefs, type PrefsState } from "./settings/usePrefs";
 import type { EventSourceFactory } from "./stream";
 import { useTheme } from "./theme/useTheme";
 import { useConversationView } from "./useConversationView";
+import { useStickToBottom } from "./useStickToBottom";
 import { WorkspaceBrowser } from "./workspace/WorkspaceBrowser";
 
 /** The boot state machine: meta fetch → schema gate → shell. */
@@ -99,13 +100,15 @@ function persistPanel(mode: PanelMode | null): void {
 const TIMELINE_STORAGE_KEY = "sigrun.timeline";
 
 function loadTimeline(): boolean {
+	// Default ON (round 2): in-place interleaving is the preferred reading
+	// shape; an explicit "0" (the user toggled grouped) wins over the default.
 	try {
 		return (
 			(globalThis as { localStorage?: { getItem(k: string): string | null } })
-				.localStorage?.getItem(TIMELINE_STORAGE_KEY) === "1"
+				.localStorage?.getItem(TIMELINE_STORAGE_KEY) !== "0"
 		);
 	} catch {
-		return false;
+		return true;
 	}
 }
 
@@ -278,9 +281,13 @@ export function App(options: AppOptions = {}) {
 		},
 		[],
 	);
-	const { view, status, error } = useConversationView(activeId, {
+	const { view, status, error, frames } = useConversationView(activeId, {
 		createEventSource: options.createEventSource,
 	});
+	// Auto-scroll (round 2): stick to the bottom on new frames unless the
+	// user scrolled up; `frames` is the stream's revision counter.
+	const stuck = useStickToBottom(scrollRoot, frames);
+	void stuck;
 	// The LIFTED conversation list (B3): one hook owns the rows for the
 	// sidebar, the header title, and the transcript's fork parents. `busy`
 	// (the view's steer state) drives the post-run reloads — a name the

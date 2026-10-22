@@ -163,9 +163,19 @@ export function assistantTurnEntry(
 	init?: {
 		readonly model?: string;
 		readonly totalTokens?: number;
+		/** Per-leg token counts (the meta label's in/cache/out split); when
+		 * absent, totalTokens' value lands on `input` (the common fixture
+		 * shape: a single number is input-dominated). */
+		readonly input?: number;
+		readonly output?: number;
+		readonly cacheRead?: number;
+		readonly cacheWrite?: number;
 		readonly conversationId?: number;
 	},
 ): ConversationEntryWire {
+	const total =
+		init?.totalTokens ??
+		(init?.input ?? 0) + (init?.output ?? 0) + (init?.cacheRead ?? 0);
 	return makeEntry(
 		"pi.assistant",
 		[
@@ -173,9 +183,17 @@ export function assistantTurnEntry(
 				role: "assistant",
 				content: blocks,
 				...(init?.model === undefined ? {} : { model: init.model }),
-				...(init?.totalTokens === undefined
+				...(total === undefined
 					? {}
-					: { usage: usageOf(init.totalTokens) }),
+					: {
+						usage: {
+							...usageOf(total),
+							input: init?.input ?? (init?.totalTokens !== undefined ? init.totalTokens : 0),
+							output: init?.output ?? 0,
+							cacheRead: init?.cacheRead ?? 0,
+							cacheWrite: init?.cacheWrite ?? 0,
+						},
+					}),
 			},
 		],
 		{ id, conversationId: init?.conversationId },

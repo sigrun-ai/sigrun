@@ -88,6 +88,10 @@ function rootView() {
 			toolResultTurnEntry(3, "call-root", { text: "bin\netc" }),
 			assistantTurnEntry(4, [textBlock("The root has `bin` and `etc`.")], {
 				model: "faux/m1",
+				input: 84,
+				cacheRead: 0,
+				cacheWrite: 0,
+				output: 36,
 				totalTokens: 120,
 			}),
 		],
@@ -327,7 +331,7 @@ describe("TurnList: grouping and rendering", () => {
 		);
 		const metas = renderer.root.findAllByProps({ className: "message-meta" });
 		expect(metas).toHaveLength(1);
-		expect(metas[0]?.children).toEqual(["faux/m1 · 120 tokens"]);
+		expect(metas[0]?.children).toEqual(["faux/m1 · in 84 · out 36"]);
 		renderer.unmount();
 	});
 });
@@ -365,7 +369,11 @@ describe("TurnList: the streaming partial and live slots", () => {
 		});
 		expect(assistant).toHaveLength(1);
 		expect(textContent(renderer.toJSON())).toContain("streaming answer");
-		expect(textContent(renderer.toJSON())).toContain("1 tool");
+		// The live turn renders IN PLACE (timeline-style): the settled tool
+		// call renders as its chronological row — not the grouped activity
+		// line — and the live flag marks the turn root.
+		expect(assistant[0]?.props["data-live"]).toBe("true");
+		expect(textContent(renderer.toJSON())).toContain("ls /");
 		renderer.unmount();
 	});
 

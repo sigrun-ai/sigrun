@@ -10,6 +10,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "@playwright/test";
 import { bootE2EServer, type E2EServer } from "./harness";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 
 const SHOT_DIR = join(import.meta.dirname, "..", "test-results", "ui-batch");
 
@@ -17,11 +18,66 @@ let server: E2EServer;
 
 test.beforeAll(async () => {
 	await mkdir(SHOT_DIR, { recursive: true });
-	server = await bootE2EServer({});
+	// Multiple sends share ONE server boot: queue an answer per send
+	// (both tests submit).
+	server = await bootE2EServer({
+		responses: [
+			fauxAssistantMessage("e2e answer one"),
+			fauxAssistantMessage("e2e answer two"),
+			fauxAssistantMessage("e2e answer three"),
+			fauxAssistantMessage("e2e answer four"),
+		],
+	});
 });
 
 test.afterAll(async () => {
 	await server?.cleanup();
+});
+
+test("round 2: in-place live render, autoscroll, token meta, one-line bubble", async ({ page }) => {
+	await page.goto(server.url);
+	await page.getByRole("button", { name: /new/i }).first().click();
+	const composer = page.locator(".composer-input");
+	await composer.waitFor({ state: "visible" });
+
+	// The user bubble: 24 chars render ONE line (the wrap bug measured 3).
+	await composer.fill("What tools can you see?");
+	await composer.press("Control+Enter");
+	await page
+		.locator(".entry-user-message")
+		.first()
+		.waitFor({ state: "visible", timeout: 8000 });
+	const bubbleH = await page
+		.locator(".entry-user-message")
+		.first()
+		.evaluate((el) => el.getBoundingClientRect().height);
+	if (bubbleH > 55) {
+		throw new Error(`user bubble wraps: height=${bubbleH}`);
+	}
+	await page.waitForTimeout(900);
+	if (bubbleH > 55) {
+		throw new Error(`user bubble wraps: height=${bubbleH}`);
+	}
+
+	// The meta label splits tokens (the faux usage has in/out legs).
+	const meta = await page.locator(".message-meta").first().textContent();
+	if (meta !== null && !/in \d+.*· out \d+$/.test(meta)) {
+		throw new Error(`meta label not split: ${meta}`);
+	}
+
+	// Autoscroll: after the answer, the transcript is pinned to the bottom.
+	const scroll = await page.evaluate(() => {
+		const root = document.querySelector(".chat-center");
+		if (root === null) throw new Error("no chat-center");
+		const el = root as HTMLElement;
+		return {
+			atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 24,
+			canScroll: el.scrollHeight > el.clientHeight,
+		};
+	});
+	if (scroll.canScroll && !scroll.atBottom) {
+		throw new Error(`not pinned to bottom: ${JSON.stringify(scroll)}`);
+	}
 });
 
 test("composer starts one row tall and grows; timeline toggle interleaves", async ({ page }) => {
@@ -66,16 +122,33 @@ test("composer starts one row tall and grows; timeline toggle interleaves", asyn
 	await page.screenshot({ path: join(SHOT_DIR, "03-answer-grouped.png"), fullPage: true });
 
 	const timelineToggle = page.getByRole("button", { name: /chronological view/i });
+	// Default ON (round 2): the turn already renders .turn-timeline.
+	if ((await page.locator(".turn-timeline").count()) === 0) {
+		throw new Error("timeline not the default");
+	}
 	await timelineToggle.click();
 	await page.waitForTimeout(200);
-	await page.screenshot({ path: join(SHOT_DIR, "04-answer-timeline.png"), fullPage: true });
 	const pressed = await timelineToggle.getAttribute("aria-pressed");
-	if (pressed !== "true") {
-		throw new Error("timeline toggle did not latch");
+	if (pressed !== "false") {
+		throw new Error("timeline toggle did not flip off");
 	}
+	await timelineToggle.click();
+	await page.waitForTimeout(200);
+	if ((await timelineToggle.getAttribute("aria-pressed")) !== "true") {
+		throw new Error("timeline toggle did not flip back on");
+	}
+	await page.screenshot({ path: join(SHOT_DIR, "04-answer-timeline.png"), fullPage: true });
 	// The timeline actually re-rendered: at least one chronological
 	// container with prose segments inside (the faux answer has no
 	// tools/thinking, so prose segments are the observable).
+	if ((await timelineToggle.getAttribute("aria-pressed")) !== "true") {
+		await timelineToggle.click();
+	}
+	// The answer's stream needs a moment in EVERY path; wait for prose.
+	await page
+		.locator(".turn-timeline .turn-prose")
+		.first()
+		.waitFor({ state: "visible", timeout: 8000 });
 	const timelineNodes = await page.locator(".turn-timeline").count();
 	const proseSegments = await page
 		.locator(".turn-timeline .turn-prose")

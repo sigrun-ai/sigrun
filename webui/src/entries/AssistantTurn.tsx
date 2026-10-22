@@ -38,15 +38,22 @@ export interface AssistantTurnData {
 	readonly timeline: readonly TimelineEvent[];
 }
 
-/** `<model> · <n> tokens` from the last assistant message with both. */
+/** `<model> · in N (+cache R) · out N` from the last assistant message
+ * carrying usage. Input/cache/output are distinct costs (a cached-heavy
+ * turn reads very differently from a fresh-context one); cache legs are
+ * omitted when zero so short turns stay quiet. */
 function metaLabel(entries: readonly ConversationEntryWire[]): string | undefined {
 	let meta: string | undefined;
 	for (const entry of entries) {
 		for (const message of entry.model ?? []) {
 			const model = typeof message.model === "string" ? message.model : undefined;
-			const tokens = message.usage?.totalTokens;
-			if (model !== undefined && typeof tokens === "number") {
-				meta = `${model} · ${tokens} tokens`;
+			const usage = message.usage;
+			if (model !== undefined && usage !== undefined) {
+				const cache =
+					usage.cacheRead > 0 || usage.cacheWrite > 0
+					? ` (+cache ${usage.cacheRead}${usage.cacheWrite > 0 ? `+${usage.cacheWrite}w` : ""})`
+						: "";
+				meta = `${model} · in ${usage.input}${cache} · out ${usage.output}`;
 			}
 		}
 	}
@@ -75,6 +82,12 @@ export function AssistantTurn(props: {
 		live,
 		timeline,
 	} = props;
+	// LIVE turns ALWAYS render in place (timeline-style): blocks stream
+	// where they occur — thinking where the model thought, tools where they
+	// ran, text where it lands. The previous shape (expanded thinking that
+	// FOLDED to the bottom ActivityLine when text arrived) relocated content
+	// mid-stream; the user's round-2 ask is in-place interleaving.
+	const inPlace = timeline === true || live === true;
 	const forkHere = (): void => {
 		client
 			.fork(conversationId, turn.lastEntryId)
@@ -84,9 +97,13 @@ export function AssistantTurn(props: {
 			);
 	};
 
-	if (timeline === true) {
+	if (inPlace) {
 		return (
-			<div className="turn turn-assistant" data-turn-kind="assistant">
+			<div
+				className="turn turn-assistant"
+				data-turn-kind="assistant"
+				data-live={live === true ? "true" : undefined}
+			>
 				<div className="turn-timeline">
 					{turn.timeline.map((event, index) => {
 						if (event.kind === "text") {
@@ -127,23 +144,12 @@ export function AssistantTurn(props: {
 		);
 	}
 
-	// Live thinking: expanded while the run streams with no text yet; the
-	// ActivityLine's `liveThinking` carries the fold-away when text lands.
-	const liveThinking = live === true && turn.text === "";
+
 	return (
 		<div className="turn turn-assistant" data-turn-kind="assistant">
 			{turn.text !== "" && (
 				<div className="turn-prose">
 					<Markdown source={turn.text} variant="prose" />
-				</div>
-			)}
-			{liveThinking && showThinking && turn.thinking.length > 0 && (
-				<div className="activity-body live-thinking">
-					{turn.thinking.map((text, index) => (
-						<div className="activity-thinking" key={index}>
-							{text}
-						</div>
-					))}
 				</div>
 			)}
 			{(turn.thinking.length > 0 || turn.tools.length > 0) && (
@@ -156,9 +162,6 @@ export function AssistantTurn(props: {
 					slots={slots}
 					showThinking={showThinking}
 					live={props.live}
-					/** While live-thinking is showing, the line renders only the
-					 * tool count; the thinking folds in when text lands. */
-					hideThinkingCount={liveThinking}
 				/>
 			)}
 			<MessageActions
