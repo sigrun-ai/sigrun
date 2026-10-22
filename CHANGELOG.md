@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-22
+### Fixed
+- **ctrl+c hung whenever a webui tab was open**: hijacked SSE streams never
+  end on their own and the shutdown drain waited on them; shutdown now ends
+  every live stream before closing (plus the second-signal force exit).
+- New conversations sort at the top of the list from creation (they used to
+  sink to the bottom of "Earlier" until their first submission).
+- Copy works on insecure origins (plain http on a LAN/tailnet host) via the
+  execCommand fallback; the async clipboard API is secure-context-only.
+- Composer auto-grows from one row (the fixed 3-row box made short prompts
+  look wrapped early).
+- `lastActivityAt` no longer spams a `conversation.changed` event per turn.
+
+### Added
+- Chronological timeline view (header toggle, persisted pref): assistant
+  turns render thinking / tool calls / text interleaved in occurrence order
+  instead of folded under the response.
+- Live thinking renders expanded while a run streams and folds with a
+  brief animation when the response text arrives.
+
 ## [0.1.2] - 2026-10-22
 ### Changed
 - The built-in `@sigrun/ext-mcp` dependency pins 0.2.0: remote MCP servers
