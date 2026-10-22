@@ -83,8 +83,17 @@ export async function serve(
 	options?: ServeOptions,
 ): Promise<BootedServer> {
 	// 1. Env-only resolution (the pre-file behavior — fail-loud on a bad
-	//    env value before anything is written).
-	const envConfig = loadConfig(env);
+	//    env value before anything is written). A file-only `defaultModel`
+	//    must NOT fail here: the file has not been read yet, and step 3
+	//    re-resolves with it. The env-only `envConfig` result feeds ONLY the
+	//    bootstrap's `defaultModel` write, which is used only when env
+	//    actually supplied the model — so skip the env-only resolution
+	//    entirely when no env model is set (a file-only model otherwise
+	//    throws here, before `settings.json` is ever read).
+	const envHasModel =
+		env.SIGRUN_DEFAULT_MODEL?.trim() !== undefined ||
+		env.SIGRUN_MODEL?.trim() !== undefined;
+	const envConfig = envHasModel ? loadConfig(env) : undefined;
 	// 2. First-boot bootstrap (ruling 5 / spec §6.6): absent settings file
 	//    → write ONLY what the environment explicitly set — the env-sourced
 	//    `server` fields (`envServerSection`) plus `extensions` and
@@ -100,11 +109,11 @@ export async function serve(
 		extensions:
 			env.SIGRUN_EXTENSIONS?.trim() === undefined
 				? undefined
-				: envConfig.extensions,
+				: envConfig!.extensions,
 		defaultModel:
 			envModel === undefined
 				? undefined
-				: `${envConfig.models.provider}/${envConfig.models.modelId}`,
+				: `${envConfig!.models.provider}/${envConfig!.models.modelId}`,
 	});
 	// 3. Final resolution: env over the file over code defaults. The file
 	//    re-read picks up whatever bootstrap wrote (or what was already

@@ -196,7 +196,50 @@ test("deploy entry fails loud on boot error: no default model (env or file) exit
 	expect(stderr).toMatch(/SIGRUN_DEFAULT_MODEL/);
 });
 
-test("deploy entry still honors the deprecated SIGRUN_MODEL alias (one release cycle)", async () => {
+test("deploy entry boots from a settings-file-only defaultModel (no env model)", async () => {
+	// The file-only path is a documented contract (README quickstart,
+	// config tests): `defaultModel` in settings.json satisfies the model
+	// requirement with NO env model set. Regression: serve()'s env-only
+	// `loadConfig(env)` step used to throw before the file was ever read.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-file-model-"));
+	const port = await freePort();
+	const configDir = join(dir, "config");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(
+		join(configDir, "settings.json"),
+		JSON.stringify({
+			server: { port },
+			defaultModel: "openai/gpt-4o",
+		}),
+	);
+	const entry = spawnEntry(
+		childEnv({
+			// NOTE: deliberately NO SIGRUN_DEFAULT_MODEL / SIGRUN_MODEL.
+			OPENAI_API_KEY: "smoke-test-key-never-sent",
+			OPENAI_BASE_URL: "http://127.0.0.1:9",
+			SIGRUN_CONFIG_DIR: configDir,
+			HOME: dir,
+		}),
+	);
+	try {
+		expect(await entry.listening).toBe(port);
+		// A present settings file is never rewritten by bootstrap: the
+		// file-only defaultModel survives verbatim.
+		const file = JSON.parse(
+			await readFile(join(configDir, "settings.json"), "utf8"),
+		) as { defaultModel?: string };
+		expect(file.defaultModel).toBe("openai/gpt-4o");
+	} finally {
+		entry.child.kill("SIGTERM");
+		const exit = await entry.exited;
+		expect(exit.code).toBe(0);
+		await rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test(
+	"deploy entry still honors the deprecated SIGRUN_MODEL alias (one release cycle)",
+	async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-alias-"));
 	const port = await freePort();
 	const entry = spawnEntry(
