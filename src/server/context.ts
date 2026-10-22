@@ -20,11 +20,18 @@ import type { OpenedHarness } from "../harness/boot.js";
 import type { CommandCatalog } from "./commands.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
+import { SseRegistry } from "./sse-registry.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
 	readonly opened: OpenedHarness;
 	readonly config: SigrunConfig;
+	/**
+	 * The live-SSE registry (the ctrl+c fix): hijacked event streams never
+	 * end on their own, so shutdown drains this BEFORE app.close() — the
+	 * fastify drain would otherwise wait on every open webui tab forever.
+	 */
+	readonly sse: SseRegistry;
 	/**
 	 * The reserved root conversation's id, computed once in `createServer`
 	 * (never recomputed per request — the list route's `root` flag and
@@ -100,5 +107,13 @@ declare module "fastify" {
 		 */
 	interface FastifyContextConfig {
 		extAuth?: "user" | "admin" | "public";
+	}
+
+	/** The SSE registry decoration (createServer decorates it): the
+	 * shutdown path ends every live event stream before app.close()'s
+	 * drain — hijacked streams never end on their own, so the drain
+	 * would hang on each open webui tab. */
+	interface FastifyInstance {
+		sse: SseRegistry;
 	}
 }

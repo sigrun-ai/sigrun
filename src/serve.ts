@@ -153,6 +153,15 @@ export async function serve(
 
 	const shutdown = async (): Promise<void> => {
 		const failures: unknown[] = [];
+		// SSE streams FIRST (the ctrl+c fix): hijacked event streams never
+		// end on their own, and app.close()'s drain waits for in-flight
+		// requests — with any webui tab open, shutdown hung forever on its
+		// /v1/events connection. End every live stream BEFORE the drain.
+		try {
+			app.sse.endAll();
+		} catch (error) {
+			failures.push(error);
+		}
 		try {
 			await app.close();
 		} catch (error) {

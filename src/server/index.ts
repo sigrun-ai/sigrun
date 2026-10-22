@@ -39,6 +39,7 @@ import type { OpenedHarness } from "../harness/boot.js";
 import { registerAuthPipeline } from "./auth/pipeline.js";
 import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
+import { SseRegistry } from "./sse-registry.js";
 import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createHostBridge } from "./host-bridge.js";
@@ -176,6 +177,12 @@ export async function createServer(
 	// resolved webui bundle, the auth-derivation inputs (listenHost + the
 	// effective method list), and the boot env (the settings routes'
 	// `effective` block reads it).
+	const sse = new SseRegistry();
+	// Decorated for the shutdown path (serve.ts): fastify's own drain waits
+	// on in-flight requests, so the SSE registry must be endable from the
+	// OUTSIDE before app.close() — a decoration is the typed, discoverable
+	// way to hand that handle up without widening ServerContext's consumers.
+	app.decorate("sse", sse);
 	const ctx: ServerContext = {
 		opened,
 		config,
@@ -186,6 +193,7 @@ export async function createServer(
 		methods,
 		env,
 		watchersByConversation: new Map(),
+		sse,
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
