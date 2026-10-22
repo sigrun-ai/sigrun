@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-22
+### Fixed
+- `@sigrun/sigrun@0.1.0` shipped a correct tarball but a dev-shape packument
+  (the `file:../sigrun-ext-*` specifiers reached the registry's manifest):
+  clean installs resolved no built-in extensions and quarantined them at
+  boot. The publish-deps restore now runs in `postpublish` only — npm 11
+  runs pack → postpack → packument submission, so the old `postpack`
+  restore raced the manifest write. Version bumped so the registry gets a
+  clean packument; 0.1.0's tarball was byte-correct and remains installable
+  by direct tarball URL.
 ## [0.1.0] - 2026-10-21
 ### Added (server)
 - Conversation list fields: name, last-activity, parent (fork lineage),

@@ -12,8 +12,16 @@
  * the rewrite is explicit and bracketed by the pack/publish lifecycle:
  *
  *   prepublishOnly -> `publish-deps.mjs registry` (rewrite, then build)
- *   postpack       -> `publish-deps.mjs file`     (restore)
  *   postpublish    -> `publish-deps.mjs file`     (restore)
+ *
+ * The restore is postpublish ONLY (0.1.1): npm 11 runs pack -> postpack
+ * -> submit(packument+tarball), so a postpack restore flips the manifest
+ * back to file: specifiers BEFORE the registry writes the packument —
+ * @sigrun/sigrun@0.1.0 shipped a correct tarball but a dev-shape
+ * packument (installers resolved file: deps and quarantined the
+ * built-ins at boot). A bare `npm pack` in registry mode now leaves the
+ * rewrite behind (git shows it; re-run `registry` self-heals, `file`
+ * restores).
  *
  * `npm pack` does NOT run `prepublishOnly`, so a pack that must carry
  * registry versions (the release's clean-install smoke) runs this script
