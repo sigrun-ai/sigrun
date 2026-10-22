@@ -9,11 +9,16 @@
  *
  * - the WIRE modules (`views`, `session-meta`, `commands`,
  *   `interactions`, `ambient`, `settings`, `json`): types + pure
- *   constants. Imports and re-exports must be TYPE-ONLY and SIBLING-ONLY
- *   (`./…` — no external package, no `node:`): a type-only sibling
- *   reference erases at compile time and contributes no runtime, while
- *   any other import would drag a dependency only one client can load
- *   or resolve.
+ *   constants. Imports and re-exports must be TYPE-ONLY and resolve
+ *   inside `shared/src/` (a sibling `./…`, or a `../…` that stays under
+ *   the root): a type-only reference erases at compile time and
+ *   contributes no runtime, while any other import would drag a
+ *   dependency only one client can load or resolve.
+ * - the BLOCKS modules (`blocks/…`, U0): runtime code by design —
+ *   `applyOps`, `lttb`, the icon names — pure and dependency-free, but
+ *   VALUE imports and re-exports are the point. Every specifier (import
+ *   or re-export) must resolve inside `shared/src/` (spec §4.1: “pure
+ *   code with no imports outside `shared/`”); nothing else differs.
  * - the UI modules (`themes`, `turns`, `conversations`): fully pure — no
  *   imports of any kind, not even type-only siblings. They are consumed
  *   by BOTH clients from one source; any dependency would reintroduce
@@ -37,7 +42,7 @@
  */
 
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const SHARED_SRC = join(__dirname, "..", "shared", "src");
@@ -50,13 +55,36 @@ const FULLY_PURE_MODULES = new Set([
 	"conversations.ts",
 ]);
 
+/** Every `.ts` file under `shared/src/` (recursively — the blocks
+ *  subdirectory ships U0's runtime code there too). */
 function sharedModuleSources(): { file: string; source: string }[] {
-	return readdirSync(SHARED_SRC)
-		.filter((name) => name.endsWith(".ts"))
-		.map((name) => ({
-			file: name,
-			source: readFileSync(join(SHARED_SRC, name), "utf8"),
-		}));
+	const found: { file: string; source: string }[] = [];
+	const walk = (dir: string): void => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const full = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(full);
+			} else if (entry.name.endsWith(".ts")) {
+				found.push({
+					file: relative(SHARED_SRC, full),
+					source: readFileSync(full, "utf8"),
+				});
+			}
+		}
+	};
+	walk(SHARED_SRC);
+	return found;
+}
+
+/** True when `specifier` (from the module at `file`) resolves to a file
+ *  under `shared/src/` — sibling `./…` and parent `../…` alike. */
+function resolvesInsideSharedSrc(file: string, specifier: string): boolean {
+	if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+		return false;
+	}
+	const target = resolve(SHARED_SRC, file, "..", specifier);
+	const rel = relative(SHARED_SRC, target);
+	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 // One import per statement; the `import ... from "specifier"` form only
@@ -85,11 +113,30 @@ function exportFromStatements(
 }
 
 describe("shared wire modules stay a type-only leaf", () => {
+	// Top-level modules only: the `blocks/` subtree is runtime code with
+	// its own class below (type-only would be a contradiction there).
 	const wireModules = () =>
-		sharedModuleSources().filter(({ file }) => !FULLY_PURE_MODULES.has(file));
+		sharedModuleSources().filter(
+			({ file }) =>
+				!FULLY_PURE_MODULES.has(file) && !file.startsWith(`blocks${sep}`),
+		);
 
 	it("has at least one wire module (the guard is not vacuous)", () => {
 		expect(wireModules().length).toBeGreaterThan(0);
+	});
+
+	it("scans subdirectories: shared/src/blocks/ files are in the scanned set", () => {
+		const files = sharedModuleSources().map(({ file }) => file);
+		for (const expected of [
+			join("blocks", "types.ts"),
+			join("blocks", "ops.ts"),
+			join("blocks", "icons.ts"),
+			join("blocks", "lttb.ts"),
+			join("blocks", "transport.ts"),
+			join("blocks", "index.ts"),
+		]) {
+			expect(files, `shared/src/${expected} must be scanned`).toContain(expected);
+		}
 	});
 
 	it("every import is `import type` — no runtime module imports", () => {
@@ -101,12 +148,12 @@ describe("shared wire modules stay a type-only leaf", () => {
 		}
 	});
 
-	it("every import specifier is a sibling (`./…`) — no external packages", () => {
+	it("every import specifier is a relative path resolving inside shared/src/ — no external packages", () => {
 		for (const { file, source } of wireModules()) {
 			const violations = importStatements(source).filter(
-				(statement) => !statement.specifier.startsWith("./"),
+				(statement) => !resolvesInsideSharedSrc(file, statement.specifier),
 			);
-			expect(violations, `${file} must import siblings only`).toEqual([]);
+			expect(violations, `${file} must import inside shared/src/ only`).toEqual([]);
 		}
 	});
 
@@ -129,6 +176,41 @@ describe("shared wire modules stay a type-only leaf", () => {
 
 	it("no `node:` specifier anywhere", () => {
 		for (const { file, source } of wireModules()) {
+			expect(source, `${file} must not use node: specifiers`).not.toMatch(
+				/"node:[^"]*"/,
+			);
+		}
+	});
+});
+
+describe("shared blocks modules are pure shared-src-only runtime", () => {
+	const blocksModules = () =>
+		sharedModuleSources().filter(({ file }) => file.startsWith(`blocks${sep}`));
+
+	it("has at least one blocks module (the guard is not vacuous)", () => {
+		expect(blocksModules().length).toBeGreaterThan(0);
+	});
+
+	it("every import/re-export specifier resolves inside shared/src/ — no external packages", () => {
+		for (const { file, source } of blocksModules()) {
+			const violations = [
+				...importStatements(source),
+				...exportFromStatements(source),
+			].filter((statement) => !resolvesInsideSharedSrc(file, statement.specifier));
+			expect(violations, `${file} must import inside shared/src/ only`).toEqual([]);
+		}
+	});
+
+	it("no side-effect imports (`import \"...\"` with no bindings)", () => {
+		for (const { file, source } of blocksModules()) {
+			expect(source, `${file} must have no side-effect imports`).not.toMatch(
+				/^\s*import\s*["']/m,
+			);
+		}
+	});
+
+	it("no `node:` specifier anywhere", () => {
+		for (const { file, source } of blocksModules()) {
 			expect(source, `${file} must not use node: specifiers`).not.toMatch(
 				/"node:[^"]*"/,
 			);

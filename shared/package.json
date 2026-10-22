@@ -51,6 +51,10 @@
 		"./jobs": {
 			"types": "./dist/jobs.d.ts",
 			"default": "./dist/jobs.js"
+		},
+		"./blocks": {
+			"types": "./dist/blocks/index.d.ts",
+			"default": "./dist/blocks/index.js"
 		}
 	},
 	"scripts": {
