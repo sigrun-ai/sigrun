@@ -25,14 +25,14 @@ import { bootE2EServer, type E2EServer } from "./harness.js";
  */
 const MEMORY_EXTENSION = (() => {
 	for (const relative of [
-		"../../../sigrun-ext-memory-markdown/dist/index.js",
-		"../../../../../sigrun-ext-memory-markdown/dist/index.js",
+		"../../../sigrun-memory-markdown/dist/index.js",
+		"../../../../../sigrun-memory-markdown/dist/index.js",
 	]) {
 		const url = new URL(relative, import.meta.url);
 		if (existsSync(fileURLToPath(url))) return url.href;
 	}
 	throw new Error(
-		"sigrun-ext-memory-markdown checkout not found next to the repo " +
+		"sigrun-memory-markdown checkout not found next to the repo " +
 			"(item 7 needs its memory_recall tool; see webui/e2e/harness.ts)",
 	);
 })();

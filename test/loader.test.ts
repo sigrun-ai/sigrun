@@ -383,7 +383,7 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 });
 
 test("a factory result carrying submit loads ok and warns (retired pass-through)", async () => {
-	// §6.7: the submit pass-through is retired. @sigrun/ext-memory-markdown
+	// §6.7: the submit pass-through is retired. @sigrun/memory-markdown
 	// dropped its `submit` in 1ae6c90, so the surface is gone — but a result
 	// still carrying one must NOT quarantine (old packages keep loading):
 	// it is ignored with exactly one warning naming the extension slug.
