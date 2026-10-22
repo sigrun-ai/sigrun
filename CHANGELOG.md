@@ -191,7 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-keyed).
 - The deprecated `createMemory` named-export loader bridge is DELETED
   (release-0.1): packages must export the factory as default —
-  `@sigrun/ext-memory-markdown` 0.1.0 does. The named `extension`
+  `@sigrun/memory-markdown` 0.1.0 does. The named `extension`
   export bridge remains deprecated (loads with one warning).
 
 ### Added
