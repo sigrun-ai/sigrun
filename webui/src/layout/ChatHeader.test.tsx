@@ -23,6 +23,8 @@ function renderHeader(init?: {
 	const renderer = render(
 		<ChatHeader
 			title={init?.title ?? "Fjord walking routes"}
+			timeline={false}
+			onTimeline={() => {}}
 			panel={init?.panel ?? null}
 			onPanel={init?.onPanel ?? (() => {})}
 			onRename={init?.onRename ?? (async () => {})}
@@ -188,6 +190,8 @@ describe("ChatHeader", () => {
 		const renderer = render(
 			<ChatHeader
 				title="t"
+				timeline={false}
+				onTimeline={() => {}}
 				panel={null}
 				onPanel={() => {}}
 				onRename={async () => {}}

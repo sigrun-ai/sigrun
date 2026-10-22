@@ -1468,7 +1468,12 @@ body {
 	color: var(--text);
 	border: none;
 	font: inherit;
-	min-height: 3.2rem;
+	/* One row tall, growing with content (Composer's grow()); the old
+	   fixed rows=3 + min-height made short prompts look wrapped early. */
+	min-height: 1.6rem;
+	max-height: 40vh;
+	overflow-y: auto;
+	transition: height 120ms ease-out;
 }
 
 .composer-input:focus-visible {
@@ -3161,4 +3166,38 @@ body {
 	min-width: 10rem;
 	flex: 1 1 10rem;
 	max-width: 22rem;
+}
+
+/* ── Chronological timeline view (the tool-visibility fix) ─────────────
+   A turn's blocks in occurrence order: thinking / tool rows / prose
+   segments interleaved, separated by faint rules so multi-step runs
+   read as the sequence they were. */
+.turn-timeline {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+.turn-timeline > * + * {
+	border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+	padding-top: 0.5rem;
+}
+.timeline-thinking {
+	font-style: italic;
+	opacity: 0.75;
+	white-space: pre-wrap;
+}
+
+/* ── Live thinking (expanded → folds when the response lands) ───────── */
+.live-thinking {
+	overflow: hidden;
+	/* The fold-away: max-height transitions from open to 0 when the
+	   response arrives and the thinking moves under the ActivityLine.
+	   240ms reads as a deliberate fold without delaying the answer. */
+	max-height: 40vh;
+	transition: max-height 240ms ease-in, opacity 240ms ease-in;
+}
+.live-thinking:not(:empty) {
+	border-left: 2px solid color-mix(in srgb, var(--border) 80%, transparent);
+	padding-left: 0.6rem;
+	margin-bottom: 0.4rem;
 }

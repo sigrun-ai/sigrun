@@ -1038,10 +1038,11 @@ export class EventBus {
 					// materialized already-pinned/-archived is real changed news.
 					if (next.archived !== basis.archived) moved.archived = next.archived;
 					if (next.pinned !== basis.pinned) moved.pinned = next.pinned;
-					if (next.lastActivityAt !== basis.lastActivityAt) {
-						moved.lastActivityAt =
-							next.lastActivityAt === undefined ? null : next.lastActivityAt;
-					}
+					// lastActivityAt deliberately EXCLUDED: activity rides every
+					// create and submission (creation stamps it since the
+					// sort-order fix), so diffing it here would spam one
+					// conversation.changed per turn — listeners who care read the
+					// field from the row snapshot, not the change event.
 					if (next.owner !== basis.owner) {
 						moved.owner = next.owner === undefined ? null : next.owner;
 					}

@@ -94,6 +94,32 @@ function persistPanel(mode: PanelMode | null): void {
 	}
 }
 
+/** The chronological-transcript pref (the tool-visibility fix): persisted
+ * like the panel mode; absent/garbage → the grouped default. */
+const TIMELINE_STORAGE_KEY = "sigrun.timeline";
+
+function loadTimeline(): boolean {
+	try {
+		return (
+			(globalThis as { localStorage?: { getItem(k: string): string | null } })
+				.localStorage?.getItem(TIMELINE_STORAGE_KEY) === "1"
+		);
+	} catch {
+		return false;
+	}
+}
+
+function persistTimeline(on: boolean): void {
+	try {
+		(globalThis as { localStorage?: Storage }).localStorage?.setItem(
+			TIMELINE_STORAGE_KEY,
+			on ? "1" : "0",
+		);
+	} catch {
+		// A failing store keeps the view session-only.
+	}
+}
+
 /** Save text as a browser download (the Export menu action; test-safe). */
 function downloadText(filename: string, text: string): void {
 	const doc = (globalThis as { document?: Document }).document;
@@ -136,6 +162,7 @@ function ChatCenter(props: {
 	status: string;
 	error: string | null;
 	readonly showThinking: boolean;
+	readonly timeline: boolean;
 	readonly client: SigrunClient;
 	readonly onNavigate: (id: number) => void;
 	readonly parent?: { id: number; name: string };
@@ -145,7 +172,7 @@ function ChatCenter(props: {
 	 *  composer dock that overlays the scroll area (the scroll fade, B5). */
 	readonly dockPadding: number;
 }) {
-	const { activeId, view, status, error, showThinking } = props;
+	const { activeId, view, status, error, showThinking, timeline } = props;
 	if (activeId === null) {
 		return (
 			<section className="chat-center">
@@ -179,6 +206,7 @@ function ChatCenter(props: {
 					<TurnList
 						view={view}
 						showThinking={showThinking}
+						timeline={timeline}
 						parent={props.parent}
 						client={props.client}
 						onNavigate={props.onNavigate}
@@ -216,6 +244,7 @@ export function App(options: AppOptions = {}) {
 	const [boot, setBoot] = useState<Boot>({ status: "loading" });
 	const [activeId, setActiveId] = useState<number | null>(null);
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
+	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
@@ -534,6 +563,13 @@ export function App(options: AppOptions = {}) {
 			<main className="main-column">
 				<ChatHeader
 					title={titleOf(list.rows, activeId)}
+					timeline={timeline}
+					onTimeline={() =>
+						setTimeline((on) => {
+							persistTimeline(!on);
+							return !on;
+						})
+					}
 					panel={panel}
 					onPanel={onPanel}
 					onRename={onRename}
@@ -556,6 +592,7 @@ export function App(options: AppOptions = {}) {
 							status={status}
 							error={error}
 							showThinking={prefsState.prefs.showThinking}
+							timeline={timeline}
 							client={client}
 							onNavigate={onSelect}
 							parent={parent}

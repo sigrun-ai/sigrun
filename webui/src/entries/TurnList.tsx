@@ -64,34 +64,47 @@ function toolCallsOf(message: MessageWire): readonly ToolCall[] {
 function partialTurn(
 	conversationId: number,
 	message: MessageWire,
-): {
-	entries: readonly ConversationEntryWire[];
-	thinking: readonly string[];
-	tools: readonly ToolCall[];
-	text: string;
-	lastEntryId: number;
-} {
+) {
 	return {
 		entries: [
 			{ id: PARTIAL_ID, conversationId, kind: "pi.assistant", model: [message] },
-		],
+		] as readonly ConversationEntryWire[],
 		thinking: thinkingTexts(message),
 		tools: toolCallsOf(message),
 		text: messageText(message),
 		lastEntryId: PARTIAL_ID,
+		timeline: partialTimeline(message),
 	};
+}
+
+/** The partial's chronological events: thinking, then tool calls, then
+ * text — the stream's own arrival order. */
+function partialTimeline(message: MessageWire) {
+	const events: import("@sigrun/shared/turns").TimelineEvent[] = [];
+	for (const text of thinkingTexts(message)) {
+		events.push({ kind: "thinking", text });
+	}
+	for (const tool of toolCallsOf(message)) {
+		events.push({ kind: "tool", tool });
+	}
+	const text = messageText(message);
+	if (text !== "") events.push({ kind: "text", text });
+	return events;
 }
 
 export function TurnList(props: {
 	view: ConversationViewWire;
 	/** Show thinking text inside the activity details (the pref). */
 	showThinking: boolean;
+	/** Chronological rendering: thinking/tool/text interleaved in
+	 * occurrence order instead of folded under the response. */
+	timeline?: boolean;
 	/** The fork parent (App lifts the conversation rows — B3). */
 	parent?: { id: number; name: string };
 	onNavigate: (id: number) => void;
 	client: SigrunClient;
 }) {
-	const { view, showThinking, parent, onNavigate, client } = props;
+	const { view, showThinking, timeline, parent, onNavigate, client } = props;
 	const conversationId = view.conversation.id;
 	const slots = liveToolSlots(view);
 	const partial = liveGenerationPartial(view);
@@ -166,6 +179,7 @@ export function TurnList(props: {
 							client={client}
 							onNavigate={onNavigate}
 							live={merged && index === turns.length - 1}
+							timeline={timeline}
 						/>
 					);
 				}
