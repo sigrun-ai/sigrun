@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-22
+### Added
+- The version is visible where operators look: the boot log line (`sigrun
+  v0.1.4 listening on …`) and `GET /v1/meta`'s new `version` field; the webui
+  Settings → General renders `sigrun vX · pi-durable vY`.
+
+### Fixed (webui round 2)
+- Live turns render IN PLACE: thinking / tool calls / text stream where they
+  occur and stay there (no fold-to-bottom relocation); settled turns default
+  to the interleaved chronological view (the header toggle flips to grouped).
+- The transcript auto-scrolls with new content while at the bottom and holds
+  position when the user scrolls up.
+- The token meta label splits input / cache / output.
+- User prompts no longer wrap absurdly early — the bubble's percentage
+  max-width resolved against a shrink-wrapped ancestor (~157px); capped in
+  absolute `60ch` now.
+
 ## [0.1.3] - 2026-10-22
 ### Fixed
 - **ctrl+c hung whenever a webui tab was open**: hijacked SSE streams never

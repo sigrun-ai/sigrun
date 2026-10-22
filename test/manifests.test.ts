@@ -45,7 +45,7 @@ const COMPOSE_FILE = join(
 /** The published image every deploy artifact names. The chart's tags
  * default to the appVersion, so a default render carries this exact
  * reference — no explicit --set needed (and no REPLACEME to work around). */
-const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.1.3";
+const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.1.4";
 
 /** helm presence — a hard env requirement (no kubectl/kustomize fallback
  * exists: the manifests are templates, not static yaml). */
