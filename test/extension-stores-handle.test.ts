@@ -177,7 +177,7 @@ test("paths: per-slug data/state; cache exists on disk after FIRST access only",
 });
 
 test("a factory-time settings read resolves the REAL slug's file (provisional pre-key, Task 9 P1)", async () => {
-	// The P1: sigrun-pareto's factory reads host.stores.settings at CALL
+	// The P1: sigrun-provider-pareto's factory reads host.stores.settings at CALL
 	// time, before the declared name is known; the pre-fix "" placeholder
 	// identity made that read hit settings/.json (absent → {}) and the
 	// deployment's baseUrl override was silently inert. The loader now

@@ -30,7 +30,7 @@
  * Hermetic: fixture upstreams are node:http servers on 127.0.0.1; the
  * plugins' ambient env keys are absent from the injected env (the plugins
  * never see `process.env`). The suite NEEDS the four sibling repos
- * (sigrun-ollama / sigrun-opencode / sigrun-pareto / sigrun-bifrost next
+ * (sigrun-provider-ollama / sigrun-provider-opencode / sigrun-provider-pareto / sigrun-provider-bifrost next
  * to this checkout) and skips loudly when they are absent — it is an
  * integration suite over external repos by design.
  */
@@ -57,10 +57,10 @@ import { seededIdentity } from "./helpers/identity.js";
 
 /** The plugin repos this suite packs; ordered as the settings list them. */
 const PLUGIN_REPOS = [
-	"sigrun-ollama",
-	"sigrun-opencode",
-	"sigrun-pareto",
-	"sigrun-bifrost",
+	"sigrun-provider-ollama",
+	"sigrun-provider-opencode",
+	"sigrun-provider-pareto",
+	"sigrun-provider-bifrost",
 ] as const;
 
 /**
