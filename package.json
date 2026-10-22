@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/sigrun",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Durable personal assistant on pi-durable",
 	"type": "module",
 	"exports": {

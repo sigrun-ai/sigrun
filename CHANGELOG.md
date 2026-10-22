@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-22
+### Changed
+- The built-in `@sigrun/ext-mcp` dependency pins 0.2.0: remote MCP servers
+  (streamable HTTP + legacy SSE adoption, no adapter process) and
+  config-dir `mcp.json` resolution.
+
 ## [0.1.1] - 2026-10-22
 ### Fixed
 - `@sigrun/sigrun@0.1.0` shipped a correct tarball but a dev-shape packument
