@@ -30,6 +30,7 @@ import type {
 import {
 	groupTurns,
 	toolPreview,
+	type TimelineEvent,
 	type ToolCall,
 	type Turn,
 } from "@sigrun/shared/turns";
@@ -126,6 +127,25 @@ export function TurnList(props: {
 			text: trailing.text === "" ? text : `${trailing.text}\n\n${text}`,
 			thinking: [...trailing.thinking, ...thinkingTexts(partial)],
 			tools: [...trailing.tools, ...newTools],
+			// The live timeline follows: streaming thinking/tools append in
+			// OCCURRENCE order (they arrived after everything settled so far),
+			// and the streaming text lands as the newest segment — the in-place
+			// live rendering reads this, not the grouped fields.
+			timeline: [
+				...trailing.timeline,
+				...thinkingTexts(partial).map(
+					(partialText): TimelineEvent => ({
+						kind: "thinking",
+						text: partialText,
+					}),
+				),
+				...newTools.map(
+					(tool): TimelineEvent => ({ kind: "tool", tool }),
+				),
+				...(text === ""
+					? []
+					: ([{ kind: "text", text }] as const)),
+			],
 		};
 	}
 
