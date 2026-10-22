@@ -295,6 +295,24 @@ export function Composer(props: {
 	const [commands, setCommands] = useState<readonly CommandWire[]>([]);
 	const [highlight, setHighlight] = useState(0);
 	const [interactions, setInteractions] = useState<readonly InteractionWire[]>([]);
+
+	// The auto-growing textarea (the early-wrap fix): a fixed rows=3 box
+	// made short prompts look wrapped-to-a-second-line in a 3-line-tall
+	// field. The textarea starts ONE row tall and grows with content (the
+	// scrollHeight dance works everywhere; `field-sizing: content` in CSS
+	// is the future but not yet universal). Shrink-back rides the same
+	// calculation whenever the draft text changes (send/clear included).
+	const inputRef = useRef<HTMLTextAreaElement | null>(null);
+	const grow = (element: HTMLTextAreaElement): void => {
+		// The test environment's elements carry no style surface; growing
+		// is cosmetic, never functional — skip silently there.
+		if (element.style === undefined || element.style === null) return;
+		element.style.height = "auto";
+		element.style.height = `${element.scrollHeight}px`;
+	};
+	useEffect(() => {
+		if (inputRef.current !== null) grow(inputRef.current);
+	}, [draft.text]);
 	const [ambient, setAmbient] = useState<readonly AmbientWire[]>([]);
 
 	// The slash-command catalog: fetched at mount, then re-fetched on the
@@ -792,8 +810,9 @@ export function Composer(props: {
 					</ul>
 				)}
 				<textarea
+					ref={inputRef}
 					className="composer-input"
-					rows={3}
+					rows={1}
 					placeholder={
 						readOnly
 							? "Read-only (shared with you)"
@@ -805,7 +824,10 @@ export function Composer(props: {
 					}
 					value={draft.text}
 					disabled={conversationId === null || readOnly}
-					onChange={(event) => draft.setText(event.target.value)}
+					onChange={(event) => {
+						draft.setText(event.target.value);
+						grow(event.target);
+					}}
 					onKeyDown={(event) => {
 						// The slash menu owns the keys while it is open.
 						if (menuOpen) {

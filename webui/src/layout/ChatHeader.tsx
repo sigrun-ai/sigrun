@@ -22,6 +22,10 @@ export type { PanelMode } from "./RightPanel";
 export function ChatHeader(props: {
 	/** The conversation's display title (the rename input's start value). */
 	readonly title: string;
+	/** Chronological transcript view (thinking/tools interleaved). */
+	readonly timeline: boolean;
+	/** Toggle the chronological view. */
+	readonly onTimeline: () => void;
 	/** The open panel mode, or null when closed (drives aria-pressed). */
 	readonly panel: PanelMode | null;
 	/** Panel toggle: App maps a click on the active mode to close. */
@@ -38,6 +42,8 @@ export function ChatHeader(props: {
 }) {
 	const {
 		title,
+		timeline,
+		onTimeline,
 		panel,
 		onPanel,
 		onRename,
@@ -112,6 +118,17 @@ export function ChatHeader(props: {
 				</button>
 			)}
 			<span className="chat-header-spacer" />
+			<button
+				type="button"
+				className="icon-btn"
+				data-panel="timeline"
+				title="Chronological view — interleave thinking and tool calls in order instead of folding them under the response"
+				aria-label="chronological view"
+				aria-pressed={timeline}
+				onClick={onTimeline}
+			>
+				{"⇅"}
+			</button>
 			<button
 				type="button"
 				className="icon-btn"

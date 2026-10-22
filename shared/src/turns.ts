@@ -94,8 +94,20 @@ export type Turn<E extends TurnEntry> =
 			readonly tools: readonly ToolCall[];
 			readonly text: string;
 			readonly lastEntryId: number;
-	  }
+			/** The turn's blocks in OCCURRENCE order — the chronological
+			 * view interleaves thinking / tool calls / text exactly as they
+			 * happened, instead of folding everything under the final text
+			 * (the grouped view's shape). Text blocks CONSECUTIVE in the
+			 * stream merge into one segment (multi-block answers read as one). */
+			readonly timeline: readonly TimelineEvent[];
+		}
 	| { readonly kind: "other"; readonly entry: E };
+
+/** One chronological segment of an assistant turn. */
+export type TimelineEvent =
+	| { readonly kind: "thinking"; readonly text: string }
+	| { readonly kind: "tool"; readonly tool: ToolCall }
+	| { readonly kind: "text"; readonly text: string };
 
 /** Assembly-time ToolCall: the readonly fields fill in as results arrive. */
 interface PendingToolCall {
@@ -112,6 +124,7 @@ interface PendingTurn<E extends TurnEntry> {
 	thinking: string[];
 	tools: PendingToolCall[];
 	texts: string[];
+	timeline: TimelineEvent[];
 }
 
 /** The assistant text blocks of one message, in order. */
@@ -125,6 +138,24 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 
 	const flush = (): void => {
 		if (pending === null) return;
+		// Merge consecutive text segments for the timeline (a multi-block
+		// answer reads as one run of prose, not N chopped paragraphs).
+		const timeline: TimelineEvent[] = [];
+		for (const event of pending.timeline) {
+			const last = timeline[timeline.length - 1];
+			if (
+				event.kind === "text" &&
+				last !== undefined &&
+				last.kind === "text"
+			) {
+				timeline[timeline.length - 1] = {
+					kind: "text",
+					text: `${last.text}\n\n${event.text}`,
+				};
+				continue;
+			}
+			timeline.push(event);
+		}
 		turns.push({
 			kind: "assistant",
 			entries: pending.entries,
@@ -132,28 +163,45 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 			tools: pending.tools,
 			text: pending.texts.join("\n\n"),
 			lastEntryId: pending.entries[pending.entries.length - 1]!.id,
+			timeline,
 		});
 		pending = null;
 	};
 
 	for (const entry of entries) {
 		if (entry.kind === "pi.assistant" || entry.kind === "pi.tool-result") {
-			pending ??= { entries: [], thinking: [], tools: [], texts: [] };
+			pending ??= {
+				entries: [],
+				thinking: [],
+				tools: [],
+				texts: [],
+				timeline: [],
+			};
 			pending.entries.push(entry);
 			if (entry.kind === "pi.assistant") {
 				for (const message of entry.model ?? []) {
 					for (const block of blocks(message)) {
 						if (block.type === "text" && block.text !== undefined) {
 							pending.texts.push(block.text);
-						} else if (block.type === "thinking" && block.thinking !== undefined) {
+							pending.timeline.push({ kind: "text", text: block.text });
+						} else if (
+							block.type === "thinking" &&
+							block.thinking !== undefined
+						) {
 							pending.thinking.push(block.thinking);
+							pending.timeline.push({
+								kind: "thinking",
+								text: block.thinking,
+							});
 						} else if (block.type === "toolCall") {
-							pending.tools.push({
+							const call: PendingToolCall = {
 								callId: block.id ?? "",
 								name: block.name ?? "",
 								preview: toolPreview(block.name ?? "", block.arguments),
 								isError: false,
-							});
+							};
+							pending.tools.push(call);
+							pending.timeline.push({ kind: "tool", tool: call });
 						}
 					}
 				}

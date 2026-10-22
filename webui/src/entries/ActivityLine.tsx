@@ -46,6 +46,10 @@ export function ActivityLine(props: {
 	showThinking: boolean;
 	/** A run is live right now (the trailing partial's turn). */
 	live?: boolean;
+	/** The turn is in live-thinking mode: AssistantTurn renders the
+	 * thinking expanded above, so the line's label drops the Thinking
+	 * count until the fold-in. */
+	hideThinkingCount?: boolean;
 }) {
 	const {
 		conversationId,
@@ -56,13 +60,17 @@ export function ActivityLine(props: {
 		slots,
 		showThinking,
 		live,
+		hideThinkingCount,
 	} = props;
 	const [open, setOpen] = useState(() => readOpen(conversationId, lastEntryId));
 	// A different key (a new run growing past this turn) re-collapses.
 	useEffect(() => {
 		setOpen(readOpen(conversationId, lastEntryId));
 	}, [conversationId, lastEntryId]);
-	const label = activityLabel({ thinking, tools });
+	const label = activityLabel({
+		thinking: hideThinkingCount === true ? [] : thinking,
+		tools,
+	});
 	if (label === "") return null;
 	const failed = tools.filter((tool) => tool.isError).length;
 	const toggle = (): void => {
