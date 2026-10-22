@@ -22,8 +22,17 @@ async function main(): Promise<void> {
 	const booted = await serve(process.env);
 	// A second signal (Ctrl-C twice, or SIGTERM+SIGINT) must not re-enter
 	// shutdown (see BootedServer.shutdownOnce); the guard makes the first
-	// signal win.
+	// signal win. A second signal after that FORCE-exits: a graceful
+	// shutdown that hangs (a wedged provider close, a stuck drain) must
+	// never trap the operator — the "press ctrl+c again to force" pattern
+	// every daemon ships.
+	let signaled = false;
 	const stop = (): void => {
+		if (signaled) {
+			console.error("sigrun: forcing exit (shutdown did not complete)");
+			process.exit(130);
+		}
+		signaled = true;
 		void booted
 			.shutdownOnce()
 			.then(() => process.exit(0))

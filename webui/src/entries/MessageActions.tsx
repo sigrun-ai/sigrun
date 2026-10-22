@@ -13,9 +13,13 @@ import { useEffect, useRef, useState } from "react";
 export const COPIED_RESET_MS = 1500;
 
 /**
- * Copy text through the async clipboard API. Best-effort: an absent
- * clipboard (the test runner, insecure origins) or a rejected write is a
- * no-op — Copy is never a blocking action.
+ * Copy text through the async clipboard API, falling back to the
+ * legacy `execCommand` path. The async API exists only in SECURE
+ * contexts — `https://` or `localhost` — so a webui browsed over plain
+ * `http://<lan-host>` (a tailnet name, a WSL IP) has NO navigator.clipboard
+ * and Copy silently did nothing; the fallback covers exactly that case.
+ * Best-effort end to end: a rejected write is a no-op — Copy is never a
+ * blocking action.
  */
 export function copyText(text: string): void {
 	const clipboard = (
@@ -23,10 +27,39 @@ export function copyText(text: string): void {
 			navigator?: { clipboard?: { writeText(text: string): Promise<void> } };
 		}
 	).navigator?.clipboard;
-	if (clipboard === undefined) return;
-	void clipboard.writeText(text).catch(() => {
-		// best-effort: a failed write keeps the transcript usable
-	});
+	if (clipboard !== undefined) {
+		void clipboard.writeText(text).catch(() => {
+			// best-effort: a failed write keeps the transcript usable
+		});
+		return;
+	}
+	// Insecure-context fallback: a transient off-screen textarea + the
+	// deprecated-but-universal execCommand("copy"). Selection restore is
+	// best-effort (an unfocusable context has nothing to restore).
+	const document = (globalThis as { document?: Document }).document;
+	if (document === undefined) return;
+	const area = document.createElement("textarea");
+	area.value = text;
+	area.setAttribute("readonly", "");
+	area.style.position = "fixed";
+	area.style.top = "-1000px";
+	document.body.appendChild(area);
+	const selected = document.getSelection();
+	const restore = selected !== null && selected.rangeCount > 0
+		? selected.getRangeAt(0).cloneRange()
+		: undefined;
+	area.select();
+	try {
+		document.execCommand("copy");
+	} catch {
+		// best-effort: a failed copy keeps the transcript usable
+	} finally {
+		area.remove();
+		if (restore !== undefined && selected !== null) {
+			selected.removeAllRanges();
+			selected.addRange(restore);
+		}
+	}
 }
 
 export function MessageActions(props: {
