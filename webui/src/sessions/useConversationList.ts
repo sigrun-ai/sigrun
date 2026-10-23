@@ -76,6 +76,13 @@ function subscribeHostEvents(
 	onConversationEvent: () => void,
 	onJobChanged: () => void,
 	onHello: (streamId: string) => void,
+	onSurfaceChanged?: (event: {
+		slug: string;
+		id: string;
+		k: string;
+		rev: number;
+		treeRev: number;
+	}) => void,
 	createEventSource?: ListEventSourceFactory,
 ): () => void {
 	// The native EventSource exists only in the browser; the hook's unit
@@ -101,6 +108,35 @@ function subscribeHostEvents(
 	source.addEventListener("conversation.created", onAny);
 	source.addEventListener("conversation.changed", onAny);
 	source.addEventListener("job.changed", onJobChanged);
+	// surface.changed (U3 Task 5): fan into the app's ext hub. Loose-parse
+	// (the frame is server-produced; a malformed one is a dropped nudge).
+	source.addEventListener("surface.changed", (event: { data: string }) => {
+		if (onSurfaceChanged === undefined) return;
+		try {
+			const parsed: unknown = JSON.parse(event.data);
+			if (
+				typeof parsed === "object" &&
+				parsed !== null &&
+				typeof (parsed as { slug?: unknown }).slug === "string" &&
+				typeof (parsed as { id?: unknown }).id === "string" &&
+				typeof (parsed as { k?: unknown }).k === "string" &&
+				typeof (parsed as { rev?: unknown }).rev === "number" &&
+				typeof (parsed as { treeRev?: unknown }).treeRev === "number"
+			) {
+				onSurfaceChanged(
+					parsed as {
+						slug: string;
+						id: string;
+						k: string;
+						rev: number;
+						treeRev: number;
+					},
+				);
+			}
+		} catch {
+			// a malformed frame is a dropped nudge
+		}
+	});
 	// The hello frame (U3 Task 4): each (re)connect carries a NEW
 	// streamId; the handler owns the visible-surface re-fetch.
 	source.addEventListener("hello", (event: { data: string }) => {
@@ -132,8 +168,20 @@ export function useConversationList(
 		/** `job.changed` nudge (W4 Task 5): the jobs panel's refetch token,
 		 *  delivered on the SAME shared source — never a second EventSource. */
 		onJobChanged?: () => void;
-		/** Test seam: the surface fetch's transport (defaults to the ambient fetch). */
-		fetchImpl?: typeof fetch;
+	/**
+	 * `surface.changed` dispatch (U3 Task 5): the shared events source
+	 * routes a surface event into the app-level ext hub (the transports'
+	 * subscription registry). App passes the hub's dispatch bound.
+	 */
+	onSurfaceChanged?: (event: {
+		slug: string;
+		id: string;
+		k: string;
+		rev: number;
+		treeRev: number;
+	}) => void;
+	/** Test seam: the surface fetch's transport (defaults to the ambient fetch). */
+	fetchImpl?: typeof fetch;
 	},
 ): UseConversationListResult {
 	const busy = options.busy;
@@ -221,9 +269,10 @@ export function useConversationList(
 			},
 			options.onJobChanged ?? (() => {}),
 			onHello,
+			options.onSurfaceChanged,
 			options.createEventSource,
 		);
-	}, [reload, onHello, options.createEventSource, options.onJobChanged]);
+	}, [reload, onHello, options.createEventSource, options.onJobChanged, options.onSurfaceChanged]);
 
 	// The busy → idle transition: an immediate reload plus a settle reload
 	// 5 s later (auto names land at run settlement, shortly after idle).

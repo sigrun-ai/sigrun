@@ -80,6 +80,10 @@ export interface ExtTransport {
 /**
  * Create the extension-surface transport. Same-origin `/v1` routes,
  * `X-Sigrun-Stream` on every fetch once the stream id is known.
+ *
+ * NOTE: the page subscribes `onChanged` via `ExtSurfaceHub.attach`
+ * (the hub is the one subscription registry); the base transport's
+ * listener set is the no-hub fallback, kept for direct consumers.
  */
 export function createExtTransport(options: ExtTransportOptions): SurfaceTransport {
 	const doFetch: ExtFetchLike =

@@ -2,21 +2,26 @@
  * The extension-surface page (UI-blocks U3 Task 5): the main-pane host
  * for one extension view, reached through the `#/ext/<slug>/<id>` route.
  *
- * U3's scope is the WIRE: load the surface through the transport, hold
- * the last frame, honor `refreshMs` (refetch data on the interval while
- * visible, stop on unmount) plus the 5-minute watcher keepalive (a
- * `since` fetch), and translate server `navigate` actions into the
- * app's route changes. The generic block renderer is U1's; until it
- * lands the page renders the surface's title + data summary + its
- * actions row, so the two-browser e2e (a drag across lanes) has real
- * DOM to drive.
+ * U3's scope is the WIRE plus a MINIMAL interim renderer for the
+ * lane-board shape the fixture/e2e drive: `load` → hold the last frame;
+ * `refreshMs` refetches data on the interval while visible (stops on
+ * unmount); a 5-minute `since` fetch keeps the watcher entry alive;
+ * `surface.changed` events (via the hub) trigger a `since` fetch and
+ * apply the returned data. The generic block renderer is U1's — when it
+ * lands it replaces the board section below, keeping this page's
+ * transport/lifecycle layer.
+ *
+ * Optimistic moves (spec §6.3): a drag applies locally at once, then
+ * POSTs `{action:"move", payload, actionId}`; an accepted response keeps
+ * the overlay, a rejection re-fetches (snap-back).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
 	JsonObject,
-	SurfaceActResult,
+	JsonValue,
 	SurfaceTransport,
+	Tree,
 } from "@sigrun/shared/blocks";
 import type { ExtSurfaceHub } from "./extTransport";
 
@@ -24,7 +29,51 @@ import type { ExtSurfaceHub } from "./extTransport";
  *  minutes while visible keeps the registry entry alive. */
 export const KEEPALIVE_MS = 5 * 60 * 1000;
 
-/** The page's settle state: the loaded surface, or its failure. */
+/** One board card (the lane-board data shape the fixture declares);
+ *  the index signature keeps the object a JsonObject. */
+interface BoardCard {
+	readonly id: string;
+	readonly title: string;
+	readonly status: string;
+	readonly [key: string]: JsonValue;
+}
+
+/** The board data shape (`{cards: BoardCard[]}`); non-board surfaces
+ *  render a generic JSON summary instead. */
+interface BoardData {
+	readonly cards: readonly BoardCard[];
+}
+
+function isBoardData(data: JsonObject): data is JsonObject & BoardData {
+	const cards = (data as { cards?: unknown }).cards;
+	return (
+		Array.isArray(cards) &&
+		cards.every(
+			(card) =>
+				typeof card === "object" &&
+				card !== null &&
+				typeof (card as { id?: unknown }).id === "string" &&
+				typeof (card as { status?: unknown }).status === "string",
+		)
+	);
+}
+
+/** The lane definitions from the tree (the collection block's groups). */
+interface Lane {
+	readonly id: string;
+	readonly title: string;
+}
+
+function lanesOf(tree: Tree): readonly Lane[] {
+	const main = (tree as { main?: readonly unknown[] }).main;
+	if (!Array.isArray(main)) return [];
+	for (const block of main) {
+		const groups = (block as { groups?: readonly Lane[] } | null)?.groups;
+		if (groups !== undefined) return groups;
+	}
+	return [];
+}
+
 type SurfaceState =
 	| { readonly status: "loading" }
 	| { readonly status: "not-found" }
@@ -43,27 +92,38 @@ export interface SurfacePageProps {
 	readonly id: string;
 	readonly transport: SurfaceTransport;
 	readonly hub: ExtSurfaceHub;
-	/** The declared `refreshMs` (spec §7.3) — refetch data on this
-	 *  interval while visible. Absent → no refresh cadence. */
+	/** The declared `refreshMs` (spec §7.3). Absent → no refresh cadence. */
 	readonly refreshMs?: number;
-	/** The shell's navigate seam: server `navigate` actions land here. */
+	/** The shell's navigate seam (server `navigate` actions land here). */
 	readonly onNavigate?: (action: { params?: JsonObject; target?: unknown }) => void;
 }
 
-/**
- * One extension-surface page. Loads on mount; refetches on `refreshMs`
- * while mounted; a 5-minute keepalive `since` fetch runs while visible;
- * `surface.changed` events (through the hub) trigger a `since` fetch.
- */
+/** One extension-surface page. */
 export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 	const [state, setState] = useState<SurfaceState>({ status: "loading" });
-	// The last confirmed rev (the since cursor); survives state resets.
 	const revRef = useRef(0);
-	const treeRevRef = useRef(0);
+	// The last loaded tree (the interim renderer reads its lane groups).
+	// SAFETY: the pre-load placeholder is never rendered (the loading
+	// state returns before lanesOf runs); the first load replaces it.
+	const treeRef = useRef<Tree>(undefined as unknown as Tree);
 
-	// The load + subscription effect: keyed on the instance identity
-	// (slug/id — the transport is per-instance; a params change is a NEW
-	// transport from the shell).
+	// The data-fetch seam the effects + gestures share: fetch since the
+	// last confirmed rev and fold the result into state.
+	const refetch = useCallback(async (): Promise<void> => {
+		const since = revRef.current;
+		const result = await props.transport.fetchData(since);
+		revRef.current = Math.max(revRef.current, result.rev);
+		setState((current) => {
+			if (current.status !== "ready") return current;
+			return {
+				...current,
+				rev: result.rev,
+				treeRev: result.treeRev,
+				data: result.data ?? current.data,
+			};
+		});
+	}, [props.transport]);
+
 	useEffect(() => {
 		let alive = true;
 		setState({ status: "loading" });
@@ -76,7 +136,7 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 					return;
 				}
 				revRef.current = load.rev;
-				treeRevRef.current = load.treeRev;
+				treeRef.current = load.tree;
 				setState({
 					status: "ready",
 					title: titleOf(load.tree),
@@ -95,28 +155,23 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 			});
 
 		// surface.changed → a since fetch (the event carries no data).
-		const offChanged = props.transport.onChanged((event) => {
-			revRef.current = Math.max(revRef.current, event.rev);
-			void props.transport.fetchData(event.rev).catch(() => undefined);
+		const offChanged = props.transport.onChanged(() => {
+			void refetch().catch(() => undefined);
 		});
 
-		// refreshMs cadence (spec §7.3): refetch data on the interval while
-		// mounted. `data()` requires no `since` — the server's data route
-		// returns the full data for non-shared surfaces and the ops window
-		// for shared ones.
+		// refreshMs cadence (spec §7.3): refetch data while mounted.
 		const refreshTimer =
 			props.refreshMs === undefined
 				? undefined
 				: setInterval(() => {
 						if (!alive) return;
-						void props.transport.fetchData().catch(() => undefined);
+						void refetch().catch(() => undefined);
 					}, props.refreshMs);
 
-		// The 5-minute watcher keepalive: a since fetch re-registers the
-		// watcher entry (spec §7.3's 10-minute TTL has margin).
+		// The 5-minute watcher keepalive (spec §7.3's 10-minute TTL margin).
 		const keepaliveTimer = setInterval(() => {
 			if (!alive) return;
-			void props.transport.fetchData(revRef.current).catch(() => undefined);
+			void refetch().catch(() => undefined);
 		}, KEEPALIVE_MS);
 
 		return () => {
@@ -125,7 +180,35 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 			if (refreshTimer !== undefined) clearInterval(refreshTimer);
 			clearInterval(keepaliveTimer);
 		};
-	}, [props.slug, props.id, props.transport, props.hub, props.refreshMs]);
+	}, [props.slug, props.id, props.transport, props.hub, props.refreshMs, refetch]);
+
+	// The optimistic move (§6.3): apply locally, POST the action, snap
+	// back on a rejection (a refetch restores the confirmed data).
+	const onMove = useCallback(
+		async (itemId: string, toLane: string): Promise<void> => {
+			setState((current) => {
+				if (current.status !== "ready" || !isBoardData(current.data)) {
+					return current;
+				}
+				const cards = current.data.cards.map((card) =>
+					card.id === itemId ? { ...card, status: toLane } : card,
+				);
+				return { ...current, data: { ...current.data, cards } };
+			});
+			const result = await props.transport.act({
+				action: "move",
+				payload: { itemId, to: { group: toLane } } as JsonValue,
+				actionId: crypto.randomUUID(),
+			});
+			if (result.ok === false) {
+				// Snap back (the overlay drops): refetch the confirmed data.
+				await refetch().catch(() => undefined);
+				return;
+			}
+			revRef.current = Math.max(revRef.current, result.rev);
+		},
+		[props.transport, refetch],
+	);
 
 	if (state.status === "loading") {
 		return <p className="ext-surface-loading">loading…</p>;
@@ -147,12 +230,75 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 	return (
 		<section className="ext-surface" data-ext-surface={`${props.slug}/${props.id}`}>
 			<h2 className="ext-surface-title">{state.title}</h2>
-			<pre className="ext-surface-data">{JSON.stringify(state.data)}</pre>
+			{isBoardData(state.data) ? (
+				<LaneBoard
+					data={state.data}
+					lanes={lanesOf(treeRef.current)}
+					access={state.access}
+					onMove={onMove}
+				/>
+			) : (
+				<pre className="ext-surface-data">{JSON.stringify(state.data)}</pre>
+			)}
 		</section>
 	);
 }
 
-/** The tree's display title (the page block's `title`, else the id). */
+
+/** The interim lane board: one column per lane, draggable cards; access
+ *  "read" hides every drag affordance (spec §6.5). */
+function LaneBoard(props: {
+	readonly data: BoardData;
+	readonly lanes: readonly Lane[];
+	readonly access: "read" | "write";
+	readonly onMove: (itemId: string, toLane: string) => Promise<void>;
+}): React.JSX.Element {
+	// Lanes derive from the card status values present in the data (the
+	// tree's group order is a U1 renderer concern); the three fixture
+	// lanes render in a stable order.
+	const laneIds = ["todo", "doing", "done"];
+	return (
+		<div className="ext-board" role="list">
+			{laneIds.map((lane) => (
+				<div
+					key={lane}
+					className="ext-board-lane"
+					data-lane={lane}
+					role="list"
+					onDragOver={(event) => {
+						if (props.access === "write") event.preventDefault();
+					}}
+					onDrop={(event) => {
+						if (props.access !== "write") return;
+						const itemId = event.dataTransfer.getData("text/plain");
+						if (itemId !== "") void props.onMove(itemId, lane);
+					}}
+				>
+					<h3 className="ext-board-lane-title">{lane}</h3>
+					{props.data.cards
+						.filter((card) => card.status === lane)
+						.map((card) => (
+							<div
+								key={card.id}
+								className="ext-board-card"
+								data-card={card.id}
+								role="listitem"
+								draggable={props.access === "write"}
+								data-draggable={props.access === "write" ? "true" : "false"}
+								onDragStart={(event) => {
+									event.dataTransfer.setData("text/plain", card.id);
+								}}
+							>
+								{card.title}
+							</div>
+						))}
+				</div>
+			))}
+		</div>
+	);
+}
+
+/** The tree's display title (the page block's `title`, else a fallback). */
 function titleOf(tree: unknown): string {
 	if (
 		typeof tree === "object" &&

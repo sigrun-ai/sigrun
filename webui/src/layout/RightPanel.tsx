@@ -36,7 +36,12 @@ export function RightPanel(props: {
 }) {
 	const { mode, outline, workspace, jobs } = props;
 	const extPanels = props.extPanels ?? [];
-	if (mode === null && props.extContent === undefined) return null;
+	// U3 Task 5: extension panel tabs keep the panel OPEN (the strip is
+	// the registration surface); a core-mode panel with no ext panels
+	// still closes on mode null as before.
+	if (mode === null && props.extContent === undefined && extPanels.length === 0) {
+		return null;
+	}
 	return (
 		<aside
 			className="right-panel"
@@ -65,11 +70,13 @@ export function RightPanel(props: {
 			)}
 			{props.extContent !== undefined
 				? props.extContent
-				: mode === "outline"
-					? outline
-					: mode === "jobs"
-						? jobs
-						: workspace}
+				: mode === null
+					? null
+					: mode === "outline"
+						? outline
+						: mode === "jobs"
+							? jobs
+							: workspace}
 		</aside>
 	);
 }
