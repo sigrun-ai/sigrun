@@ -12,17 +12,24 @@ import type { ReactNode } from "react";
 import { formatValue, type MeterBlock, type Tone } from "@sigrun/shared/blocks";
 import { bound, boundString, useSurfaceData } from "./context";
 
-/** The tone a value takes under `thresholds`: the highest one reached. */
+/** The tone a value takes under `thresholds`: the highest one reached
+ *  (the greatest `at` at or below the value — independent of the
+ *  thresholds' array order; the first of equal `at`s wins). */
 export function meterTone(
 	value: number | undefined,
 	thresholds: readonly { readonly at: number; readonly tone: Tone }[] | undefined,
 ): Tone {
 	if (value === undefined || thresholds === undefined) return "accent";
-	let tone: Tone | undefined;
+	let reached: { readonly at: number; readonly tone: Tone } | undefined;
 	for (const threshold of thresholds) {
-		if (threshold.at <= value) tone = threshold.tone;
+		if (
+			threshold.at <= value &&
+			(reached === undefined || threshold.at > reached.at)
+		) {
+			reached = threshold;
+		}
 	}
-	return tone ?? "accent";
+	return reached?.tone ?? "accent";
 }
 
 /** The fill fraction, clamped to [0, 1]. */

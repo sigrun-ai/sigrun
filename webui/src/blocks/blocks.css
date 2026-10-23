@@ -309,13 +309,17 @@
 
 /* ── content: chart / meter / log / tree (§5.3/§5.4) ─────────────────── */
 
-/* The theme's series palette (spec §5.4: chart colours come from the
-   theme's series palette, in order). Eight stops, defined per resolved
-   mode beside --warn/--danger (the same "state colours, not palette
-   members" posture): the accent is stop 1 — the user's accent leads
-   every chart — and the rest are fixed, hue-spread ramp values that sit
-   on the four palettes' surfaces. A chart with more than 8 series wraps
-   the ramp. */
+/* The chart series ramp (spec §5.4: "chart colours come from the
+   theme's series palette, in order"). This stylesheet is the ramp's
+   ONLY definition: shared/themes.ts defines no series tokens and
+   useTheme writes only the palette tokens plus --accent/--accent-bg,
+   so nothing re-keys it. Stop 1 rides --accent — the user's accent
+   leads every chart, following it transitively — and stops 2–8 are
+   fixed, hue-spread hex values per resolved mode (the dark defaults
+   in :root, the light overrides below) that sit on the four palettes'
+   surfaces. A chart with more than 8 series wraps the ramp. Promoting
+   the ramp into shared/themes.ts is a candidate follow-up, not done
+   here. */
 
 :root {
 	--chart-1: var(--accent);
