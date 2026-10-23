@@ -102,12 +102,19 @@ export interface SeamHost {
 		record: InteractionRecord,
 		context: Context,
 	): Promise<void>;
-	/** Answer a pending interaction from the extension side (tool path). */
+	/**
+	 * Answer a pending interaction from the extension side. `opts.user`
+	 * (gateway C5) stamps the answer HUMAN and names the user — who
+	 * answered matters to every participant a conversation is shared
+	 * with; access checks stay the caller's job (the host is trusted
+	 * in-process code). Without it the extension answered itself.
+	 */
 	answerInteraction(
 		conversationId: ConversationId,
 		callId: string,
 		answer: InteractionAnswer,
 		context: Context,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/** Mark a pending interaction expired/cancelled/skipped (extension-owned semantics). */
 	settleInteraction(
@@ -162,6 +169,10 @@ export interface SeamHost {
 	readonly access: SigrunHost["access"];
 	/** The conversation's owner — who the agent acts for (§9.7). */
 	readonly identity: SigrunHost["identity"];
+	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
+	readonly models: SigrunHost["models"];
+	/** The slash-command surface (gateway C4b): catalog + in-process run. */
+	readonly commands: SigrunHost["commands"];
 	/**
 	 * Bind the server-provided host bridge (W5 Task 5): `createServer`
 	 * calls `OpenedHarness.bindHostBridge` once its `ServerContext`
@@ -268,7 +279,7 @@ export function createSeamHost(
 			}, context);
 		},
 
-		async answerInteraction(conversationId, callId, answer, context) {
+		async answerInteraction(conversationId, callId, answer, context, opts) {
 			const h = await harness(context);
 			return await h.commit(async (tx) => {
 				const draft = await tx.doc(
@@ -278,7 +289,16 @@ export function createSeamHost(
 					callId,
 				);
 				if (draft.status !== "pending") return false;
-				const applied = applyAnswer(draft, answer, "extension", Date.now());
+				// Gateway C5: a host caller naming a user answers AS that human
+				// (the route's path — the same applyAnswer line); without a user
+				// the extension answered itself.
+				const applied = applyAnswer(
+					draft,
+					answer,
+					opts?.user === undefined ? "extension" : "human",
+					Date.now(),
+					opts?.user,
+				);
 				if (applied) {
 					const index = await tx.doc(InteractionsIndexDoc);
 					indexSettled(index, conversationId, callId);
@@ -388,6 +408,7 @@ export function createSeamHost(
 					...(opts.owner === undefined ? {} : { owner: opts.owner }),
 					...(opts.sharing === undefined ? {} : { sharing: opts.sharing }),
 					...(opts.name === undefined ? {} : { name: opts.name }),
+					...(opts.agent === undefined ? {} : { agent: opts.agent }),
 					// The source default: the CALLING extension's slug (spec §9.5).
 					source: opts.source ?? identity.name,
 				});
@@ -408,6 +429,30 @@ export function createSeamHost(
 				const bridge = await hostBridge();
 				return bridge.conversations.meta(id);
 			},
+			// The C4a ops: straight delegation (the bridge resolves the id and
+			// runs the op its HTTP twin runs).
+			async abort(id) {
+				return (await hostBridge()).conversations.abort(id);
+			},
+			async configure(id, opts) {
+				return (await hostBridge()).conversations.configure(id, opts);
+			},
+			async compact(id) {
+				return (await hostBridge()).conversations.compact(id);
+			},
+			async fork(id, opts) {
+				return (await hostBridge()).conversations.fork(id, opts);
+			},
+			async patchMeta(id, patch) {
+				return (await hostBridge()).conversations.patchMeta(id, patch);
+			},
+			// The C4b ops: same straight delegation.
+			async upload(id, file) {
+				return (await hostBridge()).conversations.upload(id, file);
+			},
+			async readFile(id, path) {
+				return (await hostBridge()).conversations.readFile(id, path);
+			},
 		},
 		users: {
 			async list() {
@@ -425,6 +470,25 @@ export function createSeamHost(
 		identity: {
 			async actingUser(conversationId) {
 				return (await hostBridge()).identity.actingUser(conversationId);
+			},
+		},
+		// Gateway C4b: straight delegation (the bridge owns both bodies).
+		models: {
+			async list() {
+				return (await hostBridge()).models.list();
+			},
+		},
+		commands: {
+			async list() {
+				return (await hostBridge()).commands.list();
+			},
+			async run(conversationId, name, args, opts) {
+				return (await hostBridge()).commands.run(
+					conversationId,
+					name,
+					args,
+					opts,
+				);
 			},
 		},
 

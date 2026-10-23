@@ -32,7 +32,9 @@ import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./even
 import type { HealthProducer, HealthStatus } from "./health.js";
 import {
 	loadExtensions,
+	type ExtensionChannelBinding,
 	type ExtensionCommandBinding,
+	type ExtensionGatewayBinding,
 	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
 	type ExtensionRouteBinding,
@@ -318,6 +320,24 @@ export interface OpenedHarness {
 	 * extensions contribute nothing.
 	 */
 	readonly notifierBindings: readonly ExtensionNotifierBinding[];
+	/**
+	 * Channel adapters the loaded extensions declared (gateway C1, spec
+	 * §7): one binding per extension whose factory result carried
+	 * `channels`, slug-attributed — the gateway engine's start context
+	 * reads its flat channel set from these and `GET /v1/extensions`
+	 * inventories the ids. Channel ids are unique across every loaded
+	 * extension (the loader quarantines the later colliding loader);
+	 * quarantined extensions contribute nothing.
+	 */
+	readonly channelBindings: readonly ExtensionChannelBinding[];
+	/**
+	 * The loaded gateway engine (gateway C2, spec §8.0): the FIRST
+	 * declarer's `{extension, engine}` binding, or `undefined` when no
+	 * engine loaded (core ships none). `startGateway` (src/server/gateway.ts)
+	 * consumes it; the meta route keys `health.gateway` on its presence;
+	 * a later declarer quarantined at load (the one-engine rule).
+	 */
+	readonly gatewayEngine: ExtensionGatewayBinding | undefined;
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -766,6 +786,8 @@ export async function openHarness(
 		routeBindings,
 		commandBindings,
 		notifierBindings,
+		channelBindings,
+		gatewayEngine,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -945,6 +967,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		// `typed` entry — there is no user turn to attribute).
 		commandExpansion,
 		envBuilder: undefined as unknown as EnvBuilder,
+		// Gateway C7: a deliver-carrying fire warns once per run when no
+		// engine loaded (core ships none — `gatewayEngine` is undefined
+		// unless an extension declared one).
+		gatewayLoaded: gatewayEngine !== undefined,
 	};
 	registry.install({
 		name: "sigrun.jobs",
@@ -1380,6 +1406,8 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
 		notifierBindings,
+		channelBindings,
+		gatewayEngine,
 		skillRoots: extensionSkillRoots,
 		commandExpansion,
 		eventBus,

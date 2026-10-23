@@ -510,8 +510,15 @@ export interface MetaResponse {
 		readonly memory: HealthStatus;
 		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
 		readonly providers: HealthStatus;
+		/**
+		 * The gateway engine's health (gateway C2): present ONLY when an
+		 * engine loaded (a no-engine deploy reports NO gateway health —
+		 * degenerate "ok" by absence, never a synthesized field); the
+		 * wrapped engine health (a throwing `health()` reads "degraded";
+		 * a rejected `start` latches degraded until restart).
+		 */
+		readonly gateway?: HealthStatus;
 	};
-	/**
 	/**
 	 * The auth block (core hardening W1 Task 6, spec §5.7): the effective
 	 * authenticator list (`ctx.methods` — loopback-derived or explicit) and
@@ -679,6 +686,21 @@ export interface ExtensionInfo {
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
 	/**
+	 * The channel ids this extension contributes (gateway C1, spec §7):
+	 * present only on rows of extensions whose factory result carried
+	 * `channels`; unique across every loaded extension (a collision
+	 * quarantines the later loader). Absent when the extension declared
+	 * none.
+	 */
+	readonly channels?: readonly string[];
+	/**
+	 * The inert marker (gateway C2): `"no gateway"` on rows of
+	 * extensions that contributed `channels` while NO gateway engine
+	 * loaded — their adapters are inert (nothing drives them; one boot
+	 * warning says so). Absent everywhere else.
+	 */
+	readonly inert?: "no gateway";
+	/**
 	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
 	 * built-in (codemode / MCP / tool search); ABSENT on configured
 	 * extensions. A replaced built-in reports its row with `builtin: true`
@@ -729,7 +751,11 @@ export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
  * The `GET /v1/auth/whoami` payload (core hardening W1 Task 3, spec
  * §5.8): the resolved principal, verbatim. `user` is absent only under
  * the naive empty-method path with no `X-Sigrun-User` header;
- * `service` marks the env service token.
+ * `service` marks the env service token. `method` mirrors the extension
+ * contract's `Principal.method` (gateway C4b added `"host"` — an
+ * in-process host-built principal; no HTTP route ever resolves one, but
+ * the two unions stay aligned so the whoami build from a principal can
+ * never drift from the wire type).
  */
 export interface WhoamiResponse {
 	readonly user?: string;
@@ -737,7 +763,7 @@ export interface WhoamiResponse {
 	readonly email?: string;
 	readonly admin: boolean;
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy";
+	readonly method: "none" | "token" | "proxy" | "host";
 }
 
 // ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
@@ -765,12 +791,19 @@ export interface OnboardingState {
  * One directory user on the wire (Task 4): the full record — emails are
  * admin-visible material and the routes that serve this type are
  * admin-gated. `createdAt` is epoch ms.
+ *
+ * `admin` is the STORED flag (the users-admin UI toggles it); the proxy
+ * group grant rides separately as `groupAdmin` (gateway C8): effective
+ * admin is `admin || groupAdmin === true`, and the last-admin guard
+ * counts `admin` alone.
  */
 export interface UserWire {
 	readonly user: string;
 	readonly name?: string;
 	readonly email?: string;
 	readonly admin: boolean;
+	/** The persisted proxy-group grant — present only under `adminGroups`. */
+	readonly groupAdmin?: boolean;
 	readonly createdAt: number;
 	readonly source: "proxy" | "invite" | "cli";
 }

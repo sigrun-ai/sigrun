@@ -241,6 +241,29 @@ describe("PATCH /v1/users/:user", () => {
 		expect(response.json()).toEqual({ error: "last_admin" });
 	});
 
+	test("demoting the only record-admin still 409s when a group-derived admin exists (gateway C8)", async () => {
+		// The gateway C8 write-through shape: bob carries the persisted
+		// admins-group grant — effective admin on the host surface, but NOT
+		// a record admin. The guard keeps counting stored `admin` only:
+		// a group admin existing must not allow demoting the last one.
+		const { app, opened } = await bootServer({ seed: "admin-only" });
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "proxy",
+		});
+		const token = await mint(opened, "tester");
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/tester",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { admin: false },
+		});
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "last_admin" });
+	});
+
 	test("a name patch lands", async () => {
 		const { app, opened } = await bootServer({});
 		const token = await mint(opened, "alice");

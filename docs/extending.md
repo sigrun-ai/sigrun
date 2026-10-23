@@ -210,7 +210,10 @@ What the snippet encodes:
   fine. The other surface on the same host — the interaction/ambient
   seams, see [approval-ux-seams.md](approval-ux-seams.md) — binds the
   harness lazily: call those from tool execute or hooks, not from the
-  factory body.
+  factory body. On that seam, `host.answerInteraction` takes an
+  optional `opts?: {user?}`: naming a user answers AS that human
+  (`answeredBy: "human"`, `answeredByUser: <user>` — gateway C5);
+  omitting it records the extension's own answer.
 - **Settings have no env bootstrap.** The store is their only source;
   the env pattern below is for secrets.
 
@@ -240,6 +243,7 @@ what core does with each, and where its rules are documented:
 | `conversationForked` | `ExtensionLifecycleHandler<"conversationForked">` | fired with the child, parent, and fork point | this table |
 | `conversationArchived` | `ExtensionLifecycleHandler<"conversationArchived">` | fired on archive flips (both directions) | this table |
 | `conversationIdle` | `ExtensionLifecycleHandler<"conversationIdle">` | fired per quiet period once the idle threshold passes and no run is live | this table |
+| `interactionSettled` | `ExtensionLifecycleHandler<"interactionSettled">` | fired once per terminal interaction transition (any writer: route answer, host answer, skip/expire/cancel) with `{conversationId, callId, kind, status}` | [approval-ux-seams.md](approval-ux-seams.md) |
 | `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the ordered flush window (handlers may commit); runs after workers stop | this table |
 | `userDeleted` | `ExtensionUserDeletedHandler` | fired after a user delete transferred ownership — move your per-user records here | this table |
 | `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
@@ -250,6 +254,8 @@ what core does with each, and where its rules are documented:
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
+| `channels` | `readonly ChannelContribution[]` | chat-platform adapters the gateway engine drives; channel-id collisions across extensions quarantine the later loader | ["Channel adapters"](#channel-adapters) |
+| `gateway` | `GatewayEngine` | the ONE gateway engine (supervises every channel adapter); a second declarer quarantines — and never pair it with `health` | ["Gateway engines"](#gateway-engines) |
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
 above — **never a defaulted options object**. Sigrun passes the host only
@@ -263,6 +269,103 @@ and jobs, never from a factory body.
 A malformed field (wrong shape, wrong element type) quarantines the
 extension at load — a package that THINKS it declared something must
 never silently lose it.
+
+## The conversation surface
+
+`host.conversations` drives sigrun's own conversations in-process. Every
+method runs the SAME op its HTTP route runs
+(`src/server/conversation-ops.ts`) — validation, error bodies, and durable
+effects are identical by construction:
+
+- `create({owner, sharing, name, source, agent})` — the HTTP `POST
+  /v1/conversations` op. The host gains `agent` (gateway C4):
+  `{extensions?: string[], tools?: string[]}` pins the conversation's
+  selection by NAME, resolved against the installed registry. An unknown
+  name throws `invalid_field` (`agent.extensions` / `agent.tools`); an
+  empty `tools` array enables zero tools.
+- `submit(id, input, {user, requestId, whenBusy})` — the submissions
+  route's op (content resolution, the served-model check, `waitMs` off).
+- `watch(id, listener)` — the SSE stream's snapshot-first shape.
+- `list({owner, archived})` / `meta(id)` — the durable listing and the
+  session-meta read (a superuser-shaped view: extensions are trusted).
+- `abort(id)` — the abort route's op. On an IDLE conversation it
+  resolves (chat `/stop` on an idle chat is not an error); the HTTP route
+  keeps its exact 404 `no_active_submission`.
+- `configure(id, {model, thinking})` — the configure route's op
+  ("provider/modelId", the thinking-level union).
+- `compact(id)` — the manual-compaction route's op (admits the durable
+  compaction task; the summary lands as a `pi.compaction` entry).
+- `fork(id, {at, owner})` — the fork route's op: `at` defaults to the
+  newest entry and is validated against the parent's history;
+  `owner` stamps the fork's session owner (absent = the key removed —
+  the fork is the forker's private copy, sharing dropped, autoName
+  seeded `"<source> (fork)"`).
+- `patchMeta(id, {name, archived, sharing})` — the meta PATCH route's
+  op. **Trusted-host note:** the sharing patch runs with NO
+  owner-or-superuser gate — the caller is in-process server code that
+  already decided the write is legitimate. The HTTP route keeps its
+  403 for a non-owner; the host carries no principal to check.
+- `upload(id, {name, mime?, bytes})` → `{path}` — the raw-upload route's
+  op (gateway C4b): writes `uploads/<conversationId>/<name>` through
+  the conversation's workspace env and returns the path exactly as a
+  `file`/`image` submission part takes it. The NAME is the one rule (no
+  `/` or `\`, not `.`/`..`, non-empty) — a bad name throws
+  `invalid_field` `name` (the HTTP routes answer their own
+  `invalid_body`; the op is the shared validator).
+- `readFile(id, path)` → `{bytes, mime?}` — the files/raw route's op
+  (gateway C4b): workspace-confined, capped at `server.maxFileReadBytes`,
+  with the extension-derived mime (unknown extensions read as
+  `application/octet-stream`, the route's own default). A bad path
+  throws `invalid_path`, an absent file `not_found`, and an over-cap
+  file `too_large` (413; the HTTP route keeps its `file_too_large` +
+  `maxBytes` body).
+
+An unknown conversation id throws (`conversation <id> not found`) on
+every method — the routes' 404 analog.
+
+## The models and commands surfaces
+
+`host.models.list()` serves the SAME list `GET /v1/models` serves —
+picker entries (`id`, `provider`, `modelId`, `name`, `contextWindow`,
+`maxTokens`, `reasoning`, `input`, `cost`), no provider internals —
+through the one shared construction (helpers `listModels`); the two
+surfaces cannot drift.
+
+`host.commands` drives slash commands in-process (chat `/command`
+handling):
+
+- `list()` — the merged catalog rows (the core table + extension
+  entries; the live skill/template `kind: "expand"` entries are the
+  composer's per-request concern, not this surface's).
+- `run(conversationId, name, args, {user})` — the invoke route's
+  resolution, in-process. An unknown or CORE name throws
+  `command_not_found: <name>` (core names drive HTTP endpoints, not
+  extension `run`s). The principal is built from the DIRECTORY:
+  `opts.user` must name a real user — an unknown user throws
+  `unknown user "<user>"` — and becomes `{user, name?, email?, admin:
+  <effective>, service: false, method: "host"}`. **Effective admin** is
+  the stored flag OR the persisted proxy-group grant (gateway C8 —
+  host-side code has no request headers to recompute one). A throwing
+  run PROPAGATES (the HTTP route maps 500 `command_failed`; the host
+  caller owns its own handling).
+
+## The users surface
+
+`host.users.get/list` serve the directory with **effective admin**
+(gateway C8): `admin` is the stored flag OR the persisted proxy-group
+grant (`groupAdmin`), and `groupAdmin` rides along as a definite
+boolean. Host-side code (chat commands, channel adapters) has no
+request headers to recompute a group grant, so the write-through that
+lands it on the record is what makes host-side admin checks possible.
+The HTTP surface is deliberately different: `/v1/users` keeps `admin`
+= the stored flag (the users-admin UI toggles that one) and carries
+`groupAdmin` alongside; group-derived admin never counts toward the
+last-admin guard.
+
+The grant updates only on proxy-authenticated requests while
+`server.auth.adminGroups` is non-empty: removal from the admin group
+takes effect for host-side checks at that user's **next web request**
+(a user who never browses again keeps the stale grant until then).
 
 ## Secrets precedence: stored wins, env bootstraps
 
@@ -485,6 +588,22 @@ Each entry is a full job spec (the §8.2 grammar of the core design doc:
 `prompt` or `task` action). Extension-declared jobs are read-only through
 the API — edit the extension to change them. A malformed declaration
 ( bad grammar, duplicate names) quarantines the extension at load.
+
+A `prompt` action may carry `deliver: string[]` — gateway delivery
+targets (spec §8.0 C7): an optional array of 1–8 strings, each 1–256
+chars, valid ONLY with `conversation: "new"` (a conversation bound to
+a chat already delivers there). Core validates the SHAPE only — the
+target grammar belongs to the loaded gateway engine, not core. When
+the fire runs, `fire.ts` stamps `deliver` plus the owning `jobId` into
+the run conversation's SessionMeta (both server-owned: a meta PATCH
+carrying either key is a 400 `invalid_field`), and the gateway's
+runSettled delivery reads the stamp to route the answer to chats. Two
+behaviors follow: editing `deliver` is a job revision (the field rides
+`specHash`), and a fire with `deliver` while NO engine loaded logs one
+`deliver targets ignored: no gateway` warning per run (visible, never
+silent). The warning fires on the creating fire only — a crash-recovered
+re-entry (the run record already carries its conversation) re-runs the
+submit without re-warning.
 
 ## HTTP routes
 
@@ -734,6 +853,7 @@ Core emits one event per **recipient** (`user` is who it is for):
 	type: "interaction.pending" | "job.failed" | "run.settled",
 	conversationId?: number,   // the conversation, when one is involved
 	jobId?: string,            // the failed job's id
+	callId?: string,           // the pending record's id — interaction.pending ONLY
 	user: string | undefined,  // the recipient
 	title: string,
 	body: string,
@@ -742,7 +862,9 @@ Core emits one event per **recipient** (`user` is who it is for):
 ```
 
 - **Emitted events.** `interaction.pending` — always (an agent needs a
-  human). `job.failed` — always, once per failed run. `run.settled` —
+  human); it carries the record's `callId` so a notifier can read the
+  record via `ctx.host.snapshotInteraction` (the only type that carries
+  it). `job.failed` — always, once per failed run. `run.settled` —
   per the `notifications.runSettled` setting: `"unwatched"` (default)
   only when no client stream is attached to the conversation (the
   away-from-desk case), `"cron"` only for job-run conversations,
@@ -763,6 +885,140 @@ Core emits one event per **recipient** (`user` is who it is for):
   concern).
 - A malformed declaration (missing name, non-function `notify`)
   quarantines the extension at load.
+
+## Channel adapters
+
+A factory result may declare `channels` — chat-platform adapters
+(Telegram, Signal, Slack, IRC, a loopback test harness, ...) the
+gateway engine drives. **Core ships no engine and no adapters**; each
+lives in its own extension package, and a `channels`-only result is a
+valid contributor identified by its `name` (the `providers` rule).
+
+```js
+export default function acmeChannel(host) {
+	return {
+		name: "acme-channel",
+		channels: [
+			{
+				id: "acme",
+				label: "Acme Chat",
+				capabilities: {
+					chatTypes: ["dm", "group"],
+					maxMessageLength: 4096,
+					format: "markdown",
+				},
+				async configured() {
+					const token = await host.stores.secrets.get("bot-token");
+					return token === undefined
+						? { status: "not_configured" }
+						: { status: "ready" };
+				},
+				async start(ctx) {
+					// connect; hand every platform message to ctx.receive(event)
+				},
+				async send(message) {
+					// returns { messageIds: [...] }
+				},
+			},
+		],
+	};
+}
+```
+
+The full type shapes (`ChannelContribution`, `ChannelCapabilities`,
+`InboundEvent`, `OutboundMessage`, ...) are the spec §7 contract in
+`@sigrun/sigrun/extension`. Rules for adapter authors:
+
+- **Webhook transports** (Telegram, Slack callbacks) declare their own
+  `routes` — mounted at `/v1/ext/<adapter-slug>/...` with
+  `auth: "public"` — and hand events to the `ChannelContext` captured
+  in `start`, verifying the platform's signature themselves. A webhook
+  arriving before `start` or after `stop` answers `503` — the engine's
+  contract, not yours to implement.
+- **Socket/poll transports** run their receive loop from `start`, never
+  from the factory body (the pi lifecycle lesson: timers and sockets
+  belong to started surfaces, and a quarantined replacement must not
+  leave them running).
+- **Credentials come from your own host stores.** Resolve
+  stored-then-env yourself — `host.stores.secrets.get(key)`, else
+  `SIGRUN_EXT_<SLUG>_<KEY>` from `process.env` ([the secrets-precedence
+  rule](#secrets-precedence-stored-wins-env-bootstraps)). The engine
+  never sees credentials. `configured()` reports whether they are
+  present; unconfigured adapters are never started.
+- **Button `data` is an engine-issued token of at most 64 bytes**
+  (Telegram's callback limit, the tightest seen). Pass it through
+  verbatim — never interpret, never persist it as meaning.
+- **Oversized media is refused by name, not by class.** When an
+  attachment's `fetch(opts)` exceeds `opts.maxBytes`, stop reading and
+  throw an error whose `name` is `"AttachmentTooLarge"` — the engine
+  matches that name, never `instanceof` (the contract is types-only;
+  there is no runtime class to share).
+- **`format` is required when `capabilities.format` is `"native"`** —
+  native markup has no default renderer.
+- **Channel ids are global.** Two loaded extensions declaring the same
+  channel id quarantine the *later* one, naming both — deliberately
+  unlike the last-registered-wins rule for commands and bundles, because
+  chat bindings are keyed by channel id and a shadowing adapter would
+  inherit another adapter's chats. Duplicate ids within one result
+  reject the same way.
+- A malformed declaration (bad id grammar, empty `label`, non-function
+  `start`/`send`/`configured`, a `capabilities` that fails the shape
+  check) quarantines the extension at load.
+
+`GET /v1/extensions` lists each row's contributed channel ids under
+`channels`.
+
+## Gateway engines
+
+A factory result may declare `gateway` — the engine that supervises
+every channel adapter. **One engine per boot**: the first declarer
+wins; a later extension declaring `gateway` quarantines at load with
+`gateway engine already declared by "<first slug>"` (an engine owns
+supervision over the whole channel set — never last-wins). Core ships
+no engine; it lives in its own extension package like the adapters.
+
+```js
+export default function acmeEngine(host) {
+	return {
+		extension: defineExtension({ name: "acme-gateway-engine" }),
+		gateway: {
+			async start(ctx) {
+				// ctx.channels: every loaded adapter's {extension, channel}
+				// ctx.signal: aborts when the host's gateway.stop() runs
+			},
+			async stopIntake() {},
+			async stop() {},
+			health() {
+				return "ok"; // or "degraded"
+			},
+		},
+	};
+}
+```
+
+Rules for engine authors:
+
+- **Lifecycle.** The engine starts AFTER the server listens (a failed
+  `start` latches `health.gateway: "degraded"` until restart — boot
+  never wedges). Shutdown is ordered: SSE streams end, the HTTP drain
+  completes, then `stopIntake()` closes inbound chat intake BEFORE the
+  event bus drains pending settles (the drain is the last admission
+  window), then `stop()` halts the adapters only after every settle has
+  been delivered, then the refresh scheduler stops and the harness
+  closes.
+- **Health comes from `gateway.health()`, never the `health` field.**
+  A result carrying both quarantines (`a gateway engine reports health
+  through gateway.health(), not the health field`) — the `health`
+  field is the provider-contributor surface and would double-report.
+  A throwing `health()` reads `"degraded"` in `/v1/meta` (logged once
+  per process; the route stays 200).
+- **Adapters without an engine are inert.** A deploy with channel
+  adapters and no engine logs one boot warning
+  (`channels contributed but no gateway engine is loaded`) and marks
+  each contributing row `inert: "no gateway"` in `GET /v1/extensions`;
+  `/v1/meta` omits `health.gateway` entirely.
+- A malformed declaration (a missing `start`/`stopIntake`/`stop`/
+  `health` function) quarantines the extension at load.
 
 ## Uninstall
 

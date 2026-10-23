@@ -201,6 +201,67 @@ test("seedInteraction maintains the pending index; answer flips the record and d
 	expect(unknown.statusCode).toBe(404);
 });
 
+test("answerInteraction attribution: opts.user stamps human + answeredByUser; absent keeps extension", async () => {
+	const { opened } = await bootWith([FIXTURE_SPECIFIER]);
+	const root = await opened.harness.root(BACKGROUND_CONTEXT);
+	const host = opened.seamHosts.get("sigrun-fixture-seam");
+	expect(host).toBeDefined();
+	if (host === undefined) throw new Error("seam host missing");
+	// Two pending records: one answered WITH opts.user, one without.
+	for (const callId of ["call-attr-human", "call-attr-extension"]) {
+		await host.seedInteraction(
+			root.id,
+			{
+				kind: "fixture.ask",
+				callId,
+				status: "pending",
+				createdAt: 1,
+				body: {
+					text: "pick one",
+					options: [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					],
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+	}
+	// With opts.user: the record is answered BY A HUMAN, named.
+	const named = await host.answerInteraction(
+		root.id,
+		"call-attr-human",
+		{ ids: ["a"] },
+		BACKGROUND_CONTEXT,
+		{ user: "alice" },
+	);
+	expect(named).toBe(true);
+	const human = await host.snapshotInteraction(
+		root.id,
+		"call-attr-human",
+		BACKGROUND_CONTEXT,
+	);
+	expect(human?.status).toBe("answered");
+	expect(human?.answeredBy).toBe("human");
+	expect(human?.answeredByUser).toBe("alice");
+	// Without opts: unchanged — the extension answered, no user named.
+	const plain = await host.answerInteraction(
+		root.id,
+		"call-attr-extension",
+		{ ids: ["b"] },
+		BACKGROUND_CONTEXT,
+	);
+	expect(plain).toBe(true);
+	const extensionAnswer = await host.snapshotInteraction(
+		root.id,
+		"call-attr-extension",
+		BACKGROUND_CONTEXT,
+	);
+	expect(extensionAnswer?.status).toBe("answered");
+	expect(extensionAnswer?.answeredBy).toBe("extension");
+	expect(extensionAnswer?.answeredByUser).toBeUndefined();
+});
+
 test("the extension-side answer path works and is first-answer-wins with the route", async () => {
 	const { opened, app } = await bootWith([FIXTURE_SPECIFIER]);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);

@@ -1,6 +1,6 @@
 # Sigrun multi-user: isolation, per-user extensions, and login
 
-Status: draft for review, revision 2 (builder check folded). Date: 2026-10-23.
+Status: draft for review, revision 3 (builder check and deepseek review folded). Date: 2026-10-23.
 
 Inputs:
 
@@ -18,7 +18,10 @@ Inputs:
 - the sandbox spike of 2026-10-23 (§5);
 - the user rulings of 2026-10-23 (§3);
 - the builder check of 2026-10-23 (five questions, all settled in the
-  text; the resulting calls are in §14).
+  text; the resulting calls are in §14);
+- the deepseek-v4.1-flash review
+  (`reviews/2026-10-23-multi-user-review-deepseek.md`), folded into
+  revision 3; finding ids like B2 or M7 refer to it (§16).
 
 ## 1. Intent
 
@@ -117,12 +120,18 @@ files, credentials, or conversations — by accident or by asking it to.
    user-supplied servers when the admin allows them.
 7. **OIDC and OAuth2 are extensions**, not core.
 8. **Bundled.** The OIDC/OAuth2 extension ships as a built-in.
-9. **Gateway handover.** The login workstream (M3) starts after
-   gateway-engine Task 4; it then moves the gateway's chat-account links
-   into core.
+9. **Gateway handover.** Revised the same day: the gateway engine had
+   only just started, so the account-link table lands first as M3a and
+   the engine pauses after its Task 2, then builds its links on
+   `host.accounts` (no `identities.json`, no migration, §11.7). The rest
+   of M3 follows M3a.
 10. **Do not step on in-flight work.** The gateway, UI-blocks, and
     image-workflow workstreams are underway; this spec's changes to
     shared files wait for them (§7).
+11. **No memory-unsafe languages.** The sandbox helper may not be
+    written in C or any other memory-unsafe language.
+12. **The bundled extension is `ext-oauth`,** not `ext-login`: it names
+    what it speaks, colloquially covering OAuth 2 and OIDC.
 
 ## 4. Approaches
 
@@ -204,11 +213,19 @@ It cannot:
 
 - read or write sigrun's store roots, database, or credential files;
 - read another user's workspace, home, temp, or grants they lack;
-- inspect or signal sigrun or any process outside U's own jail
-  (ptrace and signal scoping);
-- connect to abstract Unix sockets outside U's jail;
-- read sigrun's environment (scrubbed, and the process is outside the
-  jail's ptrace scope);
+- inspect sigrun or any process outside U's own jail: Landlock's
+  implicit ptrace restriction (every ABI) allows ptrace and related
+  access only to a sub-domain of the caller, and the kernel docs state
+  that sensitive `/proc/<pid>` files are restricted the same way. sigrun
+  is outside every jail, and two jails started separately are siblings,
+  so neither can read the other's `/proc/<pid>/environ` or memory (the
+  spike measured exactly this, same uid, `/proc` readable);
+- signal sigrun or any process outside U's own jail (ABI 6 signal
+  scoping);
+- connect to abstract Unix sockets outside U's jail (ABI 6 scoping);
+- read sigrun's environment: its children get the scrubbed allowlist
+  (§8), and its own `/proc/<pid>/environ` is behind the ptrace
+  restriction above;
 - use another user's credentials or per-user tools (§10);
 - read the credentials held by U's own per-user services: they run in a
   separate jail (§10.3), so a prompt-injected agent cannot read U's
@@ -224,7 +241,8 @@ extension code; resource exhaustion; outbound network; non-Linux hosts.
 | M0 | Environment-leak fix (§8) | nothing; not part of this spec's plans |
 | M1 | The execution jail (§9) | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
 | M2 | Per-user extension surface (§10) | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
-| M3 | Login (§11) | gateway-core Task 5; gateway-engine Task 4 |
+| M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 3 waits for M3a |
+| M3 | Login (§11), the rest | M3a |
 | M4 | Extension adoption (§12) | M2 (MCP); M2 (memory) |
 
 M1 and M3 run in parallel once their waits clear. Each workstream gets
@@ -233,8 +251,13 @@ the listed task has merged to `main`:
 
 - `Dockerfile`, `docker/`, `charts/sigrun/` — image-workflow;
 - `src/server/auth/pipeline.ts`, `src/harness/identity/users.ts`,
-  `src/server/routes/users.ts` — gateway-core Task 5;
-- `src/extension.ts` — UI-blocks U0/U3/U4/U6 and gateway-core;
+  `src/harness/identity/invites.ts`, `src/server/routes/users.ts`,
+  `src/server/routes/onboarding.ts` — gateway-core Task 5;
+- `src/extension.ts`, `shared/src/views.ts` — UI-blocks U0/U3/U4/U6 and
+  gateway-core (Task 6 adds `Principal.method: "host"`; M3 adds
+  `"session"` alongside it);
+- `src/harness/settings.ts` — UI-blocks U4 (`onSettingsChanged`) and
+  gateway-engine Task 1 (`builtinExtensions`);
 - the gateway engine's `src/state/identities.ts` — gateway-engine
   Task 4.
 
@@ -242,16 +265,27 @@ the listed task has merged to `main`:
 
 Lands before M1 as its own change, now:
 
-- Core's workspace service builds every `NodeExecutionEnv` with an
-  explicit environment and `inheritEnv: false` semantics for every
-  `exec`: the allowlist below, never `process.env`.
+- pi-durable's bash tool builds each execution with
+  `inheritEnv: true` and an empty `env` (`dist/tools/bash.js`
+  `prepareExecution`), and `NodeExecutionEnv` merges `process.env`
+  under any `shellEnv` (`dist/env/node.js` `getShellEnv`), so neither a
+  constructor option nor `shellEnv` can subtract. The fix uses the
+  bash tool's documented `prepare` hook where core builds the tool
+  (`src/harness/tools.ts`): `execution.inheritEnv = false;
+  execution.env = allowlist()`.
+- Belt: core wraps the env it hands tools so every `exec` call is
+  forced to `inheritEnv: false` with the allowlist, whichever tool
+  called it (extension tools that call `api.env.exec` included).
 - sigrun-ext-mcp spawns stdio servers with the same allowlist plus the
   server's configured env and token.
 - **Allowlist:** `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_*`, `TZ`, `TERM`,
-  `USER`, `LOGNAME`, `SHELL`. Nothing prefixed `SIGRUN_`, nothing from
-  `auth.json` or `secrets.json`, no provider key variables.
-- Test: the agent's `env` output in a test conversation contains no
-  `SIGRUN_*` and no configured provider key.
+  `USER`, `LOGNAME`, `SHELL`, values taken from sigrun's environment.
+  Nothing prefixed `SIGRUN_`, nothing from `auth.json` or
+  `secrets.json`, no provider key variables.
+- Tests: the agent's `env` output in a test conversation contains no
+  `SIGRUN_*` and no configured provider key; an arbitrary non-allowlisted
+  variable set in sigrun's environment is absent from both a bash-tool
+  `exec` and a direct `api.env.exec`.
 
 M1 reuses the same allowlist inside the worker.
 
@@ -263,7 +297,7 @@ Setting `server.isolation`, restart-required, env `SIGRUN_ISOLATION`:
 
 | Value | Meaning |
 |---|---|
-| `auto` (default) | Jail on when the directory holds more than one user; off for a single-user server. |
+| `auto` (default) | Jail on when the directory holds more than one user; off for a single-user server. Latched per process: once the jail has been active, it stays active until restart even if users are deleted down to one. Every transition logs one line. |
 | `always` | Jail on for every user, including a lone admin who wants their agent confined to their grants. |
 | `off` | No jail. Permitted only while the directory holds at most one user. |
 
@@ -274,8 +308,12 @@ Setting `server.isolation`, restart-required, env `SIGRUN_ISOLATION`:
   or unavailable fails: HTTP 409 `isolation_required`, CLI exit 1, both
   naming the reason.
 - A server whose directory already holds two or more users and whose
-  isolation is `off` or unavailable boots, serves HTTP, and fails every
-  agent tool call that would touch an `ExecutionEnv` with the tool error
+  isolation is `off` or unavailable boots and serves HTTP, but every
+  `ExecutionEnv` resolution fails closed. The decision sits in
+  `WorkspaceService.forConversation`, the one seam every consumer
+  passes through (tools, `files` routes and uploads, context files,
+  skills, job prompt expansion: `src/server/helpers.ts`,
+  `src/jobs/fire.ts`): it returns an env whose every method fails with
   `isolation_unavailable: <reason>`. Boot logs the reason once;
   `/v1/meta` reports it.
 
@@ -299,7 +337,8 @@ Isolation is available when all hold:
 - the host is Linux;
 - Landlock reports ABI **6 or later** (Linux 6.12+): ABI 6 adds signal
   and abstract-socket scoping, without which a jailed `pkill node` kills
-  sigrun — an accident this spec exists to prevent;
+  sigrun — an accident this spec exists to prevent. (The ptrace and
+  `/proc` restriction of §6 is implicit in every ABI.)
 - the native helper (§9.3) resolves for the platform and its self-test
   passes at boot.
 
@@ -316,20 +355,37 @@ probe file, and confirms the denial. `/v1/meta` gains
   filesystem right of the running ABI (best-effort up to ABI 7), adds
   the policy's path rules, enables signal and abstract-socket scoping,
   restricts itself, and `exec`s the command;
-- optionally switches uid/gid first (§9.8);
+- optionally switches uid/gid first (§9.8), refusing uid 0 and gid 0;
 - any failure before `exec` exits non-zero with one line on stderr; it
   never runs the command unconfined.
 
-Language is the builder's choice (Rust's `landlock` crate or C). It
-ships as npm optional platform packages
+**Invariant:** every process the helper starts has `no_new_privs` set,
+and every process inside a jail inherits it. That is what keeps the
+file-capped helper (§9.8) unprivileged when a jailed command executes
+it: with `no_new_privs`, `execve` grants no file capabilities. No change
+may relax it; the integration suite asserts that running the helper
+from inside a jail cannot change uid.
+
+**Language: Rust**, with the `landlock` crate (maintained alongside the
+kernel feature) and `#![forbid(unsafe_code)]` in the helper crate, so
+every unsafe operation lives in reviewed dependencies (user ruling 11).
+Rust over Go: before ABI 8 a Landlock ruleset binds only the calling
+thread, and Go's runtime is multithreaded before `main` runs, so a Go
+helper must apply the ruleset to every thread through the runtime's
+all-threads syscall path. A single-threaded Rust binary that restricts
+itself and then `exec`s has no such step to get wrong. It ships as npm
+optional platform packages
 `@sigrun/sandbox-linux-x64` and `@sigrun/sandbox-linux-arm64`
 (the esbuild pattern), dependencies of core, built and published by CI.
 It lives in the core repo under `sandbox/`.
 
 **The worker** is a Node process started through the helper:
-`sigrun-sandbox -- node <core>/dist/sandbox/worker.js`. It hosts
-pi-durable's own `NodeExecutionEnv`, unmodified, and serves it to sigrun
-over an IPC channel.
+`sigrun-sandbox -- node <worker entry>`. The entry is resolved from
+core's own module URL: `dist/sandbox/worker.js` in a built install, and
+the `src/` module run through `tsx` in a source checkout (the dev and
+unit-test shape; `dist/` is not committed). It hosts pi-durable's own
+`NodeExecutionEnv`, unmodified, and serves it to sigrun over an IPC
+channel.
 
 - **One worker per user**, started on the first `ExecutionEnv` call for
   a conversation owned by that user, serving all of that user's
@@ -347,11 +403,17 @@ over an IPC channel.
   is an invariant with a test: a command run through `exec` cannot write
   to the channel's descriptor.
 
-**`SandboxedExecutionEnv`** is core's `ExecutionEnv` that forwards all
-26 methods (`FileSystem` + `Shell`) to the user's worker:
+**`SandboxedExecutionEnv`** is core's `ExecutionEnv` that forwards every
+member of `FileSystem` and `Shell` to the user's worker:
 
 - typed `implements ExecutionEnv`, so a pi-durable upgrade that adds a
-  method fails to compile until it is forwarded;
+  required member fails to compile until it is forwarded. Optional
+  members (today `listFiles?`) are forwarded when the worker's env
+  implements them; the upgrade checklist in the M1 plan names checking
+  for new optional members;
+- `cleanup()` from a conversation is a no-op on the shared worker (it
+  would kill the user's other conversations' commands); the worker's
+  commands are killed when the worker stops;
 - readers, directory readers, and watchers become handle ids on the
   wire, closed on `close()` or worker exit;
 - `exec` output streams forward incrementally (the bash tool's live
@@ -360,26 +422,48 @@ over an IPC channel.
   codes.
 
 `createWorkspaceService().forConversation` returns a
-`SandboxedExecutionEnv` when isolation is active, today's
-`NodeExecutionEnv` otherwise. No tool changes.
+`SandboxedExecutionEnv` when isolation is active, the failing env of
+§9.1 when the server is multi-user without active isolation, and
+today's `NodeExecutionEnv` (with the §8 wrapper) for a single-user
+server. No tool changes.
 
 ### 9.4 The policy
+
+Rights per access level, applied as the intersection with what the
+running ABI supports:
+
+| Level | Landlock filesystem rights |
+|---|---|
+| `ro` | `EXECUTE`, `READ_FILE`, `READ_DIR` |
+| `rw` | `ro` plus `WRITE_FILE`, `REMOVE_FILE`, `REMOVE_DIR`, `MAKE_CHAR`, `MAKE_DIR`, `MAKE_REG`, `MAKE_SOCK`, `MAKE_FIFO`, `MAKE_BLOCK`, `MAKE_SYM`, `REFER`, `TRUNCATE` |
+
+`EXECUTE` is in `ro` so `./script.sh` and `bash script.sh` behave alike.
+`REFER` is `rw`-only (cross-directory rename and link, which git and npm
+need inside the workspace). `IOCTL_DEV` is never handled, so device
+ioctls follow ordinary permissions. Nothing outside this table is ever
+granted.
 
 Read-write:
 
 - the user's workspace (§9.5);
 - the user's grants marked `rw`;
-- `<dataDir>/users/<user>/home` (the worker's `HOME`: git config, tool
-  caches);
+- the user's home: `<dataDir>/users/<user>/home`, or the OS account's
+  home for an `osUser` record (§9.8). It is the worker's `HOME` (git
+  config, tool caches);
 - `<stateDir>/sandbox/<user>/tmp` (the worker's `TMPDIR`; `/tmp` is not
-  granted).
+  granted);
+- device files `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`,
+  `/dev/urandom`, `/dev/tty`, and `/dev/pts/`. Nothing else under
+  `/dev`; in particular not `/dev/shm`, which would be a same-uid
+  rendezvous outside the jail's own directories.
 
 Read-only:
 
 - system paths: `/usr`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`,
   `/etc`, `/opt`, `/proc`, `/sys`, and the Node binary's directory;
-- `/dev` read-write for files (device ioctls are not handled);
-- the core install directory (the worker script and pi-durable);
+- the module trees the worker loads: core's `dist/` (or `src/` in a
+  source checkout), `shared/`, and `node_modules/`. Never core's install
+  root itself: a source checkout's root holds `.env` and private docs;
 - the user's grants marked `ro`;
 - package directories of per-user services the user runs (§10.3).
 
@@ -414,10 +498,14 @@ osUser?: string;               // §9.8
   claimant's record gets `workspace` set to the configured
   `workspacePath` (`SIGRUN_WORKSPACE_PATH` / `server.workspacePath`), so
   the admin keeps today's workspace. Other users default to their
-  sigrun-created directory (mode 0700, created on first worker start).
+  sigrun-created directory, created on first worker start. Its mode is
+  0700, but for workers sharing sigrun's uid file modes are hygiene,
+  not isolation: Landlock alone confines them, and the docs say so.
 - **Grant validation** applies to `workspace` and every grant (400
-  `invalid_grant`, naming the path). The path is absolute and existing,
-  and:
+  `invalid_grant`, naming the path). The path is absolute, existing,
+  and stored as its `realpath` (Landlock follows the resolved
+  hierarchy, so a symlink to a store root must not pass as a string).
+  Then:
   - it is not an ancestor of, or equal to, any store root,
     `storagePath`, `<dataDir>/users`, or an extension directory
     `<dataDir>/<slug>`;
@@ -431,10 +519,21 @@ osUser?: string;               // §9.8
   subtract a path from a granted ancestor, so granting `~` on a
   workstation whose store roots live under `~` is refused; the error
   says to grant subdirectories.
-- **Reserved slugs.** The loader quarantines an extension whose slug is
-  `users` or `workspace` (same mechanism as the reserved-section
-  quarantine, R11), so no extension directory can collide with the
-  workspace areas.
+- **Revalidated** at boot and every time a worker's policy is built,
+  since a store root can move under an existing grant (e.g. a new
+  `SIGRUN_DATA_DIR` inside a granted directory). A grant that now fails
+  stops that user's worker from starting, with the reason named in the
+  tool error and in `/v1/meta`; it is never silently applied.
+- **Reserved slugs.** Every directory core owns directly under a store
+  root is a reserved extension slug, and the loader quarantines an
+  extension that claims one (same mechanism as the reserved-section
+  quarantine, R11). Today: `users`, `workspace`, `models`
+  (`<dataDir>/models`, the provider model store) under `dataDir`;
+  `sandbox` under `stateDir`; `settings`, `user-settings`,
+  `user-secrets`, `skills`, `prompts`, `packages`, `git` under
+  `configDir`. The M1 plan audits `src/` for any other core-owned
+  directory and adds it; a test fails when a new core directory name
+  is not in the list.
 - Users see their own workspace and grants (`GET /v1/auth/whoami` gains
   them) and cannot edit them. Narrowing one's own access is done by the
   admin; the self-service editor is a non-goal of this revision.
@@ -444,9 +543,15 @@ osUser?: string;               // §9.8
   the fork's create commit when the fork's owner differs from the
   parent's, so the fork starts at its owner's workspace root.
 - **Ownership transfer on user delete:** the departing user's workspace
-  stays where it is and becomes an `rw` grant on the `transferTo` user;
-  transferred conversations keep their `agent.cwd`, which now resolves
-  through that grant. The admin removes the grant when done.
+  stays where it is and becomes an `rw` grant on the `transferTo` user.
+  Each transferred conversation's `agent.cwd` is rewritten in the
+  transfer commit to the absolute path it resolved to under the old
+  owner (a relative `cwd` would otherwise silently retarget into the
+  new owner's workspace). The admin removes the grant when done.
+- **`osUser` transfer:** an `osUser` record's workspace is that OS
+  account's home, which the receiving worker cannot read. Deleting such
+  a user with `transferTo` fails 409 `invalid_transfer` naming the
+  reason; the admin clears `osUser` (or moves the files) first.
 
 ### 9.6 Single-user servers
 
@@ -482,8 +587,8 @@ For two people sharing one computer with sigrun as a service account:
 - That user's worker runs as the OS account's uid/gid (supplementary
   groups from the account), then applies Landlock as usual. Files the
   agent creates are owned by that account.
-- Default workspace for an `osUser` record: the account's home
-  directory. Grant validation still applies; the service account's
+- Default workspace and `HOME` for an `osUser` record: the account's
+  home directory. Grant validation still applies; the service account's
   store roots are not under that home.
 - Everything else is unchanged; users without `osUser` run as the
   service account's uid under Landlock.
@@ -497,14 +602,21 @@ For two people sharing one computer with sigrun as a service account:
 - Kernel integration (`SIGRUN_SANDBOX_IT=1`, Linux with Landlock ABI 6+):
   the §6 boundary list, one test per line, through real tools in real
   conversations; the IPC-descriptor invariant; worker crash and idle
-  stop; `osUser` switch when the helper has file capabilities.
+  stop; `osUser` switch when the helper has file capabilities. Named
+  cases from the review: a jailed shell reading
+  `/proc/<sigrun>/environ`, `/proc/<service>/environ`, and
+  `/proc/<other worker>/mem`, and a `ptrace` attach on each; a file
+  planted at `<core>/.env` is unreadable; running the helper from
+  inside a jail cannot change uid; a grant that becomes an ancestor of
+  a moved store root stops the worker; `/dev/shm` is not writable.
   - The suite needs a 6.12+ kernel with Landlock enabled. WSL2's 6.6
     does not qualify. GitHub's `ubuntu-24.04` runner image lists kernel
     `6.17.0-1022-azure` (image `20260927.320.1`), so the suite runs
-    there; the first CI run's boot self-test proves Landlock is enabled
-    in that kernel. If it is not, the suite runs as a CI job in a pod on
-    a 6.12+ host instead. Elsewhere it is skipped with a named reason. A
-    skip is never reported as a pass.
+    there. The first CI job asserts only the boot self-test, so a kernel
+    without Landlock fails CI loudly rather than turning the suite into
+    skips. If it fails, the suite moves to a CI job in a pod on a 6.12+
+    host. Elsewhere the suite is skipped with a named reason. A skip is
+    never reported as a pass.
 - e2e: two users, one sigrun; user B's agent is asked to read A's
   workspace file, `users.json`, and sigrun's environment, and to
   `pkill node`; all fail and sigrun stays up.
@@ -537,7 +649,10 @@ host.stores.user(user: string): {
   - paths: `<dataDir>/<slug>/users/<user>/`,
     `<stateDir>/<slug>/users/<user>/`, `<cacheDir>/<slug>/users/<user>/`,
     created on first access.
-- `user` must exist in the directory; otherwise the call throws.
+- `user` must exist in the directory; otherwise the call throws. The
+  one exception: during a user's `userDeleted` fan-out (§10.6), that
+  user resolves even though the record is gone, so handlers can read
+  secrets to revoke tokens at the provider.
 - All of these sit under store roots, so no jail can read them (§9.4).
   Extension data stays out of the user's workspace so the user's agent
   cannot corrupt it.
@@ -596,15 +711,17 @@ type ServiceHandle = {
   service's environment. With `osUser` (§9.8) the service runs as that
   account.
 - `readPaths` are validated like grants and added read-only for this
-  process only. The extension's own package directory is added
-  automatically.
+  process only. The extension's own resolved package directory is added
+  automatically and is exempt from the validation's "not inside
+  `configDir`" rule, since installed packages live under
+  `<configDir>/packages`; the exemption covers exactly that directory.
 - **Idle stop:** no held handle and no stdio traffic for `idleMinutes`.
 - **Crash:** `exited` resolves; the next `connect` starts it again.
   Three crashes within 5 minutes mark the service `failed` for that user
   until the user's settings for that extension change or sigrun
   restarts; `connect` then rejects with the last stderr lines.
-- **Stopped on:** user delete, the extension's quarantine, shutdown
-  (workers-then-handlers order), and isolation being inactive.
+- **Stopped on:** user delete, the extension's quarantine, and shutdown
+  (workers-then-handlers order).
 - **Isolation inactive (single-user server):** services run as plain
   children with the M0 allowlist env. Same API.
 - `GET /v1/extensions` gains each extension's services with per-user
@@ -631,18 +748,26 @@ host.tools.setUserTools(user: string, tools: readonly ToolRegistration[]): void;
   such slug to the conversation's stored `extensions` edit
   (`{add: [...]}`), whether or not the entry is installed yet; pi-durable
   skips uninstalled names and picks them up once installed.
-- **Fork by another user and ownership transfer** rewrite the edit:
-  remove the old owner's `*@<old>` names, add the new owner's.
-- **Array selections are exact.** A conversation whose stored
+- **Fork by another user and ownership transfer** rewrite the stored
+  selection in the same commit, in both shapes: an edit object loses the
+  old owner's `*@<old>` names and gains the new owner's; an array loses
+  every `*@<old>` name (and gains nothing, since arrays are exact).
+- **Array selections are otherwise exact.** A conversation whose stored
   `extensions` is an array (for example a gateway group with a fixed
-  tool set) is never edited; per-user tools reach it only if its creator
-  listed them.
+  tool set) is not edited at create or by the boot sweep; per-user tools
+  reach it only if its creator listed them. Core rejects any write of a
+  `*@<u>` name into a conversation whose owner is not `u` (400 on the
+  routes, a thrown error on `host.conversations`).
 - **Existing conversations:** a boot sweep adds the owner's entries to
   every non-array selection that lacks them. Idempotent.
-- **Enforcement at call time.** A core tool-call hook (pi-durable's
-  before-intent hook) blocks any call to a tool from `<slug>@<u>` when
-  `u` is not the conversation's acting user. Selection is the
-  convenience; the hook is the boundary.
+- **Enforcement inside the tool.** `setUserTools` wraps every tool it
+  installs: before running, the wrapper resolves the calling
+  conversation's acting user and returns a tool error unless it is the
+  entry's user. Hooks only run for selected extensions
+  (`agentHooks` iterates the conversation's selection), so a hook alone
+  could be bypassed by a selection naming the entry without the guard;
+  the wrapper cannot be. Selection is the convenience; the wrapper is
+  the boundary.
 
 ### 10.5 Per-user settings sections
 
@@ -659,13 +784,16 @@ U4's behavior):
 
 In order:
 
-1. existing: ownership transfer, token revocation, record removal;
+1. existing: ownership transfer (with the §9.5 `cwd` rewrite and the
+   §10.4 selection rewrite) and token revocation; remove the user's
+   account links (§11.3);
 2. stop the user's worker and services; uninstall every `*@<user>`
    registry entry;
-3. existing: `userDeleted {user, transferTo}` to extensions — per-user
-   secrets are still readable here, so an extension can revoke tokens at
-   the provider;
-4. delete `<configDir>/user-secrets/<user>.json` and
+3. existing: `userDeleted {user, transferTo}` to extensions. The user's
+   per-user secrets are still readable here (§10.2's deletion
+   exception), so an extension can revoke tokens at the provider;
+4. remove the directory record;
+5. delete the user's per-user secrets file and
    `<configDir>/user-settings/<user>/`. Credentials belong to a person
    and never transfer.
 
@@ -729,6 +857,10 @@ type LoginResult = {
   It is set as `sigrun_session` exactly like today's token login.
 - Logout revokes that session token. Users see and revoke their sessions
   in their token list.
+- **Expiry is enforced:** the token authenticator rejects an expired
+  token as unknown (401), `GET /v1/auth/tokens` shows `expiresAt`, and
+  expired records are pruned on the next token-store write. Tokens
+  without `expiresAt` (API tokens) behave as today.
 - `Principal.method` gains `"session"`; `Principal` gains
   `provider?: string`.
 - A session principal has the same rights as today's cookie token,
@@ -747,7 +879,9 @@ type LoginResult = {
 One table for every external identity, shared with the gateway:
 
 - `<configDir>/accounts.json`, mode 0600, store semantics as today:
-  `{provider, subject, user, linkedAt, via: "login" | "self" | "pairing" | "allowlist" | "admin"}`.
+  `{provider, subject, user, linkedAt, via: "login" | "self" | "pairing" | "admin"}`.
+  The gateway's static `allow[]` entries stay configuration and are
+  never written as links.
 - Provider ids: login providers `login:<slug>:<id>`; chat channels
   `chat:<channel>`.
 - `host.accounts: { lookup(provider, subject), link(provider, subject, user, via), unlink(provider, subject), listForUser(user) }`.
@@ -760,7 +894,15 @@ One table for every external identity, shared with the gateway:
   `config` backup section carries it with `users.json`.
 - **Connect an account:** a signed-in user starts a login with
   `?link=1`; the result links to the caller instead of signing in.
-  Settings lists and removes the caller's links.
+- **Listing and removing links** mirror `/v1/auth/tokens`:
+  `GET /v1/auth/accounts[?user=]` (own; admins may name anyone) and
+  `DELETE /v1/auth/accounts?provider=&subject=` (own; admins may remove
+  anyone's). Settings renders them.
+- **One link per `(provider, subject)`.** Re-linking to the same user is
+  a no-op; linking to a different user is refused
+  (`account_link_conflict:`), never re-pointed, since re-pointing is an
+  account-takeover path. The holder or an admin removes the old link
+  first.
 - User deletion removes the user's links (step 1 of §10.6).
 
 ### 11.4 First login (no link)
@@ -772,7 +914,10 @@ One table for every external identity, shared with the gateway:
 - **Claimed server, per provider `autoProvision`** (default `false`):
   - `true`: create a user, `source: "login"`, `admin: false`, link the
     account. Optional per-provider `allowedGroups` / `allowedDomains`
-    filters refuse others with 403 `not_allowed`.
+    filters refuse others with 403 `not_allowed`. `allowedDomains`
+    matches only when the provider reports the email verified
+    (`profile.emailVerified === true`); an unverified address never
+    satisfies a domain filter.
   - `false`: the login page asks for an invite code; redemption creates
     the user and links the account.
 - **Username assignment:** `profile.username`, else the email local
@@ -788,9 +933,15 @@ One table for every external identity, shared with the gateway:
 - The directory record gains `groups?: { source: string; values: string[]; updatedAt: number }[]`,
   one entry per source (`proxy`, `login:<slug>:<id>`), replaced on each
   login or proxy request from that source.
-- This generalizes gateway C8: effective admin is
-  `record.admin || any stored group ∈ server.auth.adminGroups`, the same
-  answer on the web, in chat, and host-side.
+- This generalizes gateway C8 and **retires its `groupAdmin` field** in
+  the same change: C8's write-through of `groupAdmin` becomes a write of
+  the `proxy` groups entry, `DirectoryUserWire.groupAdmin` becomes a
+  value derived from stored groups, and nothing persists `groupAdmin`
+  any more (an existing value is dropped on the record's next write).
+  Effective admin is `record.admin || any stored group ∈
+  server.auth.adminGroups`, the same answer on the web, in chat, and
+  host-side. `recordAdminCount` (the last-admin guard) keeps counting
+  `record.admin` only, as core-hardening §5.8 requires.
 - **Sharing to groups** (deferred to OIDC by core-hardening ruling 10):
   `Sharing`'s `people` scope gains `groups?: string[]`; `accessOf`
   matches the principal's stored groups.
@@ -803,11 +954,15 @@ One table for every external identity, shared with the gateway:
 - Staleness: groups refresh at the next login or proxy request. The
   docs state it.
 
-### 11.6 `@sigrun/ext-login` (bundled)
+### 11.6 `@sigrun/ext-oauth` (bundled)
 
-- Own repo `sigrun-ext-login`; a core dependency; built-in key `login`,
-  slug `login`; `builtinExtensions.login` defaults to `true`; disable
+- Own repo `sigrun-ext-oauth`; a core dependency; built-in key `oauth`,
+  slug `oauth`; `builtinExtensions.oauth` defaults to `true`; disable
   and replacement as for every built-in (`builtins.ts` rulings 5–7).
+  Named for the protocol family it speaks (OAuth 2 and OIDC on top of
+  it, user ruling 12); the core seam it plugs into stays
+  `loginProviders`, and other login extensions (atproto, say) sit
+  beside it under their own names.
 - Inert until its admin settings section lists a provider: no
   providers, no routes beyond core's, nothing on the login screen.
 - Provider kinds:
@@ -824,15 +979,19 @@ One table for every external identity, shared with the gateway:
 
 ### 11.7 Gateway handover
 
-After gateway-engine Task 4 merges:
+The engine had not reached its link storage when this spec was written,
+so the account-link table lands first (M3a) and the engine builds on it
+directly; there is no `identities.json` and no migration:
 
-- the engine's `IdentityStore` keeps its interface and stores links in
-  core through `host.accounts` (`chat:<channel>`); home chats stay
-  gateway state;
-- a one-time, idempotent migration moves existing `identities.json`
-  links into `accounts.json` at the engine's first boot on the new core,
-  then removes them from `identities.json`;
-- `/link` and `/pair` behave exactly as the gateway spec says;
+- engine Task 3's `IdentityStore` stores links in core through
+  `host.accounts` (`chat:<channel>`); home chats stay gateway state in
+  `homes.json`. `userFor` becomes async; engine Task 8's
+  `admitGroupEvent` follows;
+- a self-link or pairing approval that hits an existing link to another
+  user is refused with a reply naming the fix (remove the old link);
+- engine Task 12's `userDeleted` clears home chats only, since core
+  removed the links before the event;
+- `/link` and `/pair` otherwise behave exactly as the gateway spec says;
 - an engine booting on a core without `host.accounts` fails loud at
   factory time (quarantined, one error naming the minimum core
   version); it never falls back to writing links into `identities.json`.
@@ -857,11 +1016,16 @@ against a local test issuer; OAuth2 presets against fake endpoints.
 ### 12.1 sigrun-ext-mcp
 
 - **Catalog** (admin settings), each server gains:
-  - `credentials: "shared" | "user"`: shared servers run once as
-    system children (M0 allowlist env, admin's token, not jailed —
-    admin-configured, trusted like extensions); user servers run per
-    user as `userServices` (§10.3) with the user's token from
+  - `credentials: "user" | "shared"`, default `"user"`. User servers
+    run per user as `userServices` (§10.3) with the user's token from
     `stores.user(u).secrets`, in a jail separate from the user's agent.
+    Shared servers run once as system children (M0 allowlist env, the
+    admin's token, not jailed). A shared server's tools give every
+    permitted user's agent the admin's authority on that service, driven
+    by whatever that user asks, so a shared entry must carry
+    `sharedAuthority: "<one-line reason>"` (the catalog refuses it
+    otherwise), may carry `users: string[]` to limit who gets it, and the
+    admin UI shows that warning beside it.
   - `availability: "all" | "opt-in"`: `all` is on for every user unless
     they turn it off; `opt-in` is off until they turn it on.
 - **User-supplied servers:** admin setting
@@ -870,8 +1034,9 @@ against a local test issuer; OAuth2 presets against fake endpoints.
   `userServices`; remote servers connect from sigrun's process, which
   has the same network reach as the agent's bash (no network rules,
   §9.4), so a user URL reaches nothing the user's agent could not.
-  Tool names are prefixed
-  `u_<server>_` so a user server cannot shadow a catalog server.
+  Tool names are prefixed `u_<server>_`, and catalog loading rejects a
+  catalog server whose name or tool prefix starts with `u_`, so a user
+  server cannot shadow a catalog server.
 - **OAuth per user:** the extension's OAuth routes use the route's
   `principal` and store tokens in that user's secrets.
 - **Tools:** per-user servers' tools publish through
@@ -907,6 +1072,10 @@ verifies this with one test each.
   any installed package — install only extensions you trust. One user's
   agent can still exhaust CPU, memory, or disk. Outbound network is not
   restricted. macOS and Windows hosts run single-user only.
+- **Shared MCP servers** hand every permitted user's agent the admin's
+  credential for that service.
+- **File modes are not the boundary.** Workers that share sigrun's uid
+  are confined by Landlock alone; `0700` directories are hygiene.
 - **Single-user servers** run the agent with full host access.
 - **Every peer in `trustedProxies` can forge any identity**; with
   isolation on, the shared secret is required for that reason.
@@ -919,7 +1088,8 @@ verifies this with one test each.
 - ABI 6 minimum (§9.2; ABI 6 = Linux 6.12 per Landlock's own release
   notes): excludes Debian 12's default 6.1 (bookworm-backports' 6.12
   qualifies) and Ubuntu 24.04's GA 6.8 (its HWE 7.0 qualifies).
-- `auto` mode turns the jail on at the second user (§9.1).
+- `auto` mode turns the jail on at the second user and latches until
+  restart (§9.1).
 - No Landlock TCP rules; network unrestricted (§9.4).
 - Workspaces and grants are admin-edited; no self-service narrowing in
   this revision (§9.5).
@@ -931,12 +1101,20 @@ verifies this with one test each.
 - `autoProvision` defaults `false` for login providers (§11.4); the
   proxy method keeps its `true` default.
 - Usernames assigned, not chosen (§11.4).
-- Shared MCP servers run unjailed as system children (§12.1).
+- Shared MCP servers run unjailed as system children, default off
+  (`credentials: "user"`), and need a stated reason (§12.1).
 - Per-user services run in their own jail, sibling to the user's
   worker, so the user's agent cannot read service credentials (§10.3).
 - Workspace/grant validation forbids containing or entering sigrun's
-  managed paths rather than all of `dataDir`, plus reserved slugs
-  `users` and `workspace` (§9.5).
+  managed paths rather than all of `dataDir`, works on `realpath`, and
+  re-runs at every worker start; every core-owned directory name is a
+  reserved slug (§9.5).
+- Transfer rewrites `agent.cwd` to an absolute path; `osUser`
+  workspaces refuse transfer (§9.5).
+- `/dev` limited to the named device files (§9.4).
+- Per-user tool enforcement lives in a wrapper around each tool, not a
+  hook (§10.4).
+- C8's `groupAdmin` is retired in favor of stored groups (§11.5).
 - Sessions may create API tokens; revoking a session leaves them
   (§11.2).
 - Memory transfers on user delete (§12.2).
@@ -945,7 +1123,34 @@ verifies this with one test each.
 
 ## 15. Left to the builder
 
-- The helper's language and the IPC wire format.
+- The IPC wire format.
 - The worker's handle-id scheme and stream framing.
 - The OIDC/OAuth2 library.
 - File and module layout within each repo, beyond the paths named here.
+
+## 16. Review disposition
+
+The deepseek-v4.1-flash review
+(`reviews/2026-10-23-multi-user-review-deepseek.md`), folded into
+revision 3:
+
+| Finding | Disposition |
+|---|---|
+| B1, B1b (`/proc` and ptrace not covered by ABI 6) | **Declined, text clarified.** Landlock's implicit ptrace restriction applies at every ABI: ptrace and related access only to a sub-domain of the caller, and the kernel docs state that sensitive `/proc/<pid>` files are restricted the same way. The spike measured a same-uid jailed shell denied sigrun's `/proc/<pid>/environ` with `/proc` readable. §6 and §9.2 now name the mechanism; §9.9 adds the review's `/proc` and ptrace cases as tests. |
+| B2 (enforcement hook is selection-scoped) | **Accepted.** Confirmed (`agentHooks` iterates the selection). Enforcement moved into a wrapper around each per-user tool; array selections are rewritten on fork and transfer; cross-owner `*@<u>` writes rejected (§10.4). |
+| B3 (M0 mechanism does not exist) | **Accepted.** Confirmed (bash tool hardcodes `inheritEnv: true`). M0 uses the bash tool's `prepare` hook plus an `exec` wrapper (§8). |
+| B4 (core install root exposes `.env`) | **Accepted.** Only module trees are granted (§9.4). |
+| M1 (slug collisions) | **Accepted.** Every core-owned directory name is reserved, with a guard test (§9.5). |
+| M2 (relative `cwd` after transfer) | **Accepted** (§9.5). |
+| M3 (deletion order) | **Accepted.** Record removal moved after `userDeleted`; deletion exception in §10.2 (§10.6). |
+| M4 (fail-closed scope) | **Accepted.** Decision moved into `forConversation` (§9.1, §9.3). |
+| M5 (`/dev`) | **Accepted** (§9.4). |
+| M6 (realpath, revalidation) | **Accepted** (§9.5). |
+| M7 (rights per level) | **Accepted** (§9.4 table). |
+| M8 (`groupAdmin`; shared files) | **Accepted** (§11.5, §7). |
+| M9 (shared MCP authority) | **Accepted.** Default `user`, stated reason required, optional user list, documented (§12.1, §13). |
+| M10 (`osUser` HOME, transfer, file modes) | **Accepted** (§9.4, §9.5, §9.8, §13). |
+| M11 (`auto` un-jails) | **Accepted.** Latched per process, transitions logged (§9.1). |
+| M12 (`no_new_privs` invariant) | **Accepted.** Stated as an invariant with a test; helper refuses uid/gid 0 (§9.3). A root-owned uid allowlist was not added: with `no_new_privs` inside every jail, the file-capped helper is unprivileged there. |
+| m1, m2, m3, m4, m5, m6, m8, m9, m10 | **Accepted** (§9.3, §10.3, §11.2, §11.3, §11.4, §12.1, §9.9). |
+| m7 (`login:login:oidc` ids) | **Resolved by the rename** (user ruling 12): the bundled extension's ids read `login:oauth:<id>`. |
