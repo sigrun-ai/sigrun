@@ -375,6 +375,20 @@ dependencies, and the loader links the host's own copies into the
 packages dir so your bare imports resolve — you consume the SAME module
 instances the host runs, matched structurally at runtime (never by
 `instanceof`). `typebox` (pi-ai's own dependency) resolves the same way.
+The one exception is `@sigrun/sigrun` itself: declare it a
+**`peerDependency: `"*"`** (never a dependency and never a pinned range).
+Sigrun links its own running package into the packages dir the same way,
+and the loader quarantines an extension whose tree resolves a DIFFERENT
+sigrun — the builders behind `@sigrun/sigrun/blocks` must emit the
+server's block-set version, which only the running copy does. Import the
+builders from `@sigrun/sigrun/blocks`:
+
+```ts
+import { bind, collection, page, tree } from "@sigrun/sigrun/blocks";
+
+tree(page({ title: "Board", main: [collection({ items: bind("/cards") })] }));
+```
+
 Reference plugins: [sigrun-provider-ollama](https://github.com/sigrun-ai/sigrun-provider-ollama)
 (the minimal shape), [sigrun-provider-opencode](https://github.com/sigrun-ai/sigrun-provider-opencode),
 [sigrun-provider-pareto](https://github.com/sigrun-ai/sigrun-provider-pareto) (scoped-settings
