@@ -44,6 +44,13 @@ jobs:
         working-directory: sigrun
       - run: npm ci
         working-directory: sigrun
+      # The suite imports @sigrun/shared subpaths (access, blocks) through
+      # shared/dist — gitignored build output, absent in a fresh checkout.
+      # A bare `npm test` only passes against a tree that was built at some
+      # point; CI starts from nothing, so build first (this also chains the
+      # root tsc build, which the extension-dts contract test asserts).
+      - run: npm run build
+        working-directory: sigrun
       - run: npm test
         working-directory: sigrun
       - run: npm run typecheck
