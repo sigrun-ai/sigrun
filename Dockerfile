@@ -15,12 +15,20 @@
 # node_modules; there is no fallback install). Build with:
 #
 #   node scripts/publish-deps.mjs registry \
-#     && npm install --package-lock-only \
+#     && npm install @sigrun/ext-codemode@<ver> @sigrun/ext-mcp@<ver> \
+#          @sigrun/ext-tool-search@<ver> --package-lock-only \
 #     && docker build . \
 #     && node scripts/publish-deps.mjs file
 #
-# Nothing is committed — the registry-shaped manifest and lock are
-# build-time-only state.
+# The <ver>s are the registry pins publish-deps.mjs just wrote into
+# package.json (each read from the sibling checkout's own manifest —
+# `git diff package.json` after `registry` shows them; e.g. 0.1.0/
+# 0.2.0/0.1.0 today). The lock regen MUST name them explicitly: a bare
+# `npm install --package-lock-only` keeps the lock's existing `link:`
+# entries, npm ci then materializes dangling ../sigrun-ext-* symlinks,
+# and the built-ins quarantine at boot — the exact failure this dance
+# exists to prevent. Nothing is committed — the registry-shaped
+# manifest and lock are build-time-only state.
 #
 # The runtime entry is plain node — tsx is a devDependency (from-source
 # runs: `npm start`), never needed by the built image.

@@ -3,6 +3,13 @@
 node_modules
 webui/node_modules
 webui/dist
+# The workspace build outputs too — `dist` above is root-anchored and
+# does NOT cover these, so stale local builds of shared/tui would ride
+# into the image through `COPY . .` (the image builds shared fresh, and
+# tui's dist ships only via the explicit --from=build copy, never a
+# host tree).
+shared/dist
+tui/dist
 .worktrees
 *.log
 dist

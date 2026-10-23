@@ -27,7 +27,10 @@ SG_UID="${SG_UID:-1000}"
 SG_GID="${SG_GID:-1000}"
 
 if [ "$(id -u)" -eq 0 ]; then
-	chown "$SG_UID:$SG_GID" /data /cache
+	# /cache/npm too: it is pre-created 1000:1000 in the image, so a
+	# shifted SG_UID root start could not write its npm cache without
+	# this (still mount-point-shaped — never recursive).
+	chown "$SG_UID:$SG_GID" /data /cache /cache/npm
 	# node's home dir: needed writable when the drop targets a uid other
 	# than 1000 (npm config, tool caches land under $HOME). Guarded — a
 	# missing or read-only dir must not block the drop.
