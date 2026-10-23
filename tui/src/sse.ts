@@ -324,6 +324,14 @@ export function watchConversation(
 export interface EventsHandlers {
 	/** A host event arrived (already JSON-parsed). */
 	readonly onEvent: (event: HostEventWire) => void;
+	/**
+	 * The hello frame's streamId (UI-blocks U3 Task 4, spec §7.3's W3
+	 * amendment): fired on EVERY (re)connect — a reconnect's hello
+	 * carries a NEW id, and the channel re-fetches every visible surface
+	 * with it (re-registering the watcher entries). Surface fetches send
+	 * the current id as `X-Sigrun-Stream`.
+	 */
+	readonly onHello?: (streamId: string) => void;
 	/** A failure: malformed frame (stays open) or transport error (reconnects). */
 	readonly onError?: (message: string) => void;
 	/** The underlying connection (re)opened with an OK response. */
@@ -424,6 +432,31 @@ export function watchEvents(
 
 		const parser = createFrameParser((frame) => {
 			if (closed) return;
+			// The hello frame (U3 Task 4) is connection-local: it names
+			// THIS stream for the watcher registry — surface fetches send
+			// the id as `X-Sigrun-Stream`; a NEW id (reconnect) re-fires
+			// so the channel re-registers. It never reaches onEvent (the
+			// launch wiring's switch would ignore it anyway — event types
+			// are an open set). Parsed loosely: the hello payload carries
+			// `streamId`, not a `type` member.
+			if (frame.event === "hello") {
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(frame.data);
+				} catch {
+					handlers.onError?.("malformed hello frame (not JSON)");
+					return;
+				}
+				// SAFETY: the JSON.parse output is unknown; the read below
+				// narrows `streamId` by typeof before use.
+				const streamId = (parsed as { streamId?: unknown }).streamId;
+				if (typeof streamId === "string") {
+					handlers.onHello?.(streamId);
+				} else {
+					handlers.onError?.("malformed hello frame (no streamId)");
+				}
+				return;
+			}
 			const event = parseEvent(frame.data);
 			if (event === undefined) {
 				handlers.onError?.(

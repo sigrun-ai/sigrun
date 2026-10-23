@@ -25,7 +25,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import {
@@ -118,6 +118,9 @@ async function bootRig(options?: {
 		defaultModel,
 		now: () => clock,
 		defaultTz: "UTC",
+		// Gateway C7: the rig loads no gateway engine, so deliver-carrying
+		// fires take the no-gateway warning path (one warning per run).
+		gatewayLoaded: false,
 	};
 	opened.registry.install({
 		name: "sigrun.jobs",
@@ -259,7 +262,8 @@ describe("the schedule task", () => {
 			BACKGROUND_CONTEXT,
 		);
 		expect(meta?.source).toBe("cron");
-		expect((meta as Record<string, unknown> | undefined)?.jobId).toBe(id);
+		// The typed C7 field: no cast needed any more (SessionMeta.jobId).
+		expect(meta?.jobId).toBe(id);
 		expect(meta?.owner).toBe("tester");
 		// nextRun is computed from NOW (t0+1s), not from the missed slot:
 		// it must be strictly after now and not fire once per missed interval.
@@ -410,6 +414,126 @@ describe("the schedule task", () => {
 	});
 });
 
+// ─── Gateway C7: deliver targets on the fire path ─────────────────────────
+
+describe("deliver targets (gateway C7)", () => {
+	test("a new-conversation fire stamps meta deliver + jobId (typed fields)", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const id = "api:job-deliver";
+		await seedJob(rig, id, {
+			...everyMinuteSpec(),
+			action: {
+				kind: "prompt",
+				prompt: "say tick",
+				conversation: "new",
+				deliver: ["telegram:42"],
+			},
+		});
+		const outcome = await fireJob(
+			rig.deps,
+			id,
+			`${id}:1000`,
+			1000,
+			BACKGROUND_CONTEXT,
+		);
+		expect(outcome.outcome).toBe("running");
+		const meta = await rig.opened.harness.snapshot(
+			SessionMetaDoc,
+			outcome.conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta?.deliver).toEqual(["telegram:42"]);
+		expect(meta?.jobId).toBe(id);
+	});
+
+	test("a fire WITHOUT deliver stamps jobId but never deliver", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const id = "api:job-no-deliver";
+		await seedJob(rig, id, everyMinuteSpec());
+		const outcome = await fireJob(
+			rig.deps,
+			id,
+			`${id}:1000`,
+			1000,
+			BACKGROUND_CONTEXT,
+		);
+		expect(outcome.outcome).toBe("running");
+		const meta = await rig.opened.harness.snapshot(
+			SessionMetaDoc,
+			outcome.conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta?.jobId).toBe(id);
+		expect(meta?.deliver).toBeUndefined();
+	});
+
+	test("no gateway loaded: one warning per run when deliver is set", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const id = "api:job-deliver-nogw";
+		await seedJob(rig, id, {
+			...everyMinuteSpec(),
+			action: {
+				kind: "prompt",
+				prompt: "say tick",
+				conversation: "new",
+				deliver: ["telegram:42"],
+			},
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const outcome = await fireJob(
+				rig.deps,
+				id,
+				`${id}:1000`,
+				1000,
+				BACKGROUND_CONTEXT,
+			);
+			expect(outcome.outcome).toBe("running");
+			// A job without deliver never warns (the stamp absent, nothing to ignore).
+			const quiet = "api:job-deliver-quiet";
+			await seedJob(rig, quiet, everyMinuteSpec());
+			await fireJob(rig.deps, quiet, `${quiet}:1000`, 1000, BACKGROUND_CONTEXT);
+			// Assert BEFORE mockRestore (restore clears the spy's history).
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn).toHaveBeenCalledWith("deliver targets ignored: no gateway");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a loaded gateway (gatewayLoaded true) never warns", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const id = "api:job-deliver-gw";
+		await seedJob(rig, id, {
+			...everyMinuteSpec(),
+			action: {
+				kind: "prompt",
+				prompt: "say tick",
+				conversation: "new",
+				deliver: ["telegram:42"],
+			},
+		});
+		// The boot seam's value: no engine loaded in the rig → flip the flag
+		// the way a loaded engine's boot would.
+		rig.deps.gatewayLoaded = true;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const outcome = await fireJob(
+				rig.deps,
+				id,
+				`${id}:1000`,
+				1000,
+				BACKGROUND_CONTEXT,
+			);
+			expect(outcome.outcome).toBe("running");
+			// Assert BEFORE mockRestore (restore clears the spy's history).
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
 // ─── Task 2c: job prompts expand /skill:name and template commands ─────────
 
 test("a job prompt naming a prompt template sends the expanded text", async () => {
@@ -419,7 +543,7 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 	// handle's skills roots and command names: the SAME shape
 	// `expandInput` reads on the submit path.
 	const promptsDir = await (async () => {
-		const { mkdir, writeFile } = await import("node:fs/promises");
+		const { writeFile } = await import("node:fs/promises");
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-prompts-"));
 		await writeFile(
 			join(dir, "review.md"),

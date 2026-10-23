@@ -295,6 +295,9 @@ export async function launchTuiShell(
 	tui.setLayoutRoot(root);
 
 	await app.refresh();
+	// U3 Task 5: the sidebar's Views group loads with the conversations
+	// (one /v1/extensions GET per boot; failures fail quiet).
+	void app.sidebar.refreshViews().catch(() => {});
 
 	// The host events subscription (core hardening W3 Task 4, spec §7.4):
 	// ONE stream per process replaces the poll timers — `conversation.*`
@@ -318,9 +321,18 @@ export async function launchTuiShell(
 					app.interactions.kick();
 				} else if (event.type === "ambient.changed") {
 					app.ambient.kick(event.conversationId);
+				} else if (event.type === "surface.changed") {
+					// U3 Task 5: fan the surface event out to the open
+					// view's transport (the hub matches slug+id+k).
+					app.dispatchSurfaceChanged(event);
 				}
 			},
 			onError: (message) => app.pane.showNotice(message),
+			// U3 Task 5 (§7.3): the hello frame's streamId is the watcher
+			// entry's stream — open ext-view transports send it as
+			// X-Sigrun-Stream. A reconnect's new id re-registers on the
+			// next fetch.
+			onHello: (streamId) => app.setEventsStreamId(streamId),
 		},
 		{
 			baseUrl: options.baseUrl,

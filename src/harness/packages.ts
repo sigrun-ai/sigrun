@@ -426,6 +426,8 @@ function canonicalizePath(spec: string, base: string): string {
 interface PackageManifest {
 	readonly name?: string;
 	readonly version?: string;
+	/** UI-blocks U3 (spec §11.1): the extension's declared assets dir. */
+	readonly sigrun?: { readonly assets?: unknown };
 }
 
 /** Read a package's manifest: the directory form, else the tarball form. */
@@ -476,6 +478,18 @@ export function readPackageName(absPath: string): string | undefined {
 export function readPackageVersion(absPath: string): string | undefined {
 	const version = readManifest(absPath)?.version;
 	return typeof version === "string" && version !== "" ? version : undefined;
+}
+
+/**
+ * The declared `sigrun.assets` directory (spec §11.1), resolved
+ * absolute against the package root; `undefined` when the manifest
+ * declares none (or no manifest reads). A non-string declaration is
+ * ignored — assets are simply absent.
+ */
+export function readPackageAssetsDir(absPath: string): string | undefined {
+	const declared = readManifest(absPath)?.sigrun?.assets;
+	if (typeof declared !== "string" || declared === "") return undefined;
+	return resolve(absPath, declared);
 }
 
 interface SpecifierIdentity {

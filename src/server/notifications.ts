@@ -65,6 +65,8 @@ interface EventBase {
 	readonly type: NotificationEvent["type"];
 	readonly conversationId: number | undefined;
 	readonly jobId: string | undefined;
+	/** Gateway C6: the pending record's id — set on `interaction.pending` only. */
+	readonly callId: string | undefined;
 	readonly title: string;
 	readonly body: string;
 }
@@ -111,6 +113,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 				type: base.type,
 				conversationId: base.conversationId,
 				jobId: base.jobId,
+				...(base.callId === undefined ? {} : { callId: base.callId }),
 				user,
 				title: base.title,
 				body: base.body,
@@ -149,7 +152,10 @@ export function startNotifications(ctx: ServerContext): () => void {
 	};
 
 	/** interaction.pending → the owner plus every directory user with write. */
-	const handleInteraction = async (conversationId: number): Promise<void> => {
+	const handleInteraction = async (
+		conversationId: number,
+		callId: string | undefined,
+	): Promise<void> => {
 		const meta = await metaOf(conversationId);
 		const owner = meta?.owner;
 		const sharing: Sharing | undefined = meta?.sharing;
@@ -168,6 +174,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 				type: "interaction.pending",
 				conversationId,
 				jobId: undefined,
+				callId,
 				title: "Sigrun needs you",
 				body: displayName(meta, conversationId),
 			},
@@ -195,6 +202,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 				type: "run.settled",
 				conversationId,
 				jobId: undefined,
+				callId: undefined,
 				title: "Reply ready",
 				body: displayName(meta, conversationId),
 			},
@@ -220,6 +228,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 				type: "job.failed",
 				conversationId: run.conversationId,
 				jobId: job.id,
+				callId: undefined,
 				title: `Job ${job.name} failed`,
 				// The observer always settles a failed run with its error
 				// text; the fallback only covers a hand-corrupted record.
@@ -235,7 +244,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 		// run inline here).
 		if (event.type === "interaction.pending") {
 			void bus.runBounded("notifications interaction.pending", () =>
-				handleInteraction(event.conversationId),
+				handleInteraction(event.conversationId, event.callId),
 			);
 		} else if (event.type === "run.settled") {
 			void bus.runBounded("notifications run.settled", () =>

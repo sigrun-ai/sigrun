@@ -488,6 +488,14 @@ export interface MetaResponse {
 		 * worker's first run.
 		 */
 		readonly workers?: readonly WorkerStatus[];
+		/**
+		 * The declared surfaces (UI-blocks U3 Task 5): the flattened
+		 * view + panel rows the channels register their rail/panel
+		 * entries from. Absent when the extension declared none. The
+		 * meta response carries the DECLARATION (id/title/icon/
+		 * placement); access filtering is render-time (§6.5).
+		 */
+		readonly surfaces?: readonly ExtensionSurfaceInfo[];
 	}[];
 	/**
 	 * §5 health: pure aggregation over boot-retained §3 producers (spec
@@ -510,8 +518,15 @@ export interface MetaResponse {
 		readonly memory: HealthStatus;
 		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
 		readonly providers: HealthStatus;
+		/**
+		 * The gateway engine's health (gateway C2): present ONLY when an
+		 * engine loaded (a no-engine deploy reports NO gateway health —
+		 * degenerate "ok" by absence, never a synthesized field); the
+		 * wrapped engine health (a throwing `health()` reads "degraded";
+		 * a rejected `start` latches degraded until restart).
+		 */
+		readonly gateway?: HealthStatus;
 	};
-	/**
 	/**
 	 * The auth block (core hardening W1 Task 6, spec §5.7): the effective
 	 * authenticator list (`ctx.methods` — loopback-derived or explicit) and
@@ -678,6 +693,23 @@ export interface ExtensionInfo {
 	readonly workers: readonly WorkerStatus[];
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
+	/** The declared surfaces, one `{id, title, icon, placement}` each (U3 Task 1); absent when none. */
+	surfaces?: readonly ExtensionSurfaceInfo[];
+	/**
+	 * The channel ids this extension contributes (gateway C1, spec §7):
+	 * present only on rows of extensions whose factory result carried
+	 * `channels`; unique across every loaded extension (a collision
+	 * quarantines the later loader). Absent when the extension declared
+	 * none.
+	 */
+	readonly channels?: readonly string[];
+	/**
+	 * The inert marker (gateway C2): `"no gateway"` on rows of
+	 * extensions that contributed `channels` while NO gateway engine
+	 * loaded — their adapters are inert (nothing drives them; one boot
+	 * warning says so). Absent everywhere else.
+	 */
+	readonly inert?: "no gateway";
 	/**
 	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
 	 * built-in (codemode / MCP / tool search); ABSENT on configured
@@ -696,6 +728,27 @@ export interface ExtensionRouteInfo {
 	/** The declared relative path — mounted at `/v1/ext/<slug>/<path>`. */
 	readonly path: string;
 	readonly auth: string;
+}
+
+/**
+ * One `GET /v1/extensions` surface row (UI-blocks U3 Task 1, spec
+ * §7.1): the extension-declared views and panels — what the channels'
+ * rail (views) and right panel (panels) register from. One row per
+ * declared surface, in declaration order (views before panels).
+ */
+export interface ExtensionSurfaceInfo {
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+	/** The declared placement; `settings` sections (§13.3) are not in this workstream. */
+	readonly placement: "view" | "panel";
+	/** The declared refresh cadence (spec §7.1); channels refetch data on
+	 *  this interval while the surface is visible. Absent → no cadence. */
+	readonly refreshMs?: number;
+	/** §7.3 shared-data flag: a sharedData surface's `since` fetches may
+	 *  answer with `ops` and NO `data` — channels fall back to a full
+	 *  fetch (ops folding is U1). Absent → per-instance data. */
+	readonly sharedData?: boolean;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */
@@ -729,7 +782,11 @@ export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
  * The `GET /v1/auth/whoami` payload (core hardening W1 Task 3, spec
  * §5.8): the resolved principal, verbatim. `user` is absent only under
  * the naive empty-method path with no `X-Sigrun-User` header;
- * `service` marks the env service token.
+ * `service` marks the env service token. `method` mirrors the extension
+ * contract's `Principal.method` (gateway C4b added `"host"` — an
+ * in-process host-built principal; no HTTP route ever resolves one, but
+ * the two unions stay aligned so the whoami build from a principal can
+ * never drift from the wire type).
  */
 export interface WhoamiResponse {
 	readonly user?: string;
@@ -737,7 +794,7 @@ export interface WhoamiResponse {
 	readonly email?: string;
 	readonly admin: boolean;
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy";
+	readonly method: "none" | "token" | "proxy" | "host";
 }
 
 // ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
@@ -765,12 +822,19 @@ export interface OnboardingState {
  * One directory user on the wire (Task 4): the full record — emails are
  * admin-visible material and the routes that serve this type are
  * admin-gated. `createdAt` is epoch ms.
+ *
+ * `admin` is the STORED flag (the users-admin UI toggles it); the proxy
+ * group grant rides separately as `groupAdmin` (gateway C8): effective
+ * admin is `admin || groupAdmin === true`, and the last-admin guard
+ * counts `admin` alone.
  */
 export interface UserWire {
 	readonly user: string;
 	readonly name?: string;
 	readonly email?: string;
 	readonly admin: boolean;
+	/** The persisted proxy-group grant — present only under `adminGroups`. */
+	readonly groupAdmin?: boolean;
 	readonly createdAt: number;
 	readonly source: "proxy" | "invite" | "cli";
 }
@@ -871,4 +935,13 @@ export type HostEventWire =
 			/** W4 Task 4 (§8.4): the changed job's summary, WITHOUT `access` — the events stream computes `accessOf` per principal and adds it before delivery (a hidden job's event is withheld entirely). */
 			readonly type: "job.changed";
 			readonly job: Omit<JobWire, "access">;
+		}
+	| {
+			/** UI-blocks U3 Task 4 (spec §7.3): one surface instance changed. `k` is the hashed instance key (sha256(slug + "\0" + id + "\0" + key) hex) — the event NEVER carries params or data (render/data are principal-specific; the watcher refetches as itself). Delivered only to streams in the watcher registry whose stored access is not `"none"`. */
+			readonly type: "surface.changed";
+			readonly slug: string;
+			readonly id: string;
+			readonly k: string;
+			readonly rev: number;
+			readonly treeRev: number;
 		};

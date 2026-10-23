@@ -348,6 +348,62 @@ describe("declared jobs are immutable", () => {
 	});
 });
 
+describe("deliver targets (gateway C7)", () => {
+	test("accepts deliver on a new-conversation prompt; the created job carries it", async () => {
+		const { app, alice } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, {
+			name: "nightly",
+			schedule: { every: "3600s" },
+			action: {
+				kind: "prompt",
+				prompt: "say ok",
+				conversation: "new",
+				deliver: ["telegram"],
+			},
+		});
+		expect(created.status).toBe(201);
+		// The validated spec PRESERVES deliver (it rides specHash + the fire).
+		expect(created.json.job.action).toEqual({
+			kind: "prompt",
+			prompt: "say ok",
+			conversation: "new",
+			deliver: ["telegram"],
+		});
+	});
+
+	test("rejects invalid deliver → 400 invalid_field action.deliver", async () => {
+		const { app, alice } = await bootServer();
+		const prompt = "say ok";
+		// Every case names field action.deliver: deliver needs "new" (a fixed
+		// conversation delivers via its own chat bindings, not this field),
+		// and the array grammar is 1-8 entries of 1-256 chars.
+		const cases = [
+			{ kind: "prompt", prompt, conversation: 5, deliver: ["telegram"] },
+			{ kind: "prompt", prompt, conversation: "new", deliver: [] },
+			{
+				kind: "prompt",
+				prompt,
+				conversation: "new",
+				deliver: Array.from({ length: 9 }, (_, i) => `telegram:${i}`),
+			},
+			{ kind: "prompt", prompt, conversation: "new", deliver: [""] },
+			{ kind: "prompt", prompt, conversation: "new", deliver: ["x".repeat(257)] },
+			{ kind: "prompt", prompt, conversation: "new", deliver: "telegram" },
+		];
+		for (const action of cases) {
+			const bad = await call(app, "POST", "/v1/jobs", alice, {
+				name: "nightly",
+				schedule: { every: "3600s" },
+				action,
+			});
+			expect(bad).toMatchObject({
+				status: 400,
+				json: { error: "invalid_field", field: "action.deliver" },
+			});
+		}
+	});
+});
+
 describe("run-now and the runs history", () => {
 	test("run → outcome running + a conversation; the run lists first, manual, at the current version", async () => {
 		const { app, alice } = await bootServer();

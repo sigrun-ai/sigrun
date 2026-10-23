@@ -1,7 +1,7 @@
 {
 	"name": "@sigrun/shared",
-	"version": "0.1.0",
-	"description": "sigrun shared leaf package — theme tokens, turn/conversation shaping, and the channel wire types (pure leaf, zero dependencies)",
+	"version": "0.1.1",
+	"description": "sigrun shared leaf package \u2014 theme tokens, turn/conversation shaping, and the channel wire types (pure leaf, zero dependencies)",
 	"type": "module",
 	"exports": {
 		"./themes": {
@@ -43,6 +43,10 @@
 		"./views": {
 			"types": "./dist/views.d.ts",
 			"default": "./dist/views.js"
+		},
+		"./live": {
+			"types": "./dist/live.d.ts",
+			"default": "./dist/live.js"
 		},
 		"./view-delta": {
 			"types": "./dist/view-delta.d.ts",

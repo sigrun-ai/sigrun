@@ -32,6 +32,7 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import type { SigrunHost } from "../src/extension.js";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -42,6 +43,11 @@ import { seededIdentity } from "./helpers/identity.js";
 
 const CHANNEL_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-channel", "index.js"),
+).href;
+
+/** The commands fixture's specifier (gateway C4b: `commands.run` tests). */
+const COMMANDS_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-commands", "index.js"),
 ).href;
 
 /** The fixture's channel drive (create owned by "alice" + submit "hello"). */
@@ -79,12 +85,19 @@ afterAll(async () => {
  * starts with one answer; auto-naming is off (exact-response scripts,
  * the server-submissions pattern).
  */
-async function bootOpened(): Promise<OpenedBoot> {
+async function bootOpened(
+	env: Record<string, string> = {},
+): Promise<OpenedBoot> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-host-conv-"));
 	const configDir = join(dir, "config");
 	const faux = fauxProvider({
 		provider: "faux",
-		models: [{ id: "m", contextWindow: 128_000 }],
+		// TWO models so host configure can switch (the server-configure
+		// pattern — the HTTP twin's tests pin model m → m2).
+		models: [
+			{ id: "m", contextWindow: 128_000 },
+			{ id: "m2", contextWindow: 128_000 },
+		],
 	});
 	faux.setResponses([fauxAssistantMessage("channel answer")]);
 	const config = loadConfig({
@@ -93,13 +106,22 @@ async function bootOpened(): Promise<OpenedBoot> {
 		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
+		...env,
 	});
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const identity = await seededIdentity(dir);
 	await identity.users.add({ user: "alice", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
 		identity,
-		extensionSpecifiers: [CHANNEL_SPECIFIER],
+		// The faux provider CONTRIBUTOR (the file header's stated pattern —
+		// without it the boot registers the env-degenerate OpenAI-compat
+		// provider under "faux" and every run settles model_error with only
+		// an aborted-partial assistant entry).
+		extensions: [{ name: "ext-faux", providers: [{ provider: faux.provider }] }],
+		// Gateway C4b: fixture-commands rides along so `commands.run` sees a
+		// real extension command (its `new` core-collision drops with the
+		// usual console warning — harmless here).
+		extensionSpecifiers: [CHANNEL_SPECIFIER, COMMANDS_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: dir,
 	});
@@ -111,8 +133,10 @@ async function bootOpened(): Promise<OpenedBoot> {
 }
 
 /** Boot opened + server + tokens (the common shape). */
-async function bootServer(): Promise<TestServer> {
-	const boot = await bootOpened();
+async function bootServer(
+	env: Record<string, string> = {},
+): Promise<TestServer> {
+	const boot = await bootOpened(env);
 	const { opened } = boot;
 	const { token: aliceToken } = await opened.identity.tokens.create(
 		"alice-cli",
@@ -173,6 +197,35 @@ async function waitForAssistant(
 		}
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
+}
+
+/** The current record of one submission id (the abort test's poll). */
+async function submissionOf(
+	opened: OpenedHarness,
+	id: number,
+): Promise<{ status: string; reason?: string }> {
+	const submission = await opened.harness.submission(
+		id as never,
+		BACKGROUND_CONTEXT,
+	);
+	if (submission === undefined) throw new Error(`submission ${id} not found`);
+	return await submission.status(BACKGROUND_CONTEXT);
+}
+
+/** Whether the conversation has a live run (the placement poll). */
+async function agentLive(
+	opened: OpenedHarness,
+	id: ConversationId,
+): Promise<unknown> {
+	const conversation = await opened.harness.conversation(
+		id,
+		BACKGROUND_CONTEXT,
+	);
+	if (conversation === undefined) {
+		throw new Error(`conversation ${id} not found`);
+	}
+	const view = await conversation.viewState(BACKGROUND_CONTEXT);
+	return view.value.docs["pi.live"];
 }
 
 describe("host.conversations over the shared conversation ops", () => {
@@ -260,6 +313,34 @@ describe("host identity, users, and access (spec §9.7)", () => {
 		expect(await host.users.get("nosuch")).toBeUndefined();
 	});
 
+	test("host users expose EFFECTIVE admin: the stored flag OR the persisted group grant (gateway C8)", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		// The gateway C8 write-through shape: a proxy admins-group user
+		// whose STORED admin is false but whose record carries the group
+		// grant. Host-side code has no request headers — the effective
+		// read is the only admin it can ever see.
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "proxy",
+		});
+		const bob = await host.users.get("bob");
+		expect(bob).toMatchObject({
+			user: "bob",
+			admin: true,
+			groupAdmin: true,
+		});
+		const listed = await host.users.list();
+		const listedBob = listed.find((user) => user.user === "bob");
+		expect(listedBob).toMatchObject({ admin: true, groupAdmin: true });
+		// A plain non-admin (no group grant): effective admin false, the
+		// raw flag a definite false (never undefined on the host surface).
+		const alice = await host.users.get("alice");
+		expect(alice).toMatchObject({ admin: false, groupAdmin: false });
+	});
+
 	test("a Principal input maps admin/service to superuser semantics like the server does", async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
@@ -309,6 +390,253 @@ describe("unmapped users (Review Focus 5: extensions own their user mapping)", (
 	});
 });
 
+describe("host conversation ops (gateway C4a — the HTTP twins in-process)", () => {
+	/** A gated faux response: the run cannot settle until `release()`. */
+	function gatedResponse(): {
+		readonly step: () => Promise<AssistantMessage>;
+		readonly release: () => void;
+	} {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return {
+			step: async () => {
+				await gate;
+				return fauxAssistantMessage("gated answer");
+		},
+			release: () => release(),
+		};
+	}
+
+	/** Resolve a conversation's agent through the opened harness. */
+	async function agentOf(
+		opened: OpenedHarness,
+		id: ConversationId,
+	): Promise<{ model?: { provider: string; modelId: string }; thinkingLevel: string; tools: readonly { name: string }[] }> {
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error(`conversation ${id} not found`);
+		return await conversation.agent(BACKGROUND_CONTEXT);
+	}
+
+	/** Read the resolved agent the way the HTTP surface does (the settings/agent projection is server-side — the harness read is the observable). */
+	async function waitFor(
+		predicate: () => Promise<boolean>,
+		what: string,
+	): Promise<void> {
+		const deadline = Date.now() + 10_000;
+		while (!(await predicate())) {
+			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	}
+
+	test("configure applies model+thinking; the agent read shows the same values as the HTTP twin", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.configure(id, {
+			model: "faux/m2",
+			thinking: "high",
+		});
+		const agent = await agentOf(opened, id);
+		expect(agent.model).toEqual({ provider: "faux", modelId: "m2" });
+		expect(agent.thinkingLevel).toBe("high");
+	});
+
+	test("abort during a faux run settles it; abort on an idle conversation resolves (no throw)", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const gate = gatedResponse();
+		faux.setResponses([gate.step]);
+		const record = await host.conversations.submit(id, [
+			{ type: "text", text: "held open" },
+		]);
+		await waitFor(
+			async () => (await agentLive(opened, id)) !== undefined,
+			"the run to place",
+		);
+		expect(["placed", "queued"]).toContain(record.status);
+		// Abort while the run is live: the host call resolves (void) and the
+		// submission settles — never a hang, never a throw.
+		await host.conversations.abort(id);
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation vanished");
+		const submission = await opened.harness.submission(
+			record.id as never,
+			BACKGROUND_CONTEXT,
+		);
+		if (submission === undefined) throw new Error("submission handle lost");
+		gate.release();
+		const settled = await submission.wait(BACKGROUND_CONTEXT);
+		expect(["done", "unanswered"]).toContain(settled.status);
+		// An idle conversation: abort RESOLVES (chat /stop on an idle chat is
+		// not an error — the plan's ruling).
+		await expect(host.conversations.abort(id)).resolves.toBeUndefined();
+	});
+
+	test("compact creates the manual compaction task (pi.live.compactions / the task record)", { timeout: 60_000 }, async () => {
+		// Forced keep-window (the compaction-test pattern): with the default
+		// keepRecentTokens this tiny transcript has nothing to compact, and
+		// the manual compaction completes without placing a summary — the
+		// test would never see its entry. keepRecentTokens: 1 makes the cut
+		// fall right before the newest entry; background off keeps the faux
+		// queue deterministic.
+		const { opened, faux } = await bootServer({
+			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
+			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+		});
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		faux.appendResponses([fauxAssistantMessage("turn one answer")]);
+		const first = await host.conversations.submit(id, [
+			{ type: "text", text: `hello ${"filler ".repeat(200)}` },
+		]);
+		expect(["queued", "placed"]).toContain(first.status);
+		await waitFor(
+			async () => (await submissionOf(opened, first.id)).status === "done",
+			"the first turn to settle",
+		);
+		await host.conversations.compact(id);
+		// The manual compaction task exists: a pi.compaction entry lands once
+		// the conversation idles (the compaction.test.ts observable, adapted to
+		// the host boot — no forced thresholds here, so poll for the entry).
+		await waitFor(
+			async () => {
+				const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+				if (conversation === undefined) throw new Error("conversation vanished");
+				const page = await conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+				return page.items.some((entry) => entry.kind === "pi.compaction");
+			},
+			"the manual compaction entry",
+		);
+	},
+	);
+
+	test("fork returns a new id whose meta is \"<source> (fork)\" and owner honors opts.owner", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice", name: "Alpha" });
+		faux.appendResponses([fauxAssistantMessage("fork source answer")]);
+		const record = await host.conversations.submit(id, [
+			{ type: "text", text: "hello" },
+		]);
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the source turn to settle",
+		);
+		const forkId = await host.conversations.fork(id, { owner: "tester" });
+		expect(forkId).not.toBe(id);
+		const meta = await host.conversations.meta(forkId);
+		expect(meta.autoName).toBe("Alpha (fork)");
+		expect(meta.owner).toBe("tester");
+		expect("name" in meta).toBe(false);
+		// Fork with NO owner: the copied owner key is removed (the same reset
+		// the header-less HTTP caller gets).
+		const bare = await host.conversations.fork(id);
+		const bareMeta = await host.conversations.meta(bare);
+		expect("owner" in bareMeta).toBe(false);
+	});
+
+	test("patchMeta applies name+archived and meta reads both back; sharing from the host needs no principal (Review Focus 5)", { timeout: 30_000 }, async () => {
+		const { opened, app, aliceToken, testerToken } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const patched = await host.conversations.patchMeta(id, {
+			name: "x",
+			archived: true,
+		});
+		expect(patched.name).toBe("x");
+		expect(patched.archived).toBe(true);
+		const meta = await host.conversations.meta(id);
+		expect(meta.name).toBe("x");
+		expect(meta.archived).toBe(true);
+		// Sharing from the HOST (trusted, no principal): succeeds.
+		const shared = await host.conversations.patchMeta(id, {
+			sharing: { scope: "people", users: ["tester"], level: "write" },
+		});
+		expect(shared.sharing).toEqual({
+			scope: "people",
+			users: ["tester"],
+			level: "write",
+		});
+		// The SAME body over HTTP as tester (a non-owner sharee): 403.
+		const response = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: {
+				sharing: { scope: "people", users: ["alice"], level: "write" },
+			},
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${testerToken}`,
+			},
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toEqual({ error: "forbidden" });
+		// Sanity: the HTTP route still works for the owner (the same op).
+		const ownerPatch = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { name: "renamed by owner" },
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${aliceToken}`,
+			},
+		});
+		expect(ownerPatch.statusCode).toBe(200);
+		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
+	});
+
+	test("create with agent.tools pins the offered tools; unknown names throw invalid_field", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({
+			owner: "alice",
+			agent: { tools: ["read"] },
+		});
+		const agent = await agentOf(opened, id);
+		expect(agent.tools.map((tool) => tool.name)).toEqual(["read"]);
+		// An empty tools array: zero enabled tools (the array form selects
+		// exactly its names — none).
+		const empty = await host.conversations.create({
+			owner: "alice",
+			agent: { tools: [] },
+		});
+		const emptyAgent = await agentOf(opened, empty);
+		expect(emptyAgent.tools).toEqual([]);
+		// An unknown tool name: fail-loud invalid_field agent.tools.
+		await expect(
+			host.conversations.create({ owner: "alice", agent: { tools: ["nope"] } }),
+		).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "agent.tools" },
+		});
+	});
+
+	test("Review Focus 2: every op on an unknown id throws conversation <id> not found", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = 999999 as ConversationId;
+		await expect(host.conversations.abort(id)).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+		await expect(
+			host.conversations.configure(id, { thinking: "high" }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(host.conversations.compact(id)).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+		await expect(
+			host.conversations.fork(id, { owner: "alice" }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(
+			host.conversations.patchMeta(id, { name: "x" }),
+		).rejects.toThrow("conversation 999999 not found");
+	});
+});
+
 describe("the seam binding contract (calls before the bridge binds)", () => {
 	test("a host.conversations call made in the factory body does not resolve before boot completes — and settles once the server exists", { timeout: 30_000 }, async () => {
 		const boot = await bootOpened();
@@ -330,5 +658,155 @@ describe("the seam binding contract (calls before the bridge binds)", () => {
 		});
 		await probe?.promise;
 		expect(probe?.settled).toBe(true);
+	});
+});
+
+describe("host upload/readFile/models/commands (gateway C4b)", () => {
+	/** The principal the last `hello` run observed (the fixture's stash). */
+	function lastPrincipal(): {
+		readonly user?: string;
+		readonly admin: boolean;
+		readonly service: boolean;
+		readonly method: string;
+	} {
+		const principal = (
+			globalThis as { __fixtureCommandsPrincipal?: unknown }
+		).__fixtureCommandsPrincipal;
+		if (principal === undefined) throw new Error("no principal observed");
+		return principal as {
+			user?: string;
+			admin: boolean;
+			service: boolean;
+			method: string;
+		};
+	}
+
+	test("upload returns the uploads/<id>/<name> path; a file-part submit admits; readFile round-trips the bytes", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const bytes = new Uint8Array([104, 105, 32, 102, 114, 111, 109, 32, 104, 111, 115, 116]);
+		const uploaded = await host.conversations.upload(id, {
+			name: "a.txt",
+			bytes,
+		});
+		expect(uploaded).toEqual({ path: `uploads/${id}/a.txt` });
+		// The returned path is exactly what a content part takes: the submit
+		// admits with a file part (never a not_found error part).
+		const record = await host.conversations.submit(id, [
+			{ type: "file", path: uploaded.path },
+		]);
+		expect(["queued", "placed", "done"]).toContain(record.status);
+		// readFile round-trips the SAME file (the raw route's confinement +
+		// cap path, in-process). The env hands a Buffer (a Uint8Array
+		// subclass); assert byte equality, not vitest's shape equality.
+		const read = await host.conversations.readFile(id, uploaded.path);
+		expect(Buffer.from(read.bytes).equals(Buffer.from(bytes))).toBe(true);
+		expect(read.mime).toBe("text/plain");
+	});
+
+	test("Review Focus 3: ../x, a/b, and the empty name throw invalid_field name; readFile ../outside throws the confinement error", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		for (const name of ["../x", "a/b", ""]) {
+			await expect(
+				host.conversations.upload(id, { name, bytes: new Uint8Array(1) }),
+			).rejects.toMatchObject({
+				name: "ConversationOpError",
+				body: { error: "invalid_field", field: "name" },
+			});
+		}
+		// The readFile confinement error is the raw route's vocabulary.
+		await expect(
+			host.conversations.readFile(id, "../outside"),
+		).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_path" },
+		});
+	});
+
+	test("readFile over server.maxFileReadBytes throws too_large (cap 8 in the test config)", async () => {
+		const { opened } = await bootServer({
+			SIGRUN_MAX_FILE_READ_BYTES: "8",
+		});
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const uploaded = await host.conversations.upload(id, {
+			name: "big.txt",
+			bytes: new Uint8Array(16),
+		});
+		await expect(host.conversations.readFile(id, uploaded.path))
+			.rejects.toMatchObject({
+				name: "ConversationOpError",
+				body: { error: "too_large" },
+				status: 413,
+			});
+	});
+
+	test("unknown conversation id on upload/readFile throws conversation <id> not found", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = 999999 as ConversationId;
+		await expect(
+			host.conversations.upload(id, { name: "a.txt", bytes: new Uint8Array(1) }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(host.conversations.readFile(id, "uploads/1/a.txt")).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+	});
+
+	test("models.list() deep-equals GET /v1/models .models", async () => {
+		const { opened, app, aliceToken } = await bootServer();
+		const host = channelHost(opened);
+		const listed = await host.models.list();
+		const response = (await getJson(app, "/v1/models", aliceToken)) as {
+			models: readonly unknown[];
+		};
+		expect(listed).toEqual(response.models);
+	});
+
+	test("commands.run drives the extension command as alice: notice + principal method host, admin false; a group-admin user sees admin true", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		// Plain directory user: effective admin false, method "host".
+		const run = await host.commands.run(id, "hello", "bob", { user: "alice" });
+		expect(run).toEqual({ notice: "hi bob" });
+		const principal = lastPrincipal();
+		expect(principal).toMatchObject({
+			user: "alice",
+			admin: false,
+			service: false,
+			method: "host",
+		});
+		// A persisted group grant (Task 5's fixture shape) counts as
+		// EFFECTIVE admin for the host-built principal.
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "proxy",
+		});
+		await host.commands.run(id, "hello", "x", { user: "bob" });
+		expect(lastPrincipal()).toMatchObject({
+			user: "bob",
+			admin: true,
+			method: "host",
+		});
+	});
+
+	test("Review Focus 4: a core name throws command_not_found; an unknown user throws unknown-user", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		// `new` is a CORE name — never in runnable.
+		await expect(
+			host.commands.run(id, "new", "", { user: "alice" }),
+		).rejects.toThrow("command_not_found: new");
+		// The directory has no "ghost" — the principal build fails loud.
+		await expect(
+			host.commands.run(id, "hello", "", { user: "ghost" }),
+		).rejects.toThrow('unknown user "ghost"');
 	});
 });

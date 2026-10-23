@@ -4,7 +4,8 @@
  *
  * - `GET /v1/extensions` — one entry per loaded outcome with `status`,
  *   `error?`, the manifest `version?`, the declared
- *   `interactionKinds`/`ambientKeys`, and the idle-worker projection.
+ *   `interactionKinds`/`ambientKeys`, the idle-worker projection, and
+ *   the contributed channel ids (gateway C1, `channels?`).
  * - `GET`/`PUT /v1/extensions/:slug/settings` (PUT admin) — the
  *   `settings/<slug>.json` object verbatim. Values an extension reads at
  *   factory time apply at RESTART; per-run reads see the write live.
@@ -58,6 +59,9 @@ export function registerExtensionRoutes(
 				const routes = opened.extensionRoutes.find(
 					(binding) => binding.extension === outcome.name,
 				);
+				const surfaces = opened.extensionSurfaces.find(
+					(binding) => binding.extension === outcome.name,
+				);
 				return {
 					name: outcome.name,
 					status: outcome.status,
@@ -66,6 +70,18 @@ export function registerExtensionRoutes(
 						? {}
 						: { version: outcome.version }),
 					...(outcome.builtin === true ? { builtin: true } : {}),
+					...(outcome.channels === undefined
+						? {}
+						: { channels: [...outcome.channels] }),
+					// Gateway C2: a channel contributor with NO loaded engine is
+					// INERT — its adapters never start (the boot warning says so);
+					// the row says which surface is missing. Only OK rows mark it
+					// (a quarantined loader's `channels` never landed anyway).
+					...(outcome.channels !== undefined &&
+						outcome.status === "ok" &&
+						opened.gatewayEngine === undefined
+						? { inert: "no gateway" }
+						: {}),
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],
@@ -75,6 +91,22 @@ export function registerExtensionRoutes(
 							path: route.path,
 							auth: route.auth,
 						})) ?? [],
+					// Declared surfaces (U3 Task 1, spec §7.1): the flattened view +
+					// panel rows the channels register their rail/panel entries from —
+					// SPARSE (absent when the extension declared none).
+					...(surfaces === undefined
+						? {}
+						: {
+								surfaces: surfaces.defs.map((def) => ({
+									id: def.id,
+									title: def.title,
+									icon: def.icon,
+										placement: def.placement,
+										...(def.sharedData === true
+											? { sharedData: true }
+											: {}),
+									})),
+							}),
 				};
 			},
 		);
