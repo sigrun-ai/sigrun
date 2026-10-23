@@ -1,0 +1,24 @@
+{
+	"v": 1,
+	"root": {
+		"type": "chart",
+		"id": "chart",
+		"title": "Throughput",
+		"x": { "kind": "time", "format": "time" },
+		"y": { "unit": "req/s", "min": 0 },
+		"series": [
+			{ "name": "acme", "kind": "area", "data": { "$": "/series/acme" } },
+			{
+				"name": "Baseline",
+				"kind": "line",
+				"data": [
+					[0, 10],
+					[60, 12],
+					[120, 11]
+				]
+			}
+		],
+		"stacked": false,
+		"thresholds": [{ "at": 20, "tone": "warn", "label": "SLO" }]
+	}
+}

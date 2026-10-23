@@ -1,0 +1,12 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-number",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{ "type": "number", "name": "port", "label": "Port", "min": 1, "max": 65535, "step": 1, "format": "number" }
+		]
+	}
+}

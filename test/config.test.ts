@@ -541,9 +541,55 @@ describe("envServerSection (the env-only bootstrap projection, ruling 5)", () =>
 		expect(() =>
 			loadConfig({ ...MODEL_ENV, SIGRUN_METRICS_PUBLIC: "yes" }),
 		).toThrow(/SIGRUN_METRICS_PUBLIC must be "true" or "false"/);
-		// Env-only by design: no value is ever projected into the bootstrap's
-		// server section (validateServer does not accept server.metrics yet —
-		// W1 Task 1 adds that file tier).
+	});
+
+	test("SIGRUN_DEV parses strictly (spec 14.2/14.4; default false, file tier, effective block)", () => {
+		// Default false; unset reads false.
+		expect(loadConfig({ ...MODEL_ENV }).dev).toBe(false);
+		// The spec's own phrasing is `SIGRUN_DEV=1` — the shell form reads as
+		// true; `0` as false; the boolean spellings too.
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_DEV: "1" }).dev).toBe(true);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_DEV: "0" }).dev).toBe(false);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_DEV: "true" }).dev).toBe(true);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_DEV: " FALSE " }).dev).toBe(false);
+		// Empty counts as unset.
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_DEV: "" }).dev).toBe(false);
+		// Anything else fails LOUD naming the variable (a boot error).
+		expect(() => loadConfig({ ...MODEL_ENV, SIGRUN_DEV: "yes" })).toThrow(
+			/SIGRUN_DEV must be "true" or "false" \(or 1\/0\), got "yes"/,
+		);
+		// The file tier: server.dev applies when the env var is absent.
+		expect(loadConfig({ ...MODEL_ENV }, { server: { dev: true } }).dev).toBe(
+			true,
+		);
+		// Env wins over the file.
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_DEV: "false" },
+				{ server: { dev: true } },
+			).dev,
+		).toBe(false);
+		// envServerSection projects ONLY an env-set dev (a defaulted dev is
+		// never persisted as intent).
+		expect(envServerSection({ SIGRUN_DEV: "1" })).toEqual({ dev: true });
+		expect(envServerSection({})).toEqual({});
+		// The effective block classifies it like every other server key.
+		const env = { ...MODEL_ENV, SIGRUN_DEV: "true" };
+		expect(
+			effectiveServerSection(env, undefined, loadConfig(env))["server.dev"],
+		).toEqual({ value: true, source: "env" });
+		const file: SettingsFile = { server: { dev: true } };
+		expect(
+			effectiveServerSection(MODEL_ENV, file.server, loadConfig(MODEL_ENV, file))["server.dev"],
+		).toEqual({ value: true, source: "file" });
+		expect(
+			effectiveServerSection(MODEL_ENV, undefined, loadConfig(MODEL_ENV))["server.dev"],
+		).toEqual({ value: false, source: "default" });
+	});
+
+	test("SIGRUN_DEV projects into the bootstrap only when env-set", () => {
+		// The metrics projection stays env-only-true (metricsPublic has no
+		// file projection on this branch — W1 Task 1 adds that file tier).
 		expect(envServerSection({ SIGRUN_METRICS_PUBLIC: "true" })).toEqual({});
 	});
 

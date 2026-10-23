@@ -1,0 +1,13 @@
+{
+	"v": 1,
+	"root": {
+		"type": "stack",
+		"id": "stack",
+		"gap": "m",
+		"visibleAt": "atLeast:regular",
+		"children": [
+			{ "type": "markdown", "text": "stacked" },
+			{ "type": "fields", "rows": [{ "label": "L", "value": 1 }] }
+		]
+	}
+}

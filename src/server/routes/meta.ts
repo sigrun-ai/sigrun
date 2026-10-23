@@ -97,9 +97,12 @@ export function registerMetaRoutes(
 			// built-in default and explicit paths; a contributed selection's own
 			// name) exactly while the channel bundle is mounted; an API-only
 			// deploy (gate off or absent default) reports [].
-			channels:
-				webuiBundle === undefined ? [] : [webuiBundle.channel],
+				channels:
+					webuiBundle === undefined ? [] : [webuiBundle.channel],
 			},
+			// §14.2/§14.4: the development flag — gates the gallery and the
+			// development error bodies (a boot constant, cached like the rest).
+			dev: config.dev,
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {
 				interactions: [...opened.seamKinds]

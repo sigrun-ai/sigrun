@@ -1,0 +1,11 @@
+{
+	"v": 1,
+	"root": {
+		"type": "columns",
+		"id": "columns",
+		"children": [
+			{ "weight": 2, "minWidth": "m", "block": { "type": "markdown", "text": "left" } },
+			{ "weight": 1, "block": { "type": "stat", "label": "Load", "value": 0.42, "format": "percent", "size": "m", "icon": "clock" } }
+		]
+	}
+}

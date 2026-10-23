@@ -31,6 +31,7 @@ function makeMeta(init?: {
 		auth: { methods: [], claimed: true },
 		backup: {},
 		capabilities: { backup: false, channels: ["webui"] },
+		dev: false,
 		seam: { interactions: [], ambient: [] },
 		collisions: { webui: [], providers: [], commands: [] },
 		};

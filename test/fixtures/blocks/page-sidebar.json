@@ -1,0 +1,11 @@
+{
+	"v": 1,
+	"root": {
+		"type": "page",
+		"id": "page",
+		"title": { "$": "/title" },
+		"subtitle": "with a sidebar",
+		"sidebar": [{ "type": "tree", "nodes": { "$": "/nav" } }],
+		"main": [{ "type": "markdown", "text": "board body" }]
+	}
+}

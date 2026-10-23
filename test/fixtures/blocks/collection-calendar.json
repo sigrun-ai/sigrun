@@ -1,0 +1,18 @@
+{
+	"v": 1,
+	"root": {
+		"type": "collection",
+		"id": "collection-calendar",
+		"items": { "$": "/events" },
+		"display": "calendar",
+		"time": {
+			"start": "startsAt",
+			"end": "endsAt",
+			"allDay": "allDay",
+			"range": "month",
+			"onResize": "resizeEvent",
+			"onCreate": "createEvent"
+		},
+		"item": { "title": { "$": "./title" } }
+	}
+}

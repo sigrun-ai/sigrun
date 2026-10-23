@@ -82,12 +82,24 @@ export const NPM_TIMEOUT_MS = 120_000;
  * own. {@link ensureHostModuleLinks} links sigrun's own copies into the
  * packages dir's node_modules so the dynamic import of such a package
  * resolves them — the SAME module instances the host runs.
+ *
+ * `@sigrun/sigrun` itself is here too (spec §14.1): the builders behind
+ * `@sigrun/sigrun/blocks` must emit the SERVER's block-set version, so
+ * extensions import the running copy — never a bundled or
+ * registry-fetched one (the loader's exact-match rule quarantines a
+ * tree that resolves a different version). Sigrun is the RUNNING
+ * package, not a dependency: {@link resolveHostModuleDir} resolves it
+ * to its own root instead of walking node_modules.
  */
+/** The package this code ships in — the host runtime module that is the host itself. */
+const SELF_MODULE_NAME = "@sigrun/sigrun";
+
 export const HOST_RUNTIME_MODULES: readonly string[] = [
 	"@earendil-works/pi-ai",
 	"@earendil-works/pi-durable",
 	"@earendil-works/chord",
 	"typebox",
+	SELF_MODULE_NAME,
 ];
 
 /**
@@ -119,12 +131,45 @@ export function hostModuleVersion(name: string): string | undefined {
 }
 
 /**
+ * The running package's own root: the nearest ancestor of THIS module
+ * whose manifest is named `@sigrun/sigrun`. The node_modules walk below
+ * can never find the running package — sigrun is not a dependency of
+ * itself, and a source checkout carries no
+ * `node_modules/@sigrun/sigrun` anywhere above `src/` (the published
+ * install resolves through its OWN root, which is this same dir).
+ * `undefined` when no ancestor carries the manifest.
+ */
+function selfPackageRoot(): string | undefined {
+	let dir = dirname(fileURLToPath(import.meta.url));
+	for (let hops = 0; hops < 10; hops++) {
+		const manifest = join(dir, "package.json");
+		if (existsSync(manifest)) {
+			try {
+				const parsed = JSON.parse(
+					readFileSync(manifest, "utf8"),
+				) as { name?: unknown };
+				if (parsed.name === SELF_MODULE_NAME) return dir;
+			} catch {
+				// Unreadable manifest — keep walking.
+			}
+		}
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+	return undefined;
+}
+
+/**
  * Resolve a host runtime module's package dir from sigrun's own tree: the
  * nearest `node_modules/<name>` walking up from THIS module's location
  * (the repo root in every deploy shape — sigrun runs from source). The
  * walk stops at the filesystem root; `undefined` when nothing resolves.
+ * The ONE exception is sigrun itself (see {@link selfPackageRoot}): the
+ * link target is the running package's own root.
  */
 function resolveHostModuleDir(name: string): string | undefined {
+	if (name === SELF_MODULE_NAME) return selfPackageRoot();
 	let dir = dirname(fileURLToPath(import.meta.url));
 	for (let hops = 0; hops < 10; hops++) {
 		const candidate = join(dir, "node_modules", ...name.split("/"));
@@ -241,7 +286,12 @@ interface SyncPlan {
 
 /**
  * One `npm <args>` invocation against the packages dir (execFile — no
- * shell, so no quoting surface). Failures and timeouts reject with a
+ * shell, so no quoting surface). `--legacy-peer-deps` disables npm's
+ * peer-resolution for every managed install — pi's own posture for its
+ * extension installs: an extension declaring `@sigrun/sigrun` (or
+ * pi-durable/pi-ai) a `peerDependency: "*"` must resolve the HOST's
+ * linked copy, never an npm-solved registry copy whose version would
+ * quarantine the extension at load. Failures and timeouts reject with a
  * `PackageSyncError` carrying npm's stderr tail; `verbose` captures the
  * full output for the error message.
  */
@@ -251,11 +301,18 @@ function runNpm(
 	verbose?: boolean,
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		execFile(
-			"npm",
-			[...args, "--prefix", packagesDir, "--no-audit", "--no-fund"],
-			{ timeout: NPM_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
-			(error, stdout, stderr) => {
+			execFile(
+				"npm",
+				[
+					...args,
+					"--prefix",
+					packagesDir,
+					"--no-audit",
+					"--no-fund",
+					"--legacy-peer-deps",
+				],
+				{ timeout: NPM_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
+				(error, stdout, stderr) => {
 				if (error === null) {
 					if (verbose === true && stderr !== "") {
 						console.warn(`packages: npm ${args[0] ?? ""}: ${stderr.trim()}`);

@@ -194,6 +194,13 @@ export interface ServerSettings {
 	 */
 	readonly metrics?: { readonly public?: boolean };
 	/**
+	 * The development flag (spec §14.2/§14.4): `SIGRUN_DEV` (strict
+	 * true/false — the spec's `SIGRUN_DEV=1` form reads as true) over this
+	 * key, default `false`. Surfaces on `GET /v1/meta` (`dev`); gates the
+	 * U1 blocks gallery, U3's development error bodies, and U4.
+	 */
+	readonly dev?: boolean;
+	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
 	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`), plus
 	 * the §6.8 honesty knob: `staleAfterHours`, how old the

@@ -1,0 +1,11 @@
+{
+	"v": 1,
+	"root": {
+		"type": "diff",
+		"id": "diff",
+		"before": "const a = 1;",
+		"after": "const a = 2;",
+		"path": "src/acme.ts",
+		"lang": "ts"
+	}
+}

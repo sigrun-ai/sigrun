@@ -1,0 +1,31 @@
+{
+	"v": 1,
+	"root": {
+		"type": "collection",
+		"id": "collection-list",
+		"items": { "$": "/cards" },
+		"display": "list",
+		"numbered": true,
+		"checkable": "done",
+		"onCheck": "toggleDone",
+		"children": "subtasks",
+		"item": {
+			"eyebrow": { "$": "./eyebrow" },
+			"title": { "$": "./title" },
+			"subtitle": { "$": "./subtitle" },
+			"body": { "$": "./body" },
+			"icon": "file",
+			"badges": [{ "text": { "$": "./badge" }, "tone": "info" }],
+			"meta": [
+				{ "icon": "clock", "text": { "$": "./when" } },
+				{ "person": { "user": { "$": "./user" }, "name": { "$": "./userName" } } },
+				{ "time": { "$": "./at" }, "format": "datetime" }
+			],
+			"metrics": [{ "label": "Score", "value": { "$": "./score" }, "format": "number" }],
+			"tone": "accent",
+			"status": { "label": { "$": "./state" }, "tone": "good", "spinner": { "$": "./busy" } },
+			"quiet": { "$": "./quiet" },
+			"deps": { "$": "./deps" }
+		}
+	}
+}

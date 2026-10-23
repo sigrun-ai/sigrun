@@ -1,0 +1,10 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-date",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [{ "type": "date", "name": "on", "label": "On" }]
+	}
+}

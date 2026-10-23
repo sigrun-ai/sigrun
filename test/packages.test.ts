@@ -42,6 +42,7 @@ import {
 	findExtEntry,
 	gitDirOf,
 	gitTargetDir,
+	hostModuleVersion,
 	packagesDirOf,
 	packagesManifestPath,
 	parsePackageSpecifier,
@@ -71,6 +72,8 @@ const FIXTURE_PKG_DIR = join(import.meta.dirname, "fixtures", "fixture-pkg");
 const FIXTURE_PKG_SPEC = `file:${FIXTURE_PKG_DIR}`;
 /** The host-module fixture source dir (NO runtime deps, bare host import). */
 const FIXTURE_HOSTMOD_DIR = join(import.meta.dirname, "fixtures", "fixture-pkg-hostmod");
+/** The blocks fixture source dir (peerDependency on @sigrun/sigrun, imports /blocks). */
+const FIXTURE_BLOCKS_DIR = join(import.meta.dirname, "fixtures", "fixture-blocks-ext");
 
 /** Read the packages dir's root manifest. */
 function readManifest(packagesDir: string): {
@@ -447,6 +450,100 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 		// extensions type against), so it links like pi-ai/pi-durable/typebox.
 		expect(HOST_RUNTIME_MODULES).toContain("@earendil-works/chord");
 	});
+
+	test("sigrun links ITSELF into the packages dir (the spec 14.1 self-link)", () => {
+		// The source checkout has no node_modules/@sigrun/sigrun anywhere
+		// above src/ (sigrun is not a dependency of itself) — the node_modules
+		// walk would find nothing, so the link target is the running
+		// package's OWN root.
+		const packagesDir = join(freshDir("sigrun-hostmod-self-"), "packages");
+		mkdirSync(join(packagesDir, "node_modules"), { recursive: true });
+		ensureHostModuleLinks(packagesDir);
+		const selfLink = join(packagesDir, "node_modules", "@sigrun", "sigrun");
+		expect(lstatSync(selfLink).isSymbolicLink()).toBe(true);
+		// The link points at the repo this suite runs from (the worktree
+		// root — the running package's own root, never the main checkout).
+		expect(realpathSync(selfLink)).toBe(
+			realpathSync(join(import.meta.dirname, "..")),
+		);
+		// The version the loader's guard compares against is the running
+		// package's own manifest (not an npm-installed copy).
+		expect(hostModuleVersion("@sigrun/sigrun")).toBe(
+			(
+				JSON.parse(
+					readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
+				) as { version: string }
+			).version,
+		);
+	});
+
+	test(
+		"a tarball-installed blocks extension imports @sigrun/sigrun/blocks through the host link",
+		async () => {
+			// Needs `exports["./blocks"]` to resolve — the map points at
+			// dist/, so this test requires a build. Skipped (with a message)
+			// when dist/blocks/index.js is absent, so `npx vitest run` on a
+			// fresh checkout without a build never fails spuriously; the
+			// worktree gate (`npm run build` before the suite) runs it for real.
+			const built = join(import.meta.dirname, "..", "dist", "blocks", "index.js");
+			if (!existsSync(built)) {
+				console.warn(
+					"skipping the blocks host-link import: dist/blocks/index.js absent (run npm run build)",
+				);
+				return;
+			}
+			// npm pack the fixture (the registry shape: no devDeps, no solved
+			// peers — --legacy-peer-deps holds the peerDependency "*" symbolic).
+			const packDir = freshDir("sigrun-pkg-blocks-pack-");
+			const { stdout } = await new Promise<{ stdout: string }>(
+					(resolvePack, rejectPack) => {
+						execFile(
+							"npm",
+							[
+								"pack",
+								"--ignore-scripts",
+								"--json",
+								"--pack-destination",
+									packDir,
+									FIXTURE_BLOCKS_DIR,
+								],
+								(error: Error | null, out: string) =>
+									error === null ? resolvePack({ stdout: out }) : rejectPack(error),
+							);
+					},
+				);
+			const parsed = JSON.parse(stdout) as { filename?: string }[];
+			const filename = parsed.at(-1)?.filename;
+			if (filename === undefined) throw new Error("npm pack produced no tarball");
+			const configDir = freshDir("sigrun-blocks-config-");
+			const packagesDir = packagesDirOf(configDir);
+			await syncPackages([`file:${join(packDir, filename)}`], packagesDir, {
+				log: false,
+			});
+			// The running package is linked into the packages dir.
+			expect(
+				lstatSync(join(packagesDir, "node_modules", "@sigrun", "sigrun")).isSymbolicLink(),
+			).toBe(true);
+			// THE import: `@sigrun/sigrun/blocks` resolves through the host
+			// link — without it (or with a bundled second copy) the tarball's
+			// bare import throws ERR_MODULE_NOT_FOUND.
+			const entry = resolveExtensionEntry("fixture-blocks-ext", packagesDir);
+			expect(entry).toBeDefined();
+			const mod = (await import(entry!)) as {
+				builtTree: { v: number; root: { type: string } };
+				linkedBlockSetVersion: number;
+			};
+			expect(mod.builtTree.root.type).toBe("page");
+			// The tree the extension built carries the SERVER's block-set
+			// version (the whole point of the host link, spec 14.1).
+			const { BLOCK_SET_VERSION } = (await import("@sigrun/shared/blocks")) as {
+				BLOCK_SET_VERSION: number;
+			};
+			expect(mod.builtTree.v).toBe(BLOCK_SET_VERSION);
+			expect(mod.linkedBlockSetVersion).toBe(BLOCK_SET_VERSION);
+		},
+		60_000,
+	);
 
 	test("ensureHostModuleLinks replaces a broken link and clears it for relinking", () => {
 		const packagesDir = join(freshDir("sigrun-hostmod-broken-"), "packages");

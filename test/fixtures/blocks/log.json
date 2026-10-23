@@ -1,0 +1,11 @@
+{
+	"v": 1,
+	"root": {
+		"type": "log",
+		"id": "log",
+		"lines": { "$": "/lines" },
+		"follow": true,
+		"wrap": false,
+		"tones": { "error": "bad", "warn": "warn", "info": "neutral" }
+	}
+}

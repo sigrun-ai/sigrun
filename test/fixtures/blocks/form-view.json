@@ -1,0 +1,22 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-view",
+		"bind": "/view/filter",
+		"mode": "live",
+		"children": [
+			{
+				"type": "choice",
+				"name": "state",
+				"label": "State",
+				"multi": false,
+				"allowOther": { "label": "Other" },
+				"options": [
+					{ "id": "all", "label": "All", "description": "every item", "recommended": true },
+					{ "id": "open", "label": "Open", "tone": "info" }
+				]
+			}
+		]
+	}
+}

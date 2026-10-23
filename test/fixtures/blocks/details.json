@@ -1,0 +1,8 @@
+{
+	"v": 1,
+	"root": {
+		"type": "details",
+		"id": "details",
+		"value": { "host": "acme.example", "tags": ["a", "b"], "nested": { "ok": true } }
+	}
+}

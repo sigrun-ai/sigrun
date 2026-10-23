@@ -953,15 +953,20 @@ function validateWebuiBundles(
 }
 
 /**
- * The one host module whose version must match the host EXACTLY (spec
+ * The host modules whose version must match the host EXACTLY (spec
  * §6.4 R6): an extension's `Extension`/tool objects flow into the HOST's
  * pi-durable registry under structural typing — a different pi-durable
  * is the classic silent-breakage trap (identity never matches, hooks
- * never fire), so any difference at all quarantines. Every other host
- * module only shares the major (a minor/patch difference warns).
+ * never fire), so any difference at all quarantines. `@sigrun/sigrun`
+ * joins that tier for the same reason the spec makes it a peer dependency
+ * (§14.1): `@sigrun/sigrun/blocks` must emit the SERVER's block-set
+ * version, and a different sigrun can only ever emit a different one —
+ * any difference at all quarantines. Every other host module only shares
+ * the major (a minor/patch difference warns).
  */
 const EXACT_HOST_MODULES: ReadonlySet<string> = new Set([
 	"@earendil-works/pi-durable",
+	"@sigrun/sigrun",
 ]);
 
 /** The major segment of a semver-ish version string (`"1.2.0"` → `"1"`). */

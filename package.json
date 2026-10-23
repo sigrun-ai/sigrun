@@ -7,6 +7,10 @@
 		".": "./dist/index.js",
 		"./extension": {
 			"types": "./dist/extension.d.ts"
+		},
+		"./blocks": {
+			"types": "./dist/blocks/index.d.ts",
+			"default": "./dist/blocks/index.js"
 		}
 	},
 	"bin": {
@@ -45,7 +49,8 @@
 		"@sigrun/ext-tool-search": "file:../sigrun-ext-tool-search",
 		"@sigrun/shared": "0.1.0",
 		"croner": "^10.0.1",
-		"fastify": "^5.12.5"
+		"fastify": "^5.12.5",
+		"typebox": "1.3.27"
 	},
 	"bundleDependencies": [
 		"@sigrun/shared"
@@ -55,6 +60,7 @@
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",
+		"fast-check": "^4.10.2",
 		"tsx": "^4.23.15",
 		"typescript": "^7.0.2",
 		"vitest": "^5.0.3",
