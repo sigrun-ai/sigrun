@@ -104,8 +104,6 @@ function textOf(node: { readonly children: readonly unknown[] }): string {
 function clickEvent(): { stopPropagation: () => void } {
 	return { stopPropagation: vi.fn() };
 }
-void textOf;
-void clickEvent;
 
 describe("table display (spec §5.5)", () => {
 	test("renders rows from data; a sortable column click sorts numerically", () => {
