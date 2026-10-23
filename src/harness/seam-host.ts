@@ -102,12 +102,19 @@ export interface SeamHost {
 		record: InteractionRecord,
 		context: Context,
 	): Promise<void>;
-	/** Answer a pending interaction from the extension side (tool path). */
+	/**
+	 * Answer a pending interaction from the extension side. `opts.user`
+	 * (gateway C5) stamps the answer HUMAN and names the user — who
+	 * answered matters to every participant a conversation is shared
+	 * with; access checks stay the caller's job (the host is trusted
+	 * in-process code). Without it the extension answered itself.
+	 */
 	answerInteraction(
 		conversationId: ConversationId,
 		callId: string,
 		answer: InteractionAnswer,
 		context: Context,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/** Mark a pending interaction expired/cancelled/skipped (extension-owned semantics). */
 	settleInteraction(
@@ -272,7 +279,7 @@ export function createSeamHost(
 			}, context);
 		},
 
-		async answerInteraction(conversationId, callId, answer, context) {
+		async answerInteraction(conversationId, callId, answer, context, opts) {
 			const h = await harness(context);
 			return await h.commit(async (tx) => {
 				const draft = await tx.doc(
@@ -282,7 +289,16 @@ export function createSeamHost(
 					callId,
 				);
 				if (draft.status !== "pending") return false;
-				const applied = applyAnswer(draft, answer, "extension", Date.now());
+				// Gateway C5: a host caller naming a user answers AS that human
+				// (the route's path — the same applyAnswer line); without a user
+				// the extension answered itself.
+				const applied = applyAnswer(
+					draft,
+					answer,
+					opts?.user === undefined ? "extension" : "human",
+					Date.now(),
+					opts?.user,
+				);
 				if (applied) {
 					const index = await tx.doc(InteractionsIndexDoc);
 					indexSettled(index, conversationId, callId);

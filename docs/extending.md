@@ -210,7 +210,10 @@ What the snippet encodes:
   fine. The other surface on the same host — the interaction/ambient
   seams, see [approval-ux-seams.md](approval-ux-seams.md) — binds the
   harness lazily: call those from tool execute or hooks, not from the
-  factory body.
+  factory body. On that seam, `host.answerInteraction` takes an
+  optional `opts?: {user?}`: naming a user answers AS that human
+  (`answeredBy: "human"`, `answeredByUser: <user>` — gateway C5);
+  omitting it records the extension's own answer.
 - **Settings have no env bootstrap.** The store is their only source;
   the env pattern below is for secrets.
 
@@ -240,6 +243,7 @@ what core does with each, and where its rules are documented:
 | `conversationForked` | `ExtensionLifecycleHandler<"conversationForked">` | fired with the child, parent, and fork point | this table |
 | `conversationArchived` | `ExtensionLifecycleHandler<"conversationArchived">` | fired on archive flips (both directions) | this table |
 | `conversationIdle` | `ExtensionLifecycleHandler<"conversationIdle">` | fired per quiet period once the idle threshold passes and no run is live | this table |
+| `interactionSettled` | `ExtensionLifecycleHandler<"interactionSettled">` | fired once per terminal interaction transition (any writer: route answer, host answer, skip/expire/cancel) with `{conversationId, callId, kind, status}` | [approval-ux-seams.md](approval-ux-seams.md) |
 | `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the ordered flush window (handlers may commit); runs after workers stop | this table |
 | `userDeleted` | `ExtensionUserDeletedHandler` | fired after a user delete transferred ownership — move your per-user records here | this table |
 | `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
@@ -833,6 +837,7 @@ Core emits one event per **recipient** (`user` is who it is for):
 	type: "interaction.pending" | "job.failed" | "run.settled",
 	conversationId?: number,   // the conversation, when one is involved
 	jobId?: string,            // the failed job's id
+	callId?: string,           // the pending record's id — interaction.pending ONLY
 	user: string | undefined,  // the recipient
 	title: string,
 	body: string,
@@ -841,7 +846,9 @@ Core emits one event per **recipient** (`user` is who it is for):
 ```
 
 - **Emitted events.** `interaction.pending` — always (an agent needs a
-  human). `job.failed` — always, once per failed run. `run.settled` —
+  human); it carries the record's `callId` so a notifier can read the
+  record via `ctx.host.snapshotInteraction` (the only type that carries
+  it). `job.failed` — always, once per failed run. `run.settled` —
   per the `notifications.runSettled` setting: `"unwatched"` (default)
   only when no client stream is attached to the conversation (the
   away-from-desk case), `"cron"` only for job-run conversations,

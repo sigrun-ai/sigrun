@@ -252,6 +252,7 @@ const LIFECYCLE_FIELDS = [
 	"conversationForked",
 	"conversationArchived",
 	"conversationIdle",
+	"interactionSettled",
 	"harnessShutdown",
 	"userDeleted",
 ] as const;
@@ -515,6 +516,7 @@ type LoaderReadKeys =
 	| "conversationForked"
 	| "conversationArchived"
 	| "conversationIdle"
+	| "interactionSettled"
 	| "harnessShutdown"
 	| "userDeleted"
 	| "interactionKinds"
@@ -609,6 +611,7 @@ const WAKE_EVENTS = new Set([
 	"conversationForked",
 	"conversationArchived",
 	"conversationIdle",
+	"interactionSettled",
 ]);
 
 /**
