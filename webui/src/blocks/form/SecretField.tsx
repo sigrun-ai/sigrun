@@ -24,7 +24,10 @@ export function SecretFieldView(props: FieldProps<SecretField>): ReactNode {
 	const data = useSurfaceData();
 	// The bound value is the STATUS string, not the secret (§15: a
 	// secret is text everywhere; the channel never receives it back).
-	const status = bound<string>(data, { $: field.name });
+	// `name` is form-relative — resolve against the form's bind.
+	const bind = props.formBind ?? "";
+	const pointer = `${bind === "" ? "" : bind}/${field.name}`.replace(/^\/+/, "/");
+	const status = bound<string>(data, { $: pointer });
 	const typed = typeof props.value === "string" ? props.value : "";
 	return (
 		<FieldRow field={field} error={props.error}>

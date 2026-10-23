@@ -39,6 +39,8 @@ export interface FieldProps<F extends Field = Field> {
 	readonly disabled: boolean;
 	/** The error under the field (client or server `{error: {field}}`). */
 	readonly error?: string;
+	/** The form's `bind` (secret resolves its bound status against it). */
+	readonly formBind?: string;
 }
 
 /** The label/help/error chrome every field shares (spec §5.6). */
