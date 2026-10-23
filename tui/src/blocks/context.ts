@@ -6,8 +6,11 @@
  * renderer shares.
  *
  * `view` is the channel-owned view-state branch (spec §6.2): sort,
- * filter, expansion, selection. It is `{values}` today; later tasks
- * widen it as collections and forms land.
+ * filter, expansion, selection. Task 5 (forms) widened the seam with
+ * `setView` (the `/view/` writer a live form bound under `/view/` calls
+ * so sibling blocks reading `/view/...` bindings update — mirroring
+ * U1's `SurfaceActionsCtx.setView`) and `serverErrors` (a rejected
+ * action's `{error: {field}}` surfaces under that field, §5.6).
  */
 
 import { resolvePointer } from "@sigrun/shared/blocks";
@@ -44,6 +47,28 @@ export interface BlockCtx {
 	/** Route an action to the surface (view-only ones never reach this). */
 	dispatch(action: Action, payload: JsonValue): void;
 	view: ViewState;
+	/**
+	 * Write the channel-owned `/view/` branch (spec §6.2): `path` is a
+	 * JSON pointer under the branch (no leading `/view/` — the writer
+	 * roots at the branch, as U1's `setView` does). A live form bound
+	 * under `/view/` calls this after its 300 ms debounce; the write
+	 * never reaches the server.
+	 */
+	setView?(path: string, value: JsonValue): void;
+	/**
+	 * Server-side field errors, keyed by field name (spec §5.6: a
+	 * rejected action's `{error: {field}}` surfaces under that field).
+	 */
+	readonly serverErrors?: Readonly<Record<string, string>>;
+	/** The host's edit-in-$EDITOR seam (longtext with `syntax: code`;
+	 *  spec §5.6). The form calls it with the current text; it returns
+	 *  the new text (the TUI suspends while the editor owns the
+	 *  terminal, as the composer's vim flow does). */
+	openEditor?(text: string): { ok: true; text: string } | { ok: false; reason: string };
+	/** The surface's upload seam (§7.2): a file field hands the bytes
+	 *  here after dispatching `onUpload`. Optional — without it the
+	 *  bytes ride the dispatch payload as base64. */
+	uploadBytes?(field: string, name: string, bytes: Uint8Array): void;
 	/** The terminal copy writes to (OSC 52); defaults to process.stdout. */
 	terminal?: { write(data: string): void };
 }

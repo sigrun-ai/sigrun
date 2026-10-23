@@ -235,6 +235,14 @@ export class SurfaceState {
 	#access: "none" | "read" | "write" = "read";
 	#overlay: OverlayEntry[] = [];
 	#notices: string[] = [];
+	/** Server-side field errors from the latest rejected action
+	 *  (`{error: {field}}`, spec §5.6), keyed by field name; a success
+	 *  clears them. */
+	#serverErrors: Readonly<Record<string, string>> = {};
+	/** The channel-owned `/view/` branch (spec §6.2): live forms bound
+	 *  under `/view/` write it through {@link SurfaceState.setView}; it
+	 *  never reaches the transport. */
+	#viewBranch: JsonObject = {};
 	#actionSeq = 0;
 	/** The highest rev a change event announced (gap detect). */
 	#announcedRev = 0;
@@ -285,6 +293,57 @@ export class SurfaceState {
 		const drained = this.#notices;
 		this.#notices = [];
 		return drained;
+	}
+
+	/** The channel-owned `/view/` branch (spec §6.2) — a BlockCtx's
+	 *  `view.values` reads this object. */
+	get viewValues(): JsonObject {
+		return this.#viewBranch;
+	}
+
+	/** The server field errors from the latest rejected action. */
+	get serverErrors(): Readonly<Record<string, string>> {
+		return this.#serverErrors;
+	}
+
+	/** Write a pointer under the `/view/` branch (the form's live
+	 *  `/view/`-bound flush lands here; the write never dispatches). */
+	setView(path: string, value: JsonValue): void {
+		const tokens = path
+			.replace(/^\/+/, "")
+			.split("/")
+			.filter((token) => token !== "")
+			.map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+		const write = (node: JsonObject, depth: number): JsonObject => {
+			if (depth >= tokens.length) {
+				return typeof value === "object" && value !== null && !Array.isArray(value)
+					? { ...(value as JsonObject) }
+					: node;
+			}
+			const key = tokens[depth] as string;
+			if (depth === tokens.length - 1) return { ...node, [key]: value };
+			const child = node[key];
+			const childObject: JsonObject =
+				typeof child === "object" && child !== null && !Array.isArray(child)
+					? (child as JsonObject)
+					: {};
+			return { ...node, [key]: write(childObject, depth + 1) };
+		};
+		if (tokens.length === 0) {
+			if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+				this.#viewBranch = { ...(value as JsonObject) };
+			}
+		} else {
+			this.#viewBranch = write(this.#viewBranch, 0);
+		}
+		this.#emit();
+	}
+
+	/** Reload after an error (SurfaceView's `r` key). */
+	async retry(): Promise<void> {
+		this.#status = "loading";
+		this.#emit();
+		await this.#doLoad();
 	}
 
 	/** Load the tree and initial data; subscribe to change events. */
@@ -430,9 +489,17 @@ export class SurfaceState {
 				}
 				if (!result.ok) {
 					if (isMove) this.#dropEntry(actionId);
+					// A rejected action's `{error: {field}}` surfaces under
+					// that field (spec §5.6); an unfielded rejection clears
+					// any previous field error.
+					this.#serverErrors =
+						result.error.field === undefined
+							? {}
+							: { [result.error.field]: result.error.message };
 					this.#notice(result.error.message);
 					return;
 				}
+				this.#serverErrors = {};
 				if (result.toast !== undefined) this.#notice(result.toast);
 				if (!isMove) return;
 				if (result.ops !== undefined) {
