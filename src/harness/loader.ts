@@ -93,8 +93,11 @@ import type {
 	ProviderContribution,
 	SigrunExtensionResult,
 	SigrunLifecycleHandlers,
+	SurfaceDef,
+	SurfacesContribution,
 	WebuiBundleContribution,
 } from "../extension.js";
+import { ICON_NAMES } from "@sigrun/shared/blocks";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import type { HealthStatus } from "./health.js";
@@ -210,6 +213,20 @@ export interface ExtensionNotifierBinding {
 	readonly notifiers: readonly NotifierContribution[];
 }
 
+/**
+ * Surfaces retained from one extension factory result (UI-blocks U3
+ * Task 1, spec §7.1), attributed to the extension slug — views and
+ * panels FLATTENED in declaration order (views first). Boot threads
+ * the list to `OpenedHarness.extensionSurfaces` for the service (Task
+ * 2) and the `/v1/extensions` inventory rows.
+ */
+export interface ExtensionSurfaceBinding {
+	/** The slug identity (`/v1/ext/<slug>/surfaces/…`). */
+	readonly extension: string;
+	/** The validated view + panel defs, in declaration order. */
+	readonly defs: readonly SurfaceDef<"view" | "panel">[];
+}
+
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
 	"conversationCreated",
@@ -316,6 +333,14 @@ export interface LoadedExtensions {
 	 * none.
 	 */
 	readonly notifierBindings: readonly ExtensionNotifierBinding[];
+	/**
+	 * Declared surfaces from factory results (UI-blocks U3 Task 1,
+	 * spec §7.1), one entry per loaded extension whose result carried
+	 * `surfaces` — the FLATTENED validated defs attributed to the slug
+	 * (the service in Task 2 renders them; `/v1/extensions` inventories
+	 * them). Quarantined extensions contribute none.
+	 */
+	readonly surfaces: readonly ExtensionSurfaceBinding[];
 	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
@@ -427,6 +452,13 @@ export interface ResolvedExtension {
 	 * event reaches a transport.
 	 */
 	notifiers?: readonly NotifierContribution[];
+	/**
+	 * Declared surfaces (UI-blocks U3 Task 1, spec §7.1) — the
+	 * FLATTENED validated view + panel defs (views then panels,
+	 * declaration order); a malformed declaration quarantines the
+	 * extension before any surface mounts.
+	 */
+	surfaces?: readonly SurfaceDef<"view" | "panel">[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -458,7 +490,8 @@ type LoaderReadKeys =
 	| "routes"
 	| "commands"
 	| "skills"
-	| "notifiers";
+	| "notifiers"
+	| "surfaces";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -657,10 +690,125 @@ function validateJobs(value: unknown): readonly JobSpec[] | undefined {
 }
 
 /**
- * The `method`/`auth` vocabularies of a `routes` declaration (spec
- * §9.2) — Sets because `includes` on a `const` tuple narrows to the
- * literal union, which an `unknown` field value can never satisfy.
+ * The icon-name membership probe (spec §10.2): the closed set from
+ * `@sigrun/shared/blocks` — a `Set` so `unknown`-typed field values can
+ * be tested without a cast.
  */
+const ICON_NAME_SET: ReadonlySet<string> = new Set(ICON_NAMES);
+
+/** The refreshMs floor (spec §7.1): channels refetch no faster than 5 s. */
+const MIN_REFRESH_MS = 5000;
+
+/**
+ * Validate a factory result's `surfaces` declaration (UI-blocks U3
+ * Task 1, spec §7.1/§15). Absent → undefined (no surfaces). Present
+ * but malformed → throw with ONE message per problem; the loader
+ * quarantines the extension with the thrown message (fail-loud: an
+ * extension that THINKS it declared a surface must not silently lose
+ * it — the providers/health class). Per def: non-empty string `id`
+ * (unique across BOTH lists — one namespace), string `title`, `icon`
+ * in the closed set, `placement` exactly `view` (in `views`) or
+ * `panel` (in `panels`), `refreshMs ≥ 5000` when present, `data()` a
+ * function when `refreshMs` is set (a data refetch would otherwise
+ * re-run `render`, §7.1), and `render` a function. Returns the
+ * FLATTENED defs (views then panels, declaration order) attributed to
+ * the slug at collection.
+ */
+function validateSurfaces(
+	value: unknown,
+): readonly SurfaceDef<"view" | "panel">[] | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a surfaces field that is not an object",
+		);
+	}
+	const defs: SurfaceDef<"view" | "panel">[] = [];
+	const seen = new Set<string>();
+	for (const list of ["views", "panels"] as const) {
+		const entries = (value as Record<string, unknown>)[list];
+		if (entries === undefined) continue;
+		if (!Array.isArray(entries)) {
+			throw new Error(
+				`extension factory returned a surfaces.${list} field that is not an array`,
+			);
+		}
+		const expected = list === "views" ? "view" : "panel";
+		for (const entry of entries) {
+			const def = entry as
+				| {
+							id?: unknown;
+						title?: unknown;
+						icon?: unknown;
+						placement?: unknown;
+						refreshMs?: unknown;
+						instanceKey?: unknown;
+						render?: unknown;
+						data?: unknown;
+					  }
+				| null;
+			if (typeof def?.id !== "string" || def.id.length === 0) {
+				throw new Error(
+					"extension factory returned a surface whose id is missing or not a non-empty string",
+				);
+			}
+			if (seen.has(def.id)) {
+				throw new Error(
+					`extension factory returned a duplicate surface id "${def.id}"`,
+			);
+			}
+			seen.add(def.id);
+			if (typeof def?.title !== "string" || def.title.length === 0) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose title is missing or not a non-empty string`,
+			);
+			}
+			if (typeof def?.icon !== "string" || !ICON_NAME_SET.has(def.icon)) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" with unknown icon "${String(def?.icon)}"`,
+			);
+			}
+			if (def?.placement !== expected) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose placement must be "${expected}" in surfaces.${list}`,
+			);
+			}
+			if (def?.instanceKey !== undefined && typeof def.instanceKey !== "function") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose instanceKey is not a function`,
+			);
+			}
+			if (typeof def?.render !== "function") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose render is not a function`,
+			);
+			}
+			if (def?.data !== undefined && typeof def.data !== "function") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose data is not a function`,
+			);
+			}
+			if (def?.refreshMs !== undefined) {
+			if (
+					typeof def.refreshMs !== "number" ||
+					!Number.isInteger(def.refreshMs) ||
+					def.refreshMs < MIN_REFRESH_MS
+			) {
+					throw new Error(
+						`extension factory returned a surface "${def.id}" declaring refreshMs ${String(def.refreshMs)} (minimum ${MIN_REFRESH_MS})`,
+				);
+			}
+			if (def?.data === undefined) {
+					throw new Error(
+						`extension factory returned a surface "${def.id}" declaring refreshMs without data()`,
+				);
+			}
+		}
+			defs.push(entry as SurfaceDef<"view" | "panel">);
+		}
+	}
+	return defs;
+}
 const ROUTE_METHODS: ReadonlySet<string> = new Set([
 	"GET",
 	"POST",
@@ -671,15 +819,24 @@ const ROUTE_METHODS: ReadonlySet<string> = new Set([
 const ROUTE_AUTHS: ReadonlySet<string> = new Set(["user", "admin", "public"]);
 
 /**
+ * The route-path prefixes reserved for core under `/v1/ext/<slug>/`
+ * (spec §7.2): `surfaces/` and `assets/` are the extension-surface
+ * and asset mounts — an extension route there would shadow them, so
+ * declaring one quarantines at load, naming the route.
+ */
+const RESERVED_ROUTE_PREFIXES = ["surfaces/", "assets/"] as const;
+
+/**
  * Validate a factory result's `routes` declaration (core hardening W5
  * Task 2, spec §9.2). Absent → undefined (no routes). Present but
  * malformed → throw; the loader quarantines the extension with the
  * thrown message (fail-loud: an extension that THINKS it mounted a
  * webhook must not silently lose it). Per entry: `method` in the five
  * verbs, `path` a non-empty RELATIVE string (no leading `/`, no `..` —
- * nothing may escape the `/v1/ext/<slug>/` mount), `auth` one of the
- * three values, `bodyLimit` a positive integer when present, and
- * `handler` a function.
+ * nothing may escape the `/v1/ext/<slug>/` mount, and never under a
+ * RESERVED core prefix — §7.2), `auth` one of the three values,
+ * `bodyLimit` a positive integer when present, and `handler` a
+ * function.
  */
 function validateRoutes(
 	value: unknown,
@@ -715,6 +872,17 @@ function validateRoutes(
 		) {
 			throw new Error(
 				`extension factory returned a route whose path must be a non-empty relative string (no leading "/", no "..")`,
+			);
+		}
+		// Reserved core prefixes (spec §7.2): surfaces/ and assets/ belong
+		// to core under this slug's mount — quarantine naming the route.
+		const path: unknown = route?.path;
+		if (
+			typeof path === "string" &&
+			RESERVED_ROUTE_PREFIXES.some((prefix) => path.startsWith(prefix))
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose path starts with a reserved core prefix (surfaces/ and assets/ belong to core under /v1/ext/<slug>/)`,
 			);
 		}
 		if (typeof route?.auth !== "string" || !ROUTE_AUTHS.has(route.auth)) {
@@ -1191,6 +1359,7 @@ async function resolvedFromFactory(
 	const commands = validateCommands(candidate.commands);
 	const skills = validateSkills(candidate.skills);
 	const notifiers = validateNotifiers(candidate.notifiers);
+	const surfaces = validateSurfaces(candidate.surfaces);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -1285,6 +1454,7 @@ async function resolvedFromFactory(
 		...(commands === undefined ? {} : { commands }),
 		...(skills === undefined ? {} : { skills }),
 		...(notifiers === undefined ? {} : { notifiers }),
+		...(surfaces === undefined ? {} : { surfaces }),
 	};
 }
 
@@ -1522,6 +1692,8 @@ const commandBindings: ExtensionCommandBinding[] = [];
 // Notifier transports (W5 Task 6, spec §9.6), attributed the same way —
 // the server's notifications surface delivers to every collected entry.
 const notifierBindings: ExtensionNotifierBinding[] = [];
+// Surfaces (U3 Task 1): the flattened validated defs, slug-attributed.
+const surfaceBindings: ExtensionSurfaceBinding[] = [];
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -1804,7 +1976,10 @@ const display = label ?? entry ?? "skills-only";
 				}
 				if (resolved.notifiers !== undefined) {
 					notifierBindings.push({ extension: slug, notifiers: resolved.notifiers });
-				}
+			}
+				if (resolved.surfaces !== undefined) {
+					surfaceBindings.push({ extension: slug, defs: resolved.surfaces });
+			}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1872,5 +2047,6 @@ const display = label ?? entry ?? "skills-only";
 		routeBindings,
 		commandBindings,
 		notifierBindings,
+		surfaces: surfaceBindings,
 	};
 }
