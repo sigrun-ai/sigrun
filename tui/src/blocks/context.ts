@@ -28,6 +28,12 @@ export interface BlockCtx {
 	item?: JsonValue;
 	theme: TuiTheme;
 	locale: string;
+	/**
+	 * Time zone for `Intl` time formats (chart axes, log timestamps);
+	 * absent means the runtime's local zone. Tests pass `UTC` for
+	 * byte-stable output (`formatValue`'s fourth argument).
+	 */
+	timeZone?: string;
 	access: "read" | "write";
 	/**
 	 * Whether the terminal renders Unicode glyphs (spec §10.2): false
