@@ -340,8 +340,9 @@ function renderPage(page: PageBlock, ctx: Ctx): string[] {
 		.filter((label) => label !== "");
 	if (actionLabels.length > 0) head.push(`actions: ${actionLabels.join(", ")}`);
 
-	// §5.1: the empty state replaces main when main's first collection
-	// binds to a missing path, null or [].
+	// §5.1: `empty` is "shown instead of main" when main's first
+	// collection binds to a missing path, null or [] — main is the
+	// replaced region; the sidebar and detail slots keep their content.
 	let main: string[];
 	const collection = firstCollection(page.main);
 	if (page.empty !== undefined && collection !== undefined) {
@@ -349,10 +350,12 @@ function renderPage(page: PageBlock, ctx: Ctx): string[] {
 		if (!Array.isArray(items) || items.length === 0) {
 			main = [page.empty.title];
 			if (page.empty.hint !== undefined && page.empty.hint !== "") main.push(page.empty.hint);
-			return joinBlocks([head, main]);
+		} else {
+			main = renderBlocks(page.main, ctx);
 		}
+	} else {
+		main = renderBlocks(page.main, ctx);
 	}
-	main = renderBlocks(page.main, ctx);
 
 	const sidebar =
 		page.sidebar !== undefined && page.sidebar.length > 0
