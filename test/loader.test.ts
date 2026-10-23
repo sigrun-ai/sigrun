@@ -205,6 +205,79 @@ test("an extension resolving a different pi-durable is quarantined; the healthy 
 	}
 });
 
+test("an extension resolving a different @sigrun/sigrun is quarantined (the blocks host-module rule)", async () => {
+	// Spec §14.1: `@sigrun/sigrun/blocks` must emit the SERVER's block-set
+	// version, so sigrun joins the exact-match tier (EXACT_HOST_MODULES) —
+	// an extension whose tree resolves a different sigrun (a bundled or
+	// npm-installed second copy) is quarantined with the SAME message shape
+	// the pi-durable skew produces, before anything is keyed or installed.
+	// The nested fake is built inline: it stays hermetic and no fixture on
+	// disk ever ships a fake @sigrun/sigrun.
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-selfskew-"));
+	const pkgDir = join(dir, "skew-blocks-ext");
+	await mkdir(join(pkgDir, "node_modules", "@sigrun", "sigrun"), {
+		recursive: true,
+	});
+	await writeFile(
+		join(pkgDir, "node_modules", "@sigrun", "sigrun", "package.json"),
+		JSON.stringify({
+			name: "@sigrun/sigrun",
+			version: "0.0.1",
+			private: true,
+			type: "module",
+			main: "index.js",
+		}),
+	);
+	await writeFile(
+		join(pkgDir, "node_modules", "@sigrun", "sigrun", "index.js"),
+		"export const BLOCK_SET_VERSION = 999;\n",
+	);
+	await writeFile(
+		join(pkgDir, "package.json"),
+		JSON.stringify({
+			name: "skew-blocks-ext",
+			version: "0.1.0",
+			private: true,
+			type: "module",
+			main: "index.js",
+		}),
+	);
+	await writeFile(
+		join(pkgDir, "index.js"),
+		"export default function createSkewBlocks() {\n" +
+			"\treturn {\n" +
+			"\t\textension: { name: 'skew-blocks-ext', hooks: [], tools: [], sections: [] },\n" +
+			"\t};\n" +
+		"}\n",
+	);
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [pathToFileURL(join(pkgDir, "index.js")).href],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: pathToFileURL(join(pkgDir, "index.js")).href,
+					status: "quarantined",
+						error: expect.stringMatching(
+							/host module skew: @sigrun\/sigrun resolves to 0\.0\.1 from .*skew-blocks-ext, host runs \d+\.\d+\.\d+/,
+						),
+					},
+			]);
+			expect(
+				opened.registry.snapshot().extension("skew-blocks-ext"),
+			).toBeUndefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("a failing specifier is quarantined; the valid one still installs", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
