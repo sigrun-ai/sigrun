@@ -38,6 +38,10 @@ export interface SurfaceActionsCtx {
 	dispatch(action: Action, payload: JsonValue): void;
 	access: "read" | "write";
 	viewState: ViewState;
+	/** Server-side field errors, keyed by field name (spec §5.6: the
+	 *  `{error: {field}}` from a rejected action surfaces under that
+	 *  field). Empty when no rejection has landed. */
+	readonly serverErrors?: Readonly<Record<string, string>>;
 }
 
 /** The locale used when no provider narrows it (Node test envs have no
@@ -60,6 +64,7 @@ export const SurfaceActionsContext = createContext<SurfaceActionsCtx>({
 	dispatch: (): void => {},
 	access: "read",
 	viewState: {},
+	serverErrors: {},
 });
 
 /** The surface data bindings resolve against. */
