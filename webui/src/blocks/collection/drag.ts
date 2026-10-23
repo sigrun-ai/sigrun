@@ -6,9 +6,12 @@
  * Drop targets are declarative: elements carry `data-drop-group` /
  * `data-drop-index` attributes, and `dropTargetAt` hit-tests
  * `document.elementFromPoint` against them, so lanes and lists share
- * this one file. `startDrag`/`endDrag` wrap the pointer-capture
- * lifecycle for hosts that hold real elements (the collection displays
- * keep their drag state in refs and call `dropTargetAt` directly).
+ * this one file. The displays call `startDrag` from their pointer-down
+ * handlers (pointer capture on the event's `currentTarget` — the up
+ * event then reaches the dragged element even when the pointer is
+ * released over another element), `endDrag` from pointer-up, and
+ * `cancelDrag` from pointer-cancel (touch scroll theft) so a cancelled
+ * drag never leaves a stale pending state.
  *
  * The keyboard path (§12.4) is the same payload through `DropMove`:
  * `m` picks an item up, arrows move the cursor, `Enter` drops, `Esc`
@@ -55,6 +58,13 @@ export function startDrag(
 ): DragState {
 	element.setPointerCapture?.(pointerId);
 	return state;
+}
+
+/** Abandon a drag without a drop (pointer cancel — e.g. a touch drag
+ *  stolen by scroll): releases capture and returns nothing, so the
+ *  caller clears its pending state with no dispatch. */
+export function cancelDrag(element: DropHost, pointerId: number): void {
+	element.releasePointerCapture?.(pointerId);
 }
 
 /** Hit-test a point for the nearest drop target: the closest element

@@ -161,6 +161,109 @@ describe("lanes display (spec §5.5/§12.3/§12.4)", () => {
 		);
 	});
 
+	test("a pointerup released over a DIFFERENT element still completes the drop (pointer capture)", () => {
+		vi.stubGlobal("document", {
+			elementFromPoint: () => ({
+				closest: (selector: string) =>
+					selector === "[data-drop-group][data-drop-index]"
+						? {
+								getAttribute: (name: string) =>
+									name === "data-drop-group"
+										? "doing"
+										: name === "data-drop-index"
+											? "0"
+											: null,
+							}
+						: null,
+			}),
+		});
+		const { renderer, dispatch } = renderLanes(
+			lanesBlock(),
+			tasks(["a", "todo"], ["b", "doing"]),
+			60 * 16,
+		);
+		const card = renderer.root.find(
+			(node) =>
+				node.props["data-drag-item"] === "a" &&
+				typeof node.props.onPointerDown === "function",
+		);
+		// The OTHER card's element (release outside the source card).
+		const other = renderer.root.find(
+			(node) =>
+				node.props["data-drag-item"] === "b" &&
+				typeof node.props.onPointerUp === "function",
+		);
+		const captured: { el?: unknown; pointerId?: number } = {};
+		act(() => {
+			card.props.onPointerDown({
+				pointerId: 7,
+				clientX: 0,
+				clientY: 0,
+				currentTarget: {
+					setPointerCapture: (id: number) => {
+						captured.pointerId = id;
+					},
+				},
+			});
+		});
+		// Pointer capture was engaged on the source card.
+		expect(captured.pointerId).toBe(7);
+		// The pointer-up lands on a DIFFERENT element; the captured drag
+		// still completes against the drop target under the point.
+		act(() => {
+			other.props.onPointerUp({ pointerId: 7, clientX: 10, clientY: 10 });
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "move", name: "onMove" },
+			{
+				itemId: "a",
+				from: { group: "todo", index: 0 },
+				to: { group: "doing", index: 0 },
+			},
+		);
+	});
+
+	test("a pointercancel clears the pending drag with no dispatch", () => {
+		const { renderer, dispatch } = renderLanes(
+			lanesBlock(),
+			tasks(["a", "todo"], ["b", "doing"]),
+			60 * 16,
+		);
+		const card = renderer.root.find(
+			(node) =>
+				node.props["data-drag-item"] === "a" &&
+				typeof node.props.onPointerDown === "function",
+		);
+		const released: number[] = [];
+		act(() => {
+			card.props.onPointerDown({
+				pointerId: 9,
+				clientX: 0,
+				clientY: 0,
+				currentTarget: {
+					setPointerCapture: () => undefined,
+					releasePointerCapture: (id: number) => released.push(id),
+				},
+			});
+		});
+		act(() => {
+			card.props.onPointerCancel({
+				pointerId: 9,
+				currentTarget: {
+					releasePointerCapture: (id: number) => released.push(id),
+				},
+			});
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		// Capture released on cancel.
+		expect(released).toContain(9);
+		// A later pointerup finds no pending drag.
+		act(() => {
+			card.props.onPointerUp({ pointerId: 9, clientX: 5, clientY: 5 });
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+	});
+
 	test("compact width shows one lane with a switcher; the selected lane survives a width change across the boundary", () => {
 		vi.stubGlobal("ResizeObserver", FakeResizeObserver);
 		const { provider } = makeActions();

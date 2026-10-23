@@ -394,6 +394,15 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		void transport
 			.act({ action: name, payload, actionId })
 			.then((result) => {
+				// A move whose entry is already gone (10 s timeout fired, or
+				// an earlier settle dropped it) is STALE: no toast, no ops —
+				// the user already saw the timeout outcome.
+				if (
+					isMove &&
+					!ref.current.overlay.some((entry) => entry.actionId === actionId)
+				) {
+					return;
+				}
 				if (!result.ok) {
 					if (isMove) dropEntry(actionId);
 					toast(result.error.message);
