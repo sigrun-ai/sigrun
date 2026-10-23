@@ -9,7 +9,7 @@
  * hash: `#/blocks` lists the samples, `#/blocks/<name>` renders one.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
 	JsonObject,
 	SurfaceActResult,
@@ -66,8 +66,34 @@ function SampleView(props: { sample: GallerySample }): ReactNode {
 }
 
 /** The gallery shell: the sample list plus the selected sample. */
+function sampleFromLocation(): string | null {
+	return gallerySampleFromHash(
+		(globalThis as { location?: { hash: string } }).location?.hash ?? "",
+	);
+}
+
 export function GalleryView(): ReactNode {
-	const [selected, setSelected] = useState<string | null>(null);
+	const [selected, setSelectedState] = useState<string | null>(() =>
+		sampleFromLocation(),
+	);
+	// The hash is the route — refresh/back/forward follow it.
+	useEffect(() => {
+		const w = globalThis as {
+			addEventListener?: (t: string, l: () => void) => void;
+			removeEventListener?: (t: string, l: () => void) => void;
+		};
+		const onHash = (): void => setSelectedState(sampleFromLocation());
+		w.addEventListener?.("hashchange", onHash);
+		return () => w.removeEventListener?.("hashchange", onHash);
+	}, []);
+	const setSelected = (name: string): void => {
+		setSelectedState(name);
+		(
+			globalThis as {
+				history?: { pushState(a: null, b: string, c: string): void };
+			}
+		).history?.pushState(null, "", `#/blocks/${name}`);
+	};
 	const sample = GALLERY_SAMPLES.find((entry) => entry.name === selected);
 	return (
 		<div className="gallery" data-gallery="">
@@ -79,10 +105,7 @@ export function GalleryView(): ReactNode {
 							<button
 								type="button"
 								data-gallery-entry={entry.name}
-								onClick={() => {
-									setSelected(entry.name);
-									history.replaceState(null, "", `#/blocks/${entry.name}`);
-								}}
+								onClick={() => setSelected(entry.name)}
 							>
 								{entry.name}
 							</button>
