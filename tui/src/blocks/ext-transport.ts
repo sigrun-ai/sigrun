@@ -11,6 +11,7 @@
  * refreshMs cadence, the keepalive, and visibility gating (U2).
  */
 
+import { createHash } from "node:crypto";
 import type {
 	JsonObject,
 	JsonValue,
@@ -21,8 +22,8 @@ import type {
 	SurfaceTransport,
 	SurfaceUploadBody,
 } from "@sigrun/shared/blocks";
+import { instanceKey } from "@sigrun/shared/blocks";
 import { SigrunApiError } from "../api.js";
-
 
 export interface ExtSurfaceTransportOptions {
 	/** The extension slug (the `/v1/ext/<slug>/` prefix segment). */
@@ -38,6 +39,23 @@ export interface ExtSurfaceTransportOptions {
 	readonly user?: string;
 	readonly token?: string;
 	readonly fetch?: typeof globalThis.fetch;
+}
+
+/**
+ * The wire `k` for one surface instance (spec §7.3), Node flavor:
+ * `sha256(slug + "\0" + id + "\0" + key)` hex. The TUI's transport
+ * computes it synchronously (the WebCrypto twin in `@sigrun/shared/
+ * blocks` is async — DOM-only).
+ */
+export function surfaceKeyHash(slug: string, id: string, key: string): string {
+	return createHash("sha256")
+		.update([slug, id, key].join("\u0000"))
+		.digest("hex");
+}
+
+/** The instance key for one transport's params (the default rule). */
+export function transportKey(options: ExtSurfaceTransportOptions): string {
+	return instanceKey(options.params ?? {});
 }
 
 /** The base path for one surface instance (`?params=` omitted when `{}`). */

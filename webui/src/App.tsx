@@ -26,6 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { displayName } from "@sigrun/shared/conversations";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import { groupTurns } from "@sigrun/shared/turns";
 import {
 	createClient,
@@ -42,9 +43,12 @@ import {
 	liveCompactionFailure,
 	liveCompactions,
 } from "./entries/liveDoc";
+import { SurfacePage } from "./blocks/SurfacePage";
+import { createExtTransport, ExtSurfaceHub } from "./blocks/extTransport";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
+import { extPanelEntries } from "./layout/extViews";
 import { JobsPanel } from "./jobs/JobsPanel";
 import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
@@ -235,6 +239,99 @@ function ChatCenter(props: {
 	);
 }
 
+/** The app shell's hash route (UI-blocks U3 Task 5): `#/c/<id>` (a
+ *  conversation — the SessionList's select also lands here) and
+ *  `#/ext/<slug>/<id>?params=<json>` (an extension surface view). The
+ *  hash is the browser history entry; `navigate({params})` re-renders
+ *  the surface with new params (a new hash entry, so back/forward
+ *  walks them). */
+type Route =
+	| { readonly kind: "chat" }
+	| {
+			readonly kind: "ext";
+			readonly slug: string;
+			readonly id: string;
+			readonly params: JsonObject;
+		};
+
+/** Parse `location.hash` into a route; garbage → the chat default. */
+function parseHash(hash: string): Route {
+	const path = hash.startsWith("#") ? hash.slice(1) : hash;
+	const match = /^\/ext\/([^/]+)\/([^/?]+)(?:\?(.*))?$/.exec(path);
+	if (match === null) return { kind: "chat" };
+	const paramsRaw = match[3];
+	let params: JsonObject = {};
+	if (paramsRaw !== undefined) {
+		// The route's query is a single `params=<json>` pair (spec §7.2);
+		// anything else is ignored (the shell stays conservative).
+		const paramsParam = new URLSearchParams(paramsRaw).get("params");
+		if (paramsParam !== null) {
+			try {
+				const decoded: unknown = JSON.parse(paramsParam);
+				if (
+					typeof decoded === "object" &&
+					decoded !== null &&
+					!Array.isArray(decoded)
+				) {
+					params = decoded as JsonObject;
+				}
+			} catch {
+				// Malformed params → the empty object (the surface renders
+				// its default instance; the shell never refuses the route).
+			}
+		}
+	}
+	return {
+		kind: "ext",
+		slug: decodeURIComponent(match[1] ?? ""),
+		id: decodeURIComponent(match[2] ?? ""),
+		params,
+	};
+}
+
+/** Serialize a route to the hash (the back/forward history entry). */
+function routeHash(route: Route): string {
+	if (route.kind === "chat") return "#/c";
+	const base = `#/ext/${encodeURIComponent(route.slug)}/${encodeURIComponent(route.id)}`;
+	if (Object.keys(route.params).length === 0) return base;
+	return `${base}?params=${encodeURIComponent(JSON.stringify(route.params))}`;
+}
+
+/**
+ * The hash seam: the URL fragment is the route's persistence (browser
+ * back/forward ride it). In hosts without `location` (the
+ * react-test-renderer harness), a module-level fallback holds the
+ * current hash so the app's own navigation is self-consistent — tests
+ * assert against `locationHash()` and the popstate path re-parses it.
+ */
+let fallbackHash = "";
+function readHash(): string {
+	const location_ = (globalThis as { location?: { hash?: string } }).location;
+	if (location_ !== undefined && typeof location_.hash === "string") {
+		return location_.hash;
+	}
+	return fallbackHash;
+}
+function writeHash(hash: string, replace = false): void {
+	const historyApi = (
+		globalThis as {
+			history?: {
+				pushState(d: unknown, t: string, u: string): void;
+				replaceState(d: unknown, t: string, u: string): void;
+			};
+		}
+	).history;
+	fallbackHash = hash;
+	if (historyApi === undefined) return;
+	if (replace) historyApi.replaceState(null, "", hash);
+	else historyApi.pushState(null, "", hash);
+}
+
+/** The current route hash (tests + the popstate handler read it). */
+export function locationHash(): string {
+	return readHash();
+}
+
 export function App(options: AppOptions = {}) {
 	const client = options.client ?? defaultClient;
 	const identity = options.identity;
@@ -250,6 +347,19 @@ export function App(options: AppOptions = {}) {
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	// The hash route (U3 Task 5): the main pane renders either the chat
+	// column or one extension surface page. `navigate({params})` pushes a
+	// new hash entry; popstate walks back/forward through them.
+	const [route, setRoute] = useState<Route>(() => parseHash(readHash()));
+	// The ONE change-event hub per app (the transports subscribe; the
+	// shared events source dispatches surface.changed into it).
+	const [extHub] = useState(() => new ExtSurfaceHub());
+	// The extension surfaces the principal cannot see (access none):
+	// `slug/id` keys — discovered at render time (a load's 404), the rail
+	// entry disappears at once (§6.5's "no rail entry").
+	const [hiddenExtSurfaces, setHiddenExtSurfaces] = useState<readonly string[]>([]);
+	// The open extension PANEL tab's `slug/id` key (RightPanel state).
+	const [extPanel, setExtPanel] = useState<string | null>(null);
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
 	// the sidebar's owner-only Share… action, rendered as an overlay.
 	const [shareFor, setShareFor] = useState<number | null>(null);
@@ -349,11 +459,43 @@ export function App(options: AppOptions = {}) {
 		persistPanel(null);
 	}, []);
 
+	// The popstate listener: browser back/forward re-parses the hash
+	// into route state (the rail's ext entries and the surface pages'
+	// navigate(params) both land here).
+	useEffect(() => {
+		const onPop = (): void => setRoute(parseHash(readHash()));
+		(globalThis as { addEventListener?: (t: string, l: () => void) => void }).addEventListener?.("popstate", onPop);
+		return () => {
+			(globalThis as { removeEventListener?: (t: string, l: () => void) => void }).removeEventListener?.("popstate", onPop);
+		};
+	}, []);
+
+	// The rail's extension-view click: navigate to the surface's route.
+	const onOpenExtView = useCallback((slug: string, id: string): void => {
+		const next: Route = { kind: "ext", slug, id, params: {} };
+		writeHash(routeHash(next));
+		setRoute(next);
+		setDrawerOpen(false);
+	}, []);
+
+	// The conversation select ALSO writes the hash (the browser's back
+	// returns to the surface the user came from).
+	const onSelectWithRoute = useCallback(
+		(id: number): void => {
+			writeHash(`#/c/${id}`);
+			setRoute({ kind: "chat" });
+			onSelect(id);
+		},
+		[onSelect],
+	);
+
 	// Boot-time default: select the root conversation (the §5 default session)
 	// once the schema gate passes and the lifted list has rows, so the
-	// composer is live without a click.
+	// composer is live without a click. An /ext hash route SUPPRESSES the
+	// default (the user asked for a surface, not a conversation).
 	useEffect(() => {
 		if (boot.status !== "ready" || activeId !== null) return;
+		if (route.kind === "ext") return;
 		if (list.rows.length === 0) return;
 		const root = list.rows.find((c) => c.root);
 		const first = root ?? list.rows[0];
@@ -362,7 +504,7 @@ export function App(options: AppOptions = {}) {
 		// clobber race).
 		setActiveId((current) => current ?? first?.id ?? null);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [boot.status, list.rows]);
+	}, [boot.status, list.rows, route.kind]);
 
 	// The schema-version gate (spec §5): no shell renders until /v1/meta
 	// answers with the pinned schema. A mismatch — or an unverifiable fetch —
@@ -536,6 +678,8 @@ export function App(options: AppOptions = {}) {
 					meta={boot.meta}
 					onOpenSettings={() => setSettingsOpen(true)}
 					identity={identity}
+					hiddenExtSurfaces={hiddenExtSurfaces}
+					onOpenExtView={onOpenExtView}
 					onLogout={
 						onLogout === undefined
 							? undefined
@@ -592,6 +736,33 @@ export function App(options: AppOptions = {}) {
 					</p>
 				)}
 				<div className="main-body">
+					{route.kind === "ext" ? (
+						<SurfacePage
+							slug={route.slug}
+							id={route.id}
+							hub={extHub}
+							transport={createExtTransport({
+								slug: route.slug,
+								id: route.id,
+								params: route.params,
+								...(list.streamId === undefined
+									? {}
+									: { streamId: list.streamId }),
+							})}
+							onNavigate={(action) => {
+								if (action.params !== undefined) {
+									const next: Route = {
+										kind: "ext",
+										slug: route.slug,
+										id: route.id,
+										params: action.params,
+									};
+									writeHash(routeHash(next));
+									setRoute(next);
+								}
+							}}
+						/>
+					) : (
 					<div className="chat-column">
 						<ChatCenter
 							activeId={activeId}
@@ -624,8 +795,14 @@ export function App(options: AppOptions = {}) {
 							/>
 						</footer>
 					</div>
+					)}
 			<RightPanel
 				mode={panel}
+				extPanels={extPanelEntries(boot.meta.extensions)}
+				activeExtPanel={extPanel}
+				onOpenExtPanel={(slug, id) => {
+					setExtPanel(`${slug}/${id}`);
+				}}
 				outline={
 					<OutlinePanel scrollRoot={scrollRoot} turns={outlineTurns} />
 				}

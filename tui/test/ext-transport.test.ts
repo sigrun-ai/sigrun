@@ -10,8 +10,10 @@ import { describe, expect, test } from "vitest";
 import {
 	createExtSurfaceTransport,
 	ExtSurfaceHub,
+	surfaceKeyHash,
 	type ExtSurfaceTransportOptions,
 } from "../src/blocks/ext-transport.js";
+import { eventKey, instanceKey } from "../../src/server/surfaces/instance.js";
 
 /** One recorded fetch call (input + init). */
 interface RecordedCall {
@@ -49,6 +51,15 @@ const BASE: Omit<ExtSurfaceTransportOptions, "fetch"> = {
 	token: "tok-1",
 	streamId: "stream-9",
 };
+
+describe("surfaceKeyHash (wire compat)", () => {
+	test("the client's k matches the server's eventKey byte-for-byte", () => {
+		const key = instanceKey({ board: "b2" });
+		expect(surfaceKeyHash("fixture-surfaces", "board", key)).toBe(
+			eventKey("fixture-surfaces", "board", key),
+		);
+	});
+});
 
 describe("createExtSurfaceTransport", () => {
 	test("load() GETs the surface route on the baseUrl (trailing slash normalized)", async () => {

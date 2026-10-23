@@ -140,9 +140,6 @@ describe("Rail extension views (UI-blocks U3 Task 5)", () => {
 				{
 					name: "fixture-surfaces",
 					status: "ok",
-					interactionKinds: [],
-					ambientKeys: [],
-					workers: [],
 					...(surfaces === undefined ? {} : { surfaces }),
 				},
 			],
