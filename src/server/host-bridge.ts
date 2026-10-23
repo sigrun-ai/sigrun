@@ -23,6 +23,7 @@ import {
 	type AccessPrincipal,
 } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
+import type { DirectoryUser } from "../harness/identity/index.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
 import {
 	abortOp,
@@ -39,6 +40,22 @@ import {
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
 import { serializeConversationView } from "./views.js";
+
+/**
+ * The effective-admin projection of one directory user (gateway C8):
+ * host-side callers (chat commands, no request headers) see the STORED
+ * flag OR the persisted group grant, plus the raw `groupAdmin` as a
+ * definite boolean. The `/v1/users` wire keeps `admin` = the stored
+ * flag (the users-admin UI toggles that one); the two surfaces are
+ * deliberately different.
+ */
+function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
+	return {
+		...record,
+		admin: record.admin || record.groupAdmin === true,
+		groupAdmin: record.groupAdmin === true,
+	};
+}
 
 /**
  * The server-provided bridge a seam host delegates its
@@ -184,12 +201,14 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 		users: {
 			// The directory in wire form (emails are admin material; the
 			// bridge is in-process server code, the same trust as the
-			// admin-gated /v1/users routes).
+			// admin-gated /v1/users routes) — with EFFECTIVE admin (gateway
+			// C8): a persisted group grant counts for host-side checks.
 			async list() {
-				return opened.identity.users.list();
+				return opened.identity.users.list().map(effectiveAdminOf);
 			},
 			async get(user) {
-				return opened.identity.users.get(user);
+				const record = opened.identity.users.get(user);
+				return record === undefined ? undefined : effectiveAdminOf(record);
 			},
 		},
 		access: {

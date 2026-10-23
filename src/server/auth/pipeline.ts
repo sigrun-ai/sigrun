@@ -219,6 +219,7 @@ async function resolveProxy(
 	if (existing === undefined && !proxy.autoProvision) {
 		return { status: 403, error: "user_not_provisioned" };
 	}
+	const groupAdmin = groups.some((group) => adminGroups.includes(group));
 	const record =
 		existing ??
 		(await users.add({
@@ -230,9 +231,25 @@ async function resolveProxy(
 				? {}
 				: { email: headerOf(request, proxy.emailHeader) as string }),
 			admin: false,
+			// Gateway C8: the grant is stamped at provision — host-side
+			// checks (chat commands, no headers) read it from the record.
+			...(adminGroups.length > 0 ? { groupAdmin } : {}),
 			source: "proxy",
 		}));
-	const groupAdmin = groups.some((group) => adminGroups.includes(group));
+	// Gateway C8 write-through: host-side code has no request headers, so
+	// the computed group grant must live on the directory record. Only a
+	// CHANGE writes (the steady state never rewrites the file), and only
+	// while `adminGroups` is configured — an empty list leaves the field
+	// untouched (a group-exit clears it at this user's next request under
+	// a non-empty list, never under an empty one). Absent counts as false;
+	// the auto-provisioned record was added with the flag already set, so
+	// the comparison is against the RESOLVED record, never `existing`.
+	if (
+		adminGroups.length > 0 &&
+		(record.groupAdmin ?? false) !== groupAdmin
+	) {
+		await users.update(user, { groupAdmin });
+	}
 	return {
 		user: record.user,
 		...(record.name === undefined ? {} : { name: record.name }),

@@ -305,6 +305,24 @@ effects are identical by construction:
 An unknown conversation id throws (`conversation <id> not found`) on
 every method — the routes' 404 analog.
 
+## The users surface
+
+`host.users.get/list` serve the directory with **effective admin**
+(gateway C8): `admin` is the stored flag OR the persisted proxy-group
+grant (`groupAdmin`), and `groupAdmin` rides along as a definite
+boolean. Host-side code (chat commands, channel adapters) has no
+request headers to recompute a group grant, so the write-through that
+lands it on the record is what makes host-side admin checks possible.
+The HTTP surface is deliberately different: `/v1/users` keeps `admin`
+= the stored flag (the users-admin UI toggles that one) and carries
+`groupAdmin` alongside; group-derived admin never counts toward the
+last-admin guard.
+
+The grant updates only on proxy-authenticated requests while
+`server.auth.adminGroups` is non-empty: removal from the admin group
+takes effect for host-side checks at that user's **next web request**
+(a user who never browses again keeps the stale grant until then).
+
 ## Secrets precedence: stored wins, env bootstraps
 
 For every secret, the resolution order is:

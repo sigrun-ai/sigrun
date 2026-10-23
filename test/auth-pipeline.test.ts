@@ -286,11 +286,13 @@ describe("proxy method", () => {
 			admin: true,
 			method: "proxy",
 		});
-		// Auto-provisioned with admin:false — the group admin grant is
-		// request-scoped, never persisted.
+		// Auto-provisioned with admin:false — the group grant lands on the
+		// record as `groupAdmin` (the gateway C8 write-through), while the
+		// STORED `admin` flag stays false (toggled only via /v1/users).
 		expect(opened.identity.users.get("alice")).toMatchObject({
 			user: "alice",
 			admin: false,
+			groupAdmin: true,
 			source: "proxy",
 		});
 	});
@@ -385,6 +387,146 @@ describe("proxy autoProvision", () => {
 		});
 		expect(response.statusCode).toBe(403);
 		expect(response.json()).toMatchObject({ error: "user_not_provisioned" });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// gateway C8 — proxy group-admin write-through
+// ---------------------------------------------------------------------------
+
+describe("proxy group-admin write-through (gateway C8)", () => {
+	test("auto-provision carries the computed group admin; a later group-less request clears it", async () => {
+		const { app, opened } = await bootServer({
+			env: PROXY_ENV,
+			file: PROXY_FILE,
+		});
+		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const first = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "users,admins" },
+		});
+		expect(first.statusCode).toBe(200);
+		expect(first.json()).toMatchObject({
+			user: "bob",
+			admin: true,
+			method: "proxy",
+		});
+		// The record is the only place host-side checks (chat commands,
+		// no request headers) can read the grant — so the write-through
+		// lands it on the directory, while the STORED admin stays false.
+		// Provision carried the flag (the add itself) — no separate update.
+		expect(updateSpy).not.toHaveBeenCalled();
+		expect(opened.identity.users.get("bob")).toMatchObject({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "proxy",
+		});
+
+		const later = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "users" },
+		});
+		expect(later.statusCode).toBe(200);
+		expect(later.json()).toMatchObject({ user: "bob", admin: false });
+		// Group exit flips the stored flag at that user's next request.
+		expect(opened.identity.users.get("bob")).toMatchObject({
+			admin: false,
+			groupAdmin: false,
+		});
+		// The exit was ONE write (true → false), not one per request.
+		expect(updateSpy).toHaveBeenCalledTimes(1);
+		expect(updateSpy).toHaveBeenCalledWith("bob", { groupAdmin: false });
+	});
+
+	test("write-through only on change: two identical requests → ONE update", async () => {
+		const { app, opened } = await bootServer({
+			env: PROXY_ENV,
+			file: PROXY_FILE,
+		});
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			source: "cli",
+		});
+		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		for (const attempt of [1, 2]) {
+			const response = await app.inject({
+				method: "GET",
+			url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "bob", "remote-groups": "admins" },
+			});
+			expect(response.statusCode, `attempt ${attempt}`).toBe(200);
+		}
+		// The steady state must not rewrite the directory per request —
+		// one write for the undefined→true flip, none for the repeat.
+		expect(updateSpy).toHaveBeenCalledTimes(1);
+		expect(updateSpy).toHaveBeenCalledWith("bob", { groupAdmin: true });
+	});
+
+	test("adminGroups: [] — C8 inactive: nothing is written, a stored grant is not cleared", async () => {
+		const { app, opened } = await bootServer({
+			env: PROXY_ENV,
+			file: { auth: { adminGroups: [] } },
+		});
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "cli",
+		});
+		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "admins" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({ user: "bob", admin: false });
+		// With no configured admin groups the proxy grants nothing and no
+		// request writes the field — not even a clearing write (the value
+		// only moves when adminGroups is non-empty).
+		expect(updateSpy).not.toHaveBeenCalled();
+		expect(opened.identity.users.get("bob")).toMatchObject({
+			groupAdmin: true,
+		});
+	});
+
+	test("/v1/users keeps admin = the stored flag and adds groupAdmin", async () => {
+		const { app } = await bootServer({
+			env: PROXY_ENV,
+			file: PROXY_FILE,
+		});
+		const login = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "admins" },
+		});
+		expect(login.statusCode).toBe(200);
+		// The group admin passes the route's admin gate (effective admin),
+		// but the wire row keeps the STORED flag for the users-admin UI's
+		// toggle and carries the raw group flag alongside.
+		const list = await app.inject({
+			method: "GET",
+			url: "/v1/users",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "admins" },
+		});
+		expect(list.statusCode).toBe(200);
+		const rows = list.json().users as {
+			user: string;
+			admin: boolean;
+			groupAdmin?: boolean;
+		}[];
+		const bob = rows.find((row) => row.user === "bob");
+		expect(bob).toMatchObject({ admin: false, groupAdmin: true });
 	});
 });
 
