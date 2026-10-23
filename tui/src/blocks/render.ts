@@ -18,6 +18,12 @@ import type { Block } from "@sigrun/shared/blocks";
 import { hiddenAtCompact, type BlockCtx } from "./context.js";
 import { Lines, renderColumns, renderGrid, renderSection, renderStack } from "./layout.js";
 import { renderContent } from "./content.js";
+import { renderChart } from "./chart.js";
+import { renderMeter } from "./meter.js";
+import { LogComponent } from "./log.js";
+import { TreeComponent } from "./treeview.js";
+import { ImageComponent } from "./image.js";
+import type { ImageOptions } from "./image.js";
 import { wrapPlain } from "./width.js";
 
 // The renderer's public surface re-exports its seam types and the width
@@ -25,6 +31,7 @@ import { wrapPlain } from "./width.js";
 export { widthClassOf } from "./width.js";
 export type { WidthClass } from "./width.js";
 export type { BlockCtx, ViewState } from "./context.js";
+export type { ImageOptions } from "./image.js";
 
 /** The fallback notice (spec §4.4's exact words). */
 export const NOT_SUPPORTED = "Not supported in this client";
@@ -72,7 +79,7 @@ class WidthGated implements Component {
 }
 
 /** The type dispatch; unknown types answer `undefined` from content. */
-function dispatch(block: Block, ctx: BlockCtx): Component {
+function dispatch(block: Block, ctx: BlockCtx, options: RenderOptions): Component {
 	switch (block.type) {
 		case "stack":
 			return renderStack(block, ctx);
@@ -82,12 +89,25 @@ function dispatch(block: Block, ctx: BlockCtx): Component {
 			return renderGrid(block, ctx);
 		case "section":
 			return renderSection(block, ctx);
+		case "chart":
+			return renderChart(block, ctx);
+		case "meter":
+			return renderMeter(block, ctx);
+		case "log":
+			return new LogComponent(block, ctx);
+		case "tree":
+			return new TreeComponent(block, ctx);
+		case "image":
+			return new ImageComponent(block, ctx, options);
 		default:
 			return renderContent(block, ctx) ?? unsupported(block, ctx);
 	}
 }
 
+/** The seams `renderBlock` threads to the blocks that need them. */
+export type RenderOptions = ImageOptions;
+
 /** Render any block as a pi-tui component (the renderer's dispatch). */
-export function renderBlock(block: Block, ctx: BlockCtx): Component {
-	return new WidthGated(block, dispatch(block, ctx));
+export function renderBlock(block: Block, ctx: BlockCtx, options: RenderOptions = {}): Component {
+	return new WidthGated(block, dispatch(block, ctx, options));
 }
