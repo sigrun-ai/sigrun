@@ -250,16 +250,20 @@ export function App(options: AppOptions = {}) {
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
 	const [drawerOpen, setDrawerOpen] = useState(false);
+	// Re-render token for hash-driven section switches (the section itself
+	// derives from the hash each render).
+	const [, setSectionTick] = useState(0);
 	// The section the shell shows (U1 Task 6): the dev Blocks gallery rides
 	// a hash route so a refresh keeps the page; the entry renders only when
-	// `/v1/meta` reports dev (Rail gates it).
-	const [section, setSection] = useState<"chats" | "blocks">(() =>
-		(globalThis as { location?: { hash: string } }).location?.hash.startsWith(
-			"#/blocks",
-		)
+	// `/v1/meta` reports dev (Rail gates it). NOT state — the hash is the
+	// source of truth (the boot gate remounts the shell after meta lands,
+	// so state would reset to the pre-gate hash; the hash listener keeps
+	// back/forward and the rail button in sync).
+	const win = globalThis as { location?: { hash: string } };
+	const section: "chats" | "blocks" =
+		boot.status === "ready" && win.location?.hash.startsWith("#/blocks")
 			? "blocks"
-			: "chats",
-	);
+			: "chats";
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
 	// the sidebar's owner-only Share… action, rendered as an overlay.
@@ -420,9 +424,8 @@ export function App(options: AppOptions = {}) {
 			location?: { hash: string };
 		};
 		const onHashChange = (): void => {
-			setSection(
-				win.location?.hash.startsWith("#/blocks") ? "blocks" : "chats",
-			);
+			// The hash IS the section — force a re-render on change.
+			setSectionTick((tick) => tick + 1);
 		};
 		win.addEventListener?.("hashchange", onHashChange);
 		return () => win.removeEventListener?.("hashchange", onHashChange);
@@ -565,12 +568,12 @@ export function App(options: AppOptions = {}) {
 					onOpenGallery={
 						boot.meta.dev
 							? () => {
-								setSection("blocks");
 								(
 									globalThis as {
 										history?: { pushState(a: null, b: string, c: string): void };
 									}
 								).history?.pushState(null, "", "#/blocks");
+								setSectionTick((tick) => tick + 1);
 							}
 							: undefined
 					}
