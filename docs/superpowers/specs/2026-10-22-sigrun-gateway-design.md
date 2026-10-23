@@ -342,6 +342,11 @@ so it would see that user as a non-admin.
 - Removal from the admin group takes effect for host-side checks at that
   user's next web request. The docs state this lag.
 
+With `adminGroups` empty (the default), no group grants admin and C8 is
+inactive: admin is the stored directory flag alone, which the first user
+receives when claiming setup (`src/server/routes/onboarding.ts`) and later
+admins receive by grant.
+
 Rulings 7 and C8 together mean every person who can use sigrun is a
 directory user, with the same admin answer on the web and in chat.
 
