@@ -126,6 +126,10 @@ files, credentials, or conversations — by accident or by asking it to.
 10. **Do not step on in-flight work.** The gateway, UI-blocks, and
     image-workflow workstreams are underway; this spec's changes to
     shared files wait for them (§7).
+11. **No memory-unsafe languages.** The sandbox helper may not be
+    written in C or any other memory-unsafe language.
+12. **The bundled extension is `ext-oauth`,** not `ext-login`: it names
+    what it speaks, colloquially covering OAuth 2 and OIDC.
 
 ## 4. Approaches
 
@@ -359,8 +363,15 @@ it: with `no_new_privs`, `execve` grants no file capabilities. No change
 may relax it; the integration suite asserts that running the helper
 from inside a jail cannot change uid.
 
-Language is the builder's choice (Rust's `landlock` crate or C). It
-ships as npm optional platform packages
+**Language: Rust**, with the `landlock` crate (maintained alongside the
+kernel feature) and `#![forbid(unsafe_code)]` in the helper crate, so
+every unsafe operation lives in reviewed dependencies (user ruling 11).
+Rust over Go: before ABI 8 a Landlock ruleset binds only the calling
+thread, and Go's runtime is multithreaded before `main` runs, so a Go
+helper must apply the ruleset to every thread through the runtime's
+all-threads syscall path. A single-threaded Rust binary that restricts
+itself and then `exec`s has no such step to get wrong. It ships as npm
+optional platform packages
 `@sigrun/sandbox-linux-x64` and `@sigrun/sandbox-linux-arm64`
 (the esbuild pattern), dependencies of core, built and published by CI.
 It lives in the core repo under `sandbox/`.
@@ -932,11 +943,15 @@ One table for every external identity, shared with the gateway:
 - Staleness: groups refresh at the next login or proxy request. The
   docs state it.
 
-### 11.6 `@sigrun/ext-login` (bundled)
+### 11.6 `@sigrun/ext-oauth` (bundled)
 
-- Own repo `sigrun-ext-login`; a core dependency; built-in key `login`,
-  slug `login`; `builtinExtensions.login` defaults to `true`; disable
+- Own repo `sigrun-ext-oauth`; a core dependency; built-in key `oauth`,
+  slug `oauth`; `builtinExtensions.oauth` defaults to `true`; disable
   and replacement as for every built-in (`builtins.ts` rulings 5–7).
+  Named for the protocol family it speaks (OAuth 2 and OIDC on top of
+  it, user ruling 12); the core seam it plugs into stays
+  `loginProviders`, and other login extensions (atproto, say) sit
+  beside it under their own names.
 - Inert until its admin settings section lists a provider: no
   providers, no routes beyond core's, nothing on the login screen.
 - Provider kinds:
@@ -1093,7 +1108,7 @@ verifies this with one test each.
 
 ## 15. Left to the builder
 
-- The helper's language and the IPC wire format.
+- The IPC wire format.
 - The worker's handle-id scheme and stream framing.
 - The OIDC/OAuth2 library.
 - File and module layout within each repo, beyond the paths named here.
@@ -1123,4 +1138,4 @@ revision 3:
 | M11 (`auto` un-jails) | **Accepted.** Latched per process, transitions logged (§9.1). |
 | M12 (`no_new_privs` invariant) | **Accepted.** Stated as an invariant with a test; helper refuses uid/gid 0 (§9.3). A root-owned uid allowlist was not added: with `no_new_privs` inside every jail, the file-capped helper is unprivileged there. |
 | m1, m2, m3, m4, m5, m6, m8, m9, m10 | **Accepted** (§9.3, §10.3, §11.2, §11.3, §11.4, §12.1, §9.9). |
-| m7 (`login:login:oidc` ids) | **Declined.** Cosmetic; ids are internal and the doubled segment is unambiguous. |
+| m7 (`login:login:oidc` ids) | **Resolved by the rename** (user ruling 12): the bundled extension's ids read `login:oauth:<id>`. |
