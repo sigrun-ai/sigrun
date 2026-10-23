@@ -67,12 +67,33 @@ function makeHarness(init?: { readonly listFails?: boolean }) {
 		});
 	};
 	const events = new StubEventSource();
+	// U3 Task 4 seam: surface fetches the hook issues (X-Sigrun-Stream +
+	// the reconnect re-fetch fan-out) are recorded here.
+	const surfaceRequests: { url: string; headers: Record<string, string> }[] = [];
+	const fetchSurfaceImpl = (async (
+		input: RequestInfo | URL,
+		init?: RequestInit,
+	) => {
+		surfaceRequests.push({
+			url: String(input),
+			headers: (init?.headers ?? {}) as Record<string, string>,
+		});
+		return {
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve({}),
+			text: () => Promise.resolve(""),
+		} as Response;
+	}) as typeof fetch;
 	return {
 		client: createClient({ fetch: fetchImpl }),
 		conversations,
 		events,
 		calls: () => listCalls,
 		createEventSource: () => events,
+		fetchSurfaceImpl,
+		surfaceFetches: () => surfaceRequests.length,
+		lastSurfaceRequest: () => surfaceRequests[surfaceRequests.length - 1],
 	};
 }
 
@@ -81,11 +102,15 @@ function Host(props: {
 	client: SigrunClient;
 	busy: boolean;
 	createEventSource: () => StubEventSource;
+	fetchImpl?: typeof fetch;
 	capture: (api: UseConversationListResult) => void;
 }) {
 	const api = useConversationList(props.client, {
 		busy: props.busy,
 		createEventSource: props.createEventSource,
+		...(props.fetchImpl === undefined
+			? {}
+			: { fetchImpl: props.fetchImpl }),
 	});
 	useEffect(() => {
 		props.capture(api);
@@ -107,6 +132,7 @@ async function renderHost(harness: ReturnType<typeof makeHarness>, busy: boolean
 			client={harness.client}
 			busy={busy}
 			createEventSource={harness.createEventSource}
+			fetchImpl={harness.fetchSurfaceImpl}
 			capture={capture}
 		/>,
 	);
@@ -121,6 +147,7 @@ async function renderHost(harness: ReturnType<typeof makeHarness>, busy: boolean
 					client={harness.client}
 					busy={next}
 					createEventSource={harness.createEventSource}
+					fetchImpl={harness.fetchSurfaceImpl}
 					capture={capture}
 				/>,
 			);
@@ -131,9 +158,9 @@ async function renderHost(harness: ReturnType<typeof makeHarness>, busy: boolean
 			await vi.advanceTimersByTimeAsync(ms);
 		});
 	};
-	const emit = async (type: string) => {
+	const emit = async (type: string, data = "{}") => {
 		await act(async () => {
-			harness.events.emit(type, "{}");
+			harness.events.emit(type, data);
 			// Let the refetch promise settle.
 			await Promise.resolve();
 			await Promise.resolve();
@@ -211,6 +238,48 @@ describe("useConversationList", () => {
 		expect(getApi().rows).toEqual([]);
 		expect(getApi().error).toContain(
 			"sigrun api: GET /v1/conversations failed with status 500",
+		);
+	});
+
+	test("U3 Task 4: the hello frame's streamId is exposed; surface fetches send X-Sigrun-Stream", async () => {
+		const harness = makeHarness();
+		const { getApi, emit } = await renderHost(harness, false);
+		expect(getApi().streamId).toBeUndefined();
+		await emit("hello", JSON.stringify({ streamId: "stream-abc-123" }));
+		expect(getApi().streamId).toBe("stream-abc-123");
+		// A surface fetch through the hook's own seam carries the stream
+		// header once the hello landed.
+		await getApi().fetchSurface("acme", "board");
+		expect(harness.lastSurfaceRequest()?.headers["x-sigrun-stream"]).toBe(
+			"stream-abc-123",
+		);
+	});
+
+	test("U3 Task 4: channels ignore unknown event types (x.unknown: no error, no reload)", async () => {
+		const harness = makeHarness();
+		const { getApi, emit } = await renderHost(harness, false);
+		expect(harness.calls()).toBe(1);
+		await emit("x.unknown", "{}");
+		expect(harness.calls()).toBe(1);
+		expect(getApi().error).toBeNull();
+	});
+
+	test("U3 Task 4: after a reconnect with a new streamId, every visible surface is re-fetched", async () => {
+		const harness = makeHarness();
+		const { getApi, emit } = await renderHost(harness, false);
+		await emit("hello", JSON.stringify({ streamId: "stream-one" }));
+		expect(getApi().streamId).toBe("stream-one");
+		// Register two visible surfaces (the channel's tracking).
+		getApi().noteSurfaceVisible("acme", "board");
+		getApi().noteSurfaceVisible("acme", "stats");
+		expect(harness.surfaceFetches()).toBe(0);
+		// The reconnect: a NEW hello with a NEW streamId re-fetches every
+		// visible surface (re-registering the stream's watcher entries).
+		await emit("hello", JSON.stringify({ streamId: "stream-two" }));
+		expect(getApi().streamId).toBe("stream-two");
+		expect(harness.surfaceFetches()).toBe(2);
+		expect(harness.lastSurfaceRequest()?.headers["x-sigrun-stream"]).toBe(
+			"stream-two",
 		);
 	});
 });

@@ -43,6 +43,10 @@ function classifyDelivery(event: HostEventWire): EventDelivery {
 		// Host machinery: never principal-facing.
 		case "taskSettled":
 			return "never";
+		// U3 Task 4: delivered only to streams in the watcher registry
+		// with stored access ≠ none (the events route's own registry read).
+		case "surface.changed":
+			return "broadcast";
 		default: {
 			// A HostEventWire member without a case lands here: `event` is
 			// no longer `never`, this check fails, typecheck fails.

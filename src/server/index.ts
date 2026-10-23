@@ -63,6 +63,7 @@ import { registerStreamRoutes } from "./routes/stream.js";
 import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
+import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
@@ -188,6 +189,16 @@ export async function createServer(
 	app.decorate("sse", sse);
 	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
 		maxUploadBytes: config.maxUploadBytes,
+		// Task 4: bumpRev (actions AND the host seam's changed()) fans the
+		// surface.changed event out to the hub; the events route's
+		// visibility case delivers it to watching streams only.
+		publishChanged: (event) => {
+			// SAFETY: the hub is typed on the wire union; surface.changed's
+			// hub copy carries the internal `streams` field the events route
+			// reads and strips before delivery (spec §7.3's routing can never
+			// reverse the hashed k).
+			opened.events.publish(event as unknown as HostEventWire);
+		},
 	});
 	app.decorate("surfaces", surfacesService);
 	const ctx: ServerContext = {

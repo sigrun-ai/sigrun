@@ -887,4 +887,13 @@ export type HostEventWire =
 			/** W4 Task 4 (§8.4): the changed job's summary, WITHOUT `access` — the events stream computes `accessOf` per principal and adds it before delivery (a hidden job's event is withheld entirely). */
 			readonly type: "job.changed";
 			readonly job: Omit<JobWire, "access">;
+		}
+	| {
+			/** UI-blocks U3 Task 4 (spec §7.3): one surface instance changed. `k` is the hashed instance key (sha256(slug + "\0" + id + "\0" + key) hex) — the event NEVER carries params or data (render/data are principal-specific; the watcher refetches as itself). Delivered only to streams in the watcher registry whose stored access is not `"none"`. */
+			readonly type: "surface.changed";
+			readonly slug: string;
+			readonly id: string;
+			readonly k: string;
+			readonly rev: number;
+			readonly treeRev: number;
 		};
