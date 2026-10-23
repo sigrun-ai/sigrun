@@ -7,6 +7,10 @@
 		".": "./dist/index.js",
 		"./extension": {
 			"types": "./dist/extension.d.ts"
+		},
+		"./blocks": {
+			"types": "./dist/blocks/index.d.ts",
+			"default": "./dist/blocks/index.js"
 		}
 	},
 	"bin": {
