@@ -45,7 +45,7 @@ import { parsePackageSpecifier, readPackageName } from "./packages.js";
 /** One built-in extension's stable identity. */
 export interface BuiltinExtension {
 	/** The settings key (`builtinExtensions.<key>`). */
-	readonly key: "codemode" | "mcp" | "toolSearch";
+	readonly key: "codemode" | "mcp" | "toolSearch" | "gateway";
 	/** The npm package name (the resolution specifier; `@sigrun/ext-*`). */
 	readonly specifier: string;
 	/** The `/v1/extensions` row name — the slug the built-in's DECLARED
@@ -69,6 +69,7 @@ export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
 	{ key: "codemode", specifier: "@sigrun/ext-codemode", slug: "codemode" },
 	{ key: "mcp", specifier: "@sigrun/ext-mcp", slug: "sigrun-mcp" },
 	{ key: "toolSearch", specifier: "@sigrun/ext-tool-search", slug: "tool-search" },
+	{ key: "gateway", specifier: "@sigrun/ext-gateway", slug: "gateway" },
 ];
 
 /** The outcome of resolving the built-ins against settings + configured extensions. */

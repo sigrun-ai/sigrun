@@ -304,7 +304,12 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 			// quarantined extension row, not the built-in surface.
 			JSON.stringify({
 				extensions: [tsEntry],
-				builtinExtensions: { codemode: false, mcp: false, toolSearch: false },
+				builtinExtensions: {
+				codemode: false,
+				mcp: false,
+				toolSearch: false,
+				gateway: false,
+			},
 			}) + "\n",
 			"utf8",
 		);

@@ -320,6 +320,7 @@ test(
 					codemode: false,
 					mcp: false,
 					toolSearch: false,
+					gateway: false,
 				},
 			}) + "\n",
 			"utf8",
