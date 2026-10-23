@@ -71,7 +71,7 @@ export function registerMetaRoutes(
 			// exists — the one storage read this route makes). Gateway C2 adds
 			// `gateway`: present ONLY when an engine loaded (the meta route
 			// keys on `opened.gatewayEngine`, never on the handle — a
-		// no-engine deploy reports NO gateway health, degenerate "ok" by
+			// no-engine deploy reports NO gateway health, degenerate "ok" by
 			// absence), its value the HANDLE's wrapped health (throw →
 			// "degraded"; a start rejection latches degraded until restart).
 			health: {

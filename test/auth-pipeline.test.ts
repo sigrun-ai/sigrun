@@ -457,7 +457,7 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		for (const attempt of [1, 2]) {
 			const response = await app.inject({
 				method: "GET",
-			url: "/v1/auth/whoami",
+				url: "/v1/auth/whoami",
 				remoteAddress: "10.42.3.4",
 				headers: { "remote-user": "bob", "remote-groups": "admins" },
 			});

@@ -520,7 +520,6 @@ export interface MetaResponse {
 		readonly gateway?: HealthStatus;
 	};
 	/**
-	/**
 	 * The auth block (core hardening W1 Task 6, spec §5.7): the effective
 	 * authenticator list (`ctx.methods` — loopback-derived or explicit) and
 	 * the onboarding state (`claimed` = the user directory has its first

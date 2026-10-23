@@ -985,19 +985,22 @@ export class EventBus {
 							// settleInteraction) — so exactly one event fires per
 							// transition; seeding (pending) fires nothing. It rides the
 							// same lifecycle queue + deadline-bounded dispatch as
-							// conversationCreated etc., NOT the host event stream.
-							if (
-								record.status === "answered" ||
-								record.status === "skipped" ||
-								record.status === "expired" ||
-								record.status === "cancelled"
-							) {
+							// conversationCreated etc., NOT the host event stream. The
+							// host-event split above and this gate read the SAME
+							// imported set, so a future terminal status added to
+							// TERMINAL fires both events together by construction.
+							if (INTERACTION_TERMINAL.has(record.status)) {
 								lifecycle.push({
 									type: "interactionSettled",
 									conversationId: change.conversationId,
 									callId: record.callId,
 									kind: record.kind,
-									status: record.status,
+									// SAFETY: `record.status` is a narrowed `string`, but
+									// the payload wants the terminal union — sound because
+									// the union and the TERMINAL set share one definition
+									// (src/harness/interactions.ts): membership in the set
+									// IS membership in the union.
+									status: record.status as ExtensionLifecyclePayload["interactionSettled"]["status"],
 								});
 							}
 						}
@@ -1377,7 +1380,7 @@ export class EventBus {
 				return { conversationId: event.conversationId, archived: event.archived };
 			case "conversationIdle":
 				return { conversationId: event.conversationId, idleMs: event.idleMs };
-		case "interactionSettled":
+			case "interactionSettled":
 				return {
 					conversationId: event.conversationId,
 					callId: event.callId,

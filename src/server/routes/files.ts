@@ -283,7 +283,7 @@ export function registerFileRoutes(
 				if (readerOpened.error.code === "not_found") {
 					return await reply.code(404).send({ error: "not_found" });
 				}
-					throw readerOpened.error;
+				throw readerOpened.error;
 			}
 			const reader = readerOpened.value;
 			// Hijack BEFORE the first write: every reply.send above ran on the
@@ -299,13 +299,13 @@ export function registerFileRoutes(
 				});
 				for (let offset = 0; offset < meta.size; offset += RAW_READ_CHUNK_BYTES) {
 					const chunk = await reader.read(
-					offset,
+						offset,
 						Math.min(RAW_READ_CHUNK_BYTES, meta.size - offset),
 						BACKGROUND_CONTEXT,
 					);
 					if (!chunk.ok) throw chunk.error;
 					raw.write(Buffer.from(chunk.value));
-			}
+				}
 				raw.end();
 			} catch (error) {
 				// The raw 'error' handler above already swallows socket teardown;

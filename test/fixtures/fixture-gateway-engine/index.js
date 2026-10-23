@@ -7,12 +7,18 @@
  *
  * Records `start`/`stopIntake`/`stop` calls — with the ctx the engine
  * received (channels + signal) on `start` — and the `runSettled`
- * deliveries into `globalThis.__fixtureGatewayLog` (the fixture-channel
- * globalThis-stash pattern: the loader's `import()` and a test's static
- * import may run in different module instances — globalThis is the one
- * shared address space). `health()` returns
- * `globalThis.__fixtureGatewayHealth ?? "ok"` so tests flip the reported
- * health without reloading.
+ * deliveries into a PER-BOOT log: each factory call pushes its own array
+ * onto `globalThis.__fixtureGatewayLogs`, and the engine records into the
+ * array its factory call created. The loader invokes the factory exactly
+ * once per boot, so one boot = one registry entry — a test reads the
+ * entry its boot appended (captured as `logs[logsBeforeBoot]`), never a
+ * shared log, and repeated boots in one process never interleave. The
+ * globalThis stash is the fixture-channel pattern: the loader's
+ * `import()` and a test's static import may run in different module
+ * instances — globalThis is the one shared address space.
+ *
+ * `health()` returns `globalThis.__fixtureGatewayHealth ?? "ok"` so tests
+ * flip the reported health without reloading.
  *
  * `runSettled` awaits `globalThis.__fixtureGatewaySettleGate` (a promise)
  * BEFORE recording when one is set: the shutdown-order test holds the
@@ -27,12 +33,18 @@
 
 import { defineExtension } from "@earendil-works/pi-durable";
 
-/** The call/delivery log: `{type: "start"|"stopIntake"|"stop"|"runSettled", ...}`. */
-export const log = [];
-
-globalThis.__fixtureGatewayLog = log;
+/**
+ * The per-boot log registry: one entry per factory call, each entry the
+ * `{type: "start"|"stopIntake"|"stop"|"runSettled", ...}` array that
+ * factory call's engine records into.
+ */
+const logs = (globalThis.__fixtureGatewayLogs ??= []);
 
 export default function createFixtureGatewayEngine() {
+	// One log per FACTORY CALL (one per boot): the engine closures below
+	// record into this array only — never a module-level shared log.
+	const log = [];
+	logs.push(log);
 	return {
 		extension: defineExtension({ name: "fixture-gateway-engine", sections: [] }),
 		gateway: {
