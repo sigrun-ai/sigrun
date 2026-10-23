@@ -100,6 +100,13 @@ function textOf(node: { readonly children: readonly unknown[] }): string {
 	return text;
 }
 
+/** A click event whose propagation a listener can observe. */
+function clickEvent(): { stopPropagation: () => void } {
+	return { stopPropagation: vi.fn() };
+}
+void textOf;
+void clickEvent;
+
 describe("table display (spec §5.5)", () => {
 	test("renders rows from data; a sortable column click sorts numerically", () => {
 		const block = tableBlock();
@@ -199,11 +206,54 @@ describe("table display (spec §5.5)", () => {
 			(node) => node.type === "button" && node.props.className === "blk-table-expand",
 		);
 		act(() => {
-			more.props.onClick();
+			more.props.onClick(clickEvent());
 		});
 		text = textContent(renderer.toJSON());
 		expect(text).toContain("low-note");
 		void dispatch;
+	});
+
+	test("clicking the select checkbox does NOT fire onActivate", () => {
+		const block = tableBlock({
+			select: "multi",
+			onActivate: { type: "navigate", params: { view: "item" } },
+		});
+		const { renderer, dispatch } = renderTable(block, {
+			rows: [{ id: "a", name: "Alpha", points: 3, note: "x" }],
+		});
+		const box = renderer.root.find(
+			(node) => node.type === "input" && node.props.className === "blk-select",
+		);
+		act(() => {
+			box.props.onClick(clickEvent());
+			box.props.onChange();
+		});
+		// Selection toggled; NO onActivate dispatched.
+		expect(
+			dispatch.mock.calls.some(
+				(call) => (call[0] as { type: string }).type === "navigate",
+			),
+		).toBe(false);
+	});
+
+	test("clicking elsewhere in the row still activates", () => {
+		const block = tableBlock({
+			select: "multi",
+			onActivate: { type: "navigate", params: { view: "item" } },
+		});
+		const { renderer, dispatch } = renderTable(block, {
+			rows: [{ id: "a", name: "Alpha", points: 3, note: "x" }],
+		});
+		const row = renderer.root.find(
+			(node) => node.type === "tr" && node.props["data-item-id"] === "a",
+		);
+		act(() => {
+			row.props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "navigate", params: { view: "item" } },
+			{ itemId: "a" },
+		);
 	});
 
 	test("view-only sort survives a data update", () => {

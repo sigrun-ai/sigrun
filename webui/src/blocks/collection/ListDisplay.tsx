@@ -109,6 +109,7 @@ function CheckBox(props: {
 			type="checkbox"
 			className="blk-check"
 			checked={checked}
+			onClick={(event) => event.stopPropagation()}
 			onChange={() => {
 				const onCheck = props.block.onCheck;
 				if (onCheck !== undefined) {
@@ -132,27 +133,45 @@ function GroupRows(props: {
 	const { block, group, view, activate } = props;
 	const quietKey = `${group.id}:quiet`;
 	const quietShown = view.folded.includes(quietKey);
+	// A `collapsed` group starts folded behind its heading (spec §5.5);
+	// clicking the heading folds/unfolds. The key rides the same `folded`
+	// view state as quiet/overflow so Task 4 moves it verbatim.
+	const collapsedKey = `${group.id}:collapsed`;
+	const collapsedShown = view.folded.includes(collapsedKey);
+	const collapsed = group.collapsed && !collapsedShown;
 	return (
 		<div className="blk-list-group" data-group={group.id || undefined}>
 			{group.title !== "" && (
-				<div className="blk-list-heading" dir="auto">
+				<div
+					className="blk-list-heading"
+					dir="auto"
+					role={group.collapsed ? "button" : undefined}
+					tabIndex={group.collapsed ? 0 : undefined}
+					onClick={
+						group.collapsed
+							? () => view.toggleFold(collapsedKey)
+							: undefined
+					}
+				>
 					{group.title}
 				</div>
 			)}
-			<ol className="blk-list-rows">
-				{group.buckets.visible.map((prepared, index) => (
-					<ListRow
-						key={prepared.id}
-						block={block}
-						prepared={prepared}
-						depth={0}
-						index={index}
-						view={view}
-						activate={activate}
-					/>
-				))}
-			</ol>
-			{group.buckets.quiet.length > 0 &&
+			{!collapsed && (
+				<ol className="blk-list-rows">
+					{group.buckets.visible.map((prepared, index) => (
+						<ListRow
+							key={prepared.id}
+							block={block}
+							prepared={prepared}
+							depth={0}
+							index={index}
+							view={view}
+							activate={activate}
+						/>
+					))}
+				</ol>
+			)}
+			{!collapsed && group.buckets.quiet.length > 0 &&
 				(quietShown ? (
 					<ol className="blk-list-rows blk-list-quiet">
 						{group.buckets.quiet.map((prepared, index) => (

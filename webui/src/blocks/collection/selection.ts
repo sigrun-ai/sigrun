@@ -70,11 +70,9 @@ export function toggleKey(
 	keys: readonly string[],
 	key: string,
 ): readonly string[] {
-	return key === undefined
-		? keys
-		: keys.includes(key)
-			? keys.filter((existing) => existing !== key)
-			: [...keys, key];
+	return keys.includes(key)
+		? keys.filter((existing) => existing !== key)
+		: [...keys, key];
 }
 
 /** The cycle a clicked sortable column takes: none → asc → desc → asc. */
