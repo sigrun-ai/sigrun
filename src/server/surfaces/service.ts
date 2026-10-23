@@ -26,18 +26,123 @@
  */
 
 import type { JsonObject, Tree } from "@sigrun/shared/blocks";
+import type { DataOps } from "@sigrun/shared/blocks";
 import { validateTree, type ValidationError } from "../../blocks/validate.js";
 import type {
+	ActionResult,
 	Principal,
 	SurfaceAccessLevel,
 	SurfaceDef,
+	UploadedFile,
 } from "../../extension.js";
 import type { ExtensionSurfaceBinding } from "../../harness/loader.js";
 import { AccessCache } from "./access-cache.js";
+import { ActionDedup } from "./dedup.js";
 import { instanceKey as defaultInstanceKey } from "./instance.js";
+import { sniffMime } from "./mime.js";
+import { ActionRateLimit } from "./rate-limit.js";
 
 /** The shared-data op-log window (spec §7.3): the last 100 updates. */
 export const SHARED_OPS_WINDOW = 100;
+
+/** The action timeout (spec §6.3): 10 s, then the action is a reject. */
+export const ACTION_TIMEOUT_MS = 10 * 1000;
+
+/** The body sent for a timed-out handler (spec §6.3 step 4). */
+const TIMED_OUT_RESULT: ActionResult = {
+	ok: false,
+	error: { message: "timed out" },
+};
+
+/**
+ * The action route's response (spec §6.3 step 3): the handler's
+ * ActionResult, wrapped server-side — an accept carries the assigned
+ * `rev` and, for an accept WITH ops, the `ops` echoed back.
+ */
+export type ActionResponse =
+	| {
+			readonly ok: true;
+			readonly rev: number;
+			readonly ops?: DataOps["ops"];
+			readonly update?: DataOps;
+			readonly navigate?: Extract<
+				ActionResult,
+				{ readonly ok: true }
+			>["navigate"];
+			readonly toast?: string;
+		}
+	| Extract<ActionResult, { readonly ok: false }>;
+
+/** Errors `act` reports without calling the handler. */
+export class ActionRateLimitedError extends Error {
+	constructor() {
+		super("rate limited");
+		this.name = "ActionRateLimitedError";
+	}
+}
+
+export class UnknownActionError extends Error {
+	constructor(action: string) {
+		super(`unknown action: ${action}`);
+		this.name = "UnknownActionError";
+	}
+}
+
+/** The upload body-cap tripwire (route: 413 without buffering the rest). */
+export class UploadTooLargeError extends Error {
+	readonly maxBytes: number;
+	constructor(maxBytes: number) {
+		super("upload_too_large");
+		this.name = "UploadTooLargeError";
+		this.maxBytes = maxBytes;
+	}
+}
+
+/** A plain record (the tree walk's node shape). */
+type Rec = Record<string, unknown>;
+
+function isRec(value: unknown): value is Rec {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Yield every node of a block tree, structurally (the walk only reads
+ * `children`, `fields`, `item`, and each field's own props — a tree
+ * validated at render time is the expected input, but an unvalidated
+ * def tree walks the same way).
+ */
+function* walkNodes(root: Rec): Generator<Rec> {
+	yield root;
+	// The tree record itself: descend its `root`. Blocks descend their
+	// `children` (stack/section/form/columns…), a page's `main`, a
+	// collection's `item` template, and a form's field lists; a `list`
+	// field's `item` field recurses the same way.
+	const childLists = [
+		root.root,
+		root.children,
+		root.fields,
+		root.main,
+		root.sidebar,
+		root.detail,
+	];
+	for (const list of childLists) {
+		if (Array.isArray(list)) {
+			for (const child of list) {
+				if (isRec(child)) {
+					if (isRec(child.block)) {
+						// columns/grid wrappers: `{weight?, block}`
+						yield* walkNodes(child.block);
+					} else {
+						yield* walkNodes(child);
+					}
+				}
+			}
+		} else if (isRec(list)) {
+			yield* walkNodes(list);
+		}
+	}
+	if (isRec(root.item)) yield* walkNodes(root.item);
+}
 
 /** A render/data failure (throw or invalid tree) → 500 surface_failed. */
 export class SurfaceFailedError extends Error {
@@ -76,6 +181,8 @@ interface InstanceState {
 	treeRev: number;
 	/** Retained ops (sharedData only): each with the rev it produced. */
 	ops: { readonly rev: number; readonly ops: readonly unknown[] }[];
+	/** The `file` fields of the last rendered tree: name → maxBytes. */
+	fileFields: Map<string, number>;
 }
 
 /** One located surface: its binding plus its def. */
@@ -92,10 +199,17 @@ export class SurfaceService {
 	private readonly bindings: readonly ExtensionSurfaceBinding[];
 	private readonly cache: AccessCache;
 	private readonly instances = new Map<string, InstanceState>();
+	private readonly dedup = new ActionDedup();
+	private readonly rateLimit = new ActionRateLimit();
+	private readonly maxUploadBytes: number;
 
-	constructor(bindings: readonly ExtensionSurfaceBinding[]) {
+	constructor(
+		bindings: readonly ExtensionSurfaceBinding[],
+		options?: { maxUploadBytes?: number },
+	) {
 		this.bindings = bindings;
 		this.cache = new AccessCache();
+		this.maxUploadBytes = options?.maxUploadBytes ?? Number.MAX_SAFE_INTEGER;
 	}
 
 	/** Find one surface def by slug + id. */
@@ -122,7 +236,7 @@ export class SurfaceService {
 		const composite = `${slug}\u0001${id}\u0001${key}`;
 		let state = this.instances.get(composite);
 		if (state === undefined) {
-			state = { rev: 0, treeRev: 0, ops: [] };
+			state = { rev: 0, treeRev: 0, ops: [], fileFields: new Map() };
 			this.instances.set(composite, state);
 		}
 		return state;
@@ -157,6 +271,16 @@ export class SurfaceService {
 		this.cache.set(slug, id, key, principal.user, result.access);
 		if (result.access === "none") return undefined;
 		const state = this.stateFor(slug, id, key);
+		// Record the tree's file-field caps for the upload route (spec
+		// §7.1: the field's maxBytes, clamped by server.maxUploadBytes).
+		state.fileFields.clear();
+		for (const node of walkNodes(validation.tree as Rec)) {
+			if (node.type === "file" && typeof node.name === "string") {
+				if (typeof node.maxBytes === "number") {
+					state.fileFields.set(node.name, node.maxBytes);
+				}
+			}
+		}
 		return {
 			tree: validation.tree,
 			data: result.data,
@@ -264,6 +388,202 @@ export class SurfaceService {
 		const result = await this.callRender(located, key, params, principal);
 		this.cache.set(slug, id, key, principal.user, result.access);
 		return result.access;
+	}
+
+	/** The composite instance key (`slugidkey`) for one def + params. */
+	compositeFor(
+		slug: string,
+		def: SurfaceDef<"view" | "panel">,
+		params: JsonObject,
+	): string {
+		return `${slug}${def.id}${this.keyFor(def, params)}`;
+	}
+
+	/**
+	 * The effective upload cap for one field (spec §7.1): the field's
+	 * own `maxBytes` clamped by the server-wide `server.maxUploadBytes`.
+	 * A field absent from the last rendered tree answers `undefined`.
+	 */
+	uploadCapBytes(
+		slug: string,
+		id: string,
+		key: string,
+		field: string,
+	): number | undefined {
+		const state = this.instances.get(`${slug}${id}${key}`);
+		if (state === undefined) return undefined;
+		if (!state.fileFields.has(field)) return undefined;
+		const fieldMax = state.fileFields.get(field);
+		return Math.min(fieldMax ?? Number.MAX_SAFE_INTEGER, this.maxUploadBytes);
+	}
+
+	/** Test seam: enable or disable the action rate limiter. */
+	setRateLimitDisabled(disabled: boolean): void {
+		this.rateLimit.setDisabled(disabled);
+	}
+
+	/**
+	 * Invoke one action handler (spec §6.1/§6.3/§15): rate-limited per
+	 * principal per surface, deduped per actionId per instance for 10
+	 * minutes (a duplicate returns the FIRST stored result), timed out
+	 * at 10 s (the handler is abandoned; its late settlement is dropped
+	 * — the dedup entry still records the timeout body), and wrapped per
+	 * §6.3: an accept WITH `update.ops` answers `{ok, rev, ops}` (ops
+	 * logged for sharedData), an accept WITHOUT ops answers `{ok, rev}`
+	 * with nothing recorded (extension surfaces own their data), and
+	 * `navigate`/`toast` pass through.
+	 *
+	 * The caller (the route) has ALREADY enforced access; a miss/throw
+	 * inside the handler maps to {@link SurfaceFailedError}.
+	 */
+	async act(
+		slug: string,
+		id: string,
+		key: string,
+		params: JsonObject,
+		principal: Principal,
+		action: string,
+		payload: unknown,
+		actionId: string | undefined,
+		signal: AbortSignal,
+	): Promise<ActionResponse> {
+		const located = this.locate(slug, id);
+		if (located === undefined) return { ok: false, error: { message: "unknown surface" } };
+		const handler = located.def.actions?.[action];
+		if (handler === undefined) throw new UnknownActionError(action);
+		if (!this.rateLimit.take(slug, id, principal.user ?? "")) {
+			throw new ActionRateLimitedError();
+		}
+		const composite = `${slug}${id}${key}`;
+		if (actionId !== undefined) {
+			const hit = this.dedup.check(actionId, composite);
+			if (hit !== undefined && hit !== null) return hit.result;
+		}
+		const result = await this.invokeWithTimeout(() =>
+			handler({ principal, params, key, signal }, payload as never),
+		);
+		const wrapped = this.wrapResult(slug, id, key, result);
+		if (actionId !== undefined) {
+			this.dedup.record(actionId, composite, wrapped);
+		}
+		return wrapped;
+	}
+
+	/**
+	 * Deliver one upload (spec §7.1/§7.2): the bytes were capped at the
+	 * route (field `maxBytes` clamped by `server.maxUploadBytes`); the
+	 * MIME is sniffed from the bytes, never the client name. The
+	 * handler's result is wrapped like an action's.
+	 */
+	async upload(
+		slug: string,
+		id: string,
+		key: string,
+		params: JsonObject,
+		principal: Principal,
+		field: string,
+		name: string,
+		bytes: Uint8Array,
+		signal: AbortSignal,
+	): Promise<ActionResponse> {
+		const located = this.locate(slug, id);
+		if (located === undefined) return { ok: false, error: { message: "unknown surface" } };
+		const handler = located.def.actions?.[field];
+		if (handler === undefined) throw new UnknownActionError(field);
+		const file: UploadedFile = {
+			field,
+			name,
+			mime: sniffMime(bytes),
+			bytes,
+		};
+		let result: ActionResult;
+		try {
+			result = await handler(
+				{ principal, params, key, signal },
+				file as never,
+			);
+		} catch (cause) {
+			throw new SurfaceFailedError(
+				`surface ${slug}/${id} upload handler "${field}" threw: ${
+					cause instanceof Error ? cause.message : String(cause)
+				}`,
+			);
+		}
+		return this.wrapResult(slug, id, key, result);
+	}
+
+	/**
+	 * The §6.3 accept rules: WITH `update.ops` the ops log (sharedData)
+	 * and the answer carries `{ok, rev, ops}`; WITHOUT ops nothing is
+	 * recorded and the answer is `{ok, rev}` (extension surfaces own
+	 * their data — the rev bump announces the change). A reject and the
+	 * `navigate`/`toast` fields pass through unchanged.
+	 */
+	private wrapResult(
+		slug: string,
+		id: string,
+		key: string,
+		result: ActionResult,
+	): ActionResponse {
+		if (!result.ok) return result;
+		if (result.update !== undefined) {
+			const rev = this.bumpRev(slug, id, key, result.update);
+			return {
+				ok: true,
+				rev,
+				ops: result.update.ops,
+				update: result.update,
+				...(result.navigate === undefined ? {} : { navigate: result.navigate }),
+				...(result.toast === undefined ? {} : { toast: result.toast }),
+			};
+		}
+		const rev = this.bumpRev(slug, id, key);
+		return {
+			ok: true,
+			rev,
+			...(result.navigate === undefined ? {} : { navigate: result.navigate }),
+			...(result.toast === undefined ? {} : { toast: result.toast }),
+		};
+	}
+
+	/**
+	 * Race the handler against the 10 s timeout (spec §6.3 step 4): on a
+	 * timeout the handler is abandoned (its late settlement is dropped)
+	 * and the action answers the `timed out` reject body.
+	 */
+	private async invokeWithTimeout(
+		invoke: () => Promise<ActionResult>,
+	): Promise<ActionResult> {
+		let timer: NodeJS.Timeout | undefined;
+		try {
+			const outcome = await Promise.race([
+				invoke().then(
+					(result): { kind: "done"; result: ActionResult } => ({
+						kind: "done",
+						result,
+					}),
+					(cause: unknown): { kind: "threw"; cause: unknown } => ({
+						kind: "threw",
+						cause,
+					}),
+				),
+				new Promise<{ kind: "timedout" }>((resolvePromise) => {
+					timer = setTimeout(
+						() => resolvePromise({ kind: "timedout" }),
+						ACTION_TIMEOUT_MS,
+					);
+				}),
+			]);
+			if (outcome.kind === "timedout") return TIMED_OUT_RESULT;
+			if (outcome.kind === "threw") {
+				throw outcome.cause instanceof Error
+					? outcome.cause
+					: new Error(String(outcome.cause));
+			}
+			return outcome.result;
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
 	}
 
 	/**

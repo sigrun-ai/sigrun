@@ -110,6 +110,7 @@ import type { DeclaredKinds } from "./seam-host.js";
 import {
 	HOST_RUNTIME_MODULES,
 	hostModuleVersion,
+	readPackageAssetsDir,
 	readPackageName,
 	readPackageVersion,
 	resolveExtensionEntry,
@@ -225,6 +226,12 @@ export interface ExtensionSurfaceBinding {
 	readonly extension: string;
 	/** The validated view + panel defs, in declaration order. */
 	readonly defs: readonly SurfaceDef<"view" | "panel">[];
+	/**
+	 * The package's declared `sigrun.assets` directory (spec §11.1),
+	 * resolved absolute against the package root at load; `undefined`
+	 * when the manifest declares none (every asset request 404s).
+	 */
+	readonly assetsDir?: string;
 }
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
@@ -2018,9 +2025,22 @@ const display = label ?? entry ?? "skills-only";
 				if (resolved.notifiers !== undefined) {
 					notifierBindings.push({ extension: slug, notifiers: resolved.notifiers });
 			}
-				if (resolved.surfaces !== undefined) {
-					surfaceBindings.push({ extension: slug, defs: resolved.surfaces });
-			}
+			if (resolved.surfaces !== undefined) {
+				// The §11.1 assets dir: the package manifest's `sigrun.assets`
+				// relative to the package root (the same anchor the version
+				// read below uses); absent or undeclared → `undefined` and
+				// every asset request 404s.
+				const assetsRoot = packageDir ?? extensionModuleDir(loaded);
+				const declaredAssets =
+					assetsRoot === undefined
+						? undefined
+						: readPackageAssetsDir(assetsRoot);
+				surfaceBindings.push({
+					extension: slug,
+					defs: resolved.surfaces,
+					...(declaredAssets === undefined ? {} : { assetsDir: declaredAssets }),
+				});
+		}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,

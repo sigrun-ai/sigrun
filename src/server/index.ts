@@ -49,6 +49,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerExtensionRoutes as registerExtensionSettingsRoutes } from "./routes/extensions.js";
 import { registerExtensionRoutes as mountExtensionRoutes } from "./routes/extension-routes.js";
+import { registerExtAssetRoutes } from "./routes/ext-assets.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
@@ -185,7 +186,9 @@ export async function createServer(
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
 	// way to hand that handle up without widening ServerContext's consumers.
 	app.decorate("sse", sse);
-	const surfacesService = new SurfaceService(opened.extensionSurfaces);
+	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
+		maxUploadBytes: config.maxUploadBytes,
+	});
 	app.decorate("surfaces", surfacesService);
 	const ctx: ServerContext = {
 		opened,
@@ -245,6 +248,10 @@ export async function createServer(
 	// render/data/actions under the reserved `surfaces/` prefix, over the
 	// shared SurfaceService's access cache and revision state.
 	registerSurfaceRoutes(app, ctx);
+	// The extension asset route (UI-blocks U3 Task 3, spec §11.1/§7.2):
+	// `/v1/ext/<slug>/assets/*` serves the package's declared
+	// `sigrun.assets` dir, realpath-contained, sniffed content types.
+	registerExtAssetRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable
