@@ -947,3 +947,230 @@
 	right: 0;
 	z-index: 5;
 }
+
+/* ─── Collection displays (spec §5.5, Task 3) ─────────────────────── */
+
+.blk-collection {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+
+.blk-list-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.blk-list-line {
+	align-items: flex-start;
+	display: flex;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+.blk-list-card {
+	flex: 1;
+	min-width: 0;
+}
+
+.blk-list-card[role="button"] {
+	cursor: pointer;
+}
+
+.blk-list-number {
+	color: var(--muted);
+	font-size: 0.85em;
+	margin-top: 0.7rem;
+	min-width: 1.2rem;
+	text-align: end;
+}
+
+.blk-list-nested {
+	list-style: none;
+	margin: 0.4rem 0 0;
+	padding: 0;
+}
+
+.blk-list-group {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+
+.blk-list-heading {
+	border-bottom: 1px solid var(--border);
+	font-weight: 600;
+	overflow-wrap: anywhere;
+	padding-bottom: 0.2rem;
+}
+
+.blk-quiet-toggle {
+	align-self: flex-start;
+	background: none;
+	border: none;
+	color: var(--accent);
+	cursor: pointer;
+	font: inherit;
+	font-size: 0.85em;
+	padding: 0.2rem 0;
+}
+
+.blk-select,
+.blk-check {
+	margin-top: 0.9rem;
+}
+
+.blk-bulk {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+
+.blk-bulk-action,
+.blk-bulk-submit {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	color: var(--text);
+	cursor: pointer;
+	font: inherit;
+	font-size: 0.85em;
+	padding: 0.3rem 0.8rem;
+}
+
+.blk-bulk-form {
+	align-items: center;
+	display: flex;
+	gap: 0.4rem;
+}
+
+.blk-bulk-form input {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	color: var(--text);
+	font: inherit;
+	padding: 0.25rem 0.5rem;
+}
+
+.blk-table-wrap {
+	overflow-x: auto;
+}
+
+.blk-table {
+	border-collapse: collapse;
+	width: 100%;
+}
+
+.blk-table th {
+	border-bottom: 1px solid var(--border);
+	font-weight: 600;
+	padding: 0.4rem 0.6rem;
+	text-align: start;
+}
+
+.blk-table td {
+	border-bottom: 1px solid var(--border);
+	overflow-wrap: anywhere;
+	padding: 0.4rem 0.6rem;
+}
+
+.blk-table-sort {
+	background: none;
+	border: none;
+	color: var(--text);
+	cursor: pointer;
+	font: inherit;
+	font-weight: 600;
+	padding: 0;
+}
+
+.blk-table-sort[data-dir]::after {
+	content: " " attr(data-dir);
+}
+
+.blk-table-pager {
+	align-items: center;
+	display: flex;
+	gap: 0.6rem;
+	justify-content: center;
+	margin-top: 0.6rem;
+}
+
+.blk-table-pager button {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	color: var(--text);
+	cursor: pointer;
+	font: inherit;
+	padding: 0.3rem 0.8rem;
+}
+
+.blk-table-pager button:disabled {
+	opacity: 0.5;
+}
+
+.blk-table-compact {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+
+.blk-table-card {
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	overflow: hidden;
+}
+
+.blk-table-high,
+.blk-table-low-fields {
+	display: grid;
+	gap: 0.2rem 0.8rem;
+	grid-template-columns: auto 1fr;
+	padding: 0.4rem 0.7rem;
+}
+
+.blk-table-field {
+	display: contents;
+}
+
+.blk-table-field dt {
+	color: var(--muted);
+	font-size: 0.8em;
+}
+
+.blk-table-field dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.blk-table-expand {
+	background: none;
+	border: none;
+	color: var(--accent);
+	cursor: pointer;
+	font: inherit;
+	font-size: 0.85em;
+	padding: 0.2rem 0.7rem;
+}
+
+.blk-grid-items {
+	display: grid;
+	gap: 0.6rem;
+}
+
+.blk-grid-display[data-overflow="scroll"] .blk-grid-items {
+	grid-auto-flow: column;
+	grid-template-columns: none;
+}
+
+.blk-grid-card {
+	cursor: pointer;
+	min-width: 0;
+}
