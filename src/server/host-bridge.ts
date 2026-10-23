@@ -25,8 +25,14 @@ import {
 import type { SigrunHost } from "../extension.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
 import {
+	abortOp,
+	compactOp,
+	configureOp,
+	ConversationOpError,
 	createConversationOp,
+	forkOp,
 	listConversationsOp,
+	patchMetaOp,
 	readMetaOp,
 	submitOp,
 } from "./conversation-ops.js";
@@ -125,6 +131,54 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			async meta(id) {
 				await conversationOf(id);
 				return await readMetaOp(opened, id);
+			},
+			// Gateway C4a: the remaining conversation ops, each the SAME op
+			// its HTTP route runs — resolved through conversationOf (unknown id
+			// → the bridge's loud `conversation <id> not found`).
+			async abort(id) {
+				const conversation = await conversationOf(id);
+				// `/stop` on an idle chat is not an error (the plan's ruling): the
+				// op's 404 no_active_submission resolves instead — the HTTP route
+				// keeps its exact 404.
+				try {
+					await abortOp(ctx, conversation);
+				} catch (error) {
+					if (
+						error instanceof ConversationOpError &&
+						error.status === 404 &&
+						error.body.error === "no_active_submission"
+					) {
+						return;
+					}
+					throw error;
+				}
+			},
+			async configure(id, opts = {}) {
+				const conversation = await conversationOf(id);
+				// Thin over the op (host inputs are typed — the op still
+				// validates exactly like the route's body).
+				await configureOp(ctx, conversation, {
+					...(opts.model === undefined ? {} : { model: opts.model }),
+					...(opts.thinking === undefined ? {} : { thinking: opts.thinking }),
+				});
+			},
+			async compact(id) {
+				const conversation = await conversationOf(id);
+				await compactOp(ctx, conversation);
+			},
+			async fork(id, opts = {}) {
+				const conversation = await conversationOf(id);
+				const forked = await forkOp(ctx, conversation, {
+					...(opts.at === undefined ? {} : { at: opts.at }),
+					...(opts.owner === undefined ? {} : { owner: opts.owner }),
+				});
+				return forked.id as ConversationId;
+			},
+			async patchMeta(id, patch) {
+				const conversation = await conversationOf(id);
+				// No principal: host callers are trusted — the sharing gate is
+				// the HTTP route's own concern (the plan's ruling).
+				return await patchMetaOp(ctx, conversation, patch);
 			},
 		},
 		users: {

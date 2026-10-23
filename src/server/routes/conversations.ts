@@ -8,13 +8,16 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Cursor, EntryDraft, EntryId } from "@earendil-works/pi-durable";
+import type { Cursor, EntryDraft } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { accessOf } from "@sigrun/shared/access";
 import { isSuperuser } from "../auth/principal.js";
 import {
+	ConversationOpError,
 	createConversationOp,
+	forkOp,
 	listConversationsOp,
+	patchMetaOp,
 	readMetaOp,
 	type ListConversationsFilters,
 } from "../conversation-ops.js";
@@ -26,13 +29,7 @@ import {
 	stampSessionOwner,
 	storeAgentChange,
 } from "../helpers.js";
-import {
-	applySessionMetaPatch,
-	DEFAULT_SESSION_META,
-	SessionMetaDoc,
-	validateSessionMetaPatch,
-	type SessionMeta,
-} from "../session-meta.js";
+import type { SessionMeta } from "../session-meta.js";
 import {
 	JSONL_CONTENT_TYPE,
 	type ConversationCreateResponse,
@@ -130,11 +127,12 @@ export function registerConversationRoutes(
 	);
 
 	// Fork: a history fork at one visible entry (spec §5 session
-	// management). `at` is the LAST entry id the fork keeps; absent = the
-	// newest entry (resolved through the entries query — never 0, which is
-	// not a real entry id). The fork inherits the parent's agent model and
-	// the same ownerless ownership the create route uses; the response is
-	// the create shape: 201 `{id, view}`.
+	// management). The shared fork op (gateway C4a) is the SAME code path
+	// the host bridge drives — `at` validation against the parent history,
+	// the empty_conversation guard, the agent-model inherit, and the fork
+	// meta commit (owner reset + "<source> (fork)" autoName +
+	// lastActivityAt) live in the op; this route owns the body shape and
+	// the 201. The response is the create shape: `{id, view}`.
 	app.post(
 		"/v1/conversations/:id/fork",
 		{
@@ -145,11 +143,10 @@ export function registerConversationRoutes(
 			request,
 			reply,
 		): Promise<ConversationCreateResponse> => {
-			const conversation = request.conversation;
 			// Absent body is valid (`at` defaults to the newest entry); the
 			// object may carry ONLY `at` — the compact/configure convention.
 			const body: unknown = request.body;
-			let at: number | undefined;
+			let at: unknown;
 			if (body !== undefined && body !== null) {
 				if (typeof body !== "object" || Array.isArray(body)) {
 					return await reply.code(400).send({ error: "invalid_body" });
@@ -161,89 +158,29 @@ export function registerConversationRoutes(
 						.code(400)
 						.send({ error: "invalid_field", field: unknownKey });
 				}
-				if (
-					record.at !== undefined &&
-					typeof record.at !== "number"
-				) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "at" });
-				}
 				at = record.at;
-			}
-			if (at === undefined) {
-				// The entries query is newest-first: the first item of the first
-				// page is the newest entry. An empty page means there is nothing
-				// to fork — the parent conversation has no history at all.
-				const page = await conversation.entries(
-					{},
-					1,
-					undefined,
-					BACKGROUND_CONTEXT,
-				);
-				if (page.items.length === 0) {
-					return await reply.code(400).send({ error: "empty_conversation" });
-				}
-				at = page.items[0].id;
-			} else {
-				// Validate `at` against the parent's own history: `fork()` accepts
-				// any EntryId, but an id this conversation never had is a client
-				// error, not a silent empty fork.
-				const page = await conversation.entries(
-					{ maxEntryId: at as EntryId },
-					1,
-					undefined,
-					BACKGROUND_CONTEXT,
-				);
-				const newest = page.items[0];
-				if (newest === undefined || newest.id !== at) {
+				if (at !== undefined && typeof at !== "number") {
 					return await reply
 						.code(400)
 						.send({ error: "invalid_field", field: "at" });
 				}
 			}
-			// The fork inherits the parent's agent model — read the resolved
-			// agent, fall back to the boot default like create.
-			const agent = await conversation.agent(BACKGROUND_CONTEXT);
-			const fork = await conversation.fork(
-				at as EntryId,
-				{
-					ownership: { kind: "ownerless" },
-					agent: { model: agent.model ?? opened.defaultModel },
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// The fork's sidebar identity: the copied meta doc
-			// carries the source's name/autoName and the namer's attempt count;
-			// ONE commit drops all three (a fork is a new conversation, not the
-			// source's name — and it starts naming-fresh: inheriting an exhausted
-			// attempt count would make the fork forever unnameable), re-seeds
-			// it with "<source display name> (fork)"
-			// as its AUTO name when the source had one, and stamps activity so
-			// the fresh fork sorts where it happened.
-			// §5.9 (Review Focus 3): the doc copied the source's `owner` and
-			// `sharing` (fork: "current") — the SAME commit resets them: a fork
-			// is the FORKER's private copy (owner = the caller, sharing deleted;
-			// a header-less caller means no owner at all — the key is removed).
-			const sourceMeta = await opened.harness.snapshot(
-				SessionMetaDoc,
-				conversation.id,
-				BACKGROUND_CONTEXT,
-			);
-			const sourceName = sourceMeta?.name ?? sourceMeta?.autoName;
-			await fork.commit(async (tx) => {
-				const draft = await tx.doc(SessionMetaDoc, fork.id);
-				delete draft.name;
-				delete draft.autoName;
-				delete draft.autoNameAttempts;
-				delete draft.sharing;
-				if (request.principal.user === undefined) delete draft.owner;
-				else draft.owner = request.principal.user;
-				if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
-				draft.lastActivityAt = opened.now().toISOString();
-			}, BACKGROUND_CONTEXT);
-			const view = await readView(fork);
-			return await reply.code(201).send({ id: fork.id, view });
+			try {
+				// The route passes the principal's user as the fork's owner (the
+				// host passes its own opts.owner; undefined = the key removed).
+				const forked = await forkOp(ctx, request.conversation, {
+					...(at === undefined ? {} : { at }),
+					...(request.principal.user === undefined
+						? {}
+						: { owner: request.principal.user }),
+				});
+				return await reply.code(201).send(forked);
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
+			}
 		},
 	);
 
@@ -413,46 +350,22 @@ export function registerConversationRoutes(
 			preHandler: loadConversation(ctx, "write"),
 		},
 		async (request, reply): Promise<SessionMeta> => {
-			const conversation = request.conversation;
-			// Validate FIRST — a rejected patch never touches the doc.
-			const validated = validateSessionMetaPatch(request.body);
-			if ("error" in validated) {
-				return await reply.code(400).send(validated);
-			}
-			// §5.9: `sharing` additionally requires the OWNER or a superuser —
-			// write access (granted by a share) must not let a recipient
-			// re-share the resource.
-			if (validated.sharing !== undefined) {
-				const meta = await opened.harness.snapshot(
-					SessionMetaDoc,
-					conversation.id,
-					BACKGROUND_CONTEXT,
-				);
-				const isOwner =
-					request.principal.user !== undefined &&
-					request.principal.user === meta?.owner;
-				if (!isOwner && !isSuperuser(request.principal)) {
-					return await reply.code(403).send({ error: "forbidden" });
+			// The shared patch op (gateway C4a) is the SAME code path the
+			// host bridge drives — validate-first, the owner-or-superuser
+			// sharing gate (the route passes its principal; the host passes
+			// none, trusted), the one-commit merge, and the post-commit
+			// snapshot response all live in the op. This route owns the HTTP
+			// mapping only.
+			try {
+				return await patchMetaOp(ctx, request.conversation, request.body, {
+					principal: request.principal,
+				});
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
 				}
+				throw error;
 			}
-			// Read-modify-write inside ONE commit: tx.doc materializes the doc
-			// (initial()) when absent and the patch mutates the tracked draft.
-			await conversation.commit(async (tx) => {
-				const draft = await tx.doc(SessionMetaDoc, conversation.id);
-				applySessionMetaPatch(draft, validated);
-			}, BACKGROUND_CONTEXT);
-			// The response is a FRESH snapshot, not a draft projection:
-			// reading a newly-SET nested draft value (`sharing`, §5.9) trips
-			// chord's settled-overlay rule, so the reply must never read the
-			// mutated draft — a post-commit snapshot is exactly what was
-			// stored.
-			return (
-				(await opened.harness.snapshot(
-					SessionMetaDoc,
-					conversation.id,
-					BACKGROUND_CONTEXT,
-				)) ?? DEFAULT_SESSION_META
-			);
 		},
 	);
 }

@@ -266,6 +266,45 @@ A malformed field (wrong shape, wrong element type) quarantines the
 extension at load — a package that THINKS it declared something must
 never silently lose it.
 
+## The conversation surface
+
+`host.conversations` drives sigrun's own conversations in-process. Every
+method runs the SAME op its HTTP route runs
+(`src/server/conversation-ops.ts`) — validation, error bodies, and durable
+effects are identical by construction:
+
+- `create({owner, sharing, name, source, agent})` — the HTTP `POST
+  /v1/conversations` op. The host gains `agent` (gateway C4):
+  `{extensions?: string[], tools?: string[]}` pins the conversation's
+  selection by NAME, resolved against the installed registry. An unknown
+  name throws `invalid_field` (`agent.extensions` / `agent.tools`); an
+  empty `tools` array enables zero tools.
+- `submit(id, input, {user, requestId, whenBusy})` — the submissions
+  route's op (content resolution, the served-model check, `waitMs` off).
+- `watch(id, listener)` — the SSE stream's snapshot-first shape.
+- `list({owner, archived})` / `meta(id)` — the durable listing and the
+  session-meta read (a superuser-shaped view: extensions are trusted).
+- `abort(id)` — the abort route's op. On an IDLE conversation it
+  resolves (chat `/stop` on an idle chat is not an error); the HTTP route
+  keeps its exact 404 `no_active_submission`.
+- `configure(id, {model, thinking})` — the configure route's op
+  ("provider/modelId", the thinking-level union).
+- `compact(id)` — the manual-compaction route's op (admits the durable
+  compaction task; the summary lands as a `pi.compaction` entry).
+- `fork(id, {at, owner})` — the fork route's op: `at` defaults to the
+  newest entry and is validated against the parent's history;
+  `owner` stamps the fork's session owner (absent = the key removed —
+  the fork is the forker's private copy, sharing dropped, autoName
+  seeded `"<source> (fork)"`).
+- `patchMeta(id, {name, archived, sharing})` — the meta PATCH route's
+  op. **Trusted-host note:** the sharing patch runs with NO
+  owner-or-superuser gate — the caller is in-process server code that
+  already decided the write is legitimate. The HTTP route keeps its
+  403 for a non-owner; the host carries no principal to check.
+
+An unknown conversation id throws (`conversation <id> not found`) on
+every method — the routes' 404 analog.
+
 ## Secrets precedence: stored wins, env bootstraps
 
 For every secret, the resolution order is:

@@ -32,6 +32,7 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import type { SigrunHost } from "../src/extension.js";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -79,12 +80,19 @@ afterAll(async () => {
  * starts with one answer; auto-naming is off (exact-response scripts,
  * the server-submissions pattern).
  */
-async function bootOpened(): Promise<OpenedBoot> {
+async function bootOpened(
+	env: Record<string, string> = {},
+): Promise<OpenedBoot> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-host-conv-"));
 	const configDir = join(dir, "config");
 	const faux = fauxProvider({
 		provider: "faux",
-		models: [{ id: "m", contextWindow: 128_000 }],
+		// TWO models so host configure can switch (the server-configure
+		// pattern — the HTTP twin's tests pin model m → m2).
+		models: [
+			{ id: "m", contextWindow: 128_000 },
+			{ id: "m2", contextWindow: 128_000 },
+		],
 	});
 	faux.setResponses([fauxAssistantMessage("channel answer")]);
 	const config = loadConfig({
@@ -93,12 +101,18 @@ async function bootOpened(): Promise<OpenedBoot> {
 		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
+		...env,
 	});
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const identity = await seededIdentity(dir);
 	await identity.users.add({ user: "alice", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
 		identity,
+		// The faux provider CONTRIBUTOR (the file header's stated pattern —
+		// without it the boot registers the env-degenerate OpenAI-compat
+		// provider under "faux" and every run settles model_error with only
+		// an aborted-partial assistant entry).
+		extensions: [{ name: "ext-faux", providers: [{ provider: faux.provider }] }],
 		extensionSpecifiers: [CHANNEL_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: dir,
@@ -111,8 +125,10 @@ async function bootOpened(): Promise<OpenedBoot> {
 }
 
 /** Boot opened + server + tokens (the common shape). */
-async function bootServer(): Promise<TestServer> {
-	const boot = await bootOpened();
+async function bootServer(
+	env: Record<string, string> = {},
+): Promise<TestServer> {
+	const boot = await bootOpened(env);
 	const { opened } = boot;
 	const { token: aliceToken } = await opened.identity.tokens.create(
 		"alice-cli",
@@ -173,6 +189,35 @@ async function waitForAssistant(
 		}
 		await new Promise((resolve) => setTimeout(resolve, 50));
 	}
+}
+
+/** The current record of one submission id (the abort test's poll). */
+async function submissionOf(
+	opened: OpenedHarness,
+	id: number,
+): Promise<{ status: string; reason?: string }> {
+	const submission = await opened.harness.submission(
+		id as never,
+		BACKGROUND_CONTEXT,
+	);
+	if (submission === undefined) throw new Error(`submission ${id} not found`);
+	return await submission.status(BACKGROUND_CONTEXT);
+}
+
+/** Whether the conversation has a live run (the placement poll). */
+async function agentLive(
+	opened: OpenedHarness,
+	id: ConversationId,
+): Promise<unknown> {
+	const conversation = await opened.harness.conversation(
+		id,
+		BACKGROUND_CONTEXT,
+	);
+	if (conversation === undefined) {
+		throw new Error(`conversation ${id} not found`);
+	}
+	const view = await conversation.viewState(BACKGROUND_CONTEXT);
+	return view.value.docs["pi.live"];
 }
 
 describe("host.conversations over the shared conversation ops", () => {
@@ -306,6 +351,253 @@ describe("unmapped users (Review Focus 5: extensions own their user mapping)", (
 		// The given string stamps as owner — no verification, no rewriting.
 		const meta = await host.conversations.meta(id);
 		expect(meta.owner).toBe("unmapped-user");
+	});
+});
+
+describe("host conversation ops (gateway C4a — the HTTP twins in-process)", () => {
+	/** A gated faux response: the run cannot settle until `release()`. */
+	function gatedResponse(): {
+		readonly step: () => Promise<AssistantMessage>;
+		readonly release: () => void;
+	} {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return {
+			step: async () => {
+				await gate;
+				return fauxAssistantMessage("gated answer");
+		},
+			release: () => release(),
+		};
+	}
+
+	/** Resolve a conversation's agent through the opened harness. */
+	async function agentOf(
+		opened: OpenedHarness,
+		id: ConversationId,
+	): Promise<{ model?: { provider: string; modelId: string }; thinkingLevel: string; tools: readonly { name: string }[] }> {
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error(`conversation ${id} not found`);
+		return await conversation.agent(BACKGROUND_CONTEXT);
+	}
+
+	/** Read the resolved agent the way the HTTP surface does (the settings/agent projection is server-side — the harness read is the observable). */
+	async function waitFor(
+		predicate: () => Promise<boolean>,
+		what: string,
+	): Promise<void> {
+		const deadline = Date.now() + 10_000;
+		while (!(await predicate())) {
+			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	}
+
+	test("configure applies model+thinking; the agent read shows the same values as the HTTP twin", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.configure(id, {
+			model: "faux/m2",
+			thinking: "high",
+		});
+		const agent = await agentOf(opened, id);
+		expect(agent.model).toEqual({ provider: "faux", modelId: "m2" });
+		expect(agent.thinkingLevel).toBe("high");
+	});
+
+	test("abort during a faux run settles it; abort on an idle conversation resolves (no throw)", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const gate = gatedResponse();
+		faux.setResponses([gate.step]);
+		const record = await host.conversations.submit(id, [
+			{ type: "text", text: "held open" },
+		]);
+		await waitFor(
+			async () => (await agentLive(opened, id)) !== undefined,
+			"the run to place",
+		);
+		expect(["placed", "queued"]).toContain(record.status);
+		// Abort while the run is live: the host call resolves (void) and the
+		// submission settles — never a hang, never a throw.
+		await host.conversations.abort(id);
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation vanished");
+		const submission = await opened.harness.submission(
+			record.id as never,
+			BACKGROUND_CONTEXT,
+		);
+		if (submission === undefined) throw new Error("submission handle lost");
+		gate.release();
+		const settled = await submission.wait(BACKGROUND_CONTEXT);
+		expect(["done", "unanswered"]).toContain(settled.status);
+		// An idle conversation: abort RESOLVES (chat /stop on an idle chat is
+		// not an error — the plan's ruling).
+		await expect(host.conversations.abort(id)).resolves.toBeUndefined();
+	});
+
+	test("compact creates the manual compaction task (pi.live.compactions / the task record)", { timeout: 60_000 }, async () => {
+		// Forced keep-window (the compaction-test pattern): with the default
+		// keepRecentTokens this tiny transcript has nothing to compact, and
+		// the manual compaction completes without placing a summary — the
+		// test would never see its entry. keepRecentTokens: 1 makes the cut
+		// fall right before the newest entry; background off keeps the faux
+		// queue deterministic.
+		const { opened, faux } = await bootServer({
+			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
+			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+		});
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		faux.appendResponses([fauxAssistantMessage("turn one answer")]);
+		const first = await host.conversations.submit(id, [
+			{ type: "text", text: `hello ${"filler ".repeat(200)}` },
+		]);
+		expect(["queued", "placed"]).toContain(first.status);
+		await waitFor(
+			async () => (await submissionOf(opened, first.id)).status === "done",
+			"the first turn to settle",
+		);
+		await host.conversations.compact(id);
+		// The manual compaction task exists: a pi.compaction entry lands once
+		// the conversation idles (the compaction.test.ts observable, adapted to
+		// the host boot — no forced thresholds here, so poll for the entry).
+		await waitFor(
+			async () => {
+				const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+				if (conversation === undefined) throw new Error("conversation vanished");
+				const page = await conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+				return page.items.some((entry) => entry.kind === "pi.compaction");
+			},
+			"the manual compaction entry",
+		);
+	},
+	);
+
+	test("fork returns a new id whose meta is \"<source> (fork)\" and owner honors opts.owner", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice", name: "Alpha" });
+		faux.appendResponses([fauxAssistantMessage("fork source answer")]);
+		const record = await host.conversations.submit(id, [
+			{ type: "text", text: "hello" },
+		]);
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the source turn to settle",
+		);
+		const forkId = await host.conversations.fork(id, { owner: "tester" });
+		expect(forkId).not.toBe(id);
+		const meta = await host.conversations.meta(forkId);
+		expect(meta.autoName).toBe("Alpha (fork)");
+		expect(meta.owner).toBe("tester");
+		expect("name" in meta).toBe(false);
+		// Fork with NO owner: the copied owner key is removed (the same reset
+		// the header-less HTTP caller gets).
+		const bare = await host.conversations.fork(id);
+		const bareMeta = await host.conversations.meta(bare);
+		expect("owner" in bareMeta).toBe(false);
+	});
+
+	test("patchMeta applies name+archived and meta reads both back; sharing from the host needs no principal (Review Focus 5)", { timeout: 30_000 }, async () => {
+		const { opened, app, aliceToken, testerToken } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const patched = await host.conversations.patchMeta(id, {
+			name: "x",
+			archived: true,
+		});
+		expect(patched.name).toBe("x");
+		expect(patched.archived).toBe(true);
+		const meta = await host.conversations.meta(id);
+		expect(meta.name).toBe("x");
+		expect(meta.archived).toBe(true);
+		// Sharing from the HOST (trusted, no principal): succeeds.
+		const shared = await host.conversations.patchMeta(id, {
+			sharing: { scope: "people", users: ["tester"], level: "write" },
+		});
+		expect(shared.sharing).toEqual({
+			scope: "people",
+			users: ["tester"],
+			level: "write",
+		});
+		// The SAME body over HTTP as tester (a non-owner sharee): 403.
+		const response = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: {
+				sharing: { scope: "people", users: ["alice"], level: "write" },
+			},
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${testerToken}`,
+			},
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toEqual({ error: "forbidden" });
+		// Sanity: the HTTP route still works for the owner (the same op).
+		const ownerPatch = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { name: "renamed by owner" },
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${aliceToken}`,
+			},
+		});
+		expect(ownerPatch.statusCode).toBe(200);
+		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
+	});
+
+	test("create with agent.tools pins the offered tools; unknown names throw invalid_field", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({
+			owner: "alice",
+			agent: { tools: ["read"] },
+		});
+		const agent = await agentOf(opened, id);
+		expect(agent.tools.map((tool) => tool.name)).toEqual(["read"]);
+		// An empty tools array: zero enabled tools (the array form selects
+		// exactly its names — none).
+		const empty = await host.conversations.create({
+			owner: "alice",
+			agent: { tools: [] },
+		});
+		const emptyAgent = await agentOf(opened, empty);
+		expect(emptyAgent.tools).toEqual([]);
+		// An unknown tool name: fail-loud invalid_field agent.tools.
+		await expect(
+			host.conversations.create({ owner: "alice", agent: { tools: ["nope"] } }),
+		).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "agent.tools" },
+		});
+	});
+
+	test("Review Focus 2: every op on an unknown id throws conversation <id> not found", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = 999999 as ConversationId;
+		await expect(host.conversations.abort(id)).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+		await expect(
+			host.conversations.configure(id, { thinking: "high" }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(host.conversations.compact(id)).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+		await expect(
+			host.conversations.fork(id, { owner: "alice" }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(
+			host.conversations.patchMeta(id, { name: "x" }),
+		).rejects.toThrow("conversation 999999 not found");
 	});
 });
 
