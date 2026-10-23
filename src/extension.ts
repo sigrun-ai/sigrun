@@ -60,7 +60,9 @@ import type {
 	ConversationSummary,
 	ConversationViewWire,
 	HealthStatus,
+	ModelEntry,
 	SessionMeta,
+	SlashCommand,
 	SubmissionRecordWire,
 	ThinkingLevelWire,
 	UserWire as DirectoryUserWire,
@@ -77,7 +79,9 @@ export type {
 	DirectoryUserWire,
 	InteractionRecord,
 	JobSpec,
+	ModelEntry,
 	Sharing,
+	SlashCommand,
 };
 
 // ---------------------------------------------------------------------------
@@ -303,8 +307,11 @@ export interface WebuiBundleContribution {
 /**
  * The resolved caller (core hardening W1): what the auth pipeline
  * stamps on every request. `method` names the proof — the empty-method
- * naive path (`"none"`), a verified token (`"token"`), or a trusted
- * forward-auth header set (`"proxy"`).
+ * naive path (`"none"`), a verified token (`"token"`), a trusted
+ * forward-auth header set (`"proxy"`), or an IN-PROCESS host-built
+ * principal (`"host"`, gateway C4b: `commands.run` builds it from the
+ * directory — no request ever carries one, but a command run through
+ * the host sees exactly which proof its caller had).
  */
 export interface Principal {
 	/** The directory username; `undefined` under the naive method with no header. */
@@ -314,7 +321,7 @@ export interface Principal {
 	readonly admin: boolean;
 	/** True for the `SIGRUN_API_TOKEN` service principal. */
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy";
+	readonly method: "none" | "token" | "proxy" | "host";
 }
 
 /** One extension HTTP route, mounted at `/v1/ext/<slug>/<path>`. */
@@ -765,6 +772,28 @@ export interface SigrunHost {
 				readonly sharing?: Sharing | null;
 			},
 		): Promise<SessionMeta>;
+		/**
+		 * Upload one file into the conversation's upload namespace (gateway
+		 * C4b, the raw-upload route's op): `uploads/<conversationId>/<name>`,
+		 * the exact path a `file`/`image` submission part takes. The NAME is
+		 * the one rule (no `/` or `\\`, not `.`/`..`, non-empty) — a bad
+		 * name throws a `ConversationOpError` (`invalid_field` `name`).
+		 */
+		upload(
+			id: ConversationId,
+			file: { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array },
+		): Promise<{ readonly path: string }>;
+		/**
+		 * Read one workspace file raw (gateway C4b, the files/raw route's
+		 * op): workspace-confined, capped at `server.maxFileReadBytes`, with
+		 * the extension-derived mime. Over the cap throws
+		 * `ConversationOpError({error: "too_large"}, 413)`; a bad path
+		 * `invalid_path`; an absent file `not_found`.
+		 */
+		readFile(
+			id: ConversationId,
+			path: string,
+		): Promise<{ readonly bytes: Uint8Array; readonly mime?: string }>;
 	};
 
 	/** The user directory (admin wire form; emails are admin material). */
@@ -788,6 +817,38 @@ export interface SigrunHost {
 	/** The conversation's owner — who the agent acts for. */
 	readonly identity: {
 		actingUser(conversationId: ConversationId): Promise<string | undefined>;
+	};
+
+	/**
+	 * The served model catalog (gateway C4b): the SAME list `GET
+	 * /v1/models` serves (picker entries — no provider internals).
+	 */
+	readonly models: {
+		list(): Promise<readonly ModelEntry[]>;
+	};
+
+	/**
+	 * The slash-command surface (gateway C4b): the merged catalog for
+	 * listing, and the invoke route's run for driving an extension
+	 * command in-process (chat `/command` handling).
+	 */
+	readonly commands: {
+		/** The merged catalog rows (core table + extension entries). */
+		list(): Promise<readonly SlashCommand[]>;
+		/**
+		 * Run one EXTENSION command (the invoke route's resolution): an
+		 * unknown/core name throws `command_not_found: <name>`; `opts.user`
+		 * must name a directory user (absent → `unknown user "<user>"`) and
+		 * becomes the run's principal with EFFECTIVE admin (the stored flag
+		 * OR the persisted group grant) and `method: "host"`. A throwing
+		 * run propagates (no HTTP 500 mapping — the caller is in-process).
+		 */
+		run(
+			conversationId: ConversationId,
+			name: string,
+			args: string,
+			opts: { readonly user: string },
+		): Promise<{ readonly notice?: string }>;
 	};
 }
 

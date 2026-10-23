@@ -34,9 +34,12 @@ import {
 	forkOp,
 	listConversationsOp,
 	patchMetaOp,
+	readFileOp,
 	readMetaOp,
 	submitOp,
+	uploadOp,
 } from "./conversation-ops.js";
+import { listModels } from "./helpers.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
 import { serializeConversationView } from "./views.js";
@@ -68,6 +71,8 @@ export interface HostBridge {
 	readonly users: SigrunHost["users"];
 	readonly access: SigrunHost["access"];
 	readonly identity: SigrunHost["identity"];
+	readonly models: SigrunHost["models"];
+	readonly commands: SigrunHost["commands"];
 }
 
 /** Build the host bridge over one server context. */
@@ -197,6 +202,19 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				// the HTTP route's own concern (the plan's ruling).
 				return await patchMetaOp(ctx, conversation, patch);
 			},
+			// Gateway C4b: the files routes' ops, each the SAME op its HTTP
+			// route runs — the upload routes' shared write core and the
+			// files/raw route's confinement + cap (the host sees the op's own
+			// error vocabulary: invalid_field name / invalid_path / not_found /
+			// too_large).
+			async upload(id, file) {
+				const conversation = await conversationOf(id);
+				return await uploadOp(ctx, conversation, file);
+			},
+			async readFile(id, path) {
+				const conversation = await conversationOf(id);
+				return await readFileOp(ctx, conversation, path);
+			},
 		},
 		users: {
 			// The directory in wire form (emails are admin material; the
@@ -236,6 +254,60 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					BACKGROUND_CONTEXT,
 				);
 				return meta?.owner;
+			},
+		},
+		// Gateway C4b: the model catalog — the SAME source function the
+		// `GET /v1/models` route serves (one construction, never two).
+		models: {
+			async list() {
+				return listModels(opened);
+			},
+		},
+		commands: {
+			// The merged catalog rows (`GET /v1/commands`' core + extension
+			// half — the live skill/template expand entries are the composer's
+			// per-request concern, not this surface's).
+			async list() {
+				return ctx.commandCatalog.commands;
+			},
+			// The invoke route's resolution, in-process: the runnable map
+			// (core names and dropped/collided losers throw), the principal
+			// built from the directory with EFFECTIVE admin and method "host",
+			// and the extension's seam host exactly as the route passes it. A
+			// throwing run PROPAGATES (the HTTP route maps 500 command_failed;
+			// the host caller owns its own handling).
+			async run(conversationId, name, args, opts) {
+				const merged = ctx.commandCatalog.runnable.get(name);
+				if (merged === undefined) {
+					throw new Error(`command_not_found: ${name}`);
+				}
+				const record = opened.identity.users.get(opts.user);
+				if (record === undefined) {
+					throw new Error(`unknown user "${opts.user}"`);
+				}
+				// Effective admin (gateway C8): the stored flag OR the persisted
+				// group grant — host-side code has no request headers to
+				// recompute one.
+				const principal: Principal = {
+					user: record.user,
+					...(record.name === undefined ? {} : { name: record.name }),
+					...(record.email === undefined ? {} : { email: record.email }),
+					admin: effectiveAdminOf(record).admin,
+					service: false,
+					method: "host",
+				};
+				const host = ctx.opened.seamHosts.get(merged.extension) as
+					| SigrunHost
+					| undefined;
+				const result = await merged.run({
+					conversationId,
+					args,
+					principal,
+					host: host as SigrunHost,
+				});
+				return result === undefined || result.notice === undefined
+					? {}
+					: { notice: result.notice };
 			},
 		},
 	};

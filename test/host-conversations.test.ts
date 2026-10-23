@@ -45,6 +45,11 @@ const CHANNEL_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-channel", "index.js"),
 ).href;
 
+/** The commands fixture's specifier (gateway C4b: `commands.run` tests). */
+const COMMANDS_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-commands", "index.js"),
+).href;
+
 /** The fixture's channel drive (create owned by "alice" + submit "hello"). */
 async function drive(): Promise<ConversationId> {
 	const fn = (globalThis as { __fixtureChannelDrive?: () => Promise<number> })
@@ -113,7 +118,10 @@ async function bootOpened(
 		// provider under "faux" and every run settles model_error with only
 		// an aborted-partial assistant entry).
 		extensions: [{ name: "ext-faux", providers: [{ provider: faux.provider }] }],
-		extensionSpecifiers: [CHANNEL_SPECIFIER],
+		// Gateway C4b: fixture-commands rides along so `commands.run` sees a
+		// real extension command (its `new` core-collision drops with the
+		// usual console warning — harmless here).
+		extensionSpecifiers: [CHANNEL_SPECIFIER, COMMANDS_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: dir,
 	});
@@ -650,5 +658,155 @@ describe("the seam binding contract (calls before the bridge binds)", () => {
 		});
 		await probe?.promise;
 		expect(probe?.settled).toBe(true);
+	});
+});
+
+describe("host upload/readFile/models/commands (gateway C4b)", () => {
+	/** The principal the last `hello` run observed (the fixture's stash). */
+	function lastPrincipal(): {
+		readonly user?: string;
+		readonly admin: boolean;
+		readonly service: boolean;
+		readonly method: string;
+	} {
+		const principal = (
+			globalThis as { __fixtureCommandsPrincipal?: unknown }
+		).__fixtureCommandsPrincipal;
+		if (principal === undefined) throw new Error("no principal observed");
+		return principal as {
+			user?: string;
+		admin: boolean;
+			service: boolean;
+			method: string;
+		};
+	}
+
+	test("upload returns the uploads/<id>/<name> path; a file-part submit admits; readFile round-trips the bytes", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const bytes = new Uint8Array([104, 105, 32, 102, 114, 111, 109, 32, 104, 111, 115, 116]);
+		const uploaded = await host.conversations.upload(id, {
+			name: "a.txt",
+			bytes,
+		});
+		expect(uploaded).toEqual({ path: `uploads/${id}/a.txt` });
+		// The returned path is exactly what a content part takes: the submit
+		// admits with a file part (never a not_found error part).
+		const record = await host.conversations.submit(id, [
+			{ type: "file", path: uploaded.path },
+		]);
+		expect(["queued", "placed", "done"]).toContain(record.status);
+		// readFile round-trips the SAME file (the raw route's confinement +
+		// cap path, in-process). The env hands a Buffer (a Uint8Array
+		// subclass); assert byte equality, not vitest's shape equality.
+		const read = await host.conversations.readFile(id, uploaded.path);
+		expect(Buffer.from(read.bytes).equals(Buffer.from(bytes))).toBe(true);
+		expect(read.mime).toBe("text/plain");
+	});
+
+	test("Review Focus 3: ../x, a/b, and the empty name throw invalid_field name; readFile ../outside throws the confinement error", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		for (const name of ["../x", "a/b", ""]) {
+			await expect(
+				host.conversations.upload(id, { name, bytes: new Uint8Array(1) }),
+			).rejects.toMatchObject({
+				name: "ConversationOpError",
+				body: { error: "invalid_field", field: "name" },
+			});
+		}
+		// The readFile confinement error is the raw route's vocabulary.
+		await expect(
+			host.conversations.readFile(id, "../outside"),
+		).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_path" },
+		});
+	});
+
+	test("readFile over server.maxFileReadBytes throws too_large (cap 8 in the test config)", async () => {
+		const { opened } = await bootServer({
+			SIGRUN_MAX_FILE_READ_BYTES: "8",
+		});
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const uploaded = await host.conversations.upload(id, {
+			name: "big.txt",
+			bytes: new Uint8Array(16),
+		});
+		await expect(host.conversations.readFile(id, uploaded.path))
+			.rejects.toMatchObject({
+				name: "ConversationOpError",
+			body: { error: "too_large" },
+				status: 413,
+			});
+	});
+
+	test("unknown conversation id on upload/readFile throws conversation <id> not found", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = 999999 as ConversationId;
+		await expect(
+			host.conversations.upload(id, { name: "a.txt", bytes: new Uint8Array(1) }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(host.conversations.readFile(id, "uploads/1/a.txt")).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+	});
+
+	test("models.list() deep-equals GET /v1/models .models", async () => {
+		const { opened, app, aliceToken } = await bootServer();
+		const host = channelHost(opened);
+		const listed = await host.models.list();
+		const response = (await getJson(app, "/v1/models", aliceToken)) as {
+			models: readonly unknown[];
+		};
+		expect(listed).toEqual(response.models);
+	});
+
+	test("commands.run drives the extension command as alice: notice + principal method host, admin false; a group-admin user sees admin true", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		// Plain directory user: effective admin false, method "host".
+		const run = await host.commands.run(id, "hello", "bob", { user: "alice" });
+		expect(run).toEqual({ notice: "hi bob" });
+		const principal = lastPrincipal();
+		expect(principal).toMatchObject({
+			user: "alice",
+			admin: false,
+			service: false,
+			method: "host",
+		});
+		// A persisted group grant (Task 5's fixture shape) counts as
+		// EFFECTIVE admin for the host-built principal.
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "proxy",
+		});
+		await host.commands.run(id, "hello", "x", { user: "bob" });
+		expect(lastPrincipal()).toMatchObject({
+			user: "bob",
+			admin: true,
+			method: "host",
+		});
+	});
+
+	test("Review Focus 4: a core name throws command_not_found; an unknown user throws unknown-user", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		// `new` is a CORE name — never in runnable.
+		await expect(
+			host.commands.run(id, "new", "", { user: "alice" }),
+		).rejects.toThrow("command_not_found: new");
+		// The directory has no "ghost" — the principal build fails loud.
+		await expect(
+			host.commands.run(id, "hello", "", { user: "ghost" }),
+		).rejects.toThrow('unknown user "ghost"');
 	});
 });

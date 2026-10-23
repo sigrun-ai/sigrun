@@ -30,17 +30,19 @@ import type {
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import {
 	accessOf,
 	isSharing,
 	type AccessPrincipal,
 	type Sharing,
 } from "@sigrun/shared/access";
+import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
-import { parseSubmissionInput, resolveParts } from "./content-parts.js";
+import { isConfinedPath, parseSubmissionInput, resolveParts } from "./content-parts.js";
 import {
 	CommandUsageError,
 	expandInput,
@@ -899,4 +901,155 @@ export async function patchMetaOp(
 			BACKGROUND_CONTEXT,
 		)) ?? DEFAULT_SESSION_META
 	);
+}
+
+// ─── Upload + raw read (gateway C4b — the files routes' ops) ───────────────
+
+/**
+ * The one upload-name rule (gateway C4b): no `/` or `\`, not `.` or
+ * `..`, non-empty. The single validator BOTH upload routes and the host
+ * `conversations.upload` op share — the routes pre-validate with it to
+ * keep their exact `{error: "invalid_body"}` wire bodies while the op
+ * throws the host-side `invalid_field` `name` vocabulary.
+ */
+export function validUploadName(name: string): boolean {
+	return (
+		name.length > 0 &&
+		!name.includes("/") &&
+		!name.includes("\\") &&
+		name !== "." &&
+		name !== ".."
+	);
+}
+
+/**
+ * The extension→mime map (spec §7.8): the common workspace-file
+ * extensions a client renders inline; an absent extension serves
+ * `application/octet-stream`. The KEY is the LOWERCASE extension
+ * including the dot (the lookup lowercases, so `Photo.PNG` maps too).
+ * One map for the raw route AND the host `readFile` op (its `mime`
+ * field) — never two.
+ */
+export const MIME_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
+	[".png", "image/png"],
+	[".jpg", "image/jpeg"],
+	[".jpeg", "image/jpeg"],
+	[".gif", "image/gif"],
+	[".webp", "image/webp"],
+	[".svg", "image/svg+xml"],
+	[".pdf", "application/pdf"],
+	[".txt", "text/plain"],
+	[".md", "text/markdown"],
+	[".json", "application/json"],
+	[".html", "text/html"],
+	[".css", "text/css"],
+	[".js", "text/javascript"],
+]);
+
+/**
+ * Write one upload into the conversation's upload namespace (gateway
+ * C4b, the raw-upload/base64 routes' shared core): validates the NAME
+ * (the one rule — a bad name throws `invalid_field` `name`; the routes
+ * pre-validate with `validUploadName` to keep their `invalid_body`
+ * bodies byte-identical), writes `uploads/<conversationId>/<name>`
+ * through the conversation's workspace env (correct for remote
+ * workspaces), and returns the path exactly as a content part takes it.
+ * A failed env write is a server-side fault: fail loud.
+ */
+export async function uploadOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	file: { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array },
+): Promise<{ readonly path: string }> {
+	if (!validUploadName(file.name)) {
+		throw new ConversationOpError({ error: "invalid_field", field: "name" });
+	}
+	// `mime` is validated (never persisted — the workspace write is the
+	// file's own bytes; a content part carries its own mime) because JS
+	// extensions cross this signature untyped at runtime: the op is the
+	// host caller's only validation point, like compactOp's instructions.
+	if (file.mime !== undefined && typeof file.mime !== "string") {
+		throw new ConversationOpError({ error: "invalid_field", field: "mime" });
+	}
+	// v1 namespaces uploads per conversation (workspaces are static and
+	// shared in v1, so un-namespaced names would clobber across
+	// conversations).
+	const path = `uploads/${conversation.id}/${file.name}`;
+	const env = await conversationEnv(ctx.opened, conversation);
+	const written = await env.writeFile(path, file.bytes, BACKGROUND_CONTEXT);
+	if (!written.ok) {
+		throw written.error;
+	}
+	return { path };
+}
+
+/**
+ * Read one workspace file raw (gateway C4b, the files/raw route's op):
+ * the route's confinement + cap vocabulary as op errors — non-confined/
+ * empty/`.`/directory → `invalid_path` (400), absent → `not_found`
+ * (404), over `server.maxFileReadBytes` → `too_large` (413; the HTTP
+ * route keeps its own `file_too_large` + `maxBytes` body). The read is
+ * `readBinaryFile` (the op buffers — the host caller wants the bytes;
+ * the ROUTE keeps its chunked streaming through `readFileMetaOp`'s env
+ * so it never buffers) with the extension-derived mime from the shared
+ * map (unknown extensions read as `application/octet-stream`, the raw
+ * route's own default — one behavior, never two).
+ */
+export async function readFileOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	path: string,
+): Promise<{ readonly bytes: Uint8Array; readonly mime?: string }> {
+	const { env, mime } = await readFileMetaOp(ctx, conversation, path);
+	const read = await env.readBinaryFile(path, BACKGROUND_CONTEXT);
+	if (!read.ok) {
+		if (read.error.code === "not_found") {
+			throw new ConversationOpError({ error: "not_found" }, 404);
+		}
+		throw read.error;
+	}
+	return { bytes: read.value, mime };
+}
+
+/**
+ * The raw-read pre-checks (gateway C4b): the shared validation BOTH the
+ * `files/raw` route and the host `readFileOp` run — the content route's
+ * confinement rule (`isConfinedPath`; empty and `.` rejected too), the
+ * directory rejection, and the `server.maxFileReadBytes` cap — plus the
+ * size/mime the caller needs to serve the file and the conversation env
+ * it serves through (one env build per read, never two). The route maps
+ * `too_large` onto its own `file_too_large` + `maxBytes` body; every
+ * other op error maps 1:1 onto the route's existing responses.
+ */
+export async function readFileMetaOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	path: string,
+): Promise<{
+	readonly env: ExecutionEnv;
+	readonly size: number;
+	readonly mime: string;
+}> {
+	if (!isConfinedPath(path) || path.length === 0 || path === ".") {
+		throw new ConversationOpError({ error: "invalid_path" });
+	}
+	const env = await conversationEnv(ctx.opened, conversation);
+	const info = await env.fileInfo(path, BACKGROUND_CONTEXT);
+	if (!info.ok) {
+		if (info.error.code === "not_found") {
+			throw new ConversationOpError({ error: "not_found" }, 404);
+		}
+		throw info.error;
+	}
+	if (info.value.kind === "directory") {
+		throw new ConversationOpError({ error: "invalid_path" });
+	}
+	if (info.value.size > ctx.config.maxFileReadBytes) {
+		throw new ConversationOpError({ error: "too_large" }, 413);
+	}
+	return {
+		env,
+		size: info.value.size,
+		mime: MIME_BY_EXTENSION.get(extname(path).toLowerCase()) ?? "application/octet-stream",
+	};
 }
