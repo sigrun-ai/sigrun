@@ -31,7 +31,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -1001,6 +1001,16 @@ describe("sigrun values schema (values.schema.json)", () => {
 // ---------------------------------------------------------------------------
 
 describe("docker compose reference", () => {
+	// The structural assertions below parse the YAML directly (no
+	// docker/compose binary in the loop) — compose interpolation is not
+	// evaluated, so the assertions match the literal interpolation
+	// expressions as written (spec §6: `user:`/image tag parametrized,
+	// SIGRUN_EXTENSIONS passthrough, hardening set).
+	async function composeDoc(): Promise<Record<string, any>> {
+		const text = await readFile(COMPOSE_FILE, "utf8");
+		return YAML.parse(text) as Record<string, any>;
+	}
+
 	test("parses, and its service names the published image with no build stanza", async () => {
 		// `docker compose config` is the parser (it validates interpolation
 		// and the schema); SIGRUN_DEFAULT_MODEL is a required variable, so
@@ -1015,4 +1025,48 @@ describe("docker compose reference", () => {
 		// `docker compose up` gets the release's image.
 		expect(stdout).not.toMatch(/^\s+build:/m);
 	});
+
+	test("hardened defaults: read-only rootfs + tmpfs scratch, caps dropped, no-new-privileges, init", async () => {
+		const doc = await composeDoc();
+		const service = doc.services.sigrun;
+		// spec §6: writes are confined to /data (volume), /cache and /tmp
+		// (tmpfs) — everything else is read-only (NPM_CONFIG_CACHE is baked
+		// to /cache/npm in the image, so npm's cache writes land on tmpfs).
+		expect(service.read_only).toBe(true);
+		expect(service.tmpfs).toEqual(
+			expect.arrayContaining(["/tmp", "/cache"]),
+		);
+		expect(service.cap_drop).toEqual(["ALL"]);
+		expect(service.security_opt).toEqual(["no-new-privileges:true"]);
+		// Zombie reaping: the node process never reaps adopted children
+		// (git/npm invocations from agent shells) — compose's init makes
+		// PID 1 the reaper instead.
+		expect(service.init).toBe(true);
+	});
+
+	test("image tag and uid/gid are parametrized with the release defaults", async () => {
+		const doc = await composeDoc();
+		const service = doc.services.sigrun;
+		expect(service.image).toBe(
+			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.1.4}"}`,
+		);
+		expect(service.user).toBe("${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}");
+	});
+
+	test("SIGRUN_EXTENSIONS passes through via env_file (unset means absent, not empty)", async () => {
+		const doc = await composeDoc();
+		const service = doc.services.sigrun;
+		// The fleet override env contract: when the var is set it WINS over
+		// the settings file's `extensions` list. A literal
+		// `${SIGRUN_EXTENSIONS:-}` environment entry would pin an EMPTY
+		// fleet over the file when unset (parseExtensionList("") is [],
+		// and [] ?? file keeps []), silently killing the file-driven flow
+		// the README documents. env_file is the passthrough: present in
+		// .env ⇒ in the container, absent from .env ⇒ absent from the
+		// container (the chart's envFrom secretRef shape) — asserted BOTH
+		// ways: the mechanism present, the footgun shape absent.
+		expect(service.env_file).toContainEqual({ path: ".env", required: false });
+		expect(service.environment.SIGRUN_EXTENSIONS).toBeUndefined();
+	});
 });
+
