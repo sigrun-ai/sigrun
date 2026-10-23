@@ -144,10 +144,28 @@ export class CollectionState {
 	readonly checkedOverrides = new Map<string, boolean>();
 	readonly expanded = new Set<string>();
 	readonly unfoldedGroups = new Set<string>();
-	quietShown = false;
-	/** The open overlay: the sort choice, the bulk menu, or the seam form. */
-	menu: { kind: "sort" } | { kind: "bulk" } | { kind: "form"; form: Tree; onSubmit: string } | null =
-		null;
+	/** The groups whose quiet fold is open (per-group; Task 3's global
+	 *  toggle became per-group with the lanes' per-lane folds). */
+	readonly quietOpen = new Set<string>();
+
+	/** Is the quiet fold of `groupId` open? */
+	quietShownFor(groupId: string): boolean {
+		return this.quietOpen.has(groupId);
+	}
+
+	/** Toggle the quiet fold of `groupId`. */
+	toggleQuiet(groupId: string): void {
+		if (this.quietOpen.has(groupId)) this.quietOpen.delete(groupId);
+		else this.quietOpen.add(groupId);
+	}
+	/** The open overlay: the sort choice, the bulk menu, the seam form,
+	 *  or the compact lanes' "Move to…" target list (Task 4). */
+	menu:
+		| { kind: "sort" }
+		| { kind: "bulk" }
+		| { kind: "form"; form: Tree; onSubmit: string }
+		| { kind: "moveTo" }
+		| null = null;
 	menuCursor = 0;
 	formBuffer = "";
 
