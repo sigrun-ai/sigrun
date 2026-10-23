@@ -1,9 +1,10 @@
 /**
  * The chart block (UI-blocks U1 Task 2, spec §5.4/§12.3): hand-written
  * SVG, no chart library. One y-axis; line/area/bar series may mix in a
- * single chart; series colours come from the theme's series palette in
- * order (`--chart-1..8`, blocks.css defines the fallback ramp and
- * useTheme re-keys it per accent); line/area series downsample to at
+ * single chart; series colours come from the `--chart-1..8` ramp in
+ * order — blocks.css is that ramp's sole definition (stop 1 rides
+ * `--accent`; stops 2–8 are fixed hex per mode; the shared themes
+ * module defines no series tokens); line/area series downsample to at
  * most 2,000 points with `lttb`; `stacked` accumulates area/bar
  * baselines; thresholds draw as horizontal rules carrying their tone.
  *
@@ -17,14 +18,10 @@ import { useMemo, type CSSProperties, type ReactNode } from "react";
 import {
 	formatValue,
 	lttb,
-	type Bindable,
-	type ChartAxisX,
 	type ChartBlock,
 	type ChartSeries,
-	type Tone,
 } from "@sigrun/shared/blocks";
 import { bound, boundString, useSurfaceData } from "./context";
-import { TONE_VARS } from "./tones";
 import { useWidthInfo } from "./width";
 
 /** The display cap (spec §5.4: "at most 2,000 points", lttb). */
@@ -240,7 +237,6 @@ export function ChartBlockView(props: { block: ChartBlock }): ReactNode {
 						series={s}
 						color={`var(--chart-${(index % 8) + 1})`}
 						locale={ctx.locale}
-						format={block.x.format}
 					/>
 				))}
 			</div>
@@ -518,7 +514,6 @@ function SparkRow(props: {
 	series: ResolvedSeries;
 	color: string;
 	locale: string;
-	format: Bindable<ChartAxisX["format"]> | undefined;
 }): ReactNode {
 	const { series, color, locale } = props;
 	const values = series.points.map(([, y]) => y);

@@ -77,6 +77,31 @@ describe("meter: thresholds", () => {
 		).toBe("bad");
 	});
 
+	test("descending thresholds still pick the highest reached tone (order-independent)", () => {
+		const block = {
+			type: "meter",
+			value: { $: "/load" },
+			min: 0,
+			max: 1,
+			label: "Load",
+			thresholds: [
+				{ at: 0.95, tone: "bad" },
+				{ at: 0.8, tone: "warn" },
+				{ at: 0.5, tone: "good" },
+			],
+		} as const;
+		const toneAt = (load: number): string =>
+			renderBlock(block, { load }).root
+				.findByProps({ "data-block": "meter" }).props["data-tone"];
+		// 0.7 reaches only the 0.5 threshold → good.
+		expect(toneAt(0.7)).toBe("good");
+		// 0.85 reaches 0.8 and 0.5; the highest reached (0.8) wins → warn.
+		// (Last-wins-in-array-order would wrongly return good here.)
+		expect(toneAt(0.85)).toBe("warn");
+		// 0.99 reaches all three → bad.
+		expect(toneAt(0.99)).toBe("bad");
+	});
+
 	test("without thresholds the tone stays accent", () => {
 		const renderer = renderBlock(
 			{ type: "meter", value: 0.4, label: "Load" },
