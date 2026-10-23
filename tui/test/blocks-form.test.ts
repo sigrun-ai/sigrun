@@ -634,3 +634,141 @@ describe("Review Focus 4: the focused field survives a data update", () => {
 		expect(form.render(100).join("\n")).toContain("ac");
 	});
 });
+
+describe("review fixes (the fix round's covering tests)", () => {
+	test("a sibling block bound /view/... reads a setView write (§6.2)", () => {
+		vi.useFakeTimers();
+		try {
+			const { ctx } = makeCtx({});
+			const block: FormBlock = {
+				type: "form",
+				bind: "/view/filter",
+				mode: "live",
+				children: [{ type: "text", name: "q", label: "Filter" }],
+			};
+			const form = formOf(block, ctx);
+			form.handleInput("a");
+			form.handleInput("c");
+			vi.advanceTimersByTime(LIVE_DEBOUNCE_MS);
+			// The test double's setView only records; mirror what
+			// SurfaceState.setView does (write into the branch) so the
+			// sibling read resolves it.
+			ctx.setView?.("", {});
+			ctx.view.values = { filter: { q: "ac" } };
+			// A sibling markdown block bound /view/filter/q must resolve it.
+			const sibling = renderBlock({ type: "markdown", text: { $: "/view/filter/q" } }, ctx);
+			expect(sibling.render(100).join("\n")).toContain("ac");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a number field never holds NaN: 'abc' leaves the value empty", () => {
+		const { ctx, captured } = makeCtx({ prefs: { nick: "ok" } });
+		const form = formOf(textForm(), ctx);
+		form.handleInput(ENTER); // quota
+		form.handleInput("a");
+		form.handleInput("b");
+		form.handleInput("c");
+		expect(form.values.quota).toBe("");
+		// A valid number still submits as a number.
+		form.handleInput("\x7f");
+		form.handleInput("\x7f");
+		form.handleInput("\x7f");
+		form.handleInput("4");
+		expect(form.values.quota).toBe(4);
+		form.handleInput(ENTER); // submit row
+		form.handleInput(ENTER);
+		expect(captured[0]?.payload).toEqual({ values: { nick: "ok", quota: 4 } });
+	});
+
+	test("a multi file field appends picks (nothing is dropped)", () => {
+		const { ctx, uploads } = makeCtx({});
+		const first = writeFixture("one.txt", "one");
+		const second = writeFixture("two.txt", "two");
+		const block: FormBlock = {
+			type: "form",
+			bind: "/docs",
+			mode: "submit",
+			children: [
+				{ type: "file", name: "docs", label: "Docs", multi: true, onUpload: "uploadDocs" },
+			],
+		};
+		const form = formOf(block, ctx);
+		for (const char of first) form.handleInput(char);
+		form.handleInput(ENTER);
+		// The path editor cleared on the successful pick.
+		expect(form.render(100).join("\n")).toContain("uploaded: one.txt");
+		for (const char of second) form.handleInput(char);
+		form.handleInput(ENTER);
+		expect(uploads).toHaveLength(2);
+		const value = form.values.docs as { name: string }[];
+		expect(Array.isArray(value)).toBe(true);
+		expect(value.map((entry) => entry.name)).toEqual(["one.txt", "two.txt"]);
+	});
+
+	test("a choice+longtext section focuses only the choice; the review shows both answers (§9.1)", () => {
+		const { ctx, captured } = makeCtx({});
+		const block: FormBlock = {
+			type: "form",
+			bind: "/answers",
+			mode: "submit",
+			onSubmit: "answer",
+			children: [
+				{
+					type: "section",
+					title: "One",
+					children: [
+						{
+							type: "choice",
+							name: "pick",
+							label: "Pick",
+							options: [
+								{ id: "x", label: "Ex" },
+								{ id: "y", label: "Why" },
+							],
+						},
+						{ type: "longtext", name: "note", label: "Note" },
+					],
+				},
+				{
+					type: "section",
+					title: "Two",
+					children: [
+						{
+							type: "choice",
+							name: "second",
+							label: "Second",
+							options: [
+								{ id: "s", label: "Small" },
+								{ id: "l", label: "Large" },
+							],
+						},
+					],
+				},
+			],
+		};
+		const form = formOf(block, ctx, { interaction: true });
+		const stepOne = form.render(100);
+		const pickRow = stepOne.findIndex((line) => line.includes("Ex"));
+		const noteRow = stepOne.findIndex((line) => line.includes("Note"));
+		expect(pickRow).toBeGreaterThanOrEqual(0);
+		expect(noteRow).toBeGreaterThan(pickRow);
+		// The choice row carries focus chrome ("> " after the label
+		// column); the longtext renders read-only (no caret marker).
+		expect(stepOne[pickRow]).toContain("> ( ) Ex");
+		const noteEditor = stepOne[noteRow + 1] ?? "";
+		expect(noteEditor).not.toContain("▏");
+		// Answer the choice and continue.
+		form.handleInput(ENTER); // pick Ex
+		form.handleInput(TAB); // step 2
+		form.handleInput(DOWN);
+		form.handleInput(ENTER); // Large
+		form.handleInput(TAB); // review
+		const review = form.render(100).join("\n");
+		expect(review).toContain("One: Ex");
+		expect(review).toContain("Two: Large");
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+	});
+});
