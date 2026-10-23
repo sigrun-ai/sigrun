@@ -18,6 +18,7 @@ export { DataOpError, applyOps, resolvePointer } from "./ops.js";
 export { ICON_NAMES } from "./icons.js";
 export { lttb } from "./lttb.js";
 export { formatValue } from "./format.js";
+export { toText } from "./text.js";
 
 // ─── Wire types (spec §4/§5/§6.1) ─────────────────────────────────────────
 export type {
@@ -95,6 +96,7 @@ export type {
 } from "./types.js";
 
 export type { IconName } from "./icons.js";
+export type { TextOptions } from "./text.js";
 
 // ─── Transport (the channel-facing surface handle) ────────────────────────
 export type {
