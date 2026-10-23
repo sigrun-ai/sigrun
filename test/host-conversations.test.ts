@@ -305,6 +305,34 @@ describe("host identity, users, and access (spec §9.7)", () => {
 		expect(await host.users.get("nosuch")).toBeUndefined();
 	});
 
+	test("host users expose EFFECTIVE admin: the stored flag OR the persisted group grant (gateway C8)", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		// The gateway C8 write-through shape: a proxy admins-group user
+		// whose STORED admin is false but whose record carries the group
+		// grant. Host-side code has no request headers — the effective
+		// read is the only admin it can ever see.
+		await opened.identity.users.add({
+			user: "bob",
+			admin: false,
+			groupAdmin: true,
+			source: "proxy",
+		});
+		const bob = await host.users.get("bob");
+		expect(bob).toMatchObject({
+			user: "bob",
+			admin: true,
+			groupAdmin: true,
+		});
+		const listed = await host.users.list();
+		const listedBob = listed.find((user) => user.user === "bob");
+		expect(listedBob).toMatchObject({ admin: true, groupAdmin: true });
+		// A plain non-admin (no group grant): effective admin false, the
+		// raw flag a definite false (never undefined on the host surface).
+		const alice = await host.users.get("alice");
+		expect(alice).toMatchObject({ admin: false, groupAdmin: false });
+	});
+
 	test("a Principal input maps admin/service to superuser semantics like the server does", async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);

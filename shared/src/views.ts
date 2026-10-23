@@ -788,12 +788,19 @@ export interface OnboardingState {
  * One directory user on the wire (Task 4): the full record — emails are
  * admin-visible material and the routes that serve this type are
  * admin-gated. `createdAt` is epoch ms.
+ *
+ * `admin` is the STORED flag (the users-admin UI toggles it); the proxy
+ * group grant rides separately as `groupAdmin` (gateway C8): effective
+ * admin is `admin || groupAdmin === true`, and the last-admin guard
+ * counts `admin` alone.
  */
 export interface UserWire {
 	readonly user: string;
 	readonly name?: string;
 	readonly email?: string;
 	readonly admin: boolean;
+	/** The persisted proxy-group grant — present only under `adminGroups`. */
+	readonly groupAdmin?: boolean;
 	readonly createdAt: number;
 	readonly source: "proxy" | "invite" | "cli";
 }
