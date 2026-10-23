@@ -48,6 +48,13 @@ itself, a local ramalama/ollama exposing an OpenAI-shaped API, or a
 remote/private gateway; point `OPENAI_BASE_URL` at it and set the model
 id it serves).
 
+That minimum provisions a model, not access: auth keys are env-shaped —
+add `SIGRUN_API_TOKEN` (a service token clients must present) or
+`SIGRUN_AUTH=none` (private networks only) to the same `docker/.env`,
+since the `env_file` vars enter the container while the compose
+`environment:` block carries no auth entries. The chart's analogue
+keeps these in the operator Secret instead.
+
 ### Knobs
 
 | Variable | Default | What it does |
