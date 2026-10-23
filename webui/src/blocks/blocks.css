@@ -1266,3 +1266,24 @@
 .blk-calendar-resize {
 	touch-action: none;
 }
+
+/* ── form and fields (spec §5.6) ── */
+.blk-form { display: flex; flex-direction: column; gap: var(--sp-3, 0.75rem); }
+.blk-form[data-mode="inline"] { flex-direction: row; align-items: flex-end; }
+.blk-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.blk-field-label { font-weight: 500; }
+.blk-field-help { color: var(--fg-dim, #888); font-size: 0.875em; }
+.blk-field-error { color: var(--bad, #d33); font-size: 0.875em; }
+.blk-choice { display: flex; gap: 1rem; }
+.blk-choice[data-preview="beside"] { flex-direction: row; }
+.blk-choice[data-preview="below"] { flex-direction: column; }
+.blk-choice-options { display: flex; flex-direction: column; gap: 0.25rem; }
+.blk-choice-option { display: flex; gap: 0.5rem; align-items: baseline; }
+.blk-choice-description { color: var(--fg-dim, #888); font-size: 0.875em; }
+.blk-choice-preview { min-width: 12rem; }
+.blk-secret { display: flex; gap: 0.5rem; align-items: center; }
+.blk-secret-status { font-size: 0.875em; color: var(--fg-dim, #888); }
+.blk-list-entry { display: flex; gap: 0.5rem; align-items: flex-start; }
+.blk-daterange { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.blk-stepper-progress { font-size: 0.875em; color: var(--fg-dim, #888); }
+.blk-stepper-nav { display: flex; gap: 0.5rem; }
