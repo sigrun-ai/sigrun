@@ -49,6 +49,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerExtensionRoutes as registerExtensionSettingsRoutes } from "./routes/extensions.js";
 import { registerExtensionRoutes as mountExtensionRoutes } from "./routes/extension-routes.js";
+import { registerExtAssetRoutes } from "./routes/ext-assets.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
@@ -62,6 +63,9 @@ import { registerStreamRoutes } from "./routes/stream.js";
 import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
+import { registerSurfaceRoutes } from "./routes/surfaces.js";
+import type { HostEventWire } from "./events/types.js";
+import { SurfaceService } from "./surfaces/service.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -196,6 +200,20 @@ export async function createServer(
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
 	// way to hand that handle up without widening ServerContext's consumers.
 	app.decorate("sse", sse);
+	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
+		maxUploadBytes: config.maxUploadBytes,
+		// Task 4: bumpRev (actions AND the host seam's changed()) fans the
+		// surface.changed event out to the hub; the events route's
+		// visibility case delivers it to watching streams only.
+		publishChanged: (event) => {
+			// SAFETY: the hub is typed on the wire union; surface.changed's
+			// hub copy carries the internal `streams` field the events route
+			// reads and strips before delivery (spec §7.3's routing can never
+			// reverse the hashed k).
+			opened.events.publish(event as unknown as HostEventWire);
+		},
+	});
+	app.decorate("surfaces", surfacesService);
 	const ctx: ServerContext = {
 		opened,
 		config,
@@ -206,6 +224,7 @@ export async function createServer(
 		methods,
 		env,
 		watchersByConversation: new Map(),
+		surfaces: surfacesService,
 		sse,
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
 	};
@@ -250,6 +269,14 @@ export async function createServer(
 	// web-standard Request/Response adapter — per-route auth rides the
 	// pipeline's stage-4b public skip and this module's admin check.
 	mountExtensionRoutes(app, ctx);
+	// The extension surface routes (UI-blocks U3 Task 2, spec §7.2):
+	// render/data/actions under the reserved `surfaces/` prefix, over the
+	// shared SurfaceService's access cache and revision state.
+	registerSurfaceRoutes(app, ctx);
+	// The extension asset route (UI-blocks U3 Task 3, spec §11.1/§7.2):
+	// `/v1/ext/<slug>/assets/*` serves the package's declared
+	// `sigrun.assets` dir, realpath-contained, sniffed content types.
+	registerExtAssetRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable

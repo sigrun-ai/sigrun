@@ -30,6 +30,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { accessOf } from "@sigrun/shared/access";
 import type { JobWire } from "@sigrun/shared/jobs";
@@ -37,6 +38,7 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import type { ServerContext } from "../context.js";
 import { SessionMetaDoc } from "../session-meta.js";
 import type { HostEventWire } from "../events/types.js";
+import type { SurfaceChangedInternal } from "../surfaces/service.js";
 
 /** The heartbeat cadence (the /stream pattern: proxy idle-timeout survival). */
 const HEARTBEAT_MS = 15_000;
@@ -64,6 +66,17 @@ export function registerEventRoutes(
 		const send = (event: HostEventWire): void => {
 			raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 		};
+		// The W3 amendment (spec §7.3): the FIRST frame names this
+		// connection — `event: hello` / `data: {"streamId": "<uuid>"}`,
+		// written BEFORE the hub subscription. Channels send the id as
+		// `X-Sigrun-Stream` on surface/data fetches (the watcher registry's
+		// entry); after a reconnect (a NEW streamId) they re-fetch every
+		// visible surface, which re-registers the entries. The hello is a
+		// CONNECTION-LOCAL frame (channels ignore unknown event types), so
+		// it is deliberately NOT a HostEventWire member — the exhaustive
+		// visibility switch covers only principal-facing hub events.
+		const streamId = randomUUID();
+		send({ type: "hello", streamId } as unknown as HostEventWire); // SAFETY: hello is a connection-local frame, not a hub event — the wire writer is typed on HostEventWire only because every OTHER frame is one.
 		let finished = false;
 		const heartbeat = setInterval(() => {
 			raw.write(": ping\n\n");
@@ -135,6 +148,29 @@ export function registerEventRoutes(
 				// principal-facing wire event.
 				case "taskSettled":
 					return undefined;
+				// UI-blocks U3 Task 4 (spec §7.3): delivered to a watching
+				// stream ONLY. The hub copy is the service's internal event
+				// (SurfaceChangedInternal) which carries the resolved stream
+				// list — the service computed it off the PLAIN key at publish
+				// time (the registry can never reverse the wire's hashed `k`).
+				// The DELIVERED frame is the wire shape (the internal field
+				// stripped — the stream list is routing metadata, never wire).
+				case "surface.changed": {
+					// SAFETY: the hub carries the service's internal event (the
+					// wire shape plus the publish-time stream list); every
+					// surface.changed the hub sees comes from bumpRev, which
+					// always attaches `streams`.
+					const internal = event as unknown as SurfaceChangedInternal;
+					if (!internal.streams.includes(streamId)) return undefined;
+					return {
+						type: "surface.changed",
+						slug: event.slug,
+						id: event.id,
+						k: event.k,
+						rev: event.rev,
+						treeRev: event.treeRev,
+					};
+				}
 				// An unknown member is NEVER delivered — deny by construction,
 				// not by enumerating the leak shapes. The satisfies check keeps
 				// this arm exhaustive: a new HostEventWire member without a
@@ -161,6 +197,9 @@ export function registerEventRoutes(
 			finished = true;
 			clearInterval(heartbeat);
 			unsubscribe();
+			// The watcher registry's stream-close rule (spec §7.3): every
+			// entry this stream held drops with it.
+			ctx.surfaces.watcherRegistry.dropStream(streamId);
 			raw.end();
 		};
 		// Client disconnect: `response` close (socket termination) — NOT

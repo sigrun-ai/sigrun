@@ -53,6 +53,9 @@ export function registerMetaRoutes(
 			schemaVersion: SCHEMA_VERSION,
 			extensions: opened.extensionOutcomes.map((outcome) => {
 				const workers = workerStatuses.get(outcome.name);
+				const surfaces = opened.extensionSurfaces.find(
+					(binding) => binding.extension === outcome.name,
+				);
 				return {
 					name: outcome.name,
 					status: outcome.status,
@@ -60,6 +63,28 @@ export function registerMetaRoutes(
 					...(workers === undefined || workers.length === 0
 						? {}
 						: { workers }),
+					// The declared surfaces (UI-blocks U3 Task 5): the channels'
+					// rail/panel registration reads the DECLARATION here (never a
+					// second fetch); access-none filtering stays render-time.
+					...(surfaces === undefined
+						? {}
+						: {
+							surfaces: surfaces.defs.map((def) => ({
+								id: def.id,
+								title: def.title,
+								icon: def.icon,
+								placement: def.placement,
+								// The refresh cadence (§7.1): the channels'
+								// visible-surface refetch intervals read it here
+								// (never a second fetch).
+								...(def.refreshMs === undefined
+									? {}
+									: { refreshMs: def.refreshMs }),
+								// The §7.3 shared-data flag: channels refetch
+								// fully when a since fetch answers ops-only.
+								...(def.sharedData === true ? { sharedData: true } : {}),
+							})),
+							}),
 				};
 			}),
 			// §5 health: pure aggregation over boot-retained §3 producers —

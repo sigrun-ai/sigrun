@@ -575,3 +575,96 @@ describe("authorization header (Task 7: the token seam)", () => {
 		await close();
 	});
 });
+
+/**
+ * UI-blocks U3 Task 4 (spec §7.3, W3 amendment): the events watcher's
+ * hello frame — `GET /v1/events` opens with `event: hello` carrying
+ * `{streamId}`; the watcher exposes it (surface fetches send it as
+ * `X-Sigrun-Stream`); a reconnect's NEW hello re-fires the callback so
+ * the channel re-fetches every visible surface (re-registering the
+ * watcher's entries). Unknown event types are ignored without error
+ * (event types are an open set).
+ */
+describe("watchEvents hello frame (U3 Task 4)", () => {
+	import("../src/sse.js");
+
+	test("the hello frame's streamId surfaces via onHello; unknown event types are ignored without error", async () => {
+		const frames = [
+			`event: hello\ndata: ${JSON.stringify({ streamId: "stream-tui-1" })}\n\n`,
+			`event: x.unknown\ndata: ${JSON.stringify({ type: "x.unknown" })}\n\n`,
+		];
+		const server = http.createServer((request, response) => {
+			response.writeHead(200, {
+				"content-type": "text/event-stream",
+				"cache-control": "no-cache",
+			});
+			for (const frame of frames) response.write(frame);
+			request.on("close", () => response.end());
+		});
+		servers.push({ close: () => new Promise((r) => server.close(() => r())) });
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", () => resolve()),
+		);
+		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+		const { watchEvents } = await import("../src/sse.js");
+		const hellos: string[] = [];
+		const errors: string[] = [];
+		const unwatch = watchEvents(
+			{
+				onEvent: () => {},
+				onHello: (streamId) => {
+					hellos.push(streamId);
+				},
+				onError: (message) => {
+					errors.push(message);
+				},
+			},
+			{ baseUrl, reconnectBaseMs: 1, reconnectMaxMs: 1 },
+		);
+		await vi.waitFor(() => {
+			expect(hellos).toEqual(["stream-tui-1"]);
+		});
+		// The unknown frame parsed and delivered without error (the
+		// consumer's switch ignores it; the transport never complains).
+		expect(errors).toEqual([]);
+		unwatch();
+	});
+
+	test("a reconnect's NEW hello re-fires onHello with the new streamId", async () => {
+		let connections = 0;
+		const server = http.createServer((request, response) => {
+			connections += 1;
+			const streamId = `stream-tui-${connections}`;
+			response.writeHead(200, {
+				"content-type": "text/event-stream",
+				"cache-control": "no-cache",
+			});
+			response.write(
+				`event: hello\ndata: ${JSON.stringify({ streamId })}\n\n`,
+			);
+			if (connections === 1) response.end(); // drop the first connection
+			request.on("close", () => response.end());
+		});
+		servers.push({ close: () => new Promise((r) => server.close(() => r())) });
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", () => resolve()),
+		);
+		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+		const { watchEvents } = await import("../src/sse.js");
+		const hellos: string[] = [];
+		const unwatch = watchEvents(
+			{
+				onEvent: () => {},
+				onHello: (streamId) => {
+					hellos.push(streamId);
+				},
+				onError: () => {},
+			},
+			{ baseUrl, reconnectBaseMs: 1, reconnectMaxMs: 1 },
+		);
+		await vi.waitFor(() => {
+			expect(hellos).toEqual(["stream-tui-1", "stream-tui-2"]);
+		});
+		unwatch();
+	});
+});

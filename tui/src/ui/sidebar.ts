@@ -39,8 +39,13 @@ import {
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { ConversationSummary, SigrunClient } from "../api.js";
 
-/** The sidebar selection: a conversation id, or the `+ new` action. */
-export type SidebarSelection = number | "new";
+/** The sidebar selection: a conversation id, the `+ new` action, or an
+ *  extension VIEW (UI-blocks U3 Task 5 — the app opens it in the main
+ *  pane). */
+export type SidebarSelection =
+	| number
+	| "new"
+	| { readonly view: { readonly slug: string; readonly id: string } };
 
 /** One display row: a conversation, or the trailing `+ New` action. */
 interface SidebarRow {
@@ -75,6 +80,9 @@ export class Sidebar implements Component {
 	#rowComponents: Component[] = [];
 	/** Conversation rows only (the action row is {@link #newRow}). */
 	#rows: SidebarRow[] = [];
+	/** The extension VIEW rows (U3 Task 5): one per declared view surface,
+	 *  rendered under the VIEWS group header. */
+	#views: { readonly slug: string; readonly id: string; readonly title: string }[] = [];
 	/** The trailing `+ New conversation` action row (always present). */
 	readonly #newRow: SidebarRow = {
 		id: NEW_ROW_ID,
@@ -139,6 +147,43 @@ export class Sidebar implements Component {
 		}
 		this.#clampCursor();
 		this.#mount();
+	}
+
+	/**
+	 * The extension views (U3 Task 5): refetch `GET /v1/extensions` and
+	 * rebuild the VIEWS group (one row per declared view surface, in
+	 * declaration order, status "ok" only). Panels live in the side pane,
+	 * not here. Failures keep the last good list (a flaky server must
+	 * never blank the sidebar).
+	 */
+	async refreshViews(): Promise<void> {
+		try {
+			const list = await this.#client.listExtensions();
+			const views: { slug: string; id: string; title: string }[] = [];
+			for (const extension of list.extensions) {
+				if (extension.status !== "ok") continue;
+				for (const surface of extension.surfaces ?? []) {
+					if (surface.placement !== "view") continue;
+					views.push({ slug: extension.name, id: surface.id, title: surface.title });
+				}
+			}
+			this.#views = views;
+			this.#mount();
+		} catch {
+			// fail quiet — the last good list stands
+		}
+	}
+
+	/** The extension view rows (the app's openExtView reads them). */
+	get views(): readonly { slug: string; id: string; title: string }[] {
+		return this.#views;
+	}
+
+	/** Select the Nth extension view (the action layer's seam). */
+	confirmView(index: number): void {
+		const view = this.#views[index];
+		if (view === undefined) return;
+		this.onSelect?.({ view: { slug: view.slug, id: view.id } });
 	}
 
 	/** Mark the active conversation (accent fg + bold); pass `undefined` to clear. */
@@ -218,6 +263,22 @@ export class Sidebar implements Component {
 			this.#rowComponents.push(component);
 			this.#stack.addChild(component);
 		}
+		// The VIEWS group (U3 Task 5): one row per declared extension view.
+		if (this.#views.length > 0) {
+			this.#stack.addChild(new Text(this.#theme.dim("VIEWS"), 1, 0));
+			for (const view of this.#views) {
+				const line = this.#rowLine();
+				const component = new MouseRegion(line, (event) => {
+					if (event.type === "click" && event.button === "left") {
+						this.onSelect?.({ view: { slug: view.slug, id: view.id } });
+						return { handled: true };
+					}
+					return undefined;
+				});
+				this.#rowComponents.push(component);
+				this.#stack.addChild(component);
+			}
+		}
 		this.#stack.invalidate();
 	}
 
@@ -252,6 +313,13 @@ export class Sidebar implements Component {
 		// truncateToWidth pins them to one line).
 		for (const [index, row] of this.#display.entries()) {
 			lines[index + 1] = this.#rowText(row, index, width);
+		}
+		// The VIEWS group rows (after the conversations + the VIEWS header).
+		if (this.#views.length > 0) {
+			const base = this.#display.length + 2; // header + rows + VIEWS header
+			for (const [index, view] of this.#views.entries()) {
+				lines[base + index] = truncateToWidth(`  ${view.title}`, width);
+			}
 		}
 		return lines;
 	}
