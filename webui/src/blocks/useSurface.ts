@@ -71,6 +71,10 @@ interface Snapshot {
 	readonly toasts: readonly string[];
 	/** The channel-owned `/view/` branch (spec §6.2). */
 	readonly viewState: JsonObject;
+	/** Server-side field errors from rejected actions, keyed by the
+	 *  field name the server named (spec §5.6); cleared on the next
+	 *  accepted act or `/view/` edit. */
+	readonly serverErrors: Readonly<Record<string, string>>;
 }
 
 /** Immutably write `value` at the `/view/`-relative pointer `path`
@@ -118,6 +122,9 @@ export interface SurfaceState {
 	setView(path: string, value: JsonValue): void;
 	retry(): void;
 	readonly toasts: readonly string[];
+	/** Server-side field errors from rejected actions (spec §5.6),
+	 *  keyed by field name; rendered under the named form field. */
+	readonly serverErrors: Readonly<Record<string, string>>;
 }
 
 /** A move payload's `from`/`to` endpoint (spec §6.3 step 2). */
@@ -283,6 +290,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		overlay: [],
 		toasts: [],
 		viewState: {},
+		serverErrors: {},
 	});
 	// Async callbacks read the latest snapshot through this ref.
 	const ref = useRef(snapshot);
@@ -453,8 +461,26 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 				if (!result.ok) {
 					if (isMove) dropEntry(actionId);
 					toast(result.error.message);
+					// §5.6: a rejection naming a field renders its message
+					// under that field (SurfaceActions.serverErrors), in
+					// addition to the global toast.
+					if (typeof result.error.field === "string") {
+						const field = result.error.field;
+						const message = result.error.message;
+						setSnapshot((s) => ({
+							...s,
+							serverErrors: { [field]: message },
+						}));
+					}
 					return;
 				}
+				// An accepted act supersedes any outstanding server field
+				// error (§5.6).
+				setSnapshot((s) =>
+					Object.keys(s.serverErrors).length > 0
+						? { ...s, serverErrors: {} }
+						: s,
+				);
 				if (result.toast !== undefined) toast(result.toast);
 				if (!isMove) return;
 				if (result.ops !== undefined) {
@@ -511,6 +537,8 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		setSnapshot((s) => ({
 			...s,
 			viewState: writeViewPath(s.viewState, path, value),
+			// An edit supersedes any outstanding server field error (§5.6).
+			serverErrors: {},
 		}));
 	};
 
@@ -540,5 +568,6 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 			void doLoad();
 		},
 		toasts: snapshot.toasts,
+		serverErrors: snapshot.serverErrors,
 	};
 }

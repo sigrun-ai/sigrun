@@ -34,8 +34,15 @@ export function SurfaceView(props: {
 					? (surface.view.view as JsonObject)
 					: ({} as JsonObject),
 			setView: surface.setView,
+			serverErrors: surface.serverErrors,
 		}),
-		[surface.dispatch, surface.access, surface.view, surface.setView],
+		[
+			surface.dispatch,
+			surface.access,
+			surface.view,
+			surface.setView,
+			surface.serverErrors,
+		],
 	);
 	if (surface.status === "loading") {
 		return (

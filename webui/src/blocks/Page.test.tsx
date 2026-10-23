@@ -16,6 +16,7 @@ import { describe, expect, test } from "vitest";
 import type {
 	JsonObject,
 	PageBlock,
+	SurfaceActResult,
 	SurfaceLoad,
 	SurfaceTransport,
 	Tree,
@@ -303,7 +304,7 @@ describe("page shell (spec §5.1)", () => {
 /** An in-memory transport whose act always accepts (the gallery's shape). */
 function memoryTransport(
 	load: SurfaceLoad,
-	actResult: { ok: true; rev: number } | { ok: false; error: { message: string } } = { ok: true, rev: load.rev + 1 },
+	actResult: SurfaceActResult = { ok: true, rev: load.rev + 1 },
 ): SurfaceTransport {
 	return {
 		load: async () => load,
@@ -417,5 +418,63 @@ describe("SurfaceView", () => {
 			await new Promise((resolve) => setTimeout(resolve, 400));
 		});
 		expect(textContent(r.toJSON())).toContain("acme");
+	});
+
+	test("server field error: a rejected act with {field} renders the message under that field (spec §5.6)", async () => {
+		const tree: Tree = {
+			v: 1,
+			root: {
+				type: "form",
+				bind: "/registration",
+				mode: "submit",
+				onSubmit: "register",
+				submitLabel: "Register",
+				children: [
+					{ type: "text", name: "name", label: "Name" },
+					{ type: "text", name: "handle", label: "Handle" },
+				],
+			},
+		};
+		const transport = memoryTransport(
+			surfaceLoad(tree, { registration: { name: "Acme", handle: "acme" } }),
+			{
+				ok: false,
+				error: { message: "Handle is taken", field: "handle" },
+			},
+		);
+		const r = await renderAsync(h(SurfaceView, { transport }));
+		const [submit] = r.root.findAll(
+			(node) =>
+				node.type === "button" && node.props.className === "blk-form-submit",
+		);
+		await act(async () => {
+			(submit.props as { onClick(): void }).onClick();
+			await Promise.resolve();
+		});
+		const handleRow = r.root.find(
+			(node) =>
+				node.type === "input" && node.props["aria-label"] === "Handle",
+		);
+		// Find the enclosing field row (label + input + error chrome) and
+		// assert the server message renders INSIDE it.
+		let row: typeof handleRow = handleRow;
+		while (
+			row.parent !== null &&
+			!((row.parent.props as { className?: string }).className ?? "").includes(
+				"blk-field",
+			)
+		) {
+			row = row.parent;
+		}
+		const fieldRow = row.parent;
+		expect(fieldRow !== null).toBe(true);
+		expect(
+			fieldRow !== null &&
+				fieldRow.findAllByProps({ className: "blk-field-error" }).some(
+					(node) => node.children.join("").includes("Handle is taken"),
+				),
+		).toBe(true);
+		// The rejection also lands the global toast.
+		expect(textContent(r.toJSON())).toContain("Handle is taken");
 	});
 });
