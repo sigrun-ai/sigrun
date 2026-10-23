@@ -678,6 +678,8 @@ export interface ExtensionInfo {
 	readonly workers: readonly WorkerStatus[];
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
+	/** The declared surfaces, one `{id, title, icon, placement}` each (U3 Task 1); absent when none. */
+	surfaces?: readonly ExtensionSurfaceInfo[];
 	/**
 	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
 	 * built-in (codemode / MCP / tool search); ABSENT on configured
@@ -696,6 +698,20 @@ export interface ExtensionRouteInfo {
 	/** The declared relative path — mounted at `/v1/ext/<slug>/<path>`. */
 	readonly path: string;
 	readonly auth: string;
+}
+
+/**
+ * One `GET /v1/extensions` surface row (UI-blocks U3 Task 1, spec
+ * §7.1): the extension-declared views and panels — what the channels'
+ * rail (views) and right panel (panels) register from. One row per
+ * declared surface, in declaration order (views before panels).
+ */
+export interface ExtensionSurfaceInfo {
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+	/** The declared placement; `settings` sections (§13.3) are not in this workstream. */
+	readonly placement: "view" | "panel";
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */

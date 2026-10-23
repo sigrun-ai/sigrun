@@ -54,6 +54,7 @@ import type {
 	AmbientPlace,
 	AmbientRecord,
 } from "@sigrun/shared/ambient";
+import type { Action, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
 import type { InteractionAnswer, InteractionRecord } from "@sigrun/shared/interactions";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import type {
@@ -78,6 +79,15 @@ export type {
 	JobSpec,
 	Sharing,
 };
+
+// The JSON mirror the surfaces contract uses (spec §7.1): the shared
+// leaf's local declaration — STRUCTURALLY IDENTICAL to pi-durable's
+// `JsonObject` (the chord `JsonValue` mirror), so params and payloads
+// built from these types flow into every host API unchanged. Declared
+// as a local alias so the contract names ONE spelling of the concept
+// per import site (the shared leaf owns the shape).
+type JsonParams = JsonObject;
+type JsonParamValue = JsonParams[string];
 
 // ---------------------------------------------------------------------------
 // The invocation context
@@ -369,6 +379,108 @@ export interface NotifierContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Extension surfaces (UI-blocks U3 Task 1, spec §7.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The render/data access verdict a surface reports for one principal
+ * (spec §6.5): `none` hides the surface entirely (404 on every route).
+ */
+export type SurfaceAccessLevel = "none" | "read" | "write";
+
+/** The per-principal, per-instance context `render`/`data` receive. */
+export interface SurfaceContext {
+	/** Who is looking; the access verdict is this principal's. */
+	readonly principal: Principal;
+	/** From `navigate(params)`; validated as JSON, size-capped at 4 KiB. */
+	readonly params: JsonParams;
+	/** The instance identity: `instanceKey(params)` of this instance. */
+	readonly key: string;
+	/** Aborts when the request is abandoned; observe it in long work. */
+	readonly signal: AbortSignal;
+}
+
+/** The full render result: the tree, its data, and the access verdict. */
+export interface SurfaceRenderResult {
+	readonly tree: Tree;
+	readonly data: JsonObject;
+	readonly access: SurfaceAccessLevel;
+}
+
+/** The lighter `data()` result: refreshed data plus the access verdict. */
+export interface SurfaceDataResult {
+	readonly data: JsonObject;
+	readonly access: SurfaceAccessLevel;
+}
+
+/** The payload of an `onUpload` handler (spec §7.1 — snif... never trusted). */
+export interface UploadedFile {
+	/** The file field's name (the `file` field that carried the upload). */
+	readonly field: string;
+	/** Client-supplied filename, sanitised to a basename. */
+	readonly name: string;
+	/** Sniffed from the bytes, never trusted from the client. */
+	readonly mime: string;
+	/** Capped by the field's `maxBytes` and `server.maxUploadBytes`. */
+	readonly bytes: Uint8Array;
+}
+
+/**
+ * What an action handler returns (spec §6.3/§7.1): accepted (with an
+ * optional data update, a navigation, and a toast) or rejected (an
+ * operator-facing error, optionally field-scoped).
+ */
+export type ActionResult =
+	| {
+				readonly ok: true;
+				/** Data ops the server applies to the instance's data (sharedData only keeps them; §7.3). */
+				readonly update?: DataOps;
+				/** A `navigate` action (spec §6.1): the channel routes it through the normal navigation paths. */
+				readonly navigate?: Extract<Action, { type: "navigate" }>;
+				readonly toast?: string;
+		  }
+	| {
+				readonly ok: false;
+				readonly error: { readonly message: string; readonly field?: string };
+		  };
+
+/**
+ * One declared surface (spec §7.1, verbatim shape): the placement is
+ * the generic parameter — `"view"` or `"panel"` (the settings sections
+ * of §13.3 are a separate workstream).
+ */
+export interface SurfaceDef<P extends "view" | "panel"> {
+	/** Unique within the extension. */
+	readonly id: string;
+	readonly title: string;
+	readonly icon: IconName;
+	readonly placement: P;
+	/** Data is identical for every principal with access (§7.3). */
+	readonly sharedData?: boolean;
+	/** Channels refetch data on this interval while visible (min 5000). */
+	readonly refreshMs?: number;
+	/** §7.3; default: canonical JSON of params. */
+	instanceKey?(params: JsonParams): string;
+	render(ctx: SurfaceContext): Promise<SurfaceRenderResult>;
+	data?(ctx: SurfaceContext): Promise<SurfaceDataResult>;
+	readonly actions?: Readonly<
+		Record<string, (ctx: SurfaceContext, payload: JsonParamValue) => Promise<ActionResult>>
+	>;
+}
+
+/**
+ * The `surfaces` field of a factory result (spec §7.1): declared views
+ * and panels. Ids are unique across BOTH lists (one namespace — the
+ * loader enforces it).
+ */
+export interface SurfacesContribution {
+	readonly views?: readonly SurfaceDef<"view">[];
+	readonly panels?: readonly SurfaceDef<"panel">[];
+	/** §13.3 settings sections — a separate workstream; declared for shape stability. */
+	readonly settings?: readonly never[];
+}
+
+// ---------------------------------------------------------------------------
 // The host
 // ---------------------------------------------------------------------------
 
@@ -466,6 +578,20 @@ export interface SigrunHost {
 		key: string,
 		context: HandlerContext,
 	): Promise<void>;
+
+	/**
+	 * Publish a change for one surface instance (spec §7.3).
+	 * `changed(id, key, update?)` tells the server that instance `key`
+	 * of surface `id` changed: watching streams receive a `surface.changed`
+	 * event and refetch. `key` is the string `instanceKey(params)` returned
+	 * for that instance — params NEVER appear here. `update` carries data
+	 * ops (kept only for `sharedData` surfaces, §7.3). Fire-and-forget:
+	 * never awaited, and calling it for a surface without `data()` (a
+	 * load-time contract violation) is rejected by the host.
+	 */
+	readonly surfaces: {
+		changed(id: string, key: string, update?: DataOps): void;
+	};
 
 	/**
 	 * Drive conversations in-process (channel bridges, jobs) over the
@@ -568,6 +694,8 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly skills?: readonly string[];
 	/** Notification transports (lands in Task 6). */
 	readonly notifiers?: readonly NotifierContribution[];
+	/** Declared surfaces — views and panels (UI-blocks U3, spec §7.1; the service lands in Task 2). */
+	readonly surfaces?: SurfacesContribution;
 }
 
 /**
