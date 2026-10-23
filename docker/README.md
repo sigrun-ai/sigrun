@@ -59,7 +59,7 @@ keeps these in the operator Secret instead.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `SIGRUN_IMAGE_TAG` | `0.1.4` | The published image tag (the compose analogue of the chart's `image.tag`). |
+| `SIGRUN_IMAGE_TAG` | `0.1.5` | The published image tag (the compose analogue of the chart's `image.tag`). |
 | `SIGRUN_UID` / `SIGRUN_GID` | `1000` / `1000` | The uid/gid the container runs as. The default matches the image's `USER`, so a fresh named volume inherits `node:node` ownership on first mount with no manual chown. Override when your `/data` volume is already owned by another uid. (A `SIGRUN_UID=0` root start needs the entrypoint's privilege-drop trampoline — which the `cap_drop: [ALL]` hardening blocks; re-add `CAP_CHOWN`, `CAP_SETUID`, `CAP_SETGID` if you truly want it.) |
 | `SIGRUN_EXTENSIONS` | unset | The env-shaped extension fleet override: a comma-separated package list that REPLACES the settings file's `extensions` list when set (env wins — sigrun core's contract). When unset in `docker/.env` the variable is absent from the container, not empty — the settings file drives the fleet. Mutually exclusive with the file-driven flow under **Adding an extension** below; use one or the other, or the env silently shadows the file every boot. |
 
