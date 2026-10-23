@@ -44,7 +44,10 @@ export interface GatewayHandle {
 	/**
 	 * Stop the engine (aborting the `start` ctx's signal) — the ordered
 	 * shutdown's step 5 (after the bus drain delivered every pending
-	 * settle). Idempotent for safety; the shutdown path calls it once.
+	 * settle). IDEMPOTENT: concurrent/repeated calls join the ONE stop
+	 * (`engine.stop()` runs at most once). Engines must tolerate a
+	 * `stop()` whose `start` never ran (the lazy `started` + shutdown
+	 * edge: a boot that shuts down before the first `started` read).
 	 */
 	stop(): Promise<void>;
 }
@@ -116,6 +119,18 @@ export function startGateway(opened: OpenedHarness): GatewayHandle {
 			});
 		return startPromise;
 	};
+	// IDEMPOTENT stop, the mirror of beginStart: the FIRST call runs
+	// `abort.abort()` + `engine.stop()`; every later call (and any racing
+	// the first) joins the SAME promise — a double-stop never calls
+	// `engine.stop()` twice (the interface documents that contract).
+	let stopPromise: Promise<void> | undefined;
+	const stopOnce = (): Promise<void> => {
+		stopPromise ??= (async (): Promise<void> => {
+			abort.abort();
+			await engine.stop();
+		})();
+		return stopPromise;
+	};
 	// A throwing health() logs ONCE per process — the meta route calls
 	// health per request, and a persistently-throwing engine would spam
 	// the log on every poll otherwise.
@@ -137,9 +152,6 @@ export function startGateway(opened: OpenedHarness): GatewayHandle {
 			}
 		},
 		stopIntake: () => engine.stopIntake(),
-		stop: async (): Promise<void> => {
-			abort.abort();
-			await engine.stop();
-		},
+		stop: stopOnce,
 	};
 }

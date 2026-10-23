@@ -159,8 +159,10 @@ export async function serve(
 	await app.listen({ port: config.port, host });
 	// The engine starts with the listener live (gateway C2's lifecycle:
 	// start after listen — a failed start latches degraded inside the
-	// handle, never wedges boot).
-	void gateway.started;
+	// handle, never wedges boot). AWAITED: serve() resolves only once the
+	// engine start completed (or failed-and-latched) — the constraint's
+	// intent; the lazy `started` never rejects, so this await cannot throw.
+	await gateway.started;
 	// Machine-greppable: the deploy-entry test waits for this line, and an
 	// operator reading pod logs sees the bound port without guessing. The
 	// version rides the same line (what an operator quotes in a bug report).
