@@ -69,12 +69,18 @@ export function registerMetaRoutes(
 					...(surfaces === undefined
 						? {}
 						: {
-								surfaces: surfaces.defs.map((def) => ({
-									id: def.id,
-									title: def.title,
-									icon: def.icon,
-									placement: def.placement,
-								})),
+							surfaces: surfaces.defs.map((def) => ({
+								id: def.id,
+								title: def.title,
+								icon: def.icon,
+								placement: def.placement,
+								// The refresh cadence (§7.1): the channels'
+								// visible-surface refetch intervals read it here
+								// (never a second fetch).
+								...(def.refreshMs === undefined
+									? {}
+									: { refreshMs: def.refreshMs }),
+							})),
 							}),
 				};
 			}),

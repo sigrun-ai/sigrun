@@ -149,4 +149,99 @@ describe("SurfacePage", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	test("an act's accepted navigate result routes through onNavigate (the delivery path)", async () => {
+		const { SurfacePage } = await import("./SurfacePage");
+		const { renderAsync } = await import("../test-utils");
+		const navigations: { params?: unknown; target?: unknown }[] = [];
+		const act = vi.fn(async () => ({
+			ok: true as const,
+			rev: 2,
+			navigate: { type: "navigate" as const, target: { job: "j1" } },
+		}));
+		const transport = {
+			load: vi.fn(async () => stubLoad()),
+			fetchData: vi.fn(async () => ({ rev: 2, treeRev: 1 })),
+			act,
+			upload: vi.fn(),
+			image: vi.fn(),
+			onChanged: vi.fn(() => () => {}),
+		};
+		const renderer = await renderAsync(
+			<SurfacePage
+				slug="fixture-surfaces"
+				id="board"
+				transport={transport}
+				hub={new ExtSurfaceHub()}
+				onNavigate={(action) => navigations.push(action)}
+			/>,
+		);
+		// Drive the move gesture through the lane's drop handler (the
+		// DOM dataTransfer path needs a browser; the handler seam is the
+		// unit surface).
+		const board = renderer.root.findByProps({ className: "ext-board" });
+		const lane = board.findByProps({ "data-lane": "done" });
+		const onDrop = lane.props.onDrop as (event: {
+			dataTransfer: { getData(t: string): string };
+		}) => void;
+		onDrop({ dataTransfer: { getData: () => "c1" } });
+		await vi.waitFor(() => {
+			expect(navigations).toEqual([{ target: { job: "j1" } }]);
+		});
+	});
+
+	test("a hidden tab pauses the cadence; visible resumes with an immediate refetch", async () => {
+		vi.useFakeTimers();
+		const listeners: (() => void)[] = [];
+		const doc = {
+			visibilityState: "visible" as string,
+			addEventListener: (_t: string, l: () => void) => listeners.push(l),
+			removeEventListener: (_t: string, l: () => void) => {
+				const i = listeners.indexOf(l);
+				if (i >= 0) listeners.splice(i, 1);
+			},
+		};
+		(globalThis as { document?: unknown }).document = doc;
+		try {
+			const { SurfacePage } = await import("./SurfacePage");
+			const { renderAsync } = await import("../test-utils");
+			const fetchData = vi.fn(async () => ({ rev: 1, treeRev: 1 }));
+			const transport = {
+				load: vi.fn(async () => stubLoad()),
+				fetchData,
+				act: vi.fn(),
+				upload: vi.fn(),
+				image: vi.fn(),
+				onChanged: vi.fn(() => () => {}),
+			};
+			await renderAsync(
+				<SurfacePage
+					slug="fixture-surfaces"
+					id="stats"
+					refreshMs={1000}
+					transport={transport}
+					hub={new ExtSurfaceHub()}
+				/>,
+			);
+			await vi.advanceTimersByTimeAsync(2500);
+			const whileVisible = fetchData.mock.calls.length;
+			expect(whileVisible).toBeGreaterThanOrEqual(2);
+
+			// Hide the tab: the cadence pauses.
+			doc.visibilityState = "hidden";
+			for (const listener of [...listeners]) listener();
+			const atHide = fetchData.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(fetchData.mock.calls.length).toBe(atHide);
+
+			// Show again: resume + an immediate refetch.
+			doc.visibilityState = "visible";
+			for (const listener of [...listeners]) listener();
+			await vi.advanceTimersByTimeAsync(10);
+			expect(fetchData.mock.calls.length).toBeGreaterThan(atHide);
+		} finally {
+			delete (globalThis as { document?: unknown }).document;
+			vi.useRealTimers();
+		}
+	});
 });

@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+	CoreTarget,
 	JsonObject,
 	JsonValue,
 	SurfaceTransport,
@@ -28,6 +29,15 @@ import type { ExtSurfaceHub } from "./extTransport";
 /** The watcher-keepalive interval (spec §7.3): a `since` fetch every 5
  *  minutes while visible keeps the registry entry alive. */
 export const KEEPALIVE_MS = 5 * 60 * 1000;
+
+/** The document-visibility seam (spec §7.3's "while visible" rule): the
+ *  refresh + keepalive cadences pause while the tab is hidden. A host
+ *  without `document` (the test renderer) counts as VISIBLE.
+ *  Resolved per call — tests swap the global per test. */
+function documentVisible(): boolean {
+	const doc = (globalThis as { document?: { visibilityState?: string } }).document;
+	return doc?.visibilityState !== "hidden";
+}
 
 /** One board card (the lane-board data shape the fixture declares);
  *  the index signature keeps the object a JsonObject. */
@@ -95,7 +105,10 @@ export interface SurfacePageProps {
 	/** The declared `refreshMs` (spec §7.3). Absent → no refresh cadence. */
 	readonly refreshMs?: number;
 	/** The shell's navigate seam (server `navigate` actions land here). */
-	readonly onNavigate?: (action: { params?: JsonObject; target?: unknown }) => void;
+	readonly onNavigate?: (action: {
+		params?: JsonObject;
+		target?: CoreTarget;
+	}) => void;
 }
 
 /** One extension-surface page. */
@@ -159,26 +172,71 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 			void refetch().catch(() => undefined);
 		});
 
-		// refreshMs cadence (spec §7.3): refetch data while mounted.
-		const refreshTimer =
-			props.refreshMs === undefined
-				? undefined
-				: setInterval(() => {
-						if (!alive) return;
-						void refetch().catch(() => undefined);
-					}, props.refreshMs);
+		// refreshMs cadence (spec §7.3): refetch data while the surface is
+		// VISIBLE — a hidden tab pauses the timer (the visibility listener
+		// restarts it on return).
+		let refreshTimer: ReturnType<typeof setInterval> | undefined;
+		const startRefresh = (): void => {
+			if (props.refreshMs === undefined || refreshTimer !== undefined) return;
+			refreshTimer = setInterval(() => {
+				if (!alive) return;
+				void refetch().catch(() => undefined);
+			}, props.refreshMs);
+		};
+		const stopRefresh = (): void => {
+			if (refreshTimer !== undefined) clearInterval(refreshTimer);
+			refreshTimer = undefined;
+		};
 
-		// The 5-minute watcher keepalive (spec §7.3's 10-minute TTL margin).
-		const keepaliveTimer = setInterval(() => {
-			if (!alive) return;
-			void refetch().catch(() => undefined);
-		}, KEEPALIVE_MS);
+		// The 5-minute watcher keepalive (spec §7.3's 10-minute TTL
+		// margin): same visibility rule — a hidden tab's entry may lapse
+		// (the surface re-registers on return).
+		let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
+		const startKeepalive = (): void => {
+			if (keepaliveTimer !== undefined) return;
+			keepaliveTimer = setInterval(() => {
+				if (!alive) return;
+				void refetch().catch(() => undefined);
+			}, KEEPALIVE_MS);
+		};
+		const stopKeepalive = (): void => {
+			if (keepaliveTimer !== undefined) clearInterval(keepaliveTimer);
+			keepaliveTimer = undefined;
+		};
+
+		// Document visibility: pause both cadences while hidden, resume
+		// (with an immediate refetch — the missed window applies) on
+		// visible. The listener is absent in hosts without document.
+		const doc = (
+			globalThis as {
+				document?: {
+					addEventListener(t: string, l: () => void): void;
+					removeEventListener(t: string, l: () => void): void;
+				};
+			}
+		).document;
+		const onVisibility = (): void => {
+			if (documentVisible()) {
+				startRefresh();
+				startKeepalive();
+				void refetch().catch(() => undefined);
+			} else {
+				stopRefresh();
+				stopKeepalive();
+			}
+		};
+		if (documentVisible()) {
+			startRefresh();
+			startKeepalive();
+		}
+		doc?.addEventListener("visibilitychange", onVisibility);
 
 		return () => {
 			alive = false;
 			offChanged();
-			if (refreshTimer !== undefined) clearInterval(refreshTimer);
-			clearInterval(keepaliveTimer);
+			doc?.removeEventListener("visibilitychange", onVisibility);
+			stopRefresh();
+			stopKeepalive();
 		};
 	}, [props.slug, props.id, props.transport, props.hub, props.refreshMs, refetch]);
 
@@ -206,8 +264,20 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 				return;
 			}
 			revRef.current = Math.max(revRef.current, result.rev);
+			// An accepted action's `navigate` field (spec §6.1) routes
+			// through the shell (the act result is the DELIVERY path).
+			if (result.navigate !== undefined && result.navigate.type === "navigate") {
+				props.onNavigate?.({
+					...(result.navigate.params === undefined
+						? {}
+						: { params: result.navigate.params }),
+					...(result.navigate.target === undefined
+						? {}
+						: { target: result.navigate.target }),
+				});
+			}
 		},
-		[props.transport, refetch],
+		[props.transport, props.onNavigate, refetch],
 	);
 
 	if (state.status === "loading") {

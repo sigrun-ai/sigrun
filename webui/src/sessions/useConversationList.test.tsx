@@ -94,6 +94,7 @@ function makeHarness(init?: { readonly listFails?: boolean }) {
 		fetchSurfaceImpl,
 		surfaceFetches: () => surfaceRequests.length,
 		lastSurfaceRequest: () => surfaceRequests[surfaceRequests.length - 1],
+		surfaceRequestUrls: () => surfaceRequests.map((request) => request.url),
 	};
 }
 
@@ -281,5 +282,26 @@ describe("useConversationList", () => {
 		expect(harness.lastSurfaceRequest()?.headers["x-sigrun-stream"]).toBe(
 			"stream-two",
 		);
+	});
+
+	test("U3 Task 5 fix: two INSTANCES of one surface (different params) each re-register after a re-hello", async () => {
+		const harness = makeHarness();
+		const { getApi, emit } = await renderHost(harness, false);
+		await emit("hello", JSON.stringify({ streamId: "stream-one" }));
+		// Two instances of the same surface, keyed by their params.
+		getApi().noteSurfaceVisible("acme", "board", { board: "b1" });
+		getApi().noteSurfaceVisible("acme", "board", { board: "b2" });
+		getApi().noteSurfaceVisible("acme", "board"); // the default instance
+		await emit("hello", JSON.stringify({ streamId: "stream-two" }));
+		expect(harness.surfaceFetches()).toBe(3);
+		// Each re-fetch carries its OWN params (its own watcher entry).
+		const urls = harness.surfaceRequestUrls();
+		expect(urls).toContain(
+			`/v1/ext/acme/surfaces/board?params=${encodeURIComponent('{"board":"b1"}')}`,
+		);
+		expect(urls).toContain(
+			`/v1/ext/acme/surfaces/board?params=${encodeURIComponent('{"board":"b2"}')}`,
+		);
+		expect(urls).toContain("/v1/ext/acme/surfaces/board");
 	});
 });

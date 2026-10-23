@@ -14,6 +14,7 @@ import {
 	extPanelEntries,
 	extViewEntries,
 	loadRailOrder,
+	moveExtView,
 	orderExtViews,
 	RAIL_ORDER_KEY,
 	saveRailOrder,
@@ -124,5 +125,27 @@ describe("rail order persistence", () => {
 			"{not json",
 		);
 		expect(loadRailOrder()).toEqual([]);
+	});
+
+	test("moveExtView reorders and persists; the saved order survives a reload", () => {
+		const entries = [
+			{ slug: "a", id: "v1", title: "A1", icon: "board" },
+			{ slug: "b", id: "v2", title: "B2", icon: "chart" },
+			{ slug: "c", id: "v3", title: "C3", icon: "board" },
+		];
+		// Move b/v2 up one slot; the new order persists.
+		const saved = moveExtView(entries, "b/v2", -1);
+		expect(saved).toEqual(["b/v2", "a/v1", "c/v3"]);
+		// A simulated reload: loadRailOrder re-reads the store.
+		expect(loadRailOrder()).toEqual(["b/v2", "a/v1", "c/v3"]);
+		expect(
+			orderExtViews(entries, loadRailOrder()).map(entryKey),
+		).toEqual(["b/v2", "a/v1", "c/v3"]);
+		// The ends are a no-op (driven off the CURRENT ordered list, as
+		// the rail passes it).
+		const ordered = orderExtViews(entries, loadRailOrder());
+		expect(moveExtView(ordered, "b/v2", -1)).toEqual(saved);
+		expect(moveExtView(ordered, "nope/v9", 1)).toEqual(saved);
+		expect(loadRailOrder()).toEqual(["b/v2", "a/v1", "c/v3"]);
 	});
 });

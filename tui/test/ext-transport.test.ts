@@ -64,7 +64,7 @@ describe("surfaceKeyHash (wire compat)", () => {
 describe("createExtSurfaceTransport", () => {
 	test("load() GETs the surface route on the baseUrl (trailing slash normalized)", async () => {
 		const stub = stubFetch({ tree: {}, data: {}, rev: 0, treeRev: 0, access: "write" });
-		const transport = createExtSurfaceTransport({ ...BASE, fetch: stub.fetch });
+		const transport = createExtSurfaceTransport({ ...BASE, fetch: stub.fetch }).transport;
 		await transport.load();
 		expect(stub.calls[0]?.input).toBe(
 			"http://127.0.0.1:8080/v1/ext/fixture-surfaces/surfaces/board",
@@ -81,7 +81,7 @@ describe("createExtSurfaceTransport", () => {
 			...BASE,
 			params: { board: "b2" },
 			fetch: stub.fetch,
-		});
+		}).transport;
 		await transport.load();
 		expect(stub.calls[0]?.input).toContain(
 			`params=${encodeURIComponent('{"board":"b2"}')}`,
@@ -98,7 +98,7 @@ describe("createExtSurfaceTransport", () => {
 			...BASE,
 			params: { board: "b2" },
 			fetch: stub.fetch,
-		});
+		}).transport;
 		await transport.fetchData(2);
 		expect(stub.calls[0]?.input).toContain("/data");
 		expect(stub.calls[0]?.input).toContain("params=");
@@ -106,10 +106,28 @@ describe("createExtSurfaceTransport", () => {
 	});
 
 	test("image() rejects (the route ships with U7)", async () => {
-		const transport = createExtSurfaceTransport({ ...BASE, fetch: stubFetch().fetch });
+		const transport = createExtSurfaceTransport({ ...BASE, fetch: stubFetch().fetch }).transport;
 		await expect(
 			transport.image("/v1/image/x", { asPng: true }),
 		).rejects.toThrow(/U7/);
+	});
+
+	test("setStreamId: a reconnect's new id rides the NEXT fetch (stream-id staleness fix)", async () => {
+		const stub = stubFetch({ rev: 1, treeRev: 1 });
+		const handle = createExtSurfaceTransport({ ...BASE, fetch: stub.fetch });
+		await handle.transport.fetchData();
+		expect(stub.calls[0]?.init?.headers?.["x-sigrun-stream"]).toBe("stream-9");
+		// The reconnect: the app hands the open view the new id; the next
+		// fetch carries it (re-registering the watcher entry).
+		handle.setStreamId("stream-10");
+		await handle.transport.fetchData();
+		expect(stub.calls[1]?.init?.headers?.["x-sigrun-stream"]).toBe("stream-10");
+		// The hub attach passes the setter through.
+		const hub = new ExtSurfaceHub();
+		const attached = hub.attach({ ...BASE, fetch: stub.fetch }, "k");
+		attached.setStreamId("stream-11");
+		await attached.transport.fetchData();
+		expect(stub.calls[2]?.init?.headers?.["x-sigrun-stream"]).toBe("stream-11");
 	});
 });
 
@@ -117,11 +135,11 @@ describe("ExtSurfaceHub (tui)", () => {
 	test("dispatch fires only the matching (slug, id, k) subscription", () => {
 		const hub = new ExtSurfaceHub();
 		const stub = stubFetch();
-		const board = hub.attach({ ...BASE, fetch: stub.fetch }, "k-board");
+		const board = hub.attach({ ...BASE, fetch: stub.fetch }, "k-board").transport;
 		const stats = hub.attach(
 			{ ...BASE, id: "stats", fetch: stub.fetch },
 			"k-stats",
-		);
+		).transport;
 		const seenBoard: number[] = [];
 		const seenStats: number[] = [];
 		board.onChanged((event) => seenBoard.push(event.rev));
@@ -133,7 +151,7 @@ describe("ExtSurfaceHub (tui)", () => {
 
 	test("a same-slug/id event under a different k does NOT fire (multi-instance)", () => {
 		const hub = new ExtSurfaceHub();
-		const board = hub.attach({ ...BASE, fetch: stubFetch().fetch }, "k-b1");
+		const board = hub.attach({ ...BASE, fetch: stubFetch().fetch }, "k-b1").transport;
 		const seen: number[] = [];
 		const off = board.onChanged((event) => seen.push(event.rev));
 		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b2", rev: 9, treeRev: 1 });

@@ -66,6 +66,7 @@ import {
 	ExtSurfaceHub,
 	surfaceKeyHash,
 	transportKey,
+	type ExtSurfaceTransportHandle,
 } from "../blocks/ext-transport.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { spawnSync } from "node:child_process";
@@ -150,8 +151,14 @@ export class TuiApp implements Component, ActionHost {
 	 *  `openExtView`'s transport subscribes through it; the launcher
 	 *  dispatches `surface.changed` events into it. */
 	readonly #extHub = new ExtSurfaceHub();
-	/** The open extension view (the main pane's surface state). */
-	#extView: { readonly slug: string; readonly id: string; readonly transport: SurfaceTransport } | undefined;
+	/** The open extension view (the main pane's surface state). The
+	 *  HANDLE (not the bare transport): a reconnect's new stream id
+	 *  lands via setStreamId without re-creating the transport. */
+	#extView: {
+		readonly slug: string;
+		readonly id: string;
+		readonly handle: ExtSurfaceTransportHandle;
+	} | undefined;
 	readonly #watch: WatchFn;
 	readonly #watchOptions: WatchOptions;
 
@@ -269,11 +276,12 @@ export class TuiApp implements Component, ActionHost {
 	#eventsStreamId: string | undefined;
 
 	/** The launcher's hello hook (U3 Task 5): the stream id feeds
-	 *  future openExtView transports; already-open views re-register
-	 *  on their next fetch (a stale id fetches fine — the server just
-	 *  doesn't count the watcher). */
+	 *  future openExtView transports; an OPEN view's handle gets the
+	 *  new id at once (its next fetch re-registers the watcher entry —
+	 *  spec §7.3's reconnect rule; the webui twin remounts instead). */
 	setEventsStreamId(streamId: string): void {
 		this.#eventsStreamId = streamId;
+		this.#extView?.handle.setStreamId(streamId);
 	}
 
 	/** The open extension view's identity (undefined = the conversation
@@ -292,7 +300,7 @@ export class TuiApp implements Component, ActionHost {
 	 */
 	async openExtView(slug: string, id: string, params?: JsonObject): Promise<void> {
 		const key = transportKey({ slug, id, baseUrl: this.#watchOptions.baseUrl, ...(params === undefined ? {} : { params }) });
-		const transport = this.#extHub.attach(
+		const handle = this.#extHub.attach(
 			{
 				slug,
 				id,
@@ -310,8 +318,22 @@ export class TuiApp implements Component, ActionHost {
 			},
 			surfaceKeyHash(slug, id, key),
 		);
-		this.#extView = { slug, id, transport };
+		this.#extView = { slug, id, handle };
 		this.#tui.requestRender();
+	}
+
+	/**
+	 * Close the open extension view (the Esc/back idiom): the pane
+	 * returns to the conversation AND the surface's fetches stop — no
+	 * cadence, no keepalive for a surface nobody is looking at (spec
+	 *  §7.3's stop-when-hidden rule; U2's cadence timer consults this).
+	 *  Returns true when a view was open (the key was consumed).
+	 */
+	closeExtView(): boolean {
+		if (this.#extView === undefined) return false;
+		this.#extView = undefined;
+		this.#tui.requestRender();
+		return true;
 	}
 
 	/** The app-level surface.changed dispatch (the launcher's
@@ -597,6 +619,12 @@ export class TuiApp implements Component, ActionHost {
 		if (matchesKey(data, Key.escape) && this.#busy && this.#activeId !== undefined) {
 			this.#abortActive();
 			return true;
+		}
+		// Esc (or Back) closes an open extension view — back to the
+		// conversation pane; the surface's fetches stop (the keepalive
+		// stops with the view, spec §7.3's stop-when-hidden).
+		if (matchesKey(data, Key.escape) && this.#extView !== undefined) {
+			return this.closeExtView();
 		}
 		return false;
 	}

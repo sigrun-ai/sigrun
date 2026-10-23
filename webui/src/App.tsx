@@ -45,11 +45,12 @@ import {
 	liveCompactions,
 } from "./entries/liveDoc";
 import { SurfacePage } from "./blocks/SurfacePage";
+import { ExtPanelHost } from "./blocks/ExtPanelHost";
 import { ExtSurfaceHub } from "./blocks/extTransport";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
-import { extPanelEntries } from "./layout/extViews";
+import { extPanelEntries, extViewEntries, loadRailOrder, moveExtView, orderExtViews } from "./layout/extViews";
 import { JobsPanel } from "./jobs/JobsPanel";
 import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
@@ -460,6 +461,63 @@ export function App(options: AppOptions = {}) {
 			extKeyHash.hash,
 		);
 	}, [extRoute, extKey, extKeyHash, extHub, list.streamId]);
+
+	// The open extension PANEL's transport (spec §7.1/§7.3): created ONLY
+	// while a panel tab is active — closing the panel drops the transport
+	// (no cadence, no watcher keepalive for a hidden panel).
+	const extPanelParts = useMemo(() => {
+		if (extPanel === null) return null;
+		const [slug, id] = extPanel.split("/");
+		if (slug === undefined || id === undefined || slug === "" || id === "") {
+			return null;
+		}
+		return { slug, id };
+	}, [extPanel]);
+	const [extPanelKeyHash, setExtPanelKeyHash] = useState<{
+		readonly forKey: string;
+		readonly hash: string;
+	} | null>(null);
+	useEffect(() => {
+		if (extPanelParts === null) {
+			setExtPanelKeyHash(null);
+			return;
+		}
+		let alive = true;
+		const forKey = extPanel ?? "";
+		void eventKeyWeb(extPanelParts.slug, extPanelParts.id, canonicalJson({})).then(
+			(hash) => {
+				if (alive) setExtPanelKeyHash({ forKey, hash });
+			},
+		);
+		return () => {
+			alive = false;
+		};
+	}, [extPanelParts, extPanel]);
+	const extPanelTransport = useMemo(() => {
+		if (
+			extPanelParts === null ||
+			extPanelKeyHash === null ||
+			extPanelKeyHash.forKey !== extPanel
+		) {
+			return undefined;
+		}
+		return extHub.attach(
+			{
+				slug: extPanelParts.slug,
+				id: extPanelParts.id,
+				...(list.streamId === undefined ? {} : { streamId: list.streamId }),
+			},
+			extPanelKeyHash.hash,
+		);
+	}, [extPanelParts, extPanel, extPanelKeyHash, extHub, list.streamId]);
+	// The active panel's declared refresh cadence (§7.1): read from the
+	// meta projection's panel rows (never a second fetch).
+	const panelRefreshMs = useMemo(() => {
+		if (extPanelParts === null || boot.status !== "ready") return undefined;
+		return extPanelEntries(boot.meta.extensions).find(
+			(entry) => entry.slug === extPanelParts.slug && entry.id === extPanelParts.id,
+		)?.refreshMs;
+	}, [extPanelParts, boot]);
 	// parent, named from the lifted rows — one hook owns every name the UI
 	// shows. A parent missing from the rows falls back to the display name.
 	const parent = useMemo(() => {
@@ -523,6 +581,42 @@ export function App(options: AppOptions = {}) {
 		setRoute(next);
 		setDrawerOpen(false);
 	}, []);
+
+	// The rail's extension-view ordering state (a client preference):
+	// App owns it so the rail's keyboard reorder (Alt+Arrow) re-renders
+	// and persists (`sigrun.railOrder`, surviving a reload).
+	const [railOrder, setRailOrder] = useState<readonly string[]>(() =>
+		loadRailOrder(),
+	);
+	const onMoveExtView = useCallback(
+		(key: string, delta: -1 | 1): void => {
+			setRailOrder((current) => {
+				if (boot.status !== "ready") return current;
+				const ordered = orderExtViews(
+					extViewEntries(boot.meta.extensions),
+					current,
+				);
+				return moveExtView(ordered, key, delta);
+			});
+		},
+		[boot],
+	);
+	const railExtEntries = useMemo(
+		() =>
+			boot.status === "ready"
+				? orderExtViews(extViewEntries(boot.meta.extensions), railOrder)
+				: [],
+		[boot, railOrder],
+	);
+
+	// The open ext view's declared refresh cadence (§7.1): read from the
+	// meta projection (never a second fetch); absent → no cadence.
+	const extRefreshMs = useMemo(() => {
+		if (extRoute === null) return undefined;
+		return railExtEntries.find(
+			(entry) => entry.slug === extRoute.slug && entry.id === extRoute.id,
+		)?.refreshMs;
+	}, [extRoute, railExtEntries]);
 
 	// The conversation select ALSO writes the hash (the browser's back
 	// returns to the surface the user came from).
@@ -730,6 +824,8 @@ export function App(options: AppOptions = {}) {
 					identity={identity}
 					hiddenExtSurfaces={hiddenExtSurfaces}
 					onOpenExtView={onOpenExtView}
+					extViewEntries={railExtEntries}
+					onMoveExtView={onMoveExtView}
 					onLogout={
 						onLogout === undefined
 							? undefined
@@ -798,6 +894,9 @@ export function App(options: AppOptions = {}) {
 							hub={extHub}
 							transport={extTransport}
 							onNavigate={(action) => {
+								const target = action.target;
+								// The params-only form re-renders THIS surface
+								// with new params (a new hash entry).
 								if (action.params !== undefined) {
 									const next: Route = {
 										kind: "ext",
@@ -807,8 +906,46 @@ export function App(options: AppOptions = {}) {
 									};
 									writeHash(routeHash(next));
 									setRoute(next);
+									return;
+								}
+								// A core target (spec §6.1): conversation opens the
+								// chat route + selects; job opens the jobs panel;
+								// settings opens the dialog; view re-routes to that
+								// extension view. An inaccessible target renders the
+								// usual not-found (the surface page's own access
+								// resolution — the shell never pre-checks).
+								if (target !== undefined && target !== null && typeof target === "object") {
+									if ("conversation" in target && typeof target.conversation === "number") {
+										writeHash("#/c");
+										setRoute({ kind: "chat" });
+										onSelect(target.conversation);
+										return;
+									}
+									if ("job" in target) {
+										writeHash("#/c");
+										setRoute({ kind: "chat" });
+										setPanel("jobs");
+										persistPanel("jobs");
+										return;
+									}
+									if ("settings" in target) {
+										setSettingsOpen(true);
+										return;
+									}
+									if ("view" in target && target.view !== null && typeof target.view === "object") {
+										const view = target.view as { extension: string; id: string; params?: JsonObject };
+										const next: Route = {
+											kind: "ext",
+											slug: view.extension,
+											id: view.id,
+											params: view.params ?? {},
+										};
+										writeHash(routeHash(next));
+										setRoute(next);
+									}
 								}
 							}}
+							{...(extRefreshMs === undefined ? {} : { refreshMs: extRefreshMs })}
 						/>
 					) : (
 					<div className="chat-column">
@@ -851,6 +988,21 @@ export function App(options: AppOptions = {}) {
 				onOpenExtPanel={(slug, id) => {
 					setExtPanel(`${slug}/${id}`);
 				}}
+				{...(extPanelParts !== null && extPanelTransport !== undefined
+					? {
+							extContent: (
+								<ExtPanelHost
+									key={extPanel}
+									slug={extPanelParts.slug}
+									id={extPanelParts.id}
+									transport={extPanelTransport}
+									{...(panelRefreshMs === undefined
+										? {}
+										: { refreshMs: panelRefreshMs })}
+								/>
+							),
+						}
+					: {})}
 				outline={
 					<OutlinePanel scrollRoot={scrollRoot} turns={outlineTurns} />
 				}
