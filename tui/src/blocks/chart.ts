@@ -237,9 +237,10 @@ function fullChart(block: ChartBlock, ctx: BlockCtx, width: number): string[] {
 	const canvas = new BrailleCanvas(plotCells, PLOT_ROWS);
 	const xDot = (x: number): number =>
 		Math.round(((x - xMin) / (xMax - xMin)) * (plotCells * 2 - 1));
-	// Dot-space y counts from the BOTTOM (the canvas flips into cell rows).
+	// The canvas's dot space is TOP-DOWN (Unicode cell layout); the
+	// chart's values grow upward, so y inverts here.
 	const yDot = (y: number): number =>
-		Math.round(((y - yMin) / (yMax - yMin)) * (PLOT_ROWS * 4 - 1));
+		Math.round(((yMax - y) / (yMax - yMin)) * (PLOT_ROWS * 4 - 1));
 
 	// Bars draw first (per x tick, as a column of blocks); lines and
 	// areas then plot over them (the last plotter owns the cell).
@@ -301,8 +302,11 @@ function fullChart(block: ChartBlock, ctx: BlockCtx, width: number): string[] {
 		areaTops.push({ series, top, index });
 	}
 
-	if (unicode) {
-		// Areas: fill from the axis up to the top edge.
+	// Plot regardless of unicode: the canvas stores glyph-agnostic
+	// bits; only the ASSEMBLY chooses Braille glyphs vs ASCII marks.
+	{
+		// Areas: fill from the axis (dot-space bottom row) up to the top edge.
+		const bottomDot = PLOT_ROWS * 4 - 1;
 		for (const { top, index } of areaTops) {
 			for (let i = 0; i < top.length - 1; i++) {
 				const a = top[i] as [number, number];
@@ -312,7 +316,7 @@ function fullChart(block: ChartBlock, ctx: BlockCtx, width: number): string[] {
 				for (let x = Math.min(xa, xb); x <= Math.max(xa, xb); x++) {
 					const t = xa === xb ? 0 : (x - xa) / (xb - xa);
 					const y = yDot(a[1] + (b[1] - a[1]) * t);
-					canvas.fill(x, 0, x, y, index);
+					canvas.fill(x, y, x, bottomDot, index);
 				}
 			}
 		}
