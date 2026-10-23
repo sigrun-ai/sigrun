@@ -488,6 +488,14 @@ export interface MetaResponse {
 		 * worker's first run.
 		 */
 		readonly workers?: readonly WorkerStatus[];
+		/**
+		 * The declared surfaces (UI-blocks U3 Task 5): the flattened
+		 * view + panel rows the channels register their rail/panel
+		 * entries from. Absent when the extension declared none. The
+		 * meta response carries the DECLARATION (id/title/icon/
+		 * placement); access filtering is render-time (§6.5).
+		 */
+		readonly surfaces?: readonly ExtensionSurfaceInfo[];
 	}[];
 	/**
 	 * §5 health: pure aggregation over boot-retained §3 producers (spec
