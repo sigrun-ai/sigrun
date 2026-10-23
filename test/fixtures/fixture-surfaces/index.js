@@ -8,6 +8,15 @@
  * of its own, so the bare specifier resolves through the repo root's
  * self-reference into `dist/blocks` (the running server's copy; the
  * packages-dir host-link shape is covered by fixture-blocks-ext).
+ *
+ * Task 2 test seam: the fixture models an extension that keeps its own
+ * per-user grant table (spec §6.5 — the extension does its own
+ * accessOf) in a module-level map. The loader imports THIS module by
+ * the same file URL the test imports, so mutations are visible to the
+ * loaded extension — that is the whole seam. `calls`/`contexts` record
+ * every render/data invocation the way a real extension's own logging
+ * would; tests read them to pin the server's call discipline (every
+ * data fetch calls data(), params order does not change the key).
  */
 
 import {
@@ -71,6 +80,52 @@ const boardData = {
 	],
 };
 
+/** The stats panel's data. */
+const statsData = { open: 1, done: 1 };
+
+/**
+ * The per-user grant table (the test seam): username → access level for
+ * BOTH surfaces. Absent user falls back to the surface's default below.
+ */
+export const accessOverrides = new Map();
+
+/**
+ * Per-surface invocation counters: `calls.render[id]` / `calls.data[id]`.
+ */
+export const calls = { render: {}, data: {} };
+
+/**
+ * One record per render/data invocation: which surface, which principal,
+ * which params, and the instance KEY the server computed (spec §7.3).
+ */
+export const contexts = [];
+
+/** Reset the seam state (tests call this in beforeEach). */
+export function resetSurfaceFixture() {
+	accessOverrides.clear();
+	calls.render = {};
+	calls.data = {};
+	contexts.length = 0;
+}
+
+/** The fixture's own access resolution (its "accessOf"): table, else default. */
+function accessOf(principal, fallback) {
+	const user = principal === undefined ? undefined : principal.user;
+	return accessOverrides.get(user) ?? fallback;
+}
+
+/** Record one invocation on the seam. */
+function record(kind, id, ctx) {
+	calls[kind][id] = (calls[kind][id] ?? 0) + 1;
+	contexts.push({
+		kind,
+		id,
+		user: ctx.principal === undefined ? undefined : ctx.principal.user,
+		params: ctx.params,
+		key: ctx.key,
+	});
+}
+
 export default function createFixtureSurfaces() {
 	return {
 		extension: {
@@ -87,12 +142,18 @@ export default function createFixtureSurfaces() {
 					icon: "board",
 					placement: "view",
 					sharedData: true,
-					render: async () => ({
-						tree: boardTree,
-						data: boardData,
-						access: "write",
-					}),
-					data: async () => ({ data: boardData, access: "write" }),
+					render: async (ctx) => {
+						record("render", "board", ctx);
+						return {
+							tree: boardTree,
+							data: boardData,
+							access: accessOf(ctx.principal, "write"),
+						};
+					},
+					data: async (ctx) => {
+						record("data", "board", ctx);
+						return { data: boardData, access: accessOf(ctx.principal, "write") };
+					},
 					actions: {
 						move: async () => ({ ok: true, update: { ops: [] } }),
 					},
@@ -105,12 +166,18 @@ export default function createFixtureSurfaces() {
 					icon: "chart",
 					placement: "panel",
 					refreshMs: 60000,
-					render: async () => ({
-						tree: statsTree,
-						data: { open: 1, done: 1 },
-						access: "read",
-					}),
-					data: async () => ({ data: { open: 1, done: 1 }, access: "read" }),
+					render: async (ctx) => {
+						record("render", "stats", ctx);
+						return {
+							tree: statsTree,
+							data: statsData,
+							access: accessOf(ctx.principal, "read"),
+						};
+					},
+					data: async (ctx) => {
+						record("data", "stats", ctx);
+						return { data: statsData, access: accessOf(ctx.principal, "read") };
+					},
 				},
 			],
 		},
