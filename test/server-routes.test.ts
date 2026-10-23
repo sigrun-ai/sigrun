@@ -89,6 +89,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/ext/:slug/surfaces/:id"],
 	["GET", "/v1/ext/:slug/surfaces/:id/data"],
 	["POST", "/v1/ext/:slug/surfaces/:id/actions"],
+	["PUT", "/v1/ext/:slug/surfaces/:id/uploads/:field/:name"],
+	["GET", "/v1/ext/:slug/assets/*"],
 	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
 	["GET", "/v1/interactions"],
 	["POST", "/v1/conversations"],
@@ -364,6 +366,11 @@ describe("server route table", () => {
 				"/v1/ext/:slug/surfaces/:id",
 				"/v1/ext/:slug/surfaces/:id/data",
 				"/v1/ext/:slug/surfaces/:id/actions",
+				"/v1/ext/:slug/surfaces/:id/uploads/:field/:name",
+				// Fastify prints the assets wildcard route as a bare "*" line
+				// (printRoutes collapses `/v1/ext/:slug/assets/*` onto the
+				// root wildcard row the test's parser reconstructs).
+				"*",
 				"/v1/settings",
 				"/v1/interactions",
 				"/v1/jobs",

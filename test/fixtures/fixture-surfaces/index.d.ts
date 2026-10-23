@@ -22,6 +22,19 @@ export const contexts: {
 	key: string;
 }[];
 
+/** One record per action/upload handler invocation (Task 3). */
+export const actionCalls: {
+	action: string;
+	payload?: unknown;
+	file?: { field: string; name: string; mime: string; bytes: number[] };
+	key: string;
+	user: string | undefined;
+}[];
+
+/** Behavior knobs: sleep per action name; canned results per name. */
+export const sleepMs: Record<string, number>;
+export const actionResults: Record<string, unknown>;
+
 /** Reset the seam state. */
 export function resetSurfaceFixture(): void;
 

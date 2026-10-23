@@ -23,6 +23,8 @@ import {
 	bind,
 	card,
 	collection,
+	file,
+	form,
 	markdown,
 	page,
 	stack,
@@ -49,6 +51,19 @@ const boardTree = tree(
 				reorder: { within: true, across: true },
 				onMove: "move",
 				item: card({ title: bind("./title") }),
+			}),
+			form({
+				id: "attachments",
+				bind: "/attachments",
+				mode: "submit",
+				children: [
+					file({
+						name: "attachment",
+						label: "Attachment",
+						maxBytes: 1024,
+						onUpload: "attachment",
+					}),
+				],
 			}),
 		],
 	}),
@@ -100,12 +115,47 @@ export const calls = { render: {}, data: {} };
  */
 export const contexts = [];
 
+/**
+ * The action invocation log (Task 3): one record per handler call,
+ * `{action, payload, key, user}`; uploads record `{action: "upload",
+ * file: {field, name, mime, bytes}}`.
+ */
+export const actionCalls = [];
+
+/**
+ * Handler behavior knobs (Task 3): keyed by action name.
+ * `sleepMs[name]` — sleep that long before answering (the timeout
+ * test's 11 s handler); `results[name]` — the exact ActionResult to
+ * return (the accept-without-ops / navigate / toast tests).
+ */
+export const sleepMs = {};
+export const actionResults = {};
+
 /** Reset the seam state (tests call this in beforeEach). */
 export function resetSurfaceFixture() {
 	accessOverrides.clear();
 	calls.render = {};
 	calls.data = {};
 	contexts.length = 0;
+	actionCalls.length = 0;
+	for (const key of Object.keys(sleepMs)) delete sleepMs[key];
+	for (const key of Object.keys(actionResults)) delete actionResults[key];
+}
+
+/** One action handler invocation, recorded; behavior from the knobs. */
+async function handleAction(name, ctx, payload) {
+	actionCalls.push({
+		action: name,
+		payload,
+		key: ctx.key,
+		user: ctx.principal === undefined ? undefined : ctx.principal.user,
+	});
+	const sleep = sleepMs[name];
+	if (typeof sleep === "number" && sleep > 0) {
+		await new Promise((resolve) => setTimeout(resolve, sleep));
+	}
+	if (actionResults[name] !== undefined) return actionResults[name];
+	return { ok: true, update: { ops: [] } };
 }
 
 /** The fixture's own access resolution (its "accessOf"): table, else default. */
@@ -154,9 +204,28 @@ export default function createFixtureSurfaces() {
 						record("data", "board", ctx);
 						return { data: boardData, access: accessOf(ctx.principal, "write") };
 					},
-					actions: {
-						move: async () => ({ ok: true, update: { ops: [] } }),
+				actions: {
+					move: (ctx, payload) => handleAction("move", ctx, payload),
+					acceptNoOps: (ctx, payload) => handleAction("acceptNoOps", ctx, payload),
+					go: (ctx, payload) => handleAction("go", ctx, payload),
+					note: (ctx, payload) => handleAction("note", ctx, payload),
+					// The file field's onUpload name IS the handler key (spec
+					// §7.1) — the field is named `attachment`, so this key is too.
+					attachment: async (ctx, file) => {
+						actionCalls.push({
+							action: "upload",
+							file: {
+								field: file.field,
+								name: file.name,
+								mime: file.mime,
+								bytes: Array.from(file.bytes),
+							},
+							key: ctx.key,
+							user: ctx.principal === undefined ? undefined : ctx.principal.user,
+						});
+						return { ok: true };
 					},
+				},
 				},
 			],
 			panels: [
