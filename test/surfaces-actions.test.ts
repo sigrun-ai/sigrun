@@ -437,4 +437,77 @@ describe("the actions route (U3 Task 3)", () => {
 			app.surfaces.setRateLimitDisabled(true);
 		}
 	});
+
+	test("dedup window expiry: an actionId reused AFTER 10 minutes calls the handler again", async () => {
+		const { app, aliceToken } = await server();
+		const actionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const params = { board: "acme-dedup-expiry" };
+		const first = await postAction(app, aliceToken, "move", {
+			actionId,
+			params,
+		});
+		expect(first.status).toBe(200);
+		expect(first.body.rev).toBe(1);
+		// Advance the fake Date past the 10-minute dedup window.
+		vi.setSystemTime(new Date("2026-10-22T00:11:00Z"));
+		const second = await postAction(app, aliceToken, "move", {
+			actionId,
+			params,
+		});
+		expect(second.status).toBe(200);
+		// A fresh invocation: the rev advanced again.
+		expect(second.body.rev).toBe(2);
+		expect(
+			actionCalls.filter((entry) => entry.action === "move"),
+		).toHaveLength(2);
+	});
+
+	test("rate-limit isolation: a principal at the limit on one surface still acts on another", async () => {
+		const { app, aliceToken } = await server();
+		const params = { board: "acme-rate-isolation" };
+		// Warm the board's access cache while the limiter is off (see the
+		// two-principal test's note on per-server bucket state).
+		const warm = await postAction(app, aliceToken, "move", { params });
+		expect(warm.status).toBe(200);
+		// Advance past the 60 s access-cache TTL so the stats panel's
+		// action gate re-renders (other tests may have cached its read
+		// grant at the frozen time), and pin the grant to write via the
+		// fixture seam (actions gate read→403). One-minute STEPS: a single
+		// big Date jump would refill the rate buckets before the burst
+		// (the limiter refills from Date; the timeout test also left the
+		// timer clock at +10 s).
+		accessOverrides.set("alice", "write");
+		for (let i = 1; i <= 6; i += 1) {
+			vi.setSystemTime(new Date(Date.parse("2026-10-22T00:00:00Z") + i * 10_000));
+		}
+		app.surfaces.setRateLimitDisabled(false);
+		try {
+			// Warm the stats panel's own access cache (one token, before
+			// the board burst drains alice's board bucket).
+			const statsWarm = await postAction(app, aliceToken, "ping", {
+				surface: "/v1/ext/fixture-surfaces/surfaces/stats/actions",
+			});
+			expect(statsWarm.status).toBe(200);
+			for (let i = 0; i < 40; i += 1) {
+				await postAction(app, aliceToken, "move", {
+					params,
+					actionId: `iso-${i}`,
+				});
+			}
+			const boardNext = await postAction(app, aliceToken, "move", {
+				params,
+				actionId: "iso-40",
+			});
+			expect(boardNext.status).toBe(429);
+			// The bucket key includes slug+id: the stats panel's bucket is
+			// untouched (its ping action is at full capacity).
+			const statsNext = await postAction(app, aliceToken, "ping", {
+				surface: "/v1/ext/fixture-surfaces/surfaces/stats/actions",
+			});
+			expect(statsNext.status).toBe(200);
+		} finally {
+			accessOverrides.delete("alice");
+			app.surfaces.setRateLimitDisabled(true);
+		}
+	});
 });

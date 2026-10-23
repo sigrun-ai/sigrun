@@ -40,8 +40,12 @@ export class ActionDedup {
 	private readonly clock: () => number;
 	private sweepCounter = 0;
 
-	constructor(clock: () => number = Date.now) {
-		this.clock = clock;
+	constructor(clock?: () => number) {
+		// Resolve Date.now at CALL time, not construction: a default
+		// parameter (`clock = Date.now`) would capture the Date.now of
+		// whichever fake-timer install was active at construction and
+		// freeze this table to that install's clock.
+		this.clock = clock ?? (() => Date.now());
 	}
 
 	/**
