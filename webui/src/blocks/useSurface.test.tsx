@@ -477,8 +477,11 @@ describe("useSurface (spec §6.3)", () => {
 		});
 		expect(laneStates(latest().view as JsonObject, "done")).toEqual(["y", "a"]);
 		expect(transport.pendingActs()).toBe(2);
-		// Reject the FIRST: only that move snaps back. The second entry
-		// still applies, placing "a" at done index 1 from its position.
+		// Reject the FIRST: move 1 snaps back (spec §6.3). Entry 2's
+		// recorded `from` (doing) no longer matches "a"'s confirmed
+		// position — the overlay re-derives placement from the item's
+		// CURRENT position, so entry 2 still delivers "a" to its
+		// destination (done index 1): todo empty, doing [x], done [y, a].
 		await act(async () => {
 			transport.resolveAct({ ok: false, error: { message: "first rejected" } });
 		});
@@ -500,6 +503,31 @@ describe("useSurface (spec §6.3)", () => {
 			transport.resolveFetch({ rev: 2, treeRev: 1, data: afterSecond });
 		});
 		expect(latest().view).toEqual(afterSecond);
+	});
+
+	test("a late accept AFTER the 10 s timeout does not double-toast", async () => {
+		vi.useFakeTimers();
+		const transport = new FakeTransport();
+		transport.loadResult.data = board([task("a", "todo")]);
+		const { latest } = mount(transport);
+		await settleLoad();
+		act(() => {
+			latest().dispatch(
+				MOVE,
+				movePayload("a", { group: "todo", index: 0 }, { group: "doing", index: 0 }),
+			);
+		});
+		// Timeout fires: entry dropped, one toast.
+		await act(async () => {
+			vi.advanceTimersByTime(10_000);
+		});
+		expect(latest().toasts.length).toBe(1);
+		// The server answers LATE (after the timeout) with ok + a toast:
+		// the stale result must NOT push a second toast.
+		await act(async () => {
+			transport.resolveAct({ ok: true, rev: 2, toast: "moved" });
+		});
+		expect(latest().toasts.length).toBe(1);
 	});
 
 	test("a rev gap triggers a full refetch", async () => {

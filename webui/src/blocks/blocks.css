@@ -1259,3 +1259,10 @@
 	opacity: 0.7;
 	white-space: nowrap;
 }
+
+/* Pointer-captured drags must not be stolen by touch scroll (§12.4). */
+.blk-lane-card,
+.blk-calendar-item,
+.blk-calendar-resize {
+	touch-action: none;
+}

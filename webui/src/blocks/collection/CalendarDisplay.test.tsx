@@ -285,4 +285,42 @@ describe("calendar display (spec §5.5/§12.3/§12.4)", () => {
 		expect(json).not.toContain("data-create-day");
 		expect(json).not.toContain("data-resize-item");
 	});
+
+	test("a pointercancel clears the pending calendar drag with no dispatch", () => {
+		vi.stubGlobal("document", {
+			elementFromPoint: () => ({
+				closest: () => ({
+					getAttribute: () => `${OCT}-10`,
+				}),
+			}),
+		});
+		const { renderer, dispatch } = renderCalendar(
+			calendarBlock(),
+			events(["a", `${OCT}-05T09:00:00Z`, `${OCT}-05T10:00:00Z`]),
+			60 * 16,
+		);
+		const card = renderer.root.find(
+			(node) =>
+				node.props["data-drag-item"] === "a" &&
+				typeof node.props.onPointerDown === "function",
+		);
+		act(() => {
+			card.props.onPointerDown({
+				pointerId: 3,
+				clientX: 0,
+				clientY: 0,
+				currentTarget: { setPointerCapture: () => undefined },
+			});
+		});
+		// Cancel mid-drag: no dispatch even though a drop day resolves.
+		act(() => {
+			card.props.onPointerCancel({ pointerId: 3 });
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		// A later pointerup finds no pending drag.
+		act(() => {
+			card.props.onPointerUp({ clientX: 5, clientY: 5 });
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+	});
 });

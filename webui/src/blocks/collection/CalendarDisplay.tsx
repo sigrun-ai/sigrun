@@ -19,7 +19,7 @@ import { useSurfaceActions } from "../context";
 import { useWidthClass } from "../width";
 import { type PreparedGroup, type PreparedItem } from "./Collection";
 import { CardView } from "./Card";
-import { useActivate, useCollectionView } from "./rows";
+import { useActivate } from "./rows";
 
 /** The day key (YYYY-MM-DD) an ISO timestamp falls on. */
 function dayKey(iso: string): string {
@@ -99,7 +99,6 @@ export function CalendarDisplay(props: {
 }): ReactNode {
 	const block = props.block;
 	const time = block.time;
-	const view = useCollectionView(block);
 	const activate = useActivate(block);
 	const actions = useSurfaceActions();
 	const widthClass = useWidthClass();
@@ -128,11 +127,17 @@ export function CalendarDisplay(props: {
 	}
 
 	/** The in-flight drag (move / resize / create share the pointer
-	 *  state; the ref mirrors it for the down->up batch). */
+	 *  state; the ref mirrors it for the down->up batch). `el` holds the
+	 *  pointer-captured element so up/cancel reach it even when the
+	 *  pointer is released over another cell. */
+	type DragEl = {
+		setPointerCapture?(id: number): void;
+		releasePointerCapture?(id: number): void;
+	};
 	type Drag =
-		| { kind: "move"; itemId: string; start: string; end: string | undefined }
-		| { kind: "resize"; itemId: string; start: string }
-		| { kind: "create" };
+		| { kind: "move"; itemId: string; start: string; end: string | undefined; el?: DragEl; pointerId?: number }
+		| { kind: "resize"; itemId: string; start: string; el?: DragEl; pointerId?: number }
+		| { kind: "create"; el?: DragEl; pointerId?: number };
 	const dragRef = useRef<Drag | null>(null);
 	const [, setDragging] = useState(false);
 
@@ -145,14 +150,29 @@ export function CalendarDisplay(props: {
 	const itemPointerDown = (
 		kind: "move" | "resize",
 		prepared: PreparedItem,
+		event?: { pointerId: number; currentTarget?: DragEl },
 	): void => {
 		const range = itemRange(block, prepared.item);
 		if (range === undefined) return;
+		const el = event?.currentTarget;
+		if (el !== undefined && event !== undefined) {
+			el.setPointerCapture?.(event.pointerId);
+		}
 		dragRef.current =
 			kind === "move"
-				? { kind, itemId: prepared.id, start: range.start, end: range.end }
-				: { kind, itemId: prepared.id, start: range.start };
+				? { kind, itemId: prepared.id, start: range.start, end: range.end, el, pointerId: event?.pointerId }
+				: { kind, itemId: prepared.id, start: range.start, el, pointerId: event?.pointerId };
 		setDragging(true);
+	};
+
+	const onPointerCancel = (): void => {
+		const drag = dragRef.current;
+		if (drag === null) return;
+		dragRef.current = null;
+		setDragging(false);
+		if (drag.el !== undefined && drag.pointerId !== undefined) {
+			drag.el.releasePointerCapture?.(drag.pointerId);
+		}
 	};
 
 	const onPointerUp = (event: { clientX: number; clientY: number }): void => {
@@ -160,6 +180,9 @@ export function CalendarDisplay(props: {
 		if (drag === null) return;
 		dragRef.current = null;
 		setDragging(false);
+		if (drag.el !== undefined && drag.pointerId !== undefined) {
+			drag.el.releasePointerCapture?.(drag.pointerId);
+		}
 		const day = dropDayAt(event.clientX, event.clientY);
 		if (day === undefined) return;
 		if (drag.kind === "move") {
@@ -260,13 +283,20 @@ export function CalendarDisplay(props: {
 						data-create-day={canCreate ? day : undefined}
 						onPointerDown={
 							canCreate
-								? () => {
-										dragRef.current = { kind: "create" };
+								? (event) => {
+										const el = (event as { currentTarget?: DragEl }).currentTarget;
+										el?.setPointerCapture?.((event as { pointerId: number }).pointerId);
+										dragRef.current = {
+											kind: "create",
+											el,
+											pointerId: (event as { pointerId: number }).pointerId,
+										};
 										setDragging(true);
 									}
 								: undefined
 						}
 						onPointerUp={onPointerUp}
+						onPointerCancel={onPointerCancel}
 					>
 						<div className="blk-calendar-daynum">{day.slice(8)}</div>
 						{(byDay.get(day) ?? []).map((prepared) => (
@@ -276,9 +306,10 @@ export function CalendarDisplay(props: {
 								data-drag-item={canMove ? prepared.id : undefined}
 								onPointerDown={(event) => {
 									event.stopPropagation?.();
-									if (canMove) itemPointerDown("move", prepared);
+									if (canMove) itemPointerDown("move", prepared, event);
 								}}
 								onPointerUp={onPointerUp}
+								onPointerCancel={onPointerCancel}
 								onClick={() => activate(prepared.id)}
 							>
 								<CardView card={block.item} item={prepared.item} display="lanes" />
@@ -286,12 +317,13 @@ export function CalendarDisplay(props: {
 									<span
 										className="blk-calendar-resize"
 										data-resize-item={prepared.id}
-										onPointerDown={(event) => {
+											onPointerDown={(event) => {
 											event.stopPropagation?.();
-											itemPointerDown("resize", prepared);
+											itemPointerDown("resize", prepared, event);
 										}}
-										onPointerUp={onPointerUp}
-									/>
+											onPointerUp={onPointerUp}
+											onPointerCancel={onPointerCancel}
+										/>
 								)}
 							</div>
 						))}

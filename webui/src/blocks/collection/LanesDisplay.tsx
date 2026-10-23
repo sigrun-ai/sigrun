@@ -13,12 +13,21 @@
  */
 
 import { useRef, useState, type ReactNode } from "react";
-import type { CollectionBlock, JsonObject, JsonValue } from "@sigrun/shared/blocks";
+import type { CollectionBlock, JsonObject } from "@sigrun/shared/blocks";
+import { resolvePointer } from "@sigrun/shared/blocks";
 import { useSurfaceActions, useSurfaceData } from "../context";
 import { useWidthClass } from "../width";
 import { type PreparedGroup, type PreparedItem } from "./Collection";
 import { CardView } from "./Card";
-import { dropTargetAt, movePayload, type DropMove, type DragState } from "./drag";
+import {
+	cancelDrag,
+	dropTargetAt,
+	endDrag,
+	movePayload,
+	startDrag,
+	type DropMove,
+	type DragState,
+} from "./drag";
 import {
 	BulkActionBar,
 	SelectBox,
@@ -72,29 +81,66 @@ export function LanesDisplay(props: {
 	 *  down->up pair inside one event batch reads the latest). */
 	const [drag, setDrag] = useState<DragState | null>(null);
 	const dragRef = useRef<DragState | null>(null);
+	const dragEl = useRef<{ setPointerCapture?(id: number): void; releasePointerCapture?(id: number): void } | null>(null);
 	void drag; // the state drives a drag affordance class (blocks.css)
 
 	const onPointerDown = (
-		_event: { pointerId: number },
+		event: {
+			pointerId: number;
+			currentTarget?: { setPointerCapture?(id: number): void; releasePointerCapture?(id: number): void };
+		},
 		itemId: string,
 		from: Placement,
 	): void => {
 		if (!canMove) return;
+		// Pointer capture on the dragged element: the pointer-up reaches
+		// it even when the pointer is released over ANOTHER element.
+		const el = event.currentTarget;
+		dragEl.current = el ?? null;
+		if (el !== undefined) startDrag(el, event.pointerId, { itemId, from });
 		dragRef.current = { itemId, from };
 		setDrag({ itemId, from });
 	};
 
-	const onPointerUp = (event: { pointerId: number; clientX: number; clientY: number }): void => {
+	const onPointerUp = (event: {
+		pointerId: number;
+		clientX: number;
+		clientY: number;
+		currentTarget?: { setPointerCapture?(id: number): void; releasePointerCapture?(id: number): void };
+	}): void => {
 		const current = dragRef.current;
 		if (current === null) return;
 		dragRef.current = null;
 		setDrag(null);
-		const target = resolveDropTarget(event.clientX, event.clientY);
+		const el = event.currentTarget ?? dragEl.current ?? undefined;
+		dragEl.current = null;
+		// endDrag releases capture and hit-tests; without an element
+		// reference (a bare synthetic event) hit-test directly.
+		if (el !== undefined) {
+			const move = endDrag(el, event.pointerId, current, event.clientX, event.clientY);
+			if (move !== undefined) dispatchMove(move);
+			return;
+		}
+		const target = dropTargetAt(event.clientX, event.clientY);
 		if (target === undefined) return;
 		if (target.group === current.from.group && target.index === current.from.index) {
 			return;
 		}
 		dispatchMove({ itemId: current.itemId, from: current.from, to: target });
+	};
+
+	/** Pointer cancel (touch drag stolen by scroll): clear the pending
+	 *  drag with NO dispatch. */
+	const onPointerCancel = (event: {
+		pointerId: number;
+		currentTarget?: { setPointerCapture?(id: number): void; releasePointerCapture?(id: number): void };
+	}): void => {
+		if (dragRef.current === null) return;
+		dragRef.current = null;
+		setDrag(null);
+		const el = event.currentTarget ?? dragEl.current ?? undefined;
+		dragEl.current = null;
+		if (el !== undefined) cancelDrag(el, event.pointerId);
 	};
 
 	/** Keyboard moves (§12.4): `m` pick up, arrows place, Enter drop,
@@ -181,6 +227,7 @@ export function LanesDisplay(props: {
 				onPointerDown(event, prepared.id, { group, index })
 			}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerCancel}
 			onClick={() => activate(prepared.id)}
 		>
 			{block.select !== undefined && (
@@ -329,7 +376,8 @@ function laneSizeFromData(
 	if (typeof itemsValue !== "object" || typeof itemsValue.$ !== "string") {
 		return 0;
 	}
-	const items = resolveItems(data, itemsValue.$);
+	const resolved = resolvePointer(data, itemsValue.$);
+	const items = Array.isArray(resolved) ? resolved : [];
 	const groupBy = block.groupBy;
 	if (groupBy === undefined) return items.length;
 	return items.filter(
@@ -339,30 +387,4 @@ function laneSizeFromData(
 			!Array.isArray(item) &&
 			(item as JsonObject)[groupBy] === group,
 	).length;
-}
-
-/** Resolve a data pointer to an array (local narrow read). */
-function resolveItems(data: JsonObject, pointer: string): readonly JsonValue[] {
-	const tokens = pointer.replace(/^\//, "").split("/");
-	let node: JsonValue = data;
-	for (const token of tokens) {
-		if (typeof node !== "object" || node === null || Array.isArray(node)) {
-			return [];
-		}
-		node = (node as JsonObject)[token] as JsonValue;
-	}
-	return Array.isArray(node) ? node : [];
-}
-
-/** The lane's end index for a "Move to…" target. (Inlined into the
- *  menu through `laneSizeFromData` — kept as the named rule: the compact
- *  cross-lane move lands at the END of the destination lane.) */
-
-/** Resolve the drop target under a point (drag.ts's shared hit-test;
- *  tests stub `document.elementFromPoint`). */
-function resolveDropTarget(
-	x: number,
-	y: number,
-): { group: string; index: number } | undefined {
-	return dropTargetAt(x, y);
 }
