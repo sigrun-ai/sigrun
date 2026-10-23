@@ -70,7 +70,11 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(root.engines?.node).toBe(NODE_ENGINE);
 		expect(root.publishConfig).toEqual(PUBLISH_CONFIG);
 		expect(root.bin).toEqual({ sigrun: "dist/cli.js" });
-		expect(Object.keys(root.exports ?? {}).sort()).toEqual([".", "./extension"]);
+		expect(Object.keys(root.exports ?? {}).sort()).toEqual([
+			".",
+			"./blocks",
+			"./extension",
+		]);
 		expect(root.repository).toEqual({
 			type: "github",
 			url: "git+https://github.com/sigrun-ai/sigrun.git",
