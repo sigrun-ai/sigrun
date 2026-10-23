@@ -12,13 +12,46 @@
 
 services:
   sigrun:
-    # The published image. To run from a local checkout instead, comment the
-    # image line and uncomment the build stanza below:
+    # The published image, TAG-PARAMETRIZED to the release appVersion (the
+    # compose analogue of the chart's image.tag default). To run from a
+    # local checkout instead, comment the image line and uncomment the
+    # build stanza below:
     #   docker build -t sigrun:local .
-    image: ghcr.io/sigrun-ai/sigrun:0.1.4
+    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.1.4}
     # build:
     #   context: ..
     #   dockerfile: Dockerfile
+    # The uid/gid the container runs as (spec §6): the 1000:1000 default
+    # matches the image's USER, so the ENTRYPOINT execs straight through
+    # (the non-root path — no privilege drop) and a fresh named volume
+    # inherits node:node ownership from the image with no chown. Override
+    # SIGRUN_UID/SIGRUN_GID to run as yourself when /data is already owned
+    # by your uid; a NON-ROOT override keeps working the same way. Setting
+    # SIGRUN_UID=0 (root start: the entrypoint chowns the mount points
+    # then drops via setpriv) does NOT work with cap_drop ALL below — the
+    # trampoline needs CAP_CHOWN/CAP_SETUID/CAP_SETGID, so a root start
+    # means re-adding those caps yourself.
+    user: "${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}"
+    # Docker's init (tini) as PID 1: it reaps zombies and forwards
+    # signals. The server spawns child processes (git, npm, agent
+    # shells) whose orphans would otherwise accumulate as zombies under
+    # a non-reaping node PID 1.
+    init: true
+    # Least privilege (spec §6): the server needs no Linux
+    # capabilities, and nothing it starts may gain any (no-new-privileges
+    # also blocks setuid binaries inside the image).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Read-only root filesystem (spec §6): the server writes ONLY under
+    # /data (the named volume below), /cache and /tmp (the tmpfs mounts
+    # below) — npm's cache included (NPM_CONFIG_CACHE=/cache/npm is
+    # baked into the image, so boot's package installs land on tmpfs,
+    # not the read-only layer). Everything else is immutable: a
+    # compromised or runaway process cannot modify the image it runs
+    # from.
+    read_only: true
     # Run the BUILT deploy entry (dist/index.js) under plain node — no
     # npm in the signal path, so SIGTERM reaches the entry's graceful
     # shutdown (same rule as the Helm chart's container command). tsx is
@@ -54,16 +87,38 @@ services:
       # ramalama/ollama, or a remote/private gateway.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+    # Operator-set vars, carried VERBATIM from docker/.env into the
+    # container — SIGRUN_EXTENSIONS is the env-shaped extension fleet
+    # override (§4.1: when set it REPLACES the settings file's
+    # `extensions` list; env wins — sigrun core's contract). Deliberately
+    # NOT a `SIGRUN_EXTENSIONS: ${SIGRUN_EXTENSIONS:-}` environment
+    # entry: that interpolation renders an EMPTY string when .env omits
+    # the var, and parseExtensionList("") is an empty list (not unset) —
+    # an empty fleet would be pinned OVER the settings file, breaking
+    # the file-driven flow in the README. env_file passes a var through
+    # only when the file declares it (absent otherwise — the same shape
+    # as the chart's envFrom secretRef), so unset means the settings
+    # file drives the fleet. NOT required — `docker compose up` without
+    # a .env boots the file-driven config with the public OpenAI default
+    # base URL; required:false keeps compose from erroring on the
+    # missing file.
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "${SIGRUN_PORT:-3000}:3000"
     volumes:
       - sigrun-data:/data
-    # Cache is pod-local (the compose analogue of the chart's emptyDir):
-    # tmpfs rather than an anonymous volume, because its lifetime should
-    # die WITH the container (no /var/lib/docker/volumes residue to
-    # accumulate a regenerable root) — data/state stay on the named
-    # sigrun-data volume, cache never touches it.
+    # Cache and /tmp are pod-local tmpfs (the compose analogue of the
+    # chart's emptyDir): tmpfs rather than an anonymous volume, because
+    # their lifetime should die WITH the container (no
+    # /var/lib/docker/volumes residue to accumulate a regenerable root) —
+    # /tmp is the read_only scratch dir, /cache the regenerable root
+    # (spec §4: never a backup section, a wipe is a cold start);
+    # data/state stay on the named sigrun-data volume, cache never
+    # touches it.
     tmpfs:
+      - /tmp
       - /cache
     healthcheck:
       # Same /healthz liveness probe as deploy/base/deployment.yaml. The
