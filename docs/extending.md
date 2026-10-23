@@ -251,6 +251,7 @@ what core does with each, and where its rules are documented:
 | `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
 | `channels` | `readonly ChannelContribution[]` | chat-platform adapters the gateway engine drives; channel-id collisions across extensions quarantine the later loader | ["Channel adapters"](#channel-adapters) |
+| `gateway` | `GatewayEngine` | the ONE gateway engine (supervises every channel adapter); a second declarer quarantines — and never pair it with `health` | ["Gateway engines"](#gateway-engines) |
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
 above — **never a defaulted options object**. Sigrun passes the host only
@@ -846,6 +847,58 @@ The full type shapes (`ChannelContribution`, `ChannelCapabilities`,
 
 `GET /v1/extensions` lists each row's contributed channel ids under
 `channels`.
+
+## Gateway engines
+
+A factory result may declare `gateway` — the engine that supervises
+every channel adapter. **One engine per boot**: the first declarer
+wins; a later extension declaring `gateway` quarantines at load with
+`gateway engine already declared by "<first slug>"` (an engine owns
+supervision over the whole channel set — never last-wins). Core ships
+no engine; it lives in its own extension package like the adapters.
+
+```js
+export default function acmeEngine(host) {
+	return {
+		extension: defineExtension({ name: "acme-gateway-engine" }),
+		gateway: {
+			async start(ctx) {
+				// ctx.channels: every loaded adapter's {extension, channel}
+				// ctx.signal: aborts when the host's gateway.stop() runs
+			},
+			async stopIntake() {},
+			async stop() {},
+			health() {
+				return "ok"; // or "degraded"
+			},
+		},
+	};
+}
+```
+
+Rules for engine authors:
+
+- **Lifecycle.** The engine starts AFTER the server listens (a failed
+  `start` latches `health.gateway: "degraded"` until restart — boot
+  never wedges). Shutdown is ordered: SSE streams end, the HTTP drain
+  completes, then `stopIntake()` closes inbound chat intake BEFORE the
+  event bus drains pending settles (the drain is the last admission
+  window), then `stop()` halts the adapters only after every settle has
+  been delivered, then the refresh scheduler stops and the harness
+  closes.
+- **Health comes from `gateway.health()`, never the `health` field.**
+  A result carrying both quarantines (`a gateway engine reports health
+  through gateway.health(), not the health field`) — the `health`
+  field is the provider-contributor surface and would double-report.
+  A throwing `health()` reads `"degraded"` in `/v1/meta` (logged once
+  per process; the route stays 200).
+- **Adapters without an engine are inert.** A deploy with channel
+  adapters and no engine logs one boot warning
+  (`channels contributed but no gateway engine is loaded`) and marks
+  each contributing row `inert: "no gateway"` in `GET /v1/extensions`;
+  `/v1/meta` omits `health.gateway` entirely.
+- A malformed declaration (a missing `start`/`stopIntake`/`stop`/
+  `health` function) quarantines the extension at load.
 
 ## Uninstall
 

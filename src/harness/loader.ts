@@ -90,6 +90,7 @@ import type {
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
+	GatewayEngine,
 	NotifierContribution,
 	ProviderContribution,
 	SigrunExtensionResult,
@@ -232,6 +233,19 @@ export interface ExtensionChannelBinding {
 	readonly channels: readonly ChannelContribution[];
 }
 
+/**
+ * The gateway engine retained from one extension factory result (gateway
+ * C2, spec §8.0), paired with the extension slug — boot threads it to
+ * `OpenedHarness.gatewayEngine` for `startGateway` and the meta route's
+ * `health.gateway` presence. ONE per boot (the one-engine rule in the
+ * load loop); quarantined extensions contribute none.
+ */
+export interface ExtensionGatewayBinding {
+	/** The slug identity (which extension owns the engine). */
+	readonly extension: string;
+	readonly engine: GatewayEngine;
+}
+
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
 	"conversationCreated",
@@ -349,6 +363,15 @@ export interface LoadedExtensions {
 	 */
 	readonly channelBindings: readonly ExtensionChannelBinding[];
 	/**
+	 * The gateway engine from a factory result (gateway C2, spec §8.0):
+	 * the FIRST loaded declarer's binding — `{extension, engine}` — or
+	 * `undefined` when no engine loaded. A later declarer quarantines
+	 * (the one-engine rule: an engine supervises the whole channel set,
+	 * never last-wins). `startGateway` consumes it; the meta route's
+	 * `health.gateway` presence keys on it.
+	 */
+	readonly gatewayEngine: ExtensionGatewayBinding | undefined;
+	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
 	 * extension — each `{name, dir, extension}` with `dir` resolved against
@@ -465,6 +488,11 @@ export interface ResolvedExtension {
 	 * enforces before any binding is collected.
 	 */
 	channels?: readonly ChannelContribution[];
+	/**
+	 * The gateway engine (gateway C2, spec §8.0), validated fail-loud.
+	 * Absent when the result carried no engine.
+	 */
+	gateway?: GatewayEngine;
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -497,7 +525,8 @@ type LoaderReadKeys =
 	| "commands"
 	| "skills"
 	| "notifiers"
-	| "channels";
+	| "channels"
+	| "gateway";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -1079,6 +1108,49 @@ function validateChannels(
 }
 
 /**
+ * Validate a factory result's `gateway` declaration (gateway C2, spec
+ * §8.0). Absent → undefined (no engine). Present but malformed → throw;
+ * the loader quarantines the extension with the thrown message
+ * (fail-loud: an extension that THINKS it declared the engine must not
+ * silently lose it — the providers/health class). An object whose
+ * `start`/`stopIntake`/`stop`/`health` are all functions is the shape; a
+ * result carrying BOTH `gateway` and the `health` field is a contract
+ * violation (an engine reports health through `gateway.health()` — the
+ * `health` field is the provider-contributor surface and would
+ * double-report), thrown with the documented message.
+ */
+function validateGateway(
+	value: unknown,
+	healthPresent: boolean,
+): GatewayEngine | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "object" || value === null) {
+		throw new Error(
+			"extension factory returned a gateway field that is not an object",
+		);
+	}
+	const engine = value as {
+		start?: unknown;
+		stopIntake?: unknown;
+		stop?: unknown;
+		health?: unknown;
+	};
+	for (const field of ["start", "stopIntake", "stop", "health"] as const) {
+		if (typeof engine[field] !== "function") {
+			throw new Error(
+				`extension factory returned a gateway whose ${field} is not a function`,
+			);
+		}
+	}
+	if (healthPresent) {
+		throw new Error(
+			"a gateway engine reports health through gateway.health(), not the health field",
+		);
+	}
+	return value as GatewayEngine;
+}
+
+/**
  * Validate a factory result's `skills` declaration (core hardening W5
  * Task 4, spec §9.4). Absent → undefined (no contributions). Present but
  * malformed → throw; the loader quarantines the extension with the thrown
@@ -1432,6 +1504,10 @@ async function resolvedFromFactory(
 	const skills = validateSkills(candidate.skills);
 	const notifiers = validateNotifiers(candidate.notifiers);
 	const channels = validateChannels(candidate.channels);
+	// The engine (gateway C2): validated against the health-field conflict
+	// rule too — a result carrying both quarantines with the documented
+	// message (an engine reports health through gateway.health()).
+	const gateway = validateGateway(candidate.gateway, candidate.health !== undefined);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
@@ -1531,6 +1607,7 @@ async function resolvedFromFactory(
 		...(skills === undefined ? {} : { skills }),
 		...(notifiers === undefined ? {} : { notifiers }),
 		...(channels === undefined ? {} : { channels }),
+		...(gateway === undefined ? {} : { gateway }),
 	};
 }
 
@@ -1773,6 +1850,12 @@ const notifierBindings: ExtensionNotifierBinding[] = [];
 // them. Collected only for LOADED extensions (a colliding adapter never
 // reaches here — the channelIds check below throws first).
 const channelBindings: ExtensionChannelBinding[] = [];
+// The gateway engine (gateway C2, spec §8.0): the ONE-engine rule — the
+// first loaded declarer wins; a later result declaring `gateway`
+// quarantines naming the first slug (an engine owns supervision over the
+// whole channel set, so a shadowing engine would inherit another
+// engine's bindings — the same never-last-wins reasoning as channel ids).
+let gatewayEngine: ExtensionGatewayBinding | undefined;
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -2003,6 +2086,18 @@ const display = label ?? entry ?? "skills-only";
 					}
 				}
 			}
+				// The one-engine rule (gateway C2): checked BEFORE the registry
+				// install, exactly like the channel-id collision — a second engine
+				// leaves no registry entry, no slug claim, and no binding. First
+				// loaded wins.
+				if (resolved.gateway !== undefined) {
+					if (gatewayEngine !== undefined) {
+						throw new Error(
+							`gateway engine already declared by "${gatewayEngine.extension}"`,
+						);
+					}
+					gatewayEngine = { extension: slug, engine: resolved.gateway };
+				}
 				if (extension !== undefined) {
 					registry.install(extension);
 				}
@@ -2154,5 +2249,6 @@ const display = label ?? entry ?? "skills-only";
 		commandBindings,
 		notifierBindings,
 		channelBindings,
+		gatewayEngine,
 	};
 }

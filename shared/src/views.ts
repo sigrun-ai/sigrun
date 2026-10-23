@@ -510,6 +510,14 @@ export interface MetaResponse {
 		readonly memory: HealthStatus;
 		/** Any contributor's §3 producer degraded → "degraded"; empty → "ok". */
 		readonly providers: HealthStatus;
+		/**
+		 * The gateway engine's health (gateway C2): present ONLY when an
+		 * engine loaded (a no-engine deploy reports NO gateway health —
+		 * degenerate "ok" by absence, never a synthesized field); the
+		 * wrapped engine health (a throwing `health()` reads "degraded";
+		 * a rejected `start` latches degraded until restart).
+		 */
+		readonly gateway?: HealthStatus;
 	};
 	/**
 	/**
@@ -686,6 +694,13 @@ export interface ExtensionInfo {
 	 * none.
 	 */
 	readonly channels?: readonly string[];
+	/**
+	 * The inert marker (gateway C2): `"no gateway"` on rows of
+	 * extensions that contributed `channels` while NO gateway engine
+	 * loaded — their adapters are inert (nothing drives them; one boot
+	 * warning says so). Absent everywhere else.
+	 */
+	readonly inert?: "no gateway";
 	/**
 	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
 	 * built-in (codemode / MCP / tool search); ABSENT on configured

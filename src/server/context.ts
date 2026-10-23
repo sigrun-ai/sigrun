@@ -21,6 +21,7 @@ import type { CommandCatalog } from "./commands.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
 import { SseRegistry } from "./sse-registry.js";
+import type { GatewayHandle } from "./gateway.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
@@ -80,6 +81,15 @@ export interface ServerContext {
 	 * suppressed.
 	 */
 	readonly watchersByConversation: Map<ConversationId, number>;
+	/**
+	 * The gateway handle (gateway C2): created by the serve composition
+	 * BEFORE `createServer` and threaded through the `gateway` option so
+	 * the meta route reads the wrapped engine health. ABSENT on hand-built
+	 * test servers (the meta route then omits `health.gateway` — its
+	 * presence keys on `opened.gatewayEngine`, and the handle only reaches
+	 * it through this field).
+	 */
+	readonly gateway?: GatewayHandle;
 }
 
 declare module "fastify" {

@@ -68,11 +68,19 @@ export function registerMetaRoutes(
 			// double-reported here), providers aggregated across
 			// contributors (empty → "ok"), and backup from the §6.8 marker
 			// derivation above ("configured" only while a fresh success
-			// exists — the one storage read this route makes).
+			// exists — the one storage read this route makes). Gateway C2 adds
+			// `gateway`: present ONLY when an engine loaded (the meta route
+			// keys on `opened.gatewayEngine`, never on the handle — a
+		// no-engine deploy reports NO gateway health, degenerate "ok" by
+			// absence), its value the HANDLE's wrapped health (throw →
+			// "degraded"; a start rejection latches degraded until restart).
 			health: {
 				backup: backupHealth,
 				memory: opened.memoryHealth?.() ?? "ok",
 				providers: aggregateHealth(opened.providerHealth),
+				...(opened.gatewayEngine === undefined || ctx.gateway === undefined
+					? {}
+					: { gateway: ctx.gateway.health() }),
 			},
 			// The auth block (W1 Task 6, spec §5.7): the effective method list
 			// (resolved once in `createServer`) + the onboarding state — both

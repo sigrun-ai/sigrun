@@ -29,8 +29,10 @@ import { envServerSection, loadConfig } from "./config.js";
 import { openHarness } from "./harness/boot.js";
 import { packagesDirOf, syncPackages } from "./harness/packages.js";
 import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
+import { startGateway } from "./server/gateway.js";
 import { SIGRUN_VERSION } from "./server/schema-fixture.js";
 import { createServer } from "./server/index.js";
+import { createShutdown } from "./server/shutdown.js";
 
 /** A booted harness+server pair: the bound port and the ordered shutdown. */
 export interface BootedServer {
@@ -139,15 +141,26 @@ export async function serve(
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(config.workspace.path, { recursive: true });
 	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
+	// The gateway handle (gateway C2) exists BEFORE the server: the meta
+	// route reaches it through ServerContext, so the engine's health is
+	// reportable from the first request. The ENGINE STARTS after listen
+	// (below) — an engine supervising chat transports starts once the
+	// server it delivers through is up.
+	const gateway = startGateway(opened);
 	// The contributed-bundle registry (build-and-webui Task 6): boot folded
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
 	const app = await createServer(opened, config, opened.webuiBundles, {
 		listenHost: options?.host ?? "0.0.0.0",
 		env,
+		gateway,
 	});
 	const host = options?.host ?? "0.0.0.0";
 	await app.listen({ port: config.port, host });
+	// The engine starts with the listener live (gateway C2's lifecycle:
+	// start after listen — a failed start latches degraded inside the
+	// handle, never wedges boot).
+	void gateway.started;
 	// Machine-greppable: the deploy-entry test waits for this line, and an
 	// operator reading pod logs sees the bound port without guessing. The
 	// version rides the same line (what an operator quotes in a bug report).
@@ -155,28 +168,18 @@ export async function serve(
 		`sigrun v${SIGRUN_VERSION} listening on http://${host}:${config.port}`,
 	);
 
-	const shutdown = async (): Promise<void> => {
-		const failures: unknown[] = [];
-		// SSE streams FIRST (the ctrl+c fix): hijacked event streams never
-		// end on their own, and app.close()'s drain waits for in-flight
-		// requests — with any webui tab open, shutdown hung forever on its
-		// /v1/events connection. End every live stream BEFORE the drain.
-		try {
-			app.sse.endAll();
-		} catch (error) {
-			failures.push(error);
-		}
-		try {
-			await app.close();
-		} catch (error) {
-			failures.push(error);
-		}
-		try {
-			await opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT);
-		} catch (error) {
-			failures.push(error);
-		}
-		try {
+	// The ordered shutdown (gateway C2's extraction of the inline original
+	// into src/server/shutdown.ts): SSE streams FIRST, the app drain, the
+	// engine's intake close, the event-bus sequence (drain + flush), the
+	// engine stop, the refresh stop + bounded boot-refresh join, the
+	// harness close — each failure collected, all steps always run.
+	const shutdown = createShutdown({
+		endStreams: () => app.sse.endAll(),
+		closeApp: () => app.close(),
+		gateway,
+		eventBusShutdown: () =>
+			opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
+		stopProviderRefresh: async () => {
 			// The interval refresh scheduler (provider plugins Task 5) stops
 			// BEFORE the harness closes. The T4 boot refresh promise is raced
 			// against a bounded join: a wedged catalog fetch must not hold the
@@ -203,18 +206,9 @@ export async function serve(
 					`sigrun: boot refresh still in flight after ${BOOT_REFRESH_JOIN_MS}ms at shutdown — abandoning the join`,
 				);
 			}
-		} catch (error) {
-			failures.push(error);
-		}
-		try {
-			await opened.harness.close(BACKGROUND_CONTEXT);
-		} catch (error) {
-			failures.push(error);
-		}
-		if (failures.length > 0) {
-			throw new AggregateError(failures, "sigrun shutdown failed");
-		}
-	};
+		},
+		closeHarness: () => opened.harness.close(BACKGROUND_CONTEXT),
+	});
 
 	let stopping: Promise<void> | undefined;
 	return {

@@ -34,6 +34,7 @@ import {
 	loadExtensions,
 	type ExtensionChannelBinding,
 	type ExtensionCommandBinding,
+	type ExtensionGatewayBinding,
 	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
 	type ExtensionRouteBinding,
@@ -329,6 +330,14 @@ export interface OpenedHarness {
 	 * quarantined extensions contribute nothing.
 	 */
 	readonly channelBindings: readonly ExtensionChannelBinding[];
+	/**
+	 * The loaded gateway engine (gateway C2, spec §8.0): the FIRST
+	 * declarer's `{extension, engine}` binding, or `undefined` when no
+	 * engine loaded (core ships none). `startGateway` (src/server/gateway.ts)
+	 * consumes it; the meta route keys `health.gateway` on its presence;
+	 * a later declarer quarantined at load (the one-engine rule).
+	 */
+	readonly gatewayEngine: ExtensionGatewayBinding | undefined;
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -778,6 +787,7 @@ export async function openHarness(
 		commandBindings,
 		notifierBindings,
 		channelBindings,
+		gatewayEngine,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -1393,6 +1403,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		extensionCommands: commandBindings,
 		notifierBindings,
 		channelBindings,
+		gatewayEngine,
 		skillRoots: extensionSkillRoots,
 		commandExpansion,
 		eventBus,
