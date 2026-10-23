@@ -12,7 +12,10 @@
 
 /** The three focusable regions. `surface` (Task 4, UI-blocks U2) is a
  *  block surface pane (lanes/calendar/collection) — the blocks.* keys
- *  route ONLY while it has focus. */
+ *  route ONLY while it has focus. While a surface is focused the
+ *  transcript/list nav keys (y/f/e//?) are inert (the keymaps pass
+ *  them); Task 6's surface host decides any surface-side meaning for
+ *  them. */
 export type Focus = "composer" | "list" | "transcript" | "surface";
 
 /** Every dispatchable intent. */

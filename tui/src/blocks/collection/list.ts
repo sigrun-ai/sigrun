@@ -36,7 +36,7 @@ import {
 } from "./shared.js";
 
 /** One addressable row of the rendered list. */
-	interface ListRow {
+interface ListRow {
 	kind: "item" | "group" | "quiet";
 	/** The item rows: which item, at what nesting depth. */
 	row?: CollectionItem;

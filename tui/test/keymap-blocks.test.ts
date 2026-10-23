@@ -41,12 +41,24 @@ describe("block-surface keys — standard", () => {
 	test("m / enter / esc / space / . / x / [ ] t map to the blocks actions", () => {
 		expect(keymap.handle("m", ctx())).toEqual({ type: "blocks.pickUp" });
 		expect(keymap.handle("\r", ctx())).toEqual({ type: "blocks.drop" });
+		expect(keymap.handle("\x1b", ctx())).toEqual({ type: "blocks.cancelMove" });
 		expect(keymap.handle(" ", ctx())).toEqual({ type: "blocks.select" });
 		expect(keymap.handle(".", ctx())).toEqual({ type: "blocks.actionMenu" });
 		expect(keymap.handle("x", ctx())).toEqual({ type: "blocks.check" });
 		expect(keymap.handle("[", ctx())).toEqual({ type: "blocks.rangePrev" });
 		expect(keymap.handle("]", ctx())).toEqual({ type: "blocks.rangeNext" });
 		expect(keymap.handle("t", ctx())).toEqual({ type: "blocks.today" });
+	});
+
+	test("esc stays global while busy (cancel-run wins over cancel-move)", () => {
+		expect(keymap.handle("\x1b", ctx({ busy: true }))).toEqual({ type: "cancel-run" });
+	});
+
+	test("esc outside a surface still focuses the composer", () => {
+		expect(keymap.handle("\x1b", ctx({ focus: "transcript" }))).toEqual({
+			type: "focus",
+			target: "composer",
+		});
 	});
 
 	test("the same keys pass in other focuses", () => {
@@ -63,6 +75,7 @@ describe("block-surface keys — vim (normal mode)", () => {
 		const keymap = normalVim();
 		expect(keymap.handle("m", ctx())).toEqual({ type: "blocks.pickUp" });
 		expect(keymap.handle("\r", ctx())).toEqual({ type: "blocks.drop" });
+		expect(keymap.handle("\x1b", ctx())).toEqual({ type: "blocks.cancelMove" });
 		expect(keymap.handle(" ", ctx())).toEqual({ type: "blocks.select" });
 		expect(keymap.handle(".", ctx())).toEqual({ type: "blocks.actionMenu" });
 		expect(keymap.handle("x", ctx())).toEqual({ type: "blocks.check" });

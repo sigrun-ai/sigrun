@@ -68,7 +68,10 @@ export function createStandardKeymap(): Keymap {
 		if (matchesKey(data, Key.escape)) {
 			if (ctx.autocompleteOpen) return "pass";
 			if (ctx.busy) return { type: "cancel-run" };
-			return { type: "focus", target: "composer" };
+			// A block surface owns Esc: it cancels a pick-up
+			// (blocks.cancelMove) — the surface branch below handles it.
+			if (ctx.focus !== "surface") return { type: "focus", target: "composer" };
+			return undefined;
 		}
 		return undefined;
 	};
@@ -122,8 +125,9 @@ export function createStandardKeymap(): Keymap {
 			if (ctx.focus === "surface") {
 				const surfaceResult = surface(data);
 				if (surfaceResult !== undefined) return surfaceResult;
-				// Esc on a surface: cancel a pick-up first, else the global
-				// Esc (focus composer) already fired above.
+				// Esc on a surface: cancel a pick-up (§12.4). The host treats
+				// a cancel with NO pick-up in flight as focus-composer (the
+				// emacs C-g ordering rule, mirrored here).
 				if (matchesKey(data, Key.escape)) return { type: "blocks.cancelMove" };
 				return "pass";
 			}

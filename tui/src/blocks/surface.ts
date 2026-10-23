@@ -42,6 +42,11 @@ import { DataOpError, applyOps, resolvePointer } from "@sigrun/shared/blocks";
 /** An action has 10 s to answer before it counts as a reject (§6.3). */
 export const ACT_TIMEOUT_MS = 10_000;
 
+/** The notice cap: pending notices drop oldest-first past 50 (a flood
+ *  of failures must not grow the list without bound; the host drains
+ *  them through `consumeNotices`). */
+export const NOTICE_CAP = 50;
+
 /** Where a move applies in the data (found by scanning the tree for
  *  the collection owning the `onMove` handler name). */
 interface MoveTarget {
@@ -271,7 +276,7 @@ export class SurfaceState {
 	}
 
 	#notice(message: string): void {
-		this.#notices = [...this.#notices, message];
+		this.#notices = [...this.#notices, message].slice(-NOTICE_CAP);
 		this.#emit();
 	}
 

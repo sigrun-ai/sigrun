@@ -233,6 +233,7 @@ export class LanesComponent implements Component {
 			const targets = this.#moveTargets();
 			if (data === "\x1b") {
 				this.#state.menu = null;
+				this.#menuItem = undefined;
 				return;
 			}
 			if (data === "\x1b[B") {
@@ -247,6 +248,7 @@ export class LanesComponent implements Component {
 			const target = targets[this.#state.menuCursor];
 			const itemId = this.#menuItem;
 			this.#state.menu = null;
+			this.#menuItem = undefined;
 			if (target === undefined || itemId === undefined) return;
 			const from = placementOf(groups, visible, itemId);
 			if (from === undefined || this.#block.onMove === undefined) return;
