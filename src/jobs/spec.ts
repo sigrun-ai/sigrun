@@ -216,6 +216,34 @@ function validateAction(
 		if (record.runSharing !== undefined && !isSharing(record.runSharing)) {
 			return invalid("action.runSharing", "runSharing must be a Sharing value");
 		}
+		// Gateway C7 (spec §8.0): deliver targets ride ONLY new-conversation
+		// prompt jobs — a conversation bound to a chat already delivers
+		// there, so deliver on a fixed id is a spec error naming this field.
+		// Shape-only: the target grammar belongs to the gateway.
+		if (record.deliver !== undefined) {
+			if (record.conversation !== "new") {
+				return invalid(
+					"action.deliver",
+					'deliver requires conversation "new"',
+				);
+			}
+			if (
+				!Array.isArray(record.deliver) ||
+				record.deliver.length < 1 ||
+				record.deliver.length > 8 ||
+				record.deliver.some(
+					(target) =>
+						typeof target !== "string" ||
+						target.length < 1 ||
+						target.length > 256,
+				)
+			) {
+				return invalid(
+					"action.deliver",
+					"deliver must be an array of 1-8 strings, each 1-256 chars",
+				);
+			}
+		}
 		const action: Extract<JobAction, { kind: "prompt" }> = {
 			kind: "prompt",
 			prompt: record.prompt,
@@ -225,6 +253,7 @@ function validateAction(
 		if (record.model !== undefined) action.model = record.model;
 		if (record.thinking !== undefined) action.thinking = record.thinking;
 		if (record.runSharing !== undefined) action.runSharing = record.runSharing;
+		if (record.deliver !== undefined) action.deliver = [...record.deliver];
 		return { ok: true, action };
 	}
 

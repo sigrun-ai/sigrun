@@ -589,6 +589,20 @@ Each entry is a full job spec (the §8.2 grammar of the core design doc:
 the API — edit the extension to change them. A malformed declaration
 ( bad grammar, duplicate names) quarantines the extension at load.
 
+A `prompt` action may carry `deliver: string[]` — gateway delivery
+targets (spec §8.0 C7): an optional array of 1–8 strings, each 1–256
+chars, valid ONLY with `conversation: "new"` (a conversation bound to
+a chat already delivers there). Core validates the SHAPE only — the
+target grammar belongs to the loaded gateway engine, not core. When
+the fire runs, `fire.ts` stamps `deliver` plus the owning `jobId` into
+the run conversation's SessionMeta (both server-owned: a meta PATCH
+carrying either key is a 400 `invalid_field`), and the gateway's
+runSettled delivery reads the stamp to route the answer to chats. Two
+behaviors follow: editing `deliver` is a job revision (the field rides
+`specHash`), and a fire with `deliver` while NO engine loaded logs one
+`deliver targets ignored: no gateway` warning per run (visible, never
+silent).
+
 ## HTTP routes
 
 A factory result may declare `routes` — HTTP endpoints sigrun mounts at

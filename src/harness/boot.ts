@@ -967,6 +967,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		// `typed` entry — there is no user turn to attribute).
 		commandExpansion,
 		envBuilder: undefined as unknown as EnvBuilder,
+		// Gateway C7: a deliver-carrying fire warns once per run when no
+		// engine loaded (core ships none — `gatewayEngine` is undefined
+		// unless an extension declared one).
+		gatewayLoaded: gatewayEngine !== undefined,
 	};
 	registry.install({
 		name: "sigrun.jobs",

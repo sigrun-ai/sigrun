@@ -78,6 +78,9 @@ function depsOf(opened: Awaited<ReturnType<typeof bootScenarioHarness>>) {
 		defaultModel: opened.defaultModel as ModelRef,
 		now: () => Date.now(),
 		defaultTz: "UTC",
+		// The scenario harness loads no gateway engine — matching a bare
+		// core boot (deliver-less specs, so the flag never matters here).
+		gatewayLoaded: false,
 	};
 }
 
