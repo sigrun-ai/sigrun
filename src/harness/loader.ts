@@ -2079,16 +2079,16 @@ const display = label ?? entry ?? "skills-only";
 					options.hostContextFactory(slug, kinds, host);
 				}
 				if (resolved.channels !== undefined) {
-				for (const channel of resolved.channels) {
-					const owner = channelIds.get(channel.id);
-					if (owner !== undefined) {
-						throw new Error(
-							`channel "${channel.id}" is already contributed by "${owner}" — ` +
-							"channel ids must be unique across extensions (chat bindings are keyed by id)",
-						);
+					for (const channel of resolved.channels) {
+						const owner = channelIds.get(channel.id);
+						if (owner !== undefined) {
+							throw new Error(
+								`channel "${channel.id}" is already contributed by "${owner}" — ` +
+								"channel ids must be unique across extensions (chat bindings are keyed by id)",
+							);
+						}
 					}
 				}
-			}
 				// The one-engine rule (gateway C2): checked BEFORE the registry
 				// install, exactly like the channel-id collision — a second engine
 				// leaves no registry entry, no slug claim, and no binding. First

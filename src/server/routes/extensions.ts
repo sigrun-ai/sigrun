@@ -64,21 +64,21 @@ export function registerExtensionRoutes(
 					status: outcome.status,
 					...(outcome.error === undefined ? {} : { error: outcome.error }),
 					...(outcome.version === undefined
-					? {}
-					: { version: outcome.version }),
+						? {}
+						: { version: outcome.version }),
 					...(outcome.builtin === true ? { builtin: true } : {}),
 					...(outcome.channels === undefined
-					? {}
-					: { channels: [...outcome.channels] }),
+						? {}
+						: { channels: [...outcome.channels] }),
 					// Gateway C2: a channel contributor with NO loaded engine is
 					// INERT — its adapters never start (the boot warning says so);
 					// the row says which surface is missing. Only OK rows mark it
 					// (a quarantined loader's `channels` never landed anyway).
 					...(outcome.channels !== undefined &&
-					outcome.status === "ok" &&
-					opened.gatewayEngine === undefined
-					? { inert: "no gateway" }
-					: {}),
+						outcome.status === "ok" &&
+						opened.gatewayEngine === undefined
+						? { inert: "no gateway" }
+						: {}),
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],

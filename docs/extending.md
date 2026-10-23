@@ -601,7 +601,9 @@ runSettled delivery reads the stamp to route the answer to chats. Two
 behaviors follow: editing `deliver` is a job revision (the field rides
 `specHash`), and a fire with `deliver` while NO engine loaded logs one
 `deliver targets ignored: no gateway` warning per run (visible, never
-silent).
+silent). The warning fires on the creating fire only — a crash-recovered
+re-entry (the run record already carries its conversation) re-runs the
+submit without re-warning.
 
 ## HTTP routes
 

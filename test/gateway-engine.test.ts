@@ -50,18 +50,30 @@ const ADAPTER_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-channel-adapter", "index.js"),
 ).href;
 
-/** The fixture's shared call log (globalThis-stash, the fixture-channel pattern). */
+/**
+ * The per-boot call-log registry (globalThis-stash, the fixture-channel
+ * pattern): one entry per factory call — the fixture pushes a fresh array
+ * per boot, so every boot reads its OWN log, never a shared one.
+ */
 type FixtureLog = {
 	readonly type: "start" | "stopIntake" | "stop" | "runSettled";
 	readonly channels?: { extension: string; id: string }[];
 	readonly signal?: AbortSignal;
 }[];
 
-function gatewayLog(): FixtureLog {
-	const log = (globalThis as { __fixtureGatewayLog?: FixtureLog })
-		.__fixtureGatewayLog;
-	if (log === undefined) throw new Error("fixture-gateway-engine log not captured");
-	return log;
+function gatewayLogs(): FixtureLog[] {
+	return (globalThis as { __fixtureGatewayLogs?: FixtureLog[] })
+		.__fixtureGatewayLogs ?? [];
+}
+
+/**
+ * The log entry for ONE boot: `before` is the registry length captured
+ * BEFORE `openHarness` ran, so this returns exactly the entry that boot's
+ * factory call pushed (an empty log when the boot loaded no engine — the
+ * adapter-only case never imports the fixture).
+ */
+function bootLog(before: number): FixtureLog {
+	return gatewayLogs()[before] ?? [];
 }
 
 /** One booted test server (the host-conversations shape). */
@@ -73,6 +85,8 @@ interface TestServer {
 	readonly faux: FauxProviderHandle;
 	readonly aliceToken: string;
 	readonly dir: string;
+	/** THIS boot's fixture-engine log (empty when no engine loaded). */
+	readonly log: FixtureLog;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -93,6 +107,9 @@ async function bootServer(
 	specifiers: readonly string[],
 	beforeGateway?: (opened: OpenedHarness) => void,
 ): Promise<TestServer> {
+	// Snapshot the registry BEFORE the boot: the fixture's factory call
+	// (inside openHarness) pushes this boot's log at this index.
+	const logsBefore = gatewayLogs().length;
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-gateway-engine-"));
 	const configDir = join(dir, "config");
 	const faux = fauxProvider({
@@ -135,7 +152,17 @@ async function bootServer(
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened, gateway, config, faux, aliceToken, dir };
+	return {
+		app,
+		opened,
+		gateway,
+		config,
+		faux,
+		aliceToken,
+		dir,
+		// THE boot's own log (the fixture pushed it during openHarness).
+		log: bootLog(logsBefore),
+	};
 }
 
 /** One authenticated GET; asserts 200 and returns the parsed body. */
@@ -161,7 +188,7 @@ describe("the loader's gateway pathway", () => {
 	test("one engine loads; startGateway starts it once with the slug-attributed channels", { timeout: 30_000 }, async () => {
 		const server = await bootServer([ENGINE_SPECIFIER, ADAPTER_SPECIFIER]);
 		await server.gateway.started;
-		const log = gatewayLog();
+		const log = server.log;
 		expect(log.filter((entry) => entry.type === "start")).toHaveLength(1);
 		const start = log.find((entry) => entry.type === "start");
 		expect(start?.channels).toEqual([
@@ -324,28 +351,25 @@ describe("GET /v1/meta health.gateway", () => {
 // ---------------------------------------------------------------------------
 
 describe("GatewayHandle.stop idempotency", () => {
-test("a double stop runs engine.stop() exactly once (later calls join)", { timeout: 30_000 }, async () => {
-const server = await bootServer([ENGINE_SPECIFIER]);
-await server.gateway.started;
-// The fixture log is global across boots — scope this test's reads.
-gatewayLog().length = 0;
-// Two racing calls + one later call — all join the ONE stop.
-await Promise.all([server.gateway.stop(), server.gateway.stop()]);
-await server.gateway.stop();
-expect(gatewayLog().filter((entry) => entry.type === "stop")).toHaveLength(1);
-});
+	test("a double stop runs engine.stop() exactly once (later calls join)", { timeout: 30_000 }, async () => {
+		const server = await bootServer([ENGINE_SPECIFIER]);
+		await server.gateway.started;
+		// Two racing calls + one later call — all join the ONE stop. Reads
+		// filter by type on this boot's OWN log (no shared-log clearing).
+		await Promise.all([server.gateway.stop(), server.gateway.stop()]);
+		await server.gateway.stop();
+		expect(server.log.filter((entry) => entry.type === "stop")).toHaveLength(1);
+	});
 
-test("stop without start never runs engine.start (the lazy-started + shutdown edge)", { timeout: 30_000 }, async () => {
-const server = await bootServer([ENGINE_SPECIFIER]);
-// The fixture log is global across boots — scope this test's reads.
-gatewayLog().length = 0;
-// Deliberately NEVER read `started` — then stop. The engine contract
-// tolerates this (documented on the interface); the handle must not
-// start the engine just to stop it.
-await server.gateway.stop();
-expect(gatewayLog().some((entry) => entry.type === "start")).toBe(false);
-expect(gatewayLog().filter((entry) => entry.type === "stop")).toHaveLength(1);
-});
+	test("stop without start never runs engine.start (the lazy-started + shutdown edge)", { timeout: 30_000 }, async () => {
+		const server = await bootServer([ENGINE_SPECIFIER]);
+		// Deliberately NEVER read `started` — then stop. The engine contract
+		// tolerates this (documented on the interface); the handle must not
+		// start the engine just to stop it.
+		await server.gateway.stop();
+		expect(server.log.some((entry) => entry.type === "start")).toBe(false);
+		expect(server.log.filter((entry) => entry.type === "stop")).toHaveLength(1);
+	});
 });
 
 // ---------------------------------------------------------------------------

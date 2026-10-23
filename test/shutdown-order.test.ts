@@ -39,13 +39,14 @@ const ENGINE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-gateway-engine", "index.js"),
 ).href;
 
-/** The fixture's shared log (the gateway-engine test's reader). */
-function gatewayLog(): { type: string }[] {
-	const log = (
-		globalThis as { __fixtureGatewayLog?: { type: string }[] }
-	).__fixtureGatewayLog;
-	if (log === undefined) throw new Error("fixture-gateway-engine log not captured");
-	return log;
+/**
+ * The per-boot log registry (the gateway-engine test's reader): the
+ * fixture pushes one log per factory call — one boot = one entry.
+ */
+function gatewayLogs(): { type: string }[][] {
+	return (
+		globalThis as { __fixtureGatewayLogs?: { type: string }[][] }
+	).__fixtureGatewayLogs ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,10 @@ describe("the booted composition's shutdown order", () => {
 			name: "ext-faux",
 			providers: [{ provider: faux.provider }],
 		};
+		// Snapshot the registry BEFORE the boot — the fixture's factory call
+		// (inside openHarness) pushes THIS boot's log at that index, so the
+		// watchdog and the ordering reads below observe this boot alone.
+		const logsBefore = gatewayLogs().length;
 		const opened = await openHarness(config, {
 			identity: await seededIdentity(dir),
 			extensions: [contributor],
@@ -219,9 +224,11 @@ describe("the booted composition's shutdown order", () => {
 			// with a watchdog releasing the settle gate the moment stopIntake
 			// lands — the drain inside eventBusShutdown then delivers the run's
 			// runSettled, and only after it does gateway.stop run.
+			const bootLog = (): { type: string }[] =>
+				gatewayLogs()[logsBefore] ?? [];
 			const watchFor = async (type: string): Promise<void> => {
 				for (;;) {
-					if (gatewayLog().some((entry) => entry.type === type)) return;
+					if (bootLog().some((entry) => entry.type === type)) return;
 					await new Promise((resolve) => setTimeout(resolve, 5));
 				}
 			};
@@ -265,7 +272,7 @@ describe("the booted composition's shutdown order", () => {
 				.__fixtureGatewaySettleGate;
 			// THE order: intake closes BEFORE the bus drains the pending
 			// runSettled; the engine stops only after every settle landed.
-			const types = gatewayLog().map((entry) => entry.type);
+			const types = bootLog().map((entry) => entry.type);
 			const stopIntakeAt = types.indexOf("stopIntake");
 			const settledAt = types.indexOf("runSettled");
 			const stopAt = types.indexOf("stop");

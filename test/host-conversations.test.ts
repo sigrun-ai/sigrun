@@ -675,7 +675,7 @@ describe("host upload/readFile/models/commands (gateway C4b)", () => {
 		if (principal === undefined) throw new Error("no principal observed");
 		return principal as {
 			user?: string;
-		admin: boolean;
+			admin: boolean;
 			service: boolean;
 			method: string;
 		};
@@ -739,7 +739,7 @@ describe("host upload/readFile/models/commands (gateway C4b)", () => {
 		await expect(host.conversations.readFile(id, uploaded.path))
 			.rejects.toMatchObject({
 				name: "ConversationOpError",
-			body: { error: "too_large" },
+				body: { error: "too_large" },
 				status: 413,
 			});
 	});

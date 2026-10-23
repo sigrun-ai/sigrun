@@ -10,7 +10,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Cursor, EntryDraft } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
-import { accessOf } from "@sigrun/shared/access";
 import { isSuperuser } from "../auth/principal.js";
 import {
 	ConversationOpError,
