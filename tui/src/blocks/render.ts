@@ -24,6 +24,7 @@ import { LogComponent } from "./log.js";
 import { TreeComponent } from "./treeview.js";
 import { ImageComponent } from "./image.js";
 import type { ImageOptions } from "./image.js";
+import { renderCollection } from "./collection/collection.js";
 import { wrapPlain } from "./width.js";
 
 // The renderer's public surface re-exports its seam types and the width
@@ -99,6 +100,10 @@ function dispatch(block: Block, ctx: BlockCtx, options: RenderOptions): Componen
 			return new TreeComponent(block, ctx);
 		case "image":
 			return new ImageComponent(block, ctx, options);
+		case "collection": {
+			const component = renderCollection(block, ctx);
+			return component ?? unsupported(block, ctx);
+		}
 		default:
 			return renderContent(block, ctx) ?? unsupported(block, ctx);
 	}

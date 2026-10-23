@@ -35,12 +35,21 @@ export function renderMeter(block: MeterBlock, ctx: BlockCtx): Component {
 		const head = label === "" ? text : `${label} ${text}`;
 		const tone = crossedTone(block, value);
 		const paint = tone === undefined ? (s: string): string => s : toneFg(ctx.theme, tone);
-		const fill = ctx.unicode ? "█" : "#";
-		const empty = ctx.unicode ? "░" : "-";
 		const barCells = Math.max(1, width - visibleWidth(head) - 1);
 		const t = max === min ? 0 : Math.max(0, Math.min(1, (value - min) / (max - min)));
-		const filled = Math.floor(barCells * t);
-		const bar = fill.repeat(filled) + empty.repeat(barCells - filled);
+		const bar = meterBar(t, barCells, !ctx.unicode);
 		return [truncate(`${paint(head)} ${paint(bar)}`, width)];
 	});
+}
+
+/**
+ * The bare meter bar (no label): `filled`/`empty` cells of the 0–1
+ * `level`, for inline cells (the collection table's `meter` column).
+ */
+export function meterBar(level: number, cells: number, ascii: boolean): string {
+	const fill = ascii ? "#" : "█";
+	const empty = ascii ? "-" : "░";
+	const t = Math.max(0, Math.min(1, level));
+	const filled = Math.floor(cells * t);
+	return fill.repeat(filled) + empty.repeat(cells - filled);
 }
