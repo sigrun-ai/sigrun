@@ -80,6 +80,12 @@ class WidthGated implements Component {
 		this.#inner.invalidate();
 	}
 
+	/** Dispose forwards too (a form's pending live debounce must not
+	 *  outlive its surface host). */
+	dispose(): void {
+		(this.#inner as { dispose?: () => void }).dispose?.();
+	}
+
 	/** Form introspection forwards (tests and hosts read the wrapped
 	 *  form's values/focus — the wrapper is transparent). */
 	get values(): JsonObject | undefined {

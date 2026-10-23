@@ -94,13 +94,16 @@ export function stepperSections(
 	return allChoice ? sections : null;
 }
 
-/** The first choice field of a stepper section (the review reads it). */
-function sectionChoice(section: SectionBlock): Field | undefined {
-	return section.children.find(
+/** The answerable fields of a stepper section (every field the review
+ *  summarizes — §9.1's review step covers ALL of a section's fields,
+ *  not only the choice). */
+function sectionFields(section: SectionBlock): readonly Field[] {
+	return section.children.filter(
 		(child): child is Field =>
 			typeof child === "object" &&
 			child !== null &&
-			(child as Field).type === "choice",
+			typeof (child as Field).name === "string" &&
+			typeof (child as Field).type === "string",
 	);
 }
 
@@ -338,14 +341,16 @@ export class FormComponent implements Component {
 		const total = sections.length;
 		const lines: string[] = [];
 		if (this.#step >= total) {
-			// The review step (§9.1): every section's value, then submit.
+			// The review step (§9.1): every section's answerable fields, then
+			// submit. A section title line leads its field answers.
 			lines.push(this.#ctx.theme.bold(truncate("Review", width)));
 			sections.forEach((section) => {
 				const title = bindText(section.title, this.#ctx);
-				const choice = sectionChoice(section);
-				const value = choice === undefined ? undefined : this.#values[choice.name];
-				const text = choice === undefined ? "" : reviewText(choice, this.#ctx, value ?? null);
-				lines.push(truncate(`  ${title}: ${text}`, width));
+				const answers = sectionFields(section).map((field) =>
+					reviewText(field, this.#ctx, this.#values[field.name] ?? null),
+				);
+				const summary = answers.filter((text) => text !== "").join(", ");
+				lines.push(truncate(`  ${title}: ${summary}`, width));
 			});
 			if (!this.#readOnly && !this.#submitted) {
 				lines.push(truncate(`> [ ${this.#submitLabel} ]`, width));
@@ -360,8 +365,13 @@ export class FormComponent implements Component {
 		if (section !== undefined) {
 			const title = bindText(section.title, this.#ctx);
 			if (title !== "") lines.push(this.#ctx.theme.bold(truncate(title, width)));
-			for (const field of this.#visibleFields()) {
-				lines.push(...this.#renderField(field, width, true));
+			// Only the section's FIRST field takes focus chrome and input;
+			// the rest render read-only (the stepper's contract is one
+			// answer per step — §9.1).
+			const visible = this.#visibleFields();
+			const primary = visible[0];
+			for (const field of visible) {
+				lines.push(...this.#renderField(field, width, field === primary));
 			}
 		}
 		lines.push(
@@ -530,13 +540,11 @@ export class FormComponent implements Component {
 		if (data === "\r") {
 			if (this.#submit()) {
 				// Inline clears on success (the dispatch did not throw).
-				const bound = this.#boundObject();
 				const cleared: JsonObject = {};
 				for (const item of this.#fields) {
 					cleared[item.name] = initialValue(item, {});
 					this.#text.set(item.name, { buffer: new EditBuffer("") });
 				}
-				void bound;
 				this.#values = cleared;
 			}
 			return;
@@ -671,7 +679,8 @@ export class FormComponent implements Component {
 				if (data !== "\r") {
 					const state = this.#textState(field);
 					if (state.buffer.input(data)) {
-						this.#values = { ...this.#values, [field.name]: state.buffer.text };
+						// The typed path is editing scratch, not the value (the
+						// value becomes the descriptor(s) on a successful pick).
 					}
 					return;
 				}
@@ -686,15 +695,23 @@ export class FormComponent implements Component {
 				}
 				state.error = undefined;
 				state.uploaded = [...state.uploaded, picked.descriptor.name];
+				// A multi file field APPENDS picks; single replaces.
+				const prior = this.#values[field.name];
 				this.#values = {
 					...this.#values,
-					[field.name]: field.multi === true ? [picked.descriptor] : picked.descriptor,
+					[field.name]:
+						field.multi === true
+							? [...(Array.isArray(prior) ? prior : []), picked.descriptor]
+							: picked.descriptor,
 				};
 				this.#ctx.dispatch(
 					{ type: "submit", name: field.onUpload, turn: false },
 					{ field: field.name, files: [picked.payloadFile] },
 				);
 				this.#ctx.uploadBytes?.(field.name, picked.descriptor.name, picked.bytes);
+				// The pick consumed the path; clear the editor so the next
+				// pick types fresh (a multi field appends its descriptors).
+				this.#text.set(field.name, { buffer: new EditBuffer("") });
 				return;
 			}
 			case "longtext":
@@ -720,7 +737,11 @@ export class FormComponent implements Component {
 				if (state.buffer.input(data)) {
 					if (field.type === "number") {
 						const raw = state.buffer.text;
-						this.#change(field.name, raw === "" ? "" : Number(raw));
+						const parsed = Number(raw);
+						// Never NaN into the values (NaN serializes to null and
+						// defeats min/max validation): non-numeric text holds the
+						// empty value until it parses.
+						this.#change(field.name, raw === "" || Number.isNaN(parsed) ? "" : parsed);
 						return;
 					}
 					this.#change(field.name, state.buffer.text);

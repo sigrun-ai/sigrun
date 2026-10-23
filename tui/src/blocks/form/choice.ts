@@ -7,6 +7,10 @@
  * markdown BELOW the options (§5.6's TUI note) at every width. An
  * `allowOther` field appends a final "Type something" row; typing on it
  * edits the free text.
+ *
+ * v1 degradation note: `preview` renders via wrapPlain (plain wrapped
+ * text), not the markdown renderer — the preview stays one small
+ * dim block under the options.
  */
 
 import type { ChoiceField, ChoiceOption, JsonObject, JsonValue } from "@sigrun/shared/blocks";

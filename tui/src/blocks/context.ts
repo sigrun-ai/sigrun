@@ -11,6 +11,8 @@
  * so sibling blocks reading `/view/...` bindings update — mirroring
  * U1's `SurfaceActionsCtx.setView`) and `serverErrors` (a rejected
  * action's `{error: {field}}` surfaces under that field, §5.6).
+ * `bindRaw` routes `/view/`-rooted pointers to `view.values` so EVERY
+ * block (not only the writing form) reads the branch.
  */
 
 import { resolvePointer } from "@sigrun/shared/blocks";
@@ -92,9 +94,19 @@ const TONES: ReadonlySet<string> = new Set([
 	"info",
 ]);
 
-/** Resolve a bindable of any shape to its raw JSON value (untyped). */
+/** Resolve a bindable of any shape to its raw JSON value (untyped).
+ *  A `/view/`-rooted pointer resolves against the channel-owned view
+ *  branch (spec §6.2 — the sibling-read half of the setView seam: a
+ *  block bound `{$: "/view/..."}` sees what a view-bound live form
+ *  wrote); everything else resolves against ctx.data. */
 export function bindRaw(value: unknown, ctx: BlockCtx): JsonValue | undefined {
 	if (!isBinding(value)) return value as JsonValue | undefined;
+	if (value.$.startsWith("/view/") || value.$ === "/view") {
+		const pointer = value.$.replace(/^\/view\/?/, "/");
+		const resolved = resolvePointer(ctx.view.values as JsonValue, pointer);
+		if (resolved !== undefined) return resolved;
+		return undefined;
+	}
 	return resolvePointer(ctx.data, value.$, ctx.item);
 }
 
