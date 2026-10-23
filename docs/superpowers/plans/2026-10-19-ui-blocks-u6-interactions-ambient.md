@@ -15,6 +15,10 @@
 
 **Depends on:** U0, U1, U2.
 
+## Coordination with the gateway plans
+
+The gateway plans depend on this plan. Core Task 7 (C5 answer attribution, C6 `interactionSettled`) is shape-agnostic; if it merged first, its cases in `test/seam.test.ts`, `test/notifications.test.ts` and `test/event-bus.test.ts` are part of this plan's test rewrite. The gateway engine's Task 9 (interactions in chat) waits for this plan and is written against block-tree bodies and `{values}` answers; changing `fixture-gate`'s `decision`/`reason` names or the root-`form` convention means updating that task.
+
 ## Global Constraints
 
 - Interaction envelope, unchanged: `kind`, `callId`, `status`, `createdAt`, `expiresAt?`, `settledAt?`, `answeredBy?`, `answeredByUser?`, `answer?`, `details?`; first-answer-wins.

@@ -16,6 +16,10 @@
 
 **Depends on:** U0 for Tasks 1–4. Task 5 also needs U1 and U2 merged (it wires their `SurfaceView`s).
 
+## Coordination with the gateway plans
+
+The gateway core plan (`docs/superpowers/plans/2026-10-22-sigrun-gateway-core.md`) adds the `channels` and `gateway` factory-result fields to `src/harness/loader.ts`/`src/extension.ts` and `channels`/`inert` to `/v1/extensions` rows. Both plans add fields in the same blocks; keep both sides on rebase.
+
 ## Global Constraints
 
 - Routes (all through W1's auth pipeline):
