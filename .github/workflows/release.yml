@@ -1,0 +1,184 @@
+# Release: on v<semver> tags (and workflow_dispatch re-runs of an
+# EXISTING tag) — build and push the multi-arch image to GHCR and the
+# chart to the GHCR OCI registry. Auth is the workflow's own
+# GITHUB_TOKEN (permissions below) — no PATs, no stored secrets.
+# Runbook, smoke procedure, and idempotency boundary:
+# charts/sigrun/RELEASE.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v<semver> tag to re-release"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    env:
+      # The tag being released: the pushed tag itself, or the dispatch
+      # input. Dispatch exists to RE-RUN an existing tag's release
+      # after a fix — never to build an arbitrary SHA (the guard step
+      # enforces exactly that).
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      # Probe clone, any state — the guard only needs git + origin.
+      - uses: actions/checkout@v5
+        with:
+          path: tag-probe
+      - name: "Guard: tag must exist as an exact refs/tags ref"
+        shell: bash
+        working-directory: tag-probe
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth 1 origin \
+            "+refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
+          if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" \
+              >/dev/null 2>&1; then
+            echo "::error::tag '${TAG}' does not exist as"
+            echo "::error::refs/tags/${TAG} — releases build EXISTING"
+            echo "::error::tags only; re-release via dispatch with the tag."
+            exit 1
+          fi
+          # Exact-match belt: the fetched tag resolves to a real commit.
+          # --tags, because the release runbook's `git tag v<semver>` form
+          # is lightweight — bare --exact-match would only accept
+          # annotated tags.
+          git describe --tags --exact-match "${TAG}" >/dev/null
+          echo "releasing ${TAG} (image tag: ${TAG#v})"
+      # The release workspace: the tag itself, in the sibling layout
+      # the registry-mode dance needs (same as ci.yml — the file:
+      # ../sigrun-ext-* specifiers and publish-deps.mjs's manifest
+      # reads resolve against the workspace root).
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: sigrun
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-codemode
+          path: sigrun-ext-codemode
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-mcp
+          path: sigrun-ext-mcp
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-tool-search
+          path: sigrun-ext-tool-search
+      - name: Derive image tag (v prefix stripped)
+        shell: bash
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # QEMU: the arm64 half of the multi-arch build.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      # The Dockerfile's build precondition: registry-shaped manifest
+      # and lock — identical dance to ci.yml's image-build job (the
+      # derived pins are read back from package.json and named
+      # explicitly; a bare --package-lock-only keeps link: entries →
+      # dangling built-in symlinks → boot quarantine).
+      - name: Registry-mode lock regen
+        shell: bash
+        working-directory: sigrun
+        run: |
+          node scripts/publish-deps.mjs registry
+          pins="$(node -p "
+            const d = require('./package.json').dependencies;
+            const names = [
+              '@sigrun/ext-codemode',
+              '@sigrun/ext-mcp',
+              '@sigrun/ext-tool-search',
+            ];
+            names.map((n) => n + '@' + d[n]).join(' ');
+          ")"
+          npm install ${pins} --package-lock-only
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: sigrun
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Image tags carry the semver WITHOUT the v prefix, and so does
+          # the APP_VERSION build-arg (the Dockerfile's version label) —
+          # image tag, docker inspect label, and chart appVersion all
+          # read the same 0.1.5 form.
+          tags: |
+            ghcr.io/sigrun-ai/sigrun:${{ env.VERSION }}
+            ghcr.io/sigrun-ai/sigrun:latest
+          build-args: APP_VERSION=${{ env.VERSION }}
+
+  chart:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: tag-probe
+      - name: "Guard: tag must exist as an exact refs/tags ref"
+        shell: bash
+        working-directory: tag-probe
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth 1 origin \
+            "+refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
+          if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" \
+              >/dev/null 2>&1; then
+            echo "::error::tag '${TAG}' does not exist as"
+            echo "::error::refs/tags/${TAG} — releases build EXISTING"
+            echo "::error::tags only; re-release via dispatch with the tag."
+            exit 1
+          fi
+          # Exact-match belt (lightweight-tag-safe --tags, matching the
+          # image job's guard).
+          git describe --tags --exact-match "${TAG}" >/dev/null
+          echo "releasing ${TAG} (chart version: ${TAG#v})"
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: sigrun
+      - name: Derive chart version (v prefix stripped)
+        shell: bash
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@v4
+      # Rewrite the two pinned-format Chart.yaml lines from the tag
+      # (chart version AND appVersion both the semver without v), fetch
+      # the gitignored vendored dependency, then package.
+      - name: Version, package
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          sed -i "s/^version: .*/version: ${VERSION}/" \
+            charts/sigrun/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" \
+            charts/sigrun/Chart.yaml
+          helm dependency update charts/sigrun
+          helm package charts/sigrun
+      - name: Helm registry login (ghcr.io)
+        shell: bash
+        working-directory: sigrun
+        run: >
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | helm registry
+          login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push chart to GHCR OCI
+        shell: bash
+        working-directory: sigrun
+        run: >
+          helm push "sigrun-${VERSION}.tgz"
+          oci://ghcr.io/sigrun-ai/charts/sigrun

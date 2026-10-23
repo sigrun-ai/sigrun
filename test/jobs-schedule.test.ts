@@ -172,4 +172,20 @@ describe("specHash", () => {
 			specHash("api:1", morningBrief),
 		);
 	});
+
+	it("changes when deliver changes (gateway C7: editing targets is a revision)", () => {
+		// Routed through validateJobSpec: the hash identity requires the
+		// VALIDATED spec to preserve deliver — a validator that dropped the
+		// field would make the two specs hash identically.
+		const withDeliver = validateJobSpec({
+			...morningBrief,
+			action: { ...morningBrief.action, deliver: ["telegram:42"] },
+		});
+		const without = validateJobSpec(morningBrief);
+		if (!withDeliver.ok || !without.ok) throw new Error("unreachable");
+		expect(withDeliver.spec.action).toMatchObject({ deliver: ["telegram:42"] });
+		expect(specHash("api:1", withDeliver.spec)).not.toBe(
+			specHash("api:1", without.spec),
+		);
+	});
 });

@@ -1,0 +1,6 @@
+# sigrun chart — packaging excludes
+
+# The release runbook lives WITH the chart (it documents the workflow
+# that publishes this chart), but a deployed consumer has no use for
+# it inside the tarball.
+RELEASE.md

@@ -427,6 +427,25 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		expect(final.json()).toEqual(DEFAULT_BODY);
 	});
 
+	test("PATCH rejects the job stamp fields (deliver/jobId, gateway C7)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		// Both keys are fire.ts-stamped server state (the run conversation's
+		// delivery targets + owning job): the KEY is the client error whatever
+		// the value — even one whose type would have been valid.
+		const deliverPatch = await patchMeta(app, root.id, { deliver: [] });
+		expect(deliverPatch.statusCode).toBe(400);
+		expect(deliverPatch.json()).toEqual({ error: "invalid_field", field: "deliver" });
+		const jobIdPatch = await patchMeta(app, root.id, { jobId: "x" });
+		expect(jobIdPatch.statusCode).toBe(400);
+		expect(jobIdPatch.json()).toEqual({ error: "invalid_field", field: "jobId" });
+		// Nothing was applied by any rejected patch.
+		const final = await getMeta(app, root.id);
+		expect(final.json()).toEqual(DEFAULT_BODY);
+	});
+
 	test("rejects a non-object or empty body", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {

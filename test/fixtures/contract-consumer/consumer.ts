@@ -25,6 +25,7 @@ import type {
 	ExtensionWorker,
 	InteractionRecord,
 	JobSpec,
+	ModelEntry,
 	NotifierContribution,
 	ProviderContribution,
 	RunSettledEvent,
@@ -32,6 +33,7 @@ import type {
 	SigrunExtensionFactory,
 	SigrunExtensionResult,
 	SigrunHost,
+	SlashCommand,
 	WebuiBundleContribution,
 } from "@sigrun/sigrun/extension";
 
@@ -266,6 +268,35 @@ const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 
 		const acting: string | undefined = await host.identity.actingUser(created);
 		void acting;
+
+		// Gateway C4b: the files/models/commands surfaces.
+		const uploaded: { path: string } = await host.conversations.upload(created, {
+			name: "a.txt",
+			mime: "text/plain",
+			bytes: new Uint8Array([104, 105]),
+		});
+		const uploadedPath: string = uploaded.path;
+		void uploadedPath;
+		const read: { bytes: Uint8Array; mime?: string } =
+			await host.conversations.readFile(created, uploaded.path);
+		const readBytes: Uint8Array = read.bytes;
+		const readMime: string | undefined = read.mime;
+		void readBytes;
+		void readMime;
+
+		const models: readonly ModelEntry[] = await host.models.list();
+		void models;
+
+		const catalog: readonly SlashCommand[] = await host.commands.list();
+		void catalog;
+		const runResult: { notice?: string } = await host.commands.run(
+			created,
+			"hello",
+			"bob",
+			{ user: "alice" },
+		);
+		const notice: string | undefined = runResult.notice;
+		void notice;
 	})();
 
 	return result;

@@ -25,6 +25,14 @@ export interface DirectoryUser {
 	readonly email?: string;
 	/** Configuration authority lives with the user, never with a token. */
 	readonly admin: boolean;
+	/**
+	 * The proxy-group admin grant (gateway C8): the request pipeline's
+	 * write-through at proxy-authenticated requests, present only while
+	 * `server.auth.adminGroups` is configured. NEVER grants authority on
+	 * its own in the directory (the admin routes' guards read stored
+	 * `admin`); host-side surfaces project it into effective admin.
+	 */
+	readonly groupAdmin?: boolean;
 	/** When this record was created (epoch ms). */
 	readonly createdAt: number;
 	/** How the user entered the directory (spec §5.8 sources). */
@@ -85,12 +93,13 @@ export class UserDirectory {
 
 	/**
 	 * Patch one user's mutable fields (`name`/`email`/`admin` — the
-	 * username itself is immutable). Absent user throws; the file is
-	 * rewritten atomically.
+	 * username itself is immutable; `groupAdmin` is the pipeline's own
+	 * write-through field, never the PATCH route's surface). Absent user
+	 * throws; the file is rewritten atomically.
 	 */
 	update(
 		user: string,
-		patch: { name?: string; email?: string; admin?: boolean },
+		patch: { name?: string; email?: string; admin?: boolean; groupAdmin?: boolean },
 	): Promise<DirectoryUser> {
 		return this.mutations.run(async () => {
 			const records = this.list();

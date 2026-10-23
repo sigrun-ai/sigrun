@@ -13,7 +13,7 @@
  *
  * Types that stay declared locally: the client-NARROWED view projections
  * (`ContentBlockWire`/`UsageWire`/`MessageWire`/`ConversationEntryWire`/
- * `ConversationViewWire`/`ToolSlotWire`/`LiveDocWire` — views.ts DOES
+ * `ConversationViewWire`/`ToolSlotWire` — views.ts DOES
  * export a `ConversationViewWire`, pi-durable's full `ConversationView`
  * plus `steer`; the webui keeps its own declaration under the same name
  * because its renderers read deliberately narrowed `entries`/`docs`
@@ -334,21 +334,14 @@ export interface ToolSlotWire {
 }
 
 /**
- * The `docs["pi.live"]` LiveState doc, narrowed to what the webui reads.
- * Shape per pi-durable dist/harness/live.d.ts: `run` (present exactly while
- * busy — the steer field derives from it server-side), `generation.message`
- * (the committed throttled partial of the in-flight response), `tools`
- * (live tool slots), `compactions` (live compaction tasks),
- * `compactionFailure` (the newest failure — a completed compaction clears
- * it; nothing-to-compact or a fault leaves it).
+ * The `docs["pi.live"]` LiveState doc — the shared leaf's narrowing
+ * (`@sigrun/shared/live`), re-exported under the stable webui name: the doc
+ * shape AND its read functions live in the shared package now (gateway
+ * plan 1, Task 1) so the gateway engine and every channel narrow `pi.live`
+ * identically. `ToolSlotWire` above stays the webui's spelling of the
+ * shared `LiveToolSlotWire` (structurally identical).
  */
-export interface LiveDocWire {
-	readonly run?: unknown;
-	readonly generation?: { readonly message?: unknown };
-	readonly tools?: readonly ToolSlotWire[];
-	readonly compactions?: readonly unknown[];
-	readonly compactionFailure?: { readonly error?: unknown };
-}
+export type { LiveDocWire } from "@sigrun/shared/live";
 
 /** The configure body (`POST .../configure`): exactly one field per call. */
 export interface ConfigureInput {
