@@ -62,6 +62,7 @@ import type {
 	HealthStatus,
 	SessionMeta,
 	SubmissionRecordWire,
+	ThinkingLevelWire,
 	UserWire as DirectoryUserWire,
 } from "@sigrun/shared/views";
 
@@ -695,6 +696,15 @@ export interface SigrunHost {
 			readonly sharing?: Sharing;
 			readonly name?: string;
 			readonly source?: string;
+			/**
+			 * Pin the conversation's extension/tool selection (gateway C4):
+			 * names resolved against the registry — an unknown name throws a
+			 * `ConversationOpError` naming `agent.extensions`/`agent.tools`.
+			 */
+			readonly agent?: {
+				readonly extensions?: readonly string[];
+				readonly tools?: readonly string[];
+			};
 		}): Promise<ConversationId>;
 		submit(
 			id: ConversationId,
@@ -714,6 +724,47 @@ export interface SigrunHost {
 			readonly archived?: boolean;
 		}): Promise<readonly ConversationSummary[]>;
 		meta(id: ConversationId): Promise<SessionMeta>;
+		/**
+		 * Withdraw/settle the conversation's active submission (gateway
+		 * C4, the abort route's op). On an idle conversation it RESOLVES
+		 * (chat `/stop` on an idle chat is not an error) — the HTTP route
+		 * keeps its 404 `no_active_submission`.
+		 */
+		abort(id: ConversationId): Promise<void>;
+		/**
+		 * Change the model and/or thinking level (gateway C4, the configure
+		 * route's op). The inputs are typed but validated like the route's
+		 * body — an unknown key or malformed model is a
+		 * `ConversationOpError`.
+		 */
+		configure(
+			id: ConversationId,
+			opts: { readonly model?: string; readonly thinking?: ThinkingLevelWire },
+		): Promise<void>;
+		/** Admit one manual compaction task (gateway C4, the compact route's op). */
+		compact(id: ConversationId): Promise<void>;
+		/**
+		 * Fork the history at one entry (gateway C4, the fork route's op):
+		 * absent `at` = the newest entry; `owner` stamps the fork's session
+		 * owner (absent = the owner key removed). Returns the new id.
+		 */
+		fork(
+			id: ConversationId,
+			opts?: { readonly at?: EntryId; readonly owner?: string },
+		): Promise<ConversationId>;
+		/**
+		 * Patch the session meta (gateway C4, the meta PATCH route's op).
+		 * Host callers are TRUSTED: the sharing patch runs with no
+		 * owner-or-superuser gate (the HTTP route keeps its 403).
+		 */
+		patchMeta(
+			id: ConversationId,
+			patch: {
+				readonly name?: string | null;
+				readonly archived?: boolean;
+				readonly sharing?: Sharing | null;
+			},
+		): Promise<SessionMeta>;
 	};
 
 	/** The user directory (admin wire form; emails are admin material). */

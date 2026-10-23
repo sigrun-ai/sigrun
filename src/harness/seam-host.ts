@@ -388,6 +388,7 @@ export function createSeamHost(
 					...(opts.owner === undefined ? {} : { owner: opts.owner }),
 					...(opts.sharing === undefined ? {} : { sharing: opts.sharing }),
 					...(opts.name === undefined ? {} : { name: opts.name }),
+					...(opts.agent === undefined ? {} : { agent: opts.agent }),
 					// The source default: the CALLING extension's slug (spec §9.5).
 					source: opts.source ?? identity.name,
 				});
@@ -407,6 +408,23 @@ export function createSeamHost(
 			async meta(id) {
 				const bridge = await hostBridge();
 				return bridge.conversations.meta(id);
+			},
+			// The C4a ops: straight delegation (the bridge resolves the id and
+			// runs the op its HTTP twin runs).
+			async abort(id) {
+				return (await hostBridge()).conversations.abort(id);
+			},
+			async configure(id, opts) {
+				return (await hostBridge()).conversations.configure(id, opts);
+			},
+			async compact(id) {
+				return (await hostBridge()).conversations.compact(id);
+			},
+			async fork(id, opts) {
+				return (await hostBridge()).conversations.fork(id, opts);
+			},
+			async patchMeta(id, patch) {
+				return (await hostBridge()).conversations.patchMeta(id, patch);
 			},
 		},
 		users: {
