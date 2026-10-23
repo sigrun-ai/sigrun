@@ -11,6 +11,7 @@ import { createContext, useContext } from "react";
 import type {
 	Action,
 	Bindable,
+	Binding,
 	JsonObject,
 	JsonValue,
 } from "@sigrun/shared/blocks";
@@ -71,21 +72,41 @@ export function useSurfaceActions(): SurfaceActionsCtx {
 	return useContext(SurfaceActionsContext);
 }
 
+/** Whether `value` is a binding: an object whose SOLE contract key
+ *  `$` is a string. The string check is the fix the Task-1 review
+ *  demanded: without it the literal branch's pass-through could hand a
+ *  `{$: …}`-shaped object to a caller as if it were the VALUE for
+ *  non-string `Bindable` props (chart series data, meter values) — a
+ *  genuine binding now always resolves (or renders empty), and a
+ *  literal object that merely CONTAINS a `$` key of another type stays
+ *  a literal. */
+function isBinding(value: unknown): value is Binding {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"$" in value &&
+		typeof value.$ === "string"
+	);
+}
+
 /** Resolve `value` in a binding-aware way (spec §4.2): a `{$: pointer}`
  *  reads the pointer against the context's data (or its `item`, for
  *  the `./` item-rooted pointers); a literal passes through; an absent
  *  prop resolves `undefined`. A missing path resolves `undefined` —
- *  never an error. */
+ *  never an error, and never the binding object itself. */
 export function bound<T>(
 	ctx: SurfaceDataCtx,
 	value: Bindable<T> | undefined,
 ): T | undefined {
 	if (value === undefined) return undefined;
-	if (typeof value === "object" && value !== null && "$" in value) {
+	if (isBinding(value)) {
 		const resolved = resolvePointer(ctx.data, value.$, ctx.item);
 		return resolved === undefined ? undefined : (resolved as T);
 	}
-	return value;
+	// Not a binding object — a literal. The cast is safe by the check
+	// above (no `{$: string}` shape reaches here); it exists because TS
+	// cannot narrow a generic `T | Binding` union.
+	return value as T;
 }
 
 /** A binding-aware string (labels, titles, text): missing → "". */

@@ -307,6 +307,351 @@
 	white-space: pre-wrap;
 }
 
+/* ── content: chart / meter / log / tree (§5.3/§5.4) ─────────────────── */
+
+/* The theme's series palette (spec §5.4: chart colours come from the
+   theme's series palette, in order). Eight stops, defined per resolved
+   mode beside --warn/--danger (the same "state colours, not palette
+   members" posture): the accent is stop 1 — the user's accent leads
+   every chart — and the rest are fixed, hue-spread ramp values that sit
+   on the four palettes' surfaces. A chart with more than 8 series wraps
+   the ramp. */
+
+:root {
+	--chart-1: var(--accent);
+	--chart-2: #6fb3e0;
+	--chart-3: #86c79b;
+	--chart-4: #d9a35a;
+	--chart-5: #b48ead;
+	--chart-6: #e08f7a;
+	--chart-7: #7fc7c7;
+	--chart-8: #a9b665;
+}
+
+[data-mode="light"] {
+	--chart-2: #3e78a8;
+	--chart-3: #4a8a5f;
+	--chart-4: #8a6116;
+	--chart-5: #83619c;
+	--chart-6: #b35c42;
+	--chart-7: #3d8f8f;
+	--chart-8: #6f7a2f;
+}
+
+.blk-chart {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	min-width: 0;
+}
+
+.blk-chart-head {
+	align-items: baseline;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 0.75rem;
+}
+
+.blk-chart-title {
+	color: var(--muted);
+	font-size: 0.85em;
+}
+
+.blk-chart-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 0.9rem;
+	margin-left: auto;
+}
+
+.blk-chart-legend[data-legend="below"] {
+	margin-left: 0;
+}
+
+.blk-chart-legend-item {
+	align-items: center;
+	color: var(--muted);
+	display: inline-flex;
+	font-size: 0.8em;
+	gap: 0.35rem;
+}
+
+.blk-chart-swatch {
+	border-radius: 2px;
+	display: inline-block;
+	height: 0.6em;
+	width: 0.9em;
+}
+
+.blk-chart-svg {
+	display: block;
+	width: 100%;
+}
+
+.blk-chart-grid {
+	stroke: var(--border);
+	stroke-dasharray: 2 4;
+	stroke-width: 1;
+}
+
+.blk-chart-tick {
+	fill: var(--faint);
+	font-size: 11px;
+}
+
+.blk-chart-tick-line {
+	stroke: var(--faint);
+	stroke-width: 1;
+}
+
+.blk-chart-y-caption {
+	font-size: 10px;
+}
+
+.blk-chart-threshold {
+	stroke-dasharray: 6 4;
+	stroke-width: 1.5;
+}
+
+.blk-chart-threshold[data-tone="neutral"] {
+	stroke: var(--text);
+}
+
+.blk-chart-threshold[data-tone="accent"] {
+	stroke: var(--accent);
+}
+
+.blk-chart-threshold[data-tone="good"] {
+	stroke: var(--ok);
+}
+
+.blk-chart-threshold[data-tone="warn"] {
+	stroke: var(--warn);
+}
+
+.blk-chart-threshold[data-tone="bad"] {
+	stroke: var(--danger);
+}
+
+.blk-chart-threshold[data-tone="info"] {
+	stroke: var(--muted);
+}
+
+.blk-chart-threshold-label {
+	font-size: 10px;
+}
+
+.blk-chart-threshold-label[data-tone="neutral"] {
+	fill: var(--text);
+}
+
+.blk-chart-threshold-label[data-tone="accent"] {
+	fill: var(--accent);
+}
+
+.blk-chart-threshold-label[data-tone="good"] {
+	fill: var(--ok);
+}
+
+.blk-chart-threshold-label[data-tone="warn"] {
+	fill: var(--warn);
+}
+
+.blk-chart-threshold-label[data-tone="bad"] {
+	fill: var(--danger);
+}
+
+.blk-chart-threshold-label[data-tone="info"] {
+	fill: var(--muted);
+}
+
+.blk-chart-spark-row {
+	align-items: baseline;
+	display: flex;
+	gap: 0.5rem;
+}
+
+.blk-chart-spark {
+	flex: 1;
+	height: 24px;
+	min-width: 0;
+}
+
+.blk-chart-spark-name {
+	color: var(--muted);
+	flex: none;
+	font-size: 0.8em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.blk-chart-spark-value {
+	flex: none;
+	font-size: 0.9em;
+	font-variant-numeric: tabular-nums;
+	font-weight: 650;
+}
+
+.blk-meter {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+}
+
+.blk-meter-head {
+	display: flex;
+	gap: 0.75rem;
+	justify-content: space-between;
+}
+
+.blk-meter-label {
+	color: var(--muted);
+	font-size: 0.85em;
+}
+
+.blk-meter-value {
+	font-size: 0.9em;
+	font-variant-numeric: tabular-nums;
+}
+
+.blk-meter-track {
+	background: var(--code);
+	border-radius: 999px;
+	height: 8px;
+	overflow: hidden;
+	width: 100%;
+}
+
+.blk-meter-fill {
+	background: var(--muted);
+	border-radius: 999px;
+	height: 100%;
+	transition: width 0.2s ease;
+}
+
+.blk-meter[data-tone="accent"] .blk-meter-fill {
+	background: var(--accent);
+}
+
+.blk-meter[data-tone="good"] .blk-meter-fill {
+	background: var(--ok);
+}
+
+.blk-meter[data-tone="warn"] .blk-meter-fill {
+	background: var(--warn);
+}
+
+.blk-meter[data-tone="bad"] .blk-meter-fill {
+	background: var(--danger);
+}
+
+.blk-meter[data-tone="info"] .blk-meter-fill {
+	background: var(--muted);
+}
+
+.blk-log-lines {
+	background: var(--code);
+	border-radius: 8px;
+	font-family: var(--mono);
+	font-size: 0.82em;
+	line-height: 1.45;
+	max-height: 20rem;
+	overflow-y: auto;
+	padding: 0.55rem 0.75rem;
+}
+
+.blk-log-line {
+	display: flex;
+	gap: 0.6rem;
+}
+
+.blk-log-line[data-wrap="true"] .blk-log-text {
+	white-space: pre-wrap;
+}
+
+.blk-log-time {
+	color: var(--faint);
+	flex: none;
+	font-size: 0.9em;
+}
+
+.blk-log-level {
+	flex: none;
+	font-size: 0.85em;
+	font-weight: 650;
+	min-width: 3.5em;
+	text-transform: uppercase;
+}
+
+.blk-log-text {
+	white-space: pre;
+}
+
+.blk-tree {
+	display: flex;
+	flex-direction: column;
+}
+
+.blk-tree-row {
+	align-items: center;
+	border-radius: 6px;
+	cursor: pointer;
+	display: flex;
+	gap: 0.35rem;
+	padding: 0.15rem 0.25rem;
+}
+
+.blk-tree-row:hover {
+	background: var(--code);
+}
+
+.blk-tree-toggle {
+	align-items: center;
+	background: none;
+	border: 0;
+	color: var(--faint);
+	cursor: pointer;
+	display: inline-flex;
+	flex: none;
+	font: inherit;
+	justify-content: center;
+	padding: 0;
+	width: 1.1rem;
+}
+
+.blk-tree-toggle:disabled {
+	cursor: default;
+}
+
+.blk-tree-caret {
+	transition: transform 0.15s ease;
+}
+
+.blk-tree-caret[data-open="true"] {
+	transform: rotate(90deg);
+}
+
+.blk-tree-dot {
+	display: inline-block;
+	height: 3px;
+	width: 3px;
+}
+
+.blk-tree-label {
+	overflow-wrap: anywhere;
+}
+
+.blk-tree-children {
+	display: flex;
+	flex-direction: column;
+}
+
+.blk-tree-pending {
+	color: var(--faint);
+	padding: 0.15rem 0.25rem;
+}
+
 /* ── actions and confirm (§6.1/§6.2) ─────────────────────────────────── */
 
 .blk-actions {

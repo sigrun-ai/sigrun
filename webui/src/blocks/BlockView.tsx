@@ -16,6 +16,7 @@
 import type { ReactNode } from "react";
 import type { Block, Field, WidthCondition } from "@sigrun/shared/blocks";
 import "./blocks.css";
+import { ChartBlockView } from "./chart";
 import {
 	CalloutBlockView,
 	DetailsBlockView,
@@ -25,6 +26,9 @@ import {
 	MarkdownBlockView,
 	StatBlockView,
 } from "./content";
+import { LogBlockView } from "./log";
+import { MeterBlockView } from "./meter";
+import { TreeBlockView } from "./treeview";
 import {
 	ColumnsBlockView,
 	GridBlockView,
@@ -93,6 +97,14 @@ function renderKnown(block: Block): ReactNode {
 			return <DiffBlockView block={block} />;
 		case "details":
 			return <DetailsBlockView block={block} />;
+		case "chart":
+			return <ChartBlockView block={block} />;
+		case "meter":
+			return <MeterBlockView block={block} />;
+		case "log":
+			return <LogBlockView block={block} />;
+		case "tree":
+			return <TreeBlockView block={block} />;
 		default:
 			// A type this client doesn't know: the fallback text plus the
 			// notice (§4.4). `fallback` is optional; when absent the server
