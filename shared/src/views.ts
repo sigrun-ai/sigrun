@@ -723,6 +723,10 @@ export interface ExtensionSurfaceInfo {
 	/** The declared refresh cadence (spec §7.1); channels refetch data on
 	 *  this interval while the surface is visible. Absent → no cadence. */
 	readonly refreshMs?: number;
+	/** §7.3 shared-data flag: a sharedData surface's `since` fetches may
+	 *  answer with `ops` and NO `data` — channels fall back to a full
+	 *  fetch (ops folding is U1). Absent → per-instance data. */
+	readonly sharedData?: boolean;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */

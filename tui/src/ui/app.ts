@@ -620,7 +620,7 @@ export class TuiApp implements Component, ActionHost {
 			this.#abortActive();
 			return true;
 		}
-		// Esc (or Back) closes an open extension view — back to the
+		// Esc closes an open extension view — back to the
 		// conversation pane; the surface's fetches stop (the keepalive
 		// stops with the view, spec §7.3's stop-when-hidden).
 		if (matchesKey(data, Key.escape) && this.#extView !== undefined) {

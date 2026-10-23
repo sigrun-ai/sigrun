@@ -121,10 +121,19 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 	const treeRef = useRef<Tree>(undefined as unknown as Tree);
 
 	// The data-fetch seam the effects + gestures share: fetch since the
-	// last confirmed rev and fold the result into state.
+	// last confirmed rev and fold the result into state. A sharedData
+	// surface (§7.3) may answer a since fetch INSIDE the ops window with
+	// `{rev, treeRev, ops}` and NO data — the interim renderer does not
+	// apply ops (U1's fold), so ops-only answers fall back to ONE full
+	// no-since refetch (cheap and correct).
 	const refetch = useCallback(async (): Promise<void> => {
 		const since = revRef.current;
-		const result = await props.transport.fetchData(since);
+		let result = await props.transport.fetchData(since);
+		if (result.data === undefined && result.ops !== undefined) {
+			result = await props.transport.fetchData();
+		}
+		if (result.data === undefined) return;
+		const data = result.data;
 		revRef.current = Math.max(revRef.current, result.rev);
 		setState((current) => {
 			if (current.status !== "ready") return current;
@@ -132,7 +141,7 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 				...current,
 				rev: result.rev,
 				treeRev: result.treeRev,
-				data: result.data ?? current.data,
+				data,
 			};
 		});
 	}, [props.transport]);

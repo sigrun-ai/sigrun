@@ -510,6 +510,23 @@ export function App(options: AppOptions = {}) {
 			extPanelKeyHash.hash,
 		);
 	}, [extPanelParts, extPanel, extPanelKeyHash, extHub, list.streamId]);
+
+	// Visible-surface registration (spec §7.3's re-registration rule):
+	// the open ext page remounts on a stream change (its key joins
+	// streamId), but the open PANEL and rail-side watcher entries need
+	// the hook's registry — noting them here (also once the pre-hello
+	// stream resolves) makes the hello handler's reconnect refetch cover
+	// every visible surface.
+	useEffect(() => {
+		if (extRoute !== null) {
+			list.noteSurfaceVisible(extRoute.slug, extRoute.id, extRoute.params);
+		}
+		if (extPanelParts !== null) {
+			list.noteSurfaceVisible(extPanelParts.slug, extPanelParts.id);
+		}
+		// extKey re-runs the effect when the route's params change
+		// identity (extRoute is memoized by the router).
+	}, [extRoute, extKey, extPanelParts, list.streamId, list.noteSurfaceVisible]);
 	// The active panel's declared refresh cadence (§7.1): read from the
 	// meta projection's panel rows (never a second fetch).
 	const panelRefreshMs = useMemo(() => {

@@ -6,7 +6,7 @@
  */
 
 import { act } from "react";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { App, locationHash } from "./App";
 import {
 	createClient,
@@ -183,6 +183,7 @@ function makeHarness(init?: {
 		client,
 		createEventSource,
 		sources,
+		fetchImpl,
 	};
 }
 
@@ -667,6 +668,105 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		expect(
 			renderer.root.findAllByProps({ "aria-label": "jobs panel" }).length,
 		).toBeGreaterThan(0);
+	});
+});
+
+describe("App surface re-registration (U3 final-review fix wave)", () => {
+	// The panel-row variant: `stats` as a PANEL surface.
+	function extMeta(): MetaResponse {
+		return makeMeta({
+			extensions: [
+				{
+					name: "fixture-surfaces",
+					status: "ok",
+					surfaces: [
+						{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+						{ id: "stats", title: "Acme stats", icon: "stats", placement: "panel" },
+					],
+				},
+			],
+		});
+	}
+
+	// The ext transports fetch via globalThis.fetch (App wires no fetch
+	// into the hub); stub it to the harness's FetchLike for /v1/ext.
+	function stubGlobalFetch(fetchImpl: FetchLike): () => void {
+		const original = globalThis.fetch;
+		globalThis.fetch = (async (input: unknown, init?: unknown) => {
+			const url = typeof input === "string" ? input : String(input);
+			if (url.startsWith("/v1/ext/")) {
+				return fetchImpl(url, init as Parameters<FetchLike>[1]);
+			}
+			return original(input as URL, init as RequestInit);
+		}) as typeof fetch;
+		return () => {
+			globalThis.fetch = original;
+		};
+	}
+
+	test("a reconnect re-registers an OPEN PANEL's surface with the new stream id", async () => {
+		const { client, createEventSource, sources, calls, fetchImpl } = makeHarness({
+			meta: extMeta(),
+		});
+		const restoreFetch = stubGlobalFetch(fetchImpl);
+		try {
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const extCalls = () =>
+			calls.filter((one) => one.input.includes("/v1/ext/fixture-surfaces/surfaces/stats"));
+		// Open the panel tab (the panel host loads its surface).
+		const tab = renderer.root.findByProps({
+			"data-panel-tab": "ext:fixture-surfaces/stats",
+		});
+		await act(async () => {
+			(tab.props as { onClick: () => void }).onClick();
+		});
+		await vi.waitFor(() => {
+			expect(extCalls().length).toBeGreaterThan(0);
+		});
+		const beforeHello = extCalls().length;
+		// The FIRST hello: the noted panel re-registers onto stream s1.
+		await act(async () => {
+			sources[0]?.source.emit("hello", JSON.stringify({ streamId: "s1" }));
+		});
+		await vi.waitFor(() => {
+			expect(extCalls().length).toBeGreaterThan(beforeHello);
+		});
+		const afterHello = extCalls().length;
+		// A RECONNECT (a new id): the panel's surface re-fetches once more,
+		// re-registering the new stream's watcher entry (spec §7.3).
+		await act(async () => {
+			sources[0]?.source.emit("hello", JSON.stringify({ streamId: "s2" }));
+		});
+		await vi.waitFor(() => {
+			expect(extCalls().length).toBeGreaterThan(afterHello);
+		});
+		} finally {
+			restoreFetch();
+		}
+	});
+
+	test("pre-hello navigation to an ext route does not wedge: the surface page loads", async () => {
+		const { client, createEventSource, fetchImpl } = makeHarness({ meta: extMeta() });
+		const restoreFetch = stubGlobalFetch(fetchImpl);
+		try {
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// Navigate BEFORE any hello frame: the page must still mount + load.
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		await vi.waitFor(() => {
+			expect(textContent(renderer.toJSON())).toContain("Acme board");
+		});
+		} finally {
+			restoreFetch();
+		}
 	});
 });
 });

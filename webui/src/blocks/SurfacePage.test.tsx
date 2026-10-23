@@ -190,6 +190,57 @@ describe("SurfacePage", () => {
 		});
 	});
 
+	test("a since answer with ops and no data triggers exactly one full refetch and renders fresh data", async () => {
+		const { SurfacePage } = await import("./SurfacePage");
+		const { renderAsync, textContent } = await import("../test-utils");
+		const fresh = { cards: [{ id: "c2", title: "Second", status: "doing" }] };
+		const fetchData = vi.fn(async (since?: number) =>
+			since === undefined
+				? { rev: 2, treeRev: 1, data: fresh }
+				: {
+						rev: 2,
+						treeRev: 1,
+						ops: [{ op: "set" as const, path: "/cards/0/status", value: "doing" }],
+					},
+		);
+		let changed: (() => void) | undefined;
+		const transport = {
+			load: vi.fn(async () => stubLoad()),
+			fetchData,
+			act: vi.fn(),
+			upload: vi.fn(),
+			image: vi.fn(),
+			onChanged: vi.fn((listener: () => void) => {
+				changed = listener;
+				return () => {};
+			}),
+		};
+		const renderer = await renderAsync(
+			<SurfacePage
+				slug="fixture-surfaces"
+				id="board"
+				transport={transport}
+				hub={new ExtSurfaceHub()}
+			/>,
+		);
+		expect(textContent(renderer.toJSON())).toContain("First");
+		// surface.changed → the since fetch answers ops-only → ONE full
+		// no-since refetch; the page renders the fresh data.
+		changed?.();
+		await vi.waitFor(() => {
+			expect(textContent(renderer.toJSON())).toContain("Second");
+		});
+		const sinceCalls = fetchData.mock.calls.filter(
+			(call) => typeof (call as unknown[])[0] === "number",
+		);
+		const fullCalls = fetchData.mock.calls.filter(
+			(call) => (call as unknown[])[0] === undefined,
+		);
+		expect(sinceCalls.length).toBe(1);
+		expect(fullCalls.length).toBe(1);
+		expect(textContent(renderer.toJSON())).not.toContain("First");
+	});
+
 	test("a hidden tab pauses the cadence; visible resumes with an immediate refetch", async () => {
 		vi.useFakeTimers();
 		const listeners: (() => void)[] = [];
