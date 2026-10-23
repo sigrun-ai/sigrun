@@ -10,6 +10,25 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-22-sigrun-gateway-design.md` (rev 2). Section refs below (§7, C4, …) point into it. Plan 2: `docs/superpowers/plans/2026-10-22-sigrun-gateway-engine.md`.
 
+## Coordination with UI blocks (interleaved, ruling 2026-10-22)
+
+This plan runs beside the UI-blocks workstream (U0–U7, `docs/superpowers/plans/2026-10-19-ui-blocks-u*.md`), not after it.
+
+- **Where:** worktree `.worktrees/gateway-core` on branch `feat/gateway-core`, cut from `main`. U0 runs in `.worktrees/ui-blocks-u0`; one writer per worktree.
+- **Merge rule:** whichever branch merges second rebases onto `main` and re-runs its full gate before merging. Conflicts below are additive: keep both sides.
+- **Shared files (expect textual conflicts only):**
+
+  | file | this plan | UI blocks |
+  |---|---|---|
+  | `shared/package.json` exports, `test/views-purity.test.ts` | Task 1 (`./live`) | U0 (`./blocks`, recursive purity scan) |
+  | `src/harness/loader.ts` (`CandidateFactoryResult`, `LoaderReadKeys`, validators, bindings), `src/extension.ts` | Tasks 2, 3, 7 | U0, U3 (surfaces), U4 (settings sections) |
+  | `shared/src/views.ts`, `src/server/routes/extensions.ts`, `src/server/routes/meta.ts` | Tasks 2, 3, 5, 6 | U0, U3, U4, U5, U6 |
+  | `src/serve.ts` | Task 3 (shutdown extraction) | U4 (restart) |
+  | `src/server/conversation-ops.ts`, `src/jobs/fire.ts` | Tasks 4, 6 (op extraction), 8 (`deliver` stamp) | U5 (`writePendingNote`, `submitOp` `entry`) — U5 changes only `submitOp` and the two `conversation.submit` sites; the extracted ops never call `submitOp` |
+  | `src/harness/seam-host.ts`, `src/extension.ts` interaction types, `shared/src/interactions.ts` | Task 7 (C5, C6) | U6 (bodies → block trees, `InteractionAnswer` → `{values}`) |
+
+- **Task 7 vs U6:** C5 and C6 do not depend on the interaction body or answer shape (`answerInteraction` takes the `InteractionAnswer` alias; `interactionSettled` carries `kind` and `status` only). Task 7's tests use whichever `InteractionAnswer` shape `main` has when the task runs; if U6 merges after Task 7, U6's test rewrite (its Task 1/2 "rewrite to trees") covers the attribution and `interactionSettled` cases too.
+
 ## Global Constraints
 
 - Verification per task: `npm test` and `npm run typecheck` green; `npm --workspace @sigrun/shared run build` when `shared/` moved; `npm run typecheck:webui` and `npm run build:webui` when `webui/` moved.
@@ -201,7 +220,7 @@
 **Interfaces:**
 - Produces: `answerInteraction(conversationId, callId, answer, context, opts?: { readonly user?: string }): Promise<boolean>`; `NotificationEvent.callId?: string`; `ExtensionLifecyclePayload.interactionSettled: { readonly conversationId: ConversationId; readonly callId: string; readonly kind: string; readonly status: "answered" | "skipped" | "expired" | "cancelled" }`; handler `interactionSettled?: ExtensionLifecycleHandler<"interactionSettled">` on the factory result.
 
-- [ ] **Step 1: Write the failing tests:**
+- [ ] **Step 1: Write the failing tests** (answers in `main`'s current `InteractionAnswer` shape — see Coordination):
   - `answerInteraction(..., {user: "alice"})` → record `answeredBy: "human"`, `answeredByUser: "alice"`; without opts → `answeredBy: "extension"`, no `answeredByUser`;
   - a notifier fixture receives `interaction.pending` with `callId` equal to the seeded record's `callId`;
   - an extension declaring `interactionSettled` (extend `test/fixtures/fixture-user-events`) receives exactly one call per terminal transition for: an answer via the HTTP route, an answer via the host, a host `settleInteraction(..., "expired")`; the payload's `status` matches; seeding (pending) fires nothing;

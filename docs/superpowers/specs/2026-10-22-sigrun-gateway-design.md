@@ -1215,6 +1215,14 @@ block trees. The gateway then renders through a shared plain/markdown
 fallback renderer in `@sigrun/shared`, which the UI-blocks work should
 provide. Until then it renders the current `InteractionBody` (§8.7).
 
+**Sequencing ruling (2026-10-22):** the gateway is built interleaved with
+UI blocks, and its interaction rendering is built after U6, directly against
+block-tree records and `{values}` answers through U0's `toText`. §8.7's
+mapping translates to the root `form`: a single closed `choice` field
+becomes buttons or a numbered list, a lone `text`/`longtext` field takes a
+reply, and anything else (including any `secret` field) is answered in the
+webui. Details: plan 2, Task 9.
+
 **Left to the builder:**
 
 - **Storage:** JSON files vs a single sqlite for gateway state;

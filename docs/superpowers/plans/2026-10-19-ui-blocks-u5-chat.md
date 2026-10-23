@@ -15,6 +15,10 @@
 
 **Depends on:** U0, U1, U2, U3.
 
+## Coordination with the gateway plans
+
+The gateway core plan extracts `configureOp`, `abortOp`, `compactOp`, `forkOp`, `patchMetaOp`, `uploadOp` and `readFileOp` into `src/server/conversation-ops.ts` and stamps `deliver` in `src/jobs/fire.ts`'s `"new"` path. None of those call `submitOp` or `conversation.submit`, so U5's three `writePendingNote` sites are unchanged; expect textual conflicts only.
+
 ## Global Constraints
 
 - Tools: `show_blocks {title: string, tree: Tree, data: JsonObject}` → result text = `toText(tree, data, {width: 100, locale: <server locale>})` + `\nentryId: <id>`; `update_blocks {entryId: string, ops: DataOp[]}` → result text = the post-update projection.

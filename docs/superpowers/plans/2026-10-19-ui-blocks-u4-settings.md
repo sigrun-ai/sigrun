@@ -16,6 +16,10 @@
 
 **Depends on:** U0, U1, U2, U3.
 
+## Coordination with the gateway plans
+
+The gateway plans also touch `src/serve.ts` (core Task 3 extracts shutdown into `src/server/shutdown.ts`; U4's restart path should call that module) and `builtinExtensions` in `src/harness/settings.ts`/`shared/src/settings.ts` (engine Task 1 adds `gateway`). U4's extension settings sections are what the gateway spec's deferred webui settings page waits on.
+
 ## Global Constraints
 
 - Ruling 18: this replaces core-hardening §5.7's "every `server.*` key is restart-required". Do not edit the core-hardening docs.

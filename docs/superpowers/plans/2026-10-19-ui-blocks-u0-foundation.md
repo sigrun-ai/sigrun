@@ -15,6 +15,10 @@
 
 **Depends on:** nothing pending. Core-hardening W0–W5 landed in sigrun 0.1, and the root package is published as `@sigrun/sigrun` (0.1.4, not private, `exports` has `.` and `./extension`).
 
+## Coordination with the gateway plans
+
+The gateway core plan (`docs/superpowers/plans/2026-10-22-sigrun-gateway-core.md`) runs in parallel and also edits `shared/package.json` exports (adds `./live`), `test/views-purity.test.ts`, `src/harness/loader.ts`, `src/extension.ts` and `src/server/routes/meta.ts`. Additive on both sides; the later merge rebases and re-runs its gate. The gateway engine's Task 9 consumes `toText` from `@sigrun/shared/blocks`, so keep its signature stable or update that task.
+
 ## Global Constraints
 
 - Block-set version: `v: 1`.

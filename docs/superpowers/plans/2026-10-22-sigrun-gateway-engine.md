@@ -10,9 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-22-sigrun-gateway-design.md` (rev 2). Depends on plan 1 (`docs/superpowers/plans/2026-10-22-sigrun-gateway-core.md`) being merged: every type named below from `@sigrun/sigrun/extension` lands there.
 
+## Coordination with UI blocks (interleaved, ruling 2026-10-22)
+
+- **Order:** Tasks 1–8 and 10–12 run once plan 1 is merged, in any relation to the UI-blocks plans. **Task 9 waits for U6** (`docs/superpowers/plans/2026-10-19-ui-blocks-u6-interactions-ambient.md`) to merge: U6 replaces interaction bodies with block trees and answers with `{values}`, with no compatibility layer, so Task 9 is written against those shapes and renders through U0's `toText` (`@sigrun/shared/blocks`). This is the spec §14 successor path, applied up front.
+- **If Task 9 runs after Task 12:** Task 9's last step re-runs Task 12's final gate and adds the interactions section to the engine README.
+- **Sigrun-repo worktree:** the sigrun side of each task (C3, `test/gateway/*`, fixtures) runs in `.worktrees/gateway-engine` on `feat/gateway-engine`, cut from `main` after plan 1 merges. The plan 1 merge rule applies: the later merge rebases and re-runs its gate.
+- **Shared sigrun files:** `src/harness/builtins.ts`, `src/harness/settings.ts`, `shared/src/settings.ts` (Task 1, `builtinExtensions.gateway`) overlap U4's settings work; additive, keep both sides. `test/fixtures/fixture-gate` (used by Task 9's e2e) is rewritten by U6 to a tree with a `choice` named `decision` (`allow`/`deny`) and a `longtext` named `reason`; Task 9's e2e expects that shape.
+
+
 ## Global Constraints
 
-- Engine repo: `~/repos/sigrun-ext-gateway`, package `@sigrun/ext-gateway` 0.1.0, MIT, `engines.node >=22.19.0`, `main`/`types`/`exports` like codemode. `peerDependencies` and mirrored `devDependencies`: `@earendil-works/pi-durable` 1.3.0, `@earendil-works/chord` 1.3.0, `@sigrun/shared` 0.1.0. `devDependencies` also `@sigrun/sigrun: "file:../sigrun"` (types only: every import from it is `import type`). `dependencies` empty.
+- Engine repo: `~/repos/sigrun-ext-gateway`, package `@sigrun/ext-gateway` 0.1.0, MIT, `engines.node >=22.19.0`, `main`/`types`/`exports` like codemode. `peerDependencies` and mirrored `devDependencies`: `@earendil-works/pi-durable` 1.3.0, `@earendil-works/chord` 1.3.0, `@sigrun/shared`. The published `@sigrun/shared` 0.1.0 lacks `./live` (plan 1) and `./blocks` (U0), so the dev shape is `"@sigrun/shared": "file:../sigrun/shared"` (the built-ins' `file:` convention); publishing the engine needs a `@sigrun/shared` release carrying both subpaths and swaps the specifier to that semver. `devDependencies` also `@sigrun/sigrun: "file:../sigrun"` (types only: every import from it is `import type`). `dependencies` empty.
 - Commit `dist/` with every source change (`npm run build`, clean `git status -- dist`); sigrun resolves the built-in from `dist/index.js` through core's tree.
 - Engine repo verification per task: `npm test && npm run typecheck && npm run build`. Sigrun repo verification when it moved: `npm test && npm run typecheck`. Sigrun e2e tests need the engine built first.
 - Repo identity: set `git config user.name/user.email/user.signingkey` repo-locally in the new repo before the first commit (no remote yet, so includeIf does not fire); remote `https://github.com/sigrun-ai/sigrun-ext-gateway.git` is NOT added or pushed by this plan.
@@ -207,23 +215,36 @@
 - [ ] **Step 4: Run** — Expected: PASS; full verification per repo.
 - [ ] **Step 5: Commit** engine `feat: group modes and sharing`; sigrun `test(gateway): groups e2e`.
 
-### Task 9: Interactions in chat
+### Task 9: Interactions in chat (after U6)
+
+**Runs after U6 merges** (see Coordination). Spec §8.7's behavior, expressed over U6's block-tree records.
 
 **Files (engine):** Create `src/interactions/render.ts`, `src/interactions/answer.ts`, `src/interactions/prompts.ts`; modify `src/index.ts` (`notifiers`, `interactionSettled`), `src/inbound/pipeline.ts` (stage 8; `action` routing through `ButtonTokens`). Tests `test/interactions.test.ts`.
 **Files (sigrun):** `test/gateway/interactions.test.ts`.
 
 **Interfaces:**
-- Consumes: C5 `answerInteraction(..., { user })`, C6 `callId` + `interactionSettled` (plan 1 Task 7); `ButtonTokens` (Task 4).
-- Produces (`src/interactions/render.ts`): `renderInteraction(record: InteractionRecord, caps: ChannelCapabilities, opts: { conversationName: string; link?: string }): { text: string; buttons?: OutboundMessage["buttons"]; numbered: boolean; webuiOnly: boolean }` — options → buttons when `options.length <= buttons.max` (danger tone → `style: "danger"`, `recommended` first, labels truncated to `labelMax`), else numbered list + `"Reply with a number."`; `diff` → fenced diff truncated to fit `maxMessageLength` with a "full diff in the webui" note; any `fields` → `webuiOnly` with `"Answer this in the webui"` + link.
-- Produces (`src/interactions/prompts.ts`): `class PromptStore { record(conversationId, callId, bindingOrRecipient: string, ref: MessageRef): Promise<void>; refsOf(conversationId, callId): readonly MessageRef[]; has(conversationId, callId, key): boolean; pendingInChat(bindingKey): readonly { conversationId; callId }[] }` persisted at `prompts.json`.
+- Consumes: C5 `answerInteraction(..., { user })`, C6 `callId` + `interactionSettled` (plan 1 Task 7); `ButtonTokens` (Task 4); from U0/U6: `InteractionRecord` with `body: Tree`, `InteractionAnswer = { values: Readonly<Record<string, JsonValue>> }`, `toText(tree, data, opts: TextOptions)` and the `FormBlock`/`Field`/`ChoiceField`/`ChoiceOption` types from `@sigrun/shared/blocks`.
+- Produces (`src/interactions/render.ts`): `planInteraction(record: InteractionRecord, caps: ChannelCapabilities): ChatAnswerPlan` where
+  ```ts
+  type ChatAnswerPlan =
+    | { kind: "choice"; field: string; options: readonly ChoiceOption[]; buttons: boolean } // buttons when options.length <= caps.buttons?.max
+    | { kind: "text"; field: string }   // reply-to free text
+    | { kind: "webui" };                // answer in the webui
+  ```
+  Rules over the tree's root `form` (no root `form` → `webui`):
+  - exactly one `choice` field that is not `multi`, has no `allowOther`, and has literal (non-binding) `options`, and every other field is optional and of type `text`/`longtext` → `choice` (the optional fields are left out of the answer; U6's fixture-gate `decision` + `reason` takes this path);
+  - exactly one field, of type `text` or `longtext` → `text`;
+  - anything else (a `secret`, `number`, `toggle`, multi or open choice, two required fields, binding-valued options) → `webui`.
+  `renderInteraction(record, caps, opts: { conversationName: string; link?: string }): { text: string; buttons?: OutboundMessage["buttons"] }` — text is `toText(record.body, {}, { width: 60, locale: "en" })` with the form's own field rendering omitted when the plan is `choice` (the buttons or the numbered list replace it), formatted per spec §8.6 and truncated to `maxMessageLength` with a "full details in the webui" note; `choice` + `buttons` → one button per option (tone `bad` → `style: "danger"`, `recommended` first, labels truncated to `labelMax`); `choice` without room → a numbered list plus `"Reply with a number."`; `text` → a "Reply to this message to answer." line; `webui` → `"Answer this in the webui"` + link.
+- Produces (`src/interactions/prompts.ts`): `class PromptStore { record(conversationId, callId, key: string, ref: MessageRef, plan: ChatAnswerPlan): Promise<void>; refsOf(conversationId, callId): readonly MessageRef[]; has(conversationId, callId, key): boolean; pendingInChat(bindingKey): readonly { conversationId: number; callId: string; plan: ChatAnswerPlan }[] }` persisted at `prompts.json`.
 - Notifier `gateway` on `interaction.pending`: `snapshotInteraction(conversationId, event.callId)`; bound conversation → one prompt per bound chat (key = bindingKey); unbound → the recipient's home chats (key = `user:<recipient>`); dedupe via `PromptStore.has`; enqueue `interaction` ledger entries.
-- Answering (`src/interactions/answer.ts`): `answerFromChat(deps, { conversationId, callId, answer: InteractionAnswer, user: string | undefined }): Promise<string /* reply text */>` — refuses unlinked/no-write users; snapshot first: already terminal → reply with the outcome; else `answerInteraction(..., { user })`. Stage 8: a numbered reply matches only when `pendingInChat(key).length === 1`; a reply-to on a prompt message with no options → `{ text }` answer.
+- Produces (`src/interactions/answer.ts`): `answerFromChat(deps, { conversationId, callId, values: Record<string, JsonValue>, user: string | undefined }): Promise<string /* reply text */>` — refuses unlinked/no-write users; snapshot first: already terminal → reply with the outcome; else `answerInteraction(conversationId, callId, { values }, ctx, { user })`. A button tap answers `{ [plan.field]: optionId }`; stage 8: a numbered reply (only when `pendingInChat(key).length === 1` and that plan is `choice`) answers the numbered option; a reply-to on a `text` prompt answers `{ [plan.field]: replyText }`.
 - `interactionSettled` handler: enqueue `edit` entries for every `refsOf` ref (outcome text, no buttons) when `caps.edit`; else one outcome `notice` to bound chats only.
 
-- [ ] **Step 1: Write the failing tests.** Engine: render cases (fits/does not fit buttons, danger + recommended ordering, label truncation, diff truncation, `fields` → webui-only incl. a `secret` field); dedupe per recipient; numbered answer with one vs two pending; stale tap reply. Sigrun e2e (load `test/fixtures/fixture-gate`: its `guarded_write` tool's `beforeTool` hook seeds a pending allow/deny interaction; script a faux tool call to it): approval via button tap; via number; refused for an unlinked group member; a `fields` record renders the webui pointer; an unbound (webui) conversation's approval reaches every write-access user's home chat (two users); answered in the webui → the chat prompt is edited (buttons removed) and a later tap replies with the outcome.
+- [ ] **Step 1: Write the failing tests.** Engine (trees built with U0's builders or literal JSON): `planInteraction` table — fixture-gate's `decision`+`reason` form → `choice` on `decision`; a lone `longtext` → `text`; `secret` present → `webui`; `multi` choice → `webui`; two required fields → `webui`; no root form → `webui`; binding-valued options → `webui`; button/numbered threshold at `buttons.max`; `bad` tone → danger style; `recommended` first; long `toText` output truncated with the note; dedupe per recipient; numbered answer with one vs two pending; stale tap reply. Sigrun e2e (fixture-gate, scripted faux tool call to `guarded_write`): approval via button tap (`allow` → the tool runs); via number; refused for an unlinked group member; a form with a `secret` field renders the webui pointer (a test-local fixture seeding such a record); an unbound (webui) conversation's approval reaches every write-access user's home chat (two users); answered in the webui → the chat prompt is edited (buttons removed) and a later tap replies with the outcome.
 - [ ] **Step 2: Run** — Expected: FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** — Expected: PASS; full verification per repo.
+- [ ] **Step 4: Run** — Expected: PASS; full verification per repo. If Task 12 already ran: re-run its final gate and add the interactions section to the engine README.
 - [ ] **Step 5: Commit** engine `feat: interactions in chat`; sigrun `test(gateway): interactions e2e`.
 
 ### Task 10: Home-chat notifications and job delivery
