@@ -643,6 +643,159 @@ describe("relative bindings only inside item templates (spec §4.2)", () => {
 			true,
 		);
 	});
+
+	it("a collection bulkActions form inside a view page validates clean (nested form ≠ surface root)", () => {
+		// review finding 1: the root-block constraint must not re-apply to
+		// the nested bulk-action form (view pins `page`, but the form lives
+		// inside the page's main, where a `form` block is legal)
+		const tree = treeOf({
+			type: "page",
+			title: "Jobs",
+			main: [
+				{
+					type: "collection",
+					id: "rows",
+					items: { $: "/rows" },
+					display: "table",
+					bulkActions: [
+						{
+							id: "set-state",
+							label: "Set state",
+							onSubmit: "setState",
+							form: {
+								v: BLOCK_SET_VERSION,
+								root: {
+									type: "form",
+									id: "set-state-form",
+									bind: "/bulk",
+									mode: "submit",
+									onSubmit: "setState",
+									children: [{ type: "text", name: "state", label: "State" }],
+								},
+							},
+						},
+					],
+					item: { title: { $: "./title" } },
+				},
+			],
+		});
+		const result = validateTree(tree, { placement: "view" });
+		expect(result.ok).toBe(true);
+	});
+
+	it("a missing or non-string block type errors instead of passing silently", () => {
+		// review finding 2: {type: {$: "/t"}} and {type: 3} used to
+		// validate OK — a soundness hole, and `type` is a structural literal
+		for (const badType of [{ $: "/t" }, 3, undefined]) {
+			const tree = { v: BLOCK_SET_VERSION, root: { type: badType } } as unknown as Tree;
+			const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+			expect(errs.some((e) => e.path === "root.type"), JSON.stringify(badType)).toBe(true);
+		}
+	});
+
+	it("a missing or non-string field type errors instead of passing silently", () => {
+		// review finding 2, the checkField half: a form child without a
+		// string type must error, not silently pass
+		const tree = treeOf({
+			type: "form",
+			id: "f",
+			bind: "/x",
+			mode: "submit",
+			children: [{ label: "L" }],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+		expect(errs.some((e) => e.path === "root.children[0].type")).toBe(true);
+	});
+
+	it("a javascript: onActivate URL is rejected in view", () => {
+		// review finding 3: onActivate carries an Action and must run the
+		// same open-scheme / turn / submit-name rules as button actions
+		const tree = treeOf({
+			type: "page",
+			title: "T",
+			main: [
+				{
+					type: "tree",
+					id: "nav",
+					nodes: { $: "/nav" },
+					onActivate: { type: "open", url: "javascript:alert(1)" },
+				},
+			],
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "view" }));
+		expect(errs.some((e) => e.path === "root.main[0].onActivate.url")).toBe(true);
+	});
+
+	it("a turn: true onActivate is rejected outside chat", () => {
+		const tree = treeOf({
+			type: "tree",
+			id: "nav",
+			nodes: { $: "/nav" },
+			onActivate: { type: "edit", name: "n", turn: true },
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "view" }));
+		expect(errs.some((e) => e.path === "root.onActivate.turn")).toBe(true);
+		expect(validateTree(tree, { placement: "chat" }).ok).toBe(true);
+	});
+
+	it("binding-only props reject relative pointers: items, lines, nodes, series data, submitLabel", () => {
+		// review finding 4: the hardcoded prop list missed the props that
+		// ONLY take bindings — the generic walk must catch them too
+		const cases: { tree: Tree; path: string }[] = [
+			{
+				tree: treeOf({ type: "collection", id: "c", items: { $: "./x" }, display: "list", item: { title: "t" } } as unknown as Block),
+				path: "root.items.$",
+			},
+			{
+				tree: treeOf({ type: "log", lines: { $: "./x" } } as unknown as Block),
+				path: "root.lines.$",
+			},
+			{
+				tree: treeOf({ type: "tree", nodes: { $: "./x" } } as unknown as Block),
+				path: "root.nodes.$",
+			},
+			{
+				tree: treeOf({ type: "fields", rows: [{ label: "L", value: { $: "./v" } }] } as unknown as Block),
+				path: "root.rows[0].value.$",
+			},
+			{
+				tree: treeOf({
+					type: "chart",
+					x: { kind: "time" },
+					series: [{ name: "s", kind: "line", data: { $: "./d" } }],
+				} as unknown as Block),
+				path: "root.series[0].data.$",
+			},
+			{
+				tree: treeOf({
+					type: "form",
+					id: "f",
+					bind: "/x",
+					mode: "submit",
+					submitLabel: { $: "./l" },
+					children: [],
+				} as unknown as Block),
+				path: "root.submitLabel.$",
+			},
+		];
+		for (const { tree, path } of cases) {
+			const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+			expect(errs.some((e) => e.path === path), path).toBe(true);
+		}
+	});
+
+	it("absolute bindings on binding-only props stay legal everywhere", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "c",
+			items: { $: "/cards" },
+			display: "list",
+			item: { title: { $: "./title" } },
+		});
+		expect(validateTree(tree, { placement: "chat" }).ok).toBe(true);
+		const log = treeOf({ type: "log", lines: { $: "/out" } });
+		expect(validateTree(log, { placement: "chat" }).ok).toBe(true);
+	});
 });
 
 describe("handlers (spec §6.1: a name with no handler fails validation)", () => {

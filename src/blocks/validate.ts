@@ -240,10 +240,48 @@ function checkBinding(ctx: WalkCtx, binding: { $: string }, path: string): void 
 	}
 }
 
+/**
+ * Any relative `./` binding on this node (§4.2): every prop value is
+ * scanned — the binding-only props (`items`, `lines`, `nodes`, `rows`,
+ * `series[].data`, `submitLabel`, `copy.text`) bind just like the
+ * bindable literals, so a hardcoded prop list would miss them. Absolute
+ * `/` bindings stay legal everywhere; relative ones only inside item
+ * templates. `skip` names props whose own walk already reported (the
+ * structural literals above carry their more precise message).
+ */
+function checkNodeRelativeBindings(ctx: WalkCtx, node: Rec, path: string, skip: ReadonlySet<string>): void {
+	if (ctx.itemTemplate) return;
+	for (const [prop, value] of Object.entries(node)) {
+		if (skip.has(prop)) continue;
+		if (isBinding(value)) {
+			checkBinding(ctx, value, joinPath(path, prop));
+		} else if (Array.isArray(value)) {
+			// rows, series, meta, badges: bindings nested one level in
+			// literal arrays (e.g. `series[].data`)
+			value.forEach((element, i) => {
+				if (isBinding(element)) {
+					checkBinding(ctx, element, joinPath(joinPath(path, prop), String(i)));
+				} else if (isRec(element)) {
+					for (const [k, v] of Object.entries(element)) {
+						if (isBinding(v)) {
+							checkBinding(ctx, v, joinPath(joinPath(joinPath(path, prop), String(i)), k));
+					}
+				}
+				}
+			});
+		}
+	}
+}
+
 /** One field node (spec §5.6). `path` is the field's own path. */
 function checkField(ctx: WalkCtx, node: Rec, path: string): void {
 	const type = node.type;
-	if (typeof type !== "string") return;
+	if (typeof type !== "string") {
+		// `type` is a structural literal (§4.2); a missing or bound type is
+		// a soundness hole, never a silent pass
+		push(ctx, joinPath(path, "type"), `field type must be a literal string`);
+		return;
+	}
 	const rules = PLACEMENT_RULES[ctx.placement];
 
 	// placement: allowed field types (forms only exist where forms exist)
@@ -263,11 +301,14 @@ function checkField(ctx: WalkCtx, node: Rec, path: string): void {
 		}
 	}
 
-	// bindable props
-	for (const prop of ["label", "help", "placeholder"]) {
-		const value = node[prop];
-		if (isBinding(value)) checkBinding(ctx, value, joinPath(path, prop));
-	}
+	// bindable props: every relative `./` binding on the field (§4.2);
+	// the structural-literal props above already carry their message
+	checkNodeRelativeBindings(
+		ctx,
+		node,
+		path,
+		new Set([...FIELD_STRUCTURAL_LITERALS, "type"]),
+	);
 
 	// handler names
 	if (node.onUpload !== undefined) {
@@ -295,7 +336,12 @@ function checkCard(ctx: WalkCtx, card: unknown, path: string): void {
  */
 function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): void {
 	const type = node.type;
-	if (typeof type !== "string") return;
+	if (typeof type !== "string") {
+		// `type` is a structural literal (§4.2); a missing or bound type is
+		// a soundness hole, never a silent pass
+		push(ctx, joinPath(path, "type"), `block type must be a literal string`);
+		return;
+	}
 	const rules = PLACEMENT_RULES[ctx.placement];
 
 	// unknown block types (§4.4) first: `carousel` is not a block of this
@@ -380,7 +426,9 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 				if (isRec(bulk.form)) {
 					const formPath = joinPath(joinPath(bPath, "form"), "root");
 					if (isRec(bulk.form.root)) {
-						checkBlock(ctx, bulk.form.root, formPath, true);
+						// a nested form is never the surface's root: the placement's
+						// root-block constraint must not re-apply to it (§5.7)
+						checkBlock(ctx, bulk.form.root, formPath, false);
 					}
 				}
 			});
@@ -420,10 +468,13 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 		if (!check.ok) push(ctx, joinPath(path, "src"), check.message);
 	}
 
-	// bindable props (relative-binding check only; shape is the schema's)
-	for (const prop of ["text", "title", "subtitle", "value", "unit", "caption", "body", "label", "src", "alt"]) {
-		const value = node[prop];
-		if (isBinding(value)) checkBinding(ctx, value, joinPath(path, prop));
+	// bindable props: every relative `./` binding on the node (§4.2)
+	const structural = STRUCTURAL_LITERALS[type] ?? [];
+	checkNodeRelativeBindings(ctx, node, path, new Set(structural));
+
+	// onActivate carries an Action (§6.1): same rules as button actions
+	if (node.onActivate !== undefined) {
+		checkAction(ctx, node.onActivate, joinPath(path, "onActivate"));
 	}
 
 	// actions lists
@@ -440,6 +491,9 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 	if (Array.isArray(node.children)) {
 		node.children.forEach((child, i) => {
 			if (!isRec(child)) return;
+			// columns/grid children are `{weight?, block}` wrappers with no
+			// `type` of their own; the wrapper walk below validates `block`
+			if (isRec(child.block)) return;
 			const cPath = joinPath(joinPath(path, "children"), String(i));
 			const childType = child.type;
 			if (typeof childType === "string" && FIELD_VALIDATORS.has(childType)) {
