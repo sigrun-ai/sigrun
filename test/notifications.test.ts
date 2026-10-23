@@ -429,6 +429,9 @@ describe("interaction.pending recipients (spec §9.6)", () => {
 		expect(first).toEqual({
 			type: "interaction.pending",
 			conversationId: conv,
+			// Gateway C6: the pending record's callId rides the event (the
+			// notifier can read the record via host.snapshotInteraction).
+			callId: "notif-first",
 			jobId: undefined,
 			user: "bob",
 			title: "Sigrun needs you",
@@ -452,8 +455,15 @@ describe("interaction.pending recipients (spec §9.6)", () => {
 		await seedInteraction(server.opened, conv, "notif-second");
 		await waitForEvent(
 			(event) =>
-				event.type === "interaction.pending" && event.user === "dave",
+				(event.type === "interaction.pending" && event.user === "dave"),
 		);
+		// Gateway C6: the SECOND seed's callId rides its events too.
+		const second = waitForEvent(
+			(event) =>
+				event.type === "interaction.pending" &&
+				event.callId === "notif-second",
+		);
+		await second;
 		const users = ofType("interaction.pending")
 			.map((event) => event.user)
 			.sort();
@@ -509,6 +519,8 @@ describe("run.settled per notifications.runSettled", () => {
 			body: `Conversation ${conv}`,
 			url: `https://sigrun.example.invalid/#/c/${conv}`,
 		});
+		// Gateway C6: callId rides ONLY interaction.pending — never settle events.
+		expect("callId" in settled).toBe(false);
 	});
 
 	test('"never": no run.settled at all', { timeout: 30_000 }, async () => {
@@ -620,6 +632,9 @@ describe("job.failed", () => {
 			title: "Job nightly failed",
 			body: failedRun?.error,
 		});
+		// Gateway C6: callId rides ONLY interaction.pending — the other
+		// event types never carry it (a notifier reads records itself).
+		expect("callId" in failed).toBe(false);
 		// No publicUrl on this boot: the deep link is omitted entirely.
 		expect("url" in failed).toBe(false);
 		// Exactly one job.failed — job.changed fires for every record
@@ -646,6 +661,8 @@ describe("delivery isolation (best-effort, logged)", () => {
 				(event) =>
 					event.type === "interaction.pending" && event.user === "bob",
 			);
+			// Gateway C6: the seeded record's callId — exactly, not just present.
+			expect(recorded.callId).toBe("notif-isolation");
 			expect(recorded.body).toBe(`Conversation ${conv}`);
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			const logged = errors.mock.calls.some((args) =>

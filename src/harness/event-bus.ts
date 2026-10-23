@@ -144,6 +144,8 @@ export type SettleGroup = {
  * handler NAME discriminates (like pi-durable hooks), so the payloads
  * carry no `type` field — one source of truth for the internal events
  * (which add `type`), the dispatch fan-out, and the loader's contract.
+ * `interactionSettled` (gateway C6) joins the same map: terminal
+ * interaction transitions detected at the interaction host-event site.
  */
 export type ExtensionLifecyclePayload = {
 	conversationCreated: { readonly conversationId: ConversationId };
@@ -159,6 +161,14 @@ export type ExtensionLifecyclePayload = {
 	conversationIdle: {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
+	};
+	/** Gateway C6: one terminal interaction transition — the payload mirrors
+	 *  the record's terminal envelope fields. */
+	interactionSettled: {
+		readonly conversationId: ConversationId;
+		readonly callId: string;
+		readonly kind: string;
+		readonly status: "answered" | "skipped" | "expired" | "cancelled";
 	};
 };
 
@@ -313,6 +323,8 @@ export interface ExtensionEventHandlers {
 	readonly conversationForked?: ExtensionLifecycleHandler<"conversationForked">;
 	readonly conversationArchived?: ExtensionLifecycleHandler<"conversationArchived">;
 	readonly conversationIdle?: ExtensionLifecycleHandler<"conversationIdle">;
+	/** Terminal interaction transitions from ANY writer (gateway C6). */
+	readonly interactionSettled?: ExtensionLifecycleHandler<"interactionSettled">;
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
 	/** The user-removal transfer event (W1 Task 4); direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
@@ -965,6 +977,32 @@ export class EventBus {
 								callId: record.callId,
 								kind: record.kind,
 							});
+							// Gateway C6: a TERMINAL status transition additionally fans
+							// out to the extension lifecycle handlers
+							// (`interactionSettled`) from this same commit-observation
+							// site. Exactly one document change lands per transition —
+							// whatever wrote it (HTTP-route answer, host answer, host
+							// settleInteraction) — so exactly one event fires per
+							// transition; seeding (pending) fires nothing. It rides the
+							// same lifecycle queue + deadline-bounded dispatch as
+							// conversationCreated etc., NOT the host event stream. The
+							// host-event split above and this gate read the SAME
+							// imported set, so a future terminal status added to
+							// TERMINAL fires both events together by construction.
+							if (INTERACTION_TERMINAL.has(record.status)) {
+								lifecycle.push({
+									type: "interactionSettled",
+									conversationId: change.conversationId,
+									callId: record.callId,
+									kind: record.kind,
+									// SAFETY: `record.status` is a narrowed `string`, but
+									// the payload wants the terminal union — sound because
+									// the union and the TERMINAL set share one definition
+									// (src/harness/interactions.ts): membership in the set
+									// IS membership in the union.
+									status: record.status as ExtensionLifecyclePayload["interactionSettled"]["status"],
+								});
+							}
 						}
 					} else if (
 						change.type === "document" &&
@@ -1342,6 +1380,13 @@ export class EventBus {
 				return { conversationId: event.conversationId, archived: event.archived };
 			case "conversationIdle":
 				return { conversationId: event.conversationId, idleMs: event.idleMs };
+			case "interactionSettled":
+				return {
+					conversationId: event.conversationId,
+					callId: event.callId,
+					kind: event.kind,
+					status: event.status,
+				};
 		}
 	}
 

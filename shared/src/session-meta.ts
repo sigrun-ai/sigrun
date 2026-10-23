@@ -28,9 +28,10 @@ export type { Sharing } from "./access.js";
  * `invalid_field`.
  *
  * Server-owned fields (`autoName`, `autoNameAttempts`,
- * `lastActivityAt`) are written by host code only (activity.ts, the A2
- * auto-namer); they are NOT patch surface — the strict validator keeps
- * rejecting them as `invalid_field`.
+ * `lastActivityAt`, `jobId`, `deliver`) are written by host code only
+ * (activity.ts, the A2 auto-namer, fire.ts's job stamp); they are NOT
+ * patch surface — the strict validator keeps rejecting them as
+ * `invalid_field`.
  */
 
 /** The per-conversation session metadata (spec §5). */
@@ -70,6 +71,21 @@ export type SessionMeta = {
 	 * patchable — the strict validator rejects the key as `invalid_field`.
 	 */
 	lastActivityAt?: string;
+	/**
+	 * Server-owned job stamp (gateway C7, spec §8.0): the id of the job
+	 * whose fire created this conversation (`fire.ts` writes it inside the
+	 * creating commit). Never patchable — the strict validator rejects
+	 * the key as `invalid_field`.
+	 */
+	jobId?: string;
+	/**
+	 * Server-owned job delivery targets (gateway C7, spec §8.0): the job
+	 * action's `deliver` array, stamped onto the run conversation by
+	 * `fire.ts` in the creating commit — the gateway's runSettled delivery
+	 * reads it to route the answer to chats. Never patchable — the
+	 * strict validator rejects the key as `invalid_field`.
+	 */
+	deliver?: string[];
 	/**
 	 * The §5.9 per-resource sharing state; absent = private (owner and
 	 * superuser only). Patchable by the OWNER or a superuser (403

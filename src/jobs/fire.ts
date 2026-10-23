@@ -84,6 +84,13 @@ export interface JobRuntimeDeps {
 	 * through it, exactly like the submit op).
 	 */
 	envBuilder?: EnvBuilder;
+	/**
+	 * Whether a gateway engine loaded at boot (`OpenedHarness.gatewayEngine
+	 * !== undefined`, gateway C7): a `deliver`-carrying fire with no
+	 * engine warns once per run — the targets are stamped for a deliverer
+	 * that does not exist, which must be visible, never silent.
+	 */
+	gatewayLoaded: boolean;
 }
 
 export interface FireResult {
@@ -306,6 +313,12 @@ async function firePrompt(
 	// conversation: "new" — the run record + conversation in ONE commit.
 	let conversationId: number | undefined = prior?.conversationId;
 	if (conversationId === undefined) {
+		// Gateway C7: the deliver targets need a deliverer. With no engine
+		// loaded the stamped targets point at nothing — ONE warning per run
+		// (the fire itself proceeds; the stamp stays for whoever reads it).
+		if (action.deliver !== undefined && !deps.gatewayLoaded) {
+			console.warn("deliver targets ignored: no gateway");
+		}
 		const model =
 			action.model !== undefined
 				? parseModelSpec(action.model, "job action model")
@@ -327,7 +340,11 @@ async function firePrompt(
 					await tx.doc(JobRunDoc, fireKey, run);
 					const meta = await tx.doc(SessionMetaDoc, newId);
 					meta.source = "cron";
-					(meta as unknown as Record<string, unknown>).jobId = id;
+					// Gateway C7: the job stamp — typed SessionMeta fields (the
+					// pre-C7 cast is gone). Copy, never alias: the doc tracker
+					// takes alias-free ownership of the array.
+					meta.jobId = id;
+					if (action.deliver !== undefined) meta.deliver = [...action.deliver];
 					if (record.owner !== undefined) meta.owner = record.owner;
 					if (action.runSharing !== undefined) meta.sharing = action.runSharing;
 					meta.name = runName(record.spec.name, deps.now(), record, deps);

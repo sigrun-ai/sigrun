@@ -8,23 +8,19 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ModelRef } from "@earendil-works/pi-durable";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { FastifyInstance } from "fastify";
 import type { SigrunHost } from "../../extension.js";
 import { UnservedModelError } from "../../harness/providers/index.js";
 import {
+	abortOp,
+	compactOp,
+	configureOp,
 	ConversationOpError,
 	submitOp,
 } from "../conversation-ops.js";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
-import {
-	ID_PARAMS_SCHEMA,
-	THINKING_LEVELS,
-	storeAgentChange,
-	submissionId,
-} from "../helpers.js";
+import { ID_PARAMS_SCHEMA, submissionId } from "../helpers.js";
 import type {
 	AbortResponse,
 	CompactResponse,
@@ -140,137 +136,46 @@ export function registerSubmissionRoutes(
 	);
 
 	// Configure: change the conversation's model and/or thinking level.
+	// The shared configure op (gateway C4a) is the SAME code path the
+	// extension host bridge drives — the validation order and error bodies
+	// moved verbatim into the op; this route owns the HTTP mapping only.
 	// v1 accepts EXACTLY `model` + `thinking` — any other key is a fail-loud
 	// 400 (the agent's other knobs are not wire surface yet).
 	app.post(
 		"/v1/conversations/:id/configure",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<ConfigureResponse> => {
-			const conversation = request.conversation;
-			const body = request.body as Record<string, unknown> | undefined;
-			if (
-				body === undefined ||
-				body === null ||
-				typeof body !== "object" ||
-				Array.isArray(body)
-			) {
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			const unknownKey = Object.keys(body).find(
-				(key) => key !== "model" && key !== "thinking",
-			);
-			if (unknownKey !== undefined) {
-				return await reply
-					.code(400)
-					.send({ error: "invalid_field", field: unknownKey });
-			}
-			const model = body.model;
-			const thinking = body.thinking;
-			if (model === undefined && thinking === undefined) {
-				// A configure that changes nothing is a client error, not a no-op.
-				return await reply.code(400).send({ error: "invalid_body" });
-			}
-			// `model` is `"provider/modelId"`, split on the FIRST `/` (a modelId
-			// may itself contain slashes); both parts must be non-empty.
-			let parsedModel: ModelRef | undefined;
-			if (model !== undefined) {
-				if (typeof model !== "string" || !model.includes("/")) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "model" });
+			try {
+				return await configureOp(ctx, request.conversation, request.body as {
+					readonly model?: unknown;
+					readonly thinking?: unknown;
+				});
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
 				}
-				const slash = model.indexOf("/");
-				const provider = model.slice(0, slash);
-				const modelId = model.slice(slash + 1);
-				if (provider.length === 0 || modelId.length === 0) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "model" });
-				}
-				parsedModel = { provider, modelId };
+				throw error;
 			}
-			if (
-				thinking !== undefined &&
-				(typeof thinking !== "string" ||
-					!THINKING_LEVELS.includes(thinking))
-			) {
-				return await reply
-					.code(400)
-					.send({ error: "invalid_field", field: "thinking" });
-			}
-			// perModelThinking: a model change re-applies the store's
-			// override for the NEW model unless the request pins `thinking` —
-			// the map is the deployment default, the explicit field the caller's
-			// win. Read from the store here, so a PATCH reaches later configures.
-			const storeThinking =
-				parsedModel === undefined
-					? undefined
-					: opened.settings.read().perModelThinking?.[
-							`${parsedModel.provider}/${parsedModel.modelId}`
-					];
-			await conversation.configure(
-				{
-					...(parsedModel === undefined ? {} : { model: parsedModel }),
-					...(thinking !== undefined
-						? { thinkingLevel: thinking as ModelThinkingLevel }
-						: storeThinking === undefined
-							? {}
-							: { thinkingLevel: storeThinking as ModelThinkingLevel }),
-				},
-				BACKGROUND_CONTEXT,
-			);
-			// Read the agent back and project the configured surface only —
-			// resolved extensions/tools/sections stay server-side.
-			const agent = await conversation.agent(BACKGROUND_CONTEXT);
-			return {
-				...(agent.model === undefined ? {} : { model: agent.model }),
-				thinkingLevel: agent.thinkingLevel,
-			};
 		},
 	);
 
 	// Abort: withdraw/settle the conversation's active submission.
-	// `inspect()` is the read-only union of placed run inputs and queued inbox
-	// items (all conversations); filtered to this conversation, the LOWEST id
-	// is the active one — anything queued behind a busy conversation was
-	// admitted later and has a higher id.
+	// The shared abort op (gateway C4a) is the SAME code path the host
+	// bridge drives — the inspect/reduce targeting of the conversation's
+	// lowest live submission and the 404 `no_active_submission` live in the
+	// op; this route owns the HTTP mapping only.
 	app.post(
 		"/v1/conversations/:id/abort",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
 		async (request, reply): Promise<AbortResponse> => {
-			const conversation = request.conversation;
-			const inspection = await opened.harness.inspect(BACKGROUND_CONTEXT);
-			// Lowest live id = oldest admitted = the placed run input over later-
-			// queued inbox items. reduce() with a first-element seed is ordering-
-			// independent (a future pi-durable inspect() ordering change cannot
-			// silently target the wrong submission); empty → undefined.
-			const active = inspection.submissions
-				.filter((s) => s.conversationId === conversation.id)
-				.reduce<(typeof inspection.submissions)[number] | undefined>(
-					(min, s) => (min === undefined || s.id < min.id ? s : min),
-					undefined,
-				);
-			if (active === undefined) {
-				return await reply
-					.code(404)
-					.send({ error: "no_active_submission" });
+			try {
+				return await abortOp(ctx, request.conversation);
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
 			}
-			const result = await opened.harness.abortSubmission(
-				active.id,
-				BACKGROUND_CONTEXT,
-				conversation.id,
-			);
-			// `not_found` means the submission's record vanished between `inspect`
-			// and `abort` — the conversation is no longer busy, so the honest answer
-			// is the same as nothing-active.
-			if (result === "not_found") {
-				return await reply
-					.code(404)
-					.send({ error: "no_active_submission" });
-			}
-			// `already_placed`/`settled` are still 200: abort is idempotent and
-			// the body reports which state the submission was found in.
-			return { result, submissionId: active.id };
 		},
 	);
 
@@ -284,7 +189,8 @@ export function registerSubmissionRoutes(
 	// `enabled` (upstream doc: "manual compaction ignores `enabled`");
 	// `compact()` resumes the scheduler itself. The task id is handed back —
 	// the SSE stream carries the `pi.compaction` entry when the summary
-	// lands.
+	// lands. The shared compact op (gateway C4a) is the SAME code path the
+	// host bridge drives; this route owns the body validation and the 202.
 	app.post(
 		"/v1/conversations/:id/compact",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
@@ -292,9 +198,10 @@ export function registerSubmissionRoutes(
 			const conversation = request.conversation;
 			// Absent body is valid (no instructions); an object may carry
 			// ONLY `instructions` — any other key is a fail-loud 400, the
-			// configure convention.
+			// configure convention. The instructions value itself is the op's
+			// validation (same shape for HTTP and host callers).
 			const body: unknown = request.body;
-			let instructions: string | undefined;
+			let instructions: unknown;
 			if (body !== undefined && body !== null) {
 				if (typeof body !== "object" || Array.isArray(body)) {
 					return await reply.code(400).send({ error: "invalid_body" });
@@ -308,27 +215,17 @@ export function registerSubmissionRoutes(
 						.code(400)
 						.send({ error: "invalid_field", field: unknownKey });
 				}
-				if (
-					record.instructions !== undefined &&
-					typeof record.instructions !== "string"
-				) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: "instructions" });
-				}
-				instructions =
-					record.instructions === undefined || record.instructions === ""
-						? undefined
-						: record.instructions;
+				instructions = record.instructions;
 			}
-			const taskId = await conversation.compact(
-				instructions,
-				BACKGROUND_CONTEXT,
-			);
-			// 202: like submissions, the compaction is admitted, not settled —
-			// the task runs asynchronously and its summary lands as a view
-			// revision (the SSE stream).
-			return await reply.code(202).send({ taskId });
+			try {
+				const { taskId } = await compactOp(ctx, conversation, instructions);
+				return await reply.code(202).send({ taskId });
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
+			}
 		},
 	);
 
