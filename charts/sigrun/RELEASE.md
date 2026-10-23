@@ -113,18 +113,23 @@ visible.
 
 4. **Delete the ci package versions** from GHCR so the throwaway
    artifacts don't linger (both packages are org-owned; the chart lands
-   as a container package named `charts/sigrun`):
+   as a container package named `charts/sigrun`). The
+   `0.0.0-ci.*` prefix filter in the jq is the safety boundary — the
+   command must never see real release versions (an unfiltered pipe
+   would delete every released image/chart version once real releases
+   exist):
 
    ```sh
-   # image versions tagged 0.0.0-ci.*:
+   # image versions tagged 0.0.0-ci.* only:
    gh api /orgs/sigrun-ai/packages/container/sigrun/versions \
-     --jq '.[].id' \
+     --jq '.[] | select(.metadata.container.tags[] | startswith("0.0.0-ci.")) | .id' \
      | xargs -r -n1 -I{} gh api -X DELETE \
          /orgs/sigrun-ai/packages/container/sigrun/versions/{}
 
-   # chart package (charts/sigrun — name is URL-encoded in the path):
+   # chart package (charts/sigrun — name is URL-encoded in the path;
+   # same 0.0.0-ci.* filter):
    gh api '/orgs/sigrun-ai/packages/container/charts%2Fsigrun/versions' \
-     --jq '.[].id' \
+     --jq '.[] | select(.metadata.container.tags[] | startswith("0.0.0-ci.")) | .id' \
      | xargs -r -n1 -I{} gh api -X DELETE \
          '/orgs/sigrun-ai/packages/container/charts%2Fsigrun/versions/{}'
    ```
