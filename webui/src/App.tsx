@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { displayName } from "@sigrun/shared/conversations";
 import type { JsonObject } from "@sigrun/shared/blocks";
+import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
 import { groupTurns } from "@sigrun/shared/turns";
 import {
 	createClient,
@@ -44,7 +45,7 @@ import {
 	liveCompactions,
 } from "./entries/liveDoc";
 import { SurfacePage } from "./blocks/SurfacePage";
-import { createExtTransport, ExtSurfaceHub } from "./blocks/extTransport";
+import { ExtSurfaceHub } from "./blocks/extTransport";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
@@ -412,8 +413,53 @@ export function App(options: AppOptions = {}) {
 		onJobChanged: useCallback(() => {
 			setJobChanged((token) => token + 1);
 		}, []),
+		// U3 Task 5: `surface.changed` rides the SAME source into the ext
+		// hub (the open surface page's transport fires its onChanged).
+		onSurfaceChanged: useCallback(
+			(event: { slug: string; id: string; k: string; rev: number; treeRev: number }) => {
+				extHub.dispatch(event);
+			},
+			[extHub],
+		),
 	});
-	// The transcript's fork lineage (B4): the active conversation's fork
+	// The open surface page's transport: the hub attach (its onChanged
+	// subscription is the routing registry entry) keyed on the wire `k`
+	// (sha256 of slug\0id\0canonical params). The async eventKeyWeb
+	// resolves per ext-route instance; the page renders only once the
+	// hash resolves (a render-time createExtTransport would leave its
+	// onChanged subscription outside the hub — the first Task-5 pass's
+	// bob-context bug). `streamId` joins the deps: a reconnect's new
+	// stream rebuilds the transport (X-Sigrun-Stream watcher identity).
+	const extRoute = route.kind === "ext" ? route : null;
+	const extKey = extRoute === null ? "" : canonicalJson(extRoute.params ?? {});
+	const [extKeyHash, setExtKeyHash] = useState<{ key: string; hash: string } | null>(null);
+	useEffect(() => {
+		if (extRoute === null) {
+			setExtKeyHash(null);
+			return;
+		}
+		let alive = true;
+		void eventKeyWeb(extRoute.slug, extRoute.id, extKey).then((hash) => {
+			if (alive) setExtKeyHash({ key: extKey, hash });
+		});
+		return () => {
+			alive = false;
+		};
+	}, [extRoute, extKey]);
+	const extTransport = useMemo(() => {
+		if (extRoute === null || extKeyHash === null || extKeyHash.key !== extKey) {
+			return undefined;
+		}
+		return extHub.attach(
+			{
+				slug: extRoute.slug,
+				id: extRoute.id,
+				params: extRoute.params,
+				...(list.streamId === undefined ? {} : { streamId: list.streamId }),
+			},
+			extKeyHash.hash,
+		);
+	}, [extRoute, extKey, extKeyHash, extHub, list.streamId]);
 	// parent, named from the lifted rows — one hook owns every name the UI
 	// shows. A parent missing from the rows falls back to the display name.
 	const parent = useMemo(() => {
@@ -488,6 +534,10 @@ export function App(options: AppOptions = {}) {
 		},
 		[onSelect],
 	);
+	// The conversation sidebar's select routes through the hash writer
+	// (browser back returns to a surface the user came from); the
+	// SessionList + transcript navigate callbacks use the SAME seam.
+	void onSelectWithRoute;
 
 	// Boot-time default: select the root conversation (the §5 default session)
 	// once the schema gate passes and the lifted list has rows, so the
@@ -736,25 +786,23 @@ export function App(options: AppOptions = {}) {
 					</p>
 				)}
 				<div className="main-body">
-					{route.kind === "ext" ? (
+					{extRoute !== null && extTransport !== undefined ? (
 						<SurfacePage
-							slug={route.slug}
-							id={route.id}
+							// The key joins the instance identity + the watcher
+							// stream id: a NEW hello (a reconnect) remounts the
+							// page, whose load re-registers the new stream's
+							// watcher entry (spec §7.3's reconnect rule).
+							key={`${extRoute.slug}/${extRoute.id}/${list.streamId ?? "pre-hello"}`}
+							slug={extRoute.slug}
+							id={extRoute.id}
 							hub={extHub}
-							transport={createExtTransport({
-								slug: route.slug,
-								id: route.id,
-								params: route.params,
-								...(list.streamId === undefined
-									? {}
-									: { streamId: list.streamId }),
-							})}
+							transport={extTransport}
 							onNavigate={(action) => {
 								if (action.params !== undefined) {
 									const next: Route = {
 										kind: "ext",
-										slug: route.slug,
-										id: route.id,
+										slug: extRoute.slug,
+										id: extRoute.id,
 										params: action.params,
 									};
 									writeHash(routeHash(next));
