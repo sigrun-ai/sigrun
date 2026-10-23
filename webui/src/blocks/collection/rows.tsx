@@ -16,7 +16,9 @@ import type {
 	JsonObject,
 	JsonValue,
 } from "@sigrun/shared/blocks";
-import { bound, useSurfaceActions, useSurfaceData } from "../context";
+import { bound, SurfaceActionsContext, useSurfaceActions, useSurfaceData } from "../context";
+import type { Action, FormBlock } from "@sigrun/shared/blocks";
+import { FormBlockView } from "../form/Form";
 import { toggleKey, toggleSelection } from "./selection";
 
 /** The hook contract: one collection's view-only state slice plus the
@@ -70,11 +72,10 @@ export function useActivate(block: CollectionBlock): (itemId: string) => void {
 }
 
 /** The multi-select bulk action bar (spec §5.5): offered when a
- *  selection exists. A bulk action with a `form` opens a minimal inline
- *  form (Task 5 owns full form rendering; this task's inline shape
- *  renders the form's field names as text inputs) and dispatches
- *  `{ids, values}`; without a form it dispatches `{ids}`. Read access
- *  hides the bar entirely (bulk actions are edits). */
+ *  selection exists. A bulk action with a `form` opens the FULL form
+ *  (Task 5's FormBlockView) and its submit dispatches `{ids, values}`;
+ *  without a form it dispatches `{ids}`. Read access hides the bar
+ *  entirely (bulk actions are edits). */
 export function BulkActionBar(props: {
 	block: CollectionBlock;
 	selection: readonly string[];
@@ -82,7 +83,6 @@ export function BulkActionBar(props: {
 	const actions = useSurfaceActions();
 	const data = useSurfaceData();
 	const [openForm, setOpenForm] = useState<BulkAction | null>(null);
-	const [values, setValues] = useState<JsonObject>({});
 	const bulkActions = props.block.bulkActions ?? [];
 	if (
 		actions.access !== "write" ||
@@ -99,7 +99,6 @@ export function BulkActionBar(props: {
 			{ ids: [...props.selection], values: formValues },
 		);
 		setOpenForm(null);
-		setValues({});
 	};
 
 	return (
@@ -113,63 +112,52 @@ export function BulkActionBar(props: {
 						className="blk-bulk-action"
 						onClick={() => {
 							if (action.form === undefined) submit(action, {});
-							else {
-								setOpenForm(action);
-								setValues({});
-							}
+							else setOpenForm(action);
 						}}
 					>
 						{label}
 					</button>
 				);
 			})}
-			{openForm !== null && (
-				<form
-					className="blk-bulk-form"
-					onSubmit={(event) => {
-						event.preventDefault();
-						submit(openForm, values);
-					}}
-				>
-					{formFieldNames(openForm).map((name) => (
-						<input
-							key={name}
-							name={name}
-							aria-label={name}
-							value={typeof values[name] === "string" ? (values[name] as string) : ""}
-							onChange={(event) =>
-								setValues((current) => ({
-									...current,
-									[name]: event.target.value,
-								}))
-							}
-						/>
-					))}
-					<button type="submit" className="blk-bulk-submit">
-						Apply
-					</button>
-				</form>
+			{openForm !== null && openForm.form !== undefined && (
+				<div className="blk-bulk-form">
+					<SurfaceActionsContext.Provider
+						value={{
+							...actions,
+							// The bulk seam: the form's submit becomes the bulk
+							// action's {ids, values} dispatch.
+							dispatch: (_action: Action, payload: JsonValue) => {
+								const values =
+									typeof payload === "object" &&
+									payload !== null &&
+									!Array.isArray(payload) &&
+									typeof (payload as JsonObject).values === "object"
+										? ((payload as JsonObject).values as JsonObject)
+										: {};
+								submit(openForm, values);
+							},
+						}}
+					>
+						<FormBlockView block={bulkFormRoot(openForm.form)} />
+					</SurfaceActionsContext.Provider>
+				</div>
 			)}
 		</div>
 	);
 }
 
-/** The field names a minimal bulk form renders (Task 5 renders the full
- *  tree; this inline shape reads the form's top-level field `name`s). */
-function formFieldNames(action: BulkAction): readonly string[] {
-	// SAFETY: `Tree` is an opaque shape to this task (Task 5 owns forms);
-	// the inline bulk form only reads its top-level field names, so the
-	// narrow `{children?: …}` view is all that is needed. The runtime
-	// guards (`Array.isArray`, typeof) check before any access.
-	const form = action.form as unknown as { readonly children?: readonly JsonValue[] };
-	if (form === undefined || !Array.isArray(form.children)) return [];
-	return form.children
-		.map((child) =>
-			typeof child === "object" && child !== null && !Array.isArray(child)
-				? (child as JsonObject).name
-				: undefined,
-		)
-		.filter((name): name is string => typeof name === "string");
+/** The bulk `form` prop is typed `Tree`; early fixtures carried the
+ *  bare form block. Accept both (the runtime shape wins). */
+function bulkFormRoot(form: { readonly root?: unknown } | FormBlock): FormBlock {
+	const root = (form as { readonly root?: unknown }).root;
+	if (
+		typeof root === "object" &&
+		root !== null &&
+		(root as FormBlock).type === "form"
+	) {
+		return root as FormBlock;
+	}
+	return form as FormBlock;
 }
 
 /** The selection checkbox (read access hides it — selection exists to

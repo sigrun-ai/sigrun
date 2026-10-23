@@ -27,6 +27,7 @@ import {
 	StatBlockView,
 } from "./content";
 import { LogBlockView } from "./log";
+import { FormBlockView } from "./form/Form";
 import { CollectionBlockView } from "./collection/Collection";
 import { MeterBlockView } from "./meter";
 import { TreeBlockView } from "./treeview";
@@ -108,6 +109,8 @@ function renderKnown(block: Block): ReactNode {
 			return <LogBlockView block={block} />;
 		case "tree":
 			return <TreeBlockView block={block} />;
+		case "form":
+			return <FormBlockView block={block} />;
 		default:
 			// A type this client doesn't know: the fallback text plus the
 			// notice (§4.4). `fallback` is optional; when absent the server

@@ -13,7 +13,7 @@
 import { act, createElement as h, type ReactElement, type ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
 import type { CollectionBlock, JsonObject } from "@sigrun/shared/blocks";
-import { render, textContent } from "../../test-utils";
+import { findButton, render, textContent } from "../../test-utils";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
 import { CollectionBlockView } from "./Collection";
 
@@ -247,17 +247,20 @@ describe("list display (spec §5.5)", () => {
 		act(() => {
 			setState.props.onClick();
 		});
+		// The form action opens the real form; typing + submitting
+		// dispatches {ids, values} through the bulk seam.
 		const input = renderer.root.find(
-			(node) => node.type === "input" && node.props.name === "state",
+			(node) => node.type === "input" && node.props["aria-label"] === "State",
 		);
 		act(() => {
 			input.props.onChange({ target: { value: "closed" } });
 		});
 		const form = renderer.root.find(
-			(node) => node.type === "form" && node.props.className === "blk-bulk-form",
+			(node) => node.props.className === "blk blk-form",
 		);
+		expect(form.props["data-mode"]).toBe("submit");
 		act(() => {
-			form.props.onSubmit({ preventDefault: () => {} });
+			findButton(renderer, "Submit").props.onClick();
 		});
 		expect(dispatch).toHaveBeenCalledWith(
 			{ type: "submit", name: "onSetState" },
