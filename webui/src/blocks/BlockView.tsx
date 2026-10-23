@@ -114,18 +114,20 @@ function renderKnown(block: Block): ReactNode {
 			return <FormBlockView block={block} />;
 		case "page":
 			return <PageBlockView block={block} />;
-		default:
+		default: {
 			// A type this client doesn't know: the fallback text plus the
 			// notice (§4.4). `fallback` is optional; when absent the server
 			// has filled it with the `toText` projection.
+			const unknown = block as Block & { readonly fallback?: string };
 			return (
 				<div className="blk blk-unsupported" dir="auto">
-					{block.fallback !== undefined && block.fallback !== "" && (
-						<p>{block.fallback}</p>
+					{unknown.fallback !== undefined && unknown.fallback !== "" && (
+						<p>{unknown.fallback}</p>
 					)}
 					<p className="blk-unsupported-note">{NOT_SUPPORTED}</p>
 				</div>
 			);
+		}
 	}
 }
 

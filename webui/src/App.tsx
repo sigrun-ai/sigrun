@@ -42,6 +42,7 @@ import {
 	liveCompactionFailure,
 	liveCompactions,
 } from "./entries/liveDoc";
+import { GalleryView } from "./gallery/GalleryView";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
@@ -249,6 +250,16 @@ export function App(options: AppOptions = {}) {
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
 	const [drawerOpen, setDrawerOpen] = useState(false);
+	// The section the shell shows (U1 Task 6): the dev Blocks gallery rides
+	// a hash route so a refresh keeps the page; the entry renders only when
+	// `/v1/meta` reports dev (Rail gates it).
+	const [section, setSection] = useState<"chats" | "blocks">(() =>
+		(globalThis as { location?: { hash: string } }).location?.hash.startsWith(
+			"#/blocks",
+		)
+			? "blocks"
+			: "chats",
+	);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
 	// the sidebar's owner-only Share… action, rendered as an overlay.
@@ -401,6 +412,22 @@ export function App(options: AppOptions = {}) {
 		};
 	}, [client]);
 
+	// Keep the section in sync with the hash (back/forward navigation).
+	useEffect(() => {
+		const win = globalThis as {
+			addEventListener?: (t: string, l: () => void) => void;
+			removeEventListener?: (t: string, l: () => void) => void;
+			location?: { hash: string };
+		};
+		const onHashChange = (): void => {
+			setSection(
+				win.location?.hash.startsWith("#/blocks") ? "blocks" : "chats",
+			);
+		};
+		win.addEventListener?.("hashchange", onHashChange);
+		return () => win.removeEventListener?.("hashchange", onHashChange);
+	}, []);
+
 	// Conversation writes. Each action lands its write, then reloads the
 	// lifted list so the sidebar (and the header title) reflect it at once —
 	// the 10 s poll would also catch up, but the user just acted.
@@ -535,6 +562,18 @@ export function App(options: AppOptions = {}) {
 				<Rail
 					meta={boot.meta}
 					onOpenSettings={() => setSettingsOpen(true)}
+					onOpenGallery={
+						boot.meta.dev
+							? () => {
+								setSection("blocks");
+								(
+									globalThis as {
+										history?: { pushState(a: null, b: string, c: string): void };
+									}
+								).history?.pushState(null, "", "#/blocks");
+							}
+							: undefined
+					}
 					identity={identity}
 					onLogout={
 						onLogout === undefined
@@ -567,6 +606,11 @@ export function App(options: AppOptions = {}) {
 					onShare={setShareFor}
 				/>
 			</div>
+			{section === "blocks" ? (
+				<main className="main-column">
+					<GalleryView />
+				</main>
+			) : (
 			<main className="main-column">
 				<ChatHeader
 					title={titleOf(list.rows, activeId)}
@@ -646,6 +690,7 @@ export function App(options: AppOptions = {}) {
 			/>
 				</div>
 			</main>
+			)}
 			{/* The ≤900px overlays' backdrops (CSS: hidden at desktop widths).
 			    The drawer covers the header toggle while open; the panel is a
 			    fixed overlay — click-outside closes both. */}
