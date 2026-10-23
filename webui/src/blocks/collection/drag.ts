@@ -64,7 +64,7 @@ export function startDrag(
  *  stolen by scroll): releases capture and returns nothing, so the
  *  caller clears its pending state with no dispatch. */
 export function cancelDrag(element: DropHost, pointerId: number): void {
-	element.releasePointerCapture?.(pointerId);
+	releaseCapture(element, pointerId);
 }
 
 /** Hit-test a point for the nearest drop target: the closest element
@@ -94,6 +94,17 @@ export function dropTargetAt(
 	return { group, index };
 }
 
+/** Release pointer capture, tolerating an already-lost capture (the
+ *  browser auto-releases on pointerup/cancel; synthetic events carry
+ *  no active pointer at all). */
+function releaseCapture(element: DropHost, pointerId: number): void {
+	try {
+		element.releasePointerCapture?.(pointerId);
+	} catch {
+		// NotFoundError: no active pointer for the id (auto-released).
+	}
+}
+
 /** Finish a drag: hit-test the pointer's last position and return the
  *  move when the drop target differs from the origin (same-group
  *  same-index is a no-op, never dispatched). Releases pointer capture. */
@@ -105,7 +116,7 @@ export function endDrag(
 	y: number,
 	atPoint?: (x: number, y: number) => Element | null,
 ): DropMove | undefined {
-	element.releasePointerCapture?.(pointerId);
+	releaseCapture(element, pointerId);
 	const to = dropTargetAt(x, y, atPoint);
 	if (to === undefined) return undefined;
 	if (to.group === state.from.group && to.index === state.from.index) {
