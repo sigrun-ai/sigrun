@@ -132,4 +132,30 @@ describe("Rail", () => {
 		(settings.props as { onClick: () => void }).onClick();
 		expect(onOpenSettings).toHaveBeenCalledTimes(1);
 	});
+
+	test("the Blocks gallery entry is absent without dev meta and present with dev: true (U1 Task 6)", () => {
+		const hasBlocksEntry = (root: unknown): boolean => {
+			const entries = (root as { findAllByProps(p: object): unknown[] })
+				.findAllByProps({ "data-rail-section": "blocks" });
+			return entries.length > 0;
+		};
+		// Default meta (dev: false): the entry must NOT render even when the
+		// handler is supplied — a gate regression otherwise ships to prod.
+		const withoutDev = render(
+			<Rail
+				meta={makeMeta()}
+				onOpenSettings={() => {}}
+				onOpenGallery={() => {}}
+			/>,
+		);
+		expect(hasBlocksEntry(withoutDev.root)).toBe(false);
+		const withDev = render(
+			<Rail
+				meta={{ ...makeMeta(), dev: true }}
+				onOpenSettings={() => {}}
+				onOpenGallery={() => {}}
+			/>,
+		);
+		expect(hasBlocksEntry(withDev.root)).toBe(true);
+	});
 });

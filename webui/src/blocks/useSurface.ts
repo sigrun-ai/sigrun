@@ -21,7 +21,8 @@
  * handler name matches the action, and stamps it on the entry.
  *
  * Toasts are a MINIMAL local list (the webui has no shared toast store
- * yet); Task 6 wires them into the app's notification surface.
+ * yet); SurfaceView renders them inline as `role="status"` paragraphs
+ * beneath the tree.
  */
 
 import { useEffect, useRef, useState } from "react";
