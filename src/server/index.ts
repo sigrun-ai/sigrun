@@ -61,6 +61,8 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
+import { registerSurfaceRoutes } from "./routes/surfaces.js";
+import { SurfaceService } from "./surfaces/service.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -183,6 +185,8 @@ export async function createServer(
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
 	// way to hand that handle up without widening ServerContext's consumers.
 	app.decorate("sse", sse);
+	const surfacesService = new SurfaceService(opened.extensionSurfaces);
+	app.decorate("surfaces", surfacesService);
 	const ctx: ServerContext = {
 		opened,
 		config,
@@ -193,6 +197,7 @@ export async function createServer(
 		methods,
 		env,
 		watchersByConversation: new Map(),
+		surfaces: surfacesService,
 		sse,
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
@@ -236,6 +241,10 @@ export async function createServer(
 	// web-standard Request/Response adapter — per-route auth rides the
 	// pipeline's stage-4b public skip and this module's admin check.
 	mountExtensionRoutes(app, ctx);
+	// The extension surface routes (UI-blocks U3 Task 2, spec §7.2):
+	// render/data/actions under the reserved `surfaces/` prefix, over the
+	// shared SurfaceService's access cache and revision state.
+	registerSurfaceRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable
