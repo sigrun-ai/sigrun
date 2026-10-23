@@ -210,6 +210,79 @@ describe("surfaces contract (U3 Task 1)", () => {
 		).rejects.toThrow('surface "board" declaring refreshMs without data()');
 	});
 
+	test("a surfaces.settings declaration quarantines naming the workstream", () => {
+		// The contract reserves the key (readonly never[] for TS); a JS
+		// package declaring it must not lose it silently — U4 owns it.
+		return expect(
+			resolveExtension({
+				default: () => ({
+					extension: { name: "surfaces-settings", hooks: [], tools: [] },
+					surfaces: {
+					settings: [
+						{
+							id: "prefs",
+							title: "Prefs",
+							form: { v: 1, root: { type: "form", rows: [] } },
+						},
+					],
+					},
+				}),
+			}),
+		).rejects.toThrow("surfaces.settings");
+	});
+
+	test("a non-function action handler quarantines naming the action", () => {
+		return expect(
+			resolveExtension({
+				default: () => ({
+					extension: { name: "surfaces-bad-action", hooks: [], tools: [] },
+					surfaces: {
+						views: [
+							{
+								id: "board",
+								title: "Board",
+								icon: "board",
+								placement: "view",
+								render: async () => ({
+									tree: { v: 1, root: { type: "page", title: "b", main: [] } },
+									data: {},
+									access: "read",
+								}),
+								actions: { move: 42 },
+							},
+						],
+					},
+				}),
+			}),
+		).rejects.toThrow('action "move"');
+	});
+
+	test("a non-boolean sharedData quarantines naming the field", () => {
+		return expect(
+			resolveExtension({
+				default: () => ({
+					extension: { name: "surfaces-bad-shared", hooks: [], tools: [] },
+					surfaces: {
+						views: [
+							{
+								id: "board",
+								title: "Board",
+								icon: "board",
+								placement: "view",
+								sharedData: "yes",
+								render: async () => ({
+									tree: { v: 1, root: { type: "page", title: "b", main: [] } },
+									data: {},
+									access: "read",
+								}),
+							},
+						],
+					},
+				}),
+			}),
+		).rejects.toThrow('surface "board" whose sharedData is not a boolean');
+	});
+
 	test("a route path under surfaces/ quarantines naming the route", async () => {
 		const { opened, app, adminToken } = await server();
 		const outcome = opened.extensionOutcomes.find((entry) =>

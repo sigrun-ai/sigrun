@@ -708,9 +708,12 @@ const MIN_REFRESH_MS = 5000;
  * it — the providers/health class). Per def: non-empty string `id`
  * (unique across BOTH lists — one namespace), string `title`, `icon`
  * in the closed set, `placement` exactly `view` (in `views`) or
- * `panel` (in `panels`), `refreshMs ≥ 5000` when present, `data()` a
- * function when `refreshMs` is set (a data refetch would otherwise
- * re-run `render`, §7.1), and `render` a function. Returns the
+ * `panel` (in `panels`), `sharedData` a boolean, `actions` an object
+ * whose every handler is a function (message names the action),
+ * `refreshMs ≥ 5000` when present, `data()` a function when
+ * `refreshMs` is set (a data refetch would otherwise re-run `render`,
+ * §7.1), `render` a function, and NO `settings` key (reserved — the
+ * §13.3 sections are a separate workstream). Returns the
  * FLATTENED defs (views then panels, declaration order) attributed to
  * the slug at collection.
  */
@@ -721,6 +724,16 @@ function validateSurfaces(
 	if (typeof value !== "object" || Array.isArray(value)) {
 		throw new Error(
 			"extension factory returned a surfaces field that is not an object",
+		);
+	}
+	// The settings sections key is RESERVED (spec §7.1 names it; §13.3
+	// owns it): this workstream cannot serve it, and a JS package
+	// declaring one must not lose it silently — quarantine loud, naming
+	// the workstream (TS consumers are already stopped by the contract's
+	// `readonly never[]`).
+	if ((value as Record<string, unknown>).settings !== undefined) {
+		throw new Error(
+			"extension factory returned a surfaces.settings declaration — settings sections are a separate workstream (they land in U4)",
 		);
 	}
 	const defs: SurfaceDef<"view" | "panel">[] = [];
@@ -737,14 +750,16 @@ function validateSurfaces(
 		for (const entry of entries) {
 			const def = entry as
 				| {
-							id?: unknown;
+						id?: unknown;
 						title?: unknown;
 						icon?: unknown;
 						placement?: unknown;
+						sharedData?: unknown;
 						refreshMs?: unknown;
 						instanceKey?: unknown;
 						render?: unknown;
 						data?: unknown;
+						actions?: unknown;
 					  }
 				| null;
 			if (typeof def?.id !== "string" || def.id.length === 0) {
@@ -776,7 +791,33 @@ function validateSurfaces(
 			if (def?.instanceKey !== undefined && typeof def.instanceKey !== "function") {
 				throw new Error(
 					`extension factory returned a surface "${def.id}" whose instanceKey is not a function`,
-			);
+				);
+			}
+			if (
+				def?.sharedData !== undefined &&
+				typeof def.sharedData !== "boolean"
+			) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose sharedData is not a boolean`,
+				);
+			}
+			if (def?.actions !== undefined) {
+				if (
+					typeof def.actions !== "object" ||
+					def.actions === null ||
+					Array.isArray(def.actions)
+				) {
+					throw new Error(
+						`extension factory returned a surface "${def.id}" whose actions is not an object`,
+					);
+				}
+				for (const [action, handler] of Object.entries(def.actions)) {
+					if (typeof handler !== "function") {
+						throw new Error(
+							`extension factory returned a surface "${def.id}" whose action "${action}" handler is not a function`,
+						);
+					}
+				}
 			}
 			if (typeof def?.render !== "function") {
 				throw new Error(
