@@ -188,11 +188,15 @@ export class SurfaceService {
 		const access = await this.accessFor(slug, id, key, params, principal);
 		if (access === "none") return undefined;
 
+		// The since window (spec §7.3): contiguous iff every rev increment
+		// corresponds to one logged op (the full-fetch path below never
+		// bumps a sharedData rev, preserving this). `since == rev` answers
+		// an empty op list — the client is current.
 		if (
 			located.def.sharedData === true &&
 			since !== undefined &&
 			since >= state.rev - state.ops.length &&
-			since < state.rev
+			since <= state.rev
 		) {
 			const ops = state.ops
 				.filter((entry) => entry.rev > since)
@@ -228,7 +232,17 @@ export class SurfaceService {
 		}
 		this.cache.set(slug, id, key, principal.user, access2);
 		if (access2 === "none") return undefined;
-		state.rev += 1;
+		// Rev advances only via bumpRev for sharedData surfaces (spec §7.3):
+		// the server-assigned rev reflects STORED changes, and a full data()
+		// refetch returns data consistent with the stored rev — bumping here
+		// would break the since-window invariant (every rev must correspond
+		// to one logged op) and strand clients at an unobservable revision.
+		// Principal-specific surfaces keep no ops contract; their bump is a
+		// per-fetch freshness marker only (gap detection, never consumed for
+		// ops).
+		if (located.def.sharedData !== true) {
+			state.rev += 1;
+		}
 		return { rev: state.rev, treeRev: state.treeRev, data };
 	}
 

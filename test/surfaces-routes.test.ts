@@ -260,11 +260,102 @@ describe("surface render route (U3 Task 2)", () => {
 		expect(calls.data.stats).toBe(2);
 	});
 
-	test("sharedData: bumpRev with ops → ?since=0 returns {rev:1, ops}; a stale since returns full data", async () => {
+	test("sharedData: a full data fetch does NOT advance rev; the since window stays contiguous", async () => {
 		const { app, aliceToken } = await server();
+		const q = `params=${encodeURIComponent('{"case":"no-bump"}')}`;
+		const url = `${SURFACE_URL}?${q}`;
 		const rendered = await call(app, {
 			method: "GET",
-			url: SURFACE_URL,
+			url,
+			token: aliceToken,
+		});
+		expect(rendered.status).toBe(200);
+		expect(rendered.body.rev).toBe(0);
+		const renderKey = contexts.find(
+			(entry) => entry.kind === "render" && entry.id === "board",
+		)?.key as string;
+		// rev 1 via a logged op.
+		app.surfaces.bumpRev("fixture-surfaces", "board", renderKey, {
+			ops: [{ op: "set", path: "/cards/0/title", value: "Renamed" }],
+		});
+		// A plain full data fetch calls data() but must NOT bump rev — the
+		// server-assigned rev reflects stored changes only (spec §7.3).
+		const full = await call(app, {
+			method: "GET",
+			url: `${SURFACE_URL}/data?${q}`,
+			token: aliceToken,
+		});
+		expect(full.status).toBe(200);
+		expect(full.body.rev).toBe(1);
+		expect(full.body.data).toMatchObject({ cards: expect.any(Array) });
+		// since=1: the window still holds the op; the client is told it is
+		// current at rev 1 with the op itself.
+		const caught = await call(app, {
+			method: "GET",
+			url: `${SURFACE_URL}/data?${q}&since=1`,
+			token: aliceToken,
+		});
+		expect(caught.body).toEqual({ rev: 1, treeRev: 0, ops: [] });
+		const sinceZero = await call(app, {
+			method: "GET",
+			url: `${SURFACE_URL}/data?${q}&since=0`,
+			token: aliceToken,
+		});
+		expect(sinceZero.body).toEqual({
+			rev: 1,
+			treeRev: 0,
+			ops: [{ op: "set", path: "/cards/0/title", value: "Renamed" }],
+		});
+	});
+
+	test("sharedData: a full fetch before any bump keeps rev 0; ?since=0 is the empty window", async () => {
+		const { app, aliceToken } = await server();
+		const q = `params=${encodeURIComponent('{"case":"fresh"}')}`;
+		const url = `${SURFACE_URL}?${q}`;
+		await call(app, { method: "GET", url, token: aliceToken });
+		const full = await call(app, {
+			method: "GET",
+			url: `${SURFACE_URL}/data?${q}`,
+			token: aliceToken,
+		});
+		expect(full.body.rev).toBe(0);
+		const since = await call(app, {
+			method: "GET",
+			url: `${SURFACE_URL}/data?${q}&since=0`,
+			token: aliceToken,
+		});
+		expect(since.body).toEqual({ rev: 0, treeRev: 0, ops: [] });
+	});
+
+	test("principal-specific surface: a full data fetch advances rev (freshness marker, no ops contract)", async () => {
+		const { app, aliceToken } = await server();
+		const q = `params=${encodeURIComponent('{"case":"panel-revs"}')}`;
+		const url = `${PANEL_URL}?${q}`;
+		await call(app, { method: "GET", url, token: aliceToken });
+		const first = await call(app, {
+			method: "GET",
+			url: `${PANEL_URL}/data?${q}`,
+			token: aliceToken,
+		});
+		expect(first.body.rev).toBe(1);
+		const second = await call(app, {
+			method: "GET",
+			url: `${PANEL_URL}/data?${q}`,
+			token: aliceToken,
+		});
+		expect(second.body.rev).toBe(2);
+		// No ops are ever returned for a principal-specific surface (spec §7.3).
+		expect(first.body.ops).toBeUndefined();
+		expect(second.body.ops).toBeUndefined();
+	});
+
+	test("sharedData: bumpRev with ops → ?since=0 returns {rev:1, ops}; a stale since returns full data", async () => {
+		const { app, aliceToken } = await server();
+		const opsQ = `params=${encodeURIComponent('{"case":"ops"}')}`;
+		const opsUrl = `${SURFACE_URL}?${opsQ}`;
+		const rendered = await call(app, {
+			method: "GET",
+			url: opsUrl,
 			token: aliceToken,
 		});
 		expect(rendered.status).toBe(200);
@@ -278,7 +369,7 @@ describe("surface render route (U3 Task 2)", () => {
 		});
 		const delta = await call(app, {
 			method: "GET",
-			url: `${SURFACE_URL}/data?since=0`,
+			url: `${SURFACE_URL}/data?${opsQ}&since=0`,
 			token: aliceToken,
 		});
 		expect(delta.status).toBe(200);
@@ -291,7 +382,7 @@ describe("surface render route (U3 Task 2)", () => {
 		// A since older than the 100-update window (or unknown) gets full data.
 		const stale = await call(app, {
 			method: "GET",
-			url: `${SURFACE_URL}/data?since=999`,
+			url: `${SURFACE_URL}/data?${opsQ}&since=999`,
 			token: aliceToken,
 		});
 		expect(stale.status).toBe(200);
