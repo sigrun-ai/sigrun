@@ -14,6 +14,12 @@
  * by `helm dependency update`, gitignored); the PrometheusRule is the one
  * hand template (the library has no PrometheusRule class).
  *
+ * The `sigrun:` values block (image-workflow spec §4) owns the extension
+ * fleet (seed initContainer), deploy-time tools (tools initContainer +
+ * PATH), operator Secret envFrom refs, and the command→args migration the
+ * image's ENTRYPOINT trampoline requires — covered by the fleet describes
+ * below, with values.schema.json validating the `sigrun:` block only.
+ *
  * The homelab instantiation (iSCSI class, RustFS endpoint, worker
  * placement, kube-prometheus-stack release label) lives in the CONSUMER's
  * GitOps repo as values — deliberately NOT asserted here; the
@@ -25,7 +31,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -208,6 +214,7 @@ describe("chart Deployment", () => {
 					containers: {
 						name: string;
 						command?: string[];
+						args?: string[];
 						workingDir?: string;
 						env: { name: string; value?: string }[];
 						envFrom: { secretRef: { name: string } }[];
@@ -253,7 +260,12 @@ describe("chart Deployment", () => {
 	});
 
 	test("entrypoint is the deploy entry: node dist/index.js at /app", () => {
-		expect(container.command).toEqual(["node", "dist/index.js"]);
+		// command→args migration (spec §4): the image's ENTRYPOINT is the
+		// privilege-drop trampoline, and k8s `command:` overrides ENTRYPOINT —
+		// `args:` keeps the trampoline in the exec path (it execs straight
+		// through when the pod security context already set a non-root uid).
+		expect(container.command).toBeUndefined();
+		expect(container.args).toEqual(["node", "dist/index.js"]);
 		expect(container.workingDir).toBe("/app");
 	});
 
@@ -427,10 +439,11 @@ describe("chart backup CronJob", () => {
 					template: {
 						spec: {
 							restartPolicy: string;
-							containers: {
-								name: string;
-								command: string[];
-								env: { name: string; value?: string }[];
+									containers: {
+										name: string;
+										command?: string[];
+										args?: string[];
+										env: { name: string; value?: string }[];
 								envFrom: { secretRef: { name: string } }[];
 								volumeMounts: { name: string; mountPath: string }[];
 							}[];
@@ -468,7 +481,10 @@ describe("chart backup CronJob", () => {
 	test("backup script runs the built entry under plain node against the live db on the shared PVC", () => {
 		const pod = cronjob.spec.jobTemplate.spec.template.spec;
 		const backup = pod.containers[0];
-		expect(backup.command).toEqual([
+		// Same command→args migration as the main container: the trampoline
+		// stays in the exec path for the CronJob too.
+		expect(backup.command).toBeUndefined();
+		expect(backup.args).toEqual([
 			"node",
 			"/app/dist/backup/run-backup.js",
 		]);
@@ -795,10 +811,206 @@ describe("values toggles", () => {
 });
 
 // ---------------------------------------------------------------------------
+// sigrun: values block (spec §4) — extension fleet, secrets refs, deploy-time
+// tools, and the command→args ENTRYPOINT migration
+// ---------------------------------------------------------------------------
+
+/** The fleet/tools overlay (the spec §4 example values, neutralized). */
+const FLEET_OVERLAY = {
+	sigrun: {
+		extensions: {
+			enabled: ["npm:@sigrun/memory-markdown@^0.1.0"],
+			settings: {
+				"memory-markdown": { noteRoot: "/data/notes" },
+			},
+		},
+		tools: {
+			enabled: true,
+			packages: ["kubectl@v1.32.0"],
+		},
+		secretsEnv: ["my-sec"],
+	},
+};
+
+type FleetPodSpec = {
+	initContainers?: {
+		name: string;
+		image: string;
+		args: string[];
+		volumeMounts: { name: string; mountPath: string }[];
+	}[];
+	containers: {
+		name: string;
+		command?: string[];
+		args?: string[];
+		env: { name: string; value?: string }[];
+		envFrom: { secretRef: { name: string } }[];
+	}[];
+};
+
+describe("sigrun fleet values (spec §4)", () => {
+	let pod!: FleetPodSpec;
+
+	beforeAll(async () => {
+		const deployment = docOf(await renderWith(FLEET_OVERLAY), "Deployment") as {
+			spec: { template: { spec: FleetPodSpec } };
+		};
+		pod = deployment.spec.template.spec;
+	});
+
+	test("exactly one seed + one tools initContainer, each on the app image with /data mounted", () => {
+		expect(pod.initContainers?.map((c) => c.name).sort()).toEqual([
+			"sigrun-seed",
+			"sigrun-tools",
+		]);
+		for (const init of pod.initContainers ?? []) {
+			// One image for the whole deployment — the seed/tools scripts ship
+			// in it at /usr/local/share/sigrun/. Both targets live on the /data
+			// PVC, which the library's persistence globalMounts lands on
+			// initContainers too (under the pod security context).
+			expect(init.image).toBe(PUBLISHED_IMAGE);
+			expect(
+				init.volumeMounts.some((m) => m.mountPath === "/data"),
+				`${init.name} must mount /data`,
+			).toBe(true);
+		}
+	});
+
+	test("seed argv: script, config dir, then the three rendered JSON documents (toJson, never omitted)", () => {
+		// seed-settings.sh CONFIG_DIR FLEET_JSON SETTINGS_JSON EXT_SETTINGS_JSON
+		// — argv 2-4 are rendered JSON strings, `[]`/`{}` when empty.
+		const seed = pod.initContainers?.find((c) => c.name === "sigrun-seed");
+		expect(seed?.args).toEqual([
+			"/usr/local/share/sigrun/seed-settings.sh",
+			"/data/config",
+			'["npm:@sigrun/memory-markdown@^0.1.0"]',
+			"{}",
+			'{"memory-markdown":{"noteRoot":"/data/notes"}}',
+		]);
+	});
+
+	test("tools argv: script, dir, then every name@version spec", () => {
+		// Zero specs never renders — tools-install.sh treats that as a usage
+		// error ON PURPOSE (fail loud), so the chart gates on a non-empty
+		// packages list rather than shipping a guaranteed CrashLoop.
+		const tools = pod.initContainers?.find((c) => c.name === "sigrun-tools");
+		expect(tools?.args).toEqual([
+			"/usr/local/share/sigrun/tools-install.sh",
+			"/data/tools",
+			"kubectl@v1.32.0",
+		]);
+	});
+
+	test("main container: no command (the ENTRYPOINT trampoline stays in the exec path), args carry the deploy entry", () => {
+		const main = pod.containers.find((c) => c.name === "main");
+		expect(main?.command).toBeUndefined();
+		expect(main?.args).toEqual(["node", "dist/index.js"]);
+	});
+
+	test("PATH prepends the tools bin dir ahead of the image default", () => {
+		const path = pod.containers
+			.find((c) => c.name === "main")
+			?.env.find((e) => e.name === "PATH");
+		// tools-install.sh lands binaries in <dir>/bin.
+		expect(path?.value).toMatch(/^\/data\/tools\/bin:/);
+		// The image's standard dirs must survive the prepend (k8s env values
+		// replace PATH wholesale — there is no $(PATH) reference form).
+		expect(path?.value).toContain(":/usr/local/bin:");
+	});
+
+	test("envFrom gains each secretsEnv Secret alongside sigrun-env", () => {
+		const envFrom = pod.containers.find((c) => c.name === "main")?.envFrom;
+		expect(envFrom?.some((e) => e.secretRef.name === "my-sec")).toBe(true);
+		expect(envFrom?.some((e) => e.secretRef.name === "sigrun-env")).toBe(
+			true,
+		);
+	});
+
+	test("backup CronJob carries the backup entry as args (no command)", async () => {
+		const overlay = {
+			...FLEET_OVERLAY,
+			controllers: { backup: { enabled: true } },
+		};
+		const cron = docOf(await renderWith(overlay), "CronJob") as {
+			spec: {
+				jobTemplate: {
+					spec: {
+						template: { spec: { containers: FleetPodSpec["containers"] } },
+				};
+			};
+			};
+		};
+		const backup = cron.spec.jobTemplate.spec.template.spec.containers[0];
+		expect(backup.command).toBeUndefined();
+		expect(backup.args).toEqual(["node", "/app/dist/backup/run-backup.js"]);
+	});
+});
+
+describe("sigrun fleet values: the portable default renders nothing", () => {
+	test("default render: no initContainers, no tools PATH", async () => {
+		// The public default is initContainer-free: nothing to seed (all
+		// fleet keys empty) and no tools declared — the seeding path is an
+		// operator opt-in, like backup and monitoring.
+		const deployment = docOf(await render(), "Deployment") as {
+			spec: { template: { spec: FleetPodSpec } };
+		};
+		const spec = deployment.spec.template.spec;
+		expect(spec.initContainers).toBeUndefined();
+		expect(
+			spec.containers
+				.find((c) => c.name === "main")
+				?.env.find((e) => e.name === "PATH"),
+		).toBeUndefined();
+	});
+
+	test("tools without a fleet still renders the tools initContainer", async () => {
+		// Regression (self-review): a dangling dependsOn ("sigrun-seed" absent
+		// from the library's topological graph) made the library drop the
+		// tools container entirely — a tools-only deployment got nothing.
+		const overlay = { sigrun: { tools: { packages: ["kubectl@v1.32.0"] } } };
+		const deployment = docOf(await renderWith(overlay), "Deployment") as {
+			spec: { template: { spec: FleetPodSpec } };
+		};
+		expect(
+			deployment.spec.template.spec.initContainers?.map((c) => c.name),
+		).toEqual(["sigrun-tools"]);
+	});
+});
+
+describe("sigrun values schema (values.schema.json)", () => {
+	test("fleet list must be an array — a scalar fails values validation", async () => {
+		await expect(
+			render(["sigrun.extensions.enabled=notanarray"]),
+		).rejects.toThrow(/schema|Invalid type/i);
+	});
+
+	test("tool specs must be name@version", async () => {
+		await expect(
+			render(["sigrun.tools.packages[0]=notaspec"]),
+		).rejects.toThrow(/schema|pattern|does not match/i);
+	});
+
+	test("everything outside sigrun: passes through — deep bjw-s overrides still render", async () => {
+		const docs = await render(["controllers.backup.enabled=true"]);
+		expect(docs.some((d) => d.kind === "CronJob")).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // docker/docker-compose.yaml — the smoke / single-node path
 // ---------------------------------------------------------------------------
 
 describe("docker compose reference", () => {
+	// The structural assertions below parse the YAML directly (no
+	// docker/compose binary in the loop) — compose interpolation is not
+	// evaluated, so the assertions match the literal interpolation
+	// expressions as written (spec §6: `user:`/image tag parametrized,
+	// SIGRUN_EXTENSIONS passthrough, hardening set).
+	async function composeDoc(): Promise<Record<string, any>> {
+		const text = await readFile(COMPOSE_FILE, "utf8");
+		return YAML.parse(text) as Record<string, any>;
+	}
+
 	test("parses, and its service names the published image with no build stanza", async () => {
 		// `docker compose config` is the parser (it validates interpolation
 		// and the schema); SIGRUN_DEFAULT_MODEL is a required variable, so
@@ -813,4 +1025,48 @@ describe("docker compose reference", () => {
 		// `docker compose up` gets the release's image.
 		expect(stdout).not.toMatch(/^\s+build:/m);
 	});
+
+	test("hardened defaults: read-only rootfs + tmpfs scratch, caps dropped, no-new-privileges, init", async () => {
+		const doc = await composeDoc();
+		const service = doc.services.sigrun;
+		// spec §6: writes are confined to /data (volume), /cache and /tmp
+		// (tmpfs) — everything else is read-only (NPM_CONFIG_CACHE is baked
+		// to /cache/npm in the image, so npm's cache writes land on tmpfs).
+		expect(service.read_only).toBe(true);
+		expect(service.tmpfs).toEqual(
+			expect.arrayContaining(["/tmp", "/cache"]),
+		);
+		expect(service.cap_drop).toEqual(["ALL"]);
+		expect(service.security_opt).toEqual(["no-new-privileges:true"]);
+		// Zombie reaping: the node process never reaps adopted children
+		// (git/npm invocations from agent shells) — compose's init makes
+		// PID 1 the reaper instead.
+		expect(service.init).toBe(true);
+	});
+
+	test("image tag and uid/gid are parametrized with the release defaults", async () => {
+		const doc = await composeDoc();
+		const service = doc.services.sigrun;
+		expect(service.image).toBe(
+			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.1.4}"}`,
+		);
+		expect(service.user).toBe("${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}");
+	});
+
+	test("SIGRUN_EXTENSIONS passes through via env_file (unset means absent, not empty)", async () => {
+		const doc = await composeDoc();
+		const service = doc.services.sigrun;
+		// The fleet override env contract: when the var is set it WINS over
+		// the settings file's `extensions` list. A literal
+		// `${SIGRUN_EXTENSIONS:-}` environment entry would pin an EMPTY
+		// fleet over the file when unset (parseExtensionList("") is [],
+		// and [] ?? file keeps []), silently killing the file-driven flow
+		// the README documents. env_file is the passthrough: present in
+		// .env ⇒ in the container, absent from .env ⇒ absent from the
+		// container (the chart's envFrom secretRef shape) — asserted BOTH
+		// ways: the mechanism present, the footgun shape absent.
+		expect(service.env_file).toContainEqual({ path: ".env", required: false });
+		expect(service.environment.SIGRUN_EXTENSIONS).toBeUndefined();
+	});
 });
+
