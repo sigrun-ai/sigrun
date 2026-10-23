@@ -1,0 +1,24 @@
+{
+	"v": 1,
+	"root": {
+		"type": "section",
+		"title": "Group",
+		"subtitle": "subtitle",
+		"tone": "info",
+		"collapsible": true,
+		"collapsed": false,
+		"children": [
+			{ "type": "markdown", "text": "in section" },
+			{
+				"type": "callout",
+				"id": "section-callout",
+				"tone": "warn",
+				"title": "Careful",
+				"body": "acme maintenance at 02:00",
+				"actions": [
+					{ "id": "ack", "label": "Acknowledge", "action": { "type": "edit", "name": "ack" } }
+				]
+			}
+		]
+	}
+}

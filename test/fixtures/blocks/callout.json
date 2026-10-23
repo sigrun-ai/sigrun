@@ -1,0 +1,23 @@
+{
+	"v": 1,
+	"root": {
+		"type": "callout",
+		"id": "callout",
+		"tone": "warn",
+		"title": "Degraded",
+		"body": "acme upstream is slow",
+		"actions": [
+			{
+				"id": "open",
+				"label": "Open console",
+				"icon": "external",
+				"action": { "type": "open", "url": "https://example.invalid/console" }
+			},
+			{
+				"id": "copy",
+				"label": "Copy id",
+				"action": { "type": "copy", "text": "acme-42" }
+			}
+		]
+	}
+}

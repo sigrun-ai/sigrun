@@ -1,0 +1,21 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form",
+		"bind": "/form",
+		"mode": "submit",
+		"onSubmit": "saveForm",
+		"submitLabel": "Save",
+		"children": [
+			{
+				"type": "section",
+				"title": "Basics",
+				"children": [{ "type": "text", "name": "title", "label": "Title", "required": true, "maxLength": 80 }]
+			},
+			{ "type": "longtext", "name": "notes", "label": "Notes", "syntax": "markdown", "rows": 4, "help": "markdown ok" },
+			{ "type": "number", "name": "retries", "label": "Retries", "min": 0, "max": 5, "step": 1 },
+			{ "type": "toggle", "name": "enabled", "label": "Enabled", "help": "run the acme loop" }
+		]
+	}
+}

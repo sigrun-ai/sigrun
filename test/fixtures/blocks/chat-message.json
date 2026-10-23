@@ -1,0 +1,33 @@
+{
+	"v": 1,
+	"root": {
+		"type": "stack",
+		"id": "chat-message",
+		"children": [
+			{ "type": "markdown", "text": "acme ranking draft" },
+			{
+				"type": "collection",
+				"id": "rank",
+				"items": { "$": "/songs" },
+				"display": "list",
+				"numbered": true,
+				"reorder": { "within": true },
+				"onMove": "reorderSong",
+				"item": {
+					"title": { "$": "./title" },
+					"meta": [{ "person": { "user": "user:example", "name": "Example" } }]
+				}
+			},
+			{
+				"type": "form",
+				"id": "use",
+				"bind": "/reply",
+				"mode": "submit",
+				"onSubmit": "useOrder",
+				"submitLabel": "Use this order",
+				"turn": true,
+				"children": [{ "type": "toggle", "name": "confirm", "label": "Confirm" }]
+			}
+		]
+	}
+}

@@ -1,0 +1,30 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-interaction",
+		"bind": "/values",
+		"mode": "submit",
+		"onSubmit": "answer",
+		"submitLabel": "Answer",
+		"children": [
+			{
+				"type": "section",
+				"title": "Approve",
+				"children": [
+					{
+						"type": "choice",
+						"name": "verdict",
+						"label": "Verdict",
+						"options": [
+							{ "id": "allow", "label": "Allow", "tone": "good", "recommended": true, "preview": "run it" },
+							{ "id": "deny", "label": "Deny", "tone": "bad" }
+						]
+					}
+				]
+			},
+			{ "type": "longtext", "name": "reason", "label": "Reason", "required": true },
+			{ "type": "secret", "name": "token", "label": "Token", "help": "optional" }
+		]
+	}
+}

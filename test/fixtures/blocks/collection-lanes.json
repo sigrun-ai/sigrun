@@ -1,0 +1,18 @@
+{
+	"v": 1,
+	"root": {
+		"type": "collection",
+		"id": "collection-lanes",
+		"items": { "$": "/cards" },
+		"display": "lanes",
+		"groupBy": "state",
+		"groups": [
+			{ "id": "todo", "title": "To do", "tone": "neutral" },
+			{ "id": "doing", "title": "Doing", "tone": "info", "collapsed": false }
+		],
+		"reorder": { "within": true, "across": true },
+		"onMove": "moveCard",
+		"onActivate": { "type": "navigate", "params": { "id": "acme" } },
+		"item": { "title": { "$": "./title" }, "tone": { "$": "./tone" } }
+	}
+}

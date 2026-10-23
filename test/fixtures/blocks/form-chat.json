@@ -1,0 +1,24 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-chat",
+		"bind": "/reply",
+		"mode": "submit",
+		"onSubmit": "sendReply",
+		"submitLabel": "Send",
+		"turn": true,
+		"children": [
+			{
+				"type": "choice",
+				"name": "answer",
+				"label": "Answer",
+				"options": [
+					{ "id": "yes", "label": "Yes", "preview": "proceed with the acme plan" },
+					{ "id": "no", "label": "No", "tone": "bad" }
+				]
+			},
+			{ "type": "longtext", "name": "reason", "label": "Reason", "syntax": "plain" }
+		]
+	}
+}

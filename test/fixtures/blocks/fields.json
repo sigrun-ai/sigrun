@@ -1,0 +1,11 @@
+{
+	"v": 1,
+	"root": {
+		"type": "fields",
+		"id": "fields",
+		"rows": [
+			{ "label": "Host", "value": "acme.example" },
+			{ "label": "Errors", "value": 2, "tone": "bad", "icon": "error" }
+		]
+	}
+}

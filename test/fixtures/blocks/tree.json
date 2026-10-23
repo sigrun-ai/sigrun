@@ -1,0 +1,10 @@
+{
+	"v": 1,
+	"root": {
+		"type": "tree",
+		"id": "tree",
+		"nodes": { "$": "/nodes" },
+		"onExpand": "expandNode",
+		"onActivate": { "type": "navigate", "params": { "node": "acme" } }
+	}
+}
