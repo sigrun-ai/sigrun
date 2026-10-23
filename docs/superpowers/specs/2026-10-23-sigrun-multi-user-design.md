@@ -120,9 +120,11 @@ files, credentials, or conversations — by accident or by asking it to.
    user-supplied servers when the admin allows them.
 7. **OIDC and OAuth2 are extensions**, not core.
 8. **Bundled.** The OIDC/OAuth2 extension ships as a built-in.
-9. **Gateway handover.** The login workstream (M3) starts after
-   gateway-engine Task 4; it then moves the gateway's chat-account links
-   into core.
+9. **Gateway handover.** Revised the same day: the gateway engine had
+   only just started, so the account-link table lands first as M3a and
+   the engine pauses after its Task 2, then builds its links on
+   `host.accounts` (no `identities.json`, no migration, §11.7). The rest
+   of M3 follows M3a.
 10. **Do not step on in-flight work.** The gateway, UI-blocks, and
     image-workflow workstreams are underway; this spec's changes to
     shared files wait for them (§7).
@@ -239,7 +241,8 @@ extension code; resource exhaustion; outbound network; non-Linux hosts.
 | M0 | Environment-leak fix (§8) | nothing; not part of this spec's plans |
 | M1 | The execution jail (§9) | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
 | M2 | Per-user extension surface (§10) | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
-| M3 | Login (§11) | gateway-core Task 5; gateway-engine Task 4 |
+| M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 3 waits for M3a |
+| M3 | Login (§11), the rest | M3a |
 | M4 | Extension adoption (§12) | M2 (MCP); M2 (memory) |
 
 M1 and M3 run in parallel once their waits clear. Each workstream gets
@@ -891,7 +894,15 @@ One table for every external identity, shared with the gateway:
   `config` backup section carries it with `users.json`.
 - **Connect an account:** a signed-in user starts a login with
   `?link=1`; the result links to the caller instead of signing in.
-  Settings lists and removes the caller's links.
+- **Listing and removing links** mirror `/v1/auth/tokens`:
+  `GET /v1/auth/accounts[?user=]` (own; admins may name anyone) and
+  `DELETE /v1/auth/accounts?provider=&subject=` (own; admins may remove
+  anyone's). Settings renders them.
+- **One link per `(provider, subject)`.** Re-linking to the same user is
+  a no-op; linking to a different user is refused
+  (`account_link_conflict:`), never re-pointed, since re-pointing is an
+  account-takeover path. The holder or an admin removes the old link
+  first.
 - User deletion removes the user's links (step 1 of §10.6).
 
 ### 11.4 First login (no link)
@@ -968,15 +979,19 @@ One table for every external identity, shared with the gateway:
 
 ### 11.7 Gateway handover
 
-After gateway-engine Task 4 merges:
+The engine had not reached its link storage when this spec was written,
+so the account-link table lands first (M3a) and the engine builds on it
+directly; there is no `identities.json` and no migration:
 
-- the engine's `IdentityStore` keeps its interface and stores links in
-  core through `host.accounts` (`chat:<channel>`); home chats stay
-  gateway state;
-- a one-time, idempotent migration moves existing `identities.json`
-  links into `accounts.json` at the engine's first boot on the new core,
-  then removes them from `identities.json`;
-- `/link` and `/pair` behave exactly as the gateway spec says;
+- engine Task 3's `IdentityStore` stores links in core through
+  `host.accounts` (`chat:<channel>`); home chats stay gateway state in
+  `homes.json`. `userFor` becomes async; engine Task 8's
+  `admitGroupEvent` follows;
+- a self-link or pairing approval that hits an existing link to another
+  user is refused with a reply naming the fix (remove the old link);
+- engine Task 12's `userDeleted` clears home chats only, since core
+  removed the links before the event;
+- `/link` and `/pair` otherwise behave exactly as the gateway spec says;
 - an engine booting on a core without `host.accounts` fails loud at
   factory time (quarantined, one error naming the minimum core
   version); it never falls back to writing links into `identities.json`.
