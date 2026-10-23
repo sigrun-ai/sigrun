@@ -162,6 +162,25 @@ describe("surface render route (U3 Task 2)", () => {
 		expect(board?.refreshMs).toBeUndefined();
 	});
 
+	test("the /v1/meta projection carries sharedData for a sharedData surface", async () => {
+		const { app, aliceToken } = await server();
+		const result = await call(app, { method: "GET", url: "/v1/meta", token: aliceToken });
+		expect(result.status).toBe(200);
+		const meta = result.body as unknown as {
+			extensions: {
+				name: string;
+				surfaces?: { id: string; sharedData?: boolean }[];
+			}[];
+		};
+		const fixture = meta.extensions.find((one) => one.name === "fixture-surfaces");
+		const board = fixture?.surfaces?.find((one) => one.id === "board");
+		// The board declares sharedData: true (the fixture's view).
+		expect(board?.sharedData).toBe(true);
+		const stats = fixture?.surfaces?.find((one) => one.id === "stats");
+		// Principal-specific surfaces stay ABSENT (sparse projection).
+		expect(stats?.sharedData).toBeUndefined();
+	});
+
 	test("alice (write) gets the tree, data, rev 0, treeRev 0, access write", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {

@@ -42,7 +42,7 @@ interface WatcherEntry {
  * freeze entries at construction time).
  */
 export class WatcherRegistry {
-	/** Entries keyed `${stream} ${slug} ${id} ${key}` (nul-joined). */
+	/** Entries keyed `${stream} ${slug} ${id} ${key}` (\u0001-joined). */
 	private readonly entries = new Map<string, WatcherEntry>();
 	/** Stream → its composite keys (dropStream's index). */
 	private readonly byStream = new Map<string, Set<string>>();

@@ -89,6 +89,9 @@ export function registerExtensionRoutes(
 									title: def.title,
 									icon: def.icon,
 										placement: def.placement,
+										...(def.sharedData === true
+											? { sharedData: true }
+											: {}),
 									})),
 							}),
 				};

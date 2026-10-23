@@ -162,7 +162,15 @@ describe("surfaces contract (U3 Task 1)", () => {
 			(entry) => entry.name === "fixture-surfaces",
 		);
 		expect(fixture?.surfaces).toEqual([
-			{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+			{
+				id: "board",
+				title: "Acme board",
+				icon: "board",
+				placement: "view",
+				// §7.3: sharedData projects through (channels fall back to a
+				// full fetch on ops-only since answers).
+				sharedData: true,
+			},
 			{ id: "stats", title: "Acme stats", icon: "chart", placement: "panel" },
 		]);
 		// Extensions that declared none carry no surfaces field (the sparse

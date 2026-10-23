@@ -80,6 +80,9 @@ export function registerMetaRoutes(
 								...(def.refreshMs === undefined
 									? {}
 									: { refreshMs: def.refreshMs }),
+								// The §7.3 shared-data flag: channels refetch
+								// fully when a since fetch answers ops-only.
+								...(def.sharedData === true ? { sharedData: true } : {}),
 							})),
 							}),
 				};
