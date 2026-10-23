@@ -88,6 +88,7 @@ async function getMeta(app: FastifyInstance): Promise<{
 	};
 	backup: { lastSuccessAt?: string };
 	extensions: { name: string; status: string; error?: string }[];
+	dev: boolean;
 }> {
 	const response = await app.inject({ method: "GET", url: "/v1/meta" });
 	expect(response.statusCode).toBe(200);
@@ -357,6 +358,21 @@ describe("aggregateHealth (the §3 pure aggregation)", () => {
 // ---------------------------------------------------------------------------
 // GET /v1/meta auth block (W1 Task 6, spec §5.7)
 // ---------------------------------------------------------------------------
+
+describe("GET /v1/meta dev (spec §14.2/§14.4: the development flag)", () => {
+	test("default false; SIGRUN_DEV=1 reports true", async () => {
+		const plain = await bootServer();
+		expect((await getMeta(plain.app)).dev).toBe(false);
+		const dev = await bootServer({ env: { SIGRUN_DEV: "1" } });
+		expect((await getMeta(dev.app)).dev).toBe(true);
+	});
+
+	test("SIGRUN_DEV=yes fails loud at boot (config parse), naming the variable", async () => {
+		await expect(bootServer({ env: { SIGRUN_DEV: "yes" } })).rejects.toThrow(
+			/SIGRUN_DEV must be "true" or "false"/,
+		);
+	});
+});
 
 describe("GET /v1/meta auth", () => {
 	test("claimed boot: auth.claimed true + the effective method list", async () => {

@@ -282,6 +282,14 @@ export interface SigrunConfig {
 	/** `/metrics` without a principal — `SIGRUN_METRICS_PUBLIC` (strict) over `server.metrics.public`, default false. */
 	metricsPublic: boolean;
 	/**
+	 * The development flag (spec §14.2/§14.4): `SIGRUN_DEV` (strict
+	 * true/false — `1`/`0` read as true/false, matching the spec's
+	 * `SIGRUN_DEV=1` phrasing) over the file's `server.dev`, default
+	 * `false`. Surfaces on `GET /v1/meta`; U1's gallery, U3's error bodies
+	 * and U4 consume it.
+	 */
+	dev: boolean;
+	/**
 	 * The jobs default timezone (§8.2): `SIGRUN_TIMEZONE` over the file's
 	 * `server.timezone` over the process TZ
 	 * (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Cron schedules
@@ -616,6 +624,22 @@ function parseMetricsPublic(env: Env): boolean | undefined {
 	if (lowered === "false") return false;
 	throw new Error(
 		`SIGRUN_METRICS_PUBLIC must be "true" or "false", got ${JSON.stringify(raw)}`,
+	);
+}
+
+/**
+ * Parse `SIGRUN_DEV` (§14.2/§14.4): "true"/"false" case-insensitive, plus
+ * the spec's own `SIGRUN_DEV=1`/`=0` shell form. Strict otherwise — `yes`
+ * or any other value fails loud naming the variable (the pattern above).
+ */
+function parseDev(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_DEV;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true" || lowered === "1") return true;
+	if (lowered === "false" || lowered === "0") return false;
+	throw new Error(
+		`SIGRUN_DEV must be "true" or "false" (or 1/0), got ${JSON.stringify(raw)}`,
 	);
 }
 
@@ -1109,6 +1133,10 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 	const metrics: ServerSettings["metrics"] | undefined = config.metricsPublic
 		? { public: true }
 		: undefined;
+	// The development flag (§14.2/§14.4) follows the metrics pattern: a
+	// DEFAULTED dev is omitted (persisting `dev: false` would be noise),
+	// a dev deployment records it (an operator-visible intent marker).
+	const dev: ServerSettings["dev"] = config.dev === true ? true : undefined;
 	return {
 		port: config.port,
 		workspacePath: config.workspace.path,
@@ -1123,6 +1151,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		providers: { ...config.providers },
 		...(auth === undefined ? {} : { auth }),
 		...(metrics === undefined ? {} : { metrics }),
+		...(dev === undefined ? {} : { dev }),
 		...(backup === undefined ? {} : { backup }),
 	};
 }
@@ -1220,6 +1249,11 @@ export function envServerSection(env: Env): ServerSettings {
 	// set (validated as an IANA name by the settings/store consumers).
 	const timezone = env.SIGRUN_TIMEZONE?.trim() || undefined;
 	if (timezone !== undefined) section.timezone = timezone;
+	// The development flag (§14.2/§14.4) — a flat boolean, projected only
+	// when the env var is set (a defaulted dev is never persisted: it
+	// would read as intent on the next boot).
+	const dev = parseDev(env);
+	if (dev !== undefined) section.dev = dev;
 	return section as ServerSettings;
 }
 
@@ -1337,6 +1371,7 @@ export function effectiveServerSection(
 		config.providers.refreshIntervalMinutes,
 		["providers", "refreshIntervalMinutes"],
 	);
+	emit("dev", config.dev, ["dev"]);
 	if (config.backup?.target === "path") {
 		emit("backup.path", config.backup.path, ["backup", "path"]);
 		emit(
@@ -1520,6 +1555,9 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		auth: parseAuth(env, server?.auth),
 		metricsPublic:
 			parseMetricsPublic(env) ?? server?.metrics?.public ?? false,
+		// The development flag (§14.2/§14.4): strict env parse over the
+		// file's `server.dev`, default false.
+		dev: parseDev(env) ?? server?.dev ?? false,
 		// The jobs default timezone (§8.2): env over file over the process
 		// TZ, validated loud (a bad name would otherwise crash the scheduler
 		// at evaluation time instead of failing boot).
