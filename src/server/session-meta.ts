@@ -28,9 +28,10 @@
  * `Conversation.commit` callback, so concurrent patches cannot lose each
  * other's fields (the mutation line serializes commits).
  *
- * Server-owned fields (`autoName`, `autoNameAttempts`, `lastActivityAt`)
- * are written by host code only (activity.ts, the A2 auto-namer); they
- * are NOT patch surface — the strict validator keeps rejecting them as
+ * Server-owned fields (`autoName`, `autoNameAttempts`,
+ * `lastActivityAt`, `jobId`, `deliver`) are written by host code only
+ * (activity.ts, the A2 auto-namer, fire.ts's job stamp); they are NOT
+ * patch surface — the strict validator keeps rejecting them as
  * `invalid_field`.
  */
 
@@ -189,9 +190,14 @@ export function validateSessionMetaPatch(
 				break;
 			}
 			case "source":
-			case "owner": {
-				// Server-only (spec §5.9): the KEY itself is the client error,
-				// whatever the value — even a `null` clear.
+			case "owner":
+			case "jobId":
+			case "deliver": {
+				// Server-only (spec §5.9 + gateway C7): the KEY itself is the
+				// client error, whatever the value — even a `null` clear. The
+				// job stamp fields move with the fire (fire.ts's creating
+				// commit) and the delivery targets ride the job spec, never a
+				// meta patch.
 				return { error: "invalid_field", field: key };
 			}
 			case "sharing": {
