@@ -144,7 +144,20 @@ function makeHarness(init?: {
 				body = metas[id];
 			}
 		} else if (input === "/v1/models") body = { models: [] };
-		else if (/^\/v1\/conversations\/\d+\/files\?/.test(input)) {
+		else if (input === "/v1/jobs") body = { jobs: [] };
+		else if (/^\/v1\/ext\//.test(input)) {
+			// The ext surface routes (U3 Task 5): a minimal board load so
+			// the surface page reaches its ready state.
+			body = input.includes("/data")
+				? { rev: 1, treeRev: 1 }
+				: {
+						tree: { type: "page", id: "board", title: "Acme board", main: [] },
+						data: { cards: [] },
+						rev: 1,
+						treeRev: 1,
+						access: "write",
+					};
+		} else if (/^\/v1\/conversations\/\d+\/files\?/.test(input)) {
 			body = { entries: [] };
 		} else {
 			// A copy per response — freshly parsed JSON in reality; a
@@ -594,6 +607,66 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 			"data-rail-section": "ext:fixture-surfaces/board",
 		});
 		expect(before).toHaveLength(1);
+	});
+
+	test("navigate({target}) routes: conversation / job / settings / view / params", async () => {
+		const { client, createEventSource } = makeHarness({ meta: extMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		expect(locationHash()).toContain("/ext/fixture-surfaces/board");
+		// The mounted page's onNavigate seam (App's handler): find the
+		// SurfacePage and drive the prop directly (the transport act
+		// delivery is SurfacePage's own unit test).
+		const { SurfacePage } = await import("./blocks/SurfacePage");
+		const page = renderer.root.findByType(SurfacePage);
+		const onNavigate = page.props.onNavigate as (action: {
+			params?: Record<string, unknown>;
+			target?: unknown;
+		}) => void;
+
+		// {conversation} → the chat route + the conversation selected.
+		await act(async () => {
+			onNavigate({ target: { conversation: 2 } });
+		});
+		expect(locationHash()).toBe("#/c");
+
+		// {settings} → the settings dialog opens.
+		await act(async () => {
+			onNavigate({ target: { settings: "interface" } });
+		});
+		expect(renderer.root.findAllByProps({ className: "settings-panel" }).length).toBeGreaterThan(0);
+
+		// {view} → that extension view's hash route.
+		await act(async () => {
+			onNavigate({
+				target: { view: { extension: "fixture-surfaces", id: "board", params: { board: "b2" } } },
+			});
+		});
+		expect(locationHash()).toContain("/ext/fixture-surfaces/board");
+		expect(locationHash()).toContain("params=");
+
+		// {params} alone → THIS surface re-renders with new params.
+		await act(async () => {
+			onNavigate({ params: { board: "b1" } });
+		});
+		expect(locationHash()).toContain(encodeURIComponent('{"board":"b1"}'));
+
+		// {job} → the chat route + the jobs panel opens (the
+		// RightPanel's data-panel is the mode's observable).
+		await act(async () => {
+			onNavigate({ target: { job: "j1" } });
+		});
+		expect(locationHash()).toBe("#/c");
+		expect(
+			renderer.root.findAllByProps({ "aria-label": "jobs panel" }).length,
+		).toBeGreaterThan(0);
 	});
 });
 });

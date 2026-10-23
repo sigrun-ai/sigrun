@@ -720,6 +720,9 @@ export interface ExtensionSurfaceInfo {
 	readonly icon: string;
 	/** The declared placement; `settings` sections (§13.3) are not in this workstream. */
 	readonly placement: "view" | "panel";
+	/** The declared refresh cadence (spec §7.1); channels refetch data on
+	 *  this interval while the surface is visible. Absent → no cadence. */
+	readonly refreshMs?: number;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */

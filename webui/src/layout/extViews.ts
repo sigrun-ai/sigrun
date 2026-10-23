@@ -20,6 +20,7 @@ export interface ExtensionSurfaceRow {
 		readonly title: string;
 		readonly icon: string;
 		readonly placement: "view" | "panel";
+		readonly refreshMs?: number;
 	}[];
 }
 
@@ -33,6 +34,9 @@ export interface ExtViewEntry {
 	readonly title: string;
 	/** The declared icon name (the button's glyph). */
 	readonly icon: string;
+	/** The declared refresh cadence (§7.1); the open surface page's
+	 *  refetch interval. Absent → no cadence. */
+	readonly refreshMs?: number;
 }
 
 /** The localStorage key the saved order rides (a client preference). */
@@ -61,6 +65,9 @@ export function extViewEntries(
 				id: surface.id,
 				title: surface.title,
 				icon: surface.icon,
+				...(surface.refreshMs === undefined
+					? {}
+					: { refreshMs: surface.refreshMs }),
 			});
 		}
 	}
@@ -153,4 +160,26 @@ export function orderExtViews(
 		if (!used.has(entryKey(entry))) ordered.push(entry);
 	}
 	return ordered;
+}
+
+/**
+ * Move one entry one slot (`delta` −1 = up, +1 = down) and persist the
+ * new full order (the rail's keyboard reorder affordance; a no-op at
+ * the ends). Returns the new saved order (also persisted).
+ */
+export function moveExtView(
+	entries: readonly ExtViewEntry[],
+	key: string,
+	delta: -1 | 1,
+): readonly string[] {
+	const keys = entries.map((entry) => entryKey(entry));
+	const index = keys.indexOf(key);
+	if (index === -1) return keys;
+	const target = index + delta;
+	if (target < 0 || target >= keys.length) return keys;
+	const next = [...keys];
+	next[index] = keys[target] ?? "";
+	next[target] = key;
+	saveRailOrder(next);
+	return next;
 }

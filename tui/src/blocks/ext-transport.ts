@@ -42,6 +42,19 @@ export interface ExtSurfaceTransportOptions {
 }
 
 /**
+ * The TUI's transport handle (U3 Task 5 fix round): the `SurfaceTransport`
+ * plus `setStreamId` — a `/v1/events` reconnect hands the OPEN view the
+ * new stream id without re-creating the transport (the next fetch
+ * carries it, re-registering the watcher entry, spec §7.3).
+ */
+export interface ExtSurfaceTransportHandle {
+	readonly transport: SurfaceTransport;
+	/** Update the watcher stream id (a reconnect's hello); subsequent
+	 *  fetches carry the new id. */
+	setStreamId(streamId: string | undefined): void;
+}
+
+/**
  * The wire `k` for one surface instance (spec §7.3), Node flavor:
  * `sha256(slug + "\0" + id + "\0" + key)` hex. The TUI's transport
  * computes it synchronously (the WebCrypto twin in `@sigrun/shared/
@@ -74,7 +87,7 @@ function withQuery(path: string, key: string, value: string): string {
 /** Create the TUI's extension-surface transport. */
 export function createExtSurfaceTransport(
 	options: ExtSurfaceTransportOptions,
-): SurfaceTransport {
+): ExtSurfaceTransportHandle {
 	const doFetch =
 		options.fetch ??
 		(((input, init) =>
@@ -84,6 +97,9 @@ export function createExtSurfaceTransport(
 			)) as typeof globalThis.fetch);
 	const baseUrl = options.baseUrl.replace(/\/+$/, "");
 	const listeners = new Set<(event: SurfaceChangedEvent) => void>();
+	// Mutable: a reconnect's new stream id lands via setStreamId — every
+	// fetch resolves the header at CALL time.
+	let streamId = options.streamId;
 	const headers = (): Record<string, string> => ({
 		accept: "application/json",
 		...(options.user === undefined || options.user.trim() === ""
@@ -92,9 +108,9 @@ export function createExtSurfaceTransport(
 		...(options.token === undefined || options.token.trim() === ""
 			? {}
 			: { authorization: `Bearer ${options.token.trim()}` }),
-		...(options.streamId === undefined
+		...(streamId === undefined
 			? {}
-			: { "x-sigrun-stream": options.streamId }),
+			: { "x-sigrun-stream": streamId }),
 	});
 
 	const get = async <T>(path: string): Promise<T> => {
@@ -113,7 +129,7 @@ export function createExtSurfaceTransport(
 		return (await response.json()) as T;
 	};
 
-	return {
+	const transport: SurfaceTransport = {
 		load(): Promise<SurfaceLoad> {
 			return get<SurfaceLoad>(surfacePath(options));
 		},
@@ -165,6 +181,12 @@ export function createExtSurfaceTransport(
 			};
 		},
 	};
+	return {
+		transport,
+		setStreamId(next: string | undefined): void {
+			streamId = next;
+		},
+	};
 }
 
 /**
@@ -182,15 +204,15 @@ export class ExtSurfaceHub {
 	}>();
 
 	/** Create a transport whose `onChanged` subscribes into this hub. */
-	attach(options: ExtSurfaceTransportOptions, keyHash: string): SurfaceTransport {
+	attach(options: ExtSurfaceTransportOptions, keyHash: string): ExtSurfaceTransportHandle {
 		const base = createExtSurfaceTransport(options);
 		const hub = this;
-		return {
-			load: () => base.load(),
-			fetchData: (since) => base.fetchData(since),
-			act: (body) => base.act(body),
-			upload: (body) => base.upload(body),
-			image: (src, opts) => base.image(src, opts),
+		const transport: SurfaceTransport = {
+			load: () => base.transport.load(),
+			fetchData: (since) => base.transport.fetchData(since),
+			act: (body) => base.transport.act(body),
+			upload: (body) => base.transport.upload(body),
+			image: (src, opts) => base.transport.image(src, opts),
 			onChanged(listener) {
 				const subscription = {
 					slug: options.slug,
@@ -203,6 +225,10 @@ export class ExtSurfaceHub {
 					hub.#subscriptions.delete(subscription);
 				};
 			},
+		};
+		return {
+			transport,
+			setStreamId: (next) => base.setStreamId(next),
 		};
 	}
 

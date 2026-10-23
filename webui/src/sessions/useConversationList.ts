@@ -25,6 +25,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { JsonObject } from "@sigrun/shared/blocks";
+import { canonicalJson } from "@sigrun/shared/blocks";
 import type { ConversationSummary, SigrunClient } from "../api";
 import type { EventSourceLike } from "../stream";
 
@@ -47,13 +49,16 @@ export interface UseConversationListResult {
 	 * `X-Sigrun-Stream` once the hello landed). Task 5's transport rides
 	 * this seam; the registry entry lives for the fetch's instance.
 	 */
-	fetchSurface(slug: string, id: string): Promise<unknown>;
+	fetchSurface(slug: string, id: string, params?: JsonObject): Promise<unknown>;
 	/**
-	 * Mark one surface as visible (Task 5's rail/panel calls this): the
-	 * reconnect rule (a NEW hello re-fetches every visible surface,
-	 * re-registering the new stream's watcher entries) consults this set.
+	 * Mark one surface INSTANCE as visible (Task 5's rail/panel calls
+	 * this): the reconnect rule (a NEW hello re-fetches every visible
+	 * instance, re-registering the new stream's watcher entries)
+	 * consults this set. `params` distinguish two open instances of the
+	 * same surface — each re-registers with its OWN params (its own
+	 * watcher entry, keyed on the server side by the instance key).
 	 */
-	noteSurfaceVisible(slug: string, id: string): void;
+	noteSurfaceVisible(slug: string, id: string, params?: JsonObject): void;
 }
 
 const BUSY_SETTLE_MS = 5_000;
@@ -207,11 +212,18 @@ export function useConversationList(
 	// records lives for this stream; fetches before the first hello carry
 	// no header (the stream simply is not a watcher yet).
 	const fetchSurface = useCallback(
-		async (slug: string, id: string): Promise<unknown> => {
+		async (slug: string, id: string, params?: JsonObject): Promise<unknown> => {
 			const current = streamRef.current;
 			const transport = options.fetchImpl ?? fetch;
+			// The instance key distinguishes two open instances of one
+			// surface — the watcher entry (and the data route's params) is
+			// per-instance, so the re-register fetch carries them.
+			const path =
+				params === undefined || Object.keys(params).length === 0
+					? `/v1/ext/${slug}/surfaces/${id}`
+					: `/v1/ext/${slug}/surfaces/${id}?params=${encodeURIComponent(JSON.stringify(params))}`;
 			const response = await transport(
-				`/v1/ext/${slug}/surfaces/${id}`,
+				path,
 				{
 					headers:
 						current === undefined
@@ -228,8 +240,11 @@ export function useConversationList(
 	);
 
 	const noteSurfaceVisible = useCallback(
-		(slug: string, id: string): void => {
-			visibleSurfaces.current.add(`${slug}\u0001${id}`);
+		(slug: string, id: string, params?: JsonObject): void => {
+			// Instance-keyed (slug + id + the CANONICAL params): two open
+			// instances of one surface each re-register on a re-hello.
+			const key = params === undefined ? "{}" : canonicalJson(params);
+			visibleSurfaces.current.add(`${slug}\u0001${id}\u0001${key}`);
 		},
 		[],
 	);
@@ -244,8 +259,19 @@ export function useConversationList(
 			setStreamId(next);
 			if (previous !== undefined && previous !== next) {
 				for (const composite of visibleSurfaces.current) {
-					const [slug, id] = composite.split("\u0001");
-					void fetchSurface(slug ?? "", id ?? "");
+					const [slug, id, key] = composite.split("\u0001");
+					let params: JsonObject | undefined;
+					if (key !== undefined && key !== "{}") {
+						try {
+							const parsed: unknown = JSON.parse(key);
+							if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+								params = parsed as JsonObject;
+							}
+						} catch {
+							// malformed key → the default instance
+						}
+					}
+					void fetchSurface(slug ?? "", id ?? "", params);
 				}
 			}
 		},

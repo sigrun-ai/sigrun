@@ -139,6 +139,29 @@ afterEach(() => {
 });
 
 describe("surface render route (U3 Task 2)", () => {
+	test("the /v1/meta projection carries the declared refreshMs (Task 5)", async () => {
+		const { app, aliceToken } = await server();
+		const result = await call(app, { method: "GET", url: "/v1/meta", token: aliceToken });
+		expect(result.status).toBe(200);
+		const meta = result.body as unknown as {
+			extensions: {
+				name: string;
+				surfaces?: {
+					id: string;
+					placement: string;
+					refreshMs?: number;
+				}[];
+			}[];
+		};
+		const fixture = meta.extensions.find((one) => one.name === "fixture-surfaces");
+		expect(fixture).toBeDefined();
+		// The stats panel declares refreshMs 60000 (the view declares none).
+		const stats = fixture?.surfaces?.find((one) => one.id === "stats");
+		expect(stats?.refreshMs).toBe(60000);
+		const board = fixture?.surfaces?.find((one) => one.id === "board");
+		expect(board?.refreshMs).toBeUndefined();
+	});
+
 	test("alice (write) gets the tree, data, rev 0, treeRev 0, access write", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {

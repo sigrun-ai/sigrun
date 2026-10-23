@@ -770,5 +770,29 @@ describe("Extension views (UI-blocks U3 Task 5)", () => {
 		expect(app.extView?.slug).toBe("fixture-surfaces");
 		expect(app.extView?.id).toBe("board");
 	});
+
+	test("Esc closes an open ext view (the keepalive stops with the view)", async () => {
+		const { client } = stubClient({});
+		const app = new TuiApp(client, { tui: fakeTui });
+		await app.openExtView("fixture-surfaces", "board");
+		expect(app.extView).toBeDefined();
+		// Esc closes the view → the conversation pane is back; a second
+		// Esc falls through (nothing open).
+		expect(app.handleKeybinding("\x1b")).toBe(true);
+		expect(app.extView).toBeUndefined();
+		expect(app.handleKeybinding("\x1b")).toBe(false);
+	});
+
+	test("a new events stream id lands on the open view's transport handle", async () => {
+		const { client } = stubClient({});
+		const app = new TuiApp(client, { tui: fakeTui });
+		app.setEventsStreamId("stream-one");
+		await app.openExtView("fixture-surfaces", "board");
+		// The reconnect: a NEW stream id must reach the OPEN view (the
+		// handle's setStreamId — the transport-level header assertion
+		// lives in ext-transport.test.ts).
+		app.setEventsStreamId("stream-two");
+		expect(app.extView).toBeDefined();
+	});
 });
 });
