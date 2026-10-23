@@ -543,6 +543,48 @@ export interface ChannelContribution {
 export type AttachmentTooLargeName = "AttachmentTooLarge";
 
 // ---------------------------------------------------------------------------
+// Gateway engines (gateway C2 — the `gateway` factory-result field)
+// ---------------------------------------------------------------------------
+
+/**
+ * The context sigrun hands the loaded engine's `start`: the flat,
+ * slug-attributed channel set (every loaded adapter's contribution —
+ * `{extension, channel}` pairs) and the shutdown signal. The signal is
+ * the `AbortController` the host's `gateway.stop()` aborts — an engine's
+ * receive loops observe it, exactly like an adapter's `ChannelContext.signal`.
+ */
+export interface GatewayEngineContext {
+	readonly channels: readonly {
+		readonly extension: string;
+		readonly channel: ChannelContribution;
+	}[];
+	/** Aborted by the host's `gateway.stop()` — the engine's shutdown signal. */
+	readonly signal: AbortSignal;
+}
+
+/**
+ * One gateway engine: the chat-transport supervisor the `gateway`
+ * factory-result field names. ONE engine per boot (a second declarer
+ * quarantines at load — the one-engine rule); core ships none. `start`
+ * runs after the server listens; `stopIntake` runs before the event bus's
+ * shutdown drain (intake closes first — the drain is the last admission
+ * window); `stop` runs after it (adapters stop only once every settle has
+ * been delivered). Health is reported through `health()` — NEVER the
+ * factory-result `health` field (that field is the provider-contributor
+ * surface; a result carrying both quarantines).
+ */
+export interface GatewayEngine {
+	/** Start supervision over the channels; resolves once started. */
+	start(ctx: GatewayEngineContext): Promise<void>;
+	/** Close inbound intake (admissions stop) — before the shutdown drain. */
+	stopIntake(): Promise<void>;
+	/** Stop the engine and its adapters — after the shutdown drain. */
+	stop(): Promise<void>;
+	/** The engine's synchronous health read ("ok" | "degraded"). */
+	health(): "ok" | "degraded";
+}
+
+// ---------------------------------------------------------------------------
 // The host
 // ---------------------------------------------------------------------------
 
@@ -749,6 +791,14 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	 * loader (chat bindings are keyed by channel id — never last-wins).
 	 */
 	readonly channels?: readonly ChannelContribution[];
+	/**
+	 * The gateway engine (gateway C2, spec §8.0): ONE per boot — a second
+	 * declarer quarantines at load naming the first. Always carried on a
+	 * result WITH an `extension` (an engine owns pi-durable surface); a
+	 * contributor-only `gateway` result is not a contract form. Report
+	 * health through `gateway.health()`, never the `health` field.
+	 */
+	readonly gateway?: GatewayEngine;
 }
 
 /**

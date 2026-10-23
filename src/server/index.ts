@@ -59,6 +59,7 @@ import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerStreamRoutes } from "./routes/stream.js";
+import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -101,7 +102,19 @@ export async function createServer(
 	opened: OpenedHarness,
 	config: SigrunConfig,
 	contributedBundles: readonly ContributedWebuiBundle[] = [],
-	options?: { listenHost?: string; env?: Env },
+	options?: {
+		listenHost?: string;
+		env?: Env;
+		/**
+		 * The gateway handle (gateway C2): the serve composition creates it
+		 * (startGateway) BEFORE this call and starts the engine after
+		 * `app.listen` — threading it here puts the wrapped engine health on
+		 * `ServerContext` for the meta route. Optional: a hand-built test
+		 * server (no handle) serves meta WITHOUT `health.gateway` even when
+		 * an engine loaded — the field is the serve composition's report.
+		 */
+		gateway?: GatewayHandle;
+	},
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
 	const listenHost = options?.listenHost ?? "0.0.0.0";
@@ -194,6 +207,7 @@ export async function createServer(
 		env,
 		watchersByConversation: new Map(),
 		sse,
+		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
