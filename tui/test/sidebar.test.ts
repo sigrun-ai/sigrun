@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { Sidebar } from "../src/ui/sidebar.js";
+import { Sidebar, type SidebarSelection } from "../src/ui/sidebar.js";
 import type {
 	ConversationList,
 	ConversationSummary,
@@ -98,7 +98,7 @@ describe("Sidebar (C2 tree rows)", () => {
 			]),
 		);
 		await sidebar.refresh();
-		const selections: (number | "new")[] = [];
+		const selections: SidebarSelection[] = [];
 		sidebar.onSelect = (selection) => selections.push(selection);
 		expect(sidebar.cursor).toBe(0);
 		sidebar.moveCursor(1);
@@ -112,7 +112,7 @@ describe("Sidebar (C2 tree rows)", () => {
 		await sidebar.refresh();
 		const lines = sidebar.render(40);
 		expect(lines[lines.length - 1]).toContain("+ New conversation");
-		const selections: (number | "new")[] = [];
+		const selections: SidebarSelection[] = [];
 		sidebar.onSelect = (selection) => selections.push(selection);
 		sidebar.moveCursor(1); // past the single conversation row
 		sidebar.confirm();
