@@ -172,6 +172,14 @@ export type ExtensionLifecyclePayload = {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
 	};
+	/** Gateway C6: one terminal interaction transition — the payload mirrors
+	 *  the record's terminal envelope fields. */
+	interactionSettled: {
+		readonly conversationId: ConversationId;
+		readonly callId: string;
+		readonly kind: string;
+		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+	};
 };
 
 /** A factory-result `runSettled` handler: called once per settled run, deadline-bounded. */
@@ -217,6 +225,8 @@ export type SigrunLifecycleHandlers = {
 	readonly conversationForked?: ExtensionLifecycleHandler<"conversationForked">;
 	readonly conversationArchived?: ExtensionLifecycleHandler<"conversationArchived">;
 	readonly conversationIdle?: ExtensionLifecycleHandler<"conversationIdle">;
+	/** Terminal interaction transitions from ANY writer (gateway C6). */
+	readonly interactionSettled?: ExtensionLifecycleHandler<"interactionSettled">;
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
 	/** The user-removal transfer event; direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
@@ -359,6 +369,9 @@ export interface NotificationEvent {
 	readonly type: "interaction.pending" | "job.failed" | "run.settled";
 	readonly conversationId?: number;
 	readonly jobId?: string;
+	/** Gateway C6: the pending record's id — set on `interaction.pending` only
+	 *  (read the record via `host.snapshotInteraction`). */
+	readonly callId?: string;
 	/** The recipient. */
 	readonly user: string | undefined;
 	readonly title: string;
@@ -650,12 +663,19 @@ export interface SigrunHost {
 		record: InteractionRecord,
 		context: HandlerContext,
 	): Promise<void>;
-	/** Answer a pending interaction from the extension side (the tool path). */
+	/**
+	 * Answer a pending interaction from the extension side. `opts.user`
+	 * (gateway C5) stamps the answer HUMAN and names the user — who
+	 * answered matters to every participant a conversation is shared
+	 * with; access checks stay the caller's job (host code is trusted).
+	 * Without it the answer is the extension's own (`"extension"`).
+	 */
 	answerInteraction(
 		conversationId: ConversationId,
 		callId: string,
 		answer: InteractionAnswer,
 		context: HandlerContext,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/** Mark a pending interaction expired/cancelled/skipped (extension-owned semantics). */
 	settleInteraction(
