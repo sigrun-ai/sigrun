@@ -21,7 +21,6 @@ import type { CollectionBlock, JsonObject, JsonValue } from "@sigrun/shared/bloc
 import type { BlockCtx } from "../context.js";
 import { truncate, widthClassOf } from "../width.js";
 import { cardLines } from "./card.js";
-import { MoveSession } from "./move.js";
 import {
 	CollectionState,
 	collectionItems,
@@ -106,7 +105,6 @@ export class CalendarComponent implements Component {
 	readonly #block: CollectionBlock;
 	readonly #ctx: BlockCtx;
 	readonly #state = new CollectionState();
-	readonly #moves = new MoveSession();
 	#tick = 0;
 	/** The visible month (view-only; `[`/`]`/`t` shift it). */
 	#month = currentMonth();
@@ -119,7 +117,6 @@ export class CalendarComponent implements Component {
 	constructor(block: CollectionBlock, ctx: BlockCtx) {
 		this.#block = block;
 		this.#ctx = ctx;
-		void this.#moves;
 	}
 
 	/** Every item with a parseable time range, in start order. */

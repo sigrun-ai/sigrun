@@ -363,4 +363,18 @@ describe("SurfaceState — the optimistic overlay (§6.3)", () => {
 		expect(drained.length).toBeGreaterThan(0);
 		expect(state.view.notices).toHaveLength(0);
 	});
+
+	test("the notice list caps at 50, dropping oldest first", async () => {
+		const surface = fakeSurface();
+		const state = new SurfaceState(surface.transport);
+		await state.load();
+		for (let i = 0; i < 55; i++) {
+			state.dispatch(MOVE, { itemId: `t-x${i}`, from: { group: "todo", index: 0 }, to: { group: "doing", index: 0 } });
+			surface.answer({ ok: false, error: { message: `reject-${i}` } });
+		}
+		await flush();
+		expect(state.view.notices).toHaveLength(50);
+		expect(state.view.notices[0]).toBe("reject-5");
+		expect(state.view.notices[49]).toBe("reject-54");
+	});
 });
