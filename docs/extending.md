@@ -301,9 +301,49 @@ effects are identical by construction:
   owner-or-superuser gate — the caller is in-process server code that
   already decided the write is legitimate. The HTTP route keeps its
   403 for a non-owner; the host carries no principal to check.
+- `upload(id, {name, mime?, bytes})` → `{path}` — the raw-upload route's
+  op (gateway C4b): writes `uploads/<conversationId>/<name>` through
+  the conversation's workspace env and returns the path exactly as a
+  `file`/`image` submission part takes it. The NAME is the one rule (no
+  `/` or `\`, not `.`/`..`, non-empty) — a bad name throws
+  `invalid_field` `name` (the HTTP routes answer their own
+  `invalid_body`; the op is the shared validator).
+- `readFile(id, path)` → `{bytes, mime?}` — the files/raw route's op
+  (gateway C4b): workspace-confined, capped at `server.maxFileReadBytes`,
+  with the extension-derived mime (unknown extensions read as
+  `application/octet-stream`, the route's own default). A bad path
+  throws `invalid_path`, an absent file `not_found`, and an over-cap
+  file `too_large` (413; the HTTP route keeps its `file_too_large` +
+  `maxBytes` body).
 
 An unknown conversation id throws (`conversation <id> not found`) on
 every method — the routes' 404 analog.
+
+## The models and commands surfaces
+
+`host.models.list()` serves the SAME list `GET /v1/models` serves —
+picker entries (`id`, `provider`, `modelId`, `name`, `contextWindow`,
+`maxTokens`, `reasoning`, `input`, `cost`), no provider internals —
+through the one shared construction (helpers `listModels`); the two
+surfaces cannot drift.
+
+`host.commands` drives slash commands in-process (chat `/command`
+handling):
+
+- `list()` — the merged catalog rows (the core table + extension
+  entries; the live skill/template `kind: "expand"` entries are the
+  composer's per-request concern, not this surface's).
+- `run(conversationId, name, args, {user})` — the invoke route's
+  resolution, in-process. An unknown or CORE name throws
+  `command_not_found: <name>` (core names drive HTTP endpoints, not
+  extension `run`s). The principal is built from the DIRECTORY:
+  `opts.user` must name a real user — an unknown user throws
+  `unknown user "<user>"` — and becomes `{user, name?, email?, admin:
+  <effective>, service: false, method: "host"}`. **Effective admin** is
+  the stored flag OR the persisted proxy-group grant (gateway C8 —
+  host-side code has no request headers to recompute one). A throwing
+  run PROPAGATES (the HTTP route maps 500 `command_failed`; the host
+  caller owns its own handling).
 
 ## The users surface
 

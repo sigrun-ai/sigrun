@@ -162,6 +162,10 @@ export interface SeamHost {
 	readonly access: SigrunHost["access"];
 	/** The conversation's owner — who the agent acts for (§9.7). */
 	readonly identity: SigrunHost["identity"];
+	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
+	readonly models: SigrunHost["models"];
+	/** The slash-command surface (gateway C4b): catalog + in-process run. */
+	readonly commands: SigrunHost["commands"];
 	/**
 	 * Bind the server-provided host bridge (W5 Task 5): `createServer`
 	 * calls `OpenedHarness.bindHostBridge` once its `ServerContext`
@@ -426,6 +430,13 @@ export function createSeamHost(
 			async patchMeta(id, patch) {
 				return (await hostBridge()).conversations.patchMeta(id, patch);
 			},
+			// The C4b ops: same straight delegation.
+			async upload(id, file) {
+				return (await hostBridge()).conversations.upload(id, file);
+			},
+			async readFile(id, path) {
+				return (await hostBridge()).conversations.readFile(id, path);
+			},
 		},
 		users: {
 			async list() {
@@ -443,6 +454,25 @@ export function createSeamHost(
 		identity: {
 			async actingUser(conversationId) {
 				return (await hostBridge()).identity.actingUser(conversationId);
+			},
+		},
+		// Gateway C4b: straight delegation (the bridge owns both bodies).
+		models: {
+			async list() {
+				return (await hostBridge()).models.list();
+			},
+		},
+		commands: {
+			async list() {
+				return (await hostBridge()).commands.list();
+			},
+			async run(conversationId, name, args, opts) {
+				return (await hostBridge()).commands.run(
+					conversationId,
+					name,
+					args,
+					opts,
+				);
 			},
 		},
 

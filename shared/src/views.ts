@@ -752,7 +752,11 @@ export type { SessionMeta, SessionMetaPatch } from "./session-meta.js";
  * The `GET /v1/auth/whoami` payload (core hardening W1 Task 3, spec
  * §5.8): the resolved principal, verbatim. `user` is absent only under
  * the naive empty-method path with no `X-Sigrun-User` header;
- * `service` marks the env service token.
+ * `service` marks the env service token. `method` mirrors the extension
+ * contract's `Principal.method` (gateway C4b added `"host"` — an
+ * in-process host-built principal; no HTTP route ever resolves one, but
+ * the two unions stay aligned so the whoami build from a principal can
+ * never drift from the wire type).
  */
 export interface WhoamiResponse {
 	readonly user?: string;
@@ -760,7 +764,7 @@ export interface WhoamiResponse {
 	readonly email?: string;
 	readonly admin: boolean;
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy";
+	readonly method: "none" | "token" | "proxy" | "host";
 }
 
 // ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
