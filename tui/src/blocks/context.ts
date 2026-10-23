@@ -29,6 +29,12 @@ export interface BlockCtx {
 	theme: TuiTheme;
 	locale: string;
 	access: "read" | "write";
+	/**
+	 * Whether the terminal renders Unicode glyphs (spec §10.2): false
+	 * selects the ASCII fallbacks — `icons.ts` glyphs and `tones.ts`
+	 * markers — so an ASCII terminal never shows mojibake.
+	 */
+	unicode: boolean;
 	/** Route an action to the surface (view-only ones never reach this). */
 	dispatch(action: Action, payload: JsonValue): void;
 	view: ViewState;
