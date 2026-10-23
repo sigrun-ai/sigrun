@@ -17,6 +17,7 @@ export { BLOCK_SET_VERSION } from "./types.js";
 export { DataOpError, applyOps, resolvePointer } from "./ops.js";
 export { ICON_NAMES } from "./icons.js";
 export { lttb } from "./lttb.js";
+export { formatValue } from "./format.js";
 
 // ─── Wire types (spec §4/§5/§6.1) ─────────────────────────────────────────
 export type {
