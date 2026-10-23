@@ -38,9 +38,10 @@ import type {
 import type { ExtensionSurfaceBinding } from "../../harness/loader.js";
 import { AccessCache } from "./access-cache.js";
 import { ActionDedup } from "./dedup.js";
-import { instanceKey as defaultInstanceKey } from "./instance.js";
+import { eventKey, instanceKey as defaultInstanceKey } from "./instance.js";
 import { sniffMime } from "./mime.js";
 import { ActionRateLimit } from "./rate-limit.js";
+import { WatcherRegistry } from "./watchers.js";
 
 /** The shared-data op-log window (spec §7.3): the last 100 updates. */
 export const SHARED_OPS_WINDOW = 100;
@@ -89,6 +90,25 @@ export class UnknownActionError extends Error {
 
 /** A plain record (the tree walk's node shape). */
 type Rec = Record<string, unknown>;
+
+/**
+ * The internal surface.changed event (UI-blocks U3 Task 4): the wire
+ * shape PLUS the resolved watching-stream list, computed at publish
+ * time (the watcher registry keys on the PLAIN instance key; the wire's
+ * hashed `k` can never be reversed). The events route's visibility case
+ * reads `streams` and strips it before delivery (spec §7.3: the event
+ * carries no data — and no routing metadata either).
+ */
+export interface SurfaceChangedInternal {
+	readonly type: "surface.changed";
+	readonly slug: string;
+	readonly id: string;
+	readonly k: string;
+	readonly rev: number;
+	readonly treeRev: number;
+	/** The watching streams (registry answer at publish time). */
+	readonly streams: readonly string[];
+}
 
 function isRec(value: unknown): value is Rec {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -191,14 +211,29 @@ export class SurfaceService {
 	private readonly dedup = new ActionDedup();
 	private readonly rateLimit = new ActionRateLimit();
 	private readonly maxUploadBytes: number;
+	private readonly watchers: WatcherRegistry;
+	private readonly publishChanged: ((event: SurfaceChangedInternal) => void) | undefined;
 
 	constructor(
 		bindings: readonly ExtensionSurfaceBinding[],
-		options?: { maxUploadBytes?: number },
+		options?: {
+			maxUploadBytes?: number;
+			/** The watcher registry (Task 4); defaults to a private one. */
+			watchers?: WatcherRegistry;
+			/** The hub publish (Task 4): bumpRev fans out surface.changed. */
+			publishChanged?: (event: SurfaceChangedInternal) => void;
+		},
 	) {
 		this.bindings = bindings;
 		this.cache = new AccessCache();
 		this.maxUploadBytes = options?.maxUploadBytes ?? Number.MAX_SAFE_INTEGER;
+		this.watchers = options?.watchers ?? new WatcherRegistry();
+		this.publishChanged = options?.publishChanged;
+	}
+
+	/** The watcher registry (the events route reads it per event). */
+	get watcherRegistry(): WatcherRegistry {
+		return this.watchers;
 	}
 
 	/** Find one surface def by slug + id. */
@@ -259,6 +294,13 @@ export class SurfaceService {
 		}
 		this.cache.set(slug, id, key, principal.user, result.access);
 		if (result.access === "none") return undefined;
+		// The watcher registration (Task 4, spec §7.3): a fetch carrying
+		// `X-Sigrun-Stream` creates/refreshes the entry with the access the
+		// fetch resolved — the events route reads the STORED access, never
+		// re-rendering per event.
+		if (_stream !== undefined) {
+			this.watchers.touch(_stream, principal.user ?? "", slug, id, key, result.access);
+		}
 		const state = this.stateFor(slug, id, key);
 		// Record the tree's file-field caps for the upload route (spec
 		// §7.1: the field's maxBytes, clamped by server.maxUploadBytes).
@@ -344,6 +386,9 @@ export class SurfaceService {
 			access2 = rendered.access;
 		}
 		this.cache.set(slug, id, key, principal.user, access2);
+		if (_stream !== undefined) {
+			this.watchers.touch(_stream, principal.user ?? "", slug, id, key, access2);
+		}
 		if (access2 === "none") return undefined;
 		// Rev advances only via bumpRev for sharedData surfaces (spec §7.3):
 		// the server-assigned rev reflects STORED changes, and a full data()
@@ -598,6 +643,20 @@ export class SurfaceService {
 			state.ops.push({ rev: state.rev, ops: ops.ops });
 			while (state.ops.length > SHARED_OPS_WINDOW) state.ops.shift();
 		}
+		// The surface.changed nudge (Task 4, spec §7.3): the hashed
+		// instance key, the new rev, NO params and NO data; the events
+		// route's visibility case delivers it to watching streams only.
+		// The watching-stream list resolves HERE — the registry keys on
+		// the plain `key`; the wire's hashed `k` can never be reversed.
+		this.publishChanged?.({
+			type: "surface.changed",
+			slug,
+			id,
+			k: eventKey(slug, id, key),
+			rev: state.rev,
+			treeRev: state.treeRev,
+			streams: this.watchers.streamsFor(slug, id, key),
+		});
 		return state.rev;
 	}
 
