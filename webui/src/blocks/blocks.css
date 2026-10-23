@@ -1287,3 +1287,38 @@
 .blk-daterange { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .blk-stepper-progress { font-size: 0.875em; color: var(--fg-dim, #888); }
 .blk-stepper-nav { display: flex; gap: 0.5rem; }
+
+/* ─── page shell (spec §5.1/§12.3) ─────────────────────────────────────── */
+.blk-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.blk-page-header {
+	display: flex; align-items: center; gap: 0.75rem;
+	padding: 0.75rem 1rem; border-bottom: 1px solid var(--border, #333);
+	flex-wrap: wrap;
+}
+.blk-page-titles { min-width: 0; flex: 1 1 auto; }
+.blk-page-title { margin: 0; font-size: 1.1rem; }
+.blk-page-subtitle { margin: 0; color: var(--fg-subtle, #999); font-size: 0.85rem; }
+.blk-page-body { display: flex; flex: 1 1 auto; min-height: 0; gap: 1rem; padding: 1rem; }
+.blk-page-sidebar { flex: 0 0 16rem; overflow: auto; }
+.blk-page-main { flex: 1 1 auto; min-width: 0; overflow: auto; }
+.blk-page-detail { flex: 0 0 24rem; overflow: auto; }
+.blk-page-empty { text-align: center; padding: 3rem 1rem; color: var(--fg-subtle, #999); }
+.blk-page-empty-title { font-size: 1rem; font-weight: 600; color: var(--fg, #ddd); }
+.blk-page-switcher { display: inline-flex; gap: 0.5rem; }
+.blk-page-action { display: inline-flex; align-items: center; gap: 0.25rem; }
+.blk-page-toggle { display: none; }
+
+/* compact: sidebar → drawer; detail → pushed page (spec §12.3) */
+@container (max-width: 39.99rem) {
+	.blk-page-toggle { display: inline-flex; }
+	.blk-page-sidebar, .blk-page-detail { display: none; }
+	.blk-page-sidebar[data-open], .blk-page-detail[data-open] {
+		display: block; position: absolute; inset: 0; background: var(--bg, #111);
+		z-index: 20; padding: 1rem; overflow: auto;
+	}
+	.blk-page { position: relative; }
+}
+
+/* SurfaceView host states */
+.blk-surface { min-height: 0; }
+.blk-surface-toast { position: fixed; bottom: 1rem; right: 1rem; }
