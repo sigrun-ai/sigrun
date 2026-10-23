@@ -27,6 +27,7 @@ import {
 	StatBlockView,
 } from "./content";
 import { LogBlockView } from "./log";
+import { CollectionBlockView } from "./collection/Collection";
 import { MeterBlockView } from "./meter";
 import { TreeBlockView } from "./treeview";
 import {
@@ -97,6 +98,8 @@ function renderKnown(block: Block): ReactNode {
 			return <DiffBlockView block={block} />;
 		case "details":
 			return <DetailsBlockView block={block} />;
+		case "collection":
+			return <CollectionBlockView block={block} />;
 		case "chart":
 			return <ChartBlockView block={block} />;
 		case "meter":
