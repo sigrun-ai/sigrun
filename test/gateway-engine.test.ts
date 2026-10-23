@@ -320,6 +320,35 @@ describe("GET /v1/meta health.gateway", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Handle idempotency: the double-stop guard
+// ---------------------------------------------------------------------------
+
+describe("GatewayHandle.stop idempotency", () => {
+test("a double stop runs engine.stop() exactly once (later calls join)", { timeout: 30_000 }, async () => {
+const server = await bootServer([ENGINE_SPECIFIER]);
+await server.gateway.started;
+// The fixture log is global across boots — scope this test's reads.
+gatewayLog().length = 0;
+// Two racing calls + one later call — all join the ONE stop.
+await Promise.all([server.gateway.stop(), server.gateway.stop()]);
+await server.gateway.stop();
+expect(gatewayLog().filter((entry) => entry.type === "stop")).toHaveLength(1);
+});
+
+test("stop without start never runs engine.start (the lazy-started + shutdown edge)", { timeout: 30_000 }, async () => {
+const server = await bootServer([ENGINE_SPECIFIER]);
+// The fixture log is global across boots — scope this test's reads.
+gatewayLog().length = 0;
+// Deliberately NEVER read `started` — then stop. The engine contract
+// tolerates this (documented on the interface); the handle must not
+// start the engine just to stop it.
+await server.gateway.stop();
+expect(gatewayLog().some((entry) => entry.type === "start")).toBe(false);
+expect(gatewayLog().filter((entry) => entry.type === "stop")).toHaveLength(1);
+});
+});
+
+// ---------------------------------------------------------------------------
 // No engine: omitted health, inert adapters, the boot warning
 // ---------------------------------------------------------------------------
 
