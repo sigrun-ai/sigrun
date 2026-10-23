@@ -304,16 +304,17 @@ export function registerSurfaceRoutes(
 
 	/**
 	 * The upload route (spec §7.2). The gate + cap resolution run in
-	 * `preParsing` — AFTER the headers, BEFORE the body is read — and
-	 * the resolved field cap (`maxBytes` from the last rendered tree,
-	 * clamped by `server.maxUploadBytes`) stamps
-	 * `request.routeOptions.bodyLimit` (Fastify reads it at parse time),
-	 * so the octet-stream parser enforces the cap MID-STREAM: an
-	 * over-cap chunked body trips FST_ERR_CTP_BODY_TOO_LARGE at the cap
-	 * byte, destroying the socket before the sender's end is written
-	 * (Review Focus 5), and the app's error handler answers the shared
-	 * `413 {error:"too_large", maxBytes}`. The handler itself only
-	 * validates the name and dispatches to `onUpload`.
+	 * `preParsing` — AFTER the headers, BEFORE the body is read. The cap
+	 * is enforced by the route itself, not Fastify's bodyLimit: the hook
+	 * wraps the payload in a PassThrough counter that forwards chunks up
+	 * to the resolved field cap (`maxBytes` from the last rendered tree,
+	 * clamped by `server.maxUploadBytes`); the first over-cap chunk sends
+	 * `413 {error:"too_large", maxBytes}` DIRECTLY from the hook and
+	 * then destroys the request socket (the reply is sent first —
+	 * destroying the socket before the reply lands makes Node drop the
+	 * response), so the sender's remaining bytes are never written
+	 * (Review Focus 5). The handler itself only validates the name and
+	 * dispatches to `onUpload`.
 	 */
 	app.put<{
 		Params: { slug: string; id: string; field: string; name: string };
@@ -428,9 +429,12 @@ export function registerSurfaceRoutes(
 						void reply
 							.code(413)
 							.send({ error: "too_large", maxBytes: gate.cap });
+						// Destroy the counter too: the parser keeps buffering the
+						// already-forwarded prefix while it believes the stream is
+						// still live.
 						setImmediate(() => {
 							payload.destroy();
-							capped.end();
+							capped.destroy();
 						});
 						return;
 					}

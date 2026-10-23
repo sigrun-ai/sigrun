@@ -247,6 +247,11 @@ export default function createFixtureSurfaces() {
 						record("data", "stats", ctx);
 						return { data: statsData, access: accessOf(ctx.principal, "read") };
 					},
+					// The cross-surface rate-limit isolation test drives this
+					// action while the board's bucket is exhausted.
+					actions: {
+						ping: (ctx, payload) => handleAction("ping", ctx, payload),
+					},
 				},
 			],
 		},

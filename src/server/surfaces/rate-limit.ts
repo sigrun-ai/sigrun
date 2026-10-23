@@ -14,7 +14,11 @@ export const BURST_CAPACITY = 40;
 /** One principal's bucket on one surface. */
 interface Bucket {
 	tokens: number;
-	readonly lastRefill: number;
+	// Mutable: every take() advances it to the take's time, so the
+	// refill interval is measured take-to-take (otherwise a wall-clock
+	// gap refills the whole window on EVERY subsequent take — a burst
+	// N minutes after the last action would get N×20 free tokens).
+	lastRefill: number;
 }
 
 /** The per-principal-per-surface token bucket table. */
@@ -23,8 +27,9 @@ export class ActionRateLimit {
 	private readonly clock: () => number;
 	private disabled = false;
 
-	constructor(clock: () => number = Date.now) {
-		this.clock = clock;
+	constructor(clock?: () => number) {
+		// Resolve Date.now at CALL time (see ActionDedup's note).
+		this.clock = clock ?? (() => Date.now());
 	}
 
 	/**
@@ -53,6 +58,7 @@ export class ActionRateLimit {
 		}
 		const refill = ((now - bucket.lastRefill) / 1000) * RATE_PER_SECOND;
 		const tokens = Math.min(BURST_CAPACITY, bucket.tokens + refill);
+		bucket.lastRefill = now;
 		if (tokens < 1) {
 			bucket.tokens = tokens;
 			return false;

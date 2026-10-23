@@ -64,7 +64,6 @@ export type ActionResponse =
 			readonly ok: true;
 			readonly rev: number;
 			readonly ops?: DataOps["ops"];
-			readonly update?: DataOps;
 			readonly navigate?: Extract<
 				ActionResult,
 				{ readonly ok: true }
@@ -85,16 +84,6 @@ export class UnknownActionError extends Error {
 	constructor(action: string) {
 		super(`unknown action: ${action}`);
 		this.name = "UnknownActionError";
-	}
-}
-
-/** The upload body-cap tripwire (route: 413 without buffering the rest). */
-export class UploadTooLargeError extends Error {
-	readonly maxBytes: number;
-	constructor(maxBytes: number) {
-		super("upload_too_large");
-		this.name = "UploadTooLargeError";
-		this.maxBytes = maxBytes;
 	}
 }
 
@@ -433,6 +422,12 @@ export class SurfaceService {
 	 * with nothing recorded (extension surfaces own their data), and
 	 * `navigate`/`toast` pass through.
 	 *
+	 * Ordering note (a decision, not an accident): the rate limiter
+	 * takes its token BEFORE the dedup check, so a legitimate retry of
+	 * an already-processed actionId still costs a token — replayed
+	 * actionIds can never probe the service rate-free; the trade-off is
+	 * that a client hammering one actionId can 429 itself.
+	 *
 	 * The caller (the route) has ALREADY enforced access; a miss/throw
 	 * inside the handler maps to {@link SurfaceFailedError}.
 	 */
@@ -532,7 +527,6 @@ export class SurfaceService {
 				ok: true,
 				rev,
 				ops: result.update.ops,
-				update: result.update,
 				...(result.navigate === undefined ? {} : { navigate: result.navigate }),
 				...(result.toast === undefined ? {} : { toast: result.toast }),
 			};
