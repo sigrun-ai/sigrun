@@ -110,7 +110,7 @@ describe("form mode: submit", () => {
 		});
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
-			{ type: "submit", name: "register", turn: undefined },
+			{ type: "submit", name: "register" },
 			{ values: { name: "Acme Co", handle: "acme", seats: 3 } },
 		);
 	});
@@ -216,6 +216,51 @@ describe("form mode: live", () => {
 		expect(dispatch).not.toHaveBeenCalled();
 	});
 
+	test("bound under /view/: the debounce publishes to setView so siblings see it (§6.2)", () => {
+		const dispatch = vi.fn();
+		const setView = vi.fn();
+		const block = liveForm("/view/filters");
+		const renderer = render(
+			h(
+				SurfaceDataContext.Provider,
+				{ value: { data: {}, locale: "en-US" } },
+				h(
+					SurfaceActionsContext.Provider,
+					{
+						value: {
+							dispatch,
+							access: "write" as const,
+							viewState: {},
+							serverErrors: {},
+							setView,
+						},
+					},
+					h(FormBlockView, { block }),
+				),
+			),
+		);
+		typeInto(renderer, "Query", "acme");
+		act(() => {
+			vi.advanceTimersByTime(400);
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		// The path is the bind minus the /view/ prefix; the value is the
+		// flushed values object.
+		expect(setView).toHaveBeenCalledWith("filters", { query: "acme" });
+	});
+
+	test("bound under /view/ with no setView provider: the default is a safe no-op", () => {
+		const { dispatch, renderer } = makeHarness(liveForm("/view/filters"), {
+			data: {},
+		});
+		typeInto(renderer, "Query", "acme");
+		act(() => {
+			vi.advanceTimersByTime(400);
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		// and no throw (the default setView is a no-op)
+	});
+
 	test("bound elsewhere: dispatches an edit after 300 ms", () => {
 		const { dispatch, renderer } = makeHarness(liveForm("/filters"), {
 			data: { filters: { query: "" } },
@@ -230,7 +275,7 @@ describe("form mode: live", () => {
 		});
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
-			{ type: "edit", name: "filter", turn: undefined },
+			{ type: "edit", name: "filter" },
 			{ values: { query: "acme" } },
 		);
 	});
@@ -249,7 +294,7 @@ describe("form mode: live", () => {
 		});
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
-			{ type: "edit", name: "filter", turn: undefined },
+			{ type: "edit", name: "filter" },
 			{ values: { query: "acme" } },
 		);
 	});
@@ -276,7 +321,7 @@ describe("form mode: inline", () => {
 			findButton(renderer, "Add").props.onClick();
 		});
 		expect(dispatch).toHaveBeenCalledWith(
-			{ type: "submit", name: "add", turn: undefined },
+			{ type: "submit", name: "add" },
 			{ values: { title: "Buy milk" } },
 		);
 		// clears on success (the dispatch observable did not throw)
@@ -374,7 +419,7 @@ describe("interaction stepper (§9.1)", () => {
 		});
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
-			{ type: "submit", name: "answer", turn: undefined },
+			{ type: "submit", name: "answer" },
 			{ values: { q1: "a", q2: "" } },
 		);
 	});

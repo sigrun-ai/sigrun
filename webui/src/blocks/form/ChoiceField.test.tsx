@@ -147,6 +147,23 @@ describe("choice: value shapes (§5.6)", () => {
 		)[0];
 		expect(other.props.placeholder).toBe("Type something");
 	});
+
+	test('allowOther multi never submits a whitespace-only other', () => {
+		const { dispatch, renderer } = harness([
+			{ type: "choice", name: "pick", label: "Pick", options: [...OPTIONS], multi: true, allowOther: {} },
+		]);
+		clickOption(renderer, "a");
+		const other = renderer.root.findAll(
+			(node) => node.type === "input" && node.props["aria-label"] === "Pick other text",
+		)[0];
+		act(() => {
+			other.props.onChange({ target: { value: "   " } });
+		});
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			values: { pick: ["a"] },
+		});
+	});
 });
 
 describe("choice: preview layout (§5.6/§12.3)", () => {
