@@ -1,0 +1,75 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/sigrun-ai/sigrun/main/charts/sigrun/values.schema.json",
+	"type": "object",
+	"properties": {
+		"sigrun": {
+			"description": "The sigrun deployment block (image-workflow spec §4): extension fleet, operator Secret refs, and deploy-time tools. Everything here is re-asserted into the config volume by the seed initContainer.",
+			"type": "object",
+			"properties": {
+				"settings": {
+					"description": "settings.json keys the chart owns; re-asserted on every boot (shallow merge — chart keys overwritten wholesale, foreign keys survive).",
+					"type": "object",
+					"additionalProperties": true
+				},
+				"extensions": {
+					"description": "The extension fleet: the settings.json `extensions` list plus per-slug settings seeded once. Mutually exclusive with the SIGRUN_EXTENSIONS env var (env wins — see values.yaml).",
+					"type": "object",
+					"properties": {
+						"enabled": {
+							"description": "Install+load specs (npm specifiers, bare names, file:, git:) — sigrun core's packages contract; re-asserted every boot.",
+							"type": "array",
+							"items": {
+								"type": "string",
+								"minLength": 1
+							}
+						},
+						"settings": {
+							"description": "Per-extension settings keyed by slug → config/settings/<slug>.json; seed-ONCE (the extension owns the file after first boot), so contents stay freeform by design.",
+							"type": "object",
+							"additionalProperties": {
+								"type": "object",
+								"additionalProperties": true
+							}
+						}
+					},
+					"additionalProperties": false
+				},
+				"secretsEnv": {
+					"description": "Names of EXISTING operator-managed k8s Secrets whose keys become env vars (envFrom secretRef) on the main container — SIGRUN_EXT_* and provider credentials. Secret values never belong in values files.",
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"tools": {
+					"description": "Deploy-time kubectl-class tooling installed onto the data volume by an initContainer (spec §5). Renders only when enabled AND at least one package is listed.",
+					"type": "object",
+					"properties": {
+						"enabled": {
+							"description": "Render the tools initContainer + PATH prepend.",
+							"type": "boolean"
+						},
+						"dir": {
+							"description": "Install root on the /data PVC (binaries land in <dir>/bin).",
+							"type": "string",
+							"pattern": "^/"
+						},
+						"packages": {
+							"description": "name@version specs (version = the release tag form, `v` included). Catalog: kubectl, helm, talosctl, flux, k9s.",
+							"type": "array",
+							"items": {
+								"type": "string",
+								"pattern": "^[a-z0-9-]+@v?[0-9][^@]*$"
+							}
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": true
+}

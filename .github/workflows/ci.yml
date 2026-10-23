@@ -1,0 +1,119 @@
+# CI: tests (sibling checkout), image build check (no push — publishing
+# is release-time, Task 8), chart lint.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Sibling layout: the file:../sigrun-ext-* built-in specifiers
+      # resolve against the workspace root (npm ci works verbatim).
+      - uses: actions/checkout@v5
+        with:
+          path: sigrun
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-codemode
+          path: sigrun-ext-codemode
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-mcp
+          path: sigrun-ext-mcp
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-tool-search
+          path: sigrun-ext-tool-search
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: sigrun/package-lock.json
+      # The manifests suites run `helm` from PATH to render charts/sigrun.
+      - uses: azure/setup-helm@v4
+      # The vendored common-5.2.1.tgz is gitignored — fetch it before the
+      # manifests suites render the chart.
+      - run: helm dependency update charts/sigrun
+        working-directory: sigrun
+      - run: npm ci
+        working-directory: sigrun
+      - run: npm test
+        working-directory: sigrun
+      - run: npm run typecheck
+        working-directory: sigrun
+
+  image-build:
+    runs-on: ubuntu-latest
+    steps:
+      # Siblings again: publish-deps.mjs reads each ext checkout's own
+      # manifest for the registry pin it writes into package.json.
+      - uses: actions/checkout@v5
+        with:
+          path: sigrun
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-codemode
+          path: sigrun-ext-codemode
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-mcp
+          path: sigrun-ext-mcp
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-tool-search
+          path: sigrun-ext-tool-search
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: docker/setup-buildx-action@v3
+      # The Dockerfile's build precondition: registry-shaped manifest +
+      # lock. The lock regen must name the built-ins explicitly — a bare
+      # `npm install --package-lock-only` keeps the lock's `link:` entries
+      # and npm ci inside the image then materializes dangling
+      # ../sigrun-ext-* symlinks (every built-in quarantines at boot, the
+      # failure this dance exists to prevent). The pins are what
+      # publish-deps.mjs just wrote into package.json.
+      - name: Registry-mode lock regen
+        shell: bash
+        working-directory: sigrun
+        run: |
+          node scripts/publish-deps.mjs registry
+          # Read back the pins publish-deps.mjs just wrote into package.json
+          # (each sourced from the sibling checkout's own manifest).
+          pins="$(node -p "
+            const d = require('./package.json').dependencies;
+            const names = [
+              '@sigrun/ext-codemode',
+              '@sigrun/ext-mcp',
+              '@sigrun/ext-tool-search',
+            ];
+            names.map((n) => n + '@' + d[n]).join(' ');
+          ")"
+          npm install ${pins} --package-lock-only
+      - uses: docker/build-push-action@v6
+        with:
+          context: sigrun
+          platforms: linux/amd64
+          push: false
+          tags: sigrun:ci-check
+
+  chart-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: sigrun
+      - uses: azure/setup-helm@v4
+      # The vendored common tgz is gitignored — CI must fetch it.
+      - run: |
+          helm dependency update charts/sigrun
+          helm lint charts/sigrun
+          helm template charts/sigrun
+        working-directory: sigrun
