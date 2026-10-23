@@ -78,13 +78,22 @@ describe("BrailleCanvas", () => {
 		canvas.plot(1, 1); // dot 5
 		canvas.plot(0, 2); // dot 3
 		canvas.plot(1, 3); // dot 8
-		expect(canvas.rows()).toEqual(["⢥"]);
+		// Standard layout: 0x01 | 0x10 | 0x04 | 0x80 = 0x95.
+		expect(canvas.rows()).toEqual(["⢕"]);
+		expect(canvas.cellBits(0, 0)).toBe(0x95);
+	});
+
+	test("a full left column is dots 1,2,3,7 (no stray right dot)", () => {
+		const canvas = new BrailleCanvas(1, 1);
+		canvas.fill(0, 0, 0, 3);
+		expect(canvas.cellBits(0, 0)).toBe(0x47);
 	});
 
 	test("a dot-grid diagonal across two cells walks the dot centers", () => {
 		const canvas = new BrailleCanvas(2, 1);
 		canvas.line(0, 0, 3, 3);
-		expect(canvas.rows()).toEqual(["⠡⢄"]);
+		// cell0: dots 1+5 = 0x11 (⠑); cell1: dots 3+8 = 0x84 (⢄).
+		expect(canvas.rows()).toEqual(["⠑⢄"]);
 	});
 
 	test("out-of-range dots are ignored, never thrown", () => {
@@ -98,7 +107,9 @@ describe("BrailleCanvas", () => {
 	test("fill covers the dot rectangle inclusive", () => {
 		const canvas = new BrailleCanvas(2, 1);
 		canvas.fill(0, 0, 1, 1);
-		expect(canvas.rows()).toEqual(["⠳⠀"]);
+		// Dots 1,2,4,5: 0x01|0x02|0x08|0x10 = 0x1B.
+		expect(canvas.rows()).toEqual(["⠛⠀"]);
+		expect(canvas.cellBits(0, 0)).toBe(0x1b);
 	});
 
 	test("the last plotter owns the cell (over-plot colouring)", () => {
@@ -107,7 +118,7 @@ describe("BrailleCanvas", () => {
 		expect(canvas.cellOwner(0, 0)).toBe(1);
 		canvas.plot(1, 1, 2);
 		expect(canvas.cellOwner(0, 0)).toBe(2);
-		expect(canvas.cellBits(0, 0)).toBe(0x21);
+		expect(canvas.cellBits(0, 0)).toBe(0x11); // dots 1+5
 	});
 });
 
@@ -126,7 +137,8 @@ describe("sparkline", () => {
 	});
 
 	test("the ASCII ramp on a no-Unicode terminal", () => {
-		expect(sparkline([30, 42, 38, 51, 44], 5, false)).toBe("_+-*");
+		// 8-glyph ASCII ramp `_.,-+=*#`, same floor(t*8) buckets.
+		expect(sparkline([30, 42, 38, 51, 44], 5, false)).toBe("_+-#=");
 	});
 
 	test("empty and flat inputs degrade quietly", () => {
@@ -280,6 +292,18 @@ describe("chart ASCII fallback", () => {
 		expect(joined).not.toMatch(/[▁▂▃▄▅▆▇█░]/);
 	});
 
+	test("ASCII line/area charts still plot the series", () => {
+		const block: Block = {
+			type: "chart",
+			x: { kind: "number" },
+			series: [{ name: "a", kind: "line", data: [[0, 2], [1, 8]] }],
+		};
+		const { ctx } = makeCtx({}, { unicode: false });
+		const joined = renderBlock(block, ctx).render(80).join("\n");
+		// The plot area carries real series marks (canvas bits, not glyphs).
+		expect(joined).toContain("*");
+	});
+
 	test("ASCII bars use the ASCII ramp", () => {
 		const block: Block = {
 			type: "chart",
@@ -313,7 +337,7 @@ describe("chart ASCII fallback", () => {
 		const joined = renderBlock(fixture("chart").root, ctx)
 			.render(29)
 			.join("\n");
-		expect(joined).toContain("acme _*,# 9");
+		expect(joined).toContain("acme _=,#* 9");
 	});
 });
 

@@ -15,16 +15,16 @@
 import { lttb } from "@sigrun/shared/blocks";
 
 /**
- * Dot bit per (x, y) subpixel: bit index is `col * 4 + row` where
- * `col = x % 2` and `row = y % 4`. Dot-space y counts from the BOTTOM
- * of the canvas (chart-style), so `plot` also flips the cell row:
- * (x, 0) lands in the LAST cell row. The suite pins plot(0,0)=bit0,
- * plot(0,1)=bit1, plot(1,0)=bit4, plot(1,1)=bit5, plot(0,2)=bit2,
- * plot(1,3)=bit7 on a one-row canvas.
+ * Dot bit per (x, y) subpixel: the Unicode standard layout — the
+ * left column holds dots 1,2,3,7 and the right column dots 4,5,6,8,
+ * TOP-DOWN. Dot space is TOP-DOWN too: (x, 0) is the TOP row of the
+ * canvas (plot(0,0) = dot 1 = 0x01). The suite pins plot(0,0)=0x01,
+ * plot(0,2)=0x04, plot(1,1)=0x10, plot(1,3)=0x80 on a one-row
+ * canvas; chart inverts its y axis before plotting.
  */
 const DOT_BIT: readonly (readonly number[])[] = [
-	[0x01, 0x02, 0x04, 0x08],
-	[0x10, 0x20, 0x40, 0x80],
+	[0x01, 0x02, 0x04, 0x40],
+	[0x08, 0x10, 0x20, 0x80],
 ];
 
 /** A Braille dot canvas: `cells` columns × `rows` rows of 2×4 dots. */
@@ -44,10 +44,9 @@ export class BrailleCanvas {
 	/** Plot one dot; out-of-range coordinates are ignored. */
 	plot(x: number, y: number, series?: number): void {
 		const cellX = Math.floor(x / 2);
-		// Dot-space y counts from the BOTTOM; cell rows count top-down.
 		const cellY = Math.floor(y / 4);
 		if (cellX < 0 || cellY < 0 || cellX >= this.#cells || cellY >= this.#rows) return;
-		const index = (this.#rows - 1 - cellY) * this.#cells + cellX;
+		const index = cellY * this.#cells + cellX;
 		const row = y % 4;
 		const col = x % 2;
 		const bit = (DOT_BIT[col] as readonly number[])[row] ?? 0;
@@ -115,8 +114,8 @@ export class BrailleCanvas {
 /** The eighth-block ramp (index 0..8: empty through full). */
 const BLOCK_RAMP = "▁▂▃▄▅▆▇█"; // 8 cells, index 0..7
 
-/** The ASCII ramp for no-Unicode terminals (same 1..8 shape heights). */
-const ASCII_RAMP = "_.,-+*#"; // same 1..8 shape heights
+/** The ASCII ramp for no-Unicode terminals (same 8 shape heights). */
+const ASCII_RAMP = "_.,-+=*#";
 
 /**
  * A one-cell-per-sample sparkline of `values`, at most `maxCells`
