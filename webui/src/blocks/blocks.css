@@ -1,0 +1,385 @@
+/* The block renderer's styles (UI-blocks U1 Task 1): every colour runs
+   through the theme's CSS custom properties (the palette tokens
+   useTheme sets inline on the root plus --warn/--danger, the state
+   colours app.css pins per mode) — a block never carries a colour of
+   its own (spec §10.1). Tones are data-tone attributes; tones.ts maps
+   them. Layout metrics come from the width tokens (s/m/l = 16/24/32
+   rem) and the container classes (spec §12.1). */
+
+/* ── shared block chrome ─────────────────────────────────────────────── */
+
+.blk {
+	margin: 0;
+	min-width: 0; /* long unbroken strings cannot widen the container */
+}
+
+.blk-width {
+	container-type: inline-size;
+	width: 100%;
+}
+
+.blk-icon {
+	flex: none;
+	vertical-align: -0.15em;
+}
+
+.blk-unsupported {
+	border: 1px dashed var(--border);
+	border-radius: 8px;
+	color: var(--muted);
+	font-size: 0.9em;
+	padding: 0.75rem 1rem;
+}
+
+.blk-unsupported-note {
+	color: var(--faint);
+	font-size: 0.85em;
+	margin: 0.25rem 0 0;
+}
+
+/* ── layout: stack / columns / grid / section (§5.2) ─────────────────── */
+
+.blk-stack {
+	display: flex;
+	flex-direction: column;
+}
+
+.blk-columns {
+	display: flex;
+	gap: 1rem;
+}
+
+.blk-columns[data-stacked="true"] {
+	flex-direction: column;
+}
+
+.blk-column {
+	min-width: 0;
+}
+
+.blk-grid {
+	display: grid;
+	gap: 1rem;
+}
+
+.blk-grid-item[data-span="full"] {
+	grid-column: 1 / -1;
+}
+
+.blk-section {
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--surface);
+	padding: 0.9rem 1.1rem;
+}
+
+.blk-section-head {
+	align-items: baseline;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 0.75rem;
+	margin-bottom: 0.6rem;
+}
+
+.blk-section-title {
+	color: var(--text);
+	font-size: 0.95em;
+	font-weight: 600;
+}
+
+.blk-section-subtitle {
+	color: var(--faint);
+	font-size: 0.85em;
+}
+
+.blk-section-toggle {
+	align-items: center;
+	background: none;
+	border: 0;
+	color: inherit;
+	cursor: pointer;
+	display: flex;
+	font: inherit;
+	gap: 0.4rem;
+	padding: 0;
+}
+
+.blk-section-caret {
+	color: var(--faint);
+	width: 1em;
+}
+
+/* ── content: markdown / fields / stat (§5.3) ────────────────────────── */
+
+.blk-markdown .md {
+	font-size: 0.95em;
+}
+
+.blk-fields dl {
+	display: grid;
+	gap: 0.35rem;
+	margin: 0;
+}
+
+.blk-field-row {
+	display: flex;
+	gap: 1rem;
+	justify-content: space-between;
+}
+
+.blk-field-row dt {
+	color: var(--muted);
+	flex: none;
+}
+
+.blk-field-row dd {
+	display: flex;
+	gap: 0.4rem;
+	margin: 0;
+	overflow-wrap: anywhere;
+	text-align: end;
+}
+
+.blk-stat {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+}
+
+.blk-stat[data-size="s"] {
+	font-size: 0.9em;
+}
+
+.blk-stat[data-size="l"] {
+	font-size: 1.15em;
+}
+
+.blk-stat-top {
+	align-items: center;
+	color: var(--muted);
+	display: flex;
+	font-size: 0.85em;
+	gap: 0.4rem;
+}
+
+.blk-stat-value {
+	font-size: 1.6em;
+	font-variant-numeric: tabular-nums;
+	font-weight: 650;
+	line-height: 1.2;
+}
+
+.blk-stat[data-size="s"] .blk-stat-value {
+	font-size: 1.3em;
+}
+
+.blk-stat[data-size="l"] .blk-stat-value {
+	font-size: 2em;
+}
+
+.blk-stat-unit {
+	color: var(--muted);
+	font-size: 0.6em;
+	font-weight: 400;
+}
+
+.blk-stat-caption {
+	color: var(--faint);
+	font-size: 0.8em;
+}
+
+.blk-spark {
+	color: var(--muted);
+	display: block;
+	height: 24px;
+	margin-top: 0.25rem;
+	width: 100%;
+}
+
+/* ── content: callout / image / diff / details (§5.3) ────────────────── */
+
+.blk-callout {
+	border-left: 3px solid var(--muted);
+	border-radius: 0 8px 8px 0;
+	padding: 0.6rem 0.9rem;
+}
+
+.blk-callout[data-tone="accent"] {
+	border-left-color: var(--accent);
+	background: var(--accent-bg);
+}
+
+.blk-callout[data-tone="good"] {
+	border-left-color: var(--ok);
+	background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+
+.blk-callout[data-tone="warn"] {
+	border-left-color: var(--warn);
+	background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+
+.blk-callout[data-tone="bad"] {
+	border-left-color: var(--danger);
+	background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.blk-callout[data-tone="info"] {
+	border-left-color: var(--muted);
+	background: var(--code);
+}
+
+.blk-callout-title {
+	font-weight: 650;
+}
+
+.blk-callout-body {
+	font-size: 0.9em;
+	margin-top: 0.25rem;
+}
+
+.blk-image {
+	border-radius: 8px;
+	height: auto;
+	max-width: 100%;
+}
+
+.blk-image-fallback {
+	border: 1px dashed var(--border);
+	border-radius: 8px;
+	color: var(--muted);
+	font-size: 0.9em;
+	padding: 0.75rem;
+}
+
+.blk-diff-path {
+	color: var(--faint);
+	font-family: var(--mono);
+	font-size: 0.8em;
+	margin-bottom: 0.35rem;
+}
+
+.blk-diff-panes {
+	border-radius: 8px;
+	display: grid;
+	gap: 0.5rem;
+	grid-template-columns: 1fr 1fr;
+	overflow-x: auto;
+}
+
+.blk-diff-panes pre {
+	background: var(--code);
+	border-radius: 6px;
+	font-family: var(--mono);
+	font-size: 0.82em;
+	margin: 0;
+	padding: 0.6rem 0.75rem;
+	white-space: pre-wrap;
+}
+
+.blk-diff-after {
+	border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+}
+
+.blk-diff-before {
+	border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+@container (max-width: 40rem) {
+	.blk-diff-panes {
+		grid-template-columns: 1fr;
+	}
+}
+
+.blk-details summary {
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 0.9em;
+}
+
+.blk-details-json {
+	background: var(--code);
+	border-radius: 6px;
+	font-family: var(--mono);
+	font-size: 0.82em;
+	margin: 0.5rem 0 0;
+	padding: 0.6rem 0.75rem;
+	white-space: pre-wrap;
+}
+
+/* ── actions and confirm (§6.1/§6.2) ─────────────────────────────────── */
+
+.blk-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-top: 0.5rem;
+}
+
+.blk-action {
+	align-items: center;
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	color: var(--text);
+	cursor: pointer;
+	display: inline-flex;
+	font: inherit;
+	font-size: 0.85em;
+	gap: 0.4rem;
+	padding: 0.3rem 0.7rem;
+}
+
+.blk-action:hover {
+	border-color: var(--accent);
+}
+
+.blk-confirm {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	margin-top: 0.5rem;
+	max-width: 24rem;
+	padding: 0.8rem 1rem;
+}
+
+.blk-confirm[data-tone="bad"] {
+	border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+}
+
+.blk-confirm[data-tone="warn"] {
+	border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
+}
+
+.blk-confirm-title {
+	font-weight: 650;
+}
+
+.blk-confirm-body {
+	color: var(--muted);
+	font-size: 0.9em;
+	margin-top: 0.3rem;
+}
+
+.blk-confirm-row {
+	display: flex;
+	gap: 0.5rem;
+	justify-content: flex-end;
+	margin-top: 0.7rem;
+}
+
+.blk-confirm-row button {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	color: var(--text);
+	cursor: pointer;
+	font: inherit;
+	font-size: 0.85em;
+	padding: 0.3rem 0.8rem;
+}
+
+.blk-confirm-row .blk-confirm-ok {
+	background: var(--accent-bg);
+	border-color: var(--accent);
+}
