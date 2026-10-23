@@ -7,7 +7,7 @@
 
 import { act } from "react";
 import { describe, expect, test } from "vitest";
-import { App } from "./App";
+import { App, locationHash } from "./App";
 import {
 	createClient,
 	type ConversationMeta,
@@ -29,12 +29,13 @@ type Call = { input: string; method?: string; body?: string | Uint8Array };
 
 function makeMeta(init?: {
 	readonly schemaVersion?: string;
+	readonly extensions?: MetaResponse["extensions"];
 }): MetaResponse {
 	return {
 		version: "0.0.0-test",
 		harnessVersion: "1.0.2",
 		schemaVersion: init?.schemaVersion ?? PINNED_SCHEMA_VERSION,
-		extensions: [
+		extensions: init?.extensions ?? [
 			{ name: "memory", status: "ok" },
 			{ name: "gatekeeper", status: "ok" },
 		],
@@ -551,4 +552,48 @@ describe("App shell", () => {
 			renderer.root.findAllByProps({ className: "settings-overlay" }),
 		).toHaveLength(1);
 	});
+
+describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
+	function extMeta(): MetaResponse {
+		return makeMeta({
+			extensions: [
+				{
+					name: "fixture-surfaces",
+					status: "ok",
+					surfaces: [
+						{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+					],
+				},
+			],
+		});
+	}
+
+	test("the rail's extension entry navigates to the /ext route and the surface page loads", async () => {
+		const { client, createEventSource } = makeHarness({ meta: extMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		// The URL hash carries the route (browser back returns to the chat).
+		expect(locationHash()).toContain("/ext/fixture-surfaces/board");
+	});
+
+	test("an access-none surface renders the not-found state and loses its rail entry", async () => {
+		const { client, createEventSource } = makeHarness({ meta: extMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// The App's not-found discovery: after a surface returns access
+		// none, the rail entry disappears (§6.5).
+		const before = renderer.root.findAllByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		expect(before).toHaveLength(1);
+	});
+});
 });

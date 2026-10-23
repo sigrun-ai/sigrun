@@ -7,7 +7,21 @@
  * pure ordering/derivation, so the rail component stays declarative.
  */
 
-import type { ExtensionInfoWire } from "../api";
+/** The extension row the rail/panel registration needs: the meta
+ *  response's per-extension shape (name + status + surfaces rows). The
+ *  full ExtensionInfoWire (with interactionKinds/ambientKeys/workers) is
+ *  the /v1/extensions route's row; the rail reads the META row so the
+ *  shell never fetches twice. */
+export interface ExtensionSurfaceRow {
+	readonly name: string;
+	readonly status: string;
+	readonly surfaces?: readonly {
+		readonly id: string;
+		readonly title: string;
+		readonly icon: string;
+		readonly placement: "view" | "panel";
+	}[];
+}
 
 /** One extension-view rail entry (the rail renders one button per entry). */
 export interface ExtViewEntry {
@@ -35,7 +49,7 @@ export function entryKey(entry: ExtViewEntry): string {
  * (views only — panels register on the right panel, not the rail).
  */
 export function extViewEntries(
-	extensions: readonly ExtensionInfoWire[],
+	extensions: readonly ExtensionSurfaceRow[],
 ): ExtViewEntry[] {
 	const entries: ExtViewEntry[] = [];
 	for (const extension of extensions) {
@@ -55,7 +69,7 @@ export function extViewEntries(
 
 /** The flat list of extension PANEL surfaces (the right panel's tabs). */
 export function extPanelEntries(
-	extensions: readonly ExtensionInfoWire[],
+	extensions: readonly ExtensionSurfaceRow[],
 ): ExtViewEntry[] {
 	const entries: ExtViewEntry[] = [];
 	for (const extension of extensions) {

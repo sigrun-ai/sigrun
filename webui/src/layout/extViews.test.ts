@@ -7,7 +7,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "vitest";
-import type { ExtensionInfoWire } from "../api";
+import type { ExtensionSurfaceRow } from "./extViews";
 import {
 	entryKey,
 	memoryStorage,
@@ -23,13 +23,10 @@ function extension(
 	name: string,
 	surfaces?: readonly { id: string; title: string; icon: string; placement: "view" | "panel" }[],
 	status = "ok",
-): ExtensionInfoWire {
+): ExtensionSurfaceRow {
 	return {
 		name,
 		status,
-		interactionKinds: [],
-		ambientKeys: [],
-		workers: [],
 		...(surfaces === undefined ? {} : { surfaces }),
 	};
 }
