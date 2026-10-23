@@ -265,6 +265,70 @@ describe("list display (spec §5.5)", () => {
 		);
 	});
 
+	test("a card action dispatches WITHOUT firing onActivate", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: {
+				title,
+				actions: [
+					{ id: "act", label: "Do it", action: { type: "submit", name: "onDo" } },
+				],
+			},
+			display: "list",
+			onActivate: { type: "navigate", params: { view: "item" } },
+		};
+		const { renderer, dispatch } = renderCollection(block, {
+			tasks: [{ id: "t1", title: "Alpha" }],
+		});
+		const actionButton = renderer.root.find(
+			(node) => node.type === "button" && textOf(node) === "Do it",
+		);
+		// The click stops propagation at the card-actions container, so the
+		// row's onActivate never fires — only the action dispatches.
+		act(() => {
+			actionButton.props.onClick({ stopPropagation: () => {} });
+		});
+		expect(dispatch).toHaveBeenCalledWith({ type: "submit", name: "onDo" }, null);
+		expect(
+			dispatch.mock.calls.some(
+				(call) => (call[0] as { type: string }).type === "navigate",
+			),
+		).toBe(false);
+	});
+
+	test("a collapsed group hides its rows behind the heading", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: { title },
+			display: "list",
+			groupBy: "state",
+			groups: [
+				{ id: "doing", title: "Doing" },
+				{ id: "done", title: "Done", collapsed: true },
+			],
+		};
+		const { renderer } = renderCollection(block, {
+			tasks: [
+				{ id: "t1", title: "Open one", state: "doing" },
+				{ id: "t2", title: "Finished one", state: "done" },
+			],
+		});
+		let text = textContent(renderer.toJSON());
+		expect(text).toContain("Done"); // heading shows
+		expect(text).not.toContain("Finished one"); // rows hidden
+		// Click the collapsed heading to unfold.
+		const heading = renderer.root.findAll(
+			(node) => node.props.className === "blk-list-heading" && textOf(node) === "Done",
+		)[0];
+		act(() => {
+			heading.props.onClick();
+		});
+		text = textContent(renderer.toJSON());
+		expect(text).toContain("Finished one");
+	});
+
 	test("view-only state (selection) survives a data update", () => {
 		const block: CollectionBlock = {
 			type: "collection",

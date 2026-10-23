@@ -173,7 +173,8 @@ function formFieldNames(action: BulkAction): readonly string[] {
 }
 
 /** The selection checkbox (read access hides it — selection exists to
- *  drive edits). */
+ *  drive edits). The click stops propagation so a selectable row/card
+ *  with `onActivate` does not ALSO activate on a selection toggle. */
 export function SelectBox(props: {
 	checked: boolean;
 	onToggle(): void;
@@ -185,6 +186,7 @@ export function SelectBox(props: {
 			type="checkbox"
 			className="blk-select"
 			checked={props.checked}
+			onClick={(event) => event.stopPropagation()}
 			onChange={() => props.onToggle()}
 		/>
 	);

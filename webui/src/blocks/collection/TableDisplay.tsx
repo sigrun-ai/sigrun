@@ -143,7 +143,7 @@ function Cell(props: {
 	);
 }
 
-/** The item's tone, resolved (module-level so Cell rows don't hook). */
+/** The full (regular/wide) table. */
 function FullTable(props: {
 	block: CollectionBlock;
 	items: readonly PreparedItem[];
@@ -305,7 +305,10 @@ function CompactTable(props: {
 									type="button"
 									className="blk-table-expand"
 									aria-expanded={expanded}
-									onClick={() => table.toggleExpanded(prepared.id)}
+									onClick={(event) => {
+										event.stopPropagation();
+										table.toggleExpanded(prepared.id);
+									}}
 								>
 									{expanded ? "Less" : "More"}
 								</button>
@@ -343,6 +346,8 @@ export function TableDisplay(props: {
 	const table = useTableView(props.block);
 	const activate = useActivate(props.block);
 	const widthClass = useWidthClass();
+	// Quiet items follow the visible ones (no fold UI in table/grid — the
+	// flat order keeps sort/paging simple; list owns the "N more" fold).
 	const items = props.groups.flatMap((group) => [
 		...group.buckets.visible,
 		...group.buckets.quiet,

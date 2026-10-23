@@ -265,7 +265,10 @@ function CardActions(props: { card: Card }): ReactNode {
 	const direct = actions.slice(0, 3);
 	const overflow = actions.slice(3);
 	return (
-		<div className="blk-card-actions">
+		<div
+			className="blk-card-actions"
+			onClick={(event) => event.stopPropagation()}
+		>
 			<ActionButtonRow buttons={direct} />
 			{overflow.length > 0 && (
 				<details className="blk-card-overflow">

@@ -45,6 +45,8 @@ export function GridDisplay(props: {
 		: rem !== null && SIZE_REM[minWidth] > rem
 			? "1fr"
 			: `repeat(auto-fill, minmax(${SIZE_REM[minWidth]}rem, 1fr))`;
+	// Quiet items follow the visible ones (no fold UI in table/grid — the
+	// flat order keeps the grid flow simple; list owns the "N more" fold).
 	const items = props.groups.flatMap((group) => [
 		...group.buckets.visible,
 		...group.buckets.quiet,
