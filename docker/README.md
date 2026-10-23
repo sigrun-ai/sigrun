@@ -20,11 +20,15 @@ compose `image:` line; no extension access is needed at build time.
 ## Run
 
 ```sh
-docker compose --env-file .env -f docker/docker-compose.yaml up -d
+docker compose -f docker/docker-compose.yaml up -d
 ```
 
-`SIGRUN_PORT` is read from the environment for the host-side port mapping;
-everything else comes from the env file.
+No `--env-file` flag needed: with `-f`, compose's project directory is
+the compose file's own directory (`docker/`), so `docker/.env` is loaded
+automatically for variable interpolation — and the service's `env_file`
+entry passes the same file's operator vars (`SIGRUN_EXTENSIONS`, below)
+into the container. `SIGRUN_PORT` (host port), `SIGRUN_IMAGE_TAG`,
+`SIGRUN_UID`/`SIGRUN_GID` can be set in that file or the shell.
 
 ## Configuration
 
@@ -43,6 +47,39 @@ path — enough to run against any OpenAI-compatible endpoint (OpenAI
 itself, a local ramalama/ollama exposing an OpenAI-shaped API, or a
 remote/private gateway; point `OPENAI_BASE_URL` at it and set the model
 id it serves).
+
+That minimum provisions a model, not access: auth keys are env-shaped —
+add `SIGRUN_API_TOKEN` (a service token clients must present) or
+`SIGRUN_AUTH=none` (private networks only) to the same `docker/.env`,
+since the `env_file` vars enter the container while the compose
+`environment:` block carries no auth entries. The chart's analogue
+keeps these in the operator Secret instead.
+
+### Knobs
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SIGRUN_IMAGE_TAG` | `0.1.5` | The published image tag (the compose analogue of the chart's `image.tag`). |
+| `SIGRUN_UID` / `SIGRUN_GID` | `1000` / `1000` | The uid/gid the container runs as. The default matches the image's `USER`, so a fresh named volume inherits `node:node` ownership on first mount with no manual chown. Override when your `/data` volume is already owned by another uid. (A `SIGRUN_UID=0` root start needs the entrypoint's privilege-drop trampoline — which the `cap_drop: [ALL]` hardening blocks; re-add `CAP_CHOWN`, `CAP_SETUID`, `CAP_SETGID` if you truly want it.) |
+| `SIGRUN_EXTENSIONS` | unset | The env-shaped extension fleet override: a comma-separated package list that REPLACES the settings file's `extensions` list when set (env wins — sigrun core's contract). When unset in `docker/.env` the variable is absent from the container, not empty — the settings file drives the fleet. Mutually exclusive with the file-driven flow under **Adding an extension** below; use one or the other, or the env silently shadows the file every boot. |
+
+## Hardening
+
+The compose service runs least-privilege by default:
+
+- **Read-only root filesystem** (`read_only: true`) — the server writes
+  only under `/data` (the named volume), `/cache`, and `/tmp` (both
+  tmpfs; cache is regenerable, a wipe is a cold start). `npm`'s cache
+  included: `NPM_CONFIG_CACHE=/cache/npm` is baked into the image, so
+  boot's extension installs land on tmpfs, not the read-only layer.
+- **No Linux capabilities** (`cap_drop: [ALL]`) and
+  `no-new-privileges:true` — the server needs no caps, and nothing it
+  starts may gain any.
+- **`init: true`** — docker's init (tini) as PID 1 reaps zombies (the
+  server spawns `git`/`npm`/agent-shell children) and forwards
+  signals.
+- **`user: 1000:1000`** by default — non-root, matching the image's
+  `USER` (see `SIGRUN_UID`/`SIGRUN_GID` above).
 
 ## Data
 

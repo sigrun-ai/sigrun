@@ -568,6 +568,7 @@ describe("listing — records only, never tasks", () => {
 						defaultModel: rig.opened.defaultModel,
 						now: rig.now,
 						defaultTz: "UTC",
+						gatewayLoaded: false,
 					}),
 					{ jobId: ghost, hash: "no-record" },
 					{
@@ -864,6 +865,7 @@ describe("fireJob re-entry on a settled run record", () => {
 				defaultModel: rig.opened.defaultModel,
 				now: rig.now,
 				defaultTz: "UTC",
+				gatewayLoaded: false,
 			},
 			job.id,
 			settledKey,

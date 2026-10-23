@@ -53,6 +53,9 @@ export function registerMetaRoutes(
 			schemaVersion: SCHEMA_VERSION,
 			extensions: opened.extensionOutcomes.map((outcome) => {
 				const workers = workerStatuses.get(outcome.name);
+				const surfaces = opened.extensionSurfaces.find(
+					(binding) => binding.extension === outcome.name,
+				);
 				return {
 					name: outcome.name,
 					status: outcome.status,
@@ -60,6 +63,28 @@ export function registerMetaRoutes(
 					...(workers === undefined || workers.length === 0
 						? {}
 						: { workers }),
+					// The declared surfaces (UI-blocks U3 Task 5): the channels'
+					// rail/panel registration reads the DECLARATION here (never a
+					// second fetch); access-none filtering stays render-time.
+					...(surfaces === undefined
+						? {}
+						: {
+							surfaces: surfaces.defs.map((def) => ({
+								id: def.id,
+								title: def.title,
+								icon: def.icon,
+								placement: def.placement,
+								// The refresh cadence (§7.1): the channels'
+								// visible-surface refetch intervals read it here
+								// (never a second fetch).
+								...(def.refreshMs === undefined
+									? {}
+									: { refreshMs: def.refreshMs }),
+								// The §7.3 shared-data flag: channels refetch
+								// fully when a since fetch answers ops-only.
+								...(def.sharedData === true ? { sharedData: true } : {}),
+							})),
+							}),
 				};
 			}),
 			// §5 health: pure aggregation over boot-retained §3 producers —
@@ -68,11 +93,19 @@ export function registerMetaRoutes(
 			// double-reported here), providers aggregated across
 			// contributors (empty → "ok"), and backup from the §6.8 marker
 			// derivation above ("configured" only while a fresh success
-			// exists — the one storage read this route makes).
+			// exists — the one storage read this route makes). Gateway C2 adds
+			// `gateway`: present ONLY when an engine loaded (the meta route
+			// keys on `opened.gatewayEngine`, never on the handle — a
+			// no-engine deploy reports NO gateway health, degenerate "ok" by
+			// absence), its value the HANDLE's wrapped health (throw →
+			// "degraded"; a start rejection latches degraded until restart).
 			health: {
 				backup: backupHealth,
 				memory: opened.memoryHealth?.() ?? "ok",
 				providers: aggregateHealth(opened.providerHealth),
+				...(opened.gatewayEngine === undefined || ctx.gateway === undefined
+					? {}
+					: { gateway: ctx.gateway.health() }),
 			},
 			// The auth block (W1 Task 6, spec §5.7): the effective method list
 			// (resolved once in `createServer`) + the onboarding state — both

@@ -19,6 +19,7 @@ export { ICON_NAMES } from "./icons.js";
 export { lttb } from "./lttb.js";
 export { formatValue } from "./format.js";
 export { toText } from "./text.js";
+export { canonicalJson, eventKeyWeb, instanceKey } from "./instance.js";
 
 // ─── Wire types (spec §4/§5/§6.1) ─────────────────────────────────────────
 export type {

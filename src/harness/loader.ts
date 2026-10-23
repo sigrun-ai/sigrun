@@ -85,16 +85,21 @@
 
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
+	ChannelContribution,
 	ExtensionCommandContribution,
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
+	GatewayEngine,
 	NotifierContribution,
 	ProviderContribution,
 	SigrunExtensionResult,
 	SigrunLifecycleHandlers,
+	SurfaceDef,
+	SurfacesContribution,
 	WebuiBundleContribution,
 } from "../extension.js";
+import { ICON_NAMES } from "@sigrun/shared/blocks";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import type { HealthStatus } from "./health.js";
@@ -107,6 +112,7 @@ import type { DeclaredKinds } from "./seam-host.js";
 import {
 	HOST_RUNTIME_MODULES,
 	hostModuleVersion,
+	readPackageAssetsDir,
 	readPackageName,
 	readPackageVersion,
 	resolveExtensionEntry,
@@ -129,6 +135,12 @@ export interface ExtensionOutcome {
 	 * load quarantined before a module resolved.
 	 */
 	readonly version?: string;
+	/**
+	 * The channel ids this extension contributes (gateway C1, spec §7):
+	 * present only on `ok` outcomes of extensions whose factory result
+	 * carried `channels`; `/v1/extensions` renders it verbatim.
+	 */
+	readonly channels?: readonly string[];
 	/**
 	 * Built-in extensions (Task 2): `true` marks a core-shipped built-in
 	 * (the boot prepends its resolved entries with this flag); ABSENT on
@@ -210,12 +222,61 @@ export interface ExtensionNotifierBinding {
 	readonly notifiers: readonly NotifierContribution[];
 }
 
+/**
+ * Channel adapters retained from one extension factory result (gateway
+ * C1, spec §7), attributed to the extension slug — boot threads the
+ * list to `OpenedHarness.channelBindings` for the gateway engine's
+ * `start` context and the `/v1/extensions` inventory. A channel-id
+ * collision across extensions quarantines the later loader BEFORE this
+ * binding is collected (chat bindings are keyed by channel id — never
+ * last-wins); quarantined extensions contribute none.
+ */
+export interface ExtensionChannelBinding {
+	/** The slug identity (the engine's `channels[].extension` attribution). */
+	readonly extension: string;
+	readonly channels: readonly ChannelContribution[];
+}
+
+/**
+ * The gateway engine retained from one extension factory result (gateway
+ * C2, spec §8.0), paired with the extension slug — boot threads it to
+ * `OpenedHarness.gatewayEngine` for `startGateway` and the meta route's
+ * `health.gateway` presence. ONE per boot (the one-engine rule in the
+ * load loop); quarantined extensions contribute none.
+ */
+export interface ExtensionGatewayBinding {
+	/** The slug identity (which extension owns the engine). */
+	readonly extension: string;
+	readonly engine: GatewayEngine;
+}
+
+/**
+ * Surfaces retained from one extension factory result (UI-blocks U3
+ * Task 1, spec §7.1), attributed to the extension slug — views and
+ * panels FLATTENED in declaration order (views first). Boot threads
+ * the list to `OpenedHarness.extensionSurfaces` for the service (Task
+ * 2) and the `/v1/extensions` inventory rows.
+ */
+export interface ExtensionSurfaceBinding {
+	/** The slug identity (`/v1/ext/<slug>/surfaces/…`). */
+	readonly extension: string;
+	/** The validated view + panel defs, in declaration order. */
+	readonly defs: readonly SurfaceDef<"view" | "panel">[];
+	/**
+	 * The package's declared `sigrun.assets` directory (spec §11.1),
+	 * resolved absolute against the package root at load; `undefined`
+	 * when the manifest declares none (every asset request 404s).
+	 */
+	readonly assetsDir?: string;
+}
+
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
 	"conversationCreated",
 	"conversationForked",
 	"conversationArchived",
 	"conversationIdle",
+	"interactionSettled",
 	"harnessShutdown",
 	"userDeleted",
 ] as const;
@@ -316,6 +377,33 @@ export interface LoadedExtensions {
 	 * none.
 	 */
 	readonly notifierBindings: readonly ExtensionNotifierBinding[];
+	/**
+	 * Channel adapters from factory results (gateway C1, spec §7): one
+	 * `{extension, channels}` entry per loaded extension whose result
+	 * carried `channels`, slug-attributed — the gateway engine's start
+	 * context reads the flat channel set from these and `/v1/extensions`
+	 * inventories the ids. Channel ids are unique across every loaded
+	 * extension (the loader quarantines the later colliding loader);
+	 * quarantined extensions contribute none.
+	 */
+	readonly channelBindings: readonly ExtensionChannelBinding[];
+	/**
+	 * The gateway engine from a factory result (gateway C2, spec §8.0):
+	 * the FIRST loaded declarer's binding — `{extension, engine}` — or
+	 * `undefined` when no engine loaded. A later declarer quarantines
+	 * (the one-engine rule: an engine supervises the whole channel set,
+	 * never last-wins). `startGateway` consumes it; the meta route's
+	 * `health.gateway` presence keys on it.
+	 */
+	readonly gatewayEngine: ExtensionGatewayBinding | undefined;
+	/**
+	 * Declared surfaces from factory results (UI-blocks U3 Task 1,
+	 * spec §7.1), one entry per loaded extension whose result carried
+	 * `surfaces` — the FLATTENED validated defs attributed to the slug
+	 * (the service in Task 2 renders them; `/v1/extensions` inventories
+	 * them). Quarantined extensions contribute none.
+	 */
+	readonly surfaces: readonly ExtensionSurfaceBinding[];
 	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
@@ -427,6 +515,24 @@ export interface ResolvedExtension {
 	 * event reaches a transport.
 	 */
 	notifiers?: readonly NotifierContribution[];
+	/**
+	 * Channel adapters (gateway C1, spec §7), validated fail-loud —
+	 * including the cross-extension channel-id uniqueness the load loop
+	 * enforces before any binding is collected.
+	 */
+	channels?: readonly ChannelContribution[];
+	/**
+	 * The gateway engine (gateway C2, spec §8.0), validated fail-loud.
+	 * Absent when the result carried no engine.
+	 */
+	gateway?: GatewayEngine;
+	/**
+	 * Declared surfaces (UI-blocks U3 Task 1, spec §7.1) — the
+	 * FLATTENED validated view + panel defs (views then panels,
+	 * declaration order); a malformed declaration quarantines the
+	 * extension before any surface mounts.
+	 */
+	surfaces?: readonly SurfaceDef<"view" | "panel">[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -449,6 +555,7 @@ type LoaderReadKeys =
 	| "conversationForked"
 	| "conversationArchived"
 	| "conversationIdle"
+	| "interactionSettled"
 	| "harnessShutdown"
 	| "userDeleted"
 	| "interactionKinds"
@@ -458,7 +565,10 @@ type LoaderReadKeys =
 	| "routes"
 	| "commands"
 	| "skills"
-	| "notifiers";
+	| "notifiers"
+	| "channels"
+	| "gateway"
+	| "surfaces";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -541,6 +651,7 @@ const WAKE_EVENTS = new Set([
 	"conversationForked",
 	"conversationArchived",
 	"conversationIdle",
+	"interactionSettled",
 ]);
 
 /**
@@ -657,10 +768,166 @@ function validateJobs(value: unknown): readonly JobSpec[] | undefined {
 }
 
 /**
- * The `method`/`auth` vocabularies of a `routes` declaration (spec
- * §9.2) — Sets because `includes` on a `const` tuple narrows to the
- * literal union, which an `unknown` field value can never satisfy.
+ * The icon-name membership probe (spec §10.2): the closed set from
+ * `@sigrun/shared/blocks` — a `Set` so `unknown`-typed field values can
+ * be tested without a cast.
  */
+const ICON_NAME_SET: ReadonlySet<string> = new Set(ICON_NAMES);
+
+/** The refreshMs floor (spec §7.1): channels refetch no faster than 5 s. */
+const MIN_REFRESH_MS = 5000;
+
+/**
+ * Validate a factory result's `surfaces` declaration (UI-blocks U3
+ * Task 1, spec §7.1/§15). Absent → undefined (no surfaces). Present
+ * but malformed → throw with ONE message per problem; the loader
+ * quarantines the extension with the thrown message (fail-loud: an
+ * extension that THINKS it declared a surface must not silently lose
+ * it — the providers/health class). Per def: non-empty string `id`
+ * (unique across BOTH lists — one namespace), string `title`, `icon`
+ * in the closed set, `placement` exactly `view` (in `views`) or
+ * `panel` (in `panels`), `sharedData` a boolean, `actions` an object
+ * whose every handler is a function (message names the action),
+ * `refreshMs ≥ 5000` when present, `data()` a function when
+ * `refreshMs` is set (a data refetch would otherwise re-run `render`,
+ * §7.1), `render` a function, and NO `settings` key (reserved — the
+ * §13.3 sections are a separate workstream). Returns the
+ * FLATTENED defs (views then panels, declaration order) attributed to
+ * the slug at collection.
+ */
+function validateSurfaces(
+	value: unknown,
+): readonly SurfaceDef<"view" | "panel">[] | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "object" || Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a surfaces field that is not an object",
+		);
+	}
+	// The settings sections key is RESERVED (spec §7.1 names it; §13.3
+	// owns it): this workstream cannot serve it, and a JS package
+	// declaring one must not lose it silently — quarantine loud, naming
+	// the workstream (TS consumers are already stopped by the contract's
+	// `readonly never[]`).
+	if ((value as Record<string, unknown>).settings !== undefined) {
+		throw new Error(
+			"extension factory returned a surfaces.settings declaration — settings sections are a separate workstream (they land in U4)",
+		);
+	}
+	const defs: SurfaceDef<"view" | "panel">[] = [];
+	const seen = new Set<string>();
+	for (const list of ["views", "panels"] as const) {
+		const entries = (value as Record<string, unknown>)[list];
+		if (entries === undefined) continue;
+		if (!Array.isArray(entries)) {
+			throw new Error(
+				`extension factory returned a surfaces.${list} field that is not an array`,
+			);
+		}
+		const expected = list === "views" ? "view" : "panel";
+		for (const entry of entries) {
+			const def = entry as
+				| {
+						id?: unknown;
+						title?: unknown;
+						icon?: unknown;
+						placement?: unknown;
+						sharedData?: unknown;
+						refreshMs?: unknown;
+						instanceKey?: unknown;
+						render?: unknown;
+						data?: unknown;
+						actions?: unknown;
+					  }
+				| null;
+			if (typeof def?.id !== "string" || def.id.length === 0) {
+				throw new Error(
+					"extension factory returned a surface whose id is missing or not a non-empty string",
+				);
+			}
+			if (seen.has(def.id)) {
+				throw new Error(
+					`extension factory returned a duplicate surface id "${def.id}"`,
+			);
+			}
+			seen.add(def.id);
+			if (typeof def?.title !== "string" || def.title.length === 0) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose title is missing or not a non-empty string`,
+			);
+			}
+			if (typeof def?.icon !== "string" || !ICON_NAME_SET.has(def.icon)) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" with unknown icon "${String(def?.icon)}"`,
+			);
+			}
+			if (def?.placement !== expected) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose placement must be "${expected}" in surfaces.${list}`,
+			);
+			}
+			if (def?.instanceKey !== undefined && typeof def.instanceKey !== "function") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose instanceKey is not a function`,
+				);
+			}
+			if (
+				def?.sharedData !== undefined &&
+				typeof def.sharedData !== "boolean"
+			) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose sharedData is not a boolean`,
+				);
+			}
+			if (def?.actions !== undefined) {
+				if (
+					typeof def.actions !== "object" ||
+					def.actions === null ||
+					Array.isArray(def.actions)
+				) {
+					throw new Error(
+						`extension factory returned a surface "${def.id}" whose actions is not an object`,
+					);
+				}
+				for (const [action, handler] of Object.entries(def.actions)) {
+					if (typeof handler !== "function") {
+						throw new Error(
+							`extension factory returned a surface "${def.id}" whose action "${action}" handler is not a function`,
+						);
+					}
+				}
+			}
+			if (typeof def?.render !== "function") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose render is not a function`,
+			);
+			}
+			if (def?.data !== undefined && typeof def.data !== "function") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose data is not a function`,
+			);
+			}
+			if (def?.refreshMs !== undefined) {
+			if (
+					typeof def.refreshMs !== "number" ||
+					!Number.isInteger(def.refreshMs) ||
+					def.refreshMs < MIN_REFRESH_MS
+			) {
+					throw new Error(
+						`extension factory returned a surface "${def.id}" declaring refreshMs ${String(def.refreshMs)} (minimum ${MIN_REFRESH_MS})`,
+				);
+			}
+			if (def?.data === undefined) {
+					throw new Error(
+						`extension factory returned a surface "${def.id}" declaring refreshMs without data()`,
+				);
+			}
+		}
+			defs.push(entry as SurfaceDef<"view" | "panel">);
+		}
+	}
+	return defs;
+}
 const ROUTE_METHODS: ReadonlySet<string> = new Set([
 	"GET",
 	"POST",
@@ -671,15 +938,24 @@ const ROUTE_METHODS: ReadonlySet<string> = new Set([
 const ROUTE_AUTHS: ReadonlySet<string> = new Set(["user", "admin", "public"]);
 
 /**
+ * The route-path prefixes reserved for core under `/v1/ext/<slug>/`
+ * (spec §7.2): `surfaces/` and `assets/` are the extension-surface
+ * and asset mounts — an extension route there would shadow them, so
+ * declaring one quarantines at load, naming the route.
+ */
+const RESERVED_ROUTE_PREFIXES = ["surfaces/", "assets/"] as const;
+
+/**
  * Validate a factory result's `routes` declaration (core hardening W5
  * Task 2, spec §9.2). Absent → undefined (no routes). Present but
  * malformed → throw; the loader quarantines the extension with the
  * thrown message (fail-loud: an extension that THINKS it mounted a
  * webhook must not silently lose it). Per entry: `method` in the five
  * verbs, `path` a non-empty RELATIVE string (no leading `/`, no `..` —
- * nothing may escape the `/v1/ext/<slug>/` mount), `auth` one of the
- * three values, `bodyLimit` a positive integer when present, and
- * `handler` a function.
+ * nothing may escape the `/v1/ext/<slug>/` mount, and never under a
+ * RESERVED core prefix — §7.2), `auth` one of the three values,
+ * `bodyLimit` a positive integer when present, and `handler` a
+ * function.
  */
 function validateRoutes(
 	value: unknown,
@@ -715,6 +991,17 @@ function validateRoutes(
 		) {
 			throw new Error(
 				`extension factory returned a route whose path must be a non-empty relative string (no leading "/", no "..")`,
+			);
+		}
+		// Reserved core prefixes (spec §7.2): surfaces/ and assets/ belong
+		// to core under this slug's mount — quarantine naming the route.
+		const path: unknown = route?.path;
+		if (
+			typeof path === "string" &&
+			RESERVED_ROUTE_PREFIXES.some((prefix) => path.startsWith(prefix))
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose path starts with a reserved core prefix (surfaces/ and assets/ belong to core under /v1/ext/<slug>/)`,
 			);
 		}
 		if (typeof route?.auth !== "string" || !ROUTE_AUTHS.has(route.auth)) {
@@ -836,6 +1123,250 @@ function validateNotifiers(
 		}
 	}
 	return value as readonly NotifierContribution[];
+}
+
+/**
+ * The channel-id grammar (gateway C1, spec §7): `^[a-z][a-z0-9-]*$` —
+ * the same shape as every other extension-declared name (commands,
+ * workers, bundles), and the key the gateway engine's chat bindings are
+ * addressed by (why a collision quarantines instead of last-wins).
+ */
+const CHANNEL_ID = /^[a-z][a-z0-9-]*$/;
+
+/** The `chatTypes` vocabulary of a `capabilities` declaration (spec §7). */
+const CHANNEL_CHAT_TYPES: ReadonlySet<string> = new Set([
+	"dm",
+	"group",
+	"thread",
+]);
+
+/** The `capabilities.format` vocabulary (spec §7). */
+const CHANNEL_FORMATS: ReadonlySet<string> = new Set([
+	"plain",
+	"markdown",
+	"native",
+]);
+
+/**
+ * Validate a factory result's `channels` declaration (gateway C1, spec
+ * §7). Absent → undefined (no contributions). Present but malformed →
+ * throw; the loader quarantines the extension with the thrown message
+ * (fail-loud: an adapter that THINKS it declared a channel must not
+ * silently lose it — the providers/health class). Per entry: `id` matching
+ * the grammar, `label` a non-empty string, `capabilities` an object with
+ * `chatTypes` a non-empty array over the vocabulary, `maxMessageLength` a
+ * positive integer, `format` one of the three values, the optional
+ * `edit.minIntervalMs`/`typing.intervalMs`/`buttons.max` positive
+ * integers, `configured`/`start`/`send` functions, the optional members
+ * functions when present, and `format` REQUIRED when
+ * `capabilities.format` is `"native"` (native markup has no default
+ * renderer). Duplicate ids within one result reject — they would collide
+ * on the engine's channel-id key exactly like a cross-extension pair.
+ */
+function validateChannels(
+	value: unknown,
+): readonly ChannelContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a channels field that is not an array",
+		);
+	}
+	const seen = new Set<string>();
+	for (const entry of value) {
+		const channel = entry as
+			| {
+						id?: unknown;
+					label?: unknown;
+					capabilities?: unknown;
+					configured?: unknown;
+					start?: unknown;
+					send?: unknown;
+					stop?: unknown;
+					edit?: unknown;
+					delete?: unknown;
+					typing?: unknown;
+					setCommands?: unknown;
+					format?: unknown;
+					classifyError?: unknown;
+			  }
+			| null;
+		const describe = () =>
+			`channel "${typeof channel?.id === "string" ? channel.id : String(channel?.id)}"`;
+		if (
+			typeof channel?.id !== "string" ||
+			!CHANNEL_ID.test(channel.id)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose id does not match ^[a-z][a-z0-9-]*$`,
+			);
+		}
+		if (seen.has(channel.id)) {
+			throw new Error(
+				`extension factory returned a duplicate channel id "${channel.id}" within one result`,
+			);
+		}
+		seen.add(channel.id);
+		if (typeof channel?.label !== "string" || channel.label.length === 0) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose label is missing or empty`,
+			);
+		}
+		const capabilities = channel?.capabilities as
+			| {
+						chatTypes?: unknown;
+					maxMessageLength?: unknown;
+					format?: unknown;
+					edit?: { minIntervalMs?: unknown } | null;
+					buttons?: { max?: unknown } | null;
+					typing?: { intervalMs?: unknown } | null;
+			  }
+			| null;
+		if (typeof capabilities !== "object" || capabilities === null) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities is missing or not an object`,
+			);
+		}
+		if (
+			!Array.isArray(capabilities.chatTypes) ||
+			capabilities.chatTypes.length === 0 ||
+			capabilities.chatTypes.some(
+					(type) =>
+						typeof type !== "string" || !CHANNEL_CHAT_TYPES.has(type),
+				)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.chatTypes is not a non-empty array over dm, group, thread`,
+			);
+		}
+		if (
+			typeof capabilities.maxMessageLength !== "number" ||
+			!Number.isInteger(capabilities.maxMessageLength) ||
+			capabilities.maxMessageLength <= 0
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.maxMessageLength is not a positive integer`,
+			);
+		}
+		if (
+			typeof capabilities.format !== "string" ||
+			!CHANNEL_FORMATS.has(capabilities.format)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.format is not one of plain, markdown, native`,
+			);
+		}
+		// The optional numeric members: positive integers when present.
+		if (
+			capabilities.edit !== undefined &&
+			(typeof capabilities.edit?.minIntervalMs !== "number" ||
+				!Number.isInteger(capabilities.edit.minIntervalMs) ||
+				capabilities.edit.minIntervalMs <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.edit.minIntervalMs is not a positive integer`,
+			);
+		}
+		if (
+			capabilities.buttons !== undefined &&
+			(typeof capabilities.buttons?.max !== "number" ||
+				!Number.isInteger(capabilities.buttons.max) ||
+				capabilities.buttons.max <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.buttons.max is not a positive integer`,
+			);
+		}
+		if (
+			capabilities.typing !== undefined &&
+			(typeof capabilities.typing?.intervalMs !== "number" ||
+				!Number.isInteger(capabilities.typing.intervalMs) ||
+				capabilities.typing.intervalMs <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.typing.intervalMs is not a positive integer`,
+			);
+		}
+		if (typeof channel?.configured !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose configured is not a function`,
+			);
+		}
+		if (typeof channel?.start !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose start is not a function`,
+			);
+		}
+		if (typeof channel?.send !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose send is not a function`,
+			);
+		}
+		for (const field of [
+			"stop",
+			"edit",
+			"delete",
+			"typing",
+			"setCommands",
+			"format",
+			"classifyError",
+		] as const) {
+			if (channel[field] !== undefined && typeof channel[field] !== "function") {
+				throw new Error(
+					`extension factory returned a ${describe()} whose ${field} is not a function`,
+				);
+			}
+		}
+		if (capabilities.format === "native" && channel?.format === undefined) {
+			throw new Error(
+				`extension factory returned a ${describe()} without a format function while its capabilities.format is "native"`,
+			);
+		}
+	}
+	return value as readonly ChannelContribution[];
+}
+
+/**
+ * Validate a factory result's `gateway` declaration (gateway C2, spec
+ * §8.0). Absent → undefined (no engine). Present but malformed → throw;
+ * the loader quarantines the extension with the thrown message
+ * (fail-loud: an extension that THINKS it declared the engine must not
+ * silently lose it — the providers/health class). An object whose
+ * `start`/`stopIntake`/`stop`/`health` are all functions is the shape; a
+ * result carrying BOTH `gateway` and the `health` field is a contract
+ * violation (an engine reports health through `gateway.health()` — the
+ * `health` field is the provider-contributor surface and would
+ * double-report), thrown with the documented message.
+ */
+function validateGateway(
+	value: unknown,
+	healthPresent: boolean,
+): GatewayEngine | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "object" || value === null) {
+		throw new Error(
+			"extension factory returned a gateway field that is not an object",
+		);
+	}
+	const engine = value as {
+		start?: unknown;
+		stopIntake?: unknown;
+		stop?: unknown;
+		health?: unknown;
+	};
+	for (const field of ["start", "stopIntake", "stop", "health"] as const) {
+		if (typeof engine[field] !== "function") {
+			throw new Error(
+				`extension factory returned a gateway whose ${field} is not a function`,
+			);
+		}
+	}
+	if (healthPresent) {
+		throw new Error(
+			"a gateway engine reports health through gateway.health(), not the health field",
+		);
+	}
+	return value as GatewayEngine;
 }
 
 /**
@@ -1191,17 +1722,27 @@ async function resolvedFromFactory(
 	const commands = validateCommands(candidate.commands);
 	const skills = validateSkills(candidate.skills);
 	const notifiers = validateNotifiers(candidate.notifiers);
+	const channels = validateChannels(candidate.channels);
+	// The engine (gateway C2): validated against the health-field conflict
+	// rule too — a result carrying both quarantines with the documented
+	// message (an engine reports health through gateway.health()).
+	const gateway = validateGateway(candidate.gateway, candidate.health !== undefined);
+	const surfaces = validateSurfaces(candidate.surfaces);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
 	if (extension === undefined) {
 		// Contributor-only result: valid when ANY contribution field is
-		// present (`providers`, `webuiBundles`); otherwise this factory
-		// result is not the contract form (fall through to the next
+		// present (`providers`, `webuiBundles`, `channels`); otherwise this
+		// factory result is not the contract form (fall through to the next
 		// resolution candidate). The contributor's name is its
 		// collision-record identity — without one there is nothing to
 		// attribute the contributions to, which is a contract violation.
-		if (providers === undefined && webuiBundles === undefined) {
+		if (
+			providers === undefined &&
+			webuiBundles === undefined &&
+			channels === undefined
+		) {
 			return undefined;
 		}
 		if (typeof candidate.name !== "string" || candidate.name.length === 0) {
@@ -1285,6 +1826,9 @@ async function resolvedFromFactory(
 		...(commands === undefined ? {} : { commands }),
 		...(skills === undefined ? {} : { skills }),
 		...(notifiers === undefined ? {} : { notifiers }),
+		...(channels === undefined ? {} : { channels }),
+		...(gateway === undefined ? {} : { gateway }),
+		...(surfaces === undefined ? {} : { surfaces }),
 	};
 }
 
@@ -1522,6 +2066,19 @@ const commandBindings: ExtensionCommandBinding[] = [];
 // Notifier transports (W5 Task 6, spec §9.6), attributed the same way —
 // the server's notifications surface delivers to every collected entry.
 const notifierBindings: ExtensionNotifierBinding[] = [];
+// Channel adapters (gateway C1, spec §7), attributed the same way — the
+// gateway engine's start context and the /v1/extensions inventory read
+// them. Collected only for LOADED extensions (a colliding adapter never
+// reaches here — the channelIds check below throws first).
+const channelBindings: ExtensionChannelBinding[] = [];
+// The gateway engine (gateway C2, spec §8.0): the ONE-engine rule — the
+// first loaded declarer wins; a later result declaring `gateway`
+// quarantines naming the first slug (an engine owns supervision over the
+// whole channel set, so a shadowing engine would inherit another
+// engine's bindings — the same never-last-wins reasoning as channel ids).
+let gatewayEngine: ExtensionGatewayBinding | undefined;
+// Surfaces (U3 Task 1): the flattened validated defs, slug-attributed.
+const surfaceBindings: ExtensionSurfaceBinding[] = [];
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -1531,6 +2088,13 @@ const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
+// Channel id → slug (gateway C1): the same claimed-only-by-LOADED pattern
+// as `slugs`. Chat bindings are keyed by channel id, so a shadowing
+// adapter would inherit another adapter's chats — the collision
+// quarantines the later loader instead of last-wins (deliberately unlike
+// commands and bundles). Checked BEFORE `registry.install` so a colliding
+// extension leaves no registry entry, no slug claim, and no binding.
+const channelIds = new Map<string, string>();
 for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
 const display = label ?? entry ?? "skills-only";
 				try {
@@ -1734,6 +2298,29 @@ const display = label ?? entry ?? "skills-only";
 					};
 					options.hostContextFactory(slug, kinds, host);
 				}
+				if (resolved.channels !== undefined) {
+					for (const channel of resolved.channels) {
+						const owner = channelIds.get(channel.id);
+						if (owner !== undefined) {
+							throw new Error(
+								`channel "${channel.id}" is already contributed by "${owner}" — ` +
+								"channel ids must be unique across extensions (chat bindings are keyed by id)",
+							);
+						}
+					}
+				}
+				// The one-engine rule (gateway C2): checked BEFORE the registry
+				// install, exactly like the channel-id collision — a second engine
+				// leaves no registry entry, no slug claim, and no binding. First
+				// loaded wins.
+				if (resolved.gateway !== undefined) {
+					if (gatewayEngine !== undefined) {
+						throw new Error(
+							`gateway engine already declared by "${gatewayEngine.extension}"`,
+						);
+					}
+					gatewayEngine = { extension: slug, engine: resolved.gateway };
+				}
 				if (extension !== undefined) {
 					registry.install(extension);
 				}
@@ -1741,6 +2328,12 @@ const display = label ?? entry ?? "skills-only";
 				// later stage's quarantine (never loaded) leaves the slug free
 				// for the next boot's specifier list.
 				slugs.set(slug, declared);
+				// ...and its channel ids (the same claimed-only-by-loaded rule).
+				if (resolved.channels !== undefined) {
+					for (const channel of resolved.channels) {
+						channelIds.set(channel.id, slug);
+					}
+				}
 				// The manifest version for the §7.7 inventory: read off the
 				// module's own directory (a bare entry with no manifest stays
 				// versionless — the field is optional by design).
@@ -1752,13 +2345,16 @@ const display = label ?? entry ?? "skills-only";
 					status: "ok",
 					...(version === undefined ? {} : { version }),
 					...(builtin === true ? { builtin: true } : {}),
+					...(resolved.channels === undefined
+						? {}
+						: { channels: resolved.channels.map((channel) => channel.id) }),
 				});
-			if (extension !== undefined && resolved.health !== undefined) {
-				healthProducers.push({
-				extension,
-				health: resolved.health,
-			});
-			}
+				if (extension !== undefined && resolved.health !== undefined) {
+					healthProducers.push({
+						extension,
+						health: resolved.health,
+					});
+				}
 			// §6.7 retirements, warned ONCE at load (never quarantined): a
 			// result resolved through the named-export bridge, and a result still
 			// carrying the retired submit pass-through. Both keep loading —
@@ -1775,22 +2371,22 @@ const display = label ?? entry ?? "skills-only";
 					`extension "${slug}": the submit pass-through was retired; ignoring`,
 				);
 			}
-			if (extension !== undefined && resolved.runSettled !== undefined) {
+				if (extension !== undefined && resolved.runSettled !== undefined) {
 					runSettledBindings.push({
 						extension,
-					runSettled: resolved.runSettled,
+						runSettled: resolved.runSettled,
 					});
 				}
 				if (extension !== undefined && resolved.lifecycle !== undefined) {
 					lifecycleBindings.push({
 						extension,
-					handlers: resolved.lifecycle,
+						handlers: resolved.lifecycle,
 					});
 				}
 				if (extension !== undefined && resolved.workers !== undefined) {
 					workerBindings.push({
 						extension,
-					workers: resolved.workers,
+						workers: resolved.workers,
 					});
 				}
 				if (resolved.jobs !== undefined) {
@@ -1805,6 +2401,25 @@ const display = label ?? entry ?? "skills-only";
 				if (resolved.notifiers !== undefined) {
 					notifierBindings.push({ extension: slug, notifiers: resolved.notifiers });
 				}
+				if (resolved.channels !== undefined) {
+					channelBindings.push({ extension: slug, channels: resolved.channels });
+				}
+			if (resolved.surfaces !== undefined) {
+				// The §11.1 assets dir: the package manifest's `sigrun.assets`
+				// relative to the package root (the same anchor the version
+				// read below uses); absent or undeclared → `undefined` and
+				// every asset request 404s.
+				const assetsRoot = packageDir ?? extensionModuleDir(loaded);
+				const declaredAssets =
+					assetsRoot === undefined
+						? undefined
+						: readPackageAssetsDir(assetsRoot);
+				surfaceBindings.push({
+					extension: slug,
+					defs: resolved.surfaces,
+					...(declaredAssets === undefined ? {} : { assetsDir: declaredAssets }),
+				});
+			}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -1872,5 +2487,8 @@ const display = label ?? entry ?? "skills-only";
 		routeBindings,
 		commandBindings,
 		notifierBindings,
+		channelBindings,
+		gatewayEngine,
+		surfaces: surfaceBindings,
 	};
 }

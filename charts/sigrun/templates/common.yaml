@@ -7,6 +7,24 @@ explicit tag or digest and has no appVersion fallback of its own, so the
 default is applied here, before the loader validates: values.yaml keeps
 `tag: ""` (meaning "use the appVersion"), and a chart version bump moves
 the image tag with it unless an operator pins one.
+
+Before the loader runs, the `sigrun:` block (spec §4) is translated into
+library shape: the seed + tools initContainers (controllers.main.
+initContainers), the tools PATH, and the operator Secret envFrom refs.
+The translation lives here rather than in values.yaml so the values file
+stays the operator-facing contract (the declarative WHAT) while this
+template owns the mechanical HOW (image reuse, argv rendering) —
+including the gating: a chart owning nothing renders no initContainer at
+all (the portable default is initContainer-free, like backup and
+monitoring).
+
+Both initContainers reuse the main container's image (the scripts ship
+in it at /usr/local/share/sigrun/) and need no volume mounts of their
+own: the library's persistence globalMounts land the /data PVC on every
+container in the pod — initContainers included — under the pod security
+context (non-root uid 1000 + fsGroup 1000; the scripts own no privilege
+logic). Merge semantics throughout: a consumer's own initContainers /
+env / envFrom additions under controllers.main survive the translation.
 */}}
 {{- range $controller := .Values.controllers }}
 {{- range $container := $controller.containers }}
@@ -15,5 +33,66 @@ the image tag with it unless an operator pins one.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{- $sigrun := .Values.sigrun }}
+{{- $mainValues := .Values.controllers.main }}
+
+{{- /* Seed-input snapshots (empty-safe defaults for a missing block). */}}
+{{- $seedFleet := dig "extensions" "enabled" list $sigrun | default list }}
+{{- $seedSettings := dig "settings" dict $sigrun | default dict }}
+{{- $seedExtSettings := dig "extensions" "settings" dict $sigrun | default dict }}
+
+{{- /* The seed initContainer re-asserts settings.json + the fleet list and
+     seed-once's per-slug extension settings (spec §4). Rendered when
+     EITHER re-assert surface is non-empty: an empty fleet still writes
+     `extensions: []` (that is how values removal works), but a chart
+     owning NOTHING renders nothing. argv 2-4 are rendered JSON strings,
+     `[]`/`{}` when empty — the seeder's contract (always four args,
+     never omitted). */}}
+{{- if or $seedFleet $seedSettings $seedExtSettings }}
+{{- $seedArgs := list "/usr/local/share/sigrun/seed-settings.sh" "/data/config" ($seedFleet | toJson) ($seedSettings | toJson) ($seedExtSettings | toJson) }}
+{{- $_ := set $mainValues "initContainers" (merge (dig "initContainers" dict $mainValues) (dict "sigrun-seed" (dict "image" (deepCopy $mainValues.containers.main.image) "args" $seedArgs))) }}
+{{- end }}
+
+{{- /* The tools initContainer installs kubectl-class static binaries onto
+     the data volume (spec §5). Gated on BOTH enabled and a non-empty
+     packages list — the installer exits LOUD (nonzero) on zero specs BY
+     DESIGN (fail loud), so an empty list must render nothing rather than
+     a guaranteed CrashLoop. Hash-cached: pod restarts don't re-download.
+     dependsOn orders it after the seed ONLY when the seed renders — the
+     library's topological sort drops a container whose dependsOn names a
+     node absent from the graph (a tools-only deployment must still get
+     its installer). */}}
+{{- $seedRenders := or $seedFleet $seedSettings $seedExtSettings }}
+{{- $toolsEnabled := dig "tools" "enabled" true $sigrun }}
+{{- $toolsPackages := dig "tools" "packages" list $sigrun | default list }}
+{{- $toolsDir := dig "tools" "dir" "/data/tools" $sigrun }}
+{{- if and $toolsEnabled $toolsPackages }}
+{{- $toolsArgs := prepend (prepend $toolsPackages $toolsDir) "/usr/local/share/sigrun/tools-install.sh" }}
+{{- $toolsValues := dict "image" (deepCopy $mainValues.containers.main.image) "args" $toolsArgs }}
+{{- if $seedRenders }}
+{{- $_ := set $toolsValues "dependsOn" (list "sigrun-seed") }}
+{{- end }}
+{{- $_ := set $mainValues "initContainers" (merge (dig "initContainers" dict $mainValues) (dict "sigrun-tools" $toolsValues)) }}
+{{- end }}
+
+{{- /* PATH for the main container when tools land: <toolsDir>/bin FIRST —
+     deploy-time kubectl must win over any same-named binary the base
+     image grows later. A plain literal (the node image default), because
+     k8s env values replace PATH wholesale — there is no $(PATH) form. */}}
+{{- if and $toolsEnabled $toolsPackages }}
+{{- $pathEnv := dict "name" "PATH" "value" (printf "%s/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" $toolsDir) }}
+{{- $_ := set $mainValues.containers.main "env" (append (dig "env" list $mainValues.containers.main) $pathEnv) }}
+{{- end }}
+
+{{- /* Operator Secret envFrom refs: names of EXISTING Secrets whose keys
+     are env vars (SIGRUN_EXT_* / provider credentials). Secret VALUES
+     never render through values files (no sigrun.extensions.secrets
+     block exists by design). Appended so the chart's own sigrun-env ref
+     and consumer additions survive. */}}
+{{- range $secretName := (dig "secretsEnv" list $sigrun | default list) }}
+{{- $_ := set $mainValues.containers.main "envFrom" (append (dig "envFrom" list $mainValues.containers.main) (dict "secretRef" (dict "name" $secretName))) }}
+{{- end }}
+
 {{- include "bjw-s.common.loader.init" . }}
 {{- include "bjw-s.common.loader.generate" . }}

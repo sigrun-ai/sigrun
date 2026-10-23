@@ -20,13 +20,18 @@ import { transferOwnership } from "../ownership.js";
 import type { InviteResponse, UserWire } from "../views.js";
 
 /** The wire form of one directory user (the record minus nothing — the
- * routes serving it are admin-gated, and emails are admin material). */
+ * routes serving it are admin-gated, and emails are admin material).
+ * `admin` stays the STORED flag; `groupAdmin` (gateway C8) is the
+ * persisted proxy-group grant alongside it. */
 function userWire(record: DirectoryUser): UserWire {
 	return {
 		user: record.user,
 		...(record.name === undefined ? {} : { name: record.name }),
 		...(record.email === undefined ? {} : { email: record.email }),
 		admin: record.admin,
+		...(record.groupAdmin === undefined
+			? {}
+			: { groupAdmin: record.groupAdmin }),
 		createdAt: record.createdAt,
 		source: record.source,
 	};

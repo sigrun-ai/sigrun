@@ -18,6 +18,72 @@ nameOverride: ""
 # -- Overrides the full resource name (release-chart otherwise).
 fullnameOverride: ""
 
+# The sigrun deployment block (spec §4): extension fleet, operator
+# Secret refs, and deploy-time tools — the GitOps surface. Everything
+# here is owned by the VALUES FILE: the seed initContainer re-asserts it
+# into the config volume on every pod start (see ownership notes below).
+sigrun:
+  # settings.json keys the CHART owns (e.g. builtinExtensions). These are
+  # RE-ASSERTED on every pod start: merged into settings.json SHALLOW —
+  # foreign keys (admin-API / operator writes) survive, chart keys are
+  # overwritten WHOLESALE, so a sub-key dropped from values vanishes from
+  # the file on the next boot (a deep merge would keep it alive as zombie
+  # config).
+  settings: {}
+
+  extensions:
+    # The extension fleet: settings.json's `extensions` list (install +
+    # load specs — npm specifiers, bare names, file:, git: forms; sigrun
+    # core's packages contract). Re-asserted every boot like `settings`
+    # above; an empty list writes `extensions: []`, which is how removing
+    # an extension from values removes it from the file.
+    #
+    # MUTUALLY EXCLUSIVE with the SIGRUN_EXTENSIONS env var (sigrun core
+    # contract): the env var, when set, REPLACES the file's list — a
+    # deployment uses ONE style or the other. The chart deliberately
+    # renders no validation for the combination (env wins silently, by
+    # design); migrating an env-driven deploy onto this block means
+    # DROPPING SIGRUN_EXTENSIONS from the sigrun-env Secret, or this
+    # list is dead on every boot.
+    enabled: []
+    # Per-extension settings, keyed by slug → config/settings/<slug>.json.
+    # SEED-ONCE: written only when the file is absent. After first boot
+    # the EXTENSION owns the file (the settings store writes there at
+    # runtime); re-asserting here would clobber those self-writes.
+    # Changing a seeded value = delete the file or bump via the
+    # extension's own surface. Secret-ish knobs do NOT belong here —
+    # see secretsEnv below (extension secrets resolve STORED
+    # <configDir>/secrets.json OVER env `SIGRUN_EXT_<SLUG>_<KEY>`).
+    settings: {}
+
+  # Operator-managed k8s Secret NAMES injected as env (envFrom secretRef)
+  # on the main container. Write the `SIGRUN_EXT_*` keys (and provider
+  # credentials — OPENAI_API_KEY-class env) INTO your own Secret; secret
+  # VALUES never belong in values files (no sigrun.extensions.secrets
+  # block exists by design). Stored secrets.json entries still WIN over
+  # these env vars where both exist — env is the bootstrap/override
+  # channel, never the stored copy.
+  secretsEnv: []
+  # example:
+  #   - sigrun-ext-secrets
+
+  tools:
+    # Deploy-time tooling (spec §5): kubectl-class static binaries
+    # installed onto the data volume by an initContainer — version churn
+    # is a deploy concern, never an image rebuild. Renders the tools
+    # initContainer and prepends <dir>/bin to the main container PATH
+    # only when enabled AND at least one package is listed (the installer
+    # exits LOUD on zero specs — an empty list must render nothing).
+    enabled: true
+    # Install root on the /data PVC (binaries land in <dir>/bin).
+    dir: /data/tools
+    # name@version specs (version = the release tag form, `v` included).
+    # Catalog: kubectl, helm, talosctl, flux, k9s.
+    packages: []
+    # example:
+    #   - kubectl@v1.32.0
+    #   - helm@v3.17.0
+
 controllers:
   main:
     # -- Controller type.
@@ -56,8 +122,12 @@ controllers:
         # The deploy entry's BUILT form (dist/index.js), run under plain
         # node — direct, no npm in the signal path, so SIGTERM reaches the
         # entry's graceful shutdown (server close, event-bus drain, harness
-        # close, exit 0).
-        command:
+        # close, exit 0). ARGS, not command (spec §4): the image's ENTRYPOINT
+        # is the privilege-drop trampoline, and k8s `command:` would
+        # override it — `args:` keeps the trampoline in the exec path (it
+        # no-ops to `exec "$@"` when the pod security context already set
+        # a non-root uid).
+        args:
           - node
           - dist/index.js
         # The relative `dist/index.js` resolves against this directory, not
@@ -205,8 +275,9 @@ controllers:
         # the online-safe backup API (consistent while the harness holds
         # the db in WAL mode, verified live by test/backup.test.ts's
         # restore drill, App C). Retention (30 days, path target) and
-        # fail-loud exit codes live in the script itself.
-        command:
+        # fail-loud exit codes live in the script itself. ARGS, not
+        # command — same ENTRYPOINT contract as the main container.
+        args:
           - node
           - /app/dist/backup/run-backup.js
         env:

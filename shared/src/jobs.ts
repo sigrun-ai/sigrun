@@ -40,7 +40,16 @@ export type JobAction =
 			thinking?: string;
 			conversation: "new" | number;
 			runSharing?: Sharing;
-	  }
+			/**
+			 * Gateway delivery targets (spec §8.0 C7): 1–8 strings, each
+			 * 1–256 chars, valid ONLY with `conversation: "new"` — a
+			 * conversation bound to a chat already delivers there. Core
+			 * validates SHAPE only; the target grammar belongs to the
+			 * gateway. `fire.ts` stamps it onto the run conversation's
+			 * SessionMeta so the gateway's runSettled delivery reads it.
+			 */
+			deliver?: string[];
+		}
 	| { kind: "task"; task: string; input?: JsonValue };
 
 /** A job's declared shape — what every source (api/file/extension) supplies. */

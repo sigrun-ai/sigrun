@@ -54,14 +54,18 @@ import type {
 	AmbientPlace,
 	AmbientRecord,
 } from "@sigrun/shared/ambient";
+import type { Action, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
 import type { InteractionAnswer, InteractionRecord } from "@sigrun/shared/interactions";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import type {
 	ConversationSummary,
 	ConversationViewWire,
 	HealthStatus,
+	ModelEntry,
 	SessionMeta,
+	SlashCommand,
 	SubmissionRecordWire,
+	ThinkingLevelWire,
 	UserWire as DirectoryUserWire,
 } from "@sigrun/shared/views";
 
@@ -76,8 +80,19 @@ export type {
 	DirectoryUserWire,
 	InteractionRecord,
 	JobSpec,
+	ModelEntry,
 	Sharing,
+	SlashCommand,
 };
+
+// The JSON mirror the surfaces contract uses (spec §7.1): the shared
+// leaf's local declaration — STRUCTURALLY IDENTICAL to pi-durable's
+// `JsonObject` (the chord `JsonValue` mirror), so params and payloads
+// built from these types flow into every host API unchanged. Declared
+// as a local alias so the contract names ONE spelling of the concept
+// per import site (the shared leaf owns the shape).
+type JsonParams = JsonObject;
+type JsonParamValue = JsonParams[string];
 
 // ---------------------------------------------------------------------------
 // The invocation context
@@ -167,6 +182,14 @@ export type ExtensionLifecyclePayload = {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
 	};
+	/** Gateway C6: one terminal interaction transition — the payload mirrors
+	 *  the record's terminal envelope fields. */
+	interactionSettled: {
+		readonly conversationId: ConversationId;
+		readonly callId: string;
+		readonly kind: string;
+		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+	};
 };
 
 /** A factory-result `runSettled` handler: called once per settled run, deadline-bounded. */
@@ -212,6 +235,8 @@ export type SigrunLifecycleHandlers = {
 	readonly conversationForked?: ExtensionLifecycleHandler<"conversationForked">;
 	readonly conversationArchived?: ExtensionLifecycleHandler<"conversationArchived">;
 	readonly conversationIdle?: ExtensionLifecycleHandler<"conversationIdle">;
+	/** Terminal interaction transitions from ANY writer (gateway C6). */
+	readonly interactionSettled?: ExtensionLifecycleHandler<"interactionSettled">;
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
 	/** The user-removal transfer event; direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
@@ -302,8 +327,11 @@ export interface WebuiBundleContribution {
 /**
  * The resolved caller (core hardening W1): what the auth pipeline
  * stamps on every request. `method` names the proof — the empty-method
- * naive path (`"none"`), a verified token (`"token"`), or a trusted
- * forward-auth header set (`"proxy"`).
+ * naive path (`"none"`), a verified token (`"token"`), a trusted
+ * forward-auth header set (`"proxy"`), or an IN-PROCESS host-built
+ * principal (`"host"`, gateway C4b: `commands.run` builds it from the
+ * directory — no request ever carries one, but a command run through
+ * the host sees exactly which proof its caller had).
  */
 export interface Principal {
 	/** The directory username; `undefined` under the naive method with no header. */
@@ -313,7 +341,7 @@ export interface Principal {
 	readonly admin: boolean;
 	/** True for the `SIGRUN_API_TOKEN` service principal. */
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy";
+	readonly method: "none" | "token" | "proxy" | "host";
 }
 
 /** One extension HTTP route, mounted at `/v1/ext/<slug>/<path>`. */
@@ -351,6 +379,9 @@ export interface NotificationEvent {
 	readonly type: "interaction.pending" | "job.failed" | "run.settled";
 	readonly conversationId?: number;
 	readonly jobId?: string;
+	/** Gateway C6: the pending record's id — set on `interaction.pending` only
+	 *  (read the record via `host.snapshotInteraction`). */
+	readonly callId?: string;
 	/** The recipient. */
 	readonly user: string | undefined;
 	readonly title: string;
@@ -366,6 +397,324 @@ export interface NotifierContribution {
 		event: NotificationEvent,
 		ctx: { readonly host: SigrunHost },
 	): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Channel adapters (gateway C1 — the `channels` contribution, spec §7)
+// ---------------------------------------------------------------------------
+
+/** Whether an adapter's credentials/config are present; unconfigured adapters are never started. */
+export type ChannelReadiness = {
+	readonly status: "not_configured" | "ready";
+	readonly detail?: string;
+};
+
+/** What a chat platform can render — the engine formats against these. */
+export interface ChannelCapabilities {
+	readonly chatTypes: readonly ("dm" | "group" | "thread")[];
+	readonly maxMessageLength: number;
+	readonly format: "plain" | "markdown" | "native";
+	/** Edit-in-place streaming; `minIntervalMs` is the platform's safe edit rate. */
+	readonly edit?: { readonly minIntervalMs: number };
+	/** `labelMax` bounds button text; the engine truncates, never the adapter. */
+	readonly buttons?: {
+		readonly max: number;
+		readonly perRow?: number;
+		readonly labelMax?: number;
+	};
+	readonly media?: readonly ("image" | "audio" | "video" | "document")[];
+	readonly typing?: { readonly intervalMs: number };
+	readonly replyTo?: boolean;
+	readonly commandMenu?: boolean;
+	/** One short paragraph for the prompt: what renders, what doesn't. */
+	readonly promptHint?: string;
+}
+
+/** One chat on a platform — where a conversation lives. */
+export interface ChatRef {
+	readonly chatId: string;
+	readonly chatType: "dm" | "group" | "thread";
+	readonly threadId?: string;
+}
+
+/** One platform message — the edit/delete target. */
+export interface MessageRef {
+	readonly chat: ChatRef;
+	readonly messageId: string;
+}
+
+/**
+ * One inbound media attachment. `fetch` is lazy so unwanted media is
+ * never downloaded; the adapter stops reading and throws once `maxBytes`
+ * is exceeded, so an undeclared-size file is never fully downloaded
+ * either.
+ *
+ * The size-limit error is an error whose `name` is
+ * {@link AttachmentTooLargeName} (`"AttachmentTooLarge"`): the engine
+ * matches it by NAME, never `instanceof` — this types-only contract
+ * ships no runtime subpath, so class identity could never line up across
+ * an adapter's own dependency tree.
+ */
+export interface InboundAttachment {
+	readonly kind: "image" | "audio" | "voice" | "video" | "document" | "sticker";
+	readonly mime?: string;
+	readonly filename?: string;
+	readonly size?: number;
+	fetch(opts: { maxBytes: number; signal: AbortSignal }): Promise<Uint8Array>;
+}
+
+/** One inbound chat message, handed to the engine through `ChannelContext.receive`. */
+export interface InboundEvent {
+	readonly messageId: string;
+	readonly chat: ChatRef & { readonly title?: string };
+	readonly sender: { readonly id: string; readonly name?: string; readonly isBot?: boolean };
+	/** The bot's own message echoed back; the engine drops it. */
+	readonly fromSelf?: boolean;
+	readonly text: string;
+	/** Group messages: the bot was @-mentioned or replied to. */
+	readonly mentioned?: boolean;
+	readonly replyTo?: {
+		readonly messageId: string;
+		readonly text?: string;
+		readonly authorName?: string;
+		readonly fromSelf?: boolean;
+	};
+	readonly attachments?: readonly InboundAttachment[];
+	/** Platform album/batch id (e.g. a media group); events sharing it merge into one submission. */
+	readonly groupId?: string;
+}
+
+/** A button tap: `data` is the opaque token the engine put on the button. */
+export interface ActionEvent {
+	readonly chat: ChatRef;
+	readonly sender: { readonly id: string; readonly name?: string };
+	readonly message?: MessageRef;
+	readonly data: string;
+}
+
+/** One message to send: already formatted per `capabilities.format` and within `maxMessageLength`. */
+export interface OutboundMessage {
+	readonly chat: ChatRef;
+	readonly text: string;
+	readonly replyTo?: string;
+	readonly buttons?: readonly (readonly {
+		readonly label: string;
+		readonly data: string;
+		readonly style?: "primary" | "danger" | "neutral";
+	}[])[];
+	readonly files?: readonly { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array }[];
+}
+
+/** Which platform messages one `send` produced (a media group, a split message). */
+export interface SendReceipt {
+	readonly messageIds: readonly string[];
+}
+
+/** The engine-side context handed to a started adapter. */
+export interface ChannelContext {
+	readonly signal: AbortSignal;
+	/**
+	 * Resolves once the event is durably admitted, handled as a command,
+	 * or deliberately dropped: the adapter acks the platform on any
+	 * resolution. A rejection means the engine failed; the adapter does
+	 * not ack, the platform redelivers, and dedupe makes the retry safe.
+	 */
+	receive(event: InboundEvent): Promise<{
+		readonly outcome: "admitted" | "dropped" | "command";
+	}>;
+	/** A button tap. `data` is the opaque token the engine put on the button. */
+	action(event: ActionEvent): Promise<void>;
+	status(state: { readonly state: "connecting" | "running"; readonly detail?: string }): void;
+	fail(error: unknown): void;
+	readonly log: {
+		info(msg: string): void;
+		warn(msg: string): void;
+		error(msg: string, error?: unknown): void;
+	};
+}
+
+/**
+ * One channel adapter: one chat platform's transport. The engine owns
+ * supervision and delivery; the adapter owns the platform.
+ */
+export interface ChannelContribution {
+	/** Must match `^[a-z][a-z0-9-]*$`; unique across every loaded extension. */
+	readonly id: string;
+	readonly label: string;
+	readonly capabilities: ChannelCapabilities;
+	/** Whether credentials/config are present. Unconfigured adapters are never started. */
+	configured(): ChannelReadiness | Promise<ChannelReadiness>;
+	/**
+	 * Connect and begin receiving. Resolves once connected; any receive
+	 * loop keeps running until `ctx.signal` aborts. Post-connect failures
+	 * go through `ctx.fail` so the engine's supervisor owns restarts
+	 * (adapters never self-reconnect forever).
+	 */
+	start(ctx: ChannelContext): Promise<void>;
+	stop?(): Promise<void>;
+	send(message: OutboundMessage): Promise<SendReceipt>;
+	edit?(ref: MessageRef, message: OutboundMessage): Promise<void>;
+	delete?(ref: MessageRef): Promise<void>;
+	typing?(chat: ChatRef): Promise<void>;
+	setCommands?(
+		commands: readonly { readonly name: string; readonly description: string }[],
+	): Promise<void>;
+	/** Markdown → the platform's native markup. Required when `capabilities.format` is `"native"`. */
+	format?(markdown: string): string;
+	/** Without it every send error is `"transient"`. */
+	classifyError?(error: unknown): "transient" | "permanent" | "chat_gone";
+}
+
+/**
+ * The `name` an adapter's size-limit error carries: the engine matches
+ * `error.name === "AttachmentTooLarge"`, never `instanceof` (no runtime
+ * subpath ships with the types-only contract — see
+ * {@link InboundAttachment.fetch}).
+ */
+export type AttachmentTooLargeName = "AttachmentTooLarge";
+
+// ---------------------------------------------------------------------------
+// Gateway engines (gateway C2 — the `gateway` factory-result field)
+// ---------------------------------------------------------------------------
+
+/**
+ * The context sigrun hands the loaded engine's `start`: the flat,
+ * slug-attributed channel set (every loaded adapter's contribution —
+ * `{extension, channel}` pairs) and the shutdown signal. The signal is
+ * the `AbortController` the host's `gateway.stop()` aborts — an engine's
+ * receive loops observe it, exactly like an adapter's `ChannelContext.signal`.
+ */
+export interface GatewayEngineContext {
+	readonly channels: readonly {
+		readonly extension: string;
+		readonly channel: ChannelContribution;
+	}[];
+	/** Aborted by the host's `gateway.stop()` — the engine's shutdown signal. */
+	readonly signal: AbortSignal;
+}
+
+/**
+ * One gateway engine: the chat-transport supervisor the `gateway`
+ * factory-result field names. ONE engine per boot (a second declarer
+ * quarantines at load — the one-engine rule); core ships none. `start`
+ * runs after the server listens; `stopIntake` runs before the event bus's
+ * shutdown drain (intake closes first — the drain is the last admission
+ * window); `stop` runs after it (adapters stop only once every settle has
+ * been delivered). Health is reported through `health()` — NEVER the
+ * factory-result `health` field (that field is the provider-contributor
+ * surface; a result carrying both quarantines).
+ */
+export interface GatewayEngine {
+	/** Start supervision over the channels; resolves once started. */
+	start(ctx: GatewayEngineContext): Promise<void>;
+	/** Close inbound intake (admissions stop) — before the shutdown drain. */
+	stopIntake(): Promise<void>;
+	/** Stop the engine and its adapters — after the shutdown drain. */
+	stop(): Promise<void>;
+	/** The engine's synchronous health read ("ok" | "degraded"). */
+	health(): "ok" | "degraded";
+}
+
+// ---------------------------------------------------------------------------
+// Extension surfaces (UI-blocks U3 Task 1, spec §7.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The render/data access verdict a surface reports for one principal
+ * (spec §6.5): `none` hides the surface entirely (404 on every route).
+ */
+export type SurfaceAccessLevel = "none" | "read" | "write";
+
+/** The per-principal, per-instance context `render`/`data` receive. */
+export interface SurfaceContext {
+	/** Who is looking; the access verdict is this principal's. */
+	readonly principal: Principal;
+	/** From `navigate(params)`; validated as JSON, size-capped at 4 KiB. */
+	readonly params: JsonParams;
+	/** The instance identity: `instanceKey(params)` of this instance. */
+	readonly key: string;
+	/** Aborts when the request is abandoned; observe it in long work. */
+	readonly signal: AbortSignal;
+}
+
+/** The full render result: the tree, its data, and the access verdict. */
+export interface SurfaceRenderResult {
+	readonly tree: Tree;
+	readonly data: JsonObject;
+	readonly access: SurfaceAccessLevel;
+}
+
+/** The lighter `data()` result: refreshed data plus the access verdict. */
+export interface SurfaceDataResult {
+	readonly data: JsonObject;
+	readonly access: SurfaceAccessLevel;
+}
+
+/** The payload of an `onUpload` handler (spec §7.1 — snif... never trusted). */
+export interface UploadedFile {
+	/** The file field's name (the `file` field that carried the upload). */
+	readonly field: string;
+	/** Client-supplied filename, sanitised to a basename. */
+	readonly name: string;
+	/** Sniffed from the bytes, never trusted from the client. */
+	readonly mime: string;
+	/** Capped by the field's `maxBytes` and `server.maxUploadBytes`. */
+	readonly bytes: Uint8Array;
+}
+
+/**
+ * What an action handler returns (spec §6.3/§7.1): accepted (with an
+ * optional data update, a navigation, and a toast) or rejected (an
+ * operator-facing error, optionally field-scoped).
+ */
+export type ActionResult =
+	| {
+				readonly ok: true;
+				/** Data ops the server applies to the instance's data (sharedData only keeps them; §7.3). */
+				readonly update?: DataOps;
+				/** A `navigate` action (spec §6.1): the channel routes it through the normal navigation paths. */
+				readonly navigate?: Extract<Action, { type: "navigate" }>;
+				readonly toast?: string;
+		  }
+	| {
+				readonly ok: false;
+				readonly error: { readonly message: string; readonly field?: string };
+		  };
+
+/**
+ * One declared surface (spec §7.1, verbatim shape): the placement is
+ * the generic parameter — `"view"` or `"panel"` (the settings sections
+ * of §13.3 are a separate workstream).
+ */
+export interface SurfaceDef<P extends "view" | "panel"> {
+	/** Unique within the extension. */
+	readonly id: string;
+	readonly title: string;
+	readonly icon: IconName;
+	readonly placement: P;
+	/** Data is identical for every principal with access (§7.3). */
+	readonly sharedData?: boolean;
+	/** Channels refetch data on this interval while visible (min 5000). */
+	readonly refreshMs?: number;
+	/** §7.3; default: canonical JSON of params. */
+	instanceKey?(params: JsonParams): string;
+	render(ctx: SurfaceContext): Promise<SurfaceRenderResult>;
+	data?(ctx: SurfaceContext): Promise<SurfaceDataResult>;
+	readonly actions?: Readonly<
+		Record<string, (ctx: SurfaceContext, payload: JsonParamValue) => Promise<ActionResult>>
+	>;
+}
+
+/**
+ * The `surfaces` field of a factory result (spec §7.1): declared views
+ * and panels. Ids are unique across BOTH lists (one namespace — the
+ * loader enforces it).
+ */
+export interface SurfacesContribution {
+	readonly views?: readonly SurfaceDef<"view">[];
+	readonly panels?: readonly SurfaceDef<"panel">[];
+	/** §13.3 settings sections — a separate workstream; declared for shape stability. */
+	readonly settings?: readonly never[];
 }
 
 // ---------------------------------------------------------------------------
@@ -426,12 +775,19 @@ export interface SigrunHost {
 		record: InteractionRecord,
 		context: HandlerContext,
 	): Promise<void>;
-	/** Answer a pending interaction from the extension side (the tool path). */
+	/**
+	 * Answer a pending interaction from the extension side. `opts.user`
+	 * (gateway C5) stamps the answer HUMAN and names the user — who
+	 * answered matters to every participant a conversation is shared
+	 * with; access checks stay the caller's job (host code is trusted).
+	 * Without it the answer is the extension's own (`"extension"`).
+	 */
 	answerInteraction(
 		conversationId: ConversationId,
 		callId: string,
 		answer: InteractionAnswer,
 		context: HandlerContext,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/** Mark a pending interaction expired/cancelled/skipped (extension-owned semantics). */
 	settleInteraction(
@@ -468,6 +824,20 @@ export interface SigrunHost {
 	): Promise<void>;
 
 	/**
+	 * Publish a change for one surface instance (spec §7.3).
+	 * `changed(id, key, update?)` tells the server that instance `key`
+	 * of surface `id` changed: watching streams receive a `surface.changed`
+	 * event and refetch. `key` is the string `instanceKey(params)` returned
+	 * for that instance — params NEVER appear here. `update` carries data
+	 * ops (kept only for `sharedData` surfaces, §7.3). Fire-and-forget:
+	 * never awaited, and calling it for a surface without `data()` (a
+	 * load-time contract violation) is rejected by the host.
+	 */
+	readonly surfaces: {
+		changed(id: string, key: string, update?: DataOps): void;
+	};
+
+	/**
 	 * Drive conversations in-process (channel bridges, jobs) over the
 	 * same code paths as the HTTP API. Extensions are trusted in-process
 	 * code: they may act for any user, and mapping a channel's users to
@@ -479,6 +849,15 @@ export interface SigrunHost {
 			readonly sharing?: Sharing;
 			readonly name?: string;
 			readonly source?: string;
+			/**
+			 * Pin the conversation's extension/tool selection (gateway C4):
+			 * names resolved against the registry — an unknown name throws a
+			 * `ConversationOpError` naming `agent.extensions`/`agent.tools`.
+			 */
+			readonly agent?: {
+				readonly extensions?: readonly string[];
+				readonly tools?: readonly string[];
+			};
 		}): Promise<ConversationId>;
 		submit(
 			id: ConversationId,
@@ -498,6 +877,69 @@ export interface SigrunHost {
 			readonly archived?: boolean;
 		}): Promise<readonly ConversationSummary[]>;
 		meta(id: ConversationId): Promise<SessionMeta>;
+		/**
+		 * Withdraw/settle the conversation's active submission (gateway
+		 * C4, the abort route's op). On an idle conversation it RESOLVES
+		 * (chat `/stop` on an idle chat is not an error) — the HTTP route
+		 * keeps its 404 `no_active_submission`.
+		 */
+		abort(id: ConversationId): Promise<void>;
+		/**
+		 * Change the model and/or thinking level (gateway C4, the configure
+		 * route's op). The inputs are typed but validated like the route's
+		 * body — an unknown key or malformed model is a
+		 * `ConversationOpError`.
+		 */
+		configure(
+			id: ConversationId,
+			opts: { readonly model?: string; readonly thinking?: ThinkingLevelWire },
+		): Promise<void>;
+		/** Admit one manual compaction task (gateway C4, the compact route's op). */
+		compact(id: ConversationId): Promise<void>;
+		/**
+		 * Fork the history at one entry (gateway C4, the fork route's op):
+		 * absent `at` = the newest entry; `owner` stamps the fork's session
+		 * owner (absent = the owner key removed). Returns the new id.
+		 */
+		fork(
+			id: ConversationId,
+			opts?: { readonly at?: EntryId; readonly owner?: string },
+		): Promise<ConversationId>;
+		/**
+		 * Patch the session meta (gateway C4, the meta PATCH route's op).
+		 * Host callers are TRUSTED: the sharing patch runs with no
+		 * owner-or-superuser gate (the HTTP route keeps its 403).
+		 */
+		patchMeta(
+			id: ConversationId,
+			patch: {
+				readonly name?: string | null;
+				readonly archived?: boolean;
+				readonly sharing?: Sharing | null;
+			},
+		): Promise<SessionMeta>;
+		/**
+		 * Upload one file into the conversation's upload namespace (gateway
+		 * C4b, the raw-upload route's op): `uploads/<conversationId>/<name>`,
+		 * the exact path a `file`/`image` submission part takes. The NAME is
+		 * the one rule (no `/` or `\\`, not `.`/`..`, non-empty) — a bad
+		 * name throws a `ConversationOpError` (`invalid_field` `name`).
+		 */
+		upload(
+			id: ConversationId,
+			file: { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array },
+		): Promise<{ readonly path: string }>;
+		/**
+		 * Read one workspace file raw (gateway C4b, the files/raw route's
+		 * op): workspace-confined, capped at `server.maxFileReadBytes`, with
+		 * the extension-derived mime. Over the cap throws
+		 * `ConversationOpError({error: "too_large"}, 413)`; a bad path
+		 * `invalid_path`; an absent file `not_found`.
+		 */
+		readFile(
+			id: ConversationId,
+			path: string,
+		): Promise<{ readonly bytes: Uint8Array; readonly mime?: string }>;
 	};
 
 	/** The user directory (admin wire form; emails are admin material). */
@@ -522,6 +964,38 @@ export interface SigrunHost {
 	readonly identity: {
 		actingUser(conversationId: ConversationId): Promise<string | undefined>;
 	};
+
+	/**
+	 * The served model catalog (gateway C4b): the SAME list `GET
+	 * /v1/models` serves (picker entries — no provider internals).
+	 */
+	readonly models: {
+		list(): Promise<readonly ModelEntry[]>;
+	};
+
+	/**
+	 * The slash-command surface (gateway C4b): the merged catalog for
+	 * listing, and the invoke route's run for driving an extension
+	 * command in-process (chat `/command` handling).
+	 */
+	readonly commands: {
+		/** The merged catalog rows (core table + extension entries). */
+		list(): Promise<readonly SlashCommand[]>;
+		/**
+		 * Run one EXTENSION command (the invoke route's resolution): an
+		 * unknown/core name throws `command_not_found: <name>`; `opts.user`
+		 * must name a directory user (absent → `unknown user "<user>"`) and
+		 * becomes the run's principal with EFFECTIVE admin (the stored flag
+		 * OR the persisted group grant) and `method: "host"`. A throwing
+		 * run propagates (no HTTP 500 mapping — the caller is in-process).
+		 */
+		run(
+			conversationId: ConversationId,
+			name: string,
+			args: string,
+			opts: { readonly user: string },
+		): Promise<{ readonly notice?: string }>;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -532,8 +1006,8 @@ export interface SigrunHost {
  * The documented factory-result contract: EVERY field an extension may
  * return from its default-export factory. Every field is optional —
  * a minimal extension returns only `extension`; a contributor-only
- * result (`providers`/`webuiBundles` without `extension`) identifies
- * itself by `name`.
+ * result (`providers`/`webuiBundles`/`channels` without `extension`)
+ * identifies itself by `name`.
  *
  * `routes`, `commands`, `skills`, and `notifiers` are declared here
  * ahead of their implementations (W5 Tasks 2, 3, 4, and 6); the loader
@@ -568,6 +1042,23 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly skills?: readonly string[];
 	/** Notification transports (lands in Task 6). */
 	readonly notifiers?: readonly NotifierContribution[];
+	/**
+	 * Channel adapters (gateway C1, spec §7): one per chat platform. A
+	 * `channels`-only result is a valid contributor identified by `name`;
+	 * channel-id collisions across extensions quarantine the later
+	 * loader (chat bindings are keyed by channel id — never last-wins).
+	 */
+	readonly channels?: readonly ChannelContribution[];
+	/**
+	 * The gateway engine (gateway C2, spec §8.0): ONE per boot — a second
+	 * declarer quarantines at load naming the first. Always carried on a
+	 * result WITH an `extension` (an engine owns pi-durable surface); a
+	 * contributor-only `gateway` result is not a contract form. Report
+	 * health through `gateway.health()`, never the `health` field.
+	 */
+	readonly gateway?: GatewayEngine;
+	/** Declared surfaces — views and panels (UI-blocks U3, spec §7.1; the service lands in Task 2). */
+	readonly surfaces?: SurfacesContribution;
 }
 
 /**

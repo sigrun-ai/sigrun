@@ -11,11 +11,16 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import { extname } from "node:path";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import { isConfinedPath } from "../content-parts.js";
 import { base64BodyLimit } from "../../config.js";
+import {
+	ConversationOpError,
+	readFileMetaOp,
+	uploadOp,
+	validUploadName,
+} from "../conversation-ops.js";
 import {
 	ID_PARAMS_SCHEMA,
 	FILE_CONTENT_MAX_BYTES,
@@ -28,22 +33,8 @@ import type {
 	UploadResponse,
 } from "../views.js";
 
-/**
- * The one upload-name rule, shared by the base64 POST body's `name` and
- * the raw PUT's `:name` param: no `/` or `\\`, not `.` or `..`, non-empty.
- * The PUT checks it AFTER Fastify decodes the percent-encoded param
- * (`..%2Fx` arrives as `../x`, `%2e%2e` as `..`) — the check runs on the
- * decoded value, never the raw path text.
- */
-function validUploadName(name: string): boolean {
-	return (
-		name.length > 0 &&
-		!name.includes("/") &&
-		!name.includes("\\") &&
-		name !== "." &&
-		name !== ".."
-	);
-}
+/** The raw read's streaming chunk size (1 MiB): bounds reader memory. */
+const RAW_READ_CHUNK_BYTES = 1024 * 1024;
 
 /** The `:id` + `:name` params of the raw upload route. */
 const UPLOAD_PARAMS_SCHEMA = {
@@ -52,32 +43,6 @@ const UPLOAD_PARAMS_SCHEMA = {
 	required: ["id", "name"],
 	additionalProperties: false,
 } as const;
-
-/**
- * The extension→mime map for the raw file read (spec §7.8): the common
- * workspace-file extensions a client renders inline. A file whose
- * extension is absent from the map serves `application/octet-stream`.
- * The KEY is the LOWERCASE extension including the dot (the lookup
- * lowercases, so `Photo.PNG` maps too).
- */
-const MIME_BY_EXTENSION: ReadonlyMap<string, string> = new Map([
-	[".png", "image/png"],
-	[".jpg", "image/jpeg"],
-	[".jpeg", "image/jpeg"],
-	[".gif", "image/gif"],
-	[".webp", "image/webp"],
-	[".svg", "image/svg+xml"],
-	[".pdf", "application/pdf"],
-	[".txt", "text/plain"],
-	[".md", "text/markdown"],
-	[".json", "application/json"],
-	[".html", "text/html"],
-	[".css", "text/css"],
-	[".js", "text/javascript"],
-]);
-
-/** The raw read's streaming chunk size (1 MiB): bounds reader memory. */
-const RAW_READ_CHUNK_BYTES = 1024 * 1024;
 
 /** Register the upload/listing/content workspace file routes. */
 export function registerFileRoutes(
@@ -117,6 +82,10 @@ export function registerFileRoutes(
 		async (request, reply): Promise<UploadResponse> => {
 			const conversation = request.conversation;
 			const { name } = request.params as { name: string };
+			// The route pre-validates to keep its exact wire body
+			// (`invalid_body`); the shared op's own `invalid_field` check is
+			// unreachable here by construction (the gateway C4b ruling: the op
+			// is the one validator, the routes keep byte-identical responses).
 			if (!validUploadName(name)) {
 				return await reply.code(400).send({ error: "invalid_body" });
 			}
@@ -126,16 +95,7 @@ export function registerFileRoutes(
 				request.body === undefined
 					? new Uint8Array(0)
 					: new Uint8Array(request.body as Buffer);
-			// Same namespace as the base64 route: v1 namespaces uploads per
-			// conversation, and the returned path is exactly what a content
-			// part takes.
-			const path = `uploads/${conversation.id}/${name}`;
-			const env = await conversationEnv(opened, conversation);
-			const written = await env.writeFile(path, bytes, BACKGROUND_CONTEXT);
-			if (!written.ok) {
-				// A failed upload is a server-side fault: fail loud.
-				throw written.error;
-			}
+			const { path } = await uploadOp(ctx, conversation, { name, bytes });
 			return await reply.code(201).send({ path });
 		},
 	);
@@ -174,21 +134,13 @@ export function registerFileRoutes(
 			if (bytes === undefined) {
 				return await reply.code(400).send({ error: "invalid_body" });
 			}
-			// v1 namespaces uploads per conversation: workspaces are static and
-			// shared in v1, so un-namespaced names would clobber across
-			// conversations. The returned path is exactly what a content part
-			// takes.
-			const path = `uploads/${conversation.id}/${name}`;
-			const env = await conversationEnv(opened, conversation);
-			const written = await env.writeFile(
-				path,
-				new Uint8Array(bytes),
-				BACKGROUND_CONTEXT,
-			);
-			if (!written.ok) {
-				// A failed upload is a server-side fault: fail loud.
-				throw written.error;
-			}
+			// The shared op owns the pathing + write (same namespace as the
+			// raw route: `uploads/<conversationId>/<name>`, exactly what a
+			// content part takes).
+			const { path } = await uploadOp(ctx, conversation, {
+				name,
+				bytes: new Uint8Array(bytes),
+			});
 			return await reply.code(201).send({ path });
 		},
 	);
@@ -302,27 +254,27 @@ export function registerFileRoutes(
 			const conversation = request.conversation;
 			const query = request.query as { path?: string };
 			const path = query.path ?? "";
-			if (!isConfinedPath(path) || path.length === 0 || path === ".") {
-				return await reply.code(400).send({ error: "invalid_path" });
-			}
-			const env = await conversationEnv(opened, conversation);
-			const info = await env.fileInfo(path, BACKGROUND_CONTEXT);
-			if (!info.ok) {
-				if (info.error.code === "not_found") {
-					return await reply.code(404).send({ error: "not_found" });
+			// The shared raw-read pre-checks (gateway C4b): confinement,
+			// not_found, directory, and the cap — the SAME vocabulary this
+			// route served inline; only the cap's BODY differs (the route's
+			// `file_too_large` + `maxBytes`, not the op's `too_large`), mapped
+			// here so the wire stays byte-identical.
+			let meta: Awaited<ReturnType<typeof readFileMetaOp>>;
+			try {
+				meta = await readFileMetaOp(ctx, conversation, path);
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					if (error.status === 413 && error.body.error === "too_large") {
+						return await reply.code(413).send({
+							error: "file_too_large",
+							maxBytes: config.maxFileReadBytes,
+						});
+					}
+					return await reply.code(error.status).send(error.body);
 				}
-				throw info.error;
+				throw error;
 			}
-			if (info.value.kind === "directory") {
-				return await reply.code(400).send({ error: "invalid_path" });
-			}
-			const maxBytes = config.maxFileReadBytes;
-			if (info.value.size > maxBytes) {
-				return await reply
-					.code(413)
-					.send({ error: "file_too_large", maxBytes });
-			}
-			const readerOpened = await env.openBinaryReader(
+			const readerOpened = await meta.env.openBinaryReader(
 				path,
 				undefined,
 				BACKGROUND_CONTEXT,
@@ -342,19 +294,13 @@ export function registerFileRoutes(
 			raw.on("error", () => {});
 			try {
 				raw.writeHead(200, {
-					"content-type":
-						MIME_BY_EXTENSION.get(extname(path).toLowerCase()) ??
-						"application/octet-stream",
-					"content-length": String(info.value.size),
+					"content-type": meta.mime,
+					"content-length": String(meta.size),
 				});
-				for (
-					let offset = 0;
-					offset < info.value.size;
-					offset += RAW_READ_CHUNK_BYTES
-				) {
+				for (let offset = 0; offset < meta.size; offset += RAW_READ_CHUNK_BYTES) {
 					const chunk = await reader.read(
 						offset,
-						Math.min(RAW_READ_CHUNK_BYTES, info.value.size - offset),
+						Math.min(RAW_READ_CHUNK_BYTES, meta.size - offset),
 						BACKGROUND_CONTEXT,
 					);
 					if (!chunk.ok) throw chunk.error;

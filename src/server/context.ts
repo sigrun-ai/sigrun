@@ -20,7 +20,9 @@ import type { OpenedHarness } from "../harness/boot.js";
 import type { CommandCatalog } from "./commands.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
+import type { SurfaceService } from "./surfaces/service.js";
 import { SseRegistry } from "./sse-registry.js";
+import type { GatewayHandle } from "./gateway.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
@@ -80,6 +82,23 @@ export interface ServerContext {
 	 * suppressed.
 	 */
 	readonly watchersByConversation: Map<ConversationId, number>;
+	/**
+	 * The gateway handle (gateway C2): created by the serve composition
+	 * BEFORE `createServer` and threaded through the `gateway` option so
+	 * the meta route reads the wrapped engine health. ABSENT on hand-built
+	 * test servers (the meta route then omits `health.gateway` — its
+	 * presence keys on `opened.gatewayEngine`, and the handle only reaches
+	 * it through this field).
+	 */
+	readonly gateway?: GatewayHandle;
+	/**
+	 * The extension-surface render/data service (UI-blocks U3 Task 2,
+	 * spec §7.2/§7.3): over `opened.extensionSurfaces`, holding the
+	 * per-principal access cache and the per-instance revision/op state.
+	 * Built once in `createServer`; the surface routes (`routes/surfaces.ts`)
+	 * and Task 4's watcher registry read it.
+	 */
+	readonly surfaces: SurfaceService;
 }
 
 declare module "fastify" {
@@ -115,5 +134,7 @@ declare module "fastify" {
 	 * would hang on each open webui tab. */
 	interface FastifyInstance {
 		sse: SseRegistry;
+		/** The surface service decoration (createServer decorates it) — Task 4's watcher registry reaches it from the app handle in tests. */
+		surfaces: SurfaceService;
 	}
 }
