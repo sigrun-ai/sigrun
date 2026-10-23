@@ -48,6 +48,7 @@ import type {
 	InteractionWire,
 	SigrunClient,
 } from "../api.js";
+import { diffLines } from "../blocks/diff.js";
 import { describeCommandError } from "./composer.js";
 
 /** The answer-mode option pick keys: digits 1-9. */
@@ -304,13 +305,7 @@ export class InteractionPrompter implements Component {
 			for (const line of body.text.split("\n")) lines.push(line);
 		}
 		if (body?.diff !== undefined) {
-			lines.push(
-				body.diff.path === undefined
-					? "[diff]"
-					: `[diff] ${body.diff.path}`,
-			);
-			for (const line of body.diff.before.split("\n")) lines.push(`- ${line}`);
-			for (const line of body.diff.after.split("\n")) lines.push(`+ ${line}`);
+			lines.push(...diffLines(body.diff));
 		}
 		for (const [index, option] of options.entries()) {
 			const marker =
