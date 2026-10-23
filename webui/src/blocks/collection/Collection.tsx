@@ -13,7 +13,9 @@ import type {
 	JsonValue,
 } from "@sigrun/shared/blocks";
 import { bound, useSurfaceData } from "../context";
+import { CalendarDisplay } from "./CalendarDisplay";
 import { GridDisplay } from "./GridDisplay";
+import { LanesDisplay } from "./LanesDisplay";
 import { ListDisplay } from "./ListDisplay";
 import { TableDisplay } from "./TableDisplay";
 import { itemId } from "./selection";
@@ -128,8 +130,7 @@ export function groupItems(
 	return ordered;
 }
 
-/** The collection block: display dispatch (lanes/calendar are Task 4 —
- *  they fall through to the generic unsupported notice upstream). */
+/** The collection block: display dispatch across the five displays. */
 export function CollectionBlockView(props: {
 	block: CollectionBlock;
 }): ReactNode {
@@ -143,13 +144,9 @@ export function CollectionBlockView(props: {
 			return <TableDisplay block={block} groups={groups} />;
 		case "grid":
 			return <GridDisplay block={block} groups={groups} />;
-		default:
-			// lanes / calendar: Task 4. Render an honest notice rather than
-			// a broken half-implementation.
-			return (
-				<div className="blk blk-collection" data-display={block.display}>
-					Not supported in this client
-				</div>
-			);
+		case "lanes":
+			return <LanesDisplay block={block} groups={groups} />;
+		case "calendar":
+			return <CalendarDisplay block={block} groups={groups} />;
 	}
 }
