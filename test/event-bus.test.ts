@@ -16,6 +16,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -27,8 +28,10 @@ import {
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
 	Conversation,
+	ConversationId,
 	HarnessSettings,
 } from "@earendil-works/pi-durable";
+import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import {
@@ -36,8 +39,12 @@ import {
 	type LifecycleEvent,
 	type SettleGroup,
 } from "../src/harness/event-bus.js";
+import { resolveExtension } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
+import { InteractionDoc } from "../src/harness/interactions.js";
+import { createServer } from "../src/server/index.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 /** One booted harness + bus, its root conversation, and its faux provider. */
 interface TestBus {
@@ -52,8 +59,13 @@ const dirs: string[] = [];
 
 afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
-	for (const dir of dirs) await rm(dir, { recursive: true, force: true });
+	for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
+
+/** The fixture-seam entry (its host is the C6 interaction writer in tests). */
+const SEAM_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-seam", "index.js"),
+).href;
 
 /** Boot one hermetic harness and open a bus on it (records nothing yet). */
 async function bootBus(
@@ -564,5 +576,254 @@ describe("oldestLiveAdmissionMs (the /metrics wedge-gauge source)", () => {
 		// LIVE gate must exclude it (a far-past settled admission reading
 		// as a wedge is exactly the false alarm the gate exists for).
 		expect(bus.oldestLiveAdmissionMs(Date.now() + 10 * 60_000)).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// interactionSettled (gateway C6): terminal interaction transitions fan out
+// to the extension lifecycle handlers from the interaction host-event site.
+// ---------------------------------------------------------------------------
+
+/** The fixture-user-events entry (contract: factory + interactionSettled). */
+const USER_EVENTS_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-user-events", "index.js"),
+).href;
+
+/** The fixture module's exports (settlements record + reset). */
+type SettlementsModule = {
+	readonly settlements: readonly {
+		conversationId: number;
+		callId: string;
+		kind: string;
+		status: string;
+	}[];
+	readonly resetSettlements: () => void;
+};
+
+/** Import the fixture module by the SAME URL the loader imported — one instance. */
+async function settlementsModule(): Promise<SettlementsModule> {
+	return (await import(USER_EVENTS_SPECIFIER)) as unknown as SettlementsModule;
+}
+
+describe("interactionSettled (one delivery per terminal transition, any writer)", () => {
+	/** Boot a server with the user-events fixture loaded and its host captured. */
+	async function bootInteractionServer(): Promise<{
+		app: FastifyInstance;
+		opened: OpenedHarness;
+		fixture: SettlementsModule;
+	}> {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-c6-"));
+		dirs.push(dir);
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		faux.setResponses([fauxAssistantMessage("ok")]);
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_AUTH: "none",
+		});
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			identity: await seededIdentity(dir),
+			extensionSpecifiers: [USER_EVENTS_SPECIFIER, SEAM_SPECIFIER],
+		});
+		const app = await createServer(opened, config);
+		cleanups.push(async () => {
+			await app.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		});
+		const fixture = await settlementsModule();
+		fixture.resetSettlements();
+		return { app, opened, fixture };
+	}
+
+	/** Seed one pending interaction through the fixture-seam host. */
+	async function seed(
+		opened: OpenedHarness,
+		conversationId: number,
+		callId: string,
+	): Promise<void> {
+		const host = opened.seamHosts.get("sigrun-fixture-seam");
+		if (host === undefined) throw new Error("fixture-seam host not loaded");
+		// SAFETY: the plain test `number` is the branded ConversationId the
+		// seam host takes; passed through by value.
+		await host.seedInteraction(
+			conversationId as ConversationId,
+			{
+				kind: "fixture.ask",
+				callId,
+				status: "pending",
+				createdAt: Date.now(),
+				body: { text: `c6: ${callId}` },
+			},
+			BACKGROUND_CONTEXT,
+		);
+	}
+
+	/** The fixture-seam host (the answer/settle writer in the host-side cases). */
+	function seamHostOf(opened: OpenedHarness) {
+		const host = opened.seamHosts.get("sigrun-fixture-seam");
+		if (host === undefined) throw new Error("fixture-seam host not loaded");
+		return host;
+	}
+
+	/** Await the fixture's first settlement delivery for one callId. */
+	async function waitForSettlement(
+		fixture: SettlementsModule,
+		callId: string,
+	): Promise<SettlementsModule["settlements"][number]> {
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const found = fixture.settlements.find((one) => one.callId === callId);
+			if (found !== undefined) return found;
+			if (Date.now() > deadline) {
+				throw new Error(
+					`no interactionSettled for ${callId} (recorded: ${JSON.stringify(fixture.settlements)})`,
+				);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	}
+
+	test("an HTTP-route answer, a host answer, and a host expire each fire exactly once; seeding fires nothing", { timeout: 30_000 }, async () => {
+		const { app, opened, fixture } = await bootInteractionServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT);
+		expect(fixture.settlements).toHaveLength(0);
+
+		// Seeding is pending, not terminal: no delivery.
+		await seed(opened, root.id, "c6-route");
+		await seed(opened, root.id, "c6-host");
+		await seed(opened, root.id, "c6-expire");
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(fixture.settlements).toHaveLength(0);
+
+		// Writer 1: the HTTP route answers (the human path).
+		const answered = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/interactions/c6-route/answer`,
+			payload: { ids: ["a"] },
+		});
+		expect(answered.statusCode).toBe(200);
+		const routeEvent = await waitForSettlement(fixture, "c6-route");
+		expect(routeEvent).toEqual({
+			conversationId: root.id,
+			callId: "c6-route",
+			kind: "fixture.ask",
+			status: "answered",
+		});
+
+		// Writer 2: the host answers (the extension side).
+		const host = seamHostOf(opened);
+		const applied = await host.answerInteraction(
+			root.id as ConversationId,
+			"c6-host",
+			{ ids: ["a"] },
+			BACKGROUND_CONTEXT,
+		);
+		expect(applied).toBe(true);
+		const hostEvent = await waitForSettlement(fixture, "c6-host");
+		expect(hostEvent).toEqual({
+			conversationId: root.id,
+			callId: "c6-host",
+			kind: "fixture.ask",
+			status: "answered",
+		});
+
+		// Writer 3: the host expires (settleInteraction's terminal write).
+		const settled = await host.settleInteraction(
+			root.id as ConversationId,
+			"c6-expire",
+			"expired",
+			BACKGROUND_CONTEXT,
+		);
+		expect(settled).toBe(true);
+		const expireEvent = await waitForSettlement(fixture, "c6-expire");
+		expect(expireEvent).toEqual({
+			conversationId: root.id,
+			callId: "c6-expire",
+			kind: "fixture.ask",
+			status: "expired",
+		});
+
+		// Exactly one delivery per transition — a re-answer of a terminal
+		// record writes nothing (first-answer-wins), so no duplicate fires.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(fixture.settlements).toHaveLength(3);
+	});
+
+	test("the raw lifecycle stream carries interactionSettled for terminal statuses only", async () => {
+		const { bus, opened, root } = await bootBus({
+			responses: [fauxAssistantMessage("turn one")],
+		});
+		const { lifecycle } = recordAll(bus);
+		await runTurn(root, "hello");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// Seed through a direct doc commit (the same document change shape
+		// the seam host and the route produce).
+		await opened.harness.commit(async (tx) => {
+			const draft = await tx.doc(
+				InteractionDoc,
+				root.id,
+				"bus-seed",
+				"bus-seed",
+			);
+			Object.assign(draft, {
+				kind: "fixture.ask",
+				callId: "bus-seed",
+				status: "pending",
+				createdAt: 1,
+			});
+		}, BACKGROUND_CONTEXT);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(lifecycle).toHaveLength(0);
+
+		await opened.harness.commit(async (tx) => {
+			const draft = await tx.doc(
+				InteractionDoc,
+				root.id,
+				"bus-seed",
+				"bus-seed",
+			);
+			const mutable = draft as unknown as Record<string, unknown>;
+			mutable.status = "cancelled";
+			mutable.settledAt = Date.now();
+		}, BACKGROUND_CONTEXT);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(lifecycle).toEqual([
+			{
+				type: "interactionSettled",
+				conversationId: root.id,
+				callId: "bus-seed",
+				kind: "fixture.ask",
+				status: "cancelled",
+			},
+		]);
+	});
+
+	test("a non-function interactionSettled quarantines the extension", async () => {
+		// Same fail-loud branch as the other lifecycle fields (LIFECYCLE_FIELDS).
+		let message = "";
+		try {
+			await resolveExtension({
+				default: () => ({
+					extension: { name: "sigrun-fixture-bad-c6" },
+					interactionSettled: 42,
+				}),
+			});
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+		expect(message).toBe(
+			"extension factory returned a interactionSettled field that is not a function",
+		);
 	});
 });

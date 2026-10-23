@@ -286,6 +286,20 @@ configurable) when the request comes from a peer inside
 proxy and nothing else: every peer in `trustedProxies` can forge any
 identity, including an admin.
 
+**Group-derived admin (persisted).** `server.auth.adminGroups` lists
+the proxy groups (Authelia's `Remote-Groups`) whose members act as
+admins. The request pipeline computes the grant per request and
+writes it through to the user's directory record as `groupAdmin`
+whenever it differs — so host-side surfaces with no request headers
+(chat commands, channel adapters) see effective admin (`admin ||
+groupAdmin`), while `/v1/users` keeps `admin` as the stored flag the
+users-admin UI toggles and shows `groupAdmin` alongside. The grant
+moves only on proxy-authenticated requests while `adminGroups` is
+non-empty: removal from the admin group takes effect at that user's
+next web request. Group-derived admin never counts toward the
+last-admin guard — demoting or deleting the only stored admin is
+still refused.
+
 **Onboarding (the first claim).** An unclaimed server serves
 `GET /v1/onboarding` + `POST /v1/onboarding/claim`. On a loopback bind
 or through a trusted proxy identity the claim needs no code; otherwise
@@ -640,8 +654,16 @@ is read-only for them (`PATCH`/`DELETE` return `409 job_declared`).
 A `prompt` action submits its prompt as a conversation — `"new"`
 creates one per fire (ownerless, `source: "cron"`), a fixed id submits
 into that conversation (the job's `model`/`thinking` apply only to
-`"new"`). A `task` action creates a pi-durable task owned by the
-schedule task (deleting the job cascades): `{"kind": "task",
+`"new"`). A `prompt` action may also carry `deliver`: an array of
+1–8 gateway delivery targets (each 1–256 chars), valid only with
+`conversation: "new"` — the run's answer is delivered to those chats
+by the loaded gateway engine. The targets are stamped onto the run
+conversation's meta alongside the owning `jobId` (both server-owned,
+never PATCHable); with no engine loaded each fire logs one
+`deliver targets ignored: no gateway` warning, and editing the targets
+is a job revision like any other spec change. A `task` action creates
+a pi-durable task owned by the schedule task (deleting the job
+cascades): `{"kind": "task",
 "task": "<registered task name>", "input": …}`.
 
 **Runs:** a cron run is an ORDINARY CONTINUABLE CONVERSATION — open the

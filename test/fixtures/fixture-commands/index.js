@@ -21,7 +21,14 @@ export default function createFixtureCommands(host) {
 				name: "hello",
 				description: "Say hello",
 				args: "<name>",
-				run: async ({ args }) => ({ notice: "hi " + args }),
+				run: async ({ args, principal }) => {
+					// Principal observation (gateway C4b): stash what the caller
+					// passed on globalThis so host-surface tests can pin the
+					// principal's method/admin without changing the notice
+					// contract this suite's HTTP tests pin.
+					globalThis.__fixtureCommandsPrincipal = principal;
+					return { notice: "hi " + args };
+				},
 			},
 			{
 				name: "new",

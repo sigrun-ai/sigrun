@@ -19,7 +19,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import type { AuthStatus } from "@sigrun/shared/views";
+import type { AuthStatus, ModelEntry } from "@sigrun/shared/views";
 import {
 	effectiveServerSection,
 	type Env,
@@ -335,6 +335,33 @@ export async function conversationEnv(
 
 /** The upload read cap for `files/content` (binary-safe; 1 MiB). */
 export const FILE_CONTENT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The served model catalog as picker entries (gateway C4b): the ONE
+ * construction behind `GET /v1/models` `.models` AND the host's
+ * `models.list()` — id/provider/modelId/name/contextWindow/maxTokens/
+ * reasoning/input plus the four rate fields (tiers dropped for v1, the
+ * picker doesn't use them — no unsound cast). Provider internals
+ * (baseUrl/headers/auth) never cross either surface.
+ */
+export function listModels(opened: OpenedHarness): readonly ModelEntry[] {
+	return opened.models.getModels().map((model) => ({
+		id: `${model.provider}/${model.id}`,
+		provider: model.provider,
+		modelId: model.id,
+		name: model.name,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+		reasoning: model.reasoning,
+		input: model.input,
+		cost: {
+			input: model.cost.input,
+			output: model.cost.output,
+			cacheRead: model.cost.cacheRead,
+			cacheWrite: model.cost.cacheWrite,
+		},
+	}));
+}
 
 /**
  * One provider's auth readiness, derived from boot-retained state (spec

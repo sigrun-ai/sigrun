@@ -23,11 +23,10 @@ import type { FastifyInstance } from "fastify";
 import type { OpenedHarness } from "../../harness/boot.js";
 import { DEFAULT_AUTH_KEY } from "../../harness/auth.js";
 import type { ServerContext } from "../context.js";
-import { providerAuthStatus } from "../helpers.js";
+import { listModels, providerAuthStatus } from "../helpers.js";
 import type {
 	AuthCheckProvider,
 	AuthCheckResponse,
-	ModelEntry,
 	ModelsResponse,
 	ProvidersResponse,
 } from "../views.js";
@@ -226,26 +225,10 @@ export function registerProviderRoutes(
 	});
 
 	// Models: the merged chat-model catalog as picker entries (no provider
-	// internals — baseUrl/headers/auth stay server-side).
+	// internals — baseUrl/headers/auth stay server-side). The shared
+	// construction (gateway C4b): the host's `models.list()` serves the
+	// SAME list through helpers.listModels.
 	app.get("/v1/models", async (): Promise<ModelsResponse> => {
-		const models: ModelEntry[] = opened.models.getModels().map((model) => ({
-			id: `${model.provider}/${model.id}`,
-			provider: model.provider,
-			modelId: model.id,
-			name: model.name,
-			contextWindow: model.contextWindow,
-			maxTokens: model.maxTokens,
-			reasoning: model.reasoning,
-			input: model.input,
-			// Project the four rate fields explicitly (ModelCostRates); `tiers` is
-			// dropped for v1 (the picker doesn't use them) — no unsound cast.
-			cost: {
-				input: model.cost.input,
-				output: model.cost.output,
-				cacheRead: model.cost.cacheRead,
-				cacheWrite: model.cost.cacheWrite,
-			},
-		}));
-		return { models };
+		return { models: listModels(opened) };
 	});
 }

@@ -63,7 +63,7 @@ InteractionRecord (core-owned doc family, e.g. sigrun.interaction, keyed by call
     kind        extension-declared id (e.g. "gating.confirm", "questions.form")
     callId      stable join key to the pi.live tool slot
     status      "pending" | "answered" | "skipped" | "expired" | "cancelled"
-    createdAt / expiresAt? / answeredBy? / answeredAt?
+    createdAt / expiresAt? / answeredBy? / answeredByUser? / settledAt?
     answer      { ids?: string[], values?: Record<name,value>, text?: string }
                   — written via the one generic route; the extension
                     interprets it (first-answer-wins semantics stay hers)
@@ -281,6 +281,33 @@ interaction record awaits one answer; an ambient surface is replaced
 repeatedly and never blocks. Channels get one rendering discipline for
 both: a pending card stack and a persistent panel zone, each fed by
 replacement-safe state snapshots.
+
+## Interaction events: notifications carry `callId`; `interactionSettled` fires per transition
+
+Two event surfaces extend the seam (2026-10-23, gateway C5/C6):
+
+- **Answer attribution (C5).** The host's `answerInteraction`
+  accepts `opts?: {user?: string}`. With `user`, the record stamps
+  `answeredBy: "human"` + `answeredByUser: <user>` — the same
+  attribution the generic answer route stamps; without it, the
+  extension answered itself (`answeredBy: "extension"`, no user).
+  Access checks stay the caller's job (host code is trusted in-process).
+- **`interaction.pending` notifications carry the record's `callId`**
+  (the only notification type that does). A notifier reads the record
+  via `ctx.host.snapshotInteraction(conversationId, callId, context)`
+  to render body/options/diff — the notification itself carries only
+  title/body/url.
+- **`interactionSettled` lifecycle handler (C6).** A factory result may
+  declare `interactionSettled(event, api, context)` — fired ONCE per
+  terminal transition (`answered`/`skipped`/`expired`/`cancelled`) from
+  ANY writer (the HTTP route, a host answer, a host
+  `settleInteraction`), because exactly one durable document change
+  lands per transition. The payload is the record's terminal envelope:
+  `{conversationId, callId, kind, status}`. It is deadline-bounded
+  like the other lifecycle handlers (see extending.md); a non-function
+  declaration quarantines at load. Seeding a pending record fires
+  nothing. Channels/edit-your-prompt-message consumers use it to
+  resolve delivered prompts (edit the message to the outcome).
 
 ## Implementation status (2026-10-14)
 
