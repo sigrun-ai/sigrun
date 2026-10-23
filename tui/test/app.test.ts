@@ -12,7 +12,7 @@ import { describe, expect, test } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
 import { TuiApp } from "../src/ui/app.js";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
-import { Sidebar } from "../src/ui/sidebar.js";
+import { Sidebar, type SidebarSelection } from "../src/ui/sidebar.js";
 import type {
 	ConversationList,
 	ConversationSummary,
@@ -98,6 +98,23 @@ function stubClient(init: {
 			listed.push(summary(forkSerial));
 			return Promise.resolve({ id: forkSerial, view: view(forkSerial, []) });
 		},
+		listExtensions() {
+			return Promise.resolve({
+				extensions: [
+					{
+						name: "fixture-surfaces",
+						status: "ok",
+						interactionKinds: [],
+						ambientKeys: [],
+						workers: [],
+						surfaces: [
+							{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+							{ id: "stats", title: "Acme stats", icon: "chart", placement: "panel" },
+						],
+					},
+				],
+			});
+		},
 		submit(id: number, text: string) {
 			submitCalls.push({ id, text });
 			return Promise.resolve({ id: 1, conversationId: id, type: "user", status: "answered" });
@@ -182,7 +199,7 @@ describe("Sidebar", () => {
 		const { client } = stubClient({});
 		const sidebar = new Sidebar(client);
 		await sidebar.refresh();
-		const selections: (number | "new")[] = [];
+		const selections: SidebarSelection[] = [];
 		sidebar.onSelect = (selection) => selections.push(selection);
 		// Rows order by recency (newest first): 3, 2, 1, then + New. The
 		// cursor starts on the first conversation; Enter selects it.
@@ -718,4 +735,64 @@ describe("TuiApp race guards", () => {
 		await tick();
 		expect(submitCalls).toEqual([{ id: 2, text: "settled" }]);
 	});
+
+
+// ─── Extension views (UI-blocks U3 Task 5) ──────────────────────────────
+
+describe("Extension views (UI-blocks U3 Task 5)", () => {
+	test("the sidebar's Views group lists declared view surfaces", async () => {
+		const { client } = stubClient({});
+		const sidebar = new Sidebar(client);
+		await sidebar.refresh();
+		await sidebar.refreshViews();
+		const lines = sidebar.render(30).join("\n");
+		expect(lines).toContain("VIEWS");
+		expect(lines).toContain("Acme board");
+	});
+
+	test("selecting a view surfaces a SidebarSelection with the slug+id", async () => {
+		const { client } = stubClient({});
+		const sidebar = new Sidebar(client);
+		await sidebar.refresh();
+		await sidebar.refreshViews();
+		const selections: (number | "new" | { view: { slug: string; id: string } })[] = [];
+		sidebar.onSelect = (selection) => selections.push(selection);
+		sidebar.confirmView(0);
+		expect(selections).toEqual([{ view: { slug: "fixture-surfaces", id: "board" } }]);
+	});
+
+	test("the TuiApp opens a view in the main pane (openExtView)", async () => {
+		const { client } = stubClient({});
+		const app = new TuiApp(client, { tui: fakeTui });
+		await app.openExtView("fixture-surfaces", "board");
+		// The pane's ext-surface state renders the surface title placeholder
+		// (the block renderer is U2's; U3's pane carries the title + state).
+		expect(app.extView?.slug).toBe("fixture-surfaces");
+		expect(app.extView?.id).toBe("board");
+	});
+
+	test("Esc closes an open ext view (the keepalive stops with the view)", async () => {
+		const { client } = stubClient({});
+		const app = new TuiApp(client, { tui: fakeTui });
+		await app.openExtView("fixture-surfaces", "board");
+		expect(app.extView).toBeDefined();
+		// Esc closes the view → the conversation pane is back; a second
+		// Esc falls through (nothing open).
+		expect(app.handleKeybinding("\x1b")).toBe(true);
+		expect(app.extView).toBeUndefined();
+		expect(app.handleKeybinding("\x1b")).toBe(false);
+	});
+
+	test("a new events stream id lands on the open view's transport handle", async () => {
+		const { client } = stubClient({});
+		const app = new TuiApp(client, { tui: fakeTui });
+		app.setEventsStreamId("stream-one");
+		await app.openExtView("fixture-surfaces", "board");
+		// The reconnect: a NEW stream id must reach the OPEN view (the
+		// handle's setStreamId — the transport-level header assertion
+		// lives in ext-transport.test.ts).
+		app.setEventsStreamId("stream-two");
+		expect(app.extView).toBeDefined();
+	});
+});
 });

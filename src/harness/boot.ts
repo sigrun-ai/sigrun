@@ -38,6 +38,7 @@ import {
 	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
 	type ExtensionRouteBinding,
+	type ExtensionSurfaceBinding,
 	type ResolvedExtensionInput,
 } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
@@ -338,6 +339,14 @@ export interface OpenedHarness {
 	 * a later declarer quarantined at load (the one-engine rule).
 	 */
 	readonly gatewayEngine: ExtensionGatewayBinding | undefined;
+	/**
+	 * Surfaces the loaded extensions declared (UI-blocks U3 Task 1, spec
+	 * §7.1): one binding per extension whose factory result carried
+	 * `surfaces`, slug-attributed — Task 2's `SurfaceService` renders
+	 * them at `/v1/ext/<slug>/surfaces/…`, and `GET /v1/extensions`
+	 * inventories the rows. Quarantined extensions contribute nothing.
+	 */
+	readonly extensionSurfaces: readonly ExtensionSurfaceBinding[];
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -788,6 +797,7 @@ export async function openHarness(
 		notifierBindings,
 		channelBindings,
 		gatewayEngine,
+		surfaces: surfaceBindings,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -1405,6 +1415,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		},
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
+		extensionSurfaces: surfaceBindings,
 		notifierBindings,
 		channelBindings,
 		gatewayEngine,

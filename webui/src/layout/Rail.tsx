@@ -18,6 +18,13 @@
 
 import type { MetaResponse, WhoamiResponse } from "../api";
 import { BrandMark, ChatsIcon, LogoutIcon, SettingsIcon } from "./icons";
+import {
+	extViewEntries,
+	loadRailOrder,
+	moveExtView,
+	orderExtViews,
+	type ExtViewEntry,
+} from "./extViews";
 
 /** ok ⟺ every extension ok, memory/providers ok, backup not degraded. */
 function healthOf(meta: MetaResponse): "ok" | "degraded" {
@@ -51,9 +58,38 @@ export function Rail(props: {
 	readonly identity?: WhoamiResponse;
 	/** Ends the browser session (App wires logout + the gate flip). */
 	readonly onLogout?: () => void;
+	/**
+	 * UI-blocks U3 Task 5: opens an extension VIEW (slug, id). Absent
+	 * in hosts that don't wire the route (the entries render inert).
+	 */
+	readonly onOpenExtView?: (slug: string, id: string) => void;
+	/**
+	 * The extension surfaces the principal cannot see (access `none`,
+	 * §6.5): `slug/id` keys. App discovers them from render-time
+	 * responses; a hidden view renders NO rail entry.
+	 */
+	readonly hiddenExtSurfaces?: readonly string[];
+	/**
+	 * The rail's ext entries, controlled (App owns the ordering state so a
+	 * keyboard reorder re-renders): the full ordered entry list minus the
+	 * hidden set. Absent → the rail derives them (declaration order).
+	 */
+	readonly extViewEntries?: readonly ExtViewEntry[];
+	/** Keyboard reorder (Alt+ArrowUp/Down on a focused ext entry): App
+	 *  owns the saved-order state. */
+	readonly onMoveExtView?: (key: string, delta: -1 | 1) => void;
 }) {
 	const { meta, onOpenSettings, identity, onLogout } = props;
 	const tokenSession = identity?.method === "token";
+	// The extension-view entries (U3 Task 5): after the core entries,
+	// in the user's saved order, minus the access-none set. App passes
+	// them controlled (a reorder re-renders); the fallback derivation
+	// covers hosts that don't wire the state.
+	const hidden = new Set(props.hiddenExtSurfaces ?? []);
+	const extViews = (
+		props.extViewEntries ??
+		orderExtViews(extViewEntries(meta.extensions), loadRailOrder())
+	).filter((entry) => !hidden.has(`${entry.slug}/${entry.id}`));
 	return (
 		<nav className="rail" aria-label="sections">
 			<span className="rail-brand" title="sigrun">
@@ -68,6 +104,31 @@ export function Rail(props: {
 			>
 				<ChatsIcon />
 			</button>
+			{extViews.map((entry: ExtViewEntry) => (
+				<button
+					key={`${entry.slug}/${entry.id}`}
+					type="button"
+					className="rail-btn"
+					data-rail-section={`ext:${entry.slug}/${entry.id}`}
+					title={entry.title}
+					aria-label={entry.title}
+					onClick={() => props.onOpenExtView?.(entry.slug, entry.id)}
+					onKeyDown={(event) => {
+						// The reorder affordance (a client preference, §7.1):
+						// Alt+Arrow moves the entry one slot; App persists.
+						if (!event.altKey) return;
+						if (event.key === "ArrowUp") {
+							event.preventDefault();
+							props.onMoveExtView?.(`${entry.slug}/${entry.id}`, -1);
+						} else if (event.key === "ArrowDown") {
+							event.preventDefault();
+							props.onMoveExtView?.(`${entry.slug}/${entry.id}`, 1);
+						}
+					}}
+				>
+					{entry.title.slice(0, 1)}
+				</button>
+			))}
 			<span className="rail-spacer" />
 			<span
 				className="rail-health"
