@@ -14,7 +14,7 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
-import type { Block } from "@sigrun/shared/blocks";
+import type { Block, JsonObject } from "@sigrun/shared/blocks";
 import { hiddenAtCompact, type BlockCtx } from "./context.js";
 import { Lines, renderColumns, renderGrid, renderSection, renderStack } from "./layout.js";
 import { renderContent } from "./content.js";
@@ -25,6 +25,8 @@ import { TreeComponent } from "./treeview.js";
 import { ImageComponent } from "./image.js";
 import type { ImageOptions } from "./image.js";
 import { renderCollection } from "./collection/collection.js";
+import { FormComponent } from "./form/form.js";
+import { PageComponent } from "./page.js";
 import { wrapPlain } from "./width.js";
 
 // The renderer's public surface re-exports its seam types and the width
@@ -77,6 +79,46 @@ class WidthGated implements Component {
 	invalidate(): void {
 		this.#inner.invalidate();
 	}
+
+	/** Form introspection forwards (tests and hosts read the wrapped
+	 *  form's values/focus — the wrapper is transparent). */
+	get values(): JsonObject | undefined {
+		return this.#inner instanceof FormComponent ? this.#inner.values : undefined;
+	}
+
+	get focusIndex(): number | undefined {
+		return this.#inner instanceof FormComponent ? this.#inner.focusIndex : undefined;
+	}
+
+	get step(): number | undefined {
+		return this.#inner instanceof FormComponent ? this.#inner.step : undefined;
+	}
+
+	get submittedOnce(): boolean | undefined {
+		return this.#inner instanceof FormComponent ? this.#inner.submittedOnce : undefined;
+	}
+
+	/** Page introspection forwards (the wrapper is transparent for the
+	 *  page shell's overlay/detail state too). */
+	get hasOverlay(): boolean | undefined {
+		return this.#inner instanceof PageComponent ? this.#inner.hasOverlay : undefined;
+	}
+
+	get detailPushed(): boolean | undefined {
+		return this.#inner instanceof PageComponent ? this.#inner.detailPushed : undefined;
+	}
+
+	get sidebarOpen(): boolean | undefined {
+		return this.#inner instanceof PageComponent ? this.#inner.sidebarOpen : undefined;
+	}
+
+	get menuKind(): "switcher" | "actions" | null | undefined {
+		return this.#inner instanceof PageComponent ? this.#inner.menuKind : undefined;
+	}
+
+	setSideBySide(sideBySide: boolean): void {
+		if (this.#inner instanceof PageComponent) this.#inner.setSideBySide(sideBySide);
+	}
 }
 
 /** The type dispatch; unknown types answer `undefined` from content. */
@@ -104,13 +146,22 @@ function dispatch(block: Block, ctx: BlockCtx, options: RenderOptions): Componen
 			const component = renderCollection(block, ctx);
 			return component ?? unsupported(block, ctx);
 		}
+		case "form":
+			return new FormComponent(block, ctx, {
+				interaction: options.interaction === true,
+			});
+		case "page":
+			return new PageComponent(block, ctx, options);
 		default:
 			return renderContent(block, ctx) ?? unsupported(block, ctx);
 	}
 }
 
 /** The seams `renderBlock` threads to the blocks that need them. */
-export type RenderOptions = ImageOptions;
+export type RenderOptions = ImageOptions & {
+	/** Whether the form sits in an interaction placement (§9.1 stepper). */
+	interaction?: boolean;
+};
 
 /** Render any block as a pi-tui component (the renderer's dispatch). */
 export function renderBlock(block: Block, ctx: BlockCtx, options: RenderOptions = {}): Component {
