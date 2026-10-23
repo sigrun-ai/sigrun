@@ -250,6 +250,7 @@ what core does with each, and where its rules are documented:
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
+| `channels` | `readonly ChannelContribution[]` | chat-platform adapters the gateway engine drives; channel-id collisions across extensions quarantine the later loader | ["Channel adapters"](#channel-adapters) |
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
 above — **never a defaulted options object**. Sigrun passes the host only
@@ -763,6 +764,88 @@ Core emits one event per **recipient** (`user` is who it is for):
   concern).
 - A malformed declaration (missing name, non-function `notify`)
   quarantines the extension at load.
+
+## Channel adapters
+
+A factory result may declare `channels` — chat-platform adapters
+(Telegram, Signal, Slack, IRC, a loopback test harness, ...) the
+gateway engine drives. **Core ships no engine and no adapters**; each
+lives in its own extension package, and a `channels`-only result is a
+valid contributor identified by its `name` (the `providers` rule).
+
+```js
+export default function acmeChannel(host) {
+	return {
+		name: "acme-channel",
+		channels: [
+			{
+				id: "acme",
+				label: "Acme Chat",
+				capabilities: {
+					chatTypes: ["dm", "group"],
+					maxMessageLength: 4096,
+					format: "markdown",
+				},
+				async configured() {
+					const token = await host.stores.secrets.get("bot-token");
+					return token === undefined
+						? { status: "not_configured" }
+						: { status: "ready" };
+				},
+				async start(ctx) {
+					// connect; hand every platform message to ctx.receive(event)
+				},
+				async send(message) {
+					// returns { messageIds: [...] }
+				},
+			},
+		],
+	};
+}
+```
+
+The full type shapes (`ChannelContribution`, `ChannelCapabilities`,
+`InboundEvent`, `OutboundMessage`, ...) are the spec §7 contract in
+`@sigrun/sigrun/extension`. Rules for adapter authors:
+
+- **Webhook transports** (Telegram, Slack callbacks) declare their own
+  `routes` — mounted at `/v1/ext/<adapter-slug>/...` with
+  `auth: "public"` — and hand events to the `ChannelContext` captured
+  in `start`, verifying the platform's signature themselves. A webhook
+  arriving before `start` or after `stop` answers `503` — the engine's
+  contract, not yours to implement.
+- **Socket/poll transports** run their receive loop from `start`, never
+  from the factory body (the pi lifecycle lesson: timers and sockets
+  belong to started surfaces, and a quarantined replacement must not
+  leave them running).
+- **Credentials come from your own host stores.** Resolve
+  stored-then-env yourself — `host.stores.secrets.get(key)`, else
+  `SIGRUN_EXT_<SLUG>_<KEY>` from `process.env` ([the secrets-precedence
+  rule](#secrets-precedence-stored-wins-env-bootstraps)). The engine
+  never sees credentials. `configured()` reports whether they are
+  present; unconfigured adapters are never started.
+- **Button `data` is an engine-issued token of at most 64 bytes**
+  (Telegram's callback limit, the tightest seen). Pass it through
+  verbatim — never interpret, never persist it as meaning.
+- **Oversized media is refused by name, not by class.** When an
+  attachment's `fetch(opts)` exceeds `opts.maxBytes`, stop reading and
+  throw an error whose `name` is `"AttachmentTooLarge"` — the engine
+  matches that name, never `instanceof` (the contract is types-only;
+  there is no runtime class to share).
+- **`format` is required when `capabilities.format` is `"native"`** —
+  native markup has no default renderer.
+- **Channel ids are global.** Two loaded extensions declaring the same
+  channel id quarantine the *later* one, naming both — deliberately
+  unlike the last-registered-wins rule for commands and bundles, because
+  chat bindings are keyed by channel id and a shadowing adapter would
+  inherit another adapter's chats. Duplicate ids within one result
+  reject the same way.
+- A malformed declaration (bad id grammar, empty `label`, non-function
+  `start`/`send`/`configured`, a `capabilities` that fails the shape
+  check) quarantines the extension at load.
+
+`GET /v1/extensions` lists each row's contributed channel ids under
+`channels`.
 
 ## Uninstall
 

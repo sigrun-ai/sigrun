@@ -85,6 +85,7 @@
 
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
+	ChannelContribution,
 	ExtensionCommandContribution,
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
@@ -129,6 +130,12 @@ export interface ExtensionOutcome {
 	 * load quarantined before a module resolved.
 	 */
 	readonly version?: string;
+	/**
+	 * The channel ids this extension contributes (gateway C1, spec §7):
+	 * present only on `ok` outcomes of extensions whose factory result
+	 * carried `channels`; `/v1/extensions` renders it verbatim.
+	 */
+	readonly channels?: readonly string[];
 	/**
 	 * Built-in extensions (Task 2): `true` marks a core-shipped built-in
 	 * (the boot prepends its resolved entries with this flag); ABSENT on
@@ -208,6 +215,21 @@ export interface ExtensionNotifierBinding {
 	/** The slug identity (the delivery label's attribution). */
 	readonly extension: string;
 	readonly notifiers: readonly NotifierContribution[];
+}
+
+/**
+ * Channel adapters retained from one extension factory result (gateway
+ * C1, spec §7), attributed to the extension slug — boot threads the
+ * list to `OpenedHarness.channelBindings` for the gateway engine's
+ * `start` context and the `/v1/extensions` inventory. A channel-id
+ * collision across extensions quarantines the later loader BEFORE this
+ * binding is collected (chat bindings are keyed by channel id — never
+ * last-wins); quarantined extensions contribute none.
+ */
+export interface ExtensionChannelBinding {
+	/** The slug identity (the engine's `channels[].extension` attribution). */
+	readonly extension: string;
+	readonly channels: readonly ChannelContribution[];
 }
 
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
@@ -316,6 +338,16 @@ export interface LoadedExtensions {
 	 * none.
 	 */
 	readonly notifierBindings: readonly ExtensionNotifierBinding[];
+	/**
+	 * Channel adapters from factory results (gateway C1, spec §7): one
+	 * `{extension, channels}` entry per loaded extension whose result
+	 * carried `channels`, slug-attributed — the gateway engine's start
+	 * context reads the flat channel set from these and `/v1/extensions`
+	 * inventories the ids. Channel ids are unique across every loaded
+	 * extension (the loader quarantines the later colliding loader);
+	 * quarantined extensions contribute none.
+	 */
+	readonly channelBindings: readonly ExtensionChannelBinding[];
 	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
@@ -427,6 +459,12 @@ export interface ResolvedExtension {
 	 * event reaches a transport.
 	 */
 	notifiers?: readonly NotifierContribution[];
+	/**
+	 * Channel adapters (gateway C1, spec §7), validated fail-loud —
+	 * including the cross-extension channel-id uniqueness the load loop
+	 * enforces before any binding is collected.
+	 */
+	channels?: readonly ChannelContribution[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -458,7 +496,8 @@ type LoaderReadKeys =
 	| "routes"
 	| "commands"
 	| "skills"
-	| "notifiers";
+	| "notifiers"
+	| "channels";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -839,6 +878,207 @@ function validateNotifiers(
 }
 
 /**
+ * The channel-id grammar (gateway C1, spec §7): `^[a-z][a-z0-9-]*$` —
+ * the same shape as every other extension-declared name (commands,
+ * workers, bundles), and the key the gateway engine's chat bindings are
+ * addressed by (why a collision quarantines instead of last-wins).
+ */
+const CHANNEL_ID = /^[a-z][a-z0-9-]*$/;
+
+/** The `chatTypes` vocabulary of a `capabilities` declaration (spec §7). */
+const CHANNEL_CHAT_TYPES: ReadonlySet<string> = new Set([
+	"dm",
+	"group",
+	"thread",
+]);
+
+/** The `capabilities.format` vocabulary (spec §7). */
+const CHANNEL_FORMATS: ReadonlySet<string> = new Set([
+	"plain",
+	"markdown",
+	"native",
+]);
+
+/**
+ * Validate a factory result's `channels` declaration (gateway C1, spec
+ * §7). Absent → undefined (no contributions). Present but malformed →
+ * throw; the loader quarantines the extension with the thrown message
+ * (fail-loud: an adapter that THINKS it declared a channel must not
+ * silently lose it — the providers/health class). Per entry: `id` matching
+ * the grammar, `label` a non-empty string, `capabilities` an object with
+ * `chatTypes` a non-empty array over the vocabulary, `maxMessageLength` a
+ * positive integer, `format` one of the three values, the optional
+ * `edit.minIntervalMs`/`typing.intervalMs`/`buttons.max` positive
+ * integers, `configured`/`start`/`send` functions, the optional members
+ * functions when present, and `format` REQUIRED when
+ * `capabilities.format` is `"native"` (native markup has no default
+ * renderer). Duplicate ids within one result reject — they would collide
+ * on the engine's channel-id key exactly like a cross-extension pair.
+ */
+function validateChannels(
+	value: unknown,
+): readonly ChannelContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a channels field that is not an array",
+		);
+	}
+	const seen = new Set<string>();
+	for (const entry of value) {
+		const channel = entry as
+			| {
+						id?: unknown;
+					label?: unknown;
+					capabilities?: unknown;
+					configured?: unknown;
+					start?: unknown;
+					send?: unknown;
+					stop?: unknown;
+					edit?: unknown;
+					delete?: unknown;
+					typing?: unknown;
+					setCommands?: unknown;
+					format?: unknown;
+					classifyError?: unknown;
+			  }
+			| null;
+		const describe = () =>
+			`channel "${typeof channel?.id === "string" ? channel.id : String(channel?.id)}"`;
+		if (
+			typeof channel?.id !== "string" ||
+			!CHANNEL_ID.test(channel.id)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose id does not match ^[a-z][a-z0-9-]*$`,
+			);
+		}
+		if (seen.has(channel.id)) {
+			throw new Error(
+				`extension factory returned a duplicate channel id "${channel.id}" within one result`,
+			);
+		}
+		seen.add(channel.id);
+		if (typeof channel?.label !== "string" || channel.label.length === 0) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose label is missing or empty`,
+			);
+		}
+		const capabilities = channel?.capabilities as
+			| {
+						chatTypes?: unknown;
+					maxMessageLength?: unknown;
+					format?: unknown;
+					edit?: { minIntervalMs?: unknown } | null;
+					buttons?: { max?: unknown } | null;
+					typing?: { intervalMs?: unknown } | null;
+			  }
+			| null;
+		if (typeof capabilities !== "object" || capabilities === null) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities is missing or not an object`,
+			);
+		}
+		if (
+			!Array.isArray(capabilities.chatTypes) ||
+			capabilities.chatTypes.length === 0 ||
+			capabilities.chatTypes.some(
+					(type) =>
+						typeof type !== "string" || !CHANNEL_CHAT_TYPES.has(type),
+				)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.chatTypes is not a non-empty array over dm, group, thread`,
+			);
+		}
+		if (
+			typeof capabilities.maxMessageLength !== "number" ||
+			!Number.isInteger(capabilities.maxMessageLength) ||
+			capabilities.maxMessageLength <= 0
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.maxMessageLength is not a positive integer`,
+			);
+		}
+		if (
+			typeof capabilities.format !== "string" ||
+			!CHANNEL_FORMATS.has(capabilities.format)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.format is not one of plain, markdown, native`,
+			);
+		}
+		// The optional numeric members: positive integers when present.
+		if (
+			capabilities.edit !== undefined &&
+			(typeof capabilities.edit?.minIntervalMs !== "number" ||
+				!Number.isInteger(capabilities.edit.minIntervalMs) ||
+				capabilities.edit.minIntervalMs <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.edit.minIntervalMs is not a positive integer`,
+			);
+		}
+		if (
+			capabilities.buttons !== undefined &&
+			(typeof capabilities.buttons?.max !== "number" ||
+				!Number.isInteger(capabilities.buttons.max) ||
+				capabilities.buttons.max <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.buttons.max is not a positive integer`,
+			);
+		}
+		if (
+			capabilities.typing !== undefined &&
+			(typeof capabilities.typing?.intervalMs !== "number" ||
+				!Number.isInteger(capabilities.typing.intervalMs) ||
+				capabilities.typing.intervalMs <= 0)
+		) {
+			throw new Error(
+				`extension factory returned a ${describe()} whose capabilities.typing.intervalMs is not a positive integer`,
+			);
+		}
+		if (typeof channel?.configured !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose configured is not a function`,
+			);
+		}
+		if (typeof channel?.start !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose start is not a function`,
+			);
+		}
+		if (typeof channel?.send !== "function") {
+			throw new Error(
+				`extension factory returned a ${describe()} whose send is not a function`,
+			);
+		}
+		for (const field of [
+			"stop",
+			"edit",
+			"delete",
+			"typing",
+			"setCommands",
+			"format",
+			"classifyError",
+		] as const) {
+			if (channel[field] !== undefined && typeof channel[field] !== "function") {
+				throw new Error(
+					`extension factory returned a ${describe()} whose ${field} is not a function`,
+				);
+			}
+		}
+		if (capabilities.format === "native" && channel?.format === undefined) {
+			throw new Error(
+				`extension factory returned a ${describe()} without a format function while its capabilities.format is "native"`,
+			);
+		}
+	}
+	return value as readonly ChannelContribution[];
+}
+
+/**
  * Validate a factory result's `skills` declaration (core hardening W5
  * Task 4, spec §9.4). Absent → undefined (no contributions). Present but
  * malformed → throw; the loader quarantines the extension with the thrown
@@ -1191,17 +1431,22 @@ async function resolvedFromFactory(
 	const commands = validateCommands(candidate.commands);
 	const skills = validateSkills(candidate.skills);
 	const notifiers = validateNotifiers(candidate.notifiers);
+	const channels = validateChannels(candidate.channels);
 	const extension = isExtension(candidate.extension)
 		? candidate.extension
 		: undefined;
 	if (extension === undefined) {
 		// Contributor-only result: valid when ANY contribution field is
-		// present (`providers`, `webuiBundles`); otherwise this factory
-		// result is not the contract form (fall through to the next
+		// present (`providers`, `webuiBundles`, `channels`); otherwise this
+		// factory result is not the contract form (fall through to the next
 		// resolution candidate). The contributor's name is its
 		// collision-record identity — without one there is nothing to
 		// attribute the contributions to, which is a contract violation.
-		if (providers === undefined && webuiBundles === undefined) {
+		if (
+			providers === undefined &&
+			webuiBundles === undefined &&
+			channels === undefined
+		) {
 			return undefined;
 		}
 		if (typeof candidate.name !== "string" || candidate.name.length === 0) {
@@ -1285,6 +1530,7 @@ async function resolvedFromFactory(
 		...(commands === undefined ? {} : { commands }),
 		...(skills === undefined ? {} : { skills }),
 		...(notifiers === undefined ? {} : { notifiers }),
+		...(channels === undefined ? {} : { channels }),
 	};
 }
 
@@ -1522,6 +1768,11 @@ const commandBindings: ExtensionCommandBinding[] = [];
 // Notifier transports (W5 Task 6, spec §9.6), attributed the same way —
 // the server's notifications surface delivers to every collected entry.
 const notifierBindings: ExtensionNotifierBinding[] = [];
+// Channel adapters (gateway C1, spec §7), attributed the same way — the
+// gateway engine's start context and the /v1/extensions inventory read
+// them. Collected only for LOADED extensions (a colliding adapter never
+// reaches here — the channelIds check below throws first).
+const channelBindings: ExtensionChannelBinding[] = [];
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -1531,6 +1782,13 @@ const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
+// Channel id → slug (gateway C1): the same claimed-only-by-LOADED pattern
+// as `slugs`. Chat bindings are keyed by channel id, so a shadowing
+// adapter would inherit another adapter's chats — the collision
+// quarantines the later loader instead of last-wins (deliberately unlike
+// commands and bundles). Checked BEFORE `registry.install` so a colliding
+// extension leaves no registry entry, no slug claim, and no binding.
+const channelIds = new Map<string, string>();
 for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
 const display = label ?? entry ?? "skills-only";
 				try {
@@ -1734,6 +1992,17 @@ const display = label ?? entry ?? "skills-only";
 					};
 					options.hostContextFactory(slug, kinds, host);
 				}
+				if (resolved.channels !== undefined) {
+				for (const channel of resolved.channels) {
+					const owner = channelIds.get(channel.id);
+					if (owner !== undefined) {
+						throw new Error(
+							`channel "${channel.id}" is already contributed by "${owner}" — ` +
+							"channel ids must be unique across extensions (chat bindings are keyed by id)",
+						);
+					}
+				}
+			}
 				if (extension !== undefined) {
 					registry.install(extension);
 				}
@@ -1741,6 +2010,12 @@ const display = label ?? entry ?? "skills-only";
 				// later stage's quarantine (never loaded) leaves the slug free
 				// for the next boot's specifier list.
 				slugs.set(slug, declared);
+				// ...and its channel ids (the same claimed-only-by-loaded rule).
+				if (resolved.channels !== undefined) {
+					for (const channel of resolved.channels) {
+						channelIds.set(channel.id, slug);
+					}
+				}
 				// The manifest version for the §7.7 inventory: read off the
 				// module's own directory (a bare entry with no manifest stays
 				// versionless — the field is optional by design).
@@ -1752,6 +2027,9 @@ const display = label ?? entry ?? "skills-only";
 					status: "ok",
 					...(version === undefined ? {} : { version }),
 					...(builtin === true ? { builtin: true } : {}),
+					...(resolved.channels === undefined
+						? {}
+						: { channels: resolved.channels.map((channel) => channel.id) }),
 				});
 			if (extension !== undefined && resolved.health !== undefined) {
 				healthProducers.push({
@@ -1804,6 +2082,9 @@ const display = label ?? entry ?? "skills-only";
 				}
 				if (resolved.notifiers !== undefined) {
 					notifierBindings.push({ extension: slug, notifiers: resolved.notifiers });
+				}
+				if (resolved.channels !== undefined) {
+					channelBindings.push({ extension: slug, channels: resolved.channels });
 				}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
@@ -1872,5 +2153,6 @@ const display = label ?? entry ?? "skills-only";
 		routeBindings,
 		commandBindings,
 		notifierBindings,
+		channelBindings,
 	};
 }

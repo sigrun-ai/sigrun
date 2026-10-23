@@ -369,6 +369,180 @@ export interface NotifierContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Channel adapters (gateway C1 — the `channels` contribution, spec §7)
+// ---------------------------------------------------------------------------
+
+/** Whether an adapter's credentials/config are present; unconfigured adapters are never started. */
+export type ChannelReadiness = {
+	readonly status: "not_configured" | "ready";
+	readonly detail?: string;
+};
+
+/** What a chat platform can render — the engine formats against these. */
+export interface ChannelCapabilities {
+	readonly chatTypes: readonly ("dm" | "group" | "thread")[];
+	readonly maxMessageLength: number;
+	readonly format: "plain" | "markdown" | "native";
+	/** Edit-in-place streaming; `minIntervalMs` is the platform's safe edit rate. */
+	readonly edit?: { readonly minIntervalMs: number };
+	/** `labelMax` bounds button text; the engine truncates, never the adapter. */
+	readonly buttons?: {
+		readonly max: number;
+		readonly perRow?: number;
+		readonly labelMax?: number;
+	};
+	readonly media?: readonly ("image" | "audio" | "video" | "document")[];
+	readonly typing?: { readonly intervalMs: number };
+	readonly replyTo?: boolean;
+	readonly commandMenu?: boolean;
+	/** One short paragraph for the prompt: what renders, what doesn't. */
+	readonly promptHint?: string;
+}
+
+/** One chat on a platform — where a conversation lives. */
+export interface ChatRef {
+	readonly chatId: string;
+	readonly chatType: "dm" | "group" | "thread";
+	readonly threadId?: string;
+}
+
+/** One platform message — the edit/delete target. */
+export interface MessageRef {
+	readonly chat: ChatRef;
+	readonly messageId: string;
+}
+
+/**
+ * One inbound media attachment. `fetch` is lazy so unwanted media is
+ * never downloaded; the adapter stops reading and throws once `maxBytes`
+ * is exceeded, so an undeclared-size file is never fully downloaded
+ * either.
+ *
+ * The size-limit error is an error whose `name` is
+ * {@link AttachmentTooLargeName} (`"AttachmentTooLarge"`): the engine
+ * matches it by NAME, never `instanceof` — this types-only contract
+ * ships no runtime subpath, so class identity could never line up across
+ * an adapter's own dependency tree.
+ */
+export interface InboundAttachment {
+	readonly kind: "image" | "audio" | "voice" | "video" | "document" | "sticker";
+	readonly mime?: string;
+	readonly filename?: string;
+	readonly size?: number;
+	fetch(opts: { maxBytes: number; signal: AbortSignal }): Promise<Uint8Array>;
+}
+
+/** One inbound chat message, handed to the engine through `ChannelContext.receive`. */
+export interface InboundEvent {
+	readonly messageId: string;
+	readonly chat: ChatRef & { readonly title?: string };
+	readonly sender: { readonly id: string; readonly name?: string; readonly isBot?: boolean };
+	/** The bot's own message echoed back; the engine drops it. */
+	readonly fromSelf?: boolean;
+	readonly text: string;
+	/** Group messages: the bot was @-mentioned or replied to. */
+	readonly mentioned?: boolean;
+	readonly replyTo?: {
+		readonly messageId: string;
+		readonly text?: string;
+		readonly authorName?: string;
+		readonly fromSelf?: boolean;
+	};
+	readonly attachments?: readonly InboundAttachment[];
+	/** Platform album/batch id (e.g. a media group); events sharing it merge into one submission. */
+	readonly groupId?: string;
+}
+
+/** A button tap: `data` is the opaque token the engine put on the button. */
+export interface ActionEvent {
+	readonly chat: ChatRef;
+	readonly sender: { readonly id: string; readonly name?: string };
+	readonly message?: MessageRef;
+	readonly data: string;
+}
+
+/** One message to send: already formatted per `capabilities.format` and within `maxMessageLength`. */
+export interface OutboundMessage {
+	readonly chat: ChatRef;
+	readonly text: string;
+	readonly replyTo?: string;
+	readonly buttons?: readonly (readonly {
+		readonly label: string;
+		readonly data: string;
+		readonly style?: "primary" | "danger" | "neutral";
+	}[])[];
+	readonly files?: readonly { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array }[];
+}
+
+/** Which platform messages one `send` produced (a media group, a split message). */
+export interface SendReceipt {
+	readonly messageIds: readonly string[];
+}
+
+/** The engine-side context handed to a started adapter. */
+export interface ChannelContext {
+	readonly signal: AbortSignal;
+	/**
+	 * Resolves once the event is durably admitted, handled as a command,
+	 * or deliberately dropped: the adapter acks the platform on any
+	 * resolution. A rejection means the engine failed; the adapter does
+	 * not ack, the platform redelivers, and dedupe makes the retry safe.
+	 */
+	receive(event: InboundEvent): Promise<{
+		readonly outcome: "admitted" | "dropped" | "command";
+	}>;
+	/** A button tap. `data` is the opaque token the engine put on the button. */
+	action(event: ActionEvent): Promise<void>;
+	status(state: { readonly state: "connecting" | "running"; readonly detail?: string }): void;
+	fail(error: unknown): void;
+	readonly log: {
+		info(msg: string): void;
+		warn(msg: string): void;
+		error(msg: string, error?: unknown): void;
+	};
+}
+
+/**
+ * One channel adapter: one chat platform's transport. The engine owns
+ * supervision and delivery; the adapter owns the platform.
+ */
+export interface ChannelContribution {
+	/** Must match `^[a-z][a-z0-9-]*$`; unique across every loaded extension. */
+	readonly id: string;
+	readonly label: string;
+	readonly capabilities: ChannelCapabilities;
+	/** Whether credentials/config are present. Unconfigured adapters are never started. */
+	configured(): ChannelReadiness | Promise<ChannelReadiness>;
+	/**
+	 * Connect and begin receiving. Resolves once connected; any receive
+	 * loop keeps running until `ctx.signal` aborts. Post-connect failures
+	 * go through `ctx.fail` so the engine's supervisor owns restarts
+	 * (adapters never self-reconnect forever).
+	 */
+	start(ctx: ChannelContext): Promise<void>;
+	stop?(): Promise<void>;
+	send(message: OutboundMessage): Promise<SendReceipt>;
+	edit?(ref: MessageRef, message: OutboundMessage): Promise<void>;
+	delete?(ref: MessageRef): Promise<void>;
+	typing?(chat: ChatRef): Promise<void>;
+	setCommands?(
+		commands: readonly { readonly name: string; readonly description: string }[],
+	): Promise<void>;
+	/** Markdown → the platform's native markup. Required when `capabilities.format` is `"native"`. */
+	format?(markdown: string): string;
+	/** Without it every send error is `"transient"`. */
+	classifyError?(error: unknown): "transient" | "permanent" | "chat_gone";
+}
+
+/**
+ * The `name` an adapter's size-limit error carries: the engine matches
+ * `error.name === "AttachmentTooLarge"`, never `instanceof` (no runtime
+ * subpath ships with the types-only contract — see
+ * {@link InboundAttachment.fetch}).
+ */
+export type AttachmentTooLargeName = "AttachmentTooLarge";
+
+// ---------------------------------------------------------------------------
 // The host
 // ---------------------------------------------------------------------------
 
@@ -532,8 +706,8 @@ export interface SigrunHost {
  * The documented factory-result contract: EVERY field an extension may
  * return from its default-export factory. Every field is optional —
  * a minimal extension returns only `extension`; a contributor-only
- * result (`providers`/`webuiBundles` without `extension`) identifies
- * itself by `name`.
+ * result (`providers`/`webuiBundles`/`channels` without `extension`)
+ * identifies itself by `name`.
  *
  * `routes`, `commands`, `skills`, and `notifiers` are declared here
  * ahead of their implementations (W5 Tasks 2, 3, 4, and 6); the loader
@@ -568,6 +742,13 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly skills?: readonly string[];
 	/** Notification transports (lands in Task 6). */
 	readonly notifiers?: readonly NotifierContribution[];
+	/**
+	 * Channel adapters (gateway C1, spec §7): one per chat platform. A
+	 * `channels`-only result is a valid contributor identified by `name`;
+	 * channel-id collisions across extensions quarantine the later
+	 * loader (chat bindings are keyed by channel id — never last-wins).
+	 */
+	readonly channels?: readonly ChannelContribution[];
 }
 
 /**
