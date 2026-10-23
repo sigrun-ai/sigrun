@@ -112,7 +112,7 @@ export function renderFields(block: FieldsBlock, ctx: BlockCtx): Component {
 			const padded = row.label + " ".repeat(Math.max(0, labelWidth - visibleWidth(row.label)));
 			const text =
 				row.tone === undefined ? row.value : toneFg(ctx.theme, row.tone)(row.value);
-			const glyph = row.icon === undefined ? "" : `${iconGlyph(row.icon, false)} `;
+			const glyph = row.icon === undefined ? "" : `${iconGlyph(row.icon, !ctx.unicode)} `;
 			return `${ctx.theme.dim(padded)}  ${glyph}${text}`;
 		});
 	});
@@ -133,7 +133,7 @@ export function renderStat(block: StatBlock, ctx: BlockCtx): Component {
 		const icon = bindRaw(block.icon, ctx);
 		const label = bindText(block.label, ctx);
 		const head =
-			typeof icon === "string" ? `${iconGlyph(icon as IconName, false)} ${label}` : label;
+			typeof icon === "string" ? `${iconGlyph(icon as IconName, !ctx.unicode)} ${label}` : label;
 		const painted = toneName === undefined ? text : toneFg(ctx.theme, toneName)(text);
 		const out = [truncate(`${ctx.theme.dim(`${head}:`)} ${painted}`, width)];
 		const caption = bindText(block.caption, ctx);
@@ -243,7 +243,7 @@ export class CalloutComponent implements Component {
 		const tone = bindTone(this.#block.tone, this.#ctx);
 		const title = bindText(this.#block.title, this.#ctx);
 		const lines: string[] = [
-			truncate(`${toneFg(theme, tone)(toneMarker(tone))} ${title}`, width),
+			truncate(`${toneFg(theme, tone)(toneMarker(tone, !this.#ctx.unicode))} ${title}`, width),
 		];
 		const body = bindText(this.#block.body, this.#ctx);
 		if (body !== "") {
@@ -260,7 +260,7 @@ export class CalloutComponent implements Component {
 			lines.push("");
 			lines.push(
 				truncate(
-					`${toneFg(theme, confirm.tone ?? "warn")(toneMarker(confirm.tone ?? "warn"))} ${confirm.title}`,
+					`${toneFg(theme, confirm.tone ?? "warn")(toneMarker(confirm.tone ?? "warn", !this.#ctx.unicode))} ${confirm.title}`,
 					width,
 				),
 			);

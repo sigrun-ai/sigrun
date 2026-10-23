@@ -12,10 +12,12 @@
  * Focused cases pin the brief's binding list: width-class boundaries,
  * `visibleAt` hiding in a compact pane, `columns` stacking when the
  * minimums don't fit, the unknown-type fallback, the NO_COLOR tone
- * marker, the 40-cell truncation rule (Review Focus 2: every rendered
- * line's display width ≤ the pane), the confirm flow (`y/N`, `N`
- * dispatches nothing), the OSC 52 `copy` path, and read access hiding
- * edit/answer buttons (spec §6.5).
+ * marker, the ASCII glyph/marker fallbacks a no-Unicode terminal
+ * selects (`ctx.unicode === false`), a `collapsed` section hiding its
+ * children at every width, the 40-cell truncation rule (Review Focus
+ * 2: every rendered line's display width ≤ the pane), the confirm
+ * flow (`y/N`, `N` dispatches nothing), the OSC 52 `copy` path, and
+ * read access hiding edit/answer buttons (spec §6.5).
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -24,6 +26,7 @@ import type { Action, Block, JsonObject } from "@sigrun/shared/blocks";
 import { fixture } from "../../test/fixtures/blocks/samples.js";
 import { plainTuiTheme } from "../src/theme.js";
 import { renderBlock, widthClassOf } from "../src/blocks/render.js";
+import { iconGlyph } from "../src/blocks/icons.js";
 import type { BlockCtx } from "../src/blocks/render.js";
 
 /** One recorded dispatch. */
@@ -40,7 +43,12 @@ const DATA: Record<string, JsonObject> = {
 /** Build a ctx: plain theme, a data object, and a dispatch recorder. */
 function makeCtx(
 	name = "markdown",
-	init?: { access?: "read" | "write"; data?: JsonObject; terminal?: { write(data: string): void } },
+	init?: {
+		access?: "read" | "write";
+		data?: JsonObject;
+		unicode?: boolean;
+		terminal?: { write(data: string): void };
+	},
 ): { ctx: BlockCtx; calls: Recorded[] } {
 	const calls: Recorded[] = [];
 	const ctx: BlockCtx = {
@@ -48,6 +56,7 @@ function makeCtx(
 		theme: plainTuiTheme(),
 		locale: "en-CA",
 		access: init?.access ?? "write",
+		unicode: init?.unicode ?? true,
 		dispatch: (action: Action, payload: unknown) => {
 			calls.push({ action, payload });
 		},
@@ -316,6 +325,100 @@ describe("copy action", () => {
 		expect(written[0]).toContain(Buffer.from("job-7", "utf8").toString("base64"));
 		// copy is channel-local: it never dispatches to the surface.
 		expect(calls).toEqual([]);
+	});
+});
+
+// ─── No-Unicode terminals (§10.2: ASCII glyph + marker fallbacks) ──────
+
+describe("no-Unicode capability", () => {
+	test("iconGlyph answers the ASCII fallback exactly when asked", () => {
+		expect(iconGlyph("error", true)).toBe("!!");
+		expect(iconGlyph("clock", true)).toBe("o");
+		expect(iconGlyph("check", true)).toBe("v");
+		expect(iconGlyph("error", false)).toBe("✖");
+		expect(iconGlyph("clock", false)).toBe("◷");
+	});
+
+	test("icons render their ASCII fallback (fields row and stat head)", () => {
+		const fields: Block = {
+			type: "fields",
+			rows: [{ label: "Errors", value: 2, tone: "bad", icon: "error" }],
+		};
+		const stat: Block = {
+			type: "stat",
+			label: "Latency",
+			value: 42,
+			unit: "ms",
+			icon: "clock",
+		};
+		const { ctx } = makeCtx("markdown", { unicode: false });
+		// `error`'s ASCII fallback is `!!`; the Unicode glyph is `✖`.
+		expect(renderBlock(fields, ctx).render(72).join("\n")).toContain("Errors  !! 2");
+		expect(renderBlock(fields, ctx).render(72).join("\n")).not.toContain("✖");
+		expect(renderBlock(stat, ctx).render(72)[0]).toContain("o Latency:");
+	});
+
+	test("tone markers use the ASCII forms (callout title line)", () => {
+		const good: Block = { type: "callout", tone: "good", title: "OK" };
+		const warn: Block = { type: "callout", tone: "warn", title: "Careful" };
+		const neutral: Block = { type: "callout", tone: "neutral", title: "Hmm" };
+		const info: Block = { type: "callout", tone: "info", title: "FYI" };
+		const accent: Block = { type: "callout", tone: "accent", title: "Hey" };
+		const { ctx } = makeCtx("markdown", { unicode: false });
+		expect(renderBlock(good, ctx).render(72)[0]?.startsWith("v ")).toBe(true);
+		expect(renderBlock(warn, ctx).render(72)[0]?.startsWith("^ ")).toBe(true);
+		expect(renderBlock(neutral, ctx).render(72)[0]?.startsWith("- ")).toBe(true);
+		expect(renderBlock(info, ctx).render(72)[0]?.startsWith(". ")).toBe(true);
+		expect(renderBlock(accent, ctx).render(72)[0]?.startsWith("* ")).toBe(true);
+		// `bad` is ASCII in both tables (the NO_COLOR marker).
+		const bad: Block = { type: "callout", tone: "bad", title: "Boom" };
+		expect(renderBlock(bad, ctx).render(72)[0]?.startsWith("! ")).toBe(true);
+	});
+
+	test("a toned section header marker is ASCII under the signal", () => {
+		const section: Block = { type: "section", title: "Group", tone: "info", children: [] };
+		const { ctx } = makeCtx("markdown", { unicode: false });
+		expect(renderBlock(section, ctx).render(72)[0]?.startsWith(".")).toBe(true);
+	});
+
+	test("Unicode terminals keep the glyphs (the default ctx)", () => {
+		const good: Block = { type: "callout", tone: "good", title: "OK" };
+		const { ctx } = makeCtx();
+		expect(renderBlock(good, ctx).render(72)[0]?.startsWith("✓")).toBe(true);
+	});
+});
+
+// ─── collapsed sections (§5.2: author's initial state) ───────────────
+
+describe("collapsed section", () => {
+	const collapsed: Block = {
+		type: "section",
+		title: "Secrets",
+		subtitle: "collapsed by the author",
+		collapsible: true,
+		collapsed: true,
+		children: [{ type: "markdown", text: "hidden child" }],
+	};
+
+	for (const width of [72, 100, 160]) {
+		test(`renders only the header at ${width} columns`, () => {
+			const { ctx } = makeCtx("markdown");
+			const lines = renderBlock(collapsed, ctx).render(width);
+			const joined = lines.join("\n");
+			expect(joined).toContain("Secrets");
+			expect(joined).toContain("collapsed by the author");
+			expect(joined).not.toContain("hidden child");
+		});
+	}
+
+	test("an uncollapsed section still renders its children", () => {
+		const open: Block = {
+			type: "section",
+			title: "Group",
+			children: [{ type: "markdown", text: "visible child" }],
+		};
+		const { ctx } = makeCtx("markdown");
+		expect(renderBlock(open, ctx).render(72).join("\n")).toContain("visible child");
 	});
 });
 

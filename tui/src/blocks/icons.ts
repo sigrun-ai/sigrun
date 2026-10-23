@@ -68,7 +68,8 @@ const GLYPHS: Readonly<Record<IconName, readonly [string, string]>> = {
 	umbrella: ["☂", "u"],
 };
 
-/** The icon glyph for `name` (the ASCII fallback when `ascii` is set). */
+/** The icon glyph for `name` (the ASCII fallback when the terminal
+ * lacks Unicode support — callers pass `!ctx.unicode`). */
 export function iconGlyph(name: IconName, ascii: boolean): string {
 	const pair = GLYPHS[name];
 	if (pair === undefined) return ascii ? "?" : name;

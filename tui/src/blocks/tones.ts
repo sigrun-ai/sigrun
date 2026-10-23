@@ -6,7 +6,10 @@
  *
  * The TUI's tone treatment is a left marker column plus colour: the
  * marker makes tone legible without colour (NO_COLOR, Review Focus 5)
- * and doubles as the accent stripe `card.tone` calls for.
+ * and doubles as the accent stripe `card.tone` calls for. On a
+ * terminal that cannot render Unicode (`ctx.unicode === false`) the
+ * markers take their ASCII forms (§10.2) so tone stays legible there
+ * too.
  */
 
 import type { Tone } from "@sigrun/shared/blocks";
@@ -37,12 +40,32 @@ const TONE_MARKER: Readonly<Record<Tone, string>> = {
 	info: "·",
 };
 
+/**
+ * The marker on a no-Unicode terminal (§10.2's ASCII path): the same
+ * shapes in printable ASCII — `good` is `v`, matching `icons.ts`'s
+ * `check` fallback, so a tone and its icon degrade alike. `bad` is
+ * already ASCII.
+ */
+const TONE_MARKER_ASCII: Readonly<Record<Tone, string>> = {
+	neutral: "-",
+	accent: "*",
+	good: "v",
+	warn: "^",
+	bad: "!",
+	info: ".",
+};
+
 /** Style `text` in the tone's colour. */
 export function toneFg(theme: TuiTheme, tone: Tone): (s: string) => string {
 	return theme.fg(TONE_TOKEN[tone] ?? "text");
 }
 
-/** The tone's one-character marker (shown in addition to colour). */
-export function toneMarker(tone: Tone): string {
-	return TONE_MARKER[tone] ?? "•";
+/**
+ * The tone's one-character marker (shown in addition to colour);
+ * `ascii` selects the no-Unicode form (§10.2 — callers pass
+ * `!ctx.unicode`).
+ */
+export function toneMarker(tone: Tone, ascii: boolean): string {
+	const table = ascii ? TONE_MARKER_ASCII : TONE_MARKER;
+	return table[tone] ?? (ascii ? "-" : "•");
 }

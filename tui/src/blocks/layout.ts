@@ -176,7 +176,7 @@ export function renderSection(block: SectionBlock, ctx: BlockCtx): Component {
 		if (title !== "") {
 			if (block.tone !== undefined) {
 				const tone = bindTone(block.tone, ctx);
-				const head = `${toneFg(ctx.theme, tone)(toneMarker(tone))} ${title}`;
+				const head = `${toneFg(ctx.theme, tone)(toneMarker(tone, !ctx.unicode))} ${title}`;
 				const rule = RULE.repeat(Math.max(0, width - visibleWidth(head) - 1));
 				out.push(`${head} ${ctx.theme.dim(rule)}`);
 			} else {
@@ -185,9 +185,11 @@ export function renderSection(block: SectionBlock, ctx: BlockCtx): Component {
 			}
 		}
 		if (subtitle !== "") out.push(ctx.theme.dim(subtitle));
-		const children = block.children.filter(
-			(child): child is Block => "name" in child === false,
-		);
+		// `collapsed` is the author's INITIAL state (§5.2): children stay
+		// hidden until a later task's toggle expands them.
+		const children = block.collapsed
+			? []
+			: block.children.filter((child): child is Block => "name" in child === false);
 		const inner = width - 2;
 		const body = stacked(children, ctx, Math.max(1, inner), GAP_LINES.m);
 		for (const line of body) out.push(line === "" ? "" : `  ${line}`);
