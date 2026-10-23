@@ -6,7 +6,7 @@
  * App-provided — this component owns only the panel chrome.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { render, textContent } from "../test-utils";
 import { RightPanel } from "./RightPanel";
 
@@ -71,4 +71,45 @@ describe("RightPanel", () => {
 		expect(text).toContain("jobs-body");
 		expect(text).not.toContain("workspace-body");
 	});
+
+describe("RightPanel extension tabs (UI-blocks U3 Task 5)", () => {
+	const panels = [
+		{ slug: "fixture-surfaces", id: "stats", title: "Acme stats", icon: "chart" },
+	];
+
+	test("extension panel surfaces render one tab each, after the core tabs", () => {
+		const renderer = render(
+			<RightPanel
+				mode="outline"
+				outline={<p>outline-body</p>}
+				workspace={<p>workspace-body</p>}
+				jobs={<p>jobs-body</p>}
+				extPanels={panels}
+			/>,
+		);
+		const tab = renderer.root.findByProps({
+			"data-panel-tab": "ext:fixture-surfaces/stats",
+		});
+		expect(tab.props.title).toBe("Acme stats");
+	});
+
+	test("an extension tab click forwards (slug, id) to onOpenExtPanel", () => {
+		const onOpenExtPanel = vi.fn();
+		const renderer = render(
+			<RightPanel
+				mode="outline"
+				outline={<p>outline-body</p>}
+				workspace={<p>workspace-body</p>}
+				jobs={<p>jobs-body</p>}
+				extPanels={panels}
+				onOpenExtPanel={onOpenExtPanel}
+			/>,
+		);
+		const tab = renderer.root.findByProps({
+			"data-panel-tab": "ext:fixture-surfaces/stats",
+		});
+		(tab.props as { onClick: () => void }).onClick();
+		expect(onOpenExtPanel).toHaveBeenCalledWith("fixture-surfaces", "stats");
+	});
+});
 });

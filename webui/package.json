@@ -2,7 +2,7 @@
   "name": "@sigrun/webui",
   "version": "0.1.0",
   "private": true,
-  "description": "sigrun webui channel bundle (spec §4.1/§6) — Vite + TypeScript + React thin client over the §5 API",
+  "description": "sigrun webui channel bundle (spec \u00a74.1/\u00a76) \u2014 Vite + TypeScript + React thin client over the \u00a75 API",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,7 @@
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
-    "@sigrun/shared": "0.1.0",
+    "@sigrun/shared": "0.1.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",

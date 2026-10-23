@@ -24,6 +24,7 @@ import {
 } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
+import type { DataOps } from "@sigrun/shared/blocks";
 import { isSuperuser, type Principal } from "./auth/principal.js";
 import {
 	abortOp,
@@ -73,6 +74,21 @@ export interface HostBridge {
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
 	readonly commands: SigrunHost["commands"];
+	/**
+	 * The surfaces seam's server side (UI-blocks U3 Task 4): the seam
+	 * host's `surfaces.changed` delegates here — the slug is the
+	 * CALLING extension's (the seam host knows it; the bridge takes it
+	 * as an argument). Bumps the instance rev and publishes the
+	 * `surface.changed` hub event through the service's one code path.
+	 */
+	readonly surfaces: {
+		changed(
+			slug: string,
+			id: string,
+			key: string,
+			update?: DataOps,
+		): void;
+	};
 }
 
 /** Build the host bridge over one server context. */
@@ -305,10 +321,17 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					principal,
 					host: host as SigrunHost,
 				});
-				return result === undefined || result.notice === undefined
-					? {}
-					: { notice: result.notice };
-			},
+			return result === undefined || result.notice === undefined
+				? {}
+				: { notice: result.notice };
 		},
-	};
+	},
+	surfaces: {
+		// UI-blocks U3 Task 4 (spec §7.3): the same bumpRev the actions
+		// route takes — the rev advance and the hub event are one step.
+		changed(slug, id, key, update) {
+			ctx.surfaces.bumpRev(slug, id, key, update);
+		},
+	},
+};
 }

@@ -73,6 +73,7 @@ export type {
 	JobRevisionWire,
 } from "@sigrun/shared/jobs";
 export type { JobsResponse, JobRunResponse } from "@sigrun/shared/views";
+export type { ExtensionsResponse, ExtensionInfo, ExtensionSurfaceInfo } from "@sigrun/shared/views";
 export type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 
 /** One answer to a pending interaction (the ONE generic route's body). */
@@ -144,6 +145,8 @@ export interface SigrunClientOptions {
 }
 
 /** The typed §5 client. See {@link SigrunClientOptions} for the seams. */
+import type { ExtensionsResponse } from "@sigrun/shared/views";
+
 export class SigrunClient {
 	readonly #baseUrl: string;
 	readonly #fetch: FetchLike;
@@ -282,6 +285,12 @@ export class SigrunClient {
 	/** `GET /v1/commands` — the slash-command catalog (a boot constant). */
 	getCommands(): Promise<CommandsResponse> {
 		return this.#get("/v1/commands");
+	}
+
+	/** `GET /v1/extensions` — the loaded-extension inventory (U3 Task 5:
+	 *  the sidebar's Views group + panels read the declared surfaces). */
+	listExtensions(): Promise<ExtensionsResponse> {
+		return this.#get("/v1/extensions");
 	}
 
 	/**

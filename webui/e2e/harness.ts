@@ -77,6 +77,9 @@ export interface E2EServerOptions {
 	 * naive workstation posture (`SIGRUN_AUTH=none` + a claimed admin).
 	 */
 	readonly auth?: { readonly setupCode: string };
+	/** U1 Task 6: boot the server with `SIGRUN_DEV=true` (the gallery's
+	 *  rail gate reads `/v1/meta`'s `dev`). */
+	readonly dev?: boolean;
 	/**
 	 * T26b-iii items 4 + 7: extension package specifiers to load (the
 	 * `OpenHarnessOptions.extensionSpecifiers` seam — "@sigrun/ext-codemode",
@@ -163,6 +166,7 @@ async function bootOnDir(
 			// (or a login) sets.
 			SIGRUN_AUTH: options.auth === undefined ? "none" : "token",
 			SIGRUN_WORKSPACE_PATH: dir,
+			...(options.dev === true ? { SIGRUN_DEV: "true" } : {}),
 		}),
 		webuiBundle: WEBUI_DIST,
 		webuiBundleExplicit: true,

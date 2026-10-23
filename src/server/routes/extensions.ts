@@ -59,6 +59,9 @@ export function registerExtensionRoutes(
 				const routes = opened.extensionRoutes.find(
 					(binding) => binding.extension === outcome.name,
 				);
+				const surfaces = opened.extensionSurfaces.find(
+					(binding) => binding.extension === outcome.name,
+				);
 				return {
 					name: outcome.name,
 					status: outcome.status,
@@ -88,6 +91,22 @@ export function registerExtensionRoutes(
 							path: route.path,
 							auth: route.auth,
 						})) ?? [],
+					// Declared surfaces (U3 Task 1, spec §7.1): the flattened view +
+					// panel rows the channels register their rail/panel entries from —
+					// SPARSE (absent when the extension declared none).
+					...(surfaces === undefined
+						? {}
+						: {
+								surfaces: surfaces.defs.map((def) => ({
+									id: def.id,
+									title: def.title,
+									icon: def.icon,
+										placement: def.placement,
+										...(def.sharedData === true
+											? { sharedData: true }
+											: {}),
+									})),
+							}),
 				};
 			},
 		);
