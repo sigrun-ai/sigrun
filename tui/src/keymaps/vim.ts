@@ -81,6 +81,14 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "ctrl+c", action: "abort run (busy)" },
 	{ keys: "g?", action: "key reference" },
 	{ keys: "ZZ / :q", action: "quit" },
+	{ keys: "m", action: "pick up (block surface)" },
+	{ keys: "enter", action: "drop (block surface)" },
+	{ keys: "esc", action: "cancel move (block surface)" },
+	{ keys: "space", action: "select (block surface)" },
+	{ keys: ".", action: "action menu (block surface)" },
+	{ keys: "x", action: "check (block surface)" },
+	{ keys: "[ / ]", action: "previous / next range (calendar)" },
+	{ keys: "t", action: "today (calendar)" },
 ];
 
 function isReserved(data: string): boolean {
@@ -146,10 +154,30 @@ export function createVimKeymap(options?: VimKeymapOptions): VimKeymap {
 		return "pass";
 	};
 
+	/** Block-surface keys (spec §12.4): NORMAL mode over a `surface`
+	 *  focus. The surface wins over transcript/list bindings for the
+	 *  shared keys (o/x/etc). */
+	const surfaceNormal = (data: string): KeyResult | undefined => {
+		if (data === "m") return { type: "blocks.pickUp" };
+		if (matchesKey(data, Key.enter)) return { type: "blocks.drop" };
+		if (matchesKey(data, Key.escape)) return { type: "blocks.cancelMove" };
+		if (data === " ") return { type: "blocks.select" };
+		if (data === ".") return { type: "blocks.actionMenu" };
+		if (data === "x") return { type: "blocks.check" };
+		if (data === "[") return { type: "blocks.rangePrev" };
+		if (data === "]") return { type: "blocks.rangeNext" };
+		if (data === "t") return { type: "blocks.today" };
+		return undefined;
+	};
+
 	const normal = (data: string, ctx: KeyContext): KeyResult => {
 		// ctrl+b / ctrl+f are NOT bound in vim normal — reserved chords pass.
 		const chorded = chord(data);
 		if (chorded !== undefined) return chorded;
+		if (ctx.focus === "surface") {
+			const surfaceResult = surfaceNormal(data);
+			if (surfaceResult !== undefined) return surfaceResult;
+		}
 		if (data === "y") return { type: "copy" }; // yy is two copies — same action
 		if (data === "j") return { type: "move", delta: 1 };
 		if (data === "k") return { type: "move", delta: -1 };

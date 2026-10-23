@@ -10,8 +10,13 @@
  * what the action DOES per focus.
  */
 
-/** The three focusable regions. */
-export type Focus = "composer" | "list" | "transcript";
+/** The three focusable regions. `surface` (Task 4, UI-blocks U2) is a
+ *  block surface pane (lanes/calendar/collection) — the blocks.* keys
+ *  route ONLY while it has focus. While a surface is focused the
+ *  transcript/list nav keys (y/f/e//?) are inert (the keymaps pass
+ *  them); Task 6's surface host decides any surface-side meaning for
+ *  them. */
+export type Focus = "composer" | "list" | "transcript" | "surface";
 
 /** Every dispatchable intent. */
 export type Action =
@@ -38,7 +43,28 @@ export type Action =
 	| { readonly type: "quit" }
 	| { readonly type: "help" }
 	| { readonly type: "command-line" }
-	| { readonly type: "run-command"; readonly line: string };
+	| { readonly type: "run-command"; readonly line: string }
+	// UI-blocks U2 Task 4 (spec §12.4): block-surface keys. Routed ONLY
+	// while the `surface` focus is active; the app forwards them to the
+	// focused block component.
+	/** Pick up the item under the cursor (m / M-m). */
+	| { readonly type: "blocks.pickUp" }
+	/** Drop the picked-up item at its placement (Enter). */
+	| { readonly type: "blocks.drop" }
+	/** Cancel the pick-up (Esc). */
+	| { readonly type: "blocks.cancelMove" }
+	/** Toggle the selection of the item under the cursor (Space). */
+	| { readonly type: "blocks.select" }
+	/** Open the action menu (`.` — bulk actions, "Move to…"). */
+	| { readonly type: "blocks.actionMenu" }
+	/** Toggle the checkable field of the item under the cursor (x). */
+	| { readonly type: "blocks.check" }
+	/** Previous calendar range ([). */
+	| { readonly type: "blocks.rangePrev" }
+	/** Next calendar range (]). */
+	| { readonly type: "blocks.rangeNext" }
+	/** Return the calendar range to today (t). */
+	| { readonly type: "blocks.today" };
 
 /** The dispatch surface {@link TuiApp} implements. */
 export interface ActionHost {
