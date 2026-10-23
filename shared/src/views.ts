@@ -535,6 +535,13 @@ export interface MetaResponse {
 		readonly channels: readonly string[];
 	};
 	/**
+	 * The development flag (spec §14.2/§14.4): `server.dev` / `SIGRUN_DEV`,
+	 * default `false`. Gates the U1 blocks gallery, U3's development
+	 * error bodies (validation errors in `surface_failed` responses) and
+	 * U4 — a boot constant, like the rest of meta.
+	 */
+	readonly dev: boolean;
+	/**
 	 * The seam inventory (docs/approval-ux-seams.md): per extension, the
 	 * interaction kinds / ambient surface keys its factory declared.
 	 * Extensions that declared nothing are absent — an absent entry means

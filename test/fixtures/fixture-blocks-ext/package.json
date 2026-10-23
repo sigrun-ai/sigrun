@@ -1,0 +1,11 @@
+{
+	"name": "fixture-blocks-ext",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension package importing @sigrun/sigrun/blocks (the spec 14.1 authoring surface). @sigrun/sigrun is a peerDependency \"*\" — the packages dir's host-module link provides the running copy; the tarball install never bundles one.",
+	"type": "module",
+	"main": "index.js",
+	"peerDependencies": {
+		"@sigrun/sigrun": "*"
+	}
+}

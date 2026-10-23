@@ -1,0 +1,615 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-footer @80 1`] = `
+"left
+
+Queue: 3
+
+right"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-footer @160 1`] = `
+"left
+
+Queue: 3
+
+right"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-panel @80 1`] = `
+"acme
+  status: ok
+
+forge
+  status: restarting
+
+8:53:20 a.m. [warn] restarting forge
+
+30%
+
+{"ok":true}"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-panel @160 1`] = `
+"acme
+  status: ok
+
+forge
+  status: restarting
+
+8:53:20 a.m. [warn] restarting forge
+
+30%
+
+{"ok":true}"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-status @80 1`] = `"acme: all systems nominal"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-status @160 1`] = `"acme: all systems nominal"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > callout @80 1`] = `
+"[warn] Degraded
+
+acme upstream is slow
+
+actions: Open console, Copy id"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > callout @160 1`] = `
+"[warn] Degraded
+
+acme upstream is slow
+
+actions: Open console, Copy id"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > chart @80 1`] = `
+"## Throughput
+acme: min 20 req/s, max 24 req/s, latest 21 req/s (3 points)
+Baseline: min 10 req/s, max 12 req/s, latest 11 req/s (3 points)
+threshold: SLO at 20"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > chart @160 1`] = `
+"## Throughput
+acme: min 20 req/s, max 24 req/s, latest 21 req/s (3 points)
+Baseline: min 10 req/s, max 12 req/s, latest 11 req/s (3 points)
+threshold: SLO at 20"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > chat-message @80 1`] = `
+"acme ranking draft
+
+1. Nordlys
+  meta: Example
+
+2. Frost
+  meta: Example
+
+3. Aske
+  meta: Example
+
+Confirm: false
+
+submit: Use this order"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > chat-message @160 1`] = `
+"acme ranking draft
+
+1. Nordlys
+  meta: Example
+
+2. Frost
+  meta: Example
+
+3. Aske
+  meta: Example
+
+Confirm: false
+
+submit: Use this order"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-calendar @80 1`] = `"Oct 9, 2025, 8:53 a.m.  Rotate keys"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-calendar @160 1`] = `"Oct 9, 2025, 8:53 a.m.  Rotate keys"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-grid @80 1`] = `
+"Front
+  image: asset:shots/front.png
+
+Side
+  image: asset:shots/side.png"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-grid @160 1`] = `
+"Front
+  image: asset:shots/front.png
+
+Side
+  image: asset:shots/side.png"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-lanes @80 1`] = `
+"## To do
+  Sketch the rail
+  Bend the rail
+
+## Doing
+  Mount the rail"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-lanes @160 1`] = `
+"## To do
+  Sketch the rail
+  Bend the rail
+
+## Doing
+  Mount the rail"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-list @80 1`] = `
+"1. [x] Fix the pump
+  the impeller screeches
+  A **long** body clamped in lists.
+  badges: p1
+  meta: today · Ada · Oct 9, 2025, 8:53 a.m.
+  Score: 91
+  status: running
+  after: ACME-9
+  1. [ ] Order the gasket
+
+2. [ ] Paint the bracket
+  Score: 12
+  status: queued"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-list @160 1`] = `
+"1. [x] Fix the pump
+  the impeller screeches
+  A **long** body clamped in lists.
+  badges: p1
+  meta: today · Ada · Oct 9, 2025, 8:53 a.m.
+  Score: 91
+  status: running
+  after: ACME-9
+  1. [ ] Order the gasket
+
+2. [ ] Paint the bracket
+  Score: 12
+  status: queued"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-table @80 1`] = `
+"Name     State     Load
+-------  --------  ----
+edge-01  running   42%
+edge-02  degraded  95%"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-table @160 1`] = `
+"Name     State     Load
+-------  --------  ----
+edge-01  running   42%
+edge-02  degraded  95%"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > columns @80 1`] = `
+"left
+
+Load: 42%"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > columns @160 1`] = `
+"left
+
+Load: 42%"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > details @80 1`] = `"{"host":"acme.example","nested":{"ok":true},"tags":["a","b"]}"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > details @160 1`] = `"{"host":"acme.example","nested":{"ok":true},"tags":["a","b"]}"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > diff @80 1`] = `
+"--- src/acme.ts
+- const a = 1;
++ const a = 2;"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > diff @160 1`] = `
+"--- src/acme.ts
+- const a = 1;
++ const a = 2;"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-choice @80 1`] = `
+"Pick:
+  [ ] A
+  [ ] B"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-choice @160 1`] = `
+"Pick:
+  [ ] A
+  [ ] B"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-date @80 1`] = `"On:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-date @160 1`] = `"On:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-daterange @80 1`] = `"Range:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-daterange @160 1`] = `"Range:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-datetime @80 1`] = `"At:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-datetime @160 1`] = `"At:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-file @80 1`] = `"Logo: not set"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-file @160 1`] = `"Logo: not set"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-list @80 1`] = `"Members:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-list @160 1`] = `"Members:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-longtext @80 1`] = `"Notes:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-longtext @160 1`] = `"Notes:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-number @80 1`] = `"Port:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-number @160 1`] = `"Port:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-secret @80 1`] = `"API key: not set"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-secret @160 1`] = `"API key: not set"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-text @80 1`] = `"Name:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-text @160 1`] = `"Name:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-toggle @80 1`] = `"Dark mode: false"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-toggle @160 1`] = `"Dark mode: false"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > fields @80 1`] = `
+"Host: acme.example
+Errors: 2"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > fields @160 1`] = `
+"Host: acme.example
+Errors: 2"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form @80 1`] = `
+"## Basics
+
+Title: acme run
+
+Notes:
+
+Retries: 2
+
+Enabled: true
+
+submit: Save"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form @160 1`] = `
+"## Basics
+
+Title: acme run
+
+Notes:
+
+Retries: 2
+
+Enabled: true
+
+submit: Save"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-chat @80 1`] = `
+"Answer: yes
+  [x] Yes
+  [ ] No
+
+Reason:
+
+submit: Send"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-chat @160 1`] = `
+"Answer: yes
+  [x] Yes
+  [ ] No
+
+Reason:
+
+submit: Send"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-inline @80 1`] = `
+"Title:
+
+submit: Add"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-inline @160 1`] = `
+"Title:
+
+submit: Add"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-interaction @80 1`] = `
+"## Approve
+
+Verdict:
+  [ ] Allow
+  [ ] Deny
+
+Reason:
+
+Token: not set
+
+submit: Answer"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-interaction @160 1`] = `
+"## Approve
+
+Verdict:
+  [ ] Allow
+  [ ] Deny
+
+Reason:
+
+Token: not set
+
+submit: Answer"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-settings @80 1`] = `
+"Host: acme.example
+
+Plan: pro
+  [ ] Basic
+  [x] Pro
+
+Verbose: true
+
+Since: Oct 1, 2025
+
+At: Oct 9, 2025, 8:53 a.m.
+
+Window: {"end":"2025-10-08","start":"2025-10-01"}
+
+Hosts:
+  - a.example
+  - b.example"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-settings @160 1`] = `
+"Host: acme.example
+
+Plan: pro
+  [ ] Basic
+  [x] Pro
+
+Verbose: true
+
+Since: Oct 1, 2025
+
+At: Oct 9, 2025, 8:53 a.m.
+
+Window: {"end":"2025-10-08","start":"2025-10-01"}
+
+Hosts:
+  - a.example
+  - b.example"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-upload @80 1`] = `"Avatar: not set"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-upload @160 1`] = `"Avatar: not set"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-view @80 1`] = `
+"State: all
+  [x] All
+  [ ] Open"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > form-view @160 1`] = `
+"State: all
+  [x] All
+  [ ] Open"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > grid @80 1`] = `
+"Wide: 12
+
+Narrow: 3
+
+full row"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > grid @160 1`] = `
+"Wide: 12
+
+Narrow: 3
+
+full row"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > image @80 1`] = `"[image: acme cluster diagram]"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > image @160 1`] = `"[image: acme cluster diagram]"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > interaction-form @80 1`] = `
+"## Proceed?
+
+Proceed:
+  [ ] Yes
+  [ ] No
+
+Note:
+
+submit: Answer"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > interaction-form @160 1`] = `
+"## Proceed?
+
+Proceed:
+  [ ] Yes
+  [ ] No
+
+Note:
+
+submit: Answer"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > log @80 1`] = `
+"8:53:20 a.m. [info] acme boot
+8:54:20 a.m. [error] acme upstream failed"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > log @160 1`] = `
+"8:53:20 a.m. [info] acme boot
+8:54:20 a.m. [error] acme upstream failed"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > markdown @80 1`] = `"acme **status** at [example.invalid](https://example.invalid/x)"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > markdown @160 1`] = `"acme **status** at [example.invalid](https://example.invalid/x)"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > meter @80 1`] = `"Disk: 72%"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > meter @160 1`] = `"Disk: 72%"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page @80 1`] = `
+"# Jobs
+acme queue
+actions: Refresh
+
+## Active
+
+acme jobs run **here**
+
+Queue: acme
+State: running
+
+## Detail
+- a
++ b
+
+{"count":3,"kind":"acme"}"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page @160 1`] = `
+"# Jobs
+acme queue
+actions: Refresh
+
+## Active
+
+acme jobs run **here**
+
+Queue: acme
+State: running
+
+## Detail
+- a
++ b
+
+{"count":3,"kind":"acme"}"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page-sidebar @80 1`] = `
+"# Board
+with a sidebar
+
+## Sidebar
+Overview
+  Latency
+Jobs
+
+board body"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page-sidebar @160 1`] = `
+"# Board
+with a sidebar
+
+## Sidebar
+Overview
+  Latency
+Jobs
+
+board body"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > section @80 1`] = `
+"## Group
+subtitle
+
+in section
+
+[warn] Careful
+
+acme maintenance at 02:00
+
+actions: Acknowledge"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > section @160 1`] = `
+"## Group
+subtitle
+
+in section
+
+[warn] Careful
+
+acme maintenance at 02:00
+
+actions: Acknowledge"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stack @80 1`] = `
+"stacked
+
+L: 1"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stack @160 1`] = `
+"stacked
+
+L: 1"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stat @80 1`] = `
+"Latency: 42 ms
+p95 over 5m"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stat @160 1`] = `
+"Latency: 42 ms
+p95 over 5m"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > tree @80 1`] = `
+"acme
+  edge
+forge"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > tree @160 1`] = `
+"acme
+  edge
+forge"
+`;

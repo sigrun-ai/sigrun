@@ -1,0 +1,40 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-settings",
+		"bind": "/settings",
+		"mode": "submit",
+		"onSubmit": "saveSettings",
+		"children": [
+			{ "type": "text", "name": "host", "label": "Host", "apply": "live" },
+			{
+				"type": "choice",
+				"name": "plan",
+				"label": "Plan",
+				"options": [
+					{ "id": "basic", "label": "Basic" },
+					{ "id": "pro", "label": "Pro", "recommended": true }
+				]
+			},
+			{ "type": "toggle", "name": "verbose", "label": "Verbose", "apply": "restart" },
+			{ "type": "date", "name": "since", "label": "Since" },
+			{ "type": "datetime", "name": "at", "label": "At", "min": 0 },
+			{
+				"type": "daterange",
+				"name": "window",
+				"label": "Window",
+				"presets": [{ "id": "7d", "label": "Last 7 days", "duration": "P7D" }]
+			},
+			{
+				"type": "list",
+				"name": "hosts",
+				"label": "Hosts",
+				"reorder": true,
+				"min": 1,
+				"max": 10,
+				"item": { "type": "text", "name": "host", "label": "Host", "pattern": "^[a-z].*$" }
+			}
+		]
+	}
+}

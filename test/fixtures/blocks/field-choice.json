@@ -1,0 +1,21 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-choice",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{
+				"type": "choice",
+				"name": "pick",
+				"label": "Pick",
+				"multi": true,
+				"options": [
+					{ "id": "a", "label": "A", "description": "first" },
+					{ "id": "b", "label": "B", "tone": "good" }
+				]
+			}
+		]
+	}
+}

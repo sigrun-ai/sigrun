@@ -1,0 +1,12 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-longtext",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{ "type": "longtext", "name": "notes", "label": "Notes", "syntax": "markdown", "lang": "md", "rows": 8, "maxLength": 4000 }
+		]
+	}
+}

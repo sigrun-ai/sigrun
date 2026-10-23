@@ -1,0 +1,14 @@
+{
+	"v": 1,
+	"root": {
+		"type": "collection",
+		"id": "collection-grid",
+		"items": { "$": "/shots" },
+		"display": "grid",
+		"overflow": "wrap",
+		"item": {
+			"title": { "$": "./title" },
+			"image": { "$": "./image" }
+		}
+	}
+}

@@ -1,0 +1,36 @@
+{
+	"v": 1,
+	"root": {
+		"type": "collection",
+		"id": "collection-table",
+		"items": { "$": "/rows" },
+		"display": "table",
+		"select": "multi",
+		"sort": { "field": "name", "dir": "asc" },
+		"bulkActions": [
+			{
+				"id": "set-state",
+				"label": "Set state",
+				"icon": "edit",
+				"onSubmit": "setState",
+				"form": {
+					"v": 1,
+					"root": {
+						"type": "form",
+						"id": "set-state-form",
+						"bind": "/bulk",
+						"mode": "submit",
+						"onSubmit": "setState",
+						"children": [{ "type": "text", "name": "state", "label": "State" }]
+					}
+				}
+			}
+		],
+		"columns": [
+			{ "field": "name", "label": "Name", "sortable": true, "priority": "high" },
+			{ "field": "load", "label": "Load", "format": "percent", "cell": "meter", "priority": "low" },
+			{ "field": "state", "label": "State", "cell": "badge", "width": "s" }
+		],
+		"item": { "title": { "$": "./name" } }
+	}
+}

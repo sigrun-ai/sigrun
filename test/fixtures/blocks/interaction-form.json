@@ -1,0 +1,29 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "interaction-body",
+		"bind": "/values",
+		"mode": "submit",
+		"onSubmit": "answer",
+		"submitLabel": "Answer",
+		"children": [
+			{
+				"type": "section",
+				"title": "Proceed?",
+				"children": [
+					{
+						"type": "choice",
+						"name": "proceed",
+						"label": "Proceed",
+						"options": [
+							{ "id": "yes", "label": "Yes", "tone": "good", "preview": "deploy to acme" },
+							{ "id": "no", "label": "No", "tone": "bad" }
+						]
+					}
+				]
+			},
+			{ "type": "text", "name": "note", "label": "Note" }
+		]
+	}
+}

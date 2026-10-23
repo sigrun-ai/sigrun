@@ -1,0 +1,17 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-daterange",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{
+				"type": "daterange",
+				"name": "range",
+				"label": "Range",
+				"presets": [{ "id": "today", "label": "Today", "duration": "P1D" }]
+			}
+		]
+	}
+}

@@ -533,6 +533,7 @@ function validateServer(server: unknown): void {
 		"providers",
 		"auth",
 		"metrics",
+		"dev",
 		"backup",
 	]);
 	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
@@ -778,6 +779,10 @@ function validateServer(server: unknown): void {
 		if (metrics.public !== undefined && typeof metrics.public !== "boolean") {
 			throw new SettingsValidationError("server.metrics.public", "must be a boolean");
 		}
+	}
+	// The development flag (§14.2/§14.4) — a flat boolean, no section.
+	if (record.dev !== undefined && typeof record.dev !== "boolean") {
+		throw new SettingsValidationError("server.dev", "must be a boolean");
 	}
 	if (record.backup !== undefined) {
 		const backup = asRecord(record.backup);

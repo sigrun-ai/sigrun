@@ -1,0 +1,66 @@
+{
+	"v": 1,
+	"root": {
+		"type": "page",
+		"title": "Jobs",
+		"subtitle": "acme queue",
+		"actions": [
+			{
+				"id": "refresh",
+				"label": "Refresh",
+				"icon": "refresh",
+				"action": {
+					"type": "edit",
+					"name": "refresh"
+				}
+			}
+		],
+		"main": [
+			{
+				"type": "section",
+				"title": "Active",
+				"children": [
+					{
+						"type": "markdown",
+						"text": "acme jobs run **here**"
+					},
+					{
+						"type": "fields",
+						"rows": [
+							{
+								"label": "Queue",
+								"value": "acme"
+							},
+							{
+								"label": "State",
+								"value": "running",
+								"tone": "info"
+							}
+						]
+					}
+				]
+			}
+		],
+		"detail": [
+			{
+				"type": "diff",
+				"before": "a",
+				"after": "b",
+				"lang": "ts"
+			},
+			{
+				"type": "details",
+				"value": {
+					"kind": "acme",
+					"count": 3
+				}
+			}
+		],
+		"empty": {
+			"icon": "check",
+			"title": "All done",
+			"hint": "no pending jobs"
+		},
+		"id": "page"
+	}
+}

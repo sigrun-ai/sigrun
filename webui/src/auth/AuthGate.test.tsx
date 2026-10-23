@@ -33,6 +33,7 @@ const META: MetaResponse = {
 	auth: { methods: ["token"], claimed: true },
 	backup: {},
 	capabilities: { backup: false, channels: ["webui"] },
+	dev: false,
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [], commands: [] },
 };

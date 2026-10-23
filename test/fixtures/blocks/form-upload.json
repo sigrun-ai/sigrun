@@ -1,0 +1,20 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-upload",
+		"bind": "/upload",
+		"mode": "submit",
+		"onSubmit": "saveUpload",
+		"children": [
+			{
+				"type": "file",
+				"name": "avatar",
+				"label": "Avatar",
+				"accept": "image/*",
+				"maxBytes": 1048576,
+				"onUpload": "uploadAvatar"
+			}
+		]
+	}
+}

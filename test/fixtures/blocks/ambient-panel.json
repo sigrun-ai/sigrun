@@ -1,0 +1,23 @@
+{
+	"v": 1,
+	"root": {
+		"type": "stack",
+		"id": "ambient-panel",
+		"children": [
+			{
+				"type": "collection",
+				"id": "checks",
+				"items": { "$": "/checks" },
+				"display": "list",
+				"item": {
+					"title": { "$": "./name" },
+					"status": { "label": { "$": "./state" }, "spinner": { "$": "./busy" } },
+					"tone": { "$": "./tone" }
+				}
+			},
+			{ "type": "log", "lines": { "$": "/recentOutput" } },
+			{ "type": "meter", "value": { "$": "/gauge" }, "format": "percent" },
+			{ "type": "details", "value": { "ok": true } }
+		]
+	}
+}
