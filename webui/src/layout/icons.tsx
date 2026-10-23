@@ -63,6 +63,18 @@ export function ChatsIcon(props: IconProps) {
 	);
 }
 
+/** Blocks gallery (a 2x2 grid). */
+export function BlocksIcon(props: IconProps) {
+	return (
+		<Svg {...props}>
+			<rect x="3" y="3" width="7" height="7" />
+			<rect x="14" y="3" width="7" height="7" />
+			<rect x="3" y="14" width="7" height="7" />
+			<rect x="14" y="14" width="7" height="7" />
+		</Svg>
+	);
+}
+
 /** Settings (a gear). */
 export function SettingsIcon(props: IconProps) {
 	return (

@@ -488,6 +488,14 @@ export interface MetaResponse {
 		 * worker's first run.
 		 */
 		readonly workers?: readonly WorkerStatus[];
+		/**
+		 * The declared surfaces (UI-blocks U3 Task 5): the flattened
+		 * view + panel rows the channels register their rail/panel
+		 * entries from. Absent when the extension declared none. The
+		 * meta response carries the DECLARATION (id/title/icon/
+		 * placement); access filtering is render-time (§6.5).
+		 */
+		readonly surfaces?: readonly ExtensionSurfaceInfo[];
 	}[];
 	/**
 	 * §5 health: pure aggregation over boot-retained §3 producers (spec
@@ -685,6 +693,8 @@ export interface ExtensionInfo {
 	readonly workers: readonly WorkerStatus[];
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
+	/** The declared surfaces, one `{id, title, icon, placement}` each (U3 Task 1); absent when none. */
+	surfaces?: readonly ExtensionSurfaceInfo[];
 	/**
 	 * The channel ids this extension contributes (gateway C1, spec §7):
 	 * present only on rows of extensions whose factory result carried
@@ -718,6 +728,27 @@ export interface ExtensionRouteInfo {
 	/** The declared relative path — mounted at `/v1/ext/<slug>/<path>`. */
 	readonly path: string;
 	readonly auth: string;
+}
+
+/**
+ * One `GET /v1/extensions` surface row (UI-blocks U3 Task 1, spec
+ * §7.1): the extension-declared views and panels — what the channels'
+ * rail (views) and right panel (panels) register from. One row per
+ * declared surface, in declaration order (views before panels).
+ */
+export interface ExtensionSurfaceInfo {
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+	/** The declared placement; `settings` sections (§13.3) are not in this workstream. */
+	readonly placement: "view" | "panel";
+	/** The declared refresh cadence (spec §7.1); channels refetch data on
+	 *  this interval while the surface is visible. Absent → no cadence. */
+	readonly refreshMs?: number;
+	/** §7.3 shared-data flag: a sharedData surface's `since` fetches may
+	 *  answer with `ops` and NO `data` — channels fall back to a full
+	 *  fetch (ops folding is U1). Absent → per-instance data. */
+	readonly sharedData?: boolean;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */
@@ -904,4 +935,13 @@ export type HostEventWire =
 			/** W4 Task 4 (§8.4): the changed job's summary, WITHOUT `access` — the events stream computes `accessOf` per principal and adds it before delivery (a hidden job's event is withheld entirely). */
 			readonly type: "job.changed";
 			readonly job: Omit<JobWire, "access">;
+		}
+	| {
+			/** UI-blocks U3 Task 4 (spec §7.3): one surface instance changed. `k` is the hashed instance key (sha256(slug + "\0" + id + "\0" + key) hex) — the event NEVER carries params or data (render/data are principal-specific; the watcher refetches as itself). Delivered only to streams in the watcher registry whose stored access is not `"none"`. */
+			readonly type: "surface.changed";
+			readonly slug: string;
+			readonly id: string;
+			readonly k: string;
+			readonly rev: number;
+			readonly treeRev: number;
 		};

@@ -132,4 +132,108 @@ describe("Rail", () => {
 		(settings.props as { onClick: () => void }).onClick();
 		expect(onOpenSettings).toHaveBeenCalledTimes(1);
 	});
+
+	test("the Blocks gallery entry is absent without dev meta and present with dev: true (U1 Task 6)", () => {
+		const hasBlocksEntry = (root: unknown): boolean => {
+			const entries = (root as { findAllByProps(p: object): unknown[] })
+				.findAllByProps({ "data-rail-section": "blocks" });
+			return entries.length > 0;
+		};
+		// Default meta (dev: false): the entry must NOT render even when the
+		// handler is supplied — a gate regression otherwise ships to prod.
+		const withoutDev = render(
+			<Rail
+				meta={makeMeta()}
+				onOpenSettings={() => {}}
+				onOpenGallery={() => {}}
+			/>,
+		);
+		expect(hasBlocksEntry(withoutDev.root)).toBe(false);
+		const withDev = render(
+			<Rail
+				meta={{ ...makeMeta(), dev: true }}
+				onOpenSettings={() => {}}
+				onOpenGallery={() => {}}
+			/>,
+		);
+		expect(hasBlocksEntry(withDev.root)).toBe(true);
+	});
+describe("Rail extension views (UI-blocks U3 Task 5)", () => {
+	function extMeta(surfaces?: readonly { id: string; title: string; icon: string; placement: "view" | "panel" }[]): MetaResponse {
+		return makeMeta({
+			extensions: [
+				{
+					name: "fixture-surfaces",
+					status: "ok",
+					...(surfaces === undefined ? {} : { surfaces }),
+				},
+			],
+		});
+	}
+
+	test("an extension view renders one rail entry after the core entries", () => {
+		const renderer = render(
+			<Rail
+				meta={extMeta([
+					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+				])}
+				onOpenSettings={() => {}}
+			/>,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		expect(entry.props.title).toBe("Acme board");
+	});
+
+	test("a panel surface does NOT render a rail entry", () => {
+		const renderer = render(
+			<Rail
+				meta={extMeta([
+					{ id: "stats", title: "Acme stats", icon: "chart", placement: "panel" },
+				])}
+				onOpenSettings={() => {}}
+			/>,
+		);
+		const found = renderer.root.findAllByProps({
+			"data-rail-section": "ext:fixture-surfaces/stats",
+		});
+		expect(found).toHaveLength(0);
+	});
+
+	test("a surface the principal cannot see (access none) has NO rail entry", () => {
+		const renderer = render(
+			<Rail
+				meta={extMeta([
+					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+				])}
+				onOpenSettings={() => {}}
+				hiddenExtSurfaces={["fixture-surfaces/board"]}
+			/>,
+		);
+		expect(
+			renderer.root.findAllByProps({
+				"data-rail-section": "ext:fixture-surfaces/board",
+			}),
+		).toHaveLength(0);
+	});
+
+	test("the rail entry click forwards (slug, id) to onOpenExtView", () => {
+		const onOpenExtView = vi.fn();
+		const renderer = render(
+			<Rail
+				meta={extMeta([
+					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+				])}
+				onOpenSettings={() => {}}
+				onOpenExtView={onOpenExtView}
+			/>,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		(entry.props as { onClick: () => void }).onClick();
+		expect(onOpenExtView).toHaveBeenCalledWith("fixture-surfaces", "board");
+	});
+});
 });

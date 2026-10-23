@@ -93,7 +93,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			"CONTEXT.md",
 		]);
 		// Exact intra-family pins.
-		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.1.0");
+		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.1.1");
 		expect(root.optionalDependencies).toEqual({ "@sigrun/tui": "0.1.0" });
 		// The built-ins resolve from core's own tree under their scoped
 		// names (src/harness/builtins.ts keys on these).
@@ -124,7 +124,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(tui.engines?.node).toBe(NODE_ENGINE);
 		expect(tui.publishConfig).toEqual(PUBLISH_CONFIG);
 		expect(tui.files).toEqual(["dist", "CHANGELOG.md"]);
-		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.1.0");
+		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.1.1");
 		expect(tui.bin).toEqual({ "sigrun-tui": "dist/launch.js" });
 		expect(tui.repository).toEqual({
 			type: "github",
@@ -160,7 +160,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 					// webui's private dev shape may use the workspace link;
 					// every published manifest pins exactly.
 					if (path === "webui/package.json") continue;
-					expect(spec, `${path}: ${name}`).toMatch(/^(0\.1\.0|file:\.\.\/sigrun-ext-[a-z-]+)$/);
+					expect(spec, `${path}: ${name}`).toMatch(/^(0\.1\.[01]|file:\.\.\/sigrun-ext-[a-z-]+)$/);
 				}
 			}
 		}
