@@ -62,7 +62,13 @@ services:
       # Required. An OpenAI-model id against the endpoint below, e.g.
       # openai/gpt-4o-mini — or a private gateway's own model id.
       # (SIGRUN_MODEL is the deprecated alias for one release cycle.)
-      SIGRUN_DEFAULT_MODEL: ${SIGRUN_DEFAULT_MODEL:-${SIGRUN_MODEL:?set SIGRUN_DEFAULT_MODEL in docker/.env (see README)}}
+      # The inner default is inert on purpose (`:-`, never `:?`): docker
+      # compose evaluates NESTED defaults eagerly on some versions (the
+      # runner's), so a `:?` inside `${A:-${B:?}}` errors even when A is
+      # set. The fail-loud for a missing model lives in sigrun's own boot
+      # (exit 1 naming SIGRUN_DEFAULT_MODEL) — compose-level duplication
+      # of that message is what this replaces.
+      SIGRUN_DEFAULT_MODEL: ${SIGRUN_DEFAULT_MODEL:-${SIGRUN_MODEL:-}}
       SIGRUN_PORT: "3000"
       # sqlite db + static workspace root on the data volume — mirrors the
       # deployment.yaml env block (WAL writes -wal/-shm sidecar files, so
