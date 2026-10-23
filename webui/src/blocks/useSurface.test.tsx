@@ -239,6 +239,32 @@ describe("useSurface (spec §6.3)", () => {
 		expect(latest().access).toBe("write");
 	});
 
+	test("setView writes the /view/ branch; the returned view carries it (spec §6.2)", async () => {
+		const transport = new FakeTransport();
+		transport.loadResult.data = board([task("a", "todo")]);
+		const { latest } = mount(transport);
+		await settleLoad();
+		// No view state yet: the view is exactly the confirmed data.
+		expect(latest().view).toEqual({ tasks: [task("a", "todo")] });
+		act(() => {
+			latest().setView("filters", { q: "acme" });
+		});
+		expect(latest().view).toEqual({
+			tasks: [task("a", "todo")],
+			view: { filters: { q: "acme" } },
+		});
+		// A nested write merges (sibling keys survive).
+		act(() => {
+			latest().setView("filters", { q: "acme", sort: "due" });
+		});
+		expect((latest().view as { view: { filters: JsonObject } }).view.filters).toEqual({
+			q: "acme",
+			sort: "due",
+		});
+		// No dispatch to the server — view-only.
+		expect(transport.actCalls).toEqual([]);
+	});
+
 	test('access "none" -> status notFound', async () => {
 		const transport = new FakeTransport();
 		transport.loadResult.access = "none";

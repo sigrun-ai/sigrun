@@ -77,7 +77,7 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 		const current = optionIdList(props.value);
 		props.onChange(
 			field.name,
-			text === "" ? [...current] : [...current, { other: text }],
+			text.trim() === "" ? [...current] : [...current, { other: text }],
 		);
 	};
 
@@ -156,13 +156,12 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 							checked={otherSelected}
 							disabled={props.disabled}
 							onChange={(event) =>
-								event.target.checked
-									? setOtherMulti(other === "" ? " " : other)
+								event.target.checked && other.trim() !== ""
+									? setOtherMulti(other)
 									: props.onChange(field.name, [...selectedIds])
 							}
 						/>
 					)}
-					{(!multi && otherSelected) || multi ? null : null}
 					<input
 						type="text"
 						dir="auto"

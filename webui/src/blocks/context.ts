@@ -42,6 +42,12 @@ export interface SurfaceActionsCtx {
 	 *  `{error: {field}}` from a rejected action surfaces under that
 	 *  field). Empty when no rejection has landed. */
 	readonly serverErrors?: Readonly<Record<string, string>>;
+	/** Write the `/view/` branch (spec §6.2): view-only state the
+	 *  channel owns and never sends to the server. `path` is a JSON
+	 *  pointer under the view branch (no leading `/view/` — the writer
+	 *  roots at the branch). A live form bound under `/view/` calls
+	 *  this so sibling blocks reading `/view/...` bindings update. */
+	readonly setView?: (path: string, value: JsonValue) => void;
 }
 
 /** The locale used when no provider narrows it (Node test envs have no
@@ -65,6 +71,7 @@ export const SurfaceActionsContext = createContext<SurfaceActionsCtx>({
 	access: "read",
 	viewState: {},
 	serverErrors: {},
+	setView: (): void => {},
 });
 
 /** The surface data bindings resolve against. */

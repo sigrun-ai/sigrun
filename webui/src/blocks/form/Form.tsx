@@ -62,8 +62,14 @@ export function FormBlockView(props: {
 	const { block } = props;
 	const data = useSurfaceData();
 	const actions = useSurfaceActions();
-	const boundObject =
-		(resolvePointer(data.data, block.bind) as JsonObject | undefined) ?? {};
+	// A `/view/`-bound form reads the channel's view branch (§6.2), not
+	// the server data.
+	const boundObject = block.bind.startsWith("/view/")
+		? ((resolvePointer(
+				actions.viewState,
+				block.bind.replace(/^\/view\/?/, "/"),
+			) as JsonObject | undefined) ?? {})
+			: ((resolvePointer(data.data, block.bind) as JsonObject | undefined) ?? {});
 	const fields = collectFields(block);
 	const [values, setValues] = useState<JsonObject>(() => {
 		const init: JsonObject = {};
@@ -124,7 +130,12 @@ export function FormBlockView(props: {
 					pending.current = null;
 					if (flushed === null) return;
 					if (block.bind.startsWith("/view/")) {
-						// §6.2: view-only — the channel owns /view/; no dispatch.
+						// §6.2: view-only — the channel owns /view/. Publish the
+						// flushed values to the shared view branch so sibling
+						// blocks reading /view/... bindings see the change; the
+						// bind path minus its leading /view/ roots the write.
+						const viewPath = block.bind.replace(/^\/view\/?/, "");
+						actions.setView?.(viewPath, { ...flushed });
 						return;
 					}
 					actions.dispatch(

@@ -68,6 +68,39 @@ interface Snapshot {
 	readonly access: SurfaceAccess;
 	readonly overlay: readonly OverlayEntry[];
 	readonly toasts: readonly string[];
+	/** The channel-owned `/view/` branch (spec §6.2). */
+	readonly viewState: JsonObject;
+}
+
+/** Immutably write `value` at the `/view/`-relative pointer `path`
+ *  (the same tokenisation `resolvePointer` uses, minus the leading
+ *  `/view/` the caller already strips). */
+function writeViewPath(
+	viewState: JsonObject,
+	path: string,
+	value: JsonValue,
+): JsonObject {
+	const tokens = path
+		.replace(/^\/+/, "")
+		.split("/")
+		.filter((token) => token !== "")
+		.map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+	if (tokens.length === 0) {
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+			? (value as JsonObject)
+			: viewState;
+	}
+	const rebuild = (node: JsonValue, depth: number): JsonValue => {
+		if (depth === tokens.length) return value;
+		const record: JsonObject =
+			typeof node === "object" && node !== null && !Array.isArray(node)
+				? { ...(node as JsonObject) }
+				: {};
+		const key = tokens[depth] as string;
+		record[key] = rebuild(record[key] as JsonValue, depth + 1);
+		return record;
+	};
+	return rebuild(viewState, 0) as JsonObject;
 }
 
 /** What consumers get (the brief's interface, plus `toasts` until the
@@ -79,6 +112,9 @@ export interface SurfaceState {
 	readonly view: JsonObject;
 	readonly access: "read" | "write";
 	dispatch(action: Action, payload: JsonValue): void;
+	/** Write the `/view/` branch (spec §6.2): the channel-owned
+	 *  view-only state sibling blocks read via `/view/...` bindings. */
+	setView(path: string, value: JsonValue): void;
 	retry(): void;
 	readonly toasts: readonly string[];
 }
@@ -245,6 +281,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		access: "read",
 		overlay: [],
 		toasts: [],
+		viewState: {},
 	});
 	// Async callbacks read the latest snapshot through this ref.
 	const ref = useRef(snapshot);
@@ -329,6 +366,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 				return;
 			}
 			announcedRev.current = result.rev;
+			const serverView = result.data.view;
 			setSnapshot((s) => ({
 				...s,
 				status: "ready",
@@ -338,6 +376,14 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 				treeRev: result.treeRev,
 				access: result.access,
 				overlay: [],
+				// Seed the `/view/` branch from the server's `view`
+				// document (§6.2); local `setView` writes layer on top.
+				viewState:
+					typeof serverView === "object" &&
+					serverView !== null &&
+					!Array.isArray(serverView)
+						? (serverView as JsonObject)
+						: s.viewState,
 			}));
 		} catch {
 			setSnapshot((s) => ({ ...s, status: "error" }));
@@ -458,11 +504,27 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 			});
 	};
 
+	/** Write the `/view/` branch (spec §6.2): the channel-owned
+	 *  view-only state sibling blocks read via `/view/...` bindings. */
+	const setView = (path: string, value: JsonValue): void => {
+		setSnapshot((s) => ({
+			...s,
+			viewState: writeViewPath(s.viewState, path, value),
+		}));
+	};
+
 	// The rendered view: confirmed with every overlay entry applied in
 	// dispatch order (§6.3 step 5 — server data never touches it).
 	let view = snapshot.confirmed;
 	for (const entry of snapshot.overlay) {
 		view = applyMoveOverlay(view, entry);
+	}
+	// The `/view/` branch rides the returned `view` object (seeded from
+	// the server's `view` document) so bindings read it like any path;
+	// merged only when non-empty so a surface without view state renders
+	// exactly its confirmed data.
+	if (Object.keys(snapshot.viewState).length > 0) {
+		view = { ...view, view: snapshot.viewState };
 	}
 
 	return {
@@ -471,6 +533,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		view,
 		access: snapshot.access === "write" ? "write" : "read",
 		dispatch,
+		setView,
 		retry: (): void => {
 			setSnapshot((s) => ({ ...s, status: "loading" }));
 			void doLoad();
