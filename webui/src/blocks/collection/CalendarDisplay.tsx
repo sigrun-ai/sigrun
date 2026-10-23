@@ -171,7 +171,11 @@ export function CalendarDisplay(props: {
 		dragRef.current = null;
 		setDragging(false);
 		if (drag.el !== undefined && drag.pointerId !== undefined) {
-			drag.el.releasePointerCapture?.(drag.pointerId);
+			try {
+				drag.el.releasePointerCapture?.(drag.pointerId);
+			} catch {
+				// NotFoundError: capture already auto-released.
+			}
 		}
 	};
 
@@ -181,7 +185,11 @@ export function CalendarDisplay(props: {
 		dragRef.current = null;
 		setDragging(false);
 		if (drag.el !== undefined && drag.pointerId !== undefined) {
-			drag.el.releasePointerCapture?.(drag.pointerId);
+			try {
+				drag.el.releasePointerCapture?.(drag.pointerId);
+			} catch {
+				// NotFoundError: capture already auto-released.
+			}
 		}
 		const day = dropDayAt(event.clientX, event.clientY);
 		if (day === undefined) return;
