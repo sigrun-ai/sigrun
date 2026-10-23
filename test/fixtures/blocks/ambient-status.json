@@ -1,0 +1,4 @@
+{
+	"v": 1,
+	"root": { "type": "markdown", "id": "ambient-status", "text": { "$": "/statusLine" } }
+}

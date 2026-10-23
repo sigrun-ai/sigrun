@@ -1,0 +1,19 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-file",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{
+				"type": "file",
+				"name": "logo",
+				"label": "Logo",
+				"accept": "image/png",
+				"multi": true,
+				"onUpload": "uploadLogo"
+			}
+		]
+	}
+}

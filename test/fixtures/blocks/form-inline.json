@@ -1,0 +1,12 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-inline",
+		"bind": "/view/quick",
+		"mode": "inline",
+		"onSubmit": "addQuick",
+		"submitLabel": "Add",
+		"children": [{ "type": "text", "name": "title", "label": "Title", "placeholder": "new item", "kind": "search" }]
+	}
+}

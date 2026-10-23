@@ -1,0 +1,10 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-toggle",
+		"bind": "/values",
+		"mode": "live",
+		"children": [{ "type": "toggle", "name": "dark", "label": "Dark mode", "disabled": false }]
+	}
+}

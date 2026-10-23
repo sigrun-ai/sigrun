@@ -1,0 +1,21 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-text",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{
+				"type": "text",
+				"name": "name",
+				"label": "Name",
+				"kind": "email",
+				"suggest": { "$": "/suggestions" },
+				"required": true,
+				"minLength": 2,
+				"placeholder": "acme@example.invalid"
+			}
+		]
+	}
+}

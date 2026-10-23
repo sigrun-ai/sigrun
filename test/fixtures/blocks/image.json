@@ -1,0 +1,9 @@
+{
+	"v": 1,
+	"root": {
+		"type": "image",
+		"id": "image",
+		"src": "asset:acme/diagram.png",
+		"alt": "acme cluster diagram"
+	}
+}

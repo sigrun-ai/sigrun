@@ -1,0 +1,12 @@
+{
+	"v": 1,
+	"root": {
+		"type": "columns",
+		"id": "ambient-footer",
+		"children": [
+			{ "block": { "type": "markdown", "text": "left" } },
+			{ "block": { "type": "stat", "label": "Queue", "value": 3 } },
+			{ "block": { "type": "markdown", "text": "right" } }
+		]
+	}
+}

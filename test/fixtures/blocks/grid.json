@@ -1,0 +1,13 @@
+{
+	"v": 1,
+	"root": {
+		"type": "grid",
+		"id": "grid",
+		"minItemWidth": "m",
+		"children": [
+			{ "span": 2, "block": { "type": "stat", "label": "Wide", "value": 12, "sparkline": [1, 2, 3] } },
+			{ "block": { "type": "stat", "label": "Narrow", "value": 3 } },
+			{ "span": "full", "block": { "type": "markdown", "text": "full row" } }
+		]
+	}
+}
