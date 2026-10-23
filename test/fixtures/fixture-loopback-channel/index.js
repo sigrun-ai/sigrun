@@ -110,6 +110,9 @@ export default function createFixtureLoopbackChannel() {
 					return globalThis.__loopConfigured ?? { status: "ready" };
 				},
 				start: async (ctx) => {
+					// failNext("start") rejects the next start attempt (Task 2's
+					// supervision round trip: a rejected start enters backoff).
+					maybeFail("start");
 					loop.ctx = ctx;
 				},
 				send: async (message) => {
