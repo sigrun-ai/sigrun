@@ -796,6 +796,69 @@ describe("relative bindings only inside item templates (spec §4.2)", () => {
 		const log = treeOf({ type: "log", lines: { $: "/out" } });
 		expect(validateTree(log, { placement: "chat" }).ok).toBe(true);
 	});
+
+	it("a stray block prop on a stack child does not skip it (wrapper skip is columns/grid only)", () => {
+		// fix-round-2 guard: the wrapper-children skip must fire only for
+		// columns/grid; in a stack, a child with a stray record `block` prop
+		// is still an (unknown) block of its own
+		const tree = {
+			v: BLOCK_SET_VERSION,
+			root: {
+				type: "stack",
+				children: [{ type: "carousel", block: { type: "markdown", text: "x" } }],
+			},
+		} as unknown as Tree;
+		const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+		expect(errs.some((e) => e.path === "root.children[0].type" && e.message.includes("carousel"))).toBe(
+			true,
+		);
+	});
+
+	it("a stray block prop on a form child errors, not silence", () => {
+		// fix-round-2 guard: the finding-2 literal-type check must not be
+		// bypassed by a stray `block` prop in a form child
+		const tree = treeOf({
+			type: "form",
+			id: "f",
+			bind: "/x",
+			mode: "submit",
+			children: [{ label: "L", block: { type: "text", name: "n", label: "N" } }],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+		expect(errs.some((e) => e.path === "root.children[0].type")).toBe(true);
+	});
+
+	it("columns and grid wrapper children with real inner blocks still validate clean", () => {
+		// fix-round-2 guard against over-narrowing: genuine wrapper
+		// positions keep validating their inner blocks (and relative
+		// bindings stay legal inside card templates under both)
+		const columns = fixture("columns");
+		expect(validateTree(columns, { placement: "chat" }).ok).toBe(true);
+		const grid = fixture("grid");
+		expect(validateTree(grid, { placement: "chat" }).ok).toBe(true);
+		const nested = treeOf({
+			type: "columns",
+			children: [
+				{ weight: 2, block: { type: "markdown", text: "left" } },
+			{ block: { type: "stat", label: "Load", value: 0.42, format: "percent" } },
+			],
+		});
+		expect(validateTree(nested, { placement: "chat" }).ok).toBe(true);
+	});
+
+	it("a columns child without block defers to the schema's required-prop error", () => {
+		// cosmetic fix-round-2: {weight: 1} must not draw a misleading
+		// "block type must be a literal string" at children[0].type
+		const tree = treeOf({
+			type: "columns",
+			children: [{ weight: 1 }],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+		expect(errs.some((e) => e.path === "root.children[0]" && e.message.includes("block"))).toBe(
+			true,
+		);
+		expect(errs.some((e) => e.path === "root.children[0].type")).toBe(false);
+	});
 });
 
 describe("handlers (spec §6.1: a name with no handler fails validation)", () => {

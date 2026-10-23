@@ -489,11 +489,20 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 
 	// children: blocks and (inside forms/sections) fields
 	if (Array.isArray(node.children)) {
+		const wrapperParent = type === "columns" || type === "grid";
 		node.children.forEach((child, i) => {
 			if (!isRec(child)) return;
 			// columns/grid children are `{weight?, block}` wrappers with no
-			// `type` of their own; the wrapper walk below validates `block`
-			if (isRec(child.block)) return;
+			// `type` of their own; the wrapper walk below validates `block`.
+			// Other parents (stack, section, form…) type their children as
+			// blocks/fields directly, so a stray record-valued `block` prop
+			// must NOT skip them.
+			if (wrapperParent && isRec(child.block)) return;
+			if (wrapperParent && !isRec(child.block)) {
+				// a wrapper child without `block` (e.g. {weight: 1}): the
+			// parent schema's required-property error is the precise one
+				return;
+			}
 			const cPath = joinPath(joinPath(path, "children"), String(i));
 			const childType = child.type;
 			if (typeof childType === "string" && FIELD_VALIDATORS.has(childType)) {
