@@ -397,3 +397,72 @@ describe("toText determinism", () => {
 		expect(JSON.stringify(data)).toBe(dataSnapshot);
 	});
 });
+
+// ─── toText: the page empty state (spec §5.1) ─────────────────────────────
+
+describe("toText page empty state", () => {
+	/** The §5.1 shape under test: a page whose main's FIRST collection is empty. */
+	function emptyPage(): Tree {
+		return treeOf({
+			type: "page",
+			id: "page",
+			title: "Jobs",
+			main: [
+				{
+					type: "collection",
+					id: "jobs",
+					items: { $: "/jobs" },
+					display: "list",
+					item: { title: { $: "./title" } },
+				},
+				{ type: "markdown", text: "never shown while empty" },
+			],
+			empty: { icon: "check", title: "All done", hint: "no pending jobs" },
+		});
+	}
+
+	it("an empty items array shows the empty title and hint instead of main", () => {
+		const text = toText(emptyPage(), { jobs: [] }, W80);
+		expect(text).toContain("All done");
+		expect(text).toContain("no pending jobs");
+		expect(text).not.toContain("never shown while empty");
+	});
+
+	it("a missing items path and a null one show the empty state too", () => {
+		expect(toText(emptyPage(), {}, W80)).toContain("All done");
+		expect(toText(emptyPage(), { jobs: null }, W80)).toContain("All done");
+	});
+
+	it("a non-empty first collection renders main normally", () => {
+		const text = toText(emptyPage(), { jobs: [{ id: "1", title: "Run the pump" }] }, W80);
+		expect(text).toContain("Run the pump");
+		expect(text).not.toContain("All done");
+	});
+
+	it("the empty state replaces main only — sidebar and detail still render", () => {
+		// Spec §5.1 says `empty` is "shown instead of main": main is the
+		// replaced region; the sidebar and detail slots are separate and
+		// keep their content. This test pins that reading.
+		const tree = treeOf({
+			type: "page",
+			id: "page",
+			title: "Jobs",
+			sidebar: [{ type: "tree", nodes: { $: "/nav" } }],
+			main: [
+				{
+					type: "collection",
+					id: "jobs",
+					items: { $: "/jobs" },
+					display: "list",
+					item: { title: { $: "./title" } },
+				},
+			],
+			detail: [{ type: "markdown", text: "detail pane" }],
+			empty: { icon: "check", title: "All done", hint: "no pending jobs" },
+		});
+		const text = toText(tree, { jobs: [], nav: [{ id: "n", label: "Queue" }] }, W80);
+		expect(text).toContain("All done");
+		expect(text).toContain("Queue");
+		expect(text).toContain("detail pane");
+	});
+});
