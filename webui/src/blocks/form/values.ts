@@ -45,6 +45,10 @@ export function collectFields(block: FormBlock): readonly Field[] {
  *  a type-appropriate empty: the render contract renders missing as
  *  empty, never undefined into a controlled input). */
 export function initialValue(field: Field, bound: Record<string, JsonValue>): JsonValue {
+	// Write-only (§5.6/§15): the bound slot carries the STATUS
+	// (`stored`/`env`), never a value to echo back — check before the
+	// bound lookup so the status string never lands in the input.
+	if (field.type === "secret") return "";
 	const value = bound[field.name];
 	if (value !== undefined) return value;
 	switch (field.type) {

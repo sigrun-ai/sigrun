@@ -49,7 +49,9 @@ export function widthClassOf(rem: number): WidthClass {
  *  unknown (`columns` treats unknown as regular/fit, never stacked). */
 const DEFAULT_WIDTH: WidthInfo = { widthClass: "regular", rem: null };
 
-const WidthContext = createContext<WidthInfo>(DEFAULT_WIDTH);
+/** Provide a fixed width class in tests (the container measures; the
+ *  tests pin the class directly). */
+export const WidthContext = createContext<WidthInfo>(DEFAULT_WIDTH);
 
 /** Provide the container's width class to the subtree (measures its
  *  own wrapper div with a ResizeObserver; 1 rem = 16 px). Environments

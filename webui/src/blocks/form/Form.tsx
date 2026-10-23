@@ -185,6 +185,7 @@ export function FormBlockView(props: {
 				serverErrors={actions.serverErrors ?? {}}
 				disabled={readOnly}
 				onChange={change}
+				formBind={block.bind}
 			/>
 			{block.mode !== "live" && !readOnly && (
 				<button type="button" className="blk-form-submit" onClick={submit}>
@@ -203,6 +204,7 @@ function FormChildren(props: {
 	readonly serverErrors: Readonly<Record<string, string>>;
 	readonly disabled: boolean;
 	readonly onChange: (name: string, value: JsonValue) => void;
+	readonly formBind?: string;
 }): ReactNode {
 	return (
 		<>
@@ -220,6 +222,7 @@ function FormChild(props: {
 	readonly serverErrors: Readonly<Record<string, string>>;
 	readonly disabled: boolean;
 	readonly onChange: (name: string, value: JsonValue) => void;
+	readonly formBind?: string;
 }): ReactNode {
 	const child = props.child;
 	if (
@@ -257,6 +260,7 @@ function FormChild(props: {
 			disabled={props.disabled || field.disabled === true}
 			error={props.errors[field.name] ?? props.serverErrors[field.name]}
 			onChange={props.onChange}
+			formBind={props.formBind}
 		/>
 	);
 }
