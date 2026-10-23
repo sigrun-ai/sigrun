@@ -496,7 +496,7 @@ describe("list display", () => {
 		expect(lines.some((l) => l.includes("(*)") && l.includes("Row A"))).toBe(true);
 	});
 
-	test("lanes and calendar stay the §4.4 unsupported notice in this task", () => {
+	test("lanes render in this client (Task 4 landed them; the §4.4 notice belongs to unknown types)", () => {
 		const lanes: Block = {
 			type: "collection",
 			items: { $: "/items" },
@@ -505,7 +505,8 @@ describe("list display", () => {
 		};
 		const { ctx } = makeCtx({ items: [{ id: "a", title: "Row A" }] });
 		const lines = renderBlock(lanes, ctx).render(80);
-		expect(lines.some((l) => l.includes("Not supported in this client"))).toBe(true);
+		expect(lines.some((l) => l.includes("Not supported in this client"))).toBe(false);
+		expect(lines.some((l) => l.includes("Row A"))).toBe(true);
 	});
 });
 

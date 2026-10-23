@@ -36,12 +36,13 @@ import {
 } from "./shared.js";
 
 /** One addressable row of the rendered list. */
-interface ListRow {
+	interface ListRow {
 	kind: "item" | "group" | "quiet";
 	/** The item rows: which item, at what nesting depth. */
 	row?: CollectionItem;
 	depth?: number;
-	/** Group rows: the group's id (heading folds honor `collapsed`). */
+	/** Group rows: the group's id (heading folds honor `collapsed`).
+	 *  Quiet rows carry it too (the fold is per-group). */
 	groupId?: string;
 	/** The folded quiet items a "quiet" row stands for. */
 	quietRows?: CollectionItem[];
@@ -98,11 +99,11 @@ export class ListComponent implements Component {
 			const loud = group.items.filter((row) => !isQuiet(this.#block, this.#ctx, row.item));
 			for (const row of loud) push(row, 0);
 			if (quiet.length > 0) {
-				if (this.#state.quietShown) {
+				if (this.#state.quietShownFor(group.id)) {
 					for (const row of quiet) push(row, 0);
-					rows.push({ kind: "quiet", quietRows: [] }); // the "Show less" row
+					rows.push({ kind: "quiet", groupId: group.id, quietRows: [] }); // the "Show less" row
 				} else {
-					rows.push({ kind: "quiet", quietRows: quiet });
+					rows.push({ kind: "quiet", groupId: group.id, quietRows: quiet });
 				}
 			}
 		}
@@ -149,7 +150,7 @@ export class ListComponent implements Component {
 			}
 			if (row.kind === "quiet") {
 				const count = row.quietRows?.length ?? 0;
-				const label = this.#state.quietShown ? "Show less" : `${count} more`;
+				const label = this.#state.quietShownFor(row.groupId ?? "") ? "Show less" : `${count} more`;
 				lines.push(truncate(cursor + this.#ctx.theme.dim(label), width));
 				return;
 			}
@@ -240,7 +241,7 @@ export class ListComponent implements Component {
 		}
 		if (data !== "\r") return;
 		if (row.kind === "quiet") {
-			this.#state.quietShown = !this.#state.quietShown;
+			this.#state.toggleQuiet(row.groupId ?? "");
 			return;
 		}
 		if (row.kind === "group" && row.groupId !== undefined) {

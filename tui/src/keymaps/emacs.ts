@@ -38,6 +38,14 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "C-o", action: "answer interaction" },
 	{ keys: "C-l", action: "redraw" },
 	{ keys: "C-h", action: "key reference" },
+	{ keys: "M-m", action: "pick up (block surface)" },
+	{ keys: "enter", action: "drop (block surface)" },
+	{ keys: "C-g", action: "cancel move (block surface)" },
+	{ keys: "space", action: "select (block surface)" },
+	{ keys: ".", action: "action menu (block surface)" },
+	{ keys: "x", action: "check (block surface)" },
+	{ keys: "[ / ]", action: "previous / next range (calendar)" },
+	{ keys: "t", action: "today (calendar)" },
 ];
 
 /** Match `data` against any reserved chord (they always pass). */
@@ -75,6 +83,22 @@ export function createEmacsKeymap(): Keymap {
 		return undefined;
 	};
 
+	/** Block-surface keys (spec §12.4; emacs picks up with M-m). C-g is
+	 *  the cancel key — it cancels a move on a surface BEFORE the global
+	 *  C-g (cancel-run / focus composer) below sees it. */
+	const surface = (data: string): KeyResult | undefined => {
+		if (data === "\x1bm") return { type: "blocks.pickUp" }; // M-m
+		if (matchesKey(data, Key.enter) || data === "\r") return { type: "blocks.drop" };
+		if (data === "\x07") return { type: "blocks.cancelMove" }; // C-g
+		if (data === " ") return { type: "blocks.select" };
+		if (data === ".") return { type: "blocks.actionMenu" };
+		if (data === "x") return { type: "blocks.check" };
+		if (data === "[") return { type: "blocks.rangePrev" };
+		if (data === "]") return { type: "blocks.rangeNext" };
+		if (data === "t") return { type: "blocks.today" };
+		return undefined;
+	};
+
 	return {
 		name: "emacs",
 		modeLabel: () => undefined,
@@ -91,6 +115,12 @@ export function createEmacsKeymap(): Keymap {
 			if (ctx.overlayOpen) return "pass";
 			const chorded = chord(data);
 			if (chorded !== undefined) return chorded;
+			// A block surface owns the §12.4 keys (its C-g is cancel-move,
+			// which must win over the global C-g cancel-run).
+			if (ctx.focus === "surface") {
+				const surfaceResult = surface(data);
+				if (surfaceResult !== undefined) return surfaceResult;
+			}
 			if (data === "\x1bx") return { type: "picker", kind: "command" };
 			if (data === "\x13") return { type: "search", direction: "forward" };
 			if (data === "\x12") return { type: "search", direction: "backward" };

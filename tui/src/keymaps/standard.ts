@@ -38,6 +38,14 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "/", action: "search transcript" },
 	{ keys: "n / N", action: "next / previous match" },
 	{ keys: "?", action: "help" },
+	{ keys: "m", action: "pick up (block surface)" },
+	{ keys: "enter", action: "drop (block surface)" },
+	{ keys: "esc", action: "cancel move (block surface)" },
+	{ keys: "space", action: "select (block surface)" },
+	{ keys: ".", action: "action menu (block surface)" },
+	{ keys: "x", action: "check (block surface)" },
+	{ keys: "[ / ]", action: "previous / next range (calendar)" },
+	{ keys: "t", action: "today (calendar)" },
 ];
 
 /** Match `data` against any reserved chord (they always pass). */
@@ -85,6 +93,20 @@ export function createStandardKeymap(): Keymap {
 		return undefined;
 	};
 
+	const surface = (data: string): KeyResult | undefined => {
+		// Block-surface keys (spec §12.4): routed ONLY here; the app
+		// forwards the action to the focused block component.
+		if (data === "m") return { type: "blocks.pickUp" };
+		if (matchesKey(data, Key.enter)) return { type: "blocks.drop" };
+		if (data === " ") return { type: "blocks.select" };
+		if (data === ".") return { type: "blocks.actionMenu" };
+		if (data === "x") return { type: "blocks.check" };
+		if (data === "[") return { type: "blocks.rangePrev" };
+		if (data === "]") return { type: "blocks.rangeNext" };
+		if (data === "t") return { type: "blocks.today" };
+		return undefined;
+	};
+
 	return {
 		name: "standard",
 		modeLabel: () => undefined,
@@ -97,6 +119,14 @@ export function createStandardKeymap(): Keymap {
 			}
 			const globalResult = global(data, ctx);
 			if (globalResult !== undefined) return globalResult;
+			if (ctx.focus === "surface") {
+				const surfaceResult = surface(data);
+				if (surfaceResult !== undefined) return surfaceResult;
+				// Esc on a surface: cancel a pick-up first, else the global
+				// Esc (focus composer) already fired above.
+				if (matchesKey(data, Key.escape)) return { type: "blocks.cancelMove" };
+				return "pass";
+			}
 			if (ctx.focus !== "composer") {
 				const navResult = outsideComposer(data);
 				if (navResult !== undefined) return navResult;
