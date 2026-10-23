@@ -732,3 +732,218 @@
 	background: var(--accent-bg);
 	border-color: var(--accent);
 }
+
+/* ─── Collection: card slots (spec §5.5.1, Task 3) ─────────────────── */
+
+.blk-card {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	display: flex;
+	gap: 0.6rem;
+	min-width: 0; /* grid/flex children shrink instead of widening */
+	overflow: hidden;
+	position: relative;
+}
+
+.blk-card-stripe {
+	bottom: 0;
+	left: 0;
+	position: absolute;
+	top: 0;
+	width: 3px;
+}
+
+.blk-card-image[data-layout="top"] {
+	aspect-ratio: 16 / 9;
+	display: block;
+	height: auto;
+	object-fit: cover;
+	width: 100%;
+}
+
+.blk-card-image[data-layout="thumb"] {
+	align-self: flex-start;
+	border-radius: 8px;
+	height: 3rem;
+	margin: 0.6rem 0 0.6rem 0.6rem;
+	object-fit: cover;
+	width: 3rem;
+}
+
+.blk-card:has(.blk-card-image[data-layout="top"]) {
+	flex-direction: column;
+}
+
+.blk-card-main {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: 0.35rem;
+	min-width: 0;
+	padding: 0.6rem 0.7rem;
+}
+
+.blk-card-head {
+	align-items: flex-start;
+	display: flex;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+.blk-card-icon {
+	color: var(--muted);
+	display: inline-flex;
+	margin-top: 0.1rem;
+}
+
+.blk-card-titles {
+	flex: 1;
+	min-width: 0;
+}
+
+.blk-card-eyebrow {
+	color: var(--muted);
+	font-size: 0.78em;
+	overflow-wrap: anywhere;
+}
+
+.blk-card-title {
+	font-weight: 600;
+	overflow-wrap: anywhere; /* long unbroken strings wrap (focus 4) */
+}
+
+.blk-card-subtitle {
+	color: var(--muted);
+	font-size: 0.88em;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.blk-card-body {
+	font-size: 0.9em;
+	min-width: 0;
+}
+
+.blk-card-body[data-clamped] {
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 4;
+	display: -webkit-box;
+	overflow: hidden;
+}
+
+.blk-card-badges,
+.blk-card-meta,
+.blk-card-metrics {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+
+.blk-card-badge {
+	background: var(--accent-bg);
+	border-radius: 999px;
+	font-size: 0.75em;
+	padding: 0.05rem 0.5rem;
+}
+
+.blk-card-badge[data-tone="good"] { color: var(--ok); }
+.blk-card-badge[data-tone="warn"] { color: var(--warn); }
+.blk-card-badge[data-tone="bad"] { color: var(--danger); }
+.blk-card-badge[data-tone="neutral"] { color: var(--text); }
+.blk-card-badge[data-tone="info"] { color: var(--muted); }
+
+.blk-card-meta {
+	color: var(--muted);
+	font-size: 0.8em;
+}
+
+.blk-card-meta-item {
+	align-items: center;
+	display: inline-flex;
+	gap: 0.25rem;
+	overflow-wrap: anywhere;
+}
+
+.blk-card-metric {
+	display: inline-flex;
+	flex-direction: column;
+}
+
+.blk-card-metric-value {
+	font-weight: 600;
+}
+
+.blk-card-metric-label {
+	color: var(--muted);
+	font-size: 0.75em;
+}
+
+.blk-card-deps {
+	color: var(--muted);
+	font-size: 0.8em;
+	overflow-wrap: anywhere;
+}
+
+.blk-card-status {
+	align-items: center;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	display: inline-flex;
+	font-size: 0.75em;
+	gap: 0.3rem;
+	padding: 0.05rem 0.5rem;
+	white-space: nowrap;
+}
+
+.blk-card-status[data-tone="good"] { color: var(--ok); }
+.blk-card-status[data-tone="warn"] { color: var(--warn); }
+.blk-card-status[data-tone="bad"] { color: var(--danger); }
+
+.blk-card-spinner {
+	animation: blk-card-spin 0.9s linear infinite;
+	border: 2px solid var(--border);
+	border-top-color: currentColor;
+	border-radius: 50%;
+	display: inline-block;
+	height: 0.7em;
+	width: 0.7em;
+}
+
+@keyframes blk-card-spin {
+	to { transform: rotate(360deg); }
+}
+
+.blk-card-actions {
+	align-items: center;
+	display: flex;
+	gap: 0.4rem;
+	justify-content: flex-end;
+}
+
+.blk-card-actions .blk-actions {
+	justify-content: flex-start;
+	margin-top: 0;
+}
+
+.blk-card-overflow {
+	position: relative;
+}
+
+.blk-card-overflow > summary {
+	cursor: pointer;
+	list-style: none;
+}
+
+.blk-card-overflow[open] > .blk-actions {
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	flex-direction: column;
+	padding: 0.4rem;
+	position: absolute;
+	right: 0;
+	z-index: 5;
+}
