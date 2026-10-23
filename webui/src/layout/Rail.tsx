@@ -17,7 +17,7 @@
  */
 
 import type { MetaResponse, WhoamiResponse } from "../api";
-import { BrandMark, ChatsIcon, LogoutIcon, SettingsIcon } from "./icons";
+import { BlocksIcon, BrandMark, ChatsIcon, LogoutIcon, SettingsIcon } from "./icons";
 import {
 	extViewEntries,
 	loadRailOrder,
@@ -53,6 +53,9 @@ export function Rail(props: {
 	readonly meta: MetaResponse;
 	/** Opens the settings dialog (App owns the dialog). */
 	readonly onOpenSettings: () => void;
+	/** Opens the dev Blocks gallery (U1 Task 6); rendered only when
+	 *  `/v1/meta` reports `dev: true`. */
+	readonly onOpenGallery?: () => void;
 	/** The resolved principal (W1 Task 8): renders the user + sign-out
 	 *  under the token method. */
 	readonly identity?: WhoamiResponse;
@@ -80,6 +83,7 @@ export function Rail(props: {
 	readonly onMoveExtView?: (key: string, delta: -1 | 1) => void;
 }) {
 	const { meta, onOpenSettings, identity, onLogout } = props;
+	const { onOpenGallery } = props;
 	const tokenSession = identity?.method === "token";
 	// The extension-view entries (U3 Task 5): after the core entries,
 	// in the user's saved order, minus the access-none set. App passes
@@ -104,6 +108,18 @@ export function Rail(props: {
 			>
 				<ChatsIcon />
 			</button>
+			{meta.dev && onOpenGallery !== undefined && (
+				<button
+					type="button"
+					className="rail-btn"
+					data-rail-section="blocks"
+					title="Blocks"
+					aria-label="blocks gallery"
+					onClick={onOpenGallery}
+				>
+					<BlocksIcon />
+				</button>
+			)}
 			{extViews.map((entry: ExtViewEntry) => (
 				<button
 					key={`${entry.slug}/${entry.id}`}

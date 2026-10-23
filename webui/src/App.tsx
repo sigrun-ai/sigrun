@@ -44,6 +44,7 @@ import {
 	liveCompactionFailure,
 	liveCompactions,
 } from "./entries/liveDoc";
+import { GalleryView } from "./gallery/GalleryView";
 import { SurfacePage } from "./blocks/SurfacePage";
 import { ExtPanelHost } from "./blocks/ExtPanelHost";
 import { ExtSurfaceHub } from "./blocks/extTransport";
@@ -348,6 +349,20 @@ export function App(options: AppOptions = {}) {
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
 	const [drawerOpen, setDrawerOpen] = useState(false);
+	// Re-render token for hash-driven section switches (the section itself
+	// derives from the hash each render).
+	const [, setSectionTick] = useState(0);
+	// The section the shell shows (U1 Task 6): the dev Blocks gallery rides
+	// a hash route so a refresh keeps the page; the entry renders only when
+	// `/v1/meta` reports dev (Rail gates it). NOT state — the hash is the
+	// source of truth (the boot gate remounts the shell after meta lands,
+	// so state would reset to the pre-gate hash; the hash listener keeps
+	// back/forward and the rail button in sync).
+	const win = globalThis as { location?: { hash: string } };
+	const section: "chats" | "blocks" =
+		boot.status === "ready" && win.location?.hash.startsWith("#/blocks")
+			? "blocks"
+			: "chats";
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	// The hash route (U3 Task 5): the main pane renders either the chat
 	// column or one extension surface page. `navigate({params})` pushes a
@@ -704,6 +719,21 @@ export function App(options: AppOptions = {}) {
 		};
 	}, [client]);
 
+	// Keep the section in sync with the hash (back/forward navigation).
+	useEffect(() => {
+		const win = globalThis as {
+			addEventListener?: (t: string, l: () => void) => void;
+			removeEventListener?: (t: string, l: () => void) => void;
+			location?: { hash: string };
+		};
+		const onHashChange = (): void => {
+			// The hash IS the section — force a re-render on change.
+			setSectionTick((tick) => tick + 1);
+		};
+		win.addEventListener?.("hashchange", onHashChange);
+		return () => win.removeEventListener?.("hashchange", onHashChange);
+	}, []);
+
 	// Conversation writes. Each action lands its write, then reloads the
 	// lifted list so the sidebar (and the header title) reflect it at once —
 	// the 10 s poll would also catch up, but the user just acted.
@@ -838,6 +868,18 @@ export function App(options: AppOptions = {}) {
 				<Rail
 					meta={boot.meta}
 					onOpenSettings={() => setSettingsOpen(true)}
+					onOpenGallery={
+						boot.meta.dev
+							? () => {
+								(
+									globalThis as {
+										history?: { pushState(a: null, b: string, c: string): void };
+									}
+								).history?.pushState(null, "", "#/blocks");
+								setSectionTick((tick) => tick + 1);
+							}
+							: undefined
+					}
 					identity={identity}
 					hiddenExtSurfaces={hiddenExtSurfaces}
 					onOpenExtView={onOpenExtView}
@@ -874,6 +916,11 @@ export function App(options: AppOptions = {}) {
 					onShare={setShareFor}
 				/>
 			</div>
+			{section === "blocks" ? (
+				<main className="main-column">
+					<GalleryView />
+				</main>
+			) : (
 			<main className="main-column">
 				<ChatHeader
 					title={titleOf(list.rows, activeId)}
@@ -1040,6 +1087,7 @@ export function App(options: AppOptions = {}) {
 			/>
 				</div>
 			</main>
+			)}
 			{/* The ≤900px overlays' backdrops (CSS: hidden at desktop widths).
 			    The drawer covers the header toggle while open; the panel is a
 			    fixed overlay — click-outside closes both. */}
