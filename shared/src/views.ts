@@ -679,6 +679,14 @@ export interface ExtensionInfo {
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
 	/**
+	 * The channel ids this extension contributes (gateway C1, spec §7):
+	 * present only on rows of extensions whose factory result carried
+	 * `channels`; unique across every loaded extension (a collision
+	 * quarantines the later loader). Absent when the extension declared
+	 * none.
+	 */
+	readonly channels?: readonly string[];
+	/**
 	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
 	 * built-in (codemode / MCP / tool search); ABSENT on configured
 	 * extensions. A replaced built-in reports its row with `builtin: true`

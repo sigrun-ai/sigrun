@@ -4,7 +4,8 @@
  *
  * - `GET /v1/extensions` — one entry per loaded outcome with `status`,
  *   `error?`, the manifest `version?`, the declared
- *   `interactionKinds`/`ambientKeys`, and the idle-worker projection.
+ *   `interactionKinds`/`ambientKeys`, the idle-worker projection, and
+ *   the contributed channel ids (gateway C1, `channels?`).
  * - `GET`/`PUT /v1/extensions/:slug/settings` (PUT admin) — the
  *   `settings/<slug>.json` object verbatim. Values an extension reads at
  *   factory time apply at RESTART; per-run reads see the write live.
@@ -66,6 +67,9 @@ export function registerExtensionRoutes(
 						? {}
 						: { version: outcome.version }),
 					...(outcome.builtin === true ? { builtin: true } : {}),
+					...(outcome.channels === undefined
+						? {}
+						: { channels: [...outcome.channels] }),
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],
