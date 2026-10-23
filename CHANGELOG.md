@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-23
+### Added
+- The image + chart release pipeline: multi-arch (amd64/arm64) container
+  image on `ghcr.io/sigrun-ai/sigrun` and the Helm chart on GHCR's OCI
+  registry (`charts/sigrun/sigrun`), built and published by GitHub Actions
+  on `v*` tags. CI builds and lints both on every PR and main push.
+- The chart manages the extension fleet declaratively: a `sigrun:` values
+  block seeds `settings.json` (fleet list + chart-owned keys re-asserted
+  every boot, per-slug extension settings seed-once), passes secret
+  references through envFrom (never values), and installs deploy-time
+  tools (kubectl/helm/talosctl/flux/k9s) hash-cached onto persistent
+  storage via an initContainer.
+- Deploy hardening: non-root image with a privilege-drop entrypoint (uid
+  1000 default, overridable), agent userland baked in (ripgrep, fd, jq,
+  git, sqlite3), hardened compose defaults (read-only rootfs, caps
+  dropped, init, no-new-privileges).
+- Block-set foundation (`@sigrun/shared/blocks`): the canonical block
+  tree wire types, ops, text rendering and transport shared by server and
+  clients.
+- Gateway core seams: extension `channels` contribution field, the
+  gateway engine field with lifecycle + shutdown ordering, host-surface
+  conversation ops, upload/readFile/models/commands, interaction answer
+  attribution (`interactionSettled`), group-derived admin persisted for
+  host-side checks, and deliver-targets on prompt jobs
+  (`@sigrun/shared/live` narrows the live-doc wire).
+
+### Changed
+- `@sigrun/shared` 0.1.1: new `./live` and `./blocks` export subpaths
+  (all 0.1.0 subpaths unchanged).
 ## [0.1.4] - 2026-10-22
 ### Added
 - The version is visible where operators look: the boot log line (`sigrun
