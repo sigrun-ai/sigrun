@@ -68,7 +68,7 @@ function timingSafeStringEqual(a: string, b: string): boolean {
 }
 
 /** The request's Bearer credential, if the Authorization header carries one. */
-function bearerOf(request: FastifyRequest): string | undefined {
+export function bearerOf(request: FastifyRequest): string | undefined {
 	const value = headerOf(request, "authorization");
 	if (value === undefined) return undefined;
 	const match = /^Bearer\s+(.+)$/i.exec(value);
@@ -169,6 +169,12 @@ function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
 	if (pattern === "/metrics" && ctx.config.metricsPublic) return true;
 	if (pattern === "/v1/auth/login" && request.method === "POST") return true;
 	if (pattern === "/v1/auth/logout" && request.method === "POST") return true;
+	if (pattern === "/v1/auth/providers" && request.method === "GET") return true;
+	if (pattern === "/v1/auth/login/:provider" && request.method === "GET") return true;
+	if (
+		pattern === "/v1/auth/callback/:provider" &&
+		(request.method === "GET" || request.method === "POST")
+	) return true;
 	if (pattern === "/v1/onboarding" || pattern?.startsWith("/v1/onboarding/")) {
 		return true;
 	}
@@ -257,7 +263,7 @@ async function resolveProxy(
 }
 
 /** Stage 5b (token): verify a presented credential against the token store. */
-function resolveToken(
+export function resolveToken(
 	request: FastifyRequest,
 	ctx: ServerContext,
 ): Principal | { status: number; error?: string } {

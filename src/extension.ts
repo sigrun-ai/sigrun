@@ -325,6 +325,33 @@ export interface ProviderContribution {
 	readonly readiness?: ReadinessTracker;
 }
 
+/** Core-owned state for one external login, with provider-private scratch data. */
+export type LoginFlow = {
+	state: string;
+	callbackUrl: string;
+	data: Record<string, string>;
+}
+
+/** The identity proof a login provider returns after its callback. */
+export type LoginResult = {
+	subject: string;
+	profile: { username?: string; name?: string; email?: string; emailVerified?: boolean };
+	groups?: string[];
+}
+
+/** One extension identity provider; core owns the flow, state and callback. */
+export interface LoginProviderContribution {
+	readonly id: string;
+	readonly label: string;
+	readonly icon?: string;
+	begin(flow: LoginFlow, ctx: HandlerContext): Promise<{ redirectUrl: string }>;
+	complete(
+		flow: LoginFlow,
+		callback: { query: Record<string, string>; body?: unknown },
+		ctx: HandlerContext,
+	): Promise<LoginResult>;
+}
+
 /** One contributed webui bundle: a selection name plus the bundle root directory. */
 export interface WebuiBundleContribution {
 	/** The selection key (`server.webui.bundle`); must match `^[a-z][a-z0-9_-]*$`. */
@@ -1089,6 +1116,8 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly name?: string;
 	/** Provider contributions, merged into the boot model catalog (last-registered-wins, collisions recorded). */
 	readonly providers?: readonly ProviderContribution[];
+	/** External identity providers; core qualifies ids as `login:<slug>:<id>`. */
+	readonly loginProviders?: readonly LoginProviderContribution[];
 	/** Webui-bundle contributions; each `dir` anchors at the extension ENTRY's directory. */
 	readonly webuiBundles?: readonly WebuiBundleContribution[];
 	/** The surface's health producer, aggregated into `/v1/meta` `health` (any `"degraded"` degrades). */

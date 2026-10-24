@@ -37,6 +37,7 @@ import {
 	type ExtensionGatewayBinding,
 	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
+	type LoginProviderBinding,
 	type ExtensionRouteBinding,
 	type ExtensionSurfaceBinding,
 	type ExtensionSettingsSectionBinding,
@@ -205,6 +206,8 @@ export interface OpenedHarness {
 	 * `GET /v1/meta` (Task 9) renders this as `extensions[].status`.
 	 */
 	readonly extensionOutcomes: readonly ExtensionOutcome[];
+	/** Validated external identity providers, qualified as `login:<slug>:<id>`. */
+	readonly loginProviders: readonly LoginProviderBinding[];
 	/**
 	 * The built-in extensions that did not load this boot (Task 2):
 	 * `replaced` entries render on `/v1/extensions` as
@@ -928,6 +931,7 @@ export async function openHarness(
 		lifecycleBindings,
 		workerBindings,
 		providerContributors,
+		loginProviders,
 		webuiBundles: extensionWebuiBundles,
 		skillRoots: extensionSkillRoots,
 		jobBindings,
@@ -1599,6 +1603,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		webuiBundleCollisions,
 		envBuilder,
 		extensionOutcomes,
+		loginProviders,
 		builtinSkipped: builtinsEnabled ? builtins.skipped : [],
 		providerHealth,
 		providerOwnership,
