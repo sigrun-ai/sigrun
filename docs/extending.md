@@ -853,8 +853,9 @@ envelope may also carry `details?` (opaque JSON the channel renders as
 one collapsed line, never interpreted).
 
 A statusline slot and a panel of rows (the rpiv-todo shape — a
-`collection(display: "list")` of literal rows; ambient collections never
-bind, the envelope carries no data model):
+`collection(display: "list")` of literal rows; ambient bodies bind
+nowhere outside a collection's item template — the envelope carries no
+data model):
 
 ```ts check
 import { bind, card, collection, markdown, tree } from "@sigrun/sigrun/blocks";

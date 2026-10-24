@@ -425,6 +425,29 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 				"ambient collections carry literal rows (items must not be a binding)",
 			);
 		}
+		// Ambient: bindables nested inside structural props are still
+		// bound nowhere (the no-data-document ruling). `groups`/`columns`
+		// sit in the structural skip set, so the generic binding walk
+		// never reaches their `title`/`label` bindables — walk them here.
+		if (ctx.placement === "ambient") {
+			const nestedBindables = [
+				["groups", "title"],
+				["columns", "label"],
+			] as const;
+			for (const [listProp, leafProp] of nestedBindables) {
+				const list = node[listProp];
+				if (!Array.isArray(list)) continue;
+				list.forEach((entry, i) => {
+					if (isRec(entry) && isBinding(entry[leafProp])) {
+						checkBinding(
+							ctx,
+							entry[leafProp],
+							joinPath(joinPath(joinPath(path, listProp), String(i)), leafProp),
+						);
+					}
+				});
+			}
+		}
 		const display = node.display;
 		if (
 			typeof display === "string" &&

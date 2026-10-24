@@ -1297,6 +1297,35 @@ describe("ambient one-line rule (spec §9.2)", () => {
 		expect(errs.some((e) => e.path === "root.children[0].text.$")).toBe(true);
 	});
 
+	it("an ambient collection groups[].title binding fails naming its path", () => {
+		// groups/columns are structural (literal) props, so the generic
+		// binding walk skips them — but their title/label bindables are
+		// still bound nowhere in ambient and would render blank.
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: [{ id: "r1", state: "open", label: "deploy" }],
+			display: "list",
+			groups: [{ id: "open", title: { $: "/g0" } }],
+			item: { title: { $: "./label" } },
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }));
+		expect(errs.some((e) => e.path === "root.groups[0].title.$")).toBe(true);
+	});
+
+	it("an ambient collection columns[].label binding fails naming its path", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: [{ id: "r1", label: "deploy" }],
+			display: "list",
+			columns: [{ field: "label", label: { $: "/c0" } }],
+			item: { title: { $: "./label" } },
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }));
+		expect(errs.some((e) => e.path === "root.columns[0].label.$")).toBe(true);
+	});
+
 	it("an ambient collection item template keeps its relative bindings", () => {
 		const tree = treeOf({
 			type: "collection",
