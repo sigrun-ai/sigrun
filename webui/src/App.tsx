@@ -1234,6 +1234,7 @@ function AppShell(options: AppOptions = {}) {
 					prefsState={prefsState}
 					theme={theme}
 					admin={identity?.admin}
+					onRestart={restart}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}
