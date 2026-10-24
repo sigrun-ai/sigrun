@@ -31,44 +31,59 @@ export async function runHelperProbe(helper: string): Promise<{ abi: number }> {
 	return { abi: result.abi };
 }
 
+/** One self-test leg, changing only whether the probe dir is granted. */
+async function runSelfTestLeg(
+	helper: string,
+	command: string,
+	probeDir: string,
+	grantProbe: boolean,
+): Promise<{ stdout: string; stderr: string }> {
+	const ro = [
+		"/bin",
+		"/usr/bin",
+		"/lib",
+		"/lib64",
+		"/usr/lib",
+		"/usr/lib64",
+		...(grantProbe ? [probeDir] : []),
+	];
+	return execFileAsync(helper, ["run", "--", "/bin/sh", "-c", command], {
+		env: {
+			...process.env,
+			SIGRUN_SANDBOX_POLICY: JSON.stringify({ ro, rw: [], minAbi: 6 }),
+		},
+	});
+}
+
 /**
- * The security boundary check: a fresh probe file is deliberately absent
- * from the policy grants. The shell reports `READ_DENIED` only after it
- * has executed and `cat` has failed on the probe path. Pass only on that
- * exact stdout, a non-zero exit, and no `sigrun-sandbox:` diagnostic on
- * stderr. Thus pre-exec helper refusals, spawn failures, missing commands,
- * and a successful (unconfined) read all fail closed. Quoting keeps an
- * unusual TMPDIR from changing the shell command.
+ * The security boundary check runs the IDENTICAL shell command twice; only
+ * the policy changes. First the control grants the 0600, user-owned probe's
+ * directory read-only: exact probe content on stdout and exit zero prove
+ * the helper, /bin/sh, cat, PATH, command, and file all work when permitted.
+ * Then the denial leg withholds that grant. It must exit non-zero with only
+ * the shell's post-`cat` READ_DENIED marker on stdout, and stderr free of
+ * helper refusals and command-missing diagnostics. Requiring both legs makes
+ * the policy the sole explanation for the different read outcomes. Quoting
+ * keeps an unusual TMPDIR from changing the shell command.
  */
 export async function selfTestHelper(helper: string): Promise<boolean> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-sandbox-self-test-"));
 	const probe = join(dir, "probe");
+	const content = "sandbox boundary probe\n";
 	const quotedProbe = `'${probe.replaceAll("'", `'"'"'`)}'`;
 	const command = `if cat ${quotedProbe}; then exit 0; else printf 'READ_DENIED\\n'; exit 1; fi`;
 	try {
-		await writeFile(probe, "sandbox boundary probe\n", { mode: 0o600 });
+		await writeFile(probe, content, { mode: 0o600 });
+		let control: { stdout: string; stderr: string };
 		try {
-			await execFileAsync(
-				helper,
-				["run", "--", "/bin/sh", "-c", command],
-				{
-					env: {
-						...process.env,
-						SIGRUN_SANDBOX_POLICY: JSON.stringify({
-							ro: [
-								"/bin",
-								"/usr/bin",
-								"/lib",
-								"/lib64",
-								"/usr/lib",
-								"/usr/lib64",
-							],
-							rw: [],
-							minAbi: 6,
-						}),
-					},
-				},
-			);
+			control = await runSelfTestLeg(helper, command, dir, true);
+		} catch {
+			return false;
+		}
+		if (control.stdout !== content || control.stderr !== "") return false;
+
+		try {
+			await runSelfTestLeg(helper, command, dir, false);
 			return false;
 		} catch (error) {
 			if (typeof error !== "object" || error === null) return false;
@@ -82,7 +97,9 @@ export async function selfTestHelper(helper: string): Promise<boolean> {
 				outcome.code !== 0 &&
 				outcome.stdout === "READ_DENIED\n" &&
 				typeof outcome.stderr === "string" &&
-				!outcome.stderr.includes("sigrun-sandbox:")
+				!outcome.stderr.includes("sigrun-sandbox:") &&
+				!outcome.stderr.includes("No such file or directory") &&
+				!outcome.stderr.includes("not found")
 			);
 		}
 	} finally {
