@@ -26,6 +26,7 @@ import {
 	columns,
 	form,
 	markdown,
+	meter,
 	secret,
 	section,
 	text,
@@ -192,9 +193,10 @@ test.describe("seam visual verification", () => {
 		}, BACKGROUND_CONTEXT);
 
 		// Ambient surfaces: a goal-ish panel, a powerline-ish statusline,
-		// and an audit panel — all mapped per spec §9.2 (`rows[]` →
-		// `collection(list)`, `segments[]` → a one-line `columns` of
-		// one-line blocks, `gauge` → a meter-shaped collection card).
+		// and an audit panel — all mapped per spec §9.2. Ambient
+		// collections carry LITERAL rows (the 2026-10-24 ruling: ambient
+		// bodies never bind — no "/rows" collections); `segments[]` → a
+		// one-line `columns` of one-line blocks, `gauge` → a meter.
 		await host.setAmbient(
 			idOf(root),
 			{
@@ -204,12 +206,16 @@ test.describe("seam visual verification", () => {
 				body: tree(
 					collection({
 						id: "goal",
-						items: bind("/rows"),
+						items: [
+							{ id: "g1", label: "parse the spec", status: "running", deps: [] },
+							{ id: "g2", label: "write the plan", status: "pending", deps: ["g1"] },
+							{ id: "g3", label: "execute tasks", status: "pending", deps: ["g2"] },
+							{ id: "g4", label: "sweep", status: "done", quiet: true, deps: ["g3"] },
+						],
 						display: "list",
-						children: "children",
 						item: card({
 							title: bind("./label"),
-							status: { label: bind("./status"), spinner: bind("./spinner") },
+							status: { label: bind("./status") },
 							quiet: bind("./quiet"),
 							deps: bind("./deps"),
 						}),
@@ -242,18 +248,7 @@ test.describe("seam visual verification", () => {
 			{
 				key: "audit",
 				place: "panel",
-				body: tree(
-					collection({
-						id: "audit",
-						items: bind("/rows"),
-						display: "list",
-						item: card({
-							title: bind("./label"),
-							status: { label: bind("./status"), spinner: bind("./spinner") },
-							quiet: bind("./quiet"),
-						}),
-					}),
-				),
+				body: tree(meter({ value: 0.4, format: "percent", label: "audit" })),
 			},
 			BACKGROUND_CONTEXT,
 		);
@@ -268,10 +263,11 @@ test.describe("seam visual verification", () => {
 	test("interaction card answers through the UI (allow)", async ({ page }) => {
 		await page.goto(`${server.url}/`);
 		await page.waitForSelector(".interaction-card", { timeout: 30_000 });
-		// Answer the confirm card: click the first option's radio + submit.
+		// Answer the confirm card: pick the first option's radio (the tree
+		// form submits through `blk-form-submit` — the Task 3 rewrite).
 		const card = page.locator('[data-kind="gating.confirm"]').first();
 		await card.locator('input[type="radio"]').first().check();
-		await card.locator("button.interaction-submit").click();
+		await card.locator("button.blk-form-submit").click();
 		await page.waitForTimeout(500);
 		await page.screenshot({ path: join(SHOT_DIR, "seam-after-answer.png"), fullPage: true });
 	});
@@ -321,7 +317,7 @@ test.describe("seam visual verification", () => {
 			} else if (await textInput.isVisible().catch(() => false)) {
 				await textInput.fill("probe-value");
 			}
-			const submit = card.locator("button.interaction-submit");
+			const submit = card.locator("button.blk-form-submit");
 			if ((await submit.count()) > 0 && (await submit.isEnabled())) {
 				await submit.click();
 			}

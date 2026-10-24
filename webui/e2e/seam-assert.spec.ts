@@ -9,6 +9,7 @@ import {
 	card,
 	choice,
 	collection,
+	columns,
 	form,
 	markdown,
 	meter,
@@ -110,14 +111,23 @@ test("the rendered DOM carries all primitive renderings", async ({ page }) => {
 		})),
 	}, BACKGROUND_CONTEXT);
 
-	// Ambient: a goal panel (line + rows with deps/spinner/metrics/quiet)
-	// and an audit panel (the gauge mapped to a meter).
+	// Ambient: a goal panel (literal rows with status/metrics/quiet — the
+	// 2026-10-24 ruling: ambient collections never bind; maxRows 2
+	// exercises the panel drop budget), an audit panel (the gauge mapped
+	// to a meter), a one-line status surface, and a footer with its
+	// three zone columns.
 	await host.setAmbient(idOf(root), {
-		key: "goal", place: "panel",
+		key: "goal", place: "panel", maxRows: 2,
 		body: tree(collection({
-			id: "goal", items: bind("/rows"), display: "list", item: card({
+			id: "goal",
+			items: [
+				{ id: "g1", label: "parse the spec", status: "running", completed: 2, total: 4 },
+				{ id: "g2", label: "build", status: "pending", deps: ["g1"], completed: 0, total: 4 },
+				{ id: "g3", label: "sweep", status: "done", quiet: true, completed: 4, total: 4 },
+			],
+			display: "list", item: card({
 				title: bind("./label"),
-				status: { label: bind("./status"), spinner: bind("./spinner") },
+				status: { label: bind("./status") },
 				deps: bind("./deps"),
 				quiet: bind("./quiet"),
 				metrics: [
@@ -129,7 +139,21 @@ test("the rendered DOM carries all primitive renderings", async ({ page }) => {
 	}, BACKGROUND_CONTEXT);
 	await host.setAmbient(idOf(root), {
 		key: "audit", place: "panel",
-		body: tree(meter({ value: 40, label: "audit" })),
+		body: tree(meter({ value: 0.4, format: "percent", label: "audit" })),
+	}, BACKGROUND_CONTEXT);
+	await host.setAmbient(idOf(root), {
+		key: "powerline", place: "status",
+		body: tree(markdown({ text: "acme/flash · main*" })),
+	}, BACKGROUND_CONTEXT);
+	await host.setAmbient(idOf(root), {
+		key: "zones", place: "footer",
+		body: tree(columns({
+			children: [
+				{ block: markdown({ text: "left-zone" }) },
+				{ block: markdown({ text: "middle-zone" }) },
+				{ block: markdown({ text: "right-zone" }) },
+			],
+		})),
 	}, BACKGROUND_CONTEXT);
 
 	await page.goto(`${server.url}/`);
@@ -139,14 +163,34 @@ test("the rendered DOM carries all primitive renderings", async ({ page }) => {
 	await expect(page.locator(".interaction-card")).toHaveCount(4);
 	await expect(page.locator(".interaction-card", { hasText: "gate prompt" })).toBeVisible();
 	await expect(page.locator('input[type="password"]')).toHaveCount(1);
-	await expect(page.locator(".interaction-diff")).toHaveCount(1);
+	await expect(page.locator(".blk-diff")).toHaveCount(1);
 	const checkboxes = page.locator('input[type="checkbox"]');
 	await expect(checkboxes).toHaveCount(2);
 	// recommended pre-selected:
 	await expect(page.locator('input[type="radio"]:checked')).toHaveCount(1);
 
-	// Ambient panels: line, rows with deps + spinner + metrics, quiet fold, gauge.
-	await expect(page.locator(".ambient-surface")).toHaveCount(2);
-	await expect(page.locator(".ambient-row", { hasText: "parsing" })).toBeVisible();
-	await expect(page.locator(".ambient-gauge-fill")).toBeVisible();
+	// Ambient surfaces: literal rows render through the collection
+	// renderer; the quiet + dropped tail row folds behind the
+	// collection's own bucket ("1 more"); the meter block carries the
+	// audit gauge; the status surface renders its one line; the footer
+	// renders its zone columns.
+	await expect(page.locator(".ambient-surface")).toHaveCount(4);
+	await expect(
+		page.locator(".ambient-surface", { hasText: "parse the spec" }),
+	).toBeVisible();
+	// The quiet row is folded.
+	await expect(
+		page.locator(".ambient-surface", { hasText: "sweep" }),
+	).toHaveCount(0);
+	await expect(
+		page.locator(".ambient-surface", { hasText: "1 more" }),
+	).toBeVisible();
+	await expect(page.locator(".ambient-surface", { hasText: "40%" })).toBeVisible();
+	await expect(
+		page.locator('.ambient-surface[data-place="status"]', { hasText: "acme/flash" }),
+	).toBeAttached();
+	const footer = page.locator('.ambient-surface[data-place="footer"]');
+	await expect(footer).toContainText("left-zone");
+	await expect(footer).toContainText("middle-zone");
+	await expect(footer).toContainText("right-zone");
 });
