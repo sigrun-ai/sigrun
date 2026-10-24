@@ -46,7 +46,7 @@ export interface DirectoryUser {
 	/** When this record was created (epoch ms). */
 	readonly createdAt: number;
 	/** How the user entered the directory (spec §5.8 sources). */
-	readonly source: "proxy" | "invite" | "cli";
+	readonly source: "proxy" | "invite" | "cli" | "login";
 }
 
 /**

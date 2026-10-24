@@ -354,6 +354,7 @@ describe("server route table", () => {
 				"/v1/auth/check",
 				"/v1/auth/login",
 				"/v1/auth/login/:provider",
+				"/v1/auth/login/code",
 				"/v1/auth/logout",
 				"/v1/auth/providers",
 				"/v1/auth/tokens",

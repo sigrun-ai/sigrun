@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { LoginFlow } from "../../extension.js";
+import type { LoginFlow, LoginResult } from "../../extension.js";
 
 const FLOW_TTL_MS = 600_000;
 /** Generous per-server ceiling; oldest entries are evicted under pressure. */
@@ -10,6 +10,14 @@ export interface StoredFlow extends LoginFlow {
 	readonly provider: string;
 	readonly returnTo: string;
 	readonly link?: string;
+	readonly expiresAt: number;
+}
+
+/** The verified proof parked while the browser supplies a setup/invite code. */
+export interface PendingLogin {
+	readonly provider: string;
+	readonly result: LoginResult;
+	readonly returnTo: string;
 	readonly expiresAt: number;
 }
 
@@ -37,6 +45,7 @@ export class LoginFlows {
 	readonly #now: () => number;
 	readonly #flows = new Map<string, FlowEntry>();
 	readonly #consumed = new Map<string, { browserKey: string; expiresAt: number }>();
+	readonly #pending = new Map<string, PendingLogin>();
 
 	constructor(now: () => number = Date.now) {
 		this.#now = now;
@@ -93,6 +102,36 @@ export class LoginFlows {
 		return flow;
 	}
 
+	/** Park a verified proof for ten more minutes under a separate, single-use key. */
+	park(flow: StoredFlow, result: LoginResult): { key: string; pending: PendingLogin } {
+		this.#prune();
+		const pendingKey = key();
+		const pending: PendingLogin = {
+			provider: flow.provider,
+			result,
+			returnTo: flow.returnTo,
+			expiresAt: this.#now() + FLOW_TTL_MS,
+		};
+		this.#pending.set(pendingKey, pending);
+		this.#evictOldest(this.#pending);
+		return { key: pendingKey, pending };
+	}
+
+	/** Put a pending proof back after a rejected code, preserving its original expiry. */
+	restorePending(pendingKey: string, pending: PendingLogin): void {
+		this.#prune();
+		this.#pending.set(pendingKey, pending);
+		this.#evictOldest(this.#pending);
+	}
+
+	/** Consume a code-resume key atomically; replay/expiry/restart all fail closed. */
+	takePending(pendingKey: string): PendingLogin | undefined {
+		this.#prune();
+		const pending = this.#pending.get(pendingKey);
+		if (pending !== undefined) this.#pending.delete(pendingKey);
+		return pending;
+	}
+
 	/** Explain a failed take without exposing flow data (replay vs expired/unknown). */
 	failure(state: string, browserKey: string): "invalid_state" | "login_expired" {
 		this.#prune();
@@ -117,6 +156,9 @@ export class LoginFlows {
 		}
 		for (const [state, consumed] of this.#consumed) {
 			if (consumed.expiresAt <= now) this.#consumed.delete(state);
+		}
+		for (const [pendingKey, pending] of this.#pending) {
+			if (pending.expiresAt <= now) this.#pending.delete(pendingKey);
 		}
 	}
 }

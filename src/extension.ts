@@ -344,6 +344,12 @@ export interface LoginProviderContribution {
 	readonly id: string;
 	readonly label: string;
 	readonly icon?: string;
+	/** Provider-declared provisioning policy, enforced by core. */
+	readonly policy?: {
+		readonly autoProvision?: boolean;
+		readonly allowedGroups?: string[];
+		readonly allowedDomains?: string[];
+	};
 	begin(flow: LoginFlow, ctx: HandlerContext): Promise<{ redirectUrl: string }>;
 	complete(
 		flow: LoginFlow,

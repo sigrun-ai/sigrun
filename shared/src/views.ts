@@ -953,7 +953,7 @@ export interface UserWire {
 	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
 	readonly osUser?: string;
 	readonly createdAt: number;
-	readonly source: "proxy" | "invite" | "cli";
+	readonly source: "proxy" | "invite" | "cli" | "login";
 }
 
 /** The `POST /v1/onboarding/claim` payload (Task 4): the user (plus the

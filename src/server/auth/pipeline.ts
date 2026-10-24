@@ -171,6 +171,7 @@ function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
 	if (pattern === "/v1/auth/logout" && request.method === "POST") return true;
 	if (pattern === "/v1/auth/providers" && request.method === "GET") return true;
 	if (pattern === "/v1/auth/login/:provider" && request.method === "GET") return true;
+	if (pattern === "/v1/auth/login/code" && request.method === "POST") return true;
 	if (
 		pattern === "/v1/auth/callback/:provider" &&
 		(request.method === "GET" || request.method === "POST")

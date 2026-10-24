@@ -4,6 +4,9 @@ import { ipAllowed } from "../auth/ip.js";
 import { bearerOf, resolveToken, sessionCookieOf } from "../auth/pipeline.js";
 import type { ServerContext } from "../context.js";
 import { LoginFlows, type StoredFlow } from "../login/flows.js";
+import { clearSetupCode, readSetupCode } from "../../harness/identity/setup-code.js";
+import { resolveLogin } from "../login/resolve.js";
+import { sendLoginResolution } from "../login/http.js";
 
 export const LOGIN_STATE_COOKIE = "sigrun_login_state";
 
@@ -79,6 +82,40 @@ export function registerLoginRoutes(
 	// in-flight logins and separate server instances never share browser state.
 	const flows = options.flows ?? new LoginFlows();
 	const providers = new Map(ctx.opened.loginProviders.map((entry) => [entry.provider, entry]));
+	const resolve = options.resolver ?? (async (input: {
+		provider: string;
+		result: LoginResult;
+		flow: StoredFlow;
+		request: FastifyRequest;
+		reply: FastifyReply;
+	}) => {
+		const outcome = await resolveLogin({
+			provider: input.provider,
+			result: input.result,
+			...(input.flow.link === undefined ? {} : { linkUser: input.flow.link }),
+		}, {
+			accounts: ctx.opened.identity.accounts,
+			users: ctx.opened.identity.users,
+			invites: ctx.opened.identity.invites,
+			setupCode: () => readSetupCode(ctx.opened.identity.cacheDir),
+			clearSetupCode: () => clearSetupCode(ctx.opened.identity.cacheDir),
+			policy: providers.get(input.provider)?.contribution.policy ?? {},
+		});
+		if (outcome.kind === "needs_code") {
+			const parked = flows.park(input.flow, input.result);
+			return await input.reply.code(302).header(
+				"location",
+				`/login/code?key=${encodeURIComponent(parked.key)}&reason=${outcome.reason}`,
+			).send();
+		}
+		return await sendLoginResolution(outcome, {
+			provider: input.provider,
+			returnTo: input.flow.returnTo,
+			request: input.request,
+			reply: input.reply,
+			ctx,
+		});
+	});
 
 	app.get("/v1/auth/providers", async () => ({
 		providers: ctx.opened.loginProviders.map(({ provider, contribution }) => ({
@@ -156,13 +193,8 @@ export function registerLoginRoutes(
 			);
 			return browserError(reply, 400, "provider_error");
 		}
-		if (options.resolver === undefined) {
-			// Task 5 supplies the resolver. State remains consumed; the caller
-			// must restart rather than replay a completed identity proof.
-			return await reply.code(501).send({ error: "not_implemented" });
-		}
 		try {
-			return await options.resolver({ provider, result, flow: safeFlow, request, reply });
+			return await resolve({ provider, result, flow: safeFlow, request, reply });
 		} catch (error) {
 			if (reply.sent) throw error;
 			console.error(
@@ -173,4 +205,45 @@ export function registerLoginRoutes(
 	};
 	app.get("/v1/auth/callback/:provider", callback);
 	app.post("/v1/auth/callback/:provider", callback);
+
+	app.post("/v1/auth/login/code", async (request, reply) => {
+		const body = request.body;
+		if (typeof body !== "object" || body === null || Array.isArray(body)) {
+			return await reply.code(400).send({ error: "invalid_body" });
+		}
+		const record = body as Record<string, unknown>;
+		for (const field of Object.keys(record)) {
+			if (field !== "key" && field !== "code") {
+				return await reply.code(400).send({ error: "invalid_field", field });
+			}
+		}
+		if (typeof record.key !== "string" || typeof record.code !== "string") {
+			return await reply.code(400).send({ error: "invalid_body" });
+		}
+		const pending = flows.takePending(record.key);
+		if (pending === undefined) return browserError(reply, 400, "login_expired");
+		const outcome = await resolveLogin({
+			provider: pending.provider,
+			result: pending.result,
+			code: record.code,
+		}, {
+			accounts: ctx.opened.identity.accounts,
+			users: ctx.opened.identity.users,
+			invites: ctx.opened.identity.invites,
+			setupCode: () => readSetupCode(ctx.opened.identity.cacheDir),
+			clearSetupCode: () => clearSetupCode(ctx.opened.identity.cacheDir),
+			policy: providers.get(pending.provider)?.contribution.policy ?? {},
+		});
+		if (outcome.kind === "needs_code") {
+			flows.restorePending(record.key, pending);
+			return browserError(reply, 403, "invalid_code");
+		}
+		return await sendLoginResolution(outcome, {
+			provider: pending.provider,
+			returnTo: pending.returnTo,
+			request,
+			reply,
+			ctx,
+		});
+	});
 }

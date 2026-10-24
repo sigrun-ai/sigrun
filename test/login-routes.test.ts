@@ -10,12 +10,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
+import { AdmissionRefusedError } from "../src/harness/identity/users.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import type { LoginResolver } from "../src/server/routes/login.js";
 import { createServer } from "../src/server/index.js";
 import { fixtureLoginProvider, setFixtureLoginProviders } from "./fixtures/fixture-login/index.js";
-import { seededIdentity } from "./helpers/identity.js";
+import { seededIdentity, unclaimedIdentity } from "./helpers/identity.js";
+import { ensureSetupCode, readSetupCode } from "../src/harness/identity/setup-code.js";
 
 const LOGIN_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-login", "index.js"),
@@ -33,6 +35,8 @@ async function bootServer(options: {
 	resolver?: LoginResolver;
 	now?: () => number;
 	extensionSpecifiers?: string[];
+	isolationAvailable?: boolean;
+	unclaimed?: boolean;
 } = {}): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-login-routes-"));
 	const faux = fauxProvider({
@@ -56,14 +60,20 @@ async function bootServer(options: {
 		extensions: [contributor],
 		env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
 		settingsDir: join(dir, "config"),
-		identity: await seededIdentity(dir),
+		identity: options.unclaimed === true ? await unclaimedIdentity(dir) : await seededIdentity(dir),
 		extensionSpecifiers: options.extensionSpecifiers ?? [LOGIN_SPECIFIER],
 		builtins: false,
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 	});
+	if (options.isolationAvailable !== undefined && !options.isolationAvailable) {
+		opened.identity.users.configureAdmission({
+			admit: () => { throw new AdmissionRefusedError("isolation_required", "isolation_required: unavailable in test"); },
+		});
+	}
 	const app = await createServer(opened, config, [], {
 		listenHost: "127.0.0.1",
 		...(options.resolver === undefined ? {} : { loginResolver: options.resolver }),
+
 		...(options.now === undefined ? {} : { loginNow: options.now }),
 	});
 	cleanups.push(async () => {
@@ -227,17 +237,148 @@ describe("login provider routes", () => {
 		expect(response.headers.location).toBe("/login?error=login_expired");
 	});
 
-	test("a verified callback without Task 5's resolver answers 501", async () => {
-		const { app } = await bootServer();
-		const started = await begin(app);
-		const response = await app.inject({
+	test("an unknown identity asks for an invite, then a valid code sets a session cookie", async () => {
+		const { app, opened } = await bootServer();
+		const invite = await opened.identity.invites.create({ admin: false });
+		const started = await begin(app, "?return=/after-login");
+		const interstitial = await app.inject({
 			method: "GET",
 			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
 			headers: { cookie: started.cookie },
 		});
-		expect(response.statusCode).toBe(501);
-		expect(response.json()).toEqual({ error: "not_implemented" });
+		expect(interstitial.statusCode).toBe(302);
+		const location = new URL(interstitial.headers.location as string, "https://sigrun.example.invalid");
+		expect(location.pathname).toBe("/login/code");
+		expect(location.searchParams.get("reason")).toBe("invite");
+		const key = location.searchParams.get("key") as string;
+		expect(key).not.toBe(started.state);
+		const resumed = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			payload: { key, code: invite.code },
+		});
+		expect(resumed.statusCode).toBe(302);
+		expect(resumed.headers.location).toBe("/after-login");
+		const cookie = resumed.headers["set-cookie"] as string;
+		expect(cookie).toContain("sigrun_session=sgr_");
+		expect(cookie).toContain("HttpOnly");
+		const token = cookie.split(";", 1)[0]?.split("=", 2)[1] as string;
+		expect(opened.identity.tokens.verify(token)).toMatchObject({
+			user: "fixture-user",
+			kind: "session",
+			provider: "login:fixture-login:fixture",
+		});
+		expect(opened.identity.accounts.lookup("login:fixture-login:fixture", "subject-123")?.user).toBe("fixture-user");
+		expect(opened.identity.users.get("fixture-user")?.groups?.[0]?.values).toEqual(["family"]);
+		const replay = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			payload: { key, code: invite.code },
+		});
+		expect(replay.statusCode).toBe(400);
+		expect(replay.headers.location).toBe("/login?error=login_expired");
 	});
+
+	test("an unclaimed setup-code claim retries a wrong code and clears the code only after success", async () => {
+		const { app, opened } = await bootServer({ unclaimed: true });
+		await ensureSetupCode(opened.identity.cacheDir, { SIGRUN_SETUP_CODE: "AAAA-BBBB" });
+		const started = await begin(app);
+		const callback = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+			headers: { cookie: started.cookie },
+		});
+		const location = new URL(callback.headers.location as string, "https://sigrun.example.invalid");
+		expect(location.searchParams.get("reason")).toBe("setup");
+		const key = location.searchParams.get("key") as string;
+		const wrong = await app.inject({ method: "POST", url: "/v1/auth/login/code", payload: { key, code: "wrong" } });
+		expect(wrong.statusCode).toBe(403);
+		expect(wrong.headers.location).toBe("/login?error=invalid_code");
+		expect(readSetupCode(opened.identity.cacheDir)).toBe("AAAA-BBBB");
+		const success = await app.inject({ method: "POST", url: "/v1/auth/login/code", payload: { key, code: "AAAA-BBBB" } });
+		expect(success.statusCode).toBe(302);
+		expect(success.headers["set-cookie"]).toContain("sigrun_session=");
+		expect(opened.identity.users.get("fixture-user")).toMatchObject({ admin: true, source: "login" });
+		expect(readSetupCode(opened.identity.cacheDir)).toBeUndefined();
+	});
+
+	test("a code-resume key expires after ten more minutes", async () => {
+		let now = 1_000_000;
+		const { app } = await bootServer({ now: () => now });
+		const started = await begin(app);
+		const callback = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+			headers: { cookie: started.cookie },
+		});
+		const key = new URL(callback.headers.location as string, "https://sigrun.example.invalid").searchParams.get("key");
+		now += 600_001;
+		const expired = await app.inject({ method: "POST", url: "/v1/auth/login/code", payload: { key, code: "unused" } });
+		expect(expired.statusCode).toBe(400);
+		expect(expired.headers.location).toBe("/login?error=login_expired");
+	});
+
+	test("a provider auto-provision policy is enforced and creates a non-admin session", async () => {
+		setFixtureLoginProviders([{ ...fixtureLoginProvider, policy: { autoProvision: true, allowedGroups: ["family"] } }]);
+		try {
+			const { app, opened } = await bootServer();
+			const started = await begin(app);
+			const response = await app.inject({
+				method: "GET",
+				url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+				headers: { cookie: started.cookie },
+			});
+			expect(response.statusCode).toBe(302);
+			expect(response.headers.location).toBe("/");
+			expect(opened.identity.users.get("fixture-user")).toMatchObject({ admin: false, source: "login" });
+		} finally {
+			setFixtureLoginProviders([fixtureLoginProvider]);
+		}
+	});
+
+	test("an explicit link redirects to account settings without replacing the caller's session", async () => {
+		const { app, opened } = await bootServer();
+		const { token } = await opened.identity.tokens.createSession("tester", "login:fixture-login:fixture", 60_000);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/login/login:fixture-login:fixture?link=1",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		const state = new URL(response.headers.location as string).searchParams.get("state");
+		const stateCookie = (response.headers["set-cookie"] as string).split(";", 1)[0];
+		const linked = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${state}`,
+			headers: { cookie: stateCookie },
+		});
+		expect(linked.statusCode).toBe(302);
+		expect(linked.headers.location).toBe("/settings?section=accounts");
+		expect(linked.headers["set-cookie"]).toBeUndefined();
+		expect(opened.identity.accounts.lookup("login:fixture-login:fixture", "subject-123")?.user).toBe("tester");
+	});
+
+	test("a second-user login without isolation redirects isolation_required and creates no link", async () => {
+		const { app, opened } = await bootServer({ isolationAvailable: false });
+		const invite = await opened.identity.invites.create({ admin: false });
+		const started = await begin(app);
+		const interstitial = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+			headers: { cookie: started.cookie },
+		});
+		const key = new URL(interstitial.headers.location as string, "https://sigrun.example.invalid").searchParams.get("key");
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			payload: { key, code: invite.code },
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.headers.location).toBe("/login?error=isolation_required");
+		expect(opened.identity.users.get("fixture-user")).toBeUndefined();
+		expect(opened.identity.accounts.lookup("login:fixture-login:fixture", "subject-123")).toBeUndefined();
+	});
+
+
 
 	test("unsafe return targets become / at both begin and callback", async () => {
 		const resolveLogin = vi.fn<LoginResolver>(async ({ flow, reply }) => { await reply.code(200).send(flow.returnTo); });

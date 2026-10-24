@@ -135,7 +135,7 @@ export async function createServer(
 		 * through this same option.
 		 */
 		onRestart?: () => Promise<void> | void;
-		/** Task 5 injection seam; absent means verified callbacks answer 501. */
+		/** Test-only resolver injection; production uses the core account/session resolver. */
 		loginResolver?: LoginResolver;
 		/** Hermetic login-flow clock; production uses the server's own Date.now. */
 		loginNow?: () => number;
