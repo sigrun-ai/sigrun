@@ -61,6 +61,13 @@ export class SurfaceView implements Component {
 			view: { values: this.#surface.viewValues },
 			setView: (path, value) => this.#surface.setView(path, value),
 			serverErrors: this.#surface.serverErrors,
+			// The live read (fix wave C3): memoized block components
+			// re-resolve the confirmed data + rev off the state, never the
+			// construction-time snapshot.
+			ctxRefresh: () => {
+				const current = this.#surface.view;
+				return { data: current.data, rev: current.rev };
+			},
 		};
 	}
 

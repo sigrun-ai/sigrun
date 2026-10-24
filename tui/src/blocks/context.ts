@@ -57,6 +57,15 @@ export interface BlockCtx {
 	 */
 	readonly rev?: number;
 	/**
+	 * Live state refresh (UI-blocks U4 Task 4 fix wave): components are
+	 * MEMOIZED — a block captures `data`/`rev` at construction, so an
+	 * accepted save's refetch (new rev, new data) never reaches it and
+	 * every second save would ride the stale rev. The host supplies a
+	 * read of the live SurfaceState; the form re-reads it before each
+	 * render/input so its submissions carry the current rev.
+	 */
+	readonly ctxRefresh?: () => { readonly data: JsonObject; readonly rev: number };
+	/**
 	 * Write the channel-owned `/view/` branch (spec §6.2): `path` is a
 	 * JSON pointer under the branch (no leading `/view/` — the writer
 	 * roots at the branch, as U1's `setView` does). A live form bound
