@@ -61,7 +61,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ConversationViewWire, ModelEntry, SigrunClient, SlashCommand, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
-import type { JsonObject, SurfaceTransport } from "@sigrun/shared/blocks";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import {
 	ExtSurfaceHub,
 	surfaceKeyHash,
@@ -70,7 +70,7 @@ import {
 } from "../blocks/ext-transport.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { spawnSync } from "node:child_process";
-import type { TuiTheme } from "../theme.js";
+import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { Action, ActionHost, Focus } from "../actions.js";
 import { editInVim, resolveVimEditor } from "../editor-launch.js";
 import { copyToTerminal } from "../clipboard.js";
@@ -84,6 +84,7 @@ import {
 import { AmbientChrome } from "./ambient.js";
 import { ConversationPane } from "./conversation-pane.js";
 import { InteractionPrompter } from "./interactions.js";
+import { SettingsView } from "./settings.js";
 import { openPicker, type PickerItem } from "./picker.js";
 import { Sidebar } from "./sidebar.js";
 import type { StatusBar } from "./status-bar.js";
@@ -94,6 +95,16 @@ export type WatchFn = (
 	handlers: WatchHandlers,
 	options: WatchOptions,
 ) => Unwatch;
+
+/**
+ * How long the restart-recovery poll waits for /readyz before giving up
+ * with a permanent error (U4 Task 2, spec §13.3). DUPLICATE of the
+ * webui's `RESTART_READYZ_DEADLINE_MS` (webui/src/App.tsx) by design:
+ * the tui package consumes only `@sigrun/shared` wire types (NodeNext,
+ * no codegen), and a shared-module move for one number is not worth the
+ * coupling — keep the two in sync by hand.
+ */
+export const RESTART_READYZ_DEADLINE_MS = 60_000;
 
 export interface TuiAppOptions {
 	/** The pi-tui instance (the Editor needs it for height-aware scrolling). */
@@ -110,6 +121,19 @@ export interface TuiAppOptions {
 	readonly editor?: string;
 	/** TEST SEAM: the vim resolution for edit-in-vim (C4). */
 	readonly resolveVim?: () => string | undefined;
+	/**
+	 * The restart-recovery poll cadence (U4 Task 2, spec §13.3): the
+	 * `/readyz` probe interval after `restart()` — default 500 ms; the
+	 * tests shorten it.
+	 */
+	readonly restartPollMs?: number;
+	/**
+	 * TEST SEAM (U4 Task 2 round-2): the restart-recovery deadline —
+	 * how long the poll waits for /readyz before surfacing the stalled
+	 * restart as a permanent error notice. Default
+	 * {@link RESTART_READYZ_DEADLINE_MS}; the deadline test shortens it.
+	 */
+	readonly restartDeadlineMs?: number;
 }
 
 /** PATH lookup for the vim fallback chain (nvim/vim/vi). */
@@ -117,6 +141,41 @@ function whichPath(name: string): string | undefined {
 	const result = spawnSync("which", [name], { encoding: "utf8" });
 	if (result.status !== 0) return undefined;
 	return result.stdout.trim().split("\n")[0] || undefined;
+}
+
+/** The main column's swap slot (U4 Task 4 round-2): renders the
+ *  conversation pane, or the open settings view while one is up.
+ *  The launcher mounts this slot (in its ScrollView) so the swap is
+ *  visible — a settings view rendered only in `TuiApp.render`'s
+ *  fallback path never paints in the launcher's composition. */
+export class MainSlot implements Component {
+	#child: Component;
+
+	constructor(child: Component) {
+		this.#child = child;
+	}
+
+	/** Swap the rendered child (the conversation pane ↔ settings view). */
+	set(child: Component): void {
+		this.#child = child;
+	}
+
+	/** The current child (tests assert the swap). */
+	get current(): Component {
+		return this.#child;
+	}
+
+	render(width: number): string[] {
+		return this.#child.render(width);
+	}
+
+	handleInput(data: string): void {
+		this.#child.handleInput?.(data);
+	}
+
+	invalidate(): void {
+		this.#child.invalidate();
+	}
 }
 
 /** No-color theme: the shell pins structure; styling is a later task. */
@@ -159,6 +218,14 @@ export class TuiApp implements Component, ActionHost {
 		readonly id: string;
 		readonly handle: ExtSurfaceTransportHandle;
 	} | undefined;
+	/** The app's theme (the settings view's SurfaceView reuses it). */
+	readonly #theme: TuiTheme;
+	/** Unicode glyphs (the settings view's SurfaceView). Pinned true,
+	 *  matching the blocks tests' default; a terminal-capability
+	 *  downgrade is the theme system's call when it lands one. */
+	readonly #unicode: boolean = true;
+	/** The open settings view (U4 Task 4; `/settings` opens, Esc closes). */
+	#settingsView: SettingsView | undefined;
 	readonly #watch: WatchFn;
 	readonly #watchOptions: WatchOptions;
 
@@ -175,6 +242,12 @@ export class TuiApp implements Component, ActionHost {
 
 	readonly #body = new HStack();
 	readonly #layout = new VStack();
+	/** The main column's slot: renders the conversation pane normally,
+	 *  the open settings view while one is up (U4 Task 4 round-2 — the
+	 *  settings view renders IN the body slot; the launcher's root
+	 *  scrolls this slot, so a `#settingsView`-only render would paint
+	 *  nothing and swallow keys). Exported for the launcher's mount. */
+	readonly mainContent: MainSlot;
 	#activeId: number | undefined;
 	#unwatch: Unwatch | undefined;
 	/** Monotonic watch generation: a stale watch's frames must never land. */
@@ -204,6 +277,12 @@ export class TuiApp implements Component, ActionHost {
 	#thinkingLevel: string = "off";
 	/** The vim resolution for edit-in-vim (C4; configured → env → PATH). */
 	readonly #resolveVim: () => string | undefined;
+	/** The restart-recovery poll cadence (U4 Task 2). */
+	readonly #restartPollMs: number;
+	/** The restart-recovery deadline (U4 Task 2 round-2). */
+	readonly #restartDeadlineMs: number;
+	/** The in-flight restart poll's cancel flag (dispose fences it). */
+	#restartGeneration = 0;
 
 	constructor(client: SigrunClient, options: TuiAppOptions) {
 		this.#client = client;
@@ -213,7 +292,11 @@ export class TuiApp implements Component, ActionHost {
 		this.#catalog = new SlashCatalog(client);
 		this.#resolveVim = options.resolveVim ?? (() =>
 			resolveVimEditor({ configured: options.editor, env: process.env, which: whichPath }));
-		const theme = options.theme;
+		this.#restartPollMs = options.restartPollMs ?? 500;
+		this.#restartDeadlineMs =
+			options.restartDeadlineMs ?? RESTART_READYZ_DEADLINE_MS;
+		const theme = options.theme ?? plainTuiTheme();
+		this.#theme = theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
 		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
 		this.editor = new Editor(options.tui, plainEditorTheme());
@@ -230,7 +313,8 @@ export class TuiApp implements Component, ActionHost {
 			basis: options.sidebarWidth ?? 24,
 			shrink: 1,
 		});
-		this.#body.addChild(this.pane, { basis: 0, grow: 1, minSize: 1 });
+		this.mainContent = new MainSlot(this.pane);
+		this.#body.addChild(this.mainContent, { basis: 0, grow: 1, minSize: 1 });
 		// All entries are intrinsic-height (basis "auto"): the TUI mounts
 		// the app on the MAIN screen, where render(width) is the production
 		// path and the terminal owns scrollback — a numeric basis would be
@@ -329,11 +413,56 @@ export class TuiApp implements Component, ActionHost {
 	}
 
 	/**
+	 * Open the settings view (U4 Task 4, spec §13.4): `/settings` mounts
+	 * the SettingsView (the sections list + the search picker over the
+	 * index); Esc closes it back to the conversation.
+	 */
+	async openSettings(): Promise<void> {
+		if (this.#settingsView !== undefined) return;
+		const view = new SettingsView(this.#client, {
+			tui: this.#tui,
+			theme: this.#theme,
+			unicode: this.#unicode,
+			onRestart: async () => {
+				await this.restart();
+			},
+			onClose: () => {
+				this.#settingsView = undefined;
+				this.mainContent.set(this.pane);
+				this.#tui.requestRender();
+			},
+		});
+		this.#settingsView = view;
+		// The view renders in the main column's slot (visible + scrollable
+		// under the launcher's composition).
+		this.mainContent.set(view);
+		await view.load();
+		this.#tui.requestRender();
+	}
+
+	/** The open settings view (tests drive it). */
+	get settingsView(): SettingsView | undefined {
+		return this.#settingsView;
+	}
+
+	/**
+	 * Close the open settings view (Esc). Returns true when one was open.
+	 */
+	closeSettings(): boolean {
+		if (this.#settingsView === undefined) return false;
+		this.#settingsView.dispose();
+		this.#settingsView = undefined;
+		this.mainContent.set(this.pane);
+		this.#tui.requestRender();
+		return true;
+	}
+
+	/**
 	 * Close the open extension view (the Esc/back idiom): the pane
 	 * returns to the conversation AND the surface's fetches stop — no
 	 * cadence, no keepalive for a surface nobody is looking at (spec
-	 *  §7.3's stop-when-hidden rule; U2's cadence timer consults this).
-	 *  Returns true when a view was open (the key was consumed).
+	 * §7.3's stop-when-hidden rule; U2's cadence timer consults this).
+	 * Returns true when a view was open (the key was consumed).
 	 */
 	closeExtView(): boolean {
 		if (this.#extView === undefined) return false;
@@ -622,6 +751,21 @@ export class TuiApp implements Component, ActionHost {
 		if (matchesKey(data, Key.ctrl("o"))) {
 			return this.interactions.beginAnswer();
 		}
+		// The settings view owns its keys while open (U4 Task 4): Esc
+		// closes an open section first, then the view; `/` opens the
+		// search picker over the sections index.
+		if (this.#settingsView !== undefined) {
+			if (matchesKey(data, Key.escape)) {
+				if (this.#settingsView.closeSection()) return true;
+				return this.closeSettings();
+			}
+			if (data === "/" && this.#settingsView.openSectionId === undefined) {
+				this.#settingsView.openSearch();
+				return true;
+			}
+			this.#settingsView.handleInput(data);
+			return true;
+		}
 		if (matchesKey(data, Key.escape) && this.#busy && this.#activeId !== undefined) {
 			this.#abortActive();
 			return true;
@@ -842,6 +986,12 @@ export class TuiApp implements Component, ActionHost {
 					}
 					return;
 				}
+				case "settings": {
+					// U4 Task 4: the settings view (sections + the search
+					// picker over the index) mounts in the app's main column.
+					await this.openSettings();
+					return;
+				}
 				default:
 					// An extension-contributed command (W5 Task 3): the catalog entry
 					// carries its slug — POST the invoke endpoint and flash the
@@ -876,8 +1026,67 @@ export class TuiApp implements Component, ActionHost {
 		// held by an unwound delivery must fence after dispose exactly as
 		// after a switch — nothing renders post-dispose.
 		this.#watchGen += 1;
+		this.#restartGeneration += 1;
 		this.interactions.dispose();
 		this.ambient.dispose();
+	}
+
+	/**
+	 * The admin restart surface (U4 Task 2, spec §13.3): POST
+	 * `/v1/admin/restart`, show the "Restarting…" notice, and poll
+	 * `/readyz` — when it answers, the supervisor brought the server
+	 * back, so refresh the sidebar (the durable listing) and clear the
+	 * notice. A rejected POST (403/409 — no restart began) renders the
+	 * error and returns without touching state. Resolves once the
+	 * recovery poll ends (recovered or disposed).
+	 */
+	async restart(): Promise<void> {
+		try {
+			await this.#client.requestRestart();
+		} catch (error: unknown) {
+			this.pane.showError(
+				describeCommandError("restart", error),
+			);
+			return;
+		}
+		this.pane.showNotice("Restarting… — waiting for the server");
+		this.#tui.requestRender();
+		const generation = this.#restartGeneration;
+		const deadline = Date.now() + this.#restartDeadlineMs;
+		for (;;) {
+			await new Promise((resolve) =>
+				setTimeout(resolve, this.#restartPollMs),
+			);
+			if (generation !== this.#restartGeneration) return;
+			let ready = false;
+			try {
+				ready = await this.#client.checkReady();
+			} catch {
+				// Connection refused mid-restart: keep polling.
+			}
+			if (ready) break;
+			// The deadline (the webui's RESTART_READYZ_DEADLINE_MS shape):
+			// a stalled supervisor must SURFACE, never hang the poll
+			// forever — clear the Restarting notice and leave a permanent
+			// error naming the failure.
+			if (Date.now() > deadline) {
+				this.pane.clearNotices();
+				this.pane.showError(
+					`restart did not come back: /readyz never answered within ${Math.round(this.#restartDeadlineMs / 1000)}s — check the deployment's supervisor`,
+				);
+				this.#tui.requestRender();
+				return;
+			}
+		}
+		// Re-check the generation AFTER the probe: a dispose during the
+		// sleep+check must not let the recovery render post-dispose.
+		if (generation !== this.#restartGeneration) return;
+		// Back: the listing is durable and the stream re-attach subsumes
+		// whatever the restart dropped (the SSE reconnect contract).
+		await this.sidebar.refresh().catch(() => {});
+		this.pane.clearNotices();
+		this.pane.showNotice("Restarted.");
+		this.#tui.requestRender();
 	}
 
 	// ─── The action layer (Task C3) ────────────────────────────────────

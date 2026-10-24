@@ -53,7 +53,9 @@ export function initialValue(field: Field, bound: Record<string, JsonValue>): Js
 	if (value !== undefined) return value;
 	switch (field.type) {
 		case "toggle":
-			return false;
+			// §13.4 fix: a default-ON settings toggle initializes ON when
+			// the bound value is absent (absent = the default).
+			return field.default === true;
 		case "choice": {
 			// An interaction's recommended option pre-selects (the §9.1
 			// presentation rule); bound data always wins (a settled record's

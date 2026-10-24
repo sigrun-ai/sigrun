@@ -448,6 +448,20 @@ describe("fixtures validate for their placements (spec §5.7)", () => {
 		expect(validateTree(formTree, { placement: "settings" }).ok).toBe(true);
 		expect(validateTree(formTree, { placement: "interaction" }).ok).toBe(true);
 	});
+	it("a toggle field's default must be a boolean", () => {
+		// A string "default" would render OFF and never match the save
+		// path's boolean `=== default` skip (the C1 bug shape), so the
+		// schema rejects it with the prop's path.
+		const formTree = treeOf({
+			type: "form",
+			id: "f",
+			bind: "/x",
+			mode: "submit",
+			children: [{ type: "toggle", name: "a", label: "A", default: "true" }],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(formTree, { placement: "settings" }));
+		expect(errs.some((e) => e.path === "root.children[0].default")).toBe(true);
+	});
 });
 
 // ─── schema-level rejections with paths ───────────────────────────────────

@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { AgentDoc, configure } from "@earendil-works/pi-durable";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
@@ -189,6 +190,59 @@ describe("POST /v1/conversations/:id/fork × X-Sigrun-User", () => {
 		// The fork's doc copied the parent's owner ("current" fork semantics)
 		// — the §5.9 fork reset stamps the caller's identity over it.
 		expect(meta.owner).toBe("bob");
+	});
+
+	test("another user's fork clears the copied relative cwd", async () => {
+		const { app, opened, faux } = await bootServer();
+		const parent = await createConversation(app, "alice");
+		const source = await opened.harness.conversation(parent as never, BACKGROUND_CONTEXT);
+		await source!.commit(
+			(tx) => configure(tx, parent as never, { cwd: "projects/x" }),
+			BACKGROUND_CONTEXT,
+		);
+		faux.setResponses([fauxAssistantMessage("answer")]);
+		await submit(app, parent, "hello");
+		await shareHouseholdWrite(app, parent, "alice");
+
+		const forked = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${parent}/fork`,
+			payload: {},
+			headers: { "x-sigrun-user": "bob", "content-type": "application/json" },
+		});
+		expect(forked.statusCode).toBe(201);
+		const agent = await opened.harness.snapshot(
+			AgentDoc,
+			forked.json().id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(agent).not.toHaveProperty("cwd");
+	});
+
+	test("a same-owner fork keeps the copied relative cwd", async () => {
+		const { app, opened, faux } = await bootServer();
+		const parent = await createConversation(app, "alice");
+		const source = await opened.harness.conversation(parent as never, BACKGROUND_CONTEXT);
+		await source!.commit(
+			(tx) => configure(tx, parent as never, { cwd: "projects/x" }),
+			BACKGROUND_CONTEXT,
+		);
+		faux.setResponses([fauxAssistantMessage("answer")]);
+		await submit(app, parent, "hello");
+
+		const forked = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${parent}/fork`,
+			payload: {},
+			headers: { "x-sigrun-user": "alice", "content-type": "application/json" },
+		});
+		expect(forked.statusCode).toBe(201);
+		const agent = await opened.harness.snapshot(
+			AgentDoc,
+			forked.json().id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(agent?.cwd).toBe("projects/x");
 	});
 
 	test("fork WITHOUT the header is ownerless+private (the §5.9 fork reset)", async () => {

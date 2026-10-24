@@ -513,11 +513,29 @@ export class SurfaceState {
 							? {}
 							: { [result.error.field]: result.error.message };
 					this.#notice(result.error.message);
+					// A "changed by someone else" rejection means the
+					// confirmed data (and the rev the form rides) is stale —
+					// refetch so the NEXT save carries the current rev (U4
+					// Task 4 round-2: without it, the form rev is pinned and
+					// every retry rejects the same way).
+					if (result.error.message === "changed by someone else") {
+						void this.#fullRefetch();
+					}
 					return;
 				}
 				this.#serverErrors = {};
 				if (result.toast !== undefined) this.#notice(result.toast);
-				if (!isMove) return;
+				if (!isMove) {
+					// A non-move accept (the settings save): the rev already
+					// bumped server-side (the optimistic check needs the form's
+					// NEXT submit to carry it), and the fresh data (the core
+					// sections' meta block — the pending-restart callout) only
+					// lands via a fetch (the settings transport is outside the
+					// surface.changed hub — the app owns the probe).
+					this.#rev = result.rev;
+					void this.#fullRefetch();
+					return;
+				}
 				if (result.ops !== undefined) {
 					try {
 						this.#confirmed = applyOps(this.#confirmed, result.ops);

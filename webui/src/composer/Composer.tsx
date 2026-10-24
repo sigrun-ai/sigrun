@@ -266,6 +266,11 @@ export function Composer(props: {
 	 */
 	onNavigate?: (id: number) => void;
 	/**
+	 * Open the settings panel (U4 Task 4 fix wave): `/settings` opens
+	 * the shell overlay — App wires this to the settings-open state.
+	 */
+	onOpenSettings?: () => void;
+	/**
 	 * The `enterToSend` pref (usePrefs): when true, Enter (without shift)
 	 * submits and Shift+Enter inserts a newline; Ctrl+Enter submits in every
 	 * mode. Default false — Ctrl+Enter is the only submit chord.
@@ -278,7 +283,7 @@ export function Composer(props: {
 	 */
 	readonly readOnly?: boolean;
 }) {
-	const { client, conversationId, view, onNavigate, enterToSend = false, readOnly = false } =
+	const { client, conversationId, view, onNavigate, onOpenSettings, enterToSend = false, readOnly = false } =
 		props;
 	const draft = useDraft(client, conversationId);
 	const [models, setModels] = useState<readonly ModelEntry[]>([]);
@@ -494,12 +499,27 @@ export function Composer(props: {
 			setError(`usage: /${command.name} ${hint}`);
 			setNotice(null);
 		};
+		// `/settings` is a SHELL action (the panel is an overlay, not a
+		// conversation action): it must work with NO active conversation
+		// (U4 fix wave — the null-conversation gate below would swallow it).
+		// The draft clears like a sent command (no resurrection on reload).
+		if (command.name === "settings") {
+			onOpenSettings?.();
+			setNotice(null);
+			draft.clear(true);
+			return;
+		}
 		if (conversationId === null) return;
 		// Arg validation FIRST (client-side where the shape is known — clear
 		// errors without a round trip; the server re-validates anyway).
 		switch (command.name) {
 			case "name":
 				if (args === "") return usage(command.argsHint ?? "<name>");
+				break;
+			case "settings":
+				// The panel is a shell overlay, not a conversation action —
+				// the command resolves BEFORE the arg/conversation gate
+				// (see runCommand); this case keeps the arg validator total.
 				break;
 			case "import":
 				if (args === "") return usage(command.argsHint ?? "<jsonl>");

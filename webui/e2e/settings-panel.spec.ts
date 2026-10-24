@@ -36,12 +36,13 @@ test("gear opens the settings panel; edit + save persists", async ({ page }) => 
 	const dialog = page.getByRole("dialog", { name: "settings" });
 	await expect(dialog).toBeVisible();
 
-	// The panel reflects the served settings (the steering-mode combobox).
-	const steering = dialog.getByRole("combobox", { name: "steering mode" });
+	// The panel reflects the served settings (the steering-mode choice,
+	// a radiogroup under the sections renderer — General opens first).
+	const steering = dialog.getByRole("radiogroup", { name: "Steering mode" });
 	await expect(steering).toBeVisible();
 
 	// Flip the steering mode to a concrete option and save.
-	await steering.selectOption({ label: "all" });
+	await steering.getByRole("radio", { name: "All" }).check();
 	await dialog.getByRole("button", { name: /save/i }).click();
 
 	// The PATCH landed on the server: GET now reports the change.
@@ -61,8 +62,9 @@ test("gear opens the settings panel; edit + save persists", async ({ page }) => 
 	await expect(
 		page
 			.getByRole("dialog", { name: "settings" })
-			.getByRole("combobox", { name: "steering mode" }),
-	).toHaveValue("all");
+			.getByRole("radiogroup", { name: "Steering mode" })
+			.getByRole("radio", { name: "All" }),
+	).toBeChecked();
 
 	// Zero page errors.
 	const errors: string[] = [];
@@ -113,4 +115,64 @@ test("the Providers section lists readiness and saves a credential write-only", 
 	const errors: string[] = [];
 	page.on("pageerror", (e) => errors.push(String(e)));
 	expect(errors).toEqual([]);
+});
+
+test("the settings callout: the naming-model save needs no restart; the port save lists it pending with the restart copy", async ({
+	browser,
+}) => {
+	// A FRESH page per test: the gear test's `expect(errors).toEqual([])`
+	// teardown runs its pageerror handler against a still-open dialog, and
+	// the shared page's prior settings state (steeringMode "all") would
+	// ride into this test's form (the sections renderer re-renders per
+	// section open, but the poll's namingModel read must see THIS test's
+	// write — a stale shared page would observe the gear test's state).
+	const page = await browser.newPage();
+	await page.goto(server.url);
+	await page.getByRole("button", { name: "settings" }).click();
+	const dialog = page.getByRole("dialog", { name: "settings" });
+	await expect(dialog).toBeVisible();
+
+	// General is the nav's first section (core first).
+	await dialog.getByRole("button", { name: "General" }).click();
+
+	// namingModel is a live key: the save applies with no callout. The
+	// save rides the surface actions route (the panel's ONE renderer);
+	// the settings file reflects it via the surface save.
+	const naming = dialog.getByRole("textbox", { name: /naming model/i });
+	await expect(naming).toBeVisible();
+	await naming.fill("faux/m-renamed");
+	const saved = page.waitForResponse((response) =>
+		response.url().includes("/v1/ext/core/surfaces/general/actions") &&
+		response.request().method() === "POST",
+	);
+	await dialog.getByRole("button", { name: /^save$/i }).click();
+	const actionResponse = await saved;
+	expect(actionResponse.ok()).toBe(true);
+	await expect
+		.poll(async () => {
+			const res = await page.evaluate(async () => {
+				const r = await fetch("/v1/settings");
+				return (await r.json()) as Record<string, unknown>;
+			});
+			return res.namingModel;
+		})
+		.toBe("faux/m-renamed");
+	await expect(dialog.locator(".settings-restart-callout")).toHaveCount(0);
+
+	// server.port is a restart key (Advanced's Server group): the save
+	// lands it in the callout; the server boots UNSUPERVISED in the e2e
+	// harness, so the copy is the plain "Restart sigrun to apply" text
+	// with no Restart button (the button is the supervised admin's).
+	await dialog.getByRole("button", { name: "Advanced" }).click();
+	const port = dialog.getByRole("spinbutton", { name: /listen port/i });
+	await expect(port).toBeVisible();
+	await port.fill("5313");
+	await dialog.getByRole("button", { name: /save/i }).click();
+	const callout = dialog.locator(".settings-restart-callout");
+	await expect(callout).toBeVisible();
+	await expect(callout).toContainText("server.port");
+	await expect(callout).toContainText("Restart sigrun to apply");
+	await expect(
+		callout.getByRole("button", { name: /restart/i }),
+	).toHaveCount(0);
 });

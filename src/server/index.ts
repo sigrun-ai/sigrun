@@ -32,6 +32,7 @@
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
@@ -44,6 +45,7 @@ import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
+import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
@@ -59,13 +61,17 @@ import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerSettingsSectionsRoutes } from "./routes/settings-sections.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
+import { selfPackageRoot } from "../harness/packages.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
+import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
+import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -89,8 +95,9 @@ import {
  * checks, the public surface, the env service token, the setup gate,
  * then the configured methods — the resolved principal stamps
  * `SessionMeta.owner` at create/fork/import.
- * @param options.listenHost the host the server will bind (default
- * `"0.0.0.0"`); the pipeline's Host check and the default method list
+ * @param options.listenHost the host the server will bind (fallback
+ * `"0.0.0.0"` when omitted; `serve()` passes the dual-stack `::`);
+ * the pipeline's Host check and the default method list
  * (`effectiveMethods`) both derive from it.
  * @param contributedBundles the extension-contributed webui-bundle registry
  * (build-and-webui Task 6 threads it here from boot; the serve-time
@@ -118,6 +125,14 @@ export async function createServer(
 		 * an engine loaded — the field is the serve composition's report.
 		 */
 		gateway?: GatewayHandle;
+		/**
+		 * The restart callback (U4 Task 2, spec §13.3): the serve
+		 * composition threads its graceful-shutdown + exit-0 path here so
+		 * `POST /v1/admin/restart` runs exactly what SIGTERM runs. Absent
+		 * on hand-built test servers — their restart tests inject a stub
+		 * through this same option.
+		 */
+		onRestart?: () => Promise<void> | void;
 	},
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
@@ -213,20 +228,83 @@ export async function createServer(
 			opened.events.publish(event as unknown as HostEventWire);
 		},
 	});
+	// The settings sections (UI-blocks U4 Task 3, spec §13.3): each
+	// declared section adapts to a settings-placement surface served under
+	// the declaring extension's own `/v1/ext/<slug>/surfaces/` mount. The
+	// save handlers close over the service (the optimistic-concurrency
+	// rev read), so the adaptation attaches AFTER the service exists.
+	surfacesService.attachSettingsSurfaces(
+		opened.extensionSettingsSections.map((binding) => ({
+			extension: binding.extension,
+			defs: binding.defs.map((section) =>
+				settingsSurfaceFor(binding.extension, section, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				}),
+			),
+		})),
+	);
+	// The core settings sections (U4 Task 4, spec §13.4): the same
+	// renderer under the reserved `core` slug — core and extensions run
+	// ONE code path. The core saves write the core SettingsStore (dotted
+	// names land at their nested paths, apply-typed), not the extension
+	// settings dir.
+	surfacesService.attachSettingsSurfaces([
+		{
+			extension: "core",
+			defs: CORE_SETTINGS_SECTIONS.map((section) =>
+				settingsSurfaceFor("core", section, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				core: {
+					settings: opened.settings,
+					bootSnapshot: opened.settingsBootSnapshot,
+					env,
+					// The Tools section's default-tools options (the boot
+					// registry's tool names, deduped — the roster the
+					// checkbox list edits against).
+					toolRoster: [
+						...new Set(
+							opened.registry
+								.snapshot()
+								.tools()
+								.map((entry) => entry.tool.name),
+						),
+					],
+				},
+				}),
+			),
+		},
+	]);
 	app.decorate("surfaces", surfacesService);
+	const roots = opened.extensionStores.roots;
 	const ctx: ServerContext = {
 		opened,
 		config,
+		managedPaths: {
+			roots,
+			storagePath: config.storagePath,
+			coreRoot: selfPackageRoot() ?? process.cwd(),
+			userAreas: (user) => join(roots.dataDir, "users", user),
+		},
 		rootId,
 		webuiBundle,
 		commandCatalog,
 		listenHost,
 		methods,
 		env,
+		// U4 §13.2: the harness's settings-changed fan-out (hub publish +
+		// extension onSettingsChanged + the scheduler re-arm).
+		publishSettingsChanged: opened.publishSettingsChanged,
 		watchersByConversation: new Map(),
 		surfaces: surfacesService,
 		sse,
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
+		...(options?.onRestart === undefined
+			? {}
+			: { requestRestart: options.onRestart }),
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
@@ -254,6 +332,7 @@ export async function createServer(
 	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
+	registerAdminRoutes(app, ctx);
 	registerMetricsRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
 	registerStreamRoutes(app, ctx);
@@ -263,6 +342,7 @@ export async function createServer(
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
+	registerSettingsSectionsRoutes(app, ctx);
 	registerExtensionSettingsRoutes(app, ctx);
 	// The extension HTTP routes (W5 Task 2, spec §9.2): every collected
 	// `routes` contribution mounted at `/v1/ext/<slug>/<path>` behind the

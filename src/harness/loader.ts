@@ -93,6 +93,7 @@ import type {
 	GatewayEngine,
 	NotifierContribution,
 	ProviderContribution,
+	SettingsSectionDef,
 	SigrunExtensionResult,
 	SigrunLifecycleHandlers,
 	SurfaceDef,
@@ -102,6 +103,7 @@ import type {
 import { ICON_NAMES } from "@sigrun/shared/blocks";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
+import { validateTree } from "../blocks/validate.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContributor } from "./providers/index.js";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -117,7 +119,10 @@ import {
 	readPackageVersion,
 	resolveExtensionEntry,
 } from "./packages.js";
-import { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
+import {
+	RESERVED_CORE_SECTION_KEYS,
+	RESERVED_EXTENSION_SLUGS,
+} from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
@@ -173,6 +178,23 @@ export interface ExtensionRunSettledBinding {
 	readonly extension: Extension;
 	readonly runSettled: ExtensionRunSettledHandler;
 }
+
+/**
+ * A factory-result `onSettingsChanged` handler (UI-blocks U4, spec
+ * §13.2) — paired with the resolved `Extension` like the runSettled
+ * binding, so boot fans the handler out under the extension's final
+ * name after every committed settings write.
+ */
+export interface ExtensionSettingsChangedBinding {
+	/** The extension the factory result carried the handler for. */
+	readonly extension: Extension;
+	readonly onSettingsChanged: ExtensionSettingsChangedHandler;
+}
+
+/** The public contract's settings-change hook (src/extension.ts owns the doc). */
+export type ExtensionSettingsChangedHandler = NonNullable<
+	SigrunExtensionResult["onSettingsChanged"]
+>;
 
 /**
  * The lifecycle handler fields a factory result may carry (memory-seam
@@ -270,6 +292,20 @@ export interface ExtensionSurfaceBinding {
 	readonly assetsDir?: string;
 }
 
+/**
+ * Settings sections retained from one extension factory result
+ * (UI-blocks U4 Task 3, spec §13.3), slug-attributed like the surface
+ * binding. `createServer` adapts each to a settings-placement surface
+ * (`src/server/surfaces/settings-surfaces.ts`) and appends it to the
+ * surface service's binding list, so core and extension sections serve
+ * from ONE route family (`/v1/ext/<slug>/surfaces/<id>`).
+ */
+export interface ExtensionSettingsSectionBinding {
+	/** The slug identity. */
+	readonly extension: string;
+	readonly defs: readonly SettingsSectionDef[];
+}
+
 /** Every lifecycle field name, in validation order (mirrors the contract doc). */
 const LIFECYCLE_FIELDS = [
 	"conversationCreated",
@@ -333,6 +369,13 @@ export interface LoadedExtensions {
 	 * extension's final name.
 	 */
 	readonly runSettledBindings: readonly ExtensionRunSettledBinding[];
+	/**
+	 * `onSettingsChanged` handlers from factory results (UI-blocks U4,
+	 * §13.2), one per loaded extension that carried one; quarantined
+	 * extensions contribute none. Boot fans them out after every
+	 * committed settings write.
+	 */
+	readonly settingsChangedBindings: readonly ExtensionSettingsChangedBinding[];
 	/**
 	 * Lifecycle handlers from factory results (memory-seam Task 4), one per
 	 * loaded extension that carried ANY of the five fields; quarantined
@@ -405,6 +448,14 @@ export interface LoadedExtensions {
 	 */
 	readonly surfaces: readonly ExtensionSurfaceBinding[];
 	/**
+	 * Settings sections from factory results (UI-blocks U4 Task 3,
+	 * spec §13.3), slug-attributed — the server adapts them to
+	 * settings-placement surfaces (`settings-surfaces.ts`) and appends
+	 * them to the surface service's bindings. Quarantined extensions
+	 * contribute none.
+	 */
+	readonly settingsSections: readonly ExtensionSettingsSectionBinding[];
+	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
 	 * extension — each `{name, dir, extension}` with `dir` resolved against
@@ -472,6 +523,8 @@ export interface ResolvedExtension {
 	readonly resolvedVia?: "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
+	/** Present only when the factory result carried one (UI-blocks U4 §13.2). */
+	readonly onSettingsChanged?: ExtensionSettingsChangedHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
 	readonly lifecycle?: ExtensionLifecycleHandlers;
 	/** Present only when the factory result carried one (memory-seam Task 5). */
@@ -533,6 +586,12 @@ export interface ResolvedExtension {
 	 * extension before any surface mounts.
 	 */
 	surfaces?: readonly SurfaceDef<"view" | "panel">[];
+	/**
+	 * Settings sections (UI-blocks U4 Task 3, spec §13.3) — the validated
+	 * `surfaces.settings` list; a malformed declaration quarantines the
+	 * extension before any section mounts.
+	 */
+	settingsSections?: readonly SettingsSectionDef[];
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
@@ -558,6 +617,7 @@ type LoaderReadKeys =
 	| "interactionSettled"
 	| "harnessShutdown"
 	| "userDeleted"
+	| "onSettingsChanged"
 	| "interactionKinds"
 	| "ambientKinds"
 	| "workers"
@@ -607,6 +667,11 @@ type CandidateFactoryResult = Partial<
  */
 const RESERVED_SECTION_KEY_SET: ReadonlySet<string> = new Set(
 	RESERVED_CORE_SECTION_KEYS,
+);
+
+/** Reserved store-root directory names may not become extension identities. */
+const RESERVED_EXTENSION_SLUG_SET: ReadonlySet<string> = new Set(
+	RESERVED_EXTENSION_SLUGS,
 );
 
 /** A structural check for "looks like a pi-durable Extension". */
@@ -778,6 +843,149 @@ const ICON_NAME_SET: ReadonlySet<string> = new Set(ICON_NAMES);
 const MIN_REFRESH_MS = 5000;
 
 /**
+ * The `settings` placement's field-name walk (UI-blocks U4 Task 3):
+ * every field of a settings form must be a TOP-LEVEL key of the
+ * extension's settings object (spec §13.3 — the form binds to
+ * `settings/<slug>.json`; a dotted or nested name would write a shape
+ * the verbatim settings routes cannot show).
+ */
+function* walkFormFields(root: unknown): Generator<{ name?: unknown; item?: unknown }> {
+	const stack: unknown[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (Array.isArray(node)) {
+			stack.push(...node);
+			continue;
+		}
+		if (typeof node !== "object" || node === null) continue;
+		const record = node as Record<string, unknown>;
+		for (const key of ["children", "fields", "root", "main", "sidebar", "detail"]) {
+			if (record[key] !== undefined) stack.push(record[key]);
+		}
+		if (record.block !== undefined) stack.push(record.block);
+		if (record.item !== undefined) stack.push(record.item);
+		if (typeof record.name === "string" && typeof record.type === "string") {
+			yield record as { name?: unknown; item?: unknown };
+		}
+	}
+}
+
+/**
+ * Validate a factory result's `surfaces.settings` list (UI-blocks U4
+ * Task 3, spec §13.3). Each entry: non-empty string `id`, `title`,
+ * `icon` (optional, in the closed set), `form` a Tree validating
+ * against the `settings` placement with a root `form` block, every
+ * field name a TOP-LEVEL key (no dots), optional `secrets` entries
+ * `{key, label, help?}`, and `admin` a boolean when present. The
+ * `save` handler name is core-owned (the adapter's), so `onSubmit`
+ * names outside `{save, submit}` are rejected (an extension thinking
+ * it owns its save handler would silently never fire).
+ */
+function validateSettingsSections(
+	value: unknown,
+): readonly SettingsSectionDef[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a surfaces.settings field that is not an array",
+		);
+	}
+	const defs: SettingsSectionDef[] = [];
+	const seen = new Set<string>();
+	for (const entry of value) {
+		const def = entry as
+			| {
+					id?: unknown;
+					title?: unknown;
+					icon?: unknown;
+					form?: unknown;
+					secrets?: unknown;
+					admin?: unknown;
+				  }
+			| null;
+		if (typeof def?.id !== "string" || def.id.length === 0) {
+			throw new Error(
+				"extension factory returned a settings section whose id is missing or not a non-empty string",
+			);
+		}
+		if (seen.has(def.id)) {
+			throw new Error(
+				`extension factory returned a duplicate settings section id "${def.id}"`,
+			);
+		}
+		seen.add(def.id);
+		if (typeof def?.title !== "string" || def.title.length === 0) {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" whose title is missing or not a non-empty string`,
+			);
+		}
+		if (
+			def?.icon !== undefined &&
+			(typeof def.icon !== "string" || !ICON_NAME_SET.has(def.icon))
+		) {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" with unknown icon "${String(def?.icon)}"`,
+			);
+		}
+		if (def?.admin !== undefined && typeof def.admin !== "boolean") {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" whose admin is not a boolean`,
+			);
+		}
+		if (def?.secrets !== undefined) {
+			if (!Array.isArray(def.secrets)) {
+				throw new Error(
+					`extension factory returned a settings section "${def.id}" whose secrets is not an array`,
+				);
+			}
+			for (const secret of def.secrets) {
+				const entry2 = secret as { key?: unknown; label?: unknown; help?: unknown } | null;
+				if (typeof entry2?.key !== "string" || entry2.key.length === 0) {
+					throw new Error(
+						`extension factory returned a settings section "${def.id}" whose secrets entry is missing a key`,
+					);
+				}
+				if (typeof entry2?.label !== "string" || entry2.label.length === 0) {
+					throw new Error(
+						`extension factory returned a settings section "${def.id}" whose secrets entry "${String(entry2?.key)}" is missing a label`,
+					);
+				}
+				if (entry2?.help !== undefined && typeof entry2.help !== "string") {
+					throw new Error(
+						`extension factory returned a settings section "${def.id}" whose secrets entry "${entry2.key}" carries a non-string help`,
+					);
+				}
+			}
+		}
+		if (typeof def?.form !== "object" || def.form === null) {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" whose form is missing or not a Tree`,
+			);
+		}
+		const validation = validateTree(def.form, {
+			placement: "settings",
+			handlers: new Set(["save", "submit"]),
+		});
+		if (!validation.ok) {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" whose form is invalid: ` +
+					validation.errors.map((err) => `${err.path}: ${err.message}`).join("; "),
+			);
+		}
+		for (const field of walkFormFields(validation.tree.root)) {
+			if (typeof field.name !== "string" || field.name.length === 0) continue;
+			if (field.name.includes(".") || field.name.includes("/")) {
+				throw new Error(
+					`extension factory returned a settings section "${def.id}" whose field "${field.name}" is not a top-level settings key (no dots or slashes)`,
+				);
+			}
+		}
+		defs.push(entry as SettingsSectionDef);
+	}
+	return defs;
+}
+
+/**
  * Validate a factory result's `surfaces` declaration (UI-blocks U3
  * Task 1, spec §7.1/§15). Absent → undefined (no surfaces). Present
  * but malformed → throw with ONE message per problem; the loader
@@ -790,32 +998,33 @@ const MIN_REFRESH_MS = 5000;
  * whose every handler is a function (message names the action),
  * `refreshMs ≥ 5000` when present, `data()` a function when
  * `refreshMs` is set (a data refetch would otherwise re-run `render`,
- * §7.1), `render` a function, and NO `settings` key (reserved — the
- * §13.3 sections are a separate workstream). Returns the
- * FLATTENED defs (views then panels, declaration order) attributed to
- * the slug at collection.
+ * §7.1), `render` a function — plus the `settings` list (§13.3, U4
+ * Task 3), validated by `validateSettingsSections`. Returns the
+ * FLATTENED defs (views then panels, declaration order) and the
+ * settings sections, attributed to the slug at collection.
  */
 function validateSurfaces(
 	value: unknown,
-): readonly SurfaceDef<"view" | "panel">[] | undefined {
+):
+	| {
+			readonly defs: readonly SurfaceDef<"view" | "panel">[];
+			readonly settings?: readonly SettingsSectionDef[];
+		  }
+	| undefined {
 	if (value === undefined) return undefined;
 	if (typeof value !== "object" || Array.isArray(value)) {
 		throw new Error(
 			"extension factory returned a surfaces field that is not an object",
 		);
 	}
-	// The settings sections key is RESERVED (spec §7.1 names it; §13.3
-	// owns it): this workstream cannot serve it, and a JS package
-	// declaring one must not lose it silently — quarantine loud, naming
-	// the workstream (TS consumers are already stopped by the contract's
-	// `readonly never[]`).
-	if ((value as Record<string, unknown>).settings !== undefined) {
-		throw new Error(
-			"extension factory returned a surfaces.settings declaration — settings sections are a separate workstream (they land in U4)",
-		);
-	}
+	// §13.3 settings sections (UI-blocks U4 Task 3): validated with the
+	// settings placement; a malformed list quarantines like every other
+	// malformed surfaces member.
+	const settings = validateSettingsSections(
+		(value as Record<string, unknown>).settings,
+	);
 	const defs: SurfaceDef<"view" | "panel">[] = [];
-	const seen = new Set<string>();
+	const seen = new Set<string>(settings?.map((def) => def.id) ?? []);
 	for (const list of ["views", "panels"] as const) {
 		const entries = (value as Record<string, unknown>)[list];
 		if (entries === undefined) continue;
@@ -926,7 +1135,7 @@ function validateSurfaces(
 			defs.push(entry as SurfaceDef<"view" | "panel">);
 		}
 	}
-	return defs;
+	return { defs, ...(settings === undefined ? {} : { settings }) };
 }
 const ROUTE_METHODS: ReadonlySet<string> = new Set([
 	"GET",
@@ -1787,6 +1996,16 @@ async function resolvedFromFactory(
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
 	if (kindsProblem !== null) throw new Error(kindsProblem);
+	// The settings-change hook (U4 §13.2): present-but-not-a-function is
+	// the same contract violation class as the lifecycle fields — an
+	// extension that THINKS it observes settings changes must not
+	// silently miss them.
+	const onSettingsChanged = candidate.onSettingsChanged;
+	if (onSettingsChanged !== undefined && typeof onSettingsChanged !== "function") {
+		throw new Error(
+			"extension factory returned an onSettingsChanged field that is not a function",
+		);
+	}
 	// `workers` is a contract key — the candidate read needs no cast.
 	const workers = validateWorkers(candidate.workers);
 	return {
@@ -1804,6 +2023,13 @@ async function resolvedFromFactory(
 		...(candidate.runSettled === undefined
 			? {}
 			: { runSettled: candidate.runSettled as ExtensionRunSettledHandler }),
+		...(onSettingsChanged === undefined
+			? {}
+			: {
+					// SAFETY: the typeof-function check above is the validation —
+				// the cast supplies the contract's parameter type only.
+					onSettingsChanged: onSettingsChanged as ExtensionSettingsChangedHandler,
+				}),
 		...(anyLifecycle
 			? {
 					// SAFETY: every value under `lifecycle` passed `typeof === "function"`
@@ -1828,7 +2054,10 @@ async function resolvedFromFactory(
 		...(notifiers === undefined ? {} : { notifiers }),
 		...(channels === undefined ? {} : { channels }),
 		...(gateway === undefined ? {} : { gateway }),
-		...(surfaces === undefined ? {} : { surfaces }),
+		...(surfaces === undefined ? {} : { surfaces: surfaces.defs }),
+		...(surfaces?.settings === undefined
+			? {}
+			: { settingsSections: surfaces.settings }),
 	};
 }
 
@@ -2054,6 +2283,7 @@ const providerContributors: ProviderContributor[] = [];
 const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
+const settingsChangedBindings: ExtensionSettingsChangedBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
@@ -2079,6 +2309,8 @@ const channelBindings: ExtensionChannelBinding[] = [];
 let gatewayEngine: ExtensionGatewayBinding | undefined;
 // Surfaces (U3 Task 1): the flattened validated defs, slug-attributed.
 const surfaceBindings: ExtensionSurfaceBinding[] = [];
+// Settings sections (U4 Task 3, spec §13.3): validated, slug-attributed.
+const settingsSectionBindings: ExtensionSettingsSectionBinding[] = [];
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -2225,8 +2457,25 @@ const display = label ?? entry ?? "skills-only";
 				if (slug === "") {
 					throw new Error(
 						`extension name "${declared}" sanitizes to an empty slug ` +
-							"(nothing survives [a-z0-9_-] folding); refusing to load",
+						"(nothing survives [a-z0-9_-] folding); refusing to load",
 					);
+				}
+				// The `core` slug is RESERVED (UI-blocks U4 Task 3, spec §13.4):
+				// core's own settings sections serve under it, so an extension
+				// claiming the slug would shadow them (and every other
+				// core-served `/v1/ext/core/` surface).
+				if (slug === "core") {
+					throw new Error(
+						`extension name "${declared}" sanitizes to the reserved slug "core" ` +
+						"(core's own settings sections use it); refusing to load",
+					);
+				}
+				// Multi-user M1: core-owned store-root directories are not available
+				// as extension identities. Check after the slug is final, before
+				// any contribution is collected (the same load-time quarantine as
+				// the reserved section-key check below).
+				if (RESERVED_EXTENSION_SLUG_SET.has(slug)) {
+					throw new Error(`reserved extension slug "${slug}"`);
 				}
 				const collides = slugs.get(slug);
 				if (collides !== undefined) {
@@ -2377,6 +2626,15 @@ const display = label ?? entry ?? "skills-only";
 						runSettled: resolved.runSettled,
 					});
 				}
+				if (
+					extension !== undefined &&
+					resolved.onSettingsChanged !== undefined
+				) {
+					settingsChangedBindings.push({
+						extension,
+						onSettingsChanged: resolved.onSettingsChanged,
+					});
+				}
 				if (extension !== undefined && resolved.lifecycle !== undefined) {
 					lifecycleBindings.push({
 						extension,
@@ -2418,6 +2676,12 @@ const display = label ?? entry ?? "skills-only";
 					extension: slug,
 					defs: resolved.surfaces,
 					...(declaredAssets === undefined ? {} : { assetsDir: declaredAssets }),
+				});
+			}
+			if (resolved.settingsSections !== undefined) {
+				settingsSectionBindings.push({
+					extension: slug,
+					defs: resolved.settingsSections,
 				});
 			}
 			if (resolved.providers !== undefined) {
@@ -2481,6 +2745,7 @@ const display = label ?? entry ?? "skills-only";
 		skillRoots,
 		healthProducers,
 		runSettledBindings,
+		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
 		jobBindings,
@@ -2490,5 +2755,6 @@ const display = label ?? entry ?? "skills-only";
 		channelBindings,
 		gatewayEngine,
 		surfaces: surfaceBindings,
+		settingsSections: settingsSectionBindings,
 	};
 }

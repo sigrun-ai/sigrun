@@ -224,12 +224,8 @@ test.describe("item 6: tool card", () => {
 		await page.locator(".composer-input").fill("read notes.txt");
 		await expect(page.locator(".composer-send")).toBeEnabled();
 		await page.locator(".composer-send").click();
-		// B4: the tool call renders as the activity line under the assistant
-		// turn; expanding it shows the tool row (the old always-rendered
-		// tool card is gone), and expanding THAT shows the output.
-		const activity = page.locator(".activity-toggle").first();
-		await expect(activity).toBeVisible();
-		await activity.click();
+		// The default chronological view renders the tool row in place;
+		// expanding it shows the output.
 		const toolRow = page.locator(".tool-row-toggle").first();
 		await expect(toolRow).toBeVisible();
 		await toolRow.click();

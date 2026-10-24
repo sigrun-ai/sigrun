@@ -412,6 +412,71 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 	});
 });
 
+describe("isolation settings", () => {
+	test("defaults to auto, osUsers off, and a 10-minute worker idle timeout", () => {
+		expect(loadConfig({ ...MODEL_ENV }).isolation).toEqual({
+			mode: "auto",
+			osUsers: false,
+			workerIdleMinutes: 10,
+		});
+	});
+
+	test("SIGRUN_ISOLATION parses auto, always, and off and wins over the file", () => {
+		for (const mode of ["auto", "always", "off"] as const) {
+			expect(
+				loadConfig({ ...MODEL_ENV, SIGRUN_ISOLATION: mode }).isolation.mode,
+			).toBe(mode);
+		}
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_ISOLATION: "off" },
+				{ server: { isolation: { mode: "always" } } },
+			).isolation.mode,
+		).toBe("off");
+	});
+
+	test("the file section supplies all three knobs where env is absent", () => {
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{
+					server: {
+						isolation: {
+							mode: "always",
+							osUsers: true,
+							workerIdleMinutes: 30,
+						},
+					},
+				},
+			).isolation,
+		).toEqual({ mode: "always", osUsers: true, workerIdleMinutes: 30 });
+	});
+
+	test("SIGRUN_ISOLATION=on fails loud naming the variable", () => {
+		expect(() =>
+			loadConfig({ ...MODEL_ENV, SIGRUN_ISOLATION: "on" }),
+		).toThrow(/SIGRUN_ISOLATION/);
+	});
+
+	test("the env mode projects into the bootstrap and effective settings", () => {
+		const env = { ...MODEL_ENV, SIGRUN_ISOLATION: "always" };
+		expect(envServerSection(env)).toEqual({
+			isolation: { mode: "always" },
+		});
+		const config = loadConfig(env);
+		expect(
+			effectiveServerSection(env, undefined, config)[
+				"server.isolation.mode"
+			],
+		).toEqual({ value: "always", source: "env" });
+		expect(
+			effectiveServerSection(MODEL_ENV, undefined, loadConfig(MODEL_ENV))[
+				"server.isolation.osUsers"
+			],
+		).toEqual({ value: false, source: "default" });
+	});
+});
+
 describe("envServerSection (the env-only bootstrap projection, ruling 5)", () => {
 	test("empty env projects {} — no default is ever persisted", () => {
 		expect(envServerSection({})).toEqual({});
@@ -584,6 +649,57 @@ describe("envServerSection (the env-only bootstrap projection, ruling 5)", () =>
 		).toEqual({ value: true, source: "file" });
 		expect(
 			effectiveServerSection(MODEL_ENV, undefined, loadConfig(MODEL_ENV))["server.dev"],
+		).toEqual({ value: false, source: "default" });
+	});
+
+	test("SIGRUN_SUPERVISED parses strictly (U4 §13.3; default false, file tier, effective block)", () => {
+		// Default false; unset reads false.
+		expect(loadConfig({ ...MODEL_ENV }).supervised).toBe(false);
+		// The boolean spellings (1/0/true/false, whitespace-trimmed).
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "1" }).supervised).toBe(true);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "0" }).supervised).toBe(false);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "true" }).supervised).toBe(true);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: " FALSE " }).supervised).toBe(false);
+		// Empty counts as unset.
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "" }).supervised).toBe(false);
+		// Anything else fails LOUD naming the variable.
+		expect(() =>
+			loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "yes" }),
+		).toThrow(/SIGRUN_SUPERVISED/);
+		// The file tier: server.supervised applies when the env var is absent.
+		expect(
+			loadConfig({ ...MODEL_ENV }, { server: { supervised: true } }).supervised,
+		).toBe(true);
+		// Env wins over the file.
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_SUPERVISED: "false" },
+				{ server: { supervised: true } },
+			).supervised,
+		).toBe(false);
+		// envServerSection projects ONLY an env-set supervised (a default is
+		// never persisted as intent — the bootstrap rule).
+		expect(envServerSection({ SIGRUN_SUPERVISED: "1" })).toEqual({
+			supervised: true,
+		});
+		expect(envServerSection({})).toEqual({});
+		// The effective block classifies it like every other server key.
+		const env = { ...MODEL_ENV, SIGRUN_SUPERVISED: "true" };
+		expect(
+			effectiveServerSection(env, undefined, loadConfig(env))[
+				"server.supervised"
+			],
+		).toEqual({ value: true, source: "env" });
+		const file: SettingsFile = { server: { supervised: true } };
+		expect(
+			effectiveServerSection(MODEL_ENV, file.server, loadConfig(MODEL_ENV, file))[
+				"server.supervised"
+			],
+		).toEqual({ value: true, source: "file" });
+		expect(
+			effectiveServerSection(MODEL_ENV, undefined, loadConfig(MODEL_ENV))[
+				"server.supervised"
+			],
 		).toEqual({ value: false, source: "default" });
 	});
 

@@ -109,7 +109,7 @@ describe("submit mode (§5.6)", () => {
 		form.handleInput(ENTER); // submit
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.action).toEqual({ type: "submit", name: "savePrefs" });
-		expect(captured[0]?.payload).toEqual({ values: { nick: "ac", quota: 5 } });
+		expect(captured[0]?.payload).toEqual({ values: { nick: "ac", quota: 5 }, rev: 0 });
 	});
 
 	test("a required field blocks the submit and shows the error", () => {
@@ -251,7 +251,7 @@ describe("inline mode (§5.6)", () => {
 		form.handleInput("w");
 		form.handleInput(ENTER);
 		expect(captured).toHaveLength(1);
-		expect(captured[0]?.payload).toEqual({ values: { title: "new" } });
+		expect(captured[0]?.payload).toEqual({ values: { title: "new" }, rev: 0 });
 		expect(form.values.title).toBe("");
 	});
 });
@@ -376,7 +376,7 @@ describe("secret (§5.6)", () => {
 		expect(text).not.toContain("s3c");
 		form.handleInput(ENTER); // to the submit row
 		form.handleInput(ENTER);
-		expect(captured[0]?.payload).toEqual({ values: { apiKey: "s3c" } });
+		expect(captured[0]?.payload).toEqual({ values: { apiKey: "s3c" }, rev: 0 });
 	});
 
 	test("ASCII mode masks with *", () => {
@@ -601,7 +601,7 @@ describe("interaction stepper (§9.1)", () => {
 		form.handleInput(ENTER); // submit once
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.action).toEqual({ type: "submit", name: "answer" });
-		expect(captured[0]?.payload).toEqual({ values: { color: "blue", size: "s" } });
+		expect(captured[0]?.payload).toEqual({ values: { color: "blue", size: "s" }, rev: 0 });
 		form.handleInput(ENTER);
 		expect(captured).toHaveLength(1);
 	});
@@ -679,7 +679,7 @@ describe("review fixes (the fix round's covering tests)", () => {
 		expect(form.values.quota).toBe(4);
 		form.handleInput(ENTER); // submit row
 		form.handleInput(ENTER);
-		expect(captured[0]?.payload).toEqual({ values: { nick: "ok", quota: 4 } });
+		expect(captured[0]?.payload).toEqual({ values: { nick: "ok", quota: 4 }, rev: 0 });
 	});
 
 	test("a multi file field appends picks (nothing is dropped)", () => {

@@ -69,6 +69,13 @@ export class SurfaceView implements Component {
 				view: { values: this.#surface.viewValues },
 				setView: (path, value) => this.#surface.setView(path, value),
 				serverErrors: this.#surface.serverErrors,
+				// The live read (fix wave C3): memoized block components
+				// re-resolve the confirmed data + rev off the state, never
+				// the construction-time snapshot.
+				ctxRefresh: () => {
+					const current = this.#surface.view;
+					return { data: current.data, rev: current.rev };
+				},
 			};
 			return this.#ctx;
 		}
@@ -106,6 +113,21 @@ export class SurfaceView implements Component {
 			this.#context();
 		}
 		return this.#component;
+	}
+
+	/**
+	 * Focus the field with this name in the rendered form (the settings
+	 * view's search-resolve seam, U4 Task 4): forces the component to
+	 * build (the render gate) and forwards to the form's focus-by-name.
+	 * Returns false when the surface is not a form or has no such field.
+	 */
+	focusField(name: string): boolean {
+		const view = this.#surface.view;
+		if (view.status !== "ready" || view.tree === undefined) return false;
+		const focusable = this.#readyComponent(view.tree) as {
+			focusName?: (fieldName: string) => boolean;
+		};
+		return focusable.focusName?.(name) === true;
 	}
 
 	handleInput(data: string): void {

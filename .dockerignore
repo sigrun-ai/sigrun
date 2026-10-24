@@ -1,6 +1,7 @@
 .git
 .superpowers
 node_modules
+sandbox/target/
 webui/node_modules
 webui/dist
 # The workspace build outputs too — `dist` above is root-anchored and

@@ -10,7 +10,16 @@ export default defineConfig({
 		// `.docker-ext/**`: build-time vendored scratch (gitignored; created by
 		// scripts/docker-vendor-exts.sh for the image build) — never a test
 		// source; its vendored tests mirror the real ones and their deps differ.
-		exclude: [...defaultExclude, "webui/**", "tui/**", ".worktrees/**", ".docker-ext/**"],
+		exclude: [
+			...defaultExclude,
+			"webui/**",
+			"tui/**",
+			".worktrees/**",
+			".docker-ext/**",
+			// Kernel integration is opt-in and ABI-gated. CI's sandbox-it job
+			// asserts ABI >= 6 before enabling it; ordinary npm test never loads it.
+			...(process.env.SIGRUN_SANDBOX_IT === "1" ? [] : ["test/sandbox-it/**"]),
+		],
 		// The suite-wide env pin (test/setup.ts): the unclaimed-boot setup-code
 		// write lands in a tmp cache root, never the developer's ~/.cache/sigrun.
 		setupFiles: ["./test/setup.ts"],

@@ -43,7 +43,7 @@ import {
 import { listModels } from "./helpers.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
-import { serializeConversationView } from "./views.js";
+import { accountLinkWire, serializeConversationView } from "./views.js";
 
 /**
  * The effective-admin projection of one directory user (gateway C8):
@@ -70,6 +70,7 @@ function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
 export interface HostBridge {
 	readonly conversations: SigrunHost["conversations"];
 	readonly users: SigrunHost["users"];
+	readonly accounts: SigrunHost["accounts"];
 	readonly access: SigrunHost["access"];
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
@@ -243,6 +244,31 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			async get(user) {
 				const record = opened.identity.users.get(user);
 				return record === undefined ? undefined : effectiveAdminOf(record);
+			},
+		},
+		accounts: {
+			// The one link table (multi-user §11.3): core code over core's
+			// store — the single write path, with the store's own validation
+			// and conflict refusal. `account_link_conflict:` errors cross the
+			// bridge as plain Errors (extensions match the message prefix).
+			async lookup(provider, subject) {
+				const link = opened.identity.accounts.lookup(provider, subject);
+				return link === undefined ? undefined : accountLinkWire(link);
+			},
+			async link(provider, subject, user, via) {
+				const link = await opened.identity.accounts.link({
+					provider,
+					subject,
+					user,
+					via,
+				});
+				return accountLinkWire(link);
+			},
+			async unlink(provider, subject) {
+				return await opened.identity.accounts.unlink(provider, subject);
+			},
+			async listForUser(user) {
+				return opened.identity.accounts.listForUser(user).map(accountLinkWire);
 			},
 		},
 		access: {

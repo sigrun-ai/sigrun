@@ -60,6 +60,10 @@ import { dirname, join } from "node:path";
 import { resolveStoreRoots } from "./stores.js";
 import { isAbsoluteHttpUrl } from "../config.js";
 import { isIanaTimeZone, validateJobSpec } from "../jobs/spec.js";
+import {
+	classifyPatch,
+	type ApplyOutcome,
+} from "../settings/pending.js";
 import type {
 	BuiltinExtensionsSettings,
 	JobHistorySettings,
@@ -86,6 +90,16 @@ export interface SettingsStoreOptions {
 	 * `SIGRUN_CONFIG_DIR`; tests pass a tmp dir).
 	 */
 	readonly dir?: string;
+	/**
+	 * The committed-write observer (UI-blocks U4 Task 1, spec §13.2):
+	 * invoked after EVERY `apply()` write lands on disk, with the
+	 * flattened keys the write touched — the route layer publishes
+	 * `settings.changed` from it. Never invoked for a REJECTED write
+	 * (validation throws first) and never for `update()` (the raw
+	 * merge seam boot/tests use — bootstrap and hand edits are not
+	 * settings changes).
+	 */
+	onWrite?: (keys: readonly string[]) => void;
 }
 
 /** The queue modes pi-durable accepts (its `QueueMode`). */
@@ -530,10 +544,12 @@ function validateServer(server: unknown): void {
 		"webuiBundle",
 		"compaction",
 		"memorySeam",
+		"isolation",
 		"providers",
 		"auth",
 		"metrics",
 		"dev",
+		"supervised",
 		"backup",
 	]);
 	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
@@ -684,6 +700,43 @@ function validateServer(server: unknown): void {
 			}
 		}
 	}
+	if (record.isolation !== undefined) {
+		const isolation = asRecord(record.isolation);
+		if (isolation === undefined) {
+			throw new SettingsValidationError("server.isolation", "must be an object");
+		}
+		checkKeys("server.isolation.", isolation, [
+			"mode",
+			"osUsers",
+			"workerIdleMinutes",
+		]);
+		if (
+			isolation.mode !== undefined &&
+			isolation.mode !== "auto" &&
+			isolation.mode !== "always" &&
+			isolation.mode !== "off"
+		) {
+			throw new SettingsValidationError(
+				"server.isolation.mode",
+				'must be "auto", "always", or "off"',
+			);
+		}
+		if (isolation.osUsers !== undefined && typeof isolation.osUsers !== "boolean") {
+			throw new SettingsValidationError(
+				"server.isolation.osUsers",
+				"must be a boolean",
+			);
+		}
+		if (
+			isolation.workerIdleMinutes !== undefined &&
+			!isPositiveInt(isolation.workerIdleMinutes)
+		) {
+			throw new SettingsValidationError(
+				"server.isolation.workerIdleMinutes",
+				"must be a positive integer",
+			);
+		}
+	}
 	if (record.providers !== undefined) {
 		const providers = asRecord(record.providers);
 		if (providers === undefined) {
@@ -783,6 +836,16 @@ function validateServer(server: unknown): void {
 	// The development flag (§14.2/§14.4) — a flat boolean, no section.
 	if (record.dev !== undefined && typeof record.dev !== "boolean") {
 		throw new SettingsValidationError("server.dev", "must be a boolean");
+	}
+	// The supervised flag (U4 §13.3) — same shape.
+	if (
+		record.supervised !== undefined &&
+		typeof record.supervised !== "boolean"
+	) {
+		throw new SettingsValidationError(
+			"server.supervised",
+			"must be a boolean",
+		);
 	}
 	if (record.backup !== undefined) {
 		const backup = asRecord(record.backup);
@@ -899,9 +962,11 @@ function checkKeys(
  */
 export class SettingsStore {
 	readonly path: string;
+	readonly #onWrite: ((keys: readonly string[]) => void) | undefined;
 
 	constructor(options: SettingsStoreOptions = {}) {
 		this.path = settingsPath(options.dir ?? defaultSettingsDir());
+		this.#onWrite = options.onWrite;
 	}
 
 	/** The current settings; absent file = `{}` (all defaults). */
@@ -1234,6 +1299,30 @@ export class SettingsStore {
 		mkdirSync(dirname(this.path), { recursive: true });
 		writeFileSync(this.path, `${JSON.stringify(file, null, "\t")}\n`);
 		return file;
+	}
+
+	/**
+	 * The settings-change write (UI-blocks U4 Task 1, spec §13.2): the
+	 * PATCH body merged + validated + persisted (exactly `update()`),
+	 * THEN classified against the apply registry. Returns which keys
+	 * applied live vs. which are pending a restart, plus the effective
+	 * file; the committed-write observer fires after the write lands.
+	 *
+	 * @throws SettingsValidationError naming the offending field.
+	 */
+	apply(patch: Record<string, unknown>): SettingsFile & ApplyOutcome {
+		const outcome = classifyPatch(patch);
+		const file = this.update(patch);
+		this.#onWrite?.(outcome.keys);
+		// SAFETY: the intersection is structural — `update` returns the
+		// validated `SettingsFile`, and `ApplyOutcome`'s three fields are
+		// freshly created here, so no field collision can occur.
+		return {
+			...file,
+			keys: outcome.keys,
+			applied: outcome.applied,
+			pending: outcome.pending,
+		};
 	}
 
 	/**

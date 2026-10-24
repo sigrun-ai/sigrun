@@ -13,6 +13,9 @@
  */
 
 import { MutationQueue, readRecords, writeJson } from "./json-store.js";
+import type { Grant } from "../../sandbox/grants.js";
+import type { IsolationAvailability } from "../../sandbox/availability.js";
+import type { SigrunConfig } from "../../config.js";
 
 /** The username rule (spec §5.8): lowercase-first, then `[a-z0-9._-]`. */
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -33,6 +36,12 @@ export interface DirectoryUser {
 	 * `admin`); host-side surfaces project it into effective admin.
 	 */
 	readonly groupAdmin?: boolean;
+	/** The user's realpath-validated workspace (multi-user M1 §9.5). */
+	readonly workspace?: string;
+	/** Additional realpath-validated directories available to their worker. */
+	readonly grants?: readonly Grant[];
+	/** Optional bare-metal OS login used by the worker's uid/gid switch. */
+	readonly osUser?: string;
 	/** When this record was created (epoch ms). */
 	readonly createdAt: number;
 	/** How the user entered the directory (spec §5.8 sources). */
@@ -44,10 +53,63 @@ export interface DirectoryUser {
  * per access); every mutation is a whole-file read-modify-write that
  * serializes on the store's {@link MutationQueue}.
  */
+export type AdmissionCode = "isolation_required" | "auth_required";
+
+export class AdmissionRefusedError extends Error {
+	constructor(readonly code: AdmissionCode, message: string) {
+		super(message);
+		this.name = "AdmissionRefusedError";
+	}
+}
+
+/** The one multi-user admission policy shared by server boot and the CLI. */
+export function createAdmissionGuard(opts: {
+	isolation: IsolationAvailability;
+	mode: SigrunConfig["isolation"]["mode"];
+	methods: readonly ("token" | "proxy")[];
+	proxySecretHeader: string | undefined;
+}): (currentCount: number) => void {
+	return () => {
+		if (!opts.isolation.available || opts.mode === "off") {
+			throw new AdmissionRefusedError(
+				"isolation_required",
+				`isolation_required: ${opts.isolation.reason ?? "isolation mode is off"}`,
+			);
+		}
+		if (opts.methods.length === 0) {
+			throw new AdmissionRefusedError(
+				"auth_required",
+				"auth_required: configure token or proxy authentication before adding another user",
+			);
+		}
+		if (opts.methods.includes("proxy") && opts.proxySecretHeader === undefined) {
+			throw new AdmissionRefusedError(
+				"isolation_required",
+				"isolation_required: proxy authentication requires server.auth.proxy.secretHeader before isolation can activate",
+			);
+		}
+	};
+}
+
+export interface UserDirectoryOptions {
+	/** Called in add's mutation before every non-first user is persisted. */
+	readonly admit?: (currentCount: number) => void;
+	/** The configured workspace stamped on the first record at the second add. */
+	readonly firstWorkspace?: string;
+}
+
 export class UserDirectory {
 	private readonly mutations = new MutationQueue();
 
-	constructor(private readonly path: string) {}
+	constructor(
+		private readonly path: string,
+		private options: UserDirectoryOptions = {},
+	) {}
+
+	/** Attach the process's admission policy (boot/CLI), preserving existing rows. */
+	configureAdmission(options: UserDirectoryOptions): void {
+		this.options = { ...this.options, ...options };
+	}
 
 	/** Every user, insertion order (the first add is the onboarding claim). */
 	list(): DirectoryUser[] {
@@ -85,6 +147,12 @@ export class UserDirectory {
 			if (records.some((record) => record.user === user.user)) {
 				throw new Error(`user "${user.user}" already exists`);
 			}
+			if (records.length >= 1) {
+				this.options.admit?.(records.length);
+				if (records.length === 1 && records[0]!.workspace === undefined && this.options.firstWorkspace !== undefined) {
+					records[0] = { ...records[0], workspace: this.options.firstWorkspace };
+				}
+			}
 			const record: DirectoryUser = { ...user, createdAt: Date.now() };
 			await writeJson(this.path, [...records, record]);
 			return record;
@@ -99,7 +167,15 @@ export class UserDirectory {
 	 */
 	update(
 		user: string,
-		patch: { name?: string; email?: string; admin?: boolean; groupAdmin?: boolean },
+		patch: {
+			name?: string;
+			email?: string;
+			admin?: boolean;
+			groupAdmin?: boolean;
+			workspace?: string;
+			grants?: readonly Grant[];
+			osUser?: string;
+		},
 	): Promise<DirectoryUser> {
 		return this.mutations.run(async () => {
 			const records = this.list();
@@ -111,6 +187,28 @@ export class UserDirectory {
 			records[index] = updated;
 			await writeJson(this.path, records);
 			return updated;
+		});
+	}
+
+	/**
+	 * Remove one user and append a transfer grant to the recipient in one
+	 * serialized read-modify-write. Current recipient grants are read inside
+	 * the mutation, so a queued concurrent update cannot be clobbered.
+	 */
+	removeWithGrant(user: string, to: string, grant: Grant): Promise<void> {
+		return this.mutations.run(async () => {
+			const records = this.list();
+			const sourceIndex = records.findIndex((record) => record.user === user);
+			if (sourceIndex === -1) throw new Error(`unknown user "${user}"`);
+			const recipientIndex = records.findIndex((record) => record.user === to);
+			if (recipientIndex === -1) throw new Error(`unknown user "${to}"`);
+			const recipient = records[recipientIndex]!;
+			records[recipientIndex] = {
+				...recipient,
+				grants: [...(recipient.grants ?? []), grant],
+			};
+			records.splice(sourceIndex, 1);
+			await writeJson(this.path, records);
 		});
 	}
 

@@ -145,8 +145,12 @@ export class FormComponent implements Component {
 	}
 
 	/** The object the fields read (the `/view/` branch for a view-bound
-	 *  form, the surface data otherwise — §6.2). */
+	 *  form, the surface data otherwise — §6.2). The data reads through
+	 *  `ctxRefresh` when the host supplies it: the component is memoized
+	 *  but the surface's confirmed data moves on after a save's refetch
+	 *  (the stale-ctx fix, U4 Task 4 fix wave). */
 	#boundObject(): JsonObject {
+		const data = this.#ctx.ctxRefresh?.().data ?? this.#ctx.data;
 		const bind = this.#block.bind;
 		if (bind.startsWith("/view/")) {
 			const pointer = bind.replace(/^\/view\/?/, "/");
@@ -156,11 +160,17 @@ export class FormComponent implements Component {
 			}
 			return {};
 		}
-		const resolved = resolvePointer(this.#ctx.data, bind);
+		const resolved = resolvePointer(data, bind);
 		if (typeof resolved === "object" && resolved !== null && !Array.isArray(resolved)) {
 			return resolved as JsonObject;
 		}
 		return {};
+	}
+
+	/** The current data revision (the live read when the host supplies
+	 *  it; the construction-time snapshot otherwise). */
+	#currentRev(): number {
+		return this.#ctx.ctxRefresh?.().rev ?? this.#ctx.rev ?? 0;
 	}
 
 	#textState(field: Field): TextState {
@@ -263,7 +273,12 @@ export class FormComponent implements Component {
 				name: this.#block.onSubmit ?? "submit",
 				...(this.#block.turn === undefined ? {} : { turn: this.#block.turn }),
 			},
-			{ values: { ...this.#values } },
+			// The optimistic-concurrency rev rides every submit (the
+			// LIVE surface rev — the component is memoized, so the
+			// construction-time ctx.rev is stale after the first save's
+			// refetch; a save-shaped action handler reads it, every other
+			// handler ignores it).
+			{ values: { ...this.#values }, rev: this.#currentRev() },
 		);
 		return true;
 	}
@@ -770,6 +785,22 @@ export class FormComponent implements Component {
 
 	get focusIndex(): number {
 		return this.#focus;
+	}
+
+	/** Move focus to the field with this name (the settings view's
+	 *  search-resolve seam, U4 Task 4: a "naming" hit lands the
+	 *  caret on the naming-model row). Returns false when no field
+	 *  carries the name. */
+	focusName(name: string): boolean {
+		const index = this.#fields.findIndex((field) => field.name === name);
+		if (index < 0) return false;
+		this.#focus = index;
+		return true;
+	}
+
+	/** The flattened field names (the host's search-resolve check). */
+	get fieldNames(): readonly string[] {
+		return this.#fields.map((field) => field.name);
 	}
 
 	get step(): number {
