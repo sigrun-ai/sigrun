@@ -729,8 +729,11 @@ function ExtensionCoveNav(props: {
 function ExtensionCove(props: {
 	readonly client: SigrunClient;
 	readonly slug: string;
+	/** The registry outcome (the name row's status + version). */
+	readonly status?: string;
+	readonly version?: string;
 }): React.ReactElement {
-	const { client, slug } = props;
+	const { client, slug, status, version } = props;
 	const [draft, setDraft] = useState<ExtensionDraft | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
@@ -839,7 +842,13 @@ function ExtensionCove(props: {
 				displayed
 			</p>
 			<fieldset className="settings-ext" data-ext={slug}>
-				<legend className="settings-ext-name">{slug}</legend>
+				<legend className="settings-ext-name">
+					{slug}
+					<span className="settings-ext-meta">
+						{status ?? ""}
+						{version === undefined ? "" : ` · v${version}`}
+					</span>
+				</legend>
 				<label className="settings-field">
 					<span className="settings-label">Settings (raw JSON)</span>
 					<textarea
@@ -990,7 +999,13 @@ function ExtensionsCove(props: { readonly client: SigrunClient }): React.ReactEl
 	return (
 		<div className="settings-body">
 			{extensions.map((extension) => (
-				<ExtensionCove key={extension.name} client={client} slug={extension.name} />
+				<ExtensionCove
+					key={extension.name}
+					client={client}
+					slug={extension.name}
+					status={extension.status}
+					version={extension.version}
+				/>
 			))}
 		</div>
 	);
