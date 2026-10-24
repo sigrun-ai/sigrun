@@ -27,6 +27,8 @@ import type { StoreRoots } from "../harness/stores.js";
 export type Grant = {
 	readonly path: string;
 	readonly access: "ro" | "rw";
+	/** Former owner whose user area this transfer grant may enter. */
+	readonly inheritedFrom?: string;
 };
 
 /** The protected paths needed to validate one user's policy inputs. */
@@ -102,7 +104,11 @@ function rejectInside(candidate: string, path: string, label: string): InvalidGr
  */
 export function validateGrantPath(
 	path: string,
-	ctx: { readonly managed: ManagedPaths; readonly user: string },
+	ctx: {
+		readonly managed: ManagedPaths;
+		readonly user: string;
+		readonly inheritedFrom?: string;
+	},
 ): ValidGrantPath | InvalidGrantPath {
 	if (!isAbsolute(path)) return { ok: false, reason: "path must be absolute" };
 	let candidate: string;
@@ -112,7 +118,7 @@ export function validateGrantPath(
 		return { ok: false, reason: "path does not exist or cannot be resolved" };
 	}
 
-	const { managed, user } = ctx;
+	const { managed, user, inheritedFrom } = ctx;
 	const { roots } = managed;
 	const rootLabels = [
 		[roots.configDir, "configDir"],
@@ -156,7 +162,14 @@ export function validateGrantPath(
 		// users/alice symlink into Bob's area make both sides agree on Bob's
 		// realpath, turning the exception into a cross-user bypass.
 		const ownArea = join(usersRoot, user);
-		if (!inside(candidate, ownArea)) {
+		const inheritedArea =
+			inheritedFrom === undefined || inheritedFrom === user
+				? undefined
+				: join(usersRoot, inheritedFrom);
+		if (
+			!inside(candidate, ownArea) &&
+			(inheritedArea === undefined || !inside(candidate, inheritedArea))
+		) {
 			return { ok: false, reason: "path is inside another user's area" };
 		}
 	}
@@ -168,10 +181,21 @@ export function revalidate(
 	record: DirectoryUser,
 	managed: ManagedPaths,
 ): { readonly ok: true } | InvalidGrantPath {
-	const paths = [record.workspace, ...(record.grants ?? []).map((grant) => grant.path)];
-	for (const path of paths) {
-		if (path === undefined) continue;
-		const result = validateGrantPath(path, { managed, user: record.user });
+	if (record.workspace !== undefined) {
+		const result = validateGrantPath(record.workspace, {
+			managed,
+			user: record.user,
+		});
+		if (!result.ok) return result;
+	}
+	for (const grant of record.grants ?? []) {
+		const result = validateGrantPath(grant.path, {
+			managed,
+			user: record.user,
+			...(grant.inheritedFrom === undefined
+				? {}
+				: { inheritedFrom: grant.inheritedFrom }),
+		});
 		if (!result.ok) return result;
 	}
 	return { ok: true };

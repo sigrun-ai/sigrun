@@ -176,6 +176,22 @@ describe("buildUserPolicy", () => {
 		expect(result.policy.ro).not.toContain(rwGrant);
 	});
 
+	test("an inherited foreign user-area grant is accepted into the recipient's rw policy", async () => {
+		const { managed, moduleTrees } = await fixture();
+		const inherited = join(managed.userAreas("alice"), "workspace");
+		await mkdir(inherited, { recursive: true });
+		const result = policyFor(
+			{
+				...record("bob"),
+				grants: [{ path: inherited, access: "rw", inheritedFrom: "alice" }],
+			},
+			{ managed, moduleTrees },
+		);
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.policy.rw).toContain(await realpath(inherited));
+	});
+
 	test("an osAccount changes home and carries uid, gid, and groups", async () => {
 		const { managed, moduleTrees } = await fixture();
 		const osHome = join(await tempDir(), "os-home");
