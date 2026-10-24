@@ -85,6 +85,11 @@ export interface BootGatewayOptions {
 	readonly responses?: readonly AssistantMessage[];
 	/** Optional faux streaming rate (a slow stream opens a live-frame window). */
 	readonly tokensPerSecond?: number;
+	/** Compaction env values, mapped to the loadConfig environment. */
+	readonly compactionEnv?: {
+		readonly keepRecentTokens?: number;
+		readonly backgroundTokens?: number;
+	};
 	/**
 	 * A CALLER-OWNED stores root for the harness's state (the engine's
 	 * `host.stores.paths.state` roots here too): two boots over the same
@@ -152,6 +157,12 @@ export async function bootGateway(
 		SIGRUN_DATA_DIR: dir,
 		SIGRUN_STATE_DIR: dir,
 		SIGRUN_CACHE_DIR: dir,
+		...(opts.compactionEnv?.keepRecentTokens === undefined
+			? {}
+			: { SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: String(opts.compactionEnv.keepRecentTokens) }),
+		...(opts.compactionEnv?.backgroundTokens === undefined
+			? {}
+			: { SIGRUN_COMPACTION_BACKGROUND_TOKENS: String(opts.compactionEnv.backgroundTokens) }),
 		...(opts.authEnv ?? {}),
 	},
 		opts.serverAuth === undefined
