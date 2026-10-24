@@ -16,8 +16,9 @@ import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { AgentDoc, configure } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import {
 	fauxAssistantMessage,
@@ -28,6 +29,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { TokenStore } from "../src/harness/identity/index.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 /** The fixture-user-events entry, imported by specifier (contract: factory + userDeleted). */
@@ -360,6 +362,126 @@ describe("DELETE /v1/users/:user", () => {
 			user: "bob",
 			transferTo: "alice",
 		});
+	});
+
+	test("transfer pins relative and absent cwd values and grants the departing workspace", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const aliceWorkspace = join(dir, "alice-workspace");
+		await mkdir(aliceWorkspace);
+		await opened.identity.users.update("alice", { workspace: aliceWorkspace });
+		const createOwned = async () => {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/conversations",
+				headers: { authorization: `Bearer ${adminToken}` },
+			});
+			expect(response.statusCode).toBe(201);
+			return (response.json() as { id: number }).id;
+		};
+		const relativeId = await createOwned();
+		const rootId = await createOwned();
+		const relative = await opened.harness.conversation(relativeId as never, BACKGROUND_CONTEXT);
+		await relative!.commit(
+			(tx) => configure(tx, relativeId as never, { cwd: "projects/x" }),
+			BACKGROUND_CONTEXT,
+		);
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/alice?transferTo=bob",
+			headers: { authorization: `Bearer ${await mint(opened, "tester")}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		const storedWorkspace = await realpath(aliceWorkspace);
+		expect(
+			(await opened.harness.snapshot(AgentDoc, relativeId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe(join(storedWorkspace, "projects/x"));
+		expect(
+			(await opened.harness.snapshot(AgentDoc, rootId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe(storedWorkspace);
+		expect(opened.identity.users.get("bob")?.grants).toContainEqual({
+			path: storedWorkspace,
+			access: "rw",
+		});
+	});
+
+	test("an invalid departing-workspace grant is skipped with a warning", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		// Seed directly to exercise deletion's revalidation of stored state.
+		await opened.identity.users.update("alice", {
+			workspace: join(dir, "config"),
+			grants: [{ path: dir, access: "ro" }],
+		});
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const deleted = await app.inject({
+				method: "DELETE",
+				url: "/v1/users/alice?transferTo=bob",
+				headers: { authorization: `Bearer ${adminToken}` },
+			});
+			expect(deleted.statusCode).toBe(204);
+			expect(opened.identity.users.get("bob")?.grants).toBeUndefined();
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining("path is or contains configDir"),
+			);
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
+	test("deleting an osUser with transfer is refused before any mutation", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletions();
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		await opened.identity.users.update("bob", {
+			workspace: dir,
+			osUser: "bob-os",
+		});
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const conversationId = (created.json() as { id: number }).id;
+		const conversation = await opened.harness.conversation(
+			conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		await conversation!.commit(
+			(tx) => configure(tx, conversationId as never, { cwd: "projects/x" }),
+			BACKGROUND_CONTEXT,
+		);
+		const directoryBefore = opened.identity.users.list();
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+		expect(deleted.statusCode).toBe(409);
+		expect(deleted.json()).toEqual({
+			error: "invalid_transfer",
+			reason: "osUser workspace",
+		});
+		expect(opened.identity.users.list()).toEqual(directoryBefore);
+		expect(
+			(await opened.harness.snapshot(SessionMetaDoc, conversationId as never, BACKGROUND_CONTEXT))?.owner,
+		).toBe("bob");
+		expect(
+			(await opened.harness.snapshot(AgentDoc, conversationId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe("projects/x");
+		const whoami = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(whoami.statusCode).toBe(200);
+		expect(fixture.deletions).toEqual([]);
 	});
 
 	test("deleting a user removes their account links and no one else's", async () => {
