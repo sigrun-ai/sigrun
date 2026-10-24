@@ -819,6 +819,28 @@ export interface SettingsSectionIndexEntry {
 }
 
 /**
+ * The settings search's filter (UI-blocks U4 Task 4 round-2): the ONE
+ * implementation both channels run — the webui panel and the TUI view
+ * previously carried byte-identical copies, which drifted apart once
+ * (the TUI's lacked the key match). Case-insensitive over label + help
+ * + key; an empty query filters to nothing (the picker carries the
+ * full list).
+ */
+export function filterSettingsIndex(
+	index: readonly SettingsSectionIndexEntry[],
+	query: string,
+): readonly SettingsSectionIndexEntry[] {
+	const q = query.trim().toLowerCase();
+	if (q === "") return [];
+	return index.filter(
+		(entry) =>
+			entry.label.toLowerCase().includes(q) ||
+			(entry.help ?? "").toLowerCase().includes(q) ||
+			(entry.key ?? "").toLowerCase().includes(q),
+	);
+}
+
+/**
  * A `GET /v1/extensions/:slug/secrets` entry: the key and its winning
  * source — NEVER the value (the API lists and writes secrets; it never
  * returns them).

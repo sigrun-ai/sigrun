@@ -79,24 +79,24 @@ function* walkFields(tree: unknown): Generator<{ name: string; label: string; he
 	}
 }
 
-/** The core key → core section id resolution (the registry's `section`
- *  name, minus the keys whose section has no core surface). */
-const REGISTRY_SECTION_TO_ID: Readonly<Record<string, CoreSectionId | undefined>> = {
-	general: "general",
-	tools: "tools",
-	interface: "interface",
-	advanced: "advanced",
-	providers: "providers",
-	extensions: "extensions",
-	// `server`-section keys render under Advanced's Server group.
-	server: "advanced",
-};
-
-/** The field label for one core key, walked out of the core sections. */
-function coreFieldLabel(key: string): { label: string; help?: string } | undefined {
+/** The core field a key renders as, plus the section it renders IN
+ *  (the section id comes from the WALK — the section the field
+ *  actually renders under — never from the registry's `section`
+ *  metadata, which drifts from where fields land: the retry and
+ *  stream keys say `general` but render under Advanced). A key no core section
+ *  renders has no row (the index covers only what the panel shows). */
+function coreFieldEntry(
+	key: string,
+): { sectionId: CoreSectionId; label: string; help?: string } | undefined {
 	for (const section of CORE_SETTINGS_SECTIONS) {
 		for (const field of walkFields(section.form)) {
-			if (field.name === key) return field;
+			if (field.name === key) {
+				return {
+					sectionId: section.id as CoreSectionId,
+					label: field.label,
+					...(field.help === undefined ? {} : { help: field.help }),
+				};
+			}
 		}
 	}
 	return undefined;
@@ -106,15 +106,14 @@ function coreFieldLabel(key: string): { label: string; help?: string } | undefin
 function coreKeyEntry(key: string): SettingsIndexEntry | undefined {
 	const registryEntry = CORE_SETTING_KEYS.find((entry) => entry.key === key);
 	if (registryEntry === undefined) return undefined;
-	const sectionId = REGISTRY_SECTION_TO_ID[registryEntry.section];
-	if (sectionId === undefined) return undefined;
-	const field = coreFieldLabel(key);
+	const field = coreFieldEntry(key);
+	if (field === undefined) return undefined;
 	return {
 		slug: "core",
-		sectionId,
+		sectionId: field.sectionId,
 		kind: "core-key",
-		label: field?.label ?? key,
-		...(field?.help === undefined ? {} : { help: field.help }),
+		label: field.label,
+		...(field.help === undefined ? {} : { help: field.help }),
 		key,
 	};
 }

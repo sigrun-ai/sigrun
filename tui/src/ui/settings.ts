@@ -13,15 +13,15 @@
  * - **Interface** (client prefs) has no TUI-local state yet — the view
  *   renders it as its (empty) surface form; the prefs live in the
  *   webui's localStorage by design (§13.4's "client-side" ruling).
- * - **Providers** (the §7.6 credential flows) renders as a text
- *   readiness list (one line per provider; the write-only credential
- *   edit is the webui's surface — the TUI's settings view covers the
- *   settings forms; the credential routes stay reachable through the
- *   API).
- * - **Extensions**: an extension WITHOUT a declared section keeps its
- *   raw-JSON note reachable here (a notice naming the
- *   `/v1/extensions/<slug>/settings` routes — the raw JSON editor is
- *   the webui's cove).
+ * - **Providers** (the §7.6 credential flows) renders as its settings
+ *   surface form; the per-provider readiness rows and the write-only
+ *   credential editor are the webui's cove — the credential routes
+ *   stay reachable through the API, and the TUI does not render the
+ *   readiness list (a TUI cove is the follow-up).
+ * - **Extensions**: an extension WITHOUT a declared settings section
+ *   keeps its raw-JSON reachability as a NOTICE in the section list
+ *   (one line naming its `/v1/extensions/<slug>/settings` routes —
+ *   the raw JSON editor is the webui's cove).
  *
  * The pending-restart callout (§13.2/§13.3) renders above the section
  * body: the keys the General section's `meta` block carries, with the
@@ -33,6 +33,7 @@
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { JsonObject } from "@sigrun/shared/blocks";
+import { filterSettingsIndex } from "@sigrun/shared/views";
 import type {
 	SettingsSectionEntry,
 	SettingsSectionIndexEntry,
@@ -44,20 +45,10 @@ import { createExtSurfaceTransport } from "../blocks/ext-transport.js";
 import type { TuiTheme } from "../theme.js";
 import { openPicker, type PickerItem } from "./picker.js";
 
-/** Filter the search index (case-insensitive over label + help + key). */
-export function filterSettingsIndex(
-	index: readonly SettingsSectionIndexEntry[],
-	query: string,
-): readonly SettingsSectionIndexEntry[] {
-	const q = query.trim().toLowerCase();
-	if (q === "") return [];
-	return index.filter(
-		(entry) =>
-			entry.label.toLowerCase().includes(q) ||
-			(entry.help ?? "").toLowerCase().includes(q) ||
-			(entry.key ?? "").toLowerCase().includes(q),
-	);
-}
+// The index filter is `@sigrun/shared`'s (U4 Task 4 round-2) — ONE
+// implementation across the channels; the re-export keeps the view's
+// pre-round-2 import surface.
+export { filterSettingsIndex };
 
 /** The settings view (the app's `/settings` mount). */
 export class SettingsView implements Component {
@@ -74,6 +65,8 @@ export class SettingsView implements Component {
 	#error: string | undefined;
 	/** The open section's surface (undefined = the section list). */
 	#surface: { readonly state: SurfaceState; readonly view: SurfaceView; readonly id: string } | undefined;
+	/** Section-less loaded extensions (the raw-JSON notice lines). */
+	#sectionlessExtensions: readonly string[] = [];
 	/** The pending-restart block (the General section's `meta`). */
 	#pendingRestart: readonly string[] = [];
 	#supervised = false;
@@ -102,15 +95,24 @@ export class SettingsView implements Component {
 	/** Load the sections list + the admin/supervised flags. */
 	async load(): Promise<void> {
 		try {
-			const [sections, whoami, meta] = await Promise.all([
+			const [sections, whoami, meta, extensions] = await Promise.all([
 				this.#client.listSettingsSections(),
 				this.#client.whoami().catch(() => undefined),
 				this.#client.getBootMeta().catch(() => undefined),
+				this.#client.listExtensions().catch(() => undefined),
 			]);
 			this.#sections = sections.sections;
 			this.#index = sections.index;
 			this.#admin = whoami?.admin === true;
 			this.#supervised = meta?.supervised === true;
+			// Section-less loaded extensions (the raw-JSON notice lines):
+			// every listed extension whose slug declares NO settings section.
+			const withSections = new Set(
+				sections.sections.filter((entry) => entry.slug !== "core").map((entry) => entry.slug),
+			);
+			this.#sectionlessExtensions = (extensions?.extensions ?? [])
+				.map((extension) => extension.name)
+				.filter((name) => !withSections.has(name));
 		} catch (cause: unknown) {
 			this.#error = cause instanceof Error ? cause.message : String(cause);
 		}
@@ -171,8 +173,10 @@ export class SettingsView implements Component {
 		});
 		this.#surface = { state, view, id: section.id };
 		state.onChange(() => {
-			// The General section's meta block feeds the callout.
-			if (section.slug === "core" && section.id === "general") {
+			// The core sections' meta block feeds the callout (the
+			// pendingRestart diff lands on EVERY core section's meta — a
+			// save in Advanced flips the callout without reopening).
+			if (section.slug === "core") {
 				const meta = state.view.data.meta;
 				if (
 					typeof meta === "object" &&
@@ -237,7 +241,7 @@ export class SettingsView implements Component {
 			if (this.#supervised && this.#admin) {
 				lines.push(
 					truncateToWidth(
-						this.#theme.dim("press r to restart now"),
+						this.#theme.dim("press ctrl+r to restart now"),
 						width,
 					),
 				);
@@ -263,6 +267,20 @@ export class SettingsView implements Component {
 					),
 				);
 			}
+			// Extensions WITHOUT a declared section keep their raw-JSON
+			// routes reachable (the docblock's ruling): one notice line
+			// per section-less extension naming its routes.
+			for (const slug of this.#sectionlessExtensions) {
+				// A plain (unstyled) line: the dim theme's escape codes would
+				// break substring matching against the wire contract, and the
+				// notice is informational, not chrome.
+				lines.push(
+					truncateToWidth(
+						`  ${slug}: no settings section — raw JSON at GET/PUT /v1/extensions/${slug}/settings`,
+						width,
+					),
+				);
+			}
 			return lines;
 		}
 		// The open section: its surface view renders below the callout.
@@ -272,7 +290,9 @@ export class SettingsView implements Component {
 
 	handleInput(data: string): void {
 		if (this.#surface !== undefined) {
-			if (data === "r" && this.#supervised && this.#admin && this.#pendingRestart.length > 0) {
+			// The restart affordance is ctrl+r — a bare "r" is ordinary
+			// text in a focused editor field and must type through.
+			if (data === "\x12" && this.#supervised && this.#admin && this.#pendingRestart.length > 0) {
 				void this.restart();
 				return;
 			}

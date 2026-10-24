@@ -255,11 +255,22 @@ export async function createServer(
 					stores: opened.extensionStores,
 					publishSettingsChanged: opened.publishSettingsChanged,
 					service: surfacesService,
-					core: {
-						settings: opened.settings,
-						bootSnapshot: opened.settingsBootSnapshot,
-						env,
-					},
+				core: {
+					settings: opened.settings,
+					bootSnapshot: opened.settingsBootSnapshot,
+					env,
+					// The Tools section's default-tools options (the boot
+					// registry's tool names, deduped — the roster the
+					// checkbox list edits against).
+					toolRoster: [
+						...new Set(
+							opened.registry
+								.snapshot()
+								.tools()
+								.map((entry) => entry.tool.name),
+						),
+					],
+				},
 				}),
 			),
 		},

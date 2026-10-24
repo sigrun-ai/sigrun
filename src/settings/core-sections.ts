@@ -180,7 +180,10 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								help: "The model-offered tool filter for new conversations (empty = every installed tool); the filter hides listed tools and can never disable them all",
 								apply: applyOf("defaultTools"),
 								multi: true,
-								options: [],
+								// The roster is server data (the boot registry's tool
+								// names), bound from the core surface's data block — a
+								// literal list would drift from the installed tools.
+								options: { $: "/toolRoster" },
 							},
 							{
 								type: "toggle",

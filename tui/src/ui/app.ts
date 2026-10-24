@@ -143,6 +143,41 @@ function whichPath(name: string): string | undefined {
 	return result.stdout.trim().split("\n")[0] || undefined;
 }
 
+/** The main column's swap slot (U4 Task 4 round-2): renders the
+ *  conversation pane, or the open settings view while one is up.
+ *  The launcher mounts this slot (in its ScrollView) so the swap is
+ *  visible — a settings view rendered only in `TuiApp.render`'s
+ *  fallback path never paints in the launcher's composition. */
+export class MainSlot implements Component {
+	#child: Component;
+
+	constructor(child: Component) {
+		this.#child = child;
+	}
+
+	/** Swap the rendered child (the conversation pane ↔ settings view). */
+	set(child: Component): void {
+		this.#child = child;
+	}
+
+	/** The current child (tests assert the swap). */
+	get current(): Component {
+		return this.#child;
+	}
+
+	render(width: number): string[] {
+		return this.#child.render(width);
+	}
+
+	handleInput(data: string): void {
+		this.#child.handleInput?.(data);
+	}
+
+	invalidate(): void {
+		this.#child.invalidate();
+	}
+}
+
 /** No-color theme: the shell pins structure; styling is a later task. */
 function plainEditorTheme(): EditorTheme {
 	const identity = (text: string): string => text;
@@ -207,6 +242,12 @@ export class TuiApp implements Component, ActionHost {
 
 	readonly #body = new HStack();
 	readonly #layout = new VStack();
+	/** The main column's slot: renders the conversation pane normally,
+	 *  the open settings view while one is up (U4 Task 4 round-2 — the
+	 *  settings view renders IN the body slot; the launcher's root
+	 *  scrolls this slot, so a `#settingsView`-only render would paint
+	 *  nothing and swallow keys). Exported for the launcher's mount. */
+	readonly mainContent: MainSlot;
 	#activeId: number | undefined;
 	#unwatch: Unwatch | undefined;
 	/** Monotonic watch generation: a stale watch's frames must never land. */
@@ -266,7 +307,8 @@ export class TuiApp implements Component, ActionHost {
 			basis: options.sidebarWidth ?? 24,
 			shrink: 1,
 		});
-		this.#body.addChild(this.pane, { basis: 0, grow: 1, minSize: 1 });
+		this.mainContent = new MainSlot(this.pane);
+		this.#body.addChild(this.mainContent, { basis: 0, grow: 1, minSize: 1 });
 		// All entries are intrinsic-height (basis "auto"): the TUI mounts
 		// the app on the MAIN screen, where render(width) is the production
 		// path and the terminal owns scrollback — a numeric basis would be
@@ -380,10 +422,14 @@ export class TuiApp implements Component, ActionHost {
 			},
 			onClose: () => {
 				this.#settingsView = undefined;
+				this.mainContent.set(this.pane);
 				this.#tui.requestRender();
 			},
 		});
 		this.#settingsView = view;
+		// The view renders in the main column's slot (visible + scrollable
+		// under the launcher's composition).
+		this.mainContent.set(view);
 		await view.load();
 		this.#tui.requestRender();
 	}
@@ -400,6 +446,7 @@ export class TuiApp implements Component, ActionHost {
 		if (this.#settingsView === undefined) return false;
 		this.#settingsView.dispose();
 		this.#settingsView = undefined;
+		this.mainContent.set(this.pane);
 		this.#tui.requestRender();
 		return true;
 	}
