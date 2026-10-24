@@ -13,27 +13,39 @@
  * regression cannot kill the test runner itself.
  */
 
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import type { ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	AgentConversation,
 	assertFileExists,
 	BOB_CONTROL,
 	bootDeployment,
 	CORE_ROOT,
-	installWorkspaceHelper,
+	HELPER,
+	buildNativeProbes,
+	privilegedHelper,
+	helperCommand,
+	directCommand,
+	nativePolicy,
+	spawnUnjailed,
+	directWorker,
+	captureWorkerPid,
+	terminateOutside,
 	KILL_PROBE,
 	MEM_PROBE,
 	nodeProbe,
 	plantCoreEnv,
 	probeSandbox,
 	READ_PROBE,
-	shellQuote,
 	WORKER_PID_PROBE,
 	WRITE_PROBE,
 	type Deployment,
+	type NativeProbes,
+	type PrivilegedHelper,
 } from "./helpers.js";
 
 const probe = await probeSandbox();
@@ -51,13 +63,35 @@ let bobTmp: string;
 let coreEnv: { path: string; restore(): Promise<void> } | undefined;
 let aliceWorkerPid: string;
 let outsideDir: string;
+let native: NativeProbes;
+let privileged: PrivilegedHelper;
+let service: ChildProcess | undefined;
+let servicePid = 0;
+let abstractSocket: ChildProcess | undefined;
+const abstractName = `sigrun-boundary-${process.pid}-${Date.now()}`;
 const roots: string[] = [];
+
+function spawnOutside(command: string, args: string[], env: NodeJS.ProcessEnv = {}): ChildProcess {
+	const child = spawnUnjailed(command, args, env);
+	return child;
+}
+
+async function stopOutside(child: ChildProcess | undefined): Promise<void> {
+	if (child === undefined) return;
+	if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	await new Promise<void>((resolve) => {
+		if (child.exitCode !== null || child.signalCode !== null) resolve();
+		else child.once("exit", () => resolve());
+	});
+}
 
 beforeAll(async () => {
 	if (!enabled) return;
 	root = await mkdtemp(join(tmpdir(), "sigrun-kernel-boundary-"));
 	roots.push(root);
 	deployment = await bootDeployment({ root });
+	native = await buildNativeProbes(root);
+	privileged = await privilegedHelper(root);
 	coreEnv = await plantCoreEnv();
 	await Promise.all([
 		writeFile(join(deployment.aliceWorkspace, "alice-secret.txt"), "ALICE-WORKSPACE-SECRET\n"),
@@ -88,11 +122,41 @@ beforeAll(async () => {
 	expect(pidProbe.isError, pidProbe.text).toBe(false);
 	aliceWorkerPid = (await readFile(join(deployment.aliceWorkspace, "worker-pid.txt"), "utf8")).trim();
 	expect(aliceWorkerPid).toMatch(/^\d+$/);
+
+	if (native.available) {
+		// M2 per-user services are not shipped. This separate real-helper
+		// process exercises the sibling-service boundary they will use.
+		service = spawnOutside(HELPER, ["run", "--", native.path, "sleep"], {
+			SIGRUN_SANDBOX_POLICY: JSON.stringify(nativePolicy(native.path)),
+			SIGRUN_BOUNDARY_SERVICE_SECRET: "service-env-must-not-leak",
+		});
+		servicePid = service.pid!;
+		let serviceReady = false;
+		service.stdout!.on("data", (chunk: Buffer) => {
+			if (chunk.toString().includes("SERVICE_READY:")) serviceReady = true;
+		});
+		abstractSocket = spawnOutside(native.path, ["socket-server", abstractName]);
+		let socketReady = false;
+		abstractSocket.stdout!.on("data", (chunk: Buffer) => {
+			if (chunk.toString().includes("ABSTRACT_LISTEN_OK:")) socketReady = true;
+		});
+		await new Promise<void>((resolve, reject) => {
+			const deadline = Date.now() + 10_000;
+			const poll = (): void => {
+				if (serviceReady && socketReady) resolve();
+				else if (Date.now() > deadline) reject(new Error("service fixtures did not become ready"));
+				else setTimeout(poll, 25);
+			};
+			poll();
+		});
+	}
 }, 120_000);
 
 afterAll(async () => {
 	if (!enabled) return;
 	await coreEnv?.restore();
+	await stopOutside(service);
+	await stopOutside(abstractSocket);
 	await deployment?.stop();
 	for (const path of roots.splice(0)) await rm(path, { recursive: true, force: true });
 }, 60_000);
@@ -132,6 +196,37 @@ async function writeDenied(path: string): Promise<void> {
 	expect(result.text).toContain("WRITE_ERRNO:EACCES");
 }
 
+interface OutsideControl { readonly allowed: boolean; readonly output: string }
+
+async function outsideProbe(args: string[]): Promise<OutsideControl> {
+	expect(native.available, native.reason).toBe(true);
+	return await new Promise<OutsideControl>((resolve, reject) => {
+		const child = spawnOutside(native.path, args);
+		let output = "";
+		child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+		child.once("error", reject);
+		child.once("exit", (code) => resolve({ allowed: code === 0, output }));
+	});
+}
+
+function recordControl(caseName: string, control: OutsideControl, outsideOperation: string): void {
+	if (control.allowed) {
+		console.info(`sandbox-it control: ${caseName} discriminates Landlock; outside-jail ${outsideOperation} succeeded`);
+	} else {
+		console.warn(`sandbox-it control: ${caseName} is Yama/host-policy-satisfied and NOT Landlock-discriminating; outside-jail ${outsideOperation} denied (${control.output.trim()})`);
+	}
+}
+
+async function ptraceDenied(caseName: string, pid: number): Promise<void> {
+	expect(native.available, native.reason).toBe(true);
+	const control = await outsideProbe(["ptrace", String(pid)]);
+	recordControl(caseName, control, "ptrace(PTRACE_ATTACH)");
+	const denied = await bob.bash(directCommand([native.path, "ptrace", String(pid)]));
+	expect(denied.isError, denied.text).toBe(true);
+	expect(denied.text).toMatch(/PROBE_ERRNO:PTRACE_ATTACH:(1|13)/);
+}
+
 describeKernel("real tools in real two-user conversations", () => {
 	test("bob reads his workspace but cannot read alice's workspace file", async () => {
 		await readDenied(join(deployment.aliceWorkspace, "alice-secret.txt"));
@@ -159,12 +254,26 @@ describeKernel("real tools in real two-user conversations", () => {
 		const own = await bob.bash(nodeProbe(READ_PROBE, "/proc/self/environ"));
 		expect(own.isError, own.text).toBe(false);
 		expect(own.text).toContain("READ_OK:");
+		const control = await outsideProbe(["read-environ", String(deployment.pid)]);
+		recordControl("sigrun environ", control, "read /proc/<sigrun>/environ");
 		await probeDenied(READ_PROBE, `/proc/${deployment.pid}/environ`, "READ_ERRNO");
+	});
+
+	test("bob cannot read a per-user service's /proc/<pid>/environ", async () => {
+		expect(native.available, native.reason).toBe(true);
+		expect(servicePid).toBeGreaterThan(0);
+		const control = await outsideProbe(["read-environ", String(servicePid)]);
+		recordControl("service environ", control, "read /proc/<service>/environ");
+		await probeDenied(READ_PROBE, `/proc/${servicePid}/environ`, "READ_ERRNO");
 	});
 
 	test("bob cannot read another worker's environ or memory", async () => {
 		const own = await bob.bash(nodeProbe(READ_PROBE, "/proc/self/environ"));
 		expect(own.isError, own.text).toBe(false);
+		const envControl = await outsideProbe(["read-environ", aliceWorkerPid]);
+		recordControl("other worker environ", envControl, "read /proc/<worker>/environ");
+		const memControl = await outsideProbe(["mem-open", aliceWorkerPid]);
+		recordControl("other worker mem", memControl, "open /proc/<worker>/mem");
 		await probeDenied(READ_PROBE, `/proc/${aliceWorkerPid}/environ`, "READ_ERRNO");
 		await probeDenied(MEM_PROBE, `/proc/${aliceWorkerPid}/mem`, "MEM_ERRNO");
 	});
@@ -173,7 +282,37 @@ describeKernel("real tools in real two-user conversations", () => {
 		const own = await bob.bash(nodeProbe(MEM_PROBE, "/proc/self/mem"));
 		expect(own.isError, own.text).toBe(false);
 		expect(own.text).toContain("MEM_OK");
+		const control = await outsideProbe(["mem-open", String(deployment.pid)]);
+		recordControl("sigrun mem", control, "open /proc/<sigrun>/mem");
 		await probeDenied(MEM_PROBE, `/proc/${deployment.pid}/mem`, "MEM_ERRNO");
+	});
+
+	test("ptrace attach is denied against sigrun, a service, and the other worker", async () => {
+		await ptraceDenied("sigrun ptrace", deployment.pid);
+		await ptraceDenied("service ptrace", servicePid);
+		await ptraceDenied("other worker ptrace", Number(aliceWorkerPid));
+	});
+
+	test("abstract Unix sockets outside the jail cannot be connected", async () => {
+		expect(native.available, native.reason).toBe(true);
+		const control = await outsideProbe(["socket", abstractName]);
+		expect(control.allowed, control.output).toBe(true);
+		expect(control.output).toContain("ABSTRACT_CONNECT_OK");
+		const denied = await bob.bash(directCommand([native.path, "socket", abstractName]));
+		expect(denied.isError, denied.text).toBe(true);
+		expect(denied.text).toMatch(/PROBE_ERRNO:CONNECT_ABSTRACT:(1|13)/);
+		expect(denied.text).not.toContain("ABSTRACT_CONNECT_OK");
+	});
+
+	test("two-user pkill node cannot kill sigrun and /healthz stays up", async () => {
+		const denied = await bob.bash("pkill -x node; status=$?; printf 'PKILL_STATUS=%s\\n' \"$status\"");
+		expect(denied.isError, denied.text).toBe(true);
+		const health = await fetch(`${deployment.baseUrl}/healthz`);
+		expect(health.status).toBe(200);
+		expect(await health.text()).toContain("sigrun_liveness 1");
+		const followup = await bob.read(join(deployment.bobWorkspace, "bob-control.txt"));
+		expect(followup.isError, followup.text).toBe(false);
+		expect(followup.text).toContain(BOB_CONTROL);
 	});
 
 	test("kill -TERM <sigrun pid> fails and /healthz keeps answering", async () => {
@@ -208,19 +347,108 @@ describeKernel("real tools in real two-user conversations", () => {
 		await writeDenied(join(deployment.configDir, "bob-must-not-write.txt"));
 	});
 
-	test("running the helper inside the jail with uid:1 cannot change uid", async () => {
-		const helper = await installWorkspaceHelper(deployment.bobWorkspace);
-		const policy = JSON.stringify({
-			ro: ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/sys"],
-			rw: [], minAbi: 6, uid: 1, gid: 1, groups: [1],
+	test("the same helper uid/gid switch succeeds unjailed and fails inside the jail", async (ctx) => {
+		if (privileged.helper === undefined || privileged.native === undefined) {
+			ctx.skip(privileged.reason!);
+			return;
+		}
+		// The capability-enabled helper can switch OUTSIDE a jail. Running the
+		// same helper/policy inside Bob's worker exercises confinement rather
+		// than the ordinary unprivileged-uid restriction.
+		const helper = join(deployment.bobWorkspace, "sigrun-sandbox-cap");
+		const nativePath = join(deployment.bobWorkspace, "native-probe");
+		await copyFile(privileged.helper, helper);
+		await copyFile(privileged.native, nativePath);
+		const policy = { ...nativePolicy(nativePath), uid: 1, gid: 1, groups: [1] };
+		const outside = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "identity"], {
+				SIGRUN_SANDBOX_POLICY: JSON.stringify(policy),
+			});
+			let output = "";
+			child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.once("error", reject);
+			child.once("exit", (code) => resolve({ code, output }));
 		});
-		const result = await bob.bash(`SIGRUN_SANDBOX_POLICY=${shellQuote(policy)} ${shellQuote(helper)} run -- /usr/bin/id -u`);
+		expect(outside.code, outside.output).toBe(0);
+		expect(outside.output).toContain("IDENTITY_OK:1:1");
+		const result = await bob.bash(helperCommand(helper, policy, [nativePath, "identity"]));
 		expect(result.isError, result.text).toBe(true);
 		expect(result.text).toContain("sigrun-sandbox:");
 		expect(result.text).toMatch(/setgroups|setgid|setuid|uid|identity|capabil|permitted|Operation not permitted/i);
-		expect(result.text.trim()).not.toMatch(/^1$/m);
-		const control = await bob.bash("/usr/bin/id -u");
-		expect(control.isError, control.text).toBe(false);
+		expect(result.text).not.toContain("IDENTITY_OK:1:1");
+	});
+
+	test("osUser successfully switches through a file-capability-enabled helper", async (ctx) => {
+		if (privileged.helper === undefined || privileged.native === undefined) {
+			ctx.skip(privileged.reason!);
+			return;
+		}
+		const policy = { ...nativePolicy(privileged.native), uid: 1, gid: 1, groups: [1] };
+		const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "identity"], {
+				SIGRUN_SANDBOX_POLICY: JSON.stringify(policy),
+			});
+			let output = "";
+			child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.once("error", reject);
+			child.once("exit", (code) => resolve({ code, output }));
+		});
+		expect(result.code, result.output).toBe(0);
+		expect(result.output).toContain("IDENTITY_OK:1:1");
+	});
+
+	test("commands inherit no worker IPC descriptors", async () => {
+		const direct = await directWorker(root);
+		try {
+			let output = "";
+			const result = await direct.env.exec(directCommand([native.path, "fds"]), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
+			expect(result.ok, output).toBe(true);
+			expect(output).toContain("INHERITED_FDS:0");
+			expect(direct.client.pid).toBeTypeOf("number");
+		} finally {
+			await direct.pool.stopAll();
+		}
+	});
+
+	test("worker crash errors the in-flight exec and the next call gets a new pid", async () => {
+		const direct = await directWorker(root);
+		const pidPath = join(direct.policy.workspace, "worker-pid.txt");
+		try {
+			const oldPid = await captureWorkerPid(direct.env, pidPath);
+			const inFlight = direct.env.exec("sleep 30", undefined, BACKGROUND_CONTEXT);
+			// Wait for the worker's observed exec-spawn event, not a race-prone
+			// sleep. The real helper launcher owns this lifecycle path.
+			const spawnDeadline = Date.now() + 10_000;
+			while (direct.client.trackedCommandGroups().length === 0 && Date.now() < spawnDeadline) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			expect(direct.client.trackedCommandGroups().length).toBeGreaterThan(0);
+			expect(direct.client.pid).toBe(oldPid);
+			terminateOutside(oldPid);
+			const crashed = await inFlight;
+			expect(crashed.ok).toBe(false);
+			if (!crashed.ok) expect(crashed.error.message).toMatch(/sandbox worker.*exited|aborted/i);
+			const nextPid = await captureWorkerPid(direct.env, pidPath);
+			expect(nextPid).not.toBe(oldPid);
+			expect(direct.client.pid).toBe(nextPid);
+		} finally {
+			await direct.pool.stopAll();
+		}
+	});
+
+	test("the real helper worker stops after the idle timeout", async () => {
+		const direct = await directWorker(root, 1 / 60_000);
+		try {
+			const pid = await captureWorkerPid(direct.env, join(direct.policy.workspace, "idle-pid.txt"));
+			expect(direct.client.pid).toBe(pid);
+			const deadline = Date.now() + 5_000;
+			while (direct.client.pid !== undefined && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+			expect(direct.client.pid).toBeUndefined();
+		} finally {
+			await direct.pool.stopAll();
+		}
 	});
 
 	test("a grant moved under a store root stops the worker with the validation reason", async () => {
