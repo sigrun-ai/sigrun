@@ -173,10 +173,10 @@ describe("selfTestHelper control and denial classification", () => {
 		return helper;
 	}
 
-	/** Shell prelude exposing `granted=1` iff this run's policy grants the probe. */
+	/** Shell prelude exposing the reader argv and probe-directory grant. */
 	const detectGrant = `
-command=$3
-probe=$(printf '%s\\n' "$command" | cut -d"'" -f2)
+reader=$2
+probe=$3
 probeDir=$(dirname "$probe")
 case "$SIGRUN_SANDBOX_POLICY" in
 	*"$probeDir"*) granted=1 ;;
@@ -214,9 +214,22 @@ esac`;
 		await expect(selfTestHelper(helper)).resolves.toBe(false);
 	});
 
-	test("a control failure from unavailable cat is not a denial", async () => {
+	test("a control failure from broken reader machinery is not a denial", async () => {
 		const helper = await fakeHelper(
-			"shift 2\nPATH=/nonexistent\nexec \"$@\"",
+			"shift 2\necho 'node: reader startup failed' >&2\nexit 1",
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("an exec denial without BEGIN is not a probe-read denial", async () => {
+		const helper = await fakeHelper(
+			`set -eu
+shift 2
+${detectGrant}
+if [ "$granted" = 1 ]; then
+	exec "$@"
+fi
+exit 126`,
 		);
 		await expect(selfTestHelper(helper)).resolves.toBe(false);
 	});
@@ -229,14 +242,13 @@ ${detectGrant}
 if [ "$granted" = 1 ]; then
 	exec "$@"
 fi
-printf 'READ_DENIED\\n'
-echo '/bin/sh: cat: not found' >&2
+printf 'BEGIN\\nREAD_DENIED:ENOENT\\n'
 exit 1`,
 		);
 		await expect(selfTestHelper(helper)).resolves.toBe(false);
 	});
 
-	test("a non-permission denial-leg error after a valid control is not a denial", async () => {
+	test("a non-EACCES reader failure after a valid control is not a denial", async () => {
 		const helper = await fakeHelper(
 			`set -eu
 shift 2
@@ -244,8 +256,22 @@ ${detectGrant}
 if [ "$granted" = 1 ]; then
 	exec "$@"
 fi
-printf 'READ_DENIED\\n'
-echo 'cat: Input/output error' >&2
+printf 'BEGIN\\nREAD_DENIED:EIO\\n'
+exit 1`,
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("permission text in the probe path does not prove an EACCES denial", async () => {
+		const helper = await fakeHelper(
+			`set -eu
+shift 2
+${detectGrant}
+if [ "$granted" = 1 ]; then
+	exec "$@"
+fi
+printf 'BEGIN\\nREAD_DENIED:EIO\\n'
+echo "reader: /tmp/Permission denied/example/probe: Input/output error" >&2
 exit 1`,
 		);
 		await expect(selfTestHelper(helper)).resolves.toBe(false);
@@ -255,9 +281,8 @@ exit 1`,
 		const helper = await fakeHelper(
 			`set -eu
 shift 2
-[ "$1" = /bin/sh ] && [ "$2" = -c ]
 ${detectGrant}
-[ -f "$probe" ]
+[ -f "$reader" ] && [ -f "$probe" ]
 if [ "$granted" = 0 ]; then
 	# Simulate the policy boundary only on the denial leg.
 	chmod 000 "$probe"

@@ -1,9 +1,9 @@
 /** Boot-time Landlock availability probe and fail-closed helper self-test. */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -31,10 +31,11 @@ export async function runHelperProbe(helper: string): Promise<{ abi: number }> {
 	return { abi: result.abi };
 }
 
-/** One self-test leg, changing only whether the probe dir is granted. */
+/** One reader invocation, changing only whether the probe dir is granted. */
 async function runSelfTestLeg(
 	helper: string,
-	command: string,
+	reader: string,
+	probe: string,
 	probeDir: string,
 	grantProbe: boolean,
 ): Promise<{ stdout: string; stderr: string }> {
@@ -45,48 +46,63 @@ async function runSelfTestLeg(
 		"/lib64",
 		"/usr/lib",
 		"/usr/lib64",
+		dirname(reader),
+		dirname(process.execPath),
 		...(grantProbe ? [probeDir] : []),
 	];
-	return execFileAsync(helper, ["run", "--", "/bin/sh", "-c", command], {
+	return execFileAsync(helper, ["run", "--", process.execPath, reader, probe], {
 		env: {
 			...process.env,
+			LC_ALL: "C",
 			SIGRUN_SANDBOX_POLICY: JSON.stringify({ ro, rw: [], minAbi: 6 }),
 		},
 	});
 }
 
+const SELF_TEST_READER = `
+console.log("BEGIN");
+try {
+	const content = require("node:fs").readFileSync(process.argv[2], "utf8");
+	console.log("READ_OK:" + content);
+} catch (error) {
+	console.log("READ_DENIED:" + (error && error.code ? error.code : "UNKNOWN"));
+	process.exitCode = 1;
+}
+`;
+
 /**
- * The security boundary check runs the IDENTICAL shell command twice; only
- * the policy changes. First the control grants the 0600, user-owned probe's
- * directory read-only: exact probe content on stdout and exit zero prove
- * the helper, /bin/sh, cat, PATH, command, and file all work when permitted.
- * Then the denial leg withholds that grant. It must exit non-zero with only
- * the shell's post-`cat` READ_DENIED marker on stdout and POSITIVE evidence
- * of EACCES: a stderr line containing `Permission denied`, the diagnostic
- * Landlock produces for an ungranted read. Helper-refusal diagnostics are
- * judged per line so path-bearing text cannot trigger a substring filter.
- * Requiring both legs makes the policy the sole explanation for the read
- * outcomes; arbitrary I/O or command failures have no permission evidence.
- * Quoting keeps an unusual TMPDIR from changing the shell command.
+ * The security boundary check runs OUR reader twice with identical argv;
+ * only the probe-directory grant changes. The reader prints BEGIN before
+ * touching the file, then READ_OK with the content or READ_DENIED with the
+ * machine-readable errno. The control requires exact successful output,
+ * proving helper exec, node, the script, and the file work when permitted.
+ * The denial leg requires BEGIN plus READ_DENIED:EACCES and no helper-refusal
+ * line. No locale-dependent stderr text classifies the failure: the errno is
+ * the positive evidence, and BEGIN proves the reader actually executed.
  */
 export async function selfTestHelper(helper: string): Promise<boolean> {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-sandbox-self-test-"));
-	const probe = join(dir, "probe");
+	const root = await mkdtemp(join(tmpdir(), "sigrun-sandbox-self-test-"));
+	const grantedDir = join(root, "granted");
+	const probeDir = join(root, "probe");
+	const reader = join(grantedDir, "reader.cjs");
+	const probe = join(probeDir, "probe");
 	const content = "sandbox boundary probe\n";
-	const quotedProbe = `'${probe.replaceAll("'", `'"'"'`)}'`;
-	const command = `if cat ${quotedProbe}; then exit 0; else printf 'READ_DENIED\\n'; exit 1; fi`;
 	try {
+		await mkdir(grantedDir);
+		await mkdir(probeDir);
+		await writeFile(reader, SELF_TEST_READER, { mode: 0o600 });
 		await writeFile(probe, content, { mode: 0o600 });
+
 		let control: { stdout: string; stderr: string };
 		try {
-			control = await runSelfTestLeg(helper, command, dir, true);
+			control = await runSelfTestLeg(helper, reader, probe, probeDir, true);
 		} catch {
 			return false;
 		}
-		if (control.stdout !== content || control.stderr !== "") return false;
+		if (control.stdout !== `BEGIN\nREAD_OK:${content}\n`) return false;
 
 		try {
-			await runSelfTestLeg(helper, command, dir, false);
+			await runSelfTestLeg(helper, reader, probe, probeDir, false);
 			return false;
 		} catch (error) {
 			if (typeof error !== "object" || error === null) return false;
@@ -96,17 +112,17 @@ export async function selfTestHelper(helper: string): Promise<boolean> {
 				stderr?: unknown;
 			};
 			if (typeof outcome.stderr !== "string") return false;
-			const diagnosticLines = outcome.stderr.split(/\r?\n/);
 			return (
 				typeof outcome.code === "number" &&
 				outcome.code !== 0 &&
-				outcome.stdout === "READ_DENIED\n" &&
-				diagnosticLines.some((line) => line.includes("Permission denied")) &&
-				!diagnosticLines.some((line) => line.startsWith("sigrun-sandbox:"))
+				outcome.stdout === "BEGIN\nREAD_DENIED:EACCES\n" &&
+				!outcome.stderr
+					.split(/\r?\n/)
+					.some((line) => line.startsWith("sigrun-sandbox:"))
 			);
 		}
 	} finally {
-		await rm(dir, { recursive: true, force: true });
+		await rm(root, { recursive: true, force: true });
 	}
 }
 
