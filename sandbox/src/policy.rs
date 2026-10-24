@@ -12,6 +12,8 @@ pub struct Policy {
     pub uid: Option<u32>,
     pub gid: Option<u32>,
     pub groups: Option<Vec<u32>>,
+    #[serde(rename = "ensureDirs", default)]
+    pub ensure_dirs: Vec<PathBuf>,
 }
 
 impl Policy {
@@ -22,9 +24,17 @@ impl Policy {
         if self.gid == Some(0) {
             return Err("gid 0 is forbidden".to_owned());
         }
-        for path in self.ro.iter().chain(&self.rw) {
+        for path in self.ro.iter().chain(&self.rw).chain(&self.ensure_dirs) {
             if !path.is_absolute() {
                 return Err(format!("path must be absolute: {}", path.display()));
+            }
+        }
+        for path in &self.ensure_dirs {
+            if !self.rw.contains(path) {
+                return Err(format!(
+                    "ensureDirs path must also appear in rw: {}",
+                    path.display()
+                ));
             }
         }
         for path in &self.ro {

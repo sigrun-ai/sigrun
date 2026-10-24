@@ -35,6 +35,7 @@ function policy(user = "alice", workspacePath = workspace): UserPolicy {
 		tmp: join(root, user, "tmp"),
 		ro: [],
 		rw: [workspacePath],
+		ensureDirs: [],
 		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: join(root, user, "home") },
 	};
 }

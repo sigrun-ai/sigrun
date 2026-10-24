@@ -4,6 +4,7 @@ mod apply;
 mod policy;
 
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitCode};
 
@@ -63,6 +64,14 @@ fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(uid) = policy.uid {
         let uid = Uid::from_raw(uid);
         setresuid(uid, uid, uid).map_err(|error| format!("cannot set uid: {error}"))?;
+    }
+    for path in &policy.ensure_dirs {
+        std::fs::create_dir_all(path).map_err(|error| {
+            format!("cannot create ensureDirs path {}: {error}", path.display())
+        })?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| format!("cannot set ensureDirs mode on {}: {error}", path.display()),
+        )?;
     }
     set_no_new_privs().map_err(|error| format!("cannot set no_new_privs: {error}"))?;
 
