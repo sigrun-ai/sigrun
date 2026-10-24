@@ -39,6 +39,7 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { SeamHost } from "../src/harness/seam-host.js";
 import { createServer } from "../src/server/index.js";
+import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
 import { selfPackageRoot } from "../src/harness/packages.js";
@@ -643,6 +644,44 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		});
 		expect(ownerPatch.statusCode).toBe(200);
 		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
+	});
+
+	test("create preserves people-share groups and grants stored-group access", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		await opened.identity.users.setGroups("alice", "test", ["family"]);
+		const host = channelHost(opened);
+		const id = await host.conversations.create({
+			owner: "tester",
+			sharing: {
+				scope: "people",
+				users: [],
+				groups: ["family"],
+				level: "read",
+			},
+		});
+		const meta = await opened.harness.snapshot(
+			SessionMetaDoc,
+			id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta?.sharing).toEqual({
+			scope: "people",
+			users: [],
+			groups: ["family"],
+			level: "read",
+		});
+		expect(
+			await host.access.accessOf(
+				{ user: "alice", admin: false, service: false, method: "token" },
+				meta ?? {},
+			),
+		).toBe("read");
+		expect(
+			await host.access.accessOf(
+				{ user: "tester", admin: true, service: false, method: "token" },
+				{ owner: "someone-else", sharing: meta?.sharing },
+			),
+		).toBe("none");
 	});
 
 	test("create with agent.tools pins the offered tools; unknown names throw invalid_field", { timeout: 30_000 }, async () => {

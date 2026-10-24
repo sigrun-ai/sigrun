@@ -296,13 +296,16 @@ export async function createConversationOp(
 		draft.lastActivityAt = opened.now().toISOString();
 		if (input.owner !== undefined) draft.owner = input.owner;
 		// Copy-on-assignment (the tracker requires alias-free roots):
-		// the people-scope array is cloned; the closed scopes spread.
+		// the people-scope arrays are cloned; the closed scopes spread.
 		if (input.sharing !== undefined) {
 			draft.sharing =
 				input.sharing.scope === "people"
 					? {
 							scope: "people",
 							users: [...input.sharing.users],
+							...(input.sharing.groups === undefined
+								? {}
+								: { groups: [...input.sharing.groups] }),
 							level: input.sharing.level,
 						}
 					: { ...input.sharing };
