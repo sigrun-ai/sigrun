@@ -420,10 +420,22 @@ Rules, all enforced by core:
   section carries it alongside `users.json`.
 
 Users manage their own links over HTTP, mirroring `/v1/auth/tokens`:
-`GET /v1/auth/accounts` lists them (admins may pass `?user=` for
-anyone's), and `DELETE /v1/auth/accounts?provider=&subject=` removes one
-(query parameters, not path segments, because provider ids contain `:`
-and subjects may contain `/`, `+`, or `@`).
+
+- `GET /v1/auth/accounts` lists the caller's links as
+  `{accounts: AccountLinkWire[]}`. A principal with no directory user (a
+  userless service token) gets the whole store — the same single-operator
+  rule the token list applies. `?user=<name>` is the admin-only window
+  into another user's links; naming yourself is allowed and returns the
+  same payload as no query. A non-admin naming someone else gets 403
+  `forbidden` before the store is read.
+- `DELETE /v1/auth/accounts?provider=<p>&subject=<s>` removes one link
+  (204). A missing or empty `provider`/`subject` is 400 `invalid_query`;
+  an absent link is 404 `unknown_account`; a link belonging to another
+  user is 403 `forbidden` unless the caller is an admin.
+
+Both take QUERY parameters rather than path segments because provider ids
+contain `:` and subjects may contain `/`, `+`, or `@` (URL-encode them:
+`%2B` for a Signal `+E.164` number).
 
 ## Secrets precedence: stored wins, env bootstraps
 
