@@ -655,10 +655,9 @@ function storeThinkingFor(
  * run inputs and queued inbox items (all conversations); filtered to
  * this conversation, the LOWEST id is the active one — anything queued
  * behind a busy conversation was admitted later and has a higher id.
- * Nothing active is the 404 `no_active_submission`; a `not_found` abort
- * result (the record vanished between inspect and abort) is the same
- * honest answer. `already_placed`/`settled` still report which state
- * the submission was found in (abort is idempotent).
+ * Nothing active is the 404 `no_active_submission`. The 200 result
+ * reports the pre-abort state: queued input withdraws as `aborted`,
+ * while a placed run reports `already_placed` and is genuinely stopped.
  */
 export async function abortOp(
 	ctx: ServerContext,
@@ -679,14 +678,10 @@ export async function abortOp(
 	if (active === undefined) {
 		throw new ConversationOpError({ error: "no_active_submission" }, 404);
 	}
-	// Preserve the route's result vocabulary from the pre-abort record:
-	// queued withdraws read "aborted", a live placed run reads
-	// "already_placed", and a settle racing inspect reads "settled".
-	const result = active.status === "queued"
-		? "aborted"
-		: active.status === "placed"
-			? "already_placed"
-			: "settled";
+	// inspect() returns only queued/placed records, so those are the only
+	// reachable result values. AbortResponse still permits "settled" for
+	// compatibility, but this op cannot honestly derive it from inspect.
+	const result = active.status === "queued" ? "aborted" : "already_placed";
 	// The old abortSubmission-only path WITHDREW queued inputs but could
 	// not stop a placed generation. Conversation.abort subsumes both: it
 	// withdraws queued inputs, marks and signals every live non-background

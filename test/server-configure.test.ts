@@ -11,9 +11,9 @@
  * `POST /v1/conversations/:id/abort` aborts the conversation's active
  * submission: `harness.inspect()` filtered to the conversation, lowest live
  * id (the active run's placed input; queued inbox items have higher ids) →
- * `harness.abortSubmission(id, ctx, conversationId)`. `"aborted"` /
- * `"already_placed"` / `"settled"` all map to 200 (idempotent; the body notes
- * the prior state), nothing active maps to 404.
+ * `conversation.abort()`, which withdraws queued inputs and stops live tasks.
+ * Queued input reports `"aborted"`; a placed run reports `"already_placed"`.
+ * Both map to 200, while nothing active after the abort maps to 404.
  *
  * Hermetic pattern: faux provider + tmp workspace + `app.inject()` (see
  * server-submissions.test.ts). The abort test gates the faux response on a
@@ -229,7 +229,7 @@ describe("POST /v1/conversations/:id/configure", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /v1/conversations/:id/abort", () => {
-	test("reports the active run's placed input (already_placed), idempotently; 404 once settled", async () => {
+	test("aborts the active placed run (already_placed), then 404s with nothing active", async () => {
 		// Gate the faux response: the run stays generating until released.
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {
