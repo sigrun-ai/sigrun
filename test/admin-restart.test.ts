@@ -34,7 +34,9 @@ import { afterAll, describe, expect, test, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
+import { startGateway } from "../src/server/gateway.js";
 import { createServer } from "../src/server/index.js";
+import { createShutdown } from "../src/server/shutdown.js";
 import { seededIdentity } from "./helpers/identity.js";
 import type { SettingsFile } from "@sigrun/shared/settings";
 
@@ -260,6 +262,56 @@ describe("POST /v1/admin/restart", () => {
 			}),
 		).toThrowError(/SIGRUN_SUPERVISED/);
 	});
+
+	test("a supervised restart without a wired callback throws (never a silent no-op)", async () => {
+		// Boot the harness directly (the bootServer helper always wires
+		// the seam; this test is about a hand-built server that forgot
+		// it) and build the app WITHOUT onRestart.
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-admin-noseam-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		faux.setResponses([fauxAssistantMessage("ok")]);
+		const bootEnv = {
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_AUTH: "none",
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_SUPERVISED: "1",
+		};
+		const config = loadConfig(bootEnv);
+		const opened = await openHarness(config, {
+			identity: await seededIdentity(dir),
+			extensions: [
+				{
+					name: "ext-faux",
+					providers: [{ provider: faux.provider }],
+				} satisfies ProviderContributor,
+			],
+			env: {},
+			settingsDir: dir,
+		});
+		cleanups.push(async () => {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		});
+		const bare = await createServer(opened, config, [], {
+			env: bootEnv,
+			listenHost: "127.0.0.1",
+		});
+		cleanups.push(() => bare.close());
+		const response = await bare.inject({
+			method: "POST",
+			url: "/v1/admin/restart",
+		});
+		// Loud: the boot-composition error surfaces as a 500, and nothing
+		// was scheduled (the route throws before setImmediate).
+		expect(response.statusCode).toBe(500);
+		expect(
+			(response.json() as { message?: string }).message ?? "",
+		).toContain("no restart callback wired");
+	});
 });
 
 describe("GET /v1/meta supervised", () => {
@@ -318,8 +370,12 @@ describe("restart durability (Review Focus 4)", () => {
 			env: {},
 			settingsDir: dir,
 		});
-		// The restart callback runs the REAL graceful shutdown against
-		// this harness (the route defers it past the 202 reply).
+		// The restart callback runs the REAL ordered shutdown — the
+		// serve composition's `createShutdown` over this app+harness
+		// (SSE end, app drain, gateway intake close, the event-bus
+		// sequence, refresh stop, harness close) — not a hand-rolled
+		// two-step close (the route defers it past the 202 reply).
+		const gateway = startGateway(opened);
 		let shutdown: (() => Promise<void>) | undefined;
 		const exitStub = vi
 			.spyOn(process, "exit")
@@ -342,8 +398,19 @@ describe("restart durability (Review Focus 4)", () => {
 			// Restart mid-stream: 202, then the deferred graceful shutdown
 			// drains the run to a durable boundary and "exits".
 			shutdown = async () => {
-				await app.close();
-				await opened.harness.close(BACKGROUND_CONTEXT);
+				const ordered = createShutdown({
+					endStreams: () => app.sse.endAll(),
+					closeApp: () => app.close(),
+					gateway,
+					eventBusShutdown: () =>
+						opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
+					stopProviderRefresh: async () => {
+						opened.stopProviderRefresh();
+						await opened.bootRefresh.catch(() => {});
+					},
+					closeHarness: () => opened.harness.close(BACKGROUND_CONTEXT),
+				});
+				await ordered();
 				exitStub(0);
 			};
 			const restart = await app.inject({
@@ -372,9 +439,8 @@ describe("restart durability (Review Focus 4)", () => {
 			expect(conversation).toBeDefined();
 			// The durability assertion: scan the conversation's durable
 			// entries — the pre-restart admission's user input is stored
-			// (resume re-runs the run loop; the exact reply text depends on
-			// the faux queue, but the SUBMISSION's input is the §13.3
-			// guarantee: durable before exit).
+			// (the submission survives the exit; the resume assertion
+			// below covers the reply).
 			const entries = await reopened.storage.scanEntries(
 				{ conversationId, order: "ascending" },
 				200,
@@ -383,6 +449,38 @@ describe("restart durability (Review Focus 4)", () => {
 			);
 			const text = JSON.stringify(entries.items);
 			expect(text).toContain("stream through the restart");
+			// The RESUME half of the guarantee: the reopened harness's
+			// conversation view carries a post-restart ASSISTANT entry —
+			// the durable submission was picked back up and answered, not
+			// merely stored. The view polls briefly: the resumed run's
+			// answer commits asynchronously after the harness opens.
+			const handle = await reopened.harness.conversation(
+				conversationId,
+				BACKGROUND_CONTEXT,
+			);
+			expect(handle).toBeDefined();
+			if (handle === undefined) {
+				throw new Error("reopened harness lost the conversation");
+			}
+			const answerDeadline = Date.now() + 15_000;
+			let answered = false;
+			while (Date.now() < answerDeadline) {
+				const state = await handle.viewState(BACKGROUND_CONTEXT);
+				const viewText = state.value.entries
+					.map((e) => JSON.stringify(e))
+					.join("\n");
+				await state.dispose();
+				if (
+					viewText.includes(
+						"a long slow answer that keeps the run streaming through the restart",
+					)
+				) {
+					answered = true;
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			expect(answered).toBe(true);
 		} finally {
 			exitStub.mockRestore();
 		}

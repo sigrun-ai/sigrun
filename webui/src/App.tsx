@@ -81,7 +81,10 @@ const defaultClient = createClient();
 const PANEL_STORAGE_KEY = "sigrun.panel";
 
 /** §13.3: how long the restart-recovery poll waits for /readyz before
- *  surfacing a stalled restart as a refusal (never a silent hang). */
+ *  surfacing a stalled restart as a refusal (never a silent hang).
+ *  DUPLICATE of the tui's `RESTART_READYZ_DEADLINE_MS`
+ *  (tui/src/ui/app.ts) — the tui consumes only `@sigrun/shared` wire
+ *  types; keep the two in sync by hand. */
 const RESTART_READYZ_DEADLINE_MS = 60_000;
 
 /** Load the persisted panel mode; garbage/absent → null (closed). */
@@ -176,12 +179,15 @@ export interface AppOptions {
 	 * Test/Task-4 seam (U4 Task 2, spec §13.3): the app hands its
 	 * restart action out once the shell mounts — Task 4's pendingRestart
 	 * callout wires its Restart button to it; the tests drive it
-	 * directly (no shell surface exposes it before Task 4).
+	 * directly (no shell surface exposes it before Task 4). Providing it
+	 * ALSO publishes the action on `window.__sigrunAppActions` (the e2e
+	 * drives the same registry via the `__sigrunE2E` page flag).
 	 */
 	readonly onExposeActions?: (actions: AppActions) => void;
 	/** INTERNAL (the wrapper's remount signal): the shell calls this when
-	 *  the restart reply lands; the wrapper bumps the shell's key so the
-	 *  recovery remounts the whole tree. Never passed by callers. */
+	 *  the recovery poll sees /readyz answer; the wrapper bumps the
+	 *  shell's key so the recovery remounts the whole tree. Never passed
+	 *  by callers. */
 	readonly onRestarting?: () => void;
 }
 
@@ -402,7 +408,13 @@ function AppShell(options: AppOptions = {}) {
 		const deadline = Date.now() + RESTART_READYZ_DEADLINE_MS;
 		// Free-running poll (never an effect: it must outlive the boot
 		// state it drives, and a stalled recovery must surface, not hang).
+		// SLEEP FIRST (the TUI's shape): between the 202 and the deferred
+		// drain the OLD listener can still answer /readyz — probing
+		// immediately would read a dying process as ready, remount, and
+		// land the meta fetch on a closing server (the schema gate then
+		// refuses with no retry). The first probe waits out that window.
 		for (;;) {
+			await new Promise((resolve) => setTimeout(resolve, 500));
 			let ready = false;
 			try {
 				ready = await client.checkReady();
@@ -427,19 +439,28 @@ function AppShell(options: AppOptions = {}) {
 				});
 				return;
 			}
-			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 	}, [client, onRestarting]);
 	// Expose the action surface (Task 4's callout button; the tests).
 	// The window handle lets a browser drive the REAL action path (the
 	// e2e's restart-surface check); it is overwritten per remount, never
-	// accumulated.
+	// accumulated. The global publishes ONLY when a test/e2e drives the
+	// app (`onExposeActions` is the unit-test seam; the e2e declares
+	// `__sigrunE2E` before load) — a production page carries neither and
+	// never publishes it. The dep array is ONLY `restart`: a new
+	// callback identity re-exposes the action without re-running the
+	// options churn.
 	useEffect(() => {
 		options.onExposeActions?.({ restart });
-		(
-			globalThis as { __sigrunAppActions?: AppActions }
-		).__sigrunAppActions = { restart };
-	}, [options, restart]);
+		const expose =
+			options.onExposeActions !== undefined ||
+			(globalThis as { __sigrunE2E?: boolean }).__sigrunE2E === true;
+		if (expose) {
+			(
+				globalThis as { __sigrunAppActions?: AppActions }
+			).__sigrunAppActions = { restart };
+		}
+	}, [restart]);
 	const [activeId, setActiveId] = useState<number | null>(null);
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);

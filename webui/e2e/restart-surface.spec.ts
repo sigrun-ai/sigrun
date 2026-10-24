@@ -37,6 +37,11 @@ test("restart surface: 409 gate, Restarting… state, recovery on readyz", async
 			}),
 		);
 
+		// The action registry publishes only under the e2e flag (a prod
+		// page never carries the window global).
+		await page.addInitScript(() => {
+			(globalThis as { __sigrunE2E?: boolean }).__sigrunE2E = true;
+		});
 		await page.goto(server.url);
 		await page.waitForSelector(".chat-header", { timeout: 15_000 });
 

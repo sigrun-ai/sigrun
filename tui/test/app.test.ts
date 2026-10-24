@@ -827,5 +827,26 @@ describe("TuiApp restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
 		expect(app.render(80).join("\n")).not.toContain("Restarting");
 		app.dispose();
 	});
+
+	test("a stalled restart surfaces a permanent error after the deadline (never a silent hang)", async () => {
+		const { client } = stubClient({});
+		(client as unknown as { requestRestart(): Promise<void> }).requestRestart = () =>
+			Promise.resolve();
+		// /readyz NEVER answers — the poll must give up at the deadline.
+		(client as unknown as { checkReady(): Promise<boolean> }).checkReady = () =>
+			Promise.resolve(false);
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			restartPollMs: 5,
+			restartDeadlineMs: 30,
+		});
+		await app.restart();
+		const text = app.render(80).join("\n");
+		// The Restarting notice cleared and the permanent error names the
+		// failure (the webui's refused state carries the same message).
+		expect(text).not.toContain("Restarting");
+		expect(text).toContain("restart did not come back");
+		app.dispose();
+	});
 });
 });

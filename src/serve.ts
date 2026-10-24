@@ -158,12 +158,16 @@ export async function serve(
 	// The booted handle the restart callback defers to: `createServer`
 	// needs the callback BEFORE `serve` can build the BootedServer (the
 	// shutdown composition lives at the bottom of this function), so the
-	// reference is assigned at return time and read lazily at restart
-	// time (a restart request can only arrive after listen, hence after
-	// the assignment).
-	const bootedRef: { current: BootedServer | undefined } = {
-		current: undefined,
-	};
+	// handle is promised here and RESOLVED at return time; `onRestart`
+	// awaits the resolution. Between `app.listen` + `gateway.started` and
+	// the assignment below a supervised admin POST can already land (202
+	// answered, callback deferred) — awaiting the promise holds that
+	// window open instead of dropping the restart on the floor (a `?.`
+	// on an unassigned ref made 202-with-no-restart reachable).
+	let resolveBooted!: (booted: BootedServer) => void;
+	const bootedReady = new Promise<BootedServer>((resolve) => {
+		resolveBooted = resolve;
+	});
 	// The contributed-bundle registry (build-and-webui Task 6): boot folded
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
@@ -178,9 +182,23 @@ export async function serve(
 		// signal path uses; `stopping` is assigned by closure below, so
 		// the callback defers to it (the route fires post-listen).
 		onRestart: () =>
-			bootedRef.current
-				?.shutdownOnce()
-				.then(() => {
+			bootedReady
+				.then(async (handle) => {
+					// Force-exit lever (the review's finding 4): the ordered
+					// shutdown's drain is unbounded — a wedged close would be
+					// an unrecoverable outage (the supervisor never sees the
+					// process die, so it never restarts it). The watchdog is
+					// unref'd: the normal path (shutdown settles, exit below)
+					// is unaffected.
+					const watchdog = setTimeout(() => {
+						console.error(
+							"sigrun: restart shutdown exceeded 30s; forcing exit",
+						);
+						process.exit(1);
+					}, 30_000);
+					watchdog.unref();
+					await handle.shutdownOnce();
+					clearTimeout(watchdog);
 					process.exit(0);
 				})
 				.catch((error: unknown) => {
@@ -254,6 +272,6 @@ export async function serve(
 			return stopping;
 		},
 	};
-	bootedRef.current = booted;
+	resolveBooted(booted);
 	return booted;
 }
