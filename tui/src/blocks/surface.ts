@@ -339,16 +339,6 @@ export class SurfaceState {
 		this.#emit();
 	}
 
-	/** Refetch the confirmed data NOW (a settings save's follow-through,
-	 *  U4 Task 4 round-2: the settings transport is outside the
-	 *  surface.changed hub, so an accepted save must pull the fresh
-	 *  data itself — the pending-restart callout reads the refetched
-	 *  meta block). `fullRefetch` is the private move-overlay path;
-	 *  this is the public probe surface. */
-	async refresh(): Promise<void> {
-		await this.#fullRefetch();
-	}
-
 	/** Reload after an error (SurfaceView's `r` key). */
 	async retry(): Promise<void> {
 		this.#status = "loading";

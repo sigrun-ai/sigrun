@@ -16,7 +16,7 @@
 
 import type { SettingsFile } from "@sigrun/shared/settings";
 import { DEFAULT_PROVIDER_REFRESH_MINUTES } from "../config.js";
-import { CORE_SETTING_KEYS, applyOf, type SettingApply } from "./registry.js";
+import { CORE_SETTING_KEYS, applyOf } from "./registry.js";
 
 /** A settings write's classification (spec §13.2: writes report both). */
 export interface ApplyOutcome {
@@ -205,14 +205,6 @@ function canonicalAt(file: SettingsFile, path: string): string {
 		node = (node as Record<string, unknown>)[key];
 	}
 	return canonical(node);
-}
-
-/**
- * The apply label one key reports (public re-export seam: routes and
- * tests import from this module's surface; `applyOf` is the registry's).
- */
-export function settingApplyOf(key: string): SettingApply {
-	return applyOf(key);
 }
 
 /**

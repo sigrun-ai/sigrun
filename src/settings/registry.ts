@@ -465,16 +465,6 @@ const BY_KEY: ReadonlyMap<string, CoreSettingKey> = new Map(
 );
 
 /**
- * One key's registry entry, or `undefined` for an unknown path (a key
- * the store validates but the registry has not classified — impossible
- * while the test's type-tie holds; callers treat it as `restart`, the
- * conservative reading).
- */
-export function coreSetting(key: string): CoreSettingKey | undefined {
-	return BY_KEY.get(key);
-}
-
-/**
  * Classify one flattened key path. Keys the registry has not classified
  * read as `"restart"` (conservative: a boot-read default is the safe
  * assumption for an unclassified knob).

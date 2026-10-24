@@ -644,9 +644,17 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			walkNames(section.form, names);
 			for (const name of names) fieldSection.set(name, section.id);
 		}
+		// Cove-rendered sections (Interface/Providers/Extensions — the
+		// channels draw them natively) drop their core-key rows: a hit
+		// must land on a form field, and a cove has none.
+		const coveSections = new Set(["interface", "providers", "extensions"]);
 		const coreRows = body.index.filter((entry) => entry.kind === "core-key");
 		for (const [key, sectionId] of fieldSection) {
 			const row = coreRows.find((entry) => entry.key === key);
+			if (coveSections.has(sectionId)) {
+				expect(row, `cove key ${key} stays OUT of the index`).toBeUndefined();
+				continue;
+			}
 			expect(row, `index covers ${key}`).toBeDefined();
 			expect(
 				row?.sectionId,

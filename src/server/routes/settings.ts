@@ -75,10 +75,7 @@ export function registerSettingsRoutes(
  * The applied/pending extras a PATCH response carries over GET (the
  * write's own classification, spec §13.2/§13.1).
  */
-export interface SettingsWriteExtras {
+interface SettingsWriteExtras {
 	readonly applied: readonly string[];
 	readonly pending: readonly string[];
 }
-
-/** The pending-restart diff helper re-exported for route-side reads. */
-export { diffPendingRestart };
