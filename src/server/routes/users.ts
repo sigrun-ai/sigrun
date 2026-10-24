@@ -13,6 +13,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
+import { join } from "node:path";
 import type { ServerContext } from "../context.js";
 import { withClaimLock } from "../auth/claim-lock.js";
 import type { DirectoryUser } from "../../harness/identity/index.js";
@@ -261,32 +262,36 @@ export function registerUserRoutes(
 			return await reply.code(409).send({ error: "last_admin" });
 		}
 		const to = query.transferTo;
-		const recipient = identity.users.get(to)!;
+		const workspace =
+			target.workspace ??
+			join(ctx.managedPaths.roots.dataDir, "users", user, "workspace");
+		// Complete the only grant-dependent failure decision BEFORE the
+		// irreversible transfer/revocation. Invalid grants remain non-fatal.
+		const validatedGrant = validateGrantPath(workspace, {
+			managed: ctx.managedPaths,
+			user: to,
+			inheritedFrom: user,
+		});
+		const grant: Grant | undefined = validatedGrant.ok
+			? {
+					path: validatedGrant.realpath,
+					access: "rw",
+					inheritedFrom: user,
+				}
+			: undefined;
+		if (!validatedGrant.ok) {
+			console.warn(
+				`user delete: skipping departing workspace grant for ${to}: ${workspace}: ${validatedGrant.reason}`,
+			);
+		}
 		await transferOwnership(ctx, user, to);
 		await identity.tokens.revokeAllFor(user);
-		if (target.workspace !== undefined) {
-			const departingGrant = validateGrantPath(target.workspace, {
-				managed: ctx.managedPaths,
-				user: to,
-			});
-			if (departingGrant.ok) {
-				await identity.users.update(to, {
-					grants: [
-						...(recipient.grants ?? []),
-						{ path: departingGrant.realpath, access: "rw" },
-					],
-				});
-			} else {
-				console.warn(
-					`user delete: skipping departing workspace grant for ${to}: ${target.workspace}: ${departingGrant.reason}`,
-				);
-			}
-		}
 		// External identities never transfer (multi-user §10.6 step 1):
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
 		await identity.accounts.removeUser(user);
-		await identity.users.remove(user);
+		if (grant === undefined) await identity.users.remove(user);
+		else await identity.users.removeWithGrant(user, to, grant);
 		// The lifecycle event: extensions transfer their own records
 		// (deadlocked-ordering free — the core transfer already landed).
 		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
