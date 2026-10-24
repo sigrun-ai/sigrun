@@ -1104,6 +1104,46 @@ Rules for engine authors:
 - A malformed declaration (a missing `start`/`stopIntake`/`stop`/
   `health` function) quarantines the extension at load.
 
+## Execution isolation and the per-user surface
+
+**When isolation is on**, a user's agent can reach only their workspace,
+their grants, their home and temp directories, and read-only system paths.
+It cannot read sigrun's files or environment, other users' files, or signal
+processes outside its jail.
+
+**Not covered:** extensions run inside sigrun with full access, like any
+installed package — install only extensions you trust. One user's agent can
+still exhaust CPU, memory, or disk. Outbound network is not restricted.
+macOS and Windows hosts run single-user only.
+
+**Shared MCP servers** hand every permitted user's agent the admin's
+credential for that service.
+
+**File modes are not the boundary.** Workers that share sigrun's uid are
+confined by Landlock alone; `0700` directories are hygiene.
+
+**Single-user servers** run the agent with full host access.
+
+**Every peer in `trustedProxies` can forge any identity**; with isolation
+on, the shared secret is required for that reason.
+
+System-level extensions need none of the per-user APIs below: they run as
+trusted code inside sigrun and use the system stores documented above.
+
+The following are the **per-user extension surface covered by the M2
+workstream**, not APIs shipped by M1:
+
+- Use `stores.user(user)` for a particular user's secrets, settings, and
+  data/state/cache paths rather than shared system stores.
+- Use `userServices` for services that run per user in their own jail, and
+  connect to them through the per-user service surface. Do not put their
+  credentials in the agent workspace.
+- Use `setUserTools(user, tools)` for tools owned by one user rather than
+  tools offered to every conversation.
+- Use `scope: "user"` sections for settings that each user views and edits
+  independently. Keep deployment-wide configuration in server-scoped
+  sections.
+
 ## Uninstall
 
 There is no automatic deletion, anywhere. Removing an entry from

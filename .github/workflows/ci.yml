@@ -56,6 +56,37 @@ jobs:
       - run: npm run typecheck
         working-directory: sigrun
 
+  sandbox-it:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build the kernel integration helper
+        working-directory: sandbox
+        run: cargo build --locked --release
+      # Hard gate, deliberately before vitest: a runner without Landlock ABI 6
+      # fails this job rather than converting every boundary test to a skip.
+      - name: Require Landlock ABI 6 or newer
+        run: |
+          probe="$(sandbox/target/release/sigrun-sandbox probe)"
+          printf '%s\n' "$probe"
+          abi="$(node -e '
+            const value = JSON.parse(process.argv[1]);
+            if (!Number.isInteger(value.abi)) process.exit(2);
+            process.stdout.write(String(value.abi));
+          ' "$probe")"
+          if [ "$abi" -lt 6 ]; then
+            printf 'sandbox-it requires ABI >= 6; got %s\n' "$abi" >&2
+            exit 1
+          fi
+      - run: SIGRUN_SANDBOX_IT=1 npx vitest run test/sandbox-it
+
   sandbox:
     runs-on: ubuntu-latest
     steps:
