@@ -108,6 +108,36 @@ describe("validateGrantPath", () => {
 		);
 	});
 
+	test("inheritedFrom permits only the named former owner's area", async () => {
+		const { managed } = await fixture();
+		const inherited = join(managed.userAreas("alice"), "workspace");
+		await mkdir(inherited, { recursive: true });
+		expect(
+			validateGrantPath(inherited, {
+				managed,
+				user: "bob",
+				inheritedFrom: "alice",
+			}),
+		).toEqual({ ok: true, realpath: await realpath(inherited) });
+		expect(
+			validateGrantPath(inherited, { managed, user: "bob" }),
+		).toEqual({ ok: false, reason: "path is inside another user's area" });
+		expect(
+			validateGrantPath(inherited, {
+				managed,
+				user: "bob",
+				inheritedFrom: "carol",
+			}),
+		).toEqual({ ok: false, reason: "path is inside another user's area" });
+		expect(
+			validateGrantPath(inherited, {
+				managed,
+				user: "bob",
+				inheritedFrom: "bob",
+			}),
+		).toEqual({ ok: false, reason: "path is inside another user's area" });
+	});
+
 	test("an existing foreign data extension is protected in both directions", async () => {
 		const { managed } = await fixture();
 		const extension = join(managed.roots.dataDir, "acme-ext");
@@ -201,6 +231,26 @@ test("revalidate fails after dataDir moves underneath an existing grant", async 
 		reason: expect.stringContaining("dataDir"),
 	});
 });
+
+test("revalidate accepts only grants whose inheritedFrom names their former owner", async () => {
+	const { managed } = await fixture();
+	const workspace = join(managed.userAreas("alice"), "workspace");
+	await mkdir(workspace, { recursive: true });
+	const inherited = { path: workspace, access: "rw" as const, inheritedFrom: "alice" };
+	expect(revalidate({ ...record(), user: "bob", grants: [inherited] }, managed)).toEqual({ ok: true });
+	expect(revalidate({ ...record(), user: "bob", grants: [{ ...inherited, inheritedFrom: "carol" }] }, managed)).toEqual({
+		ok: false,
+		reason: "path is inside another user's area",
+	});
+	expect(revalidate({ ...record(), user: "bob", grants: [{ path: workspace, access: "rw" }] }, managed)).toEqual({
+		ok: false,
+		reason: "path is inside another user's area",
+	});
+});
+
+function record(): DirectoryUser {
+	return { user: "alice", admin: false, createdAt: 1, source: "cli" };
+}
 
 /** Find join calls without letting an unterminated call cross a statement. */
 function joinCalls(source: string): Array<{ args: string; end: number }> {

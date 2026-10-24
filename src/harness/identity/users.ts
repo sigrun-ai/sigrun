@@ -190,6 +190,28 @@ export class UserDirectory {
 		});
 	}
 
+	/**
+	 * Remove one user and append a transfer grant to the recipient in one
+	 * serialized read-modify-write. Current recipient grants are read inside
+	 * the mutation, so a queued concurrent update cannot be clobbered.
+	 */
+	removeWithGrant(user: string, to: string, grant: Grant): Promise<void> {
+		return this.mutations.run(async () => {
+			const records = this.list();
+			const sourceIndex = records.findIndex((record) => record.user === user);
+			if (sourceIndex === -1) throw new Error(`unknown user "${user}"`);
+			const recipientIndex = records.findIndex((record) => record.user === to);
+			if (recipientIndex === -1) throw new Error(`unknown user "${to}"`);
+			const recipient = records[recipientIndex]!;
+			records[recipientIndex] = {
+				...recipient,
+				grants: [...(recipient.grants ?? []), grant],
+			};
+			records.splice(sourceIndex, 1);
+			await writeJson(this.path, records);
+		});
+	}
+
 	/** Remove one user (their tokens are NOT revoked here — caller's job). */
 	remove(user: string): Promise<void> {
 		return this.mutations.run(async () => {

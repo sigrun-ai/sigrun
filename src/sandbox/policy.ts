@@ -132,27 +132,33 @@ function validateUserPath(
 	path: string,
 	record: DirectoryUser,
 	managed: ManagedPaths,
+	inheritedFrom?: string,
 ): ReturnType<typeof validateGrantPath> {
 	const candidate = canonical(path) ?? resolve(path);
 	if (inside(candidate, "/dev/shm") || inside("/dev/shm", candidate)) {
 		return { ok: false, reason: "path is or contains /dev/shm" };
 	}
-	return validateGrantPath(path, { managed, user: record.user });
+	return validateGrantPath(path, {
+		managed,
+		user: record.user,
+		...(inheritedFrom === undefined ? {} : { inheritedFrom }),
+	});
 }
 
 function failedStoredPath(
 	record: DirectoryUser,
 	managed: ManagedPaths,
 ): string | undefined {
-	const paths = [
-		record.workspace,
-		...(record.grants ?? []).map((grant) => grant.path),
-	];
-	return paths.find(
-		(path) =>
-			path !== undefined &&
-			!validateUserPath(path, record, managed).ok,
-	);
+	if (
+		record.workspace !== undefined &&
+		!validateUserPath(record.workspace, record, managed).ok
+	) {
+		return record.workspace;
+	}
+	return record.grants?.find(
+		(grant) =>
+			!validateUserPath(grant.path, record, managed, grant.inheritedFrom).ok,
+	)?.path;
 }
 
 function invalidReason(path: string, reason: string): PolicyFailure {
@@ -249,7 +255,12 @@ export function buildUserPolicy(
 
 	const grants = [];
 	for (const grant of record.grants ?? []) {
-		const result = validateUserPath(grant.path, record, ctx.managed);
+		const result = validateUserPath(
+			grant.path,
+			record,
+			ctx.managed,
+			grant.inheritedFrom,
+		);
 		if (!result.ok) return invalidReason(grant.path, result.reason);
 		grants.push({ ...grant, path: result.realpath });
 	}
