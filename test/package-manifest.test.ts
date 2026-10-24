@@ -54,7 +54,7 @@ const FAMILY = ["@sigrun/shared", "@sigrun/tui", "@sigrun/ext-codemode", "@sigru
 
 /** The dev-shape-or-published spec for a built-in extension dependency. */
 function builtinSpec(repo: string): RegExp {
-	return new RegExp(`^(0\\.1\\.0|file:\\.\\./${repo})$`);
+	return new RegExp(`^(0\\.[12]\\.0|file:\\.\\./${repo})$`);
 }
 
 describe("package manifests (release-0.1 Global Constraints)", () => {
@@ -93,8 +93,8 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			"CONTEXT.md",
 		]);
 		// Exact intra-family pins.
-		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.1.1");
-		expect(root.optionalDependencies).toEqual({ "@sigrun/tui": "0.1.0" });
+		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.1.2");
+		expect(root.optionalDependencies).toEqual({ "@sigrun/tui": "0.1.1" });
 		// The built-ins resolve from core's own tree under their scoped
 		// names (src/harness/builtins.ts keys on these).
 		expect(root.dependencies?.["@sigrun/ext-codemode"]).toMatch(builtinSpec("sigrun-ext-codemode"));
@@ -124,7 +124,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(tui.engines?.node).toBe(NODE_ENGINE);
 		expect(tui.publishConfig).toEqual(PUBLISH_CONFIG);
 		expect(tui.files).toEqual(["dist", "CHANGELOG.md"]);
-		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.1.1");
+		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.1.2");
 		expect(tui.bin).toEqual({ "sigrun-tui": "dist/launch.js" });
 		expect(tui.repository).toEqual({
 			type: "github",
@@ -160,7 +160,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 					// webui's private dev shape may use the workspace link;
 					// every published manifest pins exactly.
 					if (path === "webui/package.json") continue;
-					expect(spec, `${path}: ${name}`).toMatch(/^(0\.1\.[01]|file:\.\.\/sigrun-ext-[a-z-]+)$/);
+					expect(spec, `${path}: ${name}`).toMatch(/^(0\.[12]\.[012]|file:\.\.\/sigrun-ext-[a-z-]+)$/);
 				}
 			}
 		}
