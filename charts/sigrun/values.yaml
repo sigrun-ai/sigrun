@@ -337,6 +337,20 @@ service:
     # -- Annotations passthrough on the Service (e.g. Tailscale LB class
     # via a second Service entry — homelab concern).
     annotations: {}
+    # -- Address family. The container binds the dual-stack wildcard
+    # (`::`, see `DEFAULT_LISTEN_HOST` in src/serve.ts), so a
+    # PreferDualStack Service advertises BOTH pod addresses and works on
+    # an IPv4-only, IPv6-only, or dual-stack cluster. Do NOT pin this to
+    # SingleStack/IPv4 alongside the wildcard bind without checking the
+    # cluster's default family — an IPv6-primary cluster (ClusterIPs out
+    # of `fd00::/8`) then advertises only the pod's IPv6 address, and a
+    # v4-only server bind refuses it: the gateway answers "upstream
+    # connect error … reset reason: remote connection failure" while the
+    # IPv4-loopback probes keep the pod Ready.
+    ipFamilyPolicy: PreferDualStack
+    ipFamilies:
+      - IPv6
+      - IPv4
     ports:
       http:
         # -- Service port (must match SIGRUN_PORT).

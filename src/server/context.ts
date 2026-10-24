@@ -55,7 +55,9 @@ export interface ServerContext {
 	/**
 	 * The listen host the server binds (W1 Task 3): the pipeline's Host
 	 * check is strict on loopback binds, and `createServer` derives the
-	 * default method list from it. Defaults to `"0.0.0.0"`.
+	 * default method list from it. `serve()` passes its own default
+	 * (`DEFAULT_LISTEN_HOST`, the dual-stack `::`); `createServer`'s
+	 * fallback when the option is omitted is `"0.0.0.0"`.
 	 */
 	readonly listenHost: string;
 	/**

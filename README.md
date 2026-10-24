@@ -104,7 +104,7 @@ entrypoints:
 | Command | Behavior |
 |---|---|
 | `sigrun [--user <name>]` | Workstation mode: boot the harness + server **in-process** and launch the terminal UI against the loopback port — the server binds **loopback (`127.0.0.1`) only**, so the naive-identity API never answers the LAN. The agent dies with the TUI — when the TUI exits, server and harness shut down with it. |
-| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`0.0.0.0`) — the container default; workstation `sigrun` (run) binds loopback only. |
+| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`::`, the dual-stack wildcard — accepts IPv4 and IPv6; a v4-only `0.0.0.0` bind is unreachable on a dual-stack pod's IPv6 endpoint) — the container default; workstation `sigrun` (run) binds loopback only. |
 | `sigrun attach [--server <url>] [--user <name>]` | TUI only, against a harness it can reach — the remote-client mode (e.g. attaching to a cluster or tailnet deployment). |
 
 Resolution chains for `attach` (and for the workstation-mode user):
