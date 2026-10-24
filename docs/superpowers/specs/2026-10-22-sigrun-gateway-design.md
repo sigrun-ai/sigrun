@@ -588,10 +588,11 @@ mapping comes from three sources, in precedence order:
 1. **Static allowlist** (`allow[]`): `{sender, user}`.
 2. **Links** from approved pairing requests or self-linking, kept in
    core's account-link table through `host.accounts` (provider
-   `chat:<channel>`; multi-user spec §11.3, plan M3a). The engine keeps
-   only home chats, in `<stateDir>/gateway/homes.json` (mode 0600). A
-   self-link or pairing approval for a sender already linked to another
-   user is refused, never silently re-pointed.
+   `chat:<channel>`; multi-user spec §11.3, plan M3a; engine Task 13
+   makes the switch from the engine's interim `identities.json`). The
+   engine keeps only home chats, in `<stateDir>/gateway/identities.json`
+   (mode 0600). A self-link or pairing approval for a sender already
+   linked to another user is refused, never silently re-pointed.
 3. **Nothing:** the sender is unknown.
 
 If the allowlist and a link disagree, the allowlist wins and the conflict

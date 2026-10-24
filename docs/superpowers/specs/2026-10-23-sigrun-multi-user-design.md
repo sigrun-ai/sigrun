@@ -120,11 +120,12 @@ files, credentials, or conversations — by accident or by asking it to.
    user-supplied servers when the admin allows them.
 7. **OIDC and OAuth2 are extensions**, not core.
 8. **Bundled.** The OIDC/OAuth2 extension ships as a built-in.
-9. **Gateway handover.** Revised the same day: the gateway engine had
-   only just started, so the account-link table lands first as M3a and
-   the engine pauses after its Task 2, then builds its links on
-   `host.accounts` (no `identities.json`, no migration, §11.7). The rest
-   of M3 follows M3a.
+9. **Gateway handover.** The account-link table lands as M3a. The
+   gateway engine kept running meanwhile (it was not paused after all)
+   and built its links on its own `identities.json`; engine Task 13
+   moves them to `host.accounts` before the gateway merges, so no
+   release ever stores links in the engine (§11.7). The rest of M3
+   follows M3a.
 10. **Do not step on in-flight work.** The gateway, UI-blocks, and
     image-workflow workstreams are underway; this spec's changes to
     shared files wait for them (§7).
@@ -241,7 +242,7 @@ extension code; resource exhaustion; outbound network; non-Linux hosts.
 | M0 | Environment-leak fix (§8) | nothing; not part of this spec's plans |
 | M1 | The execution jail (§9) | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
 | M2 | Per-user extension surface (§10) | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
-| M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 3 waits for M3a |
+| M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 13 waits for M3a; the gateway merge waits for Task 13 |
 | M3 | Login (§11), the rest | M3a |
 | M4 | Extension adoption (§12) | M2 (MCP); M2 (memory) |
 
@@ -979,18 +980,23 @@ One table for every external identity, shared with the gateway:
 
 ### 11.7 Gateway handover
 
-The engine had not reached its link storage when this spec was written,
-so the account-link table lands first (M3a) and the engine builds on it
-directly; there is no `identities.json` and no migration:
+The engine built Tasks 3–12 with links in its own `identities.json`
+(synchronous `userFor`, refusing to re-point a linked sender). Engine
+Task 13, after M3a merges and before the gateway merges to `main`:
 
-- engine Task 3's `IdentityStore` stores links in core through
-  `host.accounts` (`chat:<channel>`); home chats stay gateway state in
-  `homes.json`. `userFor` becomes async; engine Task 8's
-  `admitGroupEvent` follows;
+- `IdentityStore` stores links in core through `host.accounts`
+  (`chat:<channel>`); home chats stay gateway state in
+  `identities.json`, whose `links` key is retired. `userFor` and
+  `admitGroupEvent` become async;
+- no data migration: the gateway has never shipped, so no deployment
+  holds engine links. A dev install whose file still has links logs one
+  warning naming the count (those senders pair or self-link again);
 - a self-link or pairing approval that hits an existing link to another
-  user is refused with a reply naming the fix (remove the old link);
-- engine Task 12's `userDeleted` clears home chats only, since core
-  removed the links before the event;
+  user is refused through core's `account_link_conflict:` with the same
+  replies as before, which now point at a fix that exists
+  (`/v1/auth/accounts`);
+- `userDeleted` clears home chats only, since core removed the links
+  before the event;
 - `/link` and `/pair` otherwise behave exactly as the gateway spec says;
 - an engine booting on a core without `host.accounts` fails loud at
   factory time (quarantined, one error naming the minimum core
@@ -1118,6 +1124,8 @@ verifies this with one test each.
 - Sessions may create API tokens; revoking a session leaves them
   (§11.2).
 - Memory transfers on user delete (§12.2).
+- No migration of the engine's interim `identities.json` links: the
+  gateway merges only after engine Task 13 (§11.7).
 - The integration suite runs on GitHub's `ubuntu-24.04` runners
   (kernel 6.17), with a pod on a 6.12+ host as the fallback (§9.9).
 
