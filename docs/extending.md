@@ -486,10 +486,25 @@ sigrun — the builders behind `@sigrun/sigrun/blocks` must emit the
 server's block-set version, which only the running copy does. Import the
 builders from `@sigrun/sigrun/blocks`:
 
-```ts
-import { bind, collection, page, tree } from "@sigrun/sigrun/blocks";
+```ts check
+import { bind, card, collection, page, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
 
-tree(page({ title: "Board", main: [collection({ items: bind("/cards") })] }));
+export function board(): Tree {
+	return tree(
+		page({
+			title: "Board",
+			main: [
+				collection({
+					id: "cards",
+					items: bind("/cards"),
+					display: "lanes",
+					item: card({ title: "./label" }),
+				}),
+			],
+		}),
+	);
+}
 ```
 
 Reference plugins: [sigrun-provider-ollama](https://github.com/sigrun-ai/sigrun-provider-ollama)
@@ -685,6 +700,165 @@ commands: [
   choice the operator can see, never a silent shadowing.
 - A malformed declaration (bad name shape, missing `description`,
   non-function `run`) quarantines the extension at load.
+
+## Interactions: a pending human decision is a block tree
+
+An **interaction record** is how your extension says "this conversation
+is waiting on a human decision" and receives the answer durably
+([approval-ux-seams.md](approval-ux-seams.md)). Its **body is a block
+tree** — placement `interaction`, a root `form` whose submit IS the
+answer — built with the typed builders from `@sigrun/sigrun/blocks`
+(the host-linked copy; `tree()` stamps the server's block-set version,
+so never bundle your own). Declare every kind you seed in the factory
+result's `interactionKinds`; seeding an undeclared kind throws at the
+write. The envelope (kind, callId, status, timestamps, answer) is
+core-owned; channels render the tree generically with no per-extension
+UI.
+
+An allow/deny gate (the pi-warden shape — a toned `choice` and a
+`longtext` reason, with `markdown` context above the decision section;
+a form's direct children are fields and `section`s, so prose blocks
+group inside a section):
+
+```ts check
+import { choice, form, longtext, markdown, section, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function gatingConfirmBody(command: string, reason: string): Tree {
+	return tree(
+		form({
+			id: "confirm",
+			bind: "/values",
+			mode: "submit",
+			submitLabel: "Send",
+			children: [
+				section({
+					title: "Confirm",
+					children: [
+						markdown({ text: `About to run \`${command}\` — it matched a confirm rule.` }),
+					],
+				}),
+				section({
+					title: "Decision",
+					children: [
+						choice({
+							name: "decision",
+							label: "Allow this call?",
+							options: [
+								{ id: "allow", label: "Allow", tone: "good" },
+								{ id: "deny", label: "Deny", tone: "bad" },
+							],
+						}),
+						longtext({ name: "reason", label: "Why (optional)", placeholder: reason }),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+A multi-question form (the ask-user-question shape — one `section` per
+question, per-option `preview` markdown, `allowOther` for free text):
+
+```ts check
+import { choice, form, section, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function questionsFormBody(): Tree {
+	return tree(
+		form({
+			id: "ask",
+			bind: "/values",
+			mode: "submit",
+			children: [
+				section({
+					title: "Pick a store",
+					children: [
+						choice({
+							name: "store",
+							label: "Which store should the extension use?",
+							multi: false,
+							allowOther: { label: "Something else" },
+							options: [
+								{
+									id: "sqlite",
+									label: "SQLite",
+									description: "A single file under your data dir",
+									recommended: true,
+									preview: "**SQLite**: zero setup, durable, local-only.",
+								},
+								{
+									id: "markdown",
+									label: "Markdown files",
+									preview: "**Markdown**: greppable, versionable by hand.",
+								},
+							],
+						}),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+**The answer is `{values}`** (ruling 20): when a human submits, the
+generic answer route (`POST /v1/conversations/:id/interactions/:callId/answer`,
+body `{values}`) writes `answer: { values: { <field name>: value } }`
+onto the record — every field's value under its name; a `choice` value
+is its option id (or ids when `multi`), a `choice` with `allowOther`
+carries `{ other: "…" }`. Your poll loop reads `record.answer?.values`
+via `host.snapshotInteraction`; `host.answerInteraction` (extension-side
+answer) takes the same `{values}` shape. A `secret` field's value
+reaches YOUR answer handler but is stored as `"[secret]"` — channels and
+logs never see it. First answer wins: a second answer gets
+`404 not_pending`.
+
+## Ambient surfaces: persistent read-mostly state as a block tree
+
+An **ambient surface** is the other direction — keyed, persistent,
+read-mostly state (a statusline slot, a footer zone, a panel) you
+REPLACE wholesale, never block on. Same discipline: strict core-owned
+envelope (`key`, `place`, `maxRows?`, `overflow?`, `refreshMs?`,
+`expires`, `updatedAt`) around a **block-tree body** (placement
+`ambient`) built with the same builders. Declare every key in
+`ambientKinds`. `place: "status"` and `"footer"` allow ONE line — a
+single one-line `markdown`, or one `columns` of one-line blocks (the
+footer's left/middle/right zones are three columns); validation rejects
+anything taller.
+
+A statusline slot and a panel of rows (the rpiv-todo shape — a
+`collection(display: "list")` of literal rows; ambient collections never
+bind, the envelope carries no data model):
+
+```ts check
+import { bind, card, collection, markdown, tree } from "@sigrun/sigrun/blocks";
+import type { JsonValue, Tree } from "@sigrun/sigrun/blocks";
+
+export function statusline(text: string): Tree {
+	return tree(markdown({ text }));
+}
+
+export function todoPanel(rows: readonly JsonValue[]): Tree {
+	return tree(
+		collection({
+			id: "todos",
+			items: rows,
+			display: "list",
+			item: card({
+				title: "./label",
+				status: { label: "./status", spinner: bind("./running") },
+			}),
+		}),
+	);
+}
+```
+
+Write with `host.setAmbient(conversationId, { key, place, body }, context)`
+from a tool execute or hook (never the factory body); clear with
+`host.clearAmbient`. One slot key is owned by exactly one extension —
+allocation, not silent composition.
 
 ## Idle workers: `wakeOn` only
 
