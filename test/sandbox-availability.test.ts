@@ -236,6 +236,21 @@ exit 1`,
 		await expect(selfTestHelper(helper)).resolves.toBe(false);
 	});
 
+	test("a non-permission denial-leg error after a valid control is not a denial", async () => {
+		const helper = await fakeHelper(
+			`set -eu
+shift 2
+${detectGrant}
+if [ "$granted" = 1 ]; then
+	exec "$@"
+fi
+printf 'READ_DENIED\\n'
+echo 'cat: Input/output error' >&2
+exit 1`,
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
 	test("a valid control and permission-style denial passes", async () => {
 		const helper = await fakeHelper(
 			`set -eu
