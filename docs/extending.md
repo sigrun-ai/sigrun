@@ -527,8 +527,8 @@ URL and turns its callback into `{subject, profile, groups}`. The subject
 must be stable within that provider; matching usernames or emails never
 implicitly links an existing sigrun user.
 
-The optional `policy` fields are declarations **core enforces**, not checks
-the provider must repeat:
+The optional `policy` fields are declarations **core enforces within their
+provisioning scope**, not checks the provider must repeat:
 
 - `autoProvision: true` admits a previously unlinked subject without an
   invite, subject to the filters below. Its default is `false`, which
@@ -538,10 +538,18 @@ the provider must repeat:
   `profile.emailVerified === true`. An absent or unverified email never
   satisfies this filter.
 
+**The two filters apply only when auto-provisioning a NEW user.** They do
+not filter subsequent logins by an already-linked account, and they do not
+apply to invite-based provisioning. A linked account keeps working even if
+it no longer satisfies a changed filter; removing that account's access
+requires removing its link (or the user).
+
 **Groups have a narrow trust boundary.** Core accepts groups only from a
-login result or from proxy headers that passed trusted-peer and secret
-validation. A token- or session-authenticated request only reads groups
-already stored on the user; nothing in that request can set or add them.
+login result or from proxy headers that passed trusted-peer validation and
+any configured secret validation. With execution isolation on, the proxy
+shared secret is mandatory; see the M1 isolation requirements in the
+operator documentation. A token- or session-authenticated request only reads
+groups already stored on the user; nothing in that request can set or add them.
 Each source replaces its own stored entry at the next login or proxy
 request, so changes at the identity service deliberately take effect then,
 not continuously. Stored groups participate in effective-admin and

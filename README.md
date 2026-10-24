@@ -358,8 +358,9 @@ Every provider needs a client secret named `<id>.clientSecret` in the
 Settings → Extensions → oauth (write-only), or as an administrator with
 `PUT /v1/extensions/oauth/secrets/company.clientSecret` and body
 `{"value":"<client-secret>"}`. Never put a client secret in
-`settings/oauth.json`. Extension settings and secrets are read at boot;
-restart after changing them.
+`settings/oauth.json`. Extension settings are read at boot; restart after
+changing them. Secrets are re-read per use, so a rotated client secret
+applies to the next login without a restart.
 
 The GitHub and Discord presets replace issuer/endpoint discovery with their
 protocol endpoints and user field mappings:
@@ -404,10 +405,13 @@ required `subject` and optional `username`, `name`, `email`,
 on an unclaimed server needs the one-shot setup code and becomes the first
 admin. On a claimed server, `autoProvision: false` (the default) requires an
 invite code; `true` creates a non-admin user, optionally restricted by
-`allowedGroups` and `allowedDomains`. A domain match additionally requires
-`emailVerified === true` from the provider. Core enforces these policies and
-the M1 admission prerequisites: adding a second user is refused without
-available execution isolation and real `token` and/or `proxy`
+`allowedGroups` and `allowedDomains`. **These filters apply only when
+creating a new user by auto-provisioning** — not to an already-linked
+account's logins or to invite-based provisioning. A linked account keeps
+working; remove its link (or the user) to remove access. A domain match
+additionally requires `emailVerified === true` from the provider. Core
+enforces the M1 admission prerequisites: adding a second user is refused
+without available execution isolation and real `token` and/or `proxy`
 authentication. An external IdP is not itself a trusted proxy.
 
 ### Browser sessions and account links
