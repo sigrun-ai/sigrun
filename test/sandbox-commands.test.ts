@@ -13,8 +13,8 @@ function fixture() {
 	const events: CommandEvent[] = [];
 	const observer = createCommandObserver({
 		registry,
-		pending,
-		active,
+		pending: () => pending,
+		active: () => active,
 		emit: (event) => events.push(event),
 	});
 	return { registry, active, pending, events, observer };

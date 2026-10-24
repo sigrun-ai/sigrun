@@ -131,6 +131,10 @@ class WorkerProcess {
 		return this.pending.size;
 	}
 
+	commandGroupsSnapshot(): readonly number[] {
+		return [...this.commandGroups];
+	}
+
 	request<T>(op: string, args: JsonValue[], onEvent?: (event: WorkerEvent) => void, context?: Context, failureOp = op): Promise<T> {
 		if (!this.running) return Promise.reject(crashError(op, this.client.user, "not running"));
 		if (context?.abortSignal?.aborted) {
@@ -413,6 +417,11 @@ export class WorkerClient {
 
 	openHandles(): number {
 		return this.handles.size;
+	}
+
+	/** Read-only snapshot of command groups currently tracked for crash cleanup. */
+	trackedCommandGroups(): number[] {
+		return [...(this.process?.commandGroupsSnapshot() ?? [])];
 	}
 
 	/** Current process id without starting a replacement (lifecycle probe). */
