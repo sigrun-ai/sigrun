@@ -29,6 +29,8 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { TokenStore } from "../src/harness/identity/index.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { defaultModuleTrees, buildUserPolicy } from "../src/sandbox/policy.js";
+import { revalidate } from "../src/sandbox/grants.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
 
@@ -403,7 +405,67 @@ describe("DELETE /v1/users/:user", () => {
 		expect(opened.identity.users.get("bob")?.grants).toContainEqual({
 			path: storedWorkspace,
 			access: "rw",
+			inheritedFrom: "alice",
 		});
+		const listing = await app.inject({
+			method: "GET",
+			url: "/v1/users",
+			headers: { authorization: `Bearer ${await mint(opened, "tester")}` },
+		});
+		expect(
+			(listing.json().users as { user: string; grants?: unknown[] }[])
+				.find((record) => record.user === "bob")?.grants,
+		).toContainEqual({
+			path: storedWorkspace,
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+	});
+
+	test("default-workspace transfer creates a visible inherited grant the recipient can use", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const conversationId = (created.json() as { id: number }).id;
+		const dataDir = opened.extensionStores.roots.dataDir;
+		const defaultWorkspace = join(dataDir, "users", "alice", "workspace");
+		await mkdir(defaultWorkspace, { recursive: true });
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/alice?transferTo=bob",
+			headers: { authorization: `Bearer ${await mint(opened, "tester")}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		const storedWorkspace = await realpath(defaultWorkspace);
+		const recipient = opened.identity.users.get("bob");
+		expect(recipient?.grants).toContainEqual({
+			path: storedWorkspace,
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+		expect(
+			(await opened.harness.snapshot(AgentDoc, conversationId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe(storedWorkspace);
+		const managed = {
+			roots: opened.extensionStores.roots,
+			storagePath: join(dir, "sigrun.db"),
+			coreRoot: process.cwd(),
+			userAreas: (user: string) => join(dataDir, "users", user),
+		};
+		expect(revalidate(recipient!, managed)).toEqual({ ok: true });
+		const policy = buildUserPolicy(recipient!, {
+			managed,
+			nodeBinDir: process.execPath,
+			moduleTrees: defaultModuleTrees(process.cwd()),
+		});
+		expect(policy.ok).toBe(true);
+		if (policy.ok) expect(policy.policy.rw).toContain(storedWorkspace);
 	});
 
 	test("an invalid departing-workspace grant is skipped with a warning", async () => {
