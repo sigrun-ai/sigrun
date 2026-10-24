@@ -209,6 +209,44 @@ describe("SandboxedExecutionEnv workspace operations", { timeout: 30_000 }, () =
 });
 
 describe("sandbox process invariants", { timeout: 30_000 }, () => {
+	test("commands inherit only the per-user policy environment with caller overrides", async () => {
+		const basePolicy = policy();
+		const userPolicy = {
+			...basePolicy,
+			env: {
+				...basePolicy.env,
+				TMPDIR: basePolicy.tmp,
+				USER: basePolicy.user,
+				NPM_CONFIG_CACHE: join(basePolicy.home, ".npm"),
+				MARKER: "inherited",
+			},
+		};
+		process.env.SIGRUN_SANDBOX_TEST_SECRET = "parent-secret";
+		process.env.TEST_PROVIDER_API_KEY = "parent-provider-key";
+		try {
+			const { env } = await envFor(userPolicy);
+			let output = "";
+			const result = await env.exec(
+				"printf '%s\\n' \"$HOME\" \"$TMPDIR\" \"$USER\" \"$NPM_CONFIG_CACHE\" \"${SIGRUN_SANDBOX_TEST_SECRET-unset}\" \"${TEST_PROVIDER_API_KEY-unset}\" \"$MARKER\"",
+				{ env: { MARKER: "caller" }, onOutput: (text) => { output += text; } },
+				context,
+			);
+			expect(getOrThrow(result).exitCode).toBe(0);
+			expect(output.trimEnd().split("\n")).toEqual([
+				basePolicy.home,
+				userPolicy.tmp,
+				userPolicy.user,
+				join(userPolicy.home, ".npm"),
+				"unset",
+				"unset",
+				"caller",
+			]);
+		} finally {
+			delete process.env.SIGRUN_SANDBOX_TEST_SECRET;
+			delete process.env.TEST_PROVIDER_API_KEY;
+		}
+	});
+
 	test("commands inherit no worker IPC descriptors", async () => {
 		if (process.platform !== "linux") return;
 		const { env } = await envFor();
