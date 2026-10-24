@@ -104,6 +104,7 @@ describe("GET /v1/commands", () => {
 			"model",
 			"thinking",
 			"jobs",
+			"settings",
 		]);
 		for (const command of body.commands) {
 			expect(typeof command.description).toBe("string");
@@ -122,6 +123,7 @@ describe("GET /v1/commands", () => {
 		expect(byName.get("model")?.argsHint).toBe("<provider/model>");
 		expect(byName.get("thinking")?.argsHint).toBe("<level>");
 		expect(byName.get("jobs")?.argsHint).toBeUndefined();
+		expect(byName.get("settings")?.argsHint).toBeUndefined();
 	});
 
 	test("every catalog entry's endpoint resolves to a real registered route", async () => {
