@@ -33,6 +33,7 @@
  */
 
 import { Type } from "@earendil-works/pi-ai";
+import type { HostEventWire } from "@sigrun/shared/views";
 import {
 	defineExtension,
 	defineTool,
@@ -64,13 +65,16 @@ export const PROJECTION_LOCALE = "en-CA";
 const ACTION_SENTENCE =
 	"Interactive elements save the user's edits silently; you'll receive a summary of edits at your next turn. A `submit` sends you the result immediately; set `turn: true` on a `move` or `edit` only if each one needs an immediate reply.";
 
-/** The `surface.changed` chat shape (spec §8.2): the wire union gains it in Task 2. */
-export interface ChatSurfaceChanged {
-	readonly type: "surface.changed";
-	readonly conversationId: number;
-	readonly entryId: string;
-	readonly rev: number;
-}
+/**
+ * The `surface.changed` chat shape (spec §8.2): the wire union's
+ * chat member (shared/src/views.ts), re-exported so the seam, the
+ * tests, and the server bind read one spelling. Task 2 added the
+ * member to `HostEventWire`; this alias keeps the Task-1 seam's name.
+ */
+export type ChatSurfaceChanged = Extract<
+	HostEventWire,
+	{ type: "surface.changed"; conversationId: number }
+>;
 
 type ChatSurfaceChangedListener = (event: ChatSurfaceChanged) => void;
 

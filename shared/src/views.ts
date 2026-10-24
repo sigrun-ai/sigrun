@@ -936,7 +936,7 @@ export type HostEventWire =
 			readonly type: "job.changed";
 			readonly job: Omit<JobWire, "access">;
 		}
-	| {
+		| {
 			/** UI-blocks U3 Task 4 (spec §7.3): one surface instance changed. `k` is the hashed instance key (sha256(slug + "\0" + id + "\0" + key) hex) — the event NEVER carries params or data (render/data are principal-specific; the watcher refetches as itself). Delivered only to streams in the watcher registry whose stored access is not `"none"`. */
 			readonly type: "surface.changed";
 			readonly slug: string;
@@ -944,4 +944,11 @@ export type HostEventWire =
 			readonly k: string;
 			readonly rev: number;
 			readonly treeRev: number;
+		}
+		| {
+			/** UI-blocks U5 Task 2 (spec §8.2): one CHAT block surface changed. The chat address is `(conversationId, entryId)` — no secret to watchers of that conversation (unlike params) — so the event names them directly instead of the hashed `k`. Delivered through the conversation-scoped path: the events route re-snapshots the SessionMeta and checks `accessOf` per event (hidden conversations see nothing). */
+			readonly type: "surface.changed";
+			readonly conversationId: number;
+			readonly entryId: string;
+			readonly rev: number;
 		};

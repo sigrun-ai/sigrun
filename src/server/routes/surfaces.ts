@@ -34,6 +34,7 @@
 
 import { PassThrough } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonObject } from "@sigrun/shared/blocks";
 import type { Principal } from "../auth/principal.js";
 import type { ServerContext } from "../context.js";
@@ -43,6 +44,11 @@ import {
 	SurfaceFailedError,
 	UnknownActionError,
 } from "../surfaces/service.js";
+import { applyChatAction, readChatBlock, resolveChatHandlers } from "../blocks/chat-surfaces.js";
+import { accessOf } from "@sigrun/shared/access";
+import { isSuperuser } from "../auth/principal.js";
+import { SessionMetaDoc } from "../session-meta.js";
+import { conversationId as brandConversationId } from "../helpers.js";
 
 /**
  * The one upload-name rule, shared with core's conversation upload
@@ -497,6 +503,201 @@ export function registerSurfaceRoutes(
 				}
 				return await failureReply(reply, slug, id, cause);
 			}
+		},
+	);
+
+	// ── Chat block surfaces (UI-blocks U5 Task 2, spec §8.2) ──────────────
+	// A chat block reuses this machinery with CORE as the handler: the
+	// address is (conversationId, entryId), access is the CONVERSATION's
+	// (write edits; read sees; hidden is 404 — indistinguishable from an
+	// unknown conversation), and ops are kept/returned like sharedData
+	// (chat data is the same for everyone who can see the conversation).
+
+	/** One conversation's access for the caller (§5.9; the pre-handler's
+	 *  same resolution, inlined because the routes below own the body). */
+	const conversationAccess = async (
+		id: number,
+		principal: Principal,
+	): Promise<"none" | "read" | "write" | undefined> => {
+		const conversation = await ctx.opened.harness.conversation(
+				brandConversationId(id),
+				BACKGROUND_CONTEXT,
+		);
+		if (conversation === undefined) return undefined;
+		const meta = await ctx.opened.harness.snapshot(
+				SessionMetaDoc,
+				conversation.id,
+				BACKGROUND_CONTEXT,
+		);
+		return accessOf(
+				{ user: principal.user, superuser: isSuperuser(principal) },
+				meta ?? {},
+		);
+	};
+
+	/** The chat-block route params: one integer id + one entryId. */
+	const BLOCK_PARAMS_SCHEMA = {
+		type: "object",
+		properties: { id: { type: "integer" }, entryId: { type: "string", pattern: "^[0-9]+$" } },
+		required: ["id", "entryId"],
+		additionalProperties: false,
+	} as const;
+
+	app.get<{ Params: { id: number; entryId: string } }>(
+		"/v1/conversations/:id/blocks/:entryId",
+		{ schema: { params: BLOCK_PARAMS_SCHEMA } },
+		async (request, reply) => {
+			const { id, entryId } = request.params;
+			const access = await conversationAccess(id, request.principal);
+			if (access === undefined || access === "none") {
+				return await reply.code(404).send({ error: "conversation_not_found" });
+			}
+			const block = await readChatBlock(
+				ctx.opened.harness,
+				id,
+				entryId,
+			);
+			if (block === undefined) {
+				return await reply.code(404).send({ error: "block_not_found" });
+			}
+			return await reply.send({
+				tree: block.tree,
+				data: block.state.data,
+				rev: block.state.rev,
+				treeRev: 0,
+				access,
+			});
+		},
+	);
+
+	app.get<{
+		Params: { id: number; entryId: string };
+		Querystring: { since?: string };
+	}>(
+		"/v1/conversations/:id/blocks/:entryId/data",
+		{ schema: { params: BLOCK_PARAMS_SCHEMA } },
+		async (request, reply) => {
+			const { id, entryId } = request.params;
+			const access = await conversationAccess(id, request.principal);
+			if (access === undefined || access === "none") {
+				return await reply.code(404).send({ error: "conversation_not_found" });
+			}
+			const block = await readChatBlock(
+				ctx.opened.harness,
+				id,
+				entryId,
+			);
+			if (block === undefined) {
+				return await reply.code(404).send({ error: "block_not_found" });
+			}
+			const since = parseSince(request.query.since);
+			if (since === null) {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: "since" });
+			}
+			// The sharedData answer (§7.3): ops since `since` while the kept
+			// window still covers it AND the in-memory rev matches the durable
+			// one just read; anything else is the full data.
+			const delta =
+				since === undefined
+					? undefined
+					: ctx.surfaces.chatOpsSince(
+							{ conversationId: id, entryId },
+						since,
+						block.state.rev,
+					);
+			if (delta !== undefined) {
+				return await reply.send({ rev: delta.rev, treeRev: 0, ops: delta.ops });
+			}
+			return await reply.send({
+				rev: block.state.rev,
+				treeRev: 0,
+				data: block.state.data,
+			});
+		},
+	);
+
+	app.post<{
+		Params: { id: number; entryId: string };
+		Body: { action?: unknown; payload?: unknown; actionId?: unknown };
+	}>(
+		"/v1/conversations/:id/blocks/:entryId/actions",
+		{ schema: { params: BLOCK_PARAMS_SCHEMA } },
+		async (request, reply) => {
+			const { id, entryId } = request.params;
+			const body = request.body ?? {};
+			if (typeof body.action !== "string") {
+				return await reply
+					.code(400)
+					.send({ error: "invalid_field", field: "action" });
+			}
+			const actionId =
+				typeof body.actionId === "string" ? body.actionId : undefined;
+			// The conversation's access gates BEFORE anything runs (§6.5/
+			// §8.2): hidden is the conversation 404, read is 403.
+			const access = await conversationAccess(id, request.principal);
+			if (access === undefined || access === "none") {
+				return await reply.code(404).send({ error: "conversation_not_found" });
+			}
+			if (access === "read") {
+				return await reply.code(403).send({ error: "forbidden" });
+			}
+			// An unknown entry id: the same 404 as the GETs (§8.2 mirrors
+			// §7.2's not-found posture).
+			const block = await readChatBlock(
+				ctx.opened.harness,
+				id,
+				entryId,
+			);
+			if (block === undefined) {
+				return await reply.code(404).send({ error: "block_not_found" });
+			}
+			// U3's action gates, over the chat address: rate limit then dedup
+			// (the ordering the ext route chose — a replayed actionId still
+			// costs a token).
+			const address = { conversationId: id, entryId } as const;
+			if (!ctx.surfaces.chatTakeToken(address, request.principal.user ?? "")) {
+				return await reply.code(429).send({ error: "rate_limited" });
+			}
+			if (actionId !== undefined) {
+				const hit = ctx.surfaces.chatDedupCheck(actionId, address);
+				if (hit !== undefined && hit !== null) return await reply.send(hit);
+			}
+		// A handler name no node in the tree declares is unknown
+			// (validateTree's handlers-set check, applied at route time:
+			// chat names are free labels).
+			if (!resolveChatHandlers(block.tree).has(body.action)) {
+				return await reply.code(400).send({ error: "unknown_action" });
+			}
+			const outcome = await applyChatAction(
+				ctx.opened.harness,
+				id,
+				entryId,
+				request.principal.user ?? "",
+				body.action,
+				(body.payload ?? null) as never,
+			);
+			if (outcome === undefined) {
+				return await reply.code(404).send({ error: "block_not_found" });
+			}
+			if (!outcome.ok) {
+				return await reply.send(outcome);
+			}
+			// Record the ops (sharedData semantics: the kept window) and the
+			// dedup entry, then answer the §6.3 accept-with-ops shape.
+			const wrapped = {
+				ok: true as const,
+				rev: outcome.rev,
+				ops: outcome.ops,
+			};
+			ctx.surfaces.announceChatRev(address, outcome.rev, {
+				ops: outcome.ops as unknown[],
+			});
+			if (actionId !== undefined) {
+				ctx.surfaces.chatDedupRecord(actionId, address, wrapped);
+			}
+			return await reply.send(wrapped);
 		},
 	);
 }
