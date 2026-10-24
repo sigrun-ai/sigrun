@@ -170,6 +170,9 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 			});
 			expect(uploaded.statusCode).toBe(201);
 			const upload = uploaded.json() as { path: string };
+			// Wait for the initial run to settle before replacing its queue;
+			// otherwise it could consume the next run's scripted tool call.
+			await boot.waitFor(() => boot.loop.sent.some((message) => message.text === "gateway answer"));
 			// Script with the actual workspace path now that the gateway
 			// conversation exists, then start a fresh tool round.
 			boot.faux.setResponses([
