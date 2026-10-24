@@ -359,7 +359,10 @@ const MeterBlock = Type.Object({
 const LogBlock = Type.Object({
 	...BlockBase,
 	type: Type.Literal("log"),
-	lines: Type.Ref("Binding"),
+	// Literal lines are legal (ambient placement requires them — the
+	// ambient envelope carries no data document); placements that resolve
+	// bindings keep the binding form.
+	lines: Type.Union([Type.Ref("Binding"), Type.Array(Type.Ref("JsonValue"))]),
 	follow: Type.Optional(Type.Boolean()),
 	wrap: Type.Optional(Type.Boolean()),
 	tones: Type.Optional(Type.Record(Type.String(), Type.Ref("Tone"))),

@@ -64,6 +64,10 @@ interface SurfaceCard {
 	readonly view: SurfaceView;
 	/** Whether the surface renders read-only (settled records). */
 	readonly access: "read" | "write";
+	/** The transport's submit action name (root.onSubmit ?? "submit") —
+	 *  the digit accelerator's direct pick must dispatch this action or
+	 *  the submit gate no-ops on a custom-onSubmit form. */
+	readonly submitAction: string;
 	/** The settled envelope a mid-edit settle refetch swapped in
 	 *  (preferred over `record` for rendering: a same-callId poll still
 	 *  serves the record PENDING, so the settled envelope must win or
@@ -248,9 +252,11 @@ export class InteractionPrompter implements Component {
 						}
 						form.setFieldValue(choice.name, option.id);
 						// Single-choice: the pick IS the answer — submit at
-						// once (the one-question gate's direct pick).
+						// once (the one-question gate's direct pick). The name
+						// must match the form's onSubmit action (custom actions
+						// like "decide" gate the transport's submit).
 						this.#surface.state.dispatch(
-							{ type: "submit", name: "submit" },
+							{ type: "submit", name: this.#surface.submitAction },
 							{ values: { ...(form.values ?? {}) } },
 						);
 						return true;
@@ -358,7 +364,7 @@ export class InteractionPrompter implements Component {
 			unicode: true,
 			options: { interaction: true },
 		});
-		this.#surface = { record, state, view, access };
+		this.#surface = { record, state, view, access, submitAction };
 		// The record's tree is static, so the load resolves within a
 		// microtask; the repaint lands via the change subscription.
 		state.onChange(() => this.#changed());

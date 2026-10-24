@@ -317,6 +317,41 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
+	test("a custom-onSubmit flat gate answers via the digit accelerator", async () => {
+		// The digit's direct pick dispatches the form's onSubmit action,
+		// not a hardcoded "submit" — the transport's submit gate keys on
+		// the action name, so a custom action must POST too.
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				tree: {
+					v: TREE_V,
+					root: {
+						type: "form",
+						id: "ask",
+						bind: "/values",
+						mode: "submit",
+						onSubmit: "decide",
+						children: gateChildren("pick one", [
+							{ id: "yes", label: "Yes" },
+							{ id: "no", label: "No" },
+						]),
+					},
+				},
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		expect(prompter.beginAnswer()).toBe(true);
+		expect(prompter.handleKey("2")).toBe(true);
+		await flush();
+		expect(stub.answerCalls).toEqual([
+			{ id: 1, callId: "c1", answer: { values: { decision: "no" } } },
+		]);
+		prompter.dispose();
+	});
+
 	test("a digit beyond the option range is consumed but answers nothing", async () => {
 		const stub = stubClient();
 		stub.setPending([

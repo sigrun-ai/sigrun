@@ -18,8 +18,9 @@
  * count line. Quiet cards fold via the collection's own quiet bucket.
  *
  * Ambient bodies carry LITERAL content only (the 2026-10-24 ruling:
- * no collection bindings — the envelope has no data document), so the
- * surface renders against an empty data document. Purely read-only —
+ * the envelope has no data document, so validation rejects every
+ * binding outside a collection's item template), so the surface
+ * renders against an empty data document. Purely read-only —
  * ambient surfaces don't take answers (actions re-route through
  * interaction records). `details` renders collapsed, never interpreted.
  */

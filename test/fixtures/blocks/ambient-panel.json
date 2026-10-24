@@ -43,9 +43,10 @@
 			},
 			{
 				"type": "log",
-				"lines": {
-					"$": "/recentOutput"
-				}
+				"lines": [
+					{ "at": 1, "level": "info", "text": "3 checks running" },
+					{ "at": 2, "level": "error", "text": "rollback failed" }
+				]
 			},
 			{
 				"type": "meter",

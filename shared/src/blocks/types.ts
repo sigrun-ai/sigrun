@@ -280,7 +280,10 @@ export interface LogLine {
 
 export interface LogBlock extends BlockBase {
 	readonly type: "log";
-	readonly lines: Binding;
+	/** Literal lines are legal (ambient placement requires them — the
+	 *  ambient envelope carries no data document); placements that
+	 *  resolve bindings keep the binding form. */
+	readonly lines: Bindable<readonly JsonValue[]>;
 	readonly follow?: boolean;
 	readonly wrap?: boolean;
 	/** Per-level tones; default `error`→bad, `warn`→warn, `info`→neutral, `debug`→subtle. */

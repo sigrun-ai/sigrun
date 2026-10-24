@@ -23,7 +23,8 @@ exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-p
 tests
   status: running
 
-8:53:20 a.m. [warn] restarting forge
+12:00:00 a.m. [info] 3 checks running
+12:00:00 a.m. [error] rollback failed
 
 6,200%
 
@@ -37,7 +38,8 @@ exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-p
 tests
   status: running
 
-8:53:20 a.m. [warn] restarting forge
+12:00:00 a.m. [info] 3 checks running
+12:00:00 a.m. [error] rollback failed
 
 6,200%
 
@@ -500,6 +502,18 @@ exports[`toText gallery snapshots (every fixture, widths 80 and 160) > log @160 
 8:54:20 a.m. [error] acme upstream failed"
 `;
 
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > log-literal @80 1`] = `
+"12:00:00 a.m. [info] deploy started
+12:00:00 a.m. [warn] cache cold
+12:00:00 a.m. [error] rollback failed"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > log-literal @160 1`] = `
+"12:00:00 a.m. [info] deploy started
+12:00:00 a.m. [warn] cache cold
+12:00:00 a.m. [error] rollback failed"
+`;
+
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > markdown @80 1`] = `"acme **status** at [example.invalid](https://example.invalid/x)"`;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > markdown @160 1`] = `"acme **status** at [example.invalid](https://example.invalid/x)"`;
@@ -507,6 +521,10 @@ exports[`toText gallery snapshots (every fixture, widths 80 and 160) > markdown 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > meter @80 1`] = `"Disk: 72%"`;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > meter @160 1`] = `"Disk: 72%"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > meter-literal @80 1`] = `"Disk: 62%"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > meter-literal @160 1`] = `"Disk: 62%"`;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page @80 1`] = `
 "# Jobs
@@ -614,6 +632,16 @@ p95 over 5m"
 `;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stat @160 1`] = `
+"Latency: 42 ms
+p95 over 5m"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stat-literal @80 1`] = `
+"Latency: 42 ms
+p95 over 5m"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > stat-literal @160 1`] = `
 "Latency: 42 ms
 p95 over 5m"
 `;

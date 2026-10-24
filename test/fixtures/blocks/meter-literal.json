@@ -1,0 +1,16 @@
+{
+	"v": 1,
+	"root": {
+		"type": "meter",
+		"id": "meter-literal",
+		"value": 0.62,
+		"min": 0,
+		"max": 1,
+		"label": "Disk",
+		"format": "percent",
+		"thresholds": [
+			{ "at": 0.8, "tone": "warn" },
+			{ "at": 0.95, "tone": "bad" }
+		]
+	}
+}

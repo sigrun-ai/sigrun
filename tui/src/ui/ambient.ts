@@ -14,9 +14,10 @@
  * knows NOTHING about what a surface means — no "todo", no "goal".
  * `details` renders as one collapsed JSON line, never interpreted.
  *
- * Ambient bodies carry LITERAL content only (the 2026-10-24 ruling: no
- * collection bindings — the envelope has no data document), so the
- * renderer's data document is EMPTY. Ambient surfaces are read-only
+ * Ambient bodies carry LITERAL content only (the 2026-10-24 ruling:
+ * the envelope has no data document, so validation rejects every
+ * binding outside a collection's item template), so the renderer's
+ * data document is EMPTY. Ambient surfaces are read-only
  * (actions re-route through interaction records) — the render context's
  * access is `read` and dispatch is a no-op.
  *

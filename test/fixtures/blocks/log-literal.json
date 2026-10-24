@@ -1,0 +1,15 @@
+{
+	"v": 1,
+	"root": {
+		"type": "log",
+		"id": "log-literal",
+		"lines": [
+			{ "at": 1, "level": "info", "text": "deploy started" },
+			{ "at": 2, "level": "warn", "text": "cache cold" },
+			{ "at": 3, "level": "error", "text": "rollback failed" }
+		],
+		"follow": true,
+		"wrap": false,
+		"tones": { "error": "bad", "warn": "warn", "info": "neutral" }
+	}
+}
