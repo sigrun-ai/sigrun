@@ -661,6 +661,27 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice"]);
 	});
 
+	test("auto proxy without secretHeader refuses CLI second add; configured header succeeds", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = {
+			...storeEnv(dir),
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+			SIGRUN_AUTH: "proxy",
+			SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+			SIGRUN_ISOLATION: "auto",
+		};
+		const deps = stubDeps({ probeIsolation: async () => ({ available: true, abi: 6 }) }).deps;
+		expect(await cliMain(["user", "add", "alice", "--admin"], env, deps, io)).toBe(0);
+		expect(await cliMain(["user", "add", "bob"], env, deps, io)).toBe(1);
+		expect(errors.join("\n")).toContain("isolation_required");
+		expect(errors.join("\n")).toContain("secretHeader");
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice"]);
+		await writeFile(join(dir, "settings.json"), JSON.stringify({ server: { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } } }));
+		expect(await cliMain(["user", "add", "bob"], env, deps, io)).toBe(0);
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice", "bob"]);
+	});
+
 	test("user list prints the directory (user, admin marker, name, email)", async () => {
 		const dir = await tmpConfigDir();
 		const { out, io } = captureIo();

@@ -14,6 +14,8 @@
 
 import { MutationQueue, readRecords, writeJson } from "./json-store.js";
 import type { Grant } from "../../sandbox/grants.js";
+import type { IsolationAvailability } from "../../sandbox/availability.js";
+import type { SigrunConfig } from "../../config.js";
 
 /** The username rule (spec §5.8): lowercase-first, then `[a-z0-9._-]`. */
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -58,6 +60,35 @@ export class AdmissionRefusedError extends Error {
 		super(message);
 		this.name = "AdmissionRefusedError";
 	}
+}
+
+/** The one multi-user admission policy shared by server boot and the CLI. */
+export function createAdmissionGuard(opts: {
+	isolation: IsolationAvailability;
+	mode: SigrunConfig["isolation"]["mode"];
+	methods: readonly ("token" | "proxy")[];
+	proxySecretHeader: string | undefined;
+}): (currentCount: number) => void {
+	return () => {
+		if (!opts.isolation.available || opts.mode === "off") {
+			throw new AdmissionRefusedError(
+				"isolation_required",
+				`isolation_required: ${opts.isolation.reason ?? "isolation mode is off"}`,
+			);
+		}
+		if (opts.methods.length === 0) {
+			throw new AdmissionRefusedError(
+				"auth_required",
+				"auth_required: configure token or proxy authentication before adding another user",
+			);
+		}
+		if (opts.methods.includes("proxy") && opts.proxySecretHeader === undefined) {
+			throw new AdmissionRefusedError(
+				"isolation_required",
+				"isolation_required: proxy authentication requires server.auth.proxy.secretHeader before isolation can activate",
+			);
+		}
+	};
 }
 
 export interface UserDirectoryOptions {
