@@ -116,14 +116,11 @@ describe("UnavailableExecutionEnv", () => {
 });
 
 describe("admission and first transition", () => {
-	test("the guard is inside add, and the first admin gains the configured workspace with bob", async () => {
+	test("the first admin gains the configured workspace when bob is added", async () => {
 		const dir = await tempDir();
 		const workspace = join(dir, "configured-workspace");
 		await mkdir(workspace);
 		const users = new UserDirectory(join(dir, "users.json"), {
-			admit: (count) => {
-				if (count >= 1 && users.list().length === 0) throw new AdmissionRefusedError("isolation_required", "isolation_required: not linux");
-			},
 			firstWorkspace: workspace,
 		});
 		await users.add({ user: "alice", admin: true, source: "cli" });
@@ -140,6 +137,55 @@ describe("admission and first transition", () => {
 		await users.add({ user: "alice", admin: true, source: "cli" });
 		await expect(users.add({ user: "bob", admin: false, source: "cli" })).rejects.toMatchObject({ code: "auth_required" });
 		expect(users.get("bob")).toBeUndefined();
+	});
+});
+
+describe("proxy-secret transition admission", () => {
+	const proxyEnv = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+		SIGRUN_ISOLATION: "auto",
+	};
+
+	async function bootProxyServer(withSecretHeader: boolean) {
+		const dir = await tempDir();
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			...proxyEnv,
+		}, withSecretHeader ? { server: { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } } } : undefined);
+		const opened = await openHarness(config, {
+			identity: await seededIdentity(dir, "alice"),
+			env: {},
+			builtins: false,
+			isolationProbe: async () => available,
+		});
+		const app = await createServer(opened, { ...config, webui: { ...config.webui, enabled: false } });
+		cleanups.push(async () => {
+			await app.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		});
+		return { app, opened };
+	}
+	const cleanups: (() => Promise<void>)[] = [];
+	afterAll(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+
+	test("auto proxy without secretHeader refuses the second user with 409 isolation_required", async () => {
+		const { app, opened } = await bootProxyServer(false);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "isolation_required" });
+		expect(opened.identity.users.list().map((user) => user.user)).toEqual(["alice"]);
+	});
+
+	test("auto proxy with secretHeader permits the second user", async () => {
+		const { app, opened } = await bootProxyServer(true);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
+		expect(response.statusCode).toBe(200);
+		expect(opened.identity.users.list().map((user) => user.user)).toEqual(["alice", "bob"]);
 	});
 });
 

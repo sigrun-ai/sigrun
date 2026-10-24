@@ -86,7 +86,7 @@ import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
 import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
 import { IsolationState } from "../sandbox/isolation.js";
-import { AdmissionRefusedError } from "./identity/users.js";
+import { createAdmissionGuard } from "./identity/users.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import {
 	probeIsolation,
@@ -689,20 +689,12 @@ export async function openHarness(
 	}
 	identity.users.configureAdmission({
 		firstWorkspace: config.workspace.path,
-		admit: () => {
-			if (!isolation.available || config.isolation.mode === "off") {
-				throw new AdmissionRefusedError(
-					"isolation_required",
-					`isolation_required: ${isolation.reason ?? "isolation mode is off"}`,
-				);
-			}
-			if (methods.length === 0) {
-				throw new AdmissionRefusedError(
-					"auth_required",
-					"auth_required: configure token or proxy authentication before adding another user",
-				);
-			}
-		},
+		admit: createAdmissionGuard({
+			isolation,
+			mode: config.isolation.mode,
+			methods,
+			proxySecretHeader: config.auth.proxy.secretHeader,
+		}),
 	});
 	isolationState.active();
 	// The unclaimed onboarding posture (W1 Task 4, spec §5.8): every

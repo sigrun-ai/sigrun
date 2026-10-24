@@ -52,9 +52,10 @@ import { openIdentityStores } from "./harness/identity/index.js";
 import { pathToFileURL } from "node:url";
 import { effectiveMethods, loadConfig, type Env } from "./config.js";
 import { probeIsolation, runHelperProbe, selfTestHelper } from "./sandbox/availability.js";
+import { SettingsStore } from "./harness/settings.js";
 import { resolveHelper } from "./sandbox/helper.js";
 import { selfPackageRoot } from "./harness/packages.js";
-import { AdmissionRefusedError } from "./harness/identity/users.js";
+import { createAdmissionGuard } from "./harness/identity/users.js";
 import type { ClaimResponse, OnboardingState } from "@sigrun/shared/views";
 import { serve, type BootedServer } from "./serve.js";
 import {
@@ -672,6 +673,8 @@ export interface CliDeps {
 	 * The value goes to the PUT body only; it is never printed.
 	 */
 	readSecret?(): Promise<string>;
+	/** Test seam for the multi-user admission availability decision. */
+	probeIsolation?: typeof probeIsolation;
 }
 
 /**
@@ -935,6 +938,7 @@ async function runIdentityCommand(
 	parsed: ParsedArgs,
 	env: NodeJS.ProcessEnv,
 	io: CliIO,
+	isolationProbe: typeof probeIsolation,
 ): Promise<number> {
 	const stores = openIdentityStores(resolveStoreRoots(env));
 	if (parsed.command === "token") {
@@ -978,9 +982,12 @@ async function runIdentityCommand(
 	}
 	switch (parsed.sub) {
 		case "add": {
-			const config = loadConfig(env);
+			const config = loadConfig(
+				env,
+				new SettingsStore({ dir: defaultConfigDir(env) }).read(),
+			);
 			const coreRoot = selfPackageRoot();
-			const isolation = await probeIsolation({
+			const isolation = await isolationProbe({
 				platform: process.platform,
 				helper: coreRoot === undefined ? undefined : resolveHelper(env, coreRoot),
 				runProbe: runHelperProbe,
@@ -989,14 +996,12 @@ async function runIdentityCommand(
 			const methods = effectiveMethods(config.auth, "127.0.0.1");
 			stores.users.configureAdmission({
 				firstWorkspace: config.workspace.path,
-				admit: () => {
-					if (!isolation.available || config.isolation.mode === "off") {
-						throw new AdmissionRefusedError("isolation_required", `isolation_required: ${isolation.reason ?? "isolation mode is off"}`);
-					}
-					if (methods.length === 0) {
-						throw new AdmissionRefusedError("auth_required", "auth_required: configure token or proxy authentication before adding another user");
-					}
-				},
+				admit: createAdmissionGuard({
+					isolation,
+					mode: config.isolation.mode,
+					methods,
+					proxySecretHeader: config.auth.proxy.secretHeader,
+				}),
 			});
 			await stores.users.add({
 				user: parsed.user as string,
@@ -1205,7 +1210,12 @@ export async function cliMain(
 			case "token":
 			case "user": {
 				// The identity commands (Task 7): stores directly, server or not.
-				return await runIdentityCommand(parsed, env, io);
+				return await runIdentityCommand(
+					parsed,
+					env,
+					io,
+					realDeps.probeIsolation ?? probeIsolation,
+				);
 			}
 			case "provider": {
 				// The provider commands (release 0.1 Task 2b): API clients over
