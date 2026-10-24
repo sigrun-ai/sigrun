@@ -25,6 +25,8 @@
  * - `globalThis.__loopFormat` — the `format` override (Task 5's native
  *   formatter seam; absent → the channel reports `format: "markdown"`
  *   unless `__loopCaps.format` says native).
+ * - `globalThis.__loopLog` — optional ordered transport event sink; when
+ *   present, sends push `{type:"send", text}` and stop pushes `{type:"stop"}`.
  */
 
 /** The default capabilities (the plan's table). */
@@ -128,6 +130,7 @@ export default function createFixtureLoopbackChannel() {
 				send: async (message) => {
 					maybeFail("send");
 					loop.sent.push(message);
+					globalThis.__loopLog?.push({ type: "send", text: message.text });
 					return { messageIds: [`loop-${loop.sent.length}`] };
 				},
 				edit: async (ref, message) => {
@@ -142,6 +145,9 @@ export default function createFixtureLoopbackChannel() {
 				},
 				setCommands: async (commands) => {
 					loop.commands.push(commands);
+				},
+				stop: async () => {
+					globalThis.__loopLog?.push({ type: "stop" });
 				},
 				// Task 5: the classification seam. The override wins when set
 				// (a marker-bearing error reads its kind); everything else is

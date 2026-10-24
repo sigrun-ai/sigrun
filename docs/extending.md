@@ -1066,6 +1066,10 @@ core dependency, enabled by default, disableable with
 `"builtinExtensions": {"gateway": false}`. With the built-in disabled
 (or replaced), adapters without a loaded engine are inert (below).
 
+Operators configuring channels, pairing, groups, job delivery, or
+shutdown should read the
+[@sigrun/ext-gateway operator guide](https://github.com/sigrun-ai/sigrun-ext-gateway#readme).
+
 ```js
 export default function acmeEngine(host) {
 	return {
