@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-24
+### Added
+- Extension surfaces and live surface updates.
+- Typed block rendering: content, braille charts, collections, forms,
+  page shells, images, navigation, and all three keymaps.
+
 ## [0.1.0] - 2026-10-21
 ### Added
 - First published release of the TUI (workspace package of

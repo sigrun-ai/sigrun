@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-24
+### Added
+- Extension-surface wire types, including block-instance and live-view
+  contracts shared by the server, webui, and TUI.
+
+## [0.1.1] - 2026-10-23
+### Added
+- `./live` and `./blocks` export subpaths.
+
 ## [0.1.0] - 2026-10-21
 ### Added
 - First published release of the shared leaf (workspace package of

@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.1.6] - 2026-10-24
+### Added
+- Extension surfaces: typed block rendering, actions and uploads, live
+  transports, per-principal access control, and web/TUI surface views.
+- Web and TUI block renderers: content, charts, collections, forms,
+  navigation, live updates, and extension-provided views.
+
+### Fixed
+- The container image preserves the core, webui, shared, and TUI build
+  output paths and compiles the TUI workspace. The published 0.1.5 image
+  flattened core `dist/` into `/app`, so `node dist/index.js` could not
+  start. CI now smoke-checks the built image's runtime layout.
+
+### Changed
+- `@sigrun/shared` 0.1.2: surface and block-instance wire types.
+- `@sigrun/tui` 0.1.1: extension surfaces and the full block renderer.
+- Fastify 5.12.7 and `@fastify/static` 10.1.7 address the server's
+  header-validation and static-file path/authorization advisories; the
+  patched `fast-uri` transitive releases address its URI-normalization
+  advisories. `npm audit` reports zero vulnerabilities.
+
 ### Security
 - Agent shells no longer inherit sigrun's environment. pi-durable's bash
   tool ran every command with the server's full environment, so an
