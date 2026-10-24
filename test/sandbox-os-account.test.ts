@@ -149,7 +149,7 @@ describe("probeOsUsers", () => {
 	});
 });
 
-async function workspaceFixture(osUsers: OsUsersAvailability): Promise<{
+async function workspaceFixture(osUsers: OsUsersAvailability, singleUser = false): Promise<{
 	service: ReturnType<typeof createWorkspaceService>;
 	pool: WorkerPool;
 	dir: string;
@@ -163,7 +163,7 @@ async function workspaceFixture(osUsers: OsUsersAvailability): Promise<{
 	if (coreRoot === undefined) throw new Error("core root required");
 	const users = new UserDirectory(join(dir, "users.json"));
 	await users.add({ user: "alice", admin: true, source: "cli", osUser: "alice-os" });
-	await users.add({ user: "bob", admin: false, source: "cli" });
+	if (!singleUser) await users.add({ user: "bob", admin: false, source: "cli" });
 	const workerEntry = resolveWorkerEntry(coreRoot);
 	const baseLauncher = testLauncher(workerEntry);
 	const launchedPolicies: UserPolicy[] = [];
@@ -255,8 +255,63 @@ describe("workspace OS-account selection", () => {
 				gid: 1301,
 				groups: [1301, 1401],
 				home,
+				workspace: home,
+				ensureDirs: [policy.tmp],
 			});
 			expect(policy.env.HOME).toBe(home);
+			expect(env.cwd).toBe(home);
+		} finally {
+			await pool.stopAll();
+		}
+	});
+
+	test("a single osUser fails closed rather than taking the service-account fast path", async () => {
+		const { service, pool, dir, launchedPolicies } = await workspaceFixture({
+			available: false,
+			status: "off",
+		}, true);
+		try {
+			const env = await service.forConversation(
+				{ id: 1 as never },
+				defaultWorkspacePrefs(join(dir, "workspace")),
+				null as unknown as DocumentReader,
+				BACKGROUND_CONTEXT,
+			);
+			const result = await env.exec("id", undefined, BACKGROUND_CONTEXT);
+			expect(env.id).toBe("unavailable");
+			expect(result).toMatchObject({
+				ok: false,
+				error: { message: "isolation_unavailable: osUser requires CAP_SETUID" },
+			});
+			expect(launchedPolicies).toHaveLength(0);
+		} finally {
+			await pool.stopAll();
+		}
+	});
+
+	test("a single osUser with available support gets the mapped policy and home workspace", async () => {
+		const { service, pool, dir, home, launchedPolicies } = await workspaceFixture({
+			available: true,
+			status: "available",
+		}, true);
+		try {
+			const env = await service.forConversation(
+				{ id: 1 as never },
+				defaultWorkspacePrefs(join(dir, "workspace")),
+				null as unknown as DocumentReader,
+				BACKGROUND_CONTEXT,
+			);
+			const result = await env.exec("true", undefined, BACKGROUND_CONTEXT);
+			expect(result.ok).toBe(true);
+			expect(launchedPolicies).toHaveLength(1);
+			expect(launchedPolicies[0]).toMatchObject({
+				uid: 1201,
+				gid: 1301,
+				groups: [1301, 1401],
+				home,
+				workspace: home,
+			});
+			expect(env.cwd).toBe(home);
 		} finally {
 			await pool.stopAll();
 		}
