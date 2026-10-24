@@ -28,6 +28,10 @@ type Handle =
 	| { kind: "watch"; value: { mode: "native" | "polling"; close(context: Context): Promise<void> } };
 
 const environments = new Map<string, NodeExecutionEnv>();
+/** Exec requests that have not reached pi-durable's synchronous spawn yet. */
+const pendingSpawns = new Map<NodeExecutionEnv, Set<number>>();
+/** Conservative pid ownership: every request that could have spawned it. */
+const commandOwners = new Map<number, Set<number>>();
 const handles = new Map<number, Handle>();
 const active = new Map<number, AbortController>();
 let nextHandle = 1;
@@ -37,9 +41,60 @@ function environment(cwd: string): NodeExecutionEnv {
 	let env = environments.get(cwd);
 	if (env === undefined) {
 		env = new NodeExecutionEnv({ cwd });
+		observeCommands(env);
 		environments.set(cwd, env);
 	}
 	return env;
+}
+
+/**
+ * Install ONE permanent observer per environment. This deliberately depends
+ * on pi-durable 1.3.0's PRIVATE, UNDOCUMENTED activeChildPids field because
+ * ExecutionEnv exposes no spawn notification. An upgrade that removes or
+ * changes that field must update this observer; fail loudly rather than
+ * silently losing crash cleanup.
+ */
+function observeCommands(env: NodeExecutionEnv): void {
+	// SAFETY: this is the intentional private-field dependency described above.
+	const registry = (env as unknown as { activeChildPids: Set<number> }).activeChildPids;
+	if (!(registry instanceof Set)) {
+		throw new Error("pi-durable activeChildPids is unavailable; sandbox command cleanup cannot be tracked");
+	}
+	const originalAdd = registry.add;
+	const originalDelete = registry.delete;
+	const originalClear = registry.clear;
+	registry.add = (pid: number): Set<number> => {
+		const result = originalAdd.call(registry, pid);
+		const pending = pendingSpawns.get(env);
+		// JavaScript spawn/add is synchronous. An empty set can only mean an
+		// unexpected pi-durable lifecycle change: retain an explicit sentinel
+		// owner and never end the pid rather than risking an orphan.
+		const owners = new Set(pending === undefined || pending.size === 0 ? [-1] : pending);
+		commandOwners.set(pid, owners);
+		for (const id of owners) write({ id, event: "command", pid, phase: "start" });
+		return result;
+	};
+	registry.delete = (pid: number): boolean => {
+		const result = originalDelete.call(registry, pid);
+		forgetIfSettled(pid);
+		return result;
+	};
+	registry.clear = (): void => {
+		const pids = [...registry];
+		originalClear.call(registry);
+		for (const pid of pids) forgetIfSettled(pid);
+	};
+
+	function forgetIfSettled(pid: number): void {
+		const owners = commandOwners.get(pid);
+		if (owners === undefined) return;
+		// End only after every exec that might own this pid has settled.
+		for (const id of owners) {
+			if (id === -1 || active.has(id)) return;
+		}
+		commandOwners.delete(pid);
+		for (const id of owners) write({ id, event: "command", pid, phase: "end" });
+	}
 }
 
 function write(message: Reply | { id: number; event: "output"; stream: "stdout" | "stderr"; text: string; skipped?: JsonValue } | { id: number; event: "watch"; change: JsonValue } | { id: number; event: "command"; pid: number; phase: "start" | "end" }): void {
@@ -200,46 +255,19 @@ async function dispatchResult(request: Request, controller: AbortController): Pr
 			},
 		};
 		const env = environment(cwd);
-		// NodeExecutionEnv records each spawned command's pid in this private
-		// set immediately after spawn. Mirror only additions/removals into the
-		// control channel; the command itself remains pi-durable's unmodified
-		// child, and the parent can kill its detached group after a crash.
-		// SAFETY: pi-durable 1.3.0 initializes this private Set in its
-		// constructor and mutates it at spawn/exit; no other fields are read.
-		const commandPids = (env as unknown as { activeChildPids: Set<number> }).activeChildPids;
-		const reported = new Set<number>();
-		// Observe the registry synchronously at spawn/settle, rather than
-		// polling: the start event must reach the parent before a crash can
-		// make the command untracked. The private methods are wrapped only for
-		// this call and restored in finally; concurrent execs share the same
-		// registry and each observer ignores pids it did not report.
-		const registry = commandPids as Set<number> & {
-			add(pid: number): Set<number>;
-			delete(pid: number): boolean;
-		};
-		const originalAdd = registry.add;
-		const originalDelete = registry.delete;
-		const report = (pid: number): void => {
-			if (reported.has(pid)) return;
-			reported.add(pid);
-			write({ id: request.id, event: "command", pid, phase: "start" });
-		};
-		registry.add = (pid: number): Set<number> => {
-			const result = originalAdd.call(registry, pid);
-			report(pid);
-			return result;
-		};
-		registry.delete = (pid: number): boolean => {
-			const result = originalDelete.call(registry, pid);
-			if (reported.delete(pid)) write({ id: request.id, event: "command", pid, phase: "end" });
-			return result;
-		};
+		let pending = pendingSpawns.get(env);
+		if (pending === undefined) {
+			pending = new Set<number>();
+			pendingSpawns.set(env, pending);
+		}
+		pending.add(request.id);
 		try {
 			return await env.exec(args[0] as string | readonly string[], options as never, withAbortSignal(controller.signal, BACKGROUND_CONTEXT));
 		} finally {
-			registry.add = originalAdd;
-			registry.delete = originalDelete;
-			for (const pid of reported) write({ id: request.id, event: "command", pid, phase: "end" });
+			// Only spawn attribution ends here. Per-exec finally NEVER emits a
+			// pid end: registry.delete owns that decision after all possible
+			// owners settle. Over-report starts; under-report ends.
+			pending.delete(request.id);
 		}
 	}
 	return dispatch({ id: request.id, op, args: [...rawArgs, cwd] });
