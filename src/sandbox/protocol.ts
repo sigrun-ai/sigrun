@@ -47,6 +47,12 @@ export type Event =
 			id: number;
 			event: "watch";
 			change: JsonValue;
+	  }
+	| {
+			id: number;
+			event: "command";
+			pid: number;
+			phase: "start" | "end";
 	  };
 export type Message = Reply | Event;
 
@@ -122,6 +128,11 @@ export function decodeMessage(line: string): Message {
 				throw new TypeError("invalid sandbox output event");
 			}
 			return event;
+		}
+		if (value.event === "command" && "pid" in value && typeof value.pid === "number" &&
+			"phase" in value && (value.phase === "start" || value.phase === "end")) {
+			// SAFETY: id, numeric pid and the two command phases were checked.
+			return value as unknown as Event;
 		}
 		if (value.event === "watch" && "change" in value) {
 			// SAFETY: id, event and change presence were checked above.

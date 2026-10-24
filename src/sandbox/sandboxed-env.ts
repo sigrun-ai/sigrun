@@ -173,9 +173,8 @@ export class SandboxedExecutionEnv implements ExecutionEnv {
 		const value = await this.client.call("result", wireArgs([op, args, this.currentCwd]), onEvent, context);
 		// A capability reply is consumed by the client at worker start. Install
 		// the optional member only after the worker has actually advertised it.
-		void this.client.capabilities().then((capabilities) => {
-			if (capabilities.listFiles) this.listFilesForwarder ??= this.forwardListFiles.bind(this);
-		}).catch(() => {});
+		const capabilities = await this.client.capabilities();
+		if (capabilities.listFiles) this.listFilesForwarder ??= this.forwardListFiles.bind(this);
 		return decoded<T>(value);
 	}
 

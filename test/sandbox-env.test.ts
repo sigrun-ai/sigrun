@@ -44,7 +44,7 @@ function makePool(idleMinutes = 10): WorkerPool {
 	const value = new WorkerPool({
 		launcher: testLauncher(entry),
 		idleMinutes: () => idleMinutes,
-		log: () => {},
+		log: (line) => console.error(line),
 		workerEntry: entry,
 	});
 	pool = value;
@@ -172,6 +172,27 @@ describe("SandboxedExecutionEnv workspace operations", { timeout: 30_000 }, () =
 		await watcher.close(context);
 	});
 
+	test("exposes and forwards listFiles when the worker advertises it", async () => {
+		const entry = { command: process.execPath, args: [join(import.meta.dirname, "fixtures", "fixture-sandbox-listfiles-worker.cjs")] };
+		pool = new WorkerPool({
+			launcher: testLauncher(entry),
+			idleMinutes: () => 10,
+			log: () => {},
+			workerEntry: entry,
+		});
+		const { env } = await envFor();
+		await getOrThrow(await env.absolutePath(".", context));
+		expect(env.listFiles).toBeDefined();
+		const listing = getOrThrow(await env.listFiles!(".", undefined, context));
+		expect(listing).toEqual({
+			entries: [
+				{ path: "nested", kind: "directory" },
+				{ path: "nested/file.txt", kind: "file" },
+			],
+			truncated: false,
+		});
+	});
+
 	test("cleanup is deliberately inert on the shared worker", async () => {
 		const { env, client } = await envFor();
 		const before = await pid(client);
@@ -225,6 +246,36 @@ describe("sandbox process invariants", { timeout: 30_000 }, () => {
 			await vi.waitFor(async () => expect(await alive(processId)).toBe(false));
 		}
 	});
+
+	if (process.platform !== "win32") {
+		test("a killed worker does not leave its command running", async () => {
+			const { env, client } = await envFor();
+			let output = "";
+			const running = env.exec("echo $$; sleep 30", {
+				onOutput: (text) => { output += text; },
+			}, context);
+			await vi.waitFor(() => expect(output).toMatch(/\d+\n/));
+			const commandPid = Number(output.trim());
+			expect(Number.isInteger(commandPid)).toBe(true);
+			process.kill(await pid(client), "SIGKILL");
+			await expect(running).rejects.toBeInstanceOf(ExecutionError);
+			await vi.waitFor(async () => expect(await alive(commandPid)).toBe(false), { timeout: 5_000 });
+		});
+
+		test("graceful stopAll also leaves no command pids", async () => {
+			const { env } = await envFor();
+			let output = "";
+			const running = env.exec("echo $$; sleep 30", {
+				onOutput: (text) => { output += text; },
+			}, context);
+			await vi.waitFor(() => expect(output).toMatch(/\d+\n/));
+			const commandPid = Number(output.trim());
+			const stopping = pool!.stopAll();
+			await expect(running).rejects.toBeInstanceOf(ExecutionError);
+			await stopping;
+			await vi.waitFor(async () => expect(await alive(commandPid)).toBe(false), { timeout: 5_000 });
+		});
+	}
 });
 
 describe("WorkerPool lifecycle", { timeout: 30_000 }, () => {
