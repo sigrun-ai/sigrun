@@ -113,9 +113,24 @@ describe("validateGrantPath", () => {
 		const extension = join(managed.roots.dataDir, "acme-ext");
 		const child = join(extension, "child");
 		await mkdir(child, { recursive: true });
-		expect(reason(extension, managed)).toContain("extension directory");
-		expect(reason(child, managed)).toContain("extension directory");
+		expect(reason(extension, managed)).toBe(
+			`path is or contains extension directory ${await realpath(extension)}`,
+		);
+		expect(reason(child, managed)).toBe(
+			`path is inside extension directory ${await realpath(extension)}`,
+		);
+	});
 
+	test("a symlinked own area does not confer access to another user's target", async () => {
+		const { managed } = await fixture();
+		const bob = managed.userAreas("bob");
+		await mkdir(join(bob, "workspace"), { recursive: true });
+		await symlink(bob, managed.userAreas("alice"), "dir");
+		const throughAlice = join(managed.userAreas("alice"), "workspace");
+		expect(await realpath(throughAlice)).toBe(await realpath(join(bob, "workspace")));
+		expect(reason(throughAlice, managed, "alice")).toBe(
+			"path is inside another user's area",
+		);
 	});
 
 	test("core-owned data dirs are not foreign extensions", async () => {
@@ -187,6 +202,27 @@ test("revalidate fails after dataDir moves underneath an existing grant", async 
 	});
 });
 
+/** Find join calls without letting an unterminated call cross a statement. */
+function joinCalls(source: string): Array<{ args: string; end: number }> {
+	const calls: Array<{ args: string; end: number }> = [];
+	for (const match of source.matchAll(/\bjoin\s*\(/g)) {
+		const argsStart = match.index + match[0].length;
+		let depth = 1;
+		for (let index = argsStart; index < source.length; index++) {
+			const char = source[index];
+			if (char === ";") break;
+			if (char === "(") depth++;
+			if (char !== ")") continue;
+			depth--;
+			if (depth === 0) {
+				calls.push({ args: source.slice(argsStart, index), end: index });
+				break;
+			}
+		}
+	}
+	return calls;
+}
+
 /** Extract only literal directory arguments to node:path.join. */
 export function coreDirectoryLiterals(source: string): string[] {
 	const roots = new Set([
@@ -198,10 +234,8 @@ export function coreDirectoryLiterals(source: string): string[] {
 		"current",
 	]);
 	const directories: string[] = [];
-	const call = /\bjoin\s*\(([^;\n]+)\)/g;
-	for (const match of source.matchAll(call)) {
-		const args = match[1];
-		if (args === undefined) continue;
+	for (const call of joinCalls(source)) {
+		const { args } = call;
 		const literals = [...args.matchAll(/"([^"\\]+)"/g)].map((item) => item[1]);
 		if (literals.length === 0) continue;
 		const root = args.slice(0, args.indexOf(literals[0] ? `"${literals[0]}"` : ""));
@@ -262,7 +296,12 @@ describe("reserved extension slugs", () => {
 			'const c = join(configDir, "settings.json");',
 			'const d = join(unresolvedRoot, "not-core-owned");',
 			'const e = join(configDir, "nested", "package.json");',
+			'const f = join(configDir,\n  "new-core-dir"\n);',
 		].join("\n");
-		expect(coreDirectoryLiterals(source)).toEqual(["packages", "models"]);
+		expect(coreDirectoryLiterals(source)).toEqual([
+			"packages",
+			"models",
+			"new-core-dir",
+		]);
 	});
 });

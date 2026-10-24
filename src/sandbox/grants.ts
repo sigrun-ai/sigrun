@@ -151,12 +151,12 @@ export function validateGrantPath(
 
 	const usersRoot = canonical(join(roots.dataDir, "users"));
 	if (inside(candidate, usersRoot)) {
-		const ownArea = canonical(managed.userAreas(user));
-		// Do not classify the user's own name as a child named `alice` when
-		// the area does not exist yet: identity is the path segment, not the
-		// existence of the directory.
-		const candidateOwnArea = join(usersRoot, user);
-		if (!inside(candidate, ownArea) && !inside(candidate, candidateOwnArea)) {
+		// Identity is the LEXICAL path segment under users/, never whatever
+		// that segment resolves to. Canonicalizing the own area would let a
+		// users/alice symlink into Bob's area make both sides agree on Bob's
+		// realpath, turning the exception into a cross-user bypass.
+		const ownArea = join(usersRoot, user);
+		if (!inside(candidate, ownArea)) {
 			return { ok: false, reason: "path is inside another user's area" };
 		}
 	}
