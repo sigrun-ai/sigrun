@@ -361,6 +361,42 @@ describe("DELETE /v1/users/:user", () => {
 		});
 	});
 
+	test("deleting a user removes their account links and no one else's", async () => {
+		const { app, opened } = await bootServer({});
+		const token = await mint(opened, "alice");
+		// Bob holds two links (two providers); alice holds one. Links
+		// never transfer (multi-user §10.6 step 1).
+		await opened.identity.accounts.link({
+			provider: "chat:loop",
+			subject: "bob-chat",
+			user: "bob",
+			via: "self",
+		});
+		await opened.identity.accounts.link({
+			provider: "login:oauth:acme",
+			subject: "bob-sub",
+			user: "bob",
+			via: "login",
+		});
+		await opened.identity.accounts.link({
+			provider: "chat:loop",
+			subject: "alice-chat",
+			user: "alice",
+			via: "self",
+		});
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("bob")).toEqual([]);
+		expect(opened.identity.accounts.listForUser("alice")).toHaveLength(1);
+		expect(
+			opened.identity.accounts.lookup("chat:loop", "bob-chat"),
+		).toBeUndefined();
+	});
+
 	test("deleting the last record-admin → 409 (a group admin does not count)", async () => {
 		// tester is the ONLY record admin; the caller's admin comes from a
 		// proxy GROUP — which never counts toward the last-admin guard.

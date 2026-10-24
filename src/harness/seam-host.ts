@@ -165,6 +165,12 @@ export interface SeamHost {
 	readonly conversations: SigrunHost["conversations"];
 	/** The user directory (§9.7): list/get in admin wire form. */
 	readonly users: SigrunHost["users"];
+	/**
+	 * External-identity links (multi-user §11.3): chat senders and login
+	 * subjects in one core-owned table. Binds lazily like every other
+	 * bridged member.
+	 */
+	readonly accounts: SigrunHost["accounts"];
 	/** Resolve one principal's access to one shared resource (§9.7). */
 	readonly access: SigrunHost["access"];
 	/** The conversation's owner — who the agent acts for (§9.7). */
@@ -471,6 +477,25 @@ export function createSeamHost(
 			},
 			async get(user) {
 				return (await hostBridge()).users.get(user);
+			},
+		},
+		accounts: {
+			async lookup(provider, subject) {
+				return (await hostBridge()).accounts.lookup(provider, subject);
+			},
+			async link(provider, subject, user, via) {
+				return (await hostBridge()).accounts.link(
+					provider,
+					subject,
+					user,
+					via,
+				);
+			},
+			async unlink(provider, subject) {
+				return (await hostBridge()).accounts.unlink(provider, subject);
+			},
+			async listForUser(user) {
+				return (await hostBridge()).accounts.listForUser(user);
 			},
 		},
 		access: {

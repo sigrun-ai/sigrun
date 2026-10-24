@@ -23,7 +23,8 @@ import {
 	type AccessPrincipal,
 } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
-import type { DirectoryUser } from "../harness/identity/index.js";
+import type { AccountLink, DirectoryUser } from "../harness/identity/index.js";
+import type { AccountLinkWire } from "@sigrun/shared/views";
 import type { DataOps } from "@sigrun/shared/blocks";
 import { isSuperuser, type Principal } from "./auth/principal.js";
 import {
@@ -62,6 +63,23 @@ function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
 }
 
 /**
+ * One `accounts.json` record in wire form (multi-user §11.3): the record
+ * shape already matches {@link AccountLinkWire}, so this copies the five
+ * fields explicitly rather than spreading — a future store-only field
+ * must not leak onto the wire by accident. Shared by the bridge and the
+ * `/v1/auth/accounts` routes.
+ */
+export function accountLinkWire(link: AccountLink): AccountLinkWire {
+	return {
+		provider: link.provider,
+		subject: link.subject,
+		user: link.user,
+		linkedAt: link.linkedAt,
+		via: link.via,
+	};
+}
+
+/**
  * The server-provided bridge a seam host delegates its
  * conversation/identity/users/access members to — exactly the
  * contract's member shapes (`SigrunHost["conversations"]` and friends),
@@ -70,6 +88,7 @@ function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
 export interface HostBridge {
 	readonly conversations: SigrunHost["conversations"];
 	readonly users: SigrunHost["users"];
+	readonly accounts: SigrunHost["accounts"];
 	readonly access: SigrunHost["access"];
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
@@ -243,6 +262,31 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			async get(user) {
 				const record = opened.identity.users.get(user);
 				return record === undefined ? undefined : effectiveAdminOf(record);
+			},
+		},
+		accounts: {
+			// The one link table (multi-user §11.3): core code over core's
+			// store — the single write path, with the store's own validation
+			// and conflict refusal. `account_link_conflict:` errors cross the
+			// bridge as plain Errors (extensions match the message prefix).
+			async lookup(provider, subject) {
+				const link = opened.identity.accounts.lookup(provider, subject);
+				return link === undefined ? undefined : accountLinkWire(link);
+			},
+			async link(provider, subject, user, via) {
+				const link = await opened.identity.accounts.link({
+					provider,
+					subject,
+					user,
+					via,
+				});
+				return accountLinkWire(link);
+			},
+			async unlink(provider, subject) {
+				return await opened.identity.accounts.unlink(provider, subject);
+			},
+			async listForUser(user) {
+				return opened.identity.accounts.listForUser(user).map(accountLinkWire);
 			},
 		},
 		access: {

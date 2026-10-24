@@ -62,9 +62,10 @@ story to guess.
   `packages/` and `git/` (the extension install machinery), `skills/`
   (your user-wide skills — the same SKILL.md convention the workspace
   ships, listed under the reserved `skills` section for every
-  conversation), the identity surfaces `users.json` and `api-tokens.json`
-  (mode 0600, sigrun-owned — user accounts and token digests), and
-  channel client configs such as `tui.json`.
+  conversation), the identity surfaces `users.json`,
+  `api-tokens.json`, and `accounts.json` (mode 0600, sigrun-owned — user
+  accounts, token digests, and external-identity links), and channel
+  client configs such as `tui.json`.
 
 ## One resolution chain — workstation and container
 
@@ -366,6 +367,63 @@ The grant updates only on proxy-authenticated requests while
 `server.auth.adminGroups` is non-empty: removal from the admin group
 takes effect for host-side checks at that user's **next web request**
 (a user who never browses again keeps the stale grant until then).
+
+## The accounts surface
+
+A **link** is one external identity bound to one directory user. Sigrun
+keeps every link in ONE table, `<configDir>/accounts.json` (mode 0600,
+atomic writes, mtime-reload reads — the same discipline as
+`users.json`), because chat senders and login subjects are the same
+question: "who is this, in the directory?". A link records `provider`,
+`subject`, `user`, `linkedAt`, and `via` (`login`, `self`, `pairing`, or
+`admin`).
+
+Provider ids have two forms:
+
+- `chat:<channel>` — a chat sender (the gateway writes these);
+- `login:<slug>:<id>` — a login subject, where `slug` is the login
+  extension's slug and `id` its provider id (so the bundled extension's
+  ids read `login:oauth:<id>`).
+
+A subject is opaque to sigrun: a Telegram or Discord numeric id, a
+Signal `+E.164` number, and an email-shaped subject all pass.
+
+```ts
+await host.accounts.lookup("chat:telegram", "12345");   // AccountLinkWire | undefined
+await host.accounts.link("chat:telegram", "12345", "alice", "pairing");
+await host.accounts.unlink("chat:telegram", "12345");   // boolean
+await host.accounts.listForUser("alice");                // readonly AccountLinkWire[]
+```
+
+Rules, all enforced by core:
+
+- **One link per `(provider, subject)`.** Re-linking to the SAME user is
+  a no-op that returns the existing record. Linking to a DIFFERENT user
+  is refused — never silently re-pointed, because re-pointing an
+  existing external identity is an account-takeover path. The holder (or
+  an admin) removes the old link first.
+- **Errors.** An unknown user throws `unknown user "<user>"`; a
+  malformed provider id throws `invalid_provider: <provider>`; an empty
+  or over-long (513+ characters) subject throws `invalid_subject`; a
+  conflict throws an `Error` whose message starts
+  `account_link_conflict:` and never names the current holder — match on
+  the prefix, as you would on `command_not_found:`.
+- **User deletion removes the departing user's links** and never
+  transfers them: credentials belong to a person, so the new owner of a
+  transferred conversation does not inherit the old owner's chat
+  identity.
+- **Core owns the file.** Extensions go through `host.accounts`; nothing
+  else may write `accounts.json`. Core is the single write path, which is
+  what keeps the gateway and the login seam from disagreeing about who a
+  sender is.
+- **`accounts.json` is in `configDir`**, so the existing `config` backup
+  section carries it alongside `users.json`.
+
+Users manage their own links over HTTP, mirroring `/v1/auth/tokens`:
+`GET /v1/auth/accounts` lists them (admins may pass `?user=` for
+anyone's), and `DELETE /v1/auth/accounts?provider=&subject=` removes one
+(query parameters, not path segments, because provider ids contain `:`
+and subjects may contain `/`, `+`, or `@`).
 
 ## Secrets precedence: stored wins, env bootstraps
 
