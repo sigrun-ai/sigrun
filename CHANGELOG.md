@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Security
+- Agent shells no longer inherit sigrun's environment. pi-durable's bash
+  tool ran every command with the server's full environment, so an
+  agent's `env` printed `SIGRUN_API_TOKEN`, `SIGRUN_PROXY_SECRET` and
+  provider keys. Every command now gets an allowlist (`PATH`, `HOME`,
+  `TMPDIR`, `LANG`, `LC_*`, `TZ`, `TERM`, `USER`, `LOGNAME`, `SHELL`,
+  `NPM_CONFIG_CACHE`, `SSH_AUTH_SOCK`) plus whatever the calling tool
+  sets. `NODE_ENV=production` from the image no longer reaches agent
+  shells, so an agent's `npm install` installs devDependencies again.
+  The bundled MCP extension's stdio servers get the same allowlist.
 
 ## [0.1.5] - 2026-10-23
 ### Added
