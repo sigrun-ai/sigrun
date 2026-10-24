@@ -34,12 +34,9 @@ export async function unclaimedIdentity(
 	await mkdir(cacheDir, { recursive: true });
 	const users = new UserDirectory(join(dir, "users.json"));
 	return {
-		users: new UserDirectory(join(dir, "users.json")),
+		users,
 		tokens: new TokenStore(join(dir, "api-tokens.json")),
-		accounts: new AccountStore(
-			join(dir, "accounts.json"),
-			users,
-		),
+		accounts: new AccountStore(join(dir, "accounts.json"), users),
 		invites: new InviteStore(join(stateDir, "invites.json")),
 		cacheDir,
 	};

@@ -37,7 +37,7 @@ import type {
 	TokenCreateResponse,
 	TokenWire,
 } from "../views.js";
-import { accountLinkWire } from "../host-bridge.js";
+import { accountLinkWire } from "../views.js";
 import type { TokenRecord } from "../../harness/identity/index.js";
 
 /** The session cookie name (spec §5.4). */
@@ -270,17 +270,22 @@ export function registerAuthRoutes(
 		) {
 			return await reply.code(400).send({ error: "invalid_query" });
 		}
-		const link = ctx.opened.identity.accounts.lookup(
+		// The lookup, the ownership check, and the removal happen INSIDE one
+		// serialized mutation: reading the link here and removing it later
+		// would leave a window where the subject is unlinked and re-linked
+		// to a different user, and this request would delete the NEW
+		// holder's link on the strength of a stale check.
+		const outcome = await ctx.opened.identity.accounts.unlinkAuthorized(
 			query.provider,
 			query.subject,
+			{ user: principal.user, admin: principal.admin },
 		);
-		if (link === undefined) {
+		if (outcome === "absent") {
 			return await reply.code(404).send({ error: "unknown_account" });
 		}
-		if (link.user !== principal.user && !principal.admin) {
+		if (outcome === "forbidden") {
 			return await reply.code(403).send({ error: "forbidden" });
 		}
-		await ctx.opened.identity.accounts.unlink(query.provider, query.subject);
 		return await reply.code(204).send();
 	});
 }

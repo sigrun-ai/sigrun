@@ -23,8 +23,7 @@ import {
 	type AccessPrincipal,
 } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
-import type { AccountLink, DirectoryUser } from "../harness/identity/index.js";
-import type { AccountLinkWire } from "@sigrun/shared/views";
+import type { DirectoryUser } from "../harness/identity/index.js";
 import type { DataOps } from "@sigrun/shared/blocks";
 import { isSuperuser, type Principal } from "./auth/principal.js";
 import {
@@ -44,7 +43,7 @@ import {
 import { listModels } from "./helpers.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
-import { serializeConversationView } from "./views.js";
+import { accountLinkWire, serializeConversationView } from "./views.js";
 
 /**
  * The effective-admin projection of one directory user (gateway C8):
@@ -59,23 +58,6 @@ function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
 		...record,
 		admin: record.admin || record.groupAdmin === true,
 		groupAdmin: record.groupAdmin === true,
-	};
-}
-
-/**
- * One `accounts.json` record in wire form (multi-user §11.3): the record
- * shape already matches {@link AccountLinkWire}, so this copies the five
- * fields explicitly rather than spreading — a future store-only field
- * must not leak onto the wire by accident. Shared by the bridge and the
- * `/v1/auth/accounts` routes.
- */
-export function accountLinkWire(link: AccountLink): AccountLinkWire {
-	return {
-		provider: link.provider,
-		subject: link.subject,
-		user: link.user,
-		linkedAt: link.linkedAt,
-		via: link.via,
 	};
 }
 

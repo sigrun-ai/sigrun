@@ -1,8 +1,8 @@
 /**
  * The identity stores bundle (core hardening W1 Task 2): the directory,
- * tokens, invites, and the setup code, opened over the resolved store
- * roots — the object `openHarness` exposes as `OpenedHarness.identity`
- * and the auth pipeline/routes consume.
+ * tokens, account links, invites, and the setup code, opened over the
+ * resolved store roots — the object `openHarness` exposes as
+ * `OpenedHarness.identity` and the auth pipeline/routes consume.
  *
  - `<configDir>/users.json` — the user directory (0600; holds emails);
  - `<configDir>/api-tokens.json` — the token digests (0600);
@@ -11,7 +11,8 @@
  - `<cacheDir>` — the setup code's home (pod-local, never backed up).
  *
  All four files: atomic writes (temp + rename), mtime-reload reads per
- access (the CLI is a second writer), serialized mutations per store.
+ access (a second writer — the CLI, or another sigrun process sharing a
+ config root — is honored live), serialized mutations per store.
  */
 
 import { join } from "node:path";
