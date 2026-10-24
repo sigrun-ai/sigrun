@@ -19,6 +19,12 @@
  *   default caps when absent).
  * - `globalThis.__loopConfigured` — the `configured()` override
  *   (default `{status: "ready"}`).
+ * - `globalThis.__loopClassify` — the `classifyError` override (Task 5:
+ *   `failNext("chat_gone")` routes through it; absent → every error
+ *   reads transient, the adapter default).
+ * - `globalThis.__loopFormat` — the `format` override (Task 5's native
+ *   formatter seam; absent → the channel reports `format: "markdown"`
+ *   unless `__loopCaps.format` says native).
  */
 
 /** The default capabilities (the plan's table). */
@@ -92,7 +98,11 @@ globalThis.__loop = loop;
 function maybeFail(kind) {
 	if (pendingFailure === kind) {
 		pendingFailure = undefined;
-		throw new Error(`loop: synthetic ${kind} failure`);
+		const error = new Error(`loop: synthetic ${kind} failure`);
+		// The classification marker the classifyError override reads
+		// (chat_gone/permanent); absent marker → transient (the default).
+		error.kind = kind;
+		throw error;
 	}
 }
 
@@ -132,6 +142,19 @@ export default function createFixtureLoopbackChannel() {
 				},
 				setCommands: async (commands) => {
 					loop.commands.push(commands);
+				},
+				// Task 5: the classification seam. The override wins when set
+				// (a marker-bearing error reads its kind); everything else is
+				// transient — the adapter contract's default.
+				classifyError: (error) => {
+					const override = globalThis.__loopClassify;
+					if (override !== undefined) return override(error);
+					const kind = error && typeof error === "object" ? error.kind : undefined;
+					return kind === "permanent" || kind === "chat_gone" ? kind : "transient";
+				},
+				format: (markdown) => {
+					const override = globalThis.__loopFormat;
+					return override === undefined ? markdown : override(markdown);
 				},
 			},
 		],
