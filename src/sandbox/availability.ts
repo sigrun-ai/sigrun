@@ -33,20 +33,24 @@ export async function runHelperProbe(helper: string): Promise<{ abi: number }> {
 
 /**
  * The security boundary check: a fresh probe file is deliberately absent
- * from the policy grants. Only a FAILED read passes; a zero exit means the
- * helper ran the command unconfined and must never count as available.
- * Quoting keeps an unusual TMPDIR from changing the shell command.
+ * from the policy grants. The shell reports `READ_DENIED` only after it
+ * has executed and `cat` has failed on the probe path. Pass only on that
+ * exact stdout, a non-zero exit, and no `sigrun-sandbox:` diagnostic on
+ * stderr. Thus pre-exec helper refusals, spawn failures, missing commands,
+ * and a successful (unconfined) read all fail closed. Quoting keeps an
+ * unusual TMPDIR from changing the shell command.
  */
 export async function selfTestHelper(helper: string): Promise<boolean> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-sandbox-self-test-"));
 	const probe = join(dir, "probe");
 	const quotedProbe = `'${probe.replaceAll("'", `'"'"'`)}'`;
+	const command = `if cat ${quotedProbe}; then exit 0; else printf 'READ_DENIED\\n'; exit 1; fi`;
 	try {
 		await writeFile(probe, "sandbox boundary probe\n", { mode: 0o600 });
 		try {
 			await execFileAsync(
 				helper,
-				["run", "--", "/bin/sh", "-c", `cat ${quotedProbe}`],
+				["run", "--", "/bin/sh", "-c", command],
 				{
 					env: {
 						...process.env,
@@ -66,8 +70,20 @@ export async function selfTestHelper(helper: string): Promise<boolean> {
 				},
 			);
 			return false;
-		} catch {
-			return true;
+		} catch (error) {
+			if (typeof error !== "object" || error === null) return false;
+			const outcome = error as {
+				code?: unknown;
+				stdout?: unknown;
+				stderr?: unknown;
+			};
+			return (
+				typeof outcome.code === "number" &&
+				outcome.code !== 0 &&
+				outcome.stdout === "READ_DENIED\n" &&
+				typeof outcome.stderr === "string" &&
+				!outcome.stderr.includes("sigrun-sandbox:")
+			);
 		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });

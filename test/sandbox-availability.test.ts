@@ -165,6 +165,64 @@ describe("resolveHelper", () => {
 	});
 });
 
+describe("selfTestHelper denial classification", () => {
+	async function fakeHelper(script: string): Promise<string> {
+		const dir = await tempDir();
+		const helper = join(dir, "fake-sigrun-sandbox");
+		await writeFile(helper, `#!/bin/sh\n${script}\n`, { mode: 0o700 });
+		return helper;
+	}
+
+	test("helper refusal exit 125 with its diagnostic is not a denial", async () => {
+		const helper = await fakeHelper(
+			"echo 'sigrun-sandbox: invalid policy' >&2\nexit 125",
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("a non-zero exit without running the command is not a denial", async () => {
+		const helper = await fakeHelper("exit 1");
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("a spawn failure is not a denial", async () => {
+		const dir = await tempDir();
+		await expect(
+			selfTestHelper(join(dir, "nonexistent-helper")),
+		).resolves.toBe(false);
+	});
+
+	test("a successful unconfined read is not a denial", async () => {
+		const helper = await fakeHelper("shift 2\nexec \"$@\"");
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("a missing jailed command is not a denial", async () => {
+		const helper = await fakeHelper(
+			"echo 'sigrun-sandbox: cannot exec /bin/sh: No such file or directory' >&2\nexit 125",
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("the jailed shell runs and its probe read is denied", async () => {
+		const helper = await fakeHelper(
+			`set -eu
+policy=$SIGRUN_SANDBOX_POLICY
+[ -n "$policy" ]
+shift 2
+[ "$1" = /bin/sh ] && [ "$2" = -c ]
+command=$3
+probe=$(printf '%s\\n' "$command" | cut -d"'" -f2)
+[ -f "$probe" ]
+# Simulate the helper's jail: the shell and runtime remain usable, but the
+# ungranted probe file is unreadable before the requested command executes.
+chmod 000 "$probe"
+exec "$@"`,
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(true);
+	});
+});
+
 describe("real Task 1 helper", () => {
 	const coreRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 	const helper = join(coreRoot, "sandbox/target/release/sigrun-sandbox");
