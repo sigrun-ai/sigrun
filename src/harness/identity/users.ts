@@ -127,6 +127,11 @@ export class UserDirectory {
 		await writeJson(this.path, records.map(withoutLegacyGroupAdmin));
 	}
 
+	/** Run the same admission guard used by add, before consuming an invite. */
+	checkAdmission(): void {
+		this.options.admit?.(this.list().length);
+	}
+
 	/** Every user, insertion order (the first add is the onboarding claim). */
 	list(): DirectoryUser[] {
 		return readRecords<DirectoryUser>(this.path);

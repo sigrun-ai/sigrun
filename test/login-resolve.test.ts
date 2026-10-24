@@ -9,6 +9,7 @@ import {
 } from "../src/harness/identity/users.js";
 import { resolveLogin, type LoginPolicy } from "../src/server/login/resolve.js";
 import { assignUsername } from "../src/server/login/usernames.js";
+import { SetupClaimStore } from "../src/server/login/setup-claim.js";
 
 const PROVIDER = "login:fixture:oidc";
 
@@ -16,14 +17,21 @@ class FakeDirectory {
 	records: DirectoryUser[] = [];
 	groups: Array<{ user: string; source: string; values: readonly string[] }> = [];
 	admission?: AdmissionRefusedError;
+	admissionChecks = 0;
+	addBarrier?: Promise<void>;
 
+	checkAdmission(): void {
+		this.admissionChecks++;
+		if (this.records.length > 0 && this.admission !== undefined) throw this.admission;
+	}
 	isClaimed(): boolean { return this.records.length > 0; }
 	list(): DirectoryUser[] { return this.records; }
 	get(user: string): DirectoryUser | undefined {
 		return this.records.find((record) => record.user === user);
 	}
 	async add(input: Omit<DirectoryUser, "createdAt">): Promise<DirectoryUser> {
-		if (this.records.length > 0 && this.admission !== undefined) throw this.admission;
+		this.checkAdmission();
+		if (this.addBarrier !== undefined) await this.addBarrier;
 		if (this.get(input.user) !== undefined) throw new Error("duplicate");
 		const record = { ...input, createdAt: 1 };
 		this.records.push(record);
@@ -38,6 +46,7 @@ class FakeDirectory {
 
 class FakeAccounts {
 	links: Array<{ provider: string; subject: string; user: string; via: string }> = [];
+	linkBarrier?: Promise<void>;
 	constructor(readonly users: FakeDirectory) {}
 	lookup(provider: string, subject: string) {
 		return this.links.find((link) => link.provider === provider && link.subject === subject);
@@ -49,6 +58,7 @@ class FakeAccounts {
 			return existing;
 		}
 		if (this.users.get(input.user) === undefined) throw new Error("unknown user");
+		if (this.linkBarrier !== undefined) await this.linkBarrier;
 		this.links.push(input);
 		return input;
 	}
@@ -72,6 +82,7 @@ interface Fixture {
 	invites: FakeInvites;
 	setup: string | undefined;
 	cleared: number;
+	setupClaims: SetupClaimStore;
 }
 
 function fixture(options: {
@@ -90,6 +101,7 @@ function fixture(options: {
 		invites: new FakeInvites(options.invites),
 		setup: options.setup,
 		cleared: 0,
+		setupClaims: new SetupClaimStore(),
 	};
 }
 
@@ -100,6 +112,7 @@ function deps(f: Fixture, policy: LoginPolicy = {}) {
 		invites: f.invites as unknown as InviteStore,
 		setupCode: () => f.setup,
 		clearSetupCode: async () => { f.cleared++; f.setup = undefined; },
+		setupClaims: f.setupClaims,
 		policy,
 	};
 }
@@ -217,6 +230,63 @@ describe("resolveLogin", () => {
 			.toEqual({ kind: "session", user: "alice-smith" });
 		expect(f.users.get("alice-smith")).toMatchObject({ admin: true, source: "login" });
 		expect(f.invites.used).toEqual(["GOOD-CODE"]);
+	});
+
+	test("concurrent setup claims create exactly one admin under the claim lock", async () => {
+		const f = fixture({ claimed: false, setup: "AAAA-BBBB" });
+		const first = resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f));
+		const second = resolveLogin({
+			provider: "login:fixture:other",
+			result: result({ profile: { username: "Bob" } }),
+			code: "AAAA-BBBB",
+		}, deps(f));
+		const outcomes = await Promise.all([first, second]);
+		expect(outcomes.filter((outcome) => outcome.kind === "session")).toHaveLength(1);
+		expect(outcomes.filter((outcome) => outcome.kind === "refused" && outcome.error === "not_allowed")).toHaveLength(1);
+		expect(f.users.records.filter((user) => user.admin)).toHaveLength(1);
+		expect(f.accounts.links).toHaveLength(1);
+	});
+
+	test("a failed setup link can be completed only by the recorded subject with the still-valid code", async () => {
+		const f = fixture({ claimed: false, setup: "AAAA-BBBB" });
+		f.accounts.linkBarrier = Promise.reject(new Error("disk unavailable"));
+		await expect(resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f)))
+			.rejects.toThrow("disk unavailable");
+		expect(f.users.records).toHaveLength(1);
+		expect(f.accounts.links).toHaveLength(0);
+		const other = await resolveLogin({
+			provider: "login:fixture:other",
+			result: result({ subject: "attacker", profile: { username: "attacker" } }),
+			code: "AAAA-BBBB",
+		}, deps(f));
+		expect(other).toEqual({ kind: "refused", error: "not_allowed" });
+		expect(f.accounts.links).toHaveLength(0);
+		f.accounts.linkBarrier = undefined;
+		const recovered = await resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f));
+		expect(recovered).toEqual({ kind: "session", user: "alice-smith" });
+		expect(f.users.records).toHaveLength(1);
+		expect(f.accounts.links).toEqual([{ provider: PROVIDER, subject: "subject-1", user: "alice-smith", via: "login" }]);
+		expect(f.users.groups[0]?.values).toEqual(["family"]);
+	});
+
+	test("a claimed server cannot use the setup code to create another user without a claim marker", async () => {
+		const f = fixture({ setup: "AAAA-BBBB" });
+		const outcome = await resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f));
+		expect(outcome).toEqual({ kind: "refused", error: "not_allowed" });
+		expect(f.users.records.map((user) => user.user)).toEqual(["owner"]);
+		expect(f.accounts.links).toEqual([]);
+	});
+
+	test("an admission refusal does not burn the invite", async () => {
+		const f = fixture({ invites: { "GOOD-CODE": { admin: false } } });
+		f.users.admission = new AdmissionRefusedError("isolation_required", "isolation_required");
+		expect(await resolveLogin({ provider: PROVIDER, result: result(), code: "GOOD-CODE" }, deps(f)))
+			.toEqual({ kind: "refused", error: "isolation_required" });
+		expect(f.invites.used).toEqual([]);
+		expect(f.users.admissionChecks).toBe(1);
+		f.users.admission = undefined;
+		expect(await resolveLogin({ provider: PROVIDER, result: result(), code: "GOOD-CODE" }, deps(f)))
+			.toEqual({ kind: "session", user: "alice-smith" });
 	});
 
 	for (const code of ["isolation_required", "auth_required"] as const) {

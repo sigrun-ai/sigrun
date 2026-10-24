@@ -7,6 +7,7 @@ import { LoginFlows, type StoredFlow } from "../login/flows.js";
 import { clearSetupCode, readSetupCode } from "../../harness/identity/setup-code.js";
 import { resolveLogin } from "../login/resolve.js";
 import { sendLoginResolution } from "../login/http.js";
+import { SetupClaimStore } from "../login/setup-claim.js";
 
 export const LOGIN_STATE_COOKIE = "sigrun_login_state";
 
@@ -81,6 +82,7 @@ export function registerLoginRoutes(
 	// Deliberately per-server, never a harness singleton: restart invalidates
 	// in-flight logins and separate server instances never share browser state.
 	const flows = options.flows ?? new LoginFlows();
+	const setupClaims = new SetupClaimStore(ctx.opened.identity.cacheDir);
 	const providers = new Map(ctx.opened.loginProviders.map((entry) => [entry.provider, entry]));
 	const resolve = options.resolver ?? (async (input: {
 		provider: string;
@@ -99,6 +101,7 @@ export function registerLoginRoutes(
 			invites: ctx.opened.identity.invites,
 			setupCode: () => readSetupCode(ctx.opened.identity.cacheDir),
 			clearSetupCode: () => clearSetupCode(ctx.opened.identity.cacheDir),
+			setupClaims,
 			policy: providers.get(input.provider)?.contribution.policy ?? {},
 		});
 		if (outcome.kind === "needs_code") {
@@ -232,6 +235,7 @@ export function registerLoginRoutes(
 			invites: ctx.opened.identity.invites,
 			setupCode: () => readSetupCode(ctx.opened.identity.cacheDir),
 			clearSetupCode: () => clearSetupCode(ctx.opened.identity.cacheDir),
+			setupClaims,
 			policy: providers.get(pending.provider)?.contribution.policy ?? {},
 		});
 		if (outcome.kind === "needs_code") {

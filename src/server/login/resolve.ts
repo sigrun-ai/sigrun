@@ -9,6 +9,9 @@ import {
 	type UserDirectory,
 } from "../../harness/identity/users.js";
 import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
+import { hashToken } from "../../harness/identity/tokens.js";
+import { withClaimLock } from "../auth/claim-lock.js";
+import { SetupClaimStore } from "./setup-claim.js";
 import { assignUsername } from "./usernames.js";
 
 export type LoginPolicy = NonNullable<LoginProviderContribution["policy"]>;
@@ -28,6 +31,7 @@ export interface ResolveLoginDependencies {
 	readonly invites: InviteStore;
 	readonly setupCode: () => string | undefined;
 	readonly clearSetupCode: () => Promise<void>;
+	readonly setupClaims: SetupClaimStore;
 	readonly policy: LoginPolicy;
 }
 
@@ -88,10 +92,21 @@ export async function resolveLogin(
 			return { kind: "session", user: existing.user };
 		}
 
-		if (!deps.users.isClaimed()) {
-			if (input.code === undefined || !setupCodeMatches(input.code, deps.setupCode())) {
-				return { kind: "needs_code", reason: "setup" };
+		const setupResolution = await withClaimLock(async (): Promise<LoginResolution | undefined> => {
+			const validSetupCode = input.code !== undefined && setupCodeMatches(input.code, deps.setupCode());
+			if (deps.users.isClaimed()) {
+				// A setup code never creates a user on a claimed server. It may
+				// only finish the exact claim whose subject/user/code were recorded.
+				if (!validSetupCode) return undefined;
+				const claim = deps.setupClaims.matches(provider, result.subject, input.code!);
+				if (claim === undefined) return { kind: "refused", error: "not_allowed" };
+				await deps.accounts.link({ provider, subject: result.subject, user: claim.user, via: "login" });
+				await deps.users.setGroups(claim.user, provider, result.groups ?? []);
+				await deps.clearSetupCode();
+				await deps.setupClaims.clear();
+				return { kind: "session", user: claim.user };
 			}
+			if (!validSetupCode) return { kind: "needs_code", reason: "setup" };
 			const user = assignUsername(result.profile, result.subject, (name) => deps.users.get(name) !== undefined);
 			const record = await deps.users.add({
 				user,
@@ -99,12 +114,19 @@ export async function resolveLogin(
 				admin: true,
 				source: "login",
 			});
+			await deps.setupClaims.record({
+				user,
+				provider,
+				subject: result.subject,
+				codeSha256: hashToken(input.code!),
+			});
 			await deps.accounts.link({ provider, subject: result.subject, user, via: "login" });
 			await deps.users.setGroups(user, provider, result.groups ?? []);
-			// Only a complete, successful claim consumes the setup credential.
 			await deps.clearSetupCode();
+			await deps.setupClaims.clear();
 			return { kind: "session", user: record.user };
-		}
+		});
+		if (setupResolution !== undefined) return setupResolution;
 
 		if (deps.policy.autoProvision === true && !allowed(result, deps.policy)) {
 			return { kind: "refused", error: "not_allowed" };
@@ -113,8 +135,8 @@ export async function resolveLogin(
 			return { kind: "needs_code", reason: "invite" };
 		}
 
-		// The invite is redeemed only after the new username is known, and
-		// never against an existing user. A refused invite creates nothing.
+		// Admission is checked before redemption so an M1 refusal burns no invite.
+		deps.users.checkAdmission();
 		const user = assignUsername(result.profile, result.subject, (name) => deps.users.get(name) !== undefined);
 		const grant = deps.policy.autoProvision === true
 			? { admin: false }
