@@ -80,13 +80,30 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
           CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
         run: cargo build --locked --release --target aarch64-unknown-linux-musl
-      - name: Upload musl helpers
+      - name: Assemble the platform packages
+        run: |
+          mkdir -p sandbox/npm/linux-x64/bin sandbox/npm/linux-arm64/bin
+          cp sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox \
+            sandbox/npm/linux-x64/bin/sigrun-sandbox
+          cp sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox \
+            sandbox/npm/linux-arm64/bin/sigrun-sandbox
+          chmod +x sandbox/npm/linux-x64/bin/sigrun-sandbox \
+            sandbox/npm/linux-arm64/bin/sigrun-sandbox
+      - name: Pack the x64 platform package
+        working-directory: sandbox/npm/linux-x64
+        run: npm pack
+      - name: Pack the arm64 platform package
+        working-directory: sandbox/npm/linux-arm64
+        run: npm pack
+      - name: Upload musl helpers and platform packages
         uses: actions/upload-artifact@v4
         with:
           name: sigrun-sandbox-musl
           path: |
             sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox
             sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox
+            sandbox/npm/linux-x64/*.tgz
+            sandbox/npm/linux-arm64/*.tgz
 
   image-build:
     runs-on: ubuntu-latest
