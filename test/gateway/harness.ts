@@ -29,7 +29,7 @@ import { openHarness, type OpenedHarness } from "../../src/harness/boot.js";
 import { createServer } from "../../src/server/index.js";
 import { startGateway, type GatewayHandle } from "../../src/server/gateway.js";
 import { createShutdown } from "../../src/server/shutdown.js";
-import { seededIdentity } from "../helpers/identity.js";
+import { seededIdentity, unclaimedIdentity } from "../helpers/identity.js";
 
 /** The loopback channel fixture (id `loop`, label `Loop`). */
 export const LOOPBACK_SPECIFIER = pathToFileURL(
@@ -90,6 +90,24 @@ export interface BootGatewayOptions {
 	 * the boot owns its own tmpdir and removes it at shutdown.
 	 */
 	readonly storesDir?: string;
+	/**
+	 * Boot with an UNCLAIMED directory (the claimed-gate e2e): no seeds,
+	 * no tokens — the engine reads the empty directory in-process
+	 * through `host.users.list()` (the HTTP surface 403s setup_required
+	 * under any auth, so the test drives the loopback fixture directly).
+	 */
+	readonly unclaimed?: boolean;
+	/**
+	 * Auth env overrides (the C8 proxy e2e): spread OVER the default
+	 * `SIGRUN_AUTH: "token"` — e.g. `{ SIGRUN_AUTH: "proxy",
+	 * SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16" }`.
+	 */
+	authEnv?: Record<string, string | undefined>;
+	/**
+	 * The settings-file `server.auth` section, threaded into loadConfig
+	 * (adminGroups for the proxy e2e's group grant).
+	 */
+	readonly serverAuth?: Record<string, unknown>;
 }
 
 /**
@@ -131,7 +149,14 @@ export async function bootGateway(
 		SIGRUN_DATA_DIR: dir,
 		SIGRUN_STATE_DIR: dir,
 		SIGRUN_CACHE_DIR: dir,
-	});
+		...(opts.authEnv ?? {}),
+	},
+		opts.serverAuth === undefined
+			? undefined
+			: ({ server: { auth: opts.serverAuth } } as Parameters<
+					typeof loadConfig
+			  >[1]),
+	);
 	// The settings file lives at the CONFIG root (the same dir
 	// `SIGRUN_CONFIG_DIR` names — where SettingsStore and AuthStore read
 	// it). With a caller-supplied storesDir the config root is INSIDE it,
@@ -162,11 +187,16 @@ export async function bootGateway(
 		await mkdir(join(opts.storesDir, "state"), { recursive: true });
 		await mkdir(join(opts.storesDir, "data"), { recursive: true });
 	}
-	const identity = await seededIdentity(dir);
+	const identity = opts.unclaimed
+		? await unclaimedIdentity(dir)
+		: await seededIdentity(dir);
 	// seededIdentity already claimed the dir with "tester" (admin); the
 	// seed list only ADDS (the caller's users default [alice]); "tester"
-	// in the list would collide with the seeded one.
-	const seedUsers = opts.users ?? [{ user: "alice", admin: true }];
+	// in the list would collide with the seeded one. An unclaimed boot
+	// seeds NOTHING (the empty directory IS the posture under test).
+	const seedUsers = opts.unclaimed
+		? []
+		: (opts.users ?? [{ user: "alice", admin: true }]);
 	for (const user of seedUsers) {
 		if (user.user === "tester") continue;
 		// Idempotent: a second boot over the SAME config root (the restart
@@ -190,12 +220,17 @@ export async function bootGateway(
 		settingsDir: join(dir, "config"),
 	});
 	const tokens: Record<string, string> = {};
-	for (const user of ["tester", ...seedUsers.map((u) => u.user)]) {
-		const { token } = await opened.identity.tokens.create(
-			`${user}-cli`,
-			user,
-		);
-		tokens[user] = token;
+	// An unclaimed directory has no users to mint for (the claimed-gate
+	// e2e drives the loopback fixture directly — the HTTP surface would
+	// 403 setup_required under any auth).
+	if (!opts.unclaimed) {
+		for (const user of ["tester", ...seedUsers.map((u) => u.user)]) {
+			const { token } = await opened.identity.tokens.create(
+				`${user}-cli`,
+				user,
+			);
+			tokens[user] = token;
+		}
 	}
 	// serve.ts's composition: the handle exists BEFORE the server (the
 	// meta route reaches it through ServerContext), and the engine starts

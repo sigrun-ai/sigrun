@@ -104,6 +104,10 @@ describe("GET /v1/commands", () => {
 			"model",
 			"thinking",
 			"jobs",
+			// The gateway built-in's two commands (gateway Task 4, §8.2) —
+			// extension-declared, merged after the core table.
+			"pair",
+			"link",
 		]);
 		for (const command of body.commands) {
 			expect(typeof command.description).toBe("string");
