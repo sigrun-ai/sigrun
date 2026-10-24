@@ -246,6 +246,27 @@ describe("loadConfig: SIGRUN_AUTH / SIGRUN_AUTH_TRUSTED_PROXIES", () => {
 	});
 });
 
+describe("loadConfig: auth.sessionDays", () => {
+	test("parses the file value and defaults to 30", () => {
+		expect(loadConfig({ ...MODEL_ENV }).auth.sessionDays).toBe(30);
+		const config = loadConfig(
+			{ ...MODEL_ENV },
+			{ server: { auth: { sessionDays: 7 } } },
+		);
+		expect(config.auth.sessionDays).toBe(7);
+		expect(config.auth.sessionDays * 86_400_000).toBe(604_800_000);
+	});
+
+	test("sessionDays must be a positive integer", () => {
+		for (const sessionDays of [0, -1, 1.5, "7"]) {
+			const { store } = freshStore();
+			expect(() => store.update({ server: { auth: { sessionDays } } })).toThrow(
+				/server\.auth\.sessionDays/,
+			);
+		}
+	});
+});
+
 describe("loadConfig: metricsPublic (SIGRUN_METRICS_PUBLIC, strict)", () => {
 	test("default false; strict true/false; the file applies where env is absent", () => {
 		expect(loadConfig({ ...MODEL_ENV }).metricsPublic).toBe(false);

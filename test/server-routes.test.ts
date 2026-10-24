@@ -419,6 +419,42 @@ describe("server route table", () => {
 	});
 });
 
+describe("token list wire", () => {
+	test("GET /v1/auth/tokens shows kind and expiresAt", async () => {
+		const { app, opened } = await bootServer({ auth: "token" });
+		const api = await opened.identity.tokens.create("laptop", "tester");
+		const now = Date.now();
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/tokens",
+			headers: { authorization: `Bearer ${api.token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().tokens).toEqual([
+			{
+				id: api.record.id,
+				name: "laptop",
+				user: "tester",
+				createdAt: api.record.createdAt,
+			},
+			{
+				id: session.record.id,
+				name: "login:login:oauth:acme",
+				user: "tester",
+				createdAt: now,
+				kind: "session",
+				expiresAt: now + 60_000,
+			},
+		]);
+	});
+});
+
 describe("unknown conversation id", () => {
 	test("every /v1/conversations/:id route 404s an unknown id except the polling surfaces", async () => {
 		const { app } = await bootServer();

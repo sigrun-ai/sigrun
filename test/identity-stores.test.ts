@@ -185,6 +185,64 @@ describe("TokenStore", () => {
 		expect(record.sha256).toBe(hashToken(token));
 	});
 
+	test("createSession stores kind, provider, and expiresAt", async () => {
+		const tokens = new TokenStore(join(tmpDir("session"), "api-tokens.json"));
+		const now = 1_700_000_000_000;
+		const { record, token } = await tokens.createSession(
+			"alice",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		expect(record).toMatchObject({
+			name: "login:login:oauth:acme",
+			user: "alice",
+			kind: "session",
+			provider: "login:oauth:acme",
+			createdAt: now,
+			expiresAt: now + 60_000,
+		});
+		expect(tokens.verify(token, now)).toEqual(record);
+	});
+
+	test("verify rejects a session at expiresAt, not one millisecond before", async () => {
+		const tokens = new TokenStore(join(tmpDir("expiry"), "api-tokens.json"));
+		const now = 1_700_000_000_000;
+		const { record, token } = await tokens.createSession(
+			"alice",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		expect(tokens.verify(token, record.expiresAt! - 1)).toEqual(record);
+		expect(tokens.verify(token, record.expiresAt!)).toBeUndefined();
+	});
+
+	test("every mutation prunes expired records before writing", async () => {
+		const tokens = new TokenStore(join(tmpDir("prune"), "api-tokens.json"));
+		const now = 1_700_000_000_000;
+		const expired = await tokens.createSession("alice", "login:oauth:acme", 1, now);
+		const other = await tokens.createSession("alice", "login:oauth:other", 1, now);
+		await tokens.create("laptop", "alice");
+		expect(tokens.verify(expired.token, now + 1)).toBeUndefined();
+		expect(tokens.list()).toHaveLength(3);
+
+		await tokens.revoke(other.record.id);
+		expect(tokens.list().map((record) => record.id)).toEqual([other.record.id]);
+		await tokens.createSession("bob", "login:oauth:acme", 60_000, now + 2);
+		expect(tokens.list().map((record) => record.user)).toEqual(["bob"]);
+
+		const expiredForRevokeAll = await tokens.createSession("alice", "login:oauth:acme", 1, now);
+		const bob = tokens.list()[0]!;
+		expect(await tokens.revokeAllFor("nobody")).toBe(0);
+		expect(tokens.list().map((record) => record.id)).toEqual([
+			bob.id,
+			expiredForRevokeAll.record.id,
+		]);
+		await tokens.revokeAllFor("alice");
+		expect(tokens.list().map((record) => record.id)).toEqual([bob.id]);
+	});
+
 	test("revokeAllFor removes only that user's tokens", async () => {
 		const tokens = new TokenStore(join(tmpDir("revoke"), "api-tokens.json"));
 		await tokens.create("a1", "alice");

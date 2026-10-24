@@ -147,6 +147,60 @@ describe("token method", () => {
 		});
 	});
 
+	test("a session cookie resolves method session with its provider", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const { token } = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "tester",
+			method: "session",
+			provider: "login:oauth:acme",
+		});
+	});
+
+	test("an expired session cookie → 401", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const now = Date.now();
+		const { token } = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		// Time travel through the store's injected clock: at expiresAt the
+		// credential is unknown, exactly like a revoked session.
+		vi.spyOn(Date, "now").mockReturnValue(now + 60_000);
+		try {
+			const expired = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				headers: { cookie: `sigrun_session=${token}` },
+			});
+			expect(expired.statusCode).toBe(401);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
 	test("an unknown token → 401", async () => {
 		const { app } = await bootServer({
 			env: { SIGRUN_AUTH: "token" },
@@ -204,6 +258,45 @@ describe("POST /v1/auth/login", () => {
 		const cookieLine = Array.isArray(cookie) ? cookie[0] : cookie;
 		expect(cookieLine).toContain("sigrun_session=");
 		expect(cookieLine).toContain("Max-Age=0");
+	});
+
+	test("logout revokes a session cookie; logout only clears an API-token cookie", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+		);
+		const logout = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+			headers: { cookie: `sigrun_session=${session.token}` },
+		});
+		expect(logout.statusCode).toBe(204);
+		expect(opened.identity.tokens.verify(session.token)).toBeUndefined();
+		const second = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${session.token}` },
+		});
+		expect(second.statusCode).toBe(401);
+
+		const apiToken = await mintToken(opened, "tester");
+		const clearOnly = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+			headers: { cookie: `sigrun_session=${apiToken}` },
+		});
+		expect(clearOnly.statusCode).toBe(204);
+		expect(opened.identity.tokens.verify(apiToken)).toBeDefined();
+		const stillValid = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${apiToken}` },
+		});
+		expect(stillValid.statusCode).toBe(200);
 	});
 });
 
