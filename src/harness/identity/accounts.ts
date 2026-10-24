@@ -20,8 +20,9 @@
  *
  * Store discipline is `users.json`'s (`json-store.ts`): synchronous
  * mtime-reloading reads, atomic 0600 writes, mutations serialized on a
- * per-instance {@link MutationQueue}. The CLI is a second writer and is
- * honored live.
+ * per-instance {@link MutationQueue}. A second writer on the same file
+ * (another sigrun process, or a future CLI accounts command) is honored
+ * live by the per-access stat check.
  */
 
 import { MutationQueue, readRecords, writeJson } from "./json-store.js";
@@ -29,6 +30,18 @@ import type { UserDirectory } from "./users.js";
 
 /** How a link came to exist (spec §11.3). */
 export type AccountLinkVia = "login" | "self" | "pairing" | "admin";
+
+/**
+ * The allowed `via` values, as a runtime set: `accounts.json` is a file,
+ * so a hand-edited or future-written record can carry anything, and the
+ * value reaches the wire verbatim. Validated like every other field.
+ */
+const VIAS: ReadonlySet<string> = new Set<AccountLinkVia>([
+	"login",
+	"self",
+	"pairing",
+	"admin",
+]);
 
 /** One external identity bound to one directory user. */
 export interface AccountLink {
@@ -104,7 +117,8 @@ export class AccountStore {
 	 * a no-op returning the existing record (its `via` and `linkedAt` are
 	 * the first link's); a different user is refused with
 	 * {@link AccountLinkConflictError}. Throws `unknown user "<user>"`,
-	 * `invalid_provider: <provider>`, or `invalid_subject`.
+	 * `invalid_provider: <provider>`, `invalid_subject`, or
+	 * `invalid_via: <via>`.
 	 */
 	link(input: {
 		provider: string;
@@ -119,6 +133,9 @@ export class AccountStore {
 			}
 			if (subject === "" || subject.length > SUBJECT_MAX_LENGTH) {
 				throw new Error("invalid_subject");
+			}
+			if (!VIAS.has(via)) {
+				throw new Error(`invalid_via: ${String(via)}`);
 			}
 			if (this.users.get(user) === undefined) {
 				throw new Error(`unknown user "${user}"`);
@@ -157,6 +174,42 @@ export class AccountStore {
 			records.splice(index, 1);
 			await writeJson(this.path, records);
 			return true;
+		});
+	}
+
+	/**
+	 * Remove one link, deciding AUTHORIZATION inside the mutation against
+	 * the record the write will actually replace.
+	 *
+	 * The route cannot check ownership itself: it reads the link, then
+	 * awaits {@link unlink}, whose read happens later — in the window the
+	 * subject could be unlinked and re-linked to a different user, and the
+	 * stale check would remove the NEW holder's link. That is the same
+	 * doctrine this store's validation follows: the check and the write
+	 * see one file state.
+	 *
+	 * `principal.admin` and an absent `principal.user` (the naive
+	 * single-operator superuser, a userless service token) may remove
+	 * anyone's link; anyone else may remove only their own.
+	 */
+	unlinkAuthorized(
+		provider: string,
+		subject: string,
+		principal: { user?: string; admin: boolean },
+	): Promise<"removed" | "absent" | "forbidden"> {
+		return this.mutations.run(async () => {
+			const records = this.list();
+			const index = records.findIndex(
+				(link) => link.provider === provider && link.subject === subject,
+			);
+			if (index === -1) return "absent" as const;
+			const record = records[index]!;
+			if (!principal.admin && record.user !== principal.user) {
+				return "forbidden" as const;
+			}
+			records.splice(index, 1);
+			await writeJson(this.path, records);
+			return "removed" as const;
 		});
 	}
 

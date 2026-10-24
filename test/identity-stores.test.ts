@@ -19,6 +19,7 @@
  */
 
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -27,7 +28,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { rm } from "node:fs/promises";
 import { afterAll, describe, expect, test } from "vitest";
 import {
@@ -502,6 +503,110 @@ describe("AccountStore", () => {
 		const { accounts, path } = await accountStore("link-malformed");
 		writeFileSync(path, "{");
 		expect(() => accounts.lookup("chat:telegram", "12345")).toThrow(path);
+	});
+
+	test("a failed write never leaves a link being served that is not on disk", async () => {
+		// The store mutates the cached record array before the write and
+		// re-reads from disk afterwards. If a write fails (a read-only PVC,
+		// a full disk) and the cache entry survives, the process keeps
+		// authorizing a sender the file does not hold — so a REVOCATION that
+		// failed would silently not stick. The failure must be surfaced AND
+		// the cache dropped.
+		const { accounts, path } = await accountStore("link-failed-write");
+		await accounts.link({
+			provider: "chat:telegram",
+			subject: "12345",
+			user: "alice",
+			via: "self",
+		});
+		// Make the containing directory read-only: creating the temp file
+		// fails, so the write fails while READS keep working — the exact
+		// shape of a read-only PVC.
+		const directory = dirname(path);
+		chmodSync(directory, 0o500);
+		try {
+			await expect(
+				accounts.unlink("chat:telegram", "12345"),
+			).rejects.toThrow();
+		} finally {
+			chmodSync(directory, 0o700);
+		}
+		// The disk still holds the link (the write failed), so the
+		// in-memory view must agree with the FILE, not with the failed
+		// mutation.
+		expect(accounts.lookup("chat:telegram", "12345")?.user).toBe("alice");
+	});
+
+	test("via is validated", async () => {
+		const { accounts } = await accountStore("link-via");
+		await expect(
+			accounts.link({
+				provider: "chat:telegram",
+				subject: "12345",
+				user: "alice",
+				via: "carrier-pigeon" as never,
+			}),
+		).rejects.toThrow("invalid_via: carrier-pigeon");
+	});
+
+	test("unlinkAuthorized authorizes inside the mutation, against the live record", async () => {
+		const { accounts } = await accountStore("link-unlink-authorized");
+		await accounts.link({
+			provider: "chat:telegram",
+			subject: "12345",
+			user: "alice",
+			via: "self",
+		});
+		// A non-admin naming themselves may remove their own link.
+		expect(
+			await accounts.unlinkAuthorized("chat:telegram", "12345", {
+				user: "alice",
+				admin: false,
+			}),
+		).toBe("removed");
+		// Absent → "absent", never a silent success.
+		expect(
+			await accounts.unlinkAuthorized("chat:telegram", "12345", {
+				user: "alice",
+				admin: false,
+			}),
+		).toBe("absent");
+		// Another user's link → "forbidden", and the link survives.
+		await accounts.link({
+			provider: "chat:telegram",
+			subject: "67890",
+			user: "bob",
+			via: "self",
+		});
+		expect(
+			await accounts.unlinkAuthorized("chat:telegram", "67890", {
+				user: "alice",
+				admin: false,
+			}),
+		).toBe("forbidden");
+		expect(accounts.lookup("chat:telegram", "67890")?.user).toBe("bob");
+		// An admin may remove anyone's.
+		expect(
+			await accounts.unlinkAuthorized("chat:telegram", "67890", {
+				user: "alice",
+				admin: true,
+			}),
+		).toBe("removed");
+		expect(accounts.lookup("chat:telegram", "67890")).toBeUndefined();
+		// A userless, non-admin principal is refused, exactly as
+		// DELETE /v1/auth/tokens/:id refuses one: own-or-admin only.
+		await accounts.link({
+			provider: "chat:telegram",
+			subject: "11111",
+			user: "bob",
+			via: "self",
+		});
+		expect(
+			await accounts.unlinkAuthorized("chat:telegram", "11111", {
+				admin: false,
+			}),
+		).toBe("forbidden");
+		expect(accounts.lookup("chat:telegram", "11111")?.user).toBe("bob");
 	});
 });
 

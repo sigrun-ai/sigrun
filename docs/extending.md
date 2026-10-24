@@ -386,7 +386,13 @@ Provider ids have two forms:
   ids read `login:oauth:<id>`).
 
 A subject is opaque to sigrun: a Telegram or Discord numeric id, a
-Signal `+E.164` number, and an email-shaped subject all pass.
+Signal `+E.164` number, and an email-shaped subject all pass — any
+non-empty string up to 512 characters.
+
+A provider id is **lowercase, no spaces**: it must match
+`^(login|chat):[a-z0-9][a-z0-9._:-]*$`, so `chat:Telegram` is rejected
+with `invalid_provider: chat:Telegram`. Use the channel's own, already
+lowercase name.
 
 ```ts
 await host.accounts.lookup("chat:telegram", "12345");   // AccountLinkWire | undefined
@@ -436,6 +442,14 @@ Users manage their own links over HTTP, mirroring `/v1/auth/tokens`:
 Both take QUERY parameters rather than path segments because provider ids
 contain `:` and subjects may contain `/`, `+`, or `@` (URL-encode them:
 `%2B` for a Signal `+E.164` number).
+
+One consequence worth knowing: because a `(provider, subject)` pair is
+usually guessable (a Discord handle, an email address), a signed-in
+non-admin can tell 404 from 403 and so learn whether a given external
+identity is registered — though never to whom. The authorization rule
+is checked inside the same serialized mutation as the removal, so a
+subject re-linked to someone else mid-request is not removed on the
+strength of a stale read.
 
 ## Secrets precedence: stored wins, env bootstraps
 
