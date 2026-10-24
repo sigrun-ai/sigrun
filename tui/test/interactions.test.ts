@@ -502,12 +502,110 @@ describe("InteractionPrompter", () => {
 		await flush();
 		// The refetch happened (the settle-refetch path).
 		expect(stub.getCalls).toEqual([{ id: 1, callId: "c1" }]);
-		// The settled status renders; typed values stay visible, read-only
-		// (the review step shows them; no submit affordance remains).
+		// The settled status renders in the header (Review fix: the
+		// header carries the record's status); typed values stay
+		// visible, read-only (the review step shows them).
 		const lines = prompter.render(60).join("\n");
+		expect(lines).toContain("expired");
 		expect(lines).toContain("A");
 		expect(lines).toContain("X");
 		expect(prompter.answerMode).toBe(false);
+		// A further poll still lists the record pending (the server's
+		// pending index lags the settle) — the settled envelope must NOT
+		// revert to write access (the read-only swap sticks).
+		await prompter.kickAndWait();
+		const after = prompter.render(60).join("\n");
+		expect(after).toContain("expired");
+		// Read-only: a digit dispatches nothing (no re-submit).
+		prompter.beginAnswer();
+		prompter.handleKey("1");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		prompter.dispose();
+	});
+
+	test("a 400 answer failure keeps the card writable — a retry can answer", async () => {
+		let fail = true;
+		const stub = stubClient({
+			answerResult: () =>
+				fail
+					? Promise.reject(
+							new SigrunApiError("POST", "/v1/conversations/1/interactions/c1/answer", 400, {
+								error: "invalid_body",
+							}),
+						)
+					: Promise.resolve({ callId: "c1", status: "answered", answer: {} }),
+			// The settle-refetch returns the STILL-PENDING record (the 400
+			// was no settle) — the card must not wedge read-only.
+			getResult: (callId) =>
+				Promise.resolve(
+					interaction(callId, { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
+				),
+		});
+		stub.setPending([
+			interaction("c1", { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		const errors: string[] = [];
+		prompter.onError = (message) => errors.push(message);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		prompter.handleKey("1");
+		await flush();
+		// The error surfaces loud; the card stays pending + writable.
+		expect(errors.length).toBe(1);
+		const mid = prompter.render(60).join("\n");
+		expect(mid).toContain("pick");
+		expect(mid).not.toContain(" — answered");
+		// The retry answers.
+		fail = false;
+		prompter.beginAnswer();
+		prompter.handleKey("1");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(2);
+		prompter.dispose();
+	});
+
+	test("a callout action is NOT the answer — only the root form's submit answers", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				children: [
+					{ type: "markdown", text: "heads up" },
+					// A callout action button inside the form: its dispatch
+					// must never POST an answer.
+					{
+						type: "callout",
+						tone: "info",
+						title: "Note",
+						body: "context",
+						actions: [
+							{
+								id: "more",
+								label: "More info",
+								action: { type: "submit", name: "details" },
+							},
+						],
+					},
+				],
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		// Dispatch the callout action directly (the form's button click).
+		const state = prompter.surface;
+		expect(state).toBeDefined();
+		state?.dispatch({ type: "submit", name: "details" }, {});
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		// The form's own submit DOES answer.
+		state?.dispatch({ type: "submit", name: "submit" }, { values: { ok: true } });
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		expect(stub.answerCalls[0]?.answer).toEqual({ values: { ok: true } });
 		prompter.dispose();
 	});
 

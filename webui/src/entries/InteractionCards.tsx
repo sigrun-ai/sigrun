@@ -23,6 +23,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type {
 	Action,
+	Block,
 	JsonObject,
 	JsonValue,
 	Tree,
@@ -52,7 +53,7 @@ export function InteractionCard(props: {
 	client: SigrunClient;
 	onAnswered?: (callId: string) => void;
 	onError?: (message: string) => void;
-}) {
+}): ReactNode {
 	const { conversationId, interaction, client, onAnswered, onError } = props;
 	// The refetched record after a settle lands mid-edit (Review Focus
 	// 2): the card swaps to the settled envelope (read-only) while the
@@ -73,6 +74,7 @@ export function InteractionCard(props: {
 						tree: record.body,
 						data: recordData(record),
 						access: pending ? "write" : "read",
+						submitAction: submitActionOf(record.body),
 						answer: (body) =>
 							client
 								.answerInteraction(conversationId, record.callId, body)
@@ -84,7 +86,17 @@ export function InteractionCard(props: {
 							// it settled; a refetch failure reports the error loud.
 							client
 								.getInteraction(conversationId, record.callId)
-								.then((fresh: InteractionWire) => setSettled(fresh))
+								.then((fresh: InteractionWire) => {
+									// Only a genuinely settled record swaps in: a
+									// still-pending refetch (a 400, a network blip)
+									// must NOT wedge the card read-only — report
+									// the failure and stay writable (Review fix).
+									if (fresh.status === "pending") {
+										onError?.(message);
+										return;
+									}
+									setSettled(fresh);
+								})
 								.catch(() => onError?.(message));
 						},
 					}),
@@ -161,6 +173,13 @@ function InteractionSurface(props: {
 	);
 }
 
+/** The root form's submit action name (`onSubmit ?? "submit"` — the
+ *  ONLY action the transport answers on; anything else is ignored). */
+function submitActionOf(tree: Tree): string {
+	const root: Block = tree.root;
+	return root.type === "form" ? (root.onSubmit ?? "submit") : "submit";
+}
+
 /** The pending card stack. */
 export function InteractionCards(props: {
 	conversationId: number | null;
@@ -168,7 +187,7 @@ export function InteractionCards(props: {
 	client: SigrunClient;
 	onAnswered?: (callId: string) => void;
 	onError?: (message: string) => void;
-}) {
+}): ReactNode {
 	const { conversationId, interactions, client, onAnswered, onError } = props;
 	if (conversationId === null || interactions.length === 0) return null;
 	return (

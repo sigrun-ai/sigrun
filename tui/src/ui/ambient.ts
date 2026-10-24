@@ -44,6 +44,7 @@ import type {
 import type { AmbientWire, SigrunClient } from "../api.js";
 import type { BlockCtx } from "../blocks/context.js";
 import { renderBlock } from "../blocks/render.js";
+import { truncate } from "../blocks/width.js";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
 
 /** Ambient bodies never bind (the ruling): the data document is empty. */
@@ -126,28 +127,29 @@ export class AmbientChrome implements Component {
 		this.#changed();
 	}
 
-	/** The statusline: the status records' one-line bodies joined " · ". */
-	statusline(): string {
+	/** The statusline: the status records' one-line bodies joined " · ".
+	 *  `width` bounds each body's render (the app's frame width). */
+	statusline(width?: number): string {
 		return this.#visible("status")
-			.map((record) => this.#bodyText(record))
+			.map((record) => this.#bodyText(record, width))
 			.filter((line) => line !== "")
 			.join(" · ");
 	}
 
 	/** The footer zone: one rendered line per footer record. */
-	footerLines(): readonly string[] {
+	footerLines(width?: number): readonly string[] {
 		return this.#visible("footer").map((record) =>
-			this.#renderBody(record, 120).join(" ").trim(),
+			this.#renderBody(record, width).join(" ").trim(),
 		);
 	}
 
 	/** The panel zone: the full per-record tree rendering. */
-	panelLines(): readonly string[] {
+	panelLines(width?: number): readonly string[] {
 		const lines: string[] = [];
 		for (const record of this.#visible("panel")) {
 			if (lines.length > 0) lines.push("");
 			lines.push(`[${record.key}]${record.owner === "" ? "" : ` ${record.owner}`}`);
-			lines.push(...this.#renderBody(record, 120));
+			lines.push(...this.#renderBody(record, width));
 			if (record.details !== undefined) {
 				lines.push(`[details] ${JSON.stringify(record.details)}`);
 			}
@@ -166,19 +168,22 @@ export class AmbientChrome implements Component {
 	}
 
 	/** Render one record's body tree (budgeted per Review Focus 3). */
-	#renderBody(record: AmbientWire, width: number): string[] {
+	#renderBody(record: AmbientWire, width?: number): string[] {
 		const body = record.body;
 		if (body === undefined) return [];
 		const root = budgetTree(record, body.root);
-		return renderBlock(root, ambientCtx(this.#theme)).render(width);
+		// The chrome's own frame width bounds the render; a bare read
+		// (statusline/footerLines callers without a frame) falls back to
+		// the regular-class width.
+		return renderBlock(root, ambientCtx(this.#theme)).render(width ?? 120);
 	}
 
 	/** The one-line text of a status/footer body (a single markdown or a
 	 *  columns of one-line blocks — §9.2's one-line rule). */
-	#bodyText(record: AmbientWire): string {
+	#bodyText(record: AmbientWire, width?: number): string {
 		const body = record.body;
 		if (body === undefined) return "";
-		return this.#renderBody(record, 120).join(" ").trim();
+		return this.#renderBody(record, width).join(" ").trim();
 	}
 
 	/** Generation-guarded fetch (quiet failures keep the last surfaces). */
@@ -208,10 +213,12 @@ export class AmbientChrome implements Component {
 
 	/** The chrome: panel blocks, then footer lines, then the statusline. */
 	render(width: number): string[] {
-		const lines = [...this.panelLines(), ...this.footerLines()];
-		const status = this.statusline();
+		const lines = [...this.panelLines(width), ...this.footerLines(width)];
+		const status = this.statusline(width);
 		if (status !== "") lines.push(status);
-		return lines.map((line) => line.slice(0, width));
+		// ANSI-aware clamp (Review fix): a raw UTF-16 slice cuts escape
+		// sequences and surrogate pairs mid-unit.
+		return lines.map((line) => truncate(line, width));
 	}
 
 	invalidate(): void {
@@ -226,12 +233,29 @@ function hasContent(record: AmbientWire): boolean {
 
 /** The quiet fold for the drop overflow: mark the tail rows quiet so
  *  the collection's own "N more" toggle carries them (the budget never
- *  LOSES rows — the user can still unfold). */
+ *  LOSES rows — the user can still unfold). A template WITHOUT a
+ *  `quiet` binding has no fold to ride (its isQuiet is always false),
+ *  so the budget falls back to truncating the tail behind a one-line
+ *  "<n> more" markdown row (Review fix — a quiet-less template's drop
+ *  overflow silently no-op'd). */
 function dropTail(
 	collection: CollectionBlock,
 	items: readonly JsonValue[],
 	maxRows: number,
-): CollectionBlock {
+): Block {
+	// No quiet binding: truncate + count line (the fold has nothing to
+	// key on).
+	if (collection.item.quiet === undefined) {
+		const visible = items.slice(0, maxRows);
+		const dropped = items.length - visible.length;
+		// SAFETY: same block with a literal array swapped in (the ambient
+		// literal-rows shape the schema now admits).
+		const trimmed = { ...collection, items: [...visible] } as CollectionBlock;
+		return {
+			type: "stack",
+			children: [trimmed, { type: "markdown", text: `${dropped} more` }],
+		};
+	}
 	const visible = items.slice(0, maxRows);
 	const tail = items.slice(maxRows).map((row) => {
 		if (typeof row === "object" && row !== null && !Array.isArray(row)) {
@@ -256,11 +280,10 @@ function budgetTree(surface: AmbientWire, root: Block): Block {
 	const dropped = root.items.length - maxRows;
 	if (surface.overflow === "summarize") {
 		// The count line: one markdown under the trimmed collection.
-		const trimmed = dropTail(root, root.items, root.items.length - dropped);
 		return {
 			type: "stack",
 			children: [
-				{ ...trimmed, items: root.items.slice(0, maxRows) },
+				{ ...root, items: root.items.slice(0, maxRows) },
 				{ type: "markdown", text: `${dropped} rows` },
 			],
 		};

@@ -301,6 +301,16 @@ export class SurfaceState {
 		return drained;
 	}
 
+	/** Flip the live surface's access (a mid-edit settle swap renders
+	 *  read-only: the transport's access was captured at load, so the
+	 *  settle path flips the state directly — the view re-renders via
+	 *  the emitted change). Only narrows: once read, never back. */
+	setAccess(access: "read" | "write"): void {
+		if (this.#access === access) return;
+		this.#access = access;
+		this.#emit();
+	}
+
 	/** The channel-owned `/view/` branch (spec §6.2) — a BlockCtx's
 	 *  `view.values` reads this object. */
 	get viewValues(): JsonObject {

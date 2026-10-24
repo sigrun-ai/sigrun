@@ -39,6 +39,10 @@ export interface InteractionTransportOptions {
 	readonly data: JsonObject;
 	/** Settled records render read-only (spec §6.5). */
 	readonly access: "read" | "write";
+	/** The root form's submit action name (`onSubmit ?? "submit"`) — the
+	 *  ONLY action that answers the record; every other action (a
+	 *  callout button, a live-mode edit dispatch) is ignored. */
+	readonly submitAction: string;
 	/** An accepted answer's follow-through (the prompter's refetch). */
 	readonly onAnswered?: () => void;
 	/** A 404 (not_pending — the record settled under the user's fingers)
@@ -70,6 +74,12 @@ export function createInteractionTransport(
 			payload: JsonValue;
 			actionId: string;
 		}): Promise<SurfaceActResult> {
+			// Only the root form's submit is the answer (Review fix): a
+			// callout button or a live-mode edit dispatch must never POST
+			// `{values}` — ignore it (an ok result keeps the form happy).
+			if (body.action !== options.submitAction) {
+				return { ok: true, rev: 0 };
+			}
 			// The form's submit payload is `{values}` (spec §5.6) — the
 			// answer shape verbatim. A double-submit is a channel bug; the
 			// route would 404 — guard anyway.

@@ -258,6 +258,151 @@ describe("InteractionCard (tree rendering)", () => {
 		expect(enabledSubmit).toHaveLength(0);
 	});
 
+	test("a 400 answer failure stays writable; a retry answers", async () => {
+		let fail = true;
+		const answerInteraction = vi.fn().mockImplementation(() =>
+			fail
+				? Promise.reject(new ApiError({ method: "POST", path: "/answer", status: 400, error: "invalid_body" }))
+				: Promise.resolve({ callId: "c1", status: "answered", answer: { values: { decision: "allow" } } }),
+		);
+		// The settle-refetch returns the STILL-PENDING record (the 400
+		// was no settle): the card must NOT wedge read-only.
+		const getInteraction = vi.fn().mockImplementation(() =>
+			Promise.resolve({ ...BASE, body: BASE.body }),
+		);
+		const onError = vi.fn();
+		const client = makeClient({ answerInteraction, getInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			body: formTree([
+				{
+					type: "choice",
+					name: "decision",
+					label: "Verdict",
+					options: [
+						{ id: "allow", label: "Allow", recommended: true },
+						{ id: "deny", label: "Deny" },
+					],
+				},
+			]),
+		};
+		const renderer = render(
+			h(InteractionCard, { conversationId: 7, interaction, client, onError }),
+		);
+		const findSubmit = (): { onClick: () => void; disabled?: boolean } => {
+			const node = renderer.root.find(
+				(candidate) =>
+					candidate.type === "button" &&
+					typeof candidate.props.className === "string" &&
+					candidate.props.className.includes("blk-form-submit"),
+			);
+			// SAFETY: the find above matches only the form's submit button
+			// (its className and button props are the renderer's contract).
+			return node.props as { onClick: () => void; disabled?: boolean };
+		};
+		// First submit 400s: the error surfaces, the card stays writable
+		// (the submit control remains enabled).
+		await act(async () => {
+			findSubmit().onClick();
+		});
+		expect(getInteraction).toHaveBeenCalledWith(7, "c1");
+		expect(onError).toHaveBeenCalled();
+		expect(textContent(renderer.toJSON())).not.toContain("answered");
+		expect(findSubmit().disabled).not.toBe(true);
+		// The retry answers.
+		fail = false;
+		await act(async () => {
+			findSubmit().onClick();
+		});
+		expect(answerInteraction).toHaveBeenCalledTimes(2);
+	});
+
+	test("a callout action is NOT the answer — only the root form's submit answers", async () => {
+		const answerInteraction = vi.fn().mockResolvedValue({
+			callId: "c1",
+			status: "answered",
+			answer: { values: { decision: "allow" } },
+		});
+		const client = makeClient({ answerInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			body: formTree([
+				// Two choice sections pass the stepper gate; the second
+				// section's callout action button is the probe.
+				questionSection("q1", "First", [{ id: "a", label: "A" }]),
+				{
+					type: "section",
+					title: "Second",
+					children: [
+						{
+							type: "callout",
+							tone: "info",
+							title: "Note",
+							body: "context",
+							actions: [
+								{
+									id: "more",
+									label: "More info",
+									action: { type: "submit", name: "details" },
+								},
+							],
+						},
+						{
+							type: "choice",
+							name: "q2",
+							label: "Second",
+							options: [{ id: "x", label: "X" }],
+						},
+					],
+				},
+			]),
+		};
+		const renderer = render(
+			h(InteractionCard, { conversationId: 7, interaction, client }),
+		);
+		// Advance to step 2 where the callout lives.
+		const radios1 = renderer.root.findAllByProps({ type: "radio" });
+		await act(async () => {
+			radios1[0].props.onChange({ target: { value: radios1[0].props.value } });
+		});
+		const nextButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never) === "Next",
+		);
+		await act(async () => {
+			nextButton?.props.onClick();
+		});
+		// Click the callout button: no answer POST.
+		const callout = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never).includes("More info"),
+		);
+		expect(callout).toBeDefined();
+		await act(async () => {
+			(callout?.props as { onClick: () => void }).onClick();
+		});
+		expect(answerInteraction).not.toHaveBeenCalled();
+		// The form's own submit DOES answer (the stepper's review).
+		const radios2 = renderer.root.findAllByProps({ type: "radio" });
+		await act(async () => {
+			radios2[0].props.onChange({ target: { value: radios2[0].props.value } });
+		});
+		const reviewButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never) === "Review",
+		);
+		await act(async () => {
+			reviewButton?.props.onClick();
+		});
+		const submit = renderer.root.find(
+			(node) =>
+				node.type === "button" &&
+				typeof node.props.className === "string" &&
+				node.props.className.includes("blk-form-submit"),
+		);
+		await act(async () => {
+			submit.props.onClick();
+		});
+		expect(answerInteraction).toHaveBeenCalledTimes(1);
+	});
+
 	test("a settled interaction renders read-only with the answer", () => {
 		const client = makeClient();
 		const interaction: InteractionWire = {
@@ -308,6 +453,16 @@ describe("InteractionCards", () => {
 /** One panel surface with a literal-rows collection (the §9.2 rows
  *  mapping; ambient collections never bind — the 2026-10-24 ruling). */
 function rowsSurface(rows: readonly Record<string, unknown>[], init?: Partial<AmbientWire>): AmbientWire {
+	return rowsSurfaceWith(rows, true, init);
+}
+
+/** rowsSurface with the quiet binding optional (the quiet-less drop
+ *  overflow case). */
+function rowsSurfaceWith(
+	rows: readonly Record<string, unknown>[],
+	withQuiet: boolean,
+	init?: Partial<AmbientWire>,
+): AmbientWire {
 	return {
 		key: "goal",
 		owner: "ext",
@@ -324,7 +479,7 @@ function rowsSurface(rows: readonly Record<string, unknown>[], init?: Partial<Am
 				item: {
 					title: { $: "./label" },
 					status: { label: { $: "./status" } },
-					quiet: { $: "./quiet" },
+					...(withQuiet ? { quiet: { $: "./quiet" } } : {}),
 					deps: { $: "./deps" },
 					metrics: [{ label: "steps", value: { $: "./completed" } }],
 				},
@@ -390,6 +545,28 @@ describe("AmbientPanel (tree rendering)", () => {
 		// The quiet row folds (the collection's quiet bucket).
 		expect(text).toContain("1 more");
 		expect(text).not.toContain("lint");
+	});
+
+	test("maxRows: 3 with 5 rows — a quiet-less template still truncates with '2 more'", () => {
+		// No quiet binding in the item template: the drop overflow must
+		// fall back to truncate + a count line (Review fix).
+		const surface = rowsSurfaceWith(
+			[1, 2, 3, 4, 5].map((n) => ({
+				id: `r${n}`,
+				label: `row ${n}`,
+				status: "open",
+				completed: n,
+			})),
+			false,
+			{ maxRows: 3, overflow: "drop" },
+		);
+		const renderer = render(h(AmbientPanel, { surface }));
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("row 1");
+		expect(text).toContain("row 3");
+		expect(text).not.toContain("row 4");
+		expect(text).not.toContain("row 5");
+		expect(text).toContain("2 more");
 	});
 
 	test("a meter-shaped panel renders its percent", () => {

@@ -53,12 +53,29 @@ const AMBIENT_ACTIONS = {
 
 /** The quiet fold for the drop overflow: mark the tail rows quiet so
  *  the collection's own "N more" toggle carries them (the panel's
- *  budget never LOSES rows — the user can still unfold). */
+ *  budget never LOSES rows — the user can still unfold). A template
+ *  WITHOUT a `quiet` binding has no fold to ride (its isQuiet is
+ *  always false), so the budget falls back to truncating the tail
+ *  behind a one-line "<n> more" markdown row (Review fix — a
+ *  quiet-less template's drop overflow silently no-op'd). */
 function dropTail(
 	collection: CollectionBlock,
 	items: readonly JsonValue[],
 	maxRows: number,
-): CollectionBlock {
+): Block {
+	// No quiet binding: truncate + count line (the fold has nothing to
+	// key on).
+	if (collection.item.quiet === undefined) {
+		const visible = items.slice(0, maxRows);
+		const dropped = items.length - visible.length;
+		// SAFETY: same block with a literal array swapped in (the ambient
+		// literal-rows shape the schema now admits).
+		const trimmed = { ...collection, items: [...visible] } as CollectionBlock;
+		return {
+			type: "stack",
+			children: [trimmed, { type: "markdown", text: `${dropped} more` }],
+		};
+	}
 	const visible = items.slice(0, maxRows);
 	const tail = items.slice(maxRows).map((row) => {
 		if (typeof row === "object" && row !== null && !Array.isArray(row)) {
@@ -83,11 +100,10 @@ function budgetTree(surface: AmbientWire, root: Block): Block {
 	const dropped = root.items.length - maxRows;
 	if (surface.overflow === "summarize") {
 		// The count line: one markdown under the trimmed collection.
-		const trimmed = dropTail(root, root.items, root.items.length - dropped);
 		return {
 			type: "stack",
 			children: [
-				{ ...trimmed, items: root.items.slice(0, maxRows) },
+				{ ...root, items: root.items.slice(0, maxRows) },
 				{ type: "markdown", text: `${dropped} rows` },
 			],
 		};

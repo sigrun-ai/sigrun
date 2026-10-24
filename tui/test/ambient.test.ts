@@ -254,6 +254,73 @@ describe("AmbientChrome", () => {
 		chrome.dispose();
 	});
 
+	test("maxRows: 3 with 5 rows — a quiet-less template still truncates with '2 more'", async () => {
+		const stub = stubClient();
+		stub.setSurfaces([
+			ambient("queue", {
+				place: "panel",
+				maxRows: 3,
+				overflow: "drop",
+				// NO quiet binding in the item template: the drop overflow
+				// must fall back to truncate + a count line (Review fix).
+				body: {
+					v: TREE_V,
+					root: {
+						type: "collection",
+						id: "rows",
+						items: [1, 2, 3, 4, 5].map((n) => ({
+							id: `r${n}`,
+							label: `row ${n}`,
+							status: "open",
+						})),
+						display: "list",
+						item: {
+							title: { $: "./label" },
+							status: { label: { $: "./status" } },
+						},
+					},
+				},
+			}),
+		]);
+		const chrome = new AmbientChrome(stub.client);
+		chrome.setConversation(1);
+		await flush();
+		const lines = chrome.panelLines().map(strip).join("\n");
+		expect(lines).toContain("row 1");
+		expect(lines).toContain("row 3");
+		expect(lines).not.toContain("row 4");
+		expect(lines).not.toContain("row 5");
+		expect(lines).toContain("2 more");
+		chrome.dispose();
+	});
+
+	test("render(width) clamps ANSI-bearing lines without cutting escape sequences", async () => {
+		const stub = stubClient();
+		stub.setSurfaces([
+			ambient("long", {
+				place: "status",
+				body: lineTree(
+					"a rather long status line that will not fit in a narrow pane at all",
+				),
+			}),
+		]);
+		const chrome = new AmbientChrome(stub.client);
+		chrome.setConversation(1);
+		await flush();
+		const width = 24;
+		const lines = chrome.render(width);
+		expect(lines.length).toBeGreaterThan(0);
+		for (const line of lines) {
+			// ANSI-aware clamp: the DISPLAY width never exceeds the pane
+			// and no dangling escape introducer survives (a raw UTF-16
+			// slice could cut mid-sequence).
+			expect(strip(line).length).toBeLessThanOrEqual(width);
+		}
+		// The clamp used the given width, not the hardcoded 120.
+		expect(strip(lines.join("\n"))).toContain("…");
+		chrome.dispose();
+	});
+
 	test("a panel renders literal rows; a quiet row folds behind the count", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([

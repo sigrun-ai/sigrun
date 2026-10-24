@@ -64,6 +64,11 @@ interface SurfaceCard {
 	readonly view: SurfaceView;
 	/** Whether the surface renders read-only (settled records). */
 	readonly access: "read" | "write";
+	/** The settled envelope a mid-edit settle refetch swapped in
+	 *  (preferred over `record` for rendering: a same-callId poll still
+	 *  serves the record PENDING, so the settled envelope must win or
+	 *  the read-only swap reverts on the next render — Review fix). */
+	readonly settled?: InteractionWire;
 }
 
 export class InteractionPrompter implements Component {
@@ -114,6 +119,12 @@ export class InteractionPrompter implements Component {
 	/** Whether keys are captured for answering. */
 	get answerMode(): boolean {
 		return this.#answerMode;
+	}
+
+	/** The live surface's state (tests drive non-submit dispatches
+	 *  through it). */
+	get surface(): SurfaceState | undefined {
+		return this.#surface?.state;
 	}
 
 	/**
@@ -269,6 +280,10 @@ export class InteractionPrompter implements Component {
 	#ensureSurface(record: InteractionWire): void {
 		const existing = this.#surface;
 		if (existing !== undefined && existing.record.callId === record.callId) {
+			// A settled envelope (the mid-edit settle swap) sticks: the
+			// pending poll re-serves the record as pending, and the
+			// settled render must not revert to write access.
+			if (existing.settled !== undefined) return;
 			const access = record.status === "pending" ? "write" : "read";
 			if (existing.access === access) return;
 			this.#surface = { ...existing, record, access };
@@ -277,6 +292,9 @@ export class InteractionPrompter implements Component {
 		const access = record.status === "pending" ? "write" : "read";
 		const conversationId = this.#conversationId;
 		if (conversationId === undefined || record.body === undefined) return;
+		const root = record.body.root;
+		const submitAction =
+			root.type === "form" ? (root.onSubmit ?? "submit") : "submit";
 		const transport = createInteractionTransport({
 			client: this.#client,
 			conversationId,
@@ -284,6 +302,7 @@ export class InteractionPrompter implements Component {
 			tree: record.body,
 			data: recordData(record),
 			access,
+			submitAction,
 			onAnswered: () => {
 				// The settle lands via the next list poll (the server drops
 				// answered records from pending).
@@ -304,13 +323,26 @@ export class InteractionPrompter implements Component {
 						// Swap ONLY the record the user was working on; a
 						// conversation switch since the submit discards it.
 						if (this.#surface?.record.callId !== record.callId) return;
+						// Only a genuinely settled record swaps in — a still-
+						// pending refetch (a 400, a network blip) must NOT wedge
+						// the card read-only: report the failure and stay
+						// writable (Review fix).
+						if (fresh.status === "pending") {
+							this.onError?.(describeCommandError("answer", cause));
+							this.#changed();
+							return;
+						}
 						this.#surface = this.#surface === undefined
 							? undefined
 							: {
 									...this.#surface,
-									record: fresh,
+									settled: fresh,
 									access: "read",
 								};
+						// Flip the LIVE surface's access so the read-only
+						// render takes effect immediately (the transport's
+						// access was captured at load).
+						this.#surface?.state.setAccess("read");
 						this.#exitAnswer();
 						this.#changed();
 					},
@@ -413,11 +445,14 @@ export class InteractionPrompter implements Component {
 		const top = this.#pending[0];
 		if (top === undefined) return [];
 		const lines: string[] = [];
-		lines.push(
+		const shown = this.#surface?.settled ?? top;
+		const suffix =
 			this.#answerMode
-				? `[interaction] ${top.kind} — answering`
-				: `[interaction] ${top.kind}`,
-		);
+				? " — answering"
+				: shown.status === "pending"
+					? ""
+					: ` — ${shown.status}`;
+		lines.push(`[interaction] ${shown.kind}${suffix}`);
 		if (top.body !== undefined) {
 			this.#ensureSurface(top);
 			if (this.#surface !== undefined) {
