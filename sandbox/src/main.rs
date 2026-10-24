@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod apply;
+mod native_probe;
 mod policy;
 
 use std::ffi::OsString;
@@ -29,6 +30,13 @@ fn dispatch(args: Vec<OsString>) -> Result<(), String> {
         Some("probe") if args.len() == 1 => {
             println!("{{\"abi\":{}}}", apply::probe());
             Ok(())
+        }
+        Some("probe") => {
+            let args = args[1..]
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            native_probe::dispatch(&args).map(|_| ())
         }
         Some("run") => run(&args[1..]),
         _ => Err("usage: sigrun-sandbox probe | run -- <command> [args…]".to_owned()),

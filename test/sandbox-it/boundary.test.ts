@@ -13,7 +13,9 @@
  * regression cannot kill the test runner itself.
  */
 
-import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +29,7 @@ import {
 	CORE_ROOT,
 	HELPER,
 	buildNativeProbes,
+	probeCommand,
 	privilegedHelper,
 	helperCommand,
 	directCommand,
@@ -95,6 +98,12 @@ beforeAll(async () => {
 	root = await mkdtemp(join(tmpdir(), "sigrun-kernel-boundary-"));
 	roots.push(root);
 	deployment = await bootDeployment({ root });
+	// The PID must identify the actual sigrun process, not unshare's
+	// wrapper. The test-only server entry writes a marker from inside
+	// that process; the host reads it through the recorded host PID.
+	const serverIdentity = await readFile(`/proc/${deployment.pid}/environ`);
+	expect(serverIdentity.toString()).toContain("SIGRUN_BOUNDARY_SERVER_IDENTITY=sigrun-real-server");
+	expect(serverIdentity.toString()).toContain("SIGRUN_BOUNDARY_IT=1");
 	native = await buildNativeProbes(root);
 	privileged = await privilegedHelper(root);
 	coreEnv = await plantCoreEnv();
@@ -131,8 +140,8 @@ beforeAll(async () => {
 	if (native.available) {
 		// M2 per-user services are not shipped. This separate real-helper
 		// process exercises the sibling-service boundary they will use.
-		service = spawnOutside(HELPER, ["run", "--", native.path, "sleep"], {
-			SIGRUN_SANDBOX_POLICY: JSON.stringify(nativePolicy(native.path)),
+		service = spawnOutside(HELPER, ["run", "--", HELPER, "probe", "service-sleep"], {
+			SIGRUN_SANDBOX_POLICY: JSON.stringify(nativePolicy(HELPER)),
 			SIGRUN_BOUNDARY_SERVICE_SECRET: "service-env-must-not-leak",
 		});
 		servicePid = service.pid!;
@@ -140,7 +149,8 @@ beforeAll(async () => {
 		service.stdout!.on("data", (chunk: Buffer) => {
 			if (chunk.toString().includes("SERVICE_READY:")) serviceReady = true;
 		});
-		abstractSocket = spawnOutside(native.path, ["socket-server", abstractName]);
+		const socketCommand = probeCommand("abstract-listen", abstractName);
+		abstractSocket = spawnOutside(socketCommand[0]!, socketCommand.slice(1));
 		let socketReady = false;
 		abstractSocket.stdout!.on("data", (chunk: Buffer) => {
 			if (chunk.toString().includes("ABSTRACT_LISTEN_OK:")) socketReady = true;
@@ -201,35 +211,49 @@ async function writeDenied(path: string): Promise<void> {
 	expect(result.text).toContain("WRITE_ERRNO:EACCES");
 }
 
-interface OutsideControl { readonly allowed: boolean; readonly output: string }
+interface OutsideControl { readonly allowed: boolean; readonly output: string; readonly phase: string; readonly errno?: string }
 
 async function outsideProbe(args: string[]): Promise<OutsideControl> {
 	expect(native.available, native.reason).toBe(true);
 	return await new Promise<OutsideControl>((resolve, reject) => {
-		const child = spawnOutside(native.path, args);
+		const child = spawnOutside(HELPER, ["probe", ...args]);
 		let output = "";
 		child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 		child.once("error", reject);
-		child.once("exit", (code) => resolve({ allowed: code === 0, output }));
+		child.once("exit", (code) => {
+			const failure = /(?:ATTACH|WAIT|DETACH|OPEN_ENVIRON|READ_ENVIRON|OPEN_MEM|CONNECT_ABSTRACT):([A-Z0-9]+)/.exec(output);
+			resolve({
+				allowed: code === 0,
+				output,
+				phase: failure?.[0]?.split(":")[0] ?? (code === 0 ? "success" : "other"),
+				errno: failure?.[1],
+			});
+		});
 	});
 }
 
 function recordControl(caseName: string, control: OutsideControl, outsideOperation: string): void {
 	if (control.allowed) {
 		console.info(`sandbox-it control: ${caseName} discriminates Landlock; outside-jail ${outsideOperation} succeeded`);
-	} else {
-		console.warn(`sandbox-it control: ${caseName} is Yama/host-policy-satisfied and NOT Landlock-discriminating; outside-jail ${outsideOperation} denied (${control.output.trim()})`);
+		return;
 	}
+	// Only the operation's own access-denied phase can be a host-policy
+	// control. A successful attach followed by WAIT/DETACH failure is a
+	// broken test, never evidence that Yama denied the attach.
+	if (control.errno !== "EPERM" && control.errno !== "EACCES") {
+		throw new Error(`outside-jail control failed in ${control.phase} for ${caseName}: ${control.output}`);
+	}
+	console.warn(`sandbox-it control: ${caseName} is Yama/host-policy-satisfied and NOT Landlock-discriminating; outside-jail ${outsideOperation} denied (${control.output.trim()})`);
 }
 
 async function ptraceDenied(caseName: string, pid: number): Promise<void> {
 	expect(native.available, native.reason).toBe(true);
 	const control = await outsideProbe(["ptrace", String(pid)]);
 	recordControl(caseName, control, "ptrace(PTRACE_ATTACH)");
-	const denied = await bob.bash(directCommand([native.path, "ptrace", String(pid)]));
+	const denied = await bob.bash(directCommand(probeCommand("ptrace", pid)));
 	expect(denied.isError, denied.text).toBe(true);
-	expect(denied.text).toMatch(/PROBE_ERRNO:PTRACE_ATTACH:(1|13)/);
+	expect(denied.text).toMatch(/ATTACH:(EPERM|EACCES)/);
 }
 
 describeKernel("real tools in real two-user conversations", () => {
@@ -306,9 +330,9 @@ describeKernel("real tools in real two-user conversations", () => {
 		const control = await outsideProbe(["socket", abstractName]);
 		expect(control.allowed, control.output).toBe(true);
 		expect(control.output).toContain("ABSTRACT_CONNECT_OK");
-		const denied = await bob.bash(directCommand([native.path, "socket", abstractName]));
+		const denied = await bob.bash(directCommand(probeCommand("abstract-connect", abstractName)));
 		expect(denied.isError, denied.text).toBe(true);
-		expect(denied.text).toMatch(/PROBE_ERRNO:CONNECT_ABSTRACT:(1|13)/);
+		expect(denied.text).toMatch(/CONNECT_ABSTRACT:(EPERM|EACCES)/);
 		expect(denied.text).not.toContain("ABSTRACT_CONNECT_OK");
 	});
 
@@ -395,9 +419,11 @@ describeKernel("real tools in real two-user conversations", () => {
 		const nativePath = join(deployment.bobWorkspace, "native-probe");
 		await copyFile(privileged.helper, helper);
 		await copyFile(privileged.native, nativePath);
+		await chmod(helper, 0o755);
+		await promisify(execFile)("setcap", ["cap_setuid,cap_setgid+ep", helper]);
 		const policy = { ...nativePolicy(nativePath), uid: 1, gid: 1, groups: [1] };
 		const outside = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "identity"], {
+			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "probe", "identity"], {
 				SIGRUN_SANDBOX_POLICY: JSON.stringify(policy),
 			});
 			let output = "";
@@ -408,7 +434,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		});
 		expect(outside.code, outside.output).toBe(0);
 		expect(outside.output).toContain("IDENTITY_OK:1:1");
-		const result = await bob.bash(helperCommand(helper, policy, [nativePath, "identity"]));
+		const result = await bob.bash(helperCommand(helper, policy, [nativePath, "probe", "identity"]));
 		expect(result.isError, result.text).toBe(true);
 		expect(result.text).toContain("sigrun-sandbox:");
 		expect(result.text).toMatch(/setgroups|setgid|setuid|uid|identity|capabil|permitted|Operation not permitted/i);
@@ -437,7 +463,7 @@ describeKernel("real tools in real two-user conversations", () => {
 			ensureDirs: built.ensureDirs,
 		};
 		const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "identity"], {
+			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "probe", "identity"], {
 				SIGRUN_SANDBOX_POLICY: JSON.stringify(policy),
 			});
 			let output = "";
@@ -454,7 +480,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		const direct = await directWorker(join(root, "lifecycle-ipc"));
 		try {
 			let output = "";
-			const result = await direct.env.exec(directCommand([native.path, "fds"]), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
+			const result = await direct.env.exec(directCommand([HELPER, "probe", "fds"]), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
 			expect(result.ok, output).toBe(true);
 			expect(output).toContain("INHERITED_FDS:0");
 			expect(direct.client.pid).toBeTypeOf("number");
