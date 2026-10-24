@@ -19,17 +19,24 @@ class FakeDirectory {
 	admission?: AdmissionRefusedError;
 	admissionChecks = 0;
 	addBarrier?: Promise<void>;
+	addCalls = 0;
+	claimedObservations: boolean[] = [];
 
 	checkAdmission(): void {
 		this.admissionChecks++;
 		if (this.records.length > 0 && this.admission !== undefined) throw this.admission;
 	}
-	isClaimed(): boolean { return this.records.length > 0; }
+	isClaimed(): boolean {
+		const claimed = this.records.length > 0;
+		this.claimedObservations.push(claimed);
+		return claimed;
+	}
 	list(): DirectoryUser[] { return this.records; }
 	get(user: string): DirectoryUser | undefined {
 		return this.records.find((record) => record.user === user);
 	}
 	async add(input: Omit<DirectoryUser, "createdAt">): Promise<DirectoryUser> {
+		this.addCalls++;
 		this.checkAdmission();
 		if (this.addBarrier !== undefined) await this.addBarrier;
 		if (this.get(input.user) !== undefined) throw new Error("duplicate");
@@ -234,17 +241,30 @@ describe("resolveLogin", () => {
 
 	test("concurrent setup claims create exactly one admin under the claim lock", async () => {
 		const f = fixture({ claimed: false, setup: "AAAA-BBBB" });
+		let releaseAdd!: () => void;
+		f.users.addBarrier = new Promise<void>((resolve) => { releaseAdd = resolve; });
 		const first = resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f));
+		// Wait until the first claim is suspended inside add, before records
+		// mutates. A second claim now queues behind withClaimLock.
+		await new Promise<void>((resolve) => { setImmediate(resolve); });
+		expect(f.users.addCalls).toBe(1);
 		const second = resolveLogin({
 			provider: "login:fixture:other",
-			result: result({ profile: { username: "Bob" } }),
+			result: result({ subject: "subject-2", profile: { username: "Bob" } }),
 			code: "AAAA-BBBB",
 		}, deps(f));
+		await new Promise<void>((resolve) => { setImmediate(resolve); });
+		expect(f.users.addCalls).toBe(1);
+		releaseAdd();
 		const outcomes = await Promise.all([first, second]);
 		expect(outcomes.filter((outcome) => outcome.kind === "session")).toHaveLength(1);
 		expect(outcomes.filter((outcome) => outcome.kind === "refused" && outcome.error === "not_allowed")).toHaveLength(1);
 		expect(f.users.records.filter((user) => user.admin)).toHaveLength(1);
 		expect(f.accounts.links).toHaveLength(1);
+		// The first decision saw an empty directory; the second could not
+		// decide until the first completed and therefore saw it claimed.
+		// Bypassing the lock makes both observations false and yields two admins.
+		expect(f.users.claimedObservations).toEqual([false, true]);
 	});
 
 	test("a failed setup link can be completed only by the recorded subject with the still-valid code", async () => {
