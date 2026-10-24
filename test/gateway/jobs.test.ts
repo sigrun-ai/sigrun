@@ -87,7 +87,7 @@ async function createConversation(boot: GatewayBoot): Promise<number> {
 	return response.json().id as number;
 }
 
-async function submit(boot: GatewayBoot, id: number, text: string): Promise<void> {
+async function submit(boot: GatewayBoot, id: number, text: string): Promise<number> {
 	const response = await boot.app.inject({
 		method: "POST",
 		url: `/v1/conversations/${id}/submissions`,
@@ -95,6 +95,23 @@ async function submit(boot: GatewayBoot, id: number, text: string): Promise<void
 		payload: { input: [{ type: "text", text }] },
 	});
 	expect(response.statusCode).toBe(202);
+	return response.json().submission.id as number;
+}
+
+async function waitForSubmission(
+	boot: GatewayBoot,
+	conversationId: number,
+	submissionId: number,
+): Promise<void> {
+	await boot.waitFor(async () => {
+		const response = await boot.app.inject({
+			method: "GET",
+			url: `/v1/conversations/${conversationId}/submissions/${submissionId}`,
+			headers: { authorization: `Bearer ${boot.tokens.alice}` },
+		});
+		expect(response.statusCode).toBe(200);
+		return response.json().submission.status === "done";
+	});
 }
 
 function sendsSince(boot: GatewayBoot, from: number): readonly OutboundMessage[] {
@@ -143,16 +160,20 @@ describe("gateway jobs and home notifications e2e (Task 10)", () => {
 				await boot.waitFor(() => sendsSince(boot, before).some((message) =>
 					message.text.startsWith("Job nightly · ") && message.text.endsWith("\njob answer"),
 				));
-				await submit(boot, conversationId, "continue this run");
-				await boot.waitFor(() => sendsSince(boot, before).some((message) =>
-					message.text === "follow-up answer" || message.text.startsWith("Reply ready —"),
-				));
-				expect(sendsSince(boot, before).filter((message) =>
-					message.text.endsWith("follow-up answer"),
+				const submissionId = await submit(boot, conversationId, "continue this run");
+				await waitForSubmission(boot, conversationId, submissionId);
+				const homeMessages = sendsSince(boot, before).filter((message) =>
+					message.chat.chatId === "100000001",
+				);
+				expect(homeMessages.filter((message) =>
+					message.text.includes("follow-up answer"),
 				)).toHaveLength(0);
-				expect(sendsSince(boot, before).filter((message) =>
-					message.text.includes("job answer"),
+				expect(homeMessages.filter((message) =>
+					message.text.startsWith("Job "),
 				)).toHaveLength(1);
+				expect(homeMessages.filter((message) =>
+					message.text.startsWith("Reply ready —"),
+				)).toHaveLength(0);
 			} finally {
 				await boot.shutdown();
 			}
