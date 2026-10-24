@@ -40,6 +40,8 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { SeamHost } from "../src/harness/seam-host.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
+import { selfPackageRoot } from "../src/harness/packages.js";
 
 const CHANNEL_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-channel", "index.js"),
@@ -123,6 +125,8 @@ async function bootOpened(
 		// usual console warning — harmless here).
 		extensionSpecifiers: [CHANNEL_SPECIFIER, COMMANDS_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
 	});
 	cleanups.push(async () => {

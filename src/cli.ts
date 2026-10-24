@@ -50,7 +50,11 @@ import { Writable } from "node:stream";
 import { resolveStoreRoots, writeFileAtomic } from "./harness/stores.js";
 import { openIdentityStores } from "./harness/identity/index.js";
 import { pathToFileURL } from "node:url";
-import type { Env } from "./config.js";
+import { effectiveMethods, loadConfig, type Env } from "./config.js";
+import { probeIsolation, runHelperProbe, selfTestHelper } from "./sandbox/availability.js";
+import { resolveHelper } from "./sandbox/helper.js";
+import { selfPackageRoot } from "./harness/packages.js";
+import { AdmissionRefusedError } from "./harness/identity/users.js";
 import type { ClaimResponse, OnboardingState } from "@sigrun/shared/views";
 import { serve, type BootedServer } from "./serve.js";
 import {
@@ -974,6 +978,26 @@ async function runIdentityCommand(
 	}
 	switch (parsed.sub) {
 		case "add": {
+			const config = loadConfig(env);
+			const coreRoot = selfPackageRoot();
+			const isolation = await probeIsolation({
+				platform: process.platform,
+				helper: coreRoot === undefined ? undefined : resolveHelper(env, coreRoot),
+				runProbe: runHelperProbe,
+				selfTest: selfTestHelper,
+			});
+			const methods = effectiveMethods(config.auth, "127.0.0.1");
+			stores.users.configureAdmission({
+				firstWorkspace: config.workspace.path,
+				admit: () => {
+					if (!isolation.available || config.isolation.mode === "off") {
+						throw new AdmissionRefusedError("isolation_required", `isolation_required: ${isolation.reason ?? "isolation mode is off"}`);
+					}
+					if (methods.length === 0) {
+						throw new AdmissionRefusedError("auth_required", "auth_required: configure token or proxy authentication before adding another user");
+					}
+				},
+			});
 			await stores.users.add({
 				user: parsed.user as string,
 				admin: parsed.admin ?? false,

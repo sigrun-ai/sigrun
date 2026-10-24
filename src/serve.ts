@@ -140,7 +140,10 @@ export async function serve(
 	// 404s forever (the directory was never created).
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(config.workspace.path, { recursive: true });
-	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
+	const opened = await openHarness(config, {
+		extensionEntries: extensionResolutions,
+		listenHost: options?.host ?? "0.0.0.0",
+	});
 	// The gateway handle (gateway C2) exists BEFORE the server: the meta
 	// route reaches it through ServerContext, so the engine's health is
 	// reportable from the first request. The ENGINE STARTS after listen

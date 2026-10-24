@@ -43,6 +43,7 @@ async function bootServer(options: {
 	env?: Record<string, string | undefined>;
 	file?: { auth?: Record<string, unknown> };
 	listenHost?: string;
+	isolationAvailable?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-onboarding-"));
 	const faux = fauxProvider({
@@ -56,6 +57,7 @@ async function bootServer(options: {
 	};
 	const env = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
+		SIGRUN_ISOLATION: "off",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: join(dir, "config"),
@@ -69,6 +71,9 @@ async function bootServer(options: {
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env,
+		isolationProbe: async () => options.isolationAvailable === true
+			? { available: true, abi: 6 }
+			: { available: false, abi: 0, reason: "not linux" },
 	});
 	const app = await createServer(opened, config, [], {
 		listenHost: options.listenHost ?? "127.0.0.1",
@@ -316,6 +321,32 @@ describe("POST /v1/onboarding/claim", () => {
 		});
 		expect(present.statusCode).toBe(200);
 		expect(present.json().user).toMatchObject({ user: "michael", admin: true });
+	});
+});
+
+describe("multi-user admission", () => {
+	test("second user via invite -> 409 isolation_required when unavailable", async () => {
+		const { app, opened } = await bootServer({ listenHost: "0.0.0.0", env: { SIGRUN_ISOLATION: "auto" } });
+		const setup = readSetupCode(opened.identity.cacheDir);
+		expect((await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code: setup, user: "alice" } })).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "isolation_required" });
+		expect(opened.identity.users.get("bob")).toBeUndefined();
+	});
+
+	test("second user with SIGRUN_AUTH=none -> 409 auth_required", async () => {
+		const { app, opened } = await bootServer({
+			listenHost: "127.0.0.1",
+			env: { SIGRUN_AUTH: "none", SIGRUN_ISOLATION: "auto" },
+			isolationAvailable: true,
+		});
+		expect((await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { user: "alice" } })).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "auth_required" });
 	});
 });
 

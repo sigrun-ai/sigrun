@@ -1,131 +1,88 @@
-/**
- * Static workspace resolution (spec §4.5).
- *
- * pi-durable calls `HarnessOptions.env` per tool call to build the
- * conversation's `ExecutionEnv`. sigrun routes that through
- * `workspaceService.forConversation(conversation, prefs)`, a thin wrapper
- * whose signature survives a swap from static config to a dynamic
- * resolver: v1 answers from the static local workspace path carried in
- * `prefs`; a future resolver replaces the *implementation*
- * and nothing downstream changes.
- *
- * v1 is deliberately static: every conversation resolves to the same local
- * workspace. Per-conversation `agent.cwd` (the committed `pi.agent`
- * document's directory within the workspace) is applied by the `toHarnessEnv`
- * adapter below: pi-durable passes it through `EnvTarget.cwd` and applies
- * nothing itself, so the adapter must root the env at it.
- */
+/** Resolve each conversation's ExecutionEnv: single-user, jailed, or fail-closed. */
 
-import type {
-	ConversationId,
-	HarnessOptions,
-} from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
+import type { ConversationId, DocumentReader, HarnessOptions } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { AgentExecutionEnv } from "./agent-env.js";
 import { isAbsolute, resolve } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LocalWorkspace } from "../config.js";
+import type { ManagedPaths } from "../sandbox/grants.js";
+import { IsolationState } from "../sandbox/isolation.js";
+import { buildUserPolicy } from "../sandbox/policy.js";
+import type { WorkerPool } from "../sandbox/pool.js";
+import { SandboxedExecutionEnv } from "../sandbox/sandboxed-env.js";
+import { UnavailableExecutionEnv } from "../sandbox/unavailable-env.js";
+import { selfPackageRoot } from "./packages.js";
+import { defaultModuleTrees } from "../sandbox/policy.js";
+import type { UserDirectory } from "./identity/users.js";
+import { AgentExecutionEnv } from "./agent-env.js";
 
-/**
- * What `forConversation` resolves a workspace from: the spec's static
- * `{ defaultWorkspace: { type: "local", path } }` shape. A future
- * dynamic-resolver swap would replace this without changing the method
- * signature.
- */
-export interface WorkspacePreferences {
-	readonly defaultWorkspace: LocalWorkspace;
-}
+export interface WorkspacePreferences { readonly defaultWorkspace: LocalWorkspace }
+export interface WorkspaceConversation { readonly id: ConversationId }
 
-/**
- * The conversation input of the seam. pi-durable's full `Conversation`
- * satisfies it; the static resolver only needs the id, and accepting the
- * minimal shape keeps the service testable and forward-compatible with the
- * dynamic resolver's handle types.
- */
-export interface WorkspaceConversation {
-	readonly id: ConversationId;
-}
-
-/** The workspace-resolution surface (spec §4.5). */
 export interface WorkspaceService {
-	/**
-	 * Resolve the conversation's `ExecutionEnv`. Called per tool call by the
-	 * harness env builder, and directly by core surfaces that read workspace
-	 * files (context files, skills, file endpoints) so remote workspaces stay
-	 * correct regardless of which resolver is wired in.
-	 */
 	forConversation(
 		conversation: WorkspaceConversation,
 		prefs: WorkspacePreferences,
+		read?: DocumentReader,
+		ctx?: Context,
 	): Promise<ExecutionEnv>;
 }
 
-/** The `HarnessOptions.env` builder shape pi-durable invokes per tool call. */
 export type EnvBuilder = NonNullable<HarnessOptions["env"]>;
 
-/**
- * Build the static workspace service.
- *
- * v1 resolves every conversation from `prefs.defaultWorkspace` — the spec's
- * static configuration — so the service carries no state of its own. The
- * returned env is an {@link AgentExecutionEnv}: upstream's local Node
- * `ExecutionEnv` with commands confined to the agent environment
- * allowlist (multi-user spec §8). Its `FileSystem.id` is the stable
- * `"node:local"` (every
- * local environment sees the same files), and its `Shell` runs commands
- * rooted at the workspace `cwd`. A fresh instance per call matches how
- * upstream builds envs; equal ids see the same files whatever their `cwd`.
- */
-export function createWorkspaceService(): WorkspaceService {
+export interface WorkspaceServiceDeps {
+	isolation: IsolationState;
+	pool: WorkerPool;
+	directory: UserDirectory;
+	managed: ManagedPaths;
+	ownerOf(conversationId: ConversationId, read: DocumentReader, ctx: Context): Promise<string | undefined>;
+}
+
+export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceService {
 	return {
-		async forConversation(_conversation, prefs) {
+		async forConversation(conversation, prefs, read, ctx) {
 			const workspace = prefs.defaultWorkspace;
 			if (workspace.type !== "local") {
-				// Fail loud: v1 knows only the static local workspace; any other
-				// type reaching here means the preferences are not v1's.
-				throw new Error(
-					`Unsupported workspace type: ${JSON.stringify(workspace.type)}`,
-				);
+				throw new Error(`Unsupported workspace type: ${JSON.stringify(workspace.type)}`);
 			}
-			return new AgentExecutionEnv({ cwd: workspace.path });
+			if (deps === undefined) return new AgentExecutionEnv({ cwd: workspace.path });
+			const { directory, isolation } = deps;
+			const active = isolation.active();
+			if (directory.list().length <= 1 && !active) {
+				return new AgentExecutionEnv({ cwd: workspace.path });
+			}
+			if (!active) {
+				return new UnavailableExecutionEnv(isolation.reason() ?? "isolation is not active");
+			}
+			const owner = read === undefined
+				? undefined
+				: await deps.ownerOf(conversation.id, read, ctx ?? BACKGROUND_CONTEXT);
+			const record = directory.list().find((candidate) => candidate.user === owner)
+				?? directory.list().find((candidate) => candidate.admin);
+			if (record === undefined) return new UnavailableExecutionEnv("conversation owner is not in the user directory");
+			const coreRoot = selfPackageRoot();
+			if (coreRoot === undefined) return new UnavailableExecutionEnv("sigrun package root not found");
+			const policy = buildUserPolicy(record, {
+				managed: deps.managed,
+				nodeBinDir: process.execPath,
+				moduleTrees: defaultModuleTrees(coreRoot),
+			});
+			if (!policy.ok) return new UnavailableExecutionEnv(policy.reason);
+			return new SandboxedExecutionEnv(deps.pool.client(policy.policy), policy.policy.workspace);
 		},
 	};
 }
 
-/**
- * The default workspace preferences for a configured local workspace path:
- * exactly the spec §4.5 static shape.
- */
-export function defaultWorkspacePrefs(
-	workspacePath: string,
-): WorkspacePreferences {
+export function defaultWorkspacePrefs(workspacePath: string): WorkspacePreferences {
 	return { defaultWorkspace: { type: "local", path: workspacePath } };
 }
 
-/**
- * Adapt the service to the `HarnessOptions.env` builder pi-durable invokes
- * per tool call. pi-durable passes the conversation's committed `agent.cwd`
- * through `EnvTarget.cwd` and applies nothing itself (verified:
- * dist/harness/harness.js:137-138) — this adapter roots the resolved env
- * there, so tools see the conversation's directory. `agent.cwd` is a
- * directory within the environment's file system: an absolute path is
- * assigned as-is, a relative one is joined to the env's base (the workspace
- * root the service resolved), because upstream's Node env would otherwise
- * anchor a bare relative `cwd` at the process directory. Without a cwd, the
- * env stays at the workspace root.
- */
-export function toHarnessEnv(
-	service: WorkspaceService,
-	prefs: WorkspacePreferences,
-): EnvBuilder {
-	return async (target, _context) => {
-		const env = await service.forConversation(
-			{ id: target.conversationId },
-			prefs,
-		);
+export function toHarnessEnv(service: WorkspaceService, prefs: WorkspacePreferences): EnvBuilder {
+	return async (target, context) => {
+		const env = await service.forConversation({ id: target.conversationId }, prefs, target.read, context);
 		if (target.cwd != null) {
-			env.cwd = isAbsolute(target.cwd)
-				? target.cwd
-				: resolve(env.cwd, target.cwd);
+			env.cwd = isAbsolute(target.cwd) ? target.cwd : resolve(env.cwd, target.cwd);
 		}
 		return env;
 	};
