@@ -10,6 +10,7 @@ import {
 import { resolveLogin, type LoginPolicy } from "../src/server/login/resolve.js";
 import { assignUsername } from "../src/server/login/usernames.js";
 import { SetupClaimStore } from "../src/server/login/setup-claim.js";
+import { effectiveAdmin } from "../src/harness/identity/groups.js";
 
 const PROVIDER = "login:fixture:oidc";
 
@@ -164,15 +165,30 @@ describe("resolveLogin", () => {
 		expect(f.users.groups[0]?.values).toEqual(["family", "admins"]);
 	});
 
-	test("an explicit link never creates a session and refuses a conflicting holder", async () => {
+	test("an explicit link never creates a session, writes groups, or replaces a conflicting holder", async () => {
 		const f = fixture();
 		f.users.records.push({ user: "bob", admin: false, source: "cli", createdAt: 1 });
 		expect(await resolveLogin({ provider: PROVIDER, result: result(), linkUser: "bob" }, deps(f)))
 			.toEqual({ kind: "linked", user: "bob" });
 		expect(f.accounts.links[0]).toMatchObject({ user: "bob", via: "login" });
-		expect(f.users.groups).toEqual([{ user: "bob", source: PROVIDER, values: ["family"] }]);
+		expect(f.users.groups).toEqual([]);
 		expect(await resolveLogin({ provider: PROVIDER, result: result(), linkUser: "owner" }, deps(f)))
 			.toEqual({ kind: "refused", error: "account_link_conflict" });
+	});
+
+	test("linking an admin-group identity cannot grant a session or token principal admin", async () => {
+		const f = fixture();
+		f.users.records.push({ user: "bob", admin: false, source: "cli", createdAt: 1 });
+		await f.users.setGroups("bob", "proxy", ["users"]);
+		const before = structuredClone(f.users.get("bob"));
+		const outcome = await resolveLogin({
+			provider: PROVIDER,
+			result: result({ groups: ["admins"] }),
+			linkUser: "bob",
+		}, deps(f));
+		expect(outcome).toEqual({ kind: "linked", user: "bob" });
+		expect(f.users.get("bob")).toEqual(before);
+		expect(effectiveAdmin(f.users.get("bob")!, ["admins"])).toBe(false);
 	});
 
 	test("an unclaimed directory needs the setup code and a valid claim creates an admin and clears it", async () => {
@@ -285,8 +301,24 @@ describe("resolveLogin", () => {
 		const recovered = await resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f));
 		expect(recovered).toEqual({ kind: "session", user: "alice-smith" });
 		expect(f.users.records).toHaveLength(1);
+		expect(f.users.addCalls).toBe(1);
 		expect(f.accounts.links).toEqual([{ provider: PROVIDER, subject: "subject-1", user: "alice-smith", via: "login" }]);
 		expect(f.users.groups[0]?.values).toEqual(["family"]);
+	});
+
+	test("a crash after the setup breadcrumb but before the user write retries the same claim", async () => {
+		const f = fixture({ claimed: false, setup: "AAAA-BBBB" });
+		f.users.addBarrier = Promise.reject(new Error("user write unavailable"));
+		await expect(resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f)))
+			.rejects.toThrow("user write unavailable");
+		expect(f.setupClaims.read()).toMatchObject({ user: "alice-smith", provider: PROVIDER, subject: "subject-1" });
+		expect(f.users.records).toHaveLength(0);
+		f.users.addBarrier = undefined;
+		const recovered = await resolveLogin({ provider: PROVIDER, result: result(), code: "AAAA-BBBB" }, deps(f));
+		expect(recovered).toEqual({ kind: "session", user: "alice-smith" });
+		expect(f.users.records).toHaveLength(1);
+		expect(f.accounts.links).toHaveLength(1);
+		expect(f.cleared).toBe(1);
 	});
 
 	test("a claimed server cannot use the setup code to create another user without a claim marker", async () => {

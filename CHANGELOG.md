@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   those tokens independent.
 - Stored groups per authenticating source, effective group-derived admin,
   and people-scoped group sharing. Groups refresh at the next login or
-  validated proxy request. The separately shipped `@sigrun/ext-oauth`
+  validated proxy request. The separately shipped `@sigrun/oauth`
   package provides OIDC, GitHub, and Discord login providers; it is not yet
   bundled or installed by default.
 

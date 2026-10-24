@@ -265,8 +265,10 @@ list explicitly — explicit always wins, including `[]` on a non-
 loopback bind, which boots with a warning that any reachable client is
 trusted. The related env knobs: `SIGRUN_AUTH_TRUSTED_PROXIES` (CIDR
 csv), `SIGRUN_PROXY_SECRET` and `SIGRUN_API_TOKEN` (credentials —
-env-only, never in `settings.json`). Every auth setting is
-restart-required.
+env-only, never in `settings.json`). Every auth setting except
+`server.auth.sessionDays` is restart-required. `sessionDays` applies live to
+new sessions and has no core settings-section field; change it in the
+settings file or with `PATCH /v1/settings`.
 
 **Tokens.** API tokens are `sgr_`-prefixed secrets shown once at
 creation (the store keeps only SHA-256 digests) and are self-service:
@@ -298,6 +300,11 @@ is derived, never persisted, and is retained for one release. Group-derived
 admin never counts toward the last-admin guard — demoting or deleting the
 only stored admin is still refused.
 
+Login-provider groups participate in `server.auth.adminGroups`, so configure
+only providers whose group claims are administrator-controlled. A linked
+account's groups come from the provider at each sign-in; removing admin
+therefore requires changing the provider's claim or removing the link/user.
+
 Groups refresh only at that user's next login or proxy request. This
 staleness is deliberate: a group removal at the IdP does not take effect
 until then. Token and session requests only read the stored record; they
@@ -307,8 +314,11 @@ also name groups, matched against the same stored groups.
 ### External sign-in (OIDC and OAuth 2)
 
 The web sign-in screen lists configured external providers above the token
-form; the TUI continues to use tokens. Login providers come from extensions.
-The reference implementation is **`@sigrun/ext-oauth`, shipped separately
+form when the effective auth methods include `token`; `/v1/auth/providers`
+returns an empty list on proxy-only deployments because their completed
+sign-ins could not authenticate the resulting session. The TUI continues to
+use tokens. Login providers come from extensions.
+The reference implementation is **`@sigrun/oauth`, shipped separately
 and not yet bundled or installed by default**. Install it through the normal
 `extensions` list (see [Extensions](#extensions)); there is no built-in
 `oauth` entry to enable. It is inert when its settings contain no valid
@@ -450,7 +460,7 @@ conversations).
 
 **Sharing.** Conversations are private to their owner by default. The
 owner can share one — household-wide or with named users and groups,
-`read` or `write` — through the web UI's ⋯ menu or the TUI's `/share`; `write`
+`read` or `write` — through the web UI's ⋯ menu; `write`
 lets a recipient submit, answer, and fork, but only the owner can
 re-share. Household sharing defaults to `read`.
 

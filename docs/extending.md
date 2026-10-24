@@ -555,12 +555,17 @@ request, so changes at the identity service deliberately take effect then,
 not continuously. Stored groups participate in effective-admin and
 group-sharing checks.
 
+Login-provider groups participate in `server.auth.adminGroups`, so configure
+only providers whose group claims are administrator-controlled. A linked
+account's groups come from the provider at each sign-in; removing admin
+therefore requires changing the provider's claim or removing the link/user.
+
 Login-provider validation is all-or-nothing for one extension: a malformed
 array or entry, an invalid or duplicate id, a non-string label/icon, or a
 non-function `begin`/`complete` quarantines that extension. Boot continues
 without its login providers.
 
-The separately shipped `@sigrun/ext-oauth` package implements this contract
+The separately shipped `@sigrun/oauth` package implements this contract
 for OIDC and OAuth 2. It is **not bundled or installed by default**; the
 operator installs and configures it like other extensions. See
 [Authentication](README.md#authentication) for its operator configuration.

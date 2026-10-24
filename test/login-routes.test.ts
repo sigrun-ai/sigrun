@@ -18,6 +18,7 @@ import { createServer } from "../src/server/index.js";
 import { fixtureLoginProvider, setFixtureLoginProviders } from "./fixtures/fixture-login/index.js";
 import { seededIdentity, unclaimedIdentity } from "./helpers/identity.js";
 import { ensureSetupCode, readSetupCode } from "../src/harness/identity/setup-code.js";
+import { effectiveAdmin } from "../src/harness/identity/groups.js";
 
 const LOGIN_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-login", "index.js"),
@@ -32,6 +33,7 @@ interface TestServer {
 }
 
 async function bootServer(options: {
+	auth?: string;
 	resolver?: LoginResolver;
 	now?: () => number;
 	extensionSpecifiers?: string[];
@@ -50,11 +52,12 @@ async function bootServer(options: {
 	};
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
-		SIGRUN_AUTH: "token",
+		SIGRUN_AUTH: options.auth ?? "token",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: join(dir, "config"),
 		SIGRUN_PUBLIC_URL: "https://sigrun.example.invalid",
+		...(options.auth === "proxy" ? { SIGRUN_AUTH_TRUSTED_PROXIES: "127.0.0.1/32" } : {}),
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],
@@ -107,7 +110,7 @@ async function begin(app: FastifyInstance, query = "") {
 }
 
 describe("login provider routes", () => {
-	test("providers lists only loaded, validated contributions", async () => {
+	test("providers lists only loaded, validated contributions when token sessions are enabled", async () => {
 		const { app } = await bootServer();
 		const response = await app.inject({ method: "GET", url: "/v1/auth/providers" });
 		expect(response.statusCode).toBe(200);
@@ -118,6 +121,14 @@ describe("login provider routes", () => {
 				icon: "key",
 			}],
 		});
+	});
+
+	test("providers is empty on a proxy-only deployment", async () => {
+		const { app, opened } = await bootServer({ auth: "proxy" });
+		expect(opened.loginProviders).toHaveLength(1);
+		const response = await app.inject({ method: "GET", url: "/v1/auth/providers" });
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({ providers: [] });
 	});
 
 	test("begin redirects to the provider and sets a browser-bound state cookie", async () => {
@@ -386,6 +397,39 @@ describe("login provider routes", () => {
 		expect(linked.headers.location).toBe("/settings?section=accounts");
 		expect(linked.headers["set-cookie"]).toBeUndefined();
 		expect(opened.identity.accounts.lookup("login:fixture-login:fixture", "subject-123")?.user).toBe("tester");
+	});
+
+	test("an authenticated link records identity without granting admin from provider groups", async () => {
+		const { app, opened, config } = await bootServer();
+		config.auth.adminGroups = ["family"];
+		await opened.identity.users.add({ user: "bob", admin: false, source: "cli" });
+		await opened.identity.users.setGroups("bob", "proxy", ["users"]);
+		const before = structuredClone(opened.identity.users.get("bob"));
+		const { token } = await opened.identity.tokens.createSession("bob", "login:fixture-login:fixture", 60_000);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/login/login:fixture-login:fixture?link=1",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		const state = new URL(response.headers.location as string).searchParams.get("state");
+		const stateCookie = (response.headers["set-cookie"] as string).split(";", 1)[0];
+		const linked = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${state}`,
+			headers: { cookie: stateCookie },
+		});
+		expect(linked.statusCode).toBe(302);
+		expect(opened.identity.accounts.lookup("login:fixture-login:fixture", "subject-123")?.user).toBe("bob");
+		const after = opened.identity.users.get("bob")!;
+		expect(after).toEqual(before);
+		expect(effectiveAdmin(after, config.auth.adminGroups)).toBe(false);
+		const whoami = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		expect(whoami.statusCode).toBe(200);
+		expect(whoami.json().admin).toBe(false);
 	});
 
 	test("a second-user login without isolation redirects isolation_required and creates no link", async () => {

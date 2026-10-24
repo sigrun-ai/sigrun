@@ -65,8 +65,9 @@ export function buildSessionCookie(
 	const forwardedProto = Array.isArray(forwarded) ? forwarded[0] : forwarded;
 	const secure =
 		request.protocol === "https" || (trusted && forwardedProto === "https");
+	const maxAge = sessionTtlMs(ctx) / 1_000;
 	return (
-		`${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/` +
+		`${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}` +
 		(secure ? "; Secure" : "")
 	);
 }

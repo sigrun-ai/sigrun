@@ -79,7 +79,8 @@ export async function resolveLogin(
 				user: input.linkUser,
 				via: "login",
 			});
-			await deps.users.setGroups(input.linkUser, provider, result.groups ?? []);
+			// A link records identity only. Groups arrive on this account's
+			// next sign-in, never on a session/token-authenticated request.
 			return { kind: "linked", user: input.linkUser };
 		}
 
@@ -99,7 +100,9 @@ export async function resolveLogin(
 				// only finish the exact claim whose subject/user/code were recorded.
 				if (!validSetupCode) return undefined;
 				const claim = deps.setupClaims.matches(provider, result.subject, input.code!);
-				if (claim === undefined) return { kind: "refused", error: "not_allowed" };
+				if (claim === undefined || deps.users.get(claim.user) === undefined) {
+					return { kind: "refused", error: "not_allowed" };
+				}
 				await deps.accounts.link({ provider, subject: result.subject, user: claim.user, via: "login" });
 				await deps.users.setGroups(claim.user, provider, result.groups ?? []);
 				await deps.clearSetupCode();
@@ -107,18 +110,26 @@ export async function resolveLogin(
 				return { kind: "session", user: claim.user };
 			}
 			if (!validSetupCode) return { kind: "needs_code", reason: "setup" };
-			const user = assignUsername(result.profile, result.subject, (name) => deps.users.get(name) !== undefined);
-			const record = await deps.users.add({
-				user,
-				...profileFields(result.profile),
-				admin: true,
-				source: "login",
-			});
+			const claim = deps.setupClaims.matches(provider, result.subject, input.code!);
+			const user = claim?.user ?? assignUsername(
+				result.profile,
+				result.subject,
+				(name) => deps.users.get(name) !== undefined,
+			);
+			// Persist the recovery breadcrumb before creating the user. On a
+			// retry, only this exact subject may finish the claim; if the user
+			// write did not happen, it is retried under the recorded name.
 			await deps.setupClaims.record({
 				user,
 				provider,
 				subject: result.subject,
 				codeSha256: hashToken(input.code!),
+			});
+			const record = deps.users.get(user) ?? await deps.users.add({
+				user,
+				...profileFields(result.profile),
+				admin: true,
+				source: "login",
 			});
 			await deps.accounts.link({ provider, subject: result.subject, user, via: "login" });
 			await deps.users.setGroups(user, provider, result.groups ?? []);

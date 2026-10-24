@@ -310,6 +310,7 @@ describe("POST /v1/auth/login", () => {
 		expect(cookieLine).toContain("sigrun_session=");
 		expect(cookieLine).toContain("HttpOnly");
 		expect(cookieLine).toContain("SameSite=Strict");
+		expect(cookieLine).toContain("Max-Age=2592000");
 
 		const whoami = await app.inject({
 			method: "GET",
@@ -331,6 +332,43 @@ describe("POST /v1/auth/login", () => {
 		const cookieLine = Array.isArray(cookie) ? cookie[0] : cookie;
 		expect(cookieLine).toContain("sigrun_session=");
 		expect(cookieLine).toContain("Max-Age=0");
+	});
+
+	test("a session can mint an API token that survives session revocation", async () => {
+		const { app, opened } = await bootServer({ env: { SIGRUN_AUTH: "token" } });
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+		);
+		const cookie = `sigrun_session=${session.token}`;
+		const minted = await app.inject({
+			method: "POST",
+			url: "/v1/auth/tokens",
+			headers: { cookie },
+			payload: { name: "tui" },
+		});
+		expect(minted.statusCode).toBe(201);
+		const apiToken = minted.json().token as string;
+		const logout = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+			headers: { cookie },
+		});
+		expect(logout.statusCode).toBe(204);
+		const revokedSession = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie },
+		});
+		expect(revokedSession.statusCode).toBe(401);
+		const independentToken = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${apiToken}` },
+		});
+		expect(independentToken.statusCode).toBe(200);
+		expect(independentToken.json()).toMatchObject({ user: "tester", method: "token" });
 	});
 
 	test("logout revokes a session cookie; logout only clears an API-token cookie", async () => {

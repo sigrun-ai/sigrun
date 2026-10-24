@@ -123,11 +123,15 @@ export function registerLoginRoutes(
 	});
 
 	app.get("/v1/auth/providers", async () => ({
-		providers: ctx.opened.loginProviders.map(({ provider, contribution }) => ({
-			provider,
-			label: contribution.label,
-			...(contribution.icon === undefined ? {} : { icon: contribution.icon }),
-		})),
+		// External sign-in creates token-backed sessions, so a proxy-only
+		// deployment cannot use it. Do not advertise a flow that would loop.
+		providers: ctx.methods.includes("token")
+			? ctx.opened.loginProviders.map(({ provider, contribution }) => ({
+				provider,
+				label: contribution.label,
+				...(contribution.icon === undefined ? {} : { icon: contribution.icon }),
+			}))
+			: [],
 	}));
 
 	app.get("/v1/auth/login/:provider", async (request, reply) => {
