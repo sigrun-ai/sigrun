@@ -82,6 +82,24 @@ export class SurfaceView implements Component {
 		return this.#component.render(width);
 	}
 
+	/**
+	 * Focus the field with this name in the rendered form (the settings
+	 * view's search-resolve seam, U4 Task 4): forces the component to
+	 * build (the render gate) and forwards to the form's focus-by-name.
+	 * Returns false when the surface is not a form or has no such field.
+	 */
+	focusField(name: string): boolean {
+		const view = this.#surface.view;
+		if (view.status !== "ready" || view.tree === undefined) return false;
+		if (this.#component === undefined) {
+			this.#component = renderBlock(view.tree.root, this.#ctx(), this.#options);
+		}
+		const focusable = this.#component as {
+			focusName?: (fieldName: string) => boolean;
+		};
+		return focusable.focusName?.(name) === true;
+	}
+
 	handleInput(data: string): void {
 		const view = this.#surface.view;
 		if (view.status === "error") {

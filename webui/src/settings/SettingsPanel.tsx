@@ -410,6 +410,37 @@ function SettingsSurfaceBody(props: {
 			}),
 		[entry.slug, entry.id, client],
 	);
+	// The probe's onData: a stable callback per section (a fresh closure
+	// per render would re-arm the probe's poll every frame).
+	const { onCoreMeta, valuesRef } = props;
+	const handleProbeData = useCallback(
+		(data: JsonObject) => {
+			valuesRef.current[`${entry.slug}/${entry.id}`] =
+				(typeof data.settings === "object" &&
+				data.settings !== null &&
+				!Array.isArray(data.settings)
+					? data.settings
+					: {}) as JsonObject;
+			if (onCoreMeta !== undefined) {
+				const metaBlock = data.meta;
+				if (
+					typeof metaBlock === "object" &&
+					metaBlock !== null &&
+					!Array.isArray(metaBlock) &&
+					Array.isArray((metaBlock as JsonObject).pendingRestart)
+				) {
+					const block = metaBlock as JsonObject;
+					onCoreMeta({
+						pendingRestart: (block.pendingRestart as unknown[]).filter(
+							(k): k is string => typeof k === "string",
+						),
+						supervised: block.supervised === true,
+					});
+				}
+			}
+		},
+		[entry.slug, entry.id, onCoreMeta, valuesRef],
+	);
 	return (
 		<div className="settings-body" data-settings-section={entry.id}>
 			{entry.slug === "core" && entry.id === "general" && (
@@ -420,34 +451,7 @@ function SettingsSurfaceBody(props: {
 						: ""}
 				</p>
 			)}
-			<SurfaceMetaProbe
-				transport={transport}
-				onData={(data) => {
-					props.valuesRef.current[`${entry.slug}/${entry.id}`] =
-						(typeof data.settings === "object" &&
-						data.settings !== null &&
-						!Array.isArray(data.settings)
-							? data.settings
-							: {}) as JsonObject;
-					if (props.onCoreMeta !== undefined) {
-						const metaBlock = data.meta;
-						if (
-							typeof metaBlock === "object" &&
-							metaBlock !== null &&
-							!Array.isArray(metaBlock) &&
-							Array.isArray((metaBlock as JsonObject).pendingRestart)
-						) {
-							const block = metaBlock as JsonObject;
-							props.onCoreMeta({
-								pendingRestart: (block.pendingRestart as unknown[]).filter(
-									(k): k is string => typeof k === "string",
-								),
-								supervised: block.supervised === true,
-							});
-						}
-					}
-				}}
-			/>
+			<SurfaceMetaProbe transport={transport} onData={handleProbeData} />
 			<SurfaceView transport={transport} />
 		</div>
 	);
@@ -457,27 +461,36 @@ function SettingsSurfaceBody(props: {
  * The data probe beside the SurfaceView: a fetch of the same surface's
  * data the panel reads the `meta` block + the search's value resolution
  * from (the SurfaceView consumes the transport; the panel needs the
- * raw data object — one extra fetch per section mount, cached).
+ * raw data object). The probe REFETCHES every 1.5 s (the pendingRestart
+ * callout must catch keys a save in ANOTHER section lands; the probe is
+ * cheap — the surface's data is small and the poll only runs while the
+ * section is open).
  */
 function SurfaceMetaProbe(props: {
 	readonly transport: ReturnType<typeof createExtTransport>;
 	readonly onData: (data: JsonObject) => void;
 }): null {
+	const { transport, onData } = props;
 	useEffect(() => {
 		let cancelled = false;
-		props.transport
-			.load()
-			.then((result) => {
-				if (!cancelled) props.onData(result.data);
-			})
-			.catch(() => {
-				// The SurfaceView surfaces the load failure; the probe is
-				// best-effort (the callout hides when the read fails).
-			});
+		const poll = (): void => {
+			transport
+				.fetchData()
+				.then((result) => {
+					if (!cancelled && result.data !== undefined) onData(result.data);
+				})
+				.catch(() => {
+					// The SurfaceView surfaces the load failure; the probe is
+					// best-effort (the callout hides when the read fails).
+				});
+		};
+		poll();
+		const timer = setInterval(poll, 1500);
 		return () => {
 			cancelled = true;
+			clearInterval(timer);
 		};
-	}, [props.transport]);
+	}, [transport, onData]);
 	return null;
 }
 

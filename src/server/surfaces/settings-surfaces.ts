@@ -453,7 +453,13 @@ export function settingsSurfaceFor(
 					value = parsed;
 				}
 			}
-			if (raw === "") value = null;
+			// An empty STRING is the unset affordance (the nullable
+			// fields' "(server default)" gesture): it CLEARS the key via
+			// the store's delete-key merge. It never counts as a provided
+			// value — a half-touched form would otherwise validate the
+			// empty string against enum/number validators and 400 the
+			// whole save.
+			if (raw === "") continue;
 			writeDotted(patch, name, value);
 		}
 		try {

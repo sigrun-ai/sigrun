@@ -774,6 +774,22 @@ export class FormComponent implements Component {
 		return this.#focus;
 	}
 
+	/** Move focus to the field with this name (the settings view's
+	 *  search-resolve seam, U4 Task 4: a "naming" hit lands the
+	 *  caret on the naming-model row). Returns false when no field
+	 *  carries the name. */
+	focusName(name: string): boolean {
+		const index = this.#fields.findIndex((field) => field.name === name);
+		if (index < 0) return false;
+		this.#focus = index;
+		return true;
+	}
+
+	/** The flattened field names (the host's search-resolve check). */
+	get fieldNames(): readonly string[] {
+		return this.#fields.map((field) => field.name);
+	}
+
 	get step(): number {
 		return this.#step;
 	}

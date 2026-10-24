@@ -39,9 +39,14 @@ import type {
 	ConversationViewWire,
 	InteractionAnswered,
 	InteractionList,
+	MetaResponse,
 	ModelsResponse,
 	SettingsResponse,
+	SettingsSectionsResponse,
+	SettingsSectionEntry,
+	SettingsSectionIndexEntry,
 	SubmissionResponse,
+	WhoamiResponse,
 } from "@sigrun/shared/views";
 
 export type {
@@ -58,10 +63,15 @@ export type {
 	InteractionAnswered,
 	InteractionList,
 	InteractionWire,
+	MetaResponse,
 	ModelEntry,
 	ModelsResponse,
 	SettingsResponse,
+	SettingsSectionsResponse,
+	SettingsSectionEntry,
+	SettingsSectionIndexEntry,
 	SubmissionResponse,
+	WhoamiResponse,
 } from "@sigrun/shared/views";
 export type { CommandRunResponse, CommandsResponse, SlashCommand } from "@sigrun/shared/commands";
 export type {
@@ -152,6 +162,34 @@ export class SigrunClient {
 	readonly #fetch: FetchLike;
 	readonly #headers: Record<string, string>;
 
+	readonly #token: string | undefined;
+	readonly #user: string | undefined;
+
+	/** The server's origin (the settings view's surface transports). */
+	get baseUrl(): string {
+		return this.#baseUrl;
+	}
+
+	/** The auth token (the surface transports' bearer). */
+	get token(): string | undefined {
+		return this.#token;
+	}
+
+	/** The `X-Sigrun-User` identity (the surface transports' header). */
+	get user(): string | undefined {
+		return this.#user;
+	}
+
+	/**
+	 * The client's fetch (the settings view's surface transports — a
+	 * test-injected fetch must carry the section loads too). The
+	 * parameter/return types widen to the ambient `fetch` signature;
+	 * the declared {@link FetchLike} is the consumed subset.
+	 */
+	get fetch(): typeof globalThis.fetch {
+		return this.#fetch as typeof globalThis.fetch;
+	}
+
 	constructor(options: SigrunClientOptions) {
 		// A trailing slash would double every route's leading one
 		// (`--server http://host/` → `//v1/...`) — normalize once.
@@ -161,6 +199,8 @@ export class SigrunClient {
 			(((input, init) => globalThis.fetch(input, init)) as FetchLike);
 		const user = options.user?.trim();
 		const token = options.token?.trim();
+		this.#token = token === "" ? undefined : token;
+		this.#user = user === "" ? undefined : user;
 		this.#headers = {
 			accept: "application/json",
 			...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
@@ -307,6 +347,26 @@ export class SigrunClient {
 	/** `GET /v1/settings` — the effective settings (absent file = `{}`). */
 	getSettings(): Promise<SettingsResponse> {
 		return this.#get("/v1/settings");
+	}
+
+	/**
+	 * `GET /v1/settings/sections` (UI-blocks U4 Task 4): the settings
+	 * panel's nav list + search index in one payload.
+	 */
+	listSettingsSections(): Promise<SettingsSectionsResponse> {
+		return this.#get("/v1/settings/sections");
+	}
+
+	/** `GET /v1/auth/whoami` — the resolved principal (the settings
+	 *  callout's admin gate). */
+	whoami(): Promise<WhoamiResponse> {
+		return this.#get("/v1/auth/whoami");
+	}
+
+	/** `GET /v1/meta` — the boot facts (the settings callout's
+	 *  `supervised` read). */
+	getBootMeta(): Promise<MetaResponse> {
+		return this.#get("/v1/meta");
 	}
 
 	/**

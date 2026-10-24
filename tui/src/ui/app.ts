@@ -61,7 +61,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ConversationViewWire, ModelEntry, SigrunClient, SlashCommand, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
-import type { JsonObject, SurfaceTransport } from "@sigrun/shared/blocks";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import {
 	ExtSurfaceHub,
 	surfaceKeyHash,
@@ -70,7 +70,7 @@ import {
 } from "../blocks/ext-transport.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { spawnSync } from "node:child_process";
-import type { TuiTheme } from "../theme.js";
+import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { Action, ActionHost, Focus } from "../actions.js";
 import { editInVim, resolveVimEditor } from "../editor-launch.js";
 import { copyToTerminal } from "../clipboard.js";
@@ -84,6 +84,7 @@ import {
 import { AmbientChrome } from "./ambient.js";
 import { ConversationPane } from "./conversation-pane.js";
 import { InteractionPrompter } from "./interactions.js";
+import { SettingsView } from "./settings.js";
 import { openPicker, type PickerItem } from "./picker.js";
 import { Sidebar } from "./sidebar.js";
 import type { StatusBar } from "./status-bar.js";
@@ -182,6 +183,14 @@ export class TuiApp implements Component, ActionHost {
 		readonly id: string;
 		readonly handle: ExtSurfaceTransportHandle;
 	} | undefined;
+	/** The app's theme (the settings view's SurfaceView reuses it). */
+	readonly #theme: TuiTheme;
+	/** Unicode glyphs (the settings view's SurfaceView). Pinned true,
+	 *  matching the blocks tests' default; a terminal-capability
+	 *  downgrade is the theme system's call when it lands one. */
+	readonly #unicode: boolean = true;
+	/** The open settings view (U4 Task 4; `/settings` opens, Esc closes). */
+	#settingsView: SettingsView | undefined;
 	readonly #watch: WatchFn;
 	readonly #watchOptions: WatchOptions;
 
@@ -245,7 +254,8 @@ export class TuiApp implements Component, ActionHost {
 		this.#restartPollMs = options.restartPollMs ?? 500;
 		this.#restartDeadlineMs =
 			options.restartDeadlineMs ?? RESTART_READYZ_DEADLINE_MS;
-		const theme = options.theme;
+		const theme = options.theme ?? plainTuiTheme();
+		this.#theme = theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
 		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
 		this.editor = new Editor(options.tui, plainEditorTheme());
@@ -355,11 +365,51 @@ export class TuiApp implements Component, ActionHost {
 	}
 
 	/**
+	 * Open the settings view (U4 Task 4, spec §13.4): `/settings` mounts
+	 * the SettingsView (the sections list + the search picker over the
+	 * index); Esc closes it back to the conversation.
+	 */
+	async openSettings(): Promise<void> {
+		if (this.#settingsView !== undefined) return;
+		const view = new SettingsView(this.#client, {
+			tui: this.#tui,
+			theme: this.#theme,
+			unicode: this.#unicode,
+			onRestart: async () => {
+				await this.restart();
+			},
+			onClose: () => {
+				this.#settingsView = undefined;
+				this.#tui.requestRender();
+			},
+		});
+		this.#settingsView = view;
+		await view.load();
+		this.#tui.requestRender();
+	}
+
+	/** The open settings view (tests drive it). */
+	get settingsView(): SettingsView | undefined {
+		return this.#settingsView;
+	}
+
+	/**
+	 * Close the open settings view (Esc). Returns true when one was open.
+	 */
+	closeSettings(): boolean {
+		if (this.#settingsView === undefined) return false;
+		this.#settingsView.dispose();
+		this.#settingsView = undefined;
+		this.#tui.requestRender();
+		return true;
+	}
+
+	/**
 	 * Close the open extension view (the Esc/back idiom): the pane
 	 * returns to the conversation AND the surface's fetches stop — no
 	 * cadence, no keepalive for a surface nobody is looking at (spec
-	 *  §7.3's stop-when-hidden rule; U2's cadence timer consults this).
-	 *  Returns true when a view was open (the key was consumed).
+	 * §7.3's stop-when-hidden rule; U2's cadence timer consults this).
+	 * Returns true when a view was open (the key was consumed).
 	 */
 	closeExtView(): boolean {
 		if (this.#extView === undefined) return false;
@@ -648,6 +698,21 @@ export class TuiApp implements Component, ActionHost {
 		if (matchesKey(data, Key.ctrl("o"))) {
 			return this.interactions.beginAnswer();
 		}
+		// The settings view owns its keys while open (U4 Task 4): Esc
+		// closes an open section first, then the view; `/` opens the
+		// search picker over the sections index.
+		if (this.#settingsView !== undefined) {
+			if (matchesKey(data, Key.escape)) {
+				if (this.#settingsView.closeSection()) return true;
+				return this.closeSettings();
+			}
+			if (data === "/" && this.#settingsView.openSectionId === undefined) {
+				this.#settingsView.openSearch();
+				return true;
+			}
+			this.#settingsView.handleInput(data);
+			return true;
+		}
 		if (matchesKey(data, Key.escape) && this.#busy && this.#activeId !== undefined) {
 			this.#abortActive();
 			return true;
@@ -866,6 +931,12 @@ export class TuiApp implements Component, ActionHost {
 								`  ${job.name} · ${next} · ${last}`,
 						);
 					}
+					return;
+				}
+				case "settings": {
+					// U4 Task 4: the settings view (sections + the search
+					// picker over the index) mounts in the app's main column.
+					await this.openSettings();
 					return;
 				}
 				default:

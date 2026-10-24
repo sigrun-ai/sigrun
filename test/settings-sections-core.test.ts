@@ -192,9 +192,22 @@ describe("core settings sections (U4 Task 4)", () => {
 				expect(field.apply, `${id}.${field.name}`).toBe(entry.apply);
 			}
 		}
-		// The searchable keys render somewhere (the index's core-key rows).
+		// The searchable keys render somewhere (the index's core-key
+		// rows).
 		expect(fieldsBySection.get("general")?.some((f) => f.name === "namingModel")).toBe(true);
 		expect(fieldsBySection.get("advanced")?.some((f) => f.name === "server.port")).toBe(true);
+		// NO unregistry'd field renders (a field with no §13.1 entry would
+		// write through the SettingsStore's allowlist at save time and
+		// reject the whole save — the panel's one-renderer rule pins the
+		// fields to the registry).
+		for (const [id, fields] of fieldsBySection) {
+			for (const field of fields) {
+				expect(
+					registryByKey.has(field.name),
+					`${id}.${field.name} is a §13.1 registry key`,
+				).toBe(true);
+			}
+		}
 	});
 });
 
