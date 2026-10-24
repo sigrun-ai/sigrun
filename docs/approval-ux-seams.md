@@ -49,12 +49,11 @@ channel UI.
    statuslines, banners — persistent read-mostly state panels,
    a *different* seam from pending decisions.
 
-## The interaction record: envelope / primitives / details
+## The interaction record: envelope / block-tree body / details
 
 The design tension (strict enough for channels to render, open enough
 for authors) resolves by **sharding, not grading** — one strict
-envelope around a body built from a closed set of primitives, with an
-opaque escape valve:
+envelope around a block-tree body, with an opaque escape valve:
 
 ```
 InteractionRecord (core-owned doc family, e.g. sigrun.interaction, keyed by callId)
@@ -64,28 +63,41 @@ InteractionRecord (core-owned doc family, e.g. sigrun.interaction, keyed by call
     callId      stable join key to the pi.live tool slot
     status      "pending" | "answered" | "skipped" | "expired" | "cancelled"
     createdAt / expiresAt? / answeredBy? / answeredByUser? / settledAt?
-    answer      { ids?: string[], values?: Record<name,value>, text?: string }
-                  — written via the one generic route; the extension
-                    interprets it (first-answer-wins semantics stay hers)
+    answer      { values: Record<name, value> }   — ruling 20; written via
+                  the one generic route; the extension interprets it
+                  (first-answer-wins semantics stay hers)
 
-  body — composed ONLY from the closed primitives:
-    text        prose/markdown (prompt, context, deny reason)
-    options[]   { id, label, description?, tone?, recommended?, multi? }
-    fields[]    { name, type: "string"|"number"|"boolean"|"secret",
-                  label?, required? }
-    diff        { before, after, path?, lang? }
+  body — a BLOCK TREE (placement `interaction`): a root `form` whose
+         submit is the answer, composed from the closed block set with
+         the typed builders in `@sigrun/sigrun/blocks`
 
   details       opaque JSON, extension-owned; channels render it
                 generically and honestly (collapsed, pretty-printed,
                 no claimed semantics)
 ```
 
-The primitives are a **frozen-by-default** set. Adding one is a
+**The primitive body types below are superseded** (2026-10-24, UI-blocks
+ruling 16 — no compatibility layer): the interaction body is a block
+tree from the closed block set, and the mapping from this section's
+`text` / `options[]` / `fields[]` / `diff` primitives onto blocks is
+spec §9.1 (`docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md`):
+`text` → `markdown`, `options[]` → a `choice` field, `fields[]` →
+`text` / `number` / `toggle` / `secret` fields, `diff` → `diff`,
+`details` → `details`; the answer shape is `{values}` (every field's
+value under its name). Extension authoring examples live in
+[extending.md](extending.md) — the two sections below are kept as the
+survey evidence that sized the set.
+
+The block set is a **frozen-by-default** set. Adding a block is a
 deliberate, evidence-driven act — "a real extension outgrew the set" —
 never a casual schema bump; a casually added primitive would be a
 de-facto core capability, which the capability-freedom ruling forbids.
 
-## The closed primitive set, sized by evidence
+## The closed primitive set, sized by evidence (historical)
+
+> Kept as the evidence record. The live contract is the block set +
+> spec §9.1 mapping above; "primitive" below means the superseded
+> body types the survey measured.
 
 Before freezing, 14 high-download pi extensions with human interaction
 were inspected by parallel subagents (cloned source, quote-backed
@@ -124,7 +136,7 @@ new):
   pi-advisor (described presets, multi model select), rpiv-ask
   (multiSelect), plannotator (recommended/settled choices),
   pi-interview (recommended/conviction). Multi-select's answer shape is
-  `answer.ids: string[]`.
+  `answer.ids: string[]` (now `{values: {<choice>: [ids]}}` — ruling 20).
 - **fields gain `"secret"`** — masked API-key entry (pi-advisor,
  .pi-guardrails key inputs). Channels mask by contract.
 - **envelope gains `expiresAt?` and `skipped`/`expired` statuses** —
@@ -145,37 +157,52 @@ list editors (guardrails), evidence elision (permission-system) — to
 **sigrun-warden** hangs on the `beforeTool` hook: verdict `allow`
 returns immediately; `steer` returns a corrected-arguments verdict
 (non-blocking); `confirm` seeds a `sigrun.interaction` record
-(kind `gating.confirm`) with `text` (command + reasons + scores) and
-toned `options` (allow/deny), then long-polls the answer doc — the
+(kind `gating.confirm`) whose tree is a root `form` with a toned
+allow/deny `choice`, a `longtext` reason, and `markdown` for the
+matched rule and command, then long-polls the answer doc — the
 crash-proven pattern. Crash mid-pending: resume re-enters the hook,
 re-polls the same `callId`-keyed record.
 
 **sigrun-ask-questions** hangs on a model-facing `ask_questions` tool:
-`execute` commits the record (kind `questions.form`) — `text` prompt,
-`options` (multi-capable) or `fields` per question — then long-polls
+`execute` commits the record (kind `questions.form`) — one `section`
+per question holding a `choice` (multi-capable, per-option
+`description`/`preview`, `allowOther` for free text) — then long-polls
 inside the tool call, so to the harness it is simply a pending tool
-slot. The generic answer route writes `answer`; the tool returns it
-into the conversation as its result.
+slot. The generic answer route writes `answer: {values}`; the tool
+returns it into the conversation as its result.
 
 ## Channel rendering contract (testable, finite)
 
 Channels commit to exactly this, and nothing more:
 
 1. Render the envelope state (pending/metered/expired) for any record.
-2. Render the four primitives generically: `text` as prose,
-   `options` as buttons/toggles (`tone` colors, `recommended`
-   pre-selected, `multi` checkbox set), `fields` as a light form,
-   `diff` as a before/after view.
+2. Render the body tree with the shared block renderers (placement
+   `interaction`): the root `form`'s submit becomes the answer POST;
+   a `choice` renders as buttons/toggles (`tone` colors, `recommended`
+   pre-selected, `multi` checkbox set), a `secret` field is masked,
+   a `diff` renders as a before/after view.
 3. Render `details` as collapsed generic JSON — never interpreted.
 4. Write answers via the one generic route
-   (`POST /v1/conversations/:id/interactions/:callId/answer`);
-   resolution semantics are the extension's.
+   (`POST /v1/conversations/:id/interactions/:callId/answer`, body
+   `{values}` — every field's value under its name); resolution
+   semantics are the extension's.
 
 No per-extension UI code paths. A `uiHint`-style bespoke-render
 pointer (factory-result-declared, extension-owned code) is the
 documented future escape route but is deliberately out of v1.
 
-## Ambient surfaces: the same envelope discipline, four primitives
+## Ambient surfaces: the same envelope discipline
+
+**Also superseded by the block set** (same ruling): an ambient record's
+body is a block tree (placement `ambient`), with `status`/`footer`
+restricted to one line. The mapping from this section's `line` /
+`rows[]` / `gauge` / `ledger[]` primitives onto blocks is spec §9.2:
+`line {text}`/`segments[]` → one-line `markdown` or a `columns` of
+one-line `markdown`s, derived metrics → `stat` with `format`, `rows[]`
+→ `collection(display: list)` cards, `gauge` → `meter` (+ `log` for
+`recentOutput`, a nested `collection` for `checks`), `ledger[]` →
+`log`, `details` → `details`. The evidence table below stays as the
+survey record.
 
 2026-10-14 second survey (8 extensions: pi-goal-x, rpiv-todo, pi-fabric,
 pi-warden, plannotator, pi-advisor, pi-goal-schovest, pi-interview-tool;
@@ -191,8 +218,8 @@ AmbientSurface (limited vocabulary; write = full replacement of surface state)
 
   envelope — strict:
     key       unique keyed slot id (e.g. "goal", "fabric", "rpiv-todos")
-    place     "status" (one keyed statusline line) | "panel" (above-editor
-              list surface)
+    place     "status" (one keyed statusline line) | "footer" (left/middle/
+              right zones) | "panel" (above-editor list surface)
     kinds[]   the surface kinds this record uses (mirror of interactionKinds;
               validated fail-loud at factory time)
     budget    "line" | maxRows? | panel mode defaults (collapse policy rides here)
@@ -203,25 +230,26 @@ AmbientSurface (limited vocabulary; write = full replacement of surface state)
                  — timer-driven slots (countdowns, clocks) request
                    scheduled repaints (pi-usage's 60s countdown line)
 
-  body — composed ONLY from the closed ambient primitives:
-    line      {text} — the statusline primitive: prose for a keyed slot;
-              everything pre-flat today (goal, advisor-usage, plannotator
-              phase) is exactly this. Composition: a slot may carry
-              `segments[]` ({id, text, place?: left|middle|right}) with
-              envelope `overflow: drop|wrap` — the segmented-footer
-              shape (pi-powerline's ~20 segments, pi-zentui's L/M/R
-              zones) without a second primitive.
-    derived   metrics may carry a `format` hint ("2.5k", currency,
-              smart-token formatting) so hosts stop re-implementing
-              formatters — every footer extension hand-rolls them.
+  body — a BLOCK TREE (placement `ambient`; `status`/`footer` allow one
+         line). The superseded ambient primitives and their §9.2 block
+         mapping, kept as the design record:
+
+    line      {text} → one-line `markdown`; `segments[]` ({id, text,
+              place?: left|middle|right}) with envelope `overflow:
+              drop|wrap` → a `columns` of one-line `markdown`s (the
+              segmented-footer shape — pi-powerline's ~20 segments,
+              pi-zentui's L/M/R zones — without a second primitive).
+    derived   metrics with a `format` hint ("2.5k", currency,
+              smart-token formatting) → `stat` with `format`, so hosts
+              stop re-implementing formatters.
     rows[]    {id, label, status: enum, severity?, quiet?, detail?, depth?,
-               deps?: ids[], spinnerLabel?, metrics?: {tokens?, cost?,
-               current?, total?, completed?}}
-    gauge     {label, percent?, phase?, elapsed?, recentOutput?: string[],
-               checks?: rows[]-shaped}
-    ledger[]  {at, kind, summary, detail?: string[]} — append-style event
-              feed for trace/audit/history surfaces (amendable per entry,
-              the one stateful non-replacement case)
+               deps?: ids[], spinnerLabel?, metrics?} →
+              `collection(display: list)` cards.
+    gauge     {label, percent?, phase?, elapsed?, recentOutput?, checks?} →
+              `meter`, plus `log` for `recentOutput` and a nested
+              `collection` for `checks`.
+    ledger[]  {at, kind, summary, detail?} — append-style event feed →
+              `log`.
 
   details       opaque JSON, extension-owned; channels render collapsed.
 ```
@@ -295,8 +323,8 @@ Two event surfaces extend the seam (2026-10-23, gateway C5/C6):
 - **`interaction.pending` notifications carry the record's `callId`**
   (the only notification type that does). A notifier reads the record
   via `ctx.host.snapshotInteraction(conversationId, callId, context)`
-  to render body/options/diff — the notification itself carries only
-  title/body/url.
+  to read the record's body tree and details — the notification itself
+  carries only title/body/url.
 - **`interactionSettled` lifecycle handler (C6).** A factory result may
   declare `interactionSettled(event, api, context)` — fired ONCE per
   terminal transition (`answered`/`skipped`/`expired`/`cancelled`) from
@@ -318,12 +346,13 @@ Shipped in core + webui (commits bcd4423 + webui commit):
 - `src/harness/seam-host.ts`: the host context (factory arity-1, kinds
   write gate, owner allocation).
 - Server: `GET/POST /v1/conversations/:id/interactions(/:callId/answer)`,
-  `GET .../ambient`, `/v1/meta seam`.
-- Webui: `InteractionCards` (pending stack: toned options, multi via
-  `details.multi`, fields with secret masking, diff panes, collapsed
-  details) + `AmbientPanels` (segmented lines, severity-sorted quiet-
-  folding rows with deps/spinner/metrics, gauges, newest-first ledgers),
-  both refreshed per stream frame.
+  `GET /v1/conversations/:id/interactions/:callId`, `GET .../ambient`,
+  `/v1/meta seam`.
+- Webui: `InteractionCards` + `AmbientPanels` render the record's
+  block tree via the shared block renderer (`BlockView`; the TUI's
+  `SurfaceView` is its sibling) (toned choices, secret
+  masking, diff panes, collapsed details; statuslines, footer zones,
+  quiet-folded panel rows), refreshed per stream frame.
 - ACHORD LESSON, pinned: never re-read a mutated draft field inside a
   commit callback (`Cannot use a settled overlay`); responses project
   the input answer instead.
@@ -354,8 +383,8 @@ above, which is the point.
 
 - No core fail-open policy knob: "un-gated" is the default, not a
   setting.
-- No core-owned schema for question *content* beyond the primitives:
-  the envelope/primitives/details transport is the contract; the
+- No core-owned schema for question *content* beyond the block set:
+  the envelope/tree/details transport is the contract; the
   payload shapes inside `details` are theirs.
 - No per-capability routes: exactly ONE generic interaction-answer
   route, shared by every extension.

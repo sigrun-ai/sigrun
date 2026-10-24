@@ -119,9 +119,15 @@ function findMoveTarget(tree: Tree | undefined, name: string): MoveTarget | unde
 	if (tree === undefined) return undefined;
 	const found = findCollection(tree.root, name);
 	if (found === undefined) return undefined;
-	if (typeof found.items.$ !== "string") return undefined;
+	const itemsProp = found.items;
+	// Literal rows (the ambient shape, U6 Task 3) have no data path; the
+	// "$" check discriminates the binding (Array.isArray cannot narrow
+	// a readonly-array union).
+	if (typeof itemsProp !== "object" || !("$" in itemsProp)) {
+		return undefined;
+	}
 	return {
-		itemsPath: found.items.$,
+		itemsPath: itemsProp.$,
 		groupBy: found.groupBy,
 		timeStart: found.time?.start,
 		timeEnd: found.time?.end,
@@ -293,6 +299,16 @@ export class SurfaceState {
 		const drained = this.#notices;
 		this.#notices = [];
 		return drained;
+	}
+
+	/** Flip the live surface's access (a mid-edit settle swap renders
+	 *  read-only: the transport's access was captured at load, so the
+	 *  settle path flips the state directly — the view re-renders via
+	 *  the emitted change). Only narrows: once read, never back. */
+	setAccess(access: "read" | "write"): void {
+		if (this.#access === access) return;
+		this.#access = access;
+		this.#emit();
 	}
 
 	/** The channel-owned `/view/` branch (spec §6.2) — a BlockCtx's
@@ -477,7 +493,7 @@ export class SurfaceState {
 			this.#emit();
 		}
 		void this.#transport
-			.act({ action: name, payload, actionId })
+			.act({ action: name, type: action.type, payload, actionId })
 			.then((result) => {
 				// A move whose entry is already gone (the 10 s timeout fired)
 				// is STALE: no ops, no notice — the user already saw it fail.

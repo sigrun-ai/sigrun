@@ -296,13 +296,34 @@ describe("tui e2e smoke (attach-mode wire path)", () => {
 						callId: "e2e-call-1",
 						status: "pending",
 						createdAt: Date.now(),
-						body: {
-							text: "pick one",
-							options: [
-								{ id: "a", label: "A", tone: "ok" },
-								{ id: "b", label: "B" },
+					// Spec §9.1 mapping: `text` → `markdown`, `options[]` →
+					// a `choice` field (tone `ok` → `good`).
+					body: {
+						v: 1,
+						root: {
+							type: "form",
+							id: "ask",
+							bind: "/values",
+							mode: "submit",
+							children: [
+								{
+									type: "section",
+									title: "pick one",
+									children: [
+										{
+											type: "choice",
+											name: "decision",
+											label: "pick one",
+											options: [
+												{ id: "a", label: "A", tone: "good" },
+												{ id: "b", label: "B" },
+											],
+										},
+									],
+								},
 							],
 						},
+					},
 					},
 					BACKGROUND_CONTEXT,
 				);
@@ -316,12 +337,12 @@ describe("tui e2e smoke (attach-mode wire path)", () => {
 				const answered = await client.answerInteraction(
 					forked.id,
 					"e2e-call-1",
-					{ ids: ["a"] },
+					{ values: { decision: "a" } },
 				);
 				expect(answered).toMatchObject({
 					callId: "e2e-call-1",
 					status: "answered",
-					answer: { ids: ["a"] },
+					answer: { values: { decision: "a" } },
 				});
 				// Drained: the record is terminal and off the pending list.
 				expect(

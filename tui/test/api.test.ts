@@ -249,19 +249,36 @@ describe("SigrunClient request shaping", () => {
 		const answered = {
 			callId: "call-1",
 			status: "answered",
-			answer: { ids: ["yes"] },
+			answer: { values: { decision: "yes" } },
 		};
 		const { calls, fetchImpl } = stubFetch(answered);
 		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
 		const result = await client.answerInteraction(4, "call-1", {
-			ids: ["yes"],
+			values: { decision: "yes" },
 		});
 		expect(result).toEqual(answered);
 		expect(calls[0]).toMatchObject({
 			input: `${BASE}/v1/conversations/4/interactions/call-1/answer`,
 			method: "POST",
-			body: JSON.stringify({ ids: ["yes"] }),
+			body: JSON.stringify({ values: { decision: "yes" } }),
 		});
+	});
+
+	test("getInteraction GETs one record by callId (the settle-refetch path)", async () => {
+		const record = {
+			kind: "acme.ask",
+			callId: "call-1",
+			status: "expired",
+			createdAt: 1,
+			settledAt: 2,
+		};
+		const { calls, fetchImpl } = stubFetch(record);
+		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
+		const result = await client.getInteraction(4, "call-1");
+		expect(result).toEqual(record);
+		expect(calls[0]?.input).toBe(
+			`${BASE}/v1/conversations/4/interactions/call-1`,
+		);
 	});
 
 	test("getAmbient GETs .../ambient", async () => {

@@ -21,20 +21,24 @@ import type { Context } from "@earendil-works/chord";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
+import type { Tree } from "@sigrun/shared/blocks";
 import {
 	AmbientDoc,
 	AmbientOwnersDoc,
 	validateAmbient,
-	type AmbientBody,
 	type AmbientPlace,
 	type AmbientRecord,
+	type StoredAmbientRecord,
 } from "./ambient.js";
 import {
 	InteractionDoc,
 	InteractionsIndexDoc,
 	applyAnswer,
+	asInteractionRecord,
 	indexPending,
 	indexSettled,
+	sweepSecretDelivery,
+	takeSecretDelivery,
 	validateInteraction,
 	type InteractionAnswer,
 	type InteractionRecord,
@@ -142,7 +146,7 @@ export interface SeamHost {
 			readonly maxRows?: number;
 			readonly overflow?: "drop" | "wrap" | "summarize";
 			readonly refreshMs?: number;
-			readonly body?: AmbientBody;
+			readonly body?: Tree;
 			readonly details?: import("@earendil-works/pi-durable").JsonObject;
 		},
 		context: Context,
@@ -308,13 +312,15 @@ export function createSeamHost(
 				if (draft.status !== "pending") return false;
 				// Gateway C5: a host caller naming a user answers AS that human
 				// (the route's path — the same applyAnswer line); without a user
-				// the extension answered itself.
+				// the extension answered itself. The conversationId rides the opts
+				// so applyAnswer can record a secret delivery (Review Focus 4).
 				const applied = applyAnswer(
 					draft,
 					answer,
 					opts?.user === undefined ? "extension" : "human",
 					Date.now(),
 					opts?.user,
+					{ conversationId },
 				);
 				if (applied) {
 					const index = await tx.doc(InteractionsIndexDoc);
@@ -326,6 +332,11 @@ export function createSeamHost(
 
 		async settleInteraction(conversationId, callId, status, context) {
 			const h = await harness(context);
+			// The sweep (Review Focus 4) is INSIDE the commit, applied only on
+			// the terminal transition: sweeping before the pending check would
+			// delete a delivery that still belongs to a live answer record
+			// (a no-op settle on an already-answered record must not eat the
+			// winner's unread secret).
 			return await h.commit(async (tx) => {
 				const draft = await tx.doc(
 					InteractionDoc,
@@ -334,23 +345,43 @@ export function createSeamHost(
 					callId,
 				);
 				if (draft.status !== "pending") return false;
+				// SAFETY: the tracked-draft write pattern mutates through a
+				// structural record view; every key exists by construction.
 				const mutable = draft as unknown as Record<string, unknown>;
 				mutable.status = status;
 				mutable.settledAt = Date.now();
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexSettled(index, conversationId, callId);
+				sweepSecretDelivery(conversationId, callId);
 				return true;
 			}, context);
 		},
 
 		async snapshotInteraction(conversationId, callId, context) {
 			const h = await harness(context);
-			return await h.snapshot(
+			const stored = await h.snapshot(
 				InteractionDoc,
 				conversationId,
 				callId,
 				context,
 			);
+			if (stored === undefined) return undefined;
+			const record = asInteractionRecord(stored);
+			// An unanswered record cannot have a delivery — and taking before
+			// this check would DELETE a delivery in flight in the
+			// record-then-commit-visible window (the poll returns the pending
+			// record and the true value is lost). Check the record FIRST.
+			if (record.answer === undefined) return record;
+			// Review Focus 4 (the extension-only read): a secret delivery for
+			// this record merges its TRUE values back ONCE — the take is
+			// one-shot, so a second read sees the stored MASK. HTTP GETs never
+			// come through here (they serve the stored record verbatim).
+			const delivery = takeSecretDelivery(conversationId, callId);
+			if (delivery === undefined) return record;
+			return {
+				...record,
+				answer: { values: delivery.values },
+			};
 		},
 
 		async setAmbient(conversationId, record, context) {
@@ -390,7 +421,10 @@ export function createSeamHost(
 				};
 				const problem = validateAmbient(full);
 				if (problem !== null) throw new SeamError("ambient", problem);
-				Object.assign(draft, full);
+				// SAFETY: `full` carries a validated block tree as its body
+				// (validateAmbient's validateTree gate just passed); the stored
+				// mirror's body differs only in the structural JSON naming.
+				Object.assign(draft, full as unknown as StoredAmbientRecord);
 			}, context);
 		},
 

@@ -4,12 +4,35 @@
  * screenshots the rendered surfaces. Screenshots land in
  * webui/test-results/seam-visual/ for human review; the assertions are
  * sanity-only (presence, not pixel judgment — the human reviews the shots).
+ *
+ * UI-blocks U6: every seeded record is a BLOCK TREE (spec §9.1/§9.2 — the
+ * old `text`/`options`/`fields`/`diff`/`line`/`rows`/`gauge` shapes are
+ * gone, ruling 16). The trees are built with the host's builders
+ * (`@sigrun/sigrun/blocks`, spec §14.1).
  */
 
-import { readdir, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "@playwright/test";
-import { bootE2EServer, type E2EServer } from "./harness";
+import type { Context } from "@earendil-works/chord";
+import type { ConversationId } from "@earendil-works/pi-durable";
+import type { SeamHost } from "../../src/harness/seam-host.js";
+import type { InteractionRecord } from "@sigrun/shared/interactions";
+import {
+	bind,
+	card,
+	choice,
+	collection,
+	columns,
+	form,
+	markdown,
+	meter,
+	secret,
+	section,
+	text,
+	tree,
+} from "../../src/blocks/index.js";
+import { bootE2EServer, type E2EServer } from "./harness.js";
 
 const SEAM_FIXTURE = (() => {
 	// The fixture lives in the core repo's test/fixtures; resolve from the
@@ -35,151 +58,197 @@ test.afterAll(async () => {
 
 test.describe("seam visual verification", () => {
 	test("rich interaction card (options/fields/diff/details)", async ({ page }) => {
-		const root = await opened_root();
-		const host = server.opened.seamHosts.get("sigrun-fixture-visual");
-		if (host === undefined) throw new Error("seam host missing — fixture did not load");
+		const host = seamHost();
 
 		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+		const root = server.conversationId;
 
-		// Rich warden-style confirm record.
-		await host.seedInteraction(
-			root.id,
-			{
-				kind: "gating.confirm",
-				callId: "shot-confirm",
-				status: "pending",
-				createdAt: Date.now(),
-				body: {
-					text:
-						"warden: allow this bash call?\nrm -rf /tmp/scratch-build\nWhy: destructive, recursive, absolute path · Jev severity 0.82",
-					options: [
-						{ id: "allow", label: "Allow once", tone: "ok" },
-						{ id: "allow-session", label: "Allow for this session", tone: "warn" },
-						{ id: "deny", label: "Deny", tone: "danger" },
+		// Rich warden-style confirm record: markdown for the command and
+		// reasons, and a toned choice (the old `text` + `options` mapped
+		// per spec §9.1; tone `ok`/`danger` → `good`/`bad`).
+		await seed(host, root, {
+			kind: "gating.confirm",
+			callId: "shot-confirm",
+			status: "pending",
+			createdAt: Date.now(),
+			body: tree(
+				form({
+					id: "confirm",
+					bind: "/values",
+					mode: "submit",
+					children: [
+						section({
+							title: "Prompt",
+							children: [
+								markdown({
+									text: "warden: allow this bash call?\nrm -rf /tmp/scratch-build\nWhy: destructive, recursive, absolute path · Jev severity 0.82",
+								}),
+							],
+						}),
+						choice({
+							name: "decision",
+							label: "Verdict",
+							options: [
+								{ id: "allow", label: "Allow once", tone: "good" },
+								{ id: "allow-session", label: "Allow for this session", tone: "warn" },
+								{ id: "deny", label: "Deny", tone: "bad" },
+							],
+						}),
 					],
-				},
-			},
-			BACKGROUND_CONTEXT,
-		);
+				}),
+			),
+		}, BACKGROUND_CONTEXT);
 
-		// Questionnaire record (fields + multi).
-		await host.seedInteraction(
-			root.id,
-			{
-				kind: "questions.form",
-				callId: "shot-form",
-				status: "pending",
-				createdAt: Date.now(),
-				details: { multi: true } as never,
-				body: {
-					text: "Which environments should receive the deploy?",
-					options: [
-						{ id: "staging", label: "Staging", recommended: true },
-						{ id: "canary", label: "Canary" },
-						{ id: "prod", label: "Production" },
+		// Questionnaire record (a multi choice inside a section).
+		await seed(host, root, {
+			kind: "questions.form",
+			callId: "shot-form",
+			status: "pending",
+			createdAt: Date.now(),
+			details: { multi: true } as never,
+			body: tree(
+				form({
+					id: "deploy",
+					bind: "/values",
+					mode: "submit",
+					children: [
+						section({
+							title: "Deploy",
+							children: [
+								markdown({ text: "Which environments should receive the deploy?" }),
+								choice({
+									name: "envs",
+									label: "Environments",
+									multi: true,
+									options: [
+										{ id: "staging", label: "Staging", recommended: true },
+										{ id: "canary", label: "Canary" },
+										{ id: "prod", label: "Production" },
+									],
+								}),
+							],
+						}),
 					],
-				},
-			},
-			BACKGROUND_CONTEXT,
-		);
+				}),
+			),
+		}, BACKGROUND_CONTEXT);
 
-		// Secret-field record.
-		await host.seedInteraction(
-			root.id,
-			{
-				kind: "questions.form",
-				callId: "shot-secret",
-				status: "pending",
-				createdAt: Date.now(),
-				body: {
-					text: "Provider credentials needed for the migration.",
-					fields: [
-						{ name: "apikey", type: "secret", label: "API key", required: true },
-						{ name: "account", type: "string", label: "Account" },
+		// Secret-field record (the migration-credentials shape).
+		await seed(host, root, {
+			kind: "questions.form",
+			callId: "shot-secret",
+			status: "pending",
+			createdAt: Date.now(),
+			body: tree(
+				form({
+					id: "creds",
+					bind: "/values",
+					mode: "submit",
+					children: [
+						section({
+							children: [
+								markdown({ text: "Provider credentials needed for the migration." }),
+							],
+						}),
+						secret({ name: "apikey", label: "API key", required: true }),
+						text({ name: "account", label: "Account" }),
 					],
-				},
-			},
-			BACKGROUND_CONTEXT,
-		);
+				}),
+			),
+		}, BACKGROUND_CONTEXT);
 
-		// Diff record.
-		await host.seedInteraction(
-			root.id,
-			{
-				kind: "gating.confirm",
-				callId: "shot-diff",
-				status: "pending",
-				createdAt: Date.now(),
-				body: {
-					text: "warden: accept this steering rewrite?",
-					diff: {
-						before: "rm -rf /tmp/scratch-build",
-						after: "rm -r -i /tmp/scratch-build --preserve-root",
-					},
-					options: [{ id: "accept", label: "Accept rewrite", tone: "ok" }],
-				},
-			},
-			BACKGROUND_CONTEXT,
-		);
+		// Diff record (a steering rewrite gate; spec §9.1's `diff` mapping).
+		await seed(host, root, {
+			kind: "gating.confirm",
+			callId: "shot-diff",
+			status: "pending",
+			createdAt: Date.now(),
+			body: tree(
+				form({
+					id: "rewrite",
+					bind: "/values",
+					mode: "submit",
+					children: [
+						section({
+							title: "Rewrite",
+							children: [
+								markdown({ text: "warden: accept this steering rewrite?" }),
+								{
+									type: "diff",
+									before: "rm -rf /tmp/scratch-build",
+									after: "rm -r -i /tmp/scratch-build --preserve-root",
+								},
+							],
+						}),
+						choice({
+							name: "decision",
+							label: "Verdict",
+							options: [
+								{ id: "accept", label: "Accept rewrite", tone: "good" },
+							],
+						}),
+					],
+				}),
+			),
+		}, BACKGROUND_CONTEXT);
 
 		// Ambient surfaces: a goal-ish panel, a powerline-ish statusline,
-		// a ledger, and a gauge.
+		// and an audit panel — all mapped per spec §9.2. Ambient
+		// collections carry LITERAL rows (the 2026-10-24 ruling: ambient
+		// bodies never bind — no "/rows" collections); `segments[]` → a
+		// one-line `columns` of one-line blocks, `gauge` → a meter.
 		await host.setAmbient(
-			root.id,
+			idOf(root),
 			{
 				key: "goal",
 				place: "panel",
 				maxRows: 6,
-				body: {
-					line: { text: "active 18k/100k · automatic 12/25" },
-					rows: [
-						{ id: "t1", label: "Write the parser", status: "completed", depth: 0 },
-						{ id: "t2", label: "Wire the loader", status: "running", depth: 0, spinnerLabel: "wiring the loader" },
-						{ id: "t2a", label: "resolution order", status: "running", depth: 1, spinnerLabel: "packages dir first" },
-						{ id: "t3", label: "Ship the docs", status: "pending", depth: 0, deps: ["t2"] },
-						{ id: "t4", label: "quiet subtask", status: "ok", quiet: true },
-					],
-				},
+				body: tree(
+					collection({
+						id: "goal",
+						items: [
+							{ id: "g1", label: "parse the spec", status: "running", deps: [] },
+							{ id: "g2", label: "write the plan", status: "pending", deps: ["g1"] },
+							{ id: "g3", label: "execute tasks", status: "pending", deps: ["g2"] },
+							{ id: "g4", label: "sweep", status: "done", quiet: true, deps: ["g3"] },
+						],
+						display: "list",
+						item: card({
+							title: bind("./label"),
+							status: { label: bind("./status") },
+							quiet: bind("./quiet"),
+							deps: bind("./deps"),
+						}),
+					}),
+				),
 			},
 			BACKGROUND_CONTEXT,
 		);
 		await host.setAmbient(
-			root.id,
+			idOf(root),
 			{
 				key: "powerline",
 				place: "status",
 				refreshMs: 60_000,
-				body: {
-					line: {
-						text: "",
-						segments: [
-							{ id: "model", text: "glm-5.3-flash", place: "left" },
-							{ id: "git", text: " main*", place: "left" },
-							{ id: "tokens", text: "18.2k tok", place: "middle" },
-							{ id: "cost", text: "$0.0421", place: "right" },
+				body: tree(
+					columns({
+						children: [
+							{ block: markdown({ text: "glm-5.3-flash" }) },
+							{ block: markdown({ text: " main*" }) },
+							{ block: markdown({ text: "18.2k tok" }) },
+							{ block: markdown({ text: "$0.0421" }) },
 						],
-					},
-				},
+					}),
+				),
 			},
 			BACKGROUND_CONTEXT,
 		);
 		await host.setAmbient(
-			root.id,
+			idOf(root),
 			{
 				key: "audit",
 				place: "panel",
-				body: {
-					gauge: {
-						label: "completion audit",
-						percent: 62,
-						phase: "producing_report",
-						elapsedMs: 3400,
-						checks: [
-							{ id: "c1", label: "tests pass", status: "completed" },
-							{ id: "c2", label: "lint clean", status: "running" },
-						],
-					},
-				},
+				body: tree(meter({ value: 0.4, format: "percent", label: "audit" })),
 			},
 			BACKGROUND_CONTEXT,
 		);
@@ -194,10 +263,11 @@ test.describe("seam visual verification", () => {
 	test("interaction card answers through the UI (allow)", async ({ page }) => {
 		await page.goto(`${server.url}/`);
 		await page.waitForSelector(".interaction-card", { timeout: 30_000 });
-		// Answer the confirm card: click the first option's radio + submit.
+		// Answer the confirm card: pick the first option's radio (the tree
+		// form submits through `blk-form-submit` — the Task 3 rewrite).
 		const card = page.locator('[data-kind="gating.confirm"]').first();
 		await card.locator('input[type="radio"]').first().check();
-		await card.locator("button.interaction-submit").click();
+		await card.locator("button.blk-form-submit").click();
 		await page.waitForTimeout(500);
 		await page.screenshot({ path: join(SHOT_DIR, "seam-after-answer.png"), fullPage: true });
 	});
@@ -206,42 +276,59 @@ test.describe("seam visual verification", () => {
 		// Re-seed one answerable card (the previous test drained the rest —
 		// which is itself the drain behavior under test).
 		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
-		const host = server.opened.seamHosts.get("sigrun-fixture-visual");
-		if (host === undefined) throw new Error("seam host missing");
-		await host.seedInteraction(
-			server.conversationId,
-			{
-				kind: "gating.confirm",
-				callId: "shot-final",
-				status: "pending",
-				createdAt: Date.now(),
-				body: {
-					text: "final gate: proceed?",
-					options: [{ id: "go", label: "Go", tone: "ok" }],
-				},
-			},
-			BACKGROUND_CONTEXT,
-		);
+		const host = seamHost();
+		await seed(host, server.conversationId, {
+			kind: "gating.confirm",
+			callId: "shot-final",
+			status: "pending",
+			createdAt: Date.now(),
+			body: tree(
+				form({
+					id: "final",
+					bind: "/values",
+					mode: "submit",
+					children: [
+						section({
+							children: [markdown({ text: "final gate: proceed?" })],
+						}),
+						choice({
+							name: "decision",
+							label: "Verdict",
+							options: [{ id: "go", label: "Go", tone: "good" }],
+						}),
+					],
+				}),
+			),
+		}, BACKGROUND_CONTEXT);
 		await page.goto(`${server.url}/`);
 		await page.waitForSelector(".interaction-card", { timeout: 30_000 });
-		// Answer all remaining cards.
+		// Answer all remaining cards (the multi stepper walks its
+		// sections before its submit shows; radios before checkboxes
+		// before text inputs).
 		const cards = page.locator(".interaction-card");
 		const count = await cards.count();
 		for (let i = 0; i < count; i += 1) {
 			const card = cards.nth(i);
-			const radio = card.locator('input[type="radio"]').first();
-			const checkbox = card.locator('input[type="checkbox"]').first();
-			const textInput = card.locator('input[type="text"]').first();
-			if (await radio.isVisible().catch(() => false)) {
-				await radio.click();
-			} else if (await checkbox.isVisible().catch(() => false)) {
-				await checkbox.click();
-			} else if (await textInput.isVisible().catch(() => false)) {
-				await textInput.fill("probe-value");
-			}
-			const submit = card.locator("button.interaction-submit");
-			if ((await submit.count()) > 0 && (await submit.isEnabled())) {
-				await submit.click();
+			for (;;) {
+				const radio = card.locator('input[type="radio"]:not(:checked)').first();
+				const checkbox = card.locator('input[type="checkbox"]:not(:checked)').first();
+				const textInput = card.locator('input[type="text"]').first();
+				if (await radio.isVisible().catch(() => false)) {
+					await radio.check();
+				} else if (await checkbox.isVisible().catch(() => false)) {
+					await checkbox.check();
+				} else if (await textInput.isVisible().catch(() => false)) {
+					await textInput.fill("probe-value");
+				}
+				const submit = card.locator("button.blk-form-submit");
+				if ((await submit.count()) > 0 && (await submit.isVisible())) {
+					await submit.click();
+					break;
+				}
+				// The stepper: advance (Next / Review) until the submit shows.
+				const next = card.locator(".blk-stepper-nav button", { hasText: /Next|Review/ });
+				if ((await next.count()) === 0) break;
+				await next.first().click();
 			}
 		}
 		await page.waitForTimeout(800);
@@ -249,7 +336,28 @@ test.describe("seam visual verification", () => {
 	});
 });
 
-/** The reserved root conversation id. */
-async function opened_root(): Promise<{ id: number }> {
-	return { id: server.conversationId };
+/** The visual fixture's seam host (named once, so each test fails loudly). */
+function seamHost(): SeamHost {
+	const host = server.opened.seamHosts.get("sigrun-fixture-visual");
+	if (host === undefined) throw new Error("seam host missing — fixture did not load");
+	return host;
+}
+
+/**
+ * The e2e harness's conversation id as the host's branded id.
+ * SAFETY: the harness's plain number is the branded ConversationId's
+ * runtime value (the wire type and the storage key are the same).
+ */
+function idOf(root: number): ConversationId {
+	return root as unknown as ConversationId;
+}
+
+/** Seed one interaction through the seam host. */
+async function seed(
+	host: SeamHost,
+	root: number,
+	record: InteractionRecord,
+	context: Context,
+): Promise<void> {
+	await host.seedInteraction(idOf(root), record, context);
 }

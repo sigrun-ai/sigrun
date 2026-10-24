@@ -25,6 +25,7 @@ import { resolvePointer } from "./ops.js";
 import { formatValue } from "./format.js";
 import type {
 	Bindable,
+	Binding,
 	Block,
 	BlockBase,
 	Card,
@@ -346,7 +347,14 @@ function renderPage(page: PageBlock, ctx: Ctx): string[] {
 	let main: string[];
 	const collection = firstCollection(page.main);
 	if (page.empty !== undefined && collection !== undefined) {
-		const items = collection.items ? resolvePointer(ctx.data, collection.items.$) : undefined;
+		// Literal rows (ambient's ruling shape) count as present for the
+		// `empty` gate; a binding resolves against the data model.
+		const bound = collection.items as Binding | undefined;
+		const items = Array.isArray(collection.items)
+			? collection.items
+			: bound === undefined
+				? undefined
+				: resolvePointer(ctx.data, bound.$);
 		if (!Array.isArray(items) || items.length === 0) {
 			main = [page.empty.title];
 			if (page.empty.hint !== undefined && page.empty.hint !== "") main.push(page.empty.hint);
@@ -561,7 +569,14 @@ function renderDiff(block: { before: string; after: string; path?: string }): st
 
 /** Render a `collection` in its display's text shape. */
 function renderCollection(block: CollectionBlock, ctx: Ctx): string[] {
-	const raw = block.items ? resolvePointer(ctx.data, block.items.$) : undefined;
+	// Literal rows (ambient) render as-is; a binding resolves against
+	// the data model.
+	const bound = block.items as Binding | undefined;
+	const raw = Array.isArray(block.items)
+		? block.items
+		: bound === undefined
+			? undefined
+			: resolvePointer(ctx.data, bound.$);
 	const items = (Array.isArray(raw) ? raw : []).filter(isRecord);
 	const ordered = sortedItems(items, block.sort);
 	if (block.display === "table" && block.columns !== undefined && block.columns.length > 0) {

@@ -1,22 +1,29 @@
 /**
- * The interaction seam's TUI renderer (Task 8 — the parity rule): the
- * pending-interaction stack rendered as an answerable prompt above the
- * composer, generic over record kinds (the TUI never knows what a gated
- * kind is). Covered here:
+ * The interaction seam's TUI renderer (UI-blocks U6 Task 3 — the parity
+ * rule): the pending-interaction stack rendered FROM BLOCK TREES (spec
+ * §9.1: a record's body is a root `form` whose submit is the answer,
+ * `{values}` — ruling 20). Covered here:
  *
- * - a pending interaction renders its kind, prompt text, and numbered
- *   options; multiple pending items stack (the top one is the prompt).
+ * - a pending interaction renders its tree (the form's markdown +
+ *   choice rows); multiple pending items stack (the top one is the
+ *   prompt).
  * - answering goes through `answerInteraction` (the ONE generic route)
- *   with the chosen option ids; the item clears on the next list.
- * - multi-select records (`details.multi`, the webui's reading) toggle
- *   with digits and submit the accumulated set on enter.
- * - records without options render without an answer affordance (the
- *   webui's no-affordance rule; form fields render read-only).
+ *   with `{values}` (the chosen option id under the choice's name); the
+ *   item clears on the next list.
+ * - a multi-question form (several choice sections) presents the
+ *   stepper: Tab advances, the review step lists every answer, Enter
+ *   submits ONCE.
+ * - expiry mid-stepper (Review Focus 2): the answer 404s, the card
+ *   refetches through `getInteraction` and shows the settled status;
+ *   the typed values stay visible, read-only.
+ * - records without a tree body render nothing answerable (no ctrl+o).
  * - refetch triggers: stream frames (via the app) and `interaction.*`
  *   host events (W3 Task 4 — the 2s poll interval is retired);
  *   a stale list response never lands after a conversation switch.
  * - answer failures render an `[error]` line in the pane (user-initiated
  *   actions fail loud; background polls fail quiet).
+ *
+ * Tests own their literals (synthetic hosts/kinds only).
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -59,15 +66,44 @@ function view(id: number, entries: unknown[], busy = false): ConversationViewWir
 	} as unknown as ConversationViewWire;
 }
 
-/** One pending interaction record (envelope + closed-primitive body). */
+const TREE_V = 1;
+
+/** A root form with the given children (the §9.1 interaction shape). */
+function formTree(children: readonly unknown[]): unknown {
+	return {
+		v: TREE_V,
+		root: {
+			type: "form",
+			id: "ask",
+			bind: "/values",
+			mode: "submit",
+			children,
+		},
+	};
+}
+
+/** One choice section (the stepper's per-question shape, §9.1). */
+function questionSection(
+	name: string,
+	label: string,
+	options: readonly { id: string; label: string; recommended?: boolean }[],
+): unknown {
+	return {
+		type: "section",
+		title: label,
+		children: [{ type: "choice", name, label, options }],
+	};
+}
+
+/** One pending interaction record (envelope + block-tree body). */
 function interaction(
 	callId: string,
 	init?: {
 		kind?: string;
-		text?: string;
-		options?: readonly { id: string; label: string; description?: string; recommended?: boolean }[];
-		fields?: readonly { name: string; type: "string" | "number" | "boolean" | "secret"; label?: string; required?: boolean }[];
-		diff?: { before: string; after: string; path?: string };
+		/** The tree's children (fields/sections). */
+		children?: readonly unknown[];
+		/** Raw tree override (children ignored when set). */
+		tree?: unknown;
 		details?: Record<string, unknown>;
 	},
 ): InteractionWire {
@@ -76,14 +112,23 @@ function interaction(
 		callId,
 		status: "pending",
 		createdAt: 1,
-		body: {
-			...(init?.text === undefined ? {} : { text: init.text }),
-			...(init?.options === undefined ? {} : { options: [...init.options] }),
-			...(init?.fields === undefined ? {} : { fields: [...init.fields] }),
-			...(init?.diff === undefined ? {} : { diff: init.diff }),
-		},
+		body: init?.tree ?? (init?.children === undefined ? undefined : formTree(init.children)),
 		...(init?.details === undefined ? {} : { details: init.details }),
 	} as unknown as InteractionWire;
+}
+
+/** A one-question gate tree (markdown + a decision choice). */
+function gateChildren(
+	text: string,
+	options: readonly { id: string; label: string; recommended?: boolean }[],
+): readonly unknown[] {
+	return [
+		{
+			type: "section",
+			children: [{ type: "markdown", text }],
+		},
+		{ type: "choice", name: "decision", label: text, options },
+	];
 }
 
 interface AnswerCall {
@@ -97,8 +142,11 @@ function stubClient(init?: {
 	answerResult?: () => Promise<unknown>;
 	/** listInteractions stub behavior; default serves the mutable list. */
 	listResult?: () => Promise<InteractionList>;
+	/** getInteraction stub behavior (the settle-refetch path). */
+	getResult?: (callId: string) => Promise<InteractionWire>;
 }) {
 	const answerCalls: AnswerCall[] = [];
+	const getCalls: { id: number; callId: string }[] = [];
 	let listCalls = 0;
 	let ambientCalls = 0;
 	const watchCalls: number[] = [];
@@ -130,6 +178,11 @@ function stubClient(init?: {
 				? init.listResult()
 				: Promise.resolve({ interactions: [...pending] });
 		},
+		getInteraction(id: number, callId: string): Promise<InteractionWire> {
+			getCalls.push({ id, callId });
+			if (init?.getResult !== undefined) return init.getResult(callId);
+			return Promise.reject(new Error("unexpected getInteraction"));
+		},
 		answerInteraction(id: number, callId: string, answer: unknown) {
 			answerCalls.push({ id, callId, answer });
 			const result =
@@ -154,6 +207,7 @@ function stubClient(init?: {
 	return {
 		client: client as unknown as SigrunClient,
 		answerCalls,
+		getCalls,
 		watchCalls,
 		watchRegistry,
 		listCalls: () => listCalls,
@@ -198,15 +252,14 @@ async function boot(init?: Parameters<typeof stubClient>[0]) {
 // ─── InteractionPrompter (unit) ─────────────────────────────────────────
 
 describe("InteractionPrompter", () => {
-	test("a pending interaction renders its kind, prompt, and numbered options", async () => {
+	test("a pending interaction renders its tree (markdown + choice rows)", async () => {
 		const stub = stubClient();
 		stub.setPending([
 			interaction("c1", {
-				text: "Proceed with the deploy?",
-				options: [
+				children: gateChildren("Proceed with the deploy?", [
 					{ id: "yes", label: "Yes", recommended: true },
-					{ id: "no", label: "No", description: "stop here" },
-				],
+					{ id: "no", label: "No" },
+				]),
 			}),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
@@ -215,10 +268,8 @@ describe("InteractionPrompter", () => {
 		const lines = prompter.render(60).join("\n");
 		expect(lines).toContain("[interaction] acme.confirm");
 		expect(lines).toContain("Proceed with the deploy?");
-		expect(lines).toContain("1. Yes");
-		expect(lines).toContain("(recommended)");
-		expect(lines).toContain("2. No");
-		expect(lines).toContain("stop here");
+		expect(lines).toContain("Yes");
+		expect(lines).toContain("No");
 		expect(lines).toContain("ctrl+o to answer");
 		prompter.dispose();
 	});
@@ -226,9 +277,9 @@ describe("InteractionPrompter", () => {
 	test("multiple pending items stack: the top renders, the rest are counted", async () => {
 		const stub = stubClient();
 		stub.setPending([
-			interaction("c1", { text: "first prompt", options: [{ id: "a", label: "A" }] }),
-			interaction("c2", { text: "second prompt", options: [{ id: "b", label: "B" }] }),
-			interaction("c3", { text: "third prompt", options: [{ id: "c", label: "C" }] }),
+			interaction("c1", { children: gateChildren("first prompt", [{ id: "a", label: "A" }]) }),
+			interaction("c2", { children: gateChildren("second prompt", [{ id: "b", label: "B" }]) }),
+			interaction("c3", { children: gateChildren("third prompt", [{ id: "c", label: "C" }]) }),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
@@ -241,15 +292,14 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
-	test("answering POSTs the decision and the item clears on the next list", async () => {
+	test("answering POSTs {values} and the item clears on the next list", async () => {
 		const stub = stubClient();
 		stub.setPending([
 			interaction("c1", {
-				text: "pick one",
-				options: [
+				children: gateChildren("pick one", [
 					{ id: "yes", label: "Yes" },
 					{ id: "no", label: "No" },
-				],
+				]),
 			}),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
@@ -259,7 +309,7 @@ describe("InteractionPrompter", () => {
 		expect(prompter.handleKey("2")).toBe(true);
 		await flush();
 		expect(stub.answerCalls).toEqual([
-			{ id: 1, callId: "c1", answer: { ids: ["no"] } },
+			{ id: 1, callId: "c1", answer: { values: { decision: "no" } } },
 		]);
 		// The next list (fetched after the answer settled) drops the item.
 		expect(prompter.render(60).join("\n")).not.toContain("pick one");
@@ -267,10 +317,45 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
+	test("a custom-onSubmit flat gate answers via the digit accelerator", async () => {
+		// The digit's direct pick dispatches the form's onSubmit action,
+		// not a hardcoded "submit" — the transport's submit gate keys on
+		// the action name, so a custom action must POST too.
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				tree: {
+					v: TREE_V,
+					root: {
+						type: "form",
+						id: "ask",
+						bind: "/values",
+						mode: "submit",
+						onSubmit: "decide",
+						children: gateChildren("pick one", [
+							{ id: "yes", label: "Yes" },
+							{ id: "no", label: "No" },
+						]),
+					},
+				},
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		expect(prompter.beginAnswer()).toBe(true);
+		expect(prompter.handleKey("2")).toBe(true);
+		await flush();
+		expect(stub.answerCalls).toEqual([
+			{ id: 1, callId: "c1", answer: { values: { decision: "no" } } },
+		]);
+		prompter.dispose();
+	});
+
 	test("a digit beyond the option range is consumed but answers nothing", async () => {
 		const stub = stubClient();
 		stub.setPending([
-			interaction("c1", { text: "pick", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
@@ -282,43 +367,53 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
-	test("multi-select (details.multi) toggles with digits and submits on enter", async () => {
+	test("multi-select toggles with digits and submits the set on enter", async () => {
 		const stub = stubClient();
 		stub.setPending([
 			interaction("c1", {
-				text: "pick several",
-				options: [
-					{ id: "a", label: "A", recommended: true },
-					{ id: "b", label: "B" },
-					{ id: "c", label: "C" },
+				children: [
+					{
+						type: "choice",
+						name: "picks",
+						label: "pick several",
+						multi: true,
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+							{ id: "c", label: "C" },
+						],
+					},
 				],
-				details: { multi: true },
 			}),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
 		await flush();
 		prompter.beginAnswer();
-		// The recommended option starts selected; toggle 1 off, 2 and 3 on.
+		// Digits toggle the working set (the prompter's accelerator).
 		prompter.handleKey("1");
 		prompter.handleKey("2");
-		prompter.handleKey("3");
-		const marked = prompter.render(60).join("\n");
-		expect(marked).toContain("[ ] 1. A");
-		expect(marked).toContain("[x] 2. B");
-		expect(marked).toContain("[x] 3. C");
-		expect(prompter.handleKey("\r")).toBe(true);
 		await flush();
-		expect(stub.answerCalls).toEqual([
-			{ id: 1, callId: "c1", answer: { ids: ["b", "c"] } },
-		]);
+		// Tab to the submit row; Enter submits the accumulated set ONCE
+		// (the form's one-submit rule).
+		prompter.handleKey("\t");
+		prompter.handleKey("\r");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		expect(stub.answerCalls[0]?.callId).toBe("c1");
+		const answer = stub.answerCalls[0]?.answer as { values: Record<string, unknown> };
+		expect(answer.values.picks).toEqual(["a", "b"]);
+		// A second Enter dispatches nothing (the form submitted once).
+		prompter.handleKey("\r");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
 		prompter.dispose();
 	});
 
 	test("esc exits answer mode without answering", async () => {
 		const stub = stubClient();
 		stub.setPending([
-			interaction("c1", { text: "pick", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
@@ -331,59 +426,280 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
-	test("a record without options renders but offers no answer affordance", async () => {
+	test("a record without a tree body renders but offers no answer affordance", async () => {
 		const stub = stubClient();
-		stub.setPending([interaction("c1", { text: "just so you know" })]);
+		stub.setPending([interaction("c1")]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
 		await flush();
 		const lines = prompter.render(60).join("\n");
-		expect(lines).toContain("just so you know");
+		expect(lines).toContain("[interaction] acme.confirm");
 		expect(lines).not.toContain("ctrl+o");
 		expect(prompter.beginAnswer()).toBe(false);
 		prompter.dispose();
 	});
 
-	test("form fields render read-only with the medium-limitation hint", async () => {
+	test("a multi-question form steps with Tab, reviews, and submits once", async () => {
 		const stub = stubClient();
 		stub.setPending([
 			interaction("c1", {
-				text: "configure",
-				fields: [
-					{ name: "host", type: "string", label: "Host", required: true },
-					{ name: "token", type: "secret" },
+				children: [
+					questionSection("q1", "First", [
+						{ id: "a", label: "A" },
+						{ id: "b", label: "B" },
+					]),
+					questionSection("q2", "Second", [
+						{ id: "x", label: "X" },
+						{ id: "y", label: "Y" },
+					]),
 				],
 			}),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
 		await flush();
-		const lines = prompter.render(60).join("\n");
-		expect(lines).toContain("Host");
-		expect(lines).toContain("string");
-		expect(lines).toContain("required");
-		expect(lines).toContain("token");
-		expect(lines).toContain("answer in the webui");
-		expect(prompter.beginAnswer()).toBe(false);
+		// Stepper: one question at a time.
+		expect(prompter.render(60).join("\n")).toContain("Step 1 of 2");
+		prompter.beginAnswer();
+		// Enter selects the current option (q1 → "a").
+		prompter.handleKey("\r");
+		// Tab advances to step 2.
+		prompter.handleKey("\t");
+		expect(prompter.render(60).join("\n")).toContain("Step 2 of 2");
+		prompter.handleKey("\r");
+		// Tab to the review: both answers listed.
+		prompter.handleKey("\t");
+		const review = prompter.render(60).join("\n");
+		expect(review).toContain("a");
+		expect(review).toContain("x");
+		// Enter submits ONCE with every value.
+		prompter.handleKey("\r");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		expect(stub.answerCalls[0]?.answer).toEqual({
+			values: { q1: "a", q2: "x" },
+		});
 		prompter.dispose();
 	});
 
-	test("a diff renders as before/after lines", async () => {
+	test("expiry mid-form: the 404 refetches, shows the status, keeps typed values read-only", async () => {
+		// A FLAT form (no sections): a digit on the review STEP would be
+		// inert for an unrelated reason, so the read-only assertion below
+		// is only load-bearing on a flat form (fix round 2).
+		const flatChildren: readonly unknown[] = [
+			{ type: "markdown", text: "Approve the deploy?" },
+			{ type: "text", name: "note", label: "Note" },
+		];
+		const settledRecord = {
+			kind: "acme.confirm",
+			callId: "c1",
+			status: "expired",
+			createdAt: 1,
+			settledAt: 2,
+			body: interaction("c1", { children: flatChildren }).body,
+		} as unknown as InteractionWire;
+		const stub = stubClient({
+			answerResult: () =>
+				Promise.reject(
+					new SigrunApiError("POST", "/v1/conversations/1/interactions/c1/answer", 404, {
+						error: "not_pending",
+					}),
+				),
+			getResult: () => Promise.resolve(settledRecord),
+		});
+		stub.setPending([interaction("c1", { children: flatChildren })]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		// Type a note, Tab to the submit row, Enter submits (404s).
+		// (Letters, not digits: the prompter consumes digits as the
+		// one-question gate's direct-pick shortcut.)
+		prompter.handleKey("x");
+		prompter.handleKey("y");
+		prompter.handleKey("\t");
+		prompter.handleKey("\r");
+		await flush();
+		// The letters landed ("xy") — the field IS live pre-settle.
+		expect(prompter.render(60).join("\n")).toContain("xy");
+		// The refetch happened (the settle-refetch path).
+		expect(stub.getCalls).toEqual([{ id: 1, callId: "c1" }]);
+		// The settled status renders in the header (Review fix: the
+		// header carries the record's status); the typed value stays
+		// visible, read-only.
+		const lines = prompter.render(60).join("\n");
+		expect(lines).toContain("expired");
+		expect(lines).toContain("xy");
+		expect(prompter.answerMode).toBe(false);
+		// A further poll still lists the record pending (the server's
+		// pending index lags the settle) — the settled envelope must NOT
+		// revert to write access (the read-only swap sticks).
+		await prompter.kickAndWait();
+		const after = prompter.render(60).join("\n");
+		expect(after).toContain("expired");
+		// Read-only: a keystroke dispatches nothing (no re-submit). On
+		// the flat form this is LOAD-BEARING — pre-fix the letter lands
+		// in the field and the Tab+Enter re-dispatches the submit.
+		prompter.beginAnswer();
+		prompter.handleKey("z");
+		await flush();
+		// The letter never landed in the (now read-only) field…
+		expect(prompter.render(60).join("\n")).not.toContain("xyz");
+		// …and no second submit is possible.
+		prompter.handleKey("\t");
+		prompter.handleKey("\r");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		prompter.dispose();
+	});
+
+	test("a 400 answer failure keeps the card writable — a retry can answer", async () => {
+		let fail = true;
+		const stub = stubClient({
+			answerResult: () =>
+				fail
+					? Promise.reject(
+							new SigrunApiError("POST", "/v1/conversations/1/interactions/c1/answer", 400, {
+								error: "invalid_body",
+							}),
+						)
+					: Promise.resolve({ callId: "c1", status: "answered", answer: {} }),
+			// The settle-refetch returns the STILL-PENDING record (the 400
+			// was no settle) — the card must not wedge read-only.
+			getResult: (callId) =>
+				Promise.resolve(
+					interaction(callId, { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
+				),
+		});
+		stub.setPending([
+			interaction("c1", { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		const errors: string[] = [];
+		prompter.onError = (message) => errors.push(message);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		prompter.handleKey("1");
+		await flush();
+		// The error surfaces loud; the card stays pending + writable.
+		expect(errors.length).toBe(1);
+		const mid = prompter.render(60).join("\n");
+		expect(mid).toContain("pick");
+		expect(mid).not.toContain(" — answered");
+		// The retry answers.
+		fail = false;
+		prompter.beginAnswer();
+		prompter.handleKey("1");
+		await flush();
+		expect(stub.answerCalls).toHaveLength(2);
+		prompter.dispose();
+	});
+
+	test("a callout action is NOT the answer — only the root form's submit answers", async () => {
 		const stub = stubClient();
 		stub.setPending([
 			interaction("c1", {
-				text: "apply this change?",
-				options: [{ id: "ok", label: "OK" }],
-				diff: { before: "old line", after: "new line", path: "src/a.ts" },
+				children: [
+					{ type: "markdown", text: "heads up" },
+					// A callout action button inside the form: its dispatch
+					// must never POST an answer.
+					{
+						type: "callout",
+						tone: "info",
+						title: "Note",
+						body: "context",
+						actions: [
+							{
+								id: "more",
+								label: "More info",
+								action: { type: "submit", name: "details" },
+							},
+						],
+					},
+				],
 			}),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
 		await flush();
-		const lines = prompter.render(60).join("\n");
-		expect(lines).toContain("[diff] src/a.ts");
-		expect(lines).toContain("- old line");
-		expect(lines).toContain("+ new line");
+		prompter.beginAnswer();
+		// Dispatch the callout action directly (the form's button click).
+		const state = prompter.surface;
+		expect(state).toBeDefined();
+		state?.dispatch({ type: "submit", name: "details" }, {});
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		// The form's own submit DOES answer.
+		state?.dispatch({ type: "submit", name: "submit" }, { values: { ok: true } });
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		expect(stub.answerCalls[0]?.answer).toEqual({ values: { ok: true } });
+		prompter.dispose();
+	});
+
+	test("a callout action NAMED \"submit\" (type \"edit\") is NOT the answer — the gate checks the kind", async () => {
+		// Fix round 2: name alone must never settle — a callout
+		// itemAction named "submit" (the default onSubmit name) is an
+		// `edit`, and an edit never answers.
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				children: [{ type: "markdown", text: "heads up" }],
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		const state = prompter.surface;
+		expect(state).toBeDefined();
+		state?.dispatch({ type: "edit", name: "submit" }, {});
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		// The real submit still answers.
+		state?.dispatch({ type: "submit", name: "submit" }, { values: { ok: true } });
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		prompter.dispose();
+	});
+
+	test("a live-mode edit NAMED the onSubmit action is NOT the answer (the gate checks the kind)", async () => {
+		// Fix round 2: mode "live" + onSubmit dispatches
+		// `{type: "edit", name: onSubmit}` on the debounce — settling on
+		// the first keystroke would be the bug.
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				tree: {
+					v: TREE_V,
+					root: {
+						type: "form",
+						id: "ask",
+						bind: "/values",
+						mode: "live",
+						onSubmit: "save",
+						children: [{ type: "text", name: "note", label: "Note" }],
+					},
+				},
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		const state = prompter.surface;
+		expect(state).toBeDefined();
+		// The debounce's dispatch (driven directly: the debounce timing
+		// is the form's own suite's concern).
+		state?.dispatch({ type: "edit", name: "save" }, { values: { note: "typed" } });
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		// The real submit with the onSubmit name answers.
+		state?.dispatch({ type: "submit", name: "save" }, { values: { note: "typed" } });
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		expect(stub.answerCalls[0]?.answer).toEqual({ values: { note: "typed" } });
 		prompter.dispose();
 	});
 
@@ -422,7 +738,9 @@ describe("InteractionPrompter", () => {
 					});
 				}
 				return Promise.resolve({
-					interactions: [interaction("c2", { text: "conversation two prompt" })],
+					interactions: [
+						interaction("c2", { children: gateChildren("conversation two prompt", [{ id: "b", label: "B" }]) }),
+					],
 				});
 			},
 		} as unknown as SigrunClient;
@@ -433,7 +751,7 @@ describe("InteractionPrompter", () => {
 		expect(prompter.render(60).join("\n")).toContain("conversation two prompt");
 		// The conversation-1 response resolves LATE — it must be dropped.
 		resolveFirst?.({
-			interactions: [interaction("c1", { text: "stale conversation one prompt" })],
+			interactions: [interaction("c1", { children: gateChildren("stale conversation one prompt", [{ id: "a", label: "A" }]) })],
 		});
 		await flush();
 		const lines = prompter.render(60).join("\n");
@@ -450,9 +768,10 @@ describe("InteractionPrompter", () => {
 						error: "invalid_body",
 					}),
 				),
+			getResult: () => Promise.reject(new Error("not found either")),
 		});
 		stub.setPending([
-			interaction("c1", { text: "pick", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		const errors: string[] = [];
@@ -473,8 +792,8 @@ describe("InteractionPrompter", () => {
 	test("a poll that changes the top record exits answer mode and keys answer nothing", async () => {
 		const stub = stubClient();
 		stub.setPending([
-			interaction("c1", { text: "prompt A", options: [{ id: "a", label: "A" }] }),
-			interaction("c2", { text: "prompt B", options: [{ id: "b", label: "B" }] }),
+			interaction("c1", { children: gateChildren("prompt A", [{ id: "a", label: "A" }]) }),
+			interaction("c2", { children: gateChildren("prompt B", [{ id: "b", label: "B" }]) }),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
@@ -484,7 +803,7 @@ describe("InteractionPrompter", () => {
 		expect(prompter.render(60).join("\n")).toContain("prompt A");
 		// A poll lands where A has settled elsewhere and B is now the top.
 		stub.setPending([
-			interaction("c2", { text: "prompt B", options: [{ id: "b", label: "B" }] }),
+			interaction("c2", { children: gateChildren("prompt B", [{ id: "b", label: "B" }]) }),
 		]);
 		await prompter.kickAndWait();
 		expect(prompter.render(60).join("\n")).toContain("prompt B");
@@ -499,7 +818,7 @@ describe("InteractionPrompter", () => {
 	test("setConversation(undefined) clears the prompt; stale kicks no-op", async () => {
 		const stub = stubClient();
 		stub.setPending([
-			interaction("c1", { text: "pick", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("pick", [{ id: "a", label: "A" }]) }),
 		]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
@@ -521,7 +840,7 @@ describe("TuiApp interactions", () => {
 	test("boot fetches the active conversation's pending interactions into the app render", async () => {
 		const stub = stubClient();
 		stub.setPending([
-			interaction("c1", { text: "boot-time prompt", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("boot-time prompt", [{ id: "a", label: "A" }]) }),
 		]);
 		const app = new TuiApp(stub.client, {
 			tui: fakeTui,
@@ -547,11 +866,10 @@ describe("TuiApp interactions", () => {
 		const stub = stubClient();
 		stub.setPending([
 			interaction("c1", {
-				text: "gate",
-				options: [
+				children: gateChildren("gate", [
 					{ id: "allow", label: "Allow" },
 					{ id: "deny", label: "Deny" },
-				],
+				]),
 			}),
 		]);
 		const app = new TuiApp(stub.client, {
@@ -564,7 +882,7 @@ describe("TuiApp interactions", () => {
 		expect(app.handleKeybinding("2")).toBe(true);
 		await flush();
 		expect(stub.answerCalls).toEqual([
-			{ id: 1, callId: "c1", answer: { ids: ["deny"] } },
+			{ id: 1, callId: "c1", answer: { values: { decision: "deny" } } },
 		]);
 		expect(app.render(80).join("\n")).not.toContain("gate");
 		app.dispose();
@@ -588,7 +906,7 @@ describe("TuiApp interactions", () => {
 			},
 		} as unknown as SigrunClient;
 		stub.setPending([
-			interaction("c1", { text: "gate", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("gate", [{ id: "a", label: "A" }]) }),
 		]);
 		const app = new TuiApp(client, {
 			tui: fakeTui,
@@ -613,9 +931,10 @@ describe("TuiApp interactions", () => {
 						error: "invalid_body",
 					}),
 				),
+			getResult: () => Promise.reject(new Error("gone")),
 		});
 		stub.setPending([
-			interaction("c1", { text: "gate", options: [{ id: "a", label: "A" }] }),
+			interaction("c1", { children: gateChildren("gate", [{ id: "a", label: "A" }]) }),
 		]);
 		const app = new TuiApp(stub.client, {
 			tui: fakeTui,
@@ -635,8 +954,8 @@ describe("TuiApp interactions", () => {
 	test("switching conversations swaps the pending stack (no cross-conversation bleed)", async () => {
 		const stub = stubClient();
 		const byConversation = new Map<number, InteractionWire[]>([
-			[1, [interaction("c1", { text: "conv one prompt", options: [{ id: "a", label: "A" }] })]],
-			[2, [interaction("c2", { text: "conv two prompt", options: [{ id: "b", label: "B" }] })]],
+			[1, [interaction("c1", { children: gateChildren("conv one prompt", [{ id: "a", label: "A" }]) })]],
+			[2, [interaction("c2", { children: gateChildren("conv two prompt", [{ id: "b", label: "B" }]) })]],
 		]);
 		const client = {
 			...stub.client,

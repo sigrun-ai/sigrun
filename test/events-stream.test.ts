@@ -39,6 +39,7 @@ import type { ProviderContributor } from "../src/harness/providers/index.js";
 import type { SeamHost } from "../src/harness/seam-host.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { askTree, lineTree } from "./helpers/trees.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
 /** The fixture-seam entry (seeds interactions + ambient through the host). */
@@ -391,7 +392,7 @@ describe("GET /v1/events (W3 Task 4)", () => {
 					callId: "call-1",
 					status: "pending",
 					createdAt: Date.now(),
-					body: { text: "proceed?" },
+					body: askTree(),
 				},
 				BACKGROUND_CONTEXT,
 			);
@@ -408,7 +409,7 @@ describe("GET /v1/events (W3 Task 4)", () => {
 			await host.answerInteraction(
 				id as never,
 				"call-1",
-				{ text: "yes" },
+				{ values: { decision: "allow" } },
 				BACKGROUND_CONTEXT,
 			);
 			const settled = await stream.waitFor(
@@ -446,7 +447,7 @@ describe("GET /v1/events (W3 Task 4)", () => {
 					callId: "call-skip",
 					status: "pending",
 					createdAt: Date.now(),
-					body: { text: "later?" },
+					body: askTree(),
 				},
 				BACKGROUND_CONTEXT,
 			);
@@ -495,7 +496,7 @@ describe("GET /v1/events (W3 Task 4)", () => {
 				{
 					key: "fixture.panel",
 					place: "status",
-					body: { line: { text: "watching" } },
+					body: lineTree("watching"),
 				},
 				BACKGROUND_CONTEXT,
 			);

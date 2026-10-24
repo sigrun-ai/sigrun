@@ -105,6 +105,7 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["POST", "/v1/conversations/:id/configure"],
 	["POST", "/v1/conversations/:id/abort"],
 	["GET", "/v1/conversations/:id/interactions"],
+	["GET", "/v1/conversations/:id/interactions/:callId"],
 	["POST", "/v1/conversations/:id/interactions/:callId/answer"],
 	["GET", "/v1/conversations/:id/ambient"],
 	["POST", "/v1/conversations/:id/compact"],
@@ -188,9 +189,17 @@ const UNKNOWN_ID_CASES: readonly UnknownIdCase[] = [
 		body: { interactions: [] },
 	},
 	{
+		// The single-record read applies the visibility half itself (a
+		// hidden conversation is indistinguishable from an absent record).
+		method: "GET",
+		url: `/v1/conversations/${UNKNOWN_ID}/interactions/x`,
+		status: 404,
+		body: { error: "conversation_not_found" },
+	},
+	{
 		method: "POST",
 		url: `/v1/conversations/${UNKNOWN_ID}/interactions/x/answer`,
-		payload: { ids: ["a"] },
+		payload: { values: { decision: "allow" } },
 		status: 404,
 		body: { error: "conversation_not_found" },
 	},
@@ -395,6 +404,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id/configure",
 				"/v1/conversations/:id/abort",
 				"/v1/conversations/:id/interactions",
+				"/v1/conversations/:id/interactions/:callId",
 				"/v1/conversations/:id/interactions/:callId/answer",
 				"/v1/conversations/:id/ambient",
 				"/v1/conversations/:id/commands/:name",

@@ -37,6 +37,7 @@ import type { ProviderContributor } from "../src/harness/providers/index.js";
 import type { SeamHost } from "../src/harness/seam-host.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { askTree } from "./helpers/trees.js";
 import type { InboxInteraction } from "@sigrun/shared/views";
 
 /** The fixture-seam entry (its host seeds interactions through the seam). */
@@ -149,7 +150,7 @@ async function seed(
 			callId,
 			status: "pending",
 			createdAt,
-			body: { text: `waiting: ${callId}` },
+			body: askTree(),
 		},
 		BACKGROUND_CONTEXT,
 	);
@@ -203,7 +204,7 @@ describe("GET /v1/interactions (W3 Task 5)", () => {
 		]);
 		// The record rides as-is (envelope + body) beside the id.
 		expect(listed[0]?.kind).toBe("fixture.ask");
-		expect(listed[0]?.body?.text).toBe("waiting: inbox-second");
+		expect(listed[0]?.body).toEqual(askTree());
 		// Absent status defaults to pending (the only indexed state).
 		const bare = await server.app.inject({
 			method: "GET",
@@ -223,7 +224,7 @@ describe("GET /v1/interactions (W3 Task 5)", () => {
 		const applied = await seamHost(server.opened).answerInteraction(
 			conv as never,
 			"inbox-answered",
-			{ text: "yes" },
+			{ values: { decision: "allow" } },
 			BACKGROUND_CONTEXT,
 		);
 		expect(applied).toBe(true);

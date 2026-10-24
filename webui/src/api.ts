@@ -31,6 +31,7 @@
 
 import type {
 	MetaResponse,
+	InteractionWire,
 	InteractionList as InteractionListWire,
 	InteractionAnswered as InteractionAnsweredWire,
 	AmbientList as AmbientListWire,
@@ -140,22 +141,10 @@ export interface JobRevisionsResponse {
  *  re-exported so the share UI and the patch type agree with the server. */
 export type { Sharing } from "@sigrun/shared/access";
 
-// The interaction/ambient seam sub-shapes — the seam records ARE the wire
-// (never projected), so their constituent primitives are the contract too.
-// The `*Wire` aliases keep the stable export names the seam renderers use.
-export type {
-	InteractionStatus,
-	InteractionOption as InteractionOptionWire,
-	InteractionField as InteractionFieldWire,
-	InteractionDiff as InteractionDiffWire,
-	InteractionBody as InteractionBodyWire,
-	AmbientMetrics as AmbientMetricsWire,
-	AmbientRow as AmbientRowWire,
-	AmbientLine as AmbientLineWire,
-	AmbientGauge as AmbientGaugeWire,
-	AmbientLedgerEntry as AmbientLedgerEntryWire,
-	AmbientBody as AmbientBodyWire,
-} from "@sigrun/shared/views";
+// The interaction/ambient seam records ARE the wire (never projected);
+// their bodies are block trees (`@sigrun/shared/blocks` — the tree types
+// are the contract). The legacy body sub-shape aliases are gone (ruling
+// 16: the legacy shapes are rejected server-side).
 
 /** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
 export type QueueModeWire = "all" | "one-at-a-time";
@@ -489,16 +478,25 @@ export interface SigrunClient {
 	/** Pending interactions for a conversation (`GET .../interactions`). */
 	listInteractions(conversationId: number): Promise<InteractionListWire>;
 	/**
+	 * One interaction record in ANY status (`GET .../interactions/:callId`,
+	 * U6 Task 2) — the channel's settle-refetch path: an answer that lands
+	 * on an already-settled record (404 not_pending) refetches here and
+	 * renders the settled record read-only.
+	 */
+	getInteraction(
+		conversationId: number,
+		callId: string,
+	): Promise<InteractionWire>;
+	/**
 	 * Answer a pending interaction (the ONE generic route). `answer` is
-	 * `{ids?, values?, text?}`; resolution semantics stay extension-owned.
+	 * `{values}` (ruling 20: every field's value under its name);
+	 * resolution semantics stay extension-owned.
 	 */
 	answerInteraction(
 		conversationId: number,
 		callId: string,
 		answer: {
-			readonly ids?: readonly string[];
-			readonly values?: Readonly<Record<string, string | number | boolean>>;
-			readonly text?: string;
+			readonly values: Readonly<Record<string, unknown>>;
 		},
 	): Promise<InteractionAnsweredWire>;
 	/** The conversation's ambient surfaces (`GET .../ambient`). */
@@ -866,6 +864,10 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		listInteractions: (conversationId) =>
 			get<InteractionListWire>(
 				`/v1/conversations/${conversationId}/interactions`,
+			),
+		getInteraction: (conversationId, callId) =>
+			get<InteractionWire>(
+				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}`,
 			),
 		answerInteraction: (conversationId, callId, answer) =>
 			send(

@@ -40,22 +40,10 @@ import type { Sharing } from "./access.js";
 import type { JobWire } from "./jobs.js";
 import type {
 	InteractionAnswer,
-	InteractionBody,
-	InteractionDiff,
-	InteractionField,
-	InteractionOption,
 	InteractionRecord,
 	InteractionStatus,
 } from "./interactions.js";
-import type {
-	AmbientBody,
-	AmbientGauge,
-	AmbientLedgerEntry,
-	AmbientLine,
-	AmbientMetrics,
-	AmbientRecord,
-	AmbientRow,
-} from "./ambient.js";
+import type { AmbientRecord } from "./ambient.js";
 import type { EffectiveServerSetting, SettingsFile } from "./settings.js";
 
 // ─── Upstream view shapes (structural) ───────────────────────────────────
@@ -407,25 +395,12 @@ export interface AmbientList {
 	readonly ambient: readonly AmbientWire[];
 }
 
-// The seam records ride the wire as-is, so their sub-shapes are the
-// contract too — re-exported here so channels (and a future generated
-// schema) resolve every wire shape from this one module without importing
-// the seam modules directly.
+// The seam records ride the wire as-is; their bodies are block trees
+// (`@sigrun/shared/blocks`), re-exported there — the dropped legacy
+// body sub-shapes have no wire spelling anymore (ruling 16).
 export type {
 	InteractionAnswer,
-	InteractionBody,
-	InteractionDiff,
-	InteractionField,
-	InteractionOption,
 	InteractionStatus,
-};
-export type {
-	AmbientBody,
-	AmbientGauge,
-	AmbientLedgerEntry,
-	AmbientLine,
-	AmbientMetrics,
-	AmbientRow,
 };
 
 // ─── Settings / meta / auth wire types ────────────────────────────────────

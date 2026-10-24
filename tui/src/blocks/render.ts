@@ -14,7 +14,7 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
-import type { Block, JsonObject } from "@sigrun/shared/blocks";
+import type { Block, JsonObject, JsonValue } from "@sigrun/shared/blocks";
 import { hiddenAtCompact, type BlockCtx } from "./context.js";
 import { Lines, renderColumns, renderGrid, renderSection, renderStack } from "./layout.js";
 import { renderContent } from "./content.js";
@@ -92,6 +92,14 @@ class WidthGated implements Component {
 		return this.#inner instanceof FormComponent ? this.#inner.values : undefined;
 	}
 
+	/** The form's field read (the interaction prompter's digit
+	 *  accelerator reads the working set before toggling). */
+	fieldValue(name: string): JsonValue | undefined {
+		return this.#inner instanceof FormComponent
+			? this.#inner.fieldValue(name)
+			: undefined;
+	}
+
 	get focusIndex(): number | undefined {
 		return this.#inner instanceof FormComponent ? this.#inner.focusIndex : undefined;
 	}
@@ -107,6 +115,14 @@ class WidthGated implements Component {
 
 	get submittedOnce(): boolean | undefined {
 		return this.#inner instanceof FormComponent ? this.#inner.submittedOnce : undefined;
+	}
+
+	/** The interaction prompter's digit accelerator writes the pick into
+	 *  the wrapped form (the wrapper is transparent). */
+	setFieldValue(name: string, value: JsonValue): void {
+		if (this.#inner instanceof FormComponent) {
+			this.#inner.setFieldValue(name, value);
+		}
 	}
 
 	/** Page introspection forwards (the wrapper is transparent for the

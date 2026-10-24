@@ -129,10 +129,15 @@ const PLACEMENT_FILES: Readonly<Record<Placement, readonly string[]>> = {
 		"callout",
 		"diff",
 		"details",
-		"stat",
-		"meter",
-		"log",
-		"collection-list",
+		// Literal stat/meter/log: ambient bodies carry no bindings outside
+		// item templates (the 2026-10-24 ruling — the envelope has no data
+		// document), so the bound stat/meter/log samples are chat-only.
+		"stat-literal",
+		"meter-literal",
+		"log-literal",
+		// Literal rows: ambient collections never bind (the envelope has
+		// no data document — the 2026-10-24 ruling).
+		"collection-literal",
 		"ambient-status",
 		"ambient-footer",
 		"ambient-panel",

@@ -431,7 +431,7 @@ describe("people write + answeredByUser", () => {
 		const answer = await app.inject({
 			method: "POST",
 			url: `/v1/conversations/${id}/interactions/share-call/answer`,
-			payload: { ids: ["opt-0"] },
+			payload: { values: { decision: "allow" } },
 			headers: authJson(daveToken),
 		});
 		expect(answer.statusCode).toBe(200);
