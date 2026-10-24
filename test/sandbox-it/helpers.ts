@@ -76,6 +76,10 @@ console.log("WORKER_PID:" + process.ppid);
 
 export interface NativeProbes { readonly path: string; readonly available: boolean; readonly reason?: string }
 
+export function probeCommand(operation: "ptrace" | "abstract-connect" | "abstract-listen" | "read-environ" | "mem-open", target: string | number): string[] {
+	return [HELPER, "probe", operation, String(target)];
+}
+
 export async function namespaceUnavailableReason(): Promise<string | undefined> {
 	try {
 		await execFileAsync("unshare", ["--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "/bin/true"], { timeout: 10_000 });
@@ -86,13 +90,8 @@ export async function namespaceUnavailableReason(): Promise<string | undefined> 
 }
 
 export async function buildNativeProbes(root: string): Promise<NativeProbes> {
-	const path = join(root, "native-probe");
-	try {
-		await execFileAsync("gcc", ["-D_GNU_SOURCE", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", join(import.meta.dirname, "native-probe.c"), "-o", path], { timeout: 30_000 });
-		return { path, available: true };
-	} catch (error) {
-		return { path, available: false, reason: `native probes require gcc and a working linker: ${String(error)}` };
-	}
+	// Probes are implemented by the Rust helper itself; no C/native build.
+	return { path: HELPER, available: true };
 }
 
 export interface PrivilegedHelper { readonly helper?: string; readonly native?: string; readonly reason?: string }
@@ -103,14 +102,12 @@ export async function privilegedHelper(root: string): Promise<PrivilegedHelper> 
 		return { reason: "requires a privileged runner with SIGRUN_SANDBOX_IT_PRIVILEGED=1 and CAP_SETFCAP; uid-switch controls cannot discriminate without helper file capabilities" };
 	}
 	const helper = join(root, "sigrun-sandbox-cap");
-	const target = join(root, "native-probe-cap");
+	const target = helper;
 	await copyFile(HELPER, helper);
-	await copyFile(join(root, "native-probe"), target);
 	await chmod(helper, 0o755);
-	await chmod(target, 0o755);
 	try {
 		await execFileAsync("setcap", ["cap_setuid,cap_setgid+ep", helper], { timeout: 10_000 });
-		const { stdout } = await execFileAsync(helper, ["run", "--", target, "identity"], {
+		const { stdout } = await execFileAsync(helper, ["run", "--", target, "probe", "identity"], {
 			env: { SIGRUN_SANDBOX_POLICY: JSON.stringify({ ...nativePolicy(target), uid: 1, gid: 1, groups: [1] }) },
 			timeout: 10_000,
 		});
@@ -238,6 +235,8 @@ export interface Deployment {
 	stop(): Promise<void>;
 }
 
+let deploymentSequence = 0;
+
 async function reservePort(): Promise<number> {
 	const listener = createServer();
 	await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", resolve); });
@@ -277,6 +276,7 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 	const settingsPath = join(configDir, "settings.json");
 	if (!existsSync(settingsPath)) await writeFile(settingsPath, '{"namingModel":false}\n');
 	const port = await reservePort();
+	const pidFile = join(root, `sigrun-server-${deploymentSequence++}.pid`);
 	const child = spawn("unshare", ["--user", "--map-root-user", "--pid", "--fork", "--mount-proc", process.execPath, "--import", "tsx", join(CORE_ROOT, "test", "sandbox-it", "server-entry.ts")], {
 		cwd: CORE_ROOT,
 		env: {
@@ -286,6 +286,8 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 			SIGRUN_WORKSPACE_PATH: aliceWorkspace, SIGRUN_AUTH: "token", SIGRUN_ISOLATION: "always",
 			SIGRUN_SANDBOX_HELPER: HELPER, SIGRUN_EXTENSIONS: join(import.meta.dirname, "provider-entry.mjs"),
 			SIGRUN_PROVIDER_REFRESH_MINUTES: "0", SIGRUN_WEBUI: "false", SIGRUN_PORT: String(port), SIGRUN_BOUNDARY_IT: "1",
+			SIGRUN_BOUNDARY_PID_FILE: pidFile,
+			SIGRUN_BOUNDARY_SERVER_IDENTITY: "sigrun-real-server",
 		}, stdio: ["ignore", "pipe", "pipe"],
 	});
 	let output = "";
@@ -296,6 +298,8 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 	const logs = () => output, baseUrl = `http://127.0.0.1:${port}`;
 	try {
 		await waitForHealth(baseUrl, child, logs);
+		const serverPid = Number((await readFile(pidFile, "utf8")).trim());
+		expect(Number.isInteger(serverPid) && serverPid > 0, `invalid server pid in ${pidFile}`).toBe(true);
 		const stop = async (): Promise<void> => {
 			if (child.exitCode === null && child.signalCode === null) {
 				child.kill("SIGTERM");
@@ -306,7 +310,7 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 		};
 		// The child is PID 1 in its disposable PID namespace; the host-side
 		// pid is used by /proc and ptrace cases.
-		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid: 1, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: child.pid!, logs, stop };
+		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid: 1, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: serverPid, logs, stop };
 	} catch (error) {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		throw error;
