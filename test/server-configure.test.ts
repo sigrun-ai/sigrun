@@ -260,18 +260,16 @@ describe("POST /v1/conversations/:id/abort", () => {
 			result: "already_placed",
 			submissionId: submission.id,
 		});
-		// Idempotent: the same 200 for the same active submission.
-		const second = await abort();
-		expect(second.statusCode).toBe(200);
-		expect(second.json()).toEqual({
-			result: "already_placed",
-			submissionId: submission.id,
-		});
-
-		// Let the run settle; then nothing is active.
-		release();
+		// The placed run is now genuinely aborted; repeating the request
+		// finds no active submission. Releasing the provider gate lets the
+		// aborted invocation unwind cleanly.
 		const settled = await submission.wait(BACKGROUND_CONTEXT);
-		expect(settled.status).toBe("done");
+		expect(settled.status).toBe("unanswered");
+		expect(settled.reason).toBe("aborted");
+		release();
+		const second = await abort();
+		expect(second.statusCode).toBe(404);
+		expect(second.json()).toEqual({ error: "no_active_submission" });
 		const third = await abort();
 		expect(third.statusCode).toBe(404);
 		expect(third.json()).toEqual({ error: "no_active_submission" });

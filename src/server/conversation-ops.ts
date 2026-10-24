@@ -679,17 +679,19 @@ export async function abortOp(
 	if (active === undefined) {
 		throw new ConversationOpError({ error: "no_active_submission" }, 404);
 	}
-	const result = await opened.harness.abortSubmission(
-		active.id,
-		BACKGROUND_CONTEXT,
-		conversation.id,
-	);
-	// `not_found` means the submission's record vanished between `inspect`
-	// and `abort` — the conversation is no longer busy, so the honest answer
-	// is the same as nothing-active.
-	if (result === "not_found") {
-		throw new ConversationOpError({ error: "no_active_submission" }, 404);
-	}
+	// Preserve the route's result vocabulary from the pre-abort record:
+	// queued withdraws read "aborted", a live placed run reads
+	// "already_placed", and a settle racing inspect reads "settled".
+	const result = active.status === "queued"
+		? "aborted"
+		: active.status === "placed"
+			? "already_placed"
+			: "settled";
+	// The old abortSubmission-only path WITHDREW queued inputs but could
+	// not stop a placed generation. Conversation.abort subsumes both: it
+	// withdraws queued inputs, marks and signals every live non-background
+	// task, then resolves once the conversation scope is idle (C4 /stop).
+	await conversation.abort(BACKGROUND_CONTEXT);
 	return { result, submissionId: active.id };
 }
 

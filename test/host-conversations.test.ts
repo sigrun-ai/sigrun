@@ -519,7 +519,8 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		if (submission === undefined) throw new Error("submission handle lost");
 		gate.release();
 		const settled = await submission.wait(BACKGROUND_CONTEXT);
-		expect(["done", "unanswered"]).toContain(settled.status);
+		expect(settled.status).toBe("unanswered");
+		expect(settled.reason).toBe("aborted");
 		// An idle conversation: abort RESOLVES (chat /stop on an idle chat is
 		// not an error — the plan's ruling).
 		await expect(host.conversations.abort(id)).resolves.toBeUndefined();
