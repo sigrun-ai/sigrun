@@ -157,8 +157,24 @@ export function registerExtensionRoutes(
 			if (!isKnownSlug(slug)) {
 				return await reply.code(404).send({ error: "extension_not_found" });
 			}
+			const stored = await opened.extensionStores.settingsFor(slug).get();
+			// Declared secret keys NEVER leave this route (U4 fix wave): a
+			// settings file predating the write-only rule (or a hand edit)
+			// can carry one in the clear — the surface's read path strips
+			// it; the raw GET must too.
+			const declaredSecrets = new Set(
+				(opened.extensionSettingsSections.find(
+					(binding) => binding.extension === slug,
+				)?.defs ?? []).flatMap((def) =>
+					(def.secrets ?? []).map((secret) => secret.key),
+				),
+			);
+			const settings: Record<string, unknown> = {};
+			for (const [key, value] of Object.entries(stored)) {
+				if (!declaredSecrets.has(key)) settings[key] = value;
+			}
 			return {
-				settings: await opened.extensionStores.settingsFor(slug).get(),
+				settings,
 				pendingRestart: [],
 			};
 		},

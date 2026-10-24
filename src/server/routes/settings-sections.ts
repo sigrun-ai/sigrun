@@ -158,10 +158,21 @@ export function buildSettingsSections(
 		});
 	}
 	// Core keys (registry-driven — every registry key whose section
-	// renders gets a row).
+	// renders gets a row). Cove-rendered sections (Interface / Providers
+	// / Extensions — the channels draw them natively) drop their keys:
+	// a hit must land on a form field, and a cove has none (the search
+	// would strand the user on a section whose row it named but whose
+	// field does not exist).
+	const COVE_SECTIONS: ReadonlySet<string> = new Set([
+		"interface",
+		"providers",
+		"extensions",
+	]);
 	for (const entry of CORE_SETTING_KEYS) {
 		const row = coreKeyEntry(entry.key);
-		if (row !== undefined) index.push(row);
+		if (row === undefined) continue;
+		if (COVE_SECTIONS.has(row.sectionId)) continue;
+		index.push(row);
 	}
 	// Extension sections: titles + every field's label/help.
 	for (const binding of sorted) {
@@ -187,19 +198,18 @@ export function buildSettingsSections(
 	return { sections, index };
 }
 
-/** Register `GET /v1/settings/sections` (admin — the settings surface
- *  is admin material; the panel is the only consumer). */
+/** Register `GET /v1/settings/sections` (any authenticated principal —
+ *  U4 Task 4 fix wave: the client-only Interface prefs die with the
+ *  panel when a non-admin can't load the list; the per-section SURFACES
+ *  keep their own access gates, so a non-admin's admin-section save
+ *  still rejects 404/forbidden server-side). */
 export function registerSettingsSectionsRoutes(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
 	app.get(
 		"/v1/settings/sections",
-		async (request, reply): Promise<SettingsSectionsResponse | { error: string }> => {
-			if (!request.principal.admin) {
-				return await reply.code(403).send({ error: "forbidden" });
-			}
-			return buildSettingsSections(ctx.opened.extensionSettingsSections);
-		},
+		async (): Promise<SettingsSectionsResponse> =>
+			buildSettingsSections(ctx.opened.extensionSettingsSections),
 	);
 }

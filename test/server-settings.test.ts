@@ -991,4 +991,28 @@ describe("PATCH /v1/settings admin gate (core hardening W1 final review)", () =>
 		});
 		expect(response.statusCode).toBe(200);
 	});
+
+	test("GET /v1/settings/sections stays open to a non-admin (the panel's client prefs die with a 403); the admin-only surfaces still gate", async () => {
+		const { app, plebToken } = await bootTokenServer();
+		const list = await app.inject({
+			method: "GET",
+			url: "/v1/settings/sections",
+			headers: { authorization: `Bearer ${plebToken}` },
+		});
+		expect(list.statusCode).toBe(200);
+		const body = list.json() as {
+			sections: { slug: string; id: string }[];
+		};
+		// The whole list serves (the Interface section the prefs ride
+		// included) — per-section surfaces keep their own gates.
+		expect(body.sections.length).toBeGreaterThan(0);
+		// A non-admin's read of an admin section's surface 404s (the
+		// access gate maps access:none to surface_not_found).
+		const surface = await app.inject({
+			method: "GET",
+			url: "/v1/ext/core/surfaces/general",
+			headers: { authorization: `Bearer ${plebToken}` },
+		});
+		expect(surface.statusCode).toBe(404);
+	});
 });

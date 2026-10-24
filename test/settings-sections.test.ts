@@ -256,6 +256,26 @@ describe("settings sections render (U4 Task 3)", () => {
 		).toBe(true);
 		expect(body.data.secrets).toEqual({});
 	});
+
+	test("the raw settings GET strips a leftover declared-secret value (fix wave)", async () => {
+		const { app, opened, aliceToken } = await server();
+		// Plant the leak directly in the store (a settings file predating
+		// the write-only rule, or a hand edit, carries the declared secret
+		// key in the clear).
+		await opened.extensionStores
+			.settingsFor("acme-settings-section")
+			.set({ endpoint: "acme.example.invalid", "api-token": "l3ft0ver-s3cr3t" });
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/extensions/acme-settings-section/settings",
+			token: aliceToken,
+		});
+		expect(result.status).toBe(200);
+		const body = result.body as { settings: Record<string, unknown> };
+		expect(body.settings.endpoint).toBe("acme.example.invalid");
+		expect(body.settings["api-token"]).toBeUndefined();
+		expect(JSON.stringify(result.body)).not.toContain("l3ft0ver-s3cr3t");
+	});
 });
 
 describe("settings section save (U4 Task 3)", () => {

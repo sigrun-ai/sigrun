@@ -37,7 +37,6 @@ import type {
 	SurfaceDef,
 	SurfaceRenderResult,
 } from "../../extension.js";
-import type { ExtensionSettingsSectionBinding } from "../../harness/loader.js";
 import type { SharedExtensionStores } from "../../harness/stores.js";
 import type { SettingsStore } from "../../harness/settings.js";
 import {
@@ -650,22 +649,4 @@ export function settingsSurfaceFor(
 			},
 		},
 	};
-}
-
-/**
- * Adapt every loaded extension's declared settings sections into the
- * surface service's binding list (spec §13.4's one-renderer rule).
- * Returns the appended list — `createServer` builds the service over
- * `opened.extensionSurfaces` + these.
- */
-export function appendSettingsSurfaces(
-	bindings: readonly ExtensionSettingsSectionBinding[],
-	options: SettingsSurfaceOptions,
-): readonly { extension: string; defs: readonly SurfaceDef<"settings">[] }[] {
-	return bindings.map((binding) => ({
-		extension: binding.extension,
-		defs: binding.defs.map((section) =>
-			settingsSurfaceFor(binding.extension, section, options),
-		),
-	}));
 }

@@ -1159,6 +1159,7 @@ function AppShell(options: AppOptions = {}) {
 								conversationId={activeId}
 								view={view}
 								onNavigate={onSelect}
+								onOpenSettings={() => setSettingsOpen(true)}
 								enterToSend={prefsState.prefs.enterToSend}
 								readOnly={
 									list.rows.find((row) => row.id === activeId)?.access ===

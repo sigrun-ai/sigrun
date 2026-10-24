@@ -69,7 +69,8 @@ const COMMANDS = [
 	{ name: "name", description: "Name", argsHint: "<name>", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
 	{ name: "model", description: "Switch model", argsHint: "<provider/model>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
 	{ name: "thinking", description: "Set thinking level", argsHint: "<level>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
-	{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-commands", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
+		{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-commands", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
+	{ name: "settings", description: "Open the settings panel (sections + search)", endpoint: { method: "GET", path: "/v1/settings/sections" } },
 	// Task 2c expand entries: a prompt template (with its argument-hint as
 	// argsHint) and a skill (no hint) — no endpoint; the server expands at
 	// admission.
@@ -747,6 +748,7 @@ describe("Composer", () => {
 				"/model",
 				"/thinking",
 				"/hello",
+				"/settings",
 				"/review",
 				"/skill:greet",
 			]);
@@ -783,6 +785,31 @@ describe("Composer", () => {
 				JSON.stringify({ name: "foo" }),
 			);
 			// The command line cleared from the composer.
+			expect(composerTextarea(renderer).props.value).toBe("");
+		});
+
+		test("`/settings` opens the settings overlay via onOpenSettings (a shell action — never a conversation call)", async () => {
+			const { calls, client } = makeHarness();
+			let opened = 0;
+			const renderer = await renderAsync(
+				<Composer
+					client={client}
+					conversationId={1}
+					view={makeView()}
+					onOpenSettings={() => {
+						opened += 1;
+					}}
+				/>,
+			);
+			await submitLine(renderer, "/settings");
+			expect(opened).toBe(1);
+			// No endpoint call — the command resolves shell-side.
+			expect(
+				calls.filter((c) => c.input === "/v1/settings/sections"),
+			).toEqual([]);
+			expect(
+				calls.filter((c) => c.input.endsWith("/submissions")),
+			).toEqual([]);
 			expect(composerTextarea(renderer).props.value).toBe("");
 		});
 
