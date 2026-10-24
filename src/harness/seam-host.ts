@@ -326,11 +326,11 @@ export function createSeamHost(
 
 		async settleInteraction(conversationId, callId, status, context) {
 			const h = await harness(context);
-			// Review Focus 4: sweep the unread secret delivery FIRST — a
-			// settle call is the extension saying it is done with the record,
-			// so a delivery it never read (an answered record, a pending one
-			// raced to expiry) must not linger in the table.
-			sweepSecretDelivery(conversationId, callId);
+			// The sweep (Review Focus 4) is INSIDE the commit, applied only on
+			// the terminal transition: sweeping before the pending check would
+			// delete a delivery that still belongs to a live answer record
+			// (a no-op settle on an already-answered record must not eat the
+			// winner's unread secret).
 			return await h.commit(async (tx) => {
 				const draft = await tx.doc(
 					InteractionDoc,
@@ -346,6 +346,7 @@ export function createSeamHost(
 				mutable.settledAt = Date.now();
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexSettled(index, conversationId, callId);
+				sweepSecretDelivery(conversationId, callId);
 				return true;
 			}, context);
 		},
@@ -360,14 +361,17 @@ export function createSeamHost(
 			);
 			if (stored === undefined) return undefined;
 			const record = asInteractionRecord(stored);
+			// An unanswered record cannot have a delivery — and taking before
+			// this check would DELETE a delivery in flight in the
+			// record-then-commit-visible window (the poll returns the pending
+			// record and the true value is lost). Check the record FIRST.
+			if (record.answer === undefined) return record;
 			// Review Focus 4 (the extension-only read): a secret delivery for
 			// this record merges its TRUE values back ONCE — the take is
 			// one-shot, so a second read sees the stored MASK. HTTP GETs never
 			// come through here (they serve the stored record verbatim).
 			const delivery = takeSecretDelivery(conversationId, callId);
-			if (delivery === undefined || record.answer === undefined) {
-				return record;
-			}
+			if (delivery === undefined) return record;
 			return {
 				...record,
 				answer: { values: delivery.values },

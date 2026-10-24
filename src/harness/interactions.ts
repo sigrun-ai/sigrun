@@ -294,9 +294,28 @@ export const SECRET_MASK = "[secret]";
  * and the extension's poll loses the value and the human re-answers — the
  * safe failure mode (a raw secret must never survive a restart in the DB).
  */
+/**
+ * Delivery TTL (minor 5): a delivery whose interaction never settles and
+ * is never polled (the host crashed mid-round-trip, the extension was
+ * uninstalled) must not hold a raw secret forever — expire after an hour.
+ */
+const SECRET_DELIVERY_TTL_MS = 60 * 60 * 1000;
+
 class SecretDeliveries {
-	/** conversationId|callId → the true answer, waiting for one read. */
-	readonly #pending = new Map<string, InteractionAnswer>();
+	/** conversationId|callId → the true answer (+ recordedAt), waiting for one read. */
+	readonly #pending = new Map<
+		string,
+		{ readonly answer: InteractionAnswer; readonly recordedAt: number }
+	>();
+
+	/** Drop entries older than the TTL (a never-settled secret has a bound). */
+	#expire(now: number): void {
+		for (const [key, entry] of this.#pending) {
+			if (now - entry.recordedAt > SECRET_DELIVERY_TTL_MS) {
+				this.#pending.delete(key);
+			}
+		}
+	}
 
 	/** Record the true answer for one settled interaction (answer path). */
 	record(
@@ -304,22 +323,30 @@ class SecretDeliveries {
 		callId: string,
 		answer: InteractionAnswer,
 	): void {
-		this.#pending.set(`${String(conversationId)}|${callId}`, answer);
+		const now = Date.now();
+		this.#expire(now);
+		this.#pending.set(`${String(conversationId)}|${callId}`, {
+			answer,
+			recordedAt: now,
+		});
 	}
 
 	/**
 	 * Take the delivery once, if present: the true answer, then delete.
 	 * Returns `undefined` when nothing was recorded (no secret, or already
-	 * delivered, or swept).
+	 * delivered, or swept, or past the TTL).
 	 */
 	take(
 		conversationId: ConversationId,
 		callId: string,
 	): InteractionAnswer | undefined {
+		const now = Date.now();
+		this.#expire(now);
 		const key = `${String(conversationId)}|${callId}`;
-		const answer = this.#pending.get(key);
-		if (answer !== undefined) this.#pending.delete(key);
-		return answer;
+		const entry = this.#pending.get(key);
+		if (entry === undefined) return undefined;
+		this.#pending.delete(key);
+		return entry.answer;
 	}
 
 	/** Drop the entry without reading it (settle/expiry sweep — no leak). */
@@ -341,20 +368,64 @@ function secretFieldNames(body: unknown): ReadonlySet<string> {
 	if (typeof body !== "object" || body === null) return names;
 	const root = (body as { root?: unknown }).root;
 	if (typeof root !== "object" || root === null) return names;
-	const walk = (nodes: readonly unknown[] | undefined): void => {
-		if (!Array.isArray(nodes)) return;
-		for (const node of nodes) {
-			if (typeof node !== "object" || node === null) continue;
-			const field = node as { type?: unknown; name?: unknown; children?: unknown };
-			if (field.type === "secret" && typeof field.name === "string") {
-				names.add(field.name);
-			} else if (field.type === "section") {
-				walk(field.children as readonly unknown[] | undefined);
+
+	/**
+	 * The block schema's child slots: every place a nested block or field
+	 * can live (schema.ts:17-22). A generic descent that walks ONLY these
+	 * slots — recursing over every record/array value would trip on data
+	 * props (rows, series) that happen to carry a `{type, name}` record.
+	 */
+	const walkNode = (node: unknown): void => {
+		if (typeof node !== "object" || node === null) return;
+		const rec = node as Record<string, unknown>;
+		if (rec.type === "secret" && typeof rec.name === "string") {
+			names.add(rec.name);
+		}
+		walkNodeList(rec.children);
+		walkNodeList(rec.main);
+		walkNodeList(rec.sidebar);
+		walkNodeList(rec.detail);
+		walkNode(rec.item);
+		walkNode(rec.switcher);
+		if (Array.isArray(rec.bulkActions)) {
+			for (const bulk of rec.bulkActions) {
+				if (typeof bulk !== "object" || bulk === null) continue;
+				walkNode((bulk as { form?: { root?: unknown } }).form?.root);
 			}
 		}
 	};
-	walk((root as { children?: unknown }).children as readonly unknown[] | undefined);
+	const walkNodeList = (nodes: unknown): void => {
+		if (!Array.isArray(nodes)) return;
+		for (const child of nodes) {
+			if (typeof child !== "object" || child === null) continue;
+			// columns/grid children are `{weight?, block}` wrappers.
+			const rec = child as { block?: unknown };
+			walkNode(rec.block ?? child);
+		}
+	};
+	walkNode(root);
 	return names;
+}
+
+/**
+ * The ONE masking rule (minor 3): secret names map to {@link SECRET_MASK},
+ * every other value passes through. Shared by `applyAnswer` (the stored
+ * write) and `maskedAnswerValues` (the route's response projection) so the
+ * two can never drift. `dropNonJson` mirrors applyAnswer's belt: values
+ * failing `isJsonValue` are skipped (the projection's inputs are already
+ * validated, so it passes false and keeps every value).
+ */
+function maskValues(
+	secrets: ReadonlySet<string>,
+	values: Readonly<Record<string, JsonValue>>,
+	dropNonJson = true,
+): Record<string, JsonValue> {
+	const masked: Record<string, JsonValue> = {};
+	for (const [key, value] of Object.entries(values)) {
+		if (dropNonJson && !isJsonValue(value)) continue;
+		masked[key] = secrets.has(key) ? SECRET_MASK : value;
+	}
+	return masked;
 }
 
 /**
@@ -382,24 +453,14 @@ export function applyAnswer(
 	// which values never persist: the stored copy carries the MASK, the
 	// true copy rides the one-shot delivery table (extension-only read).
 	const secrets = secretFieldNames(draft.body);
-	const values: Record<string, JsonValue> = {};
-	let hasSecret = false;
-	for (const [key, value] of Object.entries(answer.values ?? {})) {
-		// A host caller's answer was validated ({values: JsonObject}); this
-		// copy is the belt that keeps the stored record JSON-safe.
-		if (!isJsonValue(value)) continue;
-		if (secrets.has(key)) {
-			hasSecret = true;
-			values[key] = SECRET_MASK;
-		} else {
-			values[key] = value;
-		}
-	}
+	const values = maskValues(secrets, answer.values ?? {});
+	const hasSecret = Object.values(values).some((value) => value === SECRET_MASK);
 	if (hasSecret && opts?.conversationId !== undefined) {
 		secretDeliveries.record(opts.conversationId, draft.callId, {
 			values: answer.values,
 		});
 	}
+
 	// SAFETY: the draft's declared shape is readonly; the doc family's
 	// tracked-draft write pattern mutates through a structural record view
 	// (every key below exists on the stored record by construction).
@@ -451,11 +512,7 @@ export function maskedAnswerValues(
 	answer: { readonly values: Readonly<Record<string, JsonValue>> },
 ): { values: Record<string, JsonValue> } {
 	const secrets = secretFieldNames(body);
-	const values: Record<string, JsonValue> = {};
-	for (const [key, value] of Object.entries(answer.values ?? {})) {
-		values[key] = secrets.has(key) ? SECRET_MASK : value;
-	}
-	return { values };
+	return { values: maskValues(secrets, answer.values, false) };
 }
 
 /** Narrow an unvalidated route body to `{values: JsonObject}`, or null. */

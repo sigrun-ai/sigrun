@@ -49,7 +49,6 @@ import {
 	asInteractionRecord,
 	indexSettled,
 	maskedAnswerValues,
-	sweepSecretDelivery,
 	type InteractionRecord,
 } from "../../harness/interactions.js";
 import { loadConversation } from "../conversation-handler.js";
@@ -211,14 +210,17 @@ export function registerInteractionRoutes(
 	// refetch path (Review Focus 1's “a GET returns the winning answer”;
 	// Review Focus 2's expired refetch; the transport `load`). The SAME
 	// §5.9 visibility half as the list (hidden → the indistinguishable
-	// 404), applied in-handler by the polling convention. The record rides
-	// as-is (envelope + body + details) — the stored answer carries only
-	// the SECRET_MASK for secret fields (never the values).
+	// 404), applied in-handler by the polling convention, and the same
+	// ACCESS as the list: read membership is enough (a read-only sharee
+	// watches the decision too — writes stay behind the answer route's
+	// write gate). The record rides as-is (envelope + body + details) —
+	// the stored answer carries only the SECRET_MASK for secret fields
+	// (never the values).
 	app.get(
 		"/v1/conversations/:id/interactions/:callId",
 		{
 			schema: { params: ANSWER_PARAMS_SCHEMA },
-			preHandler: loadConversation(ctx, "write"),
+			preHandler: loadConversation(ctx),
 		},
 		async (request, reply): Promise<InteractionRecord> => {
 			const { callId } = request.params as { callId: string };
@@ -271,7 +273,6 @@ export function registerInteractionRoutes(
 				// Unknown callId: the doc materializes empty — detect via kind
 				// never having been seeded (an empty seed has kind "").
 				if (draft.kind === "") {
-					sweepSecretDelivery(conversation.id, callId);
 					return { found: false } as const;
 				}
 				// Review Focus 4: project the STORED (masked) answer for the
@@ -288,9 +289,11 @@ export function registerInteractionRoutes(
 					{ conversationId: conversation.id },
 				);
 				if (!applied) {
-					// A loser of the first-answer-wins race: its (possibly secret)
-				// payload never delivered — sweep so it cannot linger.
-					sweepSecretDelivery(conversation.id, callId);
+					// A loser of the first-answer-wins race: the delivery-table
+					// entry (when there is one) belongs to the WINNER — the loser
+					// never recorded one (applyAnswer guards on status), so there
+					// is nothing of the loser's to sweep. Sweeping here would
+					// destroy the winner's undelivered secret.
 					return { found: true, applied: false } as const;
 				}
 				const index = await tx.doc(InteractionsIndexDoc);
