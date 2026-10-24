@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # sigrun — the pi-durable assistant harness.
 #
-# Five stages (image workflow spec §1): deps (full install, feeds the
-# build) → build (sources + the built tree) → prod (manifests-only
-# re-copy + `npm ci --omit=dev`) → runtime (base + agent userland + the
-# prod tree). The runtime layer never carries the dev toolchain
+# Six stages (image workflow spec §1): deps (full install, feeds the
+# build) → build (sources + the built tree) → sandbox (the Rust helper)
+# → prod (manifests-only re-copy + `npm ci --omit=dev`) → runtime
+# (base + agent userland + the prod tree). The runtime layer never carries the dev toolchain
 # (typescript, vitest, the bundler natives), and a source-only edit
 # re-runs only the build stage — the prod install layer is keyed on the
 # manifests alone.

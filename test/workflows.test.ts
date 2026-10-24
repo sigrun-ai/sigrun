@@ -28,6 +28,7 @@ interface Step {
 	uses?: string;
 	with?: Record<string, unknown>;
 	env?: Record<string, string>;
+	"working-directory"?: string;
 }
 
 interface Job {
@@ -270,14 +271,49 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(env.CC_aarch64_unknown_linux_musl).toBe("aarch64-linux-gnu-gcc");
 	});
 
-	test("sandbox: uploads both musl helper binaries as artifacts", () => {
+	test("sandbox: assembles, packs, and uploads both platform packages", () => {
 		const { jobs } = workflow();
-		const uploads = (jobs.sandbox?.steps ?? []).filter((s) =>
-			s.uses?.startsWith("actions/upload-artifact@"),
-		);
-		const paths = uploads.map((s) => String(s.with?.path ?? "")).join("\n");
+		const steps = jobs.sandbox?.steps ?? [];
+		const runs = steps.map(runOf).join("\n");
+		for (const [target, platform] of [
+			["x86_64-unknown-linux-musl", "linux-x64"],
+			["aarch64-unknown-linux-musl", "linux-arm64"],
+		] as const) {
+			expect(runs).toContain(`sandbox/target/${target}/release/sigrun-sandbox`);
+			expect(runs).toContain(`sandbox/npm/${platform}/bin/sigrun-sandbox`);
+		}
+		expect(runs).toContain("chmod +x");
+		const packs = steps.filter((s) => runOf(s).includes("npm pack"));
+		expect(packs.map((s) => s["working-directory"])).toEqual([
+			"sandbox/npm/linux-x64",
+			"sandbox/npm/linux-arm64",
+		]);
+		const paths = steps
+			.filter((s) => s.uses?.startsWith("actions/upload-artifact@"))
+			.map((s) => String(s.with?.path ?? ""))
+			.join("\n");
 		expect(paths).toContain("sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox");
 		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
+		expect(paths).toContain("sandbox/npm/linux-x64/*.tgz");
+		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
+	});
+
+	test("sandbox: platform manifests match core and whitelist the helper binary", () => {
+		const core = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		for (const [platform, cpu] of [["linux-x64", "x64"], ["linux-arm64", "arm64"]] as const) {
+			const manifest = JSON.parse(
+				readFileSync(new URL(`../sandbox/npm/${platform}/package.json`, import.meta.url), "utf8"),
+			);
+			expect(manifest).toEqual({
+				name: `@sigrun/sandbox-${platform}`,
+				version: core.version,
+				os: ["linux"],
+				cpu: [cpu],
+				// npm's files whitelist is the contract that puts
+				// package/bin/sigrun-sandbox in the packed tarball.
+				files: ["bin/"],
+			});
+		}
 	});
 
 	test("image smoke: probes the bundled helper and verifies tini is PID 1", () => {
