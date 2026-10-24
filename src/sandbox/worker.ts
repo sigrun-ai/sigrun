@@ -42,7 +42,7 @@ function environment(cwd: string): NodeExecutionEnv {
 	return env;
 }
 
-function write(message: Reply | { id: number; event: "output"; stream: "stdout" | "stderr"; text: string; skipped?: JsonValue } | { id: number; event: "watch"; change: JsonValue }): void {
+function write(message: Reply | { id: number; event: "output"; stream: "stdout" | "stderr"; text: string; skipped?: JsonValue } | { id: number; event: "watch"; change: JsonValue } | { id: number; event: "command"; pid: number; phase: "start" | "end" }): void {
 	// SAFETY: skipped is the exact ShellOutputSkip shape emitted by pi-durable;
 	// JsonValue is only the wider transport representation accepted by the encoder.
 	process.stdout.write(encodeMessage(message as Reply | import("./protocol.js").Message));
@@ -199,7 +199,48 @@ async function dispatchResult(request: Request, controller: AbortController): Pr
 				write({ id: request.id, event: "output", stream: info.stream, text, ...(info.skipped === undefined ? {} : { skipped: encodeValue(info.skipped) }) });
 			},
 		};
-		return environment(cwd).exec(args[0] as string | readonly string[], options as never, withAbortSignal(controller.signal, BACKGROUND_CONTEXT));
+		const env = environment(cwd);
+		// NodeExecutionEnv records each spawned command's pid in this private
+		// set immediately after spawn. Mirror only additions/removals into the
+		// control channel; the command itself remains pi-durable's unmodified
+		// child, and the parent can kill its detached group after a crash.
+		// SAFETY: pi-durable 1.3.0 initializes this private Set in its
+		// constructor and mutates it at spawn/exit; no other fields are read.
+		const commandPids = (env as unknown as { activeChildPids: Set<number> }).activeChildPids;
+		const reported = new Set<number>();
+		// Observe the registry synchronously at spawn/settle, rather than
+		// polling: the start event must reach the parent before a crash can
+		// make the command untracked. The private methods are wrapped only for
+		// this call and restored in finally; concurrent execs share the same
+		// registry and each observer ignores pids it did not report.
+		const registry = commandPids as Set<number> & {
+			add(pid: number): Set<number>;
+			delete(pid: number): boolean;
+		};
+		const originalAdd = registry.add;
+		const originalDelete = registry.delete;
+		const report = (pid: number): void => {
+			if (reported.has(pid)) return;
+			reported.add(pid);
+			write({ id: request.id, event: "command", pid, phase: "start" });
+		};
+		registry.add = (pid: number): Set<number> => {
+			const result = originalAdd.call(registry, pid);
+			report(pid);
+			return result;
+		};
+		registry.delete = (pid: number): boolean => {
+			const result = originalDelete.call(registry, pid);
+			if (reported.delete(pid)) write({ id: request.id, event: "command", pid, phase: "end" });
+			return result;
+		};
+		try {
+			return await env.exec(args[0] as string | readonly string[], options as never, withAbortSignal(controller.signal, BACKGROUND_CONTEXT));
+		} finally {
+			registry.add = originalAdd;
+			registry.delete = originalDelete;
+			for (const pid of reported) write({ id: request.id, event: "command", pid, phase: "end" });
+		}
 	}
 	return dispatch({ id: request.id, op, args: [...rawArgs, cwd] });
 }

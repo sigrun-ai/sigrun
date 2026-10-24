@@ -65,6 +65,7 @@ class WorkerProcess {
 	private readonly pending = new Map<number, Pending>();
 	private readonly watchEvents = new Map<number, (event: WorkerEvent) => void>();
 	private readonly watchHandles = new Map<number, number>();
+	private readonly commandGroups = new Set<number>();
 	private drainedResolve: (() => void) | undefined;
 	private drained: Promise<void> | undefined;
 	private stopPromise: Promise<void> | undefined;
@@ -77,6 +78,10 @@ class WorkerProcess {
 	) {
 		this.child = spawn(launch.command, launch.args, {
 			env: launch.env,
+			// Own a process group: pi-durable's commands are detached too, so
+			// stopping only the worker can orphan them. Group cleanup reaches
+			// the command groups below this worker, including after SIGKILL.
+			detached: process.platform !== "win32",
 			// Exactly three descriptors: pi-durable gives every command its own
 			// pipes, so neither side of this IPC channel reaches a command.
 			stdio: ["pipe", "pipe", "pipe"],
@@ -100,14 +105,18 @@ class WorkerProcess {
 			this.child.once("error", () => { this.exited = true; });
 			this.child.once("exit", (code, signal) => {
 				this.exited = true;
+				// A direct crash cannot run the worker's stdin-close cleanup.
+				// The negative pid addresses the worker's whole process group;
+				// ESRCH simply means every member is already gone.
+				this.killGroup("SIGKILL");
 				this.failAll(code, signal);
 				this.client.processExited(this);
 				resolve();
 			});
 		});
-		this.capabilities = this.request<WorkerCapabilities>("hello", []).then((value) => {
-			const capabilities = value as WorkerCapabilities;
-			return { listFiles: capabilities.listFiles === true };
+		this.capabilities = this.request<{ capabilities: WorkerCapabilities }>("hello", []).then((value) => {
+			// The canonical hello shape is {capabilities: {listFiles}}.
+			return { listFiles: value.capabilities.listFiles === true };
 		});
 		// A caller will observe this through its first operation; attaching a
 		// rejection sink here prevents a failed boot becoming unhandled.
@@ -181,21 +190,50 @@ class WorkerProcess {
 		if (this.stopPromise !== undefined) return this.stopPromise;
 		this.stopPromise = (async () => {
 			if (!this.running) {
+				this.killGroup("SIGKILL");
 				await this.exit;
 				return;
 			}
 			const killTimer = setTimeout(() => {
-				if (this.running) this.child.kill("SIGKILL");
+				// The worker may be wedged and unable to run its own cleanup;
+				// kill its group, never just the Node process.
+				this.killGroup("SIGKILL");
 			}, 2_000);
 			killTimer.unref();
 			try {
+				// Let the worker's stdin-close hook run pi-durable cleanup for
+				// tracked command groups before the forced group-kill fallback.
 				this.child.stdin!.end();
 				await this.exit;
 			} finally {
 				clearTimeout(killTimer);
+				this.killGroup("SIGKILL");
 			}
 		})();
 		return this.stopPromise;
+	}
+
+	private killGroup(signal: NodeJS.Signals): void {
+		const pid = this.child.pid;
+		if (pid === undefined || process.platform === "win32") {
+			this.child.kill(signal);
+			return;
+		}
+		// pi-durable puts each command in a NEW process group, so killing only
+		// -workerPid cannot reach it. The worker reports actual spawned pids;
+		// kill each command's group as well as the worker's group. ESRCH means
+		// a group already exited.
+		const groups = new Set<number>();
+		for (const commandPid of this.commandGroups) groups.add(commandPid);
+		this.commandGroups.clear();
+		groups.add(pid);
+		for (const group of groups) {
+			try {
+				process.kill(-group, signal);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			}
+		}
 	}
 
 	private receive(chunk: string): void {
@@ -215,6 +253,11 @@ class WorkerProcess {
 			}
 			const pending = this.pending.get(message.id);
 			if ("event" in message) {
+				if (message.event === "command") {
+					if (message.phase === "start") this.commandGroups.add(message.pid);
+					else this.commandGroups.delete(message.pid);
+					continue;
+				}
 				const listener = pending?.onEvent ?? this.watchEvents.get(message.id);
 				if (listener === undefined) continue;
 				try {
