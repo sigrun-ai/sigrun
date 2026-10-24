@@ -10,6 +10,7 @@ import {
 	type ListFilesOptions,
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createCommandObserver, type CommandObserver } from "./command-observer.js";
 import {
 	decodeValue,
 	encodeMessage,
@@ -30,8 +31,8 @@ type Handle =
 const environments = new Map<string, NodeExecutionEnv>();
 /** Exec requests that have not reached pi-durable's synchronous spawn yet. */
 const pendingSpawns = new Map<NodeExecutionEnv, Set<number>>();
-/** Conservative pid ownership: every request that could have spawned it. */
-const commandOwners = new Map<number, Set<number>>();
+/** One ownership observer per environment, shared by all its execs. */
+const commandObservers = new Map<NodeExecutionEnv, CommandObserver>();
 const handles = new Map<number, Handle>();
 const active = new Map<number, AbortController>();
 let nextHandle = 1;
@@ -60,41 +61,12 @@ function observeCommands(env: NodeExecutionEnv): void {
 	if (!(registry instanceof Set)) {
 		throw new Error("pi-durable activeChildPids is unavailable; sandbox command cleanup cannot be tracked");
 	}
-	const originalAdd = registry.add;
-	const originalDelete = registry.delete;
-	const originalClear = registry.clear;
-	registry.add = (pid: number): Set<number> => {
-		const result = originalAdd.call(registry, pid);
-		const pending = pendingSpawns.get(env);
-		// JavaScript spawn/add is synchronous. An empty set can only mean an
-		// unexpected pi-durable lifecycle change: retain an explicit sentinel
-		// owner and never end the pid rather than risking an orphan.
-		const owners = new Set(pending === undefined || pending.size === 0 ? [-1] : pending);
-		commandOwners.set(pid, owners);
-		for (const id of owners) write({ id, event: "command", pid, phase: "start" });
-		return result;
-	};
-	registry.delete = (pid: number): boolean => {
-		const result = originalDelete.call(registry, pid);
-		forgetIfSettled(pid);
-		return result;
-	};
-	registry.clear = (): void => {
-		const pids = [...registry];
-		originalClear.call(registry);
-		for (const pid of pids) forgetIfSettled(pid);
-	};
-
-	function forgetIfSettled(pid: number): void {
-		const owners = commandOwners.get(pid);
-		if (owners === undefined) return;
-		// End only after every exec that might own this pid has settled.
-		for (const id of owners) {
-			if (id === -1 || active.has(id)) return;
-		}
-		commandOwners.delete(pid);
-		for (const id of owners) write({ id, event: "command", pid, phase: "end" });
-	}
+	commandObservers.set(env, createCommandObserver({
+		registry,
+		get pending() { return pendingSpawns.get(env) ?? new Set(); },
+		get active() { return new Set(active.keys()); },
+		emit: ({ id, pid, phase }) => write({ id, event: "command", pid, phase }),
+	}));
 }
 
 function write(message: Reply | { id: number; event: "output"; stream: "stdout" | "stderr"; text: string; skipped?: JsonValue } | { id: number; event: "watch"; change: JsonValue } | { id: number; event: "command"; pid: number; phase: "start" | "end" }): void {
@@ -308,6 +280,10 @@ async function processRequest(request: Request): Promise<void> {
 		write(errorReply(request.id, error, request.op === "exec" ? "exec" : "file"));
 	} finally {
 		active.delete(request.id);
+		// pi-durable removes a pid BEFORE the exec promise resolves. The
+		// registry hook therefore sees the request still active; this is the
+		// settlement boundary that forgets ordinary pids and emits their end.
+		for (const observer of commandObservers.values()) observer.settleRequest(request.id);
 	}
 }
 
