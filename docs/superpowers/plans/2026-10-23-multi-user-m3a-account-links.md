@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Core owns one table linking external identities (chat senders now, login subjects later) to directory users, exposed to extensions as `host.accounts` and to users as `/v1/auth/accounts`, so the gateway engine builds its `IdentityStore` on it instead of its own `identities.json`.
+**Goal:** Core owns one table linking external identities (chat senders now, login subjects later) to directory users, exposed to extensions as `host.accounts` and to users as `/v1/auth/accounts`, so the gateway engine moves its links off its own `identities.json` (engine Task 13) before the gateway merges.
 
 **Architecture:** A new `AccountStore` in `src/harness/identity/` follows the existing identity-store discipline (`json-store.ts`: mtime-reloading sync reads, `MutationQueue`-serialized atomic 0600 writes) over `<configDir>/accounts.json`, and joins the `IdentityStores` bundle. `SigrunHost` gains `accounts`, delegated by the seam host to the host bridge like `users`. `DELETE /v1/users/:user` removes the departing user's links. Two auth routes let a user list and remove their own links, mirroring `/v1/auth/tokens` (admins may act on anyone's).
 
@@ -189,4 +189,4 @@ git commit -m "feat(auth): list and remove account links (multi-user M3a)"
 
 ## After this plan
 
-Merge to `main`, then notify the gateway-engine session that its revised Task 3 (`IdentityStore` on `host.accounts`, homes in `homes.json`) can start.
+Merge to `main`, then notify the gateway-engine session that engine Task 13 (links move to `host.accounts`) can start once its Task 12 is done. The gateway engine shipped Tasks 3–4 on its own `identities.json` while this plan waited; Task 13 is the switch, and the gateway does not merge to `main` before it.

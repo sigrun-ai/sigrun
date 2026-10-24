@@ -120,11 +120,12 @@ files, credentials, or conversations — by accident or by asking it to.
    user-supplied servers when the admin allows them.
 7. **OIDC and OAuth2 are extensions**, not core.
 8. **Bundled.** The OIDC/OAuth2 extension ships as a built-in.
-9. **Gateway handover.** Revised the same day: the gateway engine had
-   only just started, so the account-link table lands first as M3a and
-   the engine pauses after its Task 2, then builds its links on
-   `host.accounts` (no `identities.json`, no migration, §11.7). The rest
-   of M3 follows M3a.
+9. **Gateway handover.** The account-link table lands as M3a. The
+   gateway engine kept running meanwhile (it was not paused after all)
+   and built its links on its own `identities.json`; engine Task 13
+   moves them to `host.accounts` before the gateway merges, so no
+   release ever stores links in the engine (§11.7). The rest of M3
+   follows M3a.
 10. **Do not step on in-flight work.** The gateway, UI-blocks, and
     image-workflow workstreams are underway; this spec's changes to
     shared files wait for them (§7).
@@ -239,11 +240,11 @@ extension code; resource exhaustion; outbound network; non-Linux hosts.
 | Id | Workstream | Waits for |
 |---|---|---|
 | M0 | Environment-leak fix (§8) | nothing; not part of this spec's plans |
-| M1 | The execution jail (§9) | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
-| M2 | Per-user extension surface (§10) | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
-| M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 3 waits for M3a |
-| M3 | Login (§11), the rest | M3a |
-| M4 | Extension adoption (§12) | M2 (MCP); M2 (memory) |
+| M1 | The execution jail (§9). Plan: `2026-10-24-multi-user-m1-execution-jail.md` | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
+| M2 | Per-user extension surface (§10). Plan: `2026-10-24-multi-user-m2-per-user-extensions.md` | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
+| M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 13 waits for M3a; the gateway merge waits for Task 13 |
+| M3b | Login (§11), the rest. Plan: `2026-10-24-multi-user-m3b-login.md` | M3a (merged). Its built-in task waits for the npm-publish automation |
+| M4 | Extension adoption (§12). Plan: `2026-10-24-multi-user-m4-extension-adoption.md`; its Task 1 (memory recall fix) waits for nothing | M2 (MCP); M2 (memory) |
 
 M1 and M3 run in parallel once their waits clear. Each workstream gets
 its own plan. Files the in-flight workstreams own are not edited until
@@ -265,29 +266,41 @@ the listed task has merged to `main`:
 
 Lands before M1 as its own change, now:
 
+**Landed** (core `src/harness/agent-env.ts`; sigrun-ext-mcp
+`src/spawn-env.ts`).
+
 - pi-durable's bash tool builds each execution with
   `inheritEnv: true` and an empty `env` (`dist/tools/bash.js`
   `prepareExecution`), and `NodeExecutionEnv` merges `process.env`
   under any `shellEnv` (`dist/env/node.js` `getShellEnv`), so neither a
-  constructor option nor `shellEnv` can subtract. The fix uses the
-  bash tool's documented `prepare` hook where core builds the tool
-  (`src/harness/tools.ts`): `execution.inheritEnv = false;
-  execution.env = allowlist()`.
-- Belt: core wraps the env it hands tools so every `exec` call is
-  forced to `inheritEnv: false` with the allowlist, whichever tool
-  called it (extension tools that call `api.env.exec` included).
+  constructor option nor `shellEnv` can subtract.
+- The fix is `AgentExecutionEnv`, a `NodeExecutionEnv` subclass whose
+  `exec` forces `inheritEnv: false` and builds the env from the
+  allowlist plus the call's own `env`. `forConversation` returns it, and
+  every consumer passes through `forConversation` (tools, file routes,
+  jobs), so one class covers the bash tool and any extension tool that
+  calls `api.env.exec`. A bash `prepare` hook would duplicate it and is
+  not used.
 - sigrun-ext-mcp spawns stdio servers with the same allowlist plus the
-  server's configured env and token.
+  server's configured env and token (`serverSpawnEnv`). The list is a
+  copy, since extensions import only core's types-only contract.
 - **Allowlist:** `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_*`, `TZ`, `TERM`,
-  `USER`, `LOGNAME`, `SHELL`, values taken from sigrun's environment.
-  Nothing prefixed `SIGRUN_`, nothing from `auth.json` or
-  `secrets.json`, no provider key variables.
+  `USER`, `LOGNAME`, `SHELL`, plus `NPM_CONFIG_CACHE` (the image points
+  npm at `/cache/npm` under a read-only root filesystem; without it an
+  agent's `npm install` fails) and `SSH_AUTH_SOCK` (a socket path, not
+  a secret; a single-user workstation's agent uses it for `git push`).
+  Values come from sigrun's environment. Nothing prefixed `SIGRUN_`,
+  nothing from `auth.json` or `secrets.json`, no provider key
+  variables.
 - Tests: the agent's `env` output in a test conversation contains no
   `SIGRUN_*` and no configured provider key; an arbitrary non-allowlisted
   variable set in sigrun's environment is absent from both a bash-tool
   `exec` and a direct `api.env.exec`.
 
-M1 reuses the same allowlist inside the worker.
+M1 reuses the same allowlist inside the worker **minus
+`SSH_AUTH_SOCK`**: Landlock restricts connecting to pathname Unix
+sockets only from ABI 9, so on an ABI 6–8 kernel another user's worker
+handed the service account's agent socket could use its keys.
 
 ## 9. M1: the execution jail
 
@@ -350,7 +363,7 @@ probe file, and confirms the denial. `/v1/meta` gains
 
 **`sigrun-sandbox`** is a small static native binary:
 
-- input: a JSON policy on fd 3, the command after `--`;
+- input: a JSON policy in the environment variable `SIGRUN_SANDBOX_POLICY` (removed before `exec`), the command after `--`. Not fd 3: Node's extra stdio pipes are socketpairs that cannot be reopened through `/proc/self/fd`, and adopting a raw fd needs `unsafe` (ruling 11). The policy holds paths and ids, no secrets;
 - it sets `no_new_privs`, creates a Landlock ruleset handling every
   filesystem right of the running ABI (best-effort up to ABI 7), adds
   the policy's path rules, enables signal and abstract-socket scoping,
@@ -628,7 +641,7 @@ For two people sharing one computer with sigrun as a service account:
 - `RunSettledEvent` and every lifecycle payload with a `conversationId`
   gain `owner?: string`: the conversation's owner when the event was
   produced.
-- Job runs carry `owner` in their handler context.
+- Jobs need nothing extra: they are declarative specs whose runs create conversations with a stamped owner, so their events carry `owner` like any other.
 - Tool execution keeps `host.identity.actingUser(conversationId)`.
 - Routes keep `principal`.
 
@@ -979,18 +992,23 @@ One table for every external identity, shared with the gateway:
 
 ### 11.7 Gateway handover
 
-The engine had not reached its link storage when this spec was written,
-so the account-link table lands first (M3a) and the engine builds on it
-directly; there is no `identities.json` and no migration:
+The engine built Tasks 3–12 with links in its own `identities.json`
+(synchronous `userFor`, refusing to re-point a linked sender). Engine
+Task 13, after M3a merges and before the gateway merges to `main`:
 
-- engine Task 3's `IdentityStore` stores links in core through
-  `host.accounts` (`chat:<channel>`); home chats stay gateway state in
-  `homes.json`. `userFor` becomes async; engine Task 8's
-  `admitGroupEvent` follows;
+- `IdentityStore` stores links in core through `host.accounts`
+  (`chat:<channel>`); home chats stay gateway state in
+  `identities.json`, whose `links` key is retired. `userFor` and
+  `admitGroupEvent` become async;
+- no data migration: the gateway has never shipped, so no deployment
+  holds engine links. A dev install whose file still has links logs one
+  warning naming the count (those senders pair or self-link again);
 - a self-link or pairing approval that hits an existing link to another
-  user is refused with a reply naming the fix (remove the old link);
-- engine Task 12's `userDeleted` clears home chats only, since core
-  removed the links before the event;
+  user is refused through core's `account_link_conflict:` with the same
+  replies as before, which now point at a fix that exists
+  (`/v1/auth/accounts`);
+- `userDeleted` clears home chats only, since core removed the links
+  before the event;
 - `/link` and `/pair` otherwise behave exactly as the gateway spec says;
 - an engine booting on a core without `host.accounts` fails loud at
   factory time (quarantined, one error naming the minimum core
@@ -1045,6 +1063,14 @@ against a local test issuer; OAuth2 presets against fake endpoints.
   conversation run or settings visit, not at factory time.
 
 ### 12.2 sigrun-memory-markdown
+
+Found while planning (2026-10-24): `memory_recall` searched whichever
+conversation settled most recently, whoever owned it, despite describing
+itself as searching "this conversation". The M4 plan's Task 1 fixes that
+with no dependencies: recall reads the calling conversation only. The
+package is now `@sigrun/memory-markdown`, and its backend is a volatile
+in-memory ring, so the bullets below key rings by owner; storage under
+`stores.user(owner).paths.data` applies to durable backends.
 
 - Records and recall are keyed by the event's `owner`, stored under
   `stores.user(owner).paths.data`.
@@ -1118,6 +1144,8 @@ verifies this with one test each.
 - Sessions may create API tokens; revoking a session leaves them
   (§11.2).
 - Memory transfers on user delete (§12.2).
+- No migration of the engine's interim `identities.json` links: the
+  gateway merges only after engine Task 13 (§11.7).
 - The integration suite runs on GitHub's `ubuntu-24.04` runners
   (kernel 6.17), with a pod on a 6.12+ host as the fallback (§9.9).
 

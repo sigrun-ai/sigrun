@@ -298,6 +298,55 @@ describe("host.conversations over the shared conversation ops", () => {
 });
 
 describe("host identity, users, and access (spec §9.7)", () => {
+	test("host accounts link, look up, list, and unlink through the bridge", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const linked = await host.accounts.link(
+			"chat:loop",
+			"s-1",
+			"alice",
+			"self",
+		);
+		expect(linked).toMatchObject({
+			provider: "chat:loop",
+			subject: "s-1",
+			user: "alice",
+			via: "self",
+		});
+		expect(await host.accounts.lookup("chat:loop", "s-1")).toEqual(linked);
+		expect(await host.accounts.lookup("chat:loop", "nobody")).toBeUndefined();
+		const forAlice = await host.accounts.listForUser("alice");
+		expect(forAlice).toHaveLength(1);
+		// One link per (provider, subject): a different user is refused, and
+		// the message never names the current holder.
+		await expect(
+			host.accounts.link("chat:loop", "s-1", "tester", "pairing"),
+		).rejects.toThrow(/^account_link_conflict:/);
+		await expect(
+			host.accounts.link("chat:loop", "s-2", "ghost", "self"),
+		).rejects.toThrow('unknown user "ghost"');
+		expect(await host.accounts.unlink("chat:loop", "s-1")).toBe(true);
+		expect(await host.accounts.lookup("chat:loop", "s-1")).toBeUndefined();
+	});
+
+	test("host accounts waits for the bridge", async () => {
+		// Harness opened, no server yet: the seam host's lazy bind must
+		// WAIT, never throw and never resolve early (Review Focus 5).
+		const boot = await bootOpened();
+		const host = channelHost(boot.opened);
+		let settled = false;
+		const probe = host.accounts.lookup("chat:loop", "s-1").finally(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(settled).toBe(false);
+		const app = await createServer(boot.opened, boot.config);
+		cleanups.push(async () => {
+			await app.close();
+		});
+		await expect(probe).resolves.toBeUndefined();
+	});
+
 	test("actingUser reads the owner; accessOf resolves; users.list serves the directory", async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
