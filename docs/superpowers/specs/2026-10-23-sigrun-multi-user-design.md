@@ -266,29 +266,41 @@ the listed task has merged to `main`:
 
 Lands before M1 as its own change, now:
 
+**Landed** (core `src/harness/agent-env.ts`; sigrun-ext-mcp
+`src/spawn-env.ts`).
+
 - pi-durable's bash tool builds each execution with
   `inheritEnv: true` and an empty `env` (`dist/tools/bash.js`
   `prepareExecution`), and `NodeExecutionEnv` merges `process.env`
   under any `shellEnv` (`dist/env/node.js` `getShellEnv`), so neither a
-  constructor option nor `shellEnv` can subtract. The fix uses the
-  bash tool's documented `prepare` hook where core builds the tool
-  (`src/harness/tools.ts`): `execution.inheritEnv = false;
-  execution.env = allowlist()`.
-- Belt: core wraps the env it hands tools so every `exec` call is
-  forced to `inheritEnv: false` with the allowlist, whichever tool
-  called it (extension tools that call `api.env.exec` included).
+  constructor option nor `shellEnv` can subtract.
+- The fix is `AgentExecutionEnv`, a `NodeExecutionEnv` subclass whose
+  `exec` forces `inheritEnv: false` and builds the env from the
+  allowlist plus the call's own `env`. `forConversation` returns it, and
+  every consumer passes through `forConversation` (tools, file routes,
+  jobs), so one class covers the bash tool and any extension tool that
+  calls `api.env.exec`. A bash `prepare` hook would duplicate it and is
+  not used.
 - sigrun-ext-mcp spawns stdio servers with the same allowlist plus the
-  server's configured env and token.
+  server's configured env and token (`serverSpawnEnv`). The list is a
+  copy, since extensions import only core's types-only contract.
 - **Allowlist:** `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_*`, `TZ`, `TERM`,
-  `USER`, `LOGNAME`, `SHELL`, values taken from sigrun's environment.
-  Nothing prefixed `SIGRUN_`, nothing from `auth.json` or
-  `secrets.json`, no provider key variables.
+  `USER`, `LOGNAME`, `SHELL`, plus `NPM_CONFIG_CACHE` (the image points
+  npm at `/cache/npm` under a read-only root filesystem; without it an
+  agent's `npm install` fails) and `SSH_AUTH_SOCK` (a socket path, not
+  a secret; a single-user workstation's agent uses it for `git push`).
+  Values come from sigrun's environment. Nothing prefixed `SIGRUN_`,
+  nothing from `auth.json` or `secrets.json`, no provider key
+  variables.
 - Tests: the agent's `env` output in a test conversation contains no
   `SIGRUN_*` and no configured provider key; an arbitrary non-allowlisted
   variable set in sigrun's environment is absent from both a bash-tool
   `exec` and a direct `api.env.exec`.
 
-M1 reuses the same allowlist inside the worker.
+M1 reuses the same allowlist inside the worker **minus
+`SSH_AUTH_SOCK`**: Landlock restricts connecting to pathname Unix
+sockets only from ABI 9, so on an ABI 6–8 kernel another user's worker
+handed the service account's agent socket could use its keys.
 
 ## 9. M1: the execution jail
 
