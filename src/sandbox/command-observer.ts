@@ -23,8 +23,8 @@ export interface CommandObserver {
  */
 export function createCommandObserver(opts: {
 	registry: Set<number>;
-	pending: ReadonlySet<number>;
-	active: ReadonlySet<number>;
+	pending(): ReadonlySet<number>;
+	active(): ReadonlySet<number>;
 	emit(event: CommandLifecycleEvent): void;
 }): CommandObserver {
 	const { registry, pending, active, emit } = opts;
@@ -35,9 +35,10 @@ export function createCommandObserver(opts: {
 
 	registry.add = (pid: number): Set<number> => {
 		const result = originalAdd.call(registry, pid);
-		const attributed = pending.size === 0
+		const currentlyPending = pending();
+		const attributed = currentlyPending.size === 0
 			? new Set([UNATTRIBUTED_OWNER])
-			: new Set(pending);
+			: new Set(currentlyPending);
 		owners.set(pid, attributed);
 		for (const id of attributed) emit({ id, pid, phase: "start" });
 		return result;
@@ -58,7 +59,7 @@ export function createCommandObserver(opts: {
 		if (attributed === undefined) return;
 		for (const id of attributed) {
 			// The sentinel can never be proved settled; retain it permanently.
-			if (id === UNATTRIBUTED_OWNER || active.has(id)) return;
+			if (id === UNATTRIBUTED_OWNER || active().has(id)) return;
 		}
 		owners.delete(pid);
 		for (const id of attributed) emit({ id, pid, phase: "end" });

@@ -222,6 +222,19 @@ describe("sandbox process invariants", { timeout: 30_000 }, () => {
 		expect(descriptors).toContain(2);
 	});
 
+	test("a completed real exec forgets its command pid", async () => {
+		const { env, client } = await envFor();
+		let output = "";
+		const result = await env.exec("echo $$", {
+			onOutput: (text) => { output += text; },
+		}, context);
+		expect(getOrThrow(result).exitCode).toBe(0);
+		const commandPid = Number(output.trim());
+		expect(Number.isInteger(commandPid)).toBe(true);
+		await vi.waitFor(() => expect(client.trackedCommandGroups()).not.toContain(commandPid));
+		expect(client.trackedCommandGroups()).toEqual([]);
+	});
+
 	test("a crash rejects in-flight exec and the next call gets a new pid", async () => {
 		const { env, client } = await envFor();
 		const before = await pid(client);

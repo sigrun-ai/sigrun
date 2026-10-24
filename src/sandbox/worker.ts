@@ -63,8 +63,8 @@ function observeCommands(env: NodeExecutionEnv): void {
 	}
 	commandObservers.set(env, createCommandObserver({
 		registry,
-		get pending() { return pendingSpawns.get(env) ?? new Set(); },
-		get active() { return new Set(active.keys()); },
+		pending: () => pendingSpawns.get(env) ?? new Set(),
+		active: () => new Set(active.keys()),
 		emit: ({ id, pid, phase }) => write({ id, event: "command", pid, phase }),
 	}));
 }
@@ -191,6 +191,26 @@ async function dispatch(request: Request): Promise<unknown> {
 	}
 }
 
+/** Both exec paths share this attribution; its finally emits no pid event. */
+async function runWithSpawnAttribution<T>(
+	env: NodeExecutionEnv,
+	requestId: number,
+	run: () => Promise<T>,
+): Promise<T> {
+	let pending = pendingSpawns.get(env);
+	if (pending === undefined) {
+		pending = new Set<number>();
+		pendingSpawns.set(env, pending);
+	}
+	pending.add(requestId);
+	try {
+		return await run();
+	} finally {
+		// processRequest's settlement sweep owns end events, not this finally.
+		pending.delete(requestId);
+	}
+}
+
 async function execute(request: Request): Promise<void> {
 	const args = argsOf(request);
 	const command = args[0] as string | readonly string[];
@@ -207,7 +227,9 @@ async function execute(request: Request): Promise<void> {
 	const cwd = args[2];
 	if (typeof cwd !== "string") throw new TypeError("exec requires cwd");
 	const env = environment(cwd);
-	const result = await env.exec(command, options as never, active.get(request.id) === undefined ? BACKGROUND_CONTEXT : withAbortSignal(active.get(request.id)!.signal, BACKGROUND_CONTEXT));
+	const result = await runWithSpawnAttribution(env, request.id, () =>
+		env.exec(command, options as never, active.get(request.id) === undefined ? BACKGROUND_CONTEXT : withAbortSignal(active.get(request.id)!.signal, BACKGROUND_CONTEXT)),
+	);
 	write(result.ok ? { id: request.id, ok: true, value: encodeValue(result.value) } : errorReply(request.id, result.error, "exec"));
 }
 
@@ -227,20 +249,9 @@ async function dispatchResult(request: Request, controller: AbortController): Pr
 			},
 		};
 		const env = environment(cwd);
-		let pending = pendingSpawns.get(env);
-		if (pending === undefined) {
-			pending = new Set<number>();
-			pendingSpawns.set(env, pending);
-		}
-		pending.add(request.id);
-		try {
-			return await env.exec(args[0] as string | readonly string[], options as never, withAbortSignal(controller.signal, BACKGROUND_CONTEXT));
-		} finally {
-			// Only spawn attribution ends here. Per-exec finally NEVER emits a
-			// pid end: registry.delete owns that decision after all possible
-			// owners settle. Over-report starts; under-report ends.
-			pending.delete(request.id);
-		}
+		return runWithSpawnAttribution(env, request.id, () =>
+			env.exec(args[0] as string | readonly string[], options as never, withAbortSignal(controller.signal, BACKGROUND_CONTEXT)),
+		);
 	}
 	return dispatch({ id: request.id, op, args: [...rawArgs, cwd] });
 }
