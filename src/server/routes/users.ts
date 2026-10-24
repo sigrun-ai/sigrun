@@ -249,14 +249,39 @@ export function registerUserRoutes(
 		) {
 			return await reply.code(400).send({ error: "invalid_transfer" });
 		}
+		if (target.osUser !== undefined) {
+			return await reply.code(409).send({
+				error: "invalid_transfer",
+				reason: "osUser workspace",
+			});
+		}
 		// The last record-admin may not be deleted — admin is not a
 		// transferable property (transferTo moves resources, not rights).
 		if (target.admin && identity.users.recordAdminCount() === 1) {
 			return await reply.code(409).send({ error: "last_admin" });
 		}
 		const to = query.transferTo;
+		const recipient = identity.users.get(to)!;
 		await transferOwnership(ctx, user, to);
 		await identity.tokens.revokeAllFor(user);
+		if (target.workspace !== undefined) {
+			const departingGrant = validateGrantPath(target.workspace, {
+				managed: ctx.managedPaths,
+				user: to,
+			});
+			if (departingGrant.ok) {
+				await identity.users.update(to, {
+					grants: [
+						...(recipient.grants ?? []),
+						{ path: departingGrant.realpath, access: "rw" },
+					],
+				});
+			} else {
+				console.warn(
+					`user delete: skipping departing workspace grant for ${to}: ${target.workspace}: ${departingGrant.reason}`,
+				);
+			}
+		}
 		// External identities never transfer (multi-user §10.6 step 1):
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
