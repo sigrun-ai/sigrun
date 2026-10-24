@@ -58,6 +58,14 @@ function makeHarness(init?: {
 	readonly failFirstMetaPatch?: boolean;
 	/** U4 Task 2 (§13.3): /readyz answers 503 until the test flips it. */
 	readonly readyzDown?: { readonly ready: { current: boolean } };
+	/** U4 Task 2 round-2: after the restart POST, /readyz keeps answering
+	 *  200 for this many MILLISECONDS (the DYING process still
+	 *  listening between the 202 and the deferred drain), then goes
+	 *  down until `readyzDown.ready` flips. Time-based (not probe
+	 *  count): a probe-before-sleep loop reads the first probe as
+	 *  ready and remounts onto the closing server — this window is
+	 *  what catches it. */
+	readonly readyzLingerMs?: number;
 }) {
 	let metaPatchFails = init?.failFirstMetaPatch === true;
 	const restartCalls: number[] = [];
@@ -96,11 +104,24 @@ function makeHarness(init?: {
 		},
 	];
 	const calls: Call[] = [];
+	// Round-2 linger: the timestamp of the last restart POST — /readyz
+	// keeps answering 200 for `readyzLingerMs` after it (the dying
+	// listener still up while the drain is deferred).
+	let restartPostedAt = -1;
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		if (input === "/readyz") {
 			// U4 Task 2: the restart-recovery probe — 503 until flipped.
-			const ready = init?.readyzDown === undefined || init.readyzDown.ready.current;
+			// Round-2 linger: within `readyzLingerMs` of the POST the DYING
+			// listener still answers 200, then the fake goes down.
+			const lingering =
+				init?.readyzLingerMs !== undefined &&
+				restartPostedAt >= 0 &&
+				Date.now() - restartPostedAt < init.readyzLingerMs;
+			const ready =
+				lingering ||
+				init?.readyzDown === undefined ||
+				init.readyzDown.ready.current;
 			return Promise.resolve({
 				ok: ready,
 				status: ready ? 200 : 503,
@@ -113,6 +134,7 @@ function makeHarness(init?: {
 			// /readyz down until the test flips it back.
 			restartCalls.push(1);
 			if (init?.readyzDown !== undefined) init.readyzDown.ready.current = false;
+			restartPostedAt = Date.now();
 			return Promise.resolve({
 				ok: true,
 				status: 202,
@@ -850,10 +872,6 @@ describe("App restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
 			) {
 				break;
 			}
-			// The recovery path lands state OUTSIDE act (the free-running
-			// poll) — force-flush the renderer's queued work each window so
-			// a microtask-scheduled re-render is never starved.
-			renderer.root;
 			if (Date.now() > deadline) break;
 		}
 		text = textContent(renderer.toJSON());
@@ -864,4 +882,63 @@ describe("App restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
 		// The long-running action settles once the recovery poll ended.
 		await restartDone;
 	}, 15_000);
+
+	test("the recovery poll sleeps before probing: a lingering 200 from the dying process is not readiness", async () => {
+		// The regression guard for the round-2 finding: the OLD listener
+		// still answers /readyz 200 between the 202 and the deferred
+		// drain. A probe-before-sleep loop would read the FIRST probe as
+		// ready and remount onto the closing server. The fake answers 200
+		// for the first 3 post-POST probes (the linger), then 503 until
+		// the test flips it — only a sleep-first loop survives.
+		const readyzDown = { ready: { current: true } };
+		const { client, createEventSource } = makeHarness({
+			readyzDown,
+			// The dying listener keeps answering 200 for 250ms after the
+			// POST; the poll cadence is 500ms — a sleep-first loop's first
+			// probe lands past the window, a probe-first loop's lands in it.
+			readyzLingerMs: 250,
+		});
+		let actions: { restart(): Promise<void> } | undefined;
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				onExposeActions={(exposed: { restart(): Promise<void> }) => {
+					actions = exposed;
+				}}
+			/>,
+		);
+		let restartDone: Promise<void> | undefined;
+		await act(async () => {
+			restartDone = actions?.restart();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		});
+		// Drive past the linger window: after one full poll cadence the
+		// shell must STILL be in the Restarting state (a probe-first loop
+		// would have read the lingering 200 and remounted).
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 650));
+		});
+		expect(textContent(renderer.toJSON())).toContain("Restarting");
+		// The poll keeps going (the fake answers 503 now) until the test
+		// brings the server back.
+		readyzDown.ready.current = true;
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			});
+			if (
+				renderer.root.findAllByProps({ className: "chat-header" }).length ===
+				1
+			) {
+				break;
+			}
+			if (Date.now() > deadline) break;
+		}
+		expect(
+			renderer.root.findAllByProps({ className: "chat-header" }),
+		).toHaveLength(1);
+		await restartDone;
+	}, 20_000);
 });

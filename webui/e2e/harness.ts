@@ -220,6 +220,11 @@ async function bootOnDir(
 	const close = async () => {
 		if (closed) return;
 		closed = true;
+		// SSE FIRST (the deploy path's shutdown.ts order): an open
+		// /v1/events stream never ends on its own, and the app drain
+		// below waits on in-flight requests — a spec that leaves a
+		// browser tab streaming would hang the teardown.
+		app.sse?.endAll?.();
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
 	};

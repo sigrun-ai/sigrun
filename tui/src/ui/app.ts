@@ -95,6 +95,16 @@ export type WatchFn = (
 	options: WatchOptions,
 ) => Unwatch;
 
+/**
+ * How long the restart-recovery poll waits for /readyz before giving up
+ * with a permanent error (U4 Task 2, spec §13.3). DUPLICATE of the
+ * webui's `RESTART_READYZ_DEADLINE_MS` (webui/src/App.tsx) by design:
+ * the tui package consumes only `@sigrun/shared` wire types (NodeNext,
+ * no codegen), and a shared-module move for one number is not worth the
+ * coupling — keep the two in sync by hand.
+ */
+export const RESTART_READYZ_DEADLINE_MS = 60_000;
+
 export interface TuiAppOptions {
 	/** The pi-tui instance (the Editor needs it for height-aware scrolling). */
 	readonly tui: TUI;
@@ -116,6 +126,13 @@ export interface TuiAppOptions {
 	 * tests shorten it.
 	 */
 	readonly restartPollMs?: number;
+	/**
+	 * TEST SEAM (U4 Task 2 round-2): the restart-recovery deadline —
+	 * how long the poll waits for /readyz before surfacing the stalled
+	 * restart as a permanent error notice. Default
+	 * {@link RESTART_READYZ_DEADLINE_MS}; the deadline test shortens it.
+	 */
+	readonly restartDeadlineMs?: number;
 }
 
 /** PATH lookup for the vim fallback chain (nvim/vim/vi). */
@@ -212,6 +229,8 @@ export class TuiApp implements Component, ActionHost {
 	readonly #resolveVim: () => string | undefined;
 	/** The restart-recovery poll cadence (U4 Task 2). */
 	readonly #restartPollMs: number;
+	/** The restart-recovery deadline (U4 Task 2 round-2). */
+	readonly #restartDeadlineMs: number;
 	/** The in-flight restart poll's cancel flag (dispose fences it). */
 	#restartGeneration = 0;
 
@@ -224,6 +243,8 @@ export class TuiApp implements Component, ActionHost {
 		this.#resolveVim = options.resolveVim ?? (() =>
 			resolveVimEditor({ configured: options.editor, env: process.env, which: whichPath }));
 		this.#restartPollMs = options.restartPollMs ?? 500;
+		this.#restartDeadlineMs =
+			options.restartDeadlineMs ?? RESTART_READYZ_DEADLINE_MS;
 		const theme = options.theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
 		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
@@ -907,6 +928,7 @@ export class TuiApp implements Component, ActionHost {
 		this.pane.showNotice("Restarting… — waiting for the server");
 		this.#tui.requestRender();
 		const generation = this.#restartGeneration;
+		const deadline = Date.now() + this.#restartDeadlineMs;
 		for (;;) {
 			await new Promise((resolve) =>
 				setTimeout(resolve, this.#restartPollMs),
@@ -919,7 +941,22 @@ export class TuiApp implements Component, ActionHost {
 				// Connection refused mid-restart: keep polling.
 			}
 			if (ready) break;
+			// The deadline (the webui's RESTART_READYZ_DEADLINE_MS shape):
+			// a stalled supervisor must SURFACE, never hang the poll
+			// forever — clear the Restarting notice and leave a permanent
+			// error naming the failure.
+			if (Date.now() > deadline) {
+				this.pane.clearNotices();
+				this.pane.showError(
+					`restart did not come back: /readyz never answered within ${Math.round(this.#restartDeadlineMs / 1000)}s — check the deployment's supervisor`,
+				);
+				this.#tui.requestRender();
+				return;
+			}
 		}
+		// Re-check the generation AFTER the probe: a dispose during the
+		// sleep+check must not let the recovery render post-dispose.
+		if (generation !== this.#restartGeneration) return;
 		// Back: the listing is durable and the stream re-attach subsumes
 		// whatever the restart dropped (the SSE reconnect contract).
 		await this.sidebar.refresh().catch(() => {});
