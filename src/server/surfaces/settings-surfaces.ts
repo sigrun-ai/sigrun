@@ -6,12 +6,14 @@
  * sections (Task 4) use the same renderer under the reserved `core`
  * slug, so core and extensions render settings from ONE code path.
  *
- * - `render` returns the declared form verbatim (validated at load with
- *   the `settings` placement) plus `data` = the current
- *   `settings/<slug>.json` object verbatim (`settings`) and the
- *   declared secrets' statuses (`secrets`: `set (stored)` / `set
- *   (env)` / `not set` — values NEVER appear, spec §7.7's
- *   never-read-back rule).
+ * - `render` returns the declared form (validated at load with the
+ *   `settings` placement) with one appended `secret` field per declared
+ *   secret (spec §13.4 — a declaration without a field never renders),
+ *   plus `data` = the current `settings/<slug>.json` object minus
+ *   secret-typed field values (`settings`) and the declared secrets'
+ *   statuses (`secrets`: `stored` / `env` / absent — the channels'
+ *   secret field renders those as `set (stored)` / `set (env)` / `not
+ *   set`; values NEVER appear, spec §7.7's never-read-back rule).
  * - The `save` action takes `{rev, values}`: a stale `rev` rejects
  *   `{ok: false, error: {message: "changed by someone else"}}`
  *   (Review Focus 3); the values validate against the form's fields
@@ -189,6 +191,59 @@ function validateFieldValue(field: FormField, value: unknown): string | null {
 	}
 }
 
+/**
+ * Per-slug write serialization (§13.3's read-merge-write): every
+ * section of one slug shares `settings/<slug>.json`, so the chains
+ * live at module scope keyed by slug (a chain is ordering, not data —
+ * a stale chain from another server instance is inert). Without it,
+ * two interleaved saves from two sections of one extension silently
+ * drop each other's keys.
+ */
+const writeChains = new Map<string, Promise<void>>();
+
+function enqueueWrite<T>(slug: string, work: () => Promise<T>): Promise<T> {
+	const run = (writeChains.get(slug) ?? Promise.resolve()).then(work);
+	writeChains.set(
+		slug,
+		run.then(
+			() => undefined,
+			() => undefined,
+		),
+	);
+	return run;
+}
+
+/**
+ * Append one `secret` field per declared secret to the form's root
+ * children (the tree shape is a plain JSON object — spec §4.1). A
+ * non-object root or one without a children array passes through
+ * verbatim (the loader already validated the settings placement).
+ */
+function withAppendedSecretFields(
+	form: SettingsSectionDef["form"],
+	appended: readonly { key: string; label: string; help?: string }[],
+): SettingsSectionDef["form"] {
+	if (appended.length === 0) return form;
+	const root = form.root;
+	if (!isRec(root)) return form;
+	const children = Array.isArray(root.children) ? root.children : [];
+	const fields = appended.map((secret) => ({
+		type: "secret",
+		name: secret.key,
+		label: secret.label,
+		...(secret.help === undefined ? {} : { help: secret.help }),
+	}));
+	// SAFETY: root is a plain JSON record from the loader-validated
+	// settings placement (its root is a form block); adding a children
+	// array of secret-field objects keeps it a valid Block tree. The
+	// `Block` union type can't express the property-addition spread, so
+	// the rebuild narrows through `unknown`.
+	return {
+		...form,
+		root: { ...root, children: [...children, ...fields] } as unknown as typeof form.root,
+	};
+}
+
 /** The dependencies one adapted section closes over. */
 export interface SettingsSurfaceOptions {
 	readonly stores: SharedExtensionStores;
@@ -215,8 +270,28 @@ export function settingsSurfaceFor(
 	const { stores, publishSettingsChanged, service } = options;
 	const admin = section.admin !== false;
 	const fields = collectFormFields(section.form.root);
-	// The instance key the section's ONE instance lives under.
-	const instanceKey = JSON.stringify({});
+	// Secret-typed fields NEVER land in the plaintext settings file
+	// (§5.6/§13.4 write-only): saves route them to the secrets store and
+	// reads exclude them from `data.settings`.
+	const secretFieldNames = new Set(
+		fields
+			.filter((field) => field.type === "secret")
+			.map((field) => field.name),
+	);
+	// Declared secrets whose keys are not already covered by a form
+	// field get one appended `secret` field each (a declaration must
+	// render — spec §13.4). The field NAME is the secret key, so the
+	// save below routes it to the secrets store.
+	const declared = section.secrets ?? [];
+	const appended = declared.filter(
+		(secret) => !secretFieldNames.has(secret.key),
+	);
+	const form = withAppendedSecretFields(section.form, appended);
+	const allSecretFieldNames = new Set([
+		...secretFieldNames,
+		...appended.map((secret) => secret.key),
+	]);
+
 
 	const accessFor = (principal: Principal): "write" | "none" => {
 		if (admin) {
@@ -226,19 +301,29 @@ export function settingsSurfaceFor(
 	};
 
 	const readData = async (): Promise<{ settings: JsonObject; secrets: JsonObject }> => {
-		const settings = (await stores.settingsFor(slug).get()) as JsonObject;
+		const stored = (await stores.settingsFor(slug).get()) as JsonObject;
+		// Secret-typed field values never render (§5.6/§13.4 write-only —
+		// the plaintext settings file shouldn't carry them either, but an
+		// older version or a hand edit may have left one behind). Secret
+		// STATUSES live at the field's own pointer under the form bind
+		// (`settings/<name>`) as the channels' contract strings
+		// (`stored`/`env`; an unset key is absent and renders "not set")
+		// — both channels resolve a secret field's status at
+		// `<bind>/<name>`. Values NEVER appear (§5.6/§7.7).
+		const settings: JsonObject = {};
+		for (const [name, value] of Object.entries(stored)) {
+			if (!allSecretFieldNames.has(name)) settings[name] = value;
+		}
 		const secrets: JsonObject = {};
 		if (section.secrets !== undefined) {
 			const listed = await stores.secretKeys(slug);
 			const byKey = new Map(listed.map((entry) => [entry.key, entry.source]));
-			for (const declared of section.secrets) {
-				const source = byKey.get(declared.key);
-				secrets[declared.key] =
-					source === "stored"
-						? "set (stored)"
-						: source === "env"
-							? "set (env)"
-							: "not set";
+			for (const secret of section.secrets) {
+				const source = byKey.get(secret.key);
+				if (source !== undefined) {
+					secrets[secret.key] = source;
+					settings[secret.key] = source;
+				}
 			}
 		}
 		return { settings, secrets };
@@ -249,36 +334,47 @@ export function settingsSurfaceFor(
 		title: section.title,
 		icon: section.icon ?? "key",
 		placement: "settings",
+		// The data payload is identical for every principal with access,
+		// so reads never advance the concurrency rev (the save action's
+		// optimistic check compares against it; §7.3).
+		sharedData: true,
 		render: async (ctx): Promise<SurfaceRenderResult> => {
 			const access = accessFor(ctx.principal);
 			return {
-				tree: section.form,
+				tree: form,
 				data: access === "none" ? {} : await readData(),
 				access,
 			};
 		},
 		actions: {
-			save: async (_ctx, payload): Promise<ActionResult> => {
+			save: async (ctx, payload): Promise<ActionResult> => {
 				const parsed = parseSavePayload(payload);
 				if (parsed === undefined) {
 					return { ok: false, error: { message: "save expects {rev, values}" } };
 				}
 				// Optimistic concurrency (Review Focus 3): the rev the caller's
-				// data read was based on must still be the instance's current rev.
-				// SAFETY: the service's per-instance state is private; the
-				// optimistic-concurrency read reaches it through a narrow
-				// structural seam (`currentRev`, added in this task).
-				const state = service.currentRev(slug, section.id, instanceKey);
-				if (state !== undefined && parsed.rev !== state) {
+				// data read was based on must still be the instance's current
+				// rev. `ctx.key` is the instance key the service resolved this
+				// request under — never a hardcoded one (a params-carrying
+				// request must not bypass the check).
+				const rev = service.currentRev(slug, section.id, ctx.key);
+				if (parsed.rev !== rev) {
 					return {
 						ok: false,
 						error: { message: "changed by someone else" },
 					};
 				}
-				// Validate every submitted value against the form's fields;
+				// Validate every submitted value against the form's fields
+				// (appended secret fields validate as string secrets);
 				// unknown submitted keys reject (the form owns the write
 				// surface; unknown STORED keys survive untouched below).
-				const byName = new Map(fields.map((field) => [field.name, field]));
+				const byName = new Map<string, FormField>([
+					...fields.map((field) => [field.name, field] as const),
+					...appended.map(
+						(secret) =>
+							[secret.key, { name: secret.key, type: "secret" }] as const,
+					),
+				]);
 				for (const [name, value] of Object.entries(parsed.values)) {
 					const field = byName.get(name);
 					if (field === undefined) {
@@ -289,14 +385,43 @@ export function settingsSurfaceFor(
 						return { ok: false, error: { message: violation, field: name } };
 					}
 				}
+				// Split secret-typed values from plain settings values: an
+				// empty/absent secret submission means "unchanged" (an
+				// untouched write-only field submits nothing meaningful —
+				// §5.6); a non-empty string writes the secrets store, never
+				// the plaintext settings file.
+				const secretWrites: { key: string; value: string }[] = [];
+				const plainValues: Record<string, unknown> = {};
+				for (const [name, value] of Object.entries(parsed.values)) {
+					if (allSecretFieldNames.has(name)) {
+						if (typeof value === "string" && value !== "") {
+							secretWrites.push({ key: name, value });
+						}
+						continue;
+					}
+					plainValues[name] = value;
+				}
 				// Merge into the stored object (unknown stored keys survive —
 				// Review Focus 5), write, and fire the §13.2 change path with
-				// the top-level keys the write touched.
-				const stored = await stores.settingsFor(slug).get();
-				const next = { ...stored, ...parsed.values };
-				await stores.settingsFor(slug).set(next);
-				publishSettingsChanged({ extension: slug }, Object.keys(parsed.values));
-				return { ok: true };
+				// the top-level keys the write touched. The per-slug promise
+				// chain serializes read-merge-writes across this slug's
+				// sections so interleaved saves can't drop each other's keys.
+				return enqueueWrite(slug, async (): Promise<ActionResult> => {
+					for (const write of secretWrites) {
+						await stores.setSecret(slug, write.key, write.value);
+					}
+					const stored = await stores.settingsFor(slug).get();
+					const next = { ...stored, ...plainValues };
+					// A secret-typed field that previously leaked into the
+					// settings file is dropped by the next save (it lives in
+					// the secrets store from now on).
+					for (const name of allSecretFieldNames) {
+						delete next[name];
+					}
+					await stores.settingsFor(slug).set(next);
+					publishSettingsChanged({ extension: slug }, Object.keys(parsed.values));
+					return { ok: true };
+				});
 			},
 		},
 	};

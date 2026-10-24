@@ -167,9 +167,10 @@ describe("settings sections render (U4 Task 3)", () => {
 			access: string;
 		};
 		expect(body.tree.root.type).toBe("form");
+		// The declared secret appends its renderable field (§13.4).
 		expect(
 			body.tree.root.children.map((child) => child.name),
-		).toEqual(["apiUrl", "limit"]);
+		).toEqual(["apiUrl", "limit", "api-token"]);
 		expect(body.data.settings).toEqual({
 			apiUrl: "https://api.example.invalid",
 			limit: 42,
@@ -177,7 +178,7 @@ describe("settings sections render (U4 Task 3)", () => {
 		expect(body.access).toBe("write");
 	});
 
-	test("a secret field shows its status and never its value", async () => {
+	test("a declared secret renders a secret field with its status, never its value", async () => {
 		const { app, aliceToken } = await server();
 		const secret = await call(app, {
 			method: "PUT",
@@ -193,11 +194,67 @@ describe("settings sections render (U4 Task 3)", () => {
 		});
 		expect(result.status).toBe(200);
 		const body = result.body as {
+			tree: {
+				root: { children: { type: string; name?: string }[] };
+			};
 			data: { secrets: Record<string, string>; settings: JsonObject };
 		};
-		expect(body.data.secrets).toEqual({ "api-token": "set (stored)" });
+		// The declaration appended a renderable secret field (§13.4).
+		const field = body.tree.root.children.find(
+			(child) => child.type === "secret",
+		);
+		expect(field).toMatchObject({ type: "secret", name: "api-token" });
+		// The status uses the channels' contract strings (both channels
+		// render `stored`/`env` as `set (…)` and anything else as unset),
+		// at the field's own pointer (form-bind-relative) AND in the
+		// secrets map.
+		expect(body.data.secrets).toEqual({ "api-token": "stored" });
+		expect(body.data.settings["api-token"]).toBe("stored");
 		// The secret VALUE appears nowhere in the response.
 		expect(JSON.stringify(result.body)).not.toContain("s3cr3t-token-value");
+	});
+
+	test("an unset declared secret renders its field with no status entry", async () => {
+		// A FRESH server: the shared one's secret store carries keys from
+		// earlier tests, and this assertion needs the unset branch.
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-sett-unset-"));
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_WEBUI: "false",
+			SIGRUN_AUTH: "token",
+			SIGRUN_CONFIG_DIR: join(dir, "config"),
+		});
+		const opened = await openHarness(config, {
+			identity: await seededIdentity(join(dir, "seed"), "alice"),
+			extensionSpecifiers: [SECTION_SPECIFIER],
+			env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
+			settingsDir: dir,
+		});
+		const { token } = await opened.identity.tokens.create("alice-cli", "alice");
+		const app = await createServer(opened, config);
+		cleanups.push(async () => {
+			await app.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+			await rm(dir, { recursive: true, force: true });
+		});
+		const result = await call(app, {
+			method: "GET",
+			url: SECTION_URL,
+			token,
+		});
+		expect(result.status).toBe(200);
+		const body = result.body as {
+			tree: { root: { children: { type: string; name?: string }[] } };
+			data: { secrets: Record<string, string> };
+		};
+		expect(
+			body.tree.root.children.some(
+				(child) => child.type === "secret" && child.name === "api-token",
+			),
+		).toBe(true);
+		expect(body.data.secrets).toEqual({});
 	});
 });
 
@@ -262,7 +319,7 @@ describe("settings section save (U4 Task 3)", () => {
 		// The store holds the saved values.
 		expect(
 			await opened.extensionStores.settingsFor("acme-settings-section").get(),
-		).toEqual({ apiUrl: "https://api.example.invalid/v2", limit: 7 });
+).toEqual({ apiUrl: "https://api.example.invalid/v2", limit: 7 });
 		// The §13.2 change path fired (the fixture's recorder saw the keys).
 		expect(received).toEqual([["apiUrl", "limit"]]);
 		// A re-render sees the saved values.
@@ -273,7 +330,7 @@ describe("settings section save (U4 Task 3)", () => {
 		});
 		expect(
 			(after.body as { data: { settings: JsonObject } }).data.settings,
-		).toEqual({ apiUrl: "https://api.example.invalid/v2", limit: 7 });
+		).toEqual({ apiUrl: "https://api.example.invalid/v2", limit: 7, "api-token": "stored" });
 	});
 
 	test("a save based on a stale rev rejects (Review Focus 3)", async () => {
@@ -309,7 +366,7 @@ describe("settings section save (U4 Task 3)", () => {
 		// The stale write never landed.
 		expect(
 			await opened.extensionStores.settingsFor("acme-settings-section").get(),
-		).toEqual({ limit: 10 });
+).toEqual({ limit: 10 });
 		// The next fetch shows the current values.
 		const after = await call(app, {
 			method: "GET",
@@ -318,7 +375,113 @@ describe("settings section save (U4 Task 3)", () => {
 		});
 		expect(
 			(after.body as { data: { settings: JsonObject } }).data.settings,
-		).toEqual({ limit: 10 });
+		).toEqual({ limit: 10, "api-token": "stored" });
+	});
+
+	test("a save on the original rev succeeds after refetches (reads never bump the rev)", async () => {
+		const { app, opened, aliceToken } = await server();
+		await opened.extensionStores.settingsFor("acme-settings-section").set({});
+		const render = await call(app, {
+			method: "GET",
+			url: SECTION_URL,
+			token: aliceToken,
+		});
+		const rev = (render.body as { rev: number }).rev;
+		// Two data refetches (keepalives) before the save.
+		for (let i = 0; i < 2; i++) {
+			const refetch = await call(app, {
+				method: "GET",
+				url: `${SECTION_URL}/data`,
+				token: aliceToken,
+			});
+			expect(refetch.status).toBe(200);
+		}
+		const save = await call(app, {
+			method: "POST",
+			url: `${SECTION_URL}/actions`,
+			token: aliceToken,
+			payload: { action: "save", payload: { rev, values: { limit: 5 } } },
+		});
+		expect(save.body).toMatchObject({ ok: true });
+		expect(
+			await opened.extensionStores.settingsFor("acme-settings-section").get(),
+).toEqual({ limit: 5 });
+	});
+
+	test("a secret field's value lands in the secrets store, never the settings file", async () => {
+		const { app, opened, aliceToken } = await server();
+		await opened.extensionStores.settingsFor("acme-settings-section").set({});
+		const render = await call(app, {
+			method: "GET",
+			url: SECTION_URL,
+			token: aliceToken,
+		});
+		const rev = (render.body as { rev: number }).rev;
+		const save = await call(app, {
+			method: "POST",
+			url: `${SECTION_URL}/actions`,
+			token: aliceToken,
+			payload: {
+				action: "save",
+				payload: {
+					rev,
+					values: { "api-token": "s3cr3t-written-by-save", limit: 3 },
+				},
+			},
+		});
+		expect(save.body).toMatchObject({ ok: true });
+		// The plaintext settings file carries only the plain value.
+		expect(
+			await opened.extensionStores.settingsFor("acme-settings-section").get(),
+		).toEqual({ limit: 3 });
+		// The secret reads back as `stored` and never in data.settings.
+		const after = await call(app, {
+			method: "GET",
+			url: SECTION_URL,
+			token: aliceToken,
+		});
+		const data = (after.body as { data: { settings: JsonObject; secrets: Record<string, string> } }).data;
+		expect(data.secrets).toEqual({ "api-token": "stored" });
+		expect(data.settings).toEqual({ limit: 3, "api-token": "stored" });
+		expect(JSON.stringify(after.body)).not.toContain("s3cr3t-written-by-save");
+	});
+
+	test("two interleaved saves from two sections of one extension both persist", async () => {
+		const { app, opened, aliceToken } = await server();
+		await opened.extensionStores.settingsFor("acme-settings-section").set({});
+		const connectionRender = await call(app, {
+			method: "GET",
+			url: SECTION_URL,
+			token: aliceToken,
+		});
+		const displayRender = await call(app, {
+			method: "GET",
+			url: DISPLAY_URL,
+			token: aliceToken,
+		});
+		const connectionRev = (connectionRender.body as { rev: number }).rev;
+		const displayRev = (displayRender.body as { rev: number }).rev;
+		// Interleave: both saves read their bases BEFORE either lands.
+		const saveConnection = call(app, {
+			method: "POST",
+			url: `${SECTION_URL}/actions`,
+			token: aliceToken,
+			payload: { action: "save", payload: { rev: connectionRev, values: { apiUrl: "https://api.example.invalid/interleaved" } } },
+		});
+		const saveDisplay = call(app, {
+			method: "POST",
+			url: `${DISPLAY_URL}/actions`,
+			token: aliceToken,
+			payload: { action: "save", payload: { rev: displayRev, values: { theme: "dark" } } },
+		});
+		const [a, b] = await Promise.all([saveConnection, saveDisplay]);
+		expect(a.body).toMatchObject({ ok: true });
+		expect(b.body).toMatchObject({ ok: true });
+		// BOTH keys landed (the per-slug chain serializes the two
+		// read-merge-writes — without it one clobbers the other).
+		expect(
+			await opened.extensionStores.settingsFor("acme-settings-section").get(),
+		).toEqual({ apiUrl: "https://api.example.invalid/interleaved", theme: "dark" });
 	});
 
 	test("an unknown stored key survives a save (Review Focus 5)", async () => {
@@ -335,7 +498,7 @@ describe("settings section save (U4 Task 3)", () => {
 		// the same data payload).
 		expect(
 			(render.body as { data: { settings: JsonObject } }).data.settings,
-		).toEqual({ apiUrl: "https://api.example.invalid", legacyFlag: true });
+		).toEqual({ apiUrl: "https://api.example.invalid", legacyFlag: true, "api-token": "stored" });
 		const rev = (render.body as { rev: number }).rev;
 		const save = await call(app, {
 			method: "POST",
