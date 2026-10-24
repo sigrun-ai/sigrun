@@ -68,8 +68,9 @@ present it calls `setgroups`, then applies the optional gid and uid, in that
 order; changing identity may require appropriate starting privileges. It sets
 `PR_SET_NO_NEW_PRIVS`, handles all filesystem rights supported by the running
 ABI except `IOCTL_DEV`, adds the path rules, scopes signals and abstract Unix
-sockets, and enforces the ruleset. If the running ABI is at least `minAbi`, any
-result other than fully enforced is fatal.
+sockets, and enforces the ruleset. The running ABI is checked against `minAbi`
+first: a lower ABI is fatal and the diagnostic names it. Full enforcement of
+the handled rights is then required regardless of `minAbi`.
 
 Every failure before `exec` emits one `sigrun-sandbox:` diagnostic on stderr
 and exits 125. Successful `run` never returns: it is replaced by the command,
