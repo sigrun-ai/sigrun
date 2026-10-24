@@ -89,7 +89,7 @@ describe("choice: value shapes (§5.6)", () => {
 		submit(renderer);
 		expect(dispatch).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "submit" }),
-			{ values: { pick: "b" } },
+			{ rev: 0, values: { pick: "b" } },
 		);
 	});
 
@@ -101,6 +101,7 @@ describe("choice: value shapes (§5.6)", () => {
 		clickOption(renderer, "c");
 		submit(renderer);
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { pick: ["a", "c"] },
 		});
 	});
@@ -117,6 +118,7 @@ describe("choice: value shapes (§5.6)", () => {
 		});
 		submit(renderer);
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { pick: { other: "something else" } },
 		});
 	});
@@ -134,6 +136,7 @@ describe("choice: value shapes (§5.6)", () => {
 		});
 		submit(renderer);
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { pick: ["a", { other: "extra" }] },
 		});
 	});
@@ -161,6 +164,7 @@ describe("choice: value shapes (§5.6)", () => {
 		});
 		submit(renderer);
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { pick: ["a"] },
 		});
 	});

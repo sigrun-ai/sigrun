@@ -783,6 +783,42 @@ export interface ExtensionsResponse {
 }
 
 /**
+ * The `GET /v1/settings/sections` payload (UI-blocks U4 Task 4, spec
+ * §13.4): the settings panel's nav list + the search index. Core's
+ * sections come first (slug `core`), then the loaded extensions'
+ * sections ordered by slug. The index covers every searchable row —
+ * a section title, a core settings key, an extension section's field —
+ * with the section id a hit jumps to.
+ */
+export interface SettingsSectionsResponse {
+	readonly sections: readonly SettingsSectionEntry[];
+	readonly index: readonly SettingsSectionIndexEntry[];
+}
+
+/** One nav entry: the section's mount (slug + id) and its display. */
+export interface SettingsSectionEntry {
+	readonly slug: string;
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+}
+
+/** One search-index row (the label search's hit shape, spec §13.4). */
+export interface SettingsSectionIndexEntry {
+	/** The section the hit belongs to (the nav target). */
+	readonly slug: string;
+	readonly sectionId: string;
+	/** The row kind: a core settings key, an extension form field, or a section title. */
+	readonly kind: "core-key" | "field" | "section";
+	/** The searchable text (the field/section label). */
+	readonly label: string;
+	/** The field's help string, when it declares one. */
+	readonly help?: string;
+	/** The core key path / the field's form name, when the row has one. */
+	readonly key?: string;
+}
+
+/**
  * A `GET /v1/extensions/:slug/secrets` entry: the key and its winning
  * source — NEVER the value (the API lists and writes secrets; it never
  * returns them).
