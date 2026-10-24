@@ -53,6 +53,7 @@ async function fixture(): Promise<{
 		),
 	);
 	const moduleTrees = defaultModuleTrees(coreRoot);
+	await Promise.all(moduleTrees.map((path) => mkdir(path, { recursive: true })));
 	return { managed, moduleTrees, coreRoot };
 }
 
@@ -285,6 +286,65 @@ describe("buildUserPolicy", () => {
 	});
 });
 
+describe("caller-supplied moduleTrees", () => {
+	test.each([
+		["filesystem root", () => "/"],
+		["configDir", (managed: ManagedPaths) => managed.roots.configDir],
+		["store root", (managed: ManagedPaths) => managed.roots.cacheDir],
+		["coreRoot itself", (managed: ManagedPaths) => managed.coreRoot],
+	])("rejects the %s and names the offending path", async (_label, treeFor) => {
+		const { managed, coreRoot } = await fixture();
+		const tree = treeFor(managed);
+		const result = buildUserPolicy(record(), {
+			managed,
+			nodeBinDir: "/ignored",
+			moduleTrees: [join(coreRoot, "src"), tree],
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toContain(tree);
+		expect("policy" in result).toBe(false);
+	});
+
+	test.skipIf(!existsSync("/dev/shm"))("rejects /dev/shm and names the offending path", async () => {
+		const { managed, coreRoot } = await fixture();
+		const result = buildUserPolicy(record(), {
+			managed,
+			nodeBinDir: "/ignored",
+			moduleTrees: [join(coreRoot, "src"), "/dev/shm"],
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toContain("/dev/shm");
+	});
+
+	test.skipIf(!existsSync("/dev/shm"))("rejects a module-tree ancestor of /dev/shm", async () => {
+		const { managed, coreRoot } = await fixture();
+		const result = buildUserPolicy(record(), {
+			managed,
+			nodeBinDir: "/ignored",
+			moduleTrees: [join(coreRoot, "src"), "/dev"],
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toContain("/dev");
+	});
+
+	test("accepts legitimate core descendants", async () => {
+		const { managed, coreRoot } = await fixture();
+		const trees = [join(coreRoot, "dist"), join(coreRoot, "node_modules")];
+		await mkdir(trees[0]!);
+		const result = buildUserPolicy(record(), {
+			managed,
+			nodeBinDir: "/ignored",
+			moduleTrees: trees,
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.policy.ro).toEqual(expect.arrayContaining(trees));
+	});
+});
+
 describe("defaultModuleTrees", () => {
 	test("uses dist when present, otherwise src, and always shared and node_modules", async () => {
 		const coreRoot = await tempDir();
@@ -382,13 +442,25 @@ describe("nodeRuntimePaths", () => {
 		expect(nodeRuntimePaths()).not.toContain("/dev/shm");
 	});
 
-	test("dot-dot and symlink spellings deduplicate to one real directory", () => {
-		const paths = nodeRuntimePaths();
-		const nodeLibrary = join(dirname(process.execPath), "..", "lib");
-		if (existsSync(nodeLibrary)) {
-			expect(paths).toContain(realpathSync(nodeLibrary));
-		}
-		expect(paths).toEqual([...new Set(paths)].sort());
-		expect(paths.some((path) => path.includes(".."))).toBe(false);
+	test("controlled dot-dot spellings of one real directory deduplicate canonically", async () => {
+		const dir = await tempDir();
+		const library = join(dir, "lib");
+		await mkdir(join(dir, "sub"));
+		await mkdir(library);
+		const executable = join(dir, "node");
+		await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+		const duplicate = join(dir, "sub", "..", "lib");
+		const readLdd = (loader: string, execPath: string): string => {
+			expect(loader).toBe("/usr/bin/ldd");
+			expect(execPath).toBe(executable);
+			return [
+				`libone.so => ${join(library, "libone.so")} (0x1)`,
+				`libtwo.so => ${join(duplicate, "libtwo.so")} (0x2)`,
+			].join("\n");
+		};
+		const paths = nodeRuntimePaths(executable, undefined, readLdd);
+		const canonicalLibrary = await realpath(library);
+		expect(paths).toEqual([dir, canonicalLibrary].sort());
+		expect(paths.filter((path) => path === canonicalLibrary)).toHaveLength(1);
 	});
 });

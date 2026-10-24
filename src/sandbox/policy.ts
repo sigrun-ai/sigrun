@@ -21,9 +21,8 @@ export interface UserPolicy {
 	readonly groups?: readonly number[];
 }
 
-type PolicyResult =
-	| { ok: true; policy: UserPolicy }
-	| { ok: false; reason: string };
+type PolicyFailure = { ok: false; reason: string };
+type PolicyResult = { ok: true; policy: UserPolicy } | PolicyFailure;
 
 function canonical(path: string): string | undefined {
 	try {
@@ -85,9 +84,11 @@ function filteredRuntimePaths(
 export function nodeRuntimePaths(
 	execPath: string = process.execPath,
 	managed?: ManagedPaths,
+	readLdd?: (loader: string, execPath: string) => string,
 ): string[] {
 	const binaryDirectory = canonical(dirname(resolve(execPath)));
-	const cached = runtimePaths.get(execPath);
+	// Injected loader output is a test seam, never a production cache identity.
+	const cached = readLdd === undefined ? runtimePaths.get(execPath) : undefined;
 	if (cached !== undefined) {
 		return filteredRuntimePaths(cached, managed);
 	}
@@ -96,10 +97,12 @@ export function nodeRuntimePaths(
 	const loader = ["/usr/bin/ldd", "/bin/ldd"].find((path) => existsSync(path));
 	if (loader !== undefined) {
 		try {
-			const output = execFileSync(loader, [execPath], {
-				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-			});
+			const output = readLdd === undefined
+				? execFileSync(loader, [execPath], {
+						encoding: "utf8",
+						stdio: ["ignore", "pipe", "ignore"],
+					})
+				: readLdd(loader, execPath);
 			for (const match of output.matchAll(/=>\s+(\/[^\s]+)/g)) {
 				const target = match[1];
 				if (target !== undefined && isAbsolute(target)) {
@@ -111,7 +114,7 @@ export function nodeRuntimePaths(
 		}
 	}
 	const result = sortedUniqueCanonical(paths);
-	runtimePaths.set(execPath, result);
+	if (readLdd === undefined) runtimePaths.set(execPath, result);
 	return filteredRuntimePaths(result, managed);
 }
 
@@ -152,8 +155,46 @@ function failedStoredPath(
 	);
 }
 
-function invalidReason(path: string, reason: string): PolicyResult {
+function invalidReason(path: string, reason: string): PolicyFailure {
 	return { ok: false, reason: `${path}: ${reason}` };
+}
+
+function canonicalModuleTrees(
+	trees: readonly string[],
+	managed: ManagedPaths,
+): { ok: true; paths: string[] } | PolicyFailure {
+	const coreRoot = canonical(managed.coreRoot);
+	if (coreRoot === undefined) {
+		return invalidReason(managed.coreRoot, "core root cannot be resolved");
+	}
+	const paths: string[] = [];
+	for (const tree of trees) {
+		// Every path source is canonicalized, then checked by its KIND:
+		// module trees are STRICT core descendants (never coreRoot itself);
+		// runtime libraries exclude protected roots; user paths use the full
+		// validator. A tree may neither sit inside nor contain a store root or
+		// /dev/shm (defence in depth if coreRoot ever overlaps one); an ancestor
+		// such as / is already excluded by the strict-descendant rule.
+		const candidate = canonical(tree);
+		if (candidate === undefined) {
+			return invalidReason(tree, "module tree does not exist or cannot be resolved");
+		}
+		if (candidate === coreRoot || !inside(candidate, coreRoot)) {
+			return invalidReason(tree, "module tree must be a strict descendant of coreRoot");
+		}
+		if (
+			inside(candidate, "/dev/shm") ||
+			inside("/dev/shm", candidate) ||
+			Object.values(managed.roots).some((root) => {
+				const protectedRoot = canonical(root) ?? resolve(root);
+				return inside(candidate, protectedRoot) || inside(protectedRoot, candidate);
+			})
+		) {
+			return invalidReason(tree, "module tree is inside a protected root or /dev/shm");
+		}
+		paths.push(candidate);
+	}
+	return { ok: true, paths };
 }
 
 /** Build a user's grants and environment, or fail closed with the bad path. */
@@ -203,6 +244,9 @@ export function buildUserPolicy(
 	const realWorkspace = workspaceValidation.realpath;
 	const realHome = homeValidation.realpath;
 
+	const moduleTrees = canonicalModuleTrees(ctx.moduleTrees, ctx.managed);
+	if (!moduleTrees.ok) return moduleTrees;
+
 	const grants = [];
 	for (const grant of record.grants ?? []) {
 		const result = validateUserPath(grant.path, record, ctx.managed);
@@ -234,7 +278,7 @@ export function buildUserPolicy(
 		"/proc",
 		"/sys",
 		...nodeRuntimePaths(process.execPath, ctx.managed),
-		...ctx.moduleTrees,
+		...moduleTrees.paths,
 		...grants.flatMap((grant) => (grant.access === "ro" ? [grant.path] : [])),
 	]);
 	const env = agentEnv();
