@@ -26,7 +26,7 @@ describe("sandbox wire protocol", () => {
 			log: () => {},
 			workerEntry: { command: "unused", args: [] },
 		});
-		const client = pool.client({ user: "errors", workspace: "/", home: "/", tmp: "/", ro: [], rw: [], env: {} });
+		const client = pool.client({ user: "errors", workspace: "/", home: "/", tmp: "/", ro: [], rw: [], ensureDirs: [], env: {} });
 		const file = errorReply(1, new FileError("permission_denied", "denied", "/secret"));
 		const exec = errorReply(2, new ExecutionError("timeout", "slow"));
 		expect(file).toEqual({ id: 1, ok: false, error: { kind: "file", code: "permission_denied", message: "denied", path: "/secret" } });

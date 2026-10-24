@@ -23,7 +23,8 @@ fn parses_a_full_policy() {
         "minAbi": 6,
         "uid": 1000,
         "gid": 1001,
-        "groups": [1001, 1002]
+        "groups": [1001, 1002],
+        "ensureDirs": ["/tmp/work"]
     }))
     .expect("full policy should parse");
 
@@ -36,6 +37,39 @@ fn parses_a_full_policy() {
     assert_eq!(policy.uid, Some(1000));
     assert_eq!(policy.gid, Some(1001));
     assert_eq!(policy.groups, Some(vec![1001, 1002]));
+    assert_eq!(policy.ensure_dirs, vec![PathBuf::from("/tmp/work")]);
+}
+
+#[test]
+fn ensure_dirs_defaults_to_empty() {
+    let policy =
+        parse_policy(json!({"ro": [], "rw": [], "minAbi": 1})).expect("ensureDirs is optional");
+    assert!(policy.ensure_dirs.is_empty());
+}
+
+#[test]
+fn rejects_an_ensure_dir_outside_rw() {
+    let error = parse_policy(json!({
+        "ro": ["/usr"],
+        "rw": ["/tmp/work"],
+        "minAbi": 1,
+        "ensureDirs": ["/tmp/other"]
+    }))
+    .expect_err("every ensureDirs entry must be rw");
+    assert!(error.contains("ensureDirs"), "unexpected error: {error}");
+    assert!(error.contains("/tmp/other"), "unexpected error: {error}");
+}
+
+#[test]
+fn rejects_a_relative_ensure_dir() {
+    let error = parse_policy(json!({
+        "ro": [],
+        "rw": ["relative/path"],
+        "minAbi": 1,
+        "ensureDirs": ["relative/path"]
+    }))
+    .expect_err("ensureDirs paths must be absolute");
+    assert!(error.contains("absolute"), "unexpected error: {error}");
 }
 
 #[test]
@@ -109,6 +143,89 @@ fn rights_masks_match_the_contract() {
     assert!(!apply::ro_access().contains(AccessFs::IoctlDev));
     assert!(!apply::rw_access().contains(AccessFs::IoctlDev));
     assert_eq!(apply::handled_access(ABI::V7), all & !AccessFs::IoctlDev);
+}
+
+#[test]
+fn run_creates_ensure_dirs_with_private_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after the epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "sigrun-sandbox-ensure-{}-{unique}",
+        std::process::id()
+    ));
+    let nested = root.join("nested/tmp");
+    let output = Command::new(env!("CARGO_BIN_EXE_sigrun-sandbox"))
+        .args(["run", "--", "/bin/true"])
+        .env(
+            "SIGRUN_SANDBOX_POLICY",
+            serde_json::to_string(&json!({
+                "ro": ["/usr", "/lib", "/lib64", "/bin"],
+                "rw": [&nested],
+                "minAbi": 0,
+                "ensureDirs": [&nested]
+            }))
+            .expect("policy should serialize"),
+        )
+        .output()
+        .expect("helper should return");
+    let metadata = std::fs::metadata(&nested).expect("ensureDirs path should exist");
+    let mode = metadata.permissions().mode() & 0o777;
+    let _ = std::fs::remove_dir_all(&root);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("sigrun-sandbox: Landlock ABI"),
+            "directory creation must precede Landlock: {stderr}"
+        );
+    }
+    assert!(metadata.is_dir());
+    assert_eq!(mode, 0o700);
+}
+
+#[test]
+fn ensure_dir_creation_failure_exits_125_without_exec() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after the epoch")
+        .as_nanos();
+    let file = std::env::temp_dir().join(format!(
+        "sigrun-sandbox-ensure-file-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::write(&file, "not a directory").expect("fixture file should be created");
+    let nested = file.join("tmp");
+    let output = Command::new(env!("CARGO_BIN_EXE_sigrun-sandbox"))
+        .args(["run", "--", "/usr/bin/printf", "MUST_NOT_RUN"])
+        .env(
+            "SIGRUN_SANDBOX_POLICY",
+            serde_json::to_string(&json!({
+                "ro": ["/usr", "/lib", "/lib64", "/bin"],
+                "rw": [nested],
+                "minAbi": 0,
+                "ensureDirs": [nested]
+            }))
+            .expect("policy should serialize"),
+        )
+        .output()
+        .expect("helper should return");
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(output.status.code(), Some(125));
+    assert!(output.stdout.is_empty(), "command must not execute");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.lines().count(), 1, "unexpected stderr: {stderr}");
+    assert!(
+        stderr.starts_with("sigrun-sandbox:"),
+        "unexpected stderr: {stderr}"
+    );
 }
 
 #[cfg(target_os = "linux")]

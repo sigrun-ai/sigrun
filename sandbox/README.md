@@ -63,13 +63,18 @@ The policy has this JSON shape:
   "minAbi": 6,
   "uid": 1000,
   "gid": 1000,
-  "groups": [1000]
+  "groups": [1000],
+  "ensureDirs": ["/tmp/work/tmp"]
 }
 ```
 
-`uid`, `gid`, and `groups` are optional. Root uid or gid is rejected. Paths
-must be absolute and cannot appear in both lists. Nonexistent paths are noted
-on stderr and skipped. Unknown fields are rejected.
+`uid`, `gid`, and `groups` are optional. `ensureDirs` is optional and defaults
+to an empty list; every entry must be absolute and also appear in `rw`. After
+the identity switch and before Landlock is applied, the helper creates those
+directories recursively with mode 0700, so a mapped OS account owns its tmp
+directory. Root uid or gid is rejected. Paths must be absolute and cannot
+appear in both lists. Nonexistent paths are noted on stderr and skipped.
+Unknown fields are rejected.
 
 The helper reads `SIGRUN_SANDBOX_POLICY`, removes it from the environment, and
 leaves the rest of the environment unchanged before `exec`. If `groups` is

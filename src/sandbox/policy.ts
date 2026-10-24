@@ -19,6 +19,8 @@ export interface UserPolicy {
 	readonly uid?: number;
 	readonly gid?: number;
 	readonly groups?: readonly number[];
+	/** Directories the helper creates after switching to the mapped account. */
+	readonly ensureDirs: readonly string[];
 }
 
 type PolicyFailure = { ok: false; reason: string };
@@ -237,6 +239,7 @@ export function buildUserPolicy(
 	}
 	const tmp = join(ctx.managed.roots.stateDir, "sandbox", record.user, "tmp");
 	for (const path of [requestedWorkspace, requestedHome, tmp]) {
+		if (ctx.osAccount !== undefined && path === tmp) continue;
 		mkdirSync(path, { recursive: true, mode: 0o700 });
 	}
 	const workspaceValidation = validateUserPath(requestedWorkspace, record, ctx.managed);
@@ -245,7 +248,9 @@ export function buildUserPolicy(
 	}
 	const homeValidation = validateUserPath(requestedHome, record, ctx.managed);
 	if (!homeValidation.ok) return invalidReason(requestedHome, homeValidation.reason);
-	const realTmp = canonical(tmp);
+	const realTmp = canonical(tmp) ?? (ctx.osAccount === undefined
+		? undefined
+		: resolve(tmp));
 	if (realTmp === undefined) return invalidReason(tmp, "path cannot be resolved");
 	const realWorkspace = workspaceValidation.realpath;
 	const realHome = homeValidation.realpath;
@@ -305,6 +310,7 @@ export function buildUserPolicy(
 		tmp: realTmp,
 		ro,
 		rw,
+		ensureDirs: ctx.osAccount === undefined ? [] : [realTmp],
 		env,
 	};
 	if (ctx.osAccount !== undefined) {

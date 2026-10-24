@@ -204,11 +204,24 @@ describe("buildUserPolicy", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		expect(result.policy.home).toBe(osHome);
+		expect(result.policy.workspace).toBe(osHome);
+		expect(result.policy.ensureDirs).toEqual([result.policy.tmp]);
+		expect(existsSync(result.policy.tmp)).toBe(false);
+		expect(result.policy.rw).toContain(result.policy.tmp);
 		expect(result.policy.rw).toContain(osHome);
 		expect(result.policy.rw).not.toContain(managed.userAreas("bob") + "/home");
 		expect(result.policy.uid).toBe(1001);
 		expect(result.policy.gid).toBe(1002);
 		expect(result.policy.groups).toEqual([1002, 2000]);
+	});
+
+	test("a plain record creates tmp itself and does not defer it to the helper", async () => {
+		const { managed, moduleTrees } = await fixture();
+		const result = policyFor(record(), { managed, moduleTrees });
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.policy.ensureDirs).toEqual([]);
+		expect(existsSync(result.policy.tmp)).toBe(true);
 	});
 
 	test.each([

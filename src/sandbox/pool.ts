@@ -599,6 +599,7 @@ export function sandboxLauncher(helper: string, workerEntry: WorkerEntry): Launc
 			SIGRUN_SANDBOX_POLICY: JSON.stringify({
 				ro: policy.ro,
 				rw: policy.rw,
+				ensureDirs: policy.ensureDirs,
 				minAbi: 6,
 				...(policy.uid === undefined ? {} : { uid: policy.uid }),
 				...(policy.gid === undefined ? {} : { gid: policy.gid }),
