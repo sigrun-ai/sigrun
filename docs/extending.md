@@ -813,8 +813,9 @@ via `host.snapshotInteraction`; `host.answerInteraction` (extension-side
 answer) takes the same `{values}` shape. A `secret` field's value
 reaches your `snapshotInteraction` read once — the stored record keeps
 only `"[secret]"` (there is no answer handler; your poll loop reads the
-live answer envelope) — and channels and logs never see it. First
-answer wins: a second answer gets `404 not_pending`.
+live answer envelope) — and channels and logs never see it (the settled
+event carries no answer values). First answer wins: a second answer gets
+`404 not_pending`.
 
 ## Ambient surfaces: persistent read-mostly state as a block tree
 
@@ -848,8 +849,8 @@ export function footer(left: string, middle: string, right: string): Tree {
 
 `expires` and `updatedAt` are host-assigned envelope fields — the host
 stamps them on the record; you never pass them to `setAmbient`. The
-envelope may also carry `details?` (a collapsible detail tree the
-channel renders under the surface).
+envelope may also carry `details?` (opaque JSON the channel renders as
+one collapsed line, never interpreted).
 
 A statusline slot and a panel of rows (the rpiv-todo shape — a
 `collection(display: "list")` of literal rows; ambient collections never

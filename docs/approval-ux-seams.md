@@ -136,7 +136,7 @@ new):
   pi-advisor (described presets, multi model select), rpiv-ask
   (multiSelect), plannotator (recommended/settled choices),
   pi-interview (recommended/conviction). Multi-select's answer shape is
-  `answer.ids: string[]`.
+  `answer.ids: string[]` (now `{values: {<choice>: [ids]}}` — ruling 20).
 - **fields gain `"secret"`** — masked API-key entry (pi-advisor,
  .pi-guardrails key inputs). Channels mask by contract.
 - **envelope gains `expiresAt?` and `skipped`/`expired` statuses** —
@@ -191,7 +191,7 @@ No per-extension UI code paths. A `uiHint`-style bespoke-render
 pointer (factory-result-declared, extension-owned code) is the
 documented future escape route but is deliberately out of v1.
 
-## Ambient surfaces: the same envelope discipline, four primitives
+## Ambient surfaces: the same envelope discipline
 
 **Also superseded by the block set** (same ruling): an ambient record's
 body is a block tree (placement `ambient`), with `status`/`footer`
@@ -346,7 +346,8 @@ Shipped in core + webui (commits bcd4423 + webui commit):
 - `src/harness/seam-host.ts`: the host context (factory arity-1, kinds
   write gate, owner allocation).
 - Server: `GET/POST /v1/conversations/:id/interactions(/:callId/answer)`,
-  `GET .../ambient`, `/v1/meta seam`.
+  `GET /v1/conversations/:id/interactions/:callId`, `GET .../ambient`,
+  `/v1/meta seam`.
 - Webui: `InteractionCards` + `AmbientPanels` render the record's
   block tree via the shared block renderer (`BlockView`; the TUI's
   `SurfaceView` is its sibling) (toned choices, secret
