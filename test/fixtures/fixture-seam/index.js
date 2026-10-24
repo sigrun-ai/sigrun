@@ -133,7 +133,18 @@ export default function createSeamFixture(host) {
 							root: {
 								type: "collection",
 								id: "progress",
-								items: "/rows",
+								// Literal rows: ambient collections never bind (the
+								// 2026-10-24 ruling — the envelope has no data slot).
+								items: [
+									{
+										id: "progress",
+										label: args.text,
+										status: "running",
+										running: true,
+										completed: progress.done,
+										total: progress.total,
+									},
+								],
 								display: "list",
 								item: {
 									type: "card",

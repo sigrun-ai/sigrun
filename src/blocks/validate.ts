@@ -394,6 +394,17 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 
 	// collection-specific rules
 	if (type === "collection") {
+		// Controller ruling (2026-10-24): bindings are OUT of ambient
+		// placement — the ambient envelope carries no data document, so a
+		// bound `items` has nothing to resolve against. Literal rows only.
+		// (Reversible: extending the envelope with a data slot remains open.)
+		if (ctx.placement === "ambient" && isBinding(node.items)) {
+			push(
+				ctx,
+				joinPath(path, "items"),
+				"ambient collections carry literal rows (items must not be a binding)",
+			);
+		}
 		const display = node.display;
 		if (
 			typeof display === "string" &&

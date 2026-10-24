@@ -7,17 +7,57 @@
 			{
 				"type": "collection",
 				"id": "checks",
-				"items": { "$": "/checks" },
+				"items": [
+					{
+						"id": "c1",
+						"name": "lint",
+						"state": "passed",
+						"busy": false,
+						"tone": "good"
+					},
+					{
+						"id": "c2",
+						"name": "tests",
+						"state": "running",
+						"busy": true,
+						"tone": "neutral"
+					}
+				],
 				"display": "list",
 				"item": {
-					"title": { "$": "./name" },
-					"status": { "label": { "$": "./state" }, "spinner": { "$": "./busy" } },
-					"tone": { "$": "./tone" }
+					"title": {
+						"$": "./name"
+					},
+					"status": {
+						"label": {
+							"$": "./state"
+						},
+						"spinner": {
+							"$": "./busy"
+						}
+					},
+					"tone": {
+						"$": "./tone"
+					}
 				}
 			},
-			{ "type": "log", "lines": { "$": "/recentOutput" } },
-			{ "type": "meter", "value": { "$": "/gauge" }, "format": "percent" },
-			{ "type": "details", "value": { "ok": true } }
+			{
+				"type": "log",
+				"lines": {
+					"$": "/recentOutput"
+				}
+			},
+			{
+				"type": "meter",
+				"value": 62,
+				"format": "percent"
+			},
+			{
+				"type": "details",
+				"value": {
+					"ok": true
+				}
+			}
 		]
 	}
 }

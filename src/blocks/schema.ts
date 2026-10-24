@@ -442,7 +442,10 @@ const BulkAction = Type.Object({
 const CollectionBlock = Type.Object({
 	...BlockBase,
 	type: Type.Literal("collection"),
-	items: Type.Ref("Binding"),
+	// Literal rows are legal (ambient placement requires them — the
+	// ambient envelope carries no data document); placements that resolve
+	// bindings keep the binding form.
+	items: Type.Union([Type.Ref("Binding"), Type.Array(Type.Ref("JsonValue"))]),
 	item: AnyObject,
 	display: Type.Unsafe({
 		type: "string",

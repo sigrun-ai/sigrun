@@ -17,36 +17,36 @@ right"
 `;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-panel @80 1`] = `
-"acme
-  status: ok
+"lint
+  status: passed
 
-forge
-  status: restarting
+tests
+  status: running
 
 8:53:20 a.m. [warn] restarting forge
 
-30%
+6,200%
 
 {"ok":true}"
 `;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-panel @160 1`] = `
-"acme
-  status: ok
+"lint
+  status: passed
 
-forge
-  status: restarting
+tests
+  status: running
 
 8:53:20 a.m. [warn] restarting forge
 
-30%
+6,200%
 
 {"ok":true}"
 `;
 
-exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-status @80 1`] = `"acme: all systems nominal"`;
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-status @80 1`] = `"glm-5.3-flash · main* · $0.0421"`;
 
-exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-status @160 1`] = `"acme: all systems nominal"`;
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > ambient-status @160 1`] = `"glm-5.3-flash · main* · $0.0421"`;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > callout @80 1`] = `
 "[warn] Degraded
@@ -180,6 +180,22 @@ exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collectio
 2. [ ] Paint the bracket
   Score: 12
   status: queued"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-literal @80 1`] = `
+"acme provision
+  status: todo
+
+acme build
+  status: doing"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-literal @160 1`] = `
+"acme provision
+  status: todo
+
+acme build
+  status: doing"
 `;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > collection-table @80 1`] = `

@@ -412,8 +412,10 @@ export interface CollectionTime {
 
 export interface CollectionBlock extends BlockBase {
 	readonly type: "collection";
-	/** Binding to an array; each item has a unique `id`. */
-	readonly items: Binding;
+	/** Binding to an array (each item has a unique `id`) — or the array
+	 *  itself as literal rows, the only legal shape in ambient placement
+	 *  (the ambient envelope carries no data document). */
+	readonly items: Binding | readonly JsonValue[];
 	/** The card template. */
 	readonly item: Card;
 	readonly display: "list" | "table" | "lanes" | "grid" | "calendar";

@@ -1,4 +1,4 @@
 {
 	"v": 1,
-	"root": { "type": "markdown", "id": "ambient-status", "text": { "$": "/statusLine" } }
+	"root": { "type": "markdown", "id": "ambient-status", "text": "glm-5.3-flash · main* · $0.0421" }
 }

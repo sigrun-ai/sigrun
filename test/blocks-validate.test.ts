@@ -302,6 +302,10 @@ describe("fixtures validate for their placements (spec §5.7)", () => {
 					// panel forbids a page root's sidebar (§5.7); ambient's
 					// one-line rule needs `ambientPlace` (§9.2) — skip, covered below.
 					if (placement === "panel" && rootType === "page" && sample.name === "page-sidebar") continue;
+					// The ambient literal-rows ruling (2026-10-24): a bound
+					// collection never validates in ambient (its envelope has no
+					// data document). Skip that cross-placement cell.
+					if (placement === "ambient" && rootType === "collection") continue;
 					const result = validateTree(sample.tree, { placement });
 					expect(
 						result.ok,
@@ -1235,6 +1239,37 @@ describe("ambient one-line rule (spec §9.2)", () => {
 
 	it("a panel ambient root may stack freely", () => {
 		const tree = fixture("ambient-panel");
+		expect(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }).ok).toBe(true);
+	});
+
+	it("a collection with bound items fails in ambient (controller ruling 2026-10-24: literal rows only)", () => {
+		// Bindings are OUT of ambient placement: the envelope stays
+		// unchanged (no data slot), so a collection whose `items` is a
+		// binding has nothing to resolve against — the validator rejects
+		// it. Reversible: extending the envelope (a data slot) remains open.
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: { $: "/rows" },
+			display: "list",
+			item: { title: { $: "./label" } },
+		});
+		for (const ambientPlace of ["status", "footer", "panel"] as const) {
+			const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace }));
+			expect(errs.some((e) => e.path === "root.items")).toBe(true);
+		}
+	});
+
+	it("a collection with a literal items array passes in ambient", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			// Literal rows: ambient collections have no data document, so
+			// `items` is the array itself (the ruling's literal-row shape).
+			items: [{ id: "r1", label: "deploy" }],
+			display: "list",
+			item: { title: { $: "./label" } },
+		});
 		expect(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }).ok).toBe(true);
 	});
 

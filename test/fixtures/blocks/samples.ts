@@ -132,7 +132,9 @@ const PLACEMENT_FILES: Readonly<Record<Placement, readonly string[]>> = {
 		"stat",
 		"meter",
 		"log",
-		"collection-list",
+		// Literal rows: ambient collections never bind (the envelope has
+		// no data document — the 2026-10-24 ruling).
+		"collection-literal",
 		"ambient-status",
 		"ambient-footer",
 		"ambient-panel",

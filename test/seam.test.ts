@@ -575,12 +575,17 @@ test("setAmbient writes; the list serves the surface; clear empties it", async (
 		body: lineTree("hello"),
 	});
 	// Replacement write (full state): a panel collection replacing the line.
-	const collectionBody = {
+	// Literal rows: ambient collections never bind (the 2026-10-24
+	// ruling — the envelope has no data slot).
+	const collectionBody: Tree = {
 		v: BLOCK_SET_VERSION,
 		root: {
 			type: "collection",
 			id: "steps",
-			items: { $: "/rows" },
+			items: [
+				{ id: "s1", label: "clone", quiet: false, tone: "neutral" },
+				{ id: "s2", label: "build", quiet: true, tone: "good" },
+			],
 			display: "list",
 			item: {
 				title: { $: "./label" },
@@ -588,7 +593,7 @@ test("setAmbient writes; the list serves the surface; clear empties it", async (
 				tone: { $: "./tone" },
 			},
 		},
-	} as const;
+	};
 	await host.setAmbient(
 		root.id,
 		{
