@@ -891,6 +891,14 @@ export interface AccountLinkWire {
 	readonly via: "login" | "self" | "pairing" | "admin";
 }
 
+/**
+ * The `GET /v1/auth/accounts` payload (multi-user §11.3): the caller's
+ * links, or one named user's for an admin.
+ */
+export interface AccountsResponse {
+	readonly accounts: readonly AccountLinkWire[];
+}
+
 // ─── Host events (GET /v1/events, core hardening W3 Task 4, spec §7.4) ───
 
 /**
