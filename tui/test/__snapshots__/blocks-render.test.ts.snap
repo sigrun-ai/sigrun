@@ -1,0 +1,230 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`fixture: callout > renders at 72 columns 1`] = `
+[
+  "▲ Degraded",
+  "acme upstream is slow                                                   ",
+  "",
+  "[1] Open console  [2] Copy id",
+]
+`;
+
+exports[`fixture: callout > renders at 100 columns 1`] = `
+[
+  "▲ Degraded",
+  "acme upstream is slow                                                                               ",
+  "",
+  "[1] Open console  [2] Copy id",
+]
+`;
+
+exports[`fixture: callout > renders at 160 columns 1`] = `
+[
+  "▲ Degraded",
+  "acme upstream is slow                                                                                                                                           ",
+  "",
+  "[1] Open console  [2] Copy id",
+]
+`;
+
+exports[`fixture: columns > renders at 72 columns 1`] = `
+[
+  "left                                                                    ",
+  "",
+  "◷ Load: 42%",
+]
+`;
+
+exports[`fixture: columns > renders at 100 columns 1`] = `
+[
+  "left                                                               ◷ Load: 42%                      ",
+]
+`;
+
+exports[`fixture: columns > renders at 160 columns 1`] = `
+[
+  "left                                                                                                       ◷ Load: 42%                                          ",
+]
+`;
+
+exports[`fixture: details > renders at 72 columns 1`] = `
+[
+  "{"host":"acme.example","tags":["a","b"],"nested":{"ok":true}}",
+]
+`;
+
+exports[`fixture: details > renders at 100 columns 1`] = `
+[
+  "{"host":"acme.example","tags":["a","b"],"nested":{"ok":true}}",
+]
+`;
+
+exports[`fixture: details > renders at 160 columns 1`] = `
+[
+  "{"host":"acme.example","tags":["a","b"],"nested":{"ok":true}}",
+]
+`;
+
+exports[`fixture: diff > renders at 72 columns 1`] = `
+[
+  "[diff] src/acme.ts",
+  "- const a = 1;",
+  "+ const a = 2;",
+]
+`;
+
+exports[`fixture: diff > renders at 100 columns 1`] = `
+[
+  "[diff] src/acme.ts",
+  "- const a = 1;",
+  "+ const a = 2;",
+]
+`;
+
+exports[`fixture: diff > renders at 160 columns 1`] = `
+[
+  "[diff] src/acme.ts",
+  "- const a = 1;",
+  "+ const a = 2;",
+]
+`;
+
+exports[`fixture: fields > renders at 72 columns 1`] = `
+[
+  "Host    acme.example",
+  "Errors  ✖ 2",
+]
+`;
+
+exports[`fixture: fields > renders at 100 columns 1`] = `
+[
+  "Host    acme.example",
+  "Errors  ✖ 2",
+]
+`;
+
+exports[`fixture: fields > renders at 160 columns 1`] = `
+[
+  "Host    acme.example",
+  "Errors  ✖ 2",
+]
+`;
+
+exports[`fixture: grid > renders at 72 columns 1`] = `
+[
+  "Wide: 12                                                                ",
+  "Narrow: 3                                                               ",
+  "full row                                                                ",
+]
+`;
+
+exports[`fixture: grid > renders at 100 columns 1`] = `
+[
+  "Wide: 12                                                                                           ",
+  "Narrow: 3                                        ",
+  "full row                                                                                           ",
+]
+`;
+
+exports[`fixture: grid > renders at 160 columns 1`] = `
+[
+  "Wide: 12                                                                                                  Narrow: 3                                           ",
+  "full row                                                                                                                                                      ",
+]
+`;
+
+exports[`fixture: markdown > renders at 72 columns 1`] = `
+[
+  "acme status at ]8;;https://example.invalid/x\\example.invalid]8;;\\                                          ",
+]
+`;
+
+exports[`fixture: markdown > renders at 100 columns 1`] = `
+[
+  "acme status at ]8;;https://example.invalid/x\\example.invalid]8;;\\                                                                      ",
+]
+`;
+
+exports[`fixture: markdown > renders at 160 columns 1`] = `
+[
+  "acme status at ]8;;https://example.invalid/x\\example.invalid]8;;\\                                                                                                                                  ",
+]
+`;
+
+exports[`fixture: section > renders at 72 columns 1`] = `
+[
+  "· Group ────────────────────────────────────────────────────────────────",
+  "subtitle",
+  "  in section                                                            ",
+  "",
+  "  ▲ Careful",
+  "  acme maintenance at 02:00                                             ",
+  "",
+  "  [1] Acknowledge",
+]
+`;
+
+exports[`fixture: section > renders at 100 columns 1`] = `
+[
+  "· Group ────────────────────────────────────────────────────────────────────────────────────────────",
+  "subtitle",
+  "  in section                                                                                        ",
+  "",
+  "  ▲ Careful",
+  "  acme maintenance at 02:00                                                                         ",
+  "",
+  "  [1] Acknowledge",
+]
+`;
+
+exports[`fixture: section > renders at 160 columns 1`] = `
+[
+  "· Group ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "subtitle",
+  "  in section                                                                                                                                                    ",
+  "",
+  "  ▲ Careful",
+  "  acme maintenance at 02:00                                                                                                                                     ",
+  "",
+  "  [1] Acknowledge",
+]
+`;
+
+exports[`fixture: stack > renders at 72 columns 1`] = `[]`;
+
+exports[`fixture: stack > renders at 100 columns 1`] = `
+[
+  "stacked                                                                                             ",
+  "",
+  "L  1",
+]
+`;
+
+exports[`fixture: stack > renders at 160 columns 1`] = `
+[
+  "stacked                                                                                                                                                         ",
+  "",
+  "L  1",
+]
+`;
+
+exports[`fixture: stat > renders at 72 columns 1`] = `
+[
+  "◷ Latency: 42 ms",
+  "p95 over 5m",
+]
+`;
+
+exports[`fixture: stat > renders at 100 columns 1`] = `
+[
+  "◷ Latency: 42 ms",
+  "p95 over 5m",
+]
+`;
+
+exports[`fixture: stat > renders at 160 columns 1`] = `
+[
+  "◷ Latency: 42 ms",
+  "p95 over 5m",
+]
+`;

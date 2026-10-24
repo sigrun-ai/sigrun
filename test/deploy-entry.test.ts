@@ -152,7 +152,7 @@ test(
 			expect(typeof meta.harnessVersion).toBe("string");
 			// The server's own version rides /v1/meta (the Settings version
 			// line and bug reports read it).
-			expect(meta.version).toBe("0.1.5");
+			expect(meta.version).toBe("0.1.6");
 			// The probe endpoints exist on the real listener too.
 			const healthz = await fetch(`http://127.0.0.1:${port}/healthz`);
 			expect(healthz.status).toBe(200);

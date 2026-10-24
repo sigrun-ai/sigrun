@@ -269,9 +269,8 @@ test.describe("item 7: compaction recall", () => {
 		// binding), not the live window.
 		await page.locator(".composer-input").pressSequentially("what was the marker?");
 		await page.locator(".composer-send").click();
-		// The tool call renders as the activity line's tool row (B4): expand
-		// the activity, then the memory_recall row, to see the recalled content.
-		await page.locator(".activity-toggle").last().click();
+		// The default chronological view renders the tool row in place;
+		// expanding it shows the recalled content.
 		const card = page.locator(".tool-row-toggle").filter({ hasText: "memory_recall" }).first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		await card.click();

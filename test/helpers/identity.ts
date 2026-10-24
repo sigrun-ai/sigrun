@@ -11,6 +11,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	AccountStore,
 	InviteStore,
 	TokenStore,
 	UserDirectory,
@@ -31,9 +32,11 @@ export async function unclaimedIdentity(
 	const cacheDir = join(dir, "cache");
 	await mkdir(stateDir, { recursive: true });
 	await mkdir(cacheDir, { recursive: true });
+	const users = new UserDirectory(join(dir, "users.json"));
 	return {
-		users: new UserDirectory(join(dir, "users.json")),
+		users,
 		tokens: new TokenStore(join(dir, "api-tokens.json")),
+		accounts: new AccountStore(join(dir, "accounts.json"), users),
 		invites: new InviteStore(join(stateDir, "invites.json")),
 		cacheDir,
 	};

@@ -34,9 +34,11 @@
 
 import type { ConversationView } from "@earendil-works/pi-durable";
 import type {
+	AccountLinkWire,
 	ConversationViewWire,
 	SteerField,
 } from "@sigrun/shared/views";
+import type { AccountLink } from "../harness/identity/accounts.js";
 
 /**
  * Derive the steer field from the view's own docs — no extra inspect()/
@@ -66,6 +68,23 @@ function deriveSteer(view: ConversationView): SteerField {
 			: undefined;
 	const queued = Array.isArray(items) ? items.length : 0;
 	return { busy, queued };
+}
+
+/**
+ * One `accounts.json` record in wire form (multi-user M3a, spec §11.3).
+ * The fields are copied explicitly rather than spread: a future
+ * store-only field must not leak onto the wire by accident. Lives here
+ * with the other wire mappers (`serializeConversationView`); the route
+ * serves it and the host bridge hands the same shape to extensions.
+ */
+export function accountLinkWire(link: AccountLink): AccountLinkWire {
+	return {
+		provider: link.provider,
+		subject: link.subject,
+		user: link.user,
+		linkedAt: link.linkedAt,
+		via: link.via,
+	};
 }
 
 /**

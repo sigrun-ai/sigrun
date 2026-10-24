@@ -361,6 +361,42 @@ describe("DELETE /v1/users/:user", () => {
 		});
 	});
 
+	test("deleting a user removes their account links and no one else's", async () => {
+		const { app, opened } = await bootServer({});
+		const token = await mint(opened, "alice");
+		// Bob holds two links (two providers); alice holds one. Links
+		// never transfer (multi-user §10.6 step 1).
+		await opened.identity.accounts.link({
+			provider: "chat:loop",
+			subject: "bob-chat",
+			user: "bob",
+			via: "self",
+		});
+		await opened.identity.accounts.link({
+			provider: "login:oauth:acme",
+			subject: "bob-sub",
+			user: "bob",
+			via: "login",
+		});
+		await opened.identity.accounts.link({
+			provider: "chat:loop",
+			subject: "alice-chat",
+			user: "alice",
+			via: "self",
+		});
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("bob")).toEqual([]);
+		expect(opened.identity.accounts.listForUser("alice")).toHaveLength(1);
+		expect(
+			opened.identity.accounts.lookup("chat:loop", "bob-chat"),
+		).toBeUndefined();
+	});
+
 	test("deleting the last record-admin → 409 (a group admin does not count)", async () => {
 		// tester is the ONLY record admin; the caller's admin comes from a
 		// proxy GROUP — which never counts toward the last-admin guard.
@@ -389,8 +425,131 @@ describe("DELETE /v1/users/:user", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tokens API
+// accounts API
 // ---------------------------------------------------------------------------
+
+describe("/v1/auth/accounts", () => {
+	/** Seed one link per entry over the boot's store. */
+	async function seed(
+		opened: OpenedHarness,
+		links: Array<{ provider: string; subject: string; user: string }>,
+	): Promise<void> {
+		for (const link of links) {
+			await opened.identity.accounts.link({ ...link, via: "self" });
+		}
+	}
+
+	test("lists the caller's links; an admin may name another user", async () => {
+		const { app, opened } = await bootServer({});
+		const aliceToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		await seed(opened, [
+			{ provider: "chat:loop", subject: "bob-1", user: "bob" },
+			{ provider: "chat:loop", subject: "alice-1", user: "alice" },
+		]);
+		// Bob's own list: only his.
+		const bobOwn = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(bobOwn.statusCode).toBe(200);
+		expect(
+			(bobOwn.json() as { accounts: { subject: string }[] }).accounts.map(
+				(link) => link.subject,
+			),
+		).toEqual(["bob-1"]);
+		// An admin's window into bob's links.
+		const adminView = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts?user=bob",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(adminView.statusCode).toBe(200);
+		expect(
+			(adminView.json() as { accounts: { subject: string }[] }).accounts.map(
+				(link) => link.subject,
+			),
+		).toEqual(["bob-1"]);
+		// A non-admin naming someone else is refused before the store is read.
+		const refused = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts?user=alice",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(refused.statusCode).toBe(403);
+		expect(refused.json()).toEqual({ error: "forbidden" });
+		// A non-admin naming THEMSELVES is fine (the same payload as no query).
+		const bobNamed = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts?user=bob",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(bobNamed.statusCode).toBe(200);
+		expect(
+			(bobNamed.json() as { accounts: { subject: string }[] }).accounts.map(
+				(link) => link.subject,
+			),
+		).toEqual(["bob-1"]);
+	});
+
+	test("a user removes their own link; the encoded subject round-trips", async () => {
+		const { app, opened } = await bootServer({});
+		const bobToken = await mint(opened, "bob");
+		await seed(opened, [
+			{ provider: "chat:signal", subject: "+15551234567", user: "bob" },
+		]);
+		const removed = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:signal&subject=%2B15551234567",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(removed.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("bob")).toEqual([]);
+	});
+
+	test("another user's link is refused for a non-admin; an admin may remove it", async () => {
+		const { app, opened } = await bootServer({});
+		const aliceToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		await seed(opened, [
+			{ provider: "chat:loop", subject: "alice-1", user: "alice" },
+		]);
+		const refused = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop&subject=alice-1",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(refused.statusCode).toBe(403);
+		expect(opened.identity.accounts.listForUser("alice")).toHaveLength(1);
+		const byAdmin = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop&subject=alice-1",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(byAdmin.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("alice")).toEqual([]);
+	});
+
+	test("an absent link → 404 unknown_account; a missing subject → 400 invalid_query", async () => {
+		const { app, opened } = await bootServer({});
+		const bobToken = await mint(opened, "bob");
+		const absent = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop&subject=nobody",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(absent.statusCode).toBe(404);
+		expect(absent.json()).toEqual({ error: "unknown_account" });
+		const missing = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(missing.statusCode).toBe(400);
+		expect(missing.json()).toEqual({ error: "invalid_query" });
+	});
+});
 
 describe("tokens API", () => {
 	test("an admin POST /v1/auth/tokens with a user field → 403 forbidden", async () => {

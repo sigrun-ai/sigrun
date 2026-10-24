@@ -109,7 +109,11 @@ jobs:
           context: sigrun
           platforms: linux/amd64
           push: false
+          load: true
           tags: sigrun:ci-check
+      - name: Smoke-check the runtime image
+        working-directory: sigrun
+        run: sh scripts/smoke-image.sh sigrun:ci-check
 
   chart-lint:
     runs-on: ubuntu-latest

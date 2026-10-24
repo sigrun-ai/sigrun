@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/sigrun",
-	"version": "0.1.5",
+	"version": "0.1.6",
 	"description": "Durable personal assistant on pi-durable",
 	"type": "module",
 	"exports": {
@@ -43,21 +43,21 @@
 		"@earendil-works/pi-ai": "1.3.0",
 		"@earendil-works/pi-durable": "1.3.0",
 		"@earendil-works/pi-tui": "^1.3.0",
-		"@fastify/static": "^9.1.0",
+		"@fastify/static": "^10.1.7",
 		"@sigrun/ext-codemode": "file:../sigrun-ext-codemode",
 		"@sigrun/ext-gateway": "file:../sigrun-ext-gateway",
 		"@sigrun/ext-mcp": "file:../sigrun-ext-mcp",
 		"@sigrun/ext-tool-search": "file:../sigrun-ext-tool-search",
-		"@sigrun/shared": "0.1.1",
+		"@sigrun/shared": "0.1.2",
 		"croner": "^10.0.1",
-		"fastify": "^5.12.5",
+		"fastify": "^5.12.7",
 		"typebox": "1.3.27"
 	},
 	"bundleDependencies": [
 		"@sigrun/shared"
 	],
 	"optionalDependencies": {
-		"@sigrun/tui": "0.1.0"
+		"@sigrun/tui": "0.1.1"
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.4",

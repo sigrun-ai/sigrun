@@ -32,8 +32,12 @@ import {
 	type PaletteTokens,
 } from "@sigrun/shared/themes";
 
-/** A palette token, or the accent colour. */
-export type TuiToken = keyof PaletteTokens | "accent";
+/** A palette token, the accent colour, or a state colour (warn/bad). */
+export type TuiToken =
+	| keyof PaletteTokens
+	| "accent"
+	| "warn"
+	| "bad";
 
 /**
  * Terminal styling surface: token-named fg/bg plus the plain attribute
@@ -86,13 +90,26 @@ function rgbToHex(r: number, g: number, b: number): string {
 	return `#${two(r)}${two(g)}${two(b)}`;
 }
 
+/**
+ * The state colours (warnings + errors), defined per mode like the
+ * webui's `--warn`/`--danger` (webui/src/app.css — they are NOT palette
+ * members in either channel). The TUI's tone table (blocks/tones.ts)
+ * paints `warn`/`bad` tones with them.
+ */
+const STATE_COLORS: Readonly<Record<"warn" | "bad", Record<ModeName, string>>> = {
+	warn: { dark: "#d9a35a", light: "#8a6116" },
+	bad: { dark: "#e0707a", light: "#b3363f" },
+};
+
 /** Resolve a token to a parseable colour for the palette+mode. */
 function resolveToken(
 	tokens: PaletteTokens,
 	accentHex: string,
+	mode: ModeName,
 	token: TuiToken,
 ): string {
 	if (token === "accent") return accentHex;
+	if (token === "warn" || token === "bad") return STATE_COLORS[token][mode];
 	const value = tokens[token];
 	// `code` is the rgba overlay chip; composite over the mode's bg.
 	if (value.startsWith("rgba")) return compositeOver(value, tokens.bg);
@@ -121,8 +138,10 @@ export function createTuiTheme(options: TuiThemeOptions): TuiTheme {
 		"ok",
 		"code",
 		"accent",
+		"warn",
+		"bad",
 	] as const satisfies readonly TuiToken[]) {
-		const color = parseColor(resolveToken(tokens, accentHex, token));
+		const color = parseColor(resolveToken(tokens, accentHex, options.mode, token));
 		fgSequences.set(token, foregroundAnsi(color, mode));
 		bgSequences.set(token, backgroundAnsi(color, mode));
 	}
