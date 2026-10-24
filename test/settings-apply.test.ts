@@ -140,6 +140,7 @@ const EXPECTED_KEYS = [
 	"server.auth.allowedOrigins",
 	"server.metrics.public",
 	"server.dev",
+	"server.supervised",
 	"server.backup.path",
 	"server.backup.staleAfterHours",
 	"server.backup.s3.bucket",

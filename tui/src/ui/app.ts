@@ -110,6 +110,12 @@ export interface TuiAppOptions {
 	readonly editor?: string;
 	/** TEST SEAM: the vim resolution for edit-in-vim (C4). */
 	readonly resolveVim?: () => string | undefined;
+	/**
+	 * The restart-recovery poll cadence (U4 Task 2, spec §13.3): the
+	 * `/readyz` probe interval after `restart()` — default 500 ms; the
+	 * tests shorten it.
+	 */
+	readonly restartPollMs?: number;
 }
 
 /** PATH lookup for the vim fallback chain (nvim/vim/vi). */
@@ -204,6 +210,10 @@ export class TuiApp implements Component, ActionHost {
 	#thinkingLevel: string = "off";
 	/** The vim resolution for edit-in-vim (C4; configured → env → PATH). */
 	readonly #resolveVim: () => string | undefined;
+	/** The restart-recovery poll cadence (U4 Task 2). */
+	readonly #restartPollMs: number;
+	/** The in-flight restart poll's cancel flag (dispose fences it). */
+	#restartGeneration = 0;
 
 	constructor(client: SigrunClient, options: TuiAppOptions) {
 		this.#client = client;
@@ -213,6 +223,7 @@ export class TuiApp implements Component, ActionHost {
 		this.#catalog = new SlashCatalog(client);
 		this.#resolveVim = options.resolveVim ?? (() =>
 			resolveVimEditor({ configured: options.editor, env: process.env, which: whichPath }));
+		this.#restartPollMs = options.restartPollMs ?? 500;
 		const theme = options.theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
 		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
@@ -870,8 +881,51 @@ export class TuiApp implements Component, ActionHost {
 		// held by an unwound delivery must fence after dispose exactly as
 		// after a switch — nothing renders post-dispose.
 		this.#watchGen += 1;
+		this.#restartGeneration += 1;
 		this.interactions.dispose();
 		this.ambient.dispose();
+	}
+
+	/**
+	 * The admin restart surface (U4 Task 2, spec §13.3): POST
+	 * `/v1/admin/restart`, show the "Restarting…" notice, and poll
+	 * `/readyz` — when it answers, the supervisor brought the server
+	 * back, so refresh the sidebar (the durable listing) and clear the
+	 * notice. A rejected POST (403/409 — no restart began) renders the
+	 * error and returns without touching state. Resolves once the
+	 * recovery poll ends (recovered or disposed).
+	 */
+	async restart(): Promise<void> {
+		try {
+			await this.#client.requestRestart();
+		} catch (error: unknown) {
+			this.pane.showError(
+				describeCommandError("restart", error),
+			);
+			return;
+		}
+		this.pane.showNotice("Restarting… — waiting for the server");
+		this.#tui.requestRender();
+		const generation = this.#restartGeneration;
+		for (;;) {
+			await new Promise((resolve) =>
+				setTimeout(resolve, this.#restartPollMs),
+			);
+			if (generation !== this.#restartGeneration) return;
+			let ready = false;
+			try {
+				ready = await this.#client.checkReady();
+			} catch {
+				// Connection refused mid-restart: keep polling.
+			}
+			if (ready) break;
+		}
+		// Back: the listing is durable and the stream re-attach subsumes
+		// whatever the restart dropped (the SSE reconnect contract).
+		await this.sidebar.refresh().catch(() => {});
+		this.pane.clearNotices();
+		this.pane.showNotice("Restarted.");
+		this.#tui.requestRender();
 	}
 
 	// ─── The action layer (Task C3) ────────────────────────────────────

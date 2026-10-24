@@ -548,6 +548,7 @@ function validateServer(server: unknown): void {
 		"auth",
 		"metrics",
 		"dev",
+		"supervised",
 		"backup",
 	]);
 	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
@@ -797,6 +798,16 @@ function validateServer(server: unknown): void {
 	// The development flag (§14.2/§14.4) — a flat boolean, no section.
 	if (record.dev !== undefined && typeof record.dev !== "boolean") {
 		throw new SettingsValidationError("server.dev", "must be a boolean");
+	}
+	// The supervised flag (U4 §13.3) — same shape.
+	if (
+		record.supervised !== undefined &&
+		typeof record.supervised !== "boolean"
+	) {
+		throw new SettingsValidationError(
+			"server.supervised",
+			"must be a boolean",
+		);
 	}
 	if (record.backup !== undefined) {
 		const backup = asRecord(record.backup);

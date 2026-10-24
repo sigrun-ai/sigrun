@@ -421,6 +421,13 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "read from the boot config (meta, U1 gallery, U3 error bodies)",
 	},
 	{
+		key: "server.supervised",
+		apply: "restart",
+		section: "server",
+		reason:
+			"read from the boot config (U4 §13.3): gates POST /v1/admin/restart and meta's supervised — and a write can only take effect at the NEXT boot, since the route it gates is this boot's",
+	},
+	{
 		key: "server.backup.path",
 		apply: "restart",
 		section: "advanced",
