@@ -193,6 +193,57 @@ function makeHarness(init?: {
 			}
 		} else if (input === "/v1/models") body = { models: [] };
 		else if (input === "/v1/jobs") body = { jobs: [] };
+		else if (input === "/v1/extensions") body = { extensions: [] };
+		else if (input === "/v1/settings/sections") {
+			// U4 Task 4 fix wave: the shell-level Restart-wiring test opens
+			// the panel; the sections payload is the nav list (core only).
+			body = {
+				sections: [
+					{ slug: "core", id: "general", title: "General", icon: "key" },
+				],
+				index: [],
+			};
+		}
+		else if (/^\/v1\/ext\/core\/surfaces\/general/.test(input)) {
+			// The General section's surface: the meta block the
+			// pending-restart callout reads (pendingRestart + supervised).
+			body = input.includes("/data")
+				? {
+						rev: 2,
+						treeRev: 1,
+						data: {
+							settings: {},
+							meta: {
+								pendingRestart: ["server.port"],
+								env: {},
+								supervised: true,
+							},
+						},
+					}
+				: {
+						tree: {
+							root: {
+								type: "form",
+								id: "core-general-form",
+								bind: "/settings",
+								mode: "submit",
+								onSubmit: "save",
+								children: [],
+							},
+						},
+						data: {
+							settings: {},
+							meta: {
+								pendingRestart: ["server.port"],
+								env: {},
+								supervised: true,
+							},
+						},
+						rev: 1,
+						treeRev: 1,
+						access: "write",
+					};
+		}
 		else if (/^\/v1\/ext\//.test(input)) {
 			// The ext surface routes (U3 Task 5): a minimal board load so
 			// the surface page reaches its ready state.
@@ -225,7 +276,7 @@ function makeHarness(init?: {
 		sources.push({ url, source });
 		return source;
 	};
-	const client = createClient({ fetch: fetchImpl });
+	const client = createClient({ fetch: fetchImpl, rawFetch: fetchImpl });
 	return {
 		calls,
 		client,
@@ -614,6 +665,50 @@ describe("App shell", () => {
 		expect(
 			renderer.root.findAllByProps({ className: "settings-overlay" }),
 		).toHaveLength(1);
+	});
+
+	test("the settings panel wires the shell restart: a supervised admin sees the button and clicking it POSTs the restart", async () => {
+		const ready = { current: true };
+		const { client, createEventSource, restartCalls } = makeHarness({
+			meta: { ...makeMeta(), supervised: true },
+			readyzDown: { ready },
+		});
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				identity={{ admin: true, service: false, method: "token" }}
+			/>,
+		);
+		const settings = renderer.root.findByProps({ "aria-label": "settings" });
+		await act(async () => {
+			(settings.props as { onClick: () => unknown }).onClick();
+		});
+		// The General section auto-opens (the panel's default): the
+		// surface's meta block (pendingRestart + supervised) drives the
+		// callout's Restart button. The meta-probe's poll resolves async —
+		// flush microtasks until the callout mounts (bounded, no sleeps).
+		let button: { props: { onClick: () => unknown } } | null = null;
+		for (let attempt = 0; attempt < 20; attempt++) {
+			await act(async () => {});
+			const found = renderer.root.findAllByProps({
+				className: "settings-restart",
+			});
+			if (found.length > 0) {
+				button = found[0] as unknown as { props: { onClick: () => unknown } };
+				break;
+			}
+		}
+		expect(button).not.toBeNull();
+		const restartButton = button as { props: { onClick: () => unknown } };
+		expect(restartCalls).toHaveLength(0);
+		await act(async () => {
+			await restartButton.props.onClick();
+		});
+		expect(restartCalls).toHaveLength(1);
+		// The shell's recovery flow: the fake flips /readyz back and the
+		// app re-boots (the restart round-trip completes).
+		ready.current = true;
 	});
 
 describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
