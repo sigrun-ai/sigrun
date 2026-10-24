@@ -83,6 +83,13 @@ export interface BootGatewayOptions {
 	readonly users?: readonly { user: string; admin?: boolean }[];
 	/** The faux provider's response queue. */
 	readonly responses?: readonly AssistantMessage[];
+	/**
+	 * A CALLER-OWNED stores root for the harness's state (the engine's
+	 * `host.stores.paths.state` roots here too): two boots over the same
+	 * dir share the engine's persisted state (the restart e2e). Absent →
+	 * the boot owns its own tmpdir and removes it at shutdown.
+	 */
+	readonly storesDir?: string;
 }
 
 /**
@@ -94,7 +101,8 @@ export interface BootGatewayOptions {
 export async function bootGateway(
 	opts: BootGatewayOptions = {},
 ): Promise<GatewayBoot> {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-gw-e2e-"));
+	const dir = opts.storesDir ?? (await mkdtemp(join(tmpdir(), "sigrun-gw-e2e-")));
+	const ownedDir = opts.storesDir === undefined;
 	const configDir = join(dir, "config");
 	const faux = fauxProvider({
 		provider: "faux",
@@ -108,15 +116,30 @@ export async function bootGateway(
 			? [fauxAssistantMessage("gateway answer")]
 			: [...opts.responses],
 	);
+	// The durable roots ALWAYS root inside the boot's dir: the engine's
+	// gateway state lives at `<stateDir>/<slug>/gateway`, and an unset
+	// root would leak test seen-ids into the operator's real
+	// `~/.local/state/sigrun` (a later boot would then read yesterday's
+	// committed ids — a cross-test pollution class). A caller-supplied
+	// storesDir makes two boots share those roots (the restart e2e).
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
+		SIGRUN_DATA_DIR: dir,
+		SIGRUN_STATE_DIR: dir,
+		SIGRUN_CACHE_DIR: dir,
 	});
+	// The settings file lives at the CONFIG root (the same dir
+	// `SIGRUN_CONFIG_DIR` names — where SettingsStore and AuthStore read
+	// it). With a caller-supplied storesDir the config root is INSIDE it,
+	// so a second boot over the dir re-reads it; the owned-dir boot
+	// simply writes its own tmp config root.
+	await mkdir(configDir, { recursive: true });
 	await writeFile(
-		join(dir, "settings.json"),
+		join(configDir, "settings.json"),
 		JSON.stringify({ namingModel: false, ...opts.settings }),
 	);
 	// The engine's scoped settings: the store-root chain puts extension
@@ -130,6 +153,15 @@ export async function bootGateway(
 			JSON.stringify(opts.gatewaySettings),
 		);
 	}
+	if (opts.storesDir !== undefined) {
+		// A caller-supplied stores root is shared across boots (the
+		// restart e2e): the durable roots (SIGRUN_*_DIR in the config load)
+		// point inside it, so a second boot over the same dir reads the
+		// first boot's persisted engine state (`<stateDir>/<slug>/gateway`
+		// — the seen set). The boot never removes the dir at shutdown.
+		await mkdir(join(opts.storesDir, "state"), { recursive: true });
+		await mkdir(join(opts.storesDir, "data"), { recursive: true });
+	}
 	const identity = await seededIdentity(dir);
 	// seededIdentity already claimed the dir with "tester" (admin); the
 	// seed list only ADDS (the caller's users default [alice]); "tester"
@@ -137,11 +169,15 @@ export async function bootGateway(
 	const seedUsers = opts.users ?? [{ user: "alice", admin: true }];
 	for (const user of seedUsers) {
 		if (user.user === "tester") continue;
-		await identity.users.add({
-			user: user.user,
-			admin: user.admin ?? false,
-			source: "cli",
-		});
+		// Idempotent: a second boot over the SAME config root (the restart
+		// e2e) re-seeds — the user already exists, so the add is skipped.
+		if ((await identity.users.get(user.user)) === undefined) {
+			await identity.users.add({
+				user: user.user,
+				admin: user.admin ?? false,
+				source: "cli",
+			});
+		}
 	}
 	// The faux provider CONTRIBUTOR (the host-conversations pattern —
 	// without it the boot registers the env-degenerate provider and every
@@ -151,7 +187,7 @@ export async function bootGateway(
 		extensions: [{ name: "ext-faux", providers: [{ provider: faux.provider }] }],
 		extensionSpecifiers: [LOOPBACK_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
-		settingsDir: dir,
+		settingsDir: join(dir, "config"),
 	});
 	const tokens: Record<string, string> = {};
 	for (const user of ["tester", ...seedUsers.map((u) => u.user)]) {
@@ -192,9 +228,12 @@ export async function bootGateway(
 			closeHarness: () => opened.harness.close(BACKGROUND_CONTEXT),
 		});
 		await ordered();
-		await rm(dir, { recursive: true, force: true });
-	};
-	const waitFor = async (
+		// Only the dir the boot OWNED is removed; a caller-supplied
+		// storesDir survives (the restart e2e boots over it again).
+		if (ownedDir) {
+			await rm(dir, { recursive: true, force: true });
+		}
+	};	const waitFor = async (
 		pred: () => boolean | Promise<boolean>,
 		ms = 10_000,
 	): Promise<void> => {
