@@ -874,6 +874,23 @@ export interface TokenCreateResponse {
 	readonly record: TokenWire;
 }
 
+/**
+ * One external identity linked to a directory user (multi-user §11.3):
+ * the `accounts.json` record verbatim. `provider` is `chat:<channel>` or
+ * `login:<slug>:<id>`; `subject` is the provider's stable subject
+ * (numeric id, `+E.164`, email-shaped — opaque to sigrun).
+ *
+ * Served to extensions as `host.accounts` and to users as
+ * `GET /v1/auth/accounts`.
+ */
+export interface AccountLinkWire {
+	readonly provider: string;
+	readonly subject: string;
+	readonly user: string;
+	readonly linkedAt: number;
+	readonly via: "login" | "self" | "pairing" | "admin";
+}
+
 // ─── Host events (GET /v1/events, core hardening W3 Task 4, spec §7.4) ───
 
 /**
