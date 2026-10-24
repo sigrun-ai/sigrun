@@ -277,7 +277,10 @@ export async function launchTuiShell(
 			visible: (viewport) => viewport.width >= SIDEBAR_MIN_WIDTH,
 		},
 		{
-			component: new ScrollView(app.pane, {
+			// The main slot (U4 Task 4 round-2): the conversation pane in
+			// the steady state, the settings view while one is open — the
+			// slot swaps, so settings renders in the body's own column.
+			component: new ScrollView(app.mainContent, {
 				follow: "end",
 				primary: true,
 				overscroll: "chain",

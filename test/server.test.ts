@@ -264,6 +264,7 @@ describe("GET /v1/meta", () => {
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [], commands: [] },
 			dev: false,
+			supervised: false,
 		});
 	});
 

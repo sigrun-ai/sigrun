@@ -38,6 +38,14 @@ export interface SurfaceActionsCtx {
 	dispatch(action: Action, payload: JsonValue): void;
 	access: "read" | "write";
 	viewState: ViewState;
+	/**
+	 * The surface's current revision (the optimistic-concurrency token,
+	 * UI-blocks U4 Task 4): a submit-mode form's dispatch carries it as
+	 * the payload's `rev` so a save-shaped action handler can reject a
+	 * stale-edit save. Optional — standalone/test renders omit it (the
+	 * form submits `rev: 0` then).
+	 */
+	readonly rev?: number;
 	/** Server-side field errors, keyed by field name (spec §5.6: the
 	 *  `{error: {field}}` from a rejected action surfaces under that
 	 *  field). Empty when no rejection has landed. */

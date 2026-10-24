@@ -41,6 +41,9 @@ import { DataOpError, applyOps, resolvePointer } from "@sigrun/shared/blocks";
 /** An action has 10 s to answer before it counts as a reject (§6.3). */
 export const ACT_TIMEOUT_MS = 10_000;
 
+/** The per-page surface scope counter (the action-id prefix below). */
+let ACTION_SCOPE_SEQ = 0;
+
 /** Where a move applies in the data (found by scanning the tree for
  *  the collection owning the `onMove` handler name). */
 interface MoveTarget {
@@ -116,6 +119,12 @@ export interface SurfaceState {
 	/** Confirmed data with the overlay applied — what blocks render. */
 	readonly view: JsonObject;
 	readonly access: "read" | "write";
+	/**
+	 * The surface's current data revision (the optimistic-concurrency
+	 * token, UI-blocks U4 Task 4): a submit-mode form's dispatch carries
+	 * it as the payload's `rev` (a save-shaped handler's stale check).
+	 */
+	readonly rev: number;
 	dispatch(action: Action, payload: JsonValue): void;
 	/** Write the `/view/` branch (spec §6.2): the channel-owned
 	 *  view-only state sibling blocks read via `/view/...` bindings. */
@@ -295,7 +304,13 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 	// Async callbacks read the latest snapshot through this ref.
 	const ref = useRef(snapshot);
 	ref.current = snapshot;
+	// The action-id sequence is GLOBALLY unique per page (not per
+	// surface mount): the server's action dedup keys on the actionId
+	// per instance for 10 minutes, so a remounted surface re-using
+	// `act-1` would replay the FIRST mount's result verbatim (the
+	// settings panel's section switch does exactly that).
 	const actionSeq = useRef(0);
+	const actionScope = useRef(`s${(ACTION_SCOPE_SEQ += 1)}`);
 	/** The highest rev a `surface.changed` event announced (gap detect). */
 	const announcedRev = useRef(0);
 	const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -429,7 +444,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 			typeof payload === "object" && payload !== null && !Array.isArray(payload)
 				? (payload as JsonObject)
 				: {};
-		const actionId = `act-${(actionSeq.current += 1)}`;
+		const actionId = `${actionScope.current}-${(actionSeq.current += 1)}`;
 		const name = "name" in action ? action.name : action.type;
 		const isMove = action.type === "move";
 		if (isMove) {
@@ -472,6 +487,14 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 							serverErrors: { [field]: message },
 						}));
 					}
+					// A "changed by someone else" rejection means the
+					// confirmed data (and the rev the form rides) is stale —
+					// refetch so the next submit carries the current rev (U4
+					// Task 4 round-2: without it the form's rev is pinned and
+					// every retry rejects the same way).
+					if (result.error.message === "changed by someone else") {
+						void fullRefetch();
+					}
 					return;
 				}
 				// An accepted act supersedes any outstanding server field
@@ -482,7 +505,16 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 						: s,
 				);
 				if (result.toast !== undefined) toast(result.toast);
-				if (!isMove) return;
+				if (!isMove) {
+					// A non-move accept (the settings save): the rev already
+					// bumped server-side, and the fresh data (the core
+					// sections' meta block — the pending-restart callout)
+					// only lands via a fetch; the settings transport is
+					// outside the surface.changed hub (U4 Task 4 round-2).
+					setSnapshot((s) => ({ ...s, rev: result.rev }));
+					void fullRefetch();
+					return;
+				}
 				if (result.ops !== undefined) {
 					const current = ref.current;
 					try {
@@ -561,6 +593,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		tree: snapshot.tree,
 		view,
 		access: snapshot.access === "write" ? "write" : "read",
+		rev: snapshot.rev,
 		dispatch,
 		setView,
 		retry: (): void => {

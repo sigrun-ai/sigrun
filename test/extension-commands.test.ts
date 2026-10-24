@@ -189,6 +189,7 @@ describe("extension slash commands: the catalog merge", () => {
 			"model",
 			"thinking",
 			"jobs",
+			"settings",
 			"hello",
 		]);
 	});

@@ -140,13 +140,34 @@ export async function serve(
 	// 404s forever (the directory was never created).
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(config.workspace.path, { recursive: true });
-	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
+	// The serve env threads into boot so boot-time env reads (store
+	// roots, the provider collector, the U4 scheduler cadence resolution
+	// in `resolveRefreshMinutes`) see the SAME env `loadConfig` just
+	// resolved — a serve-harness env override must win over process.env
+	// here exactly like it does in the config.
+	const opened = await openHarness(config, {
+		extensionEntries: extensionResolutions,
+		env,
+	});
 	// The gateway handle (gateway C2) exists BEFORE the server: the meta
 	// route reaches it through ServerContext, so the engine's health is
 	// reportable from the first request. The ENGINE STARTS after listen
 	// (below) — an engine supervising chat transports starts once the
 	// server it delivers through is up.
 	const gateway = startGateway(opened);
+	// The booted handle the restart callback defers to: `createServer`
+	// needs the callback BEFORE `serve` can build the BootedServer (the
+	// shutdown composition lives at the bottom of this function), so the
+	// handle is promised here and RESOLVED at return time; `onRestart`
+	// awaits the resolution. Between `app.listen` + `gateway.started` and
+	// the assignment below a supervised admin POST can already land (202
+	// answered, callback deferred) — awaiting the promise holds that
+	// window open instead of dropping the restart on the floor (a `?.`
+	// on an unassigned ref made 202-with-no-restart reachable).
+	let resolveBooted!: (booted: BootedServer) => void;
+	const bootedReady = new Promise<BootedServer>((resolve) => {
+		resolveBooted = resolve;
+	});
 	// The contributed-bundle registry (build-and-webui Task 6): boot folded
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
@@ -154,6 +175,36 @@ export async function serve(
 		listenHost: options?.host ?? "0.0.0.0",
 		env,
 		gateway,
+		// U4 Task 2 (spec §13.3): the admin restart route's callback runs
+		// EXACTLY the SIGTERM path (the ordered shutdown), then exits 0 —
+		// the supervisor (chart/compose, `server.supervised`) brings the
+		// process back. `shutdownOnce` is the same re-entry guard the
+		// signal path uses; `stopping` is assigned by closure below, so
+		// the callback defers to it (the route fires post-listen).
+		onRestart: () =>
+			bootedReady
+				.then(async (handle) => {
+					// Force-exit lever (the review's finding 4): the ordered
+					// shutdown's drain is unbounded — a wedged close would be
+					// an unrecoverable outage (the supervisor never sees the
+					// process die, so it never restarts it). The watchdog is
+					// unref'd: the normal path (shutdown settles, exit below)
+					// is unaffected.
+					const watchdog = setTimeout(() => {
+						console.error(
+							"sigrun: restart shutdown exceeded 30s; forcing exit",
+						);
+						process.exit(1);
+					}, 30_000);
+					watchdog.unref();
+					await handle.shutdownOnce();
+					clearTimeout(watchdog);
+					process.exit(0);
+				})
+				.catch((error: unknown) => {
+					console.error("sigrun restart error:", error);
+					process.exit(1);
+				}),
 	});
 	const host = options?.host ?? "0.0.0.0";
 	await app.listen({ port: config.port, host });
@@ -213,7 +264,7 @@ export async function serve(
 	});
 
 	let stopping: Promise<void> | undefined;
-	return {
+	const booted: BootedServer = {
 		port: config.port,
 		shutdown,
 		shutdownOnce: () => {
@@ -221,4 +272,6 @@ export async function serve(
 			return stopping;
 		},
 	};
+	resolveBooted(booted);
+	return booted;
 }

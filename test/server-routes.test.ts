@@ -78,6 +78,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/models"],
 	["GET", "/v1/settings"],
 	["PATCH", "/v1/settings"],
+	// The U4 Task 4 sections route (the settings panel's nav + search).
+	["GET", "/v1/settings/sections"],
 	// The W3 Task 7 extension settings/secrets surface (spec §7.7).
 	["GET", "/v1/extensions"],
 	["GET", "/v1/extensions/:slug/settings"],
@@ -344,6 +346,7 @@ describe("server route table", () => {
 				"/healthz",
 				"/readyz",
 				"/metrics",
+				"/v1/admin/restart",
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/accounts",
@@ -373,6 +376,7 @@ describe("server route table", () => {
 				// root wildcard row the test's parser reconstructs).
 				"*",
 				"/v1/settings",
+				"/v1/settings/sections",
 				"/v1/interactions",
 				"/v1/jobs",
 				"/v1/jobs/:id",

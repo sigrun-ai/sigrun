@@ -83,6 +83,28 @@ export interface ServerContext {
 	 */
 	readonly watchersByConversation: Map<ConversationId, number>;
 	/**
+	 * Publish one `settings.changed` event (UI-blocks U4, spec §13.2):
+	 * the opened harness's fan-out seam — the hub publication
+	 * (/v1/events, admins only) plus the extension
+	 * `onSettingsChanged` fan-out and the scheduler re-arm. Both write
+	 * routes (PATCH /v1/settings, PUT /v1/extensions/:slug/settings)
+	 * call this AFTER the write commits.
+	 */
+	readonly publishSettingsChanged: (
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	) => void;
+	/**
+	 * The restart callback (UI-blocks U4 Task 2, spec §13.3): the serve
+	 * composition's graceful shutdown + `process.exit(0)`. `POST
+	 * /v1/admin/restart` schedules it on the next tick (the 202 flushes
+	 * first). PRESENT only in the serve composition — a hand-built test
+	 * server omits it; the route then answers supervised posts with a
+	 * loud composition error (never a silent no-op). Absent or present,
+	 * an unsupervised config never reaches it (409 first).
+	 */
+	readonly requestRestart?: () => Promise<void> | void;
+	/**
 	 * The gateway handle (gateway C2): created by the serve composition
 	 * BEFORE `createServer` and threaded through the `gateway` option so
 	 * the meta route reads the wrapped engine health. ABSENT on hand-built
