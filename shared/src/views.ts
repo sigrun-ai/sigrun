@@ -556,6 +556,16 @@ export interface MetaResponse {
 	 * U4 — a boot constant, like the rest of meta.
 	 */
 	readonly dev: boolean;
+	/** The boot-time execution-jail decision (multi-user M1). */
+	readonly isolation: {
+		readonly mode: "auto" | "always" | "off";
+		/** Whether enforcement is active; filled by the later enforcement task. */
+		readonly active: boolean;
+		readonly available: boolean;
+		readonly abi: number;
+		readonly reason?: string;
+		readonly osUsers: "available" | "off" | string;
+	};
 	/**
 	 * The seam inventory (docs/approval-ux-seams.md): per extension, the
 	 * interaction kinds / ambient surface keys its factory declared.
