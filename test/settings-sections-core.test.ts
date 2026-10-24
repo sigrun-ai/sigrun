@@ -354,6 +354,148 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		expect(settings.namingModel).toBeUndefined();
 	});
 
+	test("a full-form save never writes a default-on toggle; explicitly flipping it OFF writes false", async () => {
+		const { app, opened, aliceToken } = await server();
+		// The Advanced form's untouched values (the channels initialize an
+		// absent default-on toggle to its default; the nullable fields
+		// submit the empty string = the unset affordance).
+		const render = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		const rev = (render.body as { rev: number }).rev;
+		const untouched = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-default-on-untouched",
+				params: {},
+				payload: {
+					rev,
+					values: {
+						"retry.enabled": true,
+						"retry.maxRetries": "",
+						"retry.baseDelayMs": "",
+						"retry.maxAgentDelayMs": "",
+						"stream.timeoutMs": "",
+						"stream.maxRetries": "",
+						"stream.maxRetryDelayMs": "",
+						perModelThinking: "",
+						"server.port": "",
+						"server.publicUrl": "",
+						"server.timezone": "",
+						"server.compaction.enabled": true,
+						"server.compaction.reserveTokens": "",
+						"server.compaction.keepRecentTokens": "",
+						"server.compaction.backgroundTokens": "",
+						"jobHistory.runs": "",
+						"jobHistory.revisions": "",
+					},
+				},
+			},
+		});
+		expect((untouched.body as { ok: boolean }).ok).toBe(true);
+		const file = opened.settings.read();
+		expect(file.retry?.enabled).toBeUndefined();
+		expect(file.server?.compaction?.enabled).toBeUndefined();
+		// The same rule on the other default-on toggles (Tools +
+		// Extensions sections).
+		const tools = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/tools",
+			token: aliceToken,
+		});
+		const toolsRev = (tools.body as { rev: number }).rev;
+		const toolsSave = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/tools/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-default-on-tools",
+				params: {},
+				payload: {
+					rev: toolsRev,
+					values: { defaultTools: [], autoEnableCodemode: true },
+				},
+			},
+		});
+		expect((toolsSave.body as { ok: boolean }).ok).toBe(true);
+		expect(opened.settings.read().autoEnableCodemode).toBeUndefined();
+		const extensions = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/extensions",
+			token: aliceToken,
+		});
+		const extRev = (extensions.body as { rev: number }).rev;
+		const extSave = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/extensions/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-default-on-extensions",
+				params: {},
+				payload: {
+					rev: extRev,
+					values: {
+						extensions: "",
+						"builtinExtensions.codemode": true,
+						"builtinExtensions.mcp": true,
+						"builtinExtensions.toolSearch": true,
+					},
+				},
+			},
+		});
+		expect((extSave.body as { ok: boolean }).ok).toBe(true);
+		expect(opened.settings.read().builtinExtensions).toBeUndefined();
+
+		// Explicitly flipping the default-on toggle OFF writes the false.
+		const render2 = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		const rev2 = (render2.body as { rev: number }).rev;
+		const flipped = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-default-on-off",
+				params: {},
+				payload: { rev: rev2, values: { "retry.enabled": false } },
+			},
+		});
+		expect((flipped.body as { ok: boolean }).ok).toBe(true);
+		expect(opened.settings.read().retry?.enabled).toBe(false);
+		// Flipping it back ON writes the true (the stored false differs
+		// from the default, so no skip — the re-enable must persist).
+		const render3 = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		const rev3 = (render3.body as { rev: number }).rev;
+		const backOn = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-default-on-back-on",
+				params: {},
+				payload: { rev: rev3, values: { "retry.enabled": true } },
+			},
+		});
+		expect((backOn.body as { ok: boolean }).ok).toBe(true);
+		expect(opened.settings.read().retry?.enabled).toBe(true);
+	});
+
 	test("the Tools section's data carries the tool roster (the defaultTools options)", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {

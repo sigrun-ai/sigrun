@@ -79,6 +79,8 @@ function parseSavePayload(payload: unknown): SavePayload | undefined {
 interface FormField {
 	readonly name: string;
 	readonly type: string;
+	/** The absent-means-default value (toggles; §13.4 fix). */
+	readonly default?: unknown;
 	readonly required?: boolean;
 	readonly min?: number;
 	readonly max?: number;
@@ -260,7 +262,6 @@ const ENV_OVERRIDES: Readonly<Record<string, string>> = {
 	"server.compaction.enabled": "SIGRUN_COMPACTION",
 };
 
-/** Read one flattened dotted path out of a nested record. */
 /** Read one flattened dotted path out of a nested record (the value
  *  is a JSON value by the settings file's validation). */
 function readDotted(source: Record<string, unknown>, path: string): JsonValue | undefined {
@@ -330,15 +331,15 @@ export interface SettingsSurfaceOptions {
 	/** The surface service (the rev read the save's optimistic check needs). */
 	readonly service: SurfaceService;
 	/**
- * The core-sections deps (UI-blocks U4 Task 4): present exactly when
- * `slug === "core"` — the core sections read/write the core
- * SettingsStore (dotted field names land at their nested paths,
- * apply-typed against the §13.1 registry), not the extension
- * settings dir, so the same renderer covers both. `toolRoster` is
- * the boot registry's tool names (the Tools section's default-tools
- * editor's options).
- */
-readonly core?: {
+	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
+	 * `slug === "core"` — the core sections read/write the core
+	 * SettingsStore (dotted field names land at their nested paths,
+	 * apply-typed against the §13.1 registry), not the extension
+	 * settings dir, so the same renderer covers both. `toolRoster` is
+	 * the boot registry's tool names (the Tools section's default-tools
+	 * editor's options).
+	 */
+	readonly core?: {
 		readonly settings: SettingsStore;
 		readonly bootSnapshot: SettingsBootSnapshot;
 		readonly env: Readonly<Record<string, string | undefined>>;
@@ -435,11 +436,29 @@ export function settingsSurfaceFor(
 		if (options.core === undefined) {
 			throw new Error("core settings section adapted without core deps");
 		}
-		const patch: Record<string, unknown> = {};
+		// SAFETY: SettingsFile is a plain validated JSON document; the
+		// read here is the pre-patch state the default-skip below keys on.
+		const current = options.core.settings.read() as unknown as JsonObject;
+		let patch: Record<string, unknown> = {};
 		for (const [name, raw] of Object.entries(values)) {
 			const field = fields.find((candidate) => candidate.name === name);
 			if (field === undefined) {
 				return { ok: false, error: { message: `unknown field: ${name}`, field: name } };
+			}
+			// A submitted value EQUAL to the field's declared default with
+			// NO stored key is the untouched state: the channels
+			// initialize an absent default-ON toggle to the default and
+			// submit every field, so an unedited default-on toggle would
+			// otherwise pin an explicit key a fresh install never had.
+			// Skipping keeps absent = default; explicitly flipping OFF the
+			// default writes the key, and re-enabling a stored `false`
+			// writes the `true` (the key is present, so no skip).
+			if (
+				field.default !== undefined &&
+				raw === field.default &&
+				readDotted(current, name) === undefined
+			) {
+				continue;
 			}
 			// Empty-string values CLEAR the key (the nullable fields'
 			// "(server default)" affordance): null rides the store's
@@ -466,10 +485,15 @@ export function settingsSurfaceFor(
 			// fields' "(server default)" gesture): it CLEARS the key —
 			// `null` rides the store's delete-key merge (settings.ts:
 			// a null value clears the key; a null sub-field clears that
-			// sub-field). Skipping the key instead would leave the old
-			// value in place, silently un-clearable.
+			// sub-field). A clear of a key nothing STORES is a no-op and
+			// drops out here: the strict store validation reads a null
+			// under a number-only sub-section as "must be a number", so a
+			// full-form save on a fresh install (every nullable field
+			// empty) would otherwise reject on never-present keys.
 			if (raw === "") {
-				writeDotted(patch, name, null);
+				if (readDotted(current, name) !== undefined) {
+					writeDotted(patch, name, null);
+				}
 				continue;
 			}
 			writeDotted(patch, name, value);
