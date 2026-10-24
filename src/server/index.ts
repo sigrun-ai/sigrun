@@ -67,6 +67,7 @@ import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
+import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -222,6 +223,23 @@ export async function createServer(
 			opened.events.publish(event as unknown as HostEventWire);
 		},
 	});
+	// The settings sections (UI-blocks U4 Task 3, spec §13.3): each
+	// declared section adapts to a settings-placement surface served under
+	// the declaring extension's own `/v1/ext/<slug>/surfaces/` mount. The
+	// save handlers close over the service (the optimistic-concurrency
+	// rev read), so the adaptation attaches AFTER the service exists.
+	surfacesService.attachSettingsSurfaces(
+		opened.extensionSettingsSections.map((binding) => ({
+			extension: binding.extension,
+			defs: binding.defs.map((section) =>
+				settingsSurfaceFor(binding.extension, section, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				}),
+			),
+		})),
+	);
 	app.decorate("surfaces", surfacesService);
 	const ctx: ServerContext = {
 		opened,
