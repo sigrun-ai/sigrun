@@ -3,8 +3,8 @@
  * admin-gated directory surface — list, patch (with the last-record-admin
  * guard: group-derived admins never count, Authelia can revoke them at
  * any moment), delete-with-transfer (ownership rewrite → token revocation
- * → record removal → the `userDeleted` lifecycle event), and invite
- * issuance.
+ * → account-link removal → record removal → the `userDeleted` lifecycle
+ * event), and invite issuance.
  *
  * The admin gate reads `request.principal.admin` — record admin, service
  * token, the naive loopback superuser, or a proxy-group grant. The
@@ -192,6 +192,10 @@ export function registerUserRoutes(
 		const to = query.transferTo;
 		await transferOwnership(ctx, user, to);
 		await identity.tokens.revokeAllFor(user);
+		// External identities never transfer (multi-user §10.6 step 1):
+		// credentials belong to a person, and a transferred link would hand
+		// the receiving user's account to whoever holds that chat identity.
+		await identity.accounts.removeUser(user);
 		await identity.users.remove(user);
 		// The lifecycle event: extensions transfer their own records
 		// (deadlocked-ordering free — the core transfer already landed).

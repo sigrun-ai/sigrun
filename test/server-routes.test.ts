@@ -346,6 +346,7 @@ describe("server route table", () => {
 				"/metrics",
 				"/v1/meta",
 				"/v1/commands",
+				"/v1/auth/accounts",
 				"/v1/auth/check",
 				"/v1/auth/login",
 				"/v1/auth/logout",
