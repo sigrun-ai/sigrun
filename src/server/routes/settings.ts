@@ -71,11 +71,3 @@ export function registerSettingsRoutes(
 	});
 }
 
-/**
- * The applied/pending extras a PATCH response carries over GET (the
- * write's own classification, spec §13.2/§13.1).
- */
-interface SettingsWriteExtras {
-	readonly applied: readonly string[];
-	readonly pending: readonly string[];
-}
