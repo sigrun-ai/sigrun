@@ -76,6 +76,15 @@ console.log("WORKER_PID:" + process.ppid);
 
 export interface NativeProbes { readonly path: string; readonly available: boolean; readonly reason?: string }
 
+export async function namespaceUnavailableReason(): Promise<string | undefined> {
+	try {
+		await execFileAsync("unshare", ["--user", "--map-root-user", "--pid", "--fork", "--mount-proc", "/bin/true"], { timeout: 10_000 });
+		return undefined;
+	} catch (error) {
+		return `requires unprivileged user and PID namespaces for the safe pkill-node control: ${String(error)}`;
+	}
+}
+
 export async function buildNativeProbes(root: string): Promise<NativeProbes> {
 	const path = join(root, "native-probe");
 	try {
@@ -114,8 +123,8 @@ export async function privilegedHelper(root: string): Promise<PrivilegedHelper> 
 
 export function nativePolicy(nativePath: string, extraRw: readonly string[] = []): { ro: string[]; rw: string[]; minAbi: number } {
 	return {
-		ro: ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys"],
-		rw: [...extraRw, nativePath],
+		ro: ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys", nativePath],
+		rw: [...extraRw],
 		minAbi: 6,
 	};
 }
@@ -130,6 +139,24 @@ export function directCommand(command: readonly string[]): string {
 
 export function spawnUnjailed(command: string, args: readonly string[], env: NodeJS.ProcessEnv = {}): ChildProcess {
 	return spawn(command, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+export function buildOsUserPolicy(root: string, account: { uid: number; gid: number; groups: number[]; home: string }): UserPolicy {
+	const record: DirectoryUser = { user: "mapped", admin: false, source: "cli", osUser: "mapped", createdAt: 1 };
+	const managed = {
+		roots: { configDir: join(root, "config"), dataDir: join(root, "data"), cacheDir: join(root, "cache"), stateDir: join(root, "state") },
+		storagePath: join(root, "data", "sigrun.db"),
+		coreRoot: CORE_ROOT,
+		userAreas: (user: string) => join(root, "data", "users", user),
+	};
+	const built = buildUserPolicy(record, {
+		managed,
+		nodeBinDir: process.execPath,
+		moduleTrees: defaultModuleTrees(CORE_ROOT),
+		osAccount: account,
+	});
+	if (!built.ok) throw new Error(`osUser policy failed: ${built.reason}`);
+	return built.policy;
 }
 
 export interface DirectWorker {
@@ -203,6 +230,7 @@ export interface Deployment {
 	readonly aliceWorkspace: string;
 	readonly bobWorkspace: string;
 	readonly baseUrl: string;
+	readonly namespacePid: number;
 	readonly aliceToken: string;
 	readonly bobToken: string;
 	readonly pid: number;
@@ -249,7 +277,7 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 	const settingsPath = join(configDir, "settings.json");
 	if (!existsSync(settingsPath)) await writeFile(settingsPath, '{"namingModel":false}\n');
 	const port = await reservePort();
-	const child = spawn(process.execPath, ["--import", "tsx", join(CORE_ROOT, "test", "sandbox-it", "server-entry.ts")], {
+	const child = spawn("unshare", ["--user", "--map-root-user", "--pid", "--fork", "--mount-proc", process.execPath, "--import", "tsx", join(CORE_ROOT, "test", "sandbox-it", "server-entry.ts")], {
 		cwd: CORE_ROOT,
 		env: {
 			...process.env,
@@ -262,7 +290,9 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 	});
 	let output = "";
 	child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-	child.stdout.on("data", (chunk: string) => { output += chunk; }); child.stderr.on("data", (chunk: string) => { output += chunk; });
+	child.stdout.on("data", (chunk: string) => { output += chunk; }); child.stderr.on("data", (chunk: string) => {
+		output += chunk;
+	});
 	const logs = () => output, baseUrl = `http://127.0.0.1:${port}`;
 	try {
 		await waitForHealth(baseUrl, child, logs);
@@ -274,7 +304,9 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 			}
 			if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); throw new Error(`sigrun did not stop\n${logs()}`); }
 		};
-		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: child.pid!, logs, stop };
+		// The child is PID 1 in its disposable PID namespace; the host-side
+		// pid is used by /proc and ptrace cases.
+		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid: 1, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: child.pid!, logs, stop };
 	} catch (error) {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		throw error;
@@ -285,7 +317,9 @@ async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => s
 	const deadline = Date.now() + 60_000;
 	let last = "not attempted";
 	while (Date.now() < deadline) {
-		if (child.exitCode !== null || child.signalCode !== null) throw new Error(`sigrun exited during boot (${child.exitCode ?? child.signalCode})\n${logs()}`);
+		if (child.exitCode !== null || child.signalCode !== null) {
+			throw new Error(`sigrun exited during boot (${child.exitCode ?? child.signalCode})\n${logs()}`);
+		}
 		try {
 			const response = await fetch(`${baseUrl}/healthz`, { signal: AbortSignal.timeout(1_000) });
 			last = `${response.status} ${await response.text()}`;

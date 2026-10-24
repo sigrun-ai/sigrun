@@ -372,6 +372,36 @@ sudo setcap cap_setuid,cap_setgid+ep <helper>
 The helper's boot self-test verifies the switch. This mapping is unavailable
 in containers, whose entrypoint drops every capability.
 
+### Kernel integration runner controls
+
+The opt-in suite is `SIGRUN_SANDBOX_IT=1 npx vitest run test/sandbox-it`.
+The CI `sandbox-it` job requires Landlock ABI 6 before running it. Its
+`/proc` and ptrace cases also perform the same operation as the same uid
+from outside any jail. The run log states, per case, either **Landlock
+discriminating** (the outside operation succeeds) or **Yama/host-policy
+satisfied, not Landlock-discriminating** (the outside operation is denied
+too). The latter still checks the denial but does not claim Landlock caused
+it. The abstract-socket case requires a successful outside-jail connection.
+The `pkill -x node` case needs unprivileged user/PID namespaces and `nsenter`:
+its outside control kills only PID 1 of a disposable namespace, never the
+test runner or another host Node process. If namespaces are unavailable,
+the suite skips with that named reason.
+
+The `osUser` success case and the in-jail uid-switch discrimination require
+a **privileged runner** with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`. The suite grants only
+`cap_setuid,cap_setgid+ep` to a temporary helper copy and verifies an
+unjailed uid/gid switch before testing the jailed denial. Without that
+successful outside control, both tests skip with a named reason; they never
+claim to prove confinement. An ordinary CI runner without file-capability
+permission therefore leaves these two cases unproven. The suite never runs
+`sudo` itself.
+
+The per-user-service process tests use a separate real-helper-launched
+service fixture. M2's per-user service lifecycle is a later workstream; this
+fixture proves the sibling-jail `/proc` and ptrace boundary, not that M2 has
+shipped.
+
 ## Backup
 
 Set a target (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+`SIGRUN_BACKUP_S3_PREFIX`,

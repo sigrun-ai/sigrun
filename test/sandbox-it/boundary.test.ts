@@ -33,6 +33,7 @@ import {
 	nativePolicy,
 	spawnUnjailed,
 	directWorker,
+	buildOsUserPolicy,
 	captureWorkerPid,
 	terminateOutside,
 	KILL_PROBE,
@@ -40,6 +41,7 @@ import {
 	nodeProbe,
 	plantCoreEnv,
 	probeSandbox,
+	namespaceUnavailableReason,
 	READ_PROBE,
 	WORKER_PID_PROBE,
 	WRITE_PROBE,
@@ -51,8 +53,11 @@ import {
 const probe = await probeSandbox();
 const SKIP_REASON = probe.reason ?? "";
 if (SKIP_REASON !== "") console.warn(`sandbox-it skipped: ${SKIP_REASON}; CI on ubuntu-24.04 is the real run`);
-const enabled = process.env.SIGRUN_SANDBOX_IT === "1" && probe.available;
-const describeKernel = describe.skipIf(!enabled);
+const namespaceReason = process.env.SIGRUN_SANDBOX_IT === "1" && probe.available
+	? await namespaceUnavailableReason()
+	: undefined;
+if (namespaceReason !== undefined) console.warn(`sandbox-it skipped: ${namespaceReason}`);
+const describeKernel = describe.skipIf(process.env.SIGRUN_SANDBOX_IT !== "1" || !probe.available || namespaceReason !== undefined);
 
 let deployment: Deployment;
 let bob: AgentConversation;
@@ -86,7 +91,7 @@ async function stopOutside(child: ChildProcess | undefined): Promise<void> {
 }
 
 beforeAll(async () => {
-	if (!enabled) return;
+	if (!process.env.SIGRUN_SANDBOX_IT || !probe.available || namespaceReason !== undefined) return;
 	root = await mkdtemp(join(tmpdir(), "sigrun-kernel-boundary-"));
 	roots.push(root);
 	deployment = await bootDeployment({ root });
@@ -153,7 +158,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-	if (!enabled) return;
+	if (!process.env.SIGRUN_SANDBOX_IT || !probe.available || namespaceReason !== undefined) return;
 	await coreEnv?.restore();
 	await stopOutside(service);
 	await stopOutside(abstractSocket);
@@ -268,6 +273,9 @@ describeKernel("real tools in real two-user conversations", () => {
 	});
 
 	test("bob cannot read another worker's environ or memory", async () => {
+		const refreshedPid = await alice.bash(nodeProbe(WORKER_PID_PROBE, join(deployment.aliceWorkspace, "worker-pid.txt")));
+		expect(refreshedPid.isError, refreshedPid.text).toBe(false);
+		aliceWorkerPid = (await readFile(join(deployment.aliceWorkspace, "worker-pid.txt"), "utf8")).trim();
 		const own = await bob.bash(nodeProbe(READ_PROBE, "/proc/self/environ"));
 		expect(own.isError, own.text).toBe(false);
 		const envControl = await outsideProbe(["read-environ", aliceWorkerPid]);
@@ -305,6 +313,34 @@ describeKernel("real tools in real two-user conversations", () => {
 	});
 
 	test("two-user pkill node cannot kill sigrun and /healthz stays up", async () => {
+		// The main deployment is PID 1 in a disposable PID namespace. This
+		// control really runs pkill -x node there and kills ONLY that server,
+		// never vitest or another host node process.
+		const control = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+			const child = spawnOutside("nsenter", ["-t", String(deployment.pid), "-p", "pkill", "-x", "node"]);
+			let output = "";
+			child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+			child.once("error", reject);
+			child.once("exit", (code) => resolve({ code, output }));
+		});
+		expect(control.code, control.output).toBe(0);
+		const stoppedDeadline = Date.now() + 10_000;
+		for (;;) {
+			try {
+				await deployment.stop();
+				break;
+			} catch (error) {
+				if (Date.now() > stoppedDeadline) throw error;
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+		}
+		deployment = await bootDeployment({ root });
+		bob = await AgentConversation.create(deployment, "bob");
+		alice = await AgentConversation.create(deployment, "alice");
+		const pidProbe = await alice.bash(nodeProbe(WORKER_PID_PROBE, join(deployment.aliceWorkspace, "worker-pid.txt")));
+		expect(pidProbe.isError, pidProbe.text).toBe(false);
+		aliceWorkerPid = (await readFile(join(deployment.aliceWorkspace, "worker-pid.txt"), "utf8")).trim();
 		const denied = await bob.bash("pkill -x node; status=$?; printf 'PKILL_STATUS=%s\\n' \"$status\"");
 		expect(denied.isError, denied.text).toBe(true);
 		const health = await fetch(`${deployment.baseUrl}/healthz`);
@@ -384,7 +420,22 @@ describeKernel("real tools in real two-user conversations", () => {
 			ctx.skip(privileged.reason!);
 			return;
 		}
-		const policy = { ...nativePolicy(privileged.native), uid: 1, gid: 1, groups: [1] };
+		const osRoot = await mkdtemp(join(tmpdir(), "sigrun-osuser-policy-"));
+		roots.push(osRoot);
+		const account = { uid: 1, gid: 1, groups: [1], home: osRoot };
+		const built = buildOsUserPolicy(osRoot, account);
+		expect(built.uid).toBe(1);
+		expect(built.gid).toBe(1);
+		expect(built.groups).toEqual([1]);
+		const policy = {
+			ro: [...built.ro, privileged.native],
+			rw: built.rw,
+			minAbi: 6,
+			uid: built.uid,
+			gid: built.gid,
+			groups: built.groups,
+			ensureDirs: built.ensureDirs,
+		};
 		const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
 			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "identity"], {
 				SIGRUN_SANDBOX_POLICY: JSON.stringify(policy),
@@ -400,7 +451,7 @@ describeKernel("real tools in real two-user conversations", () => {
 	});
 
 	test("commands inherit no worker IPC descriptors", async () => {
-		const direct = await directWorker(root);
+		const direct = await directWorker(join(root, "lifecycle-ipc"));
 		try {
 			let output = "";
 			const result = await direct.env.exec(directCommand([native.path, "fds"]), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
@@ -413,7 +464,7 @@ describeKernel("real tools in real two-user conversations", () => {
 	});
 
 	test("worker crash errors the in-flight exec and the next call gets a new pid", async () => {
-		const direct = await directWorker(root);
+		const direct = await directWorker(join(root, "lifecycle-crash"));
 		const pidPath = join(direct.policy.workspace, "worker-pid.txt");
 		try {
 			const oldPid = await captureWorkerPid(direct.env, pidPath);
@@ -439,7 +490,7 @@ describeKernel("real tools in real two-user conversations", () => {
 	});
 
 	test("the real helper worker stops after the idle timeout", async () => {
-		const direct = await directWorker(root, 1 / 60_000);
+		const direct = await directWorker(join(root, "lifecycle-idle"), 1 / 60_000);
 		try {
 			const pid = await captureWorkerPid(direct.env, join(direct.policy.workspace, "idle-pid.txt"));
 			expect(direct.client.pid).toBe(pid);
