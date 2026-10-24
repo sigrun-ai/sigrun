@@ -398,9 +398,12 @@ function secretFieldNames(body: unknown): ReadonlySet<string> {
 		if (!Array.isArray(nodes)) return;
 		for (const child of nodes) {
 			if (typeof child !== "object" || child === null) continue;
-			// columns/grid children are `{weight?, block}` wrappers.
+			// columns/grid children are `{weight?, block}` wrappers. Walk
+			// BOTH: unknown props pass validation, so a stray `block` prop
+			// on a real node must not shadow the node's own children.
 			const rec = child as { block?: unknown };
-			walkNode(rec.block ?? child);
+			walkNode(child);
+			if (rec.block !== undefined) walkNode(rec.block);
 		}
 	};
 	walkNode(root);

@@ -539,14 +539,19 @@ describe("secret answers (Review Focus 4)", () => {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT);
 		const host = opened.seamHosts.get("sigrun-fixture-seam");
 		if (host === undefined) throw new Error("fixture-seam host missing");
-		// Critical 1 regression: a secret field one level down in a SECTION
-		// whose children include a deeper nesting. The wire FormBlock type
-		// admits only Field | SectionBlock at the root, so the gap shape is
-		// section-inside-section (the walker must recurse the `children`
-		// slot of EVERY container, not just the root form's and one section
-		// level). The runtime validator treats section children as AnyObject
-		// (schema.ts:254), so the nested shape validates; the wire cast goes
-		// through the test's own literal.
+		// Critical 1 regression: a secret field nested in NON-section
+		// containers (a stack child and a section carrying a stray `block`
+		// prop). The wire FormBlock type admits only Field | SectionBlock
+		// at the root, so the discriminating shapes live one level down:
+		// (a) a stack child (the pre-fix walker recursed only sections;
+		//     the walker must descend the `children` slot of EVERY
+		//     container, not just sections), and (b) a section whose stray
+		//     `block` prop would have SHADOWED its real children under the
+		//     pre-fix `rec.block ?? child` walk. The runtime validator
+		//     treats section/stack children as AnyObject (schema.ts:218,
+		//     schema.ts:254) and unknown props pass (no
+		//     additionalProperties:false, schema.ts:5-7), so both shapes
+		//     validate; the wire cast goes through the test's own literal.
 		const nested = {
 			v: 1,
 			root: {
@@ -559,10 +564,20 @@ describe("secret answers (Review Focus 4)", () => {
 						type: "section",
 						title: "Primary",
 						children: [
-							{ type: "secret", name: "token", label: "API token" },
+							{
+								type: "stack",
+								children: [
+									{ type: "secret", name: "token", label: "API token" },
+								],
+							},
 							{
 								type: "section",
 								title: "Alternate",
+								// A stray `block` prop (unknown props validate): the
+								// walker must visit BOTH this wrapper and the real
+								// children below. Cast: the wire SectionBlock type
+								// doesn't know `block` — that's the point.
+								block: { type: "markdown", text: "decoy" },
 								children: [
 									{ type: "secret", name: "altToken", label: "Alt token" },
 								],
@@ -571,7 +586,7 @@ describe("secret answers (Review Focus 4)", () => {
 					},
 				],
 			},
-		} as import("@sigrun/shared/blocks").Tree;
+		} as unknown as import("@sigrun/shared/blocks").Tree;
 		await host.seedInteraction(
 			root.id as never,
 			{
@@ -670,10 +685,11 @@ describe("secret answers (Review Focus 4)", () => {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT);
 		const host = opened.seamHosts.get("sigrun-fixture-seam");
 		if (host === undefined) throw new Error("fixture-seam host missing");
-		// Important 3 / minor 6 neighbour: a pending poll arriving BEFORE
-		// the winning answer commits must not destroy the delivery (the
-		// record check comes first, so a pending record never reaches take)
-		// — and the second answer's loser branch must not sweep it either.
+		// Finding 3: this pins the RECORD-FIRST ordering, not a poll-window
+		// race — a pending poll arriving BEFORE the winning answer commits
+		// checks the record first, sees it pending, and never reaches take
+		// (so the delivery table is untouched); the second answer's loser
+		// branch must not sweep the winner's delivery either.
 		await host.seedInteraction(
 			root.id as never,
 			{
