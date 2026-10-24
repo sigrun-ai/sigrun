@@ -201,6 +201,16 @@ export interface ServerSettings {
 	 */
 	readonly dev?: boolean;
 	/**
+	 * The supervised flag (UI-blocks U4 Task 2, spec §13.3):
+	 * `SIGRUN_SUPERVISED` (strict true/false, `1`/`0` accepted) over this
+	 * key, default `false`. `true` promises a supervisor restarts the
+	 * process after an intentional `exit 0` — the Helm chart and docker
+	 * compose set the env (both restart the container); the Dockerfile
+	 * deliberately does NOT. Gates `POST /v1/admin/restart`; `/v1/meta`
+	 * reports it (`supervised`).
+	 */
+	readonly supervised?: boolean;
+	/**
 	 * The backup target — exactly one of the two shapes (mirroring the
 	 * env rule: `SIGRUN_BACKUP_PATH` XOR `SIGRUN_BACKUP_S3_BUCKET`), plus
 	 * the §6.8 honesty knob: `staleAfterHours`, how old the

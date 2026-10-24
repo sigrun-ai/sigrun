@@ -344,6 +344,7 @@ describe("server route table", () => {
 				"/healthz",
 				"/readyz",
 				"/metrics",
+				"/v1/admin/restart",
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/check",

@@ -309,6 +309,32 @@ export class SigrunClient {
 		return this.#get("/v1/settings");
 	}
 
+	/**
+	 * `POST /v1/admin/restart` (admin; U4 Task 2, spec §13.3): resolves
+	 * once the server answered 202 (the restart begins after the reply);
+	 * rejects on 403/409 (the restart never began).
+	 */
+	async requestRestart(): Promise<void> {
+		await this.#send("POST", "/v1/admin/restart", {});
+	}
+
+	/**
+	 * `GET /readyz` readiness probe (U4 Task 2): `true` only on a 200.
+	 * The restart-recovery poll rides this; a connection-level failure
+	 * (the process mid-restart) resolves `false`, never throws.
+	 */
+	async checkReady(): Promise<boolean> {
+		try {
+			const response = await this.#fetch(`${this.#baseUrl}/readyz`, {
+				method: "GET",
+				headers: this.#headers,
+			});
+			return response.ok;
+		} catch {
+			return false;
+		}
+	}
+
 	/** `GET /v1/models` — the chat-model catalog (the model picker's items). */
 	listModels(): Promise<ModelsResponse> {
 		return this.#get("/v1/models");

@@ -382,6 +382,19 @@ export interface SubmitOptions {
 /** The §5 client surface. */
 export interface SigrunClient {
 	getMeta(): Promise<MetaResponse>;
+	/**
+	 * `POST /v1/admin/restart` (admin; U4 Task 2, spec §13.3): resolves
+	 * once the server answered 202 (the restart begins after the reply);
+	 * rejects fail-loud on 403/409 (the shell shows the error and stays
+	 * up — no restart began).
+	 */
+	requestRestart(): Promise<void>;
+	/**
+	 * `GET /readyz` readiness probe (U4 Task 2): `true` only on a 200.
+	 * The restart-recovery poll rides this; a connection-level failure
+	 * (the process mid-restart) resolves `false`, never throws.
+	 */
+	checkReady(): Promise<boolean>;
 	listConversations(): Promise<ConversationList>;
 	listModels(): Promise<ModelsResponse>;
 	getConversationMeta(conversationId: number): Promise<ConversationMeta>;
@@ -714,6 +727,21 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 
 	return {
 		getMeta: () => get<MetaResponse>("/v1/meta"),
+		requestRestart: async () => {
+			await send("POST", "/v1/admin/restart", {});
+		},
+		checkReady: async () => {
+			try {
+				const response = await fetchImpl(`${baseUrl}/readyz`, {
+					method: "GET",
+					headers: { accept: "application/json" },
+				});
+				return response.ok;
+			} catch {
+				// Connection refused while the process is down: not ready.
+				return false;
+			}
+		},
 		listConversations: () => get<ConversationList>("/v1/conversations"),
 		listModels: () => get<ModelsResponse>("/v1/models"),
 		getConversationMeta: (conversationId) =>

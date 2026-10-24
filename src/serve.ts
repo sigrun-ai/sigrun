@@ -155,6 +155,15 @@ export async function serve(
 	// (below) — an engine supervising chat transports starts once the
 	// server it delivers through is up.
 	const gateway = startGateway(opened);
+	// The booted handle the restart callback defers to: `createServer`
+	// needs the callback BEFORE `serve` can build the BootedServer (the
+	// shutdown composition lives at the bottom of this function), so the
+	// reference is assigned at return time and read lazily at restart
+	// time (a restart request can only arrive after listen, hence after
+	// the assignment).
+	const bootedRef: { current: BootedServer | undefined } = {
+		current: undefined,
+	};
 	// The contributed-bundle registry (build-and-webui Task 6): boot folded
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
@@ -162,6 +171,22 @@ export async function serve(
 		listenHost: options?.host ?? "0.0.0.0",
 		env,
 		gateway,
+		// U4 Task 2 (spec §13.3): the admin restart route's callback runs
+		// EXACTLY the SIGTERM path (the ordered shutdown), then exits 0 —
+		// the supervisor (chart/compose, `server.supervised`) brings the
+		// process back. `shutdownOnce` is the same re-entry guard the
+		// signal path uses; `stopping` is assigned by closure below, so
+		// the callback defers to it (the route fires post-listen).
+		onRestart: () =>
+			bootedRef.current
+				?.shutdownOnce()
+				.then(() => {
+					process.exit(0);
+				})
+				.catch((error: unknown) => {
+					console.error("sigrun restart error:", error);
+					process.exit(1);
+				}),
 	});
 	const host = options?.host ?? "0.0.0.0";
 	await app.listen({ port: config.port, host });
@@ -221,7 +246,7 @@ export async function serve(
 	});
 
 	let stopping: Promise<void> | undefined;
-	return {
+	const booted: BootedServer = {
 		port: config.port,
 		shutdown,
 		shutdownOnce: () => {
@@ -229,4 +254,6 @@ export async function serve(
 			return stopping;
 		},
 	};
+	bootedRef.current = booted;
+	return booted;
 }

@@ -44,6 +44,7 @@ import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
+import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
@@ -118,6 +119,14 @@ export async function createServer(
 		 * an engine loaded — the field is the serve composition's report.
 		 */
 		gateway?: GatewayHandle;
+		/**
+		 * The restart callback (U4 Task 2, spec §13.3): the serve
+		 * composition threads its graceful-shutdown + exit-0 path here so
+		 * `POST /v1/admin/restart` runs exactly what SIGTERM runs. Absent
+		 * on hand-built test servers — their restart tests inject a stub
+		 * through this same option.
+		 */
+		onRestart?: () => Promise<void> | void;
 	},
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
@@ -230,6 +239,9 @@ export async function createServer(
 		surfaces: surfacesService,
 		sse,
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
+		...(options?.onRestart === undefined
+			? {}
+			: { requestRestart: options.onRestart }),
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
@@ -257,6 +269,7 @@ export async function createServer(
 	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
+	registerAdminRoutes(app, ctx);
 	registerMetricsRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
 	registerStreamRoutes(app, ctx);

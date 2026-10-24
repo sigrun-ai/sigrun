@@ -95,6 +95,16 @@ export interface ServerContext {
 		keys: readonly string[],
 	) => void;
 	/**
+	 * The restart callback (UI-blocks U4 Task 2, spec §13.3): the serve
+	 * composition's graceful shutdown + `process.exit(0)`. `POST
+	 * /v1/admin/restart` schedules it on the next tick (the 202 flushes
+	 * first). PRESENT only in the serve composition — a hand-built test
+	 * server omits it; the route then answers supervised posts with a
+	 * loud composition error (never a silent no-op). Absent or present,
+	 * an unsupervised config never reaches it (409 first).
+	 */
+	readonly requestRestart?: () => Promise<void> | void;
+	/**
 	 * The gateway handle (gateway C2): created by the serve composition
 	 * BEFORE `createServer` and threaded through the `gateway` option so
 	 * the meta route reads the wrapped engine health. ABSENT on hand-built

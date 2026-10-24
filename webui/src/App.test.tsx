@@ -44,6 +44,7 @@ function makeMeta(init?: {
 		backup: {},
 		capabilities: { backup: false, channels: ["webui"] },
 		dev: false,
+		supervised: false,
 		seam: { interactions: [], ambient: [] },
 		collisions: { webui: [], providers: [], commands: [] },
 	};
@@ -55,8 +56,11 @@ function makeHarness(init?: {
 	/** Serve a 500 for the FIRST conversation-meta PATCH, then succeed (the
 	 * shell-error recovery test's scripted failure). */
 	readonly failFirstMetaPatch?: boolean;
+	/** U4 Task 2 (§13.3): /readyz answers 503 until the test flips it. */
+	readonly readyzDown?: { readonly ready: { current: boolean } };
 }) {
 	let metaPatchFails = init?.failFirstMetaPatch === true;
+	const restartCalls: number[] = [];
 	const metas: Record<number, ConversationMeta> = {
 		1: {
 			pinned: false,
@@ -94,6 +98,28 @@ function makeHarness(init?: {
 	const calls: Call[] = [];
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
+		if (input === "/readyz") {
+			// U4 Task 2: the restart-recovery probe — 503 until flipped.
+			const ready = init?.readyzDown === undefined || init.readyzDown.ready.current;
+			return Promise.resolve({
+				ok: ready,
+				status: ready ? 200 : 503,
+				json: () => Promise.resolve({}),
+				text: () => Promise.resolve(""),
+			});
+		}
+		if (input === "/v1/admin/restart") {
+			// U4 Task 2 (§13.3): 202 {restarting: true}; the fake then takes
+			// /readyz down until the test flips it back.
+			restartCalls.push(1);
+			if (init?.readyzDown !== undefined) init.readyzDown.ready.current = false;
+			return Promise.resolve({
+				ok: true,
+				status: 202,
+				json: () => Promise.resolve({ restarting: true }),
+				text: () => Promise.resolve(""),
+			});
+		}
 		if (input === "/v1/meta") {
 			if (init?.metaFails === true) {
 				return Promise.resolve({
@@ -184,6 +210,7 @@ function makeHarness(init?: {
 		createEventSource,
 		sources,
 		fetchImpl,
+		restartCalls,
 	};
 }
 
@@ -769,4 +796,72 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 		}
 	});
 });
+});
+
+describe("App restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
+	test("requestRestart POSTs /v1/admin/restart, shows Restarting…, and recovers when /readyz answers", async () => {
+		const readyzDown = { ready: { current: true } };
+		const { client, createEventSource, restartCalls } = makeHarness({
+			readyzDown,
+		});
+		// The app exposes its actions to tests via onExposeActions (Task 4
+		// wires the §13.4 callout's Restart button to the same action).
+		let actions: { restart(): Promise<void> } | undefined;
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				onExposeActions={(exposed: { restart(): Promise<void> }) => {
+					actions = exposed;
+				}}
+			/>,
+		);
+		// Shell is up. Trigger the restart the way the §13.4 callout's
+		// Restart button will: the app's restart action. The action is
+		// LONG-RUNNING (it resolves only after the recovery poll finishes)
+		// — capture the promise, never await it inside act.
+		expect(actions).toBeDefined();
+		let restartDone: Promise<void> | undefined;
+		await act(async () => {
+			restartDone = actions?.restart();
+			// Let the POST + the setBoot land within this window.
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		});
+		expect(restartCalls).toHaveLength(1);
+		// "Restarting…" replaces the shell while /readyz is down.
+		let text = textContent(renderer.toJSON());
+		expect(text).toContain("Restarting");
+		// The server comes back: /readyz flips to 200 and the app
+		// re-boots (the keyed remount re-runs the meta gate → shell).
+		readyzDown.ready.current = true;
+		// Poll-with-deadline INSIDE act: each iteration is a real-time
+		// window. The chain (poll sleep → setBoot → meta refetch → shell)
+		// needs a full poll cadence per hop in this environment (state
+		// updates from the free-running poll land one window late), so
+		// the loop ends on the shell's return, never a guessed hop count.
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			});
+			if (
+				renderer.root.findAllByProps({ className: "chat-header" }).length ===
+				1
+			) {
+				break;
+			}
+			// The recovery path lands state OUTSIDE act (the free-running
+			// poll) — force-flush the renderer's queued work each window so
+			// a microtask-scheduled re-render is never starved.
+			renderer.root;
+			if (Date.now() > deadline) break;
+		}
+		text = textContent(renderer.toJSON());
+		expect(text).not.toContain("Restarting");
+		expect(
+			renderer.root.findAllByProps({ className: "chat-header" }),
+		).toHaveLength(1);
+		// The long-running action settles once the recovery poll ended.
+		await restartDone;
+	}, 15_000);
 });

@@ -574,6 +574,15 @@ export interface MetaResponse {
 	 */
 	readonly dev: boolean;
 	/**
+	 * The supervised flag (UI-blocks U4 Task 2, spec §13.3): `true` when
+	 * the deployment guarantees the process is restarted after an
+	 * intentional `exit 0` (the Helm chart and docker compose set
+	 * `SIGRUN_SUPERVISED=1`; a bare `docker run` does not). The §13.2
+	 * pendingRestart callout renders its Restart button only for a
+	 * supervised admin; otherwise it says "Restart sigrun to apply".
+	 */
+	readonly supervised: boolean;
+	/**
 	 * The seam inventory (docs/approval-ux-seams.md): per extension, the
 	 * interaction kinds / ambient surface keys its factory declared.
 	 * Extensions that declared nothing are absent — an absent entry means

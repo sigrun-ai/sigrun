@@ -290,6 +290,17 @@ export interface SigrunConfig {
 	 */
 	dev: boolean;
 	/**
+	 * The supervised flag (UI-blocks U4 Task 2, spec §13.3):
+	 * `SIGRUN_SUPERVISED` (strict true/false, `1`/`0` accepted like
+	 * `SIGRUN_DEV`) over the file's `server.supervised`, default `false`.
+	 * `true` promises that SOMETHING restarts the process after an
+	 * intentional `exit 0` (the Helm chart and docker compose set it; the
+	 * Dockerfile deliberately does NOT — a bare `docker run` without a
+	 * restart policy would stay down). `POST /v1/admin/restart` exists only
+	 * under this flag; `/v1/meta` reports it.
+	 */
+	supervised: boolean;
+	/**
 	 * The jobs default timezone (§8.2): `SIGRUN_TIMEZONE` over the file's
 	 * `server.timezone` over the process TZ
 	 * (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Cron schedules
@@ -640,6 +651,23 @@ function parseDev(env: Env): boolean | undefined {
 	if (lowered === "false" || lowered === "0") return false;
 	throw new Error(
 		`SIGRUN_DEV must be "true" or "false" (or 1/0), got ${JSON.stringify(raw)}`,
+	);
+}
+
+/**
+ * Parse `SIGRUN_SUPERVISED` (UI-blocks U4 Task 2, spec §13.3): the
+ * `parseDev` grammar exactly ("true"/"false"/1/0, strict otherwise —
+ * the env contract is the deploy's promise that a restart policy exists,
+ * so a fuzzy parse would lie about the failure mode).
+ */
+function parseSupervised(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_SUPERVISED;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true" || lowered === "1") return true;
+	if (lowered === "false" || lowered === "0") return false;
+	throw new Error(
+		`SIGRUN_SUPERVISED must be "true" or "false" (or 1/0), got ${JSON.stringify(raw)}`,
 	);
 }
 
@@ -1254,6 +1282,11 @@ export function envServerSection(env: Env): ServerSettings {
 	// would read as intent on the next boot).
 	const dev = parseDev(env);
 	if (dev !== undefined) section.dev = dev;
+	// The supervised flag (§13.3) — the same bootstrap rule as dev:
+	// projected only when the env var is SET (a defaulted flag is never
+	// persisted; the deploy's restart posture is env intent, not state).
+	const supervised = parseSupervised(env);
+	if (supervised !== undefined) section.supervised = supervised;
 	return section as ServerSettings;
 }
 
@@ -1372,6 +1405,9 @@ export function effectiveServerSection(
 		["providers", "refreshIntervalMinutes"],
 	);
 	emit("dev", config.dev, ["dev"]);
+	// U4 §13.3: the supervised posture rides the effective block too —
+	// the settings surface's restart affordance reads one place.
+	emit("supervised", config.supervised, ["supervised"]);
 	if (config.backup?.target === "path") {
 		emit("backup.path", config.backup.path, ["backup", "path"]);
 		emit(
@@ -1558,6 +1594,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		// The development flag (§14.2/§14.4): strict env parse over the
 		// file's `server.dev`, default false.
 		dev: parseDev(env) ?? server?.dev ?? false,
+		// The supervised posture (§13.3): env over file over false. Only
+		// the chart and compose set the env; a file-set flag serves a
+		// hand-rolled systemd/supervisord deploy (same restart promise).
+		supervised: parseSupervised(env) ?? server?.supervised ?? false,
 		// The jobs default timezone (§8.2): env over file over the process
 		// TZ, validated loud (a bad name would otherwise crash the scheduler
 		// at evaluation time instead of failing boot).
