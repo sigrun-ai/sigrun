@@ -121,6 +121,44 @@ describe("gateway shutdown e2e (Task 12)", () => {
 		}
 	});
 
+	test("shutdown flushes an open album before the adapters stop", { timeout: 60_000 }, async () => {
+		const events: LoopEvent[] = [];
+		loopLog(events);
+		const boot = await bootGateway({
+			gatewaySettings: {
+				channels: {
+					loop: {
+						dm: "allowlist",
+						allow: [{ sender: "100000001", user: "alice" }],
+						stream: false,
+					},
+				},
+			},
+		});
+		try {
+			const first = await boot.loop.inbound({
+				...dm("album-shutdown-1", "100000001", "album part one"),
+				groupId: "synthetic-album",
+			});
+			const second = await boot.loop.inbound({
+				...dm("album-shutdown-2", "100000001", "album part two"),
+				groupId: "synthetic-album",
+			});
+			expect([first.outcome, second.outcome]).toEqual(["admitted", "admitted"]);
+			// Both events are held in the 1.5-second merge window. No model
+			// call may occur before stopIntake flushes that window.
+			expect(boot.faux.state.callCount).toBe(0);
+			await boot.shutdown();
+			const answerAt = events.findIndex((event) => event.text === "gateway answer");
+			const stopAt = events.findIndex((event) => event.type === "stop");
+			expect(answerAt).toBeGreaterThanOrEqual(0);
+			expect(stopAt).toBeGreaterThan(answerAt);
+			expect(boot.loop.sent.some((message) => message.text === "gateway answer")).toBe(true);
+		} finally {
+			clearLoopLog();
+		}
+	});
+
 	test("DELETE /v1/users/bob with transfer forgets bob's linked sender and homes", { timeout: 90_000 }, async () => {
 		const boot = await bootGateway({
 			gatewaySettings: SETTINGS,

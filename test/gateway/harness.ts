@@ -36,6 +36,20 @@ export const LOOPBACK_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "..", "fixtures", "fixture-loopback-channel", "index.js"),
 ).href;
 
+/** A second isolated loopback-shaped channel (id `loop2`). */
+export const LOOP2_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "..", "fixtures", "fixture-loop2-channel", "index.js"),
+).href;
+
+/** The second channel's deliberately separate global handle. */
+export interface Loop2Handle {
+	readonly ctx: import("../../src/extension.js").ChannelContext | undefined;
+	readonly sent: readonly import("../../src/extension.js").OutboundMessage[];
+	inbound(
+		event: import("../../src/extension.js").InboundEvent,
+	): Promise<{ readonly outcome: "admitted" | "dropped" | "command" }>;
+}
+
 /** The loop handle the fixture installs on globalThis. */
 export interface LoopHandle {
 	readonly ctx: import("../../src/extension.js").ChannelContext | undefined;
@@ -63,6 +77,7 @@ export interface GatewayBoot {
 	readonly app: FastifyInstance;
 	readonly gateway: GatewayHandle;
 	readonly loop: LoopHandle;
+	readonly loop2: Loop2Handle | undefined;
 	readonly faux: FauxProviderHandle;
 	readonly tokens: Readonly<Record<string, string>>;
 	readonly config: SigrunConfig;
@@ -77,6 +92,8 @@ export interface GatewayBoot {
 export interface BootGatewayOptions {
 	/** Extra settings-file fields (merged with `namingModel: false`). */
 	readonly settings?: Record<string, unknown>;
+	/** Load the independent `loop2` fixture alongside `loop`. */
+	readonly secondChannel?: boolean;
 	/** The `settings/gateway.json` body (the engine's scoped settings). */
 	readonly gatewaySettings?: Record<string, unknown>;
 	/** Directory users to seed (alice admin + tester by default). */
@@ -229,7 +246,9 @@ export async function bootGateway(
 	const opened = await openHarness(config, {
 		identity,
 		extensions: [{ name: "ext-faux", providers: [{ provider: faux.provider }] }],
-		extensionSpecifiers: [LOOPBACK_SPECIFIER],
+		extensionSpecifiers: opts.secondChannel === true
+			? [LOOPBACK_SPECIFIER, LOOP2_SPECIFIER]
+			: [LOOPBACK_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: join(dir, "config"),
 	});
@@ -258,6 +277,10 @@ export async function bootGateway(
 	const loop = (globalThis as { __loop?: LoopHandle }).__loop;
 	if (loop === undefined) {
 		throw new Error("fixture-loopback-channel did not install globalThis.__loop");
+	}
+	const loop2 = (globalThis as { __loop2?: Loop2Handle }).__loop2;
+	if (opts.secondChannel === true && loop2 === undefined) {
+		throw new Error("fixture-loop2-channel did not install globalThis.__loop2");
 	}
 	const shutdown = async (): Promise<void> => {
 		const ordered = createShutdown({
@@ -300,6 +323,7 @@ export async function bootGateway(
 		app,
 		gateway,
 		loop,
+		loop2,
 		faux,
 		tokens,
 		config,
