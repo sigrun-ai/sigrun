@@ -58,6 +58,7 @@ import type { Action, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
 import type { InteractionAnswer, InteractionRecord } from "@sigrun/shared/interactions";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import type {
+	AccountLinkWire,
 	ConversationSummary,
 	ConversationViewWire,
 	HealthStatus,
@@ -76,6 +77,7 @@ import type {
 
 export type {
 	Access,
+	AccountLinkWire,
 	AmbientRecord,
 	DirectoryUserWire,
 	InteractionRecord,
@@ -983,6 +985,34 @@ export interface SigrunHost {
 	readonly users: {
 		list(): Promise<readonly DirectoryUserWire[]>;
 		get(user: string): Promise<DirectoryUserWire | undefined>;
+	};
+
+	/**
+	 * External identities linked to directory users (multi-user §11.3): the
+	 * one table for chat senders (`chat:<channel>`) and login subjects
+	 * (`login:<slug>:<id>`), shared with the gateway.
+	 *
+	 * Core owns the file — extensions go through this surface, never
+	 * `accounts.json` directly. One link per `(provider, subject)`: a
+	 * re-link to the same user is a no-op returning the existing record, a
+	 * link to a DIFFERENT user rejects with an `Error` whose message starts
+	 * `account_link_conflict:` (the message never names the current
+	 * holder — extensions match the prefix, as they do `command_not_found:`).
+	 * An unknown user rejects `unknown user "<user>"`.
+	 */
+	readonly accounts: {
+		lookup(
+			provider: string,
+			subject: string,
+		): Promise<AccountLinkWire | undefined>;
+		link(
+			provider: string,
+			subject: string,
+			user: string,
+			via: AccountLinkWire["via"],
+		): Promise<AccountLinkWire>;
+		unlink(provider: string, subject: string): Promise<boolean>;
+		listForUser(user: string): Promise<readonly AccountLinkWire[]>;
 	};
 
 	/**
