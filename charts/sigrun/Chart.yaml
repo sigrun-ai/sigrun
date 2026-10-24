@@ -6,8 +6,8 @@ description: >-
   Reference deployment for the sigrun core (spec §4.4): single replica,
   Recreate strategy, RWO block-like PVC for sqlite, ClusterIP Service.
 type: application
-version: 0.1.6
-appVersion: "0.1.6"
+version: 0.1.7
+appVersion: "0.1.7"
 keywords:
   - assistant
   - agent
