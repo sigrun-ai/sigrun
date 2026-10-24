@@ -82,7 +82,14 @@ import {
 } from "./providers/refresh.js";
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
-import { packagesDirOf } from "./packages.js";
+import { packagesDirOf, selfPackageRoot } from "./packages.js";
+import { resolveHelper } from "../sandbox/helper.js";
+import {
+	probeIsolation,
+	runHelperProbe,
+	selfTestHelper,
+	type IsolationAvailability,
+} from "../sandbox/availability.js";
 import {
 	BUILTIN_EXTENSIONS,
 	resolveBuiltins,
@@ -135,6 +142,8 @@ export const RESERVED_CORE_SECTION_OWNERS: Readonly<Record<string, string>> = {
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
 	readonly harness: Harness;
+	/** The one boot-time execution-jail availability decision. */
+	readonly isolation: IsolationAvailability;
 	/**
 	 * The durable storage handle the harness was opened over — the same
 	 * instance the Session owns and closes on `harness.close()`. Exposed so
@@ -454,6 +463,8 @@ export interface OpenedHarness {
 
 /** Optional `openHarness` inputs beyond the parsed config. */
 export interface OpenHarnessOptions {
+	/** Hermetic seam replacing the real helper/platform probe; still called once. */
+	readonly isolationProbe?: typeof probeIsolation;
 	/**
 	 * PROVIDER contributors (Task 2 seam) — NOT the extension package list.
 	 * These feed the Models collector; they are distinct from the deployed
@@ -588,6 +599,16 @@ export async function openHarness(
 	// store-root resolution immediately below, and the provider
 	// collector further down (`providerEnv`).
 	const env = options.env ?? process.env;
+	const coreRoot = selfPackageRoot();
+	const isolation = await (options.isolationProbe ?? probeIsolation)({
+		platform: process.platform,
+		helper: coreRoot === undefined ? undefined : resolveHelper(env, coreRoot),
+		runProbe: runHelperProbe,
+		selfTest: selfTestHelper,
+	});
+	console.log(
+		`sandbox isolation: ${isolation.available ? `available (Landlock ABI ${isolation.abi})` : `unavailable (${isolation.reason ?? "unknown reason"})`}`,
+	);
 	// Store-root lifecycle (spec §6): every durable root except cache
 	// exists before anything touches disk — storage, the registry's
 	// first install, extension packages — so a fresh deploy (or a PVC
@@ -1386,6 +1407,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	harness.resume();
 	return {
 		harness,
+		isolation,
 		storage,
 		registry,
 		models,

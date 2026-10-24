@@ -34,6 +34,7 @@ const META: MetaResponse = {
 	backup: {},
 	capabilities: { backup: false, channels: ["webui"] },
 	dev: false,
+	isolation: { mode: "auto", active: false, available: false, abi: 0, osUsers: "off" },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [], commands: [] },
 };

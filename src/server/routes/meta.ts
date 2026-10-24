@@ -136,6 +136,18 @@ export function registerMetaRoutes(
 			// §14.2/§14.4: the development flag — gates the gallery and the
 			// development error bodies (a boot constant, cached like the rest).
 			dev: config.dev,
+			isolation: {
+				mode: config.isolation.mode,
+				active: false,
+				available: opened.isolation.available,
+				abi: opened.isolation.abi,
+				...(opened.isolation.reason === undefined
+					? {}
+					: { reason: opened.isolation.reason }),
+				osUsers: config.isolation.osUsers
+					? "osUsers requires CAP_SETUID"
+					: "off",
+			},
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {
 				interactions: [...opened.seamKinds]
