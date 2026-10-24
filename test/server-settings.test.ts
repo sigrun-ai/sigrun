@@ -189,6 +189,9 @@ describe("GET /v1/settings", () => {
 		expect(response.json()).toEqual({
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// U4 §13.2: the pending-restart diff rides every GET; nothing
+			// is pending on a fresh boot.
+			pendingRestart: [],
 		});
 	});
 
@@ -303,6 +306,11 @@ describe("PATCH /v1/settings", () => {
 		expect(response.json()).toEqual({
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// The PATCH response carries the write's classification (U4
+			// §13.1/§13.2): steeringMode is a live key — applied, no pending.
+			applied: ["steeringMode"],
+			pending: [],
+			pendingRestart: [],
 		});
 	});
 
@@ -372,6 +380,10 @@ describe("PATCH /v1/settings", () => {
 			server: { port: 4080 },
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// §13.1: server.port is a restart key — stored, pending.
+			applied: [],
+			pending: ["server.port"],
+			pendingRestart: ["server.port"],
 		});
 		// Persisted to the file…
 		const file = JSON.parse(
@@ -390,6 +402,7 @@ describe("PATCH /v1/settings", () => {
 			server: { port: 4080 },
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			pendingRestart: ["server.port"],
 		});
 		// Invalid server fields → 400 invalid_field naming the key.
 		for (const [body, field] of [
@@ -425,6 +438,20 @@ describe("PATCH /v1/settings", () => {
 			server: { webuiBundle: "ui/dist" },
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// Every one of these is a restart key (§13.1) — all pending.
+			applied: [],
+			pending: [
+				"extensions",
+				"defaultModel",
+				"defaultProvider.baseUrl",
+				"server.webuiBundle",
+			],
+			pendingRestart: [
+				"extensions",
+				"defaultModel",
+				"defaultProvider.baseUrl",
+				"server.webuiBundle",
+			],
 		});
 		// Persisted to the file (restart-required: the running boot keeps
 		// its resolved values; these land on the NEXT boot).
@@ -965,5 +992,29 @@ describe("PATCH /v1/settings admin gate (core hardening W1 final review)", () =>
 			headers: { authorization: `Bearer ${plebToken}` },
 		});
 		expect(response.statusCode).toBe(200);
+	});
+
+	test("GET /v1/settings/sections stays open to a non-admin (the panel's client prefs die with a 403); the admin-only surfaces still gate", async () => {
+		const { app, plebToken } = await bootTokenServer();
+		const list = await app.inject({
+			method: "GET",
+			url: "/v1/settings/sections",
+			headers: { authorization: `Bearer ${plebToken}` },
+		});
+		expect(list.statusCode).toBe(200);
+		const body = list.json() as {
+			sections: { slug: string; id: string }[];
+		};
+		// The whole list serves (the Interface section the prefs ride
+		// included) — per-section surfaces keep their own gates.
+		expect(body.sections.length).toBeGreaterThan(0);
+		// A non-admin's read of an admin section's surface 404s (the
+		// access gate maps access:none to surface_not_found).
+		const surface = await app.inject({
+			method: "GET",
+			url: "/v1/ext/core/surfaces/general",
+			headers: { authorization: `Bearer ${plebToken}` },
+		});
+		expect(surface.statusCode).toBe(404);
 	});
 });

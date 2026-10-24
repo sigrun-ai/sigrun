@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delivery. Enabled by default; operators can disable it with
   `builtinExtensions.gateway: false`.
 
+## [0.1.7] - 2026-10-24
+### Fixed
+- The deploy entry binds the dual-stack wildcard (`::`) instead of the
+  IPv4-only `0.0.0.0`. On a dual-stack pod whose Service is IPv6-only
+  (`ipFamilies: ["IPv6"]` — the default shape on a cluster with an
+  `fd00::/8` ClusterIP range) the EndpointSlice advertises only the
+  pod's IPv6 address; the gateway dialed it, got connection-refused,
+  and answered `upstream connect error or disconnect/reset before
+  headers. reset reason: remote connection failure` while the
+  IPv4-loopback probes kept the pod Ready. `::` accepts both families
+  (`net.ipv6.bindv6only` is 0 on Linux), matching every other workload
+  in a dual-stack cluster. The reported listen line brackets the host
+  (`http://[::]:3000`).
+
+### Changed
+- The chart's main Service is `PreferDualStack` over `[IPv6, IPv4]`,
+  so it advertises both pod addresses regardless of the cluster's
+  default family. Converting an existing `SingleStack` Service is a
+  recreate (`spec.clusterIPs` is immutable).
+- `sigrun run` (workstation mode) still binds `127.0.0.1` only.
+
 ## [0.1.6] - 2026-10-24
 ### Added
 - Extension surfaces: typed block rendering, actions and uploads, live

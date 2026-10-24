@@ -193,6 +193,7 @@ describe("extension slash commands: the catalog merge", () => {
 			// of the fixture's `hello` (gateway Task 4, §8.2).
 			"pair",
 			"link",
+			"settings",
 			"hello",
 		]);
 	});

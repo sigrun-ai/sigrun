@@ -587,6 +587,57 @@ describe("envServerSection (the env-only bootstrap projection, ruling 5)", () =>
 		).toEqual({ value: false, source: "default" });
 	});
 
+	test("SIGRUN_SUPERVISED parses strictly (U4 §13.3; default false, file tier, effective block)", () => {
+		// Default false; unset reads false.
+		expect(loadConfig({ ...MODEL_ENV }).supervised).toBe(false);
+		// The boolean spellings (1/0/true/false, whitespace-trimmed).
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "1" }).supervised).toBe(true);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "0" }).supervised).toBe(false);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "true" }).supervised).toBe(true);
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: " FALSE " }).supervised).toBe(false);
+		// Empty counts as unset.
+		expect(loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "" }).supervised).toBe(false);
+		// Anything else fails LOUD naming the variable.
+		expect(() =>
+			loadConfig({ ...MODEL_ENV, SIGRUN_SUPERVISED: "yes" }),
+		).toThrow(/SIGRUN_SUPERVISED/);
+		// The file tier: server.supervised applies when the env var is absent.
+		expect(
+			loadConfig({ ...MODEL_ENV }, { server: { supervised: true } }).supervised,
+		).toBe(true);
+		// Env wins over the file.
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_SUPERVISED: "false" },
+				{ server: { supervised: true } },
+			).supervised,
+		).toBe(false);
+		// envServerSection projects ONLY an env-set supervised (a default is
+		// never persisted as intent — the bootstrap rule).
+		expect(envServerSection({ SIGRUN_SUPERVISED: "1" })).toEqual({
+			supervised: true,
+		});
+		expect(envServerSection({})).toEqual({});
+		// The effective block classifies it like every other server key.
+		const env = { ...MODEL_ENV, SIGRUN_SUPERVISED: "true" };
+		expect(
+			effectiveServerSection(env, undefined, loadConfig(env))[
+				"server.supervised"
+			],
+		).toEqual({ value: true, source: "env" });
+		const file: SettingsFile = { server: { supervised: true } };
+		expect(
+			effectiveServerSection(MODEL_ENV, file.server, loadConfig(MODEL_ENV, file))[
+				"server.supervised"
+			],
+		).toEqual({ value: true, source: "file" });
+		expect(
+			effectiveServerSection(MODEL_ENV, undefined, loadConfig(MODEL_ENV))[
+				"server.supervised"
+			],
+		).toEqual({ value: false, source: "default" });
+	});
+
 	test("SIGRUN_DEV projects into the bootstrap only when env-set", () => {
 		// The metrics projection stays env-only-true (metricsPublic has no
 		// file projection on this branch — W1 Task 1 adds that file tier).

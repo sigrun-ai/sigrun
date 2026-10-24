@@ -27,6 +27,7 @@ export function SurfaceView(props: {
 		() => ({
 			dispatch: surface.dispatch,
 			access: surface.access,
+			rev: surface.rev,
 			viewState:
 				typeof surface.view.view === "object" &&
 				surface.view.view !== null &&
@@ -39,6 +40,7 @@ export function SurfaceView(props: {
 		[
 			surface.dispatch,
 			surface.access,
+			surface.rev,
 			surface.view,
 			surface.setView,
 			surface.serverErrors,

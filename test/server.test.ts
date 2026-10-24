@@ -254,7 +254,7 @@ describe("GET /v1/meta", () => {
 		const meta = response.json();
 		expect(meta).toEqual({
 			harnessVersion: PI_DURABLE_VERSION,
-			version: "0.1.6",
+			version: "0.1.7",
 			schemaVersion: SCHEMA_VERSION,
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
@@ -264,6 +264,7 @@ describe("GET /v1/meta", () => {
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [], commands: [] },
 			dev: false,
+			supervised: false,
 		});
 	});
 

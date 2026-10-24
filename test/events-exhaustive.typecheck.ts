@@ -19,8 +19,13 @@
 
 import type { HostEventWire } from "@sigrun/shared/views";
 
-/** How the events route treats one wire member. */
-type EventDelivery = "conversation" | "broadcast" | "job" | "never";
+/**
+ * The mirror of `visible()`'s per-type dispatch, at the type level.
+ * `admin` is the delivery class settings.changed introduced (U4): the
+ * same broadcast mechanics as providers.changed but gated on the
+ * principal's admin flag.
+ */
+type EventDelivery = "conversation" | "broadcast" | "job" | "admin" | "never";
 
 /** The mirror of `visible()`'s per-type dispatch, at the type level. */
 function classifyDelivery(event: HostEventWire): EventDelivery {
@@ -37,6 +42,9 @@ function classifyDelivery(event: HostEventWire): EventDelivery {
 		// Broadcast to every authenticated principal.
 		case "providers.changed":
 			return "broadcast";
+		// U4 Task 1 (§13.2): settings changes reach admins only.
+		case "settings.changed":
+			return "admin";
 		// accessOf on the event's own job row, enriched with `access`.
 		case "job.changed":
 			return "job";

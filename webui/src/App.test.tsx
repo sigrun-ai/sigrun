@@ -44,6 +44,7 @@ function makeMeta(init?: {
 		backup: {},
 		capabilities: { backup: false, channels: ["webui"] },
 		dev: false,
+		supervised: false,
 		seam: { interactions: [], ambient: [] },
 		collisions: { webui: [], providers: [], commands: [] },
 	};
@@ -55,8 +56,19 @@ function makeHarness(init?: {
 	/** Serve a 500 for the FIRST conversation-meta PATCH, then succeed (the
 	 * shell-error recovery test's scripted failure). */
 	readonly failFirstMetaPatch?: boolean;
+	/** U4 Task 2 (§13.3): /readyz answers 503 until the test flips it. */
+	readonly readyzDown?: { readonly ready: { current: boolean } };
+	/** U4 Task 2 round-2: after the restart POST, /readyz keeps answering
+	 *  200 for this many MILLISECONDS (the DYING process still
+	 *  listening between the 202 and the deferred drain), then goes
+	 *  down until `readyzDown.ready` flips. Time-based (not probe
+	 *  count): a probe-before-sleep loop reads the first probe as
+	 *  ready and remounts onto the closing server — this window is
+	 *  what catches it. */
+	readonly readyzLingerMs?: number;
 }) {
 	let metaPatchFails = init?.failFirstMetaPatch === true;
+	const restartCalls: number[] = [];
 	const metas: Record<number, ConversationMeta> = {
 		1: {
 			pinned: false,
@@ -92,8 +104,44 @@ function makeHarness(init?: {
 		},
 	];
 	const calls: Call[] = [];
+	// Round-2 linger: the timestamp of the last restart POST — /readyz
+	// keeps answering 200 for `readyzLingerMs` after it (the dying
+	// listener still up while the drain is deferred).
+	let restartPostedAt = -1;
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
+		if (input === "/readyz") {
+			// U4 Task 2: the restart-recovery probe — 503 until flipped.
+			// Round-2 linger: within `readyzLingerMs` of the POST the DYING
+			// listener still answers 200, then the fake goes down.
+			const lingering =
+				init?.readyzLingerMs !== undefined &&
+				restartPostedAt >= 0 &&
+				Date.now() - restartPostedAt < init.readyzLingerMs;
+			const ready =
+				lingering ||
+				init?.readyzDown === undefined ||
+				init.readyzDown.ready.current;
+			return Promise.resolve({
+				ok: ready,
+				status: ready ? 200 : 503,
+				json: () => Promise.resolve({}),
+				text: () => Promise.resolve(""),
+			});
+		}
+		if (input === "/v1/admin/restart") {
+			// U4 Task 2 (§13.3): 202 {restarting: true}; the fake then takes
+			// /readyz down until the test flips it back.
+			restartCalls.push(1);
+			if (init?.readyzDown !== undefined) init.readyzDown.ready.current = false;
+			restartPostedAt = Date.now();
+			return Promise.resolve({
+				ok: true,
+				status: 202,
+				json: () => Promise.resolve({ restarting: true }),
+				text: () => Promise.resolve(""),
+			});
+		}
 		if (input === "/v1/meta") {
 			if (init?.metaFails === true) {
 				return Promise.resolve({
@@ -145,6 +193,57 @@ function makeHarness(init?: {
 			}
 		} else if (input === "/v1/models") body = { models: [] };
 		else if (input === "/v1/jobs") body = { jobs: [] };
+		else if (input === "/v1/extensions") body = { extensions: [] };
+		else if (input === "/v1/settings/sections") {
+			// U4 Task 4 fix wave: the shell-level Restart-wiring test opens
+			// the panel; the sections payload is the nav list (core only).
+			body = {
+				sections: [
+					{ slug: "core", id: "general", title: "General", icon: "key" },
+				],
+				index: [],
+			};
+		}
+		else if (/^\/v1\/ext\/core\/surfaces\/general/.test(input)) {
+			// The General section's surface: the meta block the
+			// pending-restart callout reads (pendingRestart + supervised).
+			body = input.includes("/data")
+				? {
+						rev: 2,
+						treeRev: 1,
+						data: {
+							settings: {},
+							meta: {
+								pendingRestart: ["server.port"],
+								env: {},
+								supervised: true,
+							},
+						},
+					}
+				: {
+						tree: {
+							root: {
+								type: "form",
+								id: "core-general-form",
+								bind: "/settings",
+								mode: "submit",
+								onSubmit: "save",
+								children: [],
+							},
+						},
+						data: {
+							settings: {},
+							meta: {
+								pendingRestart: ["server.port"],
+								env: {},
+								supervised: true,
+							},
+						},
+						rev: 1,
+						treeRev: 1,
+						access: "write",
+					};
+		}
 		else if (/^\/v1\/ext\//.test(input)) {
 			// The ext surface routes (U3 Task 5): a minimal board load so
 			// the surface page reaches its ready state.
@@ -177,13 +276,14 @@ function makeHarness(init?: {
 		sources.push({ url, source });
 		return source;
 	};
-	const client = createClient({ fetch: fetchImpl });
+	const client = createClient({ fetch: fetchImpl, rawFetch: fetchImpl });
 	return {
 		calls,
 		client,
 		createEventSource,
 		sources,
 		fetchImpl,
+		restartCalls,
 	};
 }
 
@@ -567,6 +667,50 @@ describe("App shell", () => {
 		).toHaveLength(1);
 	});
 
+	test("the settings panel wires the shell restart: a supervised admin sees the button and clicking it POSTs the restart", async () => {
+		const ready = { current: true };
+		const { client, createEventSource, restartCalls } = makeHarness({
+			meta: { ...makeMeta(), supervised: true },
+			readyzDown: { ready },
+		});
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				identity={{ admin: true, service: false, method: "token" }}
+			/>,
+		);
+		const settings = renderer.root.findByProps({ "aria-label": "settings" });
+		await act(async () => {
+			(settings.props as { onClick: () => unknown }).onClick();
+		});
+		// The General section auto-opens (the panel's default): the
+		// surface's meta block (pendingRestart + supervised) drives the
+		// callout's Restart button. The meta-probe's poll resolves async —
+		// flush microtasks until the callout mounts (bounded, no sleeps).
+		let button: { props: { onClick: () => unknown } } | null = null;
+		for (let attempt = 0; attempt < 20; attempt++) {
+			await act(async () => {});
+			const found = renderer.root.findAllByProps({
+				className: "settings-restart",
+			});
+			if (found.length > 0) {
+				button = found[0] as unknown as { props: { onClick: () => unknown } };
+				break;
+			}
+		}
+		expect(button).not.toBeNull();
+		const restartButton = button as { props: { onClick: () => unknown } };
+		expect(restartCalls).toHaveLength(0);
+		await act(async () => {
+			await restartButton.props.onClick();
+		});
+		expect(restartCalls).toHaveLength(1);
+		// The shell's recovery flow: the fake flips /readyz back and the
+		// app re-boots (the restart round-trip completes).
+		ready.current = true;
+	});
+
 describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 	function extMeta(): MetaResponse {
 		return makeMeta({
@@ -769,4 +913,127 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 		}
 	});
 });
+});
+
+describe("App restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
+	test("requestRestart POSTs /v1/admin/restart, shows Restarting…, and recovers when /readyz answers", async () => {
+		const readyzDown = { ready: { current: true } };
+		const { client, createEventSource, restartCalls } = makeHarness({
+			readyzDown,
+		});
+		// The app exposes its actions to tests via onExposeActions (Task 4
+		// wires the §13.4 callout's Restart button to the same action).
+		let actions: { restart(): Promise<void> } | undefined;
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				onExposeActions={(exposed: { restart(): Promise<void> }) => {
+					actions = exposed;
+				}}
+			/>,
+		);
+		// Shell is up. Trigger the restart the way the §13.4 callout's
+		// Restart button will: the app's restart action. The action is
+		// LONG-RUNNING (it resolves only after the recovery poll finishes)
+		// — capture the promise, never await it inside act.
+		expect(actions).toBeDefined();
+		let restartDone: Promise<void> | undefined;
+		await act(async () => {
+			restartDone = actions?.restart();
+			// Let the POST + the setBoot land within this window.
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		});
+		expect(restartCalls).toHaveLength(1);
+		// "Restarting…" replaces the shell while /readyz is down.
+		let text = textContent(renderer.toJSON());
+		expect(text).toContain("Restarting");
+		// The server comes back: /readyz flips to 200 and the app
+		// re-boots (the keyed remount re-runs the meta gate → shell).
+		readyzDown.ready.current = true;
+		// Poll-with-deadline INSIDE act: each iteration is a real-time
+		// window. The chain (poll sleep → setBoot → meta refetch → shell)
+		// needs a full poll cadence per hop in this environment (state
+		// updates from the free-running poll land one window late), so
+		// the loop ends on the shell's return, never a guessed hop count.
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			});
+			if (
+				renderer.root.findAllByProps({ className: "chat-header" }).length ===
+				1
+			) {
+				break;
+			}
+			if (Date.now() > deadline) break;
+		}
+		text = textContent(renderer.toJSON());
+		expect(text).not.toContain("Restarting");
+		expect(
+			renderer.root.findAllByProps({ className: "chat-header" }),
+		).toHaveLength(1);
+		// The long-running action settles once the recovery poll ended.
+		await restartDone;
+	}, 15_000);
+
+	test("the recovery poll sleeps before probing: a lingering 200 from the dying process is not readiness", async () => {
+		// The regression guard for the round-2 finding: the OLD listener
+		// still answers /readyz 200 between the 202 and the deferred
+		// drain. A probe-before-sleep loop would read the FIRST probe as
+		// ready and remount onto the closing server. The fake answers 200
+		// for the first 3 post-POST probes (the linger), then 503 until
+		// the test flips it — only a sleep-first loop survives.
+		const readyzDown = { ready: { current: true } };
+		const { client, createEventSource } = makeHarness({
+			readyzDown,
+			// The dying listener keeps answering 200 for 250ms after the
+			// POST; the poll cadence is 500ms — a sleep-first loop's first
+			// probe lands past the window, a probe-first loop's lands in it.
+			readyzLingerMs: 250,
+		});
+		let actions: { restart(): Promise<void> } | undefined;
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				onExposeActions={(exposed: { restart(): Promise<void> }) => {
+					actions = exposed;
+				}}
+			/>,
+		);
+		let restartDone: Promise<void> | undefined;
+		await act(async () => {
+			restartDone = actions?.restart();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		});
+		// Drive past the linger window: after one full poll cadence the
+		// shell must STILL be in the Restarting state (a probe-first loop
+		// would have read the lingering 200 and remounted).
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 650));
+		});
+		expect(textContent(renderer.toJSON())).toContain("Restarting");
+		// The poll keeps going (the fake answers 503 now) until the test
+		// brings the server back.
+		readyzDown.ready.current = true;
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			});
+			if (
+				renderer.root.findAllByProps({ className: "chat-header" }).length ===
+				1
+			) {
+				break;
+			}
+			if (Date.now() > deadline) break;
+		}
+		expect(
+			renderer.root.findAllByProps({ className: "chat-header" }),
+		).toHaveLength(1);
+		await restartDone;
+	}, 20_000);
 });

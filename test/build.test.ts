@@ -100,7 +100,7 @@ function spawnBuiltCli(args: readonly string[], env: NodeJS.ProcessEnv, cwd: str
 	const listening = new Promise<number>((resolve, reject) => {
 		const startedAt = Date.now();
 		const poll = (): void => {
-			const match = /listening on http:\/\/0\.0\.0\.0:(\d+)/.exec(stdout);
+			const match = /listening on http:\/\/(?:\[[^\]]*\]|[^:\/]+):(\d+)/.exec(stdout);
 			if (match) {
 				resolve(Number(match[1]));
 				return;

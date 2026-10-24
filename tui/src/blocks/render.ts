@@ -96,6 +96,11 @@ class WidthGated implements Component {
 		return this.#inner instanceof FormComponent ? this.#inner.focusIndex : undefined;
 	}
 
+	/** Focus-by-name forward (the settings view's search-resolve seam). */
+	focusName(name: string): boolean {
+		return this.#inner instanceof FormComponent ? this.#inner.focusName(name) : false;
+	}
+
 	get step(): number | undefined {
 		return this.#inner instanceof FormComponent ? this.#inner.step : undefined;
 	}

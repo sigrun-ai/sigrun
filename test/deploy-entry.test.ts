@@ -91,7 +91,7 @@ function spawnEntry(env: NodeJS.ProcessEnv) {
 	const listening = new Promise<number>((resolve, reject) => {
 		const startedAt = Date.now();
 		const poll = (): void => {
-			const match = /listening on http:\/\/0\.0\.0\.0:(\d+)/.exec(stdout);
+			const match = /listening on http:\/\/(?:\[[^\]]*\]|[^:\/]+):(\d+)/.exec(stdout);
 			if (match) {
 				resolve(Number(match[1]));
 				return;
@@ -152,7 +152,7 @@ test(
 			expect(typeof meta.harnessVersion).toBe("string");
 			// The server's own version rides /v1/meta (the Settings version
 			// line and bug reports read it).
-			expect(meta.version).toBe("0.1.6");
+			expect(meta.version).toBe("0.1.7");
 			// The probe endpoints exist on the real listener too.
 			const healthz = await fetch(`http://127.0.0.1:${port}/healthz`);
 			expect(healthz.status).toBe(200);
@@ -412,3 +412,67 @@ test("deploy entry fails loud when a declared extension cannot install", async (
 		await rm(dir, { recursive: true, force: true });
 	}
 }, 120_000);
+
+/**
+ * The dual-stack regression (2026-10-24): the entry's default bind must
+ * accept IPv6, not just IPv4.
+ *
+ * The incident: `serve()` bound `0.0.0.0` (a v4-ONLY socket). On a
+ * dual-stack pod whose Service is `ipFamilies: ["IPv6"]`, the
+ * EndpointSlice advertises only the pod's IPv6 address — the gateway
+ * dialed it, got connection-refused, and the browser saw "upstream
+ * connect error or disconnect/reset before headers. reset reason:
+ * remote connection failure". The v4 loopback probes kept the pod Ready
+ * throughout, so nothing else caught it.
+ *
+ * The assertion is deliberately about reachability on the IPv6 loopback,
+ * not about the printed host string: a string assertion passes for a
+ * v4-only bind that merely SAYS `::`. Skips on an IPv4-only host.
+ */
+test(
+	"deploy entry's default bind accepts IPv6 connections",
+	async () => {
+		const ipv6 = await hostHasIpv6Loopback();
+		if (!ipv6) {
+			// An IPv4-only CI host cannot express this bind; the local
+			// dual-stack dev box and the cluster can.
+			return;
+		}
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-v6-"));
+		const port = await freePort();
+		const entry = spawnEntry(
+			childEnv({
+				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+				OPENAI_API_KEY: "smoke-test-key-never-sent",
+				OPENAI_BASE_URL: "http://127.0.0.1:9",
+				SIGRUN_PORT: String(port),
+				SIGRUN_CONFIG_DIR: join(dir, "config"),
+				HOME: dir,
+			}),
+		);
+		try {
+			expect(await entry.listening).toBe(port);
+			// The bind a Service with `ipFamilies: ["IPv6"]` routes to.
+			const overV6 = await fetch(`http://[::1]:${port}/healthz`);
+			expect(overV6.status).toBe(200);
+			// And the v4 path still works (the dual-stack property, not a
+			// v4→v6 swap).
+			const overV4 = await fetch(`http://127.0.0.1:${port}/healthz`);
+			expect(overV4.status).toBe(200);
+		} finally {
+			entry.child.kill("SIGTERM");
+			await entry.exited;
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+	120_000,
+);
+
+/** Whether this host can bind/connect over the IPv6 loopback at all. */
+async function hostHasIpv6Loopback(): Promise<boolean> {
+	return await new Promise<boolean>((resolve) => {
+		const server = net.createServer();
+		server.on("error", () => resolve(false));
+		server.listen(0, "::1", () => server.close(() => resolve(true)));
+	});
+}

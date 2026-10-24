@@ -17,7 +17,7 @@ services:
     # local checkout instead, comment the image line and uncomment the
     # build stanza below:
     #   docker build -t sigrun:local .
-    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.1.6}
+    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.1.7}
     # build:
     #   context: ..
     #   dockerfile: Dockerfile
@@ -88,6 +88,12 @@ services:
       SIGRUN_DATA_DIR: /data/data
       SIGRUN_CACHE_DIR: /cache
       SIGRUN_STATE_DIR: /data/state
+      # The supervised posture (§13.3): compose's `restart:
+      # unless-stopped` (below) brings the container back after an
+      # intentional exit 0, so `POST /v1/admin/restart` (admin) is safe
+      # to offer. A bare `docker run` of the image sets nothing and
+      # reports not_supervised instead.
+      SIGRUN_SUPERVISED: "1"
       # The degenerate env-provider path (spec §4.1): enough to run against
       # ANY OpenAI-compatible endpoint — OpenAI itself, a local
       # ramalama/ollama, or a remote/private gateway.

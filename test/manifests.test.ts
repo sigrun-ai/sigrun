@@ -51,7 +51,7 @@ const COMPOSE_FILE = join(
 /** The published image every deploy artifact names. The chart's tags
  * default to the appVersion, so a default render carries this exact
  * reference — no explicit --set needed (and no REPLACEME to work around). */
-const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.1.6";
+const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.1.7";
 
 /** helm presence — a hard env requirement (no kubectl/kustomize fallback
  * exists: the manifests are templates, not static yaml). */
@@ -1048,7 +1048,7 @@ describe("docker compose reference", () => {
 		const doc = await composeDoc();
 		const service = doc.services.sigrun;
 		expect(service.image).toBe(
-			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.1.6}"}`,
+			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.1.7}"}`,
 		);
 		expect(service.user).toBe("${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}");
 	});
@@ -1070,3 +1070,52 @@ describe("docker compose reference", () => {
 	});
 });
 
+
+describe("supervised posture (UI-blocks U4 Task 2, spec §13.3)", () => {
+	// SIGRUN_SUPERVISED=1 tells the server something will start it again
+	// after `POST /v1/admin/restart` exits 0 — set ONLY where a restart
+	// policy actually exists: the Helm chart (Deployment restart) and the
+	// compose reference (restart: unless-stopped). The Dockerfile must NOT
+	// set it: a bare `docker run` without --restart would stay down.
+
+	test("the chart's main container carries SIGRUN_SUPERVISED=1", async () => {
+		const deployment = docOf(await render(), "Deployment") as {
+			spec: {
+				template: {
+					spec: {
+						containers: {
+							name: string;
+							env: { name: string; value?: string }[];
+						}[];
+					};
+				};
+			};
+		};
+		const main = deployment.spec.template.spec.containers.find(
+			(c) => c.name === "main",
+		);
+		expect(main).toBeDefined();
+		const entry = main?.env.find((e) => e.name === "SIGRUN_SUPERVISED");
+		expect(entry?.value).toBe("1");
+	});
+
+	test("docker compose sets SIGRUN_SUPERVISED=1 (it has restart: unless-stopped)", async () => {
+		const text = await readFile(COMPOSE_FILE, "utf8");
+		const doc = YAML.parse(text) as {
+			services: {
+				sigrun: { environment: Record<string, string>; restart: string };
+			};
+		};
+		const service = doc.services.sigrun;
+		expect(service.restart).toBe("unless-stopped");
+		expect(service.environment.SIGRUN_SUPERVISED).toBe("1");
+	});
+
+	test("the Dockerfile does NOT set SIGRUN_SUPERVISED", async () => {
+		const dockerfile = await readFile(
+			join(import.meta.dirname, "..", "Dockerfile"),
+			"utf8",
+		);
+		expect(dockerfile).not.toContain("SIGRUN_SUPERVISED");
+	});
+});

@@ -242,6 +242,17 @@ export type SigrunLifecycleHandlers = {
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
 	/** The user-removal transfer event; direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
+	/**
+	 * UI-blocks U4 (spec §13.2): called after a settings write COMMITS —
+	 * the keys are the flattened paths the write touched (core keys in
+	 * the §13.1 dotted vocabulary, this extension's own top-level keys
+	 * for a `settings/<slug>.json` write). Fired for BOTH scopes: a
+	 * server-scope write notifies every loaded extension; an extension's
+	 * own write notifies it (and every other extension — settings are
+	 * shared operator surface). Errors are caught and logged; the write
+	 * already succeeded and stays successful.
+	 */
+	onSettingsChanged?(keys: readonly string[]): void | Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -685,10 +696,12 @@ export type ActionResult =
 
 /**
  * One declared surface (spec §7.1, verbatim shape): the placement is
- * the generic parameter — `"view"` or `"panel"` (the settings sections
- * of §13.3 are a separate workstream).
+ * the generic parameter — `"view"`, `"panel"`, or `"settings"` (the
+ * §13.3 settings sections adapt to settings-placement surfaces; the
+ * host builds those — extensions declare `SettingsSectionDef`s, never
+ * `SurfaceDef<"settings">` directly).
  */
-export interface SurfaceDef<P extends "view" | "panel"> {
+export interface SurfaceDef<P extends "view" | "panel" | "settings"> {
 	/** Unique within the extension. */
 	readonly id: string;
 	readonly title: string;
@@ -707,16 +720,40 @@ export interface SurfaceDef<P extends "view" | "panel"> {
 	>;
 }
 
+// ---------------------------------------------------------------------------
+// Settings sections (UI-blocks U4 Task 3, spec §13.3)
+// ---------------------------------------------------------------------------
+
 /**
- * The `surfaces` field of a factory result (spec §7.1): declared views
- * and panels. Ids are unique across BOTH lists (one namespace — the
- * loader enforces it).
+ * One declared settings section (spec §13.3, verbatim shape): a static
+ * `settings`-placement form bound to the extension's settings object
+ * (`settings/<slug>.json`). The host adapts it to a surface under the
+ * extension's own `/v1/ext/<slug>/surfaces/` mount — core's own
+ * sections use the same renderer, under the reserved `core` slug.
+ */
+export interface SettingsSectionDef {
+	/** Unique within the extension. */
+	readonly id: string;
+	readonly title: string;
+	readonly icon?: IconName;
+	/** A root `form` block; the placement is `settings` (spec §5.7). */
+	readonly form: Tree;
+	/** Declared secrets, rendered as `secret` fields backed by the §7.7 secrets routes. */
+	readonly secrets?: readonly { key: string; label: string; help?: string }[];
+	/** Only admins see and edit it; default true (settings writes are admin-only). */
+	readonly admin?: boolean;
+}
+
+/**
+ * The `surfaces` field of a factory result (spec §7.1): declared views,
+ * panels, and settings sections. Ids are unique across ALL THREE lists
+ * (one namespace — the loader enforces it).
  */
 export interface SurfacesContribution {
 	readonly views?: readonly SurfaceDef<"view">[];
 	readonly panels?: readonly SurfaceDef<"panel">[];
-	/** §13.3 settings sections — a separate workstream; declared for shape stability. */
-	readonly settings?: readonly never[];
+	/** §13.3 settings sections (UI-blocks U4 Task 3). */
+	readonly settings?: readonly SettingsSectionDef[];
 }
 
 // ---------------------------------------------------------------------------
