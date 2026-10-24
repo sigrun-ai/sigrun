@@ -920,7 +920,7 @@ export async function openHarness(
 	// the cache dir materializes lazily on first `paths.cache` access).
 	// The boot env feeds the admin surface's env-secret listing (the
 	// `SIGRUN_EXT_<SLUG>_` fallbacks — never written down, listed only).
-	const sharedStores = sharedExtensionStores(roots, env);
+	const sharedStores = sharedExtensionStores(roots, env, identity.users);
 	const seamHosts = new Map<string, SeamHost>();
 	const seamKinds = new Map<string, DeclaredKinds>();
 	const {

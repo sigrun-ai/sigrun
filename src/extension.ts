@@ -834,6 +834,23 @@ export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 export interface SigrunHost {
 	/** The scoped extension-stores handle (your secrets/settings sections + raw data/cache/state paths). */
 	readonly stores: {
+		/** One directory user's secrets/settings/paths, still scoped to your slug. */
+		user(user: string): {
+			readonly secrets: {
+				get(key: string): Promise<string | undefined>;
+				set(key: string, value: string): Promise<void>;
+				delete(key: string): Promise<void>;
+			};
+			readonly settings: {
+				get(): Promise<Record<string, unknown>>;
+				set(value: Record<string, unknown>): Promise<void>;
+			};
+			readonly paths: {
+				readonly data: string;
+				readonly state: string;
+				readonly cache: string;
+			};
+		};
 		/** Your section of secrets.json. */
 		readonly secrets: {
 			get(key: string): Promise<string | undefined>;

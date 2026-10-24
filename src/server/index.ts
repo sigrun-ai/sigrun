@@ -57,6 +57,7 @@ import { registerExtAssetRoutes } from "./routes/ext-assets.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
+import { registerMeRoutes } from "./routes/me.js";
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerMetricsRoutes } from "./routes/metrics.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
@@ -340,6 +341,7 @@ export async function createServer(
 	});
 	registerOnboardingRoutes(app, ctx);
 	registerUserRoutes(app, ctx);
+	registerMeRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
 	registerAdminRoutes(app, ctx);
