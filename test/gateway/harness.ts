@@ -83,6 +83,8 @@ export interface BootGatewayOptions {
 	readonly users?: readonly { user: string; admin?: boolean }[];
 	/** The faux provider's response queue. */
 	readonly responses?: readonly AssistantMessage[];
+	/** Optional faux streaming rate (a slow stream opens a live-frame window). */
+	readonly tokensPerSecond?: number;
 	/**
 	 * A CALLER-OWNED stores root for the harness's state (the engine's
 	 * `host.stores.paths.state` roots here too): two boots over the same
@@ -124,6 +126,7 @@ export async function bootGateway(
 	const configDir = join(dir, "config");
 	const faux = fauxProvider({
 		provider: "faux",
+		...(opts.tokensPerSecond === undefined ? {} : { tokensPerSecond: opts.tokensPerSecond }),
 		models: [
 			{ id: "m", contextWindow: 128_000 },
 			{ id: "m2", contextWindow: 128_000 },
