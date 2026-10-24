@@ -1,7 +1,7 @@
 /** Multi-user M1 Task 4: the exact per-user Landlock grant and env policy. */
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -178,6 +178,7 @@ describe("buildUserPolicy", () => {
 	test("an osAccount changes home and carries uid, gid, and groups", async () => {
 		const { managed, moduleTrees } = await fixture();
 		const osHome = join(await tempDir(), "os-home");
+		await mkdir(osHome);
 		const result = policyFor(record("bob"), {
 			managed,
 			moduleTrees,
@@ -191,6 +192,48 @@ describe("buildUserPolicy", () => {
 		expect(result.policy.uid).toBe(1001);
 		expect(result.policy.gid).toBe(1002);
 		expect(result.policy.groups).toEqual([1002, 2000]);
+	});
+
+	test.each([
+		["core root", (managed: ManagedPaths) => managed.coreRoot],
+		["store root", (managed: ManagedPaths) => managed.roots.configDir],
+		["storage path", (managed: ManagedPaths) => managed.storagePath],
+	])("an osAccount home at the %s is refused without creating a policy", async (_label, homeFor) => {
+		const { managed, moduleTrees } = await fixture();
+		const home = homeFor(managed);
+		const result = policyFor(record("bob"), {
+			managed,
+			moduleTrees,
+			osAccount: { uid: 1001, gid: 1002, groups: [1002], home },
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toContain(home);
+		expect("policy" in result).toBe(false);
+	});
+
+	test.skipIf(process.platform !== "linux")("an osAccount home at /dev/shm is refused without creating a policy", async () => {
+		const { managed, moduleTrees } = await fixture();
+		const result = policyFor(record("bob"), {
+			managed,
+			moduleTrees,
+			osAccount: { uid: 1001, gid: 1002, groups: [1002], home: "/dev/shm" },
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toContain("/dev/shm");
+		expect("policy" in result).toBe(false);
+	});
+
+	test.skipIf(process.platform !== "linux")("a stored /dev/shm grant is refused rather than entering the policy", async () => {
+		const { managed, moduleTrees } = await fixture();
+		const result = policyFor(
+			{ ...record(), grants: [{ path: "/dev/shm", access: "rw" }] },
+			{ managed, moduleTrees },
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.reason).toContain("/dev/shm");
 	});
 
 	test("env removes SSH_AUTH_SOCK and overrides HOME, TMPDIR, and USER", async () => {
@@ -280,14 +323,72 @@ describe("nodeRuntimePaths", () => {
 		expect(nodeRuntimePaths(missing)).toEqual([dirname(missing)]);
 	});
 
-	test("resolved runtime paths are real, deduplicated, sorted, and omit virtual entries", () => {
-		const ldd = execFileSync("ldd", [process.execPath], { encoding: "utf8" });
-		const dirs = [
-			dirname(process.execPath),
-			...[...ldd.matchAll(/=>\s+(\/[^\s]+)/g)].map((match) => dirname(match[1]!)),
-		].filter(existsSync);
-		expect(nodeRuntimePaths()).toEqual([...new Set(dirs)].sort());
+	test("the known system library directory is present when ldd independently reports it", () => {
+		const output = execFileSync("/usr/bin/ldd", [process.execPath], {
+			encoding: "utf8",
+		});
+		const systemLibrary = "/usr/lib/x86_64-linux-gnu";
+		if (output.includes(systemLibrary)) {
+			expect(nodeRuntimePaths()).toContain(systemLibrary);
+		}
 		expect(nodeRuntimePaths()).not.toContain("(0x000000000000)");
 		expect(nodeRuntimePaths().some((path) => path.includes("linux-vdso"))).toBe(false);
+	});
+
+	test("a hostile ldd earlier on PATH cannot inject a protected directory", async () => {
+		const { managed } = await fixture();
+		const dir = await tempDir();
+		const fakeLoader = join(dir, "ldd");
+		const executable = join(dir, "static-node-for-loader-test");
+		await writeFile(
+			fakeLoader,
+			`#!/bin/sh\nprintf '%s\\n' 'libhostile.so => ${managed.roots.dataDir}/libhostile.so (0x1)'\n`,
+			{ mode: 0o700 },
+		);
+		await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+		const previousPath = process.env.PATH;
+		try {
+			process.env.PATH = `${dir}:${previousPath ?? ""}`;
+			expect(nodeRuntimePaths(executable, managed)).toEqual([dir]);
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+		}
+	});
+
+	test("a real discovered library directory is dropped when it is a protected root", async () => {
+		const { managed } = await fixture();
+		const discovered = nodeRuntimePaths().find(
+			(path) => path !== realpathSync(dirname(process.execPath)),
+		);
+		expect(discovered).toBeDefined();
+		if (discovered === undefined) return;
+		const protectedManaged: ManagedPaths = {
+			...managed,
+			roots: { ...managed.roots, dataDir: discovered },
+		};
+		expect(nodeRuntimePaths(process.execPath)).toContain(discovered);
+		expect(nodeRuntimePaths(process.execPath, protectedManaged)).not.toContain(discovered);
+	});
+
+	test("static fallback drops a protected binary directory", async () => {
+		const { managed } = await fixture();
+		const executable = join(managed.roots.dataDir, "static-node");
+		await writeFile(executable, "#!/bin/sh\nexit 0\n");
+		expect(nodeRuntimePaths(executable, managed)).toEqual([]);
+	});
+
+	test.skipIf(process.platform !== "linux")("/dev/shm is never returned as a discovered runtime directory", () => {
+		expect(nodeRuntimePaths()).not.toContain("/dev/shm");
+	});
+
+	test("dot-dot and symlink spellings deduplicate to one real directory", () => {
+		const paths = nodeRuntimePaths();
+		const nodeLibrary = join(dirname(process.execPath), "..", "lib");
+		if (existsSync(nodeLibrary)) {
+			expect(paths).toContain(realpathSync(nodeLibrary));
+		}
+		expect(paths).toEqual([...new Set(paths)].sort());
+		expect(paths.some((path) => path.includes(".."))).toBe(false);
 	});
 });
