@@ -64,6 +64,7 @@ import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
+import { loadOrCreateKey, signUrl } from "./images/sign.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -200,8 +201,17 @@ export async function createServer(
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
 	// way to hand that handle up without widening ServerContext's consumers.
 	app.decorate("sse", sse);
+	// The image-proxy signer (U7 Task 1, spec §11.2): the key is loaded
+	// (created at first boot) from the state dir — deleting the file
+	// rotates it — and every surface tree/data answer rewrites https
+	// image sources through it at serve time.
+	const imageKey = await loadOrCreateKey(config.stateDir);
+	const imageSign = (u: string): string => signUrl(imageKey, u, Date.now());
 	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
 		maxUploadBytes: config.maxUploadBytes,
+		// Signs https image URLs into expiring proxy URLs (U7 Task 1,
+		// spec §11.2) on every tree/data response.
+		imageSign,
 		// Task 4: bumpRev (actions AND the host seam's changed()) fans the
 		// surface.changed event out to the hub; the events route's
 		// visibility case delivers it to watching streams only.
