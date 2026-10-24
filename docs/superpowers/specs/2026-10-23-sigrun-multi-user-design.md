@@ -240,11 +240,11 @@ extension code; resource exhaustion; outbound network; non-Linux hosts.
 | Id | Workstream | Waits for |
 |---|---|---|
 | M0 | Environment-leak fix (§8) | nothing; not part of this spec's plans |
-| M1 | The execution jail (§9) | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
-| M2 | Per-user extension surface (§10) | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
+| M1 | The execution jail (§9). Plan: `2026-10-24-multi-user-m1-execution-jail.md` | gateway-core Task 5 (auth pipeline); image-workflow Task 1 (image) and Task 4 (chart) for the image and chart parts only |
+| M2 | Per-user extension surface (§10). Plan: `2026-10-24-multi-user-m2-per-user-extensions.md` | M1; the `src/extension.ts` changes of U0, U3, U4, U6 and gateway-core merged; U4 for per-user settings sections |
 | M3a | Account links (§11.3): `AccountStore`, `host.accounts`, `/v1/auth/accounts`, link removal on delete. Plan: `2026-10-23-multi-user-m3a-account-links.md` | gateway-core (merged). Gateway-engine Task 13 waits for M3a; the gateway merge waits for Task 13 |
-| M3 | Login (§11), the rest | M3a |
-| M4 | Extension adoption (§12) | M2 (MCP); M2 (memory) |
+| M3b | Login (§11), the rest. Plan: `2026-10-24-multi-user-m3b-login.md` | M3a (merged). Its built-in task waits for the npm-publish automation |
+| M4 | Extension adoption (§12). Plan: `2026-10-24-multi-user-m4-extension-adoption.md`; its Task 1 (memory recall fix) waits for nothing | M2 (MCP); M2 (memory) |
 
 M1 and M3 run in parallel once their waits clear. Each workstream gets
 its own plan. Files the in-flight workstreams own are not edited until
@@ -363,7 +363,7 @@ probe file, and confirms the denial. `/v1/meta` gains
 
 **`sigrun-sandbox`** is a small static native binary:
 
-- input: a JSON policy on fd 3, the command after `--`;
+- input: a JSON policy in the environment variable `SIGRUN_SANDBOX_POLICY` (removed before `exec`), the command after `--`. Not fd 3: Node's extra stdio pipes are socketpairs that cannot be reopened through `/proc/self/fd`, and adopting a raw fd needs `unsafe` (ruling 11). The policy holds paths and ids, no secrets;
 - it sets `no_new_privs`, creates a Landlock ruleset handling every
   filesystem right of the running ABI (best-effort up to ABI 7), adds
   the policy's path rules, enables signal and abstract-socket scoping,
@@ -641,7 +641,7 @@ For two people sharing one computer with sigrun as a service account:
 - `RunSettledEvent` and every lifecycle payload with a `conversationId`
   gain `owner?: string`: the conversation's owner when the event was
   produced.
-- Job runs carry `owner` in their handler context.
+- Jobs need nothing extra: they are declarative specs whose runs create conversations with a stamped owner, so their events carry `owner` like any other.
 - Tool execution keeps `host.identity.actingUser(conversationId)`.
 - Routes keep `principal`.
 
@@ -1063,6 +1063,14 @@ against a local test issuer; OAuth2 presets against fake endpoints.
   conversation run or settings visit, not at factory time.
 
 ### 12.2 sigrun-memory-markdown
+
+Found while planning (2026-10-24): `memory_recall` searched whichever
+conversation settled most recently, whoever owned it, despite describing
+itself as searching "this conversation". The M4 plan's Task 1 fixes that
+with no dependencies: recall reads the calling conversation only. The
+package is now `@sigrun/memory-markdown`, and its backend is a volatile
+in-memory ring, so the bullets below key rings by owner; storage under
+`stores.user(owner).paths.data` applies to durable backends.
 
 - Records and recall are keyed by the event's `owner`, stored under
   `stores.user(owner).paths.data`.
