@@ -181,6 +181,7 @@ export async function serve(
 		gateway,
 		eventBusShutdown: () =>
 			opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
+		stopSandboxWorkers: () => opened.sandboxPool.stopAll(),
 		stopProviderRefresh: async () => {
 			// The interval refresh scheduler (provider plugins Task 5) stops
 			// BEFORE the harness closes. The T4 boot refresh promise is raced

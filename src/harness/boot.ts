@@ -84,6 +84,7 @@ import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
+import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
 import {
 	probeIsolation,
 	runHelperProbe,
@@ -144,6 +145,8 @@ export interface OpenedHarness {
 	readonly harness: Harness;
 	/** The one boot-time execution-jail availability decision. */
 	readonly isolation: IsolationAvailability;
+	/** The shared per-user workers, stopped before the harness seal. */
+	readonly sandboxPool: WorkerPool;
 	/**
 	 * The durable storage handle the harness was opened over — the same
 	 * instance the Session owns and closes on `harness.close()`. Exposed so
@@ -465,6 +468,8 @@ export interface OpenedHarness {
 export interface OpenHarnessOptions {
 	/** Hermetic seam replacing the real helper/platform probe; still called once. */
 	readonly isolationProbe?: typeof probeIsolation;
+	/** Test/deployment launcher seam; defaults to the native helper. */
+	readonly sandboxLauncher?: import("../sandbox/pool.js").Launcher;
 	/**
 	 * PROVIDER contributors (Task 2 seam) — NOT the extension package list.
 	 * These feed the Models collector; they are distinct from the deployed
@@ -609,6 +614,18 @@ export async function openHarness(
 	console.log(
 		`sandbox isolation: ${isolation.available ? `available (Landlock ABI ${isolation.abi})` : `unavailable (${isolation.reason ?? "unknown reason"})`}`,
 	);
+	if (coreRoot === undefined) throw new Error("sandbox worker entry requires the sigrun package root");
+	const workerEntry = resolveWorkerEntry(coreRoot);
+	const helper = isolation.helper;
+	const sandboxPool = new WorkerPool({
+		launcher: options.sandboxLauncher ?? ((policy) => {
+			if (helper === undefined) throw new Error("sandbox helper not found");
+			return sandboxLauncher(helper, workerEntry)(policy);
+		}),
+		idleMinutes: () => settingsStore?.read().server?.isolation?.workerIdleMinutes ?? config.isolation.workerIdleMinutes,
+		log: (line) => console.warn(line),
+		workerEntry,
+	});
 	// Store-root lifecycle (spec §6): every durable root except cache
 	// exists before anything touches disk — storage, the registry's
 	// first install, extension packages — so a fresh deploy (or a PVC
@@ -1408,6 +1425,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	return {
 		harness,
 		isolation,
+		sandboxPool,
 		storage,
 		registry,
 		models,
