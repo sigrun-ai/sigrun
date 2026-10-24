@@ -153,6 +153,44 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 		}
 	});
 
+	test("a scripted send_message file arrives at loop with its bytes", { timeout: 60_000 }, async () => {
+		const bytes = new Uint8Array([9, 8, 7]);
+		const boot = await bootGateway({ gatewaySettings: GATEWAY_SETTINGS });
+		try {
+			await boot.loop.inbound(dmEvent({ messageId: "file-tool-1" }));
+			const conversation = await gatewayConversation(boot);
+			const uploaded = await boot.app.inject({
+				method: "POST",
+				url: `/v1/conversations/${conversation.id}/uploads`,
+				headers: {
+					authorization: `Bearer ${boot.tokens.alice}`,
+					"content-type": "application/json",
+				},
+				payload: { name: "note.txt", contentBase64: Buffer.from(bytes).toString("base64") },
+			});
+			expect(uploaded.statusCode).toBe(201);
+			const upload = uploaded.json() as { path: string };
+			// Script with the actual workspace path now that the gateway
+			// conversation exists, then start a fresh tool round.
+			boot.faux.setResponses([
+				fauxAssistantMessage(
+					fauxToolCall("send_message", { to: "loop", text: "file attached", files: [upload.path] }),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("file delivered"),
+			]);
+			const sentBefore = boot.loop.sent.length;
+			await boot.loop.inbound(dmEvent({ messageId: "file-tool-2", text: "send the file" }));
+			await boot.waitFor(() => boot.loop.sent.slice(sentBefore).some((message) =>
+				message.text === "file attached" && message.files?.[0]?.bytes instanceof Uint8Array,
+			));
+			const sent = boot.loop.sent.find((message) => message.text === "file attached");
+			expect(Array.from(sent?.files?.[0]?.bytes ?? [])).toEqual(Array.from(bytes));
+		} finally {
+			await boot.shutdown();
+		}
+	});
+
 	test("gateway-channel appears only in a bound conversation's system prompt", { timeout: 60_000 }, async () => {
 		const prompts: string[] = [];
 		const capture: FauxResponseFactory = (context) => {
