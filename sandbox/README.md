@@ -28,6 +28,15 @@ The resulting binaries are at
 architecture on `PATH` as `sigrun-sandbox`. sigrun core invokes this installed
 helper for each per-user worker; there is no Node package entry point.
 
+To opt in to `osUser` mappings on bare metal, grant the installed helper only
+the two identity-switch capabilities (replace `<helper>` with its path):
+
+```sh
+sudo setcap cap_setuid,cap_setgid+ep <helper>
+```
+
+Containers do not use this mapping: their entrypoint drops every capability.
+
 ## Interface
 
 Report the running kernel's Landlock ABI as one JSON line (`0` means Landlock

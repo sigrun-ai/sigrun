@@ -383,7 +383,7 @@ describe("boot and /v1/meta isolation reporting", () => {
 		}
 	});
 
-	test("an enabled osUsers setting reports the pinned pre-Task-8 reason", async () => {
+	test("an enabled osUsers setting reports an unavailable probe reason", async () => {
 		const dir = await tempDir();
 		const config = loadConfig(
 			{
@@ -407,6 +407,37 @@ describe("boot and /v1/meta isolation reporting", () => {
 		try {
 			const meta = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
 			expect(meta.isolation.osUsers).toBe("osUsers requires CAP_SETUID");
+		} finally {
+			await app.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	});
+
+	test("a successful OS-user probe reports available", async () => {
+		const dir = await tempDir();
+		const config = loadConfig(
+			{
+				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+				SIGRUN_WORKSPACE_PATH: dir,
+				SIGRUN_AUTH: "none",
+			},
+			{ server: { isolation: { osUsers: true } } },
+		);
+		const opened = await openHarness(config, {
+			env: {},
+			identity: await seededIdentity(dir),
+			builtins: false,
+			isolationProbe: async () => ({ available: true, abi: 6 }),
+			osUsersProbe: async () => ({ available: true, status: "available" }),
+		});
+		const app = await createServer(opened, {
+			...config,
+			webui: { ...config.webui, enabled: false },
+		});
+		try {
+			const meta = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
+			expect(meta.isolation.osUsers).toBe("available");
 		} finally {
 			await app.close();
 			await opened.harness.close(BACKGROUND_CONTEXT);

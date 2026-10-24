@@ -16,6 +16,8 @@ import { selfPackageRoot } from "./packages.js";
 import { defaultModuleTrees } from "../sandbox/policy.js";
 import type { UserDirectory } from "./identity/users.js";
 import { AgentExecutionEnv } from "./agent-env.js";
+import type { OsUsersAvailability } from "../sandbox/availability.js";
+import { lookupOsAccount } from "../sandbox/os-account.js";
 
 export interface WorkspacePreferences { readonly defaultWorkspace: LocalWorkspace }
 export interface WorkspaceConversation { readonly id: ConversationId }
@@ -33,6 +35,10 @@ export type EnvBuilder = NonNullable<HarnessOptions["env"]>;
 
 export interface WorkspaceServiceDeps {
 	isolation: IsolationState;
+	/** Boot's probed uid-switch capability; absent means the feature is off. */
+	osUsers?: OsUsersAvailability;
+	/** Account-file lookup seam; production reads /etc/passwd and /etc/group. */
+	lookupAccount?: typeof lookupOsAccount;
 	pool: WorkerPool;
 	directory: UserDirectory;
 	managed: ManagedPaths;
@@ -63,10 +69,25 @@ export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceSe
 			if (record === undefined) return new UnavailableExecutionEnv("conversation owner is not in the user directory");
 			const coreRoot = selfPackageRoot();
 			if (coreRoot === undefined) return new UnavailableExecutionEnv("sigrun package root not found");
+			let osAccount: ReturnType<typeof lookupOsAccount>;
+			if (record.osUser !== undefined) {
+				if (deps.osUsers?.available !== true) {
+					return new UnavailableExecutionEnv("osUser requires CAP_SETUID");
+				}
+				try {
+					osAccount = (deps.lookupAccount ?? lookupOsAccount)(record.osUser);
+				} catch {
+					return new UnavailableExecutionEnv(`OS account not found: ${record.osUser}`);
+				}
+				if (osAccount === undefined) {
+					return new UnavailableExecutionEnv(`OS account not found: ${record.osUser}`);
+				}
+			}
 			const policy = buildUserPolicy(record, {
 				managed: deps.managed,
 				nodeBinDir: process.execPath,
 				moduleTrees: defaultModuleTrees(coreRoot),
+				...(osAccount === undefined ? {} : { osAccount }),
 			});
 			if (!policy.ok) return new UnavailableExecutionEnv(policy.reason);
 			return new SandboxedExecutionEnv(deps.pool.client(policy.policy), policy.policy.workspace);

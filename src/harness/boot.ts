@@ -86,6 +86,7 @@ import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
 import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
 import { IsolationState } from "../sandbox/isolation.js";
+import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.js";
 import { createAdmissionGuard } from "./identity/users.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import {
@@ -150,6 +151,8 @@ export interface OpenedHarness {
 	readonly isolation: IsolationAvailability;
 	/** The live isolation mode/latch used by env resolution and /v1/meta. */
 	readonly isolationState: IsolationState;
+	/** The independent, opt-in OS uid/gid-switch probe result. */
+	readonly osUsers: OsUsersAvailability;
 	/** The shared per-user workers, stopped before the harness seal. */
 	readonly sandboxPool: WorkerPool;
 	/**
@@ -473,6 +476,8 @@ export interface OpenedHarness {
 export interface OpenHarnessOptions {
 	/** Hermetic seam replacing the real helper/platform probe; still called once. */
 	readonly isolationProbe?: typeof probeIsolation;
+	/** Hermetic seam for the optional OS-account capability probe. */
+	readonly osUsersProbe?: typeof probeOsUsers;
 	/** Test/deployment launcher seam; defaults to the native helper. */
 	readonly sandboxLauncher?: import("../sandbox/pool.js").Launcher;
 	/**
@@ -624,6 +629,13 @@ export async function openHarness(
 	if (coreRoot === undefined) throw new Error("sandbox worker entry requires the sigrun package root");
 	const workerEntry = resolveWorkerEntry(coreRoot);
 	const helper = isolation.helper;
+	const osUsers: OsUsersAvailability = !config.isolation.osUsers
+		? { available: false, status: "off" }
+		: options.osUsersProbe !== undefined
+			? await options.osUsersProbe(helper ?? "")
+			: helper === undefined || !isolation.available
+				? { available: false, status: "osUsers requires CAP_SETUID" }
+				: await probeOsUsers(helper);
 	const sandboxPool = new WorkerPool({
 		launcher: options.sandboxLauncher ?? ((policy) => {
 			if (helper === undefined) throw new Error("sandbox helper not found");
@@ -1150,6 +1162,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	// Every tool/file/upload/job env resolves through this one decision seam.
 	const workspaceService = createWorkspaceService({
 		isolation: isolationState,
+		osUsers,
 		pool: sandboxPool,
 		directory: identity.users,
 		managed: {
@@ -1476,6 +1489,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		harness,
 		isolation,
 		isolationState,
+		osUsers,
 		sandboxPool,
 		storage,
 		registry,

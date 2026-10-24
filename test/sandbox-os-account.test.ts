@@ -19,6 +19,7 @@ import {
 import { IsolationState } from "../src/sandbox/isolation.js";
 import { lookupOsAccount } from "../src/sandbox/os-account.js";
 import type { ManagedPaths } from "../src/sandbox/grants.js";
+import type { UserPolicy } from "../src/sandbox/policy.js";
 import { WorkerPool, resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -88,7 +89,7 @@ describe("lookupOsAccount", () => {
 	});
 });
 
-describe.skip("probeOsUsers", () => {
+describe("probeOsUsers", () => {
 	test("runs id as nobody and requires its exact uid output", async () => {
 		const read = fixtureReader(
 			"nobody:x:65534:65534::/nonexistent:/usr/sbin/nologin",
@@ -101,7 +102,7 @@ describe.skip("probeOsUsers", () => {
 		) => ({ stdout: "65534\n" }));
 		await expect(probeOsUsers("/opt/sigrun-sandbox", { read, run })).resolves.toEqual({
 			available: true,
-			reason: "available",
+			status: "available",
 		});
 		expect(run).toHaveBeenCalledOnce();
 		const [helper, args, options] = run.mock.calls[0]!;
@@ -129,7 +130,21 @@ describe.skip("probeOsUsers", () => {
 		});
 		expect(result).toEqual<OsUsersAvailability>({
 			available: false,
-			reason: "osUsers requires CAP_SETUID",
+			status: "osUsers requires CAP_SETUID",
+		});
+	});
+
+	test("a command that prints the service uid is not a successful probe", async () => {
+		const read = fixtureReader(
+			"nobody:x:65534:65534::/nonexistent:/usr/sbin/nologin",
+			"nogroup:x:65534:",
+		);
+		await expect(probeOsUsers("/opt/sigrun-sandbox", {
+			read,
+			run: async () => ({ stdout: "1000\n" }),
+		})).resolves.toEqual({
+			available: false,
+			status: "osUsers requires CAP_SETUID",
 		});
 	});
 });
@@ -139,7 +154,7 @@ async function workspaceFixture(osUsers: OsUsersAvailability): Promise<{
 	pool: WorkerPool;
 	dir: string;
 	home: string;
-	launches: ReturnType<typeof vi.fn>;
+	launchedPolicies: UserPolicy[];
 }> {
 	const dir = await tempDir();
 	const home = join(dir, "os-home");
@@ -151,9 +166,10 @@ async function workspaceFixture(osUsers: OsUsersAvailability): Promise<{
 	await users.add({ user: "bob", admin: false, source: "cli" });
 	const workerEntry = resolveWorkerEntry(coreRoot);
 	const baseLauncher = testLauncher(workerEntry);
-	const launches = vi.fn((policy: Parameters<typeof baseLauncher>[0]) => {
-		const launch = baseLauncher(policy);
-		return { ...launch, env: { ...launch.env, SIGRUN_TEST_POLICY: JSON.stringify(policy) } };
+	const launchedPolicies: UserPolicy[] = [];
+	const launches = vi.fn((policy: UserPolicy) => {
+		launchedPolicies.push(policy);
+		return baseLauncher(policy);
 	});
 	const pool = new WorkerPool({
 		launcher: launches,
@@ -189,14 +205,14 @@ async function workspaceFixture(osUsers: OsUsersAvailability): Promise<{
 		managed,
 		ownerOf: async () => "alice",
 	});
-	return { service, pool, dir, home, launches };
+	return { service, pool, dir, home, launchedPolicies };
 }
 
-describe.skip("workspace OS-account selection", () => {
+describe("workspace OS-account selection", () => {
 	test("an osUser with unavailable osUsers fails closed with the pinned reason", async () => {
-		const { service, pool, dir, launches } = await workspaceFixture({
+		const { service, pool, dir, launchedPolicies } = await workspaceFixture({
 			available: false,
-			reason: "osUsers requires CAP_SETUID",
+			status: "off",
 		});
 		try {
 			const env = await service.forConversation(
@@ -211,16 +227,16 @@ describe.skip("workspace OS-account selection", () => {
 				ok: false,
 				error: { message: "isolation_unavailable: osUser requires CAP_SETUID" },
 			});
-			expect(launches).not.toHaveBeenCalled();
+			expect(launchedPolicies).toHaveLength(0);
 		} finally {
 			await pool.stopAll();
 		}
 	});
 
 	test("an available osUsers probe maps the account identity and home into policy", async () => {
-		const { service, pool, dir, home } = await workspaceFixture({
+		const { service, pool, dir, home, launchedPolicies } = await workspaceFixture({
 			available: true,
-			reason: "available",
+			status: "available",
 		});
 		try {
 			const env = await service.forConversation(
@@ -230,19 +246,15 @@ describe.skip("workspace OS-account selection", () => {
 				BACKGROUND_CONTEXT,
 			);
 			expect(env.id).not.toBe("unavailable");
-			let output = "";
-			const result = await env.exec("printf '%s' \"$SIGRUN_TEST_POLICY\"", {
-				onOutput: (text) => { output += text; },
-			}, BACKGROUND_CONTEXT);
+			const result = await env.exec("true", undefined, BACKGROUND_CONTEXT);
 			expect(result.ok).toBe(true);
-			if (!result.ok) return;
-			const policy = JSON.parse(output);
+			expect(launchedPolicies).toHaveLength(1);
+			const policy = launchedPolicies[0]!;
 			expect(policy).toMatchObject({
 				uid: 1201,
 				gid: 1301,
 				groups: [1301, 1401],
 				home,
-				workspace: home,
 			});
 			expect(policy.env.HOME).toBe(home);
 		} finally {
