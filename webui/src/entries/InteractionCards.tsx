@@ -1,148 +1,51 @@
 /**
- * Interactions (the seam's channel half, docs/approval-ux-seams.md): the
- * generic pending-decision card stack.
+ * Interactions (the seam's channel half, docs/approval-ux-seams.md),
+ * UI-blocks U6 Task 3: the pending-decision card stack, rendered from
+ * block trees.
  *
- * Rendering contract (what the webui commits to): the envelope state, the
- * four primitives generically (text as prose; options as buttons — tone
- * colors, `recommended` pre-selected, multi via checkboxes; fields as a
- * light form, `secret` masked; diff as a before/after view), and `details`
- * as collapsed generic JSON — never interpreted.
+ * A card renders its record's block tree (placement `interaction` — a
+ * root `form` whose submit is the answer, spec §9.1) through the shared
+ * renderer against a {@link createInteractionTransport}: the record IS
+ * the surface (the tree is the load, the form's submit POSTs `{values}`
+ * to the one generic answer route — ruling 20). The stepper (several
+ * sections each holding a choice) arrives through the form block's
+ * interaction flag, threaded through the renderer.
  *
- * The answer goes through the one generic route; resolution semantics stay
- * extension-owned. `answerIds` on a single-choice card sends `ids`; the
- * multi variant accumulates then submits; fields submit `values`; free
- * text submits `text`. A card for a record with NO affordance primitives
- * still renders (text/details) but offers no answer controls — the
- * extension owns how that record resolves.
+ * Settled records render READ-ONLY with their stored answer seeding the
+ * form (access `read`); a submit that lands on an already-settled record
+ * (404 not_pending — expiry mid-stepper, Review Focus 2) refetches the
+ * record, shows its settled status, and keeps the typed values visible
+ * but read-only (the form's state survives — the tree never changed).
+ *
+ * `details` renders collapsed, never interpreted.
  */
 
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type {
-	InteractionFieldWire,
-	InteractionOptionWire,
-	InteractionWire,
-	SigrunClient,
-} from "../api";
+	Action,
+	JsonObject,
+	JsonValue,
+	Tree,
+} from "@sigrun/shared/blocks";
+import type { InteractionWire, SigrunClient } from "../api";
+import { BlockView } from "../blocks/BlockView";
+import {
+	SurfaceActionsContext,
+	SurfaceDataContext,
+} from "../blocks/context";
+import { ContainerWidth } from "../blocks/width";
+import { createInteractionTransport } from "./interactionTransport";
 
-const TONE_CLASS: Record<string, string> = {
-	danger: "interaction-option-danger",
-	warn: "interaction-option-warn",
-	ok: "interaction-option-ok",
-	neutral: "interaction-option-neutral",
-};
-
-function OptionsBlock(props: {
-	options: readonly InteractionOptionWire[];
-	multi: boolean;
-	disabled: boolean;
-	onAnswerIds: (ids: readonly string[]) => void;
-}) {
-	const { options, multi, disabled, onAnswerIds } = props;
-	const [selected, setSelected] = useState<readonly string[]>(
-		options.filter((o) => o.recommended === true).map((o) => o.id),
-	);
-	const toggle = (id: string): void => {
-		if (multi) {
-			setSelected((current) =>
-				current.includes(id)
-					? current.filter((x) => x !== id)
-					: [...current, id],
-			);
-		} else {
-			setSelected([id]);
-		}
-	};
-	return (
-		<div className="interaction-options">
-			{options.map((option) => (
-				<label
-					key={option.id}
-					className={`interaction-option ${TONE_CLASS[option.tone ?? "neutral"] ?? ""}`}
-				>
-					<input
-						type={multi ? "checkbox" : "radio"}
-						name="interaction-option"
-						checked={selected.includes(option.id)}
-						onChange={() => toggle(option.id)}
-						disabled={disabled}
-					/>
-					<span className="interaction-option-label">{option.label}</span>
-					{option.description !== undefined && (
-						<span className="interaction-option-description">
-							{option.description}
-						</span>
-					)}
-				</label>
-			))}
-			<button
-				type="button"
-				className="interaction-submit"
-				disabled={disabled || selected.length === 0}
-				onClick={() => onAnswerIds(selected)}
-			>
-				Submit
-			</button>
-		</div>
-	);
+/** The record-as-surface data document: the form binds `/values`, so
+ *  the document is `{values}` — a settled record's stored answer seeds
+ *  the read-only render (secret fields carry the status strings the
+ *  server masked; the secret field renders write-only regardless). */
+function recordData(record: InteractionWire): JsonObject {
+	if (record.answer === undefined) return {};
+	return { values: { ...record.answer.values } } as JsonObject;
 }
 
-function FieldsBlock(props: {
-	fields: readonly InteractionFieldWire[];
-	disabled: boolean;
-	onAnswerValues: (values: Record<string, string | number | boolean>) => void;
-}) {
-	const { fields, disabled, onAnswerValues } = props;
-	const [values, setValues] = useState<Record<string, string>>({});
-	const missing = fields.find(
-		(f) => f.required === true && (values[f.name] ?? "") === "",
-	);
-	return (
-		<div className="interaction-fields">
-			{fields.map((field) => (
-				<label key={field.name} className="interaction-field">
-					<span className="interaction-field-label">
-						{field.label ?? field.name}
-						{field.required === true ? " *" : ""}
-					</span>
-					<input
-						type={field.type === "secret" ? "password" : "text"}
-						inputMode={field.type === "number" ? "numeric" : undefined}
-						value={values[field.name] ?? ""}
-						onChange={(event) =>
-							setValues((current) => ({
-								...current,
-								[field.name]: event.target.value,
-							}))
-						}
-						disabled={disabled}
-					/>
-				</label>
-			))}
-			<button
-				type="button"
-				className="interaction-submit"
-				disabled={disabled || missing !== undefined}
-				onClick={() =>
-					onAnswerValues(
-						Object.fromEntries(
-							fields.map((f) => {
-								const raw = values[f.name] ?? "";
-								return [
-									f.name,
-									f.type === "number" && raw !== "" ? Number(raw) : raw,
-								];
-							}),
-						),
-					)
-				}
-			>
-				Submit
-			</button>
-		</div>
-	);
-}
-
-/** One pending interaction card. */
+/** One interaction card (a pending prompt or a settled record). */
 export function InteractionCard(props: {
 	conversationId: number;
 	interaction: InteractionWire;
@@ -151,82 +54,114 @@ export function InteractionCard(props: {
 	onError?: (message: string) => void;
 }) {
 	const { conversationId, interaction, client, onAnswered, onError } = props;
-	const [busy, setBusy] = useState(false);
+	// The refetched record after a settle lands mid-edit (Review Focus
+	// 2): the card swaps to the settled envelope (read-only) while the
+	// typed values stay on screen (the form keeps its state).
+	const [settled, setSettled] = useState<InteractionWire | undefined>(
+		undefined,
+	);
+	const record = settled ?? interaction;
+	const pending = record.status === "pending" && settled === undefined;
 
-	async function answer(answer: {
-		ids?: readonly string[];
-		values?: Record<string, string | number | boolean>;
-		text?: string;
-	}): Promise<void> {
-		setBusy(true);
-		try {
-			await client.answerInteraction(conversationId, interaction.callId, answer);
-			onAnswered?.(interaction.callId);
-		} catch (cause) {
-			onError?.(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	const body = interaction.body;
-	const options = body?.options ?? [];
-	const fields = body?.fields ?? [];
-	// multiSelect rides the record level: an extension may declare it in
-	// `details.multi` (the only place open to it without a schema bump).
-	const multiSelect =
-		(interaction.details as { multi?: boolean } | undefined)?.multi === true;
-	const hasAffordance = options.length > 0 || fields.length > 0;
+	const transport = useMemo(
+		() =>
+			record.body === undefined
+				? undefined
+				: createInteractionTransport({
+						conversationId,
+						callId: record.callId,
+						tree: record.body,
+						data: recordData(record),
+						access: pending ? "write" : "read",
+						answer: (body) =>
+							client
+								.answerInteraction(conversationId, record.callId, body)
+								.then(() => undefined),
+						onAnswered: () => onAnswered?.(record.callId),
+						onSettledElsewhere: (message) => {
+							// The settle raced the user's submit (expiry, another
+							// channel, the extension): refetch the record and render
+							// it settled; a refetch failure reports the error loud.
+							client
+								.getInteraction(conversationId, record.callId)
+								.then((fresh: InteractionWire) => setSettled(fresh))
+								.catch(() => onError?.(message));
+						},
+					}),
+		// The transport is the card's identity; a new record re-creates it.
+		[record, conversationId, client, pending, onAnswered, onError],
+	);
 
 	return (
-		<div className="interaction-card" data-kind={interaction.kind}>
+		<div className="interaction-card" data-kind={record.kind}>
 			<div className="interaction-card-title">
-				<span className="interaction-kind">{interaction.kind}</span>
-				{interaction.expiresAt !== undefined && (
+				<span className="interaction-kind">{record.kind}</span>
+				{record.expiresAt !== undefined && pending && (
 					<span className="interaction-expiry">expires</span>
 				)}
+				{!pending && (
+					<span className="interaction-status" data-status={record.status}>
+						{record.status}
+					</span>
+				)}
 			</div>
-			{body?.text !== undefined && (
-				<p className="interaction-text">{body.text}</p>
-			)}
-			{body?.diff !== undefined && (
-				<div className="interaction-diff">
-					<pre className="interaction-diff-before">{body.diff.before}</pre>
-					<pre className="interaction-diff-after">{body.diff.after}</pre>
-				</div>
-			)}
-			{options.length > 0 && (
-				<OptionsBlock
-					options={options}
-					multi={multiSelect}
-					disabled={busy}
-					onAnswerIds={(ids) => void answer({ ids })}
+			{transport !== undefined && record.body !== undefined && (
+				<InteractionSurface
+					record={record}
+					transport={transport}
+					access={pending ? "write" : "read"}
 				/>
 			)}
-			{options.length === 0 && fields.length > 0 && (
-				<FieldsBlock
-					fields={fields}
-					disabled={busy}
-					onAnswerValues={(values) => void answer({ values })}
-				/>
-			)}
-			{!hasAffordance && interaction.details !== undefined && (
+			{record.details !== undefined && (
 				<details className="interaction-details">
 					<summary>details</summary>
-					<pre>{JSON.stringify(interaction.details, null, 2)}</pre>
-				</details>
-			)}
-			{hasAffordance && interaction.details !== undefined && (
-				<details className="interaction-details">
-					<summary>details</summary>
-					<pre>{JSON.stringify(interaction.details, null, 2)}</pre>
+					<pre>{JSON.stringify(record.details, null, 2)}</pre>
 				</details>
 			)}
 		</div>
 	);
 }
 
-/** The pending card stack (replaces the old single-kind card strip). */
+/** The card's tree rendered against the record transport. Unlike
+ *  `SurfaceView` (whose loading/not-found states never occur — the
+ *  record is already in hand), this renders the ready state directly. */
+function InteractionSurface(props: {
+	record: InteractionWire;
+	transport: ReturnType<typeof createInteractionTransport>;
+	access: "read" | "write";
+}): ReactNode {
+	const tree: Tree = props.record.body as Tree;
+	const actions = useMemo(
+		() => ({
+			dispatch: (action: Action, payload: JsonValue): void => {
+				const name = "name" in action ? action.name : action.type;
+				void props.transport.act({
+					action: name,
+					payload,
+					actionId: `answer-${Date.now()}`,
+				});
+			},
+			access: props.access,
+			viewState: {} as JsonObject,
+			serverErrors: {} as Readonly<Record<string, string>>,
+			setView: (): void => {},
+		}),
+		[props.transport, props.access],
+	);
+	return (
+		<SurfaceDataContext.Provider
+			value={{ data: recordData(props.record), locale: navigator.language }}
+		>
+			<SurfaceActionsContext.Provider value={actions}>
+				<ContainerWidth>
+					<BlockView block={tree.root} interaction />
+				</ContainerWidth>
+			</SurfaceActionsContext.Provider>
+		</SurfaceDataContext.Provider>
+	);
+}
+
+/** The pending card stack. */
 export function InteractionCards(props: {
 	conversationId: number | null;
 	interactions: readonly InteractionWire[];

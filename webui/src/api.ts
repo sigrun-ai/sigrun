@@ -31,6 +31,7 @@
 
 import type {
 	MetaResponse,
+	InteractionWire,
 	InteractionList as InteractionListWire,
 	InteractionAnswered as InteractionAnsweredWire,
 	AmbientList as AmbientListWire,
@@ -438,6 +439,16 @@ export interface SigrunClient {
 	/** Pending interactions for a conversation (`GET .../interactions`). */
 	listInteractions(conversationId: number): Promise<InteractionListWire>;
 	/**
+	 * One interaction record in ANY status (`GET .../interactions/:callId`,
+	 * U6 Task 2) — the channel's settle-refetch path: an answer that lands
+	 * on an already-settled record (404 not_pending) refetches here and
+	 * renders the settled record read-only.
+	 */
+	getInteraction(
+		conversationId: number,
+		callId: string,
+	): Promise<InteractionWire>;
+	/**
 	 * Answer a pending interaction (the ONE generic route). `answer` is
 	 * `{values}` (ruling 20: every field's value under its name);
 	 * resolution semantics stay extension-owned.
@@ -764,6 +775,10 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		listInteractions: (conversationId) =>
 			get<InteractionListWire>(
 				`/v1/conversations/${conversationId}/interactions`,
+			),
+		getInteraction: (conversationId, callId) =>
+			get<InteractionWire>(
+				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}`,
 			),
 		answerInteraction: (conversationId, callId, answer) =>
 			send(

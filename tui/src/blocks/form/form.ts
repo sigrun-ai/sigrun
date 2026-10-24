@@ -38,6 +38,7 @@ import {
 	ChoiceState,
 	choiceActivate,
 	choiceLines,
+	choiceOptions,
 	choiceRowCount,
 	choiceSetOther,
 	choiceValueText,
@@ -777,5 +778,30 @@ export class FormComponent implements Component {
 
 	get submittedOnce(): boolean {
 		return this.#submitted;
+	}
+
+	/** Set one field's value from the host (the interaction prompter's
+	 *  digit accelerator writes the pick; the form's own key handling
+	 *  stays the editor). Read-only forms ignore the write. */
+	setFieldValue(name: string, value: JsonValue): void {
+		if (this.#readOnly) return;
+		this.#change(name, value);
+		// A host-written choice value moves the field's cursor onto the
+		// last-toggled option (the form's row edits consume the value,
+		// not the host's write — the cursor reflects it).
+		const field = this.#fields.find((item) => item.name === name);
+		if (field !== undefined && field.type === "choice") {
+			const state = this.#choiceState(field);
+			const ids = optionIdList(value);
+			const options = choiceOptions(field, this.#ctx);
+			const last = ids[ids.length - 1];
+			const index = options.findIndex((option) => option.id === last);
+			if (index >= 0) state.cursor = index;
+		}
+	}
+
+	/** One field's current value (the host's review/dispatch reads). */
+	fieldValue(name: string): JsonValue | undefined {
+		return this.#values[name];
 	}
 }

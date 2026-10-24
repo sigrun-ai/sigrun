@@ -1,23 +1,24 @@
 /**
- * The ambient seam's TUI renderer (Task 8 — the parity rule): ambient
- * surfaces placed in the TUI's chrome per the seam's `place` field. The
- * builder's mapping (spec §8 leaves it to the builder):
+ * The ambient seam's TUI renderer (UI-blocks U6 Task 3 — the parity
+ * rule): ambient surfaces placed in the TUI's chrome per the seam's
+ * `place` field, rendered FROM BLOCK TREES (spec §9.2):
  *
  * - `place: "status"` → the statusline (the row directly above the
  *   composer; multiple status records join with " · ").
- * - `place: "footer"` → the footer zone (one summary line per record,
- *   above the statusline).
- * - `place: "panel"` → the panel zone (full rendering: line, rows with
- *   severity order + quiet fold, gauge, ledger — the webui's AmbientPanel
- *   mirrored in text).
+ * - `place: "footer"` → the footer zone (the body's `columns` block
+ *   renders the left/middle/right zones, one line per record).
+ * - `place: "panel"` → the panel zone (the full tree rendering; literal
+ *   rows through the collection renderer, quiet rows folded behind the
+ *   collection's own "N more"; `maxRows`/`overflow` budget per Review
+ *   Focus 3).
  *
  * Records are generic — the chrome never knows what a "todo" or a "goal"
  * is. Refetches arrive on conversation connect and on `ambient.changed`
  * host events via `kick(conversationId)` (W3 Task 4 — the refreshMs
- * timer cadence is retired; a record's `refreshMs` no longer drives a
- * client poll). `expires: "idle"` entries are
- * visible only while a run is live and disappear when the conversation
- * goes idle.
+ * timer cadence is retired). `expires: "idle"` entries are visible only
+ * while a run is live and disappear when the conversation goes idle.
+ *
+ * Tests own their literals.
  */
 
 import { describe, expect, test, vi } from "vitest";
@@ -59,7 +60,51 @@ function view(id: number, entries: unknown[], busy = false): ConversationViewWir
 	} as unknown as ConversationViewWire;
 }
 
-/** One ambient record (envelope + closed-primitive body). */
+const TREE_V = 1;
+
+/** A one-line markdown tree (the §9.2 status shape). */
+function lineTree(text: string): unknown {
+	return { v: TREE_V, root: { type: "markdown", text } };
+}
+
+/** A three-zone footer tree (§9.2: one columns of one-line blocks). */
+function footerTree(left: string, middle: string, right: string): unknown {
+	return {
+		v: TREE_V,
+		root: {
+			type: "columns",
+			children: [
+				{ block: { type: "markdown", text: left } },
+				{ block: { type: "markdown", text: middle } },
+				{ block: { type: "markdown", text: right } },
+			],
+		},
+	};
+}
+
+/** A panel rows tree: a literal-rows list collection (the §9.2 rows
+ *  mapping; ambient collections never bind — the 2026-10-24 ruling). */
+function rowsTree(
+	rows: readonly Record<string, unknown>[],
+): unknown {
+	return {
+		v: TREE_V,
+		root: {
+			type: "collection",
+			id: "rows",
+			items: rows,
+			display: "list",
+			item: {
+				title: { $: "./label" },
+				status: { label: { $: "./status" } },
+				quiet: { $: "./quiet" },
+				body: { $: "./detail" },
+			},
+		},
+	};
+}
+
+/** One ambient record (envelope + block-tree body). */
 function ambient(
 	key: string,
 	init?: {
@@ -67,27 +112,22 @@ function ambient(
 		place?: "status" | "footer" | "panel";
 		refreshMs?: number;
 		expires?: "never" | "idle";
-		line?: { text?: string; segments?: readonly { id: string; text: string; place?: "left" | "middle" | "right" }[] };
-		rows?: readonly { id: string; label: string; status?: string; severity?: 0 | 1 | 2; quiet?: boolean; detail?: string; depth?: number; deps?: readonly string[]; metrics?: { tokens?: number; cost?: number; current?: number; total?: number; completed?: number; format?: "compact" | "usd" | "percent" } }[];
-		gauge?: { label: string; percent?: number; phase?: string; elapsedMs?: number; recentOutput?: readonly string[] };
-		ledger?: readonly { id: string; at: number; kind: string; summary: string; detail?: readonly string[] }[];
+		maxRows?: number;
+		overflow?: "drop" | "wrap" | "summarize";
+		body?: unknown;
 		details?: Record<string, unknown>;
 	},
 ): AmbientWire {
-	const body: Record<string, unknown> = {
-		...(init?.line === undefined ? {} : { line: init.line }),
-		...(init?.rows === undefined ? {} : { rows: [...init.rows] }),
-		...(init?.gauge === undefined ? {} : { gauge: init.gauge }),
-		...(init?.ledger === undefined ? {} : { ledger: [...init.ledger] }),
-	};
 	return {
 		key,
 		owner: init?.owner ?? "acme-ext",
 		place: init?.place ?? "status",
 		expires: init?.expires ?? "never",
 		...(init?.refreshMs === undefined ? {} : { refreshMs: init.refreshMs }),
+		...(init?.maxRows === undefined ? {} : { maxRows: init.maxRows }),
+		...(init?.overflow === undefined ? {} : { overflow: init.overflow }),
 		updatedAt: 1,
-		body,
+		body: init?.body,
 		...(init?.details === undefined ? {} : { details: init.details }),
 	} as unknown as AmbientWire;
 }
@@ -161,12 +201,17 @@ function flush(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
+/** Strip ANSI styling for structural assertions. */
+const strip = (line: string): string => line.replace(/\[[0-9;]*m/g, "");
+
 // ─── AmbientChrome (unit) ───────────────────────────────────────────────
 
 describe("AmbientChrome", () => {
-	test("a status record renders in the statusline", async () => {
+	test("a status record renders one line in the statusline", async () => {
 		const stub = stubClient();
-		stub.setSurfaces([ambient("goal", { place: "status", line: { text: "building the thing" } })]);
+		stub.setSurfaces([
+			ambient("goal", { place: "status", body: lineTree("building the thing") }),
+		]);
 		const chrome = new AmbientChrome(stub.client);
 		chrome.setConversation(1);
 		await flush();
@@ -176,16 +221,19 @@ describe("AmbientChrome", () => {
 		chrome.dispose();
 	});
 
-	test("a footer record renders in the footer zone, not the statusline", async () => {
+	test("a footer record renders its three zone columns, not the statusline", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
-			ambient("usage", { place: "footer", line: { text: "tok 2.5k" } }),
-			ambient("goal", { place: "status", line: { text: "on track" } }),
+			ambient("usage", { place: "footer", body: footerTree("tok 2.5k", "mid", "$0.01") }),
+			ambient("goal", { place: "status", body: lineTree("on track") }),
 		]);
 		const chrome = new AmbientChrome(stub.client);
 		chrome.setConversation(1);
 		await flush();
-		expect(chrome.footerLines().join("\n")).toContain("tok 2.5k");
+		const footer = chrome.footerLines().map(strip).join("\n");
+		expect(footer).toContain("tok 2.5k");
+		expect(footer).toContain("mid");
+		expect(footer).toContain("$0.01");
 		expect(chrome.statusline()).toContain("on track");
 		expect(chrome.statusline()).not.toContain("tok 2.5k");
 		chrome.dispose();
@@ -194,8 +242,8 @@ describe("AmbientChrome", () => {
 	test("multiple status records join onto one statusline", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
-			ambient("a", { place: "status", line: { text: "left" } }),
-			ambient("b", { place: "status", line: { text: "right" } }),
+			ambient("a", { place: "status", body: lineTree("left") }),
+			ambient("b", { place: "status", body: lineTree("right") }),
 		]);
 		const chrome = new AmbientChrome(stub.client);
 		chrome.setConversation(1);
@@ -206,111 +254,120 @@ describe("AmbientChrome", () => {
 		chrome.dispose();
 	});
 
-	test("a segmented line renders its segment texts in order", async () => {
+	test("a panel renders literal rows; a quiet row folds behind the count", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
-			ambient("power", {
-				place: "status",
-				line: {
-					segments: [
-						{ id: "s1", text: "one", place: "left" },
-						{ id: "s2", text: "two", place: "right" },
-					],
+			ambient("todos", {
+				place: "panel",
+				body: rowsTree([
+					{ id: "t1", label: "calm item", status: "open" },
+					{ id: "t2", label: "urgent item", status: "open", detail: "on fire" },
+					{ id: "t3", label: "quiet done", status: "done", quiet: true },
+				]),
+			}),
+		]);
+		const chrome = new AmbientChrome(stub.client);
+		chrome.setConversation(1);
+		await flush();
+		const lines = chrome.panelLines().map(strip).join("\n");
+		expect(lines).toContain("urgent item");
+		expect(lines).toContain("calm item");
+		// Quiet rows fold behind the collection's quiet bucket.
+		expect(lines).not.toContain("quiet done");
+		expect(lines).toContain("1 more");
+		chrome.dispose();
+	});
+
+	test("maxRows: 3 with 5 rows — drop folds the tail behind 'N more'", async () => {
+		const stub = stubClient();
+		stub.setSurfaces([
+			ambient("queue", {
+				place: "panel",
+				maxRows: 3,
+				overflow: "drop",
+				body: rowsTree(
+					[1, 2, 3, 4, 5].map((n) => ({
+						id: `r${n}`,
+						label: `row ${n}`,
+						status: "open",
+					})),
+				),
+			}),
+		]);
+		const chrome = new AmbientChrome(stub.client);
+		chrome.setConversation(1);
+		await flush();
+		const lines = chrome.panelLines().map(strip).join("\n");
+		expect(lines).toContain("row 1");
+		expect(lines).toContain("row 3");
+		expect(lines).not.toContain("row 4");
+		expect(lines).not.toContain("row 5");
+		expect(lines).toContain("2 more");
+		chrome.dispose();
+	});
+
+	test("maxRows: 3 with 5 rows — summarize shows a count line", async () => {
+		const stub = stubClient();
+		stub.setSurfaces([
+			ambient("queue", {
+				place: "panel",
+				maxRows: 3,
+				overflow: "summarize",
+				body: rowsTree(
+					[1, 2, 3, 4, 5].map((n) => ({
+						id: `r${n}`,
+						label: `row ${n}`,
+						status: "open",
+					})),
+				),
+			}),
+		]);
+		const chrome = new AmbientChrome(stub.client);
+		chrome.setConversation(1);
+		await flush();
+		const lines = chrome.panelLines().map(strip).join("\n");
+		expect(lines).toContain("row 1");
+		expect(lines).toContain("row 3");
+		expect(lines).not.toContain("row 4");
+		expect(lines).toContain("2 rows");
+		chrome.dispose();
+	});
+
+	test("a meter-shaped panel renders its percent", async () => {
+		const stub = stubClient();
+		stub.setSurfaces([
+			ambient("run", {
+				place: "panel",
+				body: {
+					v: TREE_V,
+					root: { type: "meter", value: 0.4, format: "percent", label: "auditing" },
 				},
 			}),
 		]);
 		const chrome = new AmbientChrome(stub.client);
 		chrome.setConversation(1);
 		await flush();
-		const line = chrome.statusline();
-		expect(line).toContain("one");
-		expect(line).toContain("two");
-		expect(line.indexOf("one")).toBeLessThan(line.indexOf("two"));
-		chrome.dispose();
-	});
-
-	test("panel rows render severity-sorted with quiet rows folded", async () => {
-		const stub = stubClient();
-		stub.setSurfaces([
-			ambient("todos", {
-				place: "panel",
-				rows: [
-					{ id: "t3", label: "quiet done", status: "done", severity: 2, quiet: true },
-					{ id: "t1", label: "calm item", severity: 2 },
-					{ id: "t2", label: "urgent item", severity: 0, detail: "on fire" },
-				],
-			}),
-		]);
-		const chrome = new AmbientChrome(stub.client);
-		chrome.setConversation(1);
-		await flush();
-		const lines = chrome.panelLines().join("\n");
-		expect(lines).toContain("urgent item");
-		expect(lines).toContain("on fire");
-		expect(lines).toContain("calm item");
-		// Severity 0 sorts above severity 2.
-		expect(lines.indexOf("urgent item")).toBeLessThan(lines.indexOf("calm item"));
-		// Quiet rows fold into a summary.
-		expect(lines).not.toContain("quiet done");
-		expect(lines).toContain("+1 quiet");
-		chrome.dispose();
-	});
-
-	test("row metrics format via the record's hint (compact / usd)", async () => {
-		const stub = stubClient();
-		stub.setSurfaces([
-			ambient("meter", {
-				place: "panel",
-				rows: [
-					{ id: "r1", label: "usage", metrics: { tokens: 2500, cost: 0.0123, format: "compact" } },
-					{ id: "r2", label: "progress", metrics: { completed: 3, total: 7 } },
-				],
-			}),
-		]);
-		const chrome = new AmbientChrome(stub.client);
-		chrome.setConversation(1);
-		await flush();
-		const lines = chrome.panelLines().join("\n");
-		expect(lines).toContain("tok 2.5k");
-		expect(lines).toContain("$0.0123");
-		expect(lines).toContain("3/7");
-		chrome.dispose();
-	});
-
-	test("a gauge renders label, percent bar, and phase", async () => {
-		const stub = stubClient();
-		stub.setSurfaces([
-			ambient("run", {
-				place: "panel",
-				gauge: { label: "auditing", percent: 40, phase: "checks" },
-			}),
-		]);
-		const chrome = new AmbientChrome(stub.client);
-		chrome.setConversation(1);
-		await flush();
-		const lines = chrome.panelLines().join("\n");
+		const lines = chrome.panelLines().map(strip).join("\n");
 		expect(lines).toContain("auditing");
-		expect(lines).toContain("checks");
 		expect(lines).toContain("40%");
 		chrome.dispose();
 	});
 
-	test("a ledger renders newest-first", async () => {
+	test("details render as one collapsed JSON line", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
 			ambient("feed", {
 				place: "panel",
-				ledger: [
-					{ id: "e1", at: 1, kind: "note", summary: "oldest" },
-					{ id: "e2", at: 2, kind: "note", summary: "newest" },
-				],
+				body: lineTree("headline"),
+				details: { custom: true },
 			}),
 		]);
 		const chrome = new AmbientChrome(stub.client);
 		chrome.setConversation(1);
 		await flush();
 		const lines = chrome.panelLines().join("\n");
-		expect(lines.indexOf("newest")).toBeLessThan(lines.indexOf("oldest"));
+		expect(lines).toContain("[details]");
+		expect(lines).toContain("custom");
 		chrome.dispose();
 	});
 
@@ -318,7 +375,9 @@ describe("AmbientChrome", () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
 		try {
 			const stub = stubClient();
-			stub.setSurfaces([ambient("clock", { place: "status", refreshMs: 500, line: { text: "tick" } })]);
+			stub.setSurfaces([
+				ambient("clock", { place: "status", refreshMs: 500, body: lineTree("tick") }),
+			]);
 			const chrome = new AmbientChrome(stub.client);
 			chrome.setConversation(1);
 			await vi.advanceTimersByTimeAsync(0);
@@ -343,7 +402,7 @@ describe("AmbientChrome", () => {
 
 	test("a failed fetch keeps the last surfaces and the next kick recovers", async () => {
 		const stub = stubClient();
-		stub.setSurfaces([ambient("clock", { place: "status", line: { text: "tick" } })]);
+		stub.setSurfaces([ambient("clock", { place: "status", body: lineTree("tick") })]);
 		let failNext = false;
 		let attempts = 0;
 		const flaky = {
@@ -368,7 +427,7 @@ describe("AmbientChrome", () => {
 		expect(attempts).toBe(2);
 		expect(chrome.statusline()).toContain("tick");
 		// The next kick recovers (no cadence to kill — each event refetches).
-		stub.setSurfaces([ambient("clock", { place: "status", line: { text: "tock" } })]);
+		stub.setSurfaces([ambient("clock", { place: "status", body: lineTree("tock") })]);
 		chrome.kick(1);
 		await flush();
 		expect(attempts).toBe(3);
@@ -387,7 +446,7 @@ describe("AmbientChrome", () => {
 		expect(chrome.statusline()).toBe("");
 		// …the extension writes a surface, which emits ambient.changed —
 		// the kick picks it up (the retired fallback cadence's role).
-		stub.setSurfaces([ambient("clock", { place: "status", line: { text: "tick" } })]);
+		stub.setSurfaces([ambient("clock", { place: "status", body: lineTree("tick") })]);
 		chrome.kick(1);
 		await flush();
 		expect(stub.ambientCalls()).toBe(2);
@@ -398,8 +457,8 @@ describe("AmbientChrome", () => {
 	test("expires: idle entries disappear when the conversation is idle", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
-			ambient("spinner", { place: "status", expires: "idle", line: { text: "working…" } }),
-			ambient("goal", { place: "status", expires: "never", line: { text: "the goal" } }),
+			ambient("spinner", { place: "status", expires: "idle", body: lineTree("working…") }),
+			ambient("goal", { place: "status", expires: "never", body: lineTree("the goal") }),
 		]);
 		const chrome = new AmbientChrome(stub.client);
 		chrome.setConversation(1);
@@ -420,8 +479,8 @@ describe("AmbientChrome", () => {
 	test("switching conversations swaps surfaces (no cross-conversation bleed)", async () => {
 		const stub = stubClient();
 		const byConversation = new Map<number, AmbientWire[]>([
-			[1, [ambient("one", { place: "status", line: { text: "conv one status" } })]],
-			[2, [ambient("two", { place: "status", line: { text: "conv two status" } })]],
+			[1, [ambient("one", { place: "status", body: lineTree("conv one status") })]],
+			[2, [ambient("two", { place: "status", body: lineTree("conv two status") })]],
 		]);
 		const client = {
 			...stub.client,
@@ -454,7 +513,7 @@ describe("AmbientChrome", () => {
 					});
 				}
 				return Promise.resolve({
-					ambient: [ambient("two", { place: "status", line: { text: "fresh status" } })],
+					ambient: [ambient("two", { place: "status", body: lineTree("fresh status") })],
 				});
 			},
 		} as unknown as SigrunClient;
@@ -464,7 +523,7 @@ describe("AmbientChrome", () => {
 		await flush();
 		expect(chrome.statusline()).toContain("fresh status");
 		resolveFirst?.({
-			ambient: [ambient("one", { place: "status", line: { text: "stale status" } })],
+			ambient: [ambient("one", { place: "status", body: lineTree("stale status") })],
 		});
 		await flush();
 		expect(chrome.statusline()).toContain("fresh status");
@@ -478,7 +537,7 @@ describe("AmbientChrome", () => {
 describe("TuiApp ambient chrome", () => {
 	test("boot fetches ambient surfaces and renders them in the app's chrome", async () => {
 		const stub = stubClient();
-		stub.setSurfaces([ambient("goal", { place: "status", line: { text: "ship the tui" } })]);
+		stub.setSurfaces([ambient("goal", { place: "status", body: lineTree("ship the tui") })]);
 		const app = new TuiApp(stub.client, {
 			tui: fakeTui,
 			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
@@ -493,7 +552,7 @@ describe("TuiApp ambient chrome", () => {
 	test("a busy→idle frame transition drops idle-expiring surfaces from the render", async () => {
 		const stub = stubClient();
 		stub.setSurfaces([
-			ambient("spinner", { place: "status", expires: "idle", line: { text: "crunching" } }),
+			ambient("spinner", { place: "status", expires: "idle", body: lineTree("crunching") }),
 		]);
 		const app = new TuiApp(stub.client, {
 			tui: fakeTui,

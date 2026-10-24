@@ -171,9 +171,17 @@ function findMoveTarget(
 	if (tree === undefined) return undefined;
 	const found = findCollection(tree.root, name);
 	if (found === undefined) return undefined;
-	if (typeof found.items.$ !== "string") return undefined;
+	// Literal rows (the ambient shape) have no data path to overlay.
+	const items = found.items;
+	if (
+		typeof items !== "object" ||
+		Array.isArray(items) ||
+		!("$" in items)
+	) {
+		return undefined;
+	}
 	return {
-		itemsPath: found.items.$,
+		itemsPath: items.$,
 		groupBy: found.groupBy,
 		timeStart: found.time?.start,
 		timeEnd: found.time?.end,

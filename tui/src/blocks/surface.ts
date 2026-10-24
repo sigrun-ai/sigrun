@@ -119,9 +119,15 @@ function findMoveTarget(tree: Tree | undefined, name: string): MoveTarget | unde
 	if (tree === undefined) return undefined;
 	const found = findCollection(tree.root, name);
 	if (found === undefined) return undefined;
-	if (typeof found.items.$ !== "string") return undefined;
+	const itemsProp = found.items;
+	// Literal rows (the ambient shape, U6 Task 3) have no data path; the
+	// "$" check discriminates the binding (Array.isArray cannot narrow
+	// a readonly-array union).
+	if (typeof itemsProp !== "object" || !("$" in itemsProp)) {
+		return undefined;
+	}
 	return {
-		itemsPath: found.items.$,
+		itemsPath: itemsProp.$,
 		groupBy: found.groupBy,
 		timeStart: found.time?.start,
 		timeEnd: found.time?.end,

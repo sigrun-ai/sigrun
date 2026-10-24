@@ -1,29 +1,69 @@
 /**
- * InteractionCards + AmbientPanels: the seam's channel rendering
- * (docs/approval-ux-seams.md contract). react-test-renderer harness, same
- * pattern as the entry tests.
+ * InteractionCards + AmbientPanels (UI-blocks U6 Task 3): the seam's
+ * channel rendering FROM BLOCK TREES (docs/approval-ux-seams.md; spec
+ * §9.1/§9.2). Covered here:
+ *
+ * - an interaction card renders its tree (a root form) and submits
+ *   `{values}` through the one generic answer route;
+ * - a multi-question form (several choice sections) renders the
+ *   stepper with a review and submits ONCE;
+ * - expiry mid-stepper: the answer route 404s, the card refetches and
+ *   shows the settled status, typed values stay visible and read-only;
+ * - a settled interaction renders read-only with its answer;
+ * - ambient `status` renders one line, `footer` renders its zones,
+ *   `panel` renders its tree above the composer; a quiet card folds
+ *   behind "N more".
+ *
+ * react-test-renderer harness, same pattern as the entry tests. Tests
+ * own their literals.
  */
 
 import { act, createElement as h } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { render, textContent } from "../test-utils";
-import type {
-	AmbientWire,
-	SigrunClient,
-	InteractionWire,
-} from "../api";
+import type { Tree } from "@sigrun/shared/blocks";
+import type { AmbientWire, InteractionWire, SigrunClient } from "../api";
+import { ApiError } from "../api";
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
 	.IS_REACT_ACT_ENVIRONMENT = true;
+
 import { InteractionCard, InteractionCards } from "./InteractionCards";
-import { AmbientPanel } from "./AmbientPanels";
+import { AmbientPanel, AmbientPanels } from "./AmbientPanels";
+
+const TREE_V = 1;
+
+/** A root form with the given children (the §9.1 interaction shape). */
+function formTree(children: readonly unknown[]): Tree {
+	return {
+		v: TREE_V,
+		root: {
+			type: "form",
+			id: "ask",
+			bind: "/values",
+			mode: "submit",
+			children,
+		},
+	} as Tree;
+}
+
+/** One choice section (the stepper's per-question shape, §9.1). */
+function questionSection(name: string, label: string, options: readonly { id: string; label: string }[]): unknown {
+	return {
+		type: "section",
+		title: label,
+		children: [{ type: "choice", name, label, options }],
+	};
+}
 
 function makeClient(overrides: Partial<SigrunClient> = {}): SigrunClient {
 	return {
 		answerInteraction: vi.fn().mockResolvedValue({
 			callId: "c1",
 			status: "answered",
-			answer: { ids: ["a"] },
+			answer: { values: { decision: "allow" } },
 		}),
+		getInteraction: vi.fn(),
 		...overrides,
 	} as unknown as SigrunClient;
 }
@@ -35,202 +75,267 @@ const BASE: InteractionWire = {
 	createdAt: 1,
 };
 
-describe("InteractionCard", () => {
-	test("renders kind, text, and toned options; recommended pre-selected", () => {
-		const client = makeClient();
-		const renderer = render(
-			h(InteractionCard, {
-				conversationId: 1,
-				interaction: {
-					...BASE,
-					body: {
-						text: "allow this?",
-						options: [
-							{ id: "a", label: "Allow", tone: "ok", recommended: true },
-							{ id: "b", label: "Deny", tone: "danger" },
-						],
-					},
+describe("InteractionCard (tree rendering)", () => {
+	test("renders the tree's markdown and choice; answering submits {values}", async () => {
+		const answerInteraction = vi.fn().mockResolvedValue({
+			callId: "c1",
+			status: "answered",
+			answer: { values: { decision: "allow" } },
+		});
+		const client = makeClient({ answerInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			body: formTree([
+				{
+					type: "section",
+					children: [{ type: "markdown", text: "allow this?" }],
 				},
-				client,
-			}),
+				{
+					type: "choice",
+					name: "decision",
+					label: "Verdict",
+					options: [
+						{ id: "allow", label: "Allow", tone: "good", recommended: true },
+						{ id: "deny", label: "Deny", tone: "bad" },
+					],
+				},
+			]),
+		};
+		const renderer = render(
+			h(InteractionCard, { conversationId: 7, interaction, client }),
 		);
 		expect(textContent(renderer.toJSON())).toContain("fixture.ask");
 		expect(textContent(renderer.toJSON())).toContain("allow this?");
-		const checked = renderer.root.findAllByProps({ checked: true });
-		expect(checked).toHaveLength(1);
-		const radios = renderer.root.findAllByProps({ type: "radio" });
-		expect(radios).toHaveLength(2);
-	});
-
-	test("answering a single choice sends ids through the generic route", async () => {
-		const answerInteraction = vi.fn().mockResolvedValue({
-			callId: "c1",
-			status: "answered",
-			answer: { ids: ["a"] },
-		});
-		const client = makeClient({ answerInteraction });
-		const renderer = render(
-			h(InteractionCard, {
-				conversationId: 7,
-				interaction: {
-					...BASE,
-					body: {
-						options: [
-							{ id: "a", label: "Allow" },
-							{ id: "b", label: "Deny" },
-						],
-					},
-				},
-				client,
-			}),
+		// recommended pre-selected, then submit → the generic route
+		// carries `{values}` (ruling 20).
+		const submit = renderer.root.find(
+			(node) =>
+				node.type === "button" &&
+				typeof node.props.className === "string" &&
+				node.props.className.includes("blk-form-submit"),
 		);
-		// No `recommended` in this fixture: select the radio, then submit.
-		const radios = renderer.root.findAllByProps({
-			type: "radio",
-			checked: false,
-		});
-		await act(async () => {
-			radios[0].props.onChange();
-		});
-		const submit = renderer.root.findByProps({ className: "interaction-submit" });
-		await act(async () => {
-			submit.props.onClick();
-		});
-		expect(answerInteraction).toHaveBeenCalledWith(7, "c1", { ids: ["a"] });
-	});
-
-	test("multi-select accumulates checkboxes into one ids answer", async () => {
-		const answerInteraction = vi.fn().mockResolvedValue({
-			callId: "c1",
-			status: "answered",
-			answer: { ids: ["a", "c"] },
-		});
-		const client = makeClient({ answerInteraction });
-		const renderer = render(
-			h(InteractionCard, {
-				conversationId: 7,
-				interaction: {
-					...BASE,
-					details: { multi: true },
-					body: {
-						options: [
-							{ id: "a", label: "A" },
-							{ id: "b", label: "B" },
-							{ id: "c", label: "C" },
-						],
-					},
-				},
-				client,
-			}),
-		);
-		const boxes = renderer.root.findAllByProps({ type: "checkbox" });
-		expect(boxes).toHaveLength(3);
-		await act(async () => {
-			boxes[0].props.onChange();
-		});
-		await act(async () => {
-			boxes[2].props.onChange();
-		});
-		const submit = renderer.root.findByProps({ className: "interaction-submit" });
-		await act(async () => {
-			submit.props.onClick();
-		});
-		expect(answerInteraction).toHaveBeenCalledWith(7, "c1", { ids: ["a", "c"] });
-	});
-
-	test("secret fields render as password inputs; values submit", async () => {
-		const answerInteraction = vi.fn().mockResolvedValue({
-			callId: "c1",
-			status: "answered",
-			answer: { values: { key: "abc", name: "x" } },
-		});
-		const client = makeClient({ answerInteraction });
-		const renderer = render(
-			h(InteractionCard, {
-				conversationId: 7,
-				interaction: {
-					...BASE,
-					body: {
-						fields: [
-							{ name: "key", type: "secret", required: true },
-							{ name: "name", type: "string" },
-						],
-					},
-				},
-				client,
-			}),
-		);
-		const inputs = renderer.root.findAllByType("input" as never);
-		expect(inputs[0].props.type).toBe("password");
-		await act(async () => {
-			inputs[0].props.onChange({ target: { value: "abc" } });
-		});
-		await act(async () => {
-			inputs[1].props.onChange({ target: { value: "x" } });
-		});
-		const submit = renderer.root.findByProps({ className: "interaction-submit" });
 		await act(async () => {
 			submit.props.onClick();
 		});
 		expect(answerInteraction).toHaveBeenCalledWith(7, "c1", {
-			values: { key: "abc", name: "x" },
+			values: { decision: "allow" },
 		});
 	});
 
-	test("no-affordance records render text+details with no answer controls", () => {
-		const client = makeClient();
-		const renderer = render(
-			h(InteractionCard, {
-				conversationId: 7,
-				interaction: {
-					...BASE,
-					body: { text: "informational only" },
-					details: { why: "because" },
-				},
-				client,
-			}),
-		);
-		expect(renderer.root.findAllByProps({ className: "interaction-submit" })).toHaveLength(0);
-		expect(renderer.root.findByProps({ className: "interaction-details" })).toBeDefined();
-		expect(textContent(renderer.toJSON())).toContain("informational only");
-	});
-
-	test("a failed answer surfaces the error fail-loud", async () => {
-		const answerInteraction = vi.fn().mockRejectedValue(new Error("boom"));
-		const onError = vi.fn();
+	test("a multi-question form renders the stepper with review and submits once", async () => {
+		const answerInteraction = vi.fn().mockResolvedValue({
+			callId: "c1",
+			status: "answered",
+			answer: { values: { q1: "a", q2: "x" } },
+		});
 		const client = makeClient({ answerInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			body: formTree([
+				questionSection("q1", "First", [
+					{ id: "a", label: "A" },
+					{ id: "b", label: "B" },
+				]),
+				questionSection("q2", "Second", [
+					{ id: "x", label: "X" },
+					{ id: "y", label: "Y" },
+				]),
+			]),
+		};
 		const renderer = render(
-			h(InteractionCard, {
-				conversationId: 7,
-				interaction: {
-					...BASE,
-					body: { options: [{ id: "a", label: "A" }] },
-				},
-				client,
-				onError,
-			}),
+			h(InteractionCard, { conversationId: 7, interaction, client }),
+		);
+		// Stepper: one question at a time ("Step 1 of 2").
+		expect(textContent(renderer.toJSON())).toContain("Step 1 of 2");
+		// Answer step 1 (click the first choice's radio), advance, answer
+		// step 2, review, submit once.
+		const radios = renderer.root.findAllByProps({ type: "radio" });
+		await act(async () => {
+			radios[0].props.onChange({ target: { value: radios[0].props.value } });
+		});
+		// Find the Next button by its text.
+		const nextButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent((b as never)) === "Next",
+		);
+		expect(nextButton).toBeDefined();
+		await act(async () => {
+			nextButton?.props.onClick();
+		});
+		expect(textContent(renderer.toJSON())).toContain("Step 2 of 2");
+		const radios2 = renderer.root.findAllByProps({ type: "radio" });
+		await act(async () => {
+			radios2[0].props.onChange({ target: { value: radios2[0].props.value } });
+		});
+		const reviewButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never) === "Review",
 		);
 		await act(async () => {
-			renderer.root.findByType("button" as never).props.onClick();
+			reviewButton?.props.onClick();
 		});
-		expect(onError).toHaveBeenCalledWith("boom");
+		// The review step lists both answers.
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("a");
+		expect(text).toContain("x");
+		const submit = renderer.root.findAllByType("button" as never).find(
+			(b) =>
+				typeof (b.props as { className?: string }).className === "string" &&
+				(b.props as { className: string }).className.includes("blk-form-submit"),
+		);
+		await act(async () => {
+			submit?.props.onClick();
+		});
+		expect(answerInteraction).toHaveBeenCalledTimes(1);
+		expect(answerInteraction).toHaveBeenCalledWith(7, "c1", {
+			values: { q1: "a", q2: "x" },
+		});
+	});
+
+	test("expiry mid-stepper: the 404 refetches, shows the status, keeps typed values read-only", async () => {
+		const settledRecord: InteractionWire = {
+			...BASE,
+			status: "expired",
+			settledAt: 2,
+			answer: { values: { q1: "a", q2: "x" } },
+		};
+		const answerInteraction = vi
+			.fn()
+			.mockRejectedValue(new ApiError({ method: "POST", path: "/answer", status: 404, error: "not_pending" }));
+		const getInteraction = vi.fn().mockResolvedValue(settledRecord);
+		const client = makeClient({ answerInteraction, getInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			expiresAt: 100,
+			body: formTree([
+				questionSection("q1", "First", [{ id: "a", label: "A" }, { id: "b", label: "B" }]),
+				questionSection("q2", "Second", [{ id: "x", label: "X" }, { id: "y", label: "Y" }]),
+			]),
+		};
+		const renderer = render(
+			h(InteractionCard, { conversationId: 7, interaction, client }),
+		);
+		// Type step 1, then submit → 404 → refetch → settled, read-only.
+		const radios = renderer.root.findAllByProps({ type: "radio" });
+		await act(async () => {
+			radios[0].props.onChange({ target: { value: radios[0].props.value } });
+		});
+		const nextButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never) === "Next",
+		);
+		await act(async () => {
+			nextButton?.props.onClick();
+		});
+		const radios2 = renderer.root.findAllByProps({ type: "radio" });
+		await act(async () => {
+			radios2[0].props.onChange({ target: { value: radios2[0].props.value } });
+		});
+		const reviewButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never) === "Review",
+		);
+		await act(async () => {
+			reviewButton?.props.onClick();
+		});
+		const submit = renderer.root.findAllByType("button" as never).find(
+			(b) =>
+				typeof (b.props as { className?: string }).className === "string" &&
+				(b.props as { className: string }).className.includes("blk-form-submit"),
+		);
+		await act(async () => {
+			submit?.props.onClick();
+		});
+		// The refetch happened and the settled status renders.
+		expect(getInteraction).toHaveBeenCalledWith(7, "c1");
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("expired");
+		// Typed values stay visible (the read-only form still shows them).
+		expect(text).toContain("a");
+		// Read-only: no enabled submit remains.
+		const enabledSubmit = renderer.root.findAllByType("button" as never).filter(
+			(b) =>
+				typeof (b.props as { className?: string }).className === "string" &&
+				(b.props as { className: string }).className.includes("blk-form-submit") &&
+				b.props.disabled !== true,
+		);
+		expect(enabledSubmit).toHaveLength(0);
+	});
+
+	test("a settled interaction renders read-only with the answer", () => {
+		const client = makeClient();
+		const interaction: InteractionWire = {
+			...BASE,
+			status: "answered",
+			settledAt: 2,
+			answer: { values: { decision: "allow" } },
+			body: formTree([
+				{
+					type: "choice",
+					name: "decision",
+					label: "Verdict",
+					options: [
+						{ id: "allow", label: "Allow" },
+						{ id: "deny", label: "Deny" },
+					],
+				},
+			]),
+		};
+		const renderer = render(
+			h(InteractionCard, { conversationId: 7, interaction, client }),
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("answered");
+		// Read access hides the submit control.
+		const submits = renderer.root.findAll(
+			(node) =>
+				node.type === "button" &&
+				typeof node.props.className === "string" &&
+				node.props.className.includes("blk-form-submit"),
+		);
+		expect(submits).toHaveLength(0);
 	});
 });
 
 describe("InteractionCards", () => {
 	test("null conversation or empty list renders nothing", () => {
 		const client = makeClient();
-		expect(render(
-			h(InteractionCards, { conversationId: null, interactions: [BASE], client }),
-		).toJSON()).toBeNull();
-		expect(render(
-			h(InteractionCards, { conversationId: 1, interactions: [], client }),
-		).toJSON()).toBeNull();
+		expect(
+			render(h(InteractionCards, { conversationId: null, interactions: [BASE], client })).toJSON(),
+		).toBeNull();
+		expect(
+			render(h(InteractionCards, { conversationId: 1, interactions: [], client })).toJSON(),
+		).toBeNull();
 	});
 });
 
-describe("AmbientPanel", () => {
-	test("renders line segments by zone", () => {
+/** One panel surface with a literal-rows collection (the §9.2 rows
+ *  mapping; ambient collections never bind — the 2026-10-24 ruling). */
+function rowsSurface(rows: readonly Record<string, unknown>[], init?: Partial<AmbientWire>): AmbientWire {
+	return {
+		key: "goal",
+		owner: "ext",
+		place: "panel",
+		expires: "never",
+		updatedAt: 1,
+		body: {
+			v: TREE_V,
+			root: {
+				type: "collection",
+				id: "rows",
+				items: rows,
+				display: "list",
+				item: {
+					title: { $: "./label" },
+					status: { label: { $: "./status" } },
+					quiet: { $: "./quiet" },
+					deps: { $: "./deps" },
+					metrics: [{ label: "steps", value: { $: "./completed" } }],
+				},
+			},
+		},
+		...init,
+	} as AmbientWire;
+}
+
+describe("AmbientPanel (tree rendering)", () => {
+	test("a status surface renders its one-line markdown", () => {
 		const surface: AmbientWire = {
 			key: "powerline",
 			owner: "ext",
@@ -238,50 +343,56 @@ describe("AmbientPanel", () => {
 			expires: "never",
 			updatedAt: 1,
 			body: {
-				line: {
-					text: "",
-					segments: [
-						{ id: "model", text: "glm-5.3", place: "left" },
-						{ id: "cost", text: "$0.12", place: "right" },
-					],
-				},
+				v: TREE_V,
+				root: { type: "markdown", text: "glm-5.3-flash · main*" },
 			},
-		};
+		} as AmbientWire;
 		const renderer = render(h(AmbientPanel, { surface }));
-		const segments = renderer.root.findAllByProps({
-			"className": "ambient-segment ambient-segment-left",
-		});
-		expect(segments.length).toBeGreaterThan(0);
-		expect(textContent(renderer.toJSON())).toContain("glm-5.3");
-		expect(textContent(renderer.toJSON())).toContain("$0.12");
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("glm-5.3-flash · main*");
 	});
 
-	test("rows: severity sorts first, quiet folded with a count, deps + metrics rendered", () => {
+	test("a footer surface renders its three zone columns", () => {
 		const surface: AmbientWire = {
-			key: "tasks",
+			key: "zones",
 			owner: "ext",
-			place: "panel",
+			place: "footer",
 			expires: "never",
 			updatedAt: 1,
 			body: {
-				rows: [
-					{ id: "r1", label: "quiet thing", status: "ok", quiet: true },
-					{ id: "r2", label: "failing", status: "failed", severity: 0, deps: ["r1"], metrics: { completed: 2, total: 5, format: "compact" } },
-					{ id: "r3", label: "working", status: "running", spinnerLabel: "parsing" },
-				],
+				v: TREE_V,
+				root: {
+					type: "columns",
+					children: [
+						{ block: { type: "markdown", text: "left-zone" } },
+						{ block: { type: "markdown", text: "middle-zone" } },
+						{ block: { type: "markdown", text: "right-zone" } },
+					],
+				},
 			},
-		};
+		} as AmbientWire;
 		const renderer = render(h(AmbientPanel, { surface }));
-		const rows = renderer.root.findAllByProps({ className: "ambient-row" });
-		// severity-0 first; quiet folded into a summary row
-		expect(rows[0].props["data-status"]).toBe("failed");
-		expect(textContent(renderer.toJSON())).toContain("+1 quiet");
-		expect(textContent(renderer.toJSON())).toContain("⛓ r1");
-		expect(textContent(renderer.toJSON())).toContain("parsing");
-		expect(textContent(renderer.toJSON())).toContain("2/5");
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("left-zone");
+		expect(text).toContain("middle-zone");
+		expect(text).toContain("right-zone");
 	});
 
-	test("gauge renders percent bar, elapsed, and check rows", () => {
+	test("a panel surface renders literal rows; a quiet row folds behind a count", () => {
+		const surface = rowsSurface([
+			{ id: "r1", label: "deploy", status: "running", quiet: false, completed: 2 },
+			{ id: "r2", label: "lint", status: "passed", quiet: true, completed: 1 },
+		]);
+		const renderer = render(h(AmbientPanel, { surface }));
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("deploy");
+		expect(text).toContain("running");
+		// The quiet row folds (the collection's quiet bucket).
+		expect(text).toContain("1 more");
+		expect(text).not.toContain("lint");
+	});
+
+	test("a meter-shaped panel renders its percent", () => {
 		const surface: AmbientWire = {
 			key: "audit",
 			owner: "ext",
@@ -289,50 +400,34 @@ describe("AmbientPanel", () => {
 			expires: "never",
 			updatedAt: 1,
 			body: {
-				gauge: {
-					label: "auditing",
-					percent: 62,
-					phase: "producing_report",
-					elapsedMs: 3400,
-					checks: [{ id: "c1", label: "tests", status: "passed" }],
-				},
+				v: TREE_V,
+				root: { type: "meter", value: 0.62, format: "percent", label: "audit" },
 			},
-		};
+		} as AmbientWire;
 		const renderer = render(h(AmbientPanel, { surface }));
-		expect(textContent(renderer.toJSON())).toContain("auditing · producing_report · 3.4s");
-		expect(renderer.root.findByProps({ className: "ambient-gauge-fill" }).props.style.width).toBe("62%");
-		expect(textContent(renderer.toJSON())).toContain("tests");
+		expect(textContent(renderer.toJSON())).toContain("62%");
 	});
 
-	test("ledger renders newest-first", () => {
-		const surface: AmbientWire = {
-			key: "trace",
-			owner: "ext",
-			place: "panel",
-			expires: "never",
-			updatedAt: 1,
-			body: {
-				ledger: [
-					{ id: "1", at: 1, kind: "guard", summary: "first" },
-					{ id: "2", at: 2, kind: "guard", summary: "second" },
-				],
-			},
-		};
-		const renderer = render(h(AmbientPanel, { surface }));
-		const text = textContent(renderer.toJSON());
-		expect(text.indexOf("second")).toBeLessThan(text.indexOf("first"));
-	});
-
-	test("details render collapsed; an empty-body surface with only details still renders", () => {
+	test("details render collapsed", () => {
 		const surface: AmbientWire = {
 			key: "x",
 			owner: "ext",
 			place: "status",
 			expires: "never",
 			updatedAt: 1,
+			body: {
+				v: TREE_V,
+				root: { type: "markdown", text: "hi" },
+			},
 			details: { custom: true },
-		};
+		} as AmbientWire;
 		const renderer = render(h(AmbientPanel, { surface }));
 		expect(renderer.root.findByProps({ className: "ambient-details" })).toBeDefined();
+	});
+});
+
+describe("AmbientPanels", () => {
+	test("no surfaces render nothing", () => {
+		expect(render(h(AmbientPanels, { surfaces: [] })).toJSON()).toBeNull();
 	});
 });

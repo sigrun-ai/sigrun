@@ -39,6 +39,7 @@ import type {
 	ConversationViewWire,
 	InteractionAnswered,
 	InteractionList,
+	InteractionWire,
 	ModelsResponse,
 	SettingsResponse,
 	SubmissionResponse,
@@ -76,11 +77,13 @@ export type { JobsResponse, JobRunResponse } from "@sigrun/shared/views";
 export type { ExtensionsResponse, ExtensionInfo, ExtensionSurfaceInfo } from "@sigrun/shared/views";
 export type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 
-/** One answer to a pending interaction (the ONE generic route's body). */
+/**
+ * One answer to a pending interaction (the ONE generic route's body).
+ * U6 Task 2 (ruling 20): `{values}` ONLY — every field's value under
+ * its name; the legacy `{ids, text}` shapes are a 400 server-side.
+ */
 export interface InteractionAnswerInput {
-	readonly ids?: readonly string[];
-	readonly values?: Readonly<Record<string, string | number | boolean>>;
-	readonly text?: string;
+	readonly values: Readonly<Record<string, import("@sigrun/shared/blocks").JsonValue>>;
 }
 
 /** `GET /v1/jobs/:id/runs`: the job's runs, newest first. */
@@ -262,6 +265,15 @@ export class SigrunClient {
 	/** `GET /v1/conversations/:id/interactions` — pending interactions. */
 	listInteractions(id: number): Promise<InteractionList> {
 		return this.#get(`/v1/conversations/${id}/interactions`);
+	}
+
+	/** `GET .../interactions/:callId` — one record in ANY status (the
+	 *  settle-refetch path: an answer that lands on an already-settled
+	 *  record (404 not_pending) refetches here and renders it read-only). */
+	getInteraction(id: number, callId: string): Promise<InteractionWire> {
+		return this.#get(
+			`/v1/conversations/${id}/interactions/${encodeURIComponent(callId)}`,
+		);
 	}
 
 	/** `POST .../interactions/:callId/answer` — the ONE generic answer route. */

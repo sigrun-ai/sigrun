@@ -11,6 +11,7 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
+import type { Tree } from "@sigrun/shared/blocks";
 import type { TuiTheme } from "../theme.js";
 import type { BlockCtx } from "./context.js";
 import { renderBlock, type RenderOptions } from "./render.js";
@@ -75,10 +76,17 @@ export class SurfaceView implements Component {
 			return [truncate(this.#theme.fg("bad")(SURFACE_ERROR), width)];
 		}
 		if (view.tree === undefined) return [];
+		return this.#readyComponent(view.tree).render(width);
+	}
+
+	/** Build the ready-state root component on demand (a key can arrive
+	 *  before the first render — the interaction prompter's answer keys
+	 *  must not wait for a paint). */
+	#readyComponent(tree: Tree): Component {
 		if (this.#component === undefined) {
-			this.#component = renderBlock(view.tree.root, this.#ctx(), this.#options);
+			this.#component = renderBlock(tree.root, this.#ctx(), this.#options);
 		}
-		return this.#component.render(width);
+		return this.#component;
 	}
 
 	handleInput(data: string): void {
@@ -87,18 +95,23 @@ export class SurfaceView implements Component {
 			if (data === "r") void this.#surface.retry();
 			return;
 		}
-		if (view.status !== "ready") return;
-		// The root component was built against the CURRENT ctx; rebuild
-		// statelessly so input handlers close over the live dispatch.
-		this.#component?.handleInput?.(data);
+		if (view.status !== "ready" || view.tree === undefined) return;
+		// Build on demand: a key can arrive before the first paint (the
+		// interaction prompter's answer keys route here directly).
+		this.#readyComponent(view.tree).handleInput?.(data);
 	}
 
 	invalidate(): void {
 		this.#component?.invalidate();
 	}
 
-	/** The wrapped component (test introspection: forms expose state). */
+	/** The wrapped component (test introspection AND the interaction
+	 *  prompter's pre-paint key routing: forms expose state). */
 	get inner(): Component | undefined {
-		return this.#component;
+		const view = this.#surface.view;
+		if (view.status !== "ready" || view.tree === undefined) {
+			return this.#component;
+		}
+		return this.#readyComponent(view.tree);
 	}
 }
