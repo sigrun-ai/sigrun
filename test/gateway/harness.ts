@@ -17,11 +17,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
 	type FauxProviderHandle,
+	type FauxResponseStep,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
 import { loadConfig, type SigrunConfig } from "../../src/config.js";
@@ -82,7 +82,7 @@ export interface BootGatewayOptions {
 	/** Directory users to seed (alice admin + tester by default). */
 	readonly users?: readonly { user: string; admin?: boolean }[];
 	/** The faux provider's response queue. */
-	readonly responses?: readonly AssistantMessage[];
+	readonly responses?: readonly FauxResponseStep[];
 	/** Optional faux streaming rate (a slow stream opens a live-frame window). */
 	readonly tokensPerSecond?: number;
 	/** Compaction env values, mapped to the loadConfig environment. */

@@ -600,6 +600,79 @@ export const VIEW_SCHEMA: Shape = {
 																"properties": {
 																	"kind": "object",
 																	"fields": {
+																		"to": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"text": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"files": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"items": {
+																					"kind": "object",
+																					"fields": {
+																						"type": {
+																							"kind": "string"
+																						}
+																					}
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
 																		"path": {
 																			"kind": "object",
 																			"fields": {
@@ -820,6 +893,29 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {}
 																}
 															}
 														}
