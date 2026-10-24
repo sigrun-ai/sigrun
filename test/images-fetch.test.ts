@@ -118,9 +118,13 @@ function selfSigned(): { certPem: string; keyPem: string } {
 	]));
 	// TBSCertificate: [0] version 3, serial, sigalg, issuer (self),
 	// validity, subject, SPKI (the exported DER is already a SEQUENCE).
+	// The serial keeps its first byte 0x01 so the INTEGER is positive
+	// (high bit clear) and minimal (no leading zero) — a raw
+	// randomBytes serial hits DER "illegal padding" on ~1% of certs
+	// (leading 0x00) and reads negative on ~50% (0x80+). 
 	const tbs = der(0x30, Buffer.concat([
 		der(0xa0, Buffer.from([0x02, 0x01, 0x02])),
-		der(0x02, randomBytes(20)),
+		der(0x02, Buffer.concat([Buffer.from([0x01]), randomBytes(19)])),
 		SHA256_RSA,
 		name,
 		validity,
