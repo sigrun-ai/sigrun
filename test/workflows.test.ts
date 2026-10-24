@@ -227,13 +227,25 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(install).toContain("@sigrun/ext-");
 	});
 
-	test("image-build: docker build-push-action with push:false, linux/amd64 only", () => {
+	test("image-build: docker build-push-action loads the local linux/amd64 image", () => {
 		const { jobs } = workflow();
 		const steps = jobs["image-build"]?.steps ?? [];
 		const build = steps.find((s) => s.uses?.startsWith("docker/build-push-action@"));
 		expect(build).toBeDefined();
 		expect((build?.with as { push?: boolean } | undefined)?.push).toBe(false);
 		expect((build?.with as { platforms?: string } | undefined)?.platforms).toBe("linux/amd64");
+		expect((build?.with as { load?: boolean } | undefined)?.load).toBe(true);
+		expect(steps.map(runOf).join("\n")).toContain("scripts/smoke-image.sh sigrun:ci-check");
+	});
+
+	test("image-build: loads the image for the smoke-check step", () => {
+		const { jobs } = workflow();
+		const steps = jobs["image-build"]?.steps ?? [];
+		const build = steps.find((s) => s.uses?.startsWith("docker/build-push-action@"));
+		expect((build?.with as { load?: boolean } | undefined)?.load).toBe(true);
+		const buildIndex = steps.indexOf(build as Step);
+		const smokeIndex = steps.findIndex((s) => runOf(s).includes("scripts/smoke-image.sh"));
+		expect(smokeIndex, "image smoke-check must follow its build").toBeGreaterThan(buildIndex);
 	});
 
 	test("chart-lint: fetches the gitignored vendored dependency, then lint + template", () => {

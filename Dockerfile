@@ -69,10 +69,11 @@ COPY tui/package.json tui/package.json
 RUN --mount=type=cache,target=/root/.npm npm ci
 
 # Build stage: sources + the built tree — the core tsc build (which
-# chains the shared workspace build) and the webui bundle.
+# chains the shared workspace build), the webui bundle, and the optional
+# TUI package the CLI spawns at runtime.
 FROM deps AS build
 COPY . .
-RUN npm run build && npm run build:webui
+RUN npm run build && npm run build:webui && npm --workspace @sigrun/tui run build
 
 # Prod stage: the runtime's node_modules — the SAME manifest set as deps
 # (the workspace links again), but --omit=dev. Manifests are re-copied
@@ -118,13 +119,18 @@ COPY --from=prod /app/node_modules ./node_modules
 # into (node_modules/@sigrun/shared → /app/shared, @sigrun/tui →
 # /app/tui): the link targets must ship too, or every import of them
 # fails at runtime.
-COPY --from=build /app/dist /app/webui/dist /app/shared /app/tui /app/package.json ./
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/webui/dist ./webui/dist
+COPY --from=build /app/shared ./shared
+COPY --from=build /app/tui ./tui
+COPY --from=build /app/package.json ./package.json
 # The container scripts (spec §2): docker/'s script set ships at
 # /usr/local/share/sigrun/ — the GLOB picks up the scripts later tasks
-# add, never a hand-enumerated list. The entrypoint is additionally
+# add, never a hand-enumerated list. The image-layout smoke lives here
+# too for operators; CI runs its source copy. The entrypoint is additionally
 # exposed at its stable exec path (symlink — one source of truth, the
 # image dir). COPY lands mode 0644, hence the chmod.
-COPY docker/*.sh /usr/local/share/sigrun/
+COPY docker/*.sh scripts/smoke-image.sh /usr/local/share/sigrun/
 RUN chmod +x /usr/local/share/sigrun/*.sh \
     && ln -s /usr/local/share/sigrun/entrypoint.sh /usr/local/bin/sigrun-entrypoint.sh
 # The volume mount points (chart PVC at /data, cache emptyDir at
