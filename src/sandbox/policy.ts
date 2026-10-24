@@ -229,7 +229,7 @@ export function buildUserPolicy(
 	// tmp is the ONE sanctioned stateDir exception: it is derived only from
 	// stateDir/sandbox/<user>/tmp and never silently routed around validation.
 	const userArea = ctx.managed.userAreas(record.user);
-	const requestedWorkspace = record.workspace ?? join(userArea, "workspace");
+	const requestedWorkspace = record.workspace ?? ctx.osAccount?.home ?? join(userArea, "workspace");
 	const requestedHome = ctx.osAccount?.home ?? join(userArea, "home");
 	if (ctx.osAccount !== undefined) {
 		const validation = validateUserPath(requestedHome, record, ctx.managed);

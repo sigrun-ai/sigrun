@@ -54,23 +54,14 @@ export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceSe
 			}
 			if (deps === undefined) return new AgentExecutionEnv({ cwd: workspace.path });
 			const { directory, isolation } = deps;
-			const active = isolation.active();
-			if (directory.list().length <= 1 && !active) {
-				return new AgentExecutionEnv({ cwd: workspace.path });
-			}
-			if (!active) {
-				return new UnavailableExecutionEnv(isolation.reason() ?? "isolation is not active");
-			}
+			const records = directory.list();
 			const owner = read === undefined
 				? undefined
 				: await deps.ownerOf(conversation.id, read, ctx ?? BACKGROUND_CONTEXT);
-			const record = directory.list().find((candidate) => candidate.user === owner)
-				?? directory.list().find((candidate) => candidate.admin);
-			if (record === undefined) return new UnavailableExecutionEnv("conversation owner is not in the user directory");
-			const coreRoot = selfPackageRoot();
-			if (coreRoot === undefined) return new UnavailableExecutionEnv("sigrun package root not found");
+			const record = records.find((candidate) => candidate.user === owner)
+				?? records.find((candidate) => candidate.admin);
 			let osAccount: ReturnType<typeof lookupOsAccount>;
-			if (record.osUser !== undefined) {
+			if (record?.osUser !== undefined) {
 				if (deps.osUsers?.available !== true) {
 					return new UnavailableExecutionEnv("osUser requires CAP_SETUID");
 				}
@@ -83,6 +74,18 @@ export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceSe
 					return new UnavailableExecutionEnv(`OS account not found: ${record.osUser}`);
 				}
 			}
+			const active = isolation.active();
+			if (osAccount === undefined) {
+				if (records.length <= 1 && !active) {
+					return new AgentExecutionEnv({ cwd: workspace.path });
+				}
+				if (!active) {
+					return new UnavailableExecutionEnv(isolation.reason() ?? "isolation is not active");
+				}
+			}
+			if (record === undefined) return new UnavailableExecutionEnv("conversation owner is not in the user directory");
+			const coreRoot = selfPackageRoot();
+			if (coreRoot === undefined) return new UnavailableExecutionEnv("sigrun package root not found");
 			const policy = buildUserPolicy(record, {
 				managed: deps.managed,
 				nodeBinDir: process.execPath,
