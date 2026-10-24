@@ -187,6 +187,10 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 							},
 							{
 								type: "toggle",
+								// Absent means ON (boot reads `?? true`): the channels
+								// initialize the untouched toggle ON and the save skips
+								// the key while it sits at the default.
+								default: true,
 								name: "autoEnableCodemode",
 								label: "Auto-enable codemode",
 								help: "When an enabled MCP server exposes codemode, keep the codemode tool (or tool_search) in new conversations' default set",
@@ -240,6 +244,8 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 						children: [
 							{
 								type: "toggle",
+								// Absent means ON (pi-durable's retry policy defaults on).
+								default: true,
 								name: "retry.enabled",
 								label: "Retry enabled",
 								help: "pi-durable's retry policy for failed requests",
@@ -338,6 +344,8 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 						children: [
 							{
 								type: "toggle",
+								// Absent means ON (the boot compaction policy defaults on).
+								default: true,
 								name: "server.compaction.enabled",
 								label: "Compaction enabled",
 								apply: applyOf("server.compaction.enabled"),
@@ -469,6 +477,8 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 						children: [
 							{
 								type: "toggle",
+								// Absent means ON (the built-in set defaults enabled).
+								default: true,
 								name: "builtinExtensions.codemode",
 								label: "Codemode",
 								help: "The built-in codemode extension (a disabled built-in never loads) — applies at restart",
@@ -476,6 +486,8 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 							},
 							{
 								type: "toggle",
+								// Absent means ON (the built-in set defaults enabled).
+								default: true,
 								name: "builtinExtensions.mcp",
 								label: "MCP",
 								help: "The built-in MCP extension — applies at restart",
@@ -483,6 +495,8 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 							},
 							{
 								type: "toggle",
+								// Absent means ON (the built-in set defaults enabled).
+								default: true,
 								name: "builtinExtensions.toolSearch",
 								label: "Tool search",
 								help: "The built-in tool-search extension — applies at restart",
