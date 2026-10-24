@@ -197,7 +197,7 @@ interface InstanceState {
 /** One located surface: its binding plus its def. */
 interface Located {
 	readonly slug: string;
-	readonly def: SurfaceDef<"view" | "panel">;
+	readonly def: SurfaceDef<"view" | "panel" | "settings">;
 }
 
 /**
@@ -213,6 +213,7 @@ export class SurfaceService {
 	private readonly maxUploadBytes: number;
 	private readonly watchers: WatcherRegistry;
 	private readonly publishChanged: ((event: SurfaceChangedInternal) => void) | undefined;
+	private readonly extra: { extension: string; defs: readonly SurfaceDef<"view" | "panel" | "settings">[] }[] = [];
 
 	constructor(
 		bindings: readonly ExtensionSurfaceBinding[],
@@ -222,13 +223,39 @@ export class SurfaceService {
 			watchers?: WatcherRegistry;
 			/** The hub publish (Task 4): bumpRev fans out surface.changed. */
 			publishChanged?: (event: SurfaceChangedInternal) => void;
+			/**
+			 * Settings-placement surfaces (UI-blocks U4 Task 3, spec §13.4):
+			 * the settings-surfaces adapter's output (extension sections +
+			 * core's own under the reserved `core` slug), located by the same
+			 * `(slug, id)` rule. Their actions (the save handler) reference
+			 * the service, so they attach AFTER construction.
+			 */
+			settingsSurfaces?: readonly {
+				extension: string;
+				defs: readonly SurfaceDef<"settings">[];
+			}[];
 		},
 	) {
 		this.bindings = bindings;
+		this.extra.push(...(options?.settingsSurfaces ?? []));
 		this.cache = new AccessCache();
 		this.maxUploadBytes = options?.maxUploadBytes ?? Number.MAX_SAFE_INTEGER;
 		this.watchers = options?.watchers ?? new WatcherRegistry();
 		this.publishChanged = options?.publishChanged;
+	}
+
+	/**
+	 * Attach the settings surfaces post-construction (their save
+	 * handlers close over THIS service for the optimistic-concurrency
+	 * rev read, so they can only be built once the service exists).
+	 */
+	attachSettingsSurfaces(
+		extra: readonly {
+			extension: string;
+			defs: readonly SurfaceDef<"settings">[];
+		}[],
+	): void {
+		this.extra.push(...extra);
 	}
 
 	/** The watcher registry (the events route reads it per event). */
@@ -243,12 +270,17 @@ export class SurfaceService {
 			const def = binding.defs.find((entry) => entry.id === id);
 			if (def !== undefined) return { slug, def };
 		}
+		for (const binding of this.extra) {
+			if (binding.extension !== slug) continue;
+			const def = binding.defs.find((entry) => entry.id === id);
+			if (def !== undefined) return { slug, def };
+		}
 		return undefined;
 	}
 
 	/** The instance key: the surface's own `instanceKey` or the default. */
 	private keyFor(
-		def: SurfaceDef<"view" | "panel">,
+		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
 	): string {
 		if (def.instanceKey !== undefined) return def.instanceKey(params);
@@ -427,7 +459,7 @@ export class SurfaceService {
 	/** The composite instance key (`slugidkey`) for one def + params. */
 	compositeFor(
 		slug: string,
-		def: SurfaceDef<"view" | "panel">,
+		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
 	): string {
 		return `${slug}${def.id}${this.keyFor(def, params)}`;
@@ -507,6 +539,23 @@ export class SurfaceService {
 			this.dedup.record(actionId, composite, wrapped);
 		}
 		return wrapped;
+	}
+
+	/** The instance's current rev (the save action's optimistic check). */
+	currentRev(slug: string, id: string, key: string): number {
+		return this.stateFor(slug, id, key).rev;
+	}
+
+	/**
+	 * The instance key for one surface + params, or `undefined` when the
+	 * surface is unknown (the routes' located-check — covers extension
+	 * views/panels AND settings surfaces, one source). A throwing
+	 * `instanceKey` propagates (the extension-fault 500 path).
+	 */
+	instanceKeyFor(slug: string, id: string, params: JsonObject): string | undefined {
+		const located = this.locate(slug, id);
+		if (located === undefined) return undefined;
+		return this.keyFor(located.def, params);
 	}
 
 	/**

@@ -204,6 +204,9 @@ describe("settings sections render (U4 Task 3)", () => {
 describe("settings section save (U4 Task 3)", () => {
 	test("a value violating the field's min rejects and writes nothing", async () => {
 		const { app, opened, aliceToken } = await server();
+		// The booted server is shared across tests — reset the store to a
+		// known state before the reject-does-not-write assertion.
+		await opened.extensionStores.settingsFor("acme-settings-section").set({});
 		const render = await call(app, {
 			method: "GET",
 			url: SECTION_URL,
@@ -232,6 +235,9 @@ describe("settings section save (U4 Task 3)", () => {
 
 	test("a valid save writes the store, returns a rev, and fires onSettingsChanged", async () => {
 		const { app, opened, aliceToken } = await server();
+		// The booted server is shared across tests — reset the store (and
+		// the fixture's `received` list is per-test via beforeEach).
+		await opened.extensionStores.settingsFor("acme-settings-section").set({});
 		const render = await call(app, {
 			method: "GET",
 			url: SECTION_URL,
@@ -272,6 +278,9 @@ describe("settings section save (U4 Task 3)", () => {
 
 	test("a save based on a stale rev rejects (Review Focus 3)", async () => {
 		const { app, opened, aliceToken } = await server();
+		// The booted server is shared across tests — reset the store to a
+		// known state before the concurrency dance.
+		await opened.extensionStores.settingsFor("acme-settings-section").set({});
 		const first = await call(app, {
 			method: "GET",
 			url: SECTION_URL,
@@ -394,9 +403,9 @@ describe("settings section load contract (U4 Task 3)", () => {
 			await rm(dir, { recursive: true, force: true });
 		});
 		const outcome = opened.extensionOutcomes.find(
-			(entry) => entry.name === "core",
+			(entry) => entry.status === "quarantined",
 		);
 		expect(outcome?.status).toBe("quarantined");
-		expect(outcome?.error).toContain("core");
+		expect(outcome?.error).toContain('"core"');
 	});
 });

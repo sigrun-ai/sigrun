@@ -39,6 +39,7 @@ import {
 	type ExtensionOutcome,
 	type ExtensionRouteBinding,
 	type ExtensionSurfaceBinding,
+	type ExtensionSettingsSectionBinding,
 	type ResolvedExtensionInput,
 } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
@@ -371,6 +372,15 @@ export interface OpenedHarness {
 	 * inventories the rows. Quarantined extensions contribute nothing.
 	 */
 	readonly extensionSurfaces: readonly ExtensionSurfaceBinding[];
+	/**
+	 * Settings sections the loaded extensions declared (UI-blocks U4
+	 * Task 3, spec §13.3), slug-attributed — `createServer` adapts them
+	 * to settings-placement surfaces
+	 * (`src/server/surfaces/settings-surfaces.ts`) and appends them to
+	 * the surface service's bindings. Quarantined extensions contribute
+	 * nothing.
+	 */
+	readonly extensionSettingsSections: readonly ExtensionSettingsSectionBinding[];
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -837,6 +847,7 @@ export async function openHarness(
 		channelBindings,
 		gatewayEngine,
 		surfaces: surfaceBindings,
+		settingsSections: settingsSectionBindings,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -1502,6 +1513,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
 		extensionSurfaces: surfaceBindings,
+		extensionSettingsSections: settingsSectionBindings,
 		notifierBindings,
 		channelBindings,
 		gatewayEngine,

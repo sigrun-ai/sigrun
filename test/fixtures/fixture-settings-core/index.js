@@ -23,6 +23,7 @@ export default function createCoreFixture() {
 						v: 1,
 						root: {
 							type: "form",
+							id: "settings-form",
 							bind: "/settings",
 							mode: "submit",
 							onSubmit: "save",
