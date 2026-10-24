@@ -274,7 +274,7 @@ interface Rendered {
 
 function renderPanelWithPrefs(
 	client: ReturnType<typeof createClient>,
-	init?: { readonly admin?: boolean },
+	init?: { readonly admin?: boolean; readonly initialSection?: string },
 ): Promise<Rendered> {
 	const themeRoot = makeThemeRoot();
 	let captured: ReturnType<typeof usePrefs> | undefined;
@@ -293,6 +293,7 @@ function renderPanelWithPrefs(
 				prefsState={captured}
 				theme={theme}
 				{...(init?.admin === undefined ? {} : { admin: init.admin })}
+				{...(init?.initialSection === undefined ? {} : { initialSection: init.initialSection })}
 				onRestart={async () => {
 					restarts += 1;
 				}}
@@ -456,6 +457,25 @@ describe("SettingsPanel", () => {
 			}),
 		).toHaveLength(0);
 	});
+
+	test("a non-admin deep link to Providers falls back to General; an admin opens Providers", async () => {
+			const nonAdmin = makeHarness();
+			const nonAdminRenderer = await renderPanelWithPrefs(nonAdmin.client, {
+				admin: false,
+				initialSection: "providers",
+			});
+			expect(nonAdminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
+			expect(nonAdmin.calls.some((call) => call.input === "/v1/providers")).toBe(false);
+
+			const admin = makeHarness();
+			const adminRenderer = await renderPanelWithPrefs(admin.client, {
+				admin: true,
+				initialSection: "providers",
+			});
+			expect(adminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
+			expect(textContent(adminRenderer.renderer.toJSON())).toContain("no providers are loaded");
+			expect(admin.calls.some((call) => call.input === "/v1/providers")).toBe(true);
+		});
 
 	test("Account links is a core cove available to a signed-in non-admin", async () => {
 		const { client } = makeHarness();

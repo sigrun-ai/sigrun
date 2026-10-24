@@ -141,9 +141,14 @@ export function SettingsPanel(props: {
 					sections: response.sections,
 					index: response.index,
 				});
-				const initial = response.sections.find(
+				// Deep links obey exactly the same visibility rule as the nav:
+				// a known non-admin cannot open the admin-only Providers cove.
+				const visibleSections = response.sections.filter(
+					(section) => !(section.id === "providers" && admin === false),
+				);
+				const initial = visibleSections.find(
 					(section) => section.slug === "core" && section.id === (initialSection ?? "general"),
-				) ?? response.sections.find(
+				) ?? visibleSections.find(
 					(section) => section.slug === "core" && section.id === "general",
 				);
 				if (initial !== undefined) {
@@ -160,7 +165,7 @@ export function SettingsPanel(props: {
 		return () => {
 			cancelled = true;
 		};
-	}, [client, initialSection]);
+	}, [client, initialSection, admin]);
 
 	const results = useMemo(
 		() => (load.status === "ready" ? filterSettingsIndex(load.index, query) : []),
