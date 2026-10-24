@@ -140,7 +140,15 @@ export async function serve(
 	// 404s forever (the directory was never created).
 	const { mkdir } = await import("node:fs/promises");
 	await mkdir(config.workspace.path, { recursive: true });
-	const opened = await openHarness(config, { extensionEntries: extensionResolutions });
+	// The serve env threads into boot so boot-time env reads (store
+	// roots, the provider collector, the U4 scheduler cadence resolution
+	// in `resolveRefreshMinutes`) see the SAME env `loadConfig` just
+	// resolved — a serve-harness env override must win over process.env
+	// here exactly like it does in the config.
+	const opened = await openHarness(config, {
+		extensionEntries: extensionResolutions,
+		env,
+	});
 	// The gateway handle (gateway C2) exists BEFORE the server: the meta
 	// route reaches it through ServerContext, so the engine's health is
 	// reportable from the first request. The ENGINE STARTS after listen

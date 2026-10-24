@@ -240,6 +240,17 @@ export type SigrunLifecycleHandlers = {
 	readonly harnessShutdown?: ExtensionHarnessShutdownHandler;
 	/** The user-removal transfer event; direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
+	/**
+	 * UI-blocks U4 (spec §13.2): called after a settings write COMMITS —
+	 * the keys are the flattened paths the write touched (core keys in
+	 * the §13.1 dotted vocabulary, this extension's own top-level keys
+	 * for a `settings/<slug>.json` write). Fired for BOTH scopes: a
+	 * server-scope write notifies every loaded extension; an extension's
+	 * own write notifies it (and every other extension — settings are
+	 * shared operator surface). Errors are caught and logged; the write
+	 * already succeeded and stays successful.
+	 */
+	onSettingsChanged?(keys: readonly string[]): void | Promise<void>;
 };
 
 // ---------------------------------------------------------------------------

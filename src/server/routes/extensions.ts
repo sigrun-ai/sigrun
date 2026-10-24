@@ -28,6 +28,14 @@ import type {
 	ExtensionSecretsResponse,
 } from "../views.js";
 
+/** One extension's settings GET/PUT payload (U4 §13.2). */
+export interface ExtensionSettingsResponse {
+	/** The stored `settings/<slug>.json` object verbatim. */
+	readonly settings: Record<string, unknown>;
+	/** Restart keys awaiting a restart — extension fields default live, so `[]` today (§13.1). */
+	readonly pendingRestart: readonly string[];
+}
+
 /** Register the extension settings/secrets routes. */
 export function registerExtensionRoutes(
 	app: FastifyInstance,
@@ -136,15 +144,23 @@ export function registerExtensionRoutes(
 
 	// The per-extension settings object (`settings/<slug>.json`), absent
 	// file → `{}`. GET is ungated beyond the pipeline: settings values are
-	// operator-facing config, not secrets.
+	// operator-facing config, not secrets. U4 (spec §13.2): the response
+	// carries `pendingRestart` too — extension-declared fields default to
+	// LIVE (§13.1) and core carries no extension-restart keys, so the list
+	// is always `[]` today; the field exists so the §13.4 callout renders
+	// from one shape and an extension that later declares restart fields
+	// has its slot.
 	app.get(
 		"/v1/extensions/:slug/settings",
-		async (request, reply): Promise<Record<string, unknown>> => {
+		async (request, reply): Promise<ExtensionSettingsResponse> => {
 			const { slug } = request.params as { slug: string };
 			if (!isKnownSlug(slug)) {
 				return await reply.code(404).send({ error: "extension_not_found" });
 			}
-			return opened.extensionStores.settingsFor(slug).get();
+			return {
+				settings: await opened.extensionStores.settingsFor(slug).get(),
+				pendingRestart: [],
+			};
 		},
 	);
 
@@ -173,7 +189,16 @@ export function registerExtensionRoutes(
 			}
 			const value = body as Record<string, unknown>;
 			await opened.extensionStores.settingsFor(slug).set(value);
-			return value;
+			// U4 §13.2: the write committed — publish `settings.changed`
+			// (extension scope) and fire every extension's
+			// `onSettingsChanged`. The keys are the object's TOP-LEVEL
+			// fields (§13.1's extension vocabulary: an extension's fields
+			// are its own schema; core's dotted registry does not apply).
+			ctx.publishSettingsChanged(
+				{ extension: slug },
+				Object.keys(value),
+			);
+			return { settings: value, pendingRestart: [] };
 		},
 	);
 

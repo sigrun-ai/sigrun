@@ -223,6 +223,9 @@ export async function createServer(
 		listenHost,
 		methods,
 		env,
+		// U4 §13.2: the harness's settings-changed fan-out (hub publish +
+		// extension onSettingsChanged + the scheduler re-arm).
+		publishSettingsChanged: opened.publishSettingsChanged,
 		watchersByConversation: new Map(),
 		surfaces: surfacesService,
 		sse,

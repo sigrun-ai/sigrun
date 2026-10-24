@@ -83,6 +83,18 @@ export interface ServerContext {
 	 */
 	readonly watchersByConversation: Map<ConversationId, number>;
 	/**
+	 * Publish one `settings.changed` event (UI-blocks U4, spec §13.2):
+	 * the opened harness's fan-out seam — the hub publication
+	 * (/v1/events, admins only) plus the extension
+	 * `onSettingsChanged` fan-out and the scheduler re-arm. Both write
+	 * routes (PATCH /v1/settings, PUT /v1/extensions/:slug/settings)
+	 * call this AFTER the write commits.
+	 */
+	readonly publishSettingsChanged: (
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	) => void;
+	/**
 	 * The gateway handle (gateway C2): created by the serve composition
 	 * BEFORE `createServer` and threaded through the `gateway` option so
 	 * the meta route reads the wrapped engine health. ABSENT on hand-built

@@ -60,6 +60,10 @@ import { dirname, join } from "node:path";
 import { resolveStoreRoots } from "./stores.js";
 import { isAbsoluteHttpUrl } from "../config.js";
 import { isIanaTimeZone, validateJobSpec } from "../jobs/spec.js";
+import {
+	classifyPatch,
+	type ApplyOutcome,
+} from "../settings/pending.js";
 import type {
 	BuiltinExtensionsSettings,
 	JobHistorySettings,
@@ -86,6 +90,16 @@ export interface SettingsStoreOptions {
 	 * `SIGRUN_CONFIG_DIR`; tests pass a tmp dir).
 	 */
 	readonly dir?: string;
+	/**
+	 * The committed-write observer (UI-blocks U4 Task 1, spec §13.2):
+	 * invoked after EVERY `apply()` write lands on disk, with the
+	 * flattened keys the write touched — the route layer publishes
+	 * `settings.changed` from it. Never invoked for a REJECTED write
+	 * (validation throws first) and never for `update()` (the raw
+	 * merge seam boot/tests use — bootstrap and hand edits are not
+	 * settings changes).
+	 */
+	onWrite?: (keys: readonly string[]) => void;
 }
 
 /** The queue modes pi-durable accepts (its `QueueMode`). */
@@ -899,9 +913,11 @@ function checkKeys(
  */
 export class SettingsStore {
 	readonly path: string;
+	readonly #onWrite: ((keys: readonly string[]) => void) | undefined;
 
 	constructor(options: SettingsStoreOptions = {}) {
 		this.path = settingsPath(options.dir ?? defaultSettingsDir());
+		this.#onWrite = options.onWrite;
 	}
 
 	/** The current settings; absent file = `{}` (all defaults). */
@@ -1234,6 +1250,30 @@ export class SettingsStore {
 		mkdirSync(dirname(this.path), { recursive: true });
 		writeFileSync(this.path, `${JSON.stringify(file, null, "\t")}\n`);
 		return file;
+	}
+
+	/**
+	 * The settings-change write (UI-blocks U4 Task 1, spec §13.2): the
+	 * PATCH body merged + validated + persisted (exactly `update()`),
+	 * THEN classified against the apply registry. Returns which keys
+	 * applied live vs. which are pending a restart, plus the effective
+	 * file; the committed-write observer fires after the write lands.
+	 *
+	 * @throws SettingsValidationError naming the offending field.
+	 */
+	apply(patch: Record<string, unknown>): SettingsFile & ApplyOutcome {
+		const outcome = classifyPatch(patch);
+		const file = this.update(patch);
+		this.#onWrite?.(outcome.keys);
+		// SAFETY: the intersection is structural — `update` returns the
+		// validated `SettingsFile`, and `ApplyOutcome`'s three fields are
+		// freshly created here, so no field collision can occur.
+		return {
+			...file,
+			keys: outcome.keys,
+			applied: outcome.applied,
+			pending: outcome.pending,
+		};
 	}
 
 	/**

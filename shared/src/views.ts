@@ -446,6 +446,23 @@ export interface SettingsResponse extends SettingsFile {
 	/** The live registry snapshot's composed tool names, deduplicated. */
 	readonly toolRoster: readonly string[];
 	/**
+	 * The restart keys whose stored value differs from the boot snapshot
+	 * (UI-blocks U4, spec §13.2): the pending-restart callout's key list.
+	 * Computed per request over the fresh file read; `[]` when nothing
+	 * waits for a restart. NOT a settable key: the store's validation
+	 * rejects it on PATCH (400 `invalid_field`), and the wire patch type
+	 * Omits it.
+	 */
+	readonly pendingRestart: readonly string[];
+	/**
+	 * The write's own classification (§13.1) — present ONLY on a PATCH
+	 * response: which touched keys applied live vs. which are pending a
+	 * restart. NOT a settable key; absent on GET.
+	 */
+	readonly applied?: readonly string[];
+	/** The restart-pending companion of {@link applied}. PATCH responses only. */
+	readonly pending?: readonly string[];
+	/**
 	 * The resolved server section per flattened dotted key
 	 * (`"server.port"`, `"server.compaction.reserveTokens"`, …), each
 	 * with its resolved value and which tier supplied it — `"env"`,
@@ -771,6 +788,19 @@ export interface ExtensionSecretsResponse {
 	readonly secrets: readonly ExtensionSecret[];
 }
 
+/**
+ * The `GET`/`PUT /v1/extensions/:slug/settings` payload (UI-blocks U4,
+ * spec §13.2): the stored object verbatim under `settings`, plus the
+ * pending-restart slot. Extension-declared fields default to LIVE
+ * (§13.1), so `pendingRestart` is `[]` today; the field exists so the
+ * §13.4 callout renders from one shape across core and extension
+ * settings.
+ */
+export interface ExtensionSettingsResponse {
+	readonly settings: Record<string, unknown>;
+	readonly pendingRestart: readonly string[];
+}
+
 // ─── Sibling leaf re-exports ──────────────────────────────────────────────
 // The slash-command catalog and session-meta wire shapes live in their own
 // shared leaf modules; re-exported here (type-only, erased at compile) so
@@ -935,6 +965,19 @@ export type HostEventWire =
 			/** W4 Task 4 (§8.4): the changed job's summary, WITHOUT `access` — the events stream computes `accessOf` per principal and adds it before delivery (a hidden job's event is withheld entirely). */
 			readonly type: "job.changed";
 			readonly job: Omit<JobWire, "access">;
+		}
+	| {
+			/** UI-blocks U4 (spec §13.2): a settings write landed. `scope` is
+			 *  `"server"` for `PATCH /v1/settings` or `{extension: slug}` for
+			 *  an extension's settings PUT; `keys` are the flattened paths the
+			 *  write touched (dotted, the §13.1 registry vocabulary — extension
+			 *  writes name their own top-level object keys). Delivered to
+			 *  ADMINS only (settings are operator surface; the events route's
+			 *  exhaustive switch enforces it).
+			 */
+			readonly type: "settings.changed";
+			readonly scope: "server" | { readonly extension: string };
+			readonly keys: readonly string[];
 		}
 	| {
 			/** UI-blocks U3 Task 4 (spec §7.3): one surface instance changed. `k` is the hashed instance key (sha256(slug + "\0" + id + "\0" + key) hex) — the event NEVER carries params or data (render/data are principal-specific; the watcher refetches as itself). Delivered only to streams in the watcher registry whose stored access is not `"none"`. */
