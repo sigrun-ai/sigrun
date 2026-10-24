@@ -22,6 +22,11 @@
 
 import type { FastifyInstance } from "fastify";
 import type { SettingsSectionDef } from "../../extension.js";
+import type {
+	SettingsSectionsResponse,
+	SettingsSectionEntry,
+	SettingsSectionIndexEntry,
+} from "../views.js";
 import {
 	CORE_SECTION_IDS,
 	CORE_SETTINGS_SECTIONS,
@@ -30,33 +35,11 @@ import {
 import { CORE_SETTING_KEYS } from "../../settings/registry.js";
 import type { ServerContext } from "../context.js";
 
-/** One section list entry (what the panel's nav renders). */
-export interface SettingsSectionEntry {
-	readonly slug: string;
-	readonly id: string;
-	readonly title: string;
-	readonly icon: string;
-}
+/** One search-index row (the label search's hit shape) — the local name. */
+export type SettingsIndexEntry = SettingsSectionIndexEntry;
 
-/** One search-index row (the label search's hit shape). */
-export interface SettingsIndexEntry {
-	/** The slug + id the hit belongs to (the nav target). */
-	readonly slug: string;
-	readonly sectionId: string;
-	/** The row kind: a core settings key, an extension form field, or a section title. */
-	readonly kind: "core-key" | "field" | "section";
-	/** The searchable text. */
-	readonly label: string;
-	readonly help?: string;
-	/** The core key path / the field name, when the row has one. */
-	readonly key?: string;
-}
-
-/** The `GET /v1/settings/sections` payload. */
-export interface SettingsSectionsResponse {
-	readonly sections: readonly SettingsSectionEntry[];
-	readonly index: readonly SettingsIndexEntry[];
-}
+/** The section entry name the build helper returns. */
+export type { SettingsSectionEntry };
 
 /** A plain record (the form-tree walk's node shape). */
 type Rec = Record<string, unknown>;

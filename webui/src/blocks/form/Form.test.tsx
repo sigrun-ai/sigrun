@@ -111,7 +111,7 @@ describe("form mode: submit", () => {
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
 			{ type: "submit", name: "register" },
-			{ values: { name: "Acme Co", handle: "acme", seats: 3 } },
+			{ rev: 0, values: { name: "Acme Co", handle: "acme", seats: 3 } },
 		);
 	});
 
@@ -322,7 +322,7 @@ describe("form mode: inline", () => {
 		});
 		expect(dispatch).toHaveBeenCalledWith(
 			{ type: "submit", name: "add" },
-			{ values: { title: "Buy milk" } },
+			{ rev: 0, values: { title: "Buy milk" } },
 		);
 		// clears on success (the dispatch observable did not throw)
 		const input = renderer.root.findAll(
@@ -420,7 +420,7 @@ describe("interaction stepper (§9.1)", () => {
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
 			{ type: "submit", name: "answer" },
-			{ values: { q1: "a", q2: "" } },
+			{ rev: 0, values: { q1: "a", q2: "" } },
 		);
 	});
 });
