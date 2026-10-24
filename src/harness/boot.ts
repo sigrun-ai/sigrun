@@ -61,6 +61,7 @@ import { createSkillsExtension } from "../skills/index.js";
 import { SLASH_COMMANDS } from "../server/commands.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { packagePromptRootsOf } from "../commands/templates.js";
+import { blocksToolsExtension } from "./blocks/tools.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
@@ -701,6 +702,10 @@ export async function openHarness(
 	registry.install(createSkillsExtension(skillsOptions));
 	registry.install(codingToolsExtension);
 	registry.install(searchToolsExtension);
+	// The chat-blocks tools (UI-blocks U5 Task 1, spec §8.1): every agent
+	// can show and update interactive block surfaces in chat — the same
+	// core-owned slot as the coding/search tools, never quarantined.
+	registry.install(blocksToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
 	// factory-result producers are retained alongside the outcomes (Task 9e).
