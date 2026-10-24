@@ -69,19 +69,16 @@ type SectionValues = Record<string, JsonObject>;
 
 // ─── The search ───────────────────────────────────────────────────────────
 
-/** Filter the index by the query (case-insensitive over label + help). */
+import { filterSettingsIndex as filterSettingsIndexShared } from "@sigrun/shared/views";
+
+/** Filter the index by the query (case-insensitive over label + help +
+ *  key) — `@sigrun/shared`'s ONE implementation (U4 Task 4 round-2);
+ *  the re-export keeps the panel's import surface. */
 export function filterSettingsIndex(
 	index: readonly SettingsSectionIndexEntryWire[],
 	query: string,
 ): readonly SettingsSectionIndexEntryWire[] {
-	const q = query.trim().toLowerCase();
-	if (q === "") return [];
-	return index.filter(
-		(entry) =>
-			entry.label.toLowerCase().includes(q) ||
-			(entry.help ?? "").toLowerCase().includes(q) ||
-			(entry.key ?? "").toLowerCase().includes(q),
-	);
+	return filterSettingsIndexShared(index, query);
 }
 
 // ─── The panel ────────────────────────────────────────────────────────────

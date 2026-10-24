@@ -300,6 +300,83 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		expect(meta.pendingRestart).toContain("server.port");
 	});
 
+	test("an empty string CLEARS the key via the store's delete-key merge", async () => {
+		const { app, opened, aliceToken } = await server();
+		const render = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/general",
+			token: aliceToken,
+		});
+		const rev = (render.body as { rev: number }).rev;
+		// Set a value first (so the clear is observable).
+		const set = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/general/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-clear-set",
+				params: {},
+				payload: { rev, values: { namingModel: "acme/namer-clear" } },
+			},
+		});
+		expect((set.body as { ok: boolean }).ok).toBe(true);
+		expect(opened.settings.read().namingModel).toBe("acme/namer-clear");
+		// Now clear it: the empty string is the unset affordance (the
+		// nullable fields' "(server default)" gesture) — null rides the
+		// store's delete-key merge.
+		const after = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/general",
+			token: aliceToken,
+		});
+		const rev2 = (after.body as { rev: number }).rev;
+		const clear = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/general/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-clear-now",
+				params: {},
+				payload: { rev: rev2, values: { namingModel: "" } },
+			},
+		});
+		expect((clear.body as { ok: boolean }).ok).toBe(true);
+		expect(opened.settings.read().namingModel).toBeUndefined();
+		// And the read-back reflects the clear (no stale value).
+		const reread = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/general",
+			token: aliceToken,
+		});
+		const settings = (reread.body as { data: JsonObject }).data.settings as JsonObject;
+		expect(settings.namingModel).toBeUndefined();
+	});
+
+	test("the Tools section's data carries the tool roster (the defaultTools options)", async () => {
+		const { app, aliceToken } = await server();
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/tools",
+			token: aliceToken,
+		});
+		expect(result.status).toBe(200);
+		const data = (result.body as { data: JsonObject }).data;
+		const roster = data.toolRoster;
+		expect(Array.isArray(roster)).toBe(true);
+		// Every built-in tool's name is an option (the registry snapshot
+		// drives it); the form's defaultTools field binds the options here.
+		const ids = (roster as { id: string; label: string }[]).map((entry) => entry.id);
+		expect(ids.length).toBeGreaterThan(0);
+		expect(ids).toContain("read");
+		// The form binds the roster (not a hardcoded empty list).
+		const tree = (result.body as { tree: { root: unknown } }).tree;
+		const json = JSON.stringify(tree);
+		expect(json).toContain('"$":"/toolRoster"');
+		expect(json).not.toContain('"options":[]');
+	});
+
 	test("a stale rev rejects with 'changed by someone else'", async () => {
 		const { app, opened, aliceToken } = await server();
 		const render = await call(app, {
@@ -397,26 +474,52 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 					entry.key === "namingModel",
 			),
 		).toBe(true);
-		// Every registry key renders a core-key row (the coverage pin:
-		// a registry key whose section renders it MUST be indexed).
+		// Every field CORE_SETTINGS_SECTIONS renders indexes under the
+		// section it renders IN (the walk is the section source — the
+		// registry's `section` metadata drifts: retry/stream say
+		// `general` but render under Advanced).
+		const walkNames = (node: unknown, out: string[]): void => {
+			if (Array.isArray(node)) {
+				for (const child of node) walkNames(child, out);
+				return;
+			}
+			if (typeof node !== "object" || node === null) return;
+			const record = node as Record<string, unknown>;
+			for (const key of ["children", "fields", "root", "item"]) {
+				if (record[key] !== undefined) walkNames(record[key], out);
+			}
+			if (
+				typeof record.name === "string" &&
+				typeof record.type === "string" &&
+				!["section", "form", "page", "stack"].includes(record.type)
+			) {
+				out.push(record.name);
+			}
+		};
+		const fieldSection = new Map<string, string>();
+		for (const section of CORE_SETTINGS_SECTIONS) {
+			const names: string[] = [];
+			walkNames(section.form, names);
+			for (const name of names) fieldSection.set(name, section.id);
+		}
 		const coreRows = body.index.filter((entry) => entry.kind === "core-key");
-		const renderedKeys = new Set([
-			"namingModel",
-			"server.port",
-			"steeringMode",
-			"defaultTools",
-			"perModelThinking",
-			"server.providers.refreshIntervalMinutes",
-		]);
-		for (const key of coreRows.map((row) => row.key)) {
-			renderedKeys.add(key ?? "");
-		}
-		for (const key of renderedKeys) {
+		for (const [key, sectionId] of fieldSection) {
+			const row = coreRows.find((entry) => entry.key === key);
+			expect(row, `index covers ${key}`).toBeDefined();
 			expect(
-				coreRows.some((row) => row.key === key),
-				`index covers ${key}`,
-			).toBe(true);
+				row?.sectionId,
+				`${key} indexes under the section it renders in (${sectionId})`,
+			).toBe(sectionId);
+			// The row carries the field's label and help (not the raw key).
+			expect(row?.label, `${key}'s row carries the rendered label`).not.toBe(key);
 		}
+		// The mis-titled keys the round-1 index misplaced (registry says
+		// `general`/`tools`; the fields render under Advanced/Tools).
+		expect(coreRows.find((entry) => entry.key === "retry.enabled")?.sectionId).toBe("advanced");
+		expect(coreRows.find((entry) => entry.key === "stream.timeoutMs")?.sectionId).toBe("advanced");
+		expect(coreRows.find((entry) => entry.key === "perModelThinking")?.sectionId).toBe("advanced");
+		expect(coreRows.find((entry) => entry.key === "server.port")?.sectionId).toBe("advanced");
+		expect(coreRows.find((entry) => entry.key === "defaultTools")?.sectionId).toBe("tools");
 		// Every row carries a label; extension fields index too.
 		const extRows = body.index.filter(
 			(entry) => entry.slug === "acme-settings-section",

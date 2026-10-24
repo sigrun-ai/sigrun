@@ -122,6 +122,22 @@ function stubClient(init: {
 		getConversation(id: number) {
 			return Promise.resolve(view(id, []));
 		},
+		// The settings view's boot fetches (U4 Task 4): the sections list
+		// + whoami + boot meta (core's General section only).
+		listSettingsSections() {
+			return Promise.resolve({
+				sections: [{ slug: "core", id: "general", title: "General", icon: "key" }],
+				index: [
+					{ slug: "core", sectionId: "general", kind: "core-key", label: "Naming model", key: "namingModel" },
+				],
+			});
+		},
+		whoami() {
+			return Promise.resolve({ user: "alice", admin: true, service: false, method: "token" });
+		},
+		getBootMeta() {
+			return Promise.resolve({ supervised: true });
+		},
 	};
 	return {
 		client: client as unknown as SigrunClient,
@@ -328,6 +344,30 @@ describe("TuiApp", () => {
 		await app.refresh();
 		const lines = app.render(80).join("\n");
 		expect(lines).toContain("CONVERSATIONS");
+	});
+
+	test("openSettings mounts the settings view in the main slot (visible in render)", async () => {
+		const { client, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// The settings view is NOT the pane: opening it swaps the main
+		// column's slot (the launcher's ScrollView mounts the slot).
+		expect(app.mainContent.current).toBe(app.pane);
+		await app.openSettings();
+		expect(app.settingsView).toBeDefined();
+		expect(app.mainContent.current).toBe(app.settingsView);
+		// The slot renders the view's content (the sections list) — the
+		// app-level render path shows it (the launcher's root mounts the
+		// same slot).
+		const lines = app.render(80).join("\n");
+		expect(lines).toContain("Settings");
+		expect(lines).toContain("General");
+		// Closing restores the pane.
+		expect(app.closeSettings()).toBe(true);
+		expect(app.mainContent.current).toBe(app.pane);
 	});
 
 	test("boot selects the first conversation and starts watching it", async () => {

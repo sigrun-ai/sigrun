@@ -74,14 +74,23 @@ interface FakeWire {
 }
 
 /** A SigrunClient over an in-memory fetch answering the settings
- *  view's five routes. */
+ *  view's routes. `savesFlipPending` makes a save POST flip the served
+ *  `pendingRestart` to `["server.port"]` on the NEXT load (the
+ *  callout-flips-after-save test). */
 function fakeWire(init?: {
 	readonly pendingRestart?: readonly string[];
 	readonly supervised?: boolean;
 	readonly admin?: boolean;
 	readonly token?: string;
 	readonly sectionsExtra?: readonly SettingsSectionEntry[];
+	/** Loaded extensions WITHOUT settings sections (the notice lines). */
+	readonly sectionlessExtensions?: readonly string[];
+	readonly savesFlipPending?: boolean;
 }): FakeWire {
+	// The save's effect: a flipped pendingRestart on the next load.
+	let flipped = false;
+	const pendingNow = (): readonly string[] =>
+		flipped ? ["server.port"] : (init?.pendingRestart ?? []);
 	const calls: string[] = [];
 	const sections: SettingsSectionEntry[] = [
 		{ slug: "core", id: "general", title: "General", icon: "key" },
@@ -138,13 +147,31 @@ function fakeWire(init?: {
 		if (url.endsWith("/v1/meta")) {
 			return json({ supervised: init?.supervised ?? true });
 		}
+		if (url.endsWith("/v1/extensions")) {
+			return json({
+				extensions: (init?.sectionlessExtensions ?? []).map((name) => ({
+					name,
+					status: "ok",
+					interactionKinds: [],
+					ambientKeys: [],
+					workers: [],
+				})),
+			});
+		}
+		if (
+			url.includes("/v1/ext/core/surfaces/general/actions") &&
+			requestInit?.method === "POST"
+		) {
+			if (init?.savesFlipPending === true) flipped = true;
+			return json({ ok: true, rev: 2 });
+		}
 		if (url.includes("/v1/ext/core/surfaces/general")) {
 			const load: SurfaceLoad = {
 				tree: GENERAL_TREE,
 				data: {
 					settings: { defaultModel: "acme/m", namingModel: "acme/n" },
 					meta: {
-						pendingRestart: [...(init?.pendingRestart ?? [])],
+						pendingRestart: [...pendingNow()],
 						supervised: init?.supervised ?? true,
 					},
 				},
@@ -291,7 +318,7 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(view.pendingRestart).toEqual(["server.port"]);
 		const adminLines = view.render(60).join("\n");
 		expect(adminLines).toContain("Restart sigrun to apply: server.port");
-		expect(adminLines).toContain("press r to restart now");
+		expect(adminLines).toContain("press ctrl+r to restart now");
 
 		// Non-admin: the text without the restart affordance.
 		const nonAdmin = fakeWire({
@@ -309,7 +336,7 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		});
 		const nonAdminLines = nonAdminView.render(60).join("\n");
 		expect(nonAdminLines).toContain("Restart sigrun to apply: server.port");
-		expect(nonAdminLines).not.toContain("press r to restart now");
+		expect(nonAdminLines).not.toContain("press ctrl+r to restart now");
 
 		// Unsupervised: the text without the restart affordance.
 		const unsupervised = fakeWire({
@@ -327,10 +354,10 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		});
 		const unsupervisedLines = unsupervisedView.render(60).join("\n");
 		expect(unsupervisedLines).toContain("Restart sigrun to apply: server.port");
-		expect(unsupervisedLines).not.toContain("press r to restart now");
+		expect(unsupervisedLines).not.toContain("press ctrl+r to restart now");
 	});
 
-	test("the callout's Restart action runs the app's restart (supervised admin)", async () => {
+	test("the callout's Restart action is ctrl+r — a bare r types into the focused field", async () => {
 		let restarts = 0;
 		const wire = fakeWire({
 			pendingRestart: ["server.port"],
@@ -345,7 +372,13 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		});
 		await view.load();
 		await openGeneral(view);
+		// A bare "r" while a form field is focused types into the field —
+		// it must NEVER restart the server mid-edit.
 		view.handleInput("r");
+		await Promise.resolve();
+		expect(restarts).toBe(0);
+		// ctrl+r (\x12) is the restart affordance.
+		view.handleInput("\x12");
 		await Promise.resolve();
 		expect(restarts).toBe(1);
 	});
@@ -376,6 +409,40 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(wire.calls.some((call) => call.includes("/v1/ext/core/surfaces/general"))).toBe(true);
 		// (The header assertion itself lives in ext-transport.test.ts —
 		// here the load succeeding over the tokened client is the gate.)
+	});
+
+	test("a save that makes a key pending flips the callout without reopening", async () => {
+		const wire = fakeWire({ supervised: true, admin: true, savesFlipPending: true });
+		const view = makeView(wire);
+		await view.load();
+		await openGeneral(view);
+		expect(view.pendingRestart).toEqual([]);
+		expect(view.render(60).join("\n")).not.toContain("Restart sigrun to apply");
+		// The form's submit dispatches the save action through the
+		// surface state; an accepted non-move triggers the refetch — the
+		// callout reads the fresh meta. Drive it through the form: the
+		// fields are defaultModel, namingModel, then the submit row —
+		// down twice, Enter submits.
+		expect(wire.calls.some((call) => call.includes("/actions"))).toBe(false);
+		view.handleInput("\x1b[B"); // down
+		view.handleInput("\x1b[B"); // down (submit row)
+		view.handleInput("\r"); // enter = submit
+		// Wait for the action + the refetch to settle.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(wire.calls.some((call) => call.includes("/actions"))).toBe(true);
+		expect(view.pendingRestart).toEqual(["server.port"]);
+		expect(view.render(60).join("\n")).toContain("Restart sigrun to apply: server.port");
+	});
+
+	test("a section-less extension stays reachable as a raw-JSON notice in the section list", async () => {
+		const wire = fakeWire({ sectionlessExtensions: ["acme-plain"] });
+		const view = makeView(wire);
+		await view.load();
+		// Wide enough that the notice line never truncates (truncateToWidth
+		// otherwise ellipsizes the routes away).
+		const lines = view.render(120).join("\n");
+		expect(lines).toContain("acme-plain: no settings section");
+		expect(lines).toContain("/v1/extensions/acme-plain/settings");
 	});
 
 	test("Esc closes the open section back to the list", async () => {

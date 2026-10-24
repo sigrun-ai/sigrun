@@ -487,6 +487,14 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 							serverErrors: { [field]: message },
 						}));
 					}
+					// A "changed by someone else" rejection means the
+					// confirmed data (and the rev the form rides) is stale —
+					// refetch so the next submit carries the current rev (U4
+					// Task 4 round-2: without it the form's rev is pinned and
+					// every retry rejects the same way).
+					if (result.error.message === "changed by someone else") {
+						void fullRefetch();
+					}
 					return;
 				}
 				// An accepted act supersedes any outstanding server field
@@ -497,7 +505,16 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 						: s,
 				);
 				if (result.toast !== undefined) toast(result.toast);
-				if (!isMove) return;
+				if (!isMove) {
+					// A non-move accept (the settings save): the rev already
+					// bumped server-side, and the fresh data (the core
+					// sections' meta block — the pending-restart callout)
+					// only lands via a fetch; the settings transport is
+					// outside the surface.changed hub (U4 Task 4 round-2).
+					setSnapshot((s) => ({ ...s, rev: result.rev }));
+					void fullRefetch();
+					return;
+				}
 				if (result.ops !== undefined) {
 					const current = ref.current;
 					try {

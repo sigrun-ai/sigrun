@@ -330,16 +330,19 @@ export interface SettingsSurfaceOptions {
 	/** The surface service (the rev read the save's optimistic check needs). */
 	readonly service: SurfaceService;
 	/**
-	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
-	 * `slug === "core"` — the core sections read/write the core
-	 * SettingsStore (dotted field names land at their nested paths,
-	 * apply-typed against the §13.1 registry), not the extension
-	 * settings dir, so the same renderer covers both.
-	 */
-	readonly core?: {
+ * The core-sections deps (UI-blocks U4 Task 4): present exactly when
+ * `slug === "core"` — the core sections read/write the core
+ * SettingsStore (dotted field names land at their nested paths,
+ * apply-typed against the §13.1 registry), not the extension
+ * settings dir, so the same renderer covers both. `toolRoster` is
+ * the boot registry's tool names (the Tools section's default-tools
+ * editor's options).
+ */
+readonly core?: {
 		readonly settings: SettingsStore;
 		readonly bootSnapshot: SettingsBootSnapshot;
 		readonly env: Readonly<Record<string, string | undefined>>;
+		readonly toolRoster: readonly string[];
 	};
 }
 
@@ -415,6 +418,12 @@ export function settingsSurfaceFor(
 				env,
 				supervised,
 			} satisfies JsonObject,
+			// The Tools section's default-tools editor binds its options
+			// here (the boot registry's tool names — the roster can only
+			// come from the server; an empty literal would render a dead
+			// checkbox list). The binding's shape is ChoiceOption[]
+			// (`{id, label}` rows, spec §5.6).
+			toolRoster: options.core.toolRoster.map((name) => ({ id: name, label: name })),
 		};
 	};
 
@@ -454,12 +463,15 @@ export function settingsSurfaceFor(
 				}
 			}
 			// An empty STRING is the unset affordance (the nullable
-			// fields' "(server default)" gesture): it CLEARS the key via
-			// the store's delete-key merge. It never counts as a provided
-			// value — a half-touched form would otherwise validate the
-			// empty string against enum/number validators and 400 the
-			// whole save.
-			if (raw === "") continue;
+			// fields' "(server default)" gesture): it CLEARS the key —
+			// `null` rides the store's delete-key merge (settings.ts:
+			// a null value clears the key; a null sub-field clears that
+			// sub-field). Skipping the key instead would leave the old
+			// value in place, silently un-clearable.
+			if (raw === "") {
+				writeDotted(patch, name, null);
+				continue;
+			}
 			writeDotted(patch, name, value);
 		}
 		try {
