@@ -70,7 +70,26 @@ const interaction: InteractionRecord = {
 	callId: "call-1",
 	status: "pending",
 	createdAt: 0,
-	body: { text: "allow this?" },
+	body: {
+		v: 1,
+		root: {
+			type: "form",
+			id: "ask",
+			bind: "/values",
+			mode: "submit",
+			children: [
+				{
+					type: "choice",
+					name: "decision",
+					label: "allow this?",
+					options: [
+						{ id: "allow", label: "Allow", tone: "good" },
+						{ id: "deny", label: "Deny", tone: "bad" },
+					],
+				},
+			],
+		},
+	},
 };
 
 const ambient: AmbientRecord = {
@@ -79,7 +98,7 @@ const ambient: AmbientRecord = {
 	place: "status",
 	expires: "never",
 	updatedAt: 0,
-	body: { line: { text: "ok" } },
+	body: { v: 1, root: { type: "markdown", text: "ok" } },
 };
 void ambient;
 

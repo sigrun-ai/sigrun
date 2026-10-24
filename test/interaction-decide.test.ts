@@ -11,8 +11,9 @@
  *    through the real loader with the host context — no sibling-repo
  *    dependency. The proof: a faux model calls `guarded_write`
  *    directly; the run pauses with ONE pending interaction (the seam
- *    record the server lists); `POST …/interactions/:callId/answer`
- *    with `{ids:["allow"]}` runs the tool (the marker
+ *    record the server lists — a root-form block tree); `POST
+ *    …/interactions/:callId/answer` with `{values: {decision: "allow",
+ *    reason: "ok"}}` runs the tool (the marker
  *    `guarded-write-executed` appears in the tool result) and the
  *    submission settles. A second run answered `deny` returns the
  *    refusal and the marker is ABSENT.
@@ -191,8 +192,9 @@ test("a gated tool call prompts; answering allow through the route runs the tool
 	});
 	expect(submission.statusCode).toBe(202);
 
-	// The gate holds the call: exactly ONE pending interaction, in
-	// today's format (allow/deny options), keyed by the tool call id.
+	// The gate holds the call: exactly ONE pending interaction, a root
+	// form with a choice named `decision` (tones good/bad — the renames),
+	// keyed by the tool call id.
 	const deadline = Date.now() + 30_000;
 	let pending: { callId: string; kind: string } | undefined;
 	while (pending === undefined && Date.now() < deadline) {
@@ -212,26 +214,36 @@ test("a gated tool call prompts; answering allow through the route runs the tool
 		kind: "gate.ask",
 		callId: pending!.callId,
 		body: {
-			text: expect.any(String) as unknown,
-			options: [
-				{ id: "allow", tone: "ok" },
-				{ id: "deny", tone: "danger" },
-			],
+			v: 1,
+			root: {
+				type: "form",
+				children: [
+					{
+					type: "choice",
+					name: "decision",
+					options: [
+						{ id: "allow", tone: "good" },
+						{ id: "deny", tone: "bad" },
+					],
+				},
+				{ type: "longtext", name: "reason" },
+				],
+			},
 		},
 	});
 
-	// Answer allow through the ONE generic route.
+	// Answer allow through the ONE generic route: {values} (ruling 20).
 	const answer = await app.inject({
 		method: "POST",
 		url: `/v1/conversations/${root.id}/interactions/${pending!.callId}/answer`,
-		payload: { ids: ["allow"] },
+		payload: { values: { decision: "allow", reason: "ok" } },
 		headers: { "content-type": "application/json" },
 	});
 	expect(answer.statusCode).toBe(200);
 	expect(answer.json()).toMatchObject({
 		callId: pending!.callId,
 		status: "answered",
-		answer: { ids: ["allow"] },
+		answer: { values: { decision: "allow", reason: "ok" } },
 	});
 
 	// The submission settles; the tool ran and its marker is in the
@@ -286,7 +298,7 @@ test("a second run answered deny returns the refusal; the marker is absent", { t
 	const answer = await app.inject({
 		method: "POST",
 		url: `/v1/conversations/${root.id}/interactions/${pending!.callId}/answer`,
-		payload: { ids: ["deny"] },
+		payload: { values: { decision: "deny", reason: "not this one" } },
 		headers: { "content-type": "application/json" },
 	});
 	expect(answer.statusCode).toBe(200);
@@ -354,11 +366,14 @@ describe(
 					_conversationId: unknown,
 					_callId: string,
 				): Promise<
-						| { status: string; answer?: { ids?: string[] } }
-					| undefined
+							| { status: string; answer?: { values?: Record<string, unknown> } }
+						| undefined
 				> {
 					if (decision === undefined) return undefined;
-					return { status: "answered", answer: { ids: [decision] } };
+					return {
+						status: "answered",
+						answer: { values: { decision } },
+					};
 				},
 			};
 			const gateFixture = (await import(GATE_SPECIFIER)) as unknown as {

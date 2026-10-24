@@ -21,18 +21,21 @@ import type { Context } from "@earendil-works/chord";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
+import type { Tree } from "@sigrun/shared/blocks";
 import {
 	AmbientDoc,
 	AmbientOwnersDoc,
 	validateAmbient,
-	type AmbientBody,
 	type AmbientPlace,
 	type AmbientRecord,
+	type StoredAmbientRecord,
 } from "./ambient.js";
 import {
 	InteractionDoc,
 	InteractionsIndexDoc,
 	applyAnswer,
+	asInteractionRecord,
+	asStoredInteractionRecord,
 	indexPending,
 	indexSettled,
 	validateInteraction,
@@ -142,7 +145,7 @@ export interface SeamHost {
 			readonly maxRows?: number;
 			readonly overflow?: "drop" | "wrap" | "summarize";
 			readonly refreshMs?: number;
-			readonly body?: AmbientBody;
+			readonly body?: Tree;
 			readonly details?: import("@earendil-works/pi-durable").JsonObject;
 		},
 		context: Context,
@@ -339,12 +342,15 @@ export function createSeamHost(
 
 		async snapshotInteraction(conversationId, callId, context) {
 			const h = await harness(context);
-			return await h.snapshot(
+			const stored = await h.snapshot(
 				InteractionDoc,
 				conversationId,
 				callId,
 				context,
 			);
+			return stored === undefined
+				? undefined
+				: asInteractionRecord(stored);
 		},
 
 		async setAmbient(conversationId, record, context) {
@@ -384,7 +390,10 @@ export function createSeamHost(
 				};
 				const problem = validateAmbient(full);
 				if (problem !== null) throw new SeamError("ambient", problem);
-				Object.assign(draft, full);
+				// SAFETY: `full` carries a validated block tree as its body
+				// (validateAmbient's validateTree gate just passed); the stored
+				// mirror's body differs only in the structural JSON naming.
+				Object.assign(draft, full as unknown as StoredAmbientRecord);
 			}, context);
 		},
 

@@ -188,7 +188,7 @@ const UNKNOWN_ID_CASES: readonly UnknownIdCase[] = [
 	{
 		method: "POST",
 		url: `/v1/conversations/${UNKNOWN_ID}/interactions/x/answer`,
-		payload: { ids: ["a"] },
+		payload: { values: { decision: "allow" } },
 		status: 404,
 		body: { error: "conversation_not_found" },
 	},

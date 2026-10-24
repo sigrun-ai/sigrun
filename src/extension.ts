@@ -50,7 +50,6 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Access, Sharing } from "@sigrun/shared/access";
 import type {
-	AmbientBody,
 	AmbientPlace,
 	AmbientRecord,
 } from "@sigrun/shared/ambient";
@@ -811,7 +810,7 @@ export interface SigrunHost {
 			readonly maxRows?: number;
 			readonly overflow?: "drop" | "wrap" | "summarize";
 			readonly refreshMs?: number;
-			readonly body?: AmbientBody;
+			readonly body?: Tree;
 			readonly details?: JsonObject;
 		},
 		context: HandlerContext,

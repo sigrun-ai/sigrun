@@ -11,10 +11,11 @@
  *     `guarded-write-executed` into the tool result — the observable
  *     the tests assert: present after allow, absent after deny), and
  *   - a `beforeTool` hook that holds EVERY call to `guarded_write` by
- *     seeding a pending interaction record through the seam host
- *     (today's interaction format: a `text` + `options` body with
- *     allow/deny ids), then long-polls the record until a channel
- *     answers it through the generic answer route. Resolution
+ *     seeding a pending interaction record through the seam host (a
+ *     block-tree body: a root `form` with a `choice` named `decision`
+ *     — options `allow`/`deny`, tones `good`/`bad` — and a `longtext`
+ *     named `reason`, spec §9.1), then long-polls the record until a
+ *     channel answers it through the generic answer route. Resolution
  *     semantics are the fixture's own: `allow` returns undefined (the
  *     tool runs); `deny` returns a `{ block }` refusal (the tool never
  *     executes and the refusal rides the tool result).
@@ -30,6 +31,7 @@
 import { defineExtension, defineTool, hook, ToolTask } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 import { awaitWithContext } from "@earendil-works/chord/context";
+import { BLOCK_SET_VERSION } from "@sigrun/shared/blocks";
 
 /** The marker the guarded tool's execute writes into its result. */
 export const GUARDED_MARKER = "guarded-write-executed";
@@ -85,11 +87,25 @@ export default function createGateFixture(host) {
 				status: "pending",
 				createdAt: Date.now(),
 				body: {
-					text: `Allow the gated tool call ${call.name}?`,
-					options: [
-						{ id: "allow", label: "Allow", tone: "ok" },
-						{ id: "deny", label: "Deny", tone: "danger" },
-					],
+					v: BLOCK_SET_VERSION,
+					root: {
+						type: "form",
+						id: "gate",
+						bind: "/values",
+						mode: "submit",
+						children: [
+							{
+								type: "choice",
+								name: "decision",
+								label: `Allow the gated tool call ${call.name}?`,
+								options: [
+									{ id: "allow", label: "Allow", tone: "good" },
+									{ id: "deny", label: "Deny", tone: "bad" },
+								],
+							},
+							{ type: "longtext", name: "reason", label: "Reason" },
+						],
+					},
 				},
 				details: {
 					toolName: call.name,
@@ -102,11 +118,13 @@ export default function createGateFixture(host) {
 			const record = await host.snapshotInteraction(
 				api.conversationId,
 				call.id,
-				context,
+			context,
 			);
 			if (record?.status === "answered") {
-				const ids = record.answer?.ids ?? [];
-				if (ids.includes("allow")) return undefined; // the tool runs
+				const decision = record.answer?.values?.decision;
+				const chosen =
+					typeof decision === "string" ? decision : undefined;
+				if (chosen === "allow") return undefined; // the tool runs
 				return { block: "denied by the answering user" }; // refusal
 			}
 			// Cancellation-safe sleep: rejects this waiter on abort/close.

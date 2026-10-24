@@ -1,8 +1,9 @@
 /**
- * The interaction seam (spec: docs/approval-ux-seams.md): core-owned,
- * channel-neutral records for "this conversation is waiting on a human
- * decision", written by extensions through the host context and answered
- * by channels through one generic route.
+ * The interaction seam (spec: docs/approval-ux-seams.md; the block
+ * mapping: docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md
+ * §9.1): core-owned, channel-neutral records for "this conversation is
+ * waiting on a human decision", written by extensions through the host
+ * context and answered by channels through one generic route.
  *
  * SPLIT (build-and-webui Task 1): the canonical TYPE declarations live in
  * the `@sigrun/shared` package (`shared/src/interactions.ts` — the records
@@ -10,12 +11,13 @@
  * this module owns the docs, validation, and index RUNTIME, importing the
  * types (type-only — no runtime dependency on the built package).
  *
- * Layering (strict envelope / closed primitives / opaque details):
+ * Layering (strict envelope / block-tree body / opaque details):
  *
  * - envelope: kind, callId, status, timestamps, answer — load-bearing for
  *   joining tool slots and lifecycle arbitration. Strictly validated.
- * - body: composed ONLY from the closed primitives (text, options,
- *   fields, diff). Structurally validated; unknown body keys quarantine.
+ * - body: a block tree (placement `interaction` — a root `form` whose
+ *   submit is the answer). Validated with `validateTree`; legacy-shaped
+ *   bodies FAIL with paths (ruling 16 — no compatibility layer).
  * - details: opaque extension-owned JSON. Never interpreted.
  *
  * Answer transport: the generic route commits `answer` into the record.
@@ -33,25 +35,78 @@
  */
 
 import { defineDoc, defineDocFamily } from "@earendil-works/pi-durable";
-import type { ConversationId } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
+import type {
+	ConversationDocFamilyToken,
+	ConversationId,
+	JsonObject,
+} from "@earendil-works/pi-durable";
 import type {
 	InteractionAnswer,
 	InteractionRecord,
 } from "@sigrun/shared/interactions";
+import { validateTree } from "../blocks/validate.js";
 
 export type {
 	InteractionAnswer,
-	InteractionBody,
-	InteractionDiff,
-	InteractionField,
-	InteractionOption,
 	InteractionRecord,
 	InteractionStatus,
 } from "@sigrun/shared/interactions";
 
+/**
+ * The stored record's `body`: the JSON mirror of `@sigrun/shared`'s
+ * `Tree`. Identical at runtime — `validateInteraction` gates every write
+ * through `validateTree` — but expressed structurally, because the wire
+ * type's `body?: Tree` carries block interfaces (no implicit index
+ * signature) and cannot satisfy pi-durable's `T extends JsonObject`
+ * doc-family constraint.
+ */
+export type StoredTree = { readonly v: number; readonly root: JsonObject };
+
+/**
+ * The interaction record as the doc family stores it: the public wire
+ * record with `body` mirrored (see `StoredTree`). Readers cast back to
+ * `InteractionRecord` through {@link asInteractionRecord} — one spelling
+ * of the cast, at one place.
+ */
+export type StoredInteractionRecord = Omit<InteractionRecord, "body"> & {
+	readonly body?: StoredTree;
+};
+
+/**
+ * Narrow a stored record to the public wire record. SAFETY: the two
+ * shapes are identical at runtime — a stored body passed `validateTree`
+ * (placement `interaction`) at write time, and a validated tree IS the
+ * JSON the mirror describes; the cast only restores the type-level
+ * naming `JsonObject`-erasure removed.
+ */
+export function asInteractionRecord(
+	value: Readonly<StoredInteractionRecord>,
+): Readonly<InteractionRecord> {
+	// SAFETY: see the doc comment — the mirror differs only in the erased
+	// body's structural naming; a validated tree is that JSON.
+	return value as unknown as Readonly<InteractionRecord>;
+}
+
+/**
+ * Widen the public wire record to the stored shape (the seed path's
+ * `Object.assign` input). SAFETY: same runtime shape as
+ * `asInteractionRecord` — the body was validated as a tree moments
+ * before this cast in `validateInteraction`.
+ */
+export function asStoredInteractionRecord(
+	value: Readonly<InteractionRecord>,
+): Readonly<StoredInteractionRecord> {
+	// SAFETY: see the doc comment — the mirror differs only in the erased
+	// body's structural naming; a validated tree is that JSON.
+	return value as unknown as Readonly<StoredInteractionRecord>;
+}
+
 /** The interaction record doc family: one record per callId, per conversation. */
-export const InteractionDoc = defineDocFamily<InteractionRecord, string>({
+export const InteractionDoc: ConversationDocFamilyToken<
+	StoredInteractionRecord,
+	string
+> = defineDocFamily<StoredInteractionRecord, string>({
 	kind: "sigrun.interaction",
 	version: 1,
 	scope: "conversation",
@@ -96,21 +151,11 @@ export const TERMINAL: ReadonlySet<string> = new Set([
 	"cancelled",
 ]);
 
-const TONES: ReadonlySet<string> = new Set([
-	"danger",
-	"warn",
-	"ok",
-	"neutral",
-]);
-
-const FIELD_TYPES: ReadonlySet<string> = new Set([
-	"string",
-	"number",
-	"boolean",
-	"secret",
-]);
-
-/** Structural validation of one interaction record. Returns the error text or null. */
+/**
+ * Structural validation of one interaction record: the envelope's own
+ * checks, then the body tree through `validateTree({placement:
+ * "interaction"})`. Returns the error text (with the tree paths) or null.
+ */
 export function validateInteraction(value: unknown): string | null {
 	if (typeof value !== "object" || value === null) {
 		return "interaction record must be an object";
@@ -141,117 +186,43 @@ export function validateInteraction(value: unknown): string | null {
 	if (r.answeredBy !== undefined && r.answeredBy !== "human" && r.answeredBy !== "extension") {
 		return "answeredBy must be 'human' or 'extension'";
 	}
-	const body = r.body;
-	if (body !== undefined) {
-		if (typeof body !== "object" || body === null) {
-			return "body must be an object";
-		}
-		const b = body as Record<string, unknown>;
-		const known = new Set(["text", "options", "fields", "diff"]);
-		const unknownKey = Object.keys(b).find((k) => !known.has(k));
-		if (unknownKey !== undefined) {
-			return `body.${unknownKey} is outside the closed primitives (move it to details)`;
-		}
-		if (b.text !== undefined && typeof b.text !== "string") {
-			return "body.text must be a string";
-		}
-		if (b.options !== undefined) {
-			if (!Array.isArray(b.options)) return "body.options must be an array";
-			for (const o of b.options) {
-				const problem = validateOption(o);
-				if (problem !== null) return problem;
-			}
-		}
-		if (b.fields !== undefined) {
-			if (!Array.isArray(b.fields)) return "body.fields must be an array";
-			for (const f of b.fields) {
-				const problem = validateField(f);
-				if (problem !== null) return problem;
-			}
-		}
-		if (b.diff !== undefined) {
-			const problem = validateDiff(b.diff);
-			if (problem !== null) return problem;
+	if (r.body !== undefined) {
+		// Ruling 16 (no compatibility layer): legacy-shaped bodies (objects
+		// keyed text/options/fields/diff rather than {v, root}) fail HERE,
+		// with the path — a tree is {v, root}.
+		const result = validateTree(r.body, { placement: "interaction" });
+		if (!result.ok) {
+			const first = result.errors[0];
+			if (first === undefined) return "body must be a block tree";
+			// The tree-relative path joins the record's field ("body.root…")
+			// so the error names where the record is wrong, not just the tree.
+			return `body is not a valid interaction tree: body.${first.path} ${first.message}`;
 		}
 	}
 	return null;
 }
 
-function validateAnswer(value: unknown): string | null {
+/**
+ * An answer is `{values}` ONLY (ruling 20): every field's value under its
+ * name. The legacy `{ids, text}` (and the string/number/boolean-only
+ * `values`) are rejected — no compatibility layer.
+ */
+export function validateAnswer(value: unknown): string | null {
 	if (typeof value !== "object" || value === null) {
 		return "answer must be an object";
 	}
 	const a = value as Record<string, unknown>;
-	const known = new Set(["ids", "values", "text"]);
+	const known = new Set(["values"]);
 	const unknownKey = Object.keys(a).find((k) => !known.has(k));
-	if (unknownKey !== undefined) return `answer.${unknownKey} is not a valid field`;
-	if (a.ids !== undefined && !Array.isArray(a.ids)) {
-		return "answer.ids must be an array of strings";
+	if (unknownKey !== undefined) {
+		return `answer.${unknownKey} is not a valid field (an answer is {values})`;
 	}
-	if (Array.isArray(a.ids) && a.ids.some((id) => typeof id !== "string")) {
-		return "answer.ids must be an array of strings";
+	if (a.values === undefined) {
+		return "answer.values is required";
 	}
-	if (a.values !== undefined) {
-		if (typeof a.values !== "object" || a.values === null) {
-			return "answer.values must be an object";
-		}
-		const bad = Object.entries(a.values as Record<string, unknown>).find(
-			([, v]) => typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean",
-		);
-		if (bad !== undefined) {
-			return `answer.values.${bad[0]} must be string, number, or boolean`;
-		}
+	if (typeof a.values !== "object" || a.values === null || Array.isArray(a.values)) {
+		return "answer.values must be an object";
 	}
-	if (a.text !== undefined && typeof a.text !== "string") {
-		return "answer.text must be a string";
-	}
-	return null;
-}
-
-function validateOption(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "option must be an object";
-	const o = value as Record<string, unknown>;
-	if (typeof o.id !== "string" || o.id.length === 0) return "option.id must be a non-empty string";
-	if (typeof o.label !== "string" || o.label.length === 0) {
-		return "option.label must be a non-empty string";
-	}
-	if (o.description !== undefined && typeof o.description !== "string") {
-		return "option.description must be a string";
-	}
-	if (o.tone !== undefined && !TONES.has(String(o.tone))) {
-		return `option.tone must be one of danger|warn|ok|neutral (got ${String(o.tone)})`;
-	}
-	if (o.recommended !== undefined && typeof o.recommended !== "boolean") {
-		return "option.recommended must be a boolean";
-	}
-	return null;
-}
-
-function validateField(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "field must be an object";
-	const f = value as Record<string, unknown>;
-	if (typeof f.name !== "string" || f.name.length === 0) {
-		return "field.name must be a non-empty string";
-	}
-	if (typeof f.type !== "string" || !FIELD_TYPES.has(f.type)) {
-		return `field.type must be one of string|number|boolean|secret (got ${String(f.type)})`;
-	}
-	if (f.label !== undefined && typeof f.label !== "string") {
-		return "field.label must be a string";
-	}
-	if (f.required !== undefined && typeof f.required !== "boolean") {
-		return "field.required must be a boolean";
-	}
-	return null;
-}
-
-function validateDiff(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "diff must be an object";
-	const d = value as Record<string, unknown>;
-	if (typeof d.before !== "string") return "diff.before must be a string";
-	if (typeof d.after !== "string") return "diff.after must be a string";
-	if (d.path !== undefined && typeof d.path !== "string") return "diff.path must be a string";
-	if (d.lang !== undefined && typeof d.lang !== "string") return "diff.lang must be a string";
 	return null;
 }
 
@@ -289,25 +260,44 @@ export function indexSettled(
 	}
 }
 
+/** A JSON value that is structurally valid in an answer's `values`. */
+function isJsonValue(value: unknown): boolean {
+	if (value === null) return true;
+	const t = typeof value;
+	if (t === "string" || t === "number" || t === "boolean") return true;
+	if (t !== "object") return false;
+	if (Array.isArray(value)) return value.every(isJsonValue);
+	for (const child of Object.values(value as Record<string, unknown>)) {
+		if (!isJsonValue(child)) return false;
+	}
+	return true;
+}
+
 /**
  * The committed answer for one record, or `undefined` when the record was
  * already terminal (first-answer-wins: the caller must NOT overwrite).
  * The draft is mutated in place — this runs inside the caller's commit.
  */
 export function applyAnswer(
-	draft: InteractionRecord,
+	draft: StoredInteractionRecord,
 	answer: InteractionAnswer,
 	answeredBy: "human" | "extension",
 	now: number,
 	answeredByUser?: string,
 ): boolean {
 	if (draft.status !== "pending") return false;
-	const clean: Record<string, JsonValue> = {};
-	if (answer.ids !== undefined) clean.ids = [...answer.ids];
-	if (answer.values !== undefined) clean.values = { ...answer.values };
-	if (answer.text !== undefined) clean.text = answer.text;
+	const values: Record<string, JsonValue> = {};
+	for (const [key, value] of Object.entries(answer.values ?? {})) {
+		// A host caller's answer was validated ({values: JsonObject}); this
+		// copy is the belt that keeps the stored record JSON-safe.
+		if (!isJsonValue(value)) continue;
+		values[key] = value;
+	}
+	// SAFETY: the draft's declared shape is readonly; the doc family's
+	// tracked-draft write pattern mutates through a structural record view
+	// (every key below exists on the stored record by construction).
 	const mutable = draft as unknown as Record<string, unknown>;
-	mutable.answer = clean;
+	mutable.answer = { values };
 	mutable.answeredBy = answeredBy;
 	// The answering USER rides alongside the actor class (spec §5.9): who
 	// answered matters to every participant a conversation is shared with.
@@ -315,4 +305,23 @@ export function applyAnswer(
 	mutable.status = "answered";
 	mutable.settledAt = now;
 	return true;
+}
+
+/** Narrow an unvalidated route body to `{values: JsonObject}`, or null. */
+export function answerFromBody(body: unknown): { values: JsonObject } | null {
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return null;
+	}
+	const b = body as Record<string, unknown>;
+	for (const key of Object.keys(b)) {
+		if (key !== "values") return null;
+	}
+	const values = b.values;
+	if (typeof values !== "object" || values === null || Array.isArray(values)) {
+		return null;
+	}
+	for (const value of Object.values(values as Record<string, unknown>)) {
+		if (!isJsonValue(value)) return null;
+	}
+	return { values: values as JsonObject };
 }

@@ -816,7 +816,10 @@ describe("conversation lifecycle contract", () => {
 			"fixture-flush",
 			BACKGROUND_CONTEXT,
 		);
-		expect(doc?.body?.line?.text).toBe("flushed at shutdown");
+		// SAFETY: the stored body is a validated block tree; read the
+		// markdown root's text structurally.
+		const body = doc?.body as { root?: { text?: string } } | undefined;
+		expect(body?.root?.text).toBe("flushed at shutdown");
 	});
 
 	test("a factory lifecycle field that is not a function is quarantined with the reason", async () => {
