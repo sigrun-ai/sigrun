@@ -154,6 +154,8 @@ interface TlsHarness {
 	port: number;
 	/** The remote address of every connection, in order. */
 	remoteAddresses(): string[];
+	/** How many TCP connections the server has accepted, in order. */
+	connectionCount(): number;
 	/** Swap the response handler (a fresh harness starts with PNG). */
 	onRequest(handler: Handler): void;
 	close(): Promise<void>;
@@ -179,10 +181,19 @@ async function startHarness(): Promise<TlsHarness> {
 	if (address === null || typeof address === "string") {
 		throw new Error("TLS harness has no port");
 	}
+	let connections = 0;
+	server.on("connection", () => {
+		connections += 1;
+	});
 	return {
 		deps: { now: Date.now, ca: Buffer.from(certPem, "utf8") },
 		port: address.port,
-		remoteAddresses: () => [...remotes],
+		// Normalize IPv4-mapped remotes ("::ffff:192.0.2.5") to the bare
+		// IPv4 literal so assertions match both the v6 and the v4
+		// public stand-in shapes.
+		remoteAddresses: () =>
+			remotes.map((remote) => remote.replace(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/, "$1")),
+		connectionCount: () => connections,
 		onRequest(next) {
 			handler = next;
 		},
@@ -198,23 +209,30 @@ async function startHarness(): Promise<TlsHarness> {
  * This host's first global IPv6 address: the stand-in for a public
  * address the vetting passes (documentation IPs are not dialable, so
  * the connection tests dial this one while the range table keeps the
- * `203.0.113.5` literal rows pure).
+ * `203.0.113.5` literal rows pure). Hosts with no global IPv6 (suite
+ * portability) fall back to the first non-internal IPv4 the vetting
+ * accepts.
  */
 function publicStandIn(): string {
+	let v4: string | undefined;
 	for (const list of Object.values(networkInterfaces())) {
 		for (const iface of list ?? []) {
+			if (iface.internal) continue;
 			if (
 				iface.family === "IPv6" &&
-				!iface.internal &&
 				iface.scopeid === 0 &&
 				!iface.address.startsWith("fd") &&
 				!iface.address.startsWith("fe80:")
 			) {
 				return iface.address;
 			}
+			if (iface.family === "IPv4" && v4 === undefined && !isRefusedAddress(iface.address)) {
+				v4 = iface.address;
+			}
 		}
 	}
-	throw new Error("no global IPv6 address for the public stand-in");
+	if (v4 !== undefined) return v4;
+	throw new Error("no global IPv6 or vetted IPv4 address for the public stand-in");
 }
 
 /** `FetchDeps.resolve` over a scripted answer list (last entry repeats). */
@@ -241,6 +259,16 @@ function urlFor(harness: TlsHarness, path = "/x.png"): string {
 }
 
 const closers: Array<() => Promise<void>> = [];
+
+/** The REAL `setTimeout`, captured before any test fakes it, so
+ * deadline tests can still let real I/O settle between advances. */
+const realSetTimeout = globalThis.setTimeout;
+/** Real-clock sleep (milliseconds) that ignores faked timers. */
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		realSetTimeout(resolve, ms);
+	});
+}
 afterAll(async () => {
 	for (const close of closers.splice(0)) await close();
 });
@@ -516,14 +544,115 @@ describe("fetchImage", () => {
 				...h.deps,
 				resolve: resolver([[publicStandIn()]]).deps.resolve,
 			});
+			// Attach the assertion BEFORE advancing so the (guaranteed)
+			// rejection is never momentarily unhandled.
+			const assertion = expect(attempt).rejects.toThrow(/^deadline reached reading body$/);
+			// Let the real I/O (handshake, headers, first drip byte)
+			// settle first: otherwise the fake advance fires the
+			// connect+header phase's timer instead of exercising the
+			// body-read deadline. `sleep` uses the captured REAL
+			// `setTimeout`, untouched by the fake.
+			await sleep(1_200);
 			// Advance the 10 s budget while the drip keeps delivering
 			// bytes within every per-read window.
 			await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 100);
-			await expect(attempt).rejects.toThrow(/deadline/);
+			await assertion;
 		} finally {
 			vi.useRealTimers();
 		}
 	}, 20_000);
+
+	// Deadline absoluteness (review finding 2a): a resolver that never
+	// resolves has NO socket, so no socket timeout could ever cut it —
+	// only the absolute whole-fetch deadline does.
+	test("cuts a resolver that never resolves at the 10s total deadline", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout"] });
+		try {
+			const attempt = fetchImage("https://example.invalid/x.png", {
+				now: Date.now,
+				// A resolver that neither resolves nor rejects, forever.
+				resolve: () => new Promise<string[]>(() => {}),
+			});
+			const assertion = expect(attempt).rejects.toThrow(
+				/deadline reached resolving example\.invalid/,
+			);
+			await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 100);
+			await assertion;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// Deadline absoluteness (review finding 2b): a server dripping
+	// HEADER bytes one per 9 s stays inside every socket-inactivity
+	// window forever — `req.setTimeout` could never cut it. The
+	// absolute connect+header deadline timer does.
+	test("cuts a header-drip server at the 10s total deadline", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout"] });
+		try {
+			const h = await harness();
+			h.onRequest((_req, res) => {
+				// Raw socket writes: a status line that never completes.
+				res.socket?.write("HTTP/1.1 200 OK\\r");
+				const drip = setInterval(() => {
+					res.socket?.write("x");
+				}, 9_000);
+				res.on("close", () => clearInterval(drip));
+			});
+			const attempt = fetchImage(urlFor(h), {
+				...h.deps,
+				resolve: resolver([[publicStandIn()]]).deps.resolve,
+			});
+			const assertion = expect(attempt).rejects.toThrow(
+				/deadline reached awaiting headers from example\.invalid/,
+			);
+			// Let the connection establish and the first header byte land
+			// (the next one would be 9 s later on the real clock).
+			await sleep(500);
+			await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 100);
+			await assertion;
+		} finally {
+			vi.useRealTimers();
+		}
+	}, 20_000);
+
+	// No agent reuse across hops (review finding 1): a same-origin
+	// redirect must open a SECOND TCP connection — Node >= 19's default
+	// keep-alive agent would serve the second hop from the pooled
+	// first-hop socket, whose `lookup` (and vetted address) is the
+	// first hop's. The second `resolve` stalls ~300 ms so the first
+	// hop's socket has long settled into any keep-alive pool: if the
+	// fetcher did not pass `agent: false`, hop 2 would ride the pooled
+	// socket and the server would see ONE connection.
+	test("a same-origin redirect uses two connections (no agent reuse)", async () => {
+		const h = await harness();
+		h.onRequest((req, res) => {
+			if (req.url === "/start") {
+				res.writeHead(302, { location: "/x.png" });
+				res.end();
+				return;
+			}
+			res.writeHead(200, { "content-type": "image/png" });
+			res.end(PNG_BYTES);
+		});
+		const standIn = publicStandIn();
+		let calls = 0;
+		const resolve: FetchDeps["resolve"] = (_host) => {
+			calls += 1;
+			if (calls === 1) return Promise.resolve([standIn]);
+			// The redirect hop's resolution stalls: any pooled first-hop
+			// socket is FREE by the time hop 2 connects.
+			return new Promise<string[]>((r) => {
+				setTimeout(() => r([standIn]), 300);
+			});
+		};
+		const image = await fetchImage(urlFor(h, "/start"), { ...h.deps, resolve });
+		expect(image.type).toBe("png");
+		// Two hops, TWO TCP connections — the pooled-socket shortcut
+		// never happened.
+		expect(h.connectionCount()).toBe(2);
+		expect(h.remoteAddresses()).toEqual([standIn, standIn]);
+	});
 
 	test("refuses a body over 10 MiB", async () => {
 		const h = await harness();

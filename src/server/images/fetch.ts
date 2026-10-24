@@ -15,8 +15,13 @@
  *   name, never the resolved address;
  * - redirects are followed BY HAND (no library follow option): at most
  *   3 in total, each target re-resolved and re-checked the same way;
- * - 10 s total timeout for the whole fetch (not per-read), 10 MiB
- *   body cap;
+ * - 10 s total timeout for the whole fetch — ABSOLUTE across the
+ *   resolve, connect, and header phases of every hop plus the body
+ *   read (a socket-inactivity timeout would never fire on a drip);
+ * - no agent reuse across hops (`agent: false`): Node's default
+ *   keep-alive agent could serve a redirect hop from a pooled socket
+ *   whose connection was vetted on the FIRST hop only;
+ * - 10 MiB body cap;
  * - the body must sniff as PNG/JPEG/GIF/WebP (Content-Type is never
  *   trusted; SVG and AVIF are refused).
  */
@@ -76,6 +81,44 @@ export class FetchRefusal extends Error {
 	}
 }
 
+/** Race `p` against the whole-fetch deadline.
+ *
+ * The deadline must be absolute even in phases a socket-inactivity
+ * timeout can never cut: a resolver that hangs, or a server dripping
+ * header bytes. Rejects with `timeout` when the deadline passes
+ * before `p` settles.
+ */
+function withDeadline<T>(
+	p: Promise<T>,
+	deps: FetchDeps,
+	deadline: number,
+	phase: string,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const remaining = deadline - deps.now();
+		if (remaining <= 0) {
+			// Mark `p`'s (possible later) rejection handled: the
+			// deadline refusal is the one the caller sees.
+			void p.catch(() => {});
+			reject(new FetchRefusal("timeout", `deadline reached before ${phase}`));
+			return;
+		}
+		const timer = setTimeout(() => {
+			reject(new FetchRefusal("timeout", `deadline reached ${phase}`));
+		}, remaining);
+		p.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(cause) => {
+				clearTimeout(timer);
+				reject(cause);
+			},
+		);
+	});
+}
+
 /** Resolve and vet one hop's host, or refuse it. */
 async function vettedAddress(
 	host: string,
@@ -103,7 +146,13 @@ async function vettedAddress(
 	return addresses[0];
 }
 
-/** One `https.request` hop: connect to `address`, keep SNI/Host. */
+/** One `https.request` hop: connect to `address`, keep SNI/Host.
+ *
+ * The connect+header phase is cut by an ABSOLUTE whole-fetch deadline
+ * timer (not `req.setTimeout`, which is socket-inactivity: a
+ * header-drip server resets it forever). The timer is cleared the
+ * moment headers resolve; the body read has its own deadline timer.
+ */
 function hop(options: {
 	url: URL;
 	address: string;
@@ -112,6 +161,11 @@ function hop(options: {
 }): Promise<{ status: number; headers: IncomingHttpHeaders; stream: NodeJS.ReadableStream }> {
 	const { url, address, deps, deadline } = options;
 	return new Promise((resolve, reject) => {
+		const remaining = deadline - deps.now();
+		if (remaining <= 0) {
+			reject(new FetchRefusal("timeout", "deadline reached before connecting"));
+			return;
+		}
 		const req = https.request(
 			{
 				protocol: "https:",
@@ -135,26 +189,31 @@ function hop(options: {
 				// ORIGINAL hostname (and the port), never the address the
 				// lookup returned.
 				ca: deps.ca,
+				// NO agent reuse across hops: with the default keep-alive
+				// global agent (Node >= 19), a redirect hop to the same
+				// host:port could be served by the pooled FIRST-hop
+				// socket — whose lookup (and vetted address) is the first
+				// hop's, so this hop's vetting would never run.
+			agent: false,
 			},
 			(res) => {
-				// Resolve as soon as headers are in; the caller owns the
-				// stream (redirect hops drain it, the final hop reads it).
+				// Headers are in: the hop's absolute timer comes down; the
+				// caller owns the stream (redirect hops drain it, the
+				// final hop reads it).
+				clearTimeout(timer);
 				resolve({ status: res.statusCode ?? 0, headers: res.headers, stream: res });
 			},
 		);
+		let timedOut = false;
 		req.on("error", (cause) => {
+			if (timedOut) return; // the destroy() below already rejected
 			reject(new FetchRefusal("network", `connecting to ${url.hostname}: ${cause.message}`));
 		});
-		const remaining = deadline - deps.now();
-		if (remaining <= 0) {
+		const timer = setTimeout(() => {
+			timedOut = true;
 			req.destroy();
-			reject(new FetchRefusal("timeout", "deadline reached before connecting"));
-			return;
-		}
-		req.setTimeout(remaining, () => {
-			req.destroy();
-			reject(new FetchRefusal("timeout", `deadline reached connecting to ${url.hostname}`));
-		});
+			reject(new FetchRefusal("timeout", `deadline reached awaiting headers from ${url.hostname}`));
+		}, remaining);
 		req.end();
 	});
 }
@@ -246,9 +305,15 @@ export async function fetchImage(
 		// literal hosts (the real resolver, `dns.lookup`, passes literals
 		// through verbatim, so literals get range-checked like any other
 		// answer). Brackets stripped for the resolver and SNI; the Host
-		// header keeps Node's own derivation from the URL.
+		// header keeps Node's own derivation from the URL. The deadline
+		// is ABSOLUTE here too: a resolver that hangs is cut at it.
 		const bareHost = current.hostname.replace(/^\[|\]$/g, "");
-		const address = await vettedAddress(bareHost, deps);
+		const address = await withDeadline(
+			vettedAddress(bareHost, deps),
+			deps,
+			deadline,
+			`resolving ${bareHost}`,
+		);
 		const response = await hop({ url: current, address, deps, deadline });
 
 		const status = response.status;
@@ -277,6 +342,10 @@ export async function fetchImage(
 					`redirect to ${target.protocol} refused`,
 				);
 			}
+			// Drain the redirect response so the server sees it consumed
+			// and the socket closes cleanly (with `agent: false` there is
+			// no pool for it to return to — the drain is hygiene, not reuse).
+			void consume(response.stream);
 			current = target;
 			continue;
 		}
@@ -300,7 +369,8 @@ export async function fetchImage(
 	}
 }
 
-/** Best-effort drain so the socket is reusable for the next hop. */
+/** Best-effort drain of a refused hop's response so the server sees
+ * the response consumed and the socket closes cleanly. */
 function consume(stream: NodeJS.ReadableStream): Promise<void> {
 	return new Promise((resolve) => {
 		stream.on("data", () => {});

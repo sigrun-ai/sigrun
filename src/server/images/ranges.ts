@@ -26,6 +26,9 @@ REFUSED.addSubnet("100.64.0.0", 10, "ipv4");
 REFUSED.addSubnet("224.0.0.0", 4, "ipv4");
 REFUSED.addAddress("255.255.255.255", "ipv4");
 // IPv6
+// (Spec-level gap, known: the deprecated IPv4-compatible form
+// `::127.0.0.1` is NOT refused — only the IPv4-mapped `::ffff:` form
+// normalizes into the IPv4 rules.)
 REFUSED.addSubnet("::", 128, "ipv6");
 REFUSED.addSubnet("::1", 128, "ipv6");
 REFUSED.addSubnet("fc00::", 7, "ipv6");
