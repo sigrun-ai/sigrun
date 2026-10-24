@@ -262,6 +262,29 @@ describe("sandbox process invariants", { timeout: 30_000 }, () => {
 			await vi.waitFor(async () => expect(await alive(commandPid)).toBe(false), { timeout: 5_000 });
 		});
 
+		test("concurrent staggered execs retain the second command for crash cleanup", async () => {
+			const { env, client } = await envFor();
+			let firstOutput = "";
+			let secondOutput = "";
+			const first = env.exec("echo $$; sleep 0.2", {
+				onOutput: (text) => { firstOutput += text; },
+			}, context);
+			const second = env.exec("echo $$; sleep 30", {
+				onOutput: (text) => { secondOutput += text; },
+			}, context);
+			await vi.waitFor(() => {
+				expect(firstOutput).toMatch(/\d+\n/);
+				expect(secondOutput).toMatch(/\d+\n/);
+			});
+			const firstPid = Number(firstOutput.trim());
+			const secondPid = Number(secondOutput.trim());
+			expect(firstPid).not.toBe(secondPid);
+			expect(getOrThrow(await first).exitCode).toBe(0);
+			process.kill(await pid(client), "SIGKILL");
+			await expect(second).rejects.toBeInstanceOf(ExecutionError);
+			await vi.waitFor(async () => expect(await alive(secondPid)).toBe(false), { timeout: 5_000 });
+		});
+
 		test("graceful stopAll also leaves no command pids", async () => {
 			const { env } = await envFor();
 			let output = "";
