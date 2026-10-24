@@ -155,6 +155,15 @@ export interface ServerSettings {
 		readonly workerDeadlineMs?: number;
 		readonly queueMax?: number;
 	};
+	/** The multi-user execution jail (M1). `mode` and `osUsers` are restart-required. */
+	readonly isolation?: {
+		/** `SIGRUN_ISOLATION` — auto, always, or off; default auto. */
+		readonly mode?: "auto" | "always" | "off";
+		/** Per-user uid/gid isolation; default false. */
+		readonly osUsers?: boolean;
+		/** Idle worker lifetime in minutes; default 10. */
+		readonly workerIdleMinutes?: number;
+	};
 	/**
 	 * The provider plugins' runtime knobs (provider plugins Task 5):
 	 * `SIGRUN_PROVIDER_REFRESH_MINUTES` — the interval refresh cadence

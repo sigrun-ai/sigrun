@@ -124,6 +124,26 @@ describe("UserDirectory", () => {
 		}
 	});
 
+	test("removeWithGrant reads the current recipient grants and removes the source in one mutation", async () => {
+		const users = new UserDirectory(join(tmpDir("remove-with-grant"), "users.json"));
+		await users.add(aliceUser());
+		await users.add({ user: "bob", admin: false, source: "cli" });
+		const concurrent = users.update("bob", {
+			grants: [{ path: "/existing", access: "ro" }],
+		});
+		const removal = users.removeWithGrant("alice", "bob", {
+			path: "/inherited",
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+		await Promise.all([concurrent, removal]);
+		expect(users.get("alice")).toBeUndefined();
+		expect(users.get("bob")?.grants).toEqual([
+			{ path: "/existing", access: "ro" },
+			{ path: "/inherited", access: "rw", inheritedFrom: "alice" },
+		]);
+	});
+
 	test("a second store instance on the same path sees the first's write", async () => {
 		const path = join(tmpDir("cross"), "users.json");
 		const first = new UserDirectory(path);

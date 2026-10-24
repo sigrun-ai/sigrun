@@ -93,6 +93,13 @@ export interface MemorySeamConfig {
 	queueMax: number;
 }
 
+/** The multi-user execution-jail configuration (M1). */
+export interface IsolationConfig {
+	mode: "auto" | "always" | "off";
+	osUsers: boolean;
+	workerIdleMinutes: number;
+}
+
 /**
  * The provider runtime knobs (provider plugins Task 5): the interval
  * refresh cadence — how often the host-owned scheduler re-runs
@@ -264,6 +271,8 @@ export interface SigrunConfig {
 	 * boot (Tasks 2-5 shipped them as temporary hardcoded constants).
 	 */
 	memorySeam: MemorySeamConfig;
+	/** The execution-jail mode, OS-user gate, and worker idle timeout. */
+	isolation: IsolationConfig;
 	/**
 	 * The provider runtime knobs (provider plugins Task 5): the interval
 	 * refresh cadence, parsed from `SIGRUN_PROVIDER_REFRESH_MINUTES` over
@@ -652,6 +661,28 @@ function parseDev(env: Env): boolean | undefined {
 	throw new Error(
 		`SIGRUN_DEV must be "true" or "false" (or 1/0), got ${JSON.stringify(raw)}`,
 	);
+}
+
+/** Parse `SIGRUN_ISOLATION`; unset/empty lets the file/default tier apply. */
+function parseIsolationMode(env: Env): IsolationConfig["mode"] | undefined {
+	const raw = env.SIGRUN_ISOLATION;
+	if (raw === undefined || raw === "") return undefined;
+	const mode = raw.trim().toLowerCase();
+	if (mode === "auto" || mode === "always" || mode === "off") return mode;
+	throw new Error(
+		`SIGRUN_ISOLATION must be "auto", "always", or "off", got ${JSON.stringify(raw)}`,
+	);
+}
+
+function parseIsolation(
+	env: Env,
+	server?: ServerSettings["isolation"],
+): IsolationConfig {
+	return {
+		mode: parseIsolationMode(env) ?? server?.mode ?? "auto",
+		osUsers: server?.osUsers ?? false,
+		workerIdleMinutes: server?.workerIdleMinutes ?? 10,
+	};
 }
 
 /**
@@ -1176,6 +1207,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		...(webui === undefined ? {} : { webui }),
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
+		isolation: { ...config.isolation },
 		providers: { ...config.providers },
 		...(auth === undefined ? {} : { auth }),
 		...(metrics === undefined ? {} : { metrics }),
@@ -1215,6 +1247,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_IDLE_THRESHOLD` | `memorySeam.idleThresholdMs` |
  * | `SIGRUN_WORKER_DEADLINE` | `memorySeam.workerDeadlineMs` |
  * | `SIGRUN_QUEUE_MAX` | `memorySeam.queueMax` |
+ * | `SIGRUN_ISOLATION` | `isolation.mode` |
  * | `SIGRUN_PROVIDER_REFRESH_MINUTES` | `providers.refreshIntervalMinutes` |
  * | `SIGRUN_BACKUP_*` | `backup` |
  * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
@@ -1264,6 +1297,8 @@ export function envServerSection(env: Env): ServerSettings {
 		queueMax: parseMemorySeamCount(env, "SIGRUN_QUEUE_MAX"),
 	});
 	if (memorySeam !== undefined) section.memorySeam = memorySeam;
+	const isolationMode = parseIsolationMode(env);
+	if (isolationMode !== undefined) section.isolation = { mode: isolationMode };
 	const refreshIntervalMinutes = parseNonNegativeIntEnv(
 		env,
 		PROVIDER_REFRESH_MINUTES_ENV,
@@ -1398,6 +1433,12 @@ export function effectiveServerSection(
 	emit("memorySeam.queueMax", config.memorySeam.queueMax, [
 		"memorySeam",
 		"queueMax",
+	]);
+	emit("isolation.mode", config.isolation.mode, ["isolation", "mode"]);
+	emit("isolation.osUsers", config.isolation.osUsers, ["isolation", "osUsers"]);
+	emit("isolation.workerIdleMinutes", config.isolation.workerIdleMinutes, [
+		"isolation",
+		"workerIdleMinutes",
 	]);
 	emit(
 		"providers.refreshIntervalMinutes",
@@ -1582,6 +1623,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			server?.backup?.staleAfterHours ?? DEFAULT_BACKUP_STALE_AFTER_HOURS,
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
+		isolation: parseIsolation(env, server?.isolation),
 		providers: {
 			refreshIntervalMinutes: parseRefreshIntervalMinutes(
 				env,

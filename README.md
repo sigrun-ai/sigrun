@@ -318,6 +318,90 @@ owner can share one — household-wide or with named users, `read` or
 lets a recipient submit, answer, and fork, but only the owner can
 re-share. Household sharing defaults to `read`.
 
+## Multi-user execution isolation
+
+`server.isolation.mode` (or `SIGRUN_ISOLATION`) controls the execution jail:
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Turns isolation on when the directory has more than one user. Once active, it stays active until restart. |
+| `always` | Confines every user, including a lone admin. |
+| `off` | No jail; permitted only with at most one directory user. |
+
+A second user is refused when isolation is unavailable or `off`, and a
+multi-user server never falls back to unconfined execution. Multi-user also
+requires real authentication (`token` and/or `proxy`).
+
+Isolation requires Linux with Landlock ABI 6 or newer (Linux 6.12+) and the
+`sigrun-sandbox` helper. Debian 12's default 6.1 kernel does not qualify;
+bookworm-backports' 6.12 kernel does. Ubuntu 24.04's GA 6.8 kernel does not
+qualify; its HWE 7.0 kernel does. Check the running host with
+`sigrun-sandbox probe`. The container needs no extra capabilities: uid 1000,
+no capabilities, and `RuntimeDefault` seccomp are sufficient.
+
+**When isolation is on**, a user's agent can reach only their workspace,
+their grants, their home and temp directories, and read-only system paths.
+It cannot read sigrun's files or environment, other users' files, or signal
+processes outside its jail.
+
+**Not covered:** extensions run inside sigrun with full access, like any
+installed package — install only extensions you trust. One user's agent can
+still exhaust CPU, memory, or disk. Outbound network is not restricted.
+macOS and Windows hosts run single-user only.
+
+**Shared MCP servers** hand every permitted user's agent the admin's
+credential for that service.
+
+**File modes are not the boundary.** Workers that share sigrun's uid are
+confined by Landlock alone; `0700` directories are hygiene.
+
+**Single-user servers** run the agent with full host access.
+
+**Every peer in `trustedProxies` can forge any identity**; with isolation
+on, the shared secret is required for that reason. Configure
+`server.auth.proxy.secretHeader` and the env-only `SIGRUN_PROXY_SECRET`.
+
+For bare-metal OS-account mappings, enable `server.isolation.osUsers` and
+set a directory record's `osUser`. Grant the installed helper only the
+identity-switch capabilities once (replace `<helper>` with its path):
+
+```sh
+sudo setcap cap_setuid,cap_setgid+ep <helper>
+```
+
+The helper's boot self-test verifies the switch. This mapping is unavailable
+in containers, whose entrypoint drops every capability.
+
+### Kernel integration runner controls
+
+The opt-in suite is `SIGRUN_SANDBOX_IT=1 npx vitest run test/sandbox-it`.
+The CI `sandbox-it` job requires Landlock ABI 6 before running it. Its
+`/proc` and ptrace cases also perform the same operation as the same uid
+from outside any jail. The run log states, per case, either **Landlock
+discriminating** (the outside operation succeeds) or **Yama/host-policy
+satisfied, not Landlock-discriminating** (the outside operation is denied
+too). The latter still checks the denial but does not claim Landlock caused
+it. The abstract-socket case requires a successful outside-jail connection.
+The `pkill -x node` case needs unprivileged user/PID namespaces and `nsenter`:
+its outside control kills only PID 1 of a disposable namespace, never the
+test runner or another host Node process. If namespaces are unavailable,
+the suite skips with that named reason.
+
+The `osUser` success case and the in-jail uid-switch discrimination require
+a **privileged runner** with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`. The suite grants only
+`cap_setuid,cap_setgid+ep` to a temporary helper copy and verifies an
+unjailed uid/gid switch before testing the jailed denial. Without that
+successful outside control, both tests skip with a named reason; they never
+claim to prove confinement. An ordinary CI runner without file-capability
+permission therefore leaves these two cases unproven. The suite never runs
+`sudo` itself.
+
+The per-user-service process tests use a separate real-helper-launched
+service fixture. M2's per-user service lifecycle is a later workstream; this
+fixture proves the sibling-jail `/proc` and ptrace boundary, not that M2 has
+shipped.
+
 ## Backup
 
 Set a target (`SIGRUN_BACKUP_PATH` or `SIGRUN_BACKUP_S3_BUCKET`+`SIGRUN_BACKUP_S3_PREFIX`,

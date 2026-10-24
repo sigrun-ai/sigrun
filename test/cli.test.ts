@@ -613,9 +613,10 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 	test("user add creates the directory entry (users.json 0600, source cli)", async () => {
 		const dir = await tmpConfigDir();
 		const { io } = captureIo();
+		const env = { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" };
 		const code = await cliMain(
 			["user", "add", "alice", "--admin", "--name", "Alice", "--email", "alice@example.invalid"],
-			storeEnv(dir),
+			env,
 			undefined,
 			io,
 		);
@@ -639,15 +640,46 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		const dir = await tmpConfigDir();
 		const { errors, io } = captureIo();
 		expect(
-			await cliMain(["user", "add", "bob"], storeEnv(dir), undefined, io),
+			await cliMain(["user", "add", "bob"], { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" }, undefined, io),
 		).toBe(0);
 		const raw = JSON.parse(await readFile(join(dir, "users.json"), "utf8"));
 		expect(raw[0]).toMatchObject({ user: "bob", admin: false });
 		// The duplicate is an error naming the user (exit 1).
 		expect(
-			await cliMain(["user", "add", "bob"], storeEnv(dir), undefined, io),
+			await cliMain(["user", "add", "bob"], { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" }, undefined, io),
 		).toBe(1);
 		expect(errors.join("\n")).toMatch(/bob/);
+	});
+
+	test("second user add refuses unavailable isolation with exit 1 and the message", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" };
+		expect(await cliMain(["user", "add", "alice", "--admin"], env, undefined, io)).toBe(0);
+		expect(await cliMain(["user", "add", "bob"], env, undefined, io)).toBe(1);
+		expect(errors.join("\n")).toContain("isolation_required");
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice"]);
+	});
+
+	test("auto proxy without secretHeader refuses CLI second add; configured header succeeds", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = {
+			...storeEnv(dir),
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+			SIGRUN_AUTH: "proxy",
+			SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+			SIGRUN_ISOLATION: "auto",
+		};
+		const deps = stubDeps({ probeIsolation: async () => ({ available: true, abi: 6 }) }).deps;
+		expect(await cliMain(["user", "add", "alice", "--admin"], env, deps, io)).toBe(0);
+		expect(await cliMain(["user", "add", "bob"], env, deps, io)).toBe(1);
+		expect(errors.join("\n")).toContain("isolation_required");
+		expect(errors.join("\n")).toContain("secretHeader");
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice"]);
+		await writeFile(join(dir, "settings.json"), JSON.stringify({ server: { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } } }));
+		expect(await cliMain(["user", "add", "bob"], env, deps, io)).toBe(0);
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice", "bob"]);
 	});
 
 	test("user list prints the directory (user, admin marker, name, email)", async () => {
@@ -655,7 +687,7 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		const { out, io } = captureIo();
 		await cliMain(
 			["user", "add", "alice", "--admin", "--name", "Alice", "--email", "alice@example.invalid"],
-			storeEnv(dir),
+			{ ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" },
 			undefined,
 			io,
 		);
@@ -670,7 +702,7 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 	test("token create prints one sgr_ line; list shows the name without the secret; revoke removes it", async () => {
 		const dir = await tmpConfigDir();
 		const { out, errors, io } = captureIo();
-		await cliMain(["user", "add", "alice"], storeEnv(dir), undefined, io);
+		await cliMain(["user", "add", "alice"], { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" }, undefined, io);
 		out.length = 0;
 
 		expect(

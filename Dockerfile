@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # sigrun — the pi-durable assistant harness.
 #
-# Five stages (image workflow spec §1): deps (full install, feeds the
-# build) → build (sources + the built tree) → prod (manifests-only
-# re-copy + `npm ci --omit=dev`) → runtime (base + agent userland + the
-# prod tree). The runtime layer never carries the dev toolchain
+# Six stages (image workflow spec §1): deps (full install, feeds the
+# build) → build (sources + the built tree) → sandbox (the Rust helper)
+# → prod (manifests-only re-copy + `npm ci --omit=dev`) → runtime
+# (base + agent userland + the prod tree). The runtime layer never carries the dev toolchain
 # (typescript, vitest, the bundler natives), and a source-only edit
 # re-runs only the build stage — the prod install layer is keyed on the
 # manifests alone.
@@ -75,6 +75,16 @@ FROM deps AS build
 COPY . .
 RUN npm run build && npm run build:webui && npm --workspace @sigrun/tui run build
 
+# Sandbox helper: an independent Rust build, with no npm manifest or
+# extension-dependency inputs. Keep this separate from the registry-mode
+# build dance above; its only output is copied into the runtime below.
+FROM rust:1-bookworm AS sandbox
+WORKDIR /sandbox
+COPY sandbox/Cargo.toml sandbox/Cargo.lock ./
+COPY sandbox/src ./src
+COPY sandbox/tests ./tests
+RUN cargo build --locked --release
+
 # Prod stage: the runtime's node_modules — the SAME manifest set as deps
 # (the workspace links again), but --omit=dev. Manifests are re-copied
 # rather than inherited so this layer's cache key is the manifests
@@ -95,7 +105,8 @@ FROM base AS runtime
 ENV NODE_ENV=production \
     SG_UID=1000 \
     SG_GID=1000 \
-    NPM_CONFIG_CACHE=/cache/npm
+    NPM_CONFIG_CACHE=/cache/npm \
+    SIGRUN_SANDBOX_HELPER=/usr/local/lib/sigrun/sigrun-sandbox
 # The agent userland (spec §1): the everyday set agents reach for —
 # ripgrep/fd/jq (search + shaping), git (required by git: extension
 # sources), sqlite3 (path-target backups + the online-safe
@@ -112,8 +123,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl fd-find git jq procps ripgrep sqlite3 unzip zip \
+        ca-certificates curl fd-find git jq procps ripgrep sqlite3 tini unzip zip \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
+# Debian bookworm installs tini at /usr/bin/tini. The sandbox helper is
+# resolved through this explicit path before npm-platform or source-tree
+# fallbacks, so the image uses the binary built in the sandbox stage.
+COPY --from=sandbox /sandbox/target/release/sigrun-sandbox /usr/local/lib/sigrun/sigrun-sandbox
 COPY --from=prod /app/node_modules ./node_modules
 # The built tree + the workspace packages the prod node_modules SYMLINK
 # into (node_modules/@sigrun/shared → /app/shared, @sigrun/tui →
@@ -147,5 +162,7 @@ EXPOSE 3000
 # Plain node (no npm in the signal path): SIGTERM reaches the entry's
 # graceful shutdown — server close, event-bus drain, harness close,
 # exit 0. The entrypoint drops privileges first when started as root.
-ENTRYPOINT ["/usr/local/bin/sigrun-entrypoint.sh"]
+# tini owns PID 1 so orphaned agent children are reaped and signals are
+# forwarded to the entrypoint; compose no longer needs its own init.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/sigrun-entrypoint.sh"]
 CMD ["node", "dist/index.js"]

@@ -412,6 +412,71 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 	});
 });
 
+describe("isolation settings", () => {
+	test("defaults to auto, osUsers off, and a 10-minute worker idle timeout", () => {
+		expect(loadConfig({ ...MODEL_ENV }).isolation).toEqual({
+			mode: "auto",
+			osUsers: false,
+			workerIdleMinutes: 10,
+		});
+	});
+
+	test("SIGRUN_ISOLATION parses auto, always, and off and wins over the file", () => {
+		for (const mode of ["auto", "always", "off"] as const) {
+			expect(
+				loadConfig({ ...MODEL_ENV, SIGRUN_ISOLATION: mode }).isolation.mode,
+			).toBe(mode);
+		}
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_ISOLATION: "off" },
+				{ server: { isolation: { mode: "always" } } },
+			).isolation.mode,
+		).toBe("off");
+	});
+
+	test("the file section supplies all three knobs where env is absent", () => {
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{
+					server: {
+						isolation: {
+							mode: "always",
+							osUsers: true,
+							workerIdleMinutes: 30,
+						},
+					},
+				},
+			).isolation,
+		).toEqual({ mode: "always", osUsers: true, workerIdleMinutes: 30 });
+	});
+
+	test("SIGRUN_ISOLATION=on fails loud naming the variable", () => {
+		expect(() =>
+			loadConfig({ ...MODEL_ENV, SIGRUN_ISOLATION: "on" }),
+		).toThrow(/SIGRUN_ISOLATION/);
+	});
+
+	test("the env mode projects into the bootstrap and effective settings", () => {
+		const env = { ...MODEL_ENV, SIGRUN_ISOLATION: "always" };
+		expect(envServerSection(env)).toEqual({
+			isolation: { mode: "always" },
+		});
+		const config = loadConfig(env);
+		expect(
+			effectiveServerSection(env, undefined, config)[
+				"server.isolation.mode"
+			],
+		).toEqual({ value: "always", source: "env" });
+		expect(
+			effectiveServerSection(MODEL_ENV, undefined, loadConfig(MODEL_ENV))[
+				"server.isolation.osUsers"
+			],
+		).toEqual({ value: false, source: "default" });
+	});
+});
+
 describe("envServerSection (the env-only bootstrap projection, ruling 5)", () => {
 	test("empty env projects {} — no default is ever persisted", () => {
 		expect(envServerSection({})).toEqual({});

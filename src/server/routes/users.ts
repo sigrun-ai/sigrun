@@ -13,11 +13,14 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
+import { join } from "node:path";
 import type { ServerContext } from "../context.js";
 import { withClaimLock } from "../auth/claim-lock.js";
 import type { DirectoryUser } from "../../harness/identity/index.js";
 import { transferOwnership } from "../ownership.js";
 import type { InviteResponse, UserWire } from "../views.js";
+import type { Grant } from "../../sandbox/grants.js";
+import { validateGrantPath } from "../../sandbox/grants.js";
 
 /** The wire form of one directory user (the record minus nothing — the
  * routes serving it are admin-gated, and emails are admin material).
@@ -32,6 +35,9 @@ function userWire(record: DirectoryUser): UserWire {
 		...(record.groupAdmin === undefined
 			? {}
 			: { groupAdmin: record.groupAdmin }),
+		...(record.workspace === undefined ? {} : { workspace: record.workspace }),
+		...(record.grants === undefined ? {} : { grants: record.grants }),
+		...(record.osUser === undefined ? {} : { osUser: record.osUser }),
 		createdAt: record.createdAt,
 		source: record.source,
 	};
@@ -68,7 +74,14 @@ export function registerUserRoutes(
 		) {
 			return await reply.code(400).send({ error: "invalid_body" });
 		}
-		const patch: { name?: string; email?: string; admin?: boolean } = {};
+		const patch: {
+			name?: string;
+			email?: string;
+			admin?: boolean;
+			workspace?: string;
+			grants?: readonly Grant[];
+			osUser?: string;
+		} = {};
 		for (const key of Object.keys(body as Record<string, unknown>)) {
 			const value = (body as Record<string, unknown>)[key];
 			switch (key) {
@@ -86,6 +99,63 @@ export function registerUserRoutes(
 						return await reply.code(400).send({ error: "invalid_body" });
 					}
 					patch.admin = value;
+					break;
+				case "workspace": {
+					if (typeof value !== "string") {
+						return await reply.code(400).send({ error: "invalid_body" });
+					}
+					const result = validateGrantPath(value, {
+						managed: ctx.managedPaths,
+						user,
+					});
+					if (!result.ok) {
+						return await reply.code(400).send({
+							error: "invalid_grant",
+							path: value,
+							reason: result.reason,
+						});
+					}
+					patch.workspace = result.realpath;
+					break;
+				}
+				case "grants": {
+					if (!Array.isArray(value)) {
+						return await reply.code(400).send({ error: "invalid_body" });
+					}
+					const grants: Grant[] = [];
+					for (const entry of value as unknown[]) {
+						if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+							return await reply.code(400).send({ error: "invalid_body" });
+						}
+						const candidate = entry as Record<string, unknown>;
+						if (
+							typeof candidate.path !== "string" ||
+							(candidate.access !== "ro" && candidate.access !== "rw") ||
+							Object.keys(candidate).some((key) => key !== "path" && key !== "access")
+						) {
+							return await reply.code(400).send({ error: "invalid_body" });
+						}
+						const result = validateGrantPath(candidate.path, {
+							managed: ctx.managedPaths,
+							user,
+						});
+						if (!result.ok) {
+							return await reply.code(400).send({
+								error: "invalid_grant",
+								path: candidate.path,
+								reason: result.reason,
+							});
+						}
+						grants.push({ path: result.realpath, access: candidate.access });
+					}
+					patch.grants = grants;
+					break;
+				}
+				case "osUser":
+					if (typeof value !== "string" || value === "") {
+						return await reply.code(400).send({ error: "invalid_body" });
+					}
+					patch.osUser = value;
 					break;
 				default:
 					return await reply
@@ -105,11 +175,7 @@ export function registerUserRoutes(
 		) {
 			return await reply.code(409).send({ error: "last_admin" });
 		}
-		const updated = await identity.users.update(user, {
-			...(patch.name === undefined ? {} : { name: patch.name }),
-			...(patch.email === undefined ? {} : { email: patch.email }),
-			...(patch.admin === undefined ? {} : { admin: patch.admin }),
-		});
+		const updated = await identity.users.update(user, patch);
 		return userWire(updated);
 	});
 
@@ -184,19 +250,48 @@ export function registerUserRoutes(
 		) {
 			return await reply.code(400).send({ error: "invalid_transfer" });
 		}
+		if (target.osUser !== undefined) {
+			return await reply.code(409).send({
+				error: "invalid_transfer",
+				reason: "osUser workspace",
+			});
+		}
 		// The last record-admin may not be deleted — admin is not a
 		// transferable property (transferTo moves resources, not rights).
 		if (target.admin && identity.users.recordAdminCount() === 1) {
 			return await reply.code(409).send({ error: "last_admin" });
 		}
 		const to = query.transferTo;
+		const workspace =
+			target.workspace ??
+			join(ctx.managedPaths.roots.dataDir, "users", user, "workspace");
+		// Complete the only grant-dependent failure decision BEFORE the
+		// irreversible transfer/revocation. Invalid grants remain non-fatal.
+		const validatedGrant = validateGrantPath(workspace, {
+			managed: ctx.managedPaths,
+			user: to,
+			inheritedFrom: user,
+		});
+		const grant: Grant | undefined = validatedGrant.ok
+			? {
+					path: validatedGrant.realpath,
+					access: "rw",
+					inheritedFrom: user,
+				}
+			: undefined;
+		if (!validatedGrant.ok) {
+			console.warn(
+				`user delete: skipping departing workspace grant for ${to}: ${workspace}: ${validatedGrant.reason}`,
+			);
+		}
 		await transferOwnership(ctx, user, to);
 		await identity.tokens.revokeAllFor(user);
 		// External identities never transfer (multi-user §10.6 step 1):
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
 		await identity.accounts.removeUser(user);
-		await identity.users.remove(user);
+		if (grant === undefined) await identity.users.remove(user);
+		else await identity.users.removeWithGrant(user, to, grant);
 		// The lifecycle event: extensions transfer their own records
 		// (deadlocked-ordering free — the core transfer already landed).
 		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);

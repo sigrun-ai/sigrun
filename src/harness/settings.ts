@@ -544,6 +544,7 @@ function validateServer(server: unknown): void {
 		"webuiBundle",
 		"compaction",
 		"memorySeam",
+		"isolation",
 		"providers",
 		"auth",
 		"metrics",
@@ -697,6 +698,43 @@ function validateServer(server: unknown): void {
 					"must be a positive integer",
 				);
 			}
+		}
+	}
+	if (record.isolation !== undefined) {
+		const isolation = asRecord(record.isolation);
+		if (isolation === undefined) {
+			throw new SettingsValidationError("server.isolation", "must be an object");
+		}
+		checkKeys("server.isolation.", isolation, [
+			"mode",
+			"osUsers",
+			"workerIdleMinutes",
+		]);
+		if (
+			isolation.mode !== undefined &&
+			isolation.mode !== "auto" &&
+			isolation.mode !== "always" &&
+			isolation.mode !== "off"
+		) {
+			throw new SettingsValidationError(
+				"server.isolation.mode",
+				'must be "auto", "always", or "off"',
+			);
+		}
+		if (isolation.osUsers !== undefined && typeof isolation.osUsers !== "boolean") {
+			throw new SettingsValidationError(
+				"server.isolation.osUsers",
+				"must be a boolean",
+			);
+		}
+		if (
+			isolation.workerIdleMinutes !== undefined &&
+			!isPositiveInt(isolation.workerIdleMinutes)
+		) {
+			throw new SettingsValidationError(
+				"server.isolation.workerIdleMinutes",
+				"must be a positive integer",
+			);
 		}
 	}
 	if (record.providers !== undefined) {

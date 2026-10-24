@@ -141,6 +141,16 @@ export function registerMetaRoutes(
 			// supervised admin (an unsupervised deploy's restart exits and
 			// STAYS down, so the button must not exist there).
 			supervised: config.supervised,
+			isolation: {
+				mode: config.isolation.mode,
+				active: opened.isolationState.active(),
+				available: opened.isolation.available,
+				abi: opened.isolation.abi,
+				...(opened.isolation.reason === undefined
+					? {}
+					: { reason: opened.isolation.reason }),
+				osUsers: opened.osUsers.status,
+			},
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {
 				interactions: [...opened.seamKinds]

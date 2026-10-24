@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Security
+- Added the opt-in Landlock kernel boundary suite for two-user execution
+  isolation, with a hard ABI 6+ CI gate and explicit local skip reasons.
+  Documented the isolation boundary, trusted-extension and resource limits,
+  kernel requirements, OS-account setup, and proxy trust posture.
+  The suite also covers abstract sockets, ptrace, worker lifecycle, IPC
+  descriptors, and privileged-runner osUser switching; outside-jail controls
+  distinguish Landlock denials from Yama or missing-capability conditions.
 
 ## [0.1.7] - 2026-10-24
 ### Fixed
