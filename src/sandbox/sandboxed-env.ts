@@ -266,7 +266,7 @@ export class SandboxedExecutionEnv implements ExecutionEnv {
 		// cleanup here would kill another conversation's live commands.
 	}
 	exec(command: string | readonly string[], options: ShellExecOptions | undefined, context: Context): Promise<Result<ShellExecResult, ExecutionError>> {
-		const wireOptions = { ...(options ?? {}), inheritEnv: false };
+		const wireOptions = { ...(options ?? {}) };
 		delete wireOptions.onOutput;
 		return this.call("exec", [command, wireOptions], context, (event) => {
 			if (event.event !== "output") return;

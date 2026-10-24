@@ -217,9 +217,8 @@ async function execute(request: Request): Promise<void> {
 	const supplied = (args[1] ?? {}) as Record<string, unknown>;
 	const options = {
 		...supplied,
-		// The caller may add allowlisted variables; the worker's process.env is
-		// NEVER an implicit execution environment.
-		inheritEnv: false,
+		// The worker's process.env is the already-scrubbed per-user allowlist,
+		// so inheriting it is the point. The caller's env remains the override.
 		onOutput: (text: string, _context: unknown, info: { stream: "stdout" | "stderr"; skipped?: JsonValue }) => {
 			write({ id: request.id, event: "output", stream: info.stream, text, ...(info.skipped === undefined ? {} : { skipped: encodeValue(info.skipped) }) });
 		},
@@ -243,7 +242,6 @@ async function dispatchResult(request: Request, controller: AbortController): Pr
 		const supplied = (args[1] ?? {}) as Record<string, unknown>;
 		const options = {
 			...supplied,
-			inheritEnv: false,
 			onOutput: (text: string, _context: unknown, info: { stream: "stdout" | "stderr"; skipped?: JsonValue }) => {
 				write({ id: request.id, event: "output", stream: info.stream, text, ...(info.skipped === undefined ? {} : { skipped: encodeValue(info.skipped) }) });
 			},
