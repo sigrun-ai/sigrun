@@ -802,6 +802,9 @@ export interface WhoamiResponse {
 	readonly user?: string;
 	readonly name?: string;
 	readonly email?: string;
+	/** The caller's own workspace/grants; never another directory user's. */
+	readonly workspace?: string;
+	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
 	readonly admin: boolean;
 	readonly service: boolean;
 	readonly method: "none" | "token" | "proxy" | "host";
@@ -845,6 +848,9 @@ export interface UserWire {
 	readonly admin: boolean;
 	/** The persisted proxy-group grant — present only under `adminGroups`. */
 	readonly groupAdmin?: boolean;
+	readonly workspace?: string;
+	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
+	readonly osUser?: string;
 	readonly createdAt: number;
 	readonly source: "proxy" | "invite" | "cli";
 }

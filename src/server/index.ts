@@ -32,6 +32,7 @@
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
@@ -62,6 +63,7 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
+import { selfPackageRoot } from "../harness/packages.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import type { HostEventWire } from "./events/types.js";
@@ -214,9 +216,16 @@ export async function createServer(
 		},
 	});
 	app.decorate("surfaces", surfacesService);
+	const roots = opened.extensionStores.roots;
 	const ctx: ServerContext = {
 		opened,
 		config,
+		managedPaths: {
+			roots,
+			storagePath: config.storagePath,
+			coreRoot: selfPackageRoot() ?? process.cwd(),
+			userAreas: (user) => join(roots.dataDir, "users", user),
+		},
 		rootId,
 		webuiBundle,
 		commandCatalog,

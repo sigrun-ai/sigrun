@@ -13,6 +13,7 @@
  */
 
 import { MutationQueue, readRecords, writeJson } from "./json-store.js";
+import type { Grant } from "../../sandbox/grants.js";
 
 /** The username rule (spec §5.8): lowercase-first, then `[a-z0-9._-]`. */
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -33,6 +34,12 @@ export interface DirectoryUser {
 	 * `admin`); host-side surfaces project it into effective admin.
 	 */
 	readonly groupAdmin?: boolean;
+	/** The user's realpath-validated workspace (multi-user M1 §9.5). */
+	readonly workspace?: string;
+	/** Additional realpath-validated directories available to their worker. */
+	readonly grants?: readonly Grant[];
+	/** Optional bare-metal OS login used by the worker's uid/gid switch. */
+	readonly osUser?: string;
 	/** When this record was created (epoch ms). */
 	readonly createdAt: number;
 	/** How the user entered the directory (spec §5.8 sources). */
@@ -99,7 +106,15 @@ export class UserDirectory {
 	 */
 	update(
 		user: string,
-		patch: { name?: string; email?: string; admin?: boolean; groupAdmin?: boolean },
+		patch: {
+			name?: string;
+			email?: string;
+			admin?: boolean;
+			groupAdmin?: boolean;
+			workspace?: string;
+			grants?: readonly Grant[];
+			osUser?: string;
+		},
 	): Promise<DirectoryUser> {
 		return this.mutations.run(async () => {
 			const records = this.list();

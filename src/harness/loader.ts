@@ -117,7 +117,10 @@ import {
 	readPackageVersion,
 	resolveExtensionEntry,
 } from "./packages.js";
-import { RESERVED_CORE_SECTION_KEYS } from "./reserved-sections.js";
+import {
+	RESERVED_CORE_SECTION_KEYS,
+	RESERVED_EXTENSION_SLUGS,
+} from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
@@ -607,6 +610,11 @@ type CandidateFactoryResult = Partial<
  */
 const RESERVED_SECTION_KEY_SET: ReadonlySet<string> = new Set(
 	RESERVED_CORE_SECTION_KEYS,
+);
+
+/** Reserved store-root directory names may not become extension identities. */
+const RESERVED_EXTENSION_SLUG_SET: ReadonlySet<string> = new Set(
+	RESERVED_EXTENSION_SLUGS,
 );
 
 /** A structural check for "looks like a pi-durable Extension". */
@@ -2227,6 +2235,13 @@ const display = label ?? entry ?? "skills-only";
 						`extension name "${declared}" sanitizes to an empty slug ` +
 							"(nothing survives [a-z0-9_-] folding); refusing to load",
 					);
+				}
+				// Multi-user M1: core-owned store-root directories are not available
+				// as extension identities. Check after the slug is final, before
+				// any contribution is collected (the same load-time quarantine as
+				// the reserved section-key check below).
+				if (RESERVED_EXTENSION_SLUG_SET.has(slug)) {
+					throw new Error(`reserved extension slug "${slug}"`);
 				}
 				const collides = slugs.get(slug);
 				if (collides !== undefined) {

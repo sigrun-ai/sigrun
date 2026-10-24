@@ -23,11 +23,14 @@ import type { WebuiBundle } from "./static.js";
 import type { SurfaceService } from "./surfaces/service.js";
 import { SseRegistry } from "./sse-registry.js";
 import type { GatewayHandle } from "./gateway.js";
+import type { ManagedPaths } from "../sandbox/grants.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
 	readonly opened: OpenedHarness;
 	readonly config: SigrunConfig;
+	/** Protected paths used to validate per-user workspaces and grants. */
+	readonly managedPaths: ManagedPaths;
 	/**
 	 * The live-SSE registry (the ctrl+c fix): hijacked event streams never
 	 * end on their own, so shutdown drains this BEFORE app.close() — the
