@@ -211,6 +211,13 @@ test.describe("item 6: tool card", () => {
 
 	test("expand a tool card and see the output", async ({ page }) => {
 		await page.goto(server.url);
+		// The activity line is the GROUPED transcript's tool home (B4); the
+		// default view is the chronological timeline (tools inline), so
+		// switch to grouped first (the toggle is pressed when timeline is on).
+		const timelineToggle = page.locator('button[aria-label="chronological view"]');
+		if ((await timelineToggle.getAttribute("aria-pressed")) === "true") {
+			await timelineToggle.click();
+		}
 		// Wait for the boot-time default selection + the draft restore to
 		// settle (the composer goes live once a conversation is active).
 		await expect(page.locator(".composer-input")).toBeEnabled();

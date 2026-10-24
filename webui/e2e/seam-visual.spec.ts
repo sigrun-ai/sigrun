@@ -302,24 +302,33 @@ test.describe("seam visual verification", () => {
 		}, BACKGROUND_CONTEXT);
 		await page.goto(`${server.url}/`);
 		await page.waitForSelector(".interaction-card", { timeout: 30_000 });
-		// Answer all remaining cards.
+		// Answer all remaining cards (the multi stepper walks its
+		// sections before its submit shows; radios before checkboxes
+		// before text inputs).
 		const cards = page.locator(".interaction-card");
 		const count = await cards.count();
 		for (let i = 0; i < count; i += 1) {
 			const card = cards.nth(i);
-			const radio = card.locator('input[type="radio"]').first();
-			const checkbox = card.locator('input[type="checkbox"]').first();
-			const textInput = card.locator('input[type="text"]').first();
-			if (await radio.isVisible().catch(() => false)) {
-				await radio.click();
-			} else if (await checkbox.isVisible().catch(() => false)) {
-				await checkbox.click();
-			} else if (await textInput.isVisible().catch(() => false)) {
-				await textInput.fill("probe-value");
-			}
-			const submit = card.locator("button.blk-form-submit");
-			if ((await submit.count()) > 0 && (await submit.isEnabled())) {
-				await submit.click();
+			for (;;) {
+				const radio = card.locator('input[type="radio"]:not(:checked)').first();
+				const checkbox = card.locator('input[type="checkbox"]:not(:checked)').first();
+				const textInput = card.locator('input[type="text"]').first();
+				if (await radio.isVisible().catch(() => false)) {
+					await radio.check();
+				} else if (await checkbox.isVisible().catch(() => false)) {
+					await checkbox.check();
+				} else if (await textInput.isVisible().catch(() => false)) {
+					await textInput.fill("probe-value");
+				}
+				const submit = card.locator("button.blk-form-submit");
+				if ((await submit.count()) > 0 && (await submit.isVisible())) {
+					await submit.click();
+					break;
+				}
+				// The stepper: advance (Next / Review) until the submit shows.
+				const next = card.locator(".blk-stepper-nav button", { hasText: /Next|Review/ });
+				if ((await next.count()) === 0) break;
+				await next.first().click();
 			}
 		}
 		await page.waitForTimeout(800);

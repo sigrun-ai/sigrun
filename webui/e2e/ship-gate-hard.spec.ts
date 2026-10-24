@@ -131,55 +131,61 @@ test.describe("item 4: interactions (the interaction seam)", () => {
 		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 		const host = server.opened.seamHosts.get("sigrun-fixture-visual");
 		if (host === undefined) throw new Error("seam host missing");
-		// Two warden-style confirm records, keyed to the ship-gate script.
-		await host.seedInteraction(
-			server.conversationId,
-			{
-				kind: "gating.confirm",
-				callId: "call-approve",
-				status: "pending",
-				createdAt: Date.now(),
-				body: {
-					text: "warden: allow this load_skill call? (demo)",
-					options: [
-						{ id: "allow", label: "Allow", tone: "ok" },
-						{ id: "deny", label: "Deny", tone: "danger" },
+		const { choice: choiceB, form: formB, markdown: markdownB, section: sectionB, tree: treeB } =
+			await import("../../src/blocks/index.js");
+		// The harness's plain conversation id as the host's branded id
+		// (same runtime value; the wire type and the storage key match).
+		const convId = server.conversationId as unknown as Parameters<typeof host.seedInteraction>[0];
+		// Two warden-style confirm records (block-tree bodies, spec §9.1),
+		// keyed to the ship-gate script.
+		const gate = (callId: string, prompt: string) => ({
+			kind: "gating.confirm",
+			callId,
+			status: "pending" as const,
+			createdAt: Date.now(),
+			body: treeB(
+				formB({
+					id: callId,
+					bind: "/values",
+					mode: "submit",
+					children: [
+						sectionB({ children: [markdownB({ text: prompt })] }),
+						choiceB({
+							name: "decision",
+							label: "Verdict",
+							options: [
+								{ id: "allow", label: "Allow", tone: "good" },
+								{ id: "deny", label: "Deny", tone: "bad" },
+							],
+						}),
 					],
-				},
-			},
+				}),
+			),
+		});
+		await host.seedInteraction(
+			convId,
+			gate("call-approve", "warden: allow this load_skill call? (demo)"),
 			BACKGROUND_CONTEXT,
 		);
 		await host.seedInteraction(
-			server.conversationId,
-			{
-				kind: "gating.confirm",
-				callId: "call-deny",
-				status: "pending",
-				createdAt: Date.now(),
-				body: {
-					text: "warden: allow this load_skill call? (demo2)",
-					options: [
-						{ id: "allow", label: "Allow", tone: "ok" },
-						{ id: "deny", label: "Deny", tone: "danger" },
-					],
-				},
-			},
+			convId,
+			gate("call-deny", "warden: allow this load_skill call? (demo2)"),
 			BACKGROUND_CONTEXT,
 		);
 		await page.goto(server.url);
 		const card = page.locator(".interaction-card").first();
 		await expect(card).toBeVisible({ timeout: 15_000 });
-		await expect(card.locator(".interaction-text")).toContainText("load_skill");
-		// Approve the first.
+		await expect(card).toContainText("load_skill");
+		// Approve the first (the tree form's submit is `blk-form-submit`).
 		await card.locator('input[type="radio"]').first().click();
-		await card.locator(".interaction-submit").click();
+		await card.locator(".blk-form-submit").click();
 		// The second gate's card is still pending: deny it.
 		const card2 = page
 			.locator(".interaction-card")
 			.filter({ hasText: "demo2" });
 		await expect(card2).toBeVisible({ timeout: 15_000 });
 		await card2.locator('input[type="radio"]').nth(1).click();
-		await card2.locator(".interaction-submit").click();
+		await card2.locator(".blk-form-submit").click();
 		// Both answered: the stack drains.
 		await expect(page.locator(".interaction-card")).toHaveCount(0, {
 			timeout: 15_000,
@@ -246,6 +252,12 @@ test.describe("item 7: compaction recall", () => {
 		page,
 	}) => {
 		await page.goto(server.url);
+		// The tool row lives under the GROUPED transcript's activity line
+		// (B4); the default is the chronological timeline — switch first.
+		const timelineToggle = page.locator('button[aria-label="chronological view"]');
+		if ((await timelineToggle.getAttribute("aria-pressed")) === "true") {
+			await timelineToggle.click();
+		}
 		await expect(page.locator(".composer-input")).toBeEnabled();
 		// Turn 1: the content that will compact out.
 		await page.locator(".composer-input").pressSequentially("remember ZEBRA");
