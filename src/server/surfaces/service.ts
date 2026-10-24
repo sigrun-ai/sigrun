@@ -527,8 +527,14 @@ export class SurfaceService {
 			throw new ActionRateLimitedError();
 		}
 		const composite = `${slug}${id}${key}`;
+		// The request fingerprint (action + params + payload)
+		// disambiguates a RETRY (same body — replay the stored result)
+		// from an actionId REUSE (a second client whose channel restarted
+		// its id sequence — two tabs of one webui share the module-level
+		// counter; U4 Task 4).
+		const fingerprint = JSON.stringify({ action, params, payload });
 		if (actionId !== undefined) {
-			const hit = this.dedup.check(actionId, composite);
+			const hit = this.dedup.check(actionId, composite, fingerprint);
 			if (hit !== undefined && hit !== null) return hit.result;
 		}
 		const result = await this.invokeWithTimeout(() =>
@@ -536,7 +542,7 @@ export class SurfaceService {
 		);
 		const wrapped = this.wrapResult(slug, id, key, result);
 		if (actionId !== undefined) {
-			this.dedup.record(actionId, composite, wrapped);
+			this.dedup.record(actionId, composite, fingerprint, wrapped);
 		}
 		return wrapped;
 	}

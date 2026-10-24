@@ -17,9 +17,16 @@ import type { ActionResponse } from "./service.js";
 /** The dedup window (spec §6.1): 10 minutes. */
 export const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
-/** One recorded invocation: its instance and its stored result. */
+/** One recorded invocation: its instance, request fingerprint, and
+ *  its stored result. */
 interface DedupEntry {
 	readonly composite: string;
+	/** The recorded request's fingerprint (action + params + payload).
+	 *  A same-instance actionId arriving with a DIFFERENT fingerprint is
+	 *  not a retry — it is a fresh client that reused the id (two
+	 *  browser tabs of one app share a channel's id sequence) — and
+	 *  must run its own handler rather than replay. */
+	readonly fingerprint: string;
 	readonly result: ActionResponse;
 	readonly expiresAt: number;
 }
@@ -56,6 +63,7 @@ export class ActionDedup {
 	check(
 		actionId: string,
 		composite: string,
+		fingerprint: string,
 	): DedupHit | undefined | null {
 		const entry = this.entries.get(actionId);
 		if (entry === undefined) return undefined;
@@ -64,13 +72,24 @@ export class ActionDedup {
 			return undefined;
 		}
 		if (entry.composite !== composite) return null;
+		// A fingerprint mismatch is NOT a retry (the class docstring's
+		// rule): the id was reused by another client, so the caller runs
+		// the handler. The new result OVERWRITES the record (the latest
+		// invocation owns the id from here).
+		if (entry.fingerprint !== fingerprint) return undefined;
 		return { result: entry.result };
 	}
 
 	/** Record the first result of one actionId for one instance. */
-	record(actionId: string, composite: string, result: ActionResponse): void {
+	record(
+		actionId: string,
+		composite: string,
+		fingerprint: string,
+		result: ActionResponse,
+	): void {
 		this.entries.set(actionId, {
 			composite,
+			fingerprint,
 			result,
 			expiresAt: this.clock() + DEDUP_WINDOW_MS,
 		});

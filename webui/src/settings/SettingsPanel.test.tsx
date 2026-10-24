@@ -145,6 +145,10 @@ function makeHarness(init?: {
 				treeRev: 0,
 				access: "write",
 			};
+		} else if (input.startsWith("/v1/ext/core/surfaces/general/data")) {
+			// The panel's meta probe polls the data channel (the
+			// pending-restart callout reads it).
+			body = { rev, treeRev: 0, data: { settings: values, meta } };
 		} else if (input === "/v1/ext/core/surfaces/general/actions") {
 			const parsed = JSON.parse(init2?.body as string) as {
 				payload: { rev: number; values: Record<string, unknown> };
