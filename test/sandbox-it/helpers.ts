@@ -228,6 +228,7 @@ export interface Deployment {
 	readonly bobWorkspace: string;
 	readonly baseUrl: string;
 	readonly namespacePid: number;
+	readonly wrapperPid: number;
 	readonly aliceToken: string;
 	readonly bobToken: string;
 	readonly pid: number;
@@ -308,9 +309,10 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 			}
 			if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); throw new Error(`sigrun did not stop\n${logs()}`); }
 		};
-		// The child is PID 1 in its disposable PID namespace; the host-side
-		// pid is used by /proc and ptrace cases.
-		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid: 1, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: serverPid, logs, stop };
+		// serverPid is read from the server entry's own pid file, not the
+		// unshare wrapper. namespacePid is used only for the safe nsenter
+		// pkill control.
+		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid: 1, wrapperPid: child.pid!, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: serverPid, logs, stop };
 	} catch (error) {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		throw error;
