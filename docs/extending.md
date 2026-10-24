@@ -1130,6 +1130,13 @@ on, the shared secret is required for that reason.
 System-level extensions need none of the per-user APIs below: they run as
 trusted code inside sigrun and use the system stores documented above.
 
+For kernel-suite provenance, `/proc` and ptrace denials are compared with
+the same operation outside a jail. When the outside operation also fails
+(for example under Yama), CI labels the case Yama/host-policy satisfied and
+not Landlock-discriminating. Successful `osUser` switching and the uid-switch
+discrimination need a privileged runner with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`; otherwise they skip with a named reason.
+
 The following are the **per-user extension surface covered by the M2
 workstream**, not APIs shipped by M1:
 

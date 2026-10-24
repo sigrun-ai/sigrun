@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isolation, with a hard ABI 6+ CI gate and explicit local skip reasons.
   Documented the isolation boundary, trusted-extension and resource limits,
   kernel requirements, OS-account setup, and proxy trust posture.
+  The suite also covers abstract sockets, ptrace, worker lifecycle, IPC
+  descriptors, and privileged-runner osUser switching; outside-jail controls
+  distinguish Landlock denials from Yama or missing-capability conditions.
 
 ## [0.1.6] - 2026-10-24
 ### Added
