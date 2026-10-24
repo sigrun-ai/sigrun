@@ -38,11 +38,13 @@ export function AccountLinksSection(props: { readonly client: SigrunClient }) {
 		}
 	}
 
-	if (error !== null) return <p className="settings-note" role="alert">{error}</p>;
-	if (accounts === null) return <p className="settings-note">loading account links…</p>;
+	if (accounts === null) {
+		return <p className="settings-note" role={error === null ? undefined : "alert"}>{error ?? "loading account links…"}</p>;
+	}
 	return (
 		<div className="settings-body" data-settings-section="accounts">
 			<p className="settings-note">External identities linked to your sigrun account.</p>
+			{error !== null && <p className="settings-note" role="alert">{error}</p>}
 			{accounts.length === 0 && <p className="settings-note">No account links.</p>}
 			{accounts.map((account) => (
 				<div className="settings-ext-row" key={`${account.provider}\u0000${account.subject}`}>

@@ -1,10 +1,10 @@
 import { act } from "react";
 import { describe, expect, test } from "vitest";
-import { createClient, type FetchLike } from "../api";
+import { ApiError, createClient, type FetchLike } from "../api";
 import { renderAsync, textContent } from "../test-utils";
 import { AccountLinksSection } from "./AccountLinksSection";
 
-function makeHarness() {
+function makeHarness(options?: { readonly removeFails?: boolean }) {
 	const calls: { input: string; method?: string; body?: string | Uint8Array }[] = [];
 	let accounts = [{
 		provider: "login:oauth:github",
@@ -22,6 +22,9 @@ function makeHarness() {
 			{ provider: "login:oauth:corp", label: "Example SSO" },
 		] };
 		else if (input.startsWith("/v1/auth/accounts?provider=")) {
+			if (options?.removeFails === true) {
+				return Promise.reject(new ApiError({ method: "DELETE", path: "/v1/auth/accounts", status: 403, error: "forbidden" }));
+			}
 			accounts = [];
 			return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve(undefined), text: () => Promise.resolve("") });
 		} else throw new Error(`unexpected fetch ${init?.method ?? "GET"} ${input}`);
@@ -48,5 +51,18 @@ describe("AccountLinksSection", () => {
 		expect(removal?.input).toBe("/v1/auth/accounts?provider=login%3Aoauth%3Agithub&subject=subject%2F123%2Btest%40example.invalid");
 		expect(harness.accounts()).toEqual([]);
 		expect(renderer.root.findAllByProps({ className: "account-remove" })).toHaveLength(0);
+	});
+
+	test("a failed removal preserves the link and Connect controls and shows the error inline", async () => {
+		const harness = makeHarness({ removeFails: true });
+		const renderer = await renderAsync(<AccountLinksSection client={harness.client} />);
+		await act(async () => {
+			await renderer.root.findByProps({ className: "account-remove" }).props.onClick();
+		});
+		expect(renderer.root.findByProps({ role: "alert" }).props.children).toBe("forbidden");
+		expect(textContent(renderer.toJSON())).toContain("subject/123+test@example.invalid");
+		expect(renderer.root.findAllByProps({ className: "account-remove" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ className: "account-connect" })).toHaveLength(2);
+		expect(harness.accounts()).toHaveLength(1);
 	});
 });
