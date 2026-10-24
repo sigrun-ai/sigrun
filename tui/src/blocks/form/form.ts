@@ -262,7 +262,10 @@ export class FormComponent implements Component {
 				name: this.#block.onSubmit ?? "submit",
 				...(this.#block.turn === undefined ? {} : { turn: this.#block.turn }),
 			},
-			{ values: { ...this.#values } },
+			// The optimistic-concurrency rev rides every submit (the
+			// surface-state rev this render is based on; a save-shaped
+			// action handler reads it, every other handler ignores it).
+			{ values: { ...this.#values }, rev: this.#ctx.rev ?? 0 },
 		);
 		return true;
 	}

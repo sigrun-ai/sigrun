@@ -56,6 +56,7 @@ export class SurfaceView implements Component {
 			locale: this.#locale,
 			access: view.access === "write" ? "write" : "read",
 			unicode: this.#unicode,
+			rev: view.rev,
 			dispatch: (action, payload) => this.#surface.dispatch(action, payload),
 			view: { values: this.#surface.viewValues },
 			setView: (path, value) => this.#surface.setView(path, value),

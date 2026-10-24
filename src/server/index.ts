@@ -60,6 +60,7 @@ import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerSettingsSectionsRoutes } from "./routes/settings-sections.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
@@ -68,6 +69,7 @@ import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
 import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
+import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -240,6 +242,28 @@ export async function createServer(
 			),
 		})),
 	);
+	// The core settings sections (U4 Task 4, spec §13.4): the same
+	// renderer under the reserved `core` slug — core and extensions run
+	// ONE code path. The core saves write the core SettingsStore (dotted
+	// names land at their nested paths, apply-typed), not the extension
+	// settings dir.
+	surfacesService.attachSettingsSurfaces([
+		{
+			extension: "core",
+			defs: CORE_SETTINGS_SECTIONS.map((section) =>
+				settingsSurfaceFor("core", section, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+					core: {
+						settings: opened.settings,
+						bootSnapshot: opened.settingsBootSnapshot,
+						env,
+					},
+				}),
+			),
+		},
+	]);
 	app.decorate("surfaces", surfacesService);
 	const ctx: ServerContext = {
 		opened,
@@ -297,6 +321,7 @@ export async function createServer(
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
+	registerSettingsSectionsRoutes(app, ctx);
 	registerExtensionSettingsRoutes(app, ctx);
 	// The extension HTTP routes (W5 Task 2, spec §9.2): every collected
 	// `routes` contribution mounted at `/v1/ext/<slug>/<path>` behind the

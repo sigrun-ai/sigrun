@@ -116,6 +116,12 @@ export interface SurfaceState {
 	/** Confirmed data with the overlay applied — what blocks render. */
 	readonly view: JsonObject;
 	readonly access: "read" | "write";
+	/**
+	 * The surface's current data revision (the optimistic-concurrency
+	 * token, UI-blocks U4 Task 4): a submit-mode form's dispatch carries
+	 * it as the payload's `rev` (a save-shaped handler's stale check).
+	 */
+	readonly rev: number;
 	dispatch(action: Action, payload: JsonValue): void;
 	/** Write the `/view/` branch (spec §6.2): the channel-owned
 	 *  view-only state sibling blocks read via `/view/...` bindings. */
@@ -561,6 +567,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 		tree: snapshot.tree,
 		view,
 		access: snapshot.access === "write" ? "write" : "read",
+		rev: snapshot.rev,
 		dispatch,
 		setView,
 		retry: (): void => {
