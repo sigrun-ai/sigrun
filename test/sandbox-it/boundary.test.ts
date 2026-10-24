@@ -242,7 +242,7 @@ function recordControl(caseName: string, control: OutsideControl, outsideOperati
 	// Only the operation's own access-denied phase can be a host-policy
 	// control. A successful attach followed by WAIT/DETACH failure is a
 	// broken test, never evidence that Yama denied the attach.
-	if (control.errno !== "EPERM" && control.errno !== "EACCES") {
+	if (control.phase !== "ATTACH" || (control.errno !== "EPERM" && control.errno !== "EACCES")) {
 		throw new Error(`outside-jail control failed in ${control.phase} for ${caseName}: ${control.output}`);
 	}
 	console.warn(`sandbox-it control: ${caseName} is Yama/host-policy-satisfied and NOT Landlock-discriminating; outside-jail ${outsideOperation} denied (${control.output.trim()})`);
@@ -328,7 +328,7 @@ describeKernel("real tools in real two-user conversations", () => {
 
 	test("abstract Unix sockets outside the jail cannot be connected", async () => {
 		expect(native.available, native.reason).toBe(true);
-		const control = await outsideProbe(["socket", abstractName]);
+		const control = await outsideProbe(["abstract-connect", abstractName]);
 		expect(control.allowed, control.output).toBe(true);
 		expect(control.output).toContain("ABSTRACT_CONNECT_OK");
 		const denied = await bob.bash(directCommand(probeCommand("abstract-connect", abstractName)));
