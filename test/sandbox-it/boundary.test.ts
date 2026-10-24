@@ -104,6 +104,7 @@ beforeAll(async () => {
 	const serverIdentity = await readFile(`/proc/${deployment.pid}/environ`);
 	expect(serverIdentity.toString()).toContain("SIGRUN_BOUNDARY_SERVER_IDENTITY=sigrun-real-server");
 	expect(serverIdentity.toString()).toContain("SIGRUN_BOUNDARY_IT=1");
+	expect(deployment.pid).not.toBe(deployment.wrapperPid);
 	native = await buildNativeProbes(root);
 	privileged = await privilegedHelper(root);
 	coreEnv = await plantCoreEnv();
