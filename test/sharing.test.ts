@@ -26,8 +26,9 @@
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -243,6 +244,76 @@ describe("accessOf rule order", () => {
 			expected: "none",
 		},
 		{
+			name: "people group membership grants the shared level",
+			principal: { user: "dave", groups: ["family"] },
+			resource: {
+				owner: "bob",
+				sharing: {
+					scope: "people",
+					users: [],
+					groups: ["family"],
+					level: "read",
+				},
+			},
+			expected: "read",
+		},
+		{
+			name: "people outside every group are hidden",
+			principal: { user: "carol", groups: ["friends"] },
+			resource: {
+				owner: "bob",
+				sharing: {
+					scope: "people",
+					users: [],
+					groups: ["family"],
+					level: "read",
+				},
+			},
+			expected: "none",
+		},
+		{
+			name: "people with both users and groups matches a listed user",
+			principal: { user: "dave" },
+			resource: {
+				owner: "bob",
+				sharing: {
+					scope: "people",
+					users: ["dave"],
+					groups: ["family"],
+					level: "write",
+				},
+			},
+			expected: "write",
+		},
+		{
+			name: "people with both users and groups matches a member group",
+			principal: { user: "carol", groups: ["family"] },
+			resource: {
+				owner: "bob",
+				sharing: {
+					scope: "people",
+					users: ["dave"],
+					groups: ["family"],
+					level: "write",
+				},
+			},
+			expected: "write",
+		},
+		{
+			name: "anonymous groups never widen people sharing",
+			principal: { groups: ["family"] },
+			resource: {
+				owner: "bob",
+				sharing: {
+					scope: "people",
+					users: [],
+					groups: ["family"],
+					level: "write",
+				},
+			},
+			expected: "none",
+		},
+		{
 			name: "superuser writes anything",
 			principal: { user: "carol", superuser: true },
 			resource: { owner: "bob" },
@@ -270,6 +341,30 @@ describe("accessOf rule order", () => {
 		expect(
 			isSharing({ scope: "people", users: ["dave"], level: "write" }),
 		).toBe(true);
+		expect(
+			isSharing({
+				scope: "people",
+				users: [],
+				groups: ["family"],
+				level: "read",
+			}),
+		).toBe(true);
+		expect(
+			isSharing({
+				scope: "people",
+				users: [],
+				groups: "family",
+				level: "read",
+			}),
+		).toBe(false);
+		expect(
+			isSharing({
+				scope: "people",
+				users: [],
+				groups: ["family", 42],
+				level: "read",
+			}),
+		).toBe(false);
 		expect(isSharing({ scope: "household", level: "admin" })).toBe(false);
 		expect(isSharing({ scope: "people", users: [42], level: "read" })).toBe(
 			false,
@@ -277,6 +372,27 @@ describe("accessOf rule order", () => {
 		expect(isSharing({ scope: "everyone" })).toBe(false);
 		expect(isSharing("household")).toBe(false);
 		expect(isSharing(null)).toBe(false);
+	});
+});
+
+describe("AccessPrincipal projection", () => {
+	test("superuser projection is centralized in access-principal.ts", () => {
+		const root = join(__dirname, "..", "src");
+		const offenders: string[] = [];
+		const walk = (dir: string): void => {
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const path = join(dir, entry.name);
+				if (entry.isDirectory()) walk(path);
+				else if (
+					entry.name.endsWith(".ts") &&
+					readFileSync(path, "utf8").includes("superuser: isSuperuser(")
+				) {
+					offenders.push(relative(root, path));
+				}
+			}
+		};
+		walk(root);
+		expect(offenders).toEqual([join("server", "auth", "access-principal.ts")]);
 	});
 });
 

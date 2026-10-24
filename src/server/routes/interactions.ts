@@ -52,7 +52,8 @@ import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";
 import { ID_PARAMS_SCHEMA, conversationId } from "../helpers.js";
 import { accessOf } from "@sigrun/shared/access";
-import { isSuperuser, type Principal } from "../auth/principal.js";
+import type { Principal } from "../auth/principal.js";
+import { accessPrincipalOf } from "../auth/access-principal.js";
 import { SessionMetaDoc } from "../session-meta.js";
 import type {
 	AmbientList,
@@ -94,7 +95,7 @@ async function visibleTo(
 	);
 	return (
 		accessOf(
-			{ user: principal.user, superuser: isSuperuser(principal) },
+			accessPrincipalOf(principal, ctx.opened.identity.users),
 			meta ?? {},
 		) !== "none"
 	);

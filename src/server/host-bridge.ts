@@ -18,16 +18,14 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
-import {
-	accessOf as accessOfShared,
-	type AccessPrincipal,
-} from "@sigrun/shared/access";
+import { accessOf as accessOfShared } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
 import { effectiveAdmin } from "../harness/identity/groups.js";
 import { userWire } from "./routes/users.js";
 import type { DataOps } from "@sigrun/shared/blocks";
-import { isSuperuser, type Principal } from "./auth/principal.js";
+import type { Principal } from "./auth/principal.js";
+import { accessPrincipalOf } from "./auth/access-principal.js";
 import {
 	abortOp,
 	compactOp,
@@ -277,12 +275,12 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				// server's routes use (naive-loopback or service — a
 				// directory admin is not a superuser for accessOf); the bare
 				// `{user}` shape is the shared rule's own principal.
-				const resolved: AccessPrincipal =
+				const resolved =
 					"admin" in principal
-						? {
-								user: principal.user,
-								superuser: isSuperuser(principal as Principal),
-							}
+						? accessPrincipalOf(
+								principal as Principal,
+								opened.identity.users,
+							)
 						: { user: principal.user };
 				return accessOfShared(resolved, resource);
 			},
