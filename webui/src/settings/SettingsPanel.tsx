@@ -45,6 +45,7 @@ import type {
 import { createExtTransport } from "../blocks/extTransport";
 import { SurfaceView } from "../blocks/SurfaceView";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
+import { AccountLinksSection } from "./AccountLinksSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { type PrefKey, type PrefsState } from "./usePrefs";
 
@@ -96,11 +97,13 @@ export function SettingsPanel(props: {
 	 * makes every caller admin.
 	 */
 	readonly admin?: boolean;
+	/** Optional deep-linked core section id (the account-link return target). */
+	readonly initialSection?: string;
 	/** The App's restart action (§13.3) — the callout's Restart button. */
 	readonly onRestart?: () => Promise<void>;
 	readonly onClose: () => void;
 }): React.ReactElement {
-	const { client, onClose, prefsState, theme, admin, onRestart } = props;
+	const { client, onClose, prefsState, theme, admin, onRestart, initialSection } = props;
 	const [load, setLoad] = useState<SectionsLoad>({ status: "loading" });
 	// The /v1/meta snapshot (the version line in General): fetched once
 	// per open; a failure leaves the line absent, never blocks settings.
@@ -138,11 +141,13 @@ export function SettingsPanel(props: {
 					sections: response.sections,
 					index: response.index,
 				});
-				const general = response.sections.find(
+				const initial = response.sections.find(
+					(section) => section.slug === "core" && section.id === (initialSection ?? "general"),
+				) ?? response.sections.find(
 					(section) => section.slug === "core" && section.id === "general",
 				);
-				if (general !== undefined) {
-					setOpen({ kind: "section", entry: general });
+				if (initial !== undefined) {
+					setOpen({ kind: "section", entry: initial });
 				}
 			})
 			.catch((error: unknown) => {
@@ -155,7 +160,7 @@ export function SettingsPanel(props: {
 		return () => {
 			cancelled = true;
 		};
-	}, [client]);
+	}, [client, initialSection]);
 
 	const results = useMemo(
 		() => (load.status === "ready" ? filterSettingsIndex(load.index, query) : []),
@@ -370,6 +375,9 @@ function SettingsSectionBody(props: {
 	}
 	if (entry.slug === "core" && entry.id === "extensions") {
 		return <ExtensionsCove client={client} />;
+	}
+	if (entry.slug === "core" && entry.id === "accounts") {
+		return <AccountLinksSection client={client} />;
 	}
 	return (
 		<SettingsSurfaceBody

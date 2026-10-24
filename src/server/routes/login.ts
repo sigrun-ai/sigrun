@@ -60,7 +60,9 @@ function browserError(
 	reply: FastifyReply,
 	statusCode: number,
 	error: string,
+	asJson = false,
 ): FastifyReply {
+	if (asJson) return reply.code(statusCode).send({ error });
 	return reply.code(statusCode).header("location", `/login?error=${encodeURIComponent(error)}`).send();
 }
 
@@ -223,8 +225,11 @@ export function registerLoginRoutes(
 		if (typeof record.key !== "string" || typeof record.code !== "string") {
 			return await reply.code(400).send({ error: "invalid_body" });
 		}
+		// The webui client requests JSON so fetch never follows a redirect
+		// into an HTML document. Existing form callers keep the 302 contract.
+		const asJson = request.headers.accept?.includes("application/json") === true;
 		const pending = flows.takePending(record.key);
-		if (pending === undefined) return browserError(reply, 400, "login_expired");
+		if (pending === undefined) return browserError(reply, 400, "login_expired", asJson);
 		const outcome = await resolveLogin({
 			provider: pending.provider,
 			result: pending.result,
@@ -240,7 +245,7 @@ export function registerLoginRoutes(
 		});
 		if (outcome.kind === "needs_code") {
 			flows.restorePending(record.key, pending);
-			return browserError(reply, 403, "invalid_code");
+			return browserError(reply, 403, "invalid_code", asJson);
 		}
 		return await sendLoginResolution(outcome, {
 			provider: pending.provider,
@@ -248,6 +253,7 @@ export function registerLoginRoutes(
 			request,
 			reply,
 			ctx,
+			asJson,
 		});
 	});
 }

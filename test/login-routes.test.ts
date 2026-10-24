@@ -270,6 +270,15 @@ describe("login provider routes", () => {
 		});
 		expect(opened.identity.accounts.lookup("login:fixture-login:fixture", "subject-123")?.user).toBe("fixture-user");
 		expect(opened.identity.users.get("fixture-user")?.groups?.[0]?.values).toEqual(["family"]);
+
+		const resumedJson = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			headers: { accept: "application/json" },
+			payload: { key, code: "wrong" },
+		});
+		expect(resumedJson.statusCode).toBe(400);
+		expect(resumedJson.json()).toEqual({ error: "login_expired" });
 		const replay = await app.inject({
 			method: "POST",
 			url: "/v1/auth/login/code",
@@ -277,6 +286,28 @@ describe("login provider routes", () => {
 		});
 		expect(replay.statusCode).toBe(400);
 		expect(replay.headers.location).toBe("/login?error=login_expired");
+	});
+
+	test("a JSON code response returns the local target and sets the session cookie", async () => {
+		const { app, opened } = await bootServer();
+		const invite = await opened.identity.invites.create({ admin: false });
+		const started = await begin(app, "?return=/settings%3Fsection%3Daccounts");
+		const callback = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+			headers: { cookie: started.cookie },
+		});
+		const key = new URL(callback.headers.location as string, "https://sigrun.example.invalid").searchParams.get("key");
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			headers: { accept: "application/json" },
+			payload: { key, code: invite.code },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toEqual({ returnTo: "/settings?section=accounts" });
+		expect(response.headers.location).toBeUndefined();
+		expect(response.headers["set-cookie"]).toContain("sigrun_session=sgr_");
 	});
 
 	test("an unclaimed setup-code claim retries a wrong code and clears the code only after success", async () => {

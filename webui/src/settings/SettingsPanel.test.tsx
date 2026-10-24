@@ -55,6 +55,7 @@ const SECTIONS = [
 	{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
 	{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
 	{ slug: "core", id: "extensions", title: "Extensions", icon: "add" },
+	{ slug: "core", id: "accounts", title: "Account links", icon: "key" },
 ] as const;
 
 const INDEX: readonly SettingsSectionIndexEntryWire[] = [
@@ -200,6 +201,10 @@ function makeHarness(init?: {
 			secretState.set(slug, keys);
 			body = { secrets: keys };
 		} else if (input === "/v1/providers") {
+			body = { providers: [] };
+		} else if (input === "/v1/auth/accounts") {
+			body = { accounts: [] };
+		} else if (input === "/v1/auth/providers") {
 			body = { providers: [] };
 		} else {
 			throw new Error(`unexpected fetch ${init2?.method ?? "GET"} ${input}`);
@@ -357,6 +362,7 @@ describe("SettingsPanel", () => {
 			"Advanced",
 			"Providers",
 			"Extensions",
+			"Account links",
 		]);
 		// The General surface mounted (its SurfaceView renders the form).
 		expect(
@@ -449,6 +455,17 @@ describe("SettingsPanel", () => {
 				className: "settings-restart",
 			}),
 		).toHaveLength(0);
+	});
+
+	test("Account links is a core cove available to a signed-in non-admin", async () => {
+		const { client } = makeHarness();
+		const { renderer } = await renderPanelWithPrefs(client, { admin: false });
+		const navItems = renderer.root
+			.findAllByType("button")
+			.filter((node) => node.props.className === "settings-nav-item");
+		expect(navItems.map((node) => node.props.children)).toContain("Account links");
+		await openSection(renderer, "Account links");
+		expect(renderer.root.findAllByProps({ "data-settings-section": "accounts" })).toHaveLength(1);
 	});
 
 	test("the Interface cove applies prefs and theme picks live", async () => {

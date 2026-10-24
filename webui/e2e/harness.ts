@@ -76,7 +76,7 @@ export interface E2EServerOptions {
 	 * onboards through the real claim route. The default boot stays the
 	 * naive workstation posture (`SIGRUN_AUTH=none` + a claimed admin).
 	 */
-	readonly auth?: { readonly setupCode: string };
+	readonly auth?: { readonly setupCode: string } | { readonly claimed: true };
 	/** U1 Task 6: boot the server with `SIGRUN_DEV=true` (the gallery's
 	 *  rail gate reads `/v1/meta`'s `dev`). */
 	readonly dev?: boolean;
@@ -87,6 +87,7 @@ export interface E2EServerOptions {
 	 * this hermetic boot).
 	 */
 	readonly extensionSpecifiers?: readonly string[];
+	readonly builtins?: boolean;
 }
 
 export interface E2EServer {
@@ -190,15 +191,18 @@ async function bootOnDir(
 		// (Task 8) is the one deliberate exception: unclaimed, with the
 		// pinned setup code the browser's onboarding screen presents.
 		identity:
-			options.auth === undefined
+			options.auth === undefined || "claimed" in options.auth
 				? await seededIdentity(dir)
 				: await unclaimedIdentity(dir),
 		extensions: [contributor],
 		env:
-			options.auth === undefined
+			options.auth === undefined || "claimed" in options.auth
 				? {}
 				: { SIGRUN_SETUP_CODE: options.auth.setupCode },
 		settingsDir,
+		// The login e2e auto-provisions a second user: admission requires
+		// an available isolation probe, as in the in-process login tests.
+		isolationProbe: async () => ({ available: true, abi: 6 }),
 		...(options.extensionSpecifiers === undefined
 			? {}
 			: { extensionSpecifiers: options.extensionSpecifiers }),
@@ -213,6 +217,11 @@ async function bootOnDir(
 		builtins: options.builtins === true,
 	});
 	const app = await createServer(opened, config);
+	// Browser-login fixture: a loopback destination for the provider's
+	// synthetic .invalid URL (the spec continues the request here).
+	app.get("/fixture-idp", async (_request, reply) => {
+		await reply.type("text/html").send("<html><body>fixture identity</body></html>");
+	});
 	let closed = false;
 	let ownsDir = true;
 	// Close the listener + harness WITHOUT removing the tmpdir (the restart
