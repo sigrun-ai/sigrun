@@ -35,9 +35,10 @@ import {
 	InteractionsIndexDoc,
 	applyAnswer,
 	asInteractionRecord,
-	asStoredInteractionRecord,
 	indexPending,
 	indexSettled,
+	sweepSecretDelivery,
+	takeSecretDelivery,
 	validateInteraction,
 	type InteractionAnswer,
 	type InteractionRecord,
@@ -305,13 +306,15 @@ export function createSeamHost(
 				if (draft.status !== "pending") return false;
 				// Gateway C5: a host caller naming a user answers AS that human
 				// (the route's path — the same applyAnswer line); without a user
-				// the extension answered itself.
+				// the extension answered itself. The conversationId rides the opts
+				// so applyAnswer can record a secret delivery (Review Focus 4).
 				const applied = applyAnswer(
 					draft,
 					answer,
 					opts?.user === undefined ? "extension" : "human",
 					Date.now(),
 					opts?.user,
+					{ conversationId },
 				);
 				if (applied) {
 					const index = await tx.doc(InteractionsIndexDoc);
@@ -323,6 +326,11 @@ export function createSeamHost(
 
 		async settleInteraction(conversationId, callId, status, context) {
 			const h = await harness(context);
+			// Review Focus 4: sweep the unread secret delivery FIRST — a
+			// settle call is the extension saying it is done with the record,
+			// so a delivery it never read (an answered record, a pending one
+			// raced to expiry) must not linger in the table.
+			sweepSecretDelivery(conversationId, callId);
 			return await h.commit(async (tx) => {
 				const draft = await tx.doc(
 					InteractionDoc,
@@ -331,6 +339,8 @@ export function createSeamHost(
 					callId,
 				);
 				if (draft.status !== "pending") return false;
+				// SAFETY: the tracked-draft write pattern mutates through a
+				// structural record view; every key exists by construction.
 				const mutable = draft as unknown as Record<string, unknown>;
 				mutable.status = status;
 				mutable.settledAt = Date.now();
@@ -348,9 +358,20 @@ export function createSeamHost(
 				callId,
 				context,
 			);
-			return stored === undefined
-				? undefined
-				: asInteractionRecord(stored);
+			if (stored === undefined) return undefined;
+			const record = asInteractionRecord(stored);
+			// Review Focus 4 (the extension-only read): a secret delivery for
+			// this record merges its TRUE values back ONCE — the take is
+			// one-shot, so a second read sees the stored MASK. HTTP GETs never
+			// come through here (they serve the stored record verbatim).
+			const delivery = takeSecretDelivery(conversationId, callId);
+			if (delivery === undefined || record.answer === undefined) {
+				return record;
+			}
+			return {
+				...record,
+				answer: { values: delivery.values },
+			};
 		},
 
 		async setAmbient(conversationId, record, context) {

@@ -7,10 +7,24 @@
  * kind and one ambient key, and its `emit_interaction` tool seeds a real
  * interaction record through the seam; `set_ambient` writes an ambient
  * surface. Both tools return the seam's outcome so tests can assert.
+ *
+ * UI-blocks U6 Task 2: every record this fixture writes is a BLOCK TREE
+ * (spec §9.1/§9.2 — legacy `text`/`options`/`fields`/`line`/`rows` bodies
+ * are gone, ruling 16). The fixture owns its tree literals (tests own
+ * their literals; the host-side builders in `@sigrun/sigrun/blocks` are
+ * for EXTENSION authors — a fixture under the test runner resolves the
+ * host package unreliably under parallel vitest workers, so literals keep
+ * the fixture load deterministic; `BLOCK_SET_VERSION` comes from the
+ * workspace-linked shared leaf, stable in every worker):
+ *   - the interaction body is a root `form` with a `choice` (tones are
+ *     the block tones: `good`, never the legacy `ok`);
+ *   - the ambient body is a one-line `markdown` (place: status) or a
+ *     `collection(list)` (place: panel).
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
+import { BLOCK_SET_VERSION } from "@sigrun/shared/blocks";
 
 /**
  * @param host {{ seedInteraction: Function, answerInteraction: Function,
@@ -43,13 +57,29 @@ export default function createSeamFixture(host) {
 					callId,
 					status: "pending",
 					createdAt: Date.now(),
+					// Spec §9.1 mapping: `text` → `markdown`, `options[]` → a
+					// `choice` field; tone `ok` → `good` (the tone renames).
 					body: {
-						text: args.prompt,
-						options: args.options.map((label, i) => ({
-							id: `opt-${i}`,
-							label,
-							tone: i === 0 ? "ok" : "neutral",
-						})),
+						v: BLOCK_SET_VERSION,
+						root: {
+							type: "form",
+							id: "ask",
+							bind: "/values",
+							mode: "submit",
+							children: [
+								{ type: "markdown", text: args.prompt },
+								{
+									type: "choice",
+									name: "decision",
+									label: args.prompt,
+									options: args.options.map((label, i) => ({
+										id: `opt-${i}`,
+										label,
+										tone: i === 0 ? "good" : "neutral",
+									})),
+								},
+							],
+						},
 					},
 				},
 				context,
@@ -67,10 +97,12 @@ export default function createSeamFixture(host) {
 			choice: Type.String({ description: "Chosen option id." }),
 		}),
 		async execute(args, api, context) {
+			// Ruling 20: the answer is {values} — the chosen option under
+			// the choice field's name.
 			const applied = await host.answerInteraction(
 				api.conversationId,
 				args.callId,
-				{ ids: [args.choice] },
+				{ values: { decision: args.choice } },
 				context,
 			);
 			return { applied };
@@ -86,33 +118,41 @@ export default function createSeamFixture(host) {
 			total: Type.Optional(Type.Number({ description: "Total count." })),
 		}),
 		async execute(args, api, context) {
+			// Progress numbers present → a panel collection (spec §9.2's
+			// mapping for `rows[]`; the item template binds the row slots);
+			// otherwise a one-line status markdown (the `line {text}` mapping).
+			const progress =
+				args.done !== undefined && args.total !== undefined
+					? { done: args.done, total: args.total }
+					: undefined;
+			const body =
+				progress === undefined
+					? { v: BLOCK_SET_VERSION, root: { type: "markdown", text: args.text } }
+					: {
+							v: BLOCK_SET_VERSION,
+							root: {
+								type: "collection",
+								id: "progress",
+								items: "/rows",
+								display: "list",
+								item: {
+									type: "card",
+									title: "./label",
+									status: { label: "./status", spinner: "./running" },
+									metrics: [
+										{ label: "steps", value: "./completed" },
+										{ label: "of", value: "./total" },
+									],
+								},
+							},
+						};
 			await host.setAmbient(
 				api.conversationId,
 				{
 					key: "fixture.panel",
-					place: "status",
-					body: {
-						line: {
-							text: args.text,
-							segments: [{ id: "main", text: args.text, place: "left" }],
-						},
-						...(args.done !== undefined && args.total !== undefined
-							? {
-									rows: [
-										{
-											id: "progress",
-											label: "steps",
-											status: "running",
-											metrics: {
-												completed: args.done,
-												total: args.total,
-												format: "compact",
-											},
-										},
-									],
-								}
-							: {}),
-					},
+					place: progress === undefined ? "status" : "panel",
+					maxRows: progress === undefined ? undefined : 5,
+					body,
 				},
 				context,
 			);
@@ -131,7 +171,6 @@ export default function createSeamFixture(host) {
 	});
 
 	return {
-		// The kinds declarations the loader validates and /v1/meta inventories.
 		interactionKinds: ["fixture.ask"],
 		ambientKinds: ["fixture.panel"],
 		extension: defineExtension({

@@ -48,7 +48,8 @@ import {
 	applyAnswer,
 	asInteractionRecord,
 	indexSettled,
-	type InteractionAnswer,
+	maskedAnswerValues,
+	sweepSecretDelivery,
 	type InteractionRecord,
 } from "../../harness/interactions.js";
 import { loadConversation } from "../conversation-handler.js";
@@ -206,6 +207,37 @@ export function registerInteractionRoutes(
 		},
 	);
 
+	// The single-record read (U6 Task 2): ANY status — the channel's
+	// refetch path (Review Focus 1's “a GET returns the winning answer”;
+	// Review Focus 2's expired refetch; the transport `load`). The SAME
+	// §5.9 visibility half as the list (hidden → the indistinguishable
+	// 404), applied in-handler by the polling convention. The record rides
+	// as-is (envelope + body + details) — the stored answer carries only
+	// the SECRET_MASK for secret fields (never the values).
+	app.get(
+		"/v1/conversations/:id/interactions/:callId",
+		{
+			schema: { params: ANSWER_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx, "write"),
+		},
+		async (request, reply): Promise<InteractionRecord> => {
+			const { callId } = request.params as { callId: string };
+			const conversation = request.conversation;
+			const record = await opened.harness.snapshot(
+				InteractionDoc,
+				conversation.id,
+				callId,
+				BACKGROUND_CONTEXT,
+			);
+			// Unknown callId (an empty doc materializes with kind "") is the
+			// same 404 as the answer route's.
+			if (record === undefined || record.kind === "") {
+				return await reply.code(404).send({ error: "no_such_interaction" });
+			}
+			return asInteractionRecord(record);
+		},
+	);
+
 	// The ONE generic answer route: writes `answer` into the envelope with
 	// first-answer-wins inside the commit. 404 for unknown/not-pending;
 	// 400 for a malformed answer. `by` is "human" (the only v1 caller).
@@ -238,25 +270,35 @@ export function registerInteractionRoutes(
 				);
 				// Unknown callId: the doc materializes empty — detect via kind
 				// never having been seeded (an empty seed has kind "").
-				if (draft.kind === "") return { found: false } as const;
+				if (draft.kind === "") {
+					sweepSecretDelivery(conversation.id, callId);
+					return { found: false } as const;
+				}
+				// Review Focus 4: project the STORED (masked) answer for the
+				// response BEFORE the mutation — reading the tree is safe (the
+				// body is never mutated), and re-reading a mutated nested field
+				// after the write trips chord's settled-overlay check.
+				const stored = maskedAnswerValues(draft.body, answer);
 				const applied = applyAnswer(
 					draft,
 					answer,
 					"human",
 					Date.now(),
 					request.principal.user,
+					{ conversationId: conversation.id },
 				);
-				if (!applied) return { found: true, applied: false } as const;
-				// NEVER re-read a mutated draft field (even before the next
-				// await): reading a newly-set nested value off the tracked
-				// draft trips chord's settled-overlay check. The response
-				// projects the INPUT answer — identical to what was written.
+				if (!applied) {
+					// A loser of the first-answer-wins race: its (possibly secret)
+				// payload never delivered — sweep so it cannot linger.
+					sweepSecretDelivery(conversation.id, callId);
+					return { found: true, applied: false } as const;
+				}
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexSettled(index, conversation.id, callId);
 				return {
 					found: true,
 					applied: true,
-					answer,
+					answer: stored,
 				} as const;
 			}, BACKGROUND_CONTEXT);
 			if (!committed.found) {

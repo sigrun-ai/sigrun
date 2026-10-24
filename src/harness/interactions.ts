@@ -274,9 +274,100 @@ function isJsonValue(value: unknown): boolean {
 }
 
 /**
+ * The literal that replaces a `secret` field's value in every STORED answer
+ * (Review Focus 4, U6 Task 2): the stored record, every HTTP read, and the
+ * wire only ever carry this marker. The extension receives the true value
+ * exactly once, transiently, through the host-side read (the delivery
+ * table below).
+ */
+export const SECRET_MASK = "[secret]";
+
+/**
+ * The transient full-answer delivery table (supervisor ruling, U6 Task 2):
+ * in-memory, runtime-owned, keyed (conversationId, callId). A `secret`
+ * field's value never lands in the stored record — the answer commit
+ * writes the MASK into the record and records the TRUE answer here, and
+ * the extension-only read path (`host.snapshotInteraction`) merges the true
+ * values back once, then deletes the entry (one-shot delivery; the
+ * extension is expected to persist the secret in its own scoped stores).
+ * The table is deliberately NOT durable: a crash between the answer commit
+ * and the extension's poll loses the value and the human re-answers — the
+ * safe failure mode (a raw secret must never survive a restart in the DB).
+ */
+class SecretDeliveries {
+	/** conversationId|callId → the true answer, waiting for one read. */
+	readonly #pending = new Map<string, InteractionAnswer>();
+
+	/** Record the true answer for one settled interaction (answer path). */
+	record(
+		conversationId: ConversationId,
+		callId: string,
+		answer: InteractionAnswer,
+	): void {
+		this.#pending.set(`${String(conversationId)}|${callId}`, answer);
+	}
+
+	/**
+	 * Take the delivery once, if present: the true answer, then delete.
+	 * Returns `undefined` when nothing was recorded (no secret, or already
+	 * delivered, or swept).
+	 */
+	take(
+		conversationId: ConversationId,
+		callId: string,
+	): InteractionAnswer | undefined {
+		const key = `${String(conversationId)}|${callId}`;
+		const answer = this.#pending.get(key);
+		if (answer !== undefined) this.#pending.delete(key);
+		return answer;
+	}
+
+	/** Drop the entry without reading it (settle/expiry sweep — no leak). */
+	sweep(conversationId: ConversationId, callId: string): void {
+		this.#pending.delete(`${String(conversationId)}|${callId}`);
+	}
+}
+
+/** The session-singleton delivery table (one per boot). */
+const secretDeliveries = new SecretDeliveries();
+
+/**
+ * The names of the `secret` fields in an interaction's form tree: every
+ * `field` node with `type: "secret"`, from the root form and its sections.
+ * Used by the answer path to strip values before they land in the record.
+ */
+function secretFieldNames(body: unknown): ReadonlySet<string> {
+	const names = new Set<string>();
+	if (typeof body !== "object" || body === null) return names;
+	const root = (body as { root?: unknown }).root;
+	if (typeof root !== "object" || root === null) return names;
+	const walk = (nodes: readonly unknown[] | undefined): void => {
+		if (!Array.isArray(nodes)) return;
+		for (const node of nodes) {
+			if (typeof node !== "object" || node === null) continue;
+			const field = node as { type?: unknown; name?: unknown; children?: unknown };
+			if (field.type === "secret" && typeof field.name === "string") {
+				names.add(field.name);
+			} else if (field.type === "section") {
+				walk(field.children as readonly unknown[] | undefined);
+			}
+		}
+	};
+	walk((root as { children?: unknown }).children as readonly unknown[] | undefined);
+	return names;
+}
+
+/**
  * The committed answer for one record, or `undefined` when the record was
  * already terminal (first-answer-wins: the caller must NOT overwrite).
  * The draft is mutated in place — this runs inside the caller's commit.
+ *
+ * Review Focus 4: when the interaction's form carries `secret` fields, the
+ * stored answer's values for those names are replaced by
+ * {@link SECRET_MASK} and the TRUE answer is recorded in the delivery
+ * table for the extension's one-shot read (`opts.conversationId` — the
+ * table is keyed (conversation, callId), and only the caller knows the
+ * conversation; omitting it skips the delivery).
  */
 export function applyAnswer(
 	draft: StoredInteractionRecord,
@@ -284,14 +375,30 @@ export function applyAnswer(
 	answeredBy: "human" | "extension",
 	now: number,
 	answeredByUser?: string,
+	opts?: { readonly conversationId?: ConversationId },
 ): boolean {
 	if (draft.status !== "pending") return false;
+	// Review Focus 4: the SECRET rule. The tree's secret field names decide
+	// which values never persist: the stored copy carries the MASK, the
+	// true copy rides the one-shot delivery table (extension-only read).
+	const secrets = secretFieldNames(draft.body);
 	const values: Record<string, JsonValue> = {};
+	let hasSecret = false;
 	for (const [key, value] of Object.entries(answer.values ?? {})) {
 		// A host caller's answer was validated ({values: JsonObject}); this
 		// copy is the belt that keeps the stored record JSON-safe.
 		if (!isJsonValue(value)) continue;
-		values[key] = value;
+		if (secrets.has(key)) {
+			hasSecret = true;
+			values[key] = SECRET_MASK;
+		} else {
+			values[key] = value;
+		}
+	}
+	if (hasSecret && opts?.conversationId !== undefined) {
+		secretDeliveries.record(opts.conversationId, draft.callId, {
+			values: answer.values,
+		});
 	}
 	// SAFETY: the draft's declared shape is readonly; the doc family's
 	// tracked-draft write pattern mutates through a structural record view
@@ -305,6 +412,50 @@ export function applyAnswer(
 	mutable.status = "answered";
 	mutable.settledAt = now;
 	return true;
+}
+
+/**
+ * Take one interaction's secret delivery (the extension-only read path):
+ * the TRUE answer when a secret was answered and never yet read — the
+ * entry is deleted by this very read (one-shot). The HTTP GETs NEVER call
+ * this: only `host.snapshotInteraction` merges it back.
+ */
+export function takeSecretDelivery(
+	conversationId: ConversationId,
+	callId: string,
+): InteractionAnswer | undefined {
+	return secretDeliveries.take(conversationId, callId);
+}
+
+/**
+ * Drop one interaction's unread secret delivery without reading it (the
+ * settle/expiry sweep: terminal transitions the extension never polled
+ * must not leave raw values in the table).
+ */
+export function sweepSecretDelivery(
+	conversationId: ConversationId,
+	callId: string,
+): void {
+	secretDeliveries.sweep(conversationId, callId);
+}
+
+/**
+ * The stored-answer projection of an input answer (the route's response
+ * body): the values with every secret-field name replaced by
+ * {@link SECRET_MASK} — EXACTLY what `applyAnswer` writes, computed
+ * without a commit so the route can project it after the commit without
+ * re-reading the mutated draft (the chord settled-overlay rule).
+ */
+export function maskedAnswerValues(
+	body: unknown,
+	answer: { readonly values: Readonly<Record<string, JsonValue>> },
+): { values: Record<string, JsonValue> } {
+	const secrets = secretFieldNames(body);
+	const values: Record<string, JsonValue> = {};
+	for (const [key, value] of Object.entries(answer.values ?? {})) {
+		values[key] = secrets.has(key) ? SECRET_MASK : value;
+	}
+	return { values };
 }
 
 /** Narrow an unvalidated route body to `{values: JsonObject}`, or null. */
