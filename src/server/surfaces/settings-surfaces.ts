@@ -29,7 +29,7 @@
  */
 
 import { isSuperuser } from "../auth/principal.js";
-import type { JsonObject } from "@sigrun/shared/blocks";
+import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
 import type {
 	ActionResult,
 	Principal,
@@ -39,8 +39,11 @@ import type {
 } from "../../extension.js";
 import type { ExtensionSettingsSectionBinding } from "../../harness/loader.js";
 import type { SharedExtensionStores } from "../../harness/stores.js";
-import { isLoopbackHost } from "../auth/loopback.js";
-import type { SigrunConfig } from "../../config.js";
+import type { SettingsStore } from "../../harness/settings.js";
+import {
+	pendingRestart,
+	type SettingsBootSnapshot,
+} from "../../settings/pending.js";
 import type { SurfaceService } from "./service.js";
 
 /** The save payload's shape (`{rev, values}`) — validated at runtime. */
@@ -244,6 +247,78 @@ function withAppendedSecretFields(
 	};
 }
 
+/** The env knob mirroring one core key, when one exists (the
+ *  General/Providers sections' "env wins" notes). Only the keys the
+ *  core forms render are listed. */
+const ENV_OVERRIDES: Readonly<Record<string, string>> = {
+	defaultModel: "SIGRUN_DEFAULT_MODEL",
+	"defaultProvider.baseUrl": "OPENAI_BASE_URL",
+	"server.port": "SIGRUN_PORT",
+	"server.publicUrl": "SIGRUN_PUBLIC_URL",
+	"server.timezone": "SIGRUN_TZ",
+	"server.providers.refreshIntervalMinutes": "SIGRUN_PROVIDER_REFRESH_MINUTES",
+	"server.compaction.enabled": "SIGRUN_COMPACTION",
+};
+
+/** Read one flattened dotted path out of a nested record. */
+/** Read one flattened dotted path out of a nested record (the value
+ *  is a JSON value by the settings file's validation). */
+function readDotted(source: Record<string, unknown>, path: string): JsonValue | undefined {
+	let node: unknown = source;
+	for (const key of path.split(".")) {
+		if (typeof node !== "object" || node === null || Array.isArray(node)) {
+			return undefined;
+		}
+		node = (node as Record<string, unknown>)[key];
+	}
+	return node as JsonValue | undefined;
+}
+
+/** Write one flattened dotted path into a nested patch record. */
+function writeDotted(
+	target: Record<string, unknown>,
+	path: string,
+	value: unknown,
+): void {
+	const keys = path.split(".");
+	let node = target;
+	for (let i = 0; i < keys.length - 1; i++) {
+		const key = keys[i];
+		if (key === undefined) return;
+		const next = node[key];
+		if (typeof next !== "object" || next === null || Array.isArray(next)) {
+			node[key] = {};
+		}
+		node = node[key] as Record<string, unknown>;
+	}
+	const last = keys[keys.length - 1];
+	if (last !== undefined) node[last] = value;
+}
+
+/** The `meta` block the core sections' renders carry: the pending
+ *  restart diff (the callout's key list), the env-override map for
+ *  the rendered keys, and the supervised flag. */
+function pendingContext(core: {
+	readonly settings: SettingsStore;
+	readonly bootSnapshot: SettingsBootSnapshot;
+	readonly env: Readonly<Record<string, string | undefined>>;
+}): {
+	readonly pendingRestart: string[];
+	readonly env: JsonObject;
+	readonly supervised: boolean;
+} {
+	const file = core.settings.read();
+	const env: JsonObject = {};
+	for (const [key, envName] of Object.entries(ENV_OVERRIDES)) {
+		if (core.env[envName] !== undefined) env[key] = envName;
+	}
+	return {
+		pendingRestart: [...pendingRestart(file, core.bootSnapshot)],
+		env,
+		supervised: core.env.SIGRUN_SUPERVISED === "1" || core.env.SIGRUN_SUPERVISED === "true",
+	};
+}
+
 /** The dependencies one adapted section closes over. */
 export interface SettingsSurfaceOptions {
 	readonly stores: SharedExtensionStores;
@@ -254,6 +329,18 @@ export interface SettingsSurfaceOptions {
 	) => void;
 	/** The surface service (the rev read the save's optimistic check needs). */
 	readonly service: SurfaceService;
+	/**
+	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
+	 * `slug === "core"` — the core sections read/write the core
+	 * SettingsStore (dotted field names land at their nested paths,
+	 * apply-typed against the §13.1 registry), not the extension
+	 * settings dir, so the same renderer covers both.
+	 */
+	readonly core?: {
+		readonly settings: SettingsStore;
+		readonly bootSnapshot: SettingsBootSnapshot;
+		readonly env: Readonly<Record<string, string | undefined>>;
+	};
 }
 
 /**
@@ -300,6 +387,92 @@ export function settingsSurfaceFor(
 		return "write";
 	};
 
+	// ─── Core sections (U4 Task 4): the same renderer, over the core ──
+	// SettingsStore (dotted names land at nested paths, apply-typed).
+	const core = options.core;
+
+	/** The core read: the SettingsStore's effective values at the
+	 *  fields' dotted names, plus the boot/meta block the pending
+	 *  callout + version line read. */
+	const readCoreData = (): JsonObject => {
+		if (options.core === undefined) {
+			throw new Error("core settings section adapted without core deps");
+		}
+		// SAFETY: SettingsFile is a plain validated JSON document; the
+		// JsonObject narrowing is the read-side projection the field walk
+		// consumes (readDotted reads unknown values out of it).
+		const file = options.core.settings.read() as unknown as JsonObject;
+		const settings: JsonObject = {};
+		for (const field of fields) {
+			const value = readDotted(file, field.name);
+			if (value !== undefined) settings[field.name] = value;
+		}
+		const { pendingRestart, env, supervised } = pendingContext(options.core);
+		return {
+			settings,
+			meta: {
+				pendingRestart,
+				env,
+				supervised,
+			} satisfies JsonObject,
+		};
+	};
+
+	/** The core save: fold the dotted field names into one core-store
+	 *  patch (longtext fields parse raw JSON — the Tools/Advanced raw
+	 *  object fields), apply it through the store, and fire the §13.2
+	 *  path with the flattened key paths the write touched. */
+	const saveCore = async (values: Record<string, unknown>): Promise<ActionResult> => {
+		if (options.core === undefined) {
+			throw new Error("core settings section adapted without core deps");
+		}
+		const patch: Record<string, unknown> = {};
+		for (const [name, raw] of Object.entries(values)) {
+			const field = fields.find((candidate) => candidate.name === name);
+			if (field === undefined) {
+				return { ok: false, error: { message: `unknown field: ${name}`, field: name } };
+			}
+			// Empty-string values CLEAR the key (the nullable fields'
+			// "(server default)" affordance): null rides the store's
+			// delete-key merge.
+			let value: unknown = raw;
+			if (field.type === "longtext") {
+				if (typeof raw === "string" && raw.trim() !== "") {
+					let parsed: unknown;
+					try {
+						parsed = JSON.parse(raw);
+					} catch (cause) {
+						return {
+							ok: false,
+							error: {
+								message: `${name}: invalid JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+								field: name,
+							},
+						};
+					}
+					value = parsed;
+				}
+			}
+			if (raw === "") value = null;
+			writeDotted(patch, name, value);
+		}
+		try {
+			const outcome = options.core.settings.apply(patch);
+			// The §13.2 publish rides the store's onWrite sink (boot wired
+			// it); the save only reports. `outcome` carries the touched
+			// flattened paths; nothing else to do here.
+			void outcome;
+		} catch (cause) {
+			return {
+				ok: false,
+				error: {
+					message: cause instanceof Error ? cause.message : String(cause),
+				},
+			};
+		}
+		return { ok: true };
+	};
+
 	const readData = async (): Promise<{ settings: JsonObject; secrets: JsonObject }> => {
 		const stored = (await stores.settingsFor(slug).get()) as JsonObject;
 		// Secret-typed field values never render (§5.6/§13.4 write-only —
@@ -342,7 +515,12 @@ export function settingsSurfaceFor(
 			const access = accessFor(ctx.principal);
 			return {
 				tree: form,
-				data: access === "none" ? {} : await readData(),
+				data:
+					access === "none"
+						? {}
+						: core === undefined
+							? await readData()
+							: readCoreData(),
 				access,
 			};
 		},
@@ -363,6 +541,11 @@ export function settingsSurfaceFor(
 						ok: false,
 						error: { message: "changed by someone else" },
 					};
+				}
+				// The core sections save through the core store (the field
+				// fold + apply classification live in saveCore).
+				if (core !== undefined) {
+					return await saveCore(parsed.values);
 				}
 				// Validate every submitted value against the form's fields
 				// (appended secret fields validate as string secrets);

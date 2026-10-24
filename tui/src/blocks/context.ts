@@ -50,6 +50,13 @@ export interface BlockCtx {
 	dispatch(action: Action, payload: JsonValue): void;
 	view: ViewState;
 	/**
+	 * The surface's current data revision (the optimistic-concurrency
+	 * token, UI-blocks U4 Task 4): a submit-mode form's dispatch carries
+	 * it as the payload's `rev` (a save-shaped handler's stale check).
+	 * Defaults to 0 in standalone/test renders.
+	 */
+	readonly rev?: number;
+	/**
 	 * Write the channel-owned `/view/` branch (spec §6.2): `path` is a
 	 * JSON pointer under the branch (no leading `/view/` — the writer
 	 * roots at the branch, as U1's `setView` does). A live form bound
