@@ -96,6 +96,18 @@ fn rejects_root_ids() {
 }
 
 #[test]
+fn rejects_root_supplementary_groups() {
+    let error = parse_policy(json!({
+        "ro": [],
+        "rw": [],
+        "minAbi": 1,
+        "groups": [1001, 0]
+    }))
+    .expect_err("root supplementary groups must be rejected");
+    assert!(error.contains("group 0"), "unexpected error: {error}");
+}
+
+#[test]
 fn rejects_a_path_in_both_ro_and_rw() {
     let error = parse_policy(json!({
         "ro": ["/tmp/shared"],
