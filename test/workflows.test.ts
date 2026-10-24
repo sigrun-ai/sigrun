@@ -27,6 +27,7 @@ interface Step {
 	run?: string | number;
 	uses?: string;
 	with?: Record<string, unknown>;
+	env?: Record<string, string>;
 }
 
 interface Job {
@@ -246,6 +247,45 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const buildIndex = steps.indexOf(build as Step);
 		const smokeIndex = steps.findIndex((s) => runOf(s).includes("scripts/smoke-image.sh"));
 		expect(smokeIndex, "image smoke-check must follow its build").toBeGreaterThan(buildIndex);
+	});
+
+	test("sandbox: tests, lints, and builds both musl targets", () => {
+		const { jobs } = workflow();
+		const steps = jobs.sandbox?.steps ?? [];
+		expect(steps.length, "the sandbox job must exist").toBeGreaterThan(0);
+		const runs = steps.map(runOf).join("\n");
+		expect(runs).toContain("cargo test");
+		expect(runs).toContain("cargo clippy");
+		expect(runs).toContain("-- -D warnings");
+		expect(runs).toContain("--target x86_64-unknown-linux-musl");
+		expect(runs).toContain("--target aarch64-unknown-linux-musl");
+		expect(runs).toContain("musl-tools");
+		expect(runs).toContain("gcc-aarch64-linux-gnu");
+		const toolchain = steps.find((s) => s.uses?.startsWith("dtolnay/rust-toolchain@"));
+		expect(toolchain).toBeDefined();
+		expect(String(toolchain?.with?.targets ?? "")).toContain("x86_64-unknown-linux-musl");
+		expect(String(toolchain?.with?.targets ?? "")).toContain("aarch64-unknown-linux-musl");
+		const env = Object.assign({}, ...steps.map((s) => s.env ?? {}));
+		expect(env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER).toBe("aarch64-linux-gnu-gcc");
+		expect(env.CC_aarch64_unknown_linux_musl).toBe("aarch64-linux-gnu-gcc");
+	});
+
+	test("sandbox: uploads both musl helper binaries as artifacts", () => {
+		const { jobs } = workflow();
+		const uploads = (jobs.sandbox?.steps ?? []).filter((s) =>
+			s.uses?.startsWith("actions/upload-artifact@"),
+		);
+		const paths = uploads.map((s) => String(s.with?.path ?? "")).join("\n");
+		expect(paths).toContain("sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox");
+		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
+	});
+
+	test("image smoke: probes the bundled helper and verifies tini is PID 1", () => {
+		const smoke = readFileSync(new URL("../scripts/smoke-image.sh", import.meta.url), "utf8");
+		expect(smoke).toContain('docker run --rm "$image" /usr/local/lib/sigrun/sigrun-sandbox probe');
+		expect(smoke).toContain("JSON.parse");
+		expect(smoke).toContain("ps -o comm= 1");
+		expect(smoke).toContain('"tini"');
 	});
 
 	test("chart-lint: fetches the gitignored vendored dependency, then lint + template", () => {

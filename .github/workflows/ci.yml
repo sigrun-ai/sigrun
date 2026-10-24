@@ -56,6 +56,38 @@ jobs:
       - run: npm run typecheck
         working-directory: sigrun
 
+  sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - name: Install musl and the arm64 cross-linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+      - run: cargo test --locked
+        working-directory: sandbox
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: sandbox
+      - name: Build the x64 musl helper
+        working-directory: sandbox
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
+      - name: Build the arm64 musl helper
+        working-directory: sandbox
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
+        run: cargo build --locked --release --target aarch64-unknown-linux-musl
+      - name: Upload musl helpers
+        uses: actions/upload-artifact@v4
+        with:
+          name: sigrun-sandbox-musl
+          path: |
+            sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox
+            sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox
+
   image-build:
     runs-on: ubuntu-latest
     steps:
