@@ -89,6 +89,7 @@ afterAll(async () => {
  */
 async function bootOpened(
 	env: Record<string, string> = {},
+	file?: { auth?: Record<string, unknown> },
 ): Promise<OpenedBoot> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-host-conv-"));
 	const configDir = join(dir, "config");
@@ -109,7 +110,7 @@ async function bootOpened(
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
 		...env,
-	});
+	}, { server: file ?? {} } as Parameters<typeof loadConfig>[1]);
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const identity = await seededIdentity(dir);
 	await identity.users.add({ user: "alice", admin: false, source: "cli" });
@@ -139,8 +140,9 @@ async function bootOpened(
 /** Boot opened + server + tokens (the common shape). */
 async function bootServer(
 	env: Record<string, string> = {},
+	file?: { auth?: Record<string, unknown> },
 ): Promise<TestServer> {
-	const boot = await bootOpened(env);
+	const boot = await bootOpened(env, file);
 	const { opened } = boot;
 	const { token: aliceToken } = await opened.identity.tokens.create(
 		"alice-cli",
@@ -366,8 +368,8 @@ describe("host identity, users, and access (spec §9.7)", () => {
 		expect(await host.users.get("nosuch")).toBeUndefined();
 	});
 
-	test("host users expose EFFECTIVE admin: the stored flag OR the persisted group grant (gateway C8)", async () => {
-		const { opened } = await bootServer();
+	test("host users expose EFFECTIVE admin from stored groups", async () => {
+		const { opened } = await bootServer({}, { auth: { adminGroups: ["admins"] } });
 		const host = channelHost(opened);
 		// The gateway C8 write-through shape: a proxy admins-group user
 		// whose STORED admin is false but whose record carries the group
@@ -376,7 +378,7 @@ describe("host identity, users, and access (spec §9.7)", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["admins"], updatedAt: 1 }],
 			source: "proxy",
 		});
 		const bob = await host.users.get("bob");
@@ -384,6 +386,7 @@ describe("host identity, users, and access (spec §9.7)", () => {
 			user: "bob",
 			admin: true,
 			groupAdmin: true,
+			groups: ["admins"],
 		});
 		const listed = await host.users.list();
 		const listedBob = listed.find((user) => user.user === "bob");
@@ -820,7 +823,7 @@ describe("host upload/readFile/models/commands (gateway C4b)", () => {
 	});
 
 	test("commands.run drives the extension command as alice: notice + principal method host, admin false; a group-admin user sees admin true", async () => {
-		const { opened } = await bootServer();
+		const { opened } = await bootServer({}, { auth: { adminGroups: ["admins"] } });
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
 		// Plain directory user: effective admin false, method "host".
@@ -838,7 +841,7 @@ describe("host upload/readFile/models/commands (gateway C4b)", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["admins"], updatedAt: 1 }],
 			source: "proxy",
 		});
 		await host.commands.run(id, "hello", "x", { user: "bob" });

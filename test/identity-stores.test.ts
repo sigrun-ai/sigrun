@@ -46,6 +46,7 @@ import {
 	readSetupCode,
 	type IdentityStores,
 } from "../src/harness/identity/index.js";
+import { effectiveAdmin, storedGroups } from "../src/harness/identity/groups.js";
 
 const dirs: string[] = [];
 afterAll(async () => {
@@ -152,6 +153,65 @@ describe("UserDirectory", () => {
 		expect(second.get("alice")?.admin).toBe(true);
 		await second.add({ user: "bob", admin: false, source: "proxy" });
 		expect(first.get("bob")?.source).toBe("proxy");
+	});
+});
+
+describe("stored groups", () => {
+	test("setGroups replaces one source and keeps another", async () => {
+		const users = new UserDirectory(join(tmpDir("group-sources"), "users.json"));
+		await users.add({ user: "alice", admin: false, source: "proxy" });
+		await users.setGroups("alice", "proxy", ["users", "admins"], 100);
+		await users.setGroups("alice", "login:oauth:acme", ["family"], 200);
+		const updated = await users.setGroups("alice", "proxy", ["users"], 300);
+		expect(updated.groups).toEqual([
+			{ source: "proxy", values: ["users"], updatedAt: 300 },
+			{ source: "login:oauth:acme", values: ["family"], updatedAt: 200 },
+		]);
+		expect(users.get("alice")).toEqual(updated);
+	});
+
+	test("setGroups with unchanged values does not write the file", async () => {
+		const path = join(tmpDir("group-noop"), "users.json");
+		const users = new UserDirectory(path);
+		await users.add({ user: "alice", admin: false, source: "proxy" });
+		await users.setGroups("alice", "proxy", ["users", "admins"], 100);
+		const before = statSync(path).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const updated = await users.setGroups("alice", "proxy", ["users", "admins"], 200);
+		expect(statSync(path).mtimeMs).toBe(before);
+		expect(updated.groups).toEqual([
+			{ source: "proxy", values: ["users", "admins"], updatedAt: 100 },
+		]);
+	});
+
+	test("storedGroups is the deduplicated union and effectiveAdmin accepts any source", async () => {
+		const users = new UserDirectory(join(tmpDir("effective-admin"), "users.json"));
+		await users.add({ user: "alice", admin: false, source: "proxy" });
+		await users.setGroups("alice", "proxy", ["users", "family"], 100);
+		const record = await users.setGroups("alice", "login:oauth:acme", ["family", "admins"], 200);
+		expect(storedGroups(record)).toEqual(["users", "family", "admins"]);
+		expect(effectiveAdmin(record, ["admins"])).toBe(true);
+		expect(effectiveAdmin(record, ["other"])).toBe(false);
+		expect(effectiveAdmin({ ...record, admin: true }, [])).toBe(true);
+	});
+
+	test("a legacy groupAdmin grant is dropped and grants nothing after the next write", async () => {
+		const path = join(tmpDir("legacy-group-admin"), "users.json");
+		writeFileSync(path, JSON.stringify([{
+			user: "alice",
+			admin: false,
+			groupAdmin: true,
+			createdAt: 1,
+			source: "proxy",
+		}]));
+		const users = new UserDirectory(path);
+		const updated = await users.update("alice", { name: "Alice" });
+		expect(effectiveAdmin(updated, ["admins"])).toBe(false);
+		expect(updated).not.toHaveProperty("groupAdmin");
+		const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[];
+		expect(raw[0]).not.toHaveProperty("groupAdmin");
+		const viaGroups = await users.setGroups("alice", "proxy", []);
+		expect(viaGroups).not.toHaveProperty("groupAdmin");
 	});
 });
 

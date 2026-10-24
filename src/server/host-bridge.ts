@@ -24,6 +24,8 @@ import {
 } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
+import { effectiveAdmin } from "../harness/identity/groups.js";
+import { userWire } from "./routes/users.js";
 import type { DataOps } from "@sigrun/shared/blocks";
 import { isSuperuser, type Principal } from "./auth/principal.js";
 import {
@@ -46,18 +48,16 @@ import { SessionMetaDoc } from "./session-meta.js";
 import { accountLinkWire, serializeConversationView } from "./views.js";
 
 /**
- * The effective-admin projection of one directory user (gateway C8):
- * host-side callers (chat commands, no request headers) see the STORED
- * flag OR the persisted group grant, plus the raw `groupAdmin` as a
- * definite boolean. The `/v1/users` wire keeps `admin` = the stored
- * flag (the users-admin UI toggles that one); the two surfaces are
- * deliberately different.
+ * Host-side callers see effective admin derived from stored groups;
+ * `groupAdmin` remains the derived compatibility field on the wire.
  */
-function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
+function effectiveAdminOf(
+	record: DirectoryUser,
+	adminGroups: readonly string[],
+): ReturnType<typeof userWire> {
 	return {
-		...record,
-		admin: record.admin || record.groupAdmin === true,
-		groupAdmin: record.groupAdmin === true,
+		...userWire(record, adminGroups),
+		admin: effectiveAdmin(record, adminGroups),
 	};
 }
 
@@ -239,11 +239,11 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			// admin-gated /v1/users routes) — with EFFECTIVE admin (gateway
 			// C8): a persisted group grant counts for host-side checks.
 			async list() {
-				return opened.identity.users.list().map(effectiveAdminOf);
+				return opened.identity.users.list().map((record) => effectiveAdminOf(record, ctx.config.auth.adminGroups));
 			},
 			async get(user) {
 				const record = opened.identity.users.get(user);
-				return record === undefined ? undefined : effectiveAdminOf(record);
+				return record === undefined ? undefined : effectiveAdminOf(record, ctx.config.auth.adminGroups);
 			},
 		},
 		accounts: {
@@ -334,7 +334,7 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					user: record.user,
 					...(record.name === undefined ? {} : { name: record.name }),
 					...(record.email === undefined ? {} : { email: record.email }),
-					admin: effectiveAdminOf(record).admin,
+					admin: effectiveAdmin(record, ctx.config.auth.adminGroups),
 					service: false,
 					method: "host",
 				};

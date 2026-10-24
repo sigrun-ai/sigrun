@@ -17,24 +17,27 @@ import { join } from "node:path";
 import type { ServerContext } from "../context.js";
 import { withClaimLock } from "../auth/claim-lock.js";
 import type { DirectoryUser } from "../../harness/identity/index.js";
+import { effectiveAdmin, storedGroups } from "../../harness/identity/groups.js";
 import { transferOwnership } from "../ownership.js";
 import type { InviteResponse, UserWire } from "../views.js";
 import type { Grant } from "../../sandbox/grants.js";
 import { validateGrantPath } from "../../sandbox/grants.js";
 
-/** The wire form of one directory user (the record minus nothing — the
- * routes serving it are admin-gated, and emails are admin material).
- * `admin` stays the STORED flag; `groupAdmin` (gateway C8) is the
- * persisted proxy-group grant alongside it. */
-function userWire(record: DirectoryUser): UserWire {
+/** The wire form of one directory user. `admin` stays the STORED flag;
+ * `groupAdmin` is DERIVED from stored groups and retained for one release
+ * so the users UI keeps rendering. */
+export function userWire(
+	record: DirectoryUser,
+	adminGroups: readonly string[],
+): UserWire {
+	const effective = effectiveAdmin(record, adminGroups);
 	return {
 		user: record.user,
 		...(record.name === undefined ? {} : { name: record.name }),
 		...(record.email === undefined ? {} : { email: record.email }),
 		admin: record.admin,
-		...(record.groupAdmin === undefined
-			? {}
-			: { groupAdmin: record.groupAdmin }),
+		groupAdmin: effective && !record.admin,
+		groups: storedGroups(record),
 		...(record.workspace === undefined ? {} : { workspace: record.workspace }),
 		...(record.grants === undefined ? {} : { grants: record.grants }),
 		...(record.osUser === undefined ? {} : { osUser: record.osUser }),
@@ -54,7 +57,7 @@ export function registerUserRoutes(
 		if (!request.principal.admin) {
 			return await reply.code(403).send({ error: "forbidden" });
 		}
-		return { users: identity.users.list().map(userWire) };
+		return { users: identity.users.list().map((record) => userWire(record, ctx.config.auth.adminGroups)) };
 	});
 
 	app.patch("/v1/users/:user", async (request, reply) => {
@@ -176,7 +179,7 @@ export function registerUserRoutes(
 			return await reply.code(409).send({ error: "last_admin" });
 		}
 		const updated = await identity.users.update(user, patch);
-		return userWire(updated);
+		return userWire(updated, ctx.config.auth.adminGroups);
 	});
 
 	app.post("/v1/users/invites", async (request, reply) => {

@@ -29,6 +29,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { sessionTtlMs } from "../src/server/routes/auth.js";
+import { stat } from "node:fs/promises";
 import { seededIdentity } from "./helpers/identity.js";
 
 interface TestServer {
@@ -396,13 +397,12 @@ describe("proxy method", () => {
 			admin: true,
 			method: "proxy",
 		});
-		// Auto-provisioned with admin:false — the group grant lands on the
-		// record as `groupAdmin` (the gateway C8 write-through), while the
-		// STORED `admin` flag stays false (toggled only via /v1/users).
+		// Auto-provisioned with admin:false — the proxy groups are stored
+		// while the STORED `admin` flag stays false.
 		expect(opened.identity.users.get("alice")).toMatchObject({
 			user: "alice",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["users", "admins"] }],
 			source: "proxy",
 		});
 	});
@@ -517,13 +517,13 @@ test("second user via proxy auto-provision -> 403 isolation_required when unavai
 // gateway C8 — proxy group-admin write-through
 // ---------------------------------------------------------------------------
 
-describe("proxy group-admin write-through (gateway C8)", () => {
+describe("proxy group write-through", () => {
 	test("auto-provision carries the computed group admin; a later group-less request clears it", async () => {
 		const { app, opened } = await bootServer({
 			env: PROXY_ENV,
 			file: PROXY_FILE,
 		});
-		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const setGroupsSpy = vi.spyOn(opened.identity.users, "setGroups");
 		const first = await app.inject({
 			method: "GET",
 			url: "/v1/auth/whoami",
@@ -539,12 +539,12 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		// The record is the only place host-side checks (chat commands,
 		// no request headers) can read the grant — so the write-through
 		// lands it on the directory, while the STORED admin stays false.
-		// Provision carried the flag (the add itself) — no separate update.
-		expect(updateSpy).not.toHaveBeenCalled();
+		// Provision writes the proxy source, while the STORED admin stays false.
+		expect(setGroupsSpy).toHaveBeenCalledTimes(1);
 		expect(opened.identity.users.get("bob")).toMatchObject({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["users", "admins"] }],
 			source: "proxy",
 		});
 
@@ -556,18 +556,17 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		});
 		expect(later.statusCode).toBe(200);
 		expect(later.json()).toMatchObject({ user: "bob", admin: false });
-		// Group exit flips the stored flag at that user's next request.
+		// Group exit replaces the stored proxy source at the next request.
 		expect(opened.identity.users.get("bob")).toMatchObject({
 			admin: false,
-			groupAdmin: false,
+			groups: [{ source: "proxy", values: ["users"] }],
 		});
-		// The exit was ONE write (true → false), not one per request.
-		expect(updateSpy).toHaveBeenCalledTimes(1);
-		expect(updateSpy).toHaveBeenCalledWith("bob", { groupAdmin: false });
+		expect(setGroupsSpy).toHaveBeenCalledTimes(2);
+		expect(setGroupsSpy).toHaveBeenLastCalledWith("bob", "proxy", ["users"]);
 	});
 
 	test("write-through only on change: two identical requests → ONE update", async () => {
-		const { app, opened } = await bootServer({
+		const { app, opened, dir } = await bootServer({
 			env: PROXY_ENV,
 			file: PROXY_FILE,
 		});
@@ -576,7 +575,7 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 			admin: false,
 			source: "cli",
 		});
-		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const usersPath = join(dir, "users.json");
 		for (const attempt of [1, 2]) {
 			const response = await app.inject({
 				method: "GET",
@@ -586,10 +585,16 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 			});
 			expect(response.statusCode, `attempt ${attempt}`).toBe(200);
 		}
-		// The steady state must not rewrite the directory per request —
-		// one write for the undefined→true flip, none for the repeat.
-		expect(updateSpy).toHaveBeenCalledTimes(1);
-		expect(updateSpy).toHaveBeenCalledWith("bob", { groupAdmin: true });
+		// The steady state must not rewrite the directory per request.
+		const before = (await stat(usersPath)).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "admins" },
+		});
+		expect((await stat(usersPath)).mtimeMs).toBe(before);
 	});
 
 	test("adminGroups: [] — C8 inactive: nothing is written, a stored grant is not cleared", async () => {
@@ -600,10 +605,10 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "login:oauth:acme", values: ["admins"], updatedAt: 1 }],
 			source: "cli",
 		});
-		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const setGroupsSpy = vi.spyOn(opened.identity.users, "setGroups");
 		const response = await app.inject({
 			method: "GET",
 			url: "/v1/auth/whoami",
@@ -612,16 +617,18 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toMatchObject({ user: "bob", admin: false });
-		// With no configured admin groups the proxy grants nothing and no
-		// request writes the field — not even a clearing write (the value
-		// only moves when adminGroups is non-empty).
-		expect(updateSpy).not.toHaveBeenCalled();
+		// With no configured admin groups the proxy grants nothing; stored
+		// groups from other sources remain, but do not grant admin here.
+		expect(setGroupsSpy).toHaveBeenCalledWith("bob", "proxy", ["admins"]);
 		expect(opened.identity.users.get("bob")).toMatchObject({
-			groupAdmin: true,
+			groups: [
+				{ source: "login:oauth:acme", values: ["admins"] },
+				{ source: "proxy", values: ["admins"] },
+			],
 		});
 	});
 
-	test("/v1/users keeps admin = the stored flag and adds groupAdmin", async () => {
+	test("/v1/users keeps admin = the stored flag and derives groupAdmin from stored groups", async () => {
 		const { app } = await bootServer({
 			env: PROXY_ENV,
 			file: PROXY_FILE,
@@ -649,7 +656,7 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 			groupAdmin?: boolean;
 		}[];
 		const bob = rows.find((row) => row.user === "bob");
-		expect(bob).toMatchObject({ admin: false, groupAdmin: true });
+		expect(bob).toMatchObject({ admin: false, groupAdmin: true, groups: ["admins"] });
 	});
 });
 

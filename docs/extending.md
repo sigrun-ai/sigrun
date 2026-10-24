@@ -352,21 +352,24 @@ handling):
 
 ## The users surface
 
-`host.users.get/list` serve the directory with **effective admin**
-(gateway C8): `admin` is the stored flag OR the persisted proxy-group
-grant (`groupAdmin`), and `groupAdmin` rides along as a definite
-boolean. Host-side code (chat commands, channel adapters) has no
-request headers to recompute a group grant, so the write-through that
-lands it on the record is what makes host-side admin checks possible.
-The HTTP surface is deliberately different: `/v1/users` keeps `admin`
-= the stored flag (the users-admin UI toggles that one) and carries
-`groupAdmin` alongside; group-derived admin never counts toward the
-last-admin guard.
+`host.users.get/list` serve the directory with **effective admin**:
+`admin` is the stored flag OR any stored group in
+`server.auth.adminGroups`. The directory stores groups per
+authenticating source (`proxy`, `login:<slug>:<id>`); each source's
+entry is replaced on its next login or proxy request. Host-side code
+(chat commands, channel adapters) reads these stored groups, never
+request headers.
 
-The grant updates only on proxy-authenticated requests while
-`server.auth.adminGroups` is non-empty: removal from the admin group
-takes effect for host-side checks at that user's **next web request**
-(a user who never browses again keeps the stale grant until then).
+The HTTP surface is deliberately different: `/v1/users` keeps `admin`
+= the stored flag (the users-admin UI toggles that one), exposes the
+deduplicated union as `groups`, and derives `groupAdmin` as
+`effectiveAdmin && !admin`. The wire `groupAdmin` is retained for one
+release for the users UI; it is never persisted. Group-derived admin
+never counts toward the last-admin guard.
+
+Proxy group removal takes effect for host-side checks at that user's
+**next web request** (a user who never browses again keeps the stale
+stored groups until then).
 
 ## The accounts surface
 

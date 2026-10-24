@@ -17,7 +17,8 @@
 
 import { join } from "node:path";
 import type { StoreRoots } from "../stores.js";
-import { UserDirectory, type DirectoryUser } from "./users.js";
+import { UserDirectory, type DirectoryUser, type DirectoryGroups } from "./users.js";
+import { effectiveAdmin, storedGroups } from "./groups.js";
 import {
 	AccountStore,
 	AccountLinkConflictError,
@@ -47,6 +48,9 @@ import {
 export {
 	UserDirectory,
 	type DirectoryUser,
+	type DirectoryGroups,
+	effectiveAdmin,
+	storedGroups,
 	AccountStore,
 	AccountLinkConflictError,
 	type AccountLink,
