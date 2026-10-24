@@ -93,8 +93,9 @@ import {
  * checks, the public surface, the env service token, the setup gate,
  * then the configured methods — the resolved principal stamps
  * `SessionMeta.owner` at create/fork/import.
- * @param options.listenHost the host the server will bind (default
- * `"0.0.0.0"`); the pipeline's Host check and the default method list
+ * @param options.listenHost the host the server will bind (fallback
+ * `"0.0.0.0"` when omitted; `serve()` passes the dual-stack `::`);
+ * the pipeline's Host check and the default method list
  * (`effectiveMethods`) both derive from it.
  * @param contributedBundles the extension-contributed webui-bundle registry
  * (build-and-webui Task 6 threads it here from boot; the serve-time

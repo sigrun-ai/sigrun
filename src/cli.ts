@@ -623,7 +623,7 @@ export interface CliDeps {
 	 * port and the shutdown the `run` lifecycle drives. The CLI passes
 	 * `{ host: "127.0.0.1" }` — workstation mode is loopback-only (the
 	 * TUI dials loopback; the naive-identity API must not answer on the
-	 * LAN). `serve` (the deploy entry) keeps the `0.0.0.0` default.
+	 * LAN). `serve` (the deploy entry) keeps the dual-stack `::` default.
 	 */
 	boot(env: NodeJS.ProcessEnv, options?: { host?: string }): Promise<BootedServer>;
 	/**

@@ -62,21 +62,42 @@ export interface BootedServer {
 }
 
 /**
+ * The deploy entry's default listen host: the IPv6 wildcard, which is a
+ * DUAL-STACK listener on Linux (`net.ipv6.bindv6only` is 0) — it accepts
+ * the pod's IPv4 connections AND its IPv6 ones.
+ *
+ * `0.0.0.0` is the WRONG default for a dual-stack cluster: it is a
+ * v4-only socket, so it refuses every IPv6 connection, while a Service
+ * whose `ipFamilies` is `["IPv6"]` advertises only the pod's IPv6
+ * address in its EndpointSlice. The gateway dials that address, gets
+ * connection-refused, and answers the browser with "upstream connect
+ * error or disconnect/reset before headers. reset reason: remote
+ * connection failure". (This cluster's ClusterIP range is
+ * `fd00:beef:cafe::/…`, so a chart-default Service is IPv6-only — the
+ * mismatch is the DEFAULT shape, not an edge case.)
+ */
+export const DEFAULT_LISTEN_HOST = "::";
+
+/**
  * Boot options. The one knob is the listen host: the default is the
- * container's `0.0.0.0` (loopback-only would be unreachable behind the
- * Service); the CLI's `run` passes `127.0.0.1` — workstation mode is
- * local-only (the TUI dials loopback; the naive-identity API must not
- * answer on the LAN).
+ * container's dual-stack wildcard {@link DEFAULT_LISTEN_HOST} (a v4-only
+ * bind would be unreachable on a dual-stack pod's IPv6 endpoint); the
+ * CLI's `run` passes `127.0.0.1` — workstation mode is local-only (the
+ * TUI dials loopback; the naive-identity API must not answer on the LAN).
  */
 export interface ServeOptions {
-	/** The listen host (default `"0.0.0.0"`; `run` passes `"127.0.0.1"`). */
+	/**
+	 * The listen host (default {@link DEFAULT_LISTEN_HOST}; `run` passes
+	 * `"127.0.0.1"`).
+	 */
 	readonly host?: string;
 }
 
 /**
  * Boot the harness + server composition and listen on
- * `options.host ?? "0.0.0.0"` + `<port>` (the default is the container's
- * address — loopback-only would be unreachable behind the Service;
+ * `options.host ?? "::"` + `<port>` (the default is the container's
+ * dual-stack wildcard — loopback-only would be unreachable behind the
+ * Service, and a v4-only bind is unreachable on an IPv6 endpoint;
  * `loadConfig` refuses port 0, so a real port is always bound).
  * The CLI's `run` additionally launches the TUI against the loopback URL
  * on {@link BootedServer.port}.
@@ -172,7 +193,7 @@ export async function serve(
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
 	const app = await createServer(opened, config, opened.webuiBundles, {
-		listenHost: options?.host ?? "0.0.0.0",
+		listenHost: options?.host ?? DEFAULT_LISTEN_HOST,
 		env,
 		gateway,
 		// U4 Task 2 (spec §13.3): the admin restart route's callback runs
@@ -206,7 +227,7 @@ export async function serve(
 					process.exit(1);
 				}),
 	});
-	const host = options?.host ?? "0.0.0.0";
+	const host = options?.host ?? DEFAULT_LISTEN_HOST;
 	await app.listen({ port: config.port, host });
 	// The engine starts with the listener live (gateway C2's lifecycle:
 	// start after listen — a failed start latches degraded inside the
@@ -217,8 +238,11 @@ export async function serve(
 	// Machine-greppable: the deploy-entry test waits for this line, and an
 	// operator reading pod logs sees the bound port without guessing. The
 	// version rides the same line (what an operator quotes in a bug report).
+	// An IPv6 host is bracketed — the URL form (`http://[::]:3000`), not the
+	// ambiguous `http://:::3000`.
+	const shownHost = host.includes(":") ? `[${host}]` : host;
 	console.log(
-		`sigrun v${SIGRUN_VERSION} listening on http://${host}:${config.port}`,
+		`sigrun v${SIGRUN_VERSION} listening on http://${shownHost}:${config.port}`,
 	);
 
 	// The ordered shutdown (gateway C2's extraction of the inline original
