@@ -165,13 +165,23 @@ describe("resolveHelper", () => {
 	});
 });
 
-describe("selfTestHelper denial classification", () => {
+describe("selfTestHelper control and denial classification", () => {
 	async function fakeHelper(script: string): Promise<string> {
 		const dir = await tempDir();
 		const helper = join(dir, "fake-sigrun-sandbox");
 		await writeFile(helper, `#!/bin/sh\n${script}\n`, { mode: 0o700 });
 		return helper;
 	}
+
+	/** Shell prelude exposing `granted=1` iff this run's policy grants the probe. */
+	const detectGrant = `
+command=$3
+probe=$(printf '%s\\n' "$command" | cut -d"'" -f2)
+probeDir=$(dirname "$probe")
+case "$SIGRUN_SANDBOX_POLICY" in
+	*"$probeDir"*) granted=1 ;;
+	*) granted=0 ;;
+esac`;
 
 	test("helper refusal exit 125 with its diagnostic is not a denial", async () => {
 		const helper = await fakeHelper(
@@ -204,19 +214,39 @@ describe("selfTestHelper denial classification", () => {
 		await expect(selfTestHelper(helper)).resolves.toBe(false);
 	});
 
-	test("the jailed shell runs and its probe read is denied", async () => {
+	test("a control failure from unavailable cat is not a denial", async () => {
+		const helper = await fakeHelper(
+			"shift 2\nPATH=/nonexistent\nexec \"$@\"",
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("a denial-leg not-found failure after a valid control is not a denial", async () => {
 		const helper = await fakeHelper(
 			`set -eu
-policy=$SIGRUN_SANDBOX_POLICY
-[ -n "$policy" ]
+shift 2
+${detectGrant}
+if [ "$granted" = 1 ]; then
+	exec "$@"
+fi
+printf 'READ_DENIED\\n'
+echo '/bin/sh: cat: not found' >&2
+exit 1`,
+		);
+		await expect(selfTestHelper(helper)).resolves.toBe(false);
+	});
+
+	test("a valid control and permission-style denial passes", async () => {
+		const helper = await fakeHelper(
+			`set -eu
 shift 2
 [ "$1" = /bin/sh ] && [ "$2" = -c ]
-command=$3
-probe=$(printf '%s\\n' "$command" | cut -d"'" -f2)
+${detectGrant}
 [ -f "$probe" ]
-# Simulate the helper's jail: the shell and runtime remain usable, but the
-# ungranted probe file is unreadable before the requested command executes.
-chmod 000 "$probe"
+if [ "$granted" = 0 ]; then
+	# Simulate the policy boundary only on the denial leg.
+	chmod 000 "$probe"
+fi
 exec "$@"`,
 		);
 		await expect(selfTestHelper(helper)).resolves.toBe(true);
