@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Multi-user login (M3b): extension-contributed `loginProviders` with
+  core-owned, single-use state and callback routes; first-login setup and
+  invite resolution with optional policy-gated auto-provisioning; webui
+  provider sign-in; and self-service account links that are never silently
+  re-pointed to another user.
+- Expiring, revocable browser sessions (`server.auth.sessionDays`, default
+  30 days). A session can mint the user's API tokens; revoking it leaves
+  those tokens independent.
+- Stored groups per authenticating source, effective group-derived admin,
+  and people-scoped group sharing. Groups refresh at the next login or
+  validated proxy request. The separately shipped `@sigrun/ext-oauth`
+  package provides OIDC, GitHub, and Discord login providers; it is not yet
+  bundled or installed by default.
+
+### Changed
+- Retired persisted `groupAdmin` in favor of stored groups; its user-wire
+  compatibility field is now derived and retained for one release.
+
 ### Security
 - Added the opt-in Landlock kernel boundary suite for two-user execution
   isolation, with a hard ABI 6+ CI gate and explicit local skip reasons.

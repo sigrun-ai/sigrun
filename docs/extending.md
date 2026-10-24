@@ -237,6 +237,7 @@ what core does with each, and where its rules are documented:
 | `extension` | pi-durable `Extension` | installed into the registry before `Harness.open`; its declared name is the slug source | this page ("The stores handle", "Prompt sections") |
 | `name` | `string` | the identity of a contributor-only result (no `extension`) | "Contributing model providers" |
 | `providers` | `readonly ProviderContribution[]` | merged into the boot model catalog; last-registered-wins, collisions recorded and surfaced | "Contributing model providers" |
+| `loginProviders` | `readonly LoginProviderContribution[]` | qualified as `login:<slug>:<id>` and mounted on core-owned begin/callback routes | ["Login providers"](#login-providers) |
 | `webuiBundles` | `readonly WebuiBundleContribution[]` | each `dir` anchored at the entry; the name-keyed registry `server.webui.bundle` selects from | "Contributing webui bundles" |
 | `health` | `() => HealthStatus` | aggregated into `/v1/meta` `health` — any `"degraded"` degrades the surface | "Contributing model providers" |
 | `runSettled` | `ExtensionRunSettledHandler` | registered on the event bus; one call per settled run, deadline-bounded | this table |
@@ -385,8 +386,8 @@ Provider ids have two forms:
 
 - `chat:<channel>` — a chat sender (the gateway writes these);
 - `login:<slug>:<id>` — a login subject, where `slug` is the login
-  extension's slug and `id` its provider id (so the bundled extension's
-  ids read `login:oauth:<id>`).
+  extension's slug and `id` its provider id (so an extension with slug
+  `oauth` contributes ids reading `login:oauth:<id>`).
 
 A subject is opaque to sigrun: a Telegram or Discord numeric id, a
 Signal `+E.164` number, and an email-shaped subject all pass — any
@@ -453,6 +454,108 @@ identity is registered — though never to whom. The authorization rule
 is checked inside the same serialized mutation as the removal, so a
 subject re-linked to someone else mid-request is not removed on the
 strength of a stale read.
+
+## Login providers
+
+An extension can prove an external identity by returning `loginProviders`
+from its factory. Core owns the browser flow and everything after the
+proof; the provider owns only the protocol exchange with the external
+identity service.
+
+```ts
+import type {
+  LoginProviderContribution,
+  SigrunExtensionResult,
+  SigrunHost,
+} from "@sigrun/sigrun/extension";
+
+const company: LoginProviderContribution = {
+  id: "company",
+  label: "Company SSO",
+  icon: "key",                         // optional
+  policy: {
+    autoProvision: true,
+    allowedGroups: ["staff"],
+    allowedDomains: ["example.invalid"],
+  },
+  async begin(flow, ctx) {
+    // Keep provider-private values (PKCE verifier, nonce) in flow.data.
+    flow.data.verifier = makeVerifier();
+    return { redirectUrl: authorizeUrl(flow.state, flow.callbackUrl) };
+  },
+  async complete(flow, callback, ctx) {
+    // callback.query is Record<string, string>; callback.body is unknown.
+    const identity = await exchangeCallback(flow, callback);
+    return {
+      subject: identity.subject,
+      profile: {
+        username: identity.username,
+        name: identity.name,
+        email: identity.email,
+        emailVerified: identity.emailVerified,
+      },
+      groups: identity.groups,
+    };
+  },
+};
+
+export default function createLogin(host: SigrunHost): SigrunExtensionResult {
+  return { name: "acme-login", loginProviders: [company] };
+}
+```
+
+The provider id is local to the extension and must match
+`^[a-z0-9][a-z0-9._-]*$`; duplicate ids within one extension are invalid.
+Core prefixes the extension slug, so this contribution's public provider id
+is `login:acme-login:company`. For slug `oauth` and id `company`, it is
+`login:oauth:company`.
+
+`GET /v1/auth/login/:provider` calls `begin`, and core redirects the browser
+to the returned URL. `flow.callbackUrl` is the callback to register with the
+identity service; core accepts that callback by GET or POST at
+`/v1/auth/callback/:provider`, then calls `complete` with the same flow and
+the callback's query and body. `GET /v1/auth/providers` publishes the id,
+label, and optional icon for the sign-in screen.
+
+**Core, not the provider, generates and verifies `state`.** State is
+single-use, bound to a separate HttpOnly browser cookie and to the provider.
+Core retains `flow.data` in memory for 10 minutes and passes it back to
+`complete`; a restart invalidates an in-flight login. Core also owns the
+callback route, first-login resolution, provisioning policy, session
+creation and cookie, and stored groups. The provider only builds the authorize
+URL and turns its callback into `{subject, profile, groups}`. The subject
+must be stable within that provider; matching usernames or emails never
+implicitly links an existing sigrun user.
+
+The optional `policy` fields are declarations **core enforces**, not checks
+the provider must repeat:
+
+- `autoProvision: true` admits a previously unlinked subject without an
+  invite, subject to the filters below. Its default is `false`, which
+  requires an invite after the first claim.
+- `allowedGroups` requires at least one named group in the login result.
+- `allowedDomains` requires an email in one of the listed domains **and**
+  `profile.emailVerified === true`. An absent or unverified email never
+  satisfies this filter.
+
+**Groups have a narrow trust boundary.** Core accepts groups only from a
+login result or from proxy headers that passed trusted-peer and secret
+validation. A token- or session-authenticated request only reads groups
+already stored on the user; nothing in that request can set or add them.
+Each source replaces its own stored entry at the next login or proxy
+request, so changes at the identity service deliberately take effect then,
+not continuously. Stored groups participate in effective-admin and
+group-sharing checks.
+
+Login-provider validation is all-or-nothing for one extension: a malformed
+array or entry, an invalid or duplicate id, a non-string label/icon, or a
+non-function `begin`/`complete` quarantines that extension. Boot continues
+without its login providers.
+
+The separately shipped `@sigrun/ext-oauth` package implements this contract
+for OIDC and OAuth 2. It is **not bundled or installed by default**; the
+operator installs and configures it like other extensions. See
+[Authentication](README.md#authentication) for its operator configuration.
 
 ## Secrets precedence: stored wins, env bootstraps
 
