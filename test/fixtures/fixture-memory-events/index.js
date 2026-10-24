@@ -85,6 +85,7 @@ export default function createFixtureMemoryEvents(host) {
 			lastConversationId = event.conversationId;
 			events.push({
 				conversationId: event.conversationId,
+				...(event.owner === undefined ? {} : { owner: event.owner }),
 				inputs: [...event.inputs],
 				inputTexts: [...event.inputTexts],
 				outcome:
@@ -112,6 +113,7 @@ export default function createFixtureMemoryEvents(host) {
 				childId: event.childId,
 				parentId: event.parentId,
 				at: event.at,
+				...(event.owner === undefined ? {} : { owner: event.owner }),
 			});
 		},
 		conversationArchived(event, api, context) {

@@ -148,19 +148,26 @@ export type SettleGroup = {
  * interaction transitions detected at the interaction host-event site.
  */
 export type ExtensionLifecyclePayload = {
-	conversationCreated: { readonly conversationId: ConversationId };
+	conversationCreated: {
+		readonly conversationId: ConversationId;
+		readonly owner?: string;
+	};
 	conversationForked: {
 		readonly childId: ConversationId;
 		readonly parentId: ConversationId;
 		readonly at: EntryId;
+		/** The CHILD's owner at delivery; absent when the child is ownerless. */
+		readonly owner?: string;
 	};
 	conversationArchived: {
 		readonly conversationId: ConversationId;
 		readonly archived: boolean;
+		readonly owner?: string;
 	};
 	conversationIdle: {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
+		readonly owner?: string;
 	};
 	/** Gateway C6: one terminal interaction transition — the payload mirrors
 	 *  the record's terminal envelope fields. */
@@ -169,6 +176,7 @@ export type ExtensionLifecyclePayload = {
 		readonly callId: string;
 		readonly kind: string;
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+		readonly owner?: string;
 	};
 };
 
@@ -188,6 +196,8 @@ export type LifecycleEvent = {
  */
 export type RunSettledEvent = {
 	readonly conversationId: ConversationId;
+	/** The conversation owner at delivery; absent when the conversation is ownerless. */
+	readonly owner?: string;
 	readonly inputs: readonly SubmissionId[];
 	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
 	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
@@ -1374,7 +1384,14 @@ export class EventBus {
 			([, handlers]) => handlers[type] !== undefined,
 		);
 		if (registered.length === 0) return;
-		const payload = this.#lifecyclePayload(event);
+		const owner = await this.#ownerOf(
+			this.#lifecycleConversation(event),
+			context,
+		);
+		const payload = {
+			...this.#lifecyclePayload(event),
+			...(owner === undefined ? {} : { owner }),
+		};
 		const api = this.#apiFor(this.#lifecycleConversation(event));
 		for (const [name, handlers] of registered) {
 			const handler = handlers[type]!;
@@ -1457,6 +1474,8 @@ export class EventBus {
 		group: SettleGroup,
 		context: Context,
 	): Promise<RunSettledEvent> {
+		const owner = await this.#ownerOf(group.conversationId, context);
+		const ownerField = owner === undefined ? {} : { owner };
 		const inputs: SubmissionId[] = [];
 		const inputTexts: string[] = [];
 		for (const one of group.settled) {
@@ -1485,6 +1504,7 @@ export class EventBus {
 			if (message !== undefined && message.role === "assistant") {
 				return {
 					conversationId: group.conversationId,
+					...ownerField,
 					inputs,
 					inputTexts,
 					outcome: { status: "answered", answerEntryId, answer: message },
@@ -1498,6 +1518,7 @@ export class EventBus {
 		const firstUnanswered = all.find((one) => one.status === "unanswered");
 		return {
 			conversationId: group.conversationId,
+			...ownerField,
 			inputs,
 			inputTexts,
 			outcome: {
@@ -1505,6 +1526,24 @@ export class EventBus {
 				reason: firstUnanswered?.reason ?? "unanswered",
 			},
 		};
+	}
+
+	/** The current SessionMeta owner; absent means the key is omitted from the event. */
+	async #ownerOf(
+		conversationId: ConversationId,
+		context: Context,
+	): Promise<string | undefined> {
+		try {
+			const meta = await this.#harness.snapshot(
+				SessionMetaDoc,
+				conversationId,
+				context,
+			);
+			return meta?.owner;
+		} catch (error) {
+			console.error("event-bus: owner read failed:", error);
+			return undefined;
+		}
 	}
 
 	/** One visible entry by exact id (`undefined` on absence or read failure). */

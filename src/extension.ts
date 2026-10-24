@@ -124,6 +124,8 @@ export interface HandlerContext {
  */
 export type RunSettledEvent = {
 	readonly conversationId: ConversationId;
+	/** The conversation owner at delivery; absent when the conversation is ownerless. */
+	readonly owner?: string;
 	readonly inputs: readonly SubmissionId[];
 	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
 	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
@@ -169,19 +171,26 @@ export type MemoryEventApi = {
  * `type` field.
  */
 export type ExtensionLifecyclePayload = {
-	conversationCreated: { readonly conversationId: ConversationId };
+	conversationCreated: {
+		readonly conversationId: ConversationId;
+		readonly owner?: string;
+	};
 	conversationForked: {
 		readonly childId: ConversationId;
 		readonly parentId: ConversationId;
 		readonly at: EntryId;
+		/** The CHILD's owner at delivery; absent when the child is ownerless. */
+		readonly owner?: string;
 	};
 	conversationArchived: {
 		readonly conversationId: ConversationId;
 		readonly archived: boolean;
+		readonly owner?: string;
 	};
 	conversationIdle: {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
+		readonly owner?: string;
 	};
 	/** Gateway C6: one terminal interaction transition — the payload mirrors
 	 *  the record's terminal envelope fields. */
@@ -190,6 +199,7 @@ export type ExtensionLifecyclePayload = {
 		readonly callId: string;
 		readonly kind: string;
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+		readonly owner?: string;
 	};
 };
 
