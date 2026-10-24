@@ -65,6 +65,9 @@ import { startNotifications } from "./notifications.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import { loadOrCreateKey, signUrl } from "./images/sign.js";
+import { ImageCache } from "./images/cache.js";
+import type { FetchDeps } from "./images/fetch.js";
+import { registerImageRoutes } from "./routes/images.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -119,9 +122,26 @@ export async function createServer(
 		 * an engine loaded — the field is the serve composition's report.
 		 */
 		gateway?: GatewayHandle;
+		/**
+		 * The image-proxy fetch deps override (U7 Task 3): tests inject a
+		 * resolver + CA so the proxy's upstream is a local TLS fixture
+		 * instead of the public internet. Absent = the real `dns.lookup`
+		 * and wall clock (the deploy default).
+		 */
+		imageFetch?: Partial<FetchDeps>;
 	},
 ): Promise<FastifyInstance> {
-	const app = Fastify({ logger: false });
+	const app = Fastify({
+		logger: false,
+		// U7 Task 3: the image route's GET `src=data:` form carries up to
+		// 192 KiB of base64 in the query string, which counts toward
+		// Node's 16 KiB default header cap and would be 431-rejected at
+		// the HTTP layer before the route's own §11.1 413 could answer.
+		// 256 KiB admits the cap-sized URL; the route enforces the real
+		// limit (192 KiB) itself. The POST form (the body path) stays the
+		// recommended shape for long data URLs.
+		http: { maxHeaderSize: 256 * 1024 },
+	});
 	const listenHost = options?.listenHost ?? "0.0.0.0";
 	const env = options?.env ?? {};
 	// The one body-limit error shape (spec §6.2, W2): Fastify's
@@ -207,6 +227,19 @@ export async function createServer(
 	// image sources through it at serve time.
 	const imageKey = await loadOrCreateKey(config.stateDir);
 	const imageSign = (u: string): string => signUrl(imageKey, u, Date.now());
+	// The proxy cache + fetch deps (U7 Task 3, spec §11.2): the on-disk
+	// LRU under `<cacheDir>/images/`; the deps are the real resolver +
+	// clock unless a test injects its own.
+	const imageCache = new ImageCache(config.cacheDir);
+	const imageDeps: FetchDeps = {
+		resolve: async (host) => {
+			const { lookup } = await import("node:dns/promises");
+			const addresses = await lookup(host, { all: true, verbatim: true });
+			return addresses.map((entry) => entry.address);
+		},
+		now: Date.now,
+		...options?.imageFetch,
+	};
 	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
 		maxUploadBytes: config.maxUploadBytes,
 		// Signs https image URLs into expiring proxy URLs (U7 Task 1,
@@ -236,6 +269,7 @@ export async function createServer(
 		watchersByConversation: new Map(),
 		surfaces: surfacesService,
 		sse,
+		imageProxy: { cache: imageCache, deps: imageDeps, key: imageKey },
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
@@ -287,6 +321,10 @@ export async function createServer(
 	// `/v1/ext/<slug>/assets/*` serves the package's declared
 	// `sigrun.assets` dir, realpath-contained, sniffed content types.
 	registerExtAssetRoutes(app, ctx);
+	// The image-proxy routes (UI-blocks U7 Task 3, spec §11.2): signed
+	// remote fetches through the on-disk LRU, the `src=` asset/data form,
+	// and the POST long-data-URL form.
+	registerImageRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable

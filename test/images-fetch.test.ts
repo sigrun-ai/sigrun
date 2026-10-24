@@ -597,7 +597,7 @@ describe("fetchImage", () => {
 			const h = await harness();
 			h.onRequest((_req, res) => {
 				// Raw socket writes: a status line that never completes.
-				res.socket?.write("HTTP/1.1 200 OK\\r");
+				res.socket?.write("HTTP/1.1 200 OK\r");
 				const drip = setInterval(() => {
 					res.socket?.write("x");
 				}, 9_000);

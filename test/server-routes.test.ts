@@ -91,6 +91,10 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["POST", "/v1/ext/:slug/surfaces/:id/actions"],
 	["PUT", "/v1/ext/:slug/surfaces/:id/uploads/:field/:name"],
 	["GET", "/v1/ext/:slug/assets/*"],
+	// The image proxy (UI-blocks U7 Task 3, spec §11.2): GET the signed
+	// or src form; POST the long data-URL body form.
+	["GET", "/v1/image"],
+	["POST", "/v1/image"],
 	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
 	["GET", "/v1/interactions"],
 	["POST", "/v1/conversations"],
@@ -363,6 +367,7 @@ describe("server route table", () => {
 				"/v1/extensions/:slug/secrets",
 				"/v1/extensions/:slug/secrets/:key",
 				"/v1/extensions/:slug/settings",
+				"/v1/image",
 				"/v1/ext/:slug/surfaces/:id",
 				"/v1/ext/:slug/surfaces/:id/data",
 				"/v1/ext/:slug/surfaces/:id/actions",

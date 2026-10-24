@@ -205,15 +205,20 @@ function hop(options: {
 			},
 		);
 		let timedOut = false;
-		req.on("error", (cause) => {
-			if (timedOut) return; // the destroy() below already rejected
-			reject(new FetchRefusal("network", `connecting to ${url.hostname}: ${cause.message}`));
-		});
 		const timer = setTimeout(() => {
 			timedOut = true;
 			req.destroy();
 			reject(new FetchRefusal("timeout", `deadline reached awaiting headers from ${url.hostname}`));
 		}, remaining);
+		// The absolute timer: cleared on headers (above) AND on a
+		// connect-phase error — an early failure must not leave a timer
+		// holding the event loop (or fake clocks) open for the full
+		// remaining budget (Task 3 pickup of Task 2's review P2).
+		req.on("error", (cause) => {
+			clearTimeout(timer);
+			if (timedOut) return; // the destroy() above already rejected
+			reject(new FetchRefusal("network", `connecting to ${url.hostname}: ${cause.message}`));
+		});
 		req.end();
 	});
 }
