@@ -493,7 +493,7 @@ export class SurfaceState {
 			this.#emit();
 		}
 		void this.#transport
-			.act({ action: name, payload, actionId })
+			.act({ action: name, type: action.type, payload, actionId })
 			.then((result) => {
 				// A move whose entry is already gone (the 10 s timeout fired)
 				// is STALE: no ops, no notice — the user already saw it fail.

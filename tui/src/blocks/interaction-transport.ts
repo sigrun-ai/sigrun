@@ -71,13 +71,17 @@ export function createInteractionTransport(
 		},
 		async act(body: {
 			action: string;
+			type: string;
 			payload: JsonValue;
 			actionId: string;
 		}): Promise<SurfaceActResult> {
 			// Only the root form's submit is the answer (Review fix): a
 			// callout button or a live-mode edit dispatch must never POST
 			// `{values}` — ignore it (an ok result keeps the form happy).
-			if (body.action !== options.submitAction) {
+			// The gate checks the action KIND too (fix round 2): a callout
+			// itemAction or a live-mode edit NAMED "submit" still isn't
+			// one.
+			if (body.type !== "submit" || body.action !== options.submitAction) {
 				return { ok: true, rev: 0 };
 			}
 			// The form's submit payload is `{values}` (spec §5.6) — the

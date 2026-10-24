@@ -60,8 +60,10 @@ export interface BlockCtx {
 	/**
 	 * Server-side field errors, keyed by field name (spec §5.6: a
 	 * rejected action's `{error: {field}}` surfaces under that field).
+	 * Mutable: the surface view refreshes it in place on the shared
+	 * context so a cached component sees the latest errors.
 	 */
-	readonly serverErrors?: Readonly<Record<string, string>>;
+	serverErrors?: Readonly<Record<string, string>>;
 	/** The host's edit-in-$EDITOR seam (longtext with `syntax: code`;
 	 *  spec §5.6). The form calls it with the current text; it returns
 	 *  the new text (the TUI suspends while the editor owns the

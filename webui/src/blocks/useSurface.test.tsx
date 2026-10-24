@@ -93,6 +93,7 @@ class FakeTransport implements SurfaceTransport {
 
 	act(body: {
 		action: string;
+		type: string;
 		payload: JsonValue;
 		actionId: string;
 	}): Promise<SurfaceActResult> {

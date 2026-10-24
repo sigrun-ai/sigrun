@@ -447,25 +447,21 @@ describe("InteractionPrompter", () => {
 		prompter.dispose();
 	});
 
-	test("expiry mid-stepper: the 404 refetches, shows the status, keeps typed values read-only", async () => {
+	test("expiry mid-form: the 404 refetches, shows the status, keeps typed values read-only", async () => {
+		// A FLAT form (no sections): a digit on the review STEP would be
+		// inert for an unrelated reason, so the read-only assertion below
+		// is only load-bearing on a flat form (fix round 2).
+		const flatChildren: readonly unknown[] = [
+			{ type: "markdown", text: "Approve the deploy?" },
+			{ type: "text", name: "note", label: "Note" },
+		];
 		const settledRecord = {
 			kind: "acme.confirm",
 			callId: "c1",
 			status: "expired",
 			createdAt: 1,
 			settledAt: 2,
-			body: interaction("c1", {
-				children: [
-					questionSection("q1", "First", [
-						{ id: "a", label: "A" },
-						{ id: "b", label: "B" },
-					]),
-					questionSection("q2", "Second", [
-						{ id: "x", label: "X" },
-						{ id: "y", label: "Y" },
-					]),
-				],
-			}).body,
+			body: interaction("c1", { children: flatChildren }).body,
 		} as unknown as InteractionWire;
 		const stub = stubClient({
 			answerResult: () =>
@@ -476,39 +472,29 @@ describe("InteractionPrompter", () => {
 				),
 			getResult: () => Promise.resolve(settledRecord),
 		});
-		stub.setPending([
-			interaction("c1", {
-				children: [
-					questionSection("q1", "First", [
-						{ id: "a", label: "A" },
-						{ id: "b", label: "B" },
-					]),
-					questionSection("q2", "Second", [
-						{ id: "x", label: "X" },
-						{ id: "y", label: "Y" },
-					]),
-				],
-			}),
-		]);
+		stub.setPending([interaction("c1", { children: flatChildren })]);
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
 		await flush();
 		prompter.beginAnswer();
-		prompter.handleKey("\r");
-		prompter.handleKey("\t");
-		prompter.handleKey("\r");
+		// Type a note, Tab to the submit row, Enter submits (404s).
+		// (Letters, not digits: the prompter consumes digits as the
+		// one-question gate's direct-pick shortcut.)
+		prompter.handleKey("x");
+		prompter.handleKey("y");
 		prompter.handleKey("\t");
 		prompter.handleKey("\r");
 		await flush();
+		// The letters landed ("xy") — the field IS live pre-settle.
+		expect(prompter.render(60).join("\n")).toContain("xy");
 		// The refetch happened (the settle-refetch path).
 		expect(stub.getCalls).toEqual([{ id: 1, callId: "c1" }]);
 		// The settled status renders in the header (Review fix: the
-		// header carries the record's status); typed values stay
-		// visible, read-only (the review step shows them).
+		// header carries the record's status); the typed value stays
+		// visible, read-only.
 		const lines = prompter.render(60).join("\n");
 		expect(lines).toContain("expired");
-		expect(lines).toContain("A");
-		expect(lines).toContain("X");
+		expect(lines).toContain("xy");
 		expect(prompter.answerMode).toBe(false);
 		// A further poll still lists the record pending (the server's
 		// pending index lags the settle) — the settled envelope must NOT
@@ -516,9 +502,17 @@ describe("InteractionPrompter", () => {
 		await prompter.kickAndWait();
 		const after = prompter.render(60).join("\n");
 		expect(after).toContain("expired");
-		// Read-only: a digit dispatches nothing (no re-submit).
+		// Read-only: a keystroke dispatches nothing (no re-submit). On
+		// the flat form this is LOAD-BEARING — pre-fix the letter lands
+		// in the field and the Tab+Enter re-dispatches the submit.
 		prompter.beginAnswer();
-		prompter.handleKey("1");
+		prompter.handleKey("z");
+		await flush();
+		// The letter never landed in the (now read-only) field…
+		expect(prompter.render(60).join("\n")).not.toContain("xyz");
+		// …and no second submit is possible.
+		prompter.handleKey("\t");
+		prompter.handleKey("\r");
 		await flush();
 		expect(stub.answerCalls).toHaveLength(1);
 		prompter.dispose();
@@ -606,6 +600,71 @@ describe("InteractionPrompter", () => {
 		await flush();
 		expect(stub.answerCalls).toHaveLength(1);
 		expect(stub.answerCalls[0]?.answer).toEqual({ values: { ok: true } });
+		prompter.dispose();
+	});
+
+	test("a callout action NAMED \"submit\" (type \"edit\") is NOT the answer — the gate checks the kind", async () => {
+		// Fix round 2: name alone must never settle — a callout
+		// itemAction named "submit" (the default onSubmit name) is an
+		// `edit`, and an edit never answers.
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				children: [{ type: "markdown", text: "heads up" }],
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		const state = prompter.surface;
+		expect(state).toBeDefined();
+		state?.dispatch({ type: "edit", name: "submit" }, {});
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		// The real submit still answers.
+		state?.dispatch({ type: "submit", name: "submit" }, { values: { ok: true } });
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		prompter.dispose();
+	});
+
+	test("a live-mode edit NAMED the onSubmit action is NOT the answer (the gate checks the kind)", async () => {
+		// Fix round 2: mode "live" + onSubmit dispatches
+		// `{type: "edit", name: onSubmit}` on the debounce — settling on
+		// the first keystroke would be the bug.
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				tree: {
+					v: TREE_V,
+					root: {
+						type: "form",
+						id: "ask",
+						bind: "/values",
+						mode: "live",
+						onSubmit: "save",
+						children: [{ type: "text", name: "note", label: "Note" }],
+					},
+				},
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		const state = prompter.surface;
+		expect(state).toBeDefined();
+		// The debounce's dispatch (driven directly: the debounce timing
+		// is the form's own suite's concern).
+		state?.dispatch({ type: "edit", name: "save" }, { values: { note: "typed" } });
+		await flush();
+		expect(stub.answerCalls).toEqual([]);
+		// The real submit with the onSubmit name answers.
+		state?.dispatch({ type: "submit", name: "save" }, { values: { note: "typed" } });
+		await flush();
+		expect(stub.answerCalls).toHaveLength(1);
+		expect(stub.answerCalls[0]?.answer).toEqual({ values: { note: "typed" } });
 		prompter.dispose();
 	});
 

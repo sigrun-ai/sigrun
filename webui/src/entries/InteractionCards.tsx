@@ -149,6 +149,7 @@ function InteractionSurface(props: {
 				const name = "name" in action ? action.name : action.type;
 				void props.transport.act({
 					action: name,
+					type: action.type,
 					payload,
 					actionId: `answer-${Date.now()}`,
 				});

@@ -19,7 +19,7 @@
  */
 
 import { act, createElement as h } from "react";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { render, textContent } from "../test-utils";
 import type { Tree } from "@sigrun/shared/blocks";
 import type { AmbientWire, InteractionWire, SigrunClient } from "../api";
@@ -435,6 +435,112 @@ describe("InteractionCard (tree rendering)", () => {
 				node.props.className.includes("blk-form-submit"),
 		);
 		expect(submits).toHaveLength(0);
+	});
+
+	test("a callout itemAction NAMED \"submit\" never answers (type gate)", async () => {
+		// Fix round 2: the transport gate keys on the action TYPE — a
+		// callout button whose name collides with the form's submit name
+		// must not POST `{values}`. The callout sits in a section (the
+		// form's top-level children render fields only).
+		const answerInteraction = vi.fn().mockResolvedValue({
+			callId: "c1",
+			status: "answered",
+			answer: { values: {} },
+		});
+		const client = makeClient({ answerInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			body: formTree([
+				{
+					type: "section",
+					children: [
+						{
+							type: "callout",
+							tone: "info",
+							title: "Heads up",
+							actions: [
+								{
+									id: "note",
+									label: "Acknowledge",
+									action: { type: "edit", name: "submit" },
+								},
+							],
+						},
+					],
+				},
+				{ type: "text", name: "note", label: "Note" },
+			]),
+		};
+		const renderer = render(
+			h(InteractionCard, { conversationId: 7, interaction, client }),
+		);
+		// Click the callout's action button: no answer POST.
+		const calloutButton = renderer.root.findAllByType("button" as never).find(
+			(b) => textContent(b as never) === "Acknowledge",
+		);
+		expect(calloutButton).toBeDefined();
+		await act(async () => {
+			calloutButton?.props.onClick();
+		});
+		expect(answerInteraction).not.toHaveBeenCalled();
+		// The real submit still answers.
+		const submit = renderer.root.findAllByType("button" as never).find(
+			(b) =>
+				typeof (b.props as { className?: string }).className === "string" &&
+				(b.props as { className: string }).className.includes("blk-form-submit"),
+		);
+		await act(async () => {
+			submit?.props.onClick();
+		});
+		expect(answerInteraction).toHaveBeenCalledTimes(1);
+	});
+
+	test("a live-mode edit NAMED the onSubmit action never answers (type gate)", async () => {
+		// Fix round 2: mode "live" with onSubmit set debounces an `edit`
+		// action NAMED "save" — the name alone must not settle the record.
+		const answerInteraction = vi.fn().mockResolvedValue({
+			callId: "c1",
+			status: "answered",
+			answer: { values: {} },
+		});
+		const client = makeClient({ answerInteraction });
+		const interaction: InteractionWire = {
+			...BASE,
+			body: {
+				v: TREE_V,
+				root: {
+					type: "form",
+					id: "ask",
+					bind: "/values",
+					mode: "live",
+					onSubmit: "save",
+					children: [{ type: "text", name: "note", label: "Note" }],
+				},
+			} as Tree,
+		};
+		vi.useFakeTimers();
+		try {
+			const renderer = render(
+				h(InteractionCard, { conversationId: 7, interaction, client }),
+			);
+			const input = renderer.root.find(
+				(node) => node.type === "input" && node.props["aria-label"] === "Note",
+			);
+			await act(async () => {
+				input.props.onChange({ target: { value: "typed" } });
+			});
+			// The edit dispatches on the 300 ms debounce; give the fired
+			// microtask a flush before asserting (fake timers advance the
+			// clock but the promise still resolves async).
+			await act(async () => {
+				vi.advanceTimersByTime(400);
+			});
+			await act(async () => {});
+			// The debounce fired an edit dispatch — the transport ignored it.
+			expect(answerInteraction).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

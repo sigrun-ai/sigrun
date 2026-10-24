@@ -72,9 +72,9 @@ describe("createExtTransport", () => {
 		expect(stub.calls[0]?.input).toBe(
 			`/v1/ext/fixture-surfaces/surfaces/board?params=${encodeURIComponent('{"board":"b2"}')}`,
 		);
-		await transport.act({ action: "move", payload: { itemId: "c1" }, actionId: "a1" });
+		await transport.act({ action: "move", type: "move", payload: { itemId: "c1" }, actionId: "a1" });
 		expect(stub.calls[1]?.init?.body).toBe(
-			'{"action":"move","payload":{"itemId":"c1"},"actionId":"a1","params":{"board":"b2"}}',
+			'{"action":"move","type":"move","payload":{"itemId":"c1"},"actionId":"a1","params":{"board":"b2"}}',
 		);
 	});
 

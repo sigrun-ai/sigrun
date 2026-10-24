@@ -30,6 +30,12 @@ export class SurfaceView implements Component {
 	readonly #unicode: boolean;
 	readonly #options: RenderOptions;
 	#component: Component | undefined;
+	/** The ONE mutable render context (fix round 2): the cached root
+	 *  component holds this object by reference, so a post-settle
+	 *  `setAccess("read")` reaches the form's `#readOnly` — refreshing
+	 *  `data`/`access` per render instead of rebuilding the component
+	 *  keeps typed state. */
+	#ctx: BlockCtx | undefined;
 
 	constructor(
 		surface: SurfaceState,
@@ -47,21 +53,30 @@ export class SurfaceView implements Component {
 		this.#options = opts.options ?? {};
 	}
 
-	/** The render context (rebuilt per view change — data updates flow
-	 *  through SurfaceState's change events; the host re-renders). */
-	#ctx(): BlockCtx {
+	/** The render context, refreshed from `#surface.view` on every
+	 *  access (data updates and access swaps flow through to the
+	 *  cached component's `#readOnly`/binding reads). */
+	#context(): BlockCtx {
 		const view = this.#surface.view;
-		return {
-			data: view.data,
-			theme: this.#theme,
-			locale: this.#locale,
-			access: view.access === "write" ? "write" : "read",
-			unicode: this.#unicode,
-			dispatch: (action, payload) => this.#surface.dispatch(action, payload),
-			view: { values: this.#surface.viewValues },
-			setView: (path, value) => this.#surface.setView(path, value),
-			serverErrors: this.#surface.serverErrors,
-		};
+		if (this.#ctx === undefined) {
+			this.#ctx = {
+				data: view.data,
+				theme: this.#theme,
+				locale: this.#locale,
+				access: view.access === "write" ? "write" : "read",
+				unicode: this.#unicode,
+				dispatch: (action, payload) => this.#surface.dispatch(action, payload),
+				view: { values: this.#surface.viewValues },
+				setView: (path, value) => this.#surface.setView(path, value),
+				serverErrors: this.#surface.serverErrors,
+			};
+			return this.#ctx;
+		}
+		const ctx = this.#ctx;
+		ctx.data = view.data;
+		ctx.access = view.access === "write" ? "write" : "read";
+		ctx.serverErrors = this.#surface.serverErrors;
+		return ctx;
 	}
 
 	render(width: number): string[] {
@@ -84,7 +99,11 @@ export class SurfaceView implements Component {
 	 *  must not wait for a paint). */
 	#readyComponent(tree: Tree): Component {
 		if (this.#component === undefined) {
-			this.#component = renderBlock(tree.root, this.#ctx(), this.#options);
+			this.#component = renderBlock(tree.root, this.#context(), this.#options);
+		} else {
+			// The component is cached: refresh the shared context so it
+			// renders against the CURRENT view (access, data, errors).
+			this.#context();
 		}
 		return this.#component;
 	}
