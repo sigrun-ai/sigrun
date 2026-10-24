@@ -267,7 +267,7 @@ describe("WorkerPool lifecycle", { timeout: 30_000 }, () => {
 		const replacement = (await next).client;
 		expect(replacement.pid).toBe(before);
 		expect(getOrThrow(await running).exitCode).toBe(0);
-		await vi.waitFor(() => expect(replacement.pid).toBeUndefined());
+		await vi.waitFor(async () => expect(await alive(before)).toBe(false));
 		expect(await pid(replacement)).not.toBe(before);
 		await getOrThrow(await (await next).env.exec("printf after", undefined, context));
 	});
