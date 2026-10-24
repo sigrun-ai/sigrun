@@ -137,27 +137,38 @@ export function registerLoginRoutes(
 		const browserKey = cookieValue(request, LOGIN_STATE_COOKIE) ?? "";
 		const flow = flows.take(state, browserKey);
 		if (flow === undefined) return browserError(reply, 400, flows.failure(state, browserKey));
+		// State names ONE provider. A flow remains consumed on mismatch, so it
+		// cannot be replayed through the original provider after this attempt.
+		if (flow.provider !== provider) return browserError(reply, 400, "invalid_state");
 		// Validate again at the trust boundary: a resolver must never receive an
 		// open redirect even if the stored flow was constructed elsewhere.
 		const safeFlow = { ...flow, returnTo: safeReturnTo(flow.returnTo) };
+		let result: LoginResult;
 		try {
-			const result = await binding.contribution.complete(
+			result = await binding.contribution.complete(
 				{ state: flow.state, callbackUrl: flow.callbackUrl, data: flow.data },
 				{ query, ...(request.body === undefined ? {} : { body: request.body }) },
 				{ abortSignal: request.raw.signal },
 			);
-			if (options.resolver === undefined) {
-				// Task 5 supplies the resolver. State remains consumed; the caller
-				// must restart rather than replay a completed identity proof.
-				return await reply.code(501).send({ error: "not_implemented" });
-			}
-			return await options.resolver({ provider, result, flow: safeFlow, request, reply });
 		} catch (error) {
-			if (options.resolver !== undefined && reply.sent) throw error;
 			console.error(
 				`sigrun: login provider ${provider} complete failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return browserError(reply, 400, "provider_error");
+		}
+		if (options.resolver === undefined) {
+			// Task 5 supplies the resolver. State remains consumed; the caller
+			// must restart rather than replay a completed identity proof.
+			return await reply.code(501).send({ error: "not_implemented" });
+		}
+		try {
+			return await options.resolver({ provider, result, flow: safeFlow, request, reply });
+		} catch (error) {
+			if (reply.sent) throw error;
+			console.error(
+				`sigrun: login resolver failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return browserError(reply, 500, "login_failed");
 		}
 	};
 	app.get("/v1/auth/callback/:provider", callback);

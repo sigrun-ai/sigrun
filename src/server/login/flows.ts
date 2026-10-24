@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import type { LoginFlow } from "../../extension.js";
 
 const FLOW_TTL_MS = 600_000;
+/** Generous per-server ceiling; oldest entries are evicted under pressure. */
+export const MAX_ACTIVE_LOGIN_FLOWS = 10_000;
 
 /** The server-side login state handed to the resolver after `complete`. */
 export interface StoredFlow extends LoginFlow {
@@ -40,6 +42,14 @@ export class LoginFlows {
 		this.#now = now;
 	}
 
+	get size(): number {
+		return this.#flows.size;
+	}
+
+	get consumedSize(): number {
+		return this.#consumed.size;
+	}
+
 	start(
 		provider: string,
 		opts: { returnTo: string; link?: string },
@@ -58,6 +68,7 @@ export class LoginFlows {
 			expiresAt: this.#now() + FLOW_TTL_MS,
 		};
 		this.#flows.set(state, flow);
+		this.#evictOldest(this.#flows);
 		return flow;
 	}
 
@@ -78,6 +89,7 @@ export class LoginFlows {
 			browserKey,
 			expiresAt: flow.expiresAt,
 		});
+		this.#evictOldest(this.#consumed);
 		return flow;
 	}
 
@@ -88,6 +100,14 @@ export class LoginFlows {
 		return this.#consumed.get(state)?.browserKey === browserKey
 			? "invalid_state"
 			: "login_expired";
+	}
+
+	#evictOldest<T>(entries: Map<string, T>): void {
+		while (entries.size > MAX_ACTIVE_LOGIN_FLOWS) {
+			const oldest = entries.keys().next();
+			if (oldest.done === true) break;
+			entries.delete(oldest.value);
+		}
 	}
 
 	#prune(): void {

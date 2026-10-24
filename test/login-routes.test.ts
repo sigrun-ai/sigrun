@@ -160,6 +160,33 @@ describe("login provider routes", () => {
 		expect(complete).toHaveBeenCalledOnce();
 	});
 
+	test("state is bound to its provider and cannot complete through another provider", async () => {
+		const otherComplete = vi.fn(async () => ({ subject: "other", profile: {} }));
+		setFixtureLoginProviders([
+			fixtureLoginProvider,
+			{ ...fixtureLoginProvider, id: "other", complete: otherComplete },
+		]);
+		try {
+			const { app } = await bootServer();
+			const started = await begin(app);
+			const callback = (provider: string) => app.inject({
+				method: "GET",
+				url: `/v1/auth/callback/${provider}?state=${started.state}`,
+				headers: { cookie: started.cookie },
+			});
+			const mismatch = await callback("login:fixture-login:other");
+			expect(mismatch.statusCode).toBe(400);
+			expect(mismatch.headers.location).toBe("/login?error=invalid_state");
+			expect(otherComplete).not.toHaveBeenCalled();
+			const original = await callback("login:fixture-login:fixture");
+			expect(original.statusCode).toBe(400);
+			expect(original.headers.location).toBe("/login?error=invalid_state");
+			expect(otherComplete).not.toHaveBeenCalled();
+		} finally {
+			setFixtureLoginProviders([fixtureLoginProvider]);
+		}
+	});
+
 	test("state presented with a different browser cookie redirects invalid_state", async () => {
 		const { app } = await bootServer();
 		const started = await begin(app);
@@ -275,6 +302,28 @@ describe("login provider routes", () => {
 			expect(complete).toHaveBeenCalledOnce();
 		} finally {
 			complete.mockRestore();
+			log.mockRestore();
+		}
+	});
+
+	test("resolver failures use login_failed, not provider_error", async () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { app } = await bootServer({ resolver: async () => {
+				throw new Error("account store unavailable");
+			} });
+			const started = await begin(app);
+			const response = await app.inject({
+				method: "GET",
+				url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+				headers: { cookie: started.cookie },
+			});
+			expect(response.statusCode).toBe(500);
+			expect(response.headers.location).toBe("/login?error=login_failed");
+			expect(response.body).not.toContain("account store unavailable");
+			expect(log.mock.calls.some((call) => call.join(" ").includes("resolver failed") && call.join(" ").includes("account store unavailable"))).toBe(true);
+			expect(log.mock.calls.some((call) => call.join(" ").includes("complete failed"))).toBe(false);
+		} finally {
 			log.mockRestore();
 		}
 	});
