@@ -114,7 +114,10 @@ export function FormBlockView(props: {
 				name: block.onSubmit ?? "submit",
 				...(block.turn === undefined ? {} : { turn: block.turn }),
 			},
-			{ values: { ...next } },
+			// The optimistic-concurrency rev rides every submit (the
+			// surface-state rev this render is based on; a save-shaped
+			// action handler reads it, every other handler ignores it).
+			{ values: { ...next }, rev: actions.rev ?? 0 },
 		);
 		return true;
 	};

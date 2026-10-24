@@ -52,7 +52,19 @@ function makeProvidersHarness(init?: {
 			},
 		]).map((entry) => [entry.provider, { ...entry }]),
 	);
-	const settings: SettingsWire = { toolRoster: [], effective: {} };
+	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [] };
+	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
+	const sectionsResponse = {
+		sections: [
+			{ slug: "core", id: "general", title: "General", icon: "key" },
+			{ slug: "core", id: "tools", title: "Tools", icon: "edit" },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image" },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
+			{ slug: "core", id: "extensions", title: "Extensions", icon: "add" },
+		],
+		index: [],
+	};
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let m: RegExpMatchArray | null;
@@ -65,7 +77,13 @@ function makeProvidersHarness(init?: {
 				text: () => Promise.resolve(""),
 			});
 		}
-		if (input === "/v1/settings") {
+		if (input === "/v1/meta") {
+			body = { version: "0.1.0", harnessVersion: "1.0.0" };
+		} else if (input === "/v1/settings/sections") {
+			body = sectionsResponse;
+		} else if (input === "/v1/extensions") {
+			body = { extensions: [] };
+		} else if (input === "/v1/settings") {
 			body = settings;
 		} else if (input === "/v1/providers") {
 			body = { providers: [...entries.values()] };
@@ -146,18 +164,19 @@ function renderPanel(
 
 /** Click one section-nav button. */
 async function openSection(
-	renderer: TestRenderer.ReactTestRenderer,
-	name: string,
+renderer: TestRenderer.ReactTestRenderer,
+name: string,
 ) {
-	const button = renderer.root
-		.findAllByType("button")
-		.find(
-			(node) =>
-				node.props.className === "settings-nav-item" &&
-				node.props.children === name,
-		);
-	if (button === undefined) throw new Error(`section ${name} not rendered`);
-	await act(async () => {
+const button = renderer.root
+.findAllByType("button")
+.find(
+(node) =>
+typeof node.props.className === "string" &&
+node.props.className.startsWith("settings-nav-item") &&
+node.props.children === name,
+);
+if (button === undefined) throw new Error(`section ${name} not rendered`);
+await act(async () => {
 		button.props.onClick();
 	});
 }

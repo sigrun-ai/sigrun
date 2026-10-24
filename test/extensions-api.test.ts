@@ -195,9 +195,11 @@ describe("GET/PUT /v1/extensions/:slug/settings", () => {
 		});
 		expect(put.status).toBe(200);
 		expect(put.json()).toEqual({
-			theme: "dark",
-			retries: 2,
-			nested: { on: true },
+			// U4 §13.2: the settings response carries the stored object under
+			// `settings` plus the pending-restart slot (extension fields
+			// default live — always `[]`).
+			settings: { theme: "dark", retries: 2, nested: { on: true } },
+			pendingRestart: [],
 		});
 		const get = await call(app, {
 			method: "GET",
@@ -206,9 +208,8 @@ describe("GET/PUT /v1/extensions/:slug/settings", () => {
 		});
 		expect(get.status).toBe(200);
 		expect(get.json()).toEqual({
-			theme: "dark",
-			retries: 2,
-			nested: { on: true },
+			settings: { theme: "dark", retries: 2, nested: { on: true } },
+			pendingRestart: [],
 		});
 		// The endpoint writes the SAME file the scoped handle reads: the
 		// extension's own `host.stores.settings` and this API are one store.
@@ -228,7 +229,7 @@ describe("GET/PUT /v1/extensions/:slug/settings", () => {
 			token: adminToken,
 		});
 		expect(get.status).toBe(200);
-		expect(get.json()).toEqual({});
+		expect(get.json()).toEqual({ settings: {}, pendingRestart: [] });
 	});
 
 	test("a non-admin PUT → 403; a non-object body → 400", async () => {

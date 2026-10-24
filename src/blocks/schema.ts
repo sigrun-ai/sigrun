@@ -538,6 +538,7 @@ const NumberField = Type.Object({
 const ToggleField = Type.Object({
 	...FieldBase,
 	type: Type.Literal("toggle"),
+	default: Type.Optional(Type.Boolean()),
 });
 
 const ChoiceField = Type.Object({

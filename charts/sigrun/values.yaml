@@ -153,7 +153,14 @@ controllers:
           # chart deliberately does not implement one.)
           - name: SIGRUN_CONFIG_DIR
             value: /data/config
-          # The store-dir contract (Tasks 1–7: the explicit env is used
+          # The supervised posture (§13.3): the Deployment restarts the
+          # container after an intentional exit 0, so `POST
+          # /v1/admin/restart` (admin) is safe to offer. The Dockerfile
+          # deliberately does NOT set this — a bare `docker run` without
+          # a restart policy must report not_supervised instead.
+          - name: SIGRUN_SUPERVISED
+            value: "1"
+          # The store-dir contract (Tasks 1-7: the explicit env is used
           # VERBATIM, stores.ts tier 1): data + state are the durable
           # buckets — subdirs of the /data PVC mount, next to the db,
           # workspace, and config above. Cache is the regenerable root:

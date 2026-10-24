@@ -680,11 +680,38 @@ In the web UI the Jobs panel (the clock icon in the header) lists jobs
 with a “Run now” button; in the TUI `/jobs` prints the table (name,
 next run, last outcome).
 
+## Restarting
+
+Restart-only settings (the registry marks every key `live` or
+`restart` — a `restart` key's stored write applies at the next boot)
+surface as `pendingRestart` on `GET /v1/settings`, and the settings
+panel lists them with a Restart button for admins. The button calls:
+
+- `POST /v1/admin/restart` — admin-only; runs the normal graceful
+  shutdown (SSE drains, in-flight runs reach a durable boundary and
+  resume after the restart — pi-durable's recovery) and exits 0, so the
+  deployment's supervisor brings the process back. Both channels show
+  "Restarting…" and reconnect when `/readyz` answers.
+
+The route exists ONLY when the server knows something restarts it:
+`server.supervised` (env `SIGRUN_SUPERVISED=1`, strict true/false)
+must be true, else 409 `not_supervised`. The Helm chart and
+`docker/docker-compose.yaml` set the env (both restart the container);
+the Dockerfile deliberately does NOT — a bare `docker run` without a
+restart policy would exit and stay down. `sigrun run` (the local TUI
+launcher) is not supervised either; there the callout says "Restart
+sigrun to apply" with no button. `GET /v1/meta` reports the posture
+(`supervised`).
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, auth posture
   (`methods`, `claimed`), capabilities.
-- `GET`/`PATCH /v1/settings` — the settings file (see above).
+- `GET`/`PATCH /v1/settings` — the settings file (see above);
+  responses carry `pendingRestart` (restart keys whose stored value
+  differs from boot) and PATCH reports `{applied, pending}`.
+- `POST /v1/admin/restart` — graceful restart (admin, supervised
+  deploys only; see Restarting).
 - `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
   the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
   now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are
