@@ -4,11 +4,15 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect } from "vitest";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { buildUserPolicy, defaultModuleTrees, type UserPolicy } from "../../src/sandbox/policy.js";
+import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../../src/sandbox/pool.js";
+import type { DirectoryUser } from "../../src/harness/identity/users.js";
 
 const execFileAsync = promisify(execFile);
 export const CORE_ROOT = join(import.meta.dirname, "..", "..");
@@ -69,6 +73,114 @@ export const WORKER_PID_PROBE = `
 require("node:fs").writeFileSync(process.argv[1], String(process.ppid));
 console.log("WORKER_PID:" + process.ppid);
 `;
+
+export interface NativeProbes { readonly path: string; readonly available: boolean; readonly reason?: string }
+
+export async function buildNativeProbes(root: string): Promise<NativeProbes> {
+	const path = join(root, "native-probe");
+	try {
+		await execFileAsync("gcc", ["-D_GNU_SOURCE", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", join(import.meta.dirname, "native-probe.c"), "-o", path], { timeout: 30_000 });
+		return { path, available: true };
+	} catch (error) {
+		return { path, available: false, reason: `native probes require gcc and a working linker: ${String(error)}` };
+	}
+}
+
+export interface PrivilegedHelper { readonly helper?: string; readonly native?: string; readonly reason?: string }
+
+/** An opt-in privileged-runner fixture; never uses sudo from the test itself. */
+export async function privilegedHelper(root: string): Promise<PrivilegedHelper> {
+	if (process.env.SIGRUN_SANDBOX_IT_PRIVILEGED !== "1") {
+		return { reason: "requires a privileged runner with SIGRUN_SANDBOX_IT_PRIVILEGED=1 and CAP_SETFCAP; uid-switch controls cannot discriminate without helper file capabilities" };
+	}
+	const helper = join(root, "sigrun-sandbox-cap");
+	const target = join(root, "native-probe-cap");
+	await copyFile(HELPER, helper);
+	await copyFile(join(root, "native-probe"), target);
+	await chmod(helper, 0o755);
+	await chmod(target, 0o755);
+	try {
+		await execFileAsync("setcap", ["cap_setuid,cap_setgid+ep", helper], { timeout: 10_000 });
+		const { stdout } = await execFileAsync(helper, ["run", "--", target, "identity"], {
+			env: { SIGRUN_SANDBOX_POLICY: JSON.stringify({ ...nativePolicy(target), uid: 1, gid: 1, groups: [1] }) },
+			timeout: 10_000,
+		});
+		if (stdout.trim() !== "IDENTITY_OK:1:1") return { reason: "privileged helper self-check did not switch to uid/gid 1" };
+		return { helper, native: target };
+	} catch (error) {
+		return { reason: `privileged runner could not grant cap_setuid,cap_setgid+ep to the helper: ${String(error)}` };
+	}
+}
+
+export function nativePolicy(nativePath: string, extraRw: readonly string[] = []): { ro: string[]; rw: string[]; minAbi: number } {
+	return {
+		ro: ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys"],
+		rw: [...extraRw, nativePath],
+		minAbi: 6,
+	};
+}
+
+export function helperCommand(helper: string, policy: unknown, command: readonly string[]): string {
+	return `SIGRUN_SANDBOX_POLICY=${shellQuote(JSON.stringify(policy))} ${[shellQuote(helper), "run", "--", ...command.map(shellQuote)].join(" ")}`;
+}
+
+export function directCommand(command: readonly string[]): string {
+	return command.map(shellQuote).join(" ");
+}
+
+export function spawnUnjailed(command: string, args: readonly string[], env: NodeJS.ProcessEnv = {}): ChildProcess {
+	return spawn(command, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+export interface DirectWorker {
+	readonly pool: WorkerPool;
+	readonly client: ReturnType<WorkerPool["client"]>;
+	readonly env: import("@earendil-works/pi-durable/env").ExecutionEnv;
+	readonly policy: UserPolicy;
+}
+
+/** Production policy + production helper launcher; no testLauncher fallback. */
+export async function directWorker(root: string, idleMinutes = 10): Promise<DirectWorker> {
+	const workspace = join(root, "workspace"), home = join(root, "home"), stateDir = join(root, "state");
+	await Promise.all([workspace, home, stateDir].map((path) => mkdir(path, { recursive: true })));
+	const record: DirectoryUser = { user: "lifecycle", admin: false, source: "cli", workspace, createdAt: 1 };
+	const managed = {
+		roots: { configDir: join(root, "config"), dataDir: join(root, "data"), cacheDir: join(root, "cache"), stateDir },
+		storagePath: join(root, "data", "sigrun.db"),
+		coreRoot: CORE_ROOT,
+		userAreas: (user: string) => join(root, "data", "users", user),
+	};
+	const built = buildUserPolicy(record, { managed, nodeBinDir: process.execPath, moduleTrees: defaultModuleTrees(CORE_ROOT) });
+	if (!built.ok) throw new Error(`direct worker policy failed: ${built.reason}`);
+	const pool = new WorkerPool({
+		launcher: sandboxLauncher(HELPER, resolveWorkerEntry(CORE_ROOT)),
+		idleMinutes: () => idleMinutes,
+		log: () => undefined,
+		workerEntry: resolveWorkerEntry(CORE_ROOT),
+	});
+	const client = pool.client(built.policy);
+	const { SandboxedExecutionEnv } = await import("../../src/sandbox/sandboxed-env.js");
+	const env = new SandboxedExecutionEnv(client, built.policy.workspace);
+	await env.exists(".", BACKGROUND_CONTEXT);
+	return { pool, client, env, policy: built.policy };
+}
+
+export async function captureWorkerPid(env: DirectWorker["env"], path: string): Promise<number> {
+	let output = "";
+	const result = await env.exec(nodeProbe(WORKER_PID_PROBE, path), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
+	expect(result.ok, output).toBe(true);
+	const pid = Number((await readFile(path, "utf8")).trim());
+	expect(Number.isInteger(pid) && pid > 0, output).toBe(true);
+	return pid;
+}
+
+export function terminateOutside(pid: number): void {
+	process.kill(pid, "SIGKILL");
+}
+
+export function workerPidFromFile(path: string): Promise<number> {
+	return readFile(path, "utf8").then((value) => Number(value.trim()));
+}
 
 export interface ToolResult { readonly name: string; readonly isError: boolean; readonly text: string }
 interface ConversationView { entries: { kind: string; model?: { role: string; toolName?: string; isError?: boolean; content?: { type: string; text?: string }[] }[] }[] }
