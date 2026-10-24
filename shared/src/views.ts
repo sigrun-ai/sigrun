@@ -904,7 +904,8 @@ export interface WhoamiResponse {
 	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
 	readonly admin: boolean;
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy" | "host";
+	readonly method: "none" | "token" | "session" | "proxy" | "host";
+	readonly provider?: string;
 }
 
 // ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
@@ -978,6 +979,8 @@ export interface TokenWire {
 	readonly name: string;
 	readonly user: string;
 	readonly createdAt: number;
+	readonly kind?: "api" | "session";
+	readonly expiresAt?: number;
 }
 
 /** The `POST /v1/auth/tokens` payload (Task 4): the secret once, the

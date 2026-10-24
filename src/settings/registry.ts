@@ -349,6 +349,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "the auth pipeline's method list resolves once at server construction",
 	},
 	{
+		key: "server.auth.sessionDays",
+		apply: "live",
+		section: "server",
+		reason: "read from the live settings store when a login creates a session",
+	},
+	{
 		key: "server.auth.proxy.trustedProxies",
 		apply: "restart",
 		section: "server",

@@ -354,7 +354,9 @@ export interface Principal {
 	readonly admin: boolean;
 	/** True for the `SIGRUN_API_TOKEN` service principal. */
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy" | "host";
+	readonly method: "none" | "token" | "session" | "proxy" | "host";
+	/** The login provider that issued a session principal. */
+	readonly provider?: string;
 }
 
 /** One extension HTTP route, mounted at `/v1/ext/<slug>/<path>`. */

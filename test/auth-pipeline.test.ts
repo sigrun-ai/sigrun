@@ -28,11 +28,13 @@ import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { sessionTtlMs } from "../src/server/routes/auth.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 interface TestServer {
 	app: FastifyInstance;
 	opened: OpenedHarness;
+	config: SigrunConfig;
 	dir: string;
 }
 
@@ -79,6 +81,7 @@ async function bootServer(options: {
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
+		settingsDir: join(dir, "config"),
 		...(claimed ? { identity: await seededIdentity(dir) } : {}),
 		...(options.extensionSpecifiers === undefined
 			? {}
@@ -96,7 +99,7 @@ async function bootServer(options: {
 		await rm(dir, { recursive: true, force: true });
 	};
 	cleanups.push(teardown);
-	return { app, opened, dir };
+	return { app, opened, config, dir };
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -212,6 +215,16 @@ describe("token method", () => {
 		});
 		expect(response.statusCode).toBe(401);
 	});
+});
+
+test("sessionTtlMs reads sessionDays live and defaults to 30 days", async () => {
+	const { opened, config } = await bootServer({
+		env: { SIGRUN_AUTH: "token" },
+	});
+	const ctx = { opened, config } as Parameters<typeof sessionTtlMs>[0];
+	expect(sessionTtlMs(ctx)).toBe(30 * 86_400_000);
+	opened.settings.update({ server: { auth: { sessionDays: 2 } } });
+	expect(sessionTtlMs(ctx)).toBe(2 * 86_400_000);
 });
 
 // ---------------------------------------------------------------------------

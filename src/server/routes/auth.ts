@@ -31,6 +31,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
 import { ipAllowed } from "../auth/ip.js";
+import { sessionCookieOf } from "../auth/pipeline.js";
 import { LoginLimiter } from "../auth/login-limiter.js";
 import type {
 	AccountsResponse,
@@ -70,6 +71,14 @@ export function buildSessionCookie(
 	);
 }
 
+/** The live session TTL consumed by the login flow (days → milliseconds). */
+export function sessionTtlMs(ctx: ServerContext): number {
+	const days =
+		ctx.opened.settings.read().server?.auth?.sessionDays ??
+		ctx.config.auth.sessionDays;
+	return days * 86_400_000;
+}
+
 /** The wire form of one token record — never the digest. */
 function tokenWire(record: TokenRecord): TokenWire {
 	return {
@@ -77,6 +86,8 @@ function tokenWire(record: TokenRecord): TokenWire {
 		name: record.name,
 		user: record.user,
 		createdAt: record.createdAt,
+		...(record.kind === undefined ? {} : { kind: record.kind }),
+		...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
 	};
 }
 
@@ -122,7 +133,14 @@ export function registerAuthRoutes(
 			.send({ user: user.user });
 	});
 
-	app.post("/v1/auth/logout", async (_request, reply) => {
+	app.post("/v1/auth/logout", async (request, reply) => {
+		const presented = sessionCookieOf(request);
+		const record = presented
+			? ctx.opened.identity.tokens.verify(presented)
+			: undefined;
+		if (record?.kind === "session") {
+			await ctx.opened.identity.tokens.revoke(record.id);
+		}
 		return await reply
 			.code(204)
 			.header(
@@ -147,6 +165,7 @@ export function registerAuthRoutes(
 			admin: principal.admin,
 			service: principal.service,
 			method: principal.method,
+			...(principal.provider === undefined ? {} : { provider: principal.provider }),
 		};
 	});
 

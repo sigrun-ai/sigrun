@@ -189,6 +189,8 @@ export interface ServerSettings {
 	readonly auth?: {
 		/** `SIGRUN_AUTH` — csv of `token`/`proxy`; absent = derive from the listen host. */
 		readonly methods?: readonly ("token" | "proxy")[];
+		/** Browser-session lifetime in days. Positive integer; default 30; LIVE. */
+		readonly sessionDays?: number;
 		readonly proxy?: { readonly trustedProxies?: readonly string[]; readonly secretHeader?: string;
 			readonly userHeader?: string; readonly groupsHeader?: string; readonly nameHeader?: string;
 			readonly emailHeader?: string; readonly autoProvision?: boolean };

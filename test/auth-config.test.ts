@@ -162,6 +162,7 @@ describe("loadConfig: SIGRUN_AUTH / SIGRUN_AUTH_TRUSTED_PROXIES", () => {
 	test("defaults: Authelia header names, autoProvision on, empty lists", () => {
 		const config = loadConfig({ ...MODEL_ENV });
 		expect(config.auth).toEqual({
+			sessionDays: 30,
 			methods: undefined,
 			proxy: {
 				trustedProxies: [],

@@ -145,6 +145,8 @@ export interface WebuiConfig {
  * listen-host default applied) is {@link effectiveMethods}.
  */
 export interface AuthConfig {
+	/** Browser-session lifetime in days (live; default 30). */
+	sessionDays: number;
 	/**
 	 * The explicit authenticator list, in try order. `undefined` = derive
 	 * from the listen host (`[]` on loopback, `["token"]` otherwise —
@@ -471,6 +473,7 @@ export const DEFAULT_PROVIDER_REFRESH_MINUTES = 15;
  * defaulted — they exist only when env provides them.
  */
 export const DEFAULT_AUTH: AuthConfig = {
+	sessionDays: 30,
 	methods: undefined,
 	proxy: {
 		trustedProxies: [],
@@ -785,6 +788,7 @@ function parseAuth(env: Env, server?: ServerSettings["auth"]): AuthConfig {
 	const token = env.SIGRUN_API_TOKEN?.trim() || undefined;
 	const secret = env.SIGRUN_PROXY_SECRET?.trim() || undefined;
 	return {
+		sessionDays: server?.sessionDays ?? DEFAULT_AUTH.sessionDays,
 		methods,
 		proxy: {
 			trustedProxies,
@@ -1172,11 +1176,15 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		proxySection !== undefined ||
 		config.auth.adminGroups.length > 0 ||
 		config.auth.allowedHosts !== undefined ||
-		config.auth.allowedOrigins !== undefined
+		config.auth.allowedOrigins !== undefined ||
+		config.auth.sessionDays !== DEFAULT_AUTH.sessionDays
 			? {
 					...(config.auth.methods === undefined
 						? {}
 						: { methods: [...config.auth.methods] }),
+					...(config.auth.sessionDays === DEFAULT_AUTH.sessionDays
+						? {}
+						: { sessionDays: config.auth.sessionDays }),
 					...(proxySection === undefined ? {} : { proxy: proxySection }),
 					...(config.auth.adminGroups.length > 0
 						? { adminGroups: [...config.auth.adminGroups] }
@@ -1434,6 +1442,7 @@ export function effectiveServerSection(
 		"memorySeam",
 		"queueMax",
 	]);
+	emit("auth.sessionDays", config.auth.sessionDays, ["auth", "sessionDays"]);
 	emit("isolation.mode", config.isolation.mode, ["isolation", "mode"]);
 	emit("isolation.osUsers", config.isolation.osUsers, ["isolation", "osUsers"]);
 	emit("isolation.workerIdleMinutes", config.isolation.workerIdleMinutes, [

@@ -30,7 +30,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { rm } from "node:fs/promises";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import {
 	AccountLinkConflictError,
 	AccountStore,
@@ -219,28 +219,40 @@ describe("TokenStore", () => {
 	});
 
 	test("every mutation prunes expired records before writing", async () => {
-		const tokens = new TokenStore(join(tmpDir("prune"), "api-tokens.json"));
 		const now = 1_700_000_000_000;
-		const expired = await tokens.createSession("alice", "login:oauth:acme", 1, now);
-		const other = await tokens.createSession("alice", "login:oauth:other", 1, now);
-		await tokens.create("laptop", "alice");
-		expect(tokens.verify(expired.token, now + 1)).toBeUndefined();
-		expect(tokens.list()).toHaveLength(3);
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const createStore = new TokenStore(join(tmpDir("prune-create"), "api-tokens.json"));
+			await createStore.createSession("alice", "login:oauth:acme", 1, now);
+			clock.mockReturnValue(now + 1);
+			await createStore.create("laptop", "alice");
+			expect(createStore.list().map((record) => record.name)).toEqual(["laptop"]);
 
-		await tokens.revoke(other.record.id);
-		expect(tokens.list().map((record) => record.id)).toEqual([other.record.id]);
-		await tokens.createSession("bob", "login:oauth:acme", 60_000, now + 2);
-		expect(tokens.list().map((record) => record.user)).toEqual(["bob"]);
+			clock.mockReturnValue(now);
+			const sessionStore = new TokenStore(join(tmpDir("prune-session"), "api-tokens.json"));
+			await sessionStore.createSession("alice", "login:oauth:acme", 1, now);
+			clock.mockReturnValue(now + 1);
+			await sessionStore.createSession("bob", "login:oauth:acme", 60_000, now + 1);
+			expect(sessionStore.list().map((record) => record.user)).toEqual(["bob"]);
 
-		const expiredForRevokeAll = await tokens.createSession("alice", "login:oauth:acme", 1, now);
-		const bob = tokens.list()[0]!;
-		expect(await tokens.revokeAllFor("nobody")).toBe(0);
-		expect(tokens.list().map((record) => record.id)).toEqual([
-			bob.id,
-			expiredForRevokeAll.record.id,
-		]);
-		await tokens.revokeAllFor("alice");
-		expect(tokens.list().map((record) => record.id)).toEqual([bob.id]);
+			clock.mockReturnValue(now);
+			const revokeStore = new TokenStore(join(tmpDir("prune-revoke"), "api-tokens.json"));
+			await revokeStore.createSession("alice", "login:oauth:acme", 1, now);
+			const live = await revokeStore.create("laptop", "alice");
+			clock.mockReturnValue(now + 1);
+			await revokeStore.revoke(live.record.id);
+			expect(revokeStore.list()).toEqual([]);
+
+			clock.mockReturnValue(now);
+			const allStore = new TokenStore(join(tmpDir("prune-all"), "api-tokens.json"));
+			await allStore.createSession("alice", "login:oauth:acme", 1, now);
+			await allStore.create("laptop", "alice");
+			clock.mockReturnValue(now + 1);
+			expect(await allStore.revokeAllFor("alice")).toBe(1);
+			expect(allStore.list()).toEqual([]);
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	test("revokeAllFor removes only that user's tokens", async () => {

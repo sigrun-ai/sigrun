@@ -75,7 +75,7 @@ function bearerOf(request: FastifyRequest): string | undefined {
 }
 
 /** The `sigrun_session` cookie value (naive parse; the cookie is ours). */
-function sessionCookieOf(request: FastifyRequest): string | undefined {
+export function sessionCookieOf(request: FastifyRequest): string | undefined {
 	const raw = headerOf(request, "cookie");
 	if (raw === undefined) return undefined;
 	for (const pair of raw.split(";")) {
@@ -286,7 +286,10 @@ function resolveToken(
 		...(user.email === undefined ? {} : { email: user.email }),
 		admin: user.admin,
 		service: false,
-		method: "token",
+		method: record.kind === "session" ? "session" : "token",
+		...(record.kind === "session" && record.provider !== undefined
+			? { provider: record.provider }
+			: {}),
 	};
 }
 
