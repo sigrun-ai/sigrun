@@ -173,3 +173,52 @@ test("openHarness wires the workspace env builder into HarnessOptions", async ()
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+/**
+ * Env-leak fix (multi-user spec §8): agent shells get an allowlisted
+ * environment, never sigrun's own. The probes stand in for
+ * `SIGRUN_API_TOKEN` and a provider key without touching real config vars.
+ */
+const LEAK_PROBES = {
+	SIGRUN_LEAK_PROBE: "sigrun-secret-probe",
+	ACME_PROVIDER_API_KEY: "provider-secret-probe",
+};
+
+async function envOutput(
+	options: { env?: Record<string, string>; inheritEnv?: boolean } | undefined,
+): Promise<string> {
+	const workspacePath = await mkdtemp(join(tmpdir(), "sigrun-workspace-"));
+	Object.assign(process.env, LEAK_PROBES);
+	try {
+		const env = await createWorkspaceService().forConversation(
+			conversation,
+			defaultWorkspacePrefs(workspacePath),
+		);
+		let output = "";
+		const result = await env.exec(
+			"env",
+			{ ...options, onOutput: (text) => { output += text; } },
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.ok).toBe(true);
+		return output;
+	} finally {
+		for (const key of Object.keys(LEAK_PROBES)) delete process.env[key];
+		await rm(workspacePath, { recursive: true, force: true });
+	}
+}
+
+test("agent shells never inherit sigrun's environment, even when asked to (the bash tool's shape)", async () => {
+	// pi-durable's bash tool passes exactly this: an empty env and inheritEnv.
+	const output = await envOutput({ env: {}, inheritEnv: true });
+	expect(output).not.toContain("sigrun-secret-probe");
+	expect(output).not.toContain("provider-secret-probe");
+	expect(output).toMatch(/^PATH=/m);
+	expect(output).toMatch(/^HOME=/m);
+});
+
+test("agent shells keep the variables a caller sets explicitly", async () => {
+	const output = await envOutput({ env: { ACME_TOOL_VAR: "kept" } });
+	expect(output).toMatch(/^ACME_TOOL_VAR=kept$/m);
+	expect(output).not.toContain("sigrun-secret-probe");
+});

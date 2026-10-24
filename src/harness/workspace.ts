@@ -21,7 +21,7 @@ import type {
 	HarnessOptions,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { AgentExecutionEnv } from "./agent-env.js";
 import { isAbsolute, resolve } from "node:path";
 import type { LocalWorkspace } from "../config.js";
 
@@ -67,8 +67,10 @@ export type EnvBuilder = NonNullable<HarnessOptions["env"]>;
  *
  * v1 resolves every conversation from `prefs.defaultWorkspace` — the spec's
  * static configuration — so the service carries no state of its own. The
- * returned env is an upstream `NodeExecutionEnv` (pi-durable's local Node
- * `ExecutionEnv`): its `FileSystem.id` is the stable `"node:local"` (every
+ * returned env is an {@link AgentExecutionEnv}: upstream's local Node
+ * `ExecutionEnv` with commands confined to the agent environment
+ * allowlist (multi-user spec §8). Its `FileSystem.id` is the stable
+ * `"node:local"` (every
  * local environment sees the same files), and its `Shell` runs commands
  * rooted at the workspace `cwd`. A fresh instance per call matches how
  * upstream builds envs; equal ids see the same files whatever their `cwd`.
@@ -84,7 +86,7 @@ export function createWorkspaceService(): WorkspaceService {
 					`Unsupported workspace type: ${JSON.stringify(workspace.type)}`,
 				);
 			}
-			return new NodeExecutionEnv({ cwd: workspace.path });
+			return new AgentExecutionEnv({ cwd: workspace.path });
 		},
 	};
 }
