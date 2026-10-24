@@ -234,15 +234,20 @@ async function outsideProbe(args: string[]): Promise<OutsideControl> {
 	});
 }
 
-function recordControl(caseName: string, control: OutsideControl, outsideOperation: string): void {
+function recordControl(
+	caseName: string,
+	control: OutsideControl,
+	outsideOperation: string,
+	allowedPhases: readonly string[],
+): void {
 	if (control.allowed) {
 		console.info(`sandbox-it control: ${caseName} discriminates Landlock; outside-jail ${outsideOperation} succeeded`);
 		return;
 	}
-	// Only the operation's own access-denied phase can be a host-policy
-	// control. A successful attach followed by WAIT/DETACH failure is a
-	// broken test, never evidence that Yama denied the attach.
-	if (control.phase !== "ATTACH" || (control.errno !== "EPERM" && control.errno !== "EACCES")) {
+	// Each caller names the phase where ITS access attempt occurs. A later
+	// WAIT/DETACH/FLUSH or any unrelated failure is a broken control, never
+	// evidence that host policy denied the intended operation.
+	if (!allowedPhases.includes(control.phase) || (control.errno !== "EPERM" && control.errno !== "EACCES")) {
 		throw new Error(`outside-jail control failed in ${control.phase} for ${caseName}: ${control.output}`);
 	}
 	console.warn(`sandbox-it control: ${caseName} is Yama/host-policy-satisfied and NOT Landlock-discriminating; outside-jail ${outsideOperation} denied (${control.output.trim()})`);
@@ -251,7 +256,7 @@ function recordControl(caseName: string, control: OutsideControl, outsideOperati
 async function ptraceDenied(caseName: string, pid: number): Promise<void> {
 	expect(native.available, native.reason).toBe(true);
 	const control = await outsideProbe(["ptrace", String(pid)]);
-	recordControl(caseName, control, "ptrace(PTRACE_ATTACH)");
+	recordControl(caseName, control, "ptrace(PTRACE_ATTACH)", ["ATTACH"]);
 	const denied = await bob.bash(directCommand(probeCommand("ptrace", pid)));
 	expect(denied.isError, denied.text).toBe(true);
 	expect(denied.text).toMatch(/ATTACH:(EPERM|EACCES)/);
@@ -285,7 +290,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		expect(own.isError, own.text).toBe(false);
 		expect(own.text).toContain("READ_OK:");
 		const control = await outsideProbe(["read-environ", String(deployment.pid)]);
-		recordControl("sigrun environ", control, "read /proc/<sigrun>/environ");
+		recordControl("sigrun environ", control, "read /proc/<sigrun>/environ", ["OPEN_ENVIRON", "READ_ENVIRON"]);
 		await probeDenied(READ_PROBE, `/proc/${deployment.pid}/environ`, "READ_ERRNO");
 	});
 
@@ -293,7 +298,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		expect(native.available, native.reason).toBe(true);
 		expect(servicePid).toBeGreaterThan(0);
 		const control = await outsideProbe(["read-environ", String(servicePid)]);
-		recordControl("service environ", control, "read /proc/<service>/environ");
+		recordControl("service environ", control, "read /proc/<service>/environ", ["OPEN_ENVIRON", "READ_ENVIRON"]);
 		await probeDenied(READ_PROBE, `/proc/${servicePid}/environ`, "READ_ERRNO");
 	});
 
@@ -304,9 +309,9 @@ describeKernel("real tools in real two-user conversations", () => {
 		const own = await bob.bash(nodeProbe(READ_PROBE, "/proc/self/environ"));
 		expect(own.isError, own.text).toBe(false);
 		const envControl = await outsideProbe(["read-environ", aliceWorkerPid]);
-		recordControl("other worker environ", envControl, "read /proc/<worker>/environ");
+		recordControl("other worker environ", envControl, "read /proc/<worker>/environ", ["OPEN_ENVIRON", "READ_ENVIRON"]);
 		const memControl = await outsideProbe(["mem-open", aliceWorkerPid]);
-		recordControl("other worker mem", memControl, "open /proc/<worker>/mem");
+		recordControl("other worker mem", memControl, "open /proc/<worker>/mem", ["OPEN_MEM"]);
 		await probeDenied(READ_PROBE, `/proc/${aliceWorkerPid}/environ`, "READ_ERRNO");
 		await probeDenied(MEM_PROBE, `/proc/${aliceWorkerPid}/mem`, "MEM_ERRNO");
 	});
@@ -316,7 +321,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		expect(own.isError, own.text).toBe(false);
 		expect(own.text).toContain("MEM_OK");
 		const control = await outsideProbe(["mem-open", String(deployment.pid)]);
-		recordControl("sigrun mem", control, "open /proc/<sigrun>/mem");
+		recordControl("sigrun mem", control, "open /proc/<sigrun>/mem", ["OPEN_MEM"]);
 		await probeDenied(MEM_PROBE, `/proc/${deployment.pid}/mem`, "MEM_ERRNO");
 	});
 
@@ -329,6 +334,7 @@ describeKernel("real tools in real two-user conversations", () => {
 	test("abstract Unix sockets outside the jail cannot be connected", async () => {
 		expect(native.available, native.reason).toBe(true);
 		const control = await outsideProbe(["abstract-connect", abstractName]);
+		recordControl("abstract socket connect", control, "connect abstract Unix socket", ["CONNECT_ABSTRACT"]);
 		expect(control.allowed, control.output).toBe(true);
 		expect(control.output).toContain("ABSTRACT_CONNECT_OK");
 		const denied = await bob.bash(directCommand(probeCommand("abstract-connect", abstractName)));
