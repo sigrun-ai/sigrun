@@ -581,6 +581,13 @@ export interface OpenHarnessOptions {
 		 * exercise the abandon path.
 		 */
 		readonly workerDeadlineMs?: number;
+		/**
+		 * The shutdown live-run settle wait (gateway §8.13 / engine Task 12),
+		 * default 10 s. The admin-restart durability test pins a small value:
+		 * its restart flush budget is macro-task scale, while the default
+		 * wait deliberately outlastes real streaming runs.
+		 */
+		readonly shutdownSettleWaitMs?: number;
 	};
 	/**
 	 * The activity clock (UI refresh A1), default `() => new Date()` — the
@@ -1228,6 +1235,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		idleThresholdMs: options.eventBus?.idleThresholdMs ?? memorySeam.idleThresholdMs,
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
+		shutdownSettleWaitMs: options.eventBus?.shutdownSettleWaitMs,
 		// W3 Task 4: the hub's subscription is installed at open —
 		// synchronous, no-blocking-work (the SSE route's filtering side
 		// lane does its own async work). Exposed so the bus's open() can

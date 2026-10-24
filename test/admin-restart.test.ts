@@ -334,7 +334,7 @@ describe("GET /v1/meta supervised", () => {
 });
 
 describe("restart durability (Review Focus 4)", () => {
-	test("a run in flight at restart has its submission durable; a fresh harness resumes it", async () => {
+	test("a run in flight at restart has its submission durable; a fresh harness resumes it", { timeout: 30_000 }, async () => {
 		// The streaming run: the faux provider emits tokens slowly (4/s),
 		// so the run is still in flight when the restart callback's
 		// graceful shutdown runs. `process.exit` is STUBBED — the fresh
@@ -369,6 +369,11 @@ describe("restart durability (Review Focus 4)", () => {
 			extensions: [contributor],
 			env: {},
 			settingsDir: dir,
+			// The durability contract this test pins: shutdown does NOT
+			// wait out the streaming run — it cuts at the durable boundary
+			// so the fresh process resumes it. The default 10 s live-run
+			// wait would outlast the test's macro-task flush budget.
+			eventBus: { shutdownSettleWaitMs: 50 },
 		});
 		// The restart callback runs the REAL ordered shutdown — the
 		// serve composition's `createShutdown` over this app+harness
@@ -380,10 +385,19 @@ describe("restart durability (Review Focus 4)", () => {
 		const exitStub = vi
 			.spyOn(process, "exit")
 			.mockImplementation((() => undefined) as never);
+		// The restart task's promise, so the durability leg can await the
+		// graceful shutdown instead of relying on a macrotask flush count.
+		let resolveRestart: () => void = () => {};
+		const restartTask = new Promise<void>((resolve) => {
+			resolveRestart = resolve;
+		});
 		const app = await createServer(opened, config, [], {
 			env: bootEnv,
 			listenHost: "127.0.0.1",
-			onRestart: () => shutdown?.(),
+			onRestart: async () => {
+				await shutdown?.();
+				resolveRestart();
+			},
 		});
 		try {
 			// The run: a real submission through the HTTP surface so the
@@ -418,10 +432,26 @@ describe("restart durability (Review Focus 4)", () => {
 				url: "/v1/admin/restart",
 			});
 			expect(restart.statusCode).toBe(202);
-			await flushRestart();
+			// The shutdown's live-run settle wait is real-time (default 10 s;
+			// pinned to 50 ms at this boot) — flushRestart's macrotask budget
+			// cannot cover it, so await the restart task itself before the
+			// exit assertion. The route defers the graceful shutdown past
+			// the 202; restartTask resolves when exitStub(0) has run.
+			await restartTask;
 			expect(exitStub).toHaveBeenCalledWith(0);
 			// The fresh harness on the SAME database: resume picks the run
 			// up — the submission survives the restart and the answer lands.
+			// A SECOND response is queued: the first run's generation was
+			// cut mid-stream at the durable boundary (the shutdown's
+			// settle wait is far shorter than the 17 s stream), so the
+			// faux queue is empty — the resumed run needs an answer to
+			// emit. (The real-world analog: the model re-generates on
+			// resume.)
+			faux.setResponses([
+				fauxAssistantMessage(
+					"a long slow answer that keeps the run streaming through the restart",
+				),
+			]);
 			const reopened = await openHarness(config, {
 				identity: await seededIdentity(dir),
 				extensions: [contributor],
