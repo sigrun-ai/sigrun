@@ -59,22 +59,41 @@ jobs:
   sandbox-it:
     runs-on: ubuntu-24.04
     steps:
+      # The file:../sigrun-ext-* dependencies and shared/dist build outputs
+      # must exist before the real serve() child can boot.
       - uses: actions/checkout@v5
+        with:
+          path: sigrun
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-codemode
+          path: sigrun-ext-codemode
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-mcp
+          path: sigrun-ext-mcp
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-tool-search
+          path: sigrun-ext-tool-search
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: sigrun/package-lock.json
       - run: npm ci
+        working-directory: sigrun
+      - run: npm run build
+        working-directory: sigrun
       - name: Build the kernel integration helper
-        working-directory: sandbox
+        working-directory: sigrun/sandbox
         run: cargo build --locked --release
       # Hard gate, deliberately before vitest: a runner without Landlock ABI 6
       # fails this job rather than converting every boundary test to a skip.
       - name: Require Landlock ABI 6 or newer
         run: |
-          probe="$(sandbox/target/release/sigrun-sandbox probe)"
+          probe="$(sigrun/sandbox/target/release/sigrun-sandbox probe)"
           printf '%s\n' "$probe"
           abi="$(node -e '
             const value = JSON.parse(process.argv[1]);
@@ -86,6 +105,7 @@ jobs:
             exit 1
           fi
       - run: SIGRUN_SANDBOX_IT=1 npx vitest run test/sandbox-it
+        working-directory: sigrun
 
   sandbox:
     runs-on: ubuntu-latest

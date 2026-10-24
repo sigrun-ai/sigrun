@@ -1,6 +1,7 @@
 /** Process-level fixtures for the opt-in kernel boundary suite. */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -49,7 +50,12 @@ export const MEM_PROBE = `
 const fs = require("node:fs");
 try {
  const fd = fs.openSync(process.argv[1], "r");
- try { fs.readSync(fd, Buffer.alloc(1), 0, 1, 0); } finally { fs.closeSync(fd); }
+ // Pread a real executable mapping: /proc/self/mem has no mapping at
+ // address zero, while opening another process's mem is ptrace-gated.
+ const maps = fs.readFileSync("/proc/self/maps", "utf8");
+ const address = Number.parseInt(maps.match(/([0-9a-f]+)-[0-9a-f]+ r-xp /)[1], 16);
+ fs.readSync(fd, Buffer.alloc(1), 0, 1, address);
+ fs.closeSync(fd);
  console.log("MEM_OK");
 } catch (error) { console.log("MEM_ERRNO:" + (error && error.code || "UNKNOWN")); process.exitCode = 25; }
 `;
@@ -83,6 +89,8 @@ export interface Deployment {
 	readonly aliceWorkspace: string;
 	readonly bobWorkspace: string;
 	readonly baseUrl: string;
+	readonly aliceToken: string;
+	readonly bobToken: string;
 	readonly pid: number;
 	readonly logs: () => string;
 	stop(): Promise<void>;
@@ -104,12 +112,28 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 	const aliceWorkspace = join(root, "alice-workspace"), bobWorkspace = join(root, "bob-workspace");
 	await Promise.all([configDir, dataDir, stateDir, cacheDir, aliceWorkspace, bobWorkspace].map((path) => mkdir(path, { recursive: true })));
 	const usersPath = join(configDir, "users.json");
+	const tokenFixturePath = join(root, "test-tokens.json");
+	let tokens: { aliceToken: string; bobToken: string };
 	if (!existsSync(usersPath)) {
+		tokens = {
+			aliceToken: `sgr_alice_${randomBytes(32).toString("base64url")}`,
+			bobToken: `sgr_bob_${randomBytes(32).toString("base64url")}`,
+		};
 		await writeFile(usersPath, `${JSON.stringify([
 			{ user: "alice", admin: true, source: "cli", workspace: aliceWorkspace, createdAt: 1 },
 			{ user: "bob", admin: false, source: "cli", workspace: bobWorkspace, createdAt: 2, ...(options?.grant === undefined ? {} : { grants: [{ path: options.grant, access: "rw" }] }) },
 		], null, 2)}\n`, { mode: 0o600 });
+		await writeFile(tokenFixturePath, `${JSON.stringify(tokens)}\n`, { mode: 0o600 });
+		const digest = (token: string): string => createHash("sha256").update(token).digest("hex");
+		await writeFile(join(configDir, "api-tokens.json"), `${JSON.stringify([
+			{ id: "boundary-alice", name: "boundary", user: "alice", sha256: digest(tokens.aliceToken), createdAt: 1 },
+			{ id: "boundary-bob", name: "boundary", user: "bob", sha256: digest(tokens.bobToken), createdAt: 2 },
+		], null, 2)}\n`, { mode: 0o600 });
+	} else {
+		tokens = JSON.parse(await readFile(tokenFixturePath, "utf8")) as { aliceToken: string; bobToken: string };
 	}
+	const settingsPath = join(configDir, "settings.json");
+	if (!existsSync(settingsPath)) await writeFile(settingsPath, '{"namingModel":false}\n');
 	const port = await reservePort();
 	const child = spawn(process.execPath, ["--import", "tsx", join(CORE_ROOT, "test", "sandbox-it", "server-entry.ts")], {
 		cwd: CORE_ROOT,
@@ -136,7 +160,7 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 			}
 			if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); throw new Error(`sigrun did not stop\n${logs()}`); }
 		};
-		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, pid: child.pid!, logs, stop };
+		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: child.pid!, logs, stop };
 	} catch (error) {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		throw error;
@@ -159,21 +183,22 @@ async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => s
 }
 
 export class AgentConversation {
-	private constructor(readonly deployment: Deployment, readonly id: number, readonly user: "alice" | "bob") {}
+	private constructor(readonly deployment: Deployment, readonly id: number, readonly token: string) {}
 	static async create(deployment: Deployment, user: "alice" | "bob"): Promise<AgentConversation> {
-		const response = await fetch(`${deployment.baseUrl}/v1/conversations`, { method: "POST", headers: { "x-sigrun-user": user } });
+		const token = user === "alice" ? deployment.aliceToken : deployment.bobToken;
+		const response = await fetch(`${deployment.baseUrl}/v1/conversations`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
 		const body = await response.text(); expect(response.status, body).toBe(201);
-		return new AgentConversation(deployment, (JSON.parse(body) as { id: number }).id, user);
+		return new AgentConversation(deployment, (JSON.parse(body) as { id: number }).id, token);
 	}
 	async run(calls: { name: string; args: Record<string, unknown> }[]): Promise<ToolResult[]> {
 		const script = { calls: calls.map((call, index) => ({ ...call, id: `boundary-${Date.now()}-${index}` })) };
 		const submitted = await fetch(`${this.deployment.baseUrl}/v1/conversations/${this.id}/submissions?waitMs=60000`, {
-			method: "POST", headers: { "x-sigrun-user": this.user, "content-type": "application/json" },
+			method: "POST", headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
 			body: JSON.stringify({ input: [{ type: "text", text: JSON.stringify(script) }] }),
 		});
 		const submittedBody = await submitted.text(); expect(submitted.status, submittedBody).toBe(202);
 		expect((JSON.parse(submittedBody) as any).submission?.status, submittedBody).toBe("done");
-		const view = await fetch(`${this.deployment.baseUrl}/v1/conversations/${this.id}`, { headers: { "x-sigrun-user": this.user } });
+		const view = await fetch(`${this.deployment.baseUrl}/v1/conversations/${this.id}`, { headers: { authorization: `Bearer ${this.token}` } });
 		const viewBody = await view.text(); expect(view.status, viewBody).toBe(200);
 		const results = toolResults(JSON.parse(viewBody) as ConversationView);
 		expect(results.map((result) => result.name)).toEqual(calls.map((call) => call.name));
@@ -184,7 +209,16 @@ export class AgentConversation {
 }
 
 export async function assertFileExists(path: string): Promise<void> {
-	const info = await stat(path); expect(info.isFile(), path).toBe(true); expect(info.size, `fixture is empty: ${path}`).toBeGreaterThan(0);
+	const info = await stat(path);
+	expect(info.isFile(), path).toBe(true);
+	// procfs reports size 0 even for readable environ/maps. Read those
+	// targets outside the jail as the fixture control instead of stat size.
+	if (path.startsWith("/proc/")) {
+		const contents = await readFile(path);
+		expect(contents.length, `proc fixture is empty: ${path}`).toBeGreaterThan(0);
+		return;
+	}
+	expect(info.size, `fixture is empty: ${path}`).toBeGreaterThan(0);
 }
 export async function plantCoreEnv(): Promise<{ path: string; restore(): Promise<void> }> {
 	const path = join(CORE_ROOT, ".env");
