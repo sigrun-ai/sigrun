@@ -323,8 +323,8 @@ Two event surfaces extend the seam (2026-10-23, gateway C5/C6):
 - **`interaction.pending` notifications carry the record's `callId`**
   (the only notification type that does). A notifier reads the record
   via `ctx.host.snapshotInteraction(conversationId, callId, context)`
-  to render body/options/diff — the notification itself carries only
-  title/body/url.
+  to read the record's body tree and details — the notification itself
+  carries only title/body/url.
 - **`interactionSettled` lifecycle handler (C6).** A factory result may
   declare `interactionSettled(event, api, context)` — fired ONCE per
   terminal transition (`answered`/`skipped`/`expired`/`cancelled`) from
@@ -348,7 +348,8 @@ Shipped in core + webui (commits bcd4423 + webui commit):
 - Server: `GET/POST /v1/conversations/:id/interactions(/:callId/answer)`,
   `GET .../ambient`, `/v1/meta seam`.
 - Webui: `InteractionCards` + `AmbientPanels` render the record's
-  block tree via the shared `SurfaceView` (toned choices, secret
+  block tree via the shared block renderer (`BlockView`; the TUI's
+  `SurfaceView` is its sibling) (toned choices, secret
   masking, diff panes, collapsed details; statuslines, footer zones,
   quiet-folded panel rows), refreshed per stream frame.
 - ACHORD LESSON, pinned: never re-read a mutated draft field inside a

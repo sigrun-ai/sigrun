@@ -7,14 +7,19 @@
  * a removed prop) fails this suite instead of reaching a reader.
  *
  * Method: extract each fenced block whose info string is exactly
- * `ts check`, write it to a scratch tsconfig project under a temp dir,
- * and run the repo's own `tsc` (typescript 7 — the JS compiler API is
- * gone, so the check shells out; tsc 7 native-compile speed keeps this
- * cheap) with a paths mapping resolving `@sigrun/sigrun/blocks` to
- * `src/blocks/index.ts`. The published `exports` entry points at
- * `dist/`, which is gitignored — the test must be green on a pristine
- * checkout. Scratch files land under `os.tmpdir()` (never the repo, so
- * a failed run leaves nothing behind) and are removed in all outcomes.
+ * `ts check` (a near-miss info string — one carrying the word `check`
+ * without being exactly `ts check`, e.g. `ts  check` or
+ * `ts check title=...` — throws, so a typo fails loudly instead of
+ * silently dropping the block from coverage), write it to a scratch
+ * tsconfig project under a temp dir, and run the repo's own `tsc`
+ * (typescript 7 — the JS compiler API is gone, so the check shells
+ * out; tsc 7 native-compile speed keeps this cheap) with a paths
+ * mapping resolving `@sigrun/sigrun/blocks` to `src/blocks/index.ts`.
+ * The published `exports` entry points at `dist/`, which is gitignored
+ * and built by CI before tests run; the source mapping keeps this suite
+ * independent of build order. Scratch files land under `os.tmpdir()`
+ * (never the repo, so a failed run leaves nothing behind) and are
+ * removed in all outcomes.
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,7 +50,21 @@ export function extractCheckedExamples(markdown: string): readonly CheckedExampl
 	let at = 0;
 	while (at < lines.length) {
 		const open = fence.exec(lines[at]);
-		if (open === null || open[1]?.trim() !== "ts check") {
+		if (open === null) {
+			at += 1;
+			continue;
+		}
+		const info = open[1]?.trim() ?? "";
+		if (info !== "ts check") {
+			// Near-miss guard: an info string carrying the word `check`
+			// that is not exactly `ts check` is a typo, not a plain block
+			// — fail loudly so coverage cannot silently shrink.
+			if (/(^|\s)check(\s|$)/.test(info)) {
+				throw new Error(
+					`docs/extending.md:${at + 1}: info string ${JSON.stringify(open[1])} looks like a ` +
+						"checked-example fence but is not exactly `ts check`",
+				);
+			}
 			at += 1;
 			continue;
 		}
@@ -103,12 +122,49 @@ function checkExample(example: CheckedExample): { ok: boolean; output: string } 
 	}
 }
 
+/**
+ * The bind() guard: card/field slots take `Bindable<T>` — a literal
+ * `"./label"` type-checks (a string IS a bindable literal) but binds
+ * nothing; the author's card would literally read "./label". Any
+ * string literal starting with `./` inside a checked block must be an
+ * argument of `bind(...)`.
+ */
+export function findUnboundRelativePointers(
+	example: CheckedExample,
+): readonly { line: number; literal: string }[] {
+	const out: { line: number; literal: string }[] = [];
+	const stringLiteral = /(["'`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+	for (const match of example.source.matchAll(stringLiteral)) {
+		const literal = match[2];
+		if (!literal.startsWith("./")) continue;
+		const at = match.index;
+		if (at === undefined) continue;
+		// Allow only a direct `bind(` call wrapping this literal.
+		const before = example.source.slice(Math.max(0, at - 8), at);
+		if (/bind\(\s*$/.test(before)) continue;
+		const line = example.source.slice(0, at).split("\n").length;
+		out.push({ line, literal });
+	}
+	return out;
+}
+
 describe("docs/extending.md `ts check` examples", () => {
 	const markdown = readFileSync(docPath, "utf8");
 	const examples = extractCheckedExamples(markdown);
 
 	it("finds at least one checked example", () => {
 		expect(examples.length).toBeGreaterThan(0);
+	});
+
+	it("never leaves a relative pointer literal unbound (bind() guard)", () => {
+		const offenders = examples.flatMap((example) =>
+			findUnboundRelativePointers(example).map(
+				(hit) =>
+					`example ${example.index} (docs/extending.md:${example.line + hit.line}): ` +
+					`string literal ${JSON.stringify(hit.literal)} is not an argument of bind(...)`,
+			),
+		);
+		expect(offenders).toEqual([]);
 	});
 
 	for (const example of examples) {

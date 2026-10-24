@@ -499,7 +499,7 @@ export function board(): Tree {
 					id: "cards",
 					items: bind("/cards"),
 					display: "lanes",
-					item: card({ title: "./label" }),
+					item: card({ title: bind("./label") }),
 				}),
 			],
 		}),
@@ -811,9 +811,10 @@ is its option id (or ids when `multi`), a `choice` with `allowOther`
 carries `{ other: "…" }`. Your poll loop reads `record.answer?.values`
 via `host.snapshotInteraction`; `host.answerInteraction` (extension-side
 answer) takes the same `{values}` shape. A `secret` field's value
-reaches YOUR answer handler but is stored as `"[secret]"` — channels and
-logs never see it. First answer wins: a second answer gets
-`404 not_pending`.
+reaches your `snapshotInteraction` read once — the stored record keeps
+only `"[secret]"` (there is no answer handler; your poll loop reads the
+live answer envelope) — and channels and logs never see it. First
+answer wins: a second answer gets `404 not_pending`.
 
 ## Ambient surfaces: persistent read-mostly state as a block tree
 
@@ -826,7 +827,29 @@ envelope (`key`, `place`, `maxRows?`, `overflow?`, `refreshMs?`,
 `ambientKinds`. `place: "status"` and `"footer"` allow ONE line — a
 single one-line `markdown`, or one `columns` of one-line blocks (the
 footer's left/middle/right zones are three columns); validation rejects
-anything taller.
+anything taller. A footer with the three zones:
+
+```ts check
+import { columns, markdown, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function footer(left: string, middle: string, right: string): Tree {
+	return tree(
+		columns({
+			children: [
+				{ block: markdown({ text: left }) },
+				{ block: markdown({ text: middle }), weight: 1 },
+				{ block: markdown({ text: right }) },
+			],
+		}),
+	);
+}
+```
+
+`expires` and `updatedAt` are host-assigned envelope fields — the host
+stamps them on the record; you never pass them to `setAmbient`. The
+envelope may also carry `details?` (a collapsible detail tree the
+channel renders under the surface).
 
 A statusline slot and a panel of rows (the rpiv-todo shape — a
 `collection(display: "list")` of literal rows; ambient collections never
@@ -847,8 +870,8 @@ export function todoPanel(rows: readonly JsonValue[]): Tree {
 			items: rows,
 			display: "list",
 			item: card({
-				title: "./label",
-				status: { label: "./status", spinner: bind("./running") },
+				title: bind("./label"),
+				status: { label: bind("./status"), spinner: bind("./running") },
 			}),
 		}),
 	);
