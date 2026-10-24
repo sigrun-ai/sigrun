@@ -61,10 +61,13 @@ async function runSelfTestLeg(
  * directory read-only: exact probe content on stdout and exit zero prove
  * the helper, /bin/sh, cat, PATH, command, and file all work when permitted.
  * Then the denial leg withholds that grant. It must exit non-zero with only
- * the shell's post-`cat` READ_DENIED marker on stdout, and stderr free of
- * helper refusals and command-missing diagnostics. Requiring both legs makes
- * the policy the sole explanation for the different read outcomes. Quoting
- * keeps an unusual TMPDIR from changing the shell command.
+ * the shell's post-`cat` READ_DENIED marker on stdout and POSITIVE evidence
+ * of EACCES: a stderr line containing `Permission denied`, the diagnostic
+ * Landlock produces for an ungranted read. Helper-refusal diagnostics are
+ * judged per line so path-bearing text cannot trigger a substring filter.
+ * Requiring both legs makes the policy the sole explanation for the read
+ * outcomes; arbitrary I/O or command failures have no permission evidence.
+ * Quoting keeps an unusual TMPDIR from changing the shell command.
  */
 export async function selfTestHelper(helper: string): Promise<boolean> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-sandbox-self-test-"));
@@ -92,14 +95,14 @@ export async function selfTestHelper(helper: string): Promise<boolean> {
 				stdout?: unknown;
 				stderr?: unknown;
 			};
+			if (typeof outcome.stderr !== "string") return false;
+			const diagnosticLines = outcome.stderr.split(/\r?\n/);
 			return (
 				typeof outcome.code === "number" &&
 				outcome.code !== 0 &&
 				outcome.stdout === "READ_DENIED\n" &&
-				typeof outcome.stderr === "string" &&
-				!outcome.stderr.includes("sigrun-sandbox:") &&
-				!outcome.stderr.includes("No such file or directory") &&
-				!outcome.stderr.includes("not found")
+				diagnosticLines.some((line) => line.includes("Permission denied")) &&
+				!diagnosticLines.some((line) => line.startsWith("sigrun-sandbox:"))
 			);
 		}
 	} finally {
