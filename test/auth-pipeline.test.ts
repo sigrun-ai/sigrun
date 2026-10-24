@@ -173,6 +173,65 @@ describe("token method", () => {
 		});
 	});
 
+	test("token and session principals derive admin from stored groups without rewriting the directory", async () => {
+		const { app, opened, dir } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+			file: { auth: { adminGroups: ["admins"] } },
+		});
+		await opened.identity.users.add({
+			user: "alice",
+			admin: false,
+			groups: [{ source: "proxy", values: ["users", "admins"], updatedAt: 1 }],
+			source: "proxy",
+		});
+		await opened.identity.users.add({ user: "bob", admin: false, source: "cli" });
+		const aliceToken = await mintToken(opened, "alice");
+		const bobToken = await mintToken(opened, "bob");
+		const session = await opened.identity.tokens.createSession(
+			"alice",
+			"login:oauth:acme",
+			60_000,
+		);
+		const usersPath = join(dir, "users.json");
+		const before = (await stat(usersPath)).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		const tokenAdmin = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(tokenAdmin.statusCode).toBe(200);
+		expect(tokenAdmin.json()).toMatchObject({ user: "alice", admin: true, method: "token" });
+		const usersRoute = await app.inject({
+			method: "GET",
+			url: "/v1/users",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(usersRoute.statusCode).toBe(200);
+
+		const sessionAdmin = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${session.token}` },
+		});
+		expect(sessionAdmin.statusCode).toBe(200);
+		expect(sessionAdmin.json()).toMatchObject({
+			user: "alice",
+			admin: true,
+			method: "session",
+			provider: "login:oauth:acme",
+		});
+		const plainToken = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(plainToken.statusCode).toBe(200);
+		expect(plainToken.json()).toMatchObject({ user: "bob", admin: false, method: "token" });
+		expect((await stat(usersPath)).mtimeMs).toBe(before);
+	});
+
 	test("an expired session cookie → 401", async () => {
 		const { app, opened } = await bootServer({
 			env: { SIGRUN_AUTH: "token" },

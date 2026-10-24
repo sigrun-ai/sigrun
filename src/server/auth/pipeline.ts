@@ -272,7 +272,9 @@ function resolveToken(
 		user: user.user,
 		...(user.name === undefined ? {} : { name: user.name }),
 		...(user.email === undefined ? {} : { email: user.email }),
-		admin: user.admin,
+		// Token/session credentials are not group sources: derive from the
+		// stored record without writing groups on this request path.
+		admin: effectiveAdmin(user, ctx.config.auth.adminGroups),
 		service: false,
 		method: record.kind === "session" ? "session" : "token",
 		...(record.kind === "session" && record.provider !== undefined
