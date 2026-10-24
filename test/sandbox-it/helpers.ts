@@ -64,6 +64,8 @@ try { process.kill(Number(process.argv[1]), "SIGTERM"); console.log("KILL_OK"); 
 catch (error) { console.log("KILL_ERRNO:" + (error && error.code || "UNKNOWN")); process.exitCode = 26; }
 `;
 export const WORKER_PID_PROBE = `
+// pi-durable exec uses a detached direct shell, so this Node process's
+// parent is the actual worker, not an intermediate shell.
 require("node:fs").writeFileSync(process.argv[1], String(process.ppid));
 console.log("WORKER_PID:" + process.ppid);
 `;
@@ -214,6 +216,18 @@ export async function assertFileExists(path: string): Promise<void> {
 	// procfs reports size 0 even for readable environ/maps. Read those
 	// targets outside the jail as the fixture control instead of stat size.
 	if (path.startsWith("/proc/")) {
+		if (path.endsWith("/mem")) {
+			// Memory has no stream at offset zero. A successful host open is
+			// the control; the self-mem probe reads a real mapping instead.
+			const { open } = await import("node:fs/promises");
+			let handle;
+			try {
+				handle = await open(path, "r");
+			} finally {
+				await handle?.close();
+			}
+			return;
+		}
 		const contents = await readFile(path);
 		expect(contents.length, `proc fixture is empty: ${path}`).toBeGreaterThan(0);
 		return;
