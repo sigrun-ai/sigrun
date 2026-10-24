@@ -91,6 +91,7 @@ import type {
 	ExtensionRunSettledHandler,
 	ExtensionWorker,
 	GatewayEngine,
+	LoginProviderContribution,
 	NotifierContribution,
 	ProviderContribution,
 	SettingsSectionDef,
@@ -342,6 +343,12 @@ export interface ExtensionWorkerBinding {
 	readonly workers: readonly ExtensionWorker[];
 }
 
+/** One validated login provider, attributed with its core-qualified id. */
+export interface LoginProviderBinding {
+	readonly provider: string;
+	readonly contribution: LoginProviderContribution;
+}
+
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -356,6 +363,8 @@ export interface LoadedExtensions {
 	 * retained below, inert for the provider surface.
 	 */
 	readonly providerContributors: readonly ProviderContributor[];
+	/** Login providers, in load order. Quarantined extensions contribute none. */
+	readonly loginProviders: readonly LoginProviderBinding[];
 	/**
 	 * §3 producers from factory results, one per loaded extension that
 	 * carried one; quarantined extensions and the no-op memory default
@@ -531,6 +540,8 @@ export interface ResolvedExtension {
 	readonly workers?: readonly ExtensionWorker[];
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
 	readonly providers?: readonly ProviderContribution[];
+	/** Login providers (multi-user M3b), validated fail-loud. */
+	readonly loginProviders?: readonly LoginProviderContribution[];
 	/**
 	 * Webui-bundle contributions (build-and-webui Task 6), validated
 	 * fail-loud — the public `WebuiBundleContribution` shape
@@ -607,6 +618,7 @@ type LoaderReadKeys =
 	| "extension"
 	| "name"
 	| "providers"
+	| "loginProviders"
 	| "webuiBundles"
 	| "health"
 	| "runSettled"
@@ -1925,6 +1937,7 @@ async function resolvedFromFactory(
 	// full read list to the contract's keys.
 	const candidate = awaited as CandidateFactoryResult;
 	const providers = validateProviders(candidate.providers);
+	const loginProviders = validateLoginProviders(candidate.loginProviders);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
 	const routes = validateRoutes(candidate.routes);
@@ -1949,6 +1962,7 @@ async function resolvedFromFactory(
 		// attribute the contributions to, which is a contract violation.
 		if (
 			providers === undefined &&
+			loginProviders === undefined &&
 			webuiBundles === undefined &&
 			channels === undefined
 		) {
@@ -2046,6 +2060,7 @@ async function resolvedFromFactory(
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
 		...(workers === undefined ? {} : { workers }),
 		...(providers === undefined ? {} : { providers }),
+		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
 		...(jobs === undefined ? {} : { jobs }),
 		...(routes === undefined ? {} : { routes }),
@@ -2059,6 +2074,40 @@ async function resolvedFromFactory(
 			? {}
 			: { settingsSections: surfaces.settings }),
 	};
+}
+
+/** Validate and retain login providers; all-or-nothing for one extension. */
+function validateLoginProviders(
+	value: unknown,
+): readonly LoginProviderContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error("extension factory returned a loginProviders field that is not an array");
+	}
+	const ids = new Set<string>();
+	for (const candidate of value) {
+		if (typeof candidate !== "object" || candidate === null) {
+			throw new Error("extension factory returned a loginProviders entry that is not an object");
+		}
+		const entry = candidate as Partial<LoginProviderContribution>;
+		if (typeof entry.id !== "string" || !/^[a-z0-9][a-z0-9._-]*$/.test(entry.id)) {
+			throw new Error("extension factory returned a loginProviders entry with an invalid id");
+		}
+		if (ids.has(entry.id)) {
+			throw new Error(`extension factory returned duplicate login provider id "${entry.id}"`);
+		}
+		ids.add(entry.id);
+		if (typeof entry.label !== "string") {
+			throw new Error("extension factory returned a loginProviders entry whose label is not a string");
+		}
+		if (entry.icon !== undefined && typeof entry.icon !== "string") {
+			throw new Error("extension factory returned a loginProviders entry whose icon is not a string");
+		}
+		if (typeof entry.begin !== "function" || typeof entry.complete !== "function") {
+			throw new Error("extension factory returned a loginProviders entry whose begin/complete is not a function");
+		}
+	}
+	return value as LoginProviderContribution[];
 }
 
 /**
@@ -2301,6 +2350,8 @@ const notifierBindings: ExtensionNotifierBinding[] = [];
 // them. Collected only for LOADED extensions (a colliding adapter never
 // reaches here — the channelIds check below throws first).
 const channelBindings: ExtensionChannelBinding[] = [];
+// Login providers (multi-user M3b): flat, slug-qualified, in load order.
+const loginProviders: LoginProviderBinding[] = [];
 // The gateway engine (gateway C2, spec §8.0): the ONE-engine rule — the
 // first loaded declarer wins; a later result declaring `gateway`
 // quarantines naming the first slug (an engine owns supervision over the
@@ -2684,6 +2735,14 @@ const display = label ?? entry ?? "skills-only";
 					defs: resolved.settingsSections,
 				});
 			}
+			if (resolved.loginProviders !== undefined) {
+				for (const contribution of resolved.loginProviders) {
+					loginProviders.push({
+						provider: `login:${slug}:${contribution.id}`,
+						contribution,
+					});
+				}
+			}
 			if (resolved.providers !== undefined) {
 				providerContributors.push({
 					name: slug,
@@ -2741,6 +2800,7 @@ const display = label ?? entry ?? "skills-only";
 	return {
 		outcomes,
 		providerContributors,
+		loginProviders,
 		webuiBundles,
 		skillRoots,
 		healthProducers,

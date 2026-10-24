@@ -21,6 +21,7 @@ import { withClaimLock } from "../auth/claim-lock.js";
 import { ipAllowed } from "../auth/ip.js";
 import { isLoopbackHost } from "../auth/loopback.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
+import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { stampSessionOwner } from "../helpers.js";
 import { buildSessionCookie } from "./auth.js";
@@ -183,7 +184,7 @@ export function registerOnboardingRoutes(
 		// claimant wins and the rest get 409"), never a misleading 403.
 		const codeWasSetup =
 			validated.code !== undefined &&
-			validated.code === readSetupCode(identity.cacheDir);
+			setupCodeMatches(validated.code, readSetupCode(identity.cacheDir));
 
 		// The claim critical section: read state, decide, add — all inside
 		// the one mutex, so concurrent claims cannot both pass the gate.

@@ -879,7 +879,8 @@ export interface WhoamiResponse {
 	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
 	readonly admin: boolean;
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy" | "host";
+	readonly method: "none" | "token" | "session" | "proxy" | "host";
+	readonly provider?: string;
 }
 
 // ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
@@ -908,23 +909,26 @@ export interface OnboardingState {
  * admin-visible material and the routes that serve this type are
  * admin-gated. `createdAt` is epoch ms.
  *
- * `admin` is the STORED flag (the users-admin UI toggles it); the proxy
- * group grant rides separately as `groupAdmin` (gateway C8): effective
- * admin is `admin || groupAdmin === true`, and the last-admin guard
- * counts `admin` alone.
+ * `admin` is the STORED flag (the users-admin UI toggles it); `groups`
+ * is the deduplicated union of stored source memberships. `groupAdmin`
+ * is DERIVED from those groups and `server.auth.adminGroups`, retained
+ * for one release for the users UI; the last-admin guard counts `admin`
+ * alone.
  */
 export interface UserWire {
 	readonly user: string;
 	readonly name?: string;
 	readonly email?: string;
 	readonly admin: boolean;
-	/** The persisted proxy-group grant — present only under `adminGroups`. */
+	/** DERIVED from stored groups and configured adminGroups; never persisted. */
 	readonly groupAdmin?: boolean;
+	/** The deduplicated union of groups stored by authenticating sources. */
+	readonly groups?: readonly string[];
 	readonly workspace?: string;
 	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
 	readonly osUser?: string;
 	readonly createdAt: number;
-	readonly source: "proxy" | "invite" | "cli";
+	readonly source: "proxy" | "invite" | "cli" | "login";
 }
 
 /** The `POST /v1/onboarding/claim` payload (Task 4): the user (plus the
@@ -953,6 +957,8 @@ export interface TokenWire {
 	readonly name: string;
 	readonly user: string;
 	readonly createdAt: number;
+	readonly kind?: "api" | "session";
+	readonly expiresAt?: number;
 }
 
 /** The `POST /v1/auth/tokens` payload (Task 4): the secret once, the

@@ -35,6 +35,7 @@ import type { FastifyInstance } from "fastify";
 import { accessOf } from "@sigrun/shared/access";
 import type { JobWire } from "@sigrun/shared/jobs";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import { accessPrincipalOf } from "../auth/access-principal.js";
 import type { ServerContext } from "../context.js";
 import { SessionMetaDoc } from "../session-meta.js";
 import type { HostEventWire } from "../events/types.js";
@@ -49,8 +50,8 @@ export function registerEventRoutes(
 	ctx: ServerContext,
 ): void {
 	app.get("/v1/events", async (request, reply) => {
-		const principal = request.principal;
 		const { opened } = ctx;
+		const { principal } = request;
 		reply.hijack();
 		const raw = reply.raw;
 		raw.writeHead(200, {
@@ -97,8 +98,14 @@ export function registerEventRoutes(
 		 */
 		const visible = async (
 			event: HostEventWire,
-		): Promise<HostEventWire | undefined> => {
-			switch (event.type) {
+			): Promise<HostEventWire | undefined> => {
+				// Like SessionMeta, stored groups are current PER EVENT: group
+				// changes affect the next event on an existing connection.
+				const accessPrincipal = accessPrincipalOf(
+					principal,
+					opened.identity.users,
+				);
+				switch (event.type) {
 				// Conversation-scoped: SessionMeta access, re-snapshotted per
 				// event (share → the NEXT event arrives; un-share withholds the
 				// one after).
@@ -123,7 +130,7 @@ export function registerEventRoutes(
 						);
 						return undefined; // a raced read withholds that one event
 					}
-					return accessOf(principal, meta ?? {}) !== "none" ? event : undefined;
+					return accessOf(accessPrincipal, meta ?? {}) !== "none" ? event : undefined;
 				}
 				// Broadcast: every authenticated principal.
 				case "providers.changed":
@@ -132,7 +139,7 @@ export function registerEventRoutes(
 					// carries the caller's access (the wire adds what the hub's
 					// access-neutral copy omits).
 				case "job.changed": {
-					const access = accessOf(principal, {
+					const access = accessOf(accessPrincipal, {
 						...(event.job.owner === undefined
 							? {}
 							: { owner: event.job.owner }),
@@ -153,7 +160,7 @@ export function registerEventRoutes(
 				// server-scope PATCH and an extension's settings PUT alike;
 				// the admin gate is the same one the writes carry).
 				case "settings.changed":
-					return principal.admin ? event : undefined;
+					return request.principal.admin ? event : undefined;
 				// UI-blocks U3 Task 4 (spec §7.3): delivered to a watching
 				// stream ONLY. The hub copy is the service's internal event
 				// (SurfaceChangedInternal) which carries the resolved stream

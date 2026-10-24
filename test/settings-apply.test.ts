@@ -128,6 +128,7 @@ const EXPECTED_KEYS = [
 	"server.memorySeam.queueMax",
 	"server.providers.refreshIntervalMinutes",
 	"server.auth.methods",
+	"server.auth.sessionDays",
 	"server.auth.proxy.trustedProxies",
 	"server.auth.proxy.secretHeader",
 	"server.auth.proxy.userHeader",
@@ -226,6 +227,7 @@ describe("the core settings registry (spec §13.1)", () => {
 			[
 				"namingModel",
 				"server.providers.refreshIntervalMinutes",
+				"server.auth.sessionDays",
 				"jobHistory.runs",
 				"jobHistory.revisions",
 			],

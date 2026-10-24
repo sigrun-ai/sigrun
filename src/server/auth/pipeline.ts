@@ -47,6 +47,7 @@ import { ipAllowed } from "./ip.js";
 import { isLoopbackHost } from "./loopback.js";
 import type { Principal } from "./principal.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
+import { effectiveAdmin } from "../../harness/identity/groups.js";
 
 /** One header read: Fastify headers may be string | string[]; first wins. */
 function headerOf(
@@ -67,7 +68,7 @@ function timingSafeStringEqual(a: string, b: string): boolean {
 }
 
 /** The request's Bearer credential, if the Authorization header carries one. */
-function bearerOf(request: FastifyRequest): string | undefined {
+export function bearerOf(request: FastifyRequest): string | undefined {
 	const value = headerOf(request, "authorization");
 	if (value === undefined) return undefined;
 	const match = /^Bearer\s+(.+)$/i.exec(value);
@@ -75,7 +76,7 @@ function bearerOf(request: FastifyRequest): string | undefined {
 }
 
 /** The `sigrun_session` cookie value (naive parse; the cookie is ours). */
-function sessionCookieOf(request: FastifyRequest): string | undefined {
+export function sessionCookieOf(request: FastifyRequest): string | undefined {
 	const raw = headerOf(request, "cookie");
 	if (raw === undefined) return undefined;
 	for (const pair of raw.split(";")) {
@@ -168,6 +169,13 @@ function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
 	if (pattern === "/metrics" && ctx.config.metricsPublic) return true;
 	if (pattern === "/v1/auth/login" && request.method === "POST") return true;
 	if (pattern === "/v1/auth/logout" && request.method === "POST") return true;
+	if (pattern === "/v1/auth/providers" && request.method === "GET") return true;
+	if (pattern === "/v1/auth/login/:provider" && request.method === "GET") return true;
+	if (pattern === "/v1/auth/login/code" && request.method === "POST") return true;
+	if (
+		pattern === "/v1/auth/callback/:provider" &&
+		(request.method === "GET" || request.method === "POST")
+	) return true;
 	if (pattern === "/v1/onboarding" || pattern?.startsWith("/v1/onboarding/")) {
 		return true;
 	}
@@ -220,7 +228,6 @@ async function resolveProxy(
 	if (existing === undefined && !proxy.autoProvision) {
 		return { status: 403, error: "user_not_provisioned" };
 	}
-	const groupAdmin = groups.some((group) => adminGroups.includes(group));
 	let record;
 	try {
 		record = existing ??
@@ -233,9 +240,6 @@ async function resolveProxy(
 					? {}
 					: { email: headerOf(request, proxy.emailHeader) as string }),
 				admin: false,
-				// Gateway C8: the grant is stamped at provision — host-side
-				// checks (chat commands, no headers) read it from the record.
-				...(adminGroups.length > 0 ? { groupAdmin } : {}),
 				source: "proxy",
 			}));
 	} catch (error) {
@@ -244,32 +248,23 @@ async function resolveProxy(
 		}
 		throw error;
 	}
-	// Gateway C8 write-through: host-side code has no request headers, so
-	// the computed group grant must live on the directory record. Only a
-	// CHANGE writes (the steady state never rewrites the file), and only
-	// while `adminGroups` is configured — an empty list leaves the field
-	// untouched (a group-exit clears it at this user's next request under
-	// a non-empty list, never under an empty one). Absent counts as false;
-	// the auto-provisioned record was added with the flag already set, so
-	// the comparison is against the RESOLVED record, never `existing`.
-	if (
-		adminGroups.length > 0 &&
-		(record.groupAdmin ?? false) !== groupAdmin
-	) {
-		await users.update(user, { groupAdmin });
-	}
+	// Persist the authenticated source's groups on every proxy request;
+	// setGroups avoids the write when the values are unchanged. Effective
+	// admin is computed over the UPDATED record, so a group exit revokes
+	// the request's grant immediately and host-side checks agree.
+	record = await users.setGroups(user, "proxy", groups);
 	return {
 		user: record.user,
 		...(record.name === undefined ? {} : { name: record.name }),
 		...(record.email === undefined ? {} : { email: record.email }),
-		admin: record.admin || groupAdmin,
+		admin: effectiveAdmin(record, adminGroups),
 		service: false,
 		method: "proxy",
 	};
 }
 
 /** Stage 5b (token): verify a presented credential against the token store. */
-function resolveToken(
+export function resolveToken(
 	request: FastifyRequest,
 	ctx: ServerContext,
 ): Principal | { status: number; error?: string } {
@@ -284,9 +279,14 @@ function resolveToken(
 		user: user.user,
 		...(user.name === undefined ? {} : { name: user.name }),
 		...(user.email === undefined ? {} : { email: user.email }),
-		admin: user.admin,
+		// Token/session credentials are not group sources: derive from the
+		// stored record without writing groups on this request path.
+		admin: effectiveAdmin(user, ctx.config.auth.adminGroups),
 		service: false,
-		method: "token",
+		method: record.kind === "session" ? "session" : "token",
+		...(record.kind === "session" && record.provider !== undefined
+			? { provider: record.provider }
+			: {}),
 	};
 }
 

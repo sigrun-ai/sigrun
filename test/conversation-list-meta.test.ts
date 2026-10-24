@@ -411,6 +411,66 @@ describe("GET /v1/conversations lean list", () => {
 		expect(await listAs(bobToken, "?mine=true")).toEqual([bobId]);
 	});
 
+	test("a people share grants a stored group and hides non-members", async () => {
+		const { app, opened } = await bootServer({
+			auth: "token",
+			users: ["alice", "bob", "carol"],
+		});
+		await opened.identity.users.setGroups("alice", "test", ["family"]);
+		const tokens = Object.fromEntries(
+			await Promise.all(
+				["alice", "bob", "carol"].map(async (user) => [
+					user,
+					(await opened.identity.tokens.create("t", user)).token,
+				]),
+			),
+		) as Record<string, string>;
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${tokens.bob}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const id = created.json().id as number;
+		const shared = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: {
+				sharing: {
+					scope: "people",
+					users: [],
+					groups: ["family"],
+					level: "read",
+				},
+			},
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${tokens.bob}`,
+			},
+		});
+		expect(shared.statusCode).toBe(200);
+		for (const [user, expected] of [
+			["alice", 200],
+			["carol", 404],
+		] as const) {
+			const view = await app.inject({
+				method: "GET",
+				url: `/v1/conversations/${id}`,
+				headers: { authorization: `Bearer ${tokens[user]}` },
+			});
+			expect(view.statusCode).toBe(expected);
+			const list = await app.inject({
+				method: "GET",
+				url: "/v1/conversations",
+				headers: { authorization: `Bearer ${tokens[user]}` },
+			});
+			expect(list.statusCode).toBe(200);
+			expect(
+				(list.json().conversations as Row[]).some((row) => row.id === id),
+			).toBe(user === "alice");
+		}
+	});
+
 	test("GET /v1/conversations performs zero view reads", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {

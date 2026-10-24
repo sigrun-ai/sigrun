@@ -760,11 +760,18 @@ function validateServer(server: unknown): void {
 		}
 		checkKeys("server.auth.", auth, [
 			"methods",
+			"sessionDays",
 			"proxy",
 			"adminGroups",
 			"allowedHosts",
 			"allowedOrigins",
 		]);
+		if (auth.sessionDays !== undefined && !isPositiveInt(auth.sessionDays)) {
+			throw new SettingsValidationError(
+				"server.auth.sessionDays",
+				"must be a positive integer",
+			);
+		}
 		if (auth.methods !== undefined) {
 			if (
 				!Array.isArray(auth.methods) ||

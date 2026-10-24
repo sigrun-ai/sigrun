@@ -45,6 +45,7 @@ import type {
 import { createExtTransport } from "../blocks/extTransport";
 import { SurfaceView } from "../blocks/SurfaceView";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
+import { AccountLinksSection } from "./AccountLinksSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { type PrefKey, type PrefsState } from "./usePrefs";
 
@@ -83,6 +84,16 @@ export function filterSettingsIndex(
 
 // ─── The panel ────────────────────────────────────────────────────────────
 
+/** The ONE section-visibility rule used by both deep links and navigation.
+ *  A known non-admin never sees the Providers cove; the naive/unknown
+ *  posture keeps it because that server makes every caller admin. */
+export function visibleSettingsSections(
+	sections: readonly SettingsSectionEntryWire[],
+	admin: boolean | undefined,
+): readonly SettingsSectionEntryWire[] {
+	return sections.filter((section) => !(section.id === "providers" && admin === false));
+}
+
 export function SettingsPanel(props: {
 	readonly client: SigrunClient;
 	/** The app-owned client prefs (the Interface section edits them live). */
@@ -96,11 +107,13 @@ export function SettingsPanel(props: {
 	 * makes every caller admin.
 	 */
 	readonly admin?: boolean;
+	/** Optional deep-linked core section id (the account-link return target). */
+	readonly initialSection?: string;
 	/** The App's restart action (§13.3) — the callout's Restart button. */
 	readonly onRestart?: () => Promise<void>;
 	readonly onClose: () => void;
 }): React.ReactElement {
-	const { client, onClose, prefsState, theme, admin, onRestart } = props;
+	const { client, onClose, prefsState, theme, admin, onRestart, initialSection } = props;
 	const [load, setLoad] = useState<SectionsLoad>({ status: "loading" });
 	// The /v1/meta snapshot (the version line in General): fetched once
 	// per open; a failure leaves the line absent, never blocks settings.
@@ -138,11 +151,16 @@ export function SettingsPanel(props: {
 					sections: response.sections,
 					index: response.index,
 				});
-				const general = response.sections.find(
+				// Deep links obey exactly the same visibility rule as the nav:
+				// a known non-admin cannot open the admin-only Providers cove.
+				const visibleSections = visibleSettingsSections(response.sections, admin);
+				const initial = visibleSections.find(
+					(section) => section.slug === "core" && section.id === (initialSection ?? "general"),
+				) ?? visibleSections.find(
 					(section) => section.slug === "core" && section.id === "general",
 				);
-				if (general !== undefined) {
-					setOpen({ kind: "section", entry: general });
+				if (initial !== undefined) {
+					setOpen({ kind: "section", entry: initial });
 				}
 			})
 			.catch((error: unknown) => {
@@ -155,7 +173,7 @@ export function SettingsPanel(props: {
 		return () => {
 			cancelled = true;
 		};
-	}, [client]);
+	}, [client, initialSection, admin]);
 
 	const results = useMemo(
 		() => (load.status === "ready" ? filterSettingsIndex(load.index, query) : []),
@@ -209,11 +227,9 @@ export function SettingsPanel(props: {
 
 	const navSections = useMemo(() => {
 		if (load.status !== "ready") return [];
-		// A known non-admin never sees the Providers nav row (the server
-		// 403s the writes regardless — the client must not pretend).
-		return load.sections.filter(
-			(section) => !(section.id === "providers" && admin === false),
-		);
+		// The server 403s non-admin writes regardless — the client must
+		// not pretend those controls are available.
+		return visibleSettingsSections(load.sections, admin);
 	}, [load, admin]);
 
 	return (
@@ -370,6 +386,9 @@ function SettingsSectionBody(props: {
 	}
 	if (entry.slug === "core" && entry.id === "extensions") {
 		return <ExtensionsCove client={client} />;
+	}
+	if (entry.slug === "core" && entry.id === "accounts") {
+		return <AccountLinksSection client={client} />;
 	}
 	return (
 		<SettingsSurfaceBody

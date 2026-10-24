@@ -1,6 +1,6 @@
 /**
  * Per-resource sharing and content access (core hardening W1 Task 5, spec
- * §5.9 ruling 6/10: per-resource sharing; groups cut).
+ * §5.9 ruling 6/10: per-resource sharing; multi-user M3b adds groups).
  *
  * Part of the shared leaf package (`@sigrun/shared`): the server computes
  * access through `accessOf`, the clients render the `sharing` state — one
@@ -13,7 +13,7 @@
  * 2. ownerless resource → household write (everyone);
  * 3. user === owner → write;
  * 4. household sharing with a defined user → the shared level;
- * 5. people sharing including the user → the shared level;
+ * 5. people sharing including the user or one of their groups → the shared level;
  * 6. otherwise none (hidden: 404 on every :id route, absent from lists).
  *
  * Anonymous callers (a principal with no user) get nothing from a shared
@@ -32,6 +32,7 @@ export type Sharing =
 			// SessionMeta doc must stay JsonObject-assignable (pi-durable's
 			// JsonValue arrays are mutable) — treat it as immutable anyway.
 			readonly users: string[];
+			readonly groups?: string[];
 			readonly level: "read" | "write";
 	  };
 
@@ -42,6 +43,7 @@ export type Access = "none" | "read" | "write";
 export interface AccessPrincipal {
 	readonly user?: string;
 	readonly superuser?: boolean;
+	readonly groups?: readonly string[];
 }
 
 /**
@@ -62,8 +64,14 @@ export function accessOf(
 	// (no user) falls straight through to none.
 	if (p.user !== undefined && r.sharing !== undefined) {
 		if (r.sharing.scope === "household") return r.sharing.level;
-		if (r.sharing.scope === "people" && r.sharing.users.includes(p.user)) {
-			return r.sharing.level;
+		if (r.sharing.scope === "people") {
+			const sharing = r.sharing;
+			if (
+				sharing.users.includes(p.user) ||
+				p.groups?.some((group) => sharing.groups?.includes(group)) === true
+			) {
+				return sharing.level;
+			}
 		}
 	}
 	// 6. Hidden.
@@ -89,6 +97,9 @@ export function isSharing(value: unknown): value is Sharing {
 			return (
 				Array.isArray(record.users) &&
 				record.users.every((user) => typeof user === "string") &&
+				(record.groups === undefined ||
+					(Array.isArray(record.groups) &&
+						record.groups.every((group) => typeof group === "string"))) &&
 				(record.level === "read" || record.level === "write")
 			);
 		default:

@@ -815,3 +815,60 @@ test("a reserved extension slug is quarantined before install", async () => {
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+
+// ---------------------------------------------------------------------------
+// Multi-user M3b: login-provider contributions
+// ---------------------------------------------------------------------------
+
+const LOGIN_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-login", "index.js"),
+).href;
+
+async function bootWithLoginProviders(loginProviders: unknown) {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-login-loader-"));
+	const config = configWith(dir);
+	const fixture = await import("./fixtures/fixture-login/index.js");
+	fixture.setFixtureLoginProviders(loginProviders);
+	const opened = await openHarness(config, {
+		extensionSpecifiers: [LOGIN_SPECIFIER],
+		builtins: false,
+	});
+	try {
+		return opened;
+	} finally {
+		fixture.setFixtureLoginProviders([fixture.fixtureLoginProvider]);
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await rm(dir, { recursive: true, force: true });
+	}
+}
+
+test("login providers load with slug-qualified provider ids", async () => {
+	const opened = await bootWithLoginProviders([{
+		id: "oidc",
+		label: "OIDC",
+		begin: async () => ({ redirectUrl: "https://idp.example.invalid" }),
+		complete: async () => ({ subject: "s", profile: {} }),
+	}]);
+	expect(opened?.loginProviders).toHaveLength(1);
+	expect(opened?.loginProviders[0]?.provider).toBe("login:fixture-login:oidc");
+	expect(opened?.extensionOutcomes).toContainEqual(expect.objectContaining({ status: "ok" }));
+});
+
+test.each([
+	["Bad Id", "id"],
+	["duplicate", "duplicate"],
+])("a login provider with %s quarantines its extension", async (id) => {
+	const provider = {
+		id: id === "duplicate" ? "oidc" : id,
+		label: "OIDC",
+		begin: async () => ({ redirectUrl: "https://idp.example.invalid" }),
+		complete: async () => ({ subject: "s", profile: {} }),
+	};
+	const opened = await bootWithLoginProviders([provider, ...(id === "duplicate" ? [provider] : [])]);
+	expect(opened?.extensionOutcomes).toContainEqual(expect.objectContaining({
+		name: LOGIN_SPECIFIER,
+		status: "quarantined",
+	}));
+	expect(opened?.loginProviders).toEqual([]);
+});

@@ -255,7 +255,7 @@ describe("PATCH /v1/users/:user", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["admins"], updatedAt: 1 }],
 			source: "proxy",
 		});
 		const token = await mint(opened, "tester");

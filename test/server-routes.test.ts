@@ -359,9 +359,13 @@ describe("server route table", () => {
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/accounts",
+				"/v1/auth/callback/:provider",
 				"/v1/auth/check",
 				"/v1/auth/login",
+				"/v1/auth/login/:provider",
+				"/v1/auth/login/code",
 				"/v1/auth/logout",
+				"/v1/auth/providers",
 				"/v1/auth/tokens",
 				"/v1/auth/tokens/:id",
 				"/v1/auth/whoami",
@@ -426,6 +430,42 @@ describe("server route table", () => {
 				`hasRoute must be true for ${method} ${url}`,
 			).toBe(true);
 		}
+	});
+});
+
+describe("token list wire", () => {
+	test("GET /v1/auth/tokens shows kind and expiresAt", async () => {
+		const { app, opened } = await bootServer({ auth: "token" });
+		const api = await opened.identity.tokens.create("laptop", "tester");
+		const now = Date.now();
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/tokens",
+			headers: { authorization: `Bearer ${api.token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().tokens).toEqual([
+			{
+				id: api.record.id,
+				name: "laptop",
+				user: "tester",
+				createdAt: api.record.createdAt,
+			},
+			{
+				id: session.record.id,
+				name: "login:login:oauth:acme",
+				user: "tester",
+				createdAt: now,
+				kind: "session",
+				expiresAt: now + 60_000,
+			},
+		]);
 	});
 });
 

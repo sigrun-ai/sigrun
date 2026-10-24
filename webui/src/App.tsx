@@ -479,7 +479,13 @@ function AppShell(options: AppOptions = {}) {
 		boot.status === "ready" && win.location?.hash.startsWith("#/blocks")
 			? "blocks"
 			: "chats";
-	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(() =>
+		new URLSearchParams(
+			(globalThis as { location?: { pathname?: string; search?: string } }).location?.pathname === "/settings"
+				? (globalThis as { location?: { search?: string } }).location?.search ?? ""
+				: "",
+		).has("section"),
+	);
 	// The hash route (U3 Task 5): the main pane renders either the chat
 	// column or one extension surface page. `navigate({params})` pushes a
 	// new hash entry; popstate walks back/forward through them.
@@ -1235,6 +1241,9 @@ function AppShell(options: AppOptions = {}) {
 					prefsState={prefsState}
 					theme={theme}
 					admin={identity?.admin}
+					initialSection={new URLSearchParams(
+						(globalThis as { location?: { search?: string } }).location?.search ?? "",
+					).get("section") ?? undefined}
 					onRestart={restart}
 					onClose={() => setSettingsOpen(false)}
 				/>

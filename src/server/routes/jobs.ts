@@ -25,18 +25,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { accessOf, type Access, type Sharing } from "@sigrun/shared/access";
 import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
-import { isSuperuser } from "../auth/principal.js";
+import { accessPrincipalOf } from "../auth/access-principal.js";
 import type { ServerContext } from "../context.js";
 import { JobDeclaredError, JobNotFoundError } from "../../jobs/index.js";
 import { validateJobSpec } from "../../jobs/spec.js";
-
-/** The principal form `accessOf` takes (§5.9). */
-function accessPrincipal(request: FastifyRequest) {
-	return {
-		user: request.principal.user,
-		superuser: isSuperuser(request.principal),
-	};
-}
 
 /** The §5.9 resource form ({owner?, sharing?}) of a job row. */
 function resourceOf(row: { owner?: string; sharing?: Sharing }) {
@@ -82,6 +74,8 @@ export function registerJobRoutes(
 ): void {
 	const { opened } = ctx;
 	const jobs = opened.jobs;
+	const accessPrincipal = (request: FastifyRequest) =>
+		accessPrincipalOf(request.principal, opened.identity.users);
 
 	/**
 	 * Resolve one job for the access rule: the live record's row when it

@@ -33,6 +33,7 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { join } from "node:path";
+import { LoginFlows } from "./login/flows.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
@@ -47,6 +48,7 @@ import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerLoginRoutes, type LoginResolver } from "./routes/login.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerExtensionRoutes as registerExtensionSettingsRoutes } from "./routes/extensions.js";
@@ -133,6 +135,10 @@ export async function createServer(
 		 * through this same option.
 		 */
 		onRestart?: () => Promise<void> | void;
+		/** Test-only resolver injection; production uses the core account/session resolver. */
+		loginResolver?: LoginResolver;
+		/** Hermetic login-flow clock; production uses the server's own Date.now. */
+		loginNow?: () => number;
 	},
 ): Promise<FastifyInstance> {
 	const app = Fastify({ logger: false });
@@ -328,6 +334,10 @@ export async function createServer(
 	// `request.principal` before any route runs.
 	registerAuthPipeline(app, ctx);
 	registerAuthRoutes(app, ctx);
+	registerLoginRoutes(app, ctx, {
+		...(options?.loginResolver === undefined ? {} : { resolver: options.loginResolver }),
+		...(options?.loginNow === undefined ? {} : { flows: new LoginFlows(options.loginNow) }),
+	});
 	registerOnboardingRoutes(app, ctx);
 	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);

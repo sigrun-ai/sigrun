@@ -162,6 +162,7 @@ describe("loadConfig: SIGRUN_AUTH / SIGRUN_AUTH_TRUSTED_PROXIES", () => {
 	test("defaults: Authelia header names, autoProvision on, empty lists", () => {
 		const config = loadConfig({ ...MODEL_ENV });
 		expect(config.auth).toEqual({
+			sessionDays: 30,
 			methods: undefined,
 			proxy: {
 				trustedProxies: [],
@@ -243,6 +244,27 @@ describe("loadConfig: SIGRUN_AUTH / SIGRUN_AUTH_TRUSTED_PROXIES", () => {
 		expect(mixed.auth.methods).toEqual(["token"]);
 		expect(mixed.auth.proxy.trustedProxies).toEqual(["10.42.0.0/16"]);
 		expect(mixed.auth.adminGroups).toEqual(["sigrun-admins"]);
+	});
+});
+
+describe("loadConfig: auth.sessionDays", () => {
+	test("parses the file value and defaults to 30", () => {
+		expect(loadConfig({ ...MODEL_ENV }).auth.sessionDays).toBe(30);
+		const config = loadConfig(
+			{ ...MODEL_ENV },
+			{ server: { auth: { sessionDays: 7 } } },
+		);
+		expect(config.auth.sessionDays).toBe(7);
+		expect(config.auth.sessionDays * 86_400_000).toBe(604_800_000);
+	});
+
+	test("sessionDays must be a positive integer", () => {
+		for (const sessionDays of [0, -1, 1.5, "7"]) {
+			const { store } = freshStore();
+			expect(() => store.update({ server: { auth: { sessionDays } } })).toThrow(
+				/server\.auth\.sessionDays/,
+			);
+		}
 	});
 });
 

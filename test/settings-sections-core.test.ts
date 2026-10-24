@@ -142,6 +142,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			"advanced",
 			"providers",
 			"extensions",
+			"accounts",
 		]);
 		expect(CORE_SETTINGS_SECTIONS.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
 	});
@@ -192,6 +193,10 @@ describe("core settings sections (U4 Task 4)", () => {
 				expect(field.apply, `${id}.${field.name}`).toBe(entry.apply);
 			}
 		}
+		const accounts = CORE_SETTINGS_SECTIONS.find((section) => section.id === "accounts");
+		expect(accounts?.title).toBe("Account links");
+		expect(accounts?.admin).toBe(false);
+
 		// The searchable keys render somewhere (the index's core-key
 		// rows).
 		expect(fieldsBySection.get("general")?.some((f) => f.name === "namingModel")).toBe(true);
