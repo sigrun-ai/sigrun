@@ -3,7 +3,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::io;
+use std::io::{self, Read};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::process::ExitCode;
@@ -57,13 +57,18 @@ fn listen(name: &str) -> Result<(), String> {
 }
 
 fn environ(pid: i32) -> Result<(), String> {
-	std::fs::File::open(format!("/proc/{pid}/environ"))
+	let mut file = std::fs::File::open(format!("/proc/{pid}/environ"))
 		.map_err(|error| format!("OPEN_ENVIRON:{}", Errno::from_raw(error.raw_os_error().unwrap_or(0))))?;
-	println!("ENVIRON_OPEN_OK");
+	let mut byte = [0_u8; 1];
+	file.read(&mut byte)
+		.map_err(|error| format!("READ_ENVIRON:{}", Errno::from_raw(error.raw_os_error().unwrap_or(0))))?;
+	println!("ENVIRON_READ_OK");
 	Ok(())
 }
 
 fn mem(pid: i32) -> Result<(), String> {
+	// Open is the correct mem control: /proc/<pid>/mem has no readable
+	// stream at offset zero. Do not weaken environ to this open-only shape.
 	std::fs::File::open(format!("/proc/{pid}/mem"))
 		.map_err(|error| format!("OPEN_MEM:{}", Errno::from_raw(error.raw_os_error().unwrap_or(0))))?;
 	println!("MEM_OPEN_OK");
