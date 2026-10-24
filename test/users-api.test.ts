@@ -406,7 +406,7 @@ describe("DELETE /v1/users/:user", () => {
 				SIGRUN_AUTH: "proxy",
 				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
 			},
-			file: { auth: { adminGroups: ["admins"] } },
+			file: { auth: { adminGroups: ["admins"], proxy: { secretHeader: "x-sigrun-proxy-secret" } } },
 			seed: "admin-only",
 		});
 		await opened.identity.users.add({
