@@ -343,6 +343,8 @@ export interface EventBusOptions {
 	readonly queueMax: number;
 	/** Bounds each handler call (Task 6: `SIGRUN_HOOK_DEADLINE`). */
 	readonly hookDeadlineMs: number;
+	/** Total wait for placed runs to settle during shutdown. */
+	readonly shutdownSettleWaitMs?: number;
 	/**
 	 * The idle threshold (Task 6: `SIGRUN_IDLE_THRESHOLD`); omitted = no
 	 * idle detection (the Task 2 substrate shape — tests that never sweep).
@@ -370,6 +372,10 @@ export interface EventBusOptions {
 
 /** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
 const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
+/** The default last-admission window (gateway spec §8.13). */
+const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
+/** Short pause between live-run checks while the commit side lane works. */
+const SHUTDOWN_SETTLE_POLL_MS = 10;
 
 /** Per-worker runtime state (the bus-owned half of the curator contract). */
 interface WorkerState {
@@ -434,6 +440,7 @@ export class EventBus {
 	/** The worker states, in registration order (memory-seam Task 5). */
 	#workers: WorkerState[] = [];
 	#workerDeadlineMs: number;
+	#shutdownSettleWaitMs: number;
 	#closed = false;
 
 	private constructor(harness: Harness, options: EventBusOptions) {
@@ -442,6 +449,7 @@ export class EventBus {
 		this.#hookDeadlineMs = options.hookDeadlineMs;
 		this.#idleThresholdMs = options.idleThresholdMs;
 		this.#workerDeadlineMs = options.workerDeadlineMs;
+		this.#shutdownSettleWaitMs = options.shutdownSettleWaitMs ?? SHUTDOWN_SETTLE_WAIT_MS;
 		if (options.onHostEvent !== undefined) {
 			this.onHostEvent(options.onHostEvent);
 		}
@@ -680,8 +688,9 @@ export class EventBus {
 	 * 2. stop idle workers FIRST (Task 5, spec §3): pending wakes dropped,
 	 *    in-flight runs awaited up to 30s then abandoned — a curator is not
 	 *    competing with the flush handlers for the window;
-	 * 3. drain pending settles — a run that settled just before shutdown
-	 *    delivers before the shutdown flush (the ordering constraint);
+	 * 3. drain pending settles and wait (bounded) for placed live runs —
+	 *    a run settling during this last admission window delivers before
+	 *    the shutdown flush; a wedged run logs its conversation ids;
 	 * 4. deliver `harnessShutdown` to every extension in install order,
 	 *    each deadline-bounded. Handlers may commit — admission is still
 	 *    open in this window (the seal is `Harness.close`, the caller's
@@ -697,6 +706,7 @@ export class EventBus {
 		}
 		await this.#stopWorkers();
 		await this.drain(this.#hookDeadlineMs, context);
+		await this.#drainLiveRuns(context);
 		// harnessShutdown carries no conversation: the conversation-scoped
 		// reads resolve empty and `document` serves any conversation.
 		const api = this.#apiFor(undefined);
@@ -744,6 +754,26 @@ export class EventBus {
 		return Promise.race([loop, deadline]).finally(() => {
 			if (timer !== undefined) clearTimeout(timer);
 		});
+	}
+
+	/** Drain runs placed before shutdown, bounded so a wedged run cannot hang close. */
+	async #drainLiveRuns(context: Context): Promise<void> {
+		const deadline = Date.now() + this.#shutdownSettleWaitMs;
+		for (;;) {
+			const live = [...this.#liveInputs.entries()]
+				.filter(([, count]) => count > 0)
+				.map(([conversationId]) => conversationId);
+			if (live.length === 0) return;
+			if (Date.now() >= deadline) {
+				console.warn(
+					"event-bus: shutdown settle wait expired; stranded conversations: %s",
+					live.map(String).join(", "),
+				);
+				return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_SETTLE_POLL_MS));
+			await this.drain(this.#hookDeadlineMs, context);
+		}
 	}
 
 	/** Stop everything: unsubscribe, empty the queue, stop the sweep + workers, and let a running loop exit. */
