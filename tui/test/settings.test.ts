@@ -71,6 +71,8 @@ const EXT_TREE: SurfaceLoad["tree"] = {
 interface FakeWire {
 	readonly client: SigrunClient;
 	readonly calls: readonly string[];
+	/** The save POST bodies (the rev assertions read them). */
+	readonly saveBodies: readonly string[];
 }
 
 /** A SigrunClient over an in-memory fetch answering the settings
@@ -86,12 +88,17 @@ function fakeWire(init?: {
 	/** Loaded extensions WITHOUT settings sections (the notice lines). */
 	readonly sectionlessExtensions?: readonly string[];
 	readonly savesFlipPending?: boolean;
+	/** Fix-wave C3: reject a save whose rev is stale (the two-saves
+	 *  test's optimistic-concurrency pin). */
+	readonly enforceRev?: boolean;
 }): FakeWire {
 	// The save's effect: a flipped pendingRestart on the next load.
 	let flipped = false;
+	let currentRev = 1;
 	const pendingNow = (): readonly string[] =>
 		flipped ? ["server.port"] : (init?.pendingRestart ?? []);
 	const calls: string[] = [];
+	const saveBodies: string[] = [];
 	const sections: SettingsSectionEntry[] = [
 		{ slug: "core", id: "general", title: "General", icon: "key" },
 		{ slug: "core", id: "tools", title: "Tools", icon: "key" },
@@ -162,8 +169,21 @@ function fakeWire(init?: {
 			url.includes("/v1/ext/core/surfaces/general/actions") &&
 			requestInit?.method === "POST"
 		) {
+			const rawBody = String(requestInit.body ?? "{}");
+			saveBodies.push(rawBody);
+			const body = JSON.parse(rawBody) as {
+				payload?: { rev?: number };
+			};
+			if (
+				init?.enforceRev === true &&
+				typeof body.payload?.rev === "number" &&
+				body.payload.rev !== currentRev
+			) {
+				return json({ ok: false, error: { message: "changed by someone else" } });
+			}
 			if (init?.savesFlipPending === true) flipped = true;
-			return json({ ok: true, rev: 2 });
+			currentRev += 1;
+			return json({ ok: true, rev: currentRev });
 		}
 		if (url.includes("/v1/ext/core/surfaces/general")) {
 			const load: SurfaceLoad = {
@@ -175,7 +195,7 @@ function fakeWire(init?: {
 						supervised: init?.supervised ?? true,
 					},
 				},
-				rev: 1,
+				rev: currentRev,
 				treeRev: 1,
 				access: "write",
 			};
@@ -199,7 +219,7 @@ function fakeWire(init?: {
 		// SAFETY: the fake implements the fetch shape the client consumes.
 		fetch: fetchImpl as typeof globalThis.fetch,
 	});
-	return { client, calls };
+	return { client, calls, saveBodies };
 }
 
 function makeView(wire: FakeWire, init?: {
@@ -443,6 +463,35 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		const lines = view.render(120).join("\n");
 		expect(lines).toContain("acme-plain: no settings section");
 		expect(lines).toContain("/v1/extensions/acme-plain/settings");
+	});
+
+	test("two consecutive saves in one open both succeed (the form rides the live rev)", async () => {
+		const wire = fakeWire({ enforceRev: true, savesFlipPending: true });
+		const view = makeView(wire);
+		await view.load();
+		await openGeneral(view);
+		// Render once: the SurfaceView builds the wrapped form lazily on
+		// first render — input before that drops on the floor.
+		view.render(60);
+		// First save (focus: defaultModel → namingModel → submit row).
+		view.handleInput("\x1b[B");
+		view.handleInput("\x1b[B");
+		view.handleInput("\r");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const first = wire.calls.filter((call) => call.includes("/actions"));
+		expect(first).toHaveLength(1);
+		expect(wire.saveBodies[0]).toContain('"rev":1');
+		// The save's refetch bumped the confirmed rev; the SECOND save
+		// must carry it (the pre-fix form rode the construction-time rev
+		// and rejected stale).
+		view.handleInput("\x1b[B");
+		view.handleInput("\x1b[B");
+		view.handleInput("\r");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(wire.saveBodies).toHaveLength(2);
+		expect(wire.saveBodies[1]).toContain('"rev":2');
+		// No rejection notice landed.
+		expect(view.render(60).join("\n")).not.toContain("changed by someone else");
 	});
 
 	test("Esc closes the open section back to the list", async () => {
