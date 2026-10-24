@@ -53,22 +53,27 @@ function visibleAt(condition: WidthCondition | undefined, widthClass: string): b
 	return true;
 }
 
-/** Render any block (the renderer's dispatch). */
-export function BlockView(props: { block: Block }): ReactNode {
+/** Render any block (the renderer's dispatch). `interaction` marks the
+ *  placement for the form block's stepper (spec §9.1); every other block
+ *  ignores it. */
+export function BlockView(props: {
+	block: Block;
+	interaction?: boolean;
+}): ReactNode {
 	const block = props.block;
 	const widthClass = useWidthClass();
 	if (!visibleAt(block.visibleAt, widthClass)) return null;
-	return renderKnown(block);
+	return renderKnown(block, props.interaction === true);
 }
 
 /** The type dispatch — Task 2+ slots its blocks in here. */
-function renderKnown(block: Block): ReactNode {
+function renderKnown(block: Block, interaction = false): ReactNode {
 	switch (block.type) {
 		case "stack":
 			return (
 				<StackBlockView block={block}>
 					{block.children.map((child, index) => (
-						<BlockView key={index} block={child} />
+						<BlockView key={index} block={child} interaction={interaction} />
 					))}
 				</StackBlockView>
 			);
@@ -82,7 +87,9 @@ function renderKnown(block: Block): ReactNode {
 			return (
 				<SectionBlockView block={block}>
 					{block.children.map((child, index) =>
-						isBlock(child) ? <BlockView key={index} block={child} /> : null,
+						isBlock(child) ? (
+							<BlockView key={index} block={child} interaction={interaction} />
+						) : null,
 					)}
 				</SectionBlockView>
 			);
@@ -111,7 +118,7 @@ function renderKnown(block: Block): ReactNode {
 		case "tree":
 			return <TreeBlockView block={block} />;
 		case "form":
-			return <FormBlockView block={block} />;
+			return <FormBlockView block={block} interaction={interaction} />;
 		case "page":
 			return <PageBlockView block={block} />;
 		default: {

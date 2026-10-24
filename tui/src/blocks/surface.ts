@@ -119,9 +119,15 @@ function findMoveTarget(tree: Tree | undefined, name: string): MoveTarget | unde
 	if (tree === undefined) return undefined;
 	const found = findCollection(tree.root, name);
 	if (found === undefined) return undefined;
-	if (typeof found.items.$ !== "string") return undefined;
+	const itemsProp = found.items;
+	// Literal rows (the ambient shape, U6 Task 3) have no data path; the
+	// "$" check discriminates the binding (Array.isArray cannot narrow
+	// a readonly-array union).
+	if (typeof itemsProp !== "object" || !("$" in itemsProp)) {
+		return undefined;
+	}
 	return {
-		itemsPath: found.items.$,
+		itemsPath: itemsProp.$,
 		groupBy: found.groupBy,
 		timeStart: found.time?.start,
 		timeEnd: found.time?.end,
@@ -293,6 +299,16 @@ export class SurfaceState {
 		const drained = this.#notices;
 		this.#notices = [];
 		return drained;
+	}
+
+	/** Flip the live surface's access (a mid-edit settle swap renders
+	 *  read-only: the transport's access was captured at load, so the
+	 *  settle path flips the state directly — the view re-renders via
+	 *  the emitted change). Only narrows: once read, never back. */
+	setAccess(access: "read" | "write"): void {
+		if (this.#access === access) return;
+		this.#access = access;
+		this.#emit();
 	}
 
 	/** The channel-owned `/view/` branch (spec §6.2) — a BlockCtx's
@@ -477,7 +493,7 @@ export class SurfaceState {
 			this.#emit();
 		}
 		void this.#transport
-			.act({ action: name, payload, actionId })
+			.act({ action: name, type: action.type, payload, actionId })
 			.then((result) => {
 				// A move whose entry is already gone (the 10 s timeout fired)
 				// is STALE: no ops, no notice — the user already saw it fail.
@@ -497,11 +513,29 @@ export class SurfaceState {
 							? {}
 							: { [result.error.field]: result.error.message };
 					this.#notice(result.error.message);
+					// A "changed by someone else" rejection means the
+					// confirmed data (and the rev the form rides) is stale —
+					// refetch so the NEXT save carries the current rev (U4
+					// Task 4 round-2: without it, the form rev is pinned and
+					// every retry rejects the same way).
+					if (result.error.message === "changed by someone else") {
+						void this.#fullRefetch();
+					}
 					return;
 				}
 				this.#serverErrors = {};
 				if (result.toast !== undefined) this.#notice(result.toast);
-				if (!isMove) return;
+				if (!isMove) {
+					// A non-move accept (the settings save): the rev already
+					// bumped server-side (the optimistic check needs the form's
+					// NEXT submit to carry it), and the fresh data (the core
+					// sections' meta block — the pending-restart callout) only
+					// lands via a fetch (the settings transport is outside the
+					// surface.changed hub — the app owns the probe).
+					this.#rev = result.rev;
+					void this.#fullRefetch();
+					return;
+				}
 				if (result.ops !== undefined) {
 					try {
 						this.#confirmed = applyOps(this.#confirmed, result.ops);

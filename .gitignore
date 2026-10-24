@@ -18,6 +18,7 @@ REPORT.md
 *.tgz
 /.pi/
 coverage/
+sandbox/target/
 .env
 .vcc/
 *.pem

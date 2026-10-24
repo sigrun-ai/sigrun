@@ -359,7 +359,10 @@ const MeterBlock = Type.Object({
 const LogBlock = Type.Object({
 	...BlockBase,
 	type: Type.Literal("log"),
-	lines: Type.Ref("Binding"),
+	// Literal lines are legal (ambient placement requires them — the
+	// ambient envelope carries no data document); placements that resolve
+	// bindings keep the binding form.
+	lines: Type.Union([Type.Ref("Binding"), Type.Array(Type.Ref("JsonValue"))]),
 	follow: Type.Optional(Type.Boolean()),
 	wrap: Type.Optional(Type.Boolean()),
 	tones: Type.Optional(Type.Record(Type.String(), Type.Ref("Tone"))),
@@ -442,7 +445,10 @@ const BulkAction = Type.Object({
 const CollectionBlock = Type.Object({
 	...BlockBase,
 	type: Type.Literal("collection"),
-	items: Type.Ref("Binding"),
+	// Literal rows are legal (ambient placement requires them — the
+	// ambient envelope carries no data document); placements that resolve
+	// bindings keep the binding form.
+	items: Type.Union([Type.Ref("Binding"), Type.Array(Type.Ref("JsonValue"))]),
 	item: AnyObject,
 	display: Type.Unsafe({
 		type: "string",
@@ -538,6 +544,7 @@ const NumberField = Type.Object({
 const ToggleField = Type.Object({
 	...FieldBase,
 	type: Type.Literal("toggle"),
+	default: Type.Optional(Type.Boolean()),
 });
 
 const ChoiceField = Type.Object({

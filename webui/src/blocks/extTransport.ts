@@ -121,6 +121,7 @@ export function createExtTransport(options: ExtTransportOptions): SurfaceTranspo
 		},
 		async act(body: {
 			action: string;
+			type: string;
 			payload: JsonValue;
 			actionId: string;
 		}): Promise<SurfaceActResult> {

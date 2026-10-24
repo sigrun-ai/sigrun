@@ -93,6 +93,13 @@ export interface MemorySeamConfig {
 	queueMax: number;
 }
 
+/** The multi-user execution-jail configuration (M1). */
+export interface IsolationConfig {
+	mode: "auto" | "always" | "off";
+	osUsers: boolean;
+	workerIdleMinutes: number;
+}
+
 /**
  * The provider runtime knobs (provider plugins Task 5): the interval
  * refresh cadence — how often the host-owned scheduler re-runs
@@ -264,6 +271,8 @@ export interface SigrunConfig {
 	 * boot (Tasks 2-5 shipped them as temporary hardcoded constants).
 	 */
 	memorySeam: MemorySeamConfig;
+	/** The execution-jail mode, OS-user gate, and worker idle timeout. */
+	isolation: IsolationConfig;
 	/**
 	 * The provider runtime knobs (provider plugins Task 5): the interval
 	 * refresh cadence, parsed from `SIGRUN_PROVIDER_REFRESH_MINUTES` over
@@ -289,6 +298,17 @@ export interface SigrunConfig {
 	 * and U4 consume it.
 	 */
 	dev: boolean;
+	/**
+	 * The supervised flag (UI-blocks U4 Task 2, spec §13.3):
+	 * `SIGRUN_SUPERVISED` (strict true/false, `1`/`0` accepted like
+	 * `SIGRUN_DEV`) over the file's `server.supervised`, default `false`.
+	 * `true` promises that SOMETHING restarts the process after an
+	 * intentional `exit 0` (the Helm chart and docker compose set it; the
+	 * Dockerfile deliberately does NOT — a bare `docker run` without a
+	 * restart policy would stay down). `POST /v1/admin/restart` exists only
+	 * under this flag; `/v1/meta` reports it.
+	 */
+	supervised: boolean;
 	/**
 	 * The jobs default timezone (§8.2): `SIGRUN_TIMEZONE` over the file's
 	 * `server.timezone` over the process TZ
@@ -640,6 +660,45 @@ function parseDev(env: Env): boolean | undefined {
 	if (lowered === "false" || lowered === "0") return false;
 	throw new Error(
 		`SIGRUN_DEV must be "true" or "false" (or 1/0), got ${JSON.stringify(raw)}`,
+	);
+}
+
+/** Parse `SIGRUN_ISOLATION`; unset/empty lets the file/default tier apply. */
+function parseIsolationMode(env: Env): IsolationConfig["mode"] | undefined {
+	const raw = env.SIGRUN_ISOLATION;
+	if (raw === undefined || raw === "") return undefined;
+	const mode = raw.trim().toLowerCase();
+	if (mode === "auto" || mode === "always" || mode === "off") return mode;
+	throw new Error(
+		`SIGRUN_ISOLATION must be "auto", "always", or "off", got ${JSON.stringify(raw)}`,
+	);
+}
+
+function parseIsolation(
+	env: Env,
+	server?: ServerSettings["isolation"],
+): IsolationConfig {
+	return {
+		mode: parseIsolationMode(env) ?? server?.mode ?? "auto",
+		osUsers: server?.osUsers ?? false,
+		workerIdleMinutes: server?.workerIdleMinutes ?? 10,
+	};
+}
+
+/**
+ * Parse `SIGRUN_SUPERVISED` (UI-blocks U4 Task 2, spec §13.3): the
+ * `parseDev` grammar exactly ("true"/"false"/1/0, strict otherwise —
+ * the env contract is the deploy's promise that a restart policy exists,
+ * so a fuzzy parse would lie about the failure mode).
+ */
+function parseSupervised(env: Env): boolean | undefined {
+	const raw = env.SIGRUN_SUPERVISED;
+	if (raw === undefined || raw === "") return undefined;
+	const lowered = raw.trim().toLowerCase();
+	if (lowered === "true" || lowered === "1") return true;
+	if (lowered === "false" || lowered === "0") return false;
+	throw new Error(
+		`SIGRUN_SUPERVISED must be "true" or "false" (or 1/0), got ${JSON.stringify(raw)}`,
 	);
 }
 
@@ -1148,6 +1207,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		...(webui === undefined ? {} : { webui }),
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
+		isolation: { ...config.isolation },
 		providers: { ...config.providers },
 		...(auth === undefined ? {} : { auth }),
 		...(metrics === undefined ? {} : { metrics }),
@@ -1187,6 +1247,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_IDLE_THRESHOLD` | `memorySeam.idleThresholdMs` |
  * | `SIGRUN_WORKER_DEADLINE` | `memorySeam.workerDeadlineMs` |
  * | `SIGRUN_QUEUE_MAX` | `memorySeam.queueMax` |
+ * | `SIGRUN_ISOLATION` | `isolation.mode` |
  * | `SIGRUN_PROVIDER_REFRESH_MINUTES` | `providers.refreshIntervalMinutes` |
  * | `SIGRUN_BACKUP_*` | `backup` |
  * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
@@ -1236,6 +1297,8 @@ export function envServerSection(env: Env): ServerSettings {
 		queueMax: parseMemorySeamCount(env, "SIGRUN_QUEUE_MAX"),
 	});
 	if (memorySeam !== undefined) section.memorySeam = memorySeam;
+	const isolationMode = parseIsolationMode(env);
+	if (isolationMode !== undefined) section.isolation = { mode: isolationMode };
 	const refreshIntervalMinutes = parseNonNegativeIntEnv(
 		env,
 		PROVIDER_REFRESH_MINUTES_ENV,
@@ -1254,6 +1317,11 @@ export function envServerSection(env: Env): ServerSettings {
 	// would read as intent on the next boot).
 	const dev = parseDev(env);
 	if (dev !== undefined) section.dev = dev;
+	// The supervised flag (§13.3) — the same bootstrap rule as dev:
+	// projected only when the env var is SET (a defaulted flag is never
+	// persisted; the deploy's restart posture is env intent, not state).
+	const supervised = parseSupervised(env);
+	if (supervised !== undefined) section.supervised = supervised;
 	return section as ServerSettings;
 }
 
@@ -1366,12 +1434,21 @@ export function effectiveServerSection(
 		"memorySeam",
 		"queueMax",
 	]);
+	emit("isolation.mode", config.isolation.mode, ["isolation", "mode"]);
+	emit("isolation.osUsers", config.isolation.osUsers, ["isolation", "osUsers"]);
+	emit("isolation.workerIdleMinutes", config.isolation.workerIdleMinutes, [
+		"isolation",
+		"workerIdleMinutes",
+	]);
 	emit(
 		"providers.refreshIntervalMinutes",
 		config.providers.refreshIntervalMinutes,
 		["providers", "refreshIntervalMinutes"],
 	);
 	emit("dev", config.dev, ["dev"]);
+	// U4 §13.3: the supervised posture rides the effective block too —
+	// the settings surface's restart affordance reads one place.
+	emit("supervised", config.supervised, ["supervised"]);
 	if (config.backup?.target === "path") {
 		emit("backup.path", config.backup.path, ["backup", "path"]);
 		emit(
@@ -1546,6 +1623,7 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			server?.backup?.staleAfterHours ?? DEFAULT_BACKUP_STALE_AFTER_HOURS,
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
+		isolation: parseIsolation(env, server?.isolation),
 		providers: {
 			refreshIntervalMinutes: parseRefreshIntervalMinutes(
 				env,
@@ -1558,6 +1636,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		// The development flag (§14.2/§14.4): strict env parse over the
 		// file's `server.dev`, default false.
 		dev: parseDev(env) ?? server?.dev ?? false,
+		// The supervised posture (§13.3): env over file over false. Only
+		// the chart and compose set the env; a file-set flag serves a
+		// hand-rolled systemd/supervisord deploy (same restart promise).
+		supervised: parseSupervised(env) ?? server?.supervised ?? false,
 		// The jobs default timezone (§8.2): env over file over the process
 		// TZ, validated loud (a bad name would otherwise crash the scheduler
 		// at evaluation time instead of failing boot).

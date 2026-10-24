@@ -264,6 +264,7 @@ export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
 			});
 			const result = await props.transport.act({
 				action: "move",
+				type: "move",
 				payload: { itemId, to: { group: toLane } } as JsonValue,
 				actionId: crypto.randomUUID(),
 			});

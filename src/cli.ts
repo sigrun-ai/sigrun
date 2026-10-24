@@ -50,7 +50,12 @@ import { Writable } from "node:stream";
 import { resolveStoreRoots, writeFileAtomic } from "./harness/stores.js";
 import { openIdentityStores } from "./harness/identity/index.js";
 import { pathToFileURL } from "node:url";
-import type { Env } from "./config.js";
+import { effectiveMethods, loadConfig, type Env } from "./config.js";
+import { probeIsolation, runHelperProbe, selfTestHelper } from "./sandbox/availability.js";
+import { SettingsStore } from "./harness/settings.js";
+import { resolveHelper } from "./sandbox/helper.js";
+import { selfPackageRoot } from "./harness/packages.js";
+import { createAdmissionGuard } from "./harness/identity/users.js";
 import type { ClaimResponse, OnboardingState } from "@sigrun/shared/views";
 import { serve, type BootedServer } from "./serve.js";
 import {
@@ -623,7 +628,7 @@ export interface CliDeps {
 	 * port and the shutdown the `run` lifecycle drives. The CLI passes
 	 * `{ host: "127.0.0.1" }` — workstation mode is loopback-only (the
 	 * TUI dials loopback; the naive-identity API must not answer on the
-	 * LAN). `serve` (the deploy entry) keeps the `0.0.0.0` default.
+	 * LAN). `serve` (the deploy entry) keeps the dual-stack `::` default.
 	 */
 	boot(env: NodeJS.ProcessEnv, options?: { host?: string }): Promise<BootedServer>;
 	/**
@@ -668,6 +673,8 @@ export interface CliDeps {
 	 * The value goes to the PUT body only; it is never printed.
 	 */
 	readSecret?(): Promise<string>;
+	/** Test seam for the multi-user admission availability decision. */
+	probeIsolation?: typeof probeIsolation;
 }
 
 /**
@@ -931,6 +938,7 @@ async function runIdentityCommand(
 	parsed: ParsedArgs,
 	env: NodeJS.ProcessEnv,
 	io: CliIO,
+	isolationProbe: typeof probeIsolation,
 ): Promise<number> {
 	const stores = openIdentityStores(resolveStoreRoots(env));
 	if (parsed.command === "token") {
@@ -974,6 +982,27 @@ async function runIdentityCommand(
 	}
 	switch (parsed.sub) {
 		case "add": {
+			const config = loadConfig(
+				env,
+				new SettingsStore({ dir: defaultConfigDir(env) }).read(),
+			);
+			const coreRoot = selfPackageRoot();
+			const isolation = await isolationProbe({
+				platform: process.platform,
+				helper: coreRoot === undefined ? undefined : resolveHelper(env, coreRoot),
+				runProbe: runHelperProbe,
+				selfTest: selfTestHelper,
+			});
+			const methods = effectiveMethods(config.auth, "127.0.0.1");
+			stores.users.configureAdmission({
+				firstWorkspace: config.workspace.path,
+				admit: createAdmissionGuard({
+					isolation,
+					mode: config.isolation.mode,
+					methods,
+					proxySecretHeader: config.auth.proxy.secretHeader,
+				}),
+			});
 			await stores.users.add({
 				user: parsed.user as string,
 				admin: parsed.admin ?? false,
@@ -1181,7 +1210,12 @@ export async function cliMain(
 			case "token":
 			case "user": {
 				// The identity commands (Task 7): stores directly, server or not.
-				return await runIdentityCommand(parsed, env, io);
+				return await runIdentityCommand(
+					parsed,
+					env,
+					io,
+					realDeps.probeIsolation ?? probeIsolation,
+				);
 			}
 			case "provider": {
 				// The provider commands (release 0.1 Task 2b): API clients over

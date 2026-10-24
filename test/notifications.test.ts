@@ -59,6 +59,7 @@ import type { ProviderContributor } from "../src/harness/providers/index.js";
 import type { SeamHost } from "../src/harness/seam-host.js";
 import { createServer } from "../src/server/index.js";
 import { unclaimedIdentity } from "./helpers/identity.js";
+import { askTree } from "./helpers/trees.js";
 
 /**
  * The recorder's shared array (the fixture-channel retrieval pattern: the
@@ -273,7 +274,7 @@ async function seedInteraction(
 			callId,
 			status: "pending",
 			createdAt: Date.now(),
-			body: { text: `waiting: ${callId}` },
+			body: askTree(),
 		},
 		BACKGROUND_CONTEXT,
 	);

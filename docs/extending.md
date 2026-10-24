@@ -62,9 +62,10 @@ story to guess.
   `packages/` and `git/` (the extension install machinery), `skills/`
   (your user-wide skills — the same SKILL.md convention the workspace
   ships, listed under the reserved `skills` section for every
-  conversation), the identity surfaces `users.json` and `api-tokens.json`
-  (mode 0600, sigrun-owned — user accounts and token digests), and
-  channel client configs such as `tui.json`.
+  conversation), the identity surfaces `users.json`,
+  `api-tokens.json`, and `accounts.json` (mode 0600, sigrun-owned — user
+  accounts, token digests, and external-identity links), and channel
+  client configs such as `tui.json`.
 
 ## One resolution chain — workstation and container
 
@@ -367,6 +368,89 @@ The grant updates only on proxy-authenticated requests while
 takes effect for host-side checks at that user's **next web request**
 (a user who never browses again keeps the stale grant until then).
 
+## The accounts surface
+
+A **link** is one external identity bound to one directory user. Sigrun
+keeps every link in ONE table, `<configDir>/accounts.json` (mode 0600,
+atomic writes, mtime-reload reads — the same discipline as
+`users.json`), because chat senders and login subjects are the same
+question: "who is this, in the directory?". A link records `provider`,
+`subject`, `user`, `linkedAt`, and `via` (`login`, `self`, `pairing`, or
+`admin`).
+
+Provider ids have two forms:
+
+- `chat:<channel>` — a chat sender (the gateway writes these);
+- `login:<slug>:<id>` — a login subject, where `slug` is the login
+  extension's slug and `id` its provider id (so the bundled extension's
+  ids read `login:oauth:<id>`).
+
+A subject is opaque to sigrun: a Telegram or Discord numeric id, a
+Signal `+E.164` number, and an email-shaped subject all pass — any
+non-empty string up to 512 characters.
+
+A provider id is **lowercase, no spaces**: it must match
+`^(login|chat):[a-z0-9][a-z0-9._:-]*$`, so `chat:Telegram` is rejected
+with `invalid_provider: chat:Telegram`. Use the channel's own, already
+lowercase name.
+
+```ts
+await host.accounts.lookup("chat:telegram", "12345");   // AccountLinkWire | undefined
+await host.accounts.link("chat:telegram", "12345", "alice", "pairing");
+await host.accounts.unlink("chat:telegram", "12345");   // boolean
+await host.accounts.listForUser("alice");                // readonly AccountLinkWire[]
+```
+
+Rules, all enforced by core:
+
+- **One link per `(provider, subject)`.** Re-linking to the SAME user is
+  a no-op that returns the existing record. Linking to a DIFFERENT user
+  is refused — never silently re-pointed, because re-pointing an
+  existing external identity is an account-takeover path. The holder (or
+  an admin) removes the old link first.
+- **Errors.** An unknown user throws `unknown user "<user>"`; a
+  malformed provider id throws `invalid_provider: <provider>`; an empty
+  or over-long (513+ characters) subject throws `invalid_subject`; a
+  conflict throws an `Error` whose message starts
+  `account_link_conflict:` and never names the current holder — match on
+  the prefix, as you would on `command_not_found:`.
+- **User deletion removes the departing user's links** and never
+  transfers them: credentials belong to a person, so the new owner of a
+  transferred conversation does not inherit the old owner's chat
+  identity.
+- **Core owns the file.** Extensions go through `host.accounts`; nothing
+  else may write `accounts.json`. Core is the single write path, which is
+  what keeps the gateway and the login seam from disagreeing about who a
+  sender is.
+- **`accounts.json` is in `configDir`**, so the existing `config` backup
+  section carries it alongside `users.json`.
+
+Users manage their own links over HTTP, mirroring `/v1/auth/tokens`:
+
+- `GET /v1/auth/accounts` lists the caller's links as
+  `{accounts: AccountLinkWire[]}`. A principal with no directory user (a
+  userless service token) gets the whole store — the same single-operator
+  rule the token list applies. `?user=<name>` is the admin-only window
+  into another user's links; naming yourself is allowed and returns the
+  same payload as no query. A non-admin naming someone else gets 403
+  `forbidden` before the store is read.
+- `DELETE /v1/auth/accounts?provider=<p>&subject=<s>` removes one link
+  (204). A missing or empty `provider`/`subject` is 400 `invalid_query`;
+  an absent link is 404 `unknown_account`; a link belonging to another
+  user is 403 `forbidden` unless the caller is an admin.
+
+Both take QUERY parameters rather than path segments because provider ids
+contain `:` and subjects may contain `/`, `+`, or `@` (URL-encode them:
+`%2B` for a Signal `+E.164` number).
+
+One consequence worth knowing: because a `(provider, subject)` pair is
+usually guessable (a Discord handle, an email address), a signed-in
+non-admin can tell 404 from 403 and so learn whether a given external
+identity is registered — though never to whom. The authorization rule
+is checked inside the same serialized mutation as the removal, so a
+subject re-linked to someone else mid-request is not removed on the
+strength of a stale read.
+
 ## Secrets precedence: stored wins, env bootstraps
 
 For every secret, the resolution order is:
@@ -486,10 +570,25 @@ sigrun — the builders behind `@sigrun/sigrun/blocks` must emit the
 server's block-set version, which only the running copy does. Import the
 builders from `@sigrun/sigrun/blocks`:
 
-```ts
-import { bind, collection, page, tree } from "@sigrun/sigrun/blocks";
+```ts check
+import { bind, card, collection, page, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
 
-tree(page({ title: "Board", main: [collection({ items: bind("/cards") })] }));
+export function board(): Tree {
+	return tree(
+		page({
+			title: "Board",
+			main: [
+				collection({
+					id: "cards",
+					items: bind("/cards"),
+					display: "lanes",
+					item: card({ title: bind("./label") }),
+				}),
+			],
+		}),
+	);
+}
 ```
 
 Reference plugins: [sigrun-provider-ollama](https://github.com/sigrun-ai/sigrun-provider-ollama)
@@ -685,6 +784,190 @@ commands: [
   choice the operator can see, never a silent shadowing.
 - A malformed declaration (bad name shape, missing `description`,
   non-function `run`) quarantines the extension at load.
+
+## Interactions: a pending human decision is a block tree
+
+An **interaction record** is how your extension says "this conversation
+is waiting on a human decision" and receives the answer durably
+([approval-ux-seams.md](approval-ux-seams.md)). Its **body is a block
+tree** — placement `interaction`, a root `form` whose submit IS the
+answer — built with the typed builders from `@sigrun/sigrun/blocks`
+(the host-linked copy; `tree()` stamps the server's block-set version,
+so never bundle your own). Declare every kind you seed in the factory
+result's `interactionKinds`; seeding an undeclared kind throws at the
+write. The envelope (kind, callId, status, timestamps, answer) is
+core-owned; channels render the tree generically with no per-extension
+UI.
+
+An allow/deny gate (the pi-warden shape — a toned `choice` and a
+`longtext` reason, with `markdown` context above the decision section;
+a form's direct children are fields and `section`s, so prose blocks
+group inside a section):
+
+```ts check
+import { choice, form, longtext, markdown, section, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function gatingConfirmBody(command: string, reason: string): Tree {
+	return tree(
+		form({
+			id: "confirm",
+			bind: "/values",
+			mode: "submit",
+			submitLabel: "Send",
+			children: [
+				section({
+					title: "Confirm",
+					children: [
+						markdown({ text: `About to run \`${command}\` — it matched a confirm rule.` }),
+					],
+				}),
+				section({
+					title: "Decision",
+					children: [
+						choice({
+							name: "decision",
+							label: "Allow this call?",
+							options: [
+								{ id: "allow", label: "Allow", tone: "good" },
+								{ id: "deny", label: "Deny", tone: "bad" },
+							],
+						}),
+						longtext({ name: "reason", label: "Why (optional)", placeholder: reason }),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+A multi-question form (the ask-user-question shape — one `section` per
+question, per-option `preview` markdown, `allowOther` for free text):
+
+```ts check
+import { choice, form, section, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function questionsFormBody(): Tree {
+	return tree(
+		form({
+			id: "ask",
+			bind: "/values",
+			mode: "submit",
+			children: [
+				section({
+					title: "Pick a store",
+					children: [
+						choice({
+							name: "store",
+							label: "Which store should the extension use?",
+							multi: false,
+							allowOther: { label: "Something else" },
+							options: [
+								{
+									id: "sqlite",
+									label: "SQLite",
+									description: "A single file under your data dir",
+									recommended: true,
+									preview: "**SQLite**: zero setup, durable, local-only.",
+								},
+								{
+									id: "markdown",
+									label: "Markdown files",
+									preview: "**Markdown**: greppable, versionable by hand.",
+								},
+							],
+						}),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+**The answer is `{values}`** (ruling 20): when a human submits, the
+generic answer route (`POST /v1/conversations/:id/interactions/:callId/answer`,
+body `{values}`) writes `answer: { values: { <field name>: value } }`
+onto the record — every field's value under its name; a `choice` value
+is its option id (or ids when `multi`), a `choice` with `allowOther`
+carries `{ other: "…" }`. Your poll loop reads `record.answer?.values`
+via `host.snapshotInteraction`; `host.answerInteraction` (extension-side
+answer) takes the same `{values}` shape. A `secret` field's value
+reaches your `snapshotInteraction` read once — the stored record keeps
+only `"[secret]"` (there is no answer handler; your poll loop reads the
+live answer envelope) — and channels and logs never see it (the settled
+event carries no answer values). First answer wins: a second answer gets
+`404 not_pending`.
+
+## Ambient surfaces: persistent read-mostly state as a block tree
+
+An **ambient surface** is the other direction — keyed, persistent,
+read-mostly state (a statusline slot, a footer zone, a panel) you
+REPLACE wholesale, never block on. Same discipline: strict core-owned
+envelope (`key`, `place`, `maxRows?`, `overflow?`, `refreshMs?`,
+`expires`, `updatedAt`) around a **block-tree body** (placement
+`ambient`) built with the same builders. Declare every key in
+`ambientKinds`. `place: "status"` and `"footer"` allow ONE line — a
+single one-line `markdown`, or one `columns` of one-line blocks (the
+footer's left/middle/right zones are three columns); validation rejects
+anything taller. A footer with the three zones:
+
+```ts check
+import { columns, markdown, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function footer(left: string, middle: string, right: string): Tree {
+	return tree(
+		columns({
+			children: [
+				{ block: markdown({ text: left }) },
+				{ block: markdown({ text: middle }), weight: 1 },
+				{ block: markdown({ text: right }) },
+			],
+		}),
+	);
+}
+```
+
+`expires` and `updatedAt` are host-assigned envelope fields — the host
+stamps them on the record; you never pass them to `setAmbient`. The
+envelope may also carry `details?` (opaque JSON the channel renders as
+one collapsed line, never interpreted).
+
+A statusline slot and a panel of rows (the rpiv-todo shape — a
+`collection(display: "list")` of literal rows; ambient bodies bind
+nowhere outside a collection's item template — the envelope carries no
+data model):
+
+```ts check
+import { bind, card, collection, markdown, tree } from "@sigrun/sigrun/blocks";
+import type { JsonValue, Tree } from "@sigrun/sigrun/blocks";
+
+export function statusline(text: string): Tree {
+	return tree(markdown({ text }));
+}
+
+export function todoPanel(rows: readonly JsonValue[]): Tree {
+	return tree(
+		collection({
+			id: "todos",
+			items: rows,
+			display: "list",
+			item: card({
+				title: bind("./label"),
+				status: { label: bind("./status"), spinner: bind("./running") },
+			}),
+		}),
+	);
+}
+```
+
+Write with `host.setAmbient(conversationId, { key, place, body }, context)`
+from a tool execute or hook (never the factory body); clear with
+`host.clearAmbient`. One slot key is owned by exactly one extension —
+allocation, not silent composition.
 
 ## Idle workers: `wakeOn` only
 
@@ -1019,6 +1302,53 @@ Rules for engine authors:
   `/v1/meta` omits `health.gateway` entirely.
 - A malformed declaration (a missing `start`/`stopIntake`/`stop`/
   `health` function) quarantines the extension at load.
+
+## Execution isolation and the per-user surface
+
+**When isolation is on**, a user's agent can reach only their workspace,
+their grants, their home and temp directories, and read-only system paths.
+It cannot read sigrun's files or environment, other users' files, or signal
+processes outside its jail.
+
+**Not covered:** extensions run inside sigrun with full access, like any
+installed package — install only extensions you trust. One user's agent can
+still exhaust CPU, memory, or disk. Outbound network is not restricted.
+macOS and Windows hosts run single-user only.
+
+**Shared MCP servers** hand every permitted user's agent the admin's
+credential for that service.
+
+**File modes are not the boundary.** Workers that share sigrun's uid are
+confined by Landlock alone; `0700` directories are hygiene.
+
+**Single-user servers** run the agent with full host access.
+
+**Every peer in `trustedProxies` can forge any identity**; with isolation
+on, the shared secret is required for that reason.
+
+System-level extensions need none of the per-user APIs below: they run as
+trusted code inside sigrun and use the system stores documented above.
+
+For kernel-suite provenance, `/proc` and ptrace denials are compared with
+the same operation outside a jail. When the outside operation also fails
+(for example under Yama), CI labels the case Yama/host-policy satisfied and
+not Landlock-discriminating. Successful `osUser` switching and the uid-switch
+discrimination need a privileged runner with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`; otherwise they skip with a named reason.
+
+The following are the **per-user extension surface covered by the M2
+workstream**, not APIs shipped by M1:
+
+- Use `stores.user(user)` for a particular user's secrets, settings, and
+  data/state/cache paths rather than shared system stores.
+- Use `userServices` for services that run per user in their own jail, and
+  connect to them through the per-user service surface. Do not put their
+  credentials in the agent workspace.
+- Use `setUserTools(user, tools)` for tools owned by one user rather than
+  tools offered to every conversation.
+- Use `scope: "user"` sections for settings that each user views and edits
+  independently. Keep deployment-wide configuration in server-scoped
+  sections.
 
 ## Uninstall
 

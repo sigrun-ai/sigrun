@@ -39,9 +39,15 @@ import type {
 	ConversationViewWire,
 	InteractionAnswered,
 	InteractionList,
+	InteractionWire,
+	MetaResponse,
 	ModelsResponse,
 	SettingsResponse,
+	SettingsSectionsResponse,
+	SettingsSectionEntry,
+	SettingsSectionIndexEntry,
 	SubmissionResponse,
+	WhoamiResponse,
 } from "@sigrun/shared/views";
 
 export type {
@@ -58,10 +64,15 @@ export type {
 	InteractionAnswered,
 	InteractionList,
 	InteractionWire,
+	MetaResponse,
 	ModelEntry,
 	ModelsResponse,
 	SettingsResponse,
+	SettingsSectionsResponse,
+	SettingsSectionEntry,
+	SettingsSectionIndexEntry,
 	SubmissionResponse,
+	WhoamiResponse,
 } from "@sigrun/shared/views";
 export type { CommandRunResponse, CommandsResponse, SlashCommand } from "@sigrun/shared/commands";
 export type {
@@ -76,11 +87,13 @@ export type { JobsResponse, JobRunResponse } from "@sigrun/shared/views";
 export type { ExtensionsResponse, ExtensionInfo, ExtensionSurfaceInfo } from "@sigrun/shared/views";
 export type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
 
-/** One answer to a pending interaction (the ONE generic route's body). */
+/**
+ * One answer to a pending interaction (the ONE generic route's body).
+ * U6 Task 2 (ruling 20): `{values}` ONLY — every field's value under
+ * its name; the legacy `{ids, text}` shapes are a 400 server-side.
+ */
 export interface InteractionAnswerInput {
-	readonly ids?: readonly string[];
-	readonly values?: Readonly<Record<string, string | number | boolean>>;
-	readonly text?: string;
+	readonly values: Readonly<Record<string, import("@sigrun/shared/blocks").JsonValue>>;
 }
 
 /** `GET /v1/jobs/:id/runs`: the job's runs, newest first. */
@@ -152,6 +165,34 @@ export class SigrunClient {
 	readonly #fetch: FetchLike;
 	readonly #headers: Record<string, string>;
 
+	readonly #token: string | undefined;
+	readonly #user: string | undefined;
+
+	/** The server's origin (the settings view's surface transports). */
+	get baseUrl(): string {
+		return this.#baseUrl;
+	}
+
+	/** The auth token (the surface transports' bearer). */
+	get token(): string | undefined {
+		return this.#token;
+	}
+
+	/** The `X-Sigrun-User` identity (the surface transports' header). */
+	get user(): string | undefined {
+		return this.#user;
+	}
+
+	/**
+	 * The client's fetch (the settings view's surface transports — a
+	 * test-injected fetch must carry the section loads too). The
+	 * parameter/return types widen to the ambient `fetch` signature;
+	 * the declared {@link FetchLike} is the consumed subset.
+	 */
+	get fetch(): typeof globalThis.fetch {
+		return this.#fetch as typeof globalThis.fetch;
+	}
+
 	constructor(options: SigrunClientOptions) {
 		// A trailing slash would double every route's leading one
 		// (`--server http://host/` → `//v1/...`) — normalize once.
@@ -161,6 +202,8 @@ export class SigrunClient {
 			(((input, init) => globalThis.fetch(input, init)) as FetchLike);
 		const user = options.user?.trim();
 		const token = options.token?.trim();
+		this.#token = token === "" ? undefined : token;
+		this.#user = user === "" ? undefined : user;
 		this.#headers = {
 			accept: "application/json",
 			...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
@@ -264,6 +307,15 @@ export class SigrunClient {
 		return this.#get(`/v1/conversations/${id}/interactions`);
 	}
 
+	/** `GET .../interactions/:callId` — one record in ANY status (the
+	 *  settle-refetch path: an answer that lands on an already-settled
+	 *  record (404 not_pending) refetches here and renders it read-only). */
+	getInteraction(id: number, callId: string): Promise<InteractionWire> {
+		return this.#get(
+			`/v1/conversations/${id}/interactions/${encodeURIComponent(callId)}`,
+		);
+	}
+
 	/** `POST .../interactions/:callId/answer` — the ONE generic answer route. */
 	answerInteraction(
 		id: number,
@@ -307,6 +359,52 @@ export class SigrunClient {
 	/** `GET /v1/settings` — the effective settings (absent file = `{}`). */
 	getSettings(): Promise<SettingsResponse> {
 		return this.#get("/v1/settings");
+	}
+
+	/**
+	 * `GET /v1/settings/sections` (UI-blocks U4 Task 4): the settings
+	 * panel's nav list + search index in one payload.
+	 */
+	listSettingsSections(): Promise<SettingsSectionsResponse> {
+		return this.#get("/v1/settings/sections");
+	}
+
+	/** `GET /v1/auth/whoami` — the resolved principal (the settings
+	 *  callout's admin gate). */
+	whoami(): Promise<WhoamiResponse> {
+		return this.#get("/v1/auth/whoami");
+	}
+
+	/** `GET /v1/meta` — the boot facts (the settings callout's
+	 *  `supervised` read). */
+	getBootMeta(): Promise<MetaResponse> {
+		return this.#get("/v1/meta");
+	}
+
+	/**
+	 * `POST /v1/admin/restart` (admin; U4 Task 2, spec §13.3): resolves
+	 * once the server answered 202 (the restart begins after the reply);
+	 * rejects on 403/409 (the restart never began).
+	 */
+	async requestRestart(): Promise<void> {
+		await this.#send("POST", "/v1/admin/restart", {});
+	}
+
+	/**
+	 * `GET /readyz` readiness probe (U4 Task 2): `true` only on a 200.
+	 * The restart-recovery poll rides this; a connection-level failure
+	 * (the process mid-restart) resolves `false`, never throws.
+	 */
+	async checkReady(): Promise<boolean> {
+		try {
+			const response = await this.#fetch(`${this.#baseUrl}/readyz`, {
+				method: "GET",
+				headers: this.#headers,
+			});
+			return response.ok;
+		} catch {
+			return false;
+		}
 	}
 
 	/** `GET /v1/models` — the chat-model catalog (the model picker's items). */

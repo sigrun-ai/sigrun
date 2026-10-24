@@ -248,13 +248,13 @@ describe("GET /v1/conversations/:id", () => {
 
 describe("GET /v1/meta", () => {
 	test("returns the static healthy shape with real boot facts", async () => {
-		const { app } = await bootServer();
+		const { app, opened } = await bootServer();
 		const response = await app.inject({ method: "GET", url: "/v1/meta" });
 		expect(response.statusCode).toBe(200);
 		const meta = response.json();
 		expect(meta).toEqual({
 			harnessVersion: PI_DURABLE_VERSION,
-			version: "0.1.5",
+			version: "0.1.7",
 			schemaVersion: SCHEMA_VERSION,
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
@@ -264,6 +264,17 @@ describe("GET /v1/meta", () => {
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [], commands: [] },
 			dev: false,
+			supervised: false,
+			isolation: {
+				mode: "auto",
+				active: false,
+				available: opened.isolation.available,
+				abi: opened.isolation.abi,
+				...(opened.isolation.reason === undefined
+					? {}
+					: { reason: opened.isolation.reason }),
+				osUsers: "off",
+			},
 		});
 	});
 

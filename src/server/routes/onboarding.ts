@@ -21,6 +21,7 @@ import { withClaimLock } from "../auth/claim-lock.js";
 import { ipAllowed } from "../auth/ip.js";
 import { isLoopbackHost } from "../auth/loopback.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
+import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { stampSessionOwner } from "../helpers.js";
 import { buildSessionCookie } from "./auth.js";
 import type { ClaimResponse, OnboardingState } from "../views.js";
@@ -187,6 +188,7 @@ export function registerOnboardingRoutes(
 		// The claim critical section: read state, decide, add — all inside
 		// the one mutex, so concurrent claims cannot both pass the gate.
 		const outcome = await withClaimLock(async () => {
+			try {
 			const claimed = identity.users.isClaimed();
 			if (!claimed) {
 				// The first admin: proxy headers, loopback bind, or the setup
@@ -281,6 +283,12 @@ export function registerOnboardingRoutes(
 				source: "proxy",
 			});
 			return { status: 200, record } as const;
+			} catch (error) {
+				if (error instanceof AdmissionRefusedError) {
+					return { status: 409, error: error.code } as const;
+				}
+				throw error;
+			}
 		});
 
 		if (outcome.status !== 200) {

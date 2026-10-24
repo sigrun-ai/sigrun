@@ -28,6 +28,8 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { resolveExtension } from "../src/harness/loader.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
+import { selfPackageRoot } from "../src/harness/packages.js";
 
 const COMMANDS_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-commands", "index.js"),
@@ -75,6 +77,8 @@ async function bootServer(
 		identity,
 		extensionSpecifiers: specifiers,
 		env: { SIGRUN_CONFIG_DIR: configDir },
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
 	});
 	const { token: aliceToken } = await opened.identity.tokens.create(
@@ -189,6 +193,7 @@ describe("extension slash commands: the catalog merge", () => {
 			"model",
 			"thinking",
 			"jobs",
+			"settings",
 			"hello",
 		]);
 	});

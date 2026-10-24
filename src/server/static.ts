@@ -248,8 +248,8 @@ export async function serveWebuiBundle(
 		// img-src directive restricts images and nothing else: scripts
 		// and styles are unaffected. Static ASSETS keep no CSP.
 		setHeaders(res, path) {
-			if (path.endsWith("/index.html") || path.endsWith("index.html")) {
-				res.setHeader("content-security-policy", "img-src 'self' data:");
+			if (path.endsWith(".html")) {
+				res.header("content-security-policy", "img-src 'self' data:");
 			}
 		},
 	});

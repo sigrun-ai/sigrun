@@ -141,7 +141,10 @@ export default function createFixtureMemoryEvents(host) {
 					{
 						key: "fixture-flush",
 						place: "panel",
-						body: { line: { text: "flushed at shutdown" } },
+						body: {
+							v: 1,
+							root: { type: "markdown", text: "flushed at shutdown" },
+						},
 					},
 					context,
 				);

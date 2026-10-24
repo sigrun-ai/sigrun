@@ -97,15 +97,25 @@ export function readRecords<T>(path: string): T[] {
  * Write one JSON value the house way (tabs, trailing newline),
  * atomically, mode `0600` — identity files all carry credential
  * material (token hashes, emails, invite hashes). The path's cache
- * entry is invalidated (never eagerly re-statted): the next read
- * re-stats and sees the new file.
+ * entry is invalidated whether the write succeeds or fails: a FAILED
+ * write leaves the file as it was, so a cache entry that outlived it
+ * would serve a value the disk no longer holds (a revoked link that
+ * silently comes back, or a link that is not on disk authorizing a
+ * sender). Re-stating on the next read is cheap and always correct.
  */
 export async function writeJson(
 	path: string,
 	value: unknown,
 ): Promise<void> {
-	await writeFileAtomic(path, `${JSON.stringify(value, null, "\t")}\n`, 0o600);
-	cache.delete(path);
+	try {
+		await writeFileAtomic(
+			path,
+			`${JSON.stringify(value, null, "\t")}\n`,
+			0o600,
+		);
+	} finally {
+		cache.delete(path);
+	}
 }
 
 /**

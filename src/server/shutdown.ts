@@ -1,6 +1,6 @@
 /**
  * The ordered shutdown (gateway C2's extraction of serve.ts's inline
- * `shutdown`): seven steps, each in its own try/catch so a failure never
+ * `shutdown`): eight steps, each in its own try/catch so a failure never
  * skips the remaining steps, with every failure collected into one
  * `AggregateError("sigrun shutdown failed")` after ALL steps ran (the
  * pre-extraction semantics, byte-for-byte).
@@ -20,9 +20,10 @@
  *    settles, then deliver `harnessShutdown` — handlers may commit);
  * 5. `gateway.stop` — the engine stops only once every settle has been
  *    delivered (its adapters' outbound side saw the final answers);
- * 6. `stopProviderRefresh` — the interval scheduler + the bounded
+ * 6. `stopSandboxWorkers` — all per-user workers and their commands stop;
+ * 7. `stopProviderRefresh` — the interval scheduler + the bounded
  *    boot-refresh join (no catalog fetch outlives the shutdown);
- * 7. `closeHarness` — the seal (joins tasks, seals storage).
+ * 8. `closeHarness` — the seal (joins tasks, seals storage).
  *
  * Does NOT exit the process — the caller owns exit policy (the deploy
  * entry exits 0/1; the CLI's `run` returns to its exit code).
@@ -30,7 +31,7 @@
 
 import type { GatewayHandle } from "./gateway.js";
 
-/** The seven ordered steps (the serve composition supplies every one). */
+/** The eight ordered steps (the serve composition supplies every one). */
 export interface ShutdownSteps {
 	/** End every live SSE stream (sync — the registry's own close). */
 	endStreams(): void;
@@ -40,6 +41,8 @@ export interface ShutdownSteps {
 	gateway: GatewayHandle;
 	/** The event bus's shutdown sequence (drain + `harnessShutdown`). */
 	eventBusShutdown(): Promise<void>;
+	/** Stop every per-user sandbox worker (and therefore its commands). */
+	stopSandboxWorkers(): Promise<void>;
 	/** Stop the refresh scheduler + join the boot refresh (bounded). */
 	stopProviderRefresh(): Promise<void>;
 	/** Close the harness (joins tasks, seals storage). */
@@ -47,7 +50,7 @@ export interface ShutdownSteps {
 }
 
 /**
- * Build the ordered shutdown over the seven steps. Failures from ANY step
+ * Build the ordered shutdown over the eight steps. Failures from ANY step
  * are collected (the remaining steps still run) and thrown together as
  * `AggregateError(failures, "sigrun shutdown failed")` at the end; a clean
  * run resolves.
@@ -77,6 +80,11 @@ export function createShutdown(steps: ShutdownSteps): () => Promise<void> {
 		}
 		try {
 			await steps.gateway.stop();
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			await steps.stopSandboxWorkers();
 		} catch (error) {
 			failures.push(error);
 		}

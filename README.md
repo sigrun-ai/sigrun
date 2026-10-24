@@ -104,7 +104,7 @@ entrypoints:
 | Command | Behavior |
 |---|---|
 | `sigrun [--user <name>]` | Workstation mode: boot the harness + server **in-process** and launch the terminal UI against the loopback port — the server binds **loopback (`127.0.0.1`) only**, so the naive-identity API never answers the LAN. The agent dies with the TUI — when the TUI exits, server and harness shut down with it. |
-| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`0.0.0.0`) — the container default; workstation `sigrun` (run) binds loopback only. |
+| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`::`, the dual-stack wildcard — accepts IPv4 and IPv6; a v4-only `0.0.0.0` bind is unreachable on a dual-stack pod's IPv6 endpoint) — the container default; workstation `sigrun` (run) binds loopback only. |
 | `sigrun attach [--server <url>] [--user <name>]` | TUI only, against a harness it can reach — the remote-client mode (e.g. attaching to a cluster or tailnet deployment). |
 
 Resolution chains for `attach` (and for the workstation-mode user):
@@ -317,6 +317,90 @@ owner can share one — household-wide or with named users, `read` or
 `write` — through the web UI's ⋯ menu or the TUI's `/share`; `write`
 lets a recipient submit, answer, and fork, but only the owner can
 re-share. Household sharing defaults to `read`.
+
+## Multi-user execution isolation
+
+`server.isolation.mode` (or `SIGRUN_ISOLATION`) controls the execution jail:
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Turns isolation on when the directory has more than one user. Once active, it stays active until restart. |
+| `always` | Confines every user, including a lone admin. |
+| `off` | No jail; permitted only with at most one directory user. |
+
+A second user is refused when isolation is unavailable or `off`, and a
+multi-user server never falls back to unconfined execution. Multi-user also
+requires real authentication (`token` and/or `proxy`).
+
+Isolation requires Linux with Landlock ABI 6 or newer (Linux 6.12+) and the
+`sigrun-sandbox` helper. Debian 12's default 6.1 kernel does not qualify;
+bookworm-backports' 6.12 kernel does. Ubuntu 24.04's GA 6.8 kernel does not
+qualify; its HWE 7.0 kernel does. Check the running host with
+`sigrun-sandbox probe`. The container needs no extra capabilities: uid 1000,
+no capabilities, and `RuntimeDefault` seccomp are sufficient.
+
+**When isolation is on**, a user's agent can reach only their workspace,
+their grants, their home and temp directories, and read-only system paths.
+It cannot read sigrun's files or environment, other users' files, or signal
+processes outside its jail.
+
+**Not covered:** extensions run inside sigrun with full access, like any
+installed package — install only extensions you trust. One user's agent can
+still exhaust CPU, memory, or disk. Outbound network is not restricted.
+macOS and Windows hosts run single-user only.
+
+**Shared MCP servers** hand every permitted user's agent the admin's
+credential for that service.
+
+**File modes are not the boundary.** Workers that share sigrun's uid are
+confined by Landlock alone; `0700` directories are hygiene.
+
+**Single-user servers** run the agent with full host access.
+
+**Every peer in `trustedProxies` can forge any identity**; with isolation
+on, the shared secret is required for that reason. Configure
+`server.auth.proxy.secretHeader` and the env-only `SIGRUN_PROXY_SECRET`.
+
+For bare-metal OS-account mappings, enable `server.isolation.osUsers` and
+set a directory record's `osUser`. Grant the installed helper only the
+identity-switch capabilities once (replace `<helper>` with its path):
+
+```sh
+sudo setcap cap_setuid,cap_setgid+ep <helper>
+```
+
+The helper's boot self-test verifies the switch. This mapping is unavailable
+in containers, whose entrypoint drops every capability.
+
+### Kernel integration runner controls
+
+The opt-in suite is `SIGRUN_SANDBOX_IT=1 npx vitest run test/sandbox-it`.
+The CI `sandbox-it` job requires Landlock ABI 6 before running it. Its
+`/proc` and ptrace cases also perform the same operation as the same uid
+from outside any jail. The run log states, per case, either **Landlock
+discriminating** (the outside operation succeeds) or **Yama/host-policy
+satisfied, not Landlock-discriminating** (the outside operation is denied
+too). The latter still checks the denial but does not claim Landlock caused
+it. The abstract-socket case requires a successful outside-jail connection.
+The `pkill -x node` case needs unprivileged user/PID namespaces and `nsenter`:
+its outside control kills only PID 1 of a disposable namespace, never the
+test runner or another host Node process. If namespaces are unavailable,
+the suite skips with that named reason.
+
+The `osUser` success case and the in-jail uid-switch discrimination require
+a **privileged runner** with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`. The suite grants only
+`cap_setuid,cap_setgid+ep` to a temporary helper copy and verifies an
+unjailed uid/gid switch before testing the jailed denial. Without that
+successful outside control, both tests skip with a named reason; they never
+claim to prove confinement. An ordinary CI runner without file-capability
+permission therefore leaves these two cases unproven. The suite never runs
+`sudo` itself.
+
+The per-user-service process tests use a separate real-helper-launched
+service fixture. M2's per-user service lifecycle is a later workstream; this
+fixture proves the sibling-jail `/proc` and ptrace boundary, not that M2 has
+shipped.
 
 ## Backup
 
@@ -680,11 +764,38 @@ In the web UI the Jobs panel (the clock icon in the header) lists jobs
 with a “Run now” button; in the TUI `/jobs` prints the table (name,
 next run, last outcome).
 
+## Restarting
+
+Restart-only settings (the registry marks every key `live` or
+`restart` — a `restart` key's stored write applies at the next boot)
+surface as `pendingRestart` on `GET /v1/settings`, and the settings
+panel lists them with a Restart button for admins. The button calls:
+
+- `POST /v1/admin/restart` — admin-only; runs the normal graceful
+  shutdown (SSE drains, in-flight runs reach a durable boundary and
+  resume after the restart — pi-durable's recovery) and exits 0, so the
+  deployment's supervisor brings the process back. Both channels show
+  "Restarting…" and reconnect when `/readyz` answers.
+
+The route exists ONLY when the server knows something restarts it:
+`server.supervised` (env `SIGRUN_SUPERVISED=1`, strict true/false)
+must be true, else 409 `not_supervised`. The Helm chart and
+`docker/docker-compose.yaml` set the env (both restart the container);
+the Dockerfile deliberately does NOT — a bare `docker run` without a
+restart policy would exit and stay down. `sigrun run` (the local TUI
+launcher) is not supervised either; there the callout says "Restart
+sigrun to apply" with no button. `GET /v1/meta` reports the posture
+(`supervised`).
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, auth posture
   (`methods`, `claimed`), capabilities.
-- `GET`/`PATCH /v1/settings` — the settings file (see above).
+- `GET`/`PATCH /v1/settings` — the settings file (see above);
+  responses carry `pendingRestart` (restart keys whose stored value
+  differs from boot) and PATCH reports `{applied, pending}`.
+- `POST /v1/admin/restart` — graceful restart (admin, supervised
+  deploys only; see Restarting).
 - `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
   the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
   now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are

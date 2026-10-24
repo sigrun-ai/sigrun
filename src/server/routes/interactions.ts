@@ -38,14 +38,17 @@ import type { FastifyInstance } from "fastify";
 import {
 	AmbientDoc,
 	AmbientOwnersDoc,
+	asAmbientRecord,
 	type AmbientRecord,
 } from "../../harness/ambient.js";
 import {
 	InteractionDoc,
 	InteractionsIndexDoc,
+	answerFromBody,
 	applyAnswer,
+	asInteractionRecord,
 	indexSettled,
-	type InteractionAnswer,
+	maskedAnswerValues,
 	type InteractionRecord,
 } from "../../harness/interactions.js";
 import { loadConversation } from "../conversation-handler.js";
@@ -150,12 +153,15 @@ export function registerInteractionRoutes(
 						callId,
 						BACKGROUND_CONTEXT,
 					);
-					// The index is maintained in the same commits as the records,
-					// but a raced settle can leave a stale entry — serve only
-					// what still reads pending (the per-conversation list's guard).
-					if (record !== undefined && record.status === "pending") {
-						interactions.push({ ...record, conversationId: id });
-					}
+				// The index is maintained in the same commits as the records,
+				// but a raced settle can leave a stale entry — serve only
+				// what still reads pending (the per-conversation list's guard).
+				if (record !== undefined && record.status === "pending") {
+					interactions.push({
+						...asInteractionRecord(record),
+						conversationId: id,
+					});
+				}
 				}
 			}
 			interactions.sort((a, b) => a.createdAt - b.createdAt);
@@ -193,10 +199,44 @@ export function registerInteractionRoutes(
 					BACKGROUND_CONTEXT,
 				);
 				if (record !== undefined && record.status === "pending") {
-					records.push(record);
+					records.push(asInteractionRecord(record));
 				}
 			}
 			return { interactions: records };
+		},
+	);
+
+	// The single-record read (U6 Task 2): ANY status — the channel's
+	// refetch path (Review Focus 1's “a GET returns the winning answer”;
+	// Review Focus 2's expired refetch; the transport `load`). The SAME
+	// §5.9 visibility half as the list (hidden → the indistinguishable
+	// 404), applied in-handler by the polling convention, and the same
+	// ACCESS as the list: read membership is enough (a read-only sharee
+	// watches the decision too — writes stay behind the answer route's
+	// write gate). The record rides as-is (envelope + body + details) —
+	// the stored answer carries only the SECRET_MASK for secret fields
+	// (never the values).
+	app.get(
+		"/v1/conversations/:id/interactions/:callId",
+		{
+			schema: { params: ANSWER_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx),
+		},
+		async (request, reply): Promise<InteractionRecord> => {
+			const { callId } = request.params as { callId: string };
+			const conversation = request.conversation;
+			const record = await opened.harness.snapshot(
+				InteractionDoc,
+				conversation.id,
+				callId,
+				BACKGROUND_CONTEXT,
+			);
+			// Unknown callId (an empty doc materializes with kind "") is the
+			// same 404 as the answer route's.
+			if (record === undefined || record.kind === "") {
+				return await reply.code(404).send({ error: "no_such_interaction" });
+			}
+			return asInteractionRecord(record);
 		},
 	);
 
@@ -212,69 +252,13 @@ export function registerInteractionRoutes(
 		async (request, reply): Promise<InteractionAnswered> => {
 			const { callId } = request.params as { callId: string };
 			const conversation = request.conversation;
-			const body: unknown = request.body;
-			// SAFETY: the spread of an explicitly-undefined InteractionAnswer
-			// builds an empty mutable scaffold — every field is optional, and
-			// each is set only after its body value passed validation, so the
-			// loose local type never leaks an unvalidated field.
-			const answer = {
-				...(undefined as unknown as InteractionAnswer),
-			} as {
-				ids?: string[];
-				values?: Record<string, string | number | boolean>;
-				text?: string;
-			};
-			if (body !== undefined && body !== null) {
-				if (typeof body !== "object" || Array.isArray(body)) {
-					return await reply.code(400).send({ error: "invalid_body" });
-				}
-				const b = body as Record<string, unknown>;
-				const known = new Set(["ids", "values", "text"]);
-				const unknownKey = Object.keys(b).find((k) => !known.has(k));
-				if (unknownKey !== undefined) {
-					return await reply
-						.code(400)
-						.send({ error: "invalid_field", field: unknownKey });
-				}
-				if (b.ids !== undefined) {
-					if (
-						!Array.isArray(b.ids) ||
-						b.ids.some((v) => typeof v !== "string")
-					) {
-						return await reply
-							.code(400)
-							.send({ error: "invalid_body" });
-					}
-					answer.ids = b.ids as string[];
-					// (mutable local; the wire type stays readonly)
-				}
-				if (b.values !== undefined) {
-					if (typeof b.values !== "object" || b.values === null) {
-						return await reply.code(400).send({ error: "invalid_body" });
-					}
-					const values: Record<string, string | number | boolean> = {};
-					for (const [k, v] of Object.entries(
-						b.values as Record<string, unknown>,
-					)) {
-						if (
-							typeof v !== "string" &&
-							typeof v !== "number" &&
-							typeof v !== "boolean"
-						) {
-							return await reply
-								.code(400)
-								.send({ error: "invalid_field", field: `values.${k}` });
-						}
-						values[k] = v;
-					}
-					answer.values = values;
-				}
-				if (b.text !== undefined) {
-					if (typeof b.text !== "string") {
-						return await reply.code(400).send({ error: "invalid_body" });
-					}
-					answer.text = b.text;
-				}
+			// Ruling 20: the route body is `{values}` ONLY (every field's value
+			// under its name); the legacy `{ids, text}` shapes are a 400 — no
+			// compatibility layer (ruling 16). An absent body is a 400 too: an
+			// answer carries values.
+			const answer = answerFromBody(request.body);
+			if (answer === null) {
+				return await reply.code(400).send({ error: "invalid_body" });
 			}
 			// The commit returns a plain outcome; reply shaping happens
 			// AFTER the commit (a Fastify reply must never travel through
@@ -288,25 +272,36 @@ export function registerInteractionRoutes(
 				);
 				// Unknown callId: the doc materializes empty — detect via kind
 				// never having been seeded (an empty seed has kind "").
-				if (draft.kind === "") return { found: false } as const;
+				if (draft.kind === "") {
+					return { found: false } as const;
+				}
+				// Review Focus 4: project the STORED (masked) answer for the
+				// response BEFORE the mutation — reading the tree is safe (the
+				// body is never mutated), and re-reading a mutated nested field
+				// after the write trips chord's settled-overlay check.
+				const stored = maskedAnswerValues(draft.body, answer);
 				const applied = applyAnswer(
 					draft,
 					answer,
 					"human",
 					Date.now(),
 					request.principal.user,
+					{ conversationId: conversation.id },
 				);
-				if (!applied) return { found: true, applied: false } as const;
-				// NEVER re-read a mutated draft field (even before the next
-				// await): reading a newly-set nested value off the tracked
-				// draft trips chord's settled-overlay check. The response
-				// projects the INPUT answer — identical to what was written.
+				if (!applied) {
+					// A loser of the first-answer-wins race: the delivery-table
+					// entry (when there is one) belongs to the WINNER — the loser
+					// never recorded one (applyAnswer guards on status), so there
+					// is nothing of the loser's to sweep. Sweeping here would
+					// destroy the winner's undelivered secret.
+					return { found: true, applied: false } as const;
+				}
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexSettled(index, conversation.id, callId);
 				return {
 					found: true,
 					applied: true,
-					answer,
+					answer: stored,
 				} as const;
 			}, BACKGROUND_CONTEXT);
 			if (!committed.found) {
@@ -355,7 +350,7 @@ export function registerInteractionRoutes(
 				// absent (owner registration is session-global; surfaces are
 				// conversation-scoped).
 				if (surface !== undefined && surface.body !== undefined) {
-					surfaces.push(surface);
+					surfaces.push(asAmbientRecord(surface));
 				}
 			}
 			return { ambient: surfaces };

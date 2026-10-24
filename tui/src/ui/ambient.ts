@@ -1,59 +1,75 @@
 /**
- * The ambient seam's TUI renderer (Task 8 — the parity rule): ambient
- * surfaces placed in the TUI's chrome per the seam's `place` field. Spec
- * §8 leaves the place→chrome mapping to the builder; the TUI's mapping:
+ * The ambient seam's TUI renderer (UI-blocks U6 Task 3, the parity
+ * rule): ambient surfaces placed in the TUI's chrome per the seam's
+ * `place` field, rendered FROM BLOCK TREES (placement `ambient`, spec
+ * §9.2):
  *
  * - `status` → the statusline: one row, directly above the composer (the
  *   last row of the app body). Multiple status records join with " · ".
- * - `footer` → the footer zone: one summary line per record, above the
- *   statusline.
- * - `panel` → the panel zone: the full rendering (line, rows, gauge,
- *   ledger), above the footer.
+ * - `footer` → the footer zone: the body's `columns` block renders the
+ *   left/middle/right zones (three columns), above the statusline.
+ * - `panel` → the panel zone: the full tree rendering, above the footer.
  *
- * Genericity (the seam's whole point): the chrome renders the closed
- * primitives and knows NOTHING about what a surface means — no "todo",
- * no "goal". `details` renders as one collapsed JSON line, never
- * interpreted. The rendering mirrors the webui's AmbientPanel: rows are
- * severity-sorted (0 severe .. 2 quiet, ties by id) with quiet rows
- * folded into a "+N quiet" summary; metrics format via the record's
- * `format` hint; gauges render label/phase/elapsed plus a text percent
- * bar; ledgers render newest-first. Ambient surfaces are read-only (the
- * seam routes actions through interaction records).
+ * Genericity (the seam's whole point): the chrome renders blocks and
+ * knows NOTHING about what a surface means — no "todo", no "goal".
+ * `details` renders as one collapsed JSON line, never interpreted.
+ *
+ * Ambient bodies carry LITERAL content only (the 2026-10-24 ruling:
+ * the envelope has no data document, so validation rejects every
+ * binding outside a collection's item template), so the renderer's
+ * data document is EMPTY. Ambient surfaces are read-only
+ * (actions re-route through interaction records) — the render context's
+ * access is `read` and dispatch is a no-op.
+ *
+ * The envelope's `maxRows`/`overflow` budget applies to a panel's root
+ * literal-rows collection (Review Focus 3): `drop` folds the tail behind
+ * the collection's own quiet bucket ("N more"), `summarize` replaces
+ * the tail with a count line, `wrap` renders as authored.
  *
  * Fetching (W3 Task 4 — the timer cadence is RETIRED): on conversation
  * connect, and on `ambient.changed` host events for the live
- * conversation (the app wires `watchEvents` to {@link kick}; an event
- * for another conversation is ignored). A record's declared `refreshMs`
- * no longer drives a poll — the extension that declares it owns its
- * writes, and each write emits the event. Fetch failures are QUIET
- * (best-effort chrome; stream transport health is reported separately by
- * the watcher's error/open transition notices — the launcher's
- * stream-health wiring).
+ * conversation (the app wires `watchEvents` to {@link kick}). Fetch
+ * failures are QUIET (best-effort chrome).
  *
  * Expiry: `expires: "idle"` surfaces render only while the conversation
- * has a live run ({@link setBusy}, driven by the stream's `steer.busy`);
- * they disappear when the conversation goes idle and reappear on the next
- * busy frame while the record is still served. `expires: "never"` records
- * stay until the server stops serving them (replacement-state reads).
- *
- * Segments: a line's `segments` render as their texts joined with spaces
- * in AUTHORED order — the segment `place` zones (left/middle/right) are
- * ignored in the statusline join (the TUI chrome has no zone layout; the
- * webui owns zoned placement).
+ * has a live run ({@link setBusy}, driven by the stream's `steer.busy`).
  */
 
 import type { Component } from "@earendil-works/pi-tui";
+import type {
+	Block,
+	CollectionBlock,
+	JsonObject,
+	JsonValue,
+} from "@sigrun/shared/blocks";
 import type { AmbientWire, SigrunClient } from "../api.js";
+import type { BlockCtx } from "../blocks/context.js";
+import { renderBlock } from "../blocks/render.js";
+import { truncate } from "../blocks/width.js";
+import { plainTuiTheme, type TuiTheme } from "../theme.js";
 
-/** One widget row, derived from the wire record (the api module's export
- * surface stays at AmbientWire/AmbientList — no new cross-package import). */
-type AmbientRow = NonNullable<NonNullable<AmbientWire["body"]>["rows"]>[number];
+/** Ambient bodies never bind (the ruling): the data document is empty. */
+const EMPTY_DATA: JsonObject = {};
 
-/** The gauge bar width (text cells). */
-const GAUGE_CELLS = 10;
+/** The read-only ambient render context (surfaces take no answers; the
+ *  dispatch sink is a no-op). */
+function ambientCtx(theme: TuiTheme): BlockCtx {
+	return {
+		data: EMPTY_DATA,
+		theme,
+		locale: "en",
+		access: "read",
+		unicode: true,
+		dispatch: (): void => {},
+		view: { values: {} },
+		setView: (): void => {},
+		serverErrors: {},
+	};
+}
 
 export class AmbientChrome implements Component {
 	readonly #client: SigrunClient;
+	readonly #theme: TuiTheme;
 
 	#conversationId: number | undefined;
 	/** Monotonic per-conversation generation: stale fetches never land. */
@@ -66,8 +82,9 @@ export class AmbientChrome implements Component {
 	/** Rendered-state changes (the app requests a repaint). */
 	onChanged?: () => void;
 
-	constructor(client: SigrunClient) {
+	constructor(client: SigrunClient, options: { theme?: TuiTheme } = {}) {
 		this.#client = client;
+		this.#theme = options.theme ?? plainTuiTheme();
 	}
 
 	/** The latest served surfaces (before the idle filter). */
@@ -111,22 +128,32 @@ export class AmbientChrome implements Component {
 		this.#changed();
 	}
 
-	/** The statusline: the status records' summaries joined " · ". */
-	statusline(): string {
-		return this.#visible("status").map(summaryOf).join(" · ");
+	/** The statusline: the status records' one-line bodies joined " · ".
+	 *  `width` bounds each body's render (the app's frame width). */
+	statusline(width?: number): string {
+		return this.#visible("status")
+			.map((record) => this.#bodyText(record, width))
+			.filter((line) => line !== "")
+			.join(" · ");
 	}
 
-	/** The footer zone: one summary line per footer record. */
-	footerLines(): readonly string[] {
-		return this.#visible("footer").map(summaryOf);
+	/** The footer zone: one rendered line per footer record. */
+	footerLines(width?: number): readonly string[] {
+		return this.#visible("footer").map((record) =>
+			this.#renderBody(record, width).join(" ").trim(),
+		);
 	}
 
-	/** The panel zone: the full per-record rendering, blocks joined. */
-	panelLines(): readonly string[] {
+	/** The panel zone: the full per-record tree rendering. */
+	panelLines(width?: number): readonly string[] {
 		const lines: string[] = [];
 		for (const record of this.#visible("panel")) {
 			if (lines.length > 0) lines.push("");
-			lines.push(...panelBlock(record));
+			lines.push(`[${record.key}]${record.owner === "" ? "" : ` ${record.owner}`}`);
+			lines.push(...this.#renderBody(record, width));
+			if (record.details !== undefined) {
+				lines.push(`[details] ${JSON.stringify(record.details)}`);
+			}
 		}
 		return lines;
 	}
@@ -139,6 +166,25 @@ export class AmbientChrome implements Component {
 				(record.expires !== "idle" || this.#busy) &&
 				hasContent(record),
 		);
+	}
+
+	/** Render one record's body tree (budgeted per Review Focus 3). */
+	#renderBody(record: AmbientWire, width?: number): string[] {
+		const body = record.body;
+		if (body === undefined) return [];
+		const root = budgetTree(record, body.root);
+		// The chrome's own frame width bounds the render; a bare read
+		// (statusline/footerLines callers without a frame) falls back to
+		// the regular-class width.
+		return renderBlock(root, ambientCtx(this.#theme)).render(width ?? 120);
+	}
+
+	/** The one-line text of a status/footer body (a single markdown or a
+	 *  columns of one-line blocks — §9.2's one-line rule). */
+	#bodyText(record: AmbientWire, width?: number): string {
+		const body = record.body;
+		if (body === undefined) return "";
+		return this.#renderBody(record, width).join(" ").trim();
 	}
 
 	/** Generation-guarded fetch (quiet failures keep the last surfaces). */
@@ -167,11 +213,13 @@ export class AmbientChrome implements Component {
 	}
 
 	/** The chrome: panel blocks, then footer lines, then the statusline. */
-	render(_width: number): string[] {
-		const lines = [...this.panelLines(), ...this.footerLines()];
-		const status = this.statusline();
+	render(width: number): string[] {
+		const lines = [...this.panelLines(width), ...this.footerLines(width)];
+		const status = this.statusline(width);
 		if (status !== "") lines.push(status);
-		return lines;
+		// ANSI-aware clamp (Review fix): a raw UTF-16 slice cuts escape
+		// sequences and surrogate pairs mid-unit.
+		return lines.map((line) => truncate(line, width));
 	}
 
 	invalidate(): void {
@@ -179,155 +227,68 @@ export class AmbientChrome implements Component {
 	}
 }
 
-// ─── Rendering helpers (the webui's AmbientPanel, mirrored in text) ─────
-
-/** A surface with no body primitives and no details renders nothing. */
+/** A surface with no body tree and no details renders nothing. */
 function hasContent(record: AmbientWire): boolean {
-	const body = record.body;
-	if (body === undefined) return record.details !== undefined;
-	return (
-		body.line !== undefined ||
-		(body.rows !== undefined && body.rows.length > 0) ||
-		body.gauge !== undefined ||
-		(body.ledger !== undefined && body.ledger.length > 0) ||
-		record.details !== undefined
-	);
+	return record.body !== undefined || record.details !== undefined;
 }
 
-/** The one-line summary (status/footer zones). */
-function summaryOf(record: AmbientWire): string {
-	const body = record.body;
-	if (body?.line !== undefined) return lineText(body.line);
-	if (body?.rows !== undefined && body.rows.length > 0) {
-		const visible = body.rows.filter((row) => row.quiet !== true);
-		if (visible.length === 0) return record.key;
-		return `${record.key}: ${visible.map((row) => row.label).join(", ")}`;
+/** The quiet fold for the drop overflow: mark the tail rows quiet so
+ *  the collection's own "N more" toggle carries them (the budget never
+ *  LOSES rows — the user can still unfold). A template WITHOUT a
+ *  `quiet` binding has no fold to ride (its isQuiet is always false),
+ *  so the budget falls back to truncating the tail behind a one-line
+ *  "<n> more" markdown row (Review fix — a quiet-less template's drop
+ *  overflow silently no-op'd). */
+function dropTail(
+	collection: CollectionBlock,
+	items: readonly JsonValue[],
+	maxRows: number,
+): Block {
+	// No quiet binding: truncate + count line (the fold has nothing to
+	// key on).
+	if (collection.item.quiet === undefined) {
+		const visible = items.slice(0, maxRows);
+		const dropped = items.length - visible.length;
+		// SAFETY: same block with a literal array swapped in (the ambient
+		// literal-rows shape the schema now admits).
+		const trimmed = { ...collection, items: [...visible] } as CollectionBlock;
+		return {
+			type: "stack",
+			children: [trimmed, { type: "markdown", text: `${dropped} more` }],
+		};
 	}
-	if (body?.gauge !== undefined) {
-		const percent =
-			body.gauge.percent === undefined ? "" : ` ${body.gauge.percent}%`;
-		return `${body.gauge.label}${percent}`;
-	}
-	if (body?.ledger !== undefined && body.ledger.length > 0) {
-		return body.ledger[body.ledger.length - 1]?.summary ?? record.key;
-	}
-	return `[${record.key}]`;
-}
-
-function lineText(line: {
-	readonly text?: string;
-	readonly segments?: readonly { readonly text: string }[];
-}): string {
-	if (line.segments !== undefined && line.segments.length > 0) {
-		return line.segments.map((segment) => segment.text).join(" ");
-	}
-	return line.text ?? "";
-}
-
-/** The full panel-zone rendering of one record. */
-function panelBlock(record: AmbientWire): string[] {
-	const body = record.body;
-	const lines: string[] = [];
-	lines.push(
-		record.owner === "" ? `[${record.key}]` : `[${record.key}] ${record.owner}`,
-	);
-	if (body?.line !== undefined) lines.push(lineText(body.line));
-	if (body?.rows !== undefined && body.rows.length > 0) {
-		lines.push(...rowLines(body.rows));
-	}
-	if (body?.gauge !== undefined) {
-		const gauge = body.gauge;
-		let header = gauge.label;
-		if (gauge.phase !== undefined) header += ` · ${gauge.phase}`;
-		if (gauge.elapsedMs !== undefined) {
-			header += ` · ${(gauge.elapsedMs / 1000).toFixed(1)}s`;
+	const visible = items.slice(0, maxRows);
+	const tail = items.slice(maxRows).map((row) => {
+		if (typeof row === "object" && row !== null && !Array.isArray(row)) {
+			return { ...(row as JsonObject), quiet: true } as JsonValue;
 		}
-		lines.push(header);
-		if (gauge.percent !== undefined) {
-			const filled = Math.max(
-				0,
-				Math.min(GAUGE_CELLS, Math.round(gauge.percent / GAUGE_CELLS)),
-			);
-			lines.push(
-				`[${"#".repeat(filled)}${"-".repeat(GAUGE_CELLS - filled)}] ${gauge.percent}%`,
-			);
-		}
-		if (gauge.checks !== undefined && gauge.checks.length > 0) {
-			lines.push(...rowLines(gauge.checks));
-		}
-		if (gauge.recentOutput !== undefined && gauge.recentOutput.length > 0) {
-			lines.push(...gauge.recentOutput.slice(-3));
-		}
-	}
-	if (body?.ledger !== undefined && body.ledger.length > 0) {
-		for (const entry of [...body.ledger].reverse()) {
-			const detail =
-				entry.detail === undefined || entry.detail.length === 0
-					? ""
-					: ` — ${entry.detail.join(" · ")}`;
-			lines.push(`${entry.kind} ${entry.summary}${detail}`);
-		}
-	}
-	if (record.details !== undefined) {
-		lines.push(`[details] ${JSON.stringify(record.details)}`);
-	}
-	return lines;
-}
-
-/** Rows: severity-sorted (ties by id), quiet folded into "+N quiet". */
-function rowLines(rows: readonly AmbientRow[]): readonly string[] {
-	const sorted = [...rows].sort((a, b) => {
-		const severityA = a.severity ?? 2;
-		const severityB = b.severity ?? 2;
-		if (severityA !== severityB) return severityA - severityB;
-		return a.id < b.id ? -1 : 1;
+		return row;
 	});
-	const visible = sorted.filter((row) => row.quiet !== true);
-	const quietCount = sorted.length - visible.length;
-	const lines = visible.map(rowLine);
-	if (quietCount > 0) lines.push(`+${quietCount} quiet`);
-	return lines;
+	// SAFETY: `items` is the same block with a literal array swapped in
+	// (the ambient literal-rows shape the schema now admits); every other
+	// prop is verbatim.
+	return { ...collection, items: [...visible, ...tail] } as CollectionBlock;
 }
 
-function rowLine(row: AmbientRow): string {
-	const indent = "  ".repeat(row.depth ?? 0);
-	const glyph = row.status ?? "·";
-	let line = `${indent}${glyph} ${row.label}`;
-	if (row.spinnerLabel !== undefined) line += ` ${row.spinnerLabel}`;
-	if (row.detail !== undefined) line += ` — ${row.detail}`;
-	if (row.deps !== undefined && row.deps.length > 0) {
-		line += ` ⛓ ${row.deps.join(",")}`;
+/** Apply the panel row budget (Review Focus 3): only a root
+ *  literal-rows collection on a panel surface budgets; anything else
+ *  renders as authored. */
+function budgetTree(surface: AmbientWire, root: Block): Block {
+	if (surface.place !== "panel" || root.type !== "collection") return root;
+	if (!Array.isArray(root.items)) return root; // bound elsewhere; ambient rejects these
+	const maxRows = surface.maxRows;
+	if (maxRows === undefined || root.items.length <= maxRows) return root;
+	const dropped = root.items.length - maxRows;
+	if (surface.overflow === "summarize") {
+		// The count line: one markdown under the trimmed collection.
+		return {
+			type: "stack",
+			children: [
+				{ ...root, items: root.items.slice(0, maxRows) },
+				{ type: "markdown", text: `${dropped} rows` },
+			],
+		};
 	}
-	const metrics = metricsText(row.metrics);
-	if (metrics !== "") line += ` ${metrics}`;
-	return line;
-}
-
-function metricsText(
-	metrics: AmbientRow["metrics"],
-): string {
-	if (metrics === undefined) return "";
-	const parts: string[] = [];
-	if (metrics.tokens !== undefined) {
-		parts.push(`tok ${formatMetric(metrics.tokens, metrics.format)}`);
-	}
-	if (metrics.cost !== undefined) {
-		parts.push(`$${metrics.cost.toFixed(4)}`);
-	}
-	if (metrics.total !== undefined) {
-		parts.push(`${metrics.completed ?? metrics.current ?? 0}/${metrics.total}`);
-	} else if (metrics.current !== undefined) {
-		parts.push(`cur ${metrics.current}`);
-	}
-	return parts.join(" · ");
-}
-
-/** The webui's metric formatting (compact / usd / percent hints). */
-function formatMetric(value: number, format: string | undefined): string {
-	if (format === "usd") return `$${value.toFixed(4)}`;
-	if (format === "percent") return `${Math.round(value * 100)}%`;
-	if (format === "compact" && Math.abs(value) >= 1000) {
-		return `${(value / 1000).toFixed(1)}k`;
-	}
-	return String(value);
+	if (surface.overflow === "wrap") return root; // panels wrap rows — no fold
+	return dropTail(root, root.items, maxRows);
 }

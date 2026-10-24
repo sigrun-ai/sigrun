@@ -280,7 +280,10 @@ export interface LogLine {
 
 export interface LogBlock extends BlockBase {
 	readonly type: "log";
-	readonly lines: Binding;
+	/** Literal lines are legal (ambient placement requires them — the
+	 *  ambient envelope carries no data document); placements that
+	 *  resolve bindings keep the binding form. */
+	readonly lines: Bindable<readonly JsonValue[]>;
 	readonly follow?: boolean;
 	readonly wrap?: boolean;
 	/** Per-level tones; default `error`→bad, `warn`→warn, `info`→neutral, `debug`→subtle. */
@@ -412,8 +415,10 @@ export interface CollectionTime {
 
 export interface CollectionBlock extends BlockBase {
 	readonly type: "collection";
-	/** Binding to an array; each item has a unique `id`. */
-	readonly items: Binding;
+	/** Binding to an array (each item has a unique `id`) — or the array
+	 *  itself as literal rows, the only legal shape in ambient placement
+	 *  (the ambient envelope carries no data document). */
+	readonly items: Binding | readonly JsonValue[];
 	/** The card template. */
 	readonly item: Card;
 	readonly display: "list" | "table" | "lanes" | "grid" | "calendar";
@@ -465,6 +470,19 @@ export interface FieldBase {
 	readonly pattern?: string;
 }
 
+export interface ToggleFieldProps {
+	/**
+	 * The value an ABSENT bound value stands for (default false). Set it
+	 * on toggles whose settings key defaults ON (absent = on): the
+	 * channel initializes an untouched toggle to the default, and the
+	 * settings surface's save skips a submitted value EQUAL to the
+	 * default, so a full-form save never writes the key while the value
+	 * sits at its default (explicitly flipping OFF the default still
+	 * writes the key — the write is how the non-default state persists).
+	 */
+	readonly default?: boolean;
+}
+
 export interface TextField extends FieldBase {
 	readonly type: "text";
 	readonly kind?: "plain" | "search" | "email" | "url";
@@ -485,7 +503,7 @@ export interface NumberField extends FieldBase {
 	readonly format?: Format;
 }
 
-export interface ToggleField extends FieldBase {
+export interface ToggleField extends FieldBase, ToggleFieldProps {
 	readonly type: "toggle";
 }
 

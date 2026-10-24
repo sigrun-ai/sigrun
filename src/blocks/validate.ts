@@ -229,9 +229,25 @@ function checkActionButtons(ctx: WalkCtx, buttons: unknown, path: string): void 
 	});
 }
 
-/** Relative `./` bindings are legal only inside a card template (§4.2). */
+/**
+ * Bindings outside a card template (§4.2): relative `./` bindings are
+ * legal only inside an item template. In the AMBIENT placement, every
+ * binding (absolute or relative) outside an item template is rejected —
+ * the ambient envelope carries no data document, so a bound prop has
+ * nothing to resolve against and renders blank (the 2026-10-24 ruling's
+ * items rule, extended to every bindable prop).
+ */
 function checkBinding(ctx: WalkCtx, binding: { $: string }, path: string): void {
-	if (!ctx.itemTemplate && binding.$.startsWith("./")) {
+	if (ctx.itemTemplate) return;
+	if (ctx.placement === "ambient") {
+		push(
+			ctx,
+			joinPath(path, "$"),
+			`ambient surfaces carry literal content only (binding "${binding.$}" outside a collection item template)`,
+		);
+		return;
+	}
+	if (binding.$.startsWith("./")) {
 		push(
 			ctx,
 			joinPath(path, "$"),
@@ -244,10 +260,12 @@ function checkBinding(ctx: WalkCtx, binding: { $: string }, path: string): void 
  * Any relative `./` binding on this node (§4.2): every prop value is
  * scanned — the binding-only props (`items`, `lines`, `nodes`, `rows`,
  * `series[].data`, `submitLabel`, `copy.text`) bind just like the
- * bindable literals, so a hardcoded prop list would miss them. Absolute
- * `/` bindings stay legal everywhere; relative ones only inside item
- * templates. `skip` names props whose own walk already reported (the
- * structural literals above carry their more precise message).
+ * bindable literals, so a hardcoded prop list would miss them. Outside
+ * ambient, absolute `/` bindings stay legal everywhere and relative
+ * ones only inside item templates; in ambient, every binding outside an
+ * item template fails (checkBinding). `skip` names props whose own walk
+ * already reported (the structural literals above carry their more
+ * precise message).
  */
 function checkNodeRelativeBindings(ctx: WalkCtx, node: Rec, path: string, skip: ReadonlySet<string>): void {
 	if (ctx.itemTemplate) return;
@@ -394,6 +412,42 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 
 	// collection-specific rules
 	if (type === "collection") {
+		// Controller ruling (2026-10-24): bindings are OUT of ambient
+		// placement — the ambient envelope carries no data document, so a
+		// bound `items` has nothing to resolve against. Literal rows only.
+		// (Reversible: extending the envelope with a data slot remains open.)
+		if (ctx.placement === "ambient" && isBinding(node.items)) {
+			// checkBinding's ambient branch fires for this prop too; the
+			// more specific collection wording wins, so skip `items` below.
+			push(
+				ctx,
+				joinPath(path, "items"),
+				"ambient collections carry literal rows (items must not be a binding)",
+			);
+		}
+		// Ambient: bindables nested inside structural props are still
+		// bound nowhere (the no-data-document ruling). `groups`/`columns`
+		// sit in the structural skip set, so the generic binding walk
+		// never reaches their `title`/`label` bindables — walk them here.
+		if (ctx.placement === "ambient") {
+			const nestedBindables = [
+				["groups", "title"],
+				["columns", "label"],
+			] as const;
+			for (const [listProp, leafProp] of nestedBindables) {
+				const list = node[listProp];
+				if (!Array.isArray(list)) continue;
+				list.forEach((entry, i) => {
+					if (isRec(entry) && isBinding(entry[leafProp])) {
+						checkBinding(
+							ctx,
+							entry[leafProp],
+							joinPath(joinPath(joinPath(path, listProp), String(i)), leafProp),
+						);
+					}
+				});
+			}
+		}
 		const display = node.display;
 		if (
 			typeof display === "string" &&
@@ -468,9 +522,13 @@ function checkBlock(ctx: WalkCtx, node: Rec, path: string, rootDepth: boolean): 
 		if (!check.ok) push(ctx, joinPath(path, "src"), check.message);
 	}
 
-	// bindable props: every relative `./` binding on the node (§4.2)
+	// bindable props: every relative `./` binding on the node (§4.2).
+	// `items` joins the skip set in ambient so the collection-specific
+	// message above stays the single error at its path.
 	const structural = STRUCTURAL_LITERALS[type] ?? [];
-	checkNodeRelativeBindings(ctx, node, path, new Set(structural));
+	const skip = new Set(structural);
+	if (type === "collection" && ctx.placement === "ambient") skip.add("items");
+	checkNodeRelativeBindings(ctx, node, path, skip);
 
 	// onActivate carries an Action (§6.1): same rules as button actions
 	if (node.onActivate !== undefined) {

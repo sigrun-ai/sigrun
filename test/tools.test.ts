@@ -250,6 +250,27 @@ describe("core tool registration", () => {
 	});
 });
 
+describe("agent shell environment (multi-user spec §8)", () => {
+	test("the bash tool's env output carries no sigrun or provider secrets", async () => {
+		process.env.SIGRUN_LEAK_PROBE = "sigrun-secret-probe";
+		process.env.ACME_PROVIDER_API_KEY = "provider-secret-probe";
+		try {
+			const { app, opened } = await bootToolsServer([
+				toolRound({ name: "bash", args: { command: "env" } }),
+				fauxAssistantMessage("done"),
+			]);
+			const id = await runTurn(opened, "print the environment");
+			const text = resultText(toolResult(await getView(app, id), "bash"));
+			expect(text).toMatch(/^PATH=/m);
+			expect(text).not.toContain("sigrun-secret-probe");
+			expect(text).not.toContain("provider-secret-probe");
+		} finally {
+			delete process.env.SIGRUN_LEAK_PROBE;
+			delete process.env.ACME_PROVIDER_API_KEY;
+		}
+	});
+});
+
 // ---------------------------------------------------------------------------
 // Coding tools end-to-end (T1a) + image reads (T1c)
 // ---------------------------------------------------------------------------

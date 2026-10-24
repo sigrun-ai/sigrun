@@ -136,6 +136,21 @@ export function registerMetaRoutes(
 			// §14.2/§14.4: the development flag — gates the gallery and the
 			// development error bodies (a boot constant, cached like the rest).
 			dev: config.dev,
+			// §13.3 (U4 Task 2): the supervised posture — the settings panel's
+			// pendingRestart callout renders its Restart button only for a
+			// supervised admin (an unsupervised deploy's restart exits and
+			// STAYS down, so the button must not exist there).
+			supervised: config.supervised,
+			isolation: {
+				mode: config.isolation.mode,
+				active: opened.isolationState.active(),
+				available: opened.isolation.available,
+				abi: opened.isolation.abi,
+				...(opened.isolation.reason === undefined
+					? {}
+					: { reason: opened.isolation.reason }),
+				osUsers: opened.osUsers.status,
+			},
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {
 				interactions: [...opened.seamKinds]

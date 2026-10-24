@@ -216,7 +216,7 @@ describe("the actions route (U3 Task 3)", () => {
 		expect(actionCalls).toHaveLength(0);
 	});
 
-	test("dedup: two posts with one actionId call the handler once and return identical bodies", async () => {
+	test("dedup: a retry (one actionId, the SAME request body) calls the handler once and returns identical bodies", async () => {
 		const { app, aliceToken } = await server();
 		const actionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 		const first = await postAction(app, aliceToken, "move", {
@@ -226,8 +226,11 @@ describe("the actions route (U3 Task 3)", () => {
 		});
 		expect(first.status).toBe(200);
 		expect(first.body.ok).toBe(true);
+		// A retry resends the IDENTICAL request (the network lost the
+		// first response); a different body with the same actionId is a
+		// fresh client reusing the id (the request-scoped test above).
 		const second = await postAction(app, aliceToken, "move", {
-			payload: { itemId: "c2" },
+			payload: { itemId: "c1" },
 			actionId,
 			params: { board: "acme-dedup" },
 		});
@@ -237,6 +240,41 @@ describe("the actions route (U3 Task 3)", () => {
 			(entry) => entry.action === "move" && entry.key !== "",
 		);
 		expect(moves).toHaveLength(1);
+	});
+
+	test("dedup is request-scoped: one actionId with a DIFFERENT payload runs the handler again (two clients sharing a channel id sequence)", async () => {
+		const { app, aliceToken } = await server();
+		const actionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const first = await postAction(app, aliceToken, "move", {
+			payload: { itemId: "c1" },
+			actionId,
+			params: { board: "acme-reuse" },
+		});
+		expect(first.status).toBe(200);
+		// The second client's same-id DIFFERENT-body action must NOT
+		// replay the first result (the U4 Task 4 two-tab settings save).
+		const second = await postAction(app, aliceToken, "move", {
+			payload: { itemId: "c2" },
+			actionId,
+			params: { board: "acme-reuse" },
+		});
+		expect(second.status).toBe(200);
+		const moves = actionCalls.filter(
+			(entry) => entry.action === "move" && entry.key !== "",
+		);
+		expect(moves).toHaveLength(2);
+		// A true retry of the SECOND request still replays (dedup intact).
+		const retry = await postAction(app, aliceToken, "move", {
+			payload: { itemId: "c2" },
+			actionId,
+			params: { board: "acme-reuse" },
+		});
+		expect(retry.body).toEqual(second.body);
+		expect(
+			actionCalls.filter(
+				(entry) => entry.action === "move" && entry.key !== "",
+			),
+		).toHaveLength(2);
 	});
 
 	test("dedup windows per instance: the same actionId on a different params instance runs the handler again", async () => {

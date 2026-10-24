@@ -83,7 +83,14 @@ export function isMainEmpty(block: PageBlock, data: JsonObject): boolean {
 	if (block.empty === undefined) return false;
 	const collection = firstCollection(block.main);
 	if (collection === undefined) return false;
-	const items = resolvePointer(data, collection.items.$);
+	const itemsProp = collection.items;
+	// Literal rows (the ambient shape, U6 Task 3) resolve directly; the
+	// "$" check discriminates the binding (Array.isArray cannot narrow
+	// a readonly-array union).
+	if (typeof itemsProp !== "object" || !("$" in itemsProp)) {
+		return itemsProp.length === 0;
+	}
+	const items = resolvePointer(data, itemsProp.$);
 	return !Array.isArray(items) || items.length === 0;
 }
 
@@ -93,7 +100,6 @@ type Region = "sidebar" | "main";
 export class PageComponent implements Component {
 	readonly #block: PageBlock;
 	readonly #ctx: BlockCtx;
-	readonly #options: RenderOptions;
 	/** The open overlay: the switcher or the actions menu. */
 	#menu: { kind: "switcher" | "actions"; cursor: number } | null = null;
 	/** The pushed detail view (spec §12.3: detail → pushed page, Esc back). */
@@ -109,7 +115,6 @@ export class PageComponent implements Component {
 	constructor(block: PageBlock, ctx: BlockCtx, options: RenderOptions = {}) {
 		this.#block = block;
 		this.#ctx = ctx;
-		this.#options = options;
 		this.#main = block.main.map((child) => renderBlock(child, ctx, options));
 		this.#sidebar = (block.sidebar ?? []).map((child) => renderBlock(child, ctx, options));
 		this.#detail = (block.detail ?? []).map((child) => renderBlock(child, ctx, options));

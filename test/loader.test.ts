@@ -787,3 +787,31 @@ test("a factory result with a nonexistent skill dir is quarantined", async () =>
 		await rm(fixtureDir, { recursive: true, force: true });
 	}
 });
+
+test("a reserved extension slug is quarantined before install", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-reserved-slug-"));
+	const specifier = pathToFileURL(
+		join(import.meta.dirname, "fixtures", "fixture-reserved-slug", "index.js"),
+	).href;
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [specifier],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: specifier,
+					status: "quarantined",
+					error: 'reserved extension slug "sandbox"',
+				},
+			]);
+			expect(opened.registry.snapshot().extension("sandbox")).toBeUndefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});

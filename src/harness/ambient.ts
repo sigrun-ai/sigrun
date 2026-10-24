@@ -1,8 +1,10 @@
 /**
- * The ambient seam (spec: docs/approval-ux-seams.md, "Ambient surfaces"):
- * core-owned, channel-neutral records for persistent read-mostly state —
- * statusline slots and panel widgets — written by extensions through the
- * host context and rendered by channels generically.
+ * The ambient seam (spec: docs/approval-ux-seams.md, "Ambient surfaces";
+ * the block mapping: docs/superpowers/specs/
+ * 2026-10-19-sigrun-ui-blocks-design.md §9.2): core-owned,
+ * channel-neutral records for persistent read-mostly state — statusline
+ * slots and panel widgets — written by extensions through the host
+ * context and rendered by channels generically.
  *
  * SPLIT (build-and-webui Task 1): the canonical TYPE declarations live in
  * the `@sigrun/shared` package (`shared/src/ambient.ts` — the records ride
@@ -16,44 +18,68 @@
  * not silent composition — the pi-zentui chrome-skin lesson).
  *
  * Layering mirrors the interaction seam: strict envelope (key, place,
- * budget, refresh, expires) around a body composed only from the closed
- * ambient primitives (line, rows, gauge, ledger), with opaque `details`.
+ * budget, refresh, expires) around a block-tree body (placement
+ * `ambient`; `status`/`footer` allow one line), with opaque `details`.
+ * Legacy-shaped bodies FAIL with paths (ruling 16).
  */
 
 import { defineDoc, defineDocFamily } from "@earendil-works/pi-durable";
-import type { AmbientRecord } from "@sigrun/shared/ambient";
-
-export type {
-	AmbientBody,
-	AmbientGauge,
-	AmbientLedgerEntry,
-	AmbientLine,
-	AmbientMetrics,
+import type {
+	ConversationDocFamilyToken,
+} from "@earendil-works/pi-durable";
+import type {
 	AmbientPlace,
 	AmbientRecord,
-	AmbientRow,
 } from "@sigrun/shared/ambient";
+import { validateTree } from "../blocks/validate.js";
+import type { StoredTree } from "./interactions.js";
+
+export type { AmbientPlace, AmbientRecord } from "@sigrun/shared/ambient";
+
+/**
+ * The ambient record as the doc family stores it: the public wire record
+ * with `body` mirrored (`StoredTree`, imported from the interaction seam
+ * — one spelling of the mirror). Identical at runtime; `validateAmbient`
+ * gates every write through `validateTree`.
+ */
+export type StoredAmbientRecord = Omit<AmbientRecord, "body"> & {
+	readonly body?: StoredTree;
+};
+
+/**
+ * Narrow a stored record to the public wire record. SAFETY: the two
+ * shapes are identical at runtime — a stored body passed `validateTree`
+ * (placement `ambient`) at write time, and a validated tree IS the JSON
+ * the mirror describes; the cast only restores the type-level naming
+ * `JsonObject`-erasure removed.
+ */
+export function asAmbientRecord(
+	value: Readonly<StoredAmbientRecord>,
+): Readonly<AmbientRecord> {
+	return value as unknown as Readonly<AmbientRecord>;
+}
 
 /**
  * The ambient record family: one record per surface key, per conversation.
  * (Session-scoped statuslines that outlive one conversation are a v2
  * concern; channels today render conversation-scoped state.)
  */
-export const AmbientDoc = defineDocFamily<AmbientRecord, string>({
-	kind: "sigrun.ambient",
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	fork: "current",
-	family: true,
-	initial: (key: string) => ({
-		key,
-		owner: "",
-		place: "status",
-		expires: "never",
-		updatedAt: 0,
-	}),
-});
+export const AmbientDoc: ConversationDocFamilyToken<StoredAmbientRecord, string> =
+	defineDocFamily<StoredAmbientRecord, string>({
+		kind: "sigrun.ambient",
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "current",
+		family: true,
+		initial: (key: string) => ({
+			key,
+			owner: "",
+			place: "status",
+			expires: "never",
+			updatedAt: 0,
+		}),
+	});
 
 /**
  * The ambient slot registry (session singleton): surface key -> owning
@@ -73,10 +99,13 @@ export const AmbientOwnersDoc = defineDoc<AmbientOwners>({
 
 const PLACES: ReadonlySet<string> = new Set(["status", "footer", "panel"]);
 const OVERFLOWS: ReadonlySet<string> = new Set(["drop", "wrap", "summarize"]);
-const FORMATS: ReadonlySet<string> = new Set(["compact", "usd", "percent"]);
-const ZONES: ReadonlySet<string> = new Set(["left", "middle", "right"]);
 
-/** Structural validation of one ambient record. Returns the error text or null. */
+/**
+ * Structural validation of one ambient record: the envelope's own checks,
+ * then the body tree through `validateTree({placement: "ambient"})` with
+ * the one-line rule for `status`/`footer` (§9.2). Returns the error text
+ * (with the tree paths) or null.
+ */
 export function validateAmbient(value: unknown): string | null {
 	if (typeof value !== "object" || value === null) {
 		return "ambient record must be an object";
@@ -105,168 +134,19 @@ export function validateAmbient(value: unknown): string | null {
 	}
 	const body = r.body;
 	if (body === undefined) return null; // an empty write clears the surface
-	if (typeof body !== "object" || body === null) {
-		return "body must be an object";
-	}
-	const b = body as Record<string, unknown>;
-	const known = new Set(["line", "rows", "gauge", "ledger"]);
-	const unknownKey = Object.keys(b).find((k) => !known.has(k));
-	if (unknownKey !== undefined) {
-		return `body.${unknownKey} is outside the closed primitives (move it to details)`;
-	}
-	if (b.line !== undefined) {
-		const problem = validateLine(b.line);
-		if (problem !== null) return problem;
-	}
-	if (b.rows !== undefined) {
-		if (!Array.isArray(b.rows)) return "body.rows must be an array";
-		for (const row of b.rows) {
-			const problem = validateRow(row);
-			if (problem !== null) return problem;
-		}
-	}
-	if (b.gauge !== undefined) {
-		const problem = validateGauge(b.gauge);
-		if (problem !== null) return problem;
-	}
-	if (b.ledger !== undefined) {
-		if (!Array.isArray(b.ledger)) return "body.ledger must be an array";
-		for (const e of b.ledger) {
-			const problem = validateLedgerEntry(e);
-			if (problem !== null) return problem;
-		}
-	}
-	return null;
-}
-
-function validateLine(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "line must be an object";
-	const l = value as Record<string, unknown>;
-	if (l.text === undefined && l.segments === undefined) {
-		return "line needs text or segments";
-	}
-	if (l.text !== undefined && typeof l.text !== "string") {
-		return "line.text must be a string";
-	}
-	if (l.segments !== undefined) {
-		if (!Array.isArray(l.segments)) return "line.segments must be an array";
-		for (const s of l.segments) {
-			if (typeof s !== "object" || s === null) return "segment must be an object";
-			const seg = s as Record<string, unknown>;
-			if (typeof seg.id !== "string" || seg.id.length === 0) {
-				return "segment.id must be a non-empty string";
-			}
-			if (typeof seg.text !== "string") return "segment.text must be a string";
-			if (seg.place !== undefined && !ZONES.has(String(seg.place))) {
-				return `segment.place must be one of left|middle|right (got ${String(seg.place)})`;
-			}
-		}
-	}
-	return null;
-}
-
-function validateRow(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "row must be an object";
-	const r = value as Record<string, unknown>;
-	if (typeof r.id !== "string" || r.id.length === 0) {
-		return "row.id must be a non-empty string";
-	}
-	if (typeof r.label !== "string") return "row.label must be a string";
-	if (r.status !== undefined && typeof r.status !== "string") {
-		return "row.status must be a string";
-	}
-	if (
-		r.severity !== undefined &&
-		r.severity !== 0 &&
-		r.severity !== 1 &&
-		r.severity !== 2
-	) {
-		return "row.severity must be 0, 1, or 2";
-	}
-	if (r.quiet !== undefined && typeof r.quiet !== "boolean") {
-		return "row.quiet must be a boolean";
-	}
-	if (r.detail !== undefined && typeof r.detail !== "string") {
-		return "row.detail must be a string";
-	}
-	if (r.depth !== undefined && typeof r.depth !== "number") {
-		return "row.depth must be a number";
-	}
-	if (r.deps !== undefined && !Array.isArray(r.deps)) {
-		return "row.deps must be an array of ids";
-	}
-	if (Array.isArray(r.deps) && r.deps.some((d) => typeof d !== "string")) {
-		return "row.deps must be an array of ids";
-	}
-	if (r.spinnerLabel !== undefined && typeof r.spinnerLabel !== "string") {
-		return "row.spinnerLabel must be a string";
-	}
-	if (r.metrics !== undefined) {
-		const problem = validateMetrics(r.metrics);
-		if (problem !== null) return problem;
-	}
-	return null;
-}
-
-function validateMetrics(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "metrics must be an object";
-	const m = value as Record<string, unknown>;
-	for (const k of ["tokens", "cost", "current", "total", "completed"]) {
-		if (m[k] !== undefined && typeof m[k] !== "number") {
-			return `metrics.${k} must be a number`;
-		}
-	}
-	if (m.format !== undefined && !FORMATS.has(String(m.format))) {
-		return `metrics.format must be one of compact|usd|percent (got ${String(m.format)})`;
-	}
-	return null;
-}
-
-function validateGauge(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "gauge must be an object";
-	const g = value as Record<string, unknown>;
-	if (typeof g.label !== "string") return "gauge.label must be a string";
-	if (g.percent !== undefined && typeof g.percent !== "number") {
-		return "gauge.percent must be a number";
-	}
-	if (g.phase !== undefined && typeof g.phase !== "string") {
-		return "gauge.phase must be a string";
-	}
-	if (g.elapsedMs !== undefined && typeof g.elapsedMs !== "number") {
-		return "gauge.elapsedMs must be a number";
-	}
-	if (g.recentOutput !== undefined && !Array.isArray(g.recentOutput)) {
-		return "gauge.recentOutput must be an array of strings";
-	}
-	if (Array.isArray(g.recentOutput) && g.recentOutput.some((l) => typeof l !== "string")) {
-		return "gauge.recentOutput must be an array of strings";
-	}
-	if (g.checks !== undefined && !Array.isArray(g.checks)) {
-		return "gauge.checks must be row-shaped";
-	}
-	if (Array.isArray(g.checks)) {
-		for (const row of g.checks) {
-			const problem = validateRow(row);
-			if (problem !== null) return `gauge.checks: ${problem}`;
-		}
-	}
-	return null;
-}
-
-function validateLedgerEntry(value: unknown): string | null {
-	if (typeof value !== "object" || value === null) return "ledger entry must be an object";
-	const e = value as Record<string, unknown>;
-	if (typeof e.id !== "string" || e.id.length === 0) {
-		return "ledger.id must be a non-empty string";
-	}
-	if (typeof e.at !== "number") return "ledger.at must be a number";
-	if (typeof e.kind !== "string") return "ledger.kind must be a string";
-	if (typeof e.summary !== "string") return "ledger.summary must be a string";
-	if (e.detail !== undefined && !Array.isArray(e.detail)) {
-		return "ledger.detail must be an array of strings";
-	}
-	if (Array.isArray(e.detail) && e.detail.some((d) => typeof d !== "string")) {
-		return "ledger.detail must be an array of strings";
+	// Ruling 16 (no compatibility layer): legacy-shaped bodies (objects
+	// keyed line/rows/gauge/ledger rather than {v, root}) fail HERE, with
+	// the path — a tree is {v, root}.
+	const result = validateTree(body, {
+		placement: "ambient",
+		ambientPlace: r.place as AmbientPlace,
+	});
+	if (!result.ok) {
+		const first = result.errors[0];
+		if (first === undefined) return "body must be a block tree";
+		// The tree-relative path joins the record's field ("body.root…")
+		// so the error names where the record is wrong, not just the tree.
+		return `body is not a valid ambient tree: body.${first.path} ${first.message}`;
 	}
 	return null;
 }

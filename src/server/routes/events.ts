@@ -148,6 +148,12 @@ export function registerEventRoutes(
 				// principal-facing wire event.
 				case "taskSettled":
 					return undefined;
+				// UI-blocks U4 (spec §13.2): settings changes are OPERATOR
+				// surface — delivered to ADMINS only, both scopes (a
+				// server-scope PATCH and an extension's settings PUT alike;
+				// the admin gate is the same one the writes carry).
+				case "settings.changed":
+					return principal.admin ? event : undefined;
 				// UI-blocks U3 Task 4 (spec §7.3): delivered to a watching
 				// stream ONLY. The hub copy is the service's internal event
 				// (SurfaceChangedInternal) which carries the resolved stream
