@@ -144,9 +144,7 @@ export function registerMetaRoutes(
 				...(opened.isolation.reason === undefined
 					? {}
 					: { reason: opened.isolation.reason }),
-				osUsers: config.isolation.osUsers
-					? "osUsers requires CAP_SETUID"
-					: "off",
+				osUsers: opened.osUsers.status,
 			},
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {

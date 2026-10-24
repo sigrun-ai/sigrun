@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { lookupOsAccount, type OsAccountReader } from "./os-account.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,6 +14,64 @@ export interface IsolationAvailability {
 	readonly abi: number;
 	readonly helper?: string;
 	readonly reason?: string;
+}
+
+/** The independent opt-in uid/gid-switch capability decision. */
+export interface OsUsersAvailability {
+	readonly available: boolean;
+	/** The exact /v1/meta value: available, off, or the failure reason. */
+	readonly status: "available" | "off" | "osUsers requires CAP_SETUID";
+}
+
+export type OsUsersProbeRunner = (
+	helper: string,
+	args: readonly string[],
+	options: { env: Record<string, string> },
+) => Promise<{ stdout: string }>;
+
+/**
+ * Prove a real identity transition, not merely the presence of a helper.
+ * Every failure has the one operator-actionable reason; no failed switch is
+ * ever treated as permission to run under the service account instead.
+ */
+export async function probeOsUsers(
+	helper: string,
+	options?: {
+		read?: OsAccountReader;
+		run?: OsUsersProbeRunner;
+	},
+): Promise<OsUsersAvailability> {
+	const unavailable = (): OsUsersAvailability => ({
+		available: false,
+		status: "osUsers requires CAP_SETUID",
+	});
+	try {
+		const account = lookupOsAccount("nobody", options?.read);
+		if (account === undefined) return unavailable();
+		const run = options?.run ?? (async (
+			command: string,
+			args: readonly string[],
+			execOptions: { env: Record<string, string> },
+		) => execFileAsync(command, args, execOptions));
+		const { stdout } = await run(helper, ["run", "--", "/usr/bin/id", "-u"], {
+			env: {
+				LC_ALL: "C",
+				SIGRUN_SANDBOX_POLICY: JSON.stringify({
+					ro: ["/usr", "/usr/bin", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys"],
+					rw: [],
+					minAbi: 6,
+					uid: account.uid,
+					gid: account.gid,
+					groups: account.groups,
+				}),
+			},
+		});
+		return stdout.trim() === String(account.uid)
+			? { available: true, status: "available" }
+			: unavailable();
+	} catch {
+		return unavailable();
+	}
 }
 
 /** Execute the helper's lightweight `probe` command and parse its ABI. */
