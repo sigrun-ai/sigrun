@@ -93,7 +93,14 @@ export function ShareMenu(props: {
 			setError("enter at least one username to share with");
 			return;
 		}
-		void apply({ scope: "people", users: list, level });
+		void apply({
+			scope: "people",
+			users: list,
+			...(current?.scope === "people" && current.groups !== undefined
+				? { groups: [...current.groups] }
+				: {}),
+			level,
+		});
 	}
 
 	return (
