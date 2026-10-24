@@ -1303,6 +1303,598 @@ Rules for engine authors:
 - A malformed declaration (a missing `start`/`stopIntake`/`stop`/
   `health` function) quarantines the extension at load.
 
+## Building surfaces
+
+A **surface** is a block tree with a data model behind it, rendered by
+both channels (webui and TUI) from one definition. You build trees with
+the typed builders from `@sigrun/sigrun/blocks` — the host-linked copy
+(the `tree()` wrapper stamps the server's block-set version, so never
+bundle your own builders):
+
+```ts
+import { page, collection, card, bind, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+```
+
+Builders return plain JSON; there is no runtime besides them. Any prop
+whose value can change at runtime takes a literal or a **binding** —
+`bind("/cards")` is a JSON Pointer into the surface's data model, and
+inside a collection's card template `bind("./title")` resolves against
+the current item. Structural props (`type`, `id`, `display`, `groupBy`,
+field `name`s, handler names, ...) are literals, never bindings.
+
+### Placements
+
+Where a tree may appear decides which blocks, collection displays and
+form fields it may use (spec §5.7; `validateTree` enforces the table):
+
+| | view | panel | settings | chat | interaction | ambient |
+|---|---|---|---|---|---|---|
+| root block | `page` (required) | `page` (required, no `sidebar`) | `form` (required) | any (no `page`) | `form` (required) | any (no `page`, no `form`) |
+| layout | all | all | `section` only | all | `stack`, `section` | `stack`, `columns` |
+| content (`markdown`, `fields`, `callout`, `diff`, `details`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `stat`, `meter`, `log` | ✓ | ✓ | — | ✓ | — | ✓ |
+| `chart`, `image`, `tree` | ✓ | ✓ | — | ✓ | — | — |
+| `collection` | all displays | all displays | `list`, `table` | all displays | `list` | `list` |
+| `form` | ✓ | ✓ | root only | ✓ | root only | — |
+| fields in a form | all | all | all but `file` | all but `secret` | `text`, `longtext`, `number`, `toggle`, `choice`, `secret` | — |
+
+**Ambient is literal-content only** (the 2026-10-24 ruling): the
+ambient envelope carries no data document, so every value in the tree
+is a literal — a binding is allowed only inside a collection's item
+template (`bind("./label")` against a literal `items` array).
+
+### The block catalog
+
+One builder per block. Every example below is a complete tree.
+
+**Content** — prose, key/value rows, status numbers, progress and logs:
+
+```ts check
+import { bind, markdown, stat, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function statusNote(): Tree {
+	return tree(
+		markdown({ text: "Deploy **finished**; see the status line." }),
+	);
+}
+
+export function uptime(): Tree {
+	return tree(
+		stat({
+			label: "Uptime",
+			value: bind("/uptime"),
+			format: "duration",
+			tone: bind("/uptimeTone"),
+		}),
+	);
+}
+```
+
+**Chart** — time series with thresholds:
+
+```ts check
+import { bind, chart, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function cpuChart(): Tree {
+	return tree(
+		chart({
+			title: "CPU",
+			x: { kind: "time", format: "time" },
+			y: { format: "percent", min: 0, max: 1 },
+			series: [{ name: "cpu", kind: "area", data: bind("/cpu") }],
+			thresholds: [{ at: 0.8, tone: "warn" }, { at: 0.95, tone: "bad" }],
+		}),
+	);
+}
+```
+
+**Collection** — one item block with five displays (`list`, `table`,
+`lanes`, `grid`, `calendar`). `items` binds an array of objects each
+with a unique `id`; `card` is the item template, its `bind("./…")`
+pointers resolving against the current item:
+
+```ts check
+import { bind, card, collection, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function recentJobs(): Tree {
+	return tree(
+		collection({
+			id: "jobs",
+			items: bind("/jobs"),
+			display: "list",
+			item: card({
+				title: bind("./name"),
+				subtitle: bind("./lastRun"),
+				status: { label: bind("./state"), tone: bind("./tone") },
+			}),
+		}),
+	);
+}
+
+export function jobsTable(): Tree {
+	return tree(
+		collection({
+			id: "jobs",
+			items: bind("/jobs"),
+			display: "table",
+			columns: [
+				{ field: "name", label: "Name", sortable: true },
+				{ field: "duration", label: "Duration", format: "duration" },
+				{ field: "state", label: "State", cell: "badge" },
+			],
+			item: card({ title: bind("./name") }),
+		}),
+	);
+}
+```
+
+**Form and fields** — a `form` binds an object path; each field's
+`name` is its path inside it. All eleven field builders share the same
+base props (`name`, `label`, `help`, `required`, validation,
+`apply`):
+
+```ts check
+import { choice, form, number, text, toggle, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function filterForm(): Tree {
+	return tree(
+		form({
+			id: "filter",
+			bind: "/view/filter",
+			mode: "live",
+			children: [
+				text({ name: "query", label: "Search", kind: "search" }),
+				choice({
+					name: "state",
+					label: "State",
+					options: [
+						{ id: "open", label: "Open" },
+						{ id: "done", label: "Done" },
+					],
+				}),
+				number({ name: "limit", label: "Max items", min: 1, max: 500 }),
+				toggle({ name: "archived", label: "Include archived" }),
+			],
+		}),
+	);
+}
+```
+
+The rest of the field set: `longtext` (with `syntax`/`lang`), `date`,
+`datetime`, `daterange` (with presets), `secret` (write-only — the
+channel shows `set (stored)` / `set (env)` / `not set` from a bound
+status), `file` (uploads through the surface's upload route; see
+"Uploads and assets"), and `list` (a repeatable group of fields).
+
+**Stat, meter, log** — the dashboard and ambient trio:
+
+```ts check
+import { log, meter, stat, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function gauges(): Tree {
+	return tree(
+		stat({ label: "Requests", value: 12840, format: "compact", sparkline: [3, 5, 4, 8, 7] }),
+	);
+}
+
+export function disk(): Tree {
+	return tree(
+		meter({
+			label: "Disk",
+			value: 0.62,
+			format: "percent",
+			thresholds: [{ at: 0.8, tone: "warn" }, { at: 0.95, tone: "bad" }],
+		}),
+	);
+}
+
+export function recentOutput(): Tree {
+	return tree(
+		log({
+			lines: [{ level: "info", text: "backup completed" }],
+			follow: true,
+		}),
+	);
+}
+```
+
+**Callout, diff, details** — attention, review, and collapsed JSON:
+
+```ts check
+import { callout, details, diff, tree } from "@sigrun/sigrun/blocks";
+import type { JsonValue, Tree } from "@sigrun/sigrun/blocks";
+
+export function restartNotice(pending: readonly string[]): Tree {
+	return tree(
+		callout({
+			tone: "warn",
+			title: "Restart required",
+			body: `Pending: ${pending.join(", ")}`,
+			actions: [
+				{
+					id: "restart",
+					label: "Restart",
+					action: { type: "restart", confirm: { title: "Restart sigrun?" } },
+				},
+			],
+		}),
+	);
+}
+
+export function proposedEdit(): Tree {
+	return tree(
+		diff({ path: "src/index.ts", lang: "ts", before: "const a = 1;", after: "const a = 2;" }),
+	);
+}
+
+export function rawPayload(payload: JsonValue): Tree {
+	return tree(details({ value: payload }));
+}
+```
+
+(The `details` value is `JsonValue` — opaque JSON the channel shows
+collapsed and pretty-printed.)
+
+Also available: the layout blocks `stack`, `columns`, `grid`,
+`section`; `image` (see "Images"); `fields` (key/value rows); and
+`treeBlock` (a lazy `tree` block — the `tree` name belongs to the root
+wrapper).
+
+### Actions and the turn rule
+
+Actions live where a block offers buttons (`page.actions`, card
+`actions`, `callout.actions`, `onActivate`) or as a block's named
+gesture handler (`onMove`, `onCheck`, `onSubmit`, `onUpload`, ...).
+There are three kinds (spec §6.2):
+
+- **view-only** — sort, filter, expand, `navigate(params)`, a live form
+  bound under `/view/…`. The channel applies it locally; nothing
+  reaches the server, and it never starts a turn.
+- **edit** — `move`, `edit` (checkbox toggles, inline field edits), a
+  `submit` with `turn: false`. The placement's handler runs and the
+  change is saved, silently. The agent hears about it in the next
+  change note, not immediately.
+- **answer** — a `submit` (default `turn: true`), or any action with
+  `turn: true`. The handler runs, then a turn starts: the user sees the
+  result NOW.
+
+The rule of thumb: **`turn: true` only when the user must see the
+result immediately.** A lanes board's drag is a `move` — saving each
+drag as it happens is right, but interrupting the agent with a turn per
+drag is not. Set `turn: true` on a `move` or `edit` only when each one
+needs an immediate reply. `turn` is valid only in the `chat` placement;
+validation rejects it anywhere else.
+
+### Access and sharedData
+
+Every render and every action carries the **principal** (who is
+looking). Your `render` returns `access: "none" | "read" | "write"`
+for that principal (spec §6.5):
+
+- `none` — the surface is `404 surface_not_found` on every route
+  (indistinguishable from one that doesn't exist), no events, no rail
+  entry.
+- `read` — the channel hides every edit and answer action and disables
+  reorder, checkable, inputs and bulk actions. You never build a second
+  tree for read-only users.
+- `write` — everything.
+
+The server enforces the verdict per principal (a 60-second cache keyed
+by `(slug, id, key, principal.user)`); your handlers still check access
+themselves — the server's check is defence in depth, not your only
+guard.
+
+**`sharedData: true`** declares that every principal with access sees
+the SAME data (a shared board). It changes what the server keeps
+(spec §7.3): ops passed to `changed` and accepted actions are retained
+(last 100 per instance), so a `since` fetch inside the window returns
+just the ops. Without it (the default — data is principal-specific),
+the server keeps nothing: ops passed to `changed` are ignored and every
+data fetch re-runs your `data()` as the fetching principal. Never mark
+a surface `sharedData` if its data differs per user.
+
+### Freshness: `changed` and the rev
+
+A surface's data has a monotonic **`rev`, assigned by the server** —
+you hand the server `DataOps`, never a rev. Three ways a channel learns
+data moved (spec §7.3):
+
+1. **`host.surfaces.changed(id, key, update?)`** — publish that instance
+   `key` (the string `instanceKey(params)` returns) changed. Watchers
+   (streams whose last fetch's access wasn't `none`) get a
+   `surface.changed` event carrying `{slug, id, k, rev, treeRev}` —
+   params never appear in events and the event carries no data — then
+   fetch `…/data?since=<rev>` as their own principal.
+2. **Since-windows** — on a `sharedData` surface the server keeps the
+   last 100 ops per instance; a `since` fetch within the window returns
+   `{rev, treeRev, ops}`, older fetches re-run `data()`.
+3. **`refreshMs`** — channels refetch data on that interval while the
+   surface is visible (min 5000), with no event at all. Dashboards use
+   this.
+
+Declare `data()` whenever you set `refreshMs` or call `changed` —
+without it a refetch would re-run the whole `render`. A gap in `rev`
+means the channel fetches the full data again.
+
+### Uploads and assets
+
+A `file` field uploads through the surface's own upload route
+(`PUT /v1/ext/<slug>/surfaces/<id>/uploads/<field>/<name>`): the raw
+bytes go to your `onUpload` handler and NOWHERE else — core keeps no
+copy. The payload is `{field, name, mime, bytes}` with the filename
+sanitised to a basename, the mime sniffed from the bytes (never the
+client's claim), and `bytes` capped by the field's `maxBytes` and
+`server.maxUploadBytes`. Store what you want in your own stores.
+
+Static files ship in your package's `assets` directory (declared as
+`sigrun.assets` in the package manifest) and are served at
+`/v1/ext/<slug>/assets/<path>` — public to every signed-in user, like
+any static file of an installed package, so never put private data in
+`assets`. Paths are resolved with `realpath` and must stay inside the
+assets directory; `..` segments and symlinks out of it are 404.
+
+### Images
+
+An `image` block's `src` takes three forms (spec §11.1):
+
+- **`asset:<path>`** — a file from your assets directory (above).
+  Untouched by the proxy.
+- **`data:image/png|jpeg|gif|webp;base64,…`** — at most 192 KiB of
+  base64 text, counted toward whichever of the tree or the data holds
+  it (§4.5). Untouched by the proxy.
+- **`https://…`** — the server REWRITES it to a signed `/v1/image`
+  proxy URL before the tree or data leaves the server (24-hour
+  signature; the proxy re-resolves and vetoes private/refused address
+  ranges, caps the fetch at 10 s / 10 MiB, and sniffs the body as PNG,
+  JPEG, GIF or WebP).
+
+SVG and AVIF are never accepted (script payload; no TUI decoder), and
+`http:` URLs are rejected. The CSP consequence: the webui sends
+`Content-Security-Policy: img-src 'self' data:` — a missed rewrite or a
+markdown image from another origin simply doesn't load. A failure
+renders the block's `alt` text (which is required).
+
+### Settings sections with apply
+
+A settings section is a static `settings`-placement tree — a root
+`form` bound to your settings object (`settings/<slug>.json`) —
+declared in the factory result's `surfaces.settings` (spec §13.3).
+Every field declares **`apply: "live" | "restart"`**:
+
+- `live` (the default for extension fields): the value is read where
+  it's used; saving takes effect with no restart.
+- `restart`: the value is read at boot. Saving stores it and marks it
+  pending — `GET /v1/settings` returns `pendingRestart: string[]`, and
+  the settings surface shows a `callout(tone: "warn")` listing them
+  with a Restart button for admins (when the server is supervised).
+
+Mark a field `restart` when your factory reads the value at load;
+everything else stays `live`.
+
+### Worked example: a lanes board
+
+A kanban board view: cards grouped into lanes, drag within and across,
+a live filter in the sidebar, and a detail pane (the H2/S1 shape from
+the sizing pass):
+
+```ts check
+import { bind, card, choice, collection, form, markdown, page, text, toggle, tree } from "@sigrun/sigrun/blocks";
+import type { JsonObject, Tone, Tree } from "@sigrun/sigrun/blocks";
+
+export interface BoardCard {
+	readonly id: string;
+	readonly title: string;
+	readonly status: string;
+	readonly assignee: string;
+	readonly assigneeName: string;
+	readonly age: string;
+	readonly staleness: Tone;
+}
+
+export function boardTree(): Tree {
+	return tree(
+		page({
+			title: "Board",
+			switcher: choice({
+				name: "board",
+				label: "Board",
+				options: bind("/boards"),
+			}),
+			sidebar: [
+				form({
+					id: "filter",
+					bind: "/view/filter",
+					mode: "live",
+					children: [
+						text({ name: "q", label: "Search", kind: "search" }),
+						choice({ name: "assignee", label: "Assignee", options: bind("/people") }),
+						toggle({ name: "mine", label: "Only mine" }),
+					],
+				}),
+			],
+			main: [
+				collection({
+					id: "cards",
+					items: bind("/cards"),
+					display: "lanes",
+					groupBy: "status",
+					groups: [
+						{ id: "todo", title: "To do" },
+						{ id: "doing", title: "Doing" },
+						{ id: "done", title: "Done" },
+					],
+					reorder: { within: true, across: true },
+					onMove: "move",
+					item: card({
+						eyebrow: bind("./id"),
+						title: bind("./title"),
+						meta: [
+							{ person: { user: bind("./assignee"), name: bind("./assigneeName") } },
+							{ time: bind("./age"), format: "relative" },
+						],
+						tone: bind("./staleness"),
+					}),
+				}),
+			],
+			detail: [markdown({ text: bind("/detail") })],
+			empty: { icon: "board", title: "No cards", hint: "Create one to get started." },
+		}),
+	);
+}
+
+export function boardData(cards: readonly BoardCard[]): JsonObject {
+	return {
+		boards: [
+			{ id: "ops", label: "Ops" },
+			{ id: "home", label: "Home" },
+		],
+		people: [
+			{ id: "ada", label: "Ada" },
+			{ id: "grace", label: "Grace" },
+		],
+		// The wire data is plain JSON; a typed record list widens to it.
+		cards: cards.map((c) => ({ ...c })),
+		detail: "Select a card.",
+		view: { filter: { q: "", assignee: "", mine: false } },
+	};
+}
+```
+
+The `move` handler receives `{itemId, from, to}` and answers
+`{ok: true}` — the server increments `rev` and announces it; the
+channel's optimistic overlay holds the card where the user dropped it
+until your data catches up (spec §6.3). A read-only principal gets the
+same tree with `reorder` disabled by the channel.
+
+### Worked example: a settings section
+
+A section for an extension with one live field, one restart field, and
+a write-only secret (the S2 shape):
+
+```ts check
+import { choice, form, secret, section, text, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function settingsForm(): Tree {
+	return tree(
+		form({
+			id: "acme-settings",
+			bind: "/",
+			mode: "submit",
+			submitLabel: "Save",
+			children: [
+				section({
+					title: "Sync",
+					children: [
+						choice({
+							name: "interval",
+							label: "Sync interval",
+							help: "Read where it is used — saving applies immediately.",
+							apply: "live",
+							options: [
+								{ id: "5m", label: "Every 5 minutes" },
+								{ id: "1h", label: "Hourly", recommended: true },
+							],
+						}),
+						text({
+							name: "endpoint",
+							label: "Endpoint URL",
+							kind: "url",
+							placeholder: "https://sync.example.invalid",
+							help: "Read at boot — saving marks it pending restart.",
+							apply: "restart",
+							required: true,
+						}),
+					],
+				}),
+				section({
+					title: "Credentials",
+					children: [
+						secret({
+							name: "apiKey",
+							label: "API key",
+							help: "Write-only; the field shows set (stored) / set (env) / not set.",
+						}),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+Saving validates every field, writes the settings object, then fires
+`settings.changed` (your `onSettingsChanged(keys)` runs after the write
+commits). A `restart` field whose stored value differs from the boot
+snapshot lands in `pendingRestart`.
+
+### Worked example: a dashboard
+
+A metrics dashboard view: stats with sparklines, thresholded charts,
+and a refresh interval — data-only updates on the tick, layout sent
+once (the S7 shape):
+
+```ts check
+import { bind, chart, grid, meter, page, stat, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function dashboardTree(): Tree {
+	return tree(
+		page({
+			title: bind("/name"),
+			main: [
+				grid({
+					minItemWidth: "m",
+					children: [
+						{
+							block: stat({
+								label: "Up",
+								value: bind("/up"),
+								format: "percent",
+								tone: bind("/upTone"),
+								sparkline: bind("/upSeries"),
+							}),
+						},
+						{
+							span: 2,
+							block: chart({
+								title: "CPU",
+								x: { kind: "time", format: "time" },
+								y: { format: "percent", min: 0, max: 1 },
+								series: [{ name: "cpu", kind: "area", data: bind("/cpu") }],
+								thresholds: [
+									{ at: 0.8, tone: "warn" },
+									{ at: 0.95, tone: "bad" },
+								],
+							}),
+						},
+						{
+							block: meter({
+								label: "Disk",
+								value: bind("/disk"),
+								format: "percent",
+								thresholds: [{ at: 0.9, tone: "bad" }],
+							}),
+						},
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+Declare it with `refreshMs: 15000` and a `data()` handler: channels
+refetch data every 15 s while the dashboard is visible, as their own
+principal, with no event — and a refetch re-runs `data()`, never
+`render`, so the layout is sent once.
+
 ## Execution isolation and the per-user surface
 
 **When isolation is on**, a user's agent can reach only their workspace,
