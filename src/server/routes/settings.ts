@@ -1,12 +1,16 @@
 /**
  * Settings routes over the file-backed store on the harness's live
  * settings (pi parity): GET serves the current effective settings
- * (absent file = `{}` — every default); PATCH validates + merges +
- * persists through the store.
+ * (absent file = `{}` — every default) plus the pending-restart diff
+ * (U4 §13.2); PATCH validates + merges + persists through the store's
+ * `apply()` — the write classifies live vs. restart against the §13.1
+ * registry, reports both, and publishes `settings.changed` after the
+ * write commits.
  */
 
 import type { FastifyInstance } from "fastify";
 import { SettingsValidationError } from "../../harness/settings.js";
+import { pendingRestart as diffPendingRestart } from "../../settings/pending.js";
 import type { ServerContext } from "../context.js";
 import { settingsResponse } from "../helpers.js";
 import type { SettingsResponse } from "../views.js";
@@ -45,8 +49,17 @@ export function registerSettingsRoutes(
 			return await reply.code(400).send({ error: "invalid_body" });
 		}
 		try {
-			opened.settings.update(body);
-			return settingsResponse(opened, config, env);
+			const outcome = opened.settings.apply(body);
+			// §13.2: the store's onWrite observer (boot's settings-changed
+			// sink) published `settings.changed` when the write committed —
+			// hub publication, extension onSettingsChanged fan-out, and the
+			// scheduler re-arm all ride that ONE seam, so the route only
+			// reports the write's own classification here. Observer errors
+			// never fail the write (§13.2's caught-and-logged rule).
+			return settingsResponse(opened, config, env, {
+				applied: outcome.applied,
+				pending: outcome.pending,
+			});
 		} catch (error) {
 			if (error instanceof SettingsValidationError) {
 				return await reply
@@ -57,3 +70,15 @@ export function registerSettingsRoutes(
 		}
 	});
 }
+
+/**
+ * The applied/pending extras a PATCH response carries over GET (the
+ * write's own classification, spec §13.2/§13.1).
+ */
+export interface SettingsWriteExtras {
+	readonly applied: readonly string[];
+	readonly pending: readonly string[];
+}
+
+/** The pending-restart diff helper re-exported for route-side reads. */
+export { diffPendingRestart };

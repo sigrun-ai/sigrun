@@ -326,12 +326,14 @@ function ExtensionsSection(props: { readonly client: SigrunClient }) {
 				// one extension's fetches fails the section (fail-loud client).
 				const entries = await Promise.all(
 					list.extensions.map(async (extension) => {
-					const [settings, secrets] = await Promise.all([
+					const [settingsResponse, secrets] = await Promise.all([
 						client.getExtensionSettings(extension.name),
 						client.listExtensionSecrets(extension.name),
 					]);
 					const draft: ExtensionDraft = {
-						settingsText: settingsToText(settings),
+						// U4 §13.2: the wire carries {settings, pendingRestart} — the
+						// editor's text is the settings OBJECT.
+						settingsText: settingsToText(settingsResponse.settings),
 						secrets: secrets.secrets,
 						secretValues: {},
 						newKey: "",

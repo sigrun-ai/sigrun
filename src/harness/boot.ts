@@ -91,6 +91,10 @@ import {
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
 import {
+	resolveRefreshMinutes,
+	snapshotRestartKeys,
+} from "../settings/pending.js";
+import {
 	ensureStoreRoots,
 	resolveStoreRoots,
 	sharedExtensionStores,
@@ -247,6 +251,26 @@ export interface OpenedHarness {
 	 * submission without a restart).
 	 */
 	readonly settings: SettingsStore;
+	/**
+	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
+	 * restart key's stored value at boot, taken once after the settings
+	 * load validates and before listen. The `/v1/settings` response's
+	 * `pendingRestart` diffs the fresh file against THIS — a reverted
+	 * key leaves the pending list without a restart.
+	 */
+	readonly settingsBootSnapshot: ReadonlyMap<string, string>;
+	/**
+	 * Publish one `settings.changed` event (U4 §13.2): the server-side
+	 * fan-out seam — the hub publication (/v1/events) and the extension
+	 * `onSettingsChanged` fan-out (deadline-bounded, errors logged).
+	 * Wired in boot AFTER the hub and bus exist; the late-bound sink list
+	 * exists so the settings store's onWrite observer can reference it
+	 * before that. Also assignable onto ServerContext by createServer.
+	 */
+	publishSettingsChanged(
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	): void;
 	/**
 	 * The boot-shared extension store trio (core hardening W3 Task 7,
 	 * spec §7.7): the `/v1/extensions` settings/secrets routes ride its
@@ -714,12 +738,26 @@ export async function openHarness(
 	// `builtinExtensions` toggles live there), so the store is constructed
 	// HERE — before the loader — and the one instance threads on to the
 	// rest of boot (its `harnessSettings()` call below stays the single
-	// construction).
-	const settingsStore = new SettingsStore({ dir: options.settingsDir });
+	// construction). The onWrite observer (U4 §13.2) fires `settingsStore`
+	// writes' change events through a boot-owned sink assigned below (the
+	// hub does not exist yet here — a late-bound closure keeps the store
+	// constructor pure while every committed write still publishes).
+	const settingsChangedSinks: Array<(scope: "server" | { extension: string }, keys: readonly string[]) => void> = [];
+	const settingsStore = new SettingsStore({
+		dir: options.settingsDir,
+		onWrite: (keys) => {
+			for (const sink of settingsChangedSinks) sink("server", keys);
+		},
+	});
 	// Eager validation (the fail-loud boot posture, matching the
 	// `harnessSettings()` contract below): a malformed settings file
 	// throws HERE even when the caller seam overrides every field.
 	const bootSettings = settingsStore.read();
+	// The pending-restart boot snapshot (U4 §13.2): taken ONCE, after the
+	// settings load validates and before anything else reads it — the
+	// diff base `GET /v1/settings`'s `pendingRestart` reports. Pre-listen
+	// by construction: openHarness returns before serve listens.
+	const settingsBootSnapshot = snapshotRestartKeys(bootSettings);
 	const builtinsEnabled = options.builtins !== false;
 	// Skipped entirely (no resolution, no log lines) when the caller
 	// turns built-ins off.
@@ -786,6 +824,7 @@ export async function openHarness(
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
 		runSettledBindings,
+		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
 		providerContributors,
@@ -1061,14 +1100,29 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	// when the resolved interval is greater than zero (0 = the designed
 	// disable, no timer); the timer is unref()ed inside, and `stop()` rides
 	// on the returned handle for the deploy shutdown path.
-	const stopProviderRefresh =
-		config.providers.refreshIntervalMinutes > 0
-			? startProviderRefresh(models, {
-					intervalMinutes: config.providers.refreshIntervalMinutes,
-					onReadinessChange: observeReadiness,
-					snapshotReadiness,
-				}).stop
-			: (): void => {};
+	// The interval refresh scheduler (with the U4 §13.1 re-arm): the
+	// cadence is a LIVE setting — a committed write to
+	// `server.providers.refreshIntervalMinutes` re-arms the timer at the
+	// NEW interval (stop + start; `0` disables, no timer). The re-arm
+	// resolves env over the fresh file value exactly like boot does, so
+	// an env-pinned cadence (`SIGRUN_PROVIDER_REFRESH_MINUTES`) stays
+	// authoritative across re-arms.
+	const armProviderRefresh = (): (() => void) => {
+		const minutes = resolveRefreshMinutes(env, settingsStore);
+		if (!(minutes > 0)) return (): void => {};
+		return startProviderRefresh(models, {
+			intervalMinutes: minutes,
+			onReadinessChange: observeReadiness,
+			snapshotReadiness,
+		}).stop;
+	};
+	let stopProviderRefresh = armProviderRefresh();
+	// SAFETY: `stopProviderRefresh` is `let`-bound for the re-arm swap;
+	// the shutdown handle the deploy path calls stays this function (it
+	// always stops whatever arm is current).
+	const stopCurrentProviderRefresh = (): void => {
+		stopProviderRefresh();
+	};
 	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
 	// resolves through it, so a future resolver swap changes this wiring's
 	// inputs and nothing downstream.
@@ -1169,6 +1223,30 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		// wire it before any commit lands.
 		onHostEvent: (event) => events.publish(event),
 	});
+	// The settings-changed publication (U4 §13.2): ONE seam fanning a
+	// committed settings write out to (a) the hub — /v1/events delivers
+	// `settings.changed` to admins — and (b) every extension's
+	// `onSettingsChanged` through the bus's bounded fan-out (rejections
+	// logged, never propagated: §13.2's the-write-still-succeeds rule).
+	// The scheduler re-arm rides the same seam: a write touching
+	// `server.providers.refreshIntervalMinutes` (a LIVE key, §13.1) stops
+	// and re-arms the interval timer at the fresh cadence.
+	const publishSettingsChanged = (
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	): void => {
+		events.publish({ type: "settings.changed", scope, keys: [...keys] });
+		if (
+			keys.includes("server.providers.refreshIntervalMinutes") ||
+			keys.includes("server.providers") ||
+			keys.includes("server")
+		) {
+			stopProviderRefresh();
+			stopProviderRefresh = armProviderRefresh();
+		}
+		void eventBus.emitSettingsChanged(keys);
+	};
+	settingsChangedSinks.push(publishSettingsChanged);
 	// Activity stamping (UI refresh A1): every settled run stamps its
 	// conversation's `lastActivityAt` (the admission-side stamp lives in the
 	// submissions route). Registered directly after the bus opens — host-owned
@@ -1181,6 +1259,14 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		handlersByName.set(binding.extension.name, {
 			...handlersByName.get(binding.extension.name),
 			runSettled: binding.runSettled,
+		});
+	}
+	// UI-blocks U4 §13.2: the settings-change hook merges into the same
+	// per-extension registration (the fan-out below invokes it).
+	for (const binding of settingsChangedBindings) {
+		handlersByName.set(binding.extension.name, {
+			...handlersByName.get(binding.extension.name),
+			onSettingsChanged: binding.onSettingsChanged,
 		});
 	}
 	for (const binding of lifecycleBindings) {
@@ -1428,6 +1514,8 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		autoNamer,
 		bootRefresh: bootRefreshDone,
 		refreshProvider: refreshOneProvider,
-		stopProviderRefresh,
+		stopProviderRefresh: stopCurrentProviderRefresh,
+		settingsBootSnapshot,
+		publishSettingsChanged,
 	};
 }

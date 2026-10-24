@@ -189,6 +189,9 @@ describe("GET /v1/settings", () => {
 		expect(response.json()).toEqual({
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// U4 §13.2: the pending-restart diff rides every GET; nothing
+			// is pending on a fresh boot.
+			pendingRestart: [],
 		});
 	});
 
@@ -303,6 +306,11 @@ describe("PATCH /v1/settings", () => {
 		expect(response.json()).toEqual({
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// The PATCH response carries the write's classification (U4
+			// §13.1/§13.2): steeringMode is a live key — applied, no pending.
+			applied: ["steeringMode"],
+			pending: [],
+			pendingRestart: [],
 		});
 	});
 
@@ -372,6 +380,10 @@ describe("PATCH /v1/settings", () => {
 			server: { port: 4080 },
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// §13.1: server.port is a restart key — stored, pending.
+			applied: [],
+			pending: ["server.port"],
+			pendingRestart: ["server.port"],
 		});
 		// Persisted to the file…
 		const file = JSON.parse(
@@ -390,6 +402,7 @@ describe("PATCH /v1/settings", () => {
 			server: { port: 4080 },
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			pendingRestart: ["server.port"],
 		});
 		// Invalid server fields → 400 invalid_field naming the key.
 		for (const [body, field] of [
@@ -425,6 +438,20 @@ describe("PATCH /v1/settings", () => {
 			server: { webuiBundle: "ui/dist" },
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
+			// Every one of these is a restart key (§13.1) — all pending.
+			applied: [],
+			pending: [
+				"extensions",
+				"defaultModel",
+				"defaultProvider.baseUrl",
+				"server.webuiBundle",
+			],
+			pendingRestart: [
+				"extensions",
+				"defaultModel",
+				"defaultProvider.baseUrl",
+				"server.webuiBundle",
+			],
 		});
 		// Persisted to the file (restart-required: the running boot keeps
 		// its resolved values; these land on the NEXT boot).

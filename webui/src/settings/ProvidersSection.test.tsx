@@ -52,7 +52,7 @@ function makeProvidersHarness(init?: {
 			},
 		]).map((entry) => [entry.provider, { ...entry }]),
 	);
-	const settings: SettingsWire = { toolRoster: [], effective: {} };
+	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [] };
 	const fetchImpl: FetchLike = (input, init2) => {
 		calls.push({ input, method: init2?.method, body: init2?.body });
 		let m: RegExpMatchArray | null;

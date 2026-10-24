@@ -48,6 +48,9 @@ function makeHarness(init?: {
 }) {
 	const calls: Call[] = [];
 	const settings = init?.settings ?? {};
+	// U4 §13.2: every /v1/settings wire carries the pending-restart diff;
+	// the fake server defaults it to [] when a fixture doesn't name one.
+	const settingsWire = { pendingRestart: [], ...settings };
 	const ext = init?.extensions;
 	// The mutable secret-key state the PUT/DELETE paths read back through
 	// the GET responses (the UI refreshes from the write responses).
@@ -71,11 +74,14 @@ function makeHarness(init?: {
 			body = { extensions: ext?.list ?? [] };
 		} else if ((m = input.match(/^\/v1\/extensions\/([^/]+)\/settings$/)) !== null) {
 			const slug = decodeURIComponent(m[1]);
-			if (init2?.method === "PUT") {
-				// Echo the stored object (the server's response shape).
-				body = JSON.parse(init2.body as string);
+		if (init2?.method === "PUT") {
+				// U4 §13.2 shape: echo the stored object under `settings`.
+				body = {
+					settings: JSON.parse(init2.body as string),
+					pendingRestart: [],
+				};
 			} else {
-				body = ext?.settings?.[slug] ?? {};
+				body = { settings: ext?.settings?.[slug] ?? {}, pendingRestart: [] };
 			}
 		} else if ((m = input.match(/^\/v1\/extensions\/([^/]+)\/secrets$/)) !== null) {
 			const slug = decodeURIComponent(m[1]);
@@ -211,6 +217,7 @@ describe("SettingsPanel", () => {
 				perModelThinking: { "faux/m": "high" },
 				toolRoster: ["read", "bash", "edit"],
 				effective: {},
+				pendingRestart: [],
 			},
 		});
 		const renderer = await renderPanel(client);
@@ -283,7 +290,7 @@ describe("SettingsPanel", () => {
 
 	test("re-selecting (server default) PATCHes null to clear the key", async () => {
 		const { calls, client } = makeHarness({
-			settings: { steeringMode: "all", toolRoster: [], effective: {} },
+			settings: { steeringMode: "all", toolRoster: [], effective: {}, pendingRestart: [] },
 		});
 		const renderer = await renderPanel(client);
 		await act(async () => {
@@ -343,7 +350,7 @@ describe("SettingsPanel", () => {
 			"codemode_eval",
 		];
 		const { calls, client } = makeHarness({
-			settings: { toolRoster: roster, effective: {} },
+			settings: { toolRoster: roster, effective: {}, pendingRestart: [] },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Tools");
@@ -389,7 +396,7 @@ describe("SettingsPanel", () => {
 
 	test("all tools checked clears the filter (PATCH null) when one was set", async () => {
 		const { calls, client } = makeHarness({
-			settings: { defaultTools: ["read"], toolRoster: ["read", "bash"], effective: {} },
+			settings: { defaultTools: ["read"], toolRoster: ["read", "bash"], effective: {}, pendingRestart: [] },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Tools");
@@ -436,7 +443,7 @@ describe("SettingsPanel", () => {
 
 	test("an empty textarea clears perModelThinking when one was set", async () => {
 		const { calls, client } = makeHarness({
-			settings: { perModelThinking: { "faux/m": "high" }, toolRoster: [], effective: {} },
+			settings: { perModelThinking: { "faux/m": "high" }, toolRoster: [], effective: {}, pendingRestart: [] },
 		});
 		const renderer = await renderPanel(client);
 		await openSection(renderer, "Advanced");

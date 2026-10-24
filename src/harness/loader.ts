@@ -175,6 +175,23 @@ export interface ExtensionRunSettledBinding {
 }
 
 /**
+ * A factory-result `onSettingsChanged` handler (UI-blocks U4, spec
+ * §13.2) — paired with the resolved `Extension` like the runSettled
+ * binding, so boot fans the handler out under the extension's final
+ * name after every committed settings write.
+ */
+export interface ExtensionSettingsChangedBinding {
+	/** The extension the factory result carried the handler for. */
+	readonly extension: Extension;
+	readonly onSettingsChanged: ExtensionSettingsChangedHandler;
+}
+
+/** The public contract's settings-change hook (src/extension.ts owns the doc). */
+export type ExtensionSettingsChangedHandler = NonNullable<
+	SigrunExtensionResult["onSettingsChanged"]
+>;
+
+/**
  * The lifecycle handler fields a factory result may carry (memory-seam
  * Task 4; `userDeleted` — W1 Task 4). The PUBLIC contract's group type
  * (`SigrunLifecycleHandlers`, src/extension.ts) — one declaration, no
@@ -334,6 +351,13 @@ export interface LoadedExtensions {
 	 */
 	readonly runSettledBindings: readonly ExtensionRunSettledBinding[];
 	/**
+	 * `onSettingsChanged` handlers from factory results (UI-blocks U4,
+	 * §13.2), one per loaded extension that carried one; quarantined
+	 * extensions contribute none. Boot fans them out after every
+	 * committed settings write.
+	 */
+	readonly settingsChangedBindings: readonly ExtensionSettingsChangedBinding[];
+	/**
 	 * Lifecycle handlers from factory results (memory-seam Task 4), one per
 	 * loaded extension that carried ANY of the five fields; quarantined
 	 * extensions contribute none. Boot merges these with the runSettled
@@ -472,6 +496,8 @@ export interface ResolvedExtension {
 	readonly resolvedVia?: "extension";
 	/** Present only when the factory result carried one (memory-seam Task 3). */
 	readonly runSettled?: ExtensionRunSettledHandler;
+	/** Present only when the factory result carried one (UI-blocks U4 §13.2). */
+	readonly onSettingsChanged?: ExtensionSettingsChangedHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
 	readonly lifecycle?: ExtensionLifecycleHandlers;
 	/** Present only when the factory result carried one (memory-seam Task 5). */
@@ -558,6 +584,7 @@ type LoaderReadKeys =
 	| "interactionSettled"
 	| "harnessShutdown"
 	| "userDeleted"
+	| "onSettingsChanged"
 	| "interactionKinds"
 	| "ambientKinds"
 	| "workers"
@@ -1787,6 +1814,16 @@ async function resolvedFromFactory(
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
 	if (kindsProblem !== null) throw new Error(kindsProblem);
+	// The settings-change hook (U4 §13.2): present-but-not-a-function is
+	// the same contract violation class as the lifecycle fields — an
+	// extension that THINKS it observes settings changes must not
+	// silently miss them.
+	const onSettingsChanged = candidate.onSettingsChanged;
+	if (onSettingsChanged !== undefined && typeof onSettingsChanged !== "function") {
+		throw new Error(
+			"extension factory returned an onSettingsChanged field that is not a function",
+		);
+	}
 	// `workers` is a contract key — the candidate read needs no cast.
 	const workers = validateWorkers(candidate.workers);
 	return {
@@ -1804,6 +1841,13 @@ async function resolvedFromFactory(
 		...(candidate.runSettled === undefined
 			? {}
 			: { runSettled: candidate.runSettled as ExtensionRunSettledHandler }),
+		...(onSettingsChanged === undefined
+			? {}
+			: {
+					// SAFETY: the typeof-function check above is the validation —
+				// the cast supplies the contract's parameter type only.
+					onSettingsChanged: onSettingsChanged as ExtensionSettingsChangedHandler,
+				}),
 		...(anyLifecycle
 			? {
 					// SAFETY: every value under `lifecycle` passed `typeof === "function"`
@@ -2054,6 +2098,7 @@ const providerContributors: ProviderContributor[] = [];
 const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
 const runSettledBindings: ExtensionRunSettledBinding[] = [];
+const settingsChangedBindings: ExtensionSettingsChangedBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
@@ -2377,6 +2422,15 @@ const display = label ?? entry ?? "skills-only";
 						runSettled: resolved.runSettled,
 					});
 				}
+				if (
+					extension !== undefined &&
+					resolved.onSettingsChanged !== undefined
+				) {
+					settingsChangedBindings.push({
+						extension,
+						onSettingsChanged: resolved.onSettingsChanged,
+					});
+				}
 				if (extension !== undefined && resolved.lifecycle !== undefined) {
 					lifecycleBindings.push({
 						extension,
@@ -2481,6 +2535,7 @@ const display = label ?? entry ?? "skills-only";
 		skillRoots,
 		healthProducers,
 		runSettledBindings,
+		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
 		jobBindings,

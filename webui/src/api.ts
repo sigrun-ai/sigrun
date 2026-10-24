@@ -57,6 +57,7 @@ import type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	ExtensionSettingsResponse as ExtensionSettingsWire,
 	AuthCheckProvider as AuthCheckProviderWire,
 	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
@@ -101,6 +102,7 @@ export type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	ExtensionSettingsResponse as ExtensionSettingsWire,
 	AuthCheckProvider as AuthCheckProviderWire,
 	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
@@ -487,15 +489,15 @@ export interface SigrunClient {
 	whoami(): Promise<WhoamiResponse>;
 	/** The loaded-extension inventory (`GET /v1/extensions`). */
 	listExtensions(): Promise<ExtensionsResponseWire>;
-	/** One extension's settings object (`GET /v1/extensions/:slug/settings`). */
+	/** One extension's settings (`GET /v1/extensions/:slug/settings`; U4 §13.2 shape). */
 	getExtensionSettings(
 		slug: string,
-	): Promise<Record<string, unknown>>;
+	): Promise<ExtensionSettingsWire>;
 	/** Replace one extension's settings object (`PUT`, admin). */
 	putExtensionSettings(
 		slug: string,
 		value: Record<string, unknown>,
-	): Promise<Record<string, unknown>>;
+	): Promise<ExtensionSettingsWire>;
 	/** One extension's secret keys with their sources (`GET .../secrets`). */
 	listExtensionSecrets(
 		slug: string,
@@ -798,7 +800,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		whoami: () => get<WhoamiResponse>("/v1/auth/whoami"),
 		listExtensions: () => get<ExtensionsResponseWire>("/v1/extensions"),
 		getExtensionSettings: (slug) =>
-			get<Record<string, unknown>>(
+			get<ExtensionSettingsWire>(
 				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
 			),
 		putExtensionSettings: (slug, value) =>
@@ -806,7 +808,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				"PUT",
 				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
 				value,
-			) as Promise<Record<string, unknown>>,
+			) as Promise<ExtensionSettingsWire>,
 		listExtensionSecrets: (slug) =>
 			get<ExtensionSecretsResponseWire>(
 				`/v1/extensions/${encodeURIComponent(slug)}/secrets`,
