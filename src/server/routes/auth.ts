@@ -134,10 +134,16 @@ export function registerAuthRoutes(
 
 	app.get("/v1/auth/whoami", async (request) => {
 		const principal = request.principal;
+		const record =
+			principal.user === undefined
+				? undefined
+				: ctx.opened.identity.users.get(principal.user);
 		return {
 			...(principal.user === undefined ? {} : { user: principal.user }),
 			...(principal.name === undefined ? {} : { name: principal.name }),
 			...(principal.email === undefined ? {} : { email: principal.email }),
+			...(record?.workspace === undefined ? {} : { workspace: record.workspace }),
+			...(record?.grants === undefined ? {} : { grants: record.grants }),
 			admin: principal.admin,
 			service: principal.service,
 			method: principal.method,

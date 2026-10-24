@@ -12,7 +12,7 @@
  * records are read by importing the SAME file:// URL the loader used.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -672,5 +672,109 @@ describe("tokens API", () => {
 			headers: { authorization: `Bearer ${token}` },
 		});
 		expect(second.statusCode).toBe(401);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Multi-user M1 Task 3 — workspace, grants, and OS-account mapping
+// ---------------------------------------------------------------------------
+
+describe("PATCH /v1/users/:user — grants", () => {
+	test("admin PATCH stores realpaths for workspace/grants and accepts osUser", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const token = await mint(opened, "alice");
+		const grant = join(dir, "grant-target");
+		const link = join(dir, "grant-link");
+		await mkdir(grant);
+		await symlink(grant, link, "dir");
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: {
+				workspace: link,
+				grants: [{ path: link, access: "rw" }],
+				osUser: "bob",
+			},
+		});
+		expect(response.statusCode).toBe(200);
+		const stored = await realpath(grant);
+		expect(response.json()).toMatchObject({
+			workspace: stored,
+			grants: [{ path: stored, access: "rw" }],
+			osUser: "bob",
+		});
+		expect(opened.identity.users.get("bob")).toMatchObject({
+			workspace: stored,
+			grants: [{ path: stored, access: "rw" }],
+			osUser: "bob",
+		});
+	});
+
+	test("invalid workspace and grant paths → 400 invalid_grant with the exact reason", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const token = await mint(opened, "alice");
+		const workspace = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { workspace: join(dir, "config") },
+		});
+		expect(workspace.statusCode).toBe(400);
+		expect(workspace.json()).toEqual({
+			error: "invalid_grant",
+			path: join(dir, "config"),
+			reason: "path is or contains configDir",
+		});
+		const grant = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { grants: [{ path: "relative", access: "rw" }] },
+		});
+		expect(grant.statusCode).toBe(400);
+		expect(grant.json()).toEqual({
+			error: "invalid_grant",
+			path: "relative",
+			reason: "path must be absolute",
+		});
+	});
+
+	test("non-admin PATCH → 403", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const token = await mint(opened, "bob");
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { workspace: dir },
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toEqual({ error: "forbidden" });
+	});
+
+	test("whoami exposes only the caller's own workspace and grants", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const own = join(dir, "own-workspace");
+		await mkdir(own);
+		await opened.identity.users.update("bob", {
+			workspace: own,
+			grants: [{ path: own, access: "ro" }],
+		});
+		await opened.identity.users.update("alice", {
+			workspace: dir,
+			grants: [{ path: dir, access: "rw" }],
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${await mint(opened, "bob")}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "bob",
+			workspace: own,
+			grants: [{ path: own, access: "ro" }],
+		});
 	});
 });
