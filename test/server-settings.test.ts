@@ -97,6 +97,7 @@ async function bootServer(
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
+		isolationProbe: async () => ({ available: true, abi: 6 }),
 		settingsDir: dir,
 		settings: opts.settings,
 	});

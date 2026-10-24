@@ -103,6 +103,7 @@ async function bootServer(options: {
 		env,
 		identity,
 		extensionSpecifiers: [USER_EVENTS_SPECIFIER],
+		isolationProbe: async () => ({ available: true, abi: 6 }),
 	});
 	const app = await createServer(opened, config, [], {
 		listenHost: "0.0.0.0",

@@ -138,7 +138,7 @@ export function registerMetaRoutes(
 			dev: config.dev,
 			isolation: {
 				mode: config.isolation.mode,
-				active: false,
+				active: opened.isolationState.active(),
 				available: opened.isolation.available,
 				abi: opened.isolation.abi,
 				...(opened.isolation.reason === undefined

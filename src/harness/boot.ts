@@ -19,7 +19,7 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { Env, SigrunConfig } from "../config.js";
+import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
@@ -85,6 +85,9 @@ import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
 import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
+import { IsolationState } from "../sandbox/isolation.js";
+import { AdmissionRefusedError } from "./identity/users.js";
+import { SessionMetaDoc } from "../server/session-meta.js";
 import {
 	probeIsolation,
 	runHelperProbe,
@@ -145,6 +148,8 @@ export interface OpenedHarness {
 	readonly harness: Harness;
 	/** The one boot-time execution-jail availability decision. */
 	readonly isolation: IsolationAvailability;
+	/** The live isolation mode/latch used by env resolution and /v1/meta. */
+	readonly isolationState: IsolationState;
 	/** The shared per-user workers, stopped before the harness seal. */
 	readonly sandboxPool: WorkerPool;
 	/**
@@ -483,6 +488,8 @@ export interface OpenHarnessOptions {
 	readonly extensions?: readonly ProviderContributor[];
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
+	/** The bind host used for effective auth defaults (serve passes its host). */
+	readonly listenHost?: string;
 	/**
 	 * The identity stores injection seam (core hardening W1 Task 3):
 	 * when present it WINS over `openIdentityStores(roots)` — tests seed
@@ -657,6 +664,47 @@ export async function openHarness(
 	// I/O here (each file materializes on its first write), so this is
 	// pure construction over paths boot already owns.
 	const identity = options.identity ?? openIdentityStores(roots);
+	const listenHost = options.listenHost ?? env.SIGRUN_LISTEN_HOST ?? "0.0.0.0";
+	const methods = effectiveMethods(config.auth, listenHost);
+	const isolationState = new IsolationState({
+		mode: config.isolation.mode,
+		availability: isolation,
+		userCount: () => identity.users.list().length,
+		log: (line) => console.warn(line),
+	});
+	// These refusals happen during openHarness, before createServer/listen.
+	if (identity.users.list().length >= 2 && methods.length === 0) {
+		throw new Error(
+			"multi-user requires authentication: configure SIGRUN_AUTH=token or SIGRUN_AUTH=proxy, or remove users until only one remains",
+		);
+	}
+	if (
+		(isolationState.active() || config.isolation.mode === "always") &&
+		methods.includes("proxy") &&
+		config.auth.proxy.secretHeader === undefined
+	) {
+		throw new Error(
+			"isolation with proxy authentication requires server.auth.proxy.secretHeader; configure a shared-secret header or disable isolation",
+		);
+	}
+	identity.users.configureAdmission({
+		firstWorkspace: config.workspace.path,
+		admit: () => {
+			if (!isolation.available || config.isolation.mode === "off") {
+				throw new AdmissionRefusedError(
+					"isolation_required",
+					`isolation_required: ${isolation.reason ?? "isolation mode is off"}`,
+				);
+			}
+			if (methods.length === 0) {
+				throw new AdmissionRefusedError(
+					"auth_required",
+					"auth_required: configure token or proxy authentication before adding another user",
+				);
+			}
+		},
+	});
+	isolationState.active();
 	// The unclaimed onboarding posture (W1 Task 4, spec §5.8): every
 	// unclaimed boot (re)ensures the setup code under the pod-local cache
 	// root and logs it ONCE — the retrieval flow is `kubectl logs … | grep
@@ -1107,10 +1155,20 @@ collectedSkillRoots.push(...extensionSkillRoots);
 					snapshotReadiness,
 				}).stop
 			: (): void => {};
-	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
-	// resolves through it, so a future resolver swap changes this wiring's
-	// inputs and nothing downstream.
-	const workspaceService = createWorkspaceService();
+	// Every tool/file/upload/job env resolves through this one decision seam.
+	const workspaceService = createWorkspaceService({
+		isolation: isolationState,
+		pool: sandboxPool,
+		directory: identity.users,
+		managed: {
+			roots,
+			storagePath: config.storagePath,
+			coreRoot,
+			userAreas: (user) => join(roots.dataDir, "users", user),
+		},
+		ownerOf: async (conversationId, read, ctx) =>
+			(await read.snapshot(SessionMetaDoc, conversationId, ctx))?.owner,
+	});
 	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
 	// The job runtime's env-builder binding resolves here (the placeholder
@@ -1425,6 +1483,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	return {
 		harness,
 		isolation,
+		isolationState,
 		sandboxPool,
 		storage,
 		registry,

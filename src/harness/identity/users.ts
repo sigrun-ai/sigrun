@@ -51,10 +51,34 @@ export interface DirectoryUser {
  * per access); every mutation is a whole-file read-modify-write that
  * serializes on the store's {@link MutationQueue}.
  */
+export type AdmissionCode = "isolation_required" | "auth_required";
+
+export class AdmissionRefusedError extends Error {
+	constructor(readonly code: AdmissionCode, message: string) {
+		super(message);
+		this.name = "AdmissionRefusedError";
+	}
+}
+
+export interface UserDirectoryOptions {
+	/** Called in add's mutation before every non-first user is persisted. */
+	readonly admit?: (currentCount: number) => void;
+	/** The configured workspace stamped on the first record at the second add. */
+	readonly firstWorkspace?: string;
+}
+
 export class UserDirectory {
 	private readonly mutations = new MutationQueue();
 
-	constructor(private readonly path: string) {}
+	constructor(
+		private readonly path: string,
+		private options: UserDirectoryOptions = {},
+	) {}
+
+	/** Attach the process's admission policy (boot/CLI), preserving existing rows. */
+	configureAdmission(options: UserDirectoryOptions): void {
+		this.options = { ...this.options, ...options };
+	}
 
 	/** Every user, insertion order (the first add is the onboarding claim). */
 	list(): DirectoryUser[] {
@@ -91,6 +115,12 @@ export class UserDirectory {
 			const records = this.list();
 			if (records.some((record) => record.user === user.user)) {
 				throw new Error(`user "${user.user}" already exists`);
+			}
+			if (records.length >= 1) {
+				this.options.admit?.(records.length);
+				if (records.length === 1 && records[0]!.workspace === undefined && this.options.firstWorkspace !== undefined) {
+					records[0] = { ...records[0], workspace: this.options.firstWorkspace };
+				}
 			}
 			const record: DirectoryUser = { ...user, createdAt: Date.now() };
 			await writeJson(this.path, [...records, record]);

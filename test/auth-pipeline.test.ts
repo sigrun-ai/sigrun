@@ -50,6 +50,7 @@ async function bootServer(options: {
 	fakeTimers?: boolean;
 	webuiBundle?: string;
 	extensionSpecifiers?: string[];
+	isolationAvailable?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-pipeline-"));
 	const faux = fauxProvider({
@@ -82,6 +83,9 @@ async function bootServer(options: {
 		...(options.extensionSpecifiers === undefined
 			? {}
 			: { extensionSpecifiers: options.extensionSpecifiers }),
+		isolationProbe: async () => options.isolationAvailable === false
+			? { available: false, abi: 0, reason: "not linux" }
+			: { available: true, abi: 6 },
 	});
 	const app = await createServer(opened, config, [], {
 		listenHost: options.listenHost ?? "127.0.0.1",
@@ -388,6 +392,19 @@ describe("proxy autoProvision", () => {
 		expect(response.statusCode).toBe(403);
 		expect(response.json()).toMatchObject({ error: "user_not_provisioned" });
 	});
+});
+
+test("second user via proxy auto-provision -> 403 isolation_required when unavailable", async () => {
+	const { app, opened } = await bootServer({ env: { ...PROXY_ENV, SIGRUN_ISOLATION: "auto" }, file: PROXY_FILE, isolationAvailable: false });
+	const response = await app.inject({
+		method: "GET",
+		url: "/v1/auth/whoami",
+		remoteAddress: "10.42.3.4",
+		headers: { "remote-user": "bob", "x-sigrun-proxy-secret": "s3cret" },
+	});
+	expect(response.statusCode).toBe(403);
+	expect(response.json()).toEqual({ error: "isolation_required" });
+	expect(opened.identity.users.get("bob")).toBeUndefined();
 });
 
 // ---------------------------------------------------------------------------
