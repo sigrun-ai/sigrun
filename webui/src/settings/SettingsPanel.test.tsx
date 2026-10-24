@@ -29,7 +29,7 @@ import {
 	type ThemeState,
 	type ThemeStorage,
 } from "../theme/useTheme";
-import { SettingsPanel } from "./SettingsPanel";
+import { SettingsPanel, visibleSettingsSections } from "./SettingsPanel";
 import { usePrefs } from "./usePrefs";
 
 interface Call {
@@ -347,6 +347,12 @@ async function openSection(
 }
 
 describe("SettingsPanel", () => {
+	test("initial selection and navigation share the same non-admin visible section set", () => {
+		expect(visibleSettingsSections(SECTIONS, false)).toEqual(
+			SECTIONS.filter((section) => section.id !== "providers"),
+		);
+	});
+
 	test("renders the sections nav from GET /v1/settings/sections, General first", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderPanel(client);
