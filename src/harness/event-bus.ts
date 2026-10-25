@@ -643,8 +643,9 @@ export class EventBus {
 
 	/**
 	 * Emit one `userDeleted` directly (core hardening W1 Task 4): the
-	 * DELETE /v1/users route's final step, AFTER the ownership transfer,
-	 * token revocation, and record removal have landed. Delivered exactly
+	 * DELETE /v1/users route's step 3, AFTER transfer/revocation/link
+	 * removal and service stop, but BEFORE the directory record is removed,
+	 * so per-user secrets remain readable. Delivered exactly
 	 * like `harnessShutdown` — inline to every registered extension's
 	 * handler in install order, each deadline-bounded, never queued —
 	 * because the directory is not durable conversation state (there is

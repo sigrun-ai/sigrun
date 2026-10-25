@@ -35,16 +35,27 @@ export function resetSettlements() {
 	settlements.length = 0;
 }
 
+/** Clear the records (tests own their fixtures' state). */
+export const deletionChecks = [];
+export function resetDeletionChecks() {
+	deletionChecks.length = 0;
+}
+
 /** Default export: factory returning the extension + its event handlers. */
-export default function createFixtureUserEvents() {
+export default function createFixtureUserEvents(host) {
 	return {
 		extension: defineExtension({
 			name: "sigrun-fixture-user-events",
 		}),
-		userDeleted(event, api, context) {
+		async userDeleted(event, api, context) {
 			void api;
 			void context;
 			deletions.push({ user: event.user, transferTo: event.transferTo });
+			deletionChecks.push({
+				user: event.user,
+				record: await host.users.get(event.user),
+				secret: await host.stores.user(event.user).secrets.get("provider-token"),
+			});
 		},
 		/** The factory-returned getter over the module-level records. */
 		getDeletions: () => [...deletions],

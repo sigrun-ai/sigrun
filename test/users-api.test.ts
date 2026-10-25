@@ -43,6 +43,8 @@ const USER_EVENTS_SPECIFIER = pathToFileURL(
 type FixtureModule = {
 	readonly deletions: readonly { user: string; transferTo: string }[];
 	readonly resetDeletions: () => void;
+	readonly deletionChecks: readonly { user: string; record?: { user: string }; secret?: string }[];
+	readonly resetDeletionChecks: () => void;
 };
 
 /** Import the fixture module by the SAME URL the loader imported — one instance. */
@@ -318,13 +320,26 @@ describe("DELETE /v1/users/:user", () => {
 		expect(self.statusCode).toBe(400);
 	});
 
-	test("deleting a user stops their services before the record is removed", async () => {
+	test("deletion stops services, delivers userDeleted with readable secrets, then removes the record", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletionChecks();
 		const { app, opened } = await bootServer({});
 		const token = await mint(opened, "alice");
+		await opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "bob").secrets.set("provider-token", "revoke-me");
+		const order: string[] = [];
 		const stopUser = vi.spyOn(opened.userServices, "stopUser").mockImplementation(async (user) => {
-			// The record must still exist while its services are stopped;
-			// otherwise their user-scoped credentials/policy cannot be resolved.
 			expect(opened.identity.users.get(user)).toBeDefined();
+			order.push("stopUser");
+		});
+		const remove = opened.identity.users.remove.bind(opened.identity.users);
+		vi.spyOn(opened.identity.users, "remove").mockImplementation(async (user) => {
+			order.push("remove");
+			return remove(user);
+		});
+		const removeWithGrant = opened.identity.users.removeWithGrant.bind(opened.identity.users);
+		vi.spyOn(opened.identity.users, "removeWithGrant").mockImplementation(async (user, to, grant) => {
+			order.push("remove");
+			return removeWithGrant(user, to, grant);
 		});
 		const deleted = await app.inject({
 			method: "DELETE",
@@ -333,6 +348,13 @@ describe("DELETE /v1/users/:user", () => {
 		});
 		expect(deleted.statusCode).toBe(204);
 		expect(stopUser).toHaveBeenCalledWith("bob");
+		expect(order).toEqual(["stopUser", "remove"]);
+		expect(fixture.deletionChecks).toEqual([{
+			user: "bob",
+			record: expect.objectContaining({ user: "bob" }),
+			secret: "revoke-me",
+		}]);
+		expect(opened.identity.users.get("bob")).toBeUndefined();
 	});
 
 	test("with transferTo → owner rewrite, token dead, userDeleted recorded", async () => {

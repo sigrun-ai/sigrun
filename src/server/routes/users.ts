@@ -297,11 +297,11 @@ export function registerUserRoutes(
 		// record still exists and before userDeleted handlers run. Task 5
 		// owns the remaining per-user store cleanup ordering.
 		await ctx.opened.userServices.stopUser(user);
+		// Extensions revoke provider credentials here while the directory
+		// record and per-user secrets are still readable (§10.6 step 3).
+		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
 		if (grant === undefined) await identity.users.remove(user);
 		else await identity.users.removeWithGrant(user, to, grant);
-		// The lifecycle event: extensions transfer their own records
-		// (deadlocked-ordering free — the core transfer already landed).
-		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
 		return await reply.code(204).send();
 	});
 }
