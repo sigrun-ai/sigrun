@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, test } from "vitest";
+import type { SurfaceTransport, Tree } from "@sigrun/shared/blocks";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
 import type { ConversationViewWire } from "../src/api.js";
 
@@ -322,5 +323,344 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		const lines = pane.render(80);
 		expect(lines[0]).toContain("<bg>");
 		expect(lines[1] ?? "").not.toContain("<bg>");
+	});
+});
+
+/**
+ * U5 Task 4 fixtures: the entry order a real `show_blocks` run produces
+ * (pi.user → pi.assistant(toolCall show_blocks) → sigrun.blocks →
+ * pi.tool-result → sigrun.blocks.note → pi.assistant(text)) plus the
+ * answer entry (a user turn with the "from <title>" chip).
+ */
+function chatBlocksEntries(): unknown[] {
+	return [
+		{
+			id: 1,
+			kind: "pi.user",
+			model: [{ role: "user", content: "show the ranking" }],
+		},
+		{
+			id: 2,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "call-blocks",
+							name: "show_blocks",
+							arguments: { title: "Ranking" },
+						},
+					],
+				},
+			],
+		},
+		{
+			id: 3,
+			kind: "sigrun.blocks",
+			data: {
+				title: "Ranking",
+				tree: {
+					v: 1,
+					root: {
+						type: "collection",
+						id: "ranking",
+						items: { $: "/cards" },
+						display: "list",
+						numbered: true,
+						reorder: { within: true },
+						onMove: "reorderCards",
+						item: { title: { $: "./title" } },
+					},
+				},
+				data: { cards: [{ id: "c1", title: "Clair de Lune" }] },
+			},
+		},
+		{
+			id: 4,
+			kind: "pi.tool-result",
+			model: [
+				{
+					role: "toolResult",
+					toolCallId: "call-blocks",
+					toolName: "show_blocks",
+					content: [{ type: "text", text: "1. Clair de Lune\nentryId: 3" }],
+				},
+			],
+		},
+		{
+			id: 5,
+			kind: "sigrun.blocks.note",
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "UI changes: Ranking (alice): moved c1" },
+					],
+				},
+			],
+			data: { advance: [{ entryId: "3", through: 1 }] },
+		},
+		{
+			id: 6,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Here is the ranking." }],
+				},
+			],
+		},
+		{
+			id: 7,
+			kind: "sigrun.blocks.answer",
+			model: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Submitted 'Ranking': 1. Clair de Lune" }],
+				},
+			],
+			data: { entryId: "3", action: "submitRanking", payload: null, state: {} },
+		},
+	];
+}
+
+/** A stub chat transport serving the ranking block (write access). */
+function stubChatTransport(): SurfaceTransport {
+	const tree = {
+		v: 1,
+		root: {
+			type: "collection",
+			id: "ranking",
+			items: { $: "/cards" },
+			display: "list",
+			numbered: true,
+			reorder: { within: true },
+			onMove: "reorderCards",
+			item: { title: { $: "./title" } },
+		},
+	} as unknown as Tree;
+	return {
+		load: async () => ({
+			tree,
+			data: { cards: [{ id: "c1", title: "Clair de Lune" }] },
+			rev: 1,
+			treeRev: 0,
+			access: "write",
+		}),
+		fetchData: async () => ({ rev: 1, treeRev: 0, data: {} }),
+		act: async () => ({ ok: true as const, rev: 1 }),
+		upload: async () => {
+			throw new Error("no uploads in chat");
+		},
+		image: async () => {
+			throw new Error("no images yet");
+		},
+		onChanged: () => () => {},
+	};
+}
+
+describe("ConversationPane: chat blocks (U5 Task 4)", () => {
+	test("one assistant turn carries the blocks + note events; the show_blocks tool is absent", async () => {
+		const pane = new ConversationPane({
+			attachChatTransport: () => stubChatTransport(),
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		const turns = pane.turns();
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"user",
+		]);
+		const assistant = turns[1]!;
+		if (assistant.kind !== "assistant") throw new Error("expected assistant");
+		// The show_blocks call is left out of tools (the activity line
+		// never counts the surface's own rendering machinery).
+		expect(assistant.tools).toEqual([]);
+		// The timeline interleaves blocks, note, text.
+		expect(
+			assistant.timeline.map((event) =>
+				event.kind === "blocks" || event.kind === "note"
+					? `${event.kind}:${event.entryId}`
+					: event.kind,
+			),
+		).toEqual(["blocks:3", "note:5", "text"]);
+		// The render shows the note's collapsed summary row; the note text
+		// waits behind the fold.
+		const closed = pane.render(80).join("\n");
+		expect(closed).toContain("UI changes sent to the agent");
+		expect(closed).not.toContain("moved c1");
+		// Opening the fold reveals the note text.
+		pane.toggleFold(1);
+		const open = pane.render(80).join("\n");
+		expect(open).toContain("moved c1");
+		// The answer turn renders the user's message with the title chip.
+		const answerText = pane.textOf(2);
+		expect(answerText).toContain("Submitted 'Ranking'");
+		expect(pane.render(80).join("\n")).toContain("from Ranking");
+	});
+
+	test("the block surface loads inline through the attach seam", async () => {
+		const pane = new ConversationPane({
+			attachChatTransport: () => stubChatTransport(),
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		// The surface loads asynchronously; flush the microtask queue.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain("Clair de Lune");
+	});
+
+	test("without an attach seam the block renders the fail-visible placeholder", () => {
+		const pane = new ConversationPane();
+		pane.showView(view(1, chatBlocksEntries()));
+		expect(pane.render(80).join("\n")).toContain(
+			"blocks entry 3 — no chat transport",
+		);
+	});
+
+	test("repeated showView frames reuse ONE surface state: one attach, one load, one subscription", async () => {
+		let loads = 0;
+		let subscriptions = 0;
+		const transport = {
+			...stubChatTransport(),
+			load: async () => {
+				loads += 1;
+				return stubChatTransport().load();
+			},
+			onChanged: () => {
+				subscriptions += 1;
+				return () => {};
+			},
+		};
+		let attaches = 0;
+		const pane = new ConversationPane({
+			attachChatTransport: () => {
+				attaches += 1;
+				return transport;
+			},
+		});
+		// Two frames (a snapshot then a delta — each triggers a rebuild).
+		pane.showView(view(1, chatBlocksEntries()));
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(attaches).toBe(1);
+		expect(loads).toBe(1);
+		expect(subscriptions).toBe(1);
+		pane.dispose();
+	});
+
+	test("a conversation swap disposes the old surface state (its unsubscribe fires)", async () => {
+		let unsubscribed = 0;
+		const transport = {
+			...stubChatTransport(),
+			onChanged: () => () => {
+				unsubscribed += 1;
+			},
+		};
+		const pane = new ConversationPane({
+			attachChatTransport: () => transport,
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(unsubscribed).toBe(0);
+		pane.showView(view(2, chatBlocksEntries()));
+		expect(unsubscribed).toBe(1);
+		// The swap's own state unsubscribes once its async load lands.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		pane.dispose();
+		expect(unsubscribed).toBe(2); // the swap's own state, now torn down
+	});
+
+	test("a same-conversation rewind prunes the orphaned surface state", async () => {
+		// A fork rewinding past the blocks entry leaves the state for the
+		// rewound-away entry orphaned: the rebuild prune must dispose it
+		// (its unsubscribe fires) and drop it from the cache.
+		let unsubscribed = 0;
+		const transport = {
+			...stubChatTransport(),
+			onChanged: () => () => {
+				unsubscribed += 1;
+			},
+		};
+		const pane = new ConversationPane({
+			attachChatTransport: () => transport,
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(pane.surfaceStateFor(3)).toBeDefined();
+		// The fork's rewind: the view replaces with entries 1-2 only (the
+		// blocks entry 3 is gone) — the SAME conversation, so the swap
+		// clear never runs; the rebuild prune owns this teardown.
+		pane.showView(view(1, chatBlocksEntries().slice(0, 2)));
+		expect(unsubscribed).toBe(1);
+		expect(pane.surfaceStateFor(3)).toBeUndefined();
+		pane.dispose();
+	});
+
+	test("a note entry written after a compaction renders as a note, never unsupported", async () => {
+		// Auto-compaction lands at run end and flushes the pending turn;
+		// the next turn's note entry lands after the pi.compaction entry —
+		// it must open a fresh assistant turn (the note row renders), not
+		// fall through to the other-kind unsupported line.
+		const pane = new ConversationPane({
+			attachChatTransport: () => stubChatTransport(),
+		});
+		pane.showView(
+			view(1, [
+				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "hi" }] },
+				{
+					id: 2,
+					kind: "pi.assistant",
+					model: [
+						{ role: "assistant", content: [{ type: "text", text: "hello" }] },
+					],
+				},
+				{ id: 3, kind: "pi.compaction" },
+				{
+					id: 4,
+					kind: "sigrun.blocks.note",
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "UI changes: Ranking (alice): moved c1" },
+							],
+						},
+					],
+					data: { advance: [{ entryId: "2", through: 1 }] },
+				},
+			]),
+		);
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain("UI changes sent to the agent");
+		expect(lines).not.toContain("unsupported entry kind");
+		pane.dispose();
+	});
+
+	test("a rejected action's notice drains into a pane [error] line", async () => {
+		const pane = new ConversationPane({
+			attachChatTransport: () => ({
+				...stubChatTransport(),
+				act: async () => ({
+					ok: false as const,
+					error: { message: "nope from acme" },
+				}),
+			}),
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		// Dispatch an action through the cached state (a form button's
+		// path). The rejection's message must land as a pane notice.
+		const state = pane.surfaceStateFor(3);
+		expect(state).toBeDefined();
+		state!.dispatch(
+			{ type: "action", name: "submit" } as never,
+			{},
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(pane.render(80).join("\n")).toContain("[error] nope from acme");
+		pane.dispose();
 	});
 });

@@ -153,6 +153,33 @@ const MOVE_PAYLOAD: JsonValue = {
 };
 
 describe("SurfaceState — load and access (§6.5)", () => {
+	test("a dispose landing mid-load leaves no subscription", async () => {
+		// The swap race: load subscribes AFTER awaiting #doLoad — a pane
+		// swap disposing the state mid-load must win (otherwise one stale
+		// hub subscription per racing swap). A deferred load lets the test
+		// interleave dispose between start and resolve.
+		const surface = fakeSurface();
+		let release: (result: SurfaceLoad) => void = () => {};
+		const pendingLoad = new Promise<SurfaceLoad>((resolve) => {
+			release = resolve;
+		});
+		const original = surface.transport.load;
+		surface.transport.load = () => pendingLoad;
+		const state = new SurfaceState(surface.transport);
+		const inflight = state.load();
+		state.dispose(); // the swap lands while the load is still in flight
+		release({
+			tree: TREE,
+			data: { items: ITEMS },
+			rev: 1,
+			treeRev: 1,
+			access: "write",
+		});
+		await inflight;
+		expect(surface.changedCount()).toBe(0);
+		surface.transport.load = original;
+	});
+
 	test("load leaves the surface ready with confirmed data", async () => {
 		const surface = fakeSurface();
 		const state = new SurfaceState(surface.transport);

@@ -8,7 +8,7 @@
 
 import type { ReactNode } from "react";
 import type { CollectionBlock, Size } from "@sigrun/shared/blocks";
-import { useWidthRem } from "../width";
+import { useWidthClass, useWidthRem } from "../width";
 import { type PreparedGroup } from "./Collection";
 import { CardView } from "./Card";
 import {
@@ -34,15 +34,17 @@ export function GridDisplay(props: {
 	const view = useCollectionView(props.block);
 	const activate = useActivate(props.block);
 	const rem = useWidthRem();
+	const widthClass = useWidthClass();
 	const minWidth = minItemWidth(props.block);
 	const scroll = props.block.overflow === "scroll";
 	// The template columns: `scroll` forces one track (one horizontal
-	// row); otherwise auto-fill at the minimum item width — compact
-	// (`useWidthRem` measured under the min) collapses to one column,
-	// matching §12.3's "one column" for wrap grids.
+	// row); otherwise auto-fill at the minimum item width. The §12.3
+	// "one column at compact" collapse is CLASS-keyed (a pinned compact
+	// class — the chat column — collapses without a measurement), with
+	// the rem comparison as the measured fallback.
 	const template = scroll
 		? "1fr"
-		: rem !== null && SIZE_REM[minWidth] > rem
+		: widthClass === "compact" || (rem !== null && SIZE_REM[minWidth] > rem)
 			? "1fr"
 			: `repeat(auto-fill, minmax(${SIZE_REM[minWidth]}rem, 1fr))`;
 	// Quiet items follow the visible ones (no fold UI in table/grid — the

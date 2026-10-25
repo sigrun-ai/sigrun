@@ -56,6 +56,7 @@ import { parseModelSpec } from "../config.js";
 import { expandInput } from "../commands/expand.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { noteThen } from "../server/turns/submit-turn.js";
 import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
 import type { ScheduleInput, ScheduleState } from "./task.js";
 
@@ -297,22 +298,24 @@ async function firePrompt(
 				draft.lastRun = run;
 			}, context);
 		}
-		await conversation.submit(
-			{
-				type: "input",
-				content: [
+		const prompt = await jobPromptText(
+			deps,
+			conversationId as ConversationId,
+			action.prompt,
+			context,
+		);
+		await noteThen(
+			deps.harness,
+			conversation,
+			() =>
+				conversation.submit(
 					{
-						type: "text",
-						text: await jobPromptText(
-							deps,
-							conversationId as number as ConversationId,
-							action.prompt,
-							context,
-						),
+						type: "input",
+						content: [{ type: "text", text: prompt }],
+						requestId: `job:${fireKey}`,
 					},
-				],
-				requestId: `job:${fireKey}`,
-			},
+					context,
+				),
 			context,
 		);
 		return { outcome: "running", conversationId };
@@ -377,22 +380,24 @@ async function firePrompt(
 		// fire (never silently succeed).
 		return { outcome: "blocked" };
 	}
-	await conversation.submit(
-		{
-			type: "input",
-			content: [
+	const prompt = await jobPromptText(
+		deps,
+		conversationId as ConversationId,
+		action.prompt,
+		context,
+	);
+	await noteThen(
+		deps.harness,
+		conversation,
+		() =>
+			conversation.submit(
 				{
-					type: "text",
-					text: await jobPromptText(
-						deps,
-						conversationId as ConversationId,
-						action.prompt,
-						context,
-					),
+					type: "input",
+					content: [{ type: "text", text: prompt }],
+					requestId: `job:${fireKey}`,
 				},
-			],
-			requestId: `job:${fireKey}`,
-		},
+				context,
+			),
 		context,
 	);
 	return { outcome: "running", conversationId };

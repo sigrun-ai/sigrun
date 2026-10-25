@@ -180,5 +180,8 @@ declare module "fastify" {
 		sse: SseRegistry;
 		/** The surface service decoration (createServer decorates it) — Task 4's watcher registry reaches it from the app handle in tests. */
 		surfaces: SurfaceService;
+		/** The bound host bridge (createServer decorates it) — the in-process
+		 *  conversations surface tests drive the W5 bridge path through. */
+		hostBridge: import("./host-bridge.js").HostBridge;
 	}
 }

@@ -88,6 +88,12 @@ function subscribeHostEvents(
 		rev: number;
 		treeRev: number;
 	}) => void,
+	/** U5 Task 4: the chat member of `surface.changed` (conversation-scoped). */
+	onChatChanged?: (event: {
+		conversationId: number;
+		entryId: string;
+		rev: number;
+	}) => void,
 	createEventSource?: ListEventSourceFactory,
 ): () => void {
 	// The native EventSource exists only in the browser; the hook's unit
@@ -116,6 +122,26 @@ function subscribeHostEvents(
 	// surface.changed (U3 Task 5): fan into the app's ext hub. Loose-parse
 	// (the frame is server-produced; a malformed one is a dropped nudge).
 	source.addEventListener("surface.changed", (event: { data: string }) => {
+		try {
+			const parsed: unknown = JSON.parse(event.data);
+			// U5 Task 4: the CHAT member (spec §8.2) — conversation-scoped,
+			// named by (conversationId, entryId); fans into the chat hub.
+			if (
+				typeof parsed === "object" &&
+				parsed !== null &&
+				typeof (parsed as { conversationId?: unknown }).conversationId ===
+					"number" &&
+				typeof (parsed as { entryId?: unknown }).entryId === "string" &&
+				typeof (parsed as { rev?: unknown }).rev === "number"
+			) {
+				onChatChanged?.(
+					parsed as { conversationId: number; entryId: string; rev: number },
+				);
+				return;
+			}
+		} catch {
+			// a malformed frame is a dropped nudge
+		}
 		if (onSurfaceChanged === undefined) return;
 		try {
 			const parsed: unknown = JSON.parse(event.data);
@@ -184,6 +210,15 @@ export function useConversationList(
 		k: string;
 		rev: number;
 		treeRev: number;
+	}) => void;
+	/**
+	 * U5 Task 4: the chat member of `surface.changed` (spec §8.2) —
+	 * conversation-scoped; App passes its `ChatSurfaceHub`'s dispatch.
+	 */
+	onChatChanged?: (event: {
+		conversationId: number;
+		entryId: string;
+		rev: number;
 	}) => void;
 	/** Test seam: the surface fetch's transport (defaults to the ambient fetch). */
 	fetchImpl?: typeof fetch;
@@ -296,9 +331,10 @@ export function useConversationList(
 			options.onJobChanged ?? (() => {}),
 			onHello,
 			options.onSurfaceChanged,
+			options.onChatChanged,
 			options.createEventSource,
 		);
-	}, [reload, onHello, options.createEventSource, options.onJobChanged, options.onSurfaceChanged]);
+	}, [reload, onHello, options.createEventSource, options.onJobChanged, options.onSurfaceChanged, options.onChatChanged]);
 
 	// The busy → idle transition: an immediate reload plus a settle reload
 	// 5 s later (auto names land at run settlement, shortly after idle).

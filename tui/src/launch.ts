@@ -325,9 +325,16 @@ export async function launchTuiShell(
 				} else if (event.type === "ambient.changed") {
 					app.ambient.kick(event.conversationId);
 				} else if (event.type === "surface.changed") {
-					// U3 Task 5: fan the surface event out to the open
-					// view's transport (the hub matches slug+id+k).
-					app.dispatchSurfaceChanged(event);
+					// U3 Task 5: fan the EXT surface event out to the open view's
+					// transport (the hub matches slug+id+k). The CHAT shape (U5
+					// Task 2/4: conversationId+entryId, no k) names a block in a
+					// conversation — it fans to the app's ChatSurfaceHub, which
+					// the inline block surfaces subscribe through.
+					if ("slug" in event) {
+						app.dispatchSurfaceChanged(event);
+					} else if ("conversationId" in event) {
+						app.dispatchChatSurfaceChanged(event);
+					}
 				}
 			},
 			onError: (message) => app.pane.showNotice(message),
