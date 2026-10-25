@@ -24,6 +24,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
+interface LockPackage {
+	version?: string;
+	resolved?: string;
+	dependencies?: Record<string, string>;
+}
+
 interface MinimalManifest {
 	name?: string;
 	version?: string;
@@ -44,6 +50,15 @@ interface MinimalManifest {
 
 function manifest(path: string): MinimalManifest {
 	return JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8")) as MinimalManifest;
+}
+
+function lockPackage(path: string): LockPackage {
+	const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8")) as {
+		packages: Record<string, LockPackage>;
+	};
+	const entry = lock.packages[path];
+	expect(entry, `package-lock.json has ${path}`).toBeDefined();
+	return entry;
 }
 
 const PUBLISH_CONFIG = { access: "public", provenance: true };
@@ -101,6 +116,18 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(root.dependencies?.["@sigrun/ext-mcp"]).toMatch(builtinSpec("sigrun-ext-mcp"));
 		expect(root.dependencies?.["@sigrun/ext-tool-search"]).toMatch(builtinSpec("sigrun-ext-tool-search"));
 		expect(root.dependencies?.["@sigrun/oauth"]).toMatch(builtinSpec("sigrun-ext-oauth"));
+	});
+
+	test("OAuth's lock package node carries its runtime dependency for clean installs", () => {
+		expect(lockPackage("node_modules/@sigrun/oauth")).toMatchObject({
+			version: "0.1.0",
+			resolved: "file:../sigrun-ext-oauth",
+			dependencies: { oauth4webapi: "3.8.8" },
+		});
+		expect(lockPackage("node_modules/oauth4webapi")).toMatchObject({
+			version: "3.8.8",
+			resolved: "https://registry.npmjs.org/oauth4webapi/-/oauth4webapi-3.8.8.tgz",
+		});
 	});
 
 	test("shared: published leaf with directory-qualified repository", () => {
