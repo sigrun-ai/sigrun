@@ -8,7 +8,7 @@
  * window used by userDeleted fan-out.
  */
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -170,6 +170,23 @@ test("removeUserData removes credentials/settings and every cache slug, not data
 	expect((await stat(data)).isDirectory()).toBe(true);
 	expect((await stat(state)).isDirectory()).toBe(true);
 	expect((await stat(fileSlug)).isFile()).toBe(true);
+});
+
+test("removeUserData refuses an intermediate users symlink outside the cache root", async () => {
+	const shared = sharedExtensionStores(roots, {}, users);
+	const outside = join(base, "outside-cache");
+	const outsideUser = join(outside, "alice");
+	await mkdir(outsideUser, { recursive: true });
+	await writeFile(join(outsideUser, "keep.txt"), "must survive");
+	const slugDir = join(roots.cacheDir, "acme");
+	await mkdir(slugDir, { recursive: true });
+	await symlink(outside, join(slugDir, "users"), "dir");
+	await users.remove("alice");
+
+	await shared.removeUserData("alice");
+
+	expect(await readFile(join(outsideUser, "keep.txt"), "utf8")).toBe("must survive");
+	expect((await stat(outsideUser)).isDirectory()).toBe(true);
 });
 
 test("the deleting marker admits only its bounded fan-out window, never a stale handle afterwards", async () => {

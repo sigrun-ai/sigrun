@@ -37,8 +37,8 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 import type { Env } from "../config.js";
 import {
 	MutationQueue,
@@ -754,6 +754,48 @@ export function scopedExtensionStores(
 const USER_SECRETS_DIR = "user-secrets";
 const USER_SETTINGS_DIR = "user-settings";
 
+/** Whether a filesystem error is just an absent cleanup candidate. */
+function isEnoent(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/** Delete one cache user dir only when every existing parent component is
+ * a real directory inside the cache root. Symlink parents are skipped, so
+ * recursive rm can never follow one outside the root.
+ */
+async function removeCacheUserDir(
+	cacheRoot: string,
+	slug: string,
+	user: string,
+): Promise<void> {
+	const parentComponents = [slug, "users"];
+	let resolvedParent = cacheRoot;
+	for (const component of parentComponents) {
+		const candidate = join(resolvedParent, component);
+		let stats: import("node:fs").Stats;
+		try {
+			stats = await lstat(candidate);
+		} catch (error) {
+			if (isEnoent(error)) return;
+			throw error;
+		}
+		if (!stats.isDirectory() || stats.isSymbolicLink()) return;
+		const resolved = await realpath(candidate);
+		if (resolved !== cacheRoot && !resolved.startsWith(cacheRoot + sep)) return;
+		resolvedParent = resolved;
+	}
+	const target = join(resolvedParent, user);
+	try {
+		const stats = await lstat(target);
+		// Deleting the symlink itself is confined; its target is untouched.
+		if (!stats.isDirectory() && !stats.isSymbolicLink()) return;
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	await rm(target, { recursive: true, force: true });
+}
+
 /** Core's §10.6 step-5 cleanup, after userDeleted and directory removal.
  * Cache entries are enumerated because per-user registry entries may already
  * have uninstalled slugs. Data/state deliberately remain extension-owned.
@@ -761,15 +803,18 @@ const USER_SETTINGS_DIR = "user-settings";
 async function removeUserData(roots: StoreRoots, user: string): Promise<void> {
 	await rm(join(roots.configDir, USER_SECRETS_DIR, `${user}.json`), { force: true });
 	await rm(join(roots.configDir, USER_SETTINGS_DIR, user), { recursive: true, force: true });
-	let entries: import("node:fs").Dirent[] = [];
+	let cacheRoot: string;
+	let entries: import("node:fs").Dirent[];
 	try {
-		entries = await readdir(roots.cacheDir, { withFileTypes: true });
+		cacheRoot = await realpath(roots.cacheDir);
+		entries = await readdir(cacheRoot, { withFileTypes: true });
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		if (isEnoent(error)) return;
+		throw error;
 	}
 	await Promise.all(entries.flatMap((entry) =>
-		entry.isDirectory()
-			? [rm(join(roots.cacheDir, entry.name, "users", user), { recursive: true, force: true })]
+		entry.isDirectory() && !entry.isSymbolicLink()
+			? [removeCacheUserDir(cacheRoot, entry.name, user)]
 			: [],
 	));
 }

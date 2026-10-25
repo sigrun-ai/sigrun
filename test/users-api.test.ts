@@ -41,6 +41,26 @@ import { seededIdentity } from "./helpers/identity.js";
 const USER_EVENTS_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-user-events", "index.js"),
 ).href;
+const USER_SERVICE_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-user-service", "index.js"),
+).href;
+
+/** Read the fixture service's initial report without losing later output. */
+async function readServicePid(stream: ReadableStream<Uint8Array>): Promise<number> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	try {
+		while (!text.includes("\n")) {
+			const next = await reader.read();
+			if (next.done) break;
+			text += decoder.decode(next.value, { stream: true });
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return (JSON.parse(text.split("\n", 1)[0]) as { pid: number }).pid;
+}
 
 /** The fixture module's exports (deletions record + reset). */
 type FixtureModule = {
@@ -338,6 +358,10 @@ describe("DELETE /v1/users/:user", () => {
 		const token = await mint(opened, "alice");
 		await opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "bob").secrets.set("provider-token", "revoke-me");
 		const order: string[] = [];
+		const stopWorker = vi.spyOn(opened.sandboxPool, "stopUser").mockImplementation(async (user) => {
+			expect(opened.identity.users.get(user)).toBeDefined();
+			order.push("stopWorker");
+		});
 		const stopUser = vi.spyOn(opened.userServices, "stopUser").mockImplementation(async (user) => {
 			expect(opened.identity.users.get(user)).toBeDefined();
 			order.push("stopUser");
@@ -369,9 +393,10 @@ describe("DELETE /v1/users/:user", () => {
 			headers: { authorization: `Bearer ${token}` },
 		});
 		expect(deleted.statusCode).toBe(204);
+		expect(stopWorker).toHaveBeenCalledWith("bob");
 		expect(stopUser).toHaveBeenCalledWith("bob");
 		expect(removeUser).toHaveBeenCalledWith("bob");
-		expect(order).toEqual(["stopUser", "removeUser", "userDeleted", "remove"]);
+		expect(order).toEqual(["stopWorker", "stopUser", "removeUser", "userDeleted", "remove"]);
 		expect(fixture.deletionChecks).toEqual([expect.objectContaining({
 			user: "bob",
 			record: expect.objectContaining({ user: "bob" }),
@@ -423,6 +448,11 @@ describe("DELETE /v1/users/:user", () => {
 		const otherCache = otherStores.paths.cache;
 		const order: string[] = [];
 		fixture.setDeletionStatusObserver(() => opened.userServices.statuses());
+		const stopWorker = opened.sandboxPool.stopUser.bind(opened.sandboxPool);
+		const stopWorkerSpy = vi.spyOn(opened.sandboxPool, "stopUser").mockImplementation(async (user) => {
+			order.push("stopWorker");
+			await stopWorker(user);
+		});
 		const stopUser = opened.userServices.stopUser.bind(opened.userServices);
 		const stopUserSpy = vi.spyOn(opened.userServices, "stopUser").mockImplementation(async (user) => {
 			order.push("stopUser");
@@ -446,9 +476,10 @@ describe("DELETE /v1/users/:user", () => {
 			headers: { authorization: `Bearer ${adminToken}` },
 		});
 		expect(deleted.statusCode).toBe(204);
-		expect(order).toEqual(["stopUser", "removeUser", "userDeleted"]);
+		expect(order).toEqual(["stopWorker", "stopUser", "removeUser", "userDeleted"]);
 		expect(opened.registry.snapshot().installed().some((entry) => entry.name.endsWith("@bob"))).toBe(false);
 		expect(opened.registry.snapshot().installed().some((entry) => entry.name.endsWith("@alice"))).toBe(true);
+		expect(stopWorkerSpy).toHaveBeenCalledWith("bob");
 		expect(stopUserSpy).toHaveBeenCalledWith("bob");
 		expect(removeUserSpy).toHaveBeenCalledWith("bob");
 		const roots = opened.extensionStores.roots;
@@ -460,6 +491,42 @@ describe("DELETE /v1/users/:user", () => {
 		expect((await stat(state)).isDirectory()).toBe(true);
 		expect(fixture.deletionChecks).toEqual([expect.objectContaining({ user: "bob", secret: "delete-me", services: [] })]);
 		expect(() => opened.extensionStores.userExtensionStores("acme", "bob")).toThrow('unknown user "bob"');
+		fixture.setDeletionStatusObserver(undefined);
+	});
+
+	test("deletion terminates the user's running fixture service and pid", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletionChecks();
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_ISOLATION: "off" },
+			extensionSpecifiers: [USER_EVENTS_SPECIFIER, USER_SERVICE_SPECIFIER],
+		});
+		const adminToken = await mint(opened, "alice");
+		const serviceHost = opened.seamHosts.get("acme");
+		expect(serviceHost).toBeDefined();
+		const handle = await serviceHost!.services.connect("echo", "bob", {
+			abortSignal: undefined,
+		});
+		const pid = await readServicePid(handle.stdout);
+		expect(pid).toBeGreaterThan(0);
+		expect(opened.userServices.statuses()).toEqual([
+			{ slug: "acme", name: "echo", user: "bob", state: "running" },
+		]);
+		fixture.setDeletionStatusObserver(() => opened.userServices.statuses());
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+
+		expect(deleted.statusCode).toBe(204);
+		await expect(handle.exited).resolves.toMatchObject({ signal: "SIGTERM" });
+		expect(opened.userServices.statuses()).toEqual([]);
+		expect(() => process.kill(pid, 0)).toThrow();
+		expect(fixture.deletionChecks).toEqual([
+			expect.objectContaining({ user: "bob", services: [] }),
+		]);
 		fixture.setDeletionStatusObserver(undefined);
 	});
 

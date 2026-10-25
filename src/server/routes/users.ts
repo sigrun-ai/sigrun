@@ -293,8 +293,9 @@ export function registerUserRoutes(
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
 		await identity.accounts.removeUser(user);
-		// §10.6 step 2: stop credential-bearing sibling processes and
-		// uninstall every *@user entry while the directory record exists.
+		// §10.6 step 2: stop the user's worker and credential-bearing
+		// services, then uninstall every *@user entry.
+		await ctx.opened.sandboxPool.stopUser(user);
 		await ctx.opened.userServices.stopUser(user);
 		ctx.opened.userTools.removeUser(user);
 		// §10.6 step 3: provider credentials remain readable throughout the
