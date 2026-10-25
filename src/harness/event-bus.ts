@@ -169,6 +169,14 @@ export type ExtensionLifecyclePayload = {
 		readonly callId: string;
 		readonly kind: string;
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+		/** The answering user (C5 attribution), when a human answered. */
+		readonly answeredByUser?: string;
+		/**
+		 * The STORED answer's values — masked by construction (secret values
+		 * never persist; the commit's stored copy carries the mask), so a
+		 * consumer may render them without a one-shot delivery read.
+		 */
+		readonly answer?: Readonly<Record<string, unknown>>;
 	};
 };
 
@@ -1015,12 +1023,30 @@ export class EventBus {
 							kind?: unknown;
 							callId?: unknown;
 							status?: unknown;
+							answeredByUser?: unknown;
+							answer?: unknown;
 						};
 						if (
 							typeof record.callId === "string" &&
 							typeof record.kind === "string" &&
 							typeof record.status === "string"
 						) {
+							// C6 widening: carry the attribution + the STORED
+							// (masked-by-construction) answer values — the stored
+							// copy never holds a secret's true value, so these are
+							// render-safe without any delivery-table read.
+							const recordAnsweredByUser =
+								typeof record.answeredByUser === "string"
+									? record.answeredByUser
+									: undefined;
+							const recordAnswerValues =
+								typeof record.answer === "object" &&
+								record.answer !== null &&
+								typeof (record.answer as { values?: unknown }).values ===
+									"object" &&
+								(record.answer as { values?: unknown }).values !== null
+									? ((record.answer as { values?: unknown }).values as Readonly<Record<string, unknown>>)
+									: undefined;
 							this.#emitHost({
 								type: INTERACTION_TERMINAL.has(record.status)
 									? "interaction.settled"
@@ -1047,6 +1073,12 @@ export class EventBus {
 									conversationId: change.conversationId,
 									callId: record.callId,
 									kind: record.kind,
+									...(recordAnsweredByUser === undefined
+										? {}
+										: { answeredByUser: recordAnsweredByUser }),
+									...(recordAnswerValues === undefined
+										? {}
+										: { answer: recordAnswerValues }),
 									// SAFETY: `record.status` is a narrowed `string`, but
 									// the payload wants the terminal union — sound because
 									// the union and the TERMINAL set share one definition
