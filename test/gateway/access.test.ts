@@ -233,6 +233,22 @@ describe("gateway access e2e (Task 4)", () => {
 			const reply = boot.loop.sent.at(-1);
 			expect(reply?.text).toContain("alice");
 
+			// The link is visible through core's own account-link route.
+			const accounts = await boot.app.inject({
+				method: "GET",
+				url: "/v1/auth/accounts",
+				headers: { authorization: `Bearer ${boot.tokens.alice}` },
+			});
+			expect(accounts.statusCode).toBe(200);
+			expect(accounts.json()).toEqual({
+				accounts: [expect.objectContaining({
+					provider: "chat:loop",
+					subject: "100000001",
+					user: "alice",
+					via: "self",
+				})],
+			});
+
 			// The link admits: alice's next DM creates her gateway conversation.
 			const admitted = await boot.loop.inbound(dmEvent("100000001", "m2"));
 			expect(admitted).toEqual({ outcome: "admitted" });
@@ -242,6 +258,58 @@ describe("gateway access e2e (Task 4)", () => {
 					(row) => row.source === "gateway" && row.owner === "alice",
 				);
 			});
+		} finally {
+			await boot.shutdown();
+		}
+	});
+
+	test("DELETE /v1/auth/accounts revokes a self-link and the next DM pairs again", { timeout: 90_000 }, async () => {
+		const boot = await bootGateway({
+			gatewaySettings: PAIRING_SETTINGS,
+			users: [{ user: "alice", admin: true }],
+		});
+		try {
+			const created = await boot.app.inject({
+				method: "POST",
+				url: "/v1/conversations",
+				headers: { authorization: `Bearer ${boot.tokens.alice}` },
+			});
+			const conversationId = (created.json() as ConversationRow).id;
+			const link = await boot.app.inject({
+				method: "POST",
+				url: `/v1/conversations/${conversationId}/commands/link`,
+				headers: {
+					authorization: `Bearer ${boot.tokens.alice}`,
+					"content-type": "application/json",
+				},
+				payload: { args: "loop" },
+			});
+			const code = ((link.json() as { notice?: string }).notice ?? "").match(
+				/[A-Z2-9]{8}/,
+			)?.[0];
+			if (code === undefined) throw new Error("test setup: no link code");
+			expect(await boot.loop.inbound(
+				dmEvent("100000001", "m1", `/link ${code}`, "Alice"),
+			)).toEqual({ outcome: "command" });
+			expect(await boot.loop.inbound(dmEvent("100000001", "m2"))).toEqual({
+				outcome: "admitted",
+			});
+			const removed = await boot.app.inject({
+				method: "DELETE",
+				url: "/v1/auth/accounts?provider=chat%3Aloop&subject=100000001",
+				headers: { authorization: `Bearer ${boot.tokens.alice}` },
+			});
+			expect(removed.statusCode).toBe(204);
+			const after = await boot.app.inject({
+				method: "GET",
+				url: "/v1/auth/accounts",
+				headers: { authorization: `Bearer ${boot.tokens.alice}` },
+			});
+			expect(after.json()).toEqual({ accounts: [] });
+			expect(await boot.loop.inbound(
+				dmEvent("100000001", "m3", "hello again"),
+			)).toEqual({ outcome: "dropped" });
+			expect(codeFromReplies(boot, "100000001")).toHaveLength(8);
 		} finally {
 			await boot.shutdown();
 		}

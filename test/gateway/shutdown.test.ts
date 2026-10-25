@@ -176,11 +176,11 @@ describe("gateway shutdown e2e (Task 12)", () => {
 			const identitiesPath = join(boot.dir, "state", "ext-gateway", "gateway", "identities.json");
 			await boot.waitFor(async () => {
 				const raw = JSON.parse(await readFile(identitiesPath, "utf8")) as {
-					links: Record<string, { user: string }>;
 					homes: Record<string, unknown>;
 				};
-				return raw.homes.bob === undefined && !Object.values(raw.links).some((link) => link.user === "bob");
+				return raw.homes.bob === undefined;
 			});
+			expect(boot.opened.identity.accounts.listForUser("bob")).toEqual([]);
 			const binding = boot.opened.gatewayEngine;
 			if (binding === undefined) throw new Error("gateway engine unavailable");
 			const identities = (
@@ -190,7 +190,7 @@ describe("gateway shutdown e2e (Task 12)", () => {
 			const { parseGatewayConfig } = await import("@sigrun/ext-gateway");
 			const block = parseGatewayConfig(SETTINGS).channels.loop;
 			if (block === undefined || "failed" in block) throw new Error("bad test config");
-			expect(identities.userFor(block, "loop", "200000002")).toBeUndefined();
+			expect(await identities.userFor(block, "loop", "200000002")).toBeUndefined();
 			// The next DM resolves through the unknown-sender pairing branch.
 			// Its original request cooldown still applies; deleting a user does
 			// not manufacture a second immediate code reply.
