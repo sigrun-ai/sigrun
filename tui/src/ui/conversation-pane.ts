@@ -262,6 +262,10 @@ export class ConversationPane implements Component {
 	 *  remounted a fresh state and subscription and never disposed the
 	 *  old one — N frames = N stale subscriptions fanning out refetches. */
 	readonly #surfaceStates = new Map<string, SurfaceState>();
+	/** The surface keys `#mountTurn` mounted during the in-flight
+	 *  `#rebuild` (undefined outside a rebuild) — the prune in `#rebuild`
+	 *  disposes every cached state NOT in this set. */
+	#mountKeysSeen: Set<string> | undefined;
 	#focus: number | undefined;
 	/** Fold state by turn index (assistant turns only fold). */
 	readonly #open = new Set<number>();
@@ -436,9 +440,24 @@ export class ConversationPane implements Component {
 	#rebuild(): void {
 		this.#container.clear();
 		this.#noticeComponents.length = 0;
+		this.#mountKeysSeen = new Set<string>();
 		this.#mounted = this.#turns.map((turn, index) =>
 			this.#mountTurn(turn, index),
 		);
+		// Prune states whose block left the view (a fork rewound the
+		// transcript): an orphaned state would keep its live hub
+		// subscription + action timers forever. `#mountTurn` records the
+		// keys it mounted this pass in `#mountKeysSeen`.
+		const seen = this.#mountKeysSeen;
+		if (seen !== undefined) {
+			for (const [key, state] of this.#surfaceStates) {
+				if (!seen.has(key)) {
+					state.dispose();
+					this.#surfaceStates.delete(key);
+				}
+			}
+			this.#mountKeysSeen = undefined;
+		}
 		for (const mounted of this.#mounted) {
 			for (const component of mounted.components) {
 				this.#container.addChild(component);
@@ -552,6 +571,7 @@ export class ConversationPane implements Component {
 				const key = `${this.#conversationId}:${event.entryId}`;
 				// Reuse the cached state across rebuilds; create + load once.
 				let state = this.#surfaceStates.get(key);
+				if (state !== undefined) this.#mountKeysSeen?.add(key);
 				if (state === undefined && attach !== undefined) {
 					const fresh = new SurfaceState(
 						attach(this.#conversationId, String(event.entryId)),
@@ -566,6 +586,7 @@ export class ConversationPane implements Component {
 						this.#container.invalidate();
 					});
 					this.#surfaceStates.set(key, fresh);
+					this.#mountKeysSeen?.add(key);
 					state = fresh;
 				}
 				if (attach === undefined) {

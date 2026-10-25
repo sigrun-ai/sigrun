@@ -61,14 +61,15 @@ export function blocksEntryData(data: unknown): BlocksEntryData | undefined {
 
 /** The width pin: `compact` asserted INSTEAD of any measurement (no
  *  ContainerWidth in the chat column — the tree's structural fallbacks
- *  (lanes → single, calendar → agenda, `visibleAt`) read the pin). The
- *  rem is pinned to 0, NOT null: the rem-derived fallbacks (a grid's
- *  minItemWidth collapse, spec §12.3's one column at compact) compare
- *  against the rem, and `null` would fall back to the auto-fill track
- *  (two columns inside the 720px chat column). */
+ *  (lanes → single, calendar → agenda, `visibleAt`, the §12.3 grid
+ *  column collapse) read the CLASS. The rem stays `null` (unmeasured):
+ *  pinning it to 0 lied to rem-derived fallbacks (a chat chart computed
+ *  px = 0 → spark mode, losing axes/legend). Class-keyed fallbacks read
+ *  the pinned class; rem-keyed ones (a chart's spark/compact ladder)
+ *  fall to their unmeasured full-width default. */
 function PinnedWidth(props: { readonly children: ReactNode }): ReactNode {
 	return (
-		<WidthContext.Provider value={{ widthClass: "compact", rem: 0 }}>
+		<WidthContext.Provider value={{ widthClass: "compact", rem: null }}>
 			{props.children}
 		</WidthContext.Provider>
 	);
@@ -165,9 +166,12 @@ export function BlocksEntry(props: {
 					<SurfaceActionsContext.Provider value={actionsCtx}>
 						<BlockView block={surface.tree.root} />
 						{/* A rejected action's feedback (SurfaceView's toast row,
-						    inline — the chat column has no other notice surface). */}
+						    inline — the chat column has no other notice surface).
+						    In-flow class: the fixed .blk-surface-toast chrome would
+						    leave the transcript's flow and stack multiple rejections
+						    on the same viewport coordinates. */}
 						{surface.toasts.map((toast, index) => (
-							<p key={index} className="blk-surface-toast" role="status">
+							<p key={index} className="blk-chat-toast" role="status">
 								{toast}
 							</p>
 						))}

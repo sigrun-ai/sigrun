@@ -10,7 +10,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { bound, boundString, useSurfaceData } from "./context";
 import type { Block, Field, Size, Tone } from "@sigrun/shared/blocks";
 import { toneColor } from "./tones";
-import { useWidthRem } from "./width";
+import { useWidthClass, useWidthRem } from "./width";
 
 /** The webui's width tokens (spec §5.2: s/m/l = 16/24/32 rem). */
 const SIZE_REM: Readonly<Record<Size, number>> = { s: 16, m: 24, l: 32 };
@@ -53,11 +53,15 @@ export function ColumnsBlockView(props: {
 	render(block: Block): ReactNode;
 }): ReactNode {
 	const rem = useWidthRem();
+	const widthClass = useWidthClass();
 	const minimum = props.block.children.reduce(
 		(sum, child) => sum + (child.minWidth !== undefined ? SIZE_REM[child.minWidth] : 0),
 		0,
 	);
-	const stacked = rem !== null && minimum > rem;
+	// §12.3's stack is class-keyed (a pinned compact class — the chat
+	// column — stacks without a measurement); the rem comparison is the
+	// measured fallback.
+	const stacked = widthClass === "compact" || (rem !== null && minimum > rem);
 	return (
 		<div className="blk blk-columns" data-block="columns" data-stacked={stacked}>
 			{props.block.children.map((child, index) => (
@@ -93,10 +97,14 @@ export function GridBlockView(props: {
 	render(block: Block): ReactNode;
 }): ReactNode {
 	// Unmeasured keeps auto-fill's own judgement (the CSS handles the
-	// fallback); measured compact forces the single column of §12.3.
+	// fallback); §12.3's single column is class-keyed (a pinned compact
+	// class collapses without a measurement), with the rem comparison as
+	// the measured fallback.
 	const rem = useWidthRem();
+	const widthClass = useWidthClass();
 	const template =
-		rem !== null && SIZE_REM[props.block.minItemWidth] > rem
+		widthClass === "compact" ||
+		(rem !== null && SIZE_REM[props.block.minItemWidth] > rem)
 			? "1fr"
 			: `repeat(auto-fill, minmax(${SIZE_REM[props.block.minItemWidth]}rem, 1fr))`;
 	return (

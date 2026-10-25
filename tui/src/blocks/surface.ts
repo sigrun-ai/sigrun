@@ -249,6 +249,9 @@ export class SurfaceState {
 	readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #listeners = new Set<() => void>();
 	#unsubscribe: (() => void) | undefined;
+	/** Set by dispose(): a load still in flight must not subscribe after
+	 *  the swap that disposed us (one stale subscription per racing swap). */
+	#disposed = false;
 
 	constructor(transport: SurfaceTransport) {
 		this.#transport = transport;
@@ -349,6 +352,7 @@ export class SurfaceState {
 	/** Load the tree and initial data; subscribe to change events. */
 	async load(): Promise<void> {
 		await this.#doLoad();
+		if (this.#disposed) return; // a swap landed mid-load — stay unsubscribed
 		if (this.#unsubscribe === undefined) {
 			this.#unsubscribe = this.#transport.onChanged((event) => {
 				this.#announcedRev = Math.max(this.#announcedRev, event.rev);
@@ -369,6 +373,7 @@ export class SurfaceState {
 
 	/** Stop listening and cancel every pending action timer. */
 	dispose(): void {
+		this.#disposed = true;
 		this.#unsubscribe?.();
 		this.#unsubscribe = undefined;
 		for (const timer of this.#timers.values()) clearTimeout(timer);

@@ -573,6 +573,32 @@ describe("ConversationPane: chat blocks (U5 Task 4)", () => {
 		expect(unsubscribed).toBe(2); // the swap's own state, now torn down
 	});
 
+	test("a same-conversation rewind prunes the orphaned surface state", async () => {
+		// A fork rewinding past the blocks entry leaves the state for the
+		// rewound-away entry orphaned: the rebuild prune must dispose it
+		// (its unsubscribe fires) and drop it from the cache.
+		let unsubscribed = 0;
+		const transport = {
+			...stubChatTransport(),
+			onChanged: () => () => {
+				unsubscribed += 1;
+			},
+		};
+		const pane = new ConversationPane({
+			attachChatTransport: () => transport,
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(pane.surfaceStateFor(3)).toBeDefined();
+		// The fork's rewind: the view replaces with entries 1-2 only (the
+		// blocks entry 3 is gone) — the SAME conversation, so the swap
+		// clear never runs; the rebuild prune owns this teardown.
+		pane.showView(view(1, chatBlocksEntries().slice(0, 2)));
+		expect(unsubscribed).toBe(1);
+		expect(pane.surfaceStateFor(3)).toBeUndefined();
+		pane.dispose();
+	});
+
 	test("a note entry written after a compaction renders as a note, never unsupported", async () => {
 		// Auto-compaction lands at run end and flushes the pending turn;
 		// the next turn's note entry lands after the pi.compaction entry —

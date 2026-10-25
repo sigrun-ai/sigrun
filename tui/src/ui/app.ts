@@ -901,6 +901,10 @@ export class TuiApp implements Component, ActionHost {
 		this.#watchGen += 1;
 		this.interactions.dispose();
 		this.ambient.dispose();
+		// The pane's chat-block surface states hold live hub subscriptions
+		// + action timers — the shell owns their teardown (the pane never
+		// leaves a subscription behind).
+		this.pane.dispose();
 	}
 
 	// ─── The action layer (Task C3) ────────────────────────────────────

@@ -199,6 +199,90 @@ describe("BlocksEntry", () => {
 		renderer.unmount();
 	});
 
+	test("a chart in chat renders full, never the sparkline", async () => {
+		// The width pin keeps rem null (unmeasured): a rem:0 pin computed
+		// px = 0 → spark mode, dropping axes/legend/ticks from every chat
+		// chart. The pinned compact class must not reach the chart's
+		// rem-derived spark ladder.
+		const CHART_TREE = {
+			v: 1,
+			root: {
+				type: "chart",
+				id: "ch",
+				x: { label: "t" },
+				y: { label: "req/s" },
+				series: [
+					{ name: "acme", kind: "line", data: { $: "/points" } },
+				],
+			},
+		};
+		const { transport } = stubTransport("read");
+		transport.load = async () => ({
+			tree: CHART_TREE as unknown as SurfaceLoad["tree"],
+			data: { points: [[0, 5], [60, 7], [120, 6]] },
+			rev: 1,
+			treeRev: 0,
+			access: "read",
+		});
+		const renderer = await renderAsync(
+			h(
+				ChatTransportContext.Provider,
+				{ value: () => transport },
+				h(BlocksEntry, {
+					conversationId: 1,
+					entryId: 7,
+					data: {
+						title: "Throughput",
+						tree: CHART_TREE,
+						data: { points: [[0, 5], [60, 7], [120, 6]] },
+					},
+				}),
+			),
+		);
+		const chart = renderer.root.findByProps({ "data-block": "chart" });
+		expect(chart.props["data-chart-mode"]).not.toBe("spark");
+		expect(chart.props["data-chart-mode"]).toBe("full");
+		renderer.unmount();
+	});
+
+	test("columns stack under the compact pin even unmeasured", async () => {
+		// The §12.3 columns stack is class-keyed: the pinned compact class
+		// stacks s+m columns without a measurement (rem is null in chat).
+		const COLUMNS_TREE = {
+			v: 1,
+			root: {
+				type: "columns",
+				id: "cols",
+				children: [
+					{ minWidth: "s", block: { type: "markdown", text: "left" } },
+					{ minWidth: "m", block: { type: "markdown", text: "right" } },
+				],
+			},
+		};
+		const { transport } = stubTransport("read");
+		transport.load = async () => ({
+			tree: COLUMNS_TREE as unknown as SurfaceLoad["tree"],
+			data: {},
+			rev: 1,
+			treeRev: 0,
+			access: "read",
+		});
+		const renderer = await renderAsync(
+			h(
+				ChatTransportContext.Provider,
+				{ value: () => transport },
+				h(BlocksEntry, {
+					conversationId: 1,
+					entryId: 7,
+					data: { title: "Columns", tree: COLUMNS_TREE, data: {} },
+				}),
+			),
+		);
+		const columns = renderer.root.findByProps({ "data-block": "columns" });
+		expect(columns.props["data-stacked"]).toBe(true);
+		renderer.unmount();
+	});
+
 	test("a rejected action surfaces its message as a toast row", async () => {
 		// useSurface collects a rejection into toasts; the chat BlocksEntry
 		// renders them inline (the chat column has no other notice surface).
@@ -249,7 +333,7 @@ describe("BlocksEntry", () => {
 		// The rejection's message renders as the toast row SurfaceView
 		// would have shown (chat has no other notice surface).
 		const toasts = renderer.root.findAllByProps({
-			className: "blk-surface-toast",
+			className: "blk-chat-toast",
 		});
 		expect(toasts.length).toBeGreaterThan(0);
 		expect(textContent(renderer.toJSON())).toContain("nope from acme");

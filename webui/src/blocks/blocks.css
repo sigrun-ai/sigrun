@@ -1321,4 +1321,8 @@
 
 /* SurfaceView host states */
 .blk-surface { min-height: 0; }
-.blk-surface-toast { position: fixed; bottom: 1rem; right: 1rem; }
+/* The fixed notice is a SurfaceView chrome; chat toasts (.blk-chat-toast)
+   stay in flow under the entry so multiple rejections stack in document
+   order instead of overlapping on the same viewport coordinates. */
+.blk-surface > .blk-surface-toast { position: fixed; bottom: 1rem; right: 1rem; }
+.blk-chat-toast { margin: 0.25rem 0 0; }
