@@ -300,6 +300,7 @@ export class UserServices {
 			live.stdout.end();
 			live.stderrStream.end();
 			if (pendingStderr !== "") live.stderr.push(pendingStderr);
+			if (live.stderr.length > 20) live.stderr.splice(0, live.stderr.length - 20);
 			if (entry.live === live) {
 				entry.live = undefined;
 				clearTimeout(live.timer);

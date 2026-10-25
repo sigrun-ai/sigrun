@@ -173,6 +173,22 @@ describe("UserServices process lifecycle", () => {
 		await expect(services.stopUser("alice")).resolves.toBeUndefined();
 	});
 
+	test("the stderr tail contains exactly 20 lines including an unterminated final line", async () => {
+		const { services } = await unitServices(async () => ({
+			command: NODE,
+			args: ["-e", "for (let i=1;i<=21;i++) process.stderr.write('line-'+i+'\\n'); process.stderr.write('final-without-newline'); process.exit(9)"],
+		}));
+		for (let index = 0; index < 3; index++) {
+			const handle = await services.connect("acme", "echo", "alice", CTX);
+			await handle.exited;
+			handle.release();
+		}
+		const rejection = await services.connect("acme", "echo", "alice", CTX).catch((error: unknown) => error as Error);
+		expect(rejection).toBeInstanceOf(Error);
+		expect((rejection as Error).message.split("\n").filter((line) => line.startsWith("line-") || line.startsWith("final-"))).toHaveLength(20);
+		expect((rejection as Error).message).toContain("final-without-newline");
+	});
+
 	test("three crashes in 300000ms fail with the last 20 stderr lines", async () => {
 		const { services } = await unitServices(startEcho);
 		for (let crash = 0; crash < 3; crash++) {
