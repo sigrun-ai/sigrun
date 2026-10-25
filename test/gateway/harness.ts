@@ -92,6 +92,8 @@ export interface GatewayBoot {
 
 /** `bootGateway` options. */
 export interface BootGatewayOptions {
+	/** Additional configured extension packages (the interaction gate fixture). */
+	readonly extraExtensions?: readonly string[];
 	/** Extra settings-file fields (merged with `namingModel: false`). */
 	readonly settings?: Record<string, unknown>;
 	/** Load the independent `loop2` fixture alongside `loop`. */
@@ -117,7 +119,7 @@ export interface BootGatewayOptions {
 	 * provision additional users pass an available probe; the guard's
 	 * refusal paths are test/sandbox-isolation.test.ts's subject.
 	 */
-	readonly isolationProbe?: () => Promise<{ available: boolean; abi?: number; reason?: string }>;
+	readonly isolationProbe?: () => Promise<{ available: boolean; abi: number; reason?: string }>;
 	/**
 	 * The sandbox worker launcher. With an available probe and 2+ users,
 	 * M1 isolation ACTIVATES: per-user workspaces resolve through real
@@ -140,6 +142,8 @@ export interface BootGatewayOptions {
 	 * under any auth, so the test drives the loopback fixture directly).
 	 */
 	readonly unclaimed?: boolean;
+	/** Deployment base URL for notification deep links. */
+	readonly publicUrl?: string;
 	/**
 	 * Auth env overrides (the C8 proxy e2e): spread OVER the default
 	 * `SIGRUN_AUTH: "token"` — e.g. `{ SIGRUN_AUTH: "proxy",
@@ -196,6 +200,7 @@ export async function bootGateway(
 		SIGRUN_DATA_DIR: join(dir, "data"),
 		SIGRUN_STATE_DIR: join(dir, "state"),
 		SIGRUN_CACHE_DIR: join(dir, "cache"),
+		...(opts.publicUrl === undefined ? {} : { SIGRUN_PUBLIC_URL: opts.publicUrl }),
 		...(opts.compactionEnv?.keepRecentTokens === undefined
 			? {}
 			: { SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: String(opts.compactionEnv.keepRecentTokens) }),
@@ -268,9 +273,10 @@ export async function bootGateway(
 	const opened = await openHarness(config, {
 		identity,
 		extensions: [{ name: "ext-faux", providers: [{ provider: faux.provider }] }],
-		extensionSpecifiers: opts.secondChannel === true
-			? [LOOPBACK_SPECIFIER, LOOP2_SPECIFIER]
-			: [LOOPBACK_SPECIFIER],
+		extensionSpecifiers: [
+			...(opts.secondChannel === true ? [LOOPBACK_SPECIFIER, LOOP2_SPECIFIER] : [LOOPBACK_SPECIFIER]),
+			...(opts.extraExtensions ?? []),
+		],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: join(dir, "config"),
 		...(opts.isolationProbe === undefined
