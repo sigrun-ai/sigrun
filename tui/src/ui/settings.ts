@@ -101,9 +101,12 @@ export class SettingsView implements Component {
 				this.#client.getBootMeta().catch(() => undefined),
 				this.#client.listExtensions().catch(() => undefined),
 			]);
-			this.#sections = sections.sections;
-			this.#index = sections.index;
 			this.#admin = whoami?.admin === true;
+			this.#sections = sections.sections.filter(
+				(section) => section.scope !== "user" || section.admin !== true || this.#admin,
+			);
+			const allowed = new Set(this.#sections.map((section) => `${section.slug}\u0000${section.id}`));
+			this.#index = sections.index.filter((entry) => allowed.has(`${entry.slug}\u0000${entry.sectionId}`));
 			this.#supervised = meta?.supervised === true;
 			// Section-less loaded extensions (the raw-JSON notice lines):
 			// every listed extension whose slug declares NO settings section.
@@ -259,13 +262,25 @@ export class SettingsView implements Component {
 					width,
 				),
 			);
-			for (const section of this.#sections) {
+			for (const section of this.#sections.filter((entry) => entry.scope !== "user")) {
 				lines.push(
 					truncateToWidth(
 						`  ${section.title}${section.slug === "core" ? "" : `  (${section.slug})`}`,
 						width,
 					),
 				);
+			}
+			const personal = this.#sections.filter((entry) => entry.scope === "user");
+			if (personal.length > 0) {
+				lines.push(truncateToWidth(this.#theme.bold("My settings"), width));
+				for (const section of personal) {
+					lines.push(
+						truncateToWidth(
+							`  ${section.title}${section.slug === "core" ? "" : `  (${section.slug})`}`,
+							width,
+						),
+					);
+				}
 			}
 			// Extensions WITHOUT a declared section keep their raw-JSON
 			// routes reachable (the docblock's ruling): one notice line

@@ -139,7 +139,7 @@ export function registerSubmissionRoutes(
 	// The shared configure op (gateway C4a) is the SAME code path the
 	// extension host bridge drives — the validation order and error bodies
 	// moved verbatim into the op; this route owns the HTTP mapping only.
-	// v1 accepts EXACTLY `model` + `thinking` — any other key is a fail-loud
+	// Configure accepts `model` + `thinking` + `extensions` — any other key is a fail-loud
 	// 400 (the agent's other knobs are not wire surface yet).
 	app.post(
 		"/v1/conversations/:id/configure",
@@ -149,6 +149,7 @@ export function registerSubmissionRoutes(
 				return await configureOp(ctx, request.conversation, request.body as {
 					readonly model?: unknown;
 					readonly thinking?: unknown;
+					readonly extensions?: unknown;
 				});
 			} catch (error) {
 				if (error instanceof ConversationOpError) {

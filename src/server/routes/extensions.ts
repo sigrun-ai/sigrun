@@ -5,7 +5,8 @@
  * - `GET /v1/extensions` — one entry per loaded outcome with `status`,
  *   `error?`, the manifest `version?`, the declared
  *   `interactionKinds`/`ambientKeys`, the idle-worker projection, and
- *   the contributed channel ids (gateway C1, `channels?`).
+ *   the contributed channel ids (gateway C1, `channels?`). Every principal
+ *   may read the inventory; `services` is populated for admins only.
  * - `GET`/`PUT /v1/extensions/:slug/settings` (PUT admin) — the
  *   `settings/<slug>.json` object verbatim. Values an extension reads at
  *   factory time apply at RESTART; per-run reads see the write live.
@@ -58,7 +59,7 @@ export function registerExtensionRoutes(
 	// row here — `builtin: true`, `replacedBy` the configured specifier,
 	// status "replaced" — while a DISABLED one is absent entirely
 	// (ruling 6).
-	app.get("/v1/extensions", async (): Promise<ExtensionsResponse> => {
+	app.get("/v1/extensions", async (request): Promise<ExtensionsResponse> => {
 		const workerStatuses = opened.workerStatuses();
 		const extensions: ExtensionInfo[] = opened.extensionOutcomes.map(
 			(outcome) => {
@@ -93,6 +94,9 @@ export function registerExtensionRoutes(
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],
+					services: request.principal.admin
+						? opened.userServices.statuses().filter((s) => s.slug === outcome.name)
+						: [],
 					routes:
 						routes?.routes.map((route) => ({
 							method: route.method,
@@ -136,6 +140,9 @@ export function registerExtensionRoutes(
 				interactionKinds: [],
 				ambientKeys: [],
 				workers: [],
+				services: request.principal.admin
+					? opened.userServices.statuses().filter((s) => s.slug === slug)
+					: [],
 				routes: [],
 			});
 		}

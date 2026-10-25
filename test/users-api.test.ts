@@ -12,21 +12,24 @@
  * records are read by importing the SAME file:// URL the loader used.
  */
 
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { AgentDoc, configure } from "@earendil-works/pi-durable";
+import { AgentDoc, configure, defineTool } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
-import { loadConfig, type SigrunConfig } from "../src/config.js";
+import { Type } from "@earendil-works/pi-ai";
+import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { TokenStore } from "../src/harness/identity/index.js";
+import { createSeamHost } from "../src/harness/seam-host.js";
+import { userEntryName } from "../src/harness/user-tools.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { defaultModuleTrees, buildUserPolicy } from "../src/sandbox/policy.js";
@@ -38,11 +41,40 @@ import { seededIdentity } from "./helpers/identity.js";
 const USER_EVENTS_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-user-events", "index.js"),
 ).href;
+const USER_SERVICE_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-user-service", "index.js"),
+).href;
+
+/** Read the fixture service's initial report without losing later output. */
+async function readServicePid(stream: ReadableStream<Uint8Array>): Promise<number> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	try {
+		while (!text.includes("\n")) {
+			const next = await reader.read();
+			if (next.done) break;
+			text += decoder.decode(next.value, { stream: true });
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return (JSON.parse(text.split("\n", 1)[0]) as { pid: number }).pid;
+}
 
 /** The fixture module's exports (deletions record + reset). */
 type FixtureModule = {
 	readonly deletions: readonly { user: string; transferTo: string }[];
 	readonly resetDeletions: () => void;
+	readonly deletionChecks: readonly {
+		user: string;
+		record?: { user: string };
+		secret?: string;
+		services?: readonly { slug: string; name: string; user: string }[];
+	}[];
+	readonly resetDeletionChecks: () => void;
+	readonly deletionThrows: string[];
+	readonly setDeletionStatusObserver: (observer: (() => readonly { slug: string; name: string; user: string }[]) | undefined) => void;
 };
 
 /** Import the fixture module by the SAME URL the loader imported — one instance. */
@@ -64,6 +96,7 @@ async function bootServer(options: {
 	env?: Record<string, string | undefined>;
 	file?: { auth?: Record<string, unknown> };
 	seed?: "admin-only" | "alice-and-bob";
+	extensionSpecifiers?: readonly string[];
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-users-api-"));
 	const faux = fauxProvider({
@@ -106,7 +139,7 @@ async function bootServer(options: {
 		extensions: [contributor],
 		env,
 		identity,
-		extensionSpecifiers: [USER_EVENTS_SPECIFIER],
+		extensionSpecifiers: options.extensionSpecifiers ?? [USER_EVENTS_SPECIFIER],
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 	});
 	const app = await createServer(opened, config, [], {
@@ -316,6 +349,230 @@ describe("DELETE /v1/users/:user", () => {
 			headers: { authorization: `Bearer ${token}` },
 		});
 		expect(self.statusCode).toBe(400);
+	});
+
+	test("deletion stops services, delivers userDeleted with readable secrets, then removes the record", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletionChecks();
+		const { app, opened } = await bootServer({});
+		const token = await mint(opened, "alice");
+		await opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "bob").secrets.set("provider-token", "revoke-me");
+		const order: string[] = [];
+		const stopWorker = vi.spyOn(opened.sandboxPool, "stopUser").mockImplementation(async (user) => {
+			expect(opened.identity.users.get(user)).toBeDefined();
+			order.push("stopWorker");
+		});
+		const stopUser = vi.spyOn(opened.userServices, "stopUser").mockImplementation(async (user) => {
+			expect(opened.identity.users.get(user)).toBeDefined();
+			order.push("stopUser");
+		});
+		const remove = opened.identity.users.remove.bind(opened.identity.users);
+		vi.spyOn(opened.identity.users, "remove").mockImplementation(async (user) => {
+			order.push("remove");
+			return remove(user);
+		});
+		const removeWithGrant = opened.identity.users.removeWithGrant.bind(opened.identity.users);
+		vi.spyOn(opened.identity.users, "removeWithGrant").mockImplementation(async (user, to, grant) => {
+			order.push("remove");
+			return removeWithGrant(user, to, grant);
+		});
+		// The FULL §10.6 sequence must be pinned, not one boundary: without
+		// this entry the test would still pass if userDeleted ran BEFORE
+		// stopUser. Call through so the real fan-out still happens.
+		const removeUser = vi.spyOn(opened.userTools, "removeUser").mockImplementation(() => {
+			order.push("removeUser");
+		});
+		const emitUserDeleted = opened.eventBus.emitUserDeleted.bind(opened.eventBus);
+		vi.spyOn(opened.eventBus, "emitUserDeleted").mockImplementation(async (event, context) => {
+			order.push("userDeleted");
+			return emitUserDeleted(event, context);
+		});
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		expect(stopWorker).toHaveBeenCalledWith("bob");
+		expect(stopUser).toHaveBeenCalledWith("bob");
+		expect(removeUser).toHaveBeenCalledWith("bob");
+		expect(order).toEqual(["stopWorker", "stopUser", "removeUser", "userDeleted", "remove"]);
+		expect(fixture.deletionChecks).toEqual([expect.objectContaining({
+			user: "bob",
+			record: expect.objectContaining({ user: "bob" }),
+			secret: "revoke-me",
+		})]);
+		expect(opened.identity.users.get("bob")).toBeUndefined();
+	});
+
+	test("deletion uninstalls every per-user entry before userDeleted and cleans per-user files", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletionChecks();
+		const { app, opened } = await bootServer({
+			extensionSpecifiers: [
+				USER_EVENTS_SPECIFIER,
+				pathToFileURL(join(import.meta.dirname, "fixtures", "fixture-user-tools", "index.js")).href,
+			],
+		});
+		const adminToken = await mint(opened, "alice");
+		const acmeHost = createSeamHost(
+			{ name: "acme" },
+			{},
+			{
+				bindHarness: () => {},
+				harness: async () => opened.harness,
+			},
+			opened.extensionStores,
+			{
+				declared: (slug) => slug === "acme",
+				set: (slug, user, tools) => opened.userTools.set(slug, user, tools),
+			},
+		);
+		const probe = defineTool({
+			name: "acme_probe",
+			description: "Per-user deletion fixture",
+			parameters: Type.Object({}),
+			execute: async () => ({ output: [{ type: "text", text: "unused" }] }),
+		});
+		acmeHost.tools.setUserTools("bob", [probe]);
+		acmeHost.tools.setUserTools("alice", [probe]);
+		opened.registry.install({ name: userEntryName("other", "bob"), tools: [] });
+		const bobStores = opened.extensionStores.userExtensionStores("acme", "bob");
+		const otherStores = opened.extensionStores.userExtensionStores("other", "bob");
+		await bobStores.secrets.set("provider-token", "delete-me");
+		await opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "bob").secrets.set("provider-token", "delete-me");
+		await bobStores.settings.set({ theme: "dark" });
+		const data = bobStores.paths.data;
+		const state = bobStores.paths.state;
+		const cache = bobStores.paths.cache;
+		const otherCache = otherStores.paths.cache;
+		const order: string[] = [];
+		fixture.setDeletionStatusObserver(() => opened.userServices.statuses());
+		const stopWorker = opened.sandboxPool.stopUser.bind(opened.sandboxPool);
+		const stopWorkerSpy = vi.spyOn(opened.sandboxPool, "stopUser").mockImplementation(async (user) => {
+			order.push("stopWorker");
+			await stopWorker(user);
+		});
+		const stopUser = opened.userServices.stopUser.bind(opened.userServices);
+		const stopUserSpy = vi.spyOn(opened.userServices, "stopUser").mockImplementation(async (user) => {
+			order.push("stopUser");
+			await stopUser(user);
+		});
+		const removeUser = opened.userTools.removeUser.bind(opened.userTools);
+		const removeUserSpy = vi.spyOn(opened.userTools, "removeUser").mockImplementation((user) => {
+			order.push("removeUser");
+			removeUser(user);
+		});
+		const emitUserDeleted = opened.eventBus.emitUserDeleted.bind(opened.eventBus);
+		vi.spyOn(opened.eventBus, "emitUserDeleted").mockImplementation(async (event, context) => {
+			order.push("userDeleted");
+			expect(opened.registry.snapshot().installed().some((entry) => entry.name.endsWith("@bob"))).toBe(false);
+			return emitUserDeleted(event, context);
+		});
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		expect(order).toEqual(["stopWorker", "stopUser", "removeUser", "userDeleted"]);
+		expect(opened.registry.snapshot().installed().some((entry) => entry.name.endsWith("@bob"))).toBe(false);
+		expect(opened.registry.snapshot().installed().some((entry) => entry.name.endsWith("@alice"))).toBe(true);
+		expect(stopWorkerSpy).toHaveBeenCalledWith("bob");
+		expect(stopUserSpy).toHaveBeenCalledWith("bob");
+		expect(removeUserSpy).toHaveBeenCalledWith("bob");
+		const roots = opened.extensionStores.roots;
+		await expect(stat(join(roots.configDir, "user-secrets", "bob.json"))).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(stat(join(roots.configDir, "user-settings", "bob"))).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(stat(cache)).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(stat(otherCache)).rejects.toMatchObject({ code: "ENOENT" });
+		expect((await stat(data)).isDirectory()).toBe(true);
+		expect((await stat(state)).isDirectory()).toBe(true);
+		expect(fixture.deletionChecks).toEqual([expect.objectContaining({ user: "bob", secret: "delete-me", services: [] })]);
+		expect(() => opened.extensionStores.userExtensionStores("acme", "bob")).toThrow('unknown user "bob"');
+		fixture.setDeletionStatusObserver(undefined);
+	});
+
+	test("deletion terminates the user's running fixture service and pid", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletionChecks();
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_ISOLATION: "off" },
+			extensionSpecifiers: [USER_EVENTS_SPECIFIER, USER_SERVICE_SPECIFIER],
+		});
+		const adminToken = await mint(opened, "alice");
+		const serviceHost = opened.seamHosts.get("acme");
+		expect(serviceHost).toBeDefined();
+		const handle = await serviceHost!.services.connect("echo", "bob", {
+			abortSignal: undefined,
+		});
+		const pid = await readServicePid(handle.stdout);
+		expect(pid).toBeGreaterThan(0);
+		expect(opened.userServices.statuses()).toEqual([
+			{ slug: "acme", name: "echo", user: "bob", state: "running" },
+		]);
+		fixture.setDeletionStatusObserver(() => opened.userServices.statuses());
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+
+		expect(deleted.statusCode).toBe(204);
+		await expect(handle.exited).resolves.toMatchObject({ signal: "SIGTERM" });
+		expect(opened.userServices.statuses()).toEqual([]);
+		expect(() => process.kill(pid, 0)).toThrow();
+		expect(fixture.deletionChecks).toEqual([
+			expect.objectContaining({ user: "bob", services: [] }),
+		]);
+		fixture.setDeletionStatusObserver(undefined);
+	});
+
+	test("a throwing userDeleted handler still clears the marker and completes cleanup", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletionChecks();
+		fixture.deletionThrows.push("bob");
+		const { app, opened } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const bobStores = opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "bob");
+		await bobStores.secrets.set("provider-token", "revoke-before-throw");
+		const bobCache = bobStores.paths.cache;
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const deleted = await app.inject({
+				method: "DELETE",
+				url: "/v1/users/bob?transferTo=alice",
+				headers: { authorization: `Bearer ${adminToken}` },
+			});
+			expect(deleted.statusCode).toBe(204);
+			expect(opened.identity.users.get("bob")).toBeUndefined();
+			await expect(stat(join(opened.extensionStores.roots.configDir, "user-secrets", "bob.json"))).rejects.toMatchObject({ code: "ENOENT" });
+			await expect(stat(join(opened.extensionStores.roots.configDir, "user-settings", "bob"))).rejects.toMatchObject({ code: "ENOENT" });
+			await expect(stat(bobCache)).rejects.toMatchObject({ code: "ENOENT" });
+			expect(() => opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "bob")).toThrow('unknown user "bob"');
+			expect(error).toHaveBeenCalledWith(
+				"event-bus: %s handler failed:",
+				expect.stringContaining("fixture-user-events"),
+				expect.objectContaining({ message: "fixture userDeleted failure: bob" }),
+			);
+		} finally {
+			fixture.deletionThrows.length = 0;
+			error.mockRestore();
+		}
+
+		// A marker leaked by the first request would make this user's stores
+		// readable after removal; a second deletion must still complete too.
+		await opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "tester").secrets.set("provider-token", "second");
+		const second = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/tester?transferTo=alice",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+		expect(second.statusCode).toBe(204);
+		expect(opened.identity.users.get("tester")).toBeUndefined();
+		expect(() => opened.extensionStores.userExtensionStores("sigrun-fixture-user-events", "tester")).toThrow('unknown user "tester"');
 	});
 
 	test("with transferTo → owner rewrite, token dead, userDeleted recorded", async () => {

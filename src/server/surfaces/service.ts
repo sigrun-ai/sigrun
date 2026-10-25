@@ -43,6 +43,7 @@ import { ActionDedup } from "./dedup.js";
 import { eventKey, instanceKey as defaultInstanceKey } from "./instance.js";
 import { sniffMime } from "./mime.js";
 import { ActionRateLimit } from "./rate-limit.js";
+import { NamedUserRequiredError } from "./settings-surfaces.js";
 import { WatcherRegistry } from "./watchers.js";
 
 /** The shared-data op-log window (spec §7.3): the last 100 updates. */
@@ -74,6 +75,39 @@ export type ActionResponse =
 			readonly toast?: string;
 		}
 	| Extract<ActionResult, { readonly ok: false }>;
+
+/**
+ * A surface address (UI-blocks U5 Task 2, spec §8.2): an extension
+ * instance `(slug, id, key)` — the form every §7 surface uses — or a
+ * CHAT block `(conversationId, entryId)`, which reuses the same
+ * per-instance state tables (the op window, the action dedup, the
+ * rate limiter) under a reserved composite that can never collide
+ * with an extension slug.
+ */
+export type SurfaceAddress =
+	| { readonly slug: string; readonly id: string; readonly key: string }
+	| { readonly conversationId: number; readonly entryId: string };
+
+/**
+ * The reserved chat "slug" (spec §8.2): a NUL byte can never appear in
+ * an extension slug, so chat composites never collide with one.
+ */
+export const CHAT_SURFACE_SLUG = "\u0000chat";
+
+/** Decompose either address form into the service's table keys. */
+function partsOf(address: SurfaceAddress): {
+	readonly slug: string;
+	readonly id: string;
+	readonly key: string;
+} {
+	return "conversationId" in address
+		? {
+				slug: CHAT_SURFACE_SLUG,
+				id: String(address.conversationId),
+				key: address.entryId,
+			}
+		: { slug: address.slug, id: address.id, key: address.key };
+}
 
 /** Errors `act` reports without calling the handler. */
 export class ActionRateLimitedError extends Error {
@@ -289,8 +323,9 @@ export class SurfaceService {
 	private keyFor(
 		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
+		principal: Principal,
 	): string {
-		if (def.instanceKey !== undefined) return def.instanceKey(params);
+		if (def.instanceKey !== undefined) return def.instanceKey(params, principal);
 		return defaultInstanceKey(params);
 	}
 
@@ -319,7 +354,7 @@ export class SurfaceService {
 	): Promise<RenderResult | undefined> {
 		const located = this.locate(slug, id);
 		if (located === undefined) return undefined;
-		const key = this.keyFor(located.def, params);
+		const key = this.keyFor(located.def, params, principal);
 		const result = await this.callRender(located, key, params, principal);
 		const validation = validateTree(result.tree, {
 			placement: located.def.placement,
@@ -382,7 +417,7 @@ export class SurfaceService {
 	): Promise<DataResult | undefined> {
 		const located = this.locate(slug, id);
 		if (located === undefined) return undefined;
-		const key = this.keyFor(located.def, params);
+		const key = this.keyFor(located.def, params, principal);
 		const state = this.stateFor(slug, id, key);
 		const access = await this.accessFor(slug, id, key, params, principal);
 		if (access === "none") return undefined;
@@ -498,8 +533,9 @@ export class SurfaceService {
 		slug: string,
 		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
+		principal: Principal,
 	): string {
-		return `${slug}${def.id}${this.keyFor(def, params)}`;
+		return `${slug}${def.id}${this.keyFor(def, params, principal)}`;
 	}
 
 	/**
@@ -574,9 +610,19 @@ export class SurfaceService {
 			const hit = this.dedup.check(actionId, composite, fingerprint);
 			if (hit !== undefined && hit !== null) return hit.result;
 		}
-		const result = await this.invokeWithTimeout(() =>
-			handler({ principal, params, key, signal }, payload as never),
-		);
+		let result: ActionResult;
+		try {
+			result = await this.invokeWithTimeout(() =>
+				handler({ principal, params, key, signal }, payload as never),
+			);
+		} catch (cause) {
+			if (cause instanceof NamedUserRequiredError) throw cause;
+			throw new SurfaceFailedError(
+				`surface ${slug}/${id} action "${action}" threw: ${
+					cause instanceof Error ? cause.message : String(cause)
+				}`,
+			);
+		}
 		const wrapped = this.wrapResult(slug, id, key, result);
 		if (actionId !== undefined) {
 			this.dedup.record(actionId, composite, fingerprint, wrapped);
@@ -595,10 +641,10 @@ export class SurfaceService {
 	 * views/panels AND settings surfaces, one source). A throwing
 	 * `instanceKey` propagates (the extension-fault 500 path).
 	 */
-	instanceKeyFor(slug: string, id: string, params: JsonObject): string | undefined {
+	instanceKeyFor(slug: string, id: string, params: JsonObject, principal: Principal): string | undefined {
 		const located = this.locate(slug, id);
 		if (located === undefined) return undefined;
-		return this.keyFor(located.def, params);
+		return this.keyFor(located.def, params, principal);
 	}
 
 	/**
@@ -752,6 +798,96 @@ export class SurfaceService {
 		return state.rev;
 	}
 
+	/**
+	 * Record one chat-block change (spec §8.2: chat data is shared by
+	 * everyone who can see the conversation, so ops are kept like
+	 * `sharedData` surfaces). Only the chat surface ROUTES call this —
+	 * the core handler itself publishes the Task-1 `surface.changed`
+	 * seam event and never touches this table, and an `update_blocks`
+	 * agent edit likewise publishes ONLY the seam event (never an
+	 * announceChatRev), so after an agent edit the in-memory rev no
+	 * longer continues the recorded sequence and the rev-match guard
+	 * below forces the client's next fetch to a full-data answer.
+	 * `rev` is the DURABLE family's revision — the chat block's source
+	 * of truth — so the table merely mirrors it: a rev that does not
+	 * continue the recorded sequence (or a restart resetting memory)
+	 * breaks the replay window's contiguity, and the window RESETS
+	 * rather than ever answering a fetch across a missing rev.
+	 */
+	announceChatRev(
+		address: SurfaceAddress,
+		rev: number,
+		ops?: { readonly ops: readonly unknown[] },
+	): void {
+		const { slug, id, key } = partsOf(address);
+		const state = this.stateFor(slug, id, key);
+		if (ops !== undefined && rev === state.rev + 1) {
+			state.rev = rev;
+			state.ops.push({ rev, ops: [...ops.ops] });
+			while (state.ops.length > SHARED_OPS_WINDOW) state.ops.shift();
+			return;
+		}
+		// An ops-less announcement, or a rev that skips: the window is no
+		// longer contiguous from any `since` — drop it; the next contiguous
+		// recorded action rebuilds it.
+		if (rev > state.rev) state.rev = rev;
+		state.ops = [];
+	}
+
+	/**
+	 * The ops since one rev for a chat block (the `data?since=` answer):
+	 * the kept ops when the window still covers `since` AND the in-memory
+	 * rev matches the durable one the caller read (a stale table serves
+	 * nothing — the caller answers the full data). `undefined` otherwise.
+	 */
+	chatOpsSince(
+		address: SurfaceAddress,
+		since: number,
+		currentRev: number,
+	): { readonly rev: number; readonly ops: readonly unknown[] } | undefined {
+		const { slug, id, key } = partsOf(address);
+		const state = this.instances.get(`${slug}\u0001${id}\u0001${key}`);
+		if (state === undefined) return undefined;
+		if (state.rev !== currentRev) return undefined;
+		if (since < state.rev - state.ops.length || since > state.rev) {
+			return undefined;
+		}
+		return {
+			rev: state.rev,
+			ops: state.ops
+				.filter((entry) => entry.rev > since)
+				.flatMap((entry) => entry.ops),
+		};
+	}
+
+	/** One chat action's rate-limit token (the ext route's own gate). */
+	chatTakeToken(address: SurfaceAddress, user: string): boolean {
+		const { slug, id } = partsOf(address);
+		return this.rateLimit.take(slug, id, user);
+	}
+
+	/** The dedup lookup for one chat action (same table as ext actions). */
+	chatDedupCheck(
+		actionId: string,
+		address: SurfaceAddress,
+		fingerprint: string,
+	): ActionResponse | undefined | null {
+		const { slug, id, key } = partsOf(address);
+		const hit = this.dedup.check(actionId, `${slug}\u0001${id}\u0001${key}`, fingerprint);
+		return hit === undefined || hit === null ? hit : hit.result;
+	}
+
+	/** Record one chat action's first result (the dedup entry). */
+	chatDedupRecord(
+		actionId: string,
+		address: SurfaceAddress,
+		fingerprint: string,
+		result: ActionResponse,
+	): void {
+		const { slug, id, key } = partsOf(address);
+		this.dedup.record(actionId, `${slug}\u0001${id}\u0001${key}`, fingerprint, result);
+	}
+
 	/** Call the surface's `render`, mapping throws to SurfaceFailedError. */
 	private async callRender(
 		located: Located,
@@ -767,6 +903,7 @@ export class SurfaceService {
 				signal: new AbortController().signal,
 			});
 		} catch (cause) {
+			if (cause instanceof NamedUserRequiredError) throw cause;
 			throw new SurfaceFailedError(
 				`surface ${located.slug}/${located.def.id} render() threw: ${
 					cause instanceof Error ? cause.message : String(cause)

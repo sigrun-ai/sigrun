@@ -57,6 +57,7 @@ import { registerExtAssetRoutes } from "./routes/ext-assets.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { registerInteractionRoutes } from "./routes/interactions.js";
+import { registerMeRoutes } from "./routes/me.js";
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerMetricsRoutes } from "./routes/metrics.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
@@ -70,6 +71,7 @@ import { startNotifications } from "./notifications.js";
 import { selfPackageRoot } from "../harness/packages.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
+import { subscribeChatSurfaceChanged } from "../harness/blocks/tools.js";
 import { loadOrCreateKey, signUrl } from "./images/sign.js";
 import { ImageCache } from "./images/cache.js";
 import type { FetchDeps } from "./images/fetch.js";
@@ -237,6 +239,9 @@ export async function createServer(
 	// effective method list), and the boot env (the settings routes'
 	// `effective` block reads it).
 	const sse = new SseRegistry();
+	// The chat-surface seam's unsubscribe (filled in just below, after
+	// the events hub exists to publish onto; never reassigned after).
+	let unsubscribeChatSurfaceChanged: () => void = (): void => {};
 	// Decorated for the shutdown path (serve.ts): fastify's own drain waits
 	// on in-flight requests, so the SSE registry must be endable from the
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
@@ -328,6 +333,18 @@ export async function createServer(
 		},
 	]);
 	app.decorate("surfaces", surfacesService);
+	// The chat-block change seam (UI-blocks U5 Task 2, spec §8.2):
+	// show_blocks/update_blocks AND the user-edit route publish
+	// `surface.changed` through the Task-1 in-process seam; binding it
+	// here forwards every event onto the hub, where the events route's
+	// exhaustive switch gives the CHAT shape the conversation-scoped
+	// delivery path (SessionMeta re-snapshot + accessOf per event).
+	unsubscribeChatSurfaceChanged = subscribeChatSurfaceChanged((event) => {
+		// SAFETY: the chat event IS the wire union's second surface.changed
+		// member (same declaration, re-exported through the seam type) —
+		// the publish types on the union the events switch discriminates.
+		opened.events.publish(event as HostEventWire);
+	});
 	const roots = opened.extensionStores.roots;
 	const ctx: ServerContext = {
 		opened,
@@ -356,6 +373,7 @@ export async function createServer(
 			? {}
 			: { requestRestart: options.onRestart }),
 	};
+	app.decorate("sigrunContext", ctx);
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
 	// conversations/users/access/identity surface then runs the SAME
@@ -363,7 +381,11 @@ export async function createServer(
 	// implementation). Bound here, after the context exists and before any
 	// route or extension code can serve a request; calls issued earlier
 	// (a factory body) have been waiting on exactly this assignment.
-	opened.bindHostBridge(createHostBridge(ctx));
+	const hostBridge = createHostBridge(ctx);
+	opened.bindHostBridge(hostBridge);
+	// Decorated like `sse`/`surfaces`: the bridge is the server-owned
+	// handle tests (and only tests) reach the W5 bridge path through.
+	app.decorate("hostBridge", hostBridge);
 	// The notifications surface (W5 Task 6, spec §9.6): one hub
 	// subscription turning host events into per-recipient
 	// NotificationEvents for every collected notifier contribution,
@@ -384,6 +406,7 @@ export async function createServer(
 	});
 	registerOnboardingRoutes(app, ctx);
 	registerUserRoutes(app, ctx);
+	registerMeRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
 	registerAdminRoutes(app, ctx);
@@ -434,6 +457,13 @@ export async function createServer(
 	// next boot's reconciliation warns (the declared owner no longer
 	// exists — the job runs ownerless until the file is edited).
 	registerJobsOwnershipParticipant(ctx);
+	// The chat-surface seam's teardown: the subscription lives for the
+	// app's lifetime (the module seam is process-global), but the
+	// unsubscribe is kept so a future embedder (a second createServer
+	// over one harness in tests) can detach a bound server cleanly.
+	app.addHook("onClose", async () => {
+		unsubscribeChatSurfaceChanged();
+	});
 
 	return app;
 }

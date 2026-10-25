@@ -180,6 +180,7 @@ export function TurnList(props: {
 						<UserTurn
 							key={turn.entry.id}
 							entry={turn.entry}
+							entries={view.entries}
 							view={view}
 							client={client}
 							conversationId={conversationId}
@@ -226,13 +227,16 @@ export function TurnList(props: {
 /** A user turn: the bubble + actions, with the Edit rule wired here. */
 function UserTurn(props: {
 	entry: ConversationEntryWire;
+	/** The conversation's entries (UserEntry's answer chip resolves its
+	 *  block's title from the `sigrun.blocks` entry it names). */
+	entries: readonly ConversationEntryWire[];
 	view: ConversationViewWire;
 	client: SigrunClient;
 	conversationId: number;
 	onNavigate: (id: number) => void;
 	forkFrom: (entryId: number) => () => void;
 }) {
-	const { entry, view, client, conversationId, onNavigate, forkFrom } = props;
+	const { entry, entries, view, client, conversationId, onNavigate, forkFrom } = props;
 	// The Edit rule (plan Review Focus 4): fork at the entry immediately
 	// BEFORE this user entry; a first message (nothing before it) edits in
 	// a fresh conversation instead. Either way the draft patch prefills
@@ -258,6 +262,7 @@ function UserTurn(props: {
 	return (
 		<UserEntry
 			entry={entry}
+			entries={entries}
 			onFork={forkFrom(entry.id)}
 			onEdit={editHere}
 		/>

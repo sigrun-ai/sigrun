@@ -240,7 +240,7 @@ export function registerOnboardingRoutes(
 					BACKGROUND_CONTEXT,
 				);
 				if (root !== undefined) {
-					await stampSessionOwner(root, record.user);
+					await stampSessionOwner(root, record.user, ctx.opened);
 				}
 				return { status: 200, record } as const;
 			}

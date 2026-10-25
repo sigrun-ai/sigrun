@@ -24,9 +24,11 @@
 import type { ConversationEntryWire, SigrunClient, ToolSlotWire } from "../api";
 import type { ToolCall, TimelineEvent } from "@sigrun/shared/turns";
 import { ActivityLine } from "./ActivityLine";
+import { BlocksEntry, NoteEntry } from "./BlocksEntry";
 import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
 import { ToolRow } from "./ToolResultEntry";
+import { messageText } from "./content";
 
 /** The grouped assistant turn TurnList hands down (groupTurns' assistant variant). */
 export interface AssistantTurnData {
@@ -121,6 +123,37 @@ export function AssistantTurn(props: {
 								</div>
 							);
 						}
+						// U5 Task 4: the chat-blocks events render in place (the
+						// surface at the point the run created it, the note where it
+						// was admitted).
+						if (event.kind === "blocks") {
+							const entry = turn.entries.find(
+								(candidate) => candidate.id === event.entryId,
+							);
+							return (
+								<BlocksEntry
+									key={`blocks:${event.entryId}`}
+									conversationId={conversationId}
+									entryId={event.entryId}
+									data={entry?.data}
+								/>
+							);
+						}
+						if (event.kind === "note") {
+							const entry = turn.entries.find(
+								(candidate) => candidate.id === event.entryId,
+							);
+							return (
+								<NoteEntry
+									key={`note:${event.entryId}`}
+									entryId={event.entryId}
+									text={(entry?.model ?? [])
+										.map((message) => messageText(message))
+										.filter((text) => text !== "")
+										.join("\n\n")}
+								/>
+							);
+						}
 						return (
 							<ToolRow
 								key={`${event.tool.callId}:${index}`}
@@ -164,6 +197,40 @@ export function AssistantTurn(props: {
 					live={props.live}
 				/>
 			)}
+			{/* U5 Task 4: the grouped view keeps the block surfaces and note
+			    rows OUTSIDE the folded ActivityLine — the surface is the turn's
+			    visible artifact, never hidden behind the activity fold. */}
+			{turn.timeline.map((event) => {
+				if (event.kind === "blocks") {
+					const entry = turn.entries.find(
+						(candidate) => candidate.id === event.entryId,
+					);
+					return (
+						<BlocksEntry
+							key={`blocks:${event.entryId}`}
+							conversationId={conversationId}
+							entryId={event.entryId}
+							data={entry?.data}
+						/>
+					);
+				}
+				if (event.kind === "note") {
+					const entry = turn.entries.find(
+						(candidate) => candidate.id === event.entryId,
+					);
+					return (
+						<NoteEntry
+							key={`note:${event.entryId}`}
+							entryId={event.entryId}
+							text={(entry?.model ?? [])
+								.map((message) => messageText(message))
+								.filter((text) => text !== "")
+								.join("\n\n")}
+						/>
+					);
+				}
+				return null;
+			})}
 			<MessageActions
 				kind="assistant"
 				text={turn.text}

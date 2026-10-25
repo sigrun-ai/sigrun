@@ -63,6 +63,7 @@ import { createSkillsExtension } from "../skills/index.js";
 import { SLASH_COMMANDS } from "../server/commands.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { packagePromptRootsOf } from "../commands/templates.js";
+import { blocksToolsExtension } from "./blocks/tools.js";
 import { codingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
@@ -86,6 +87,11 @@ import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
+import { launchInJail } from "../sandbox/launch.js";
+import { buildUserPolicy, defaultModuleTrees } from "../sandbox/policy.js";
+import { lookupOsAccount } from "../sandbox/os-account.js";
+import { agentEnv } from "./agent-env.js";
+import { UserServices } from "./user-services.js";
 import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
 import { IsolationState } from "../sandbox/isolation.js";
 import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.js";
@@ -103,6 +109,12 @@ import {
 	type ResolvedBuiltins,
 } from "./builtins.js";
 import { createRegistry } from "./registry.js";
+import {
+	isUserEntryName,
+	rewriteSelection,
+	sweepUserSelections,
+	UserToolRegistry,
+} from "./user-tools.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
 import {
 	resolveRefreshMinutes,
@@ -161,6 +173,7 @@ export interface OpenedHarness {
 	readonly osUsers: OsUsersAvailability;
 	/** The shared per-user workers, stopped before the harness seal. */
 	readonly sandboxPool: WorkerPool;
+	readonly userServices: UserServices;
 	/**
 	 * The durable storage handle the harness was opened over — the same
 	 * instance the Session owns and closes on `harness.close()`. Exposed so
@@ -172,6 +185,17 @@ export interface OpenedHarness {
 	 */
 	readonly storage: Storage;
 	readonly registry: Registry;
+	/** Per-user tool publications and the loader-declared slug set (M2). */
+	readonly userTools: UserToolRegistry;
+	/** Selection edits applied during owner writes (shared with server ops). */
+	readonly rewriteUserSelection: (
+		tx: import("@earendil-works/pi-durable").Tx,
+		conversationId: import("@earendil-works/pi-durable").ConversationId,
+		from: string | undefined,
+		to: string | undefined,
+	) => Promise<void>;
+	/** The boot sweep's durable conversation count (zero on a no-op boot). */
+	readonly userToolSweep: { readonly scanned: number; readonly changed: number };
 	/** The merged `Models` store generation dispatches through. */
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
@@ -294,6 +318,7 @@ export interface OpenedHarness {
 	publishSettingsChanged(
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	): void;
 	/**
 	 * The boot-shared extension store trio (core hardening W3 Task 7,
@@ -769,8 +794,53 @@ export async function openHarness(
 		const code = await ensureSetupCode(identity.cacheDir, env);
 		console.log(`sigrun setup code: ${code}`);
 	}
+	const managedPaths = {
+		roots,
+		storagePath: config.storagePath,
+		coreRoot,
+		userAreas: (user: string) => join(roots.dataDir, "users", user),
+	};
+	const userServices = new UserServices({
+		launch: (policy, command, args, serviceEnv) => {
+			if (helper === undefined) throw new Error("sandbox helper not found");
+			return launchInJail(helper, policy, command, args, serviceEnv);
+		},
+		policyFor: (user) => {
+			const record = identity.users.get(user);
+			if (record === undefined) return { reason: `unknown user "${user}"` };
+			let osAccount: ReturnType<typeof lookupOsAccount>;
+			if (record.osUser !== undefined) {
+				if (!osUsers.available) return { reason: "osUser requires CAP_SETUID" };
+				try { osAccount = lookupOsAccount(record.osUser); } catch { return { reason: `OS account not found: ${record.osUser}` }; }
+				if (osAccount === undefined) return { reason: `OS account not found: ${record.osUser}` };
+			}
+			const built = buildUserPolicy(record, {
+				managed: managedPaths,
+				nodeBinDir: process.execPath,
+				moduleTrees: defaultModuleTrees(coreRoot),
+				...(osAccount === undefined ? {} : { osAccount }),
+			});
+			if (!built.ok) return { reason: built.reason };
+			if (!isolationState.active()) {
+				const serviceEnv = agentEnv(env);
+				delete serviceEnv.SSH_AUTH_SOCK;
+				serviceEnv.HOME = built.policy.home;
+				serviceEnv.TMPDIR = built.policy.tmp;
+				serviceEnv.USER = user;
+				return { ...built.policy, env: serviceEnv };
+			}
+			return built.policy;
+		},
+		isolationActive: () => isolationState.active(),
+		now: () => Date.now(),
+		managed: managedPaths,
+	});
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
+	// Late-filled by the loader: factories publish through the same registry
+	// instance, and selection rewrites read the declared set LIVE.
+	const perUserSlugs: string[] = [];
+	const userTools = new UserToolRegistry(registry, () => perUserSlugs);
 	// The skills convention's package roots (W5 Task 4, spec §9.4): a LATE
 	// array — the extension packages that contribute skill dirs load BELOW
 	// (after this install), and the section renders per REQUEST, so the
@@ -835,6 +905,10 @@ export async function openHarness(
 	registry.install(createSkillsExtension(skillsOptions));
 	registry.install(codingToolsExtension);
 	registry.install(searchToolsExtension);
+	// The chat-blocks tools (UI-blocks U5 Task 1, spec §8.1): every agent
+	// can show and update interactive block surfaces in chat — the same
+	// core-owned slot as the coding/search tools, never quarantined.
+	registry.install(blocksToolsExtension);
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
 	// factory-result producers are retained alongside the outcomes (Task 9e).
@@ -927,7 +1001,7 @@ export async function openHarness(
 	// the cache dir materializes lazily on first `paths.cache` access).
 	// The boot env feeds the admin surface's env-secret listing (the
 	// `SIGRUN_EXT_<SLUG>_` fallbacks — never written down, listed only).
-	const sharedStores = sharedExtensionStores(roots, env);
+	const sharedStores = sharedExtensionStores(roots, env, identity.users);
 	const seamHosts = new Map<string, SeamHost>();
 	const seamKinds = new Map<string, DeclaredKinds>();
 	const {
@@ -937,6 +1011,7 @@ export async function openHarness(
 		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
+		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
 		webuiBundles: extensionWebuiBundles,
@@ -949,6 +1024,7 @@ export async function openHarness(
 		gatewayEngine,
 		surfaces: surfaceBindings,
 		settingsSections: settingsSectionBindings,
+		perUserSlugs: loadedPerUserSlugs,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -970,7 +1046,10 @@ export async function openHarness(
 					createSeamHost({ name: extensionName }, kinds, {
 						bindHarness,
 						harness: harnessOf,
-					}, sharedStores);
+					}, sharedStores, {
+						declared: (slug) => perUserSlugs.includes(slug),
+						set: (slug, user, tools) => userTools.set(slug, user, tools),
+					}, userServices);
 				host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
 				// resolved: the PRE-import call must NOT file (its identity is
@@ -983,14 +1062,22 @@ export async function openHarness(
 				}
 				return host;
 			},
+			onQuarantine: (slug) => {
+				userTools.removeSlug(slug);
+				return userServices.quarantine(slug);
+			},
 		},
-);
-// The late fill (W5 Task 4): the skills extension installed BEFORE the
-// loader ran, holding an empty package-roots array by reference — the
-// collected roots land HERE, and the section (which renders per request)
-// observes them from its next render on. Core sections still lead the
-// prompt; only the discovery content is late.
-collectedSkillRoots.push(...extensionSkillRoots);
+	);
+	perUserSlugs.push(...loadedPerUserSlugs);
+	for (const binding of userServiceBindings) {
+		userServices.register(binding.extension, binding.services, binding.packageDir);
+	}
+	// The late fill (W5 Task 4): the skills extension installed BEFORE the
+	// loader ran, holding an empty package-roots array by reference — the
+	// collected roots land HERE, and the section (which renders per request)
+	// observes them from its next render on. Core sections still lead the
+	// prompt; only the discovery content is late.
+	collectedSkillRoots.push(...extensionSkillRoots);
 	// The prompt-template package roots (Task 2c): derived from the loaded
 	// entries' package roots — each package that ships a `prompts/`
 	// directory becomes an attributed root (the loader has no fs coupling
@@ -1132,6 +1219,8 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		// engine loaded (core ships none — `gatewayEngine` is undefined
 		// unless an extension declared one).
 		gatewayLoaded: gatewayEngine !== undefined,
+		rewriteUserSelection: (tx, conversationId, from, to) =>
+			rewriteSelection(tx, conversationId, from, to, perUserSlugs),
 	};
 	registry.install({
 		name: "sigrun.jobs",
@@ -1241,12 +1330,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		osUsers,
 		pool: sandboxPool,
 		directory: identity.users,
-		managed: {
-			roots,
-			storagePath: config.storagePath,
-			coreRoot,
-			userAreas: (user) => join(roots.dataDir, "users", user),
-		},
+		managed: managedPaths,
 		ownerOf: async (conversationId, read, ctx) =>
 			(await read.snapshot(SessionMetaDoc, conversationId, ctx))?.owner,
 	});
@@ -1302,7 +1386,13 @@ collectedSkillRoots.push(...extensionSkillRoots);
 				get stream() {
 					return callerSettings?.stream ?? fileSettings.stream;
 				},
-				extensions: callerSettings?.extensions,
+				get extensions() {
+					// Per-user entries are core-computed from SessionMeta.owner,
+					// never part of a host default — including an operator-supplied
+					// caller list (controller ruling: filter BOTH sources).
+					const selected = callerSettings?.extensions ?? registry.snapshot().installed();
+					return selected.filter((entry) => !isUserEntryName(entry.name));
+				},
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {
 					...config.compaction,
@@ -1311,6 +1401,17 @@ collectedSkillRoots.push(...extensionSkillRoots);
 			},
 		},
 		BACKGROUND_CONTEXT,
+	);
+	// M2 boot sweep: add each conversation owner's declared entries to every
+	// default-edited selection. Exact arrays are never widened. Runs before
+	// resume and is idempotent; late tool installs still resolve by name.
+	const userToolSweep = await sweepUserSelections(
+		harness,
+		storage,
+		perUserSlugs,
+	);
+	console.log(
+		`user tools: boot sweep scanned ${userToolSweep.scanned} conversation(s), changed ${userToolSweep.changed}`,
 	);
 	// The seam hosts' lazy binding resolves here: every seam call issued
 	// after boot completes finds the harness immediately; one issued from a
@@ -1358,6 +1459,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	const publishSettingsChanged = (
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	): void => {
 		events.publish({ type: "settings.changed", scope, keys: [...keys] });
 		if (
@@ -1368,7 +1470,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 			stopProviderRefresh();
 			stopProviderRefresh = armProviderRefresh();
 		}
-		void eventBus.emitSettingsChanged(keys);
+		if (user !== undefined && typeof scope !== "string") {
+			userServices.settingsChanged(scope.extension, user);
+		}
+		void eventBus.emitSettingsChanged(keys, user);
 	};
 	settingsChangedSinks.push(publishSettingsChanged);
 	// Activity stamping (UI refresh A1): every settled run stamps its
@@ -1600,8 +1705,13 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		isolationState,
 		osUsers,
 		sandboxPool,
+		userServices,
 		storage,
 		registry,
+		userTools,
+		rewriteUserSelection: (tx, conversationId, from, to) =>
+			rewriteSelection(tx, conversationId, from, to, perUserSlugs),
+		userToolSweep,
 		models,
 		jobs,
 		jobRunTotals: () => jobRunTotals,

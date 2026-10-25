@@ -93,6 +93,11 @@ export function readRecords<T>(path: string): T[] {
 	return value as T[];
 }
 
+/** Invalidate one path after a writer outside writeJson replaces it. */
+export function invalidateJsonCache(path: string): void {
+	cache.delete(path);
+}
+
 /**
  * Write one JSON value the house way (tabs, trailing newline),
  * atomically, mode `0600` — identity files all carry credential

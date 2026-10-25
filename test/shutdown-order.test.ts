@@ -245,7 +245,10 @@ describe("the booted composition's shutdown order", () => {
 				gateway,
 				eventBusShutdown: () =>
 					opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
-				stopSandboxWorkers: async () => {},
+				stopSandboxWorkers: async () => {
+					await opened.sandboxPool.stopAll();
+					await opened.userServices.stopAll();
+				},
 				stopProviderRefresh: async () => {
 					opened.stopProviderRefresh();
 					// The serve path's bounded boot-refresh join (behavior

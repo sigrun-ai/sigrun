@@ -37,9 +37,16 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 import type { Env } from "../config.js";
+import {
+	MutationQueue,
+	invalidateJsonCache,
+	readJson,
+	writeJson,
+} from "./identity/json-store.js";
+import { UserDirectory } from "./identity/users.js";
 
 /** The four resolved store roots — absolute paths, `~` expanded. */
 export interface StoreRoots {
@@ -195,7 +202,11 @@ export async function ensureCacheDir(
 
 /** The synchronous mkdir core behind {@link ensureCacheDir}. */
 function ensureCacheDirAt(roots: StoreRoots, slug: string): string {
-	const dir = join(roots.cacheDir, slug);
+	return ensureDirAt(join(roots.cacheDir, slug));
+}
+
+/** The synchronous mkdir core behind lazy path getters. */
+function ensureDirAt(dir: string): string {
 	try {
 		mkdirSync(dir, { recursive: true });
 	} catch (error) {
@@ -443,6 +454,26 @@ export function resolveSecretFor(
  * extension owns the I/O; only the cache one is created by sigrun,
  * lazily at first access — Review Focus 5: never at boot).
  */
+export interface UserExtensionStores {
+	/** This user and slug's secrets section. Values never appear on HTTP reads. */
+	readonly secrets: {
+		get(key: string): Promise<string | undefined>;
+		set(key: string, value: string): Promise<void>;
+		delete(key: string): Promise<void>;
+	};
+	/** This user's `user-settings/<user>/<slug>.json` object. */
+	readonly settings: {
+		get(): Promise<Record<string, unknown>>;
+		set(value: Record<string, unknown>): Promise<void>;
+	};
+	/** Per-user raw directories, each created synchronously on first access. */
+	readonly paths: {
+		readonly data: string;
+		readonly state: string;
+		readonly cache: string;
+	};
+}
+
 export interface ExtensionStores {
 	/** This slug's `secrets.json` section (whole-section read-modify-write). */
 	readonly secrets: {
@@ -455,6 +486,8 @@ export interface ExtensionStores {
 		set(value: Record<string, unknown>): Promise<void>;
 	};
 	/** Per-slug raw directories under the data/state/cache roots. */
+	/** One directory user's stores, still scoped to this extension's slug. */
+	user(user: string): UserExtensionStores;
 	readonly paths: {
 		/** `<dataDir>/<slug>` — the root exists; the subdir is the extension's. */
 		readonly data: string;
@@ -488,6 +521,14 @@ export interface SharedExtensionStores {
 	readonly secrets: SecretsStore;
 	readonly settings: ExtensionSettingsStore;
 	readonly roots: StoreRoots;
+	/** The live directory; stores.user validates through this on every call. */
+	readonly users: UserDirectory;
+	/** One user's stores for one slug (the /v1/me routes ride this too). */
+	userExtensionStores(slug: string, user: string): UserExtensionStores;
+	/** §10.6 step 5: credentials/settings and cache only; data/state stay. */
+	removeUserData(user: string): Promise<void>;
+	/** One user/slug's stored secret names (never values, no env fallback). */
+	userSecretKeys(slug: string, user: string): Promise<readonly string[]>;
 	/** One slug's settings file get/set (the API's verbatim object store). */
 	settingsFor(slug: string): {
 		get(): Promise<Record<string, unknown>>;
@@ -510,19 +551,117 @@ export interface ExtensionSecretKey {
 /** The `secrets.json` file name at the config root (spec §3 map). */
 const SECRETS_FILE_NAME = "secrets.json";
 
+/**
+ * One user's secrets file (multi-user M2): the same object-map discipline
+ * as the shared SecretsStore, plus the identity helpers' mtime reload and
+ * MutationQueue. A queued write re-reads the CURRENT file inside its
+ * mutation, so sibling sections survive concurrent sets.
+ */
+/** One FIFO per secrets file, shared by independently constructed views. */
+const userSecretMutations = new Map<string, MutationQueue>();
+
+export class UserSecretsStore {
+	private readonly mutations: MutationQueue;
+
+	constructor(readonly path: string) {
+		this.mutations = userSecretMutations.get(path) ?? new MutationQueue();
+		userSecretMutations.set(path, this.mutations);
+	}
+
+	private readAll(): Record<string, unknown> {
+		const value = readJson<unknown>(this.path, {});
+		if (!isPlainObject(value)) {
+			throw new Error(`sigrun: ${this.path} must contain a JSON object`);
+		}
+		return value;
+	}
+
+	readSection(slug: string): Record<string, unknown> {
+		const section = this.readAll()[slug];
+		return isPlainObject(section) ? section : {};
+	}
+
+	writeSection(slug: string, section: Record<string, unknown>): Promise<void> {
+		return this.mutate(slug, (draft) => {
+			for (const key of Object.keys(draft)) delete draft[key];
+			Object.assign(draft, section);
+		});
+	}
+
+	/** One serialized read-modify-write; validation runs INSIDE the queue. */
+	mutate(
+		slug: string,
+		update: (section: Record<string, unknown>) => void,
+	): Promise<void> {
+		return this.mutations.run(async () => {
+			const all = this.readAll();
+			const current = all[slug];
+			const draft = isPlainObject(current) ? { ...current } : {};
+			update(draft);
+			all[slug] = draft;
+			// The parent is created only on the first actual secret write.
+			await ensureDir(dirname(this.path));
+			// writeJson -> writeFileAtomic(..., 0600), on create AND rewrite.
+			await writeJson(this.path, all);
+		});
+	}
+}
+
+/** In-memory only: active userDeleted fan-out windows (Task 5 owns begin/end). */
+const deletingUsers = new Map<string, number>();
+
+/**
+ * Mark one user's deletion fan-out active. The returned idempotent end hook
+ * releases only this window; nested fan-outs cannot clear each other early.
+ * No marker is persisted and no catch-all allowMissing flag exists.
+ */
+export function beginUserDeletion(user: string): () => void {
+	deletingUsers.set(user, (deletingUsers.get(user) ?? 0) + 1);
+	let active = true;
+	return () => {
+		if (!active) return;
+		active = false;
+		const remaining = (deletingUsers.get(user) ?? 1) - 1;
+		if (remaining <= 0) deletingUsers.delete(user);
+		else deletingUsers.set(user, remaining);
+	};
+}
+
+/** Resolve one directory user, or the explicit deletion-window exception. */
+function requireStoreUser(users: UserDirectory, user: string): void {
+	if (users.get(user) === undefined && !deletingUsers.has(user)) {
+		throw new Error(`unknown user "${user}"`);
+	}
+}
+
 /** Build the shared trio from resolved roots (cheap, no I/O). */
 export function sharedExtensionStores(
 	roots: StoreRoots,
 	env: Env = {},
+	users?: UserDirectory,
 ): SharedExtensionStores {
 	const settings = new ExtensionSettingsStore(
 		join(roots.configDir, SETTINGS_DIR_NAME),
 	);
 	const secrets = new SecretsStore(join(roots.configDir, SECRETS_FILE_NAME));
+	// The optional fallback keeps this low-level factory usable without an
+	// identity bundle; production boot always passes its LIVE directory.
+	const directory = users ?? new UserDirectory(join(roots.configDir, "users.json"));
 	return {
 		secrets,
 		settings,
 		roots,
+		users: directory,
+		removeUserData: (user) => removeUserData(roots, user),
+		userExtensionStores: (slug, user) =>
+			userExtensionStores(roots, directory, slug, user),
+		userSecretKeys: async (slug, user) => {
+			requireStoreUser(directory, user);
+			const store = new UserSecretsStore(
+				join(roots.configDir, USER_SECRETS_DIR, `${user}.json`),
+			);
+			return Object.keys(store.readSection(slug));
+		},
 		settingsFor: (slug) => ({
 			get: () => settings.read(slug),
 			set: (value) => settings.write(slug, value),
@@ -582,6 +721,7 @@ export function scopedExtensionStores(
 	slug: string,
 ): ExtensionStores {
 	return {
+		user: (user) => shared.userExtensionStores(slug, user),
 		secrets: {
 			async get(key) {
 				const section = await shared.secrets.readSection(slug);
@@ -606,6 +746,172 @@ export function scopedExtensionStores(
 			get cache() {
 				return ensureCacheDirAt(shared.roots, slug);
 			},
+		},
+	};
+}
+
+/** The per-user file/dir layout (multi-user M2 §10.2, verbatim). */
+const USER_SECRETS_DIR = "user-secrets";
+const USER_SETTINGS_DIR = "user-settings";
+
+/** Whether a filesystem error is just an absent cleanup candidate. */
+function isEnoent(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/** Delete one cache user dir only when every existing parent component is
+ * a real directory inside the cache root. Symlink parents are skipped, so
+ * recursive rm can never follow one outside the root.
+ */
+async function removeCacheUserDir(
+	cacheRoot: string,
+	slug: string,
+	user: string,
+): Promise<void> {
+	const parentComponents = [slug, "users"];
+	let resolvedParent = cacheRoot;
+	for (const component of parentComponents) {
+		const candidate = join(resolvedParent, component);
+		let stats: import("node:fs").Stats;
+		try {
+			stats = await lstat(candidate);
+		} catch (error) {
+			if (isEnoent(error)) return;
+			throw error;
+		}
+		if (!stats.isDirectory() || stats.isSymbolicLink()) return;
+		const resolved = await realpath(candidate);
+		if (resolved !== cacheRoot && !resolved.startsWith(cacheRoot + sep)) return;
+		resolvedParent = resolved;
+	}
+	const target = join(resolvedParent, user);
+	try {
+		const stats = await lstat(target);
+		// Deleting the symlink itself is confined; its target is untouched.
+		if (!stats.isDirectory() && !stats.isSymbolicLink()) return;
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	await rm(target, { recursive: true, force: true });
+}
+
+/** Core's §10.6 step-5 cleanup, after userDeleted and directory removal.
+ * Cache entries are enumerated because per-user registry entries may already
+ * have uninstalled slugs. Data/state deliberately remain extension-owned.
+ */
+async function removeUserData(roots: StoreRoots, user: string): Promise<void> {
+	await rm(join(roots.configDir, USER_SECRETS_DIR, `${user}.json`), { force: true });
+	await rm(join(roots.configDir, USER_SETTINGS_DIR, user), { recursive: true, force: true });
+	let cacheRoot: string;
+	let entries: import("node:fs").Dirent[];
+	try {
+		cacheRoot = await realpath(roots.cacheDir);
+		entries = await readdir(cacheRoot, { withFileTypes: true });
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	await Promise.all(entries.flatMap((entry) =>
+		entry.isDirectory() && !entry.isSymbolicLink()
+			? [removeCacheUserDir(cacheRoot, entry.name, user)]
+			: [],
+	));
+}
+
+/** Settings use sync mtime reload + queued atomic writes (0644, like shared settings). */
+const userSettingQueues = new Map<string, MutationQueue>();
+const userSettingMutations = {
+	run<T>(path: string, op: () => Promise<T>): Promise<T> {
+		const queue = userSettingQueues.get(path) ?? new MutationQueue();
+		userSettingQueues.set(path, queue);
+		return queue.run(op);
+	},
+};
+
+function readUserSettings(path: string): Record<string, unknown> {
+	const value = readJson<unknown>(path, {});
+	if (!isPlainObject(value)) {
+		throw new Error(`sigrun: ${path} must contain a JSON object`);
+	}
+	return value;
+}
+
+async function writeUserSettings(
+	path: string,
+	value: Record<string, unknown>,
+): Promise<void> {
+	try {
+		await writeFileAtomic(path, serializeJson(value), 0o644);
+	} finally {
+		invalidateJsonCache(path);
+	}
+}
+
+/** One user/slug view; user validity is checked at EVERY operation, not cached. */
+// Directory usernames are validated at creation, and extension slugs are
+// loader-sanitized; the joins below therefore cannot escape the store roots.
+// The deleting marker is the ONLY missing-record exception, and its release
+// immediately re-enables checks on handles already captured during fan-out.
+export function userExtensionStores(
+	roots: StoreRoots,
+	users: UserDirectory,
+	slug: string,
+	user: string,
+): UserExtensionStores {
+	requireStoreUser(users, user);
+	const secrets = new UserSecretsStore(
+		join(roots.configDir, USER_SECRETS_DIR, `${user}.json`),
+	);
+	const rawPath = (root: string): string => {
+		requireStoreUser(users, user);
+		return ensureDirAt(join(root, slug, "users", user));
+	};
+	return {
+		secrets: {
+			async get(key) {
+				requireStoreUser(users, user);
+				const value = secrets.readSection(slug)[key];
+				return value === undefined || value === null ? undefined : String(value);
+			},
+			async set(key, value) {
+				await secrets.mutate(slug, (section) => {
+					requireStoreUser(users, user);
+					section[key] = value;
+				});
+			},
+			async delete(key) {
+				await secrets.mutate(slug, (section) => {
+					requireStoreUser(users, user);
+					delete section[key];
+				});
+			},
+		},
+		settings: {
+			async get() {
+				requireStoreUser(users, user);
+				return readUserSettings(
+					join(roots.configDir, USER_SETTINGS_DIR, user, `${slug}.json`),
+				);
+			},
+			async set(value) {
+				await userSettingMutations.run(
+					join(roots.configDir, USER_SETTINGS_DIR, user, `${slug}.json`),
+					async () => {
+						requireStoreUser(users, user);
+						await ensureDir(join(roots.configDir, USER_SETTINGS_DIR, user));
+						await writeUserSettings(
+							join(roots.configDir, USER_SETTINGS_DIR, user, `${slug}.json`),
+							value,
+						);
+					},
+				);
+			},
+		},
+		paths: {
+			get data() { return rawPath(roots.dataDir); },
+			get state() { return rawPath(roots.stateDir); },
+			get cache() { return rawPath(roots.cacheDir); },
 		},
 	};
 }

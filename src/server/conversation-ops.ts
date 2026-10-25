@@ -17,13 +17,14 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { configure } from "@earendil-works/pi-durable";
+import { AgentDoc, configure } from "@earendil-works/pi-durable";
 import type {
 	Conversation,
 	ConversationId,
 	Cursor,
 	EntryId,
 	Extension,
+	InputEntry,
 	InputSubmissionDraft,
 	ModelRef,
 	Submission,
@@ -43,7 +44,8 @@ import { touchActivity } from "../harness/activity.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
-import { isConfinedPath, parseSubmissionInput, resolveParts } from "./content-parts.js";
+import { isConfinedPath, parseSubmissionInput } from "./content-parts.js";
+import { resolvePartsLazy } from "./content-parts-lazy.js";
 import {
 	CommandUsageError,
 	expandInput,
@@ -60,6 +62,7 @@ import {
 	WHEN_BUSY_MODES,
 	type WhenBusyMode,
 } from "./helpers.js";
+import { writePendingNote } from "./blocks/notes.js";
 import {
 	applySessionMetaPatch,
 	DEFAULT_SESSION_META,
@@ -260,6 +263,15 @@ export async function createConversationOp(
 				});
 			}
 		}
+		for (const name of input.agent.extensions ?? []) {
+			const at = name.indexOf("@");
+			if (at > 0 && name.slice(at + 1) !== input.owner) {
+				throw new ConversationOpError({
+					error: "invalid_field",
+					field: "agent.extensions",
+				});
+			}
+		}
 	}
 	const selection =
 		input.agent === undefined
@@ -312,6 +324,12 @@ export async function createConversationOp(
 		}
 		if (input.name !== undefined) draft.name = input.name;
 		if (input.source !== undefined) draft.source = input.source;
+		await opened.rewriteUserSelection(
+			tx,
+			conversation.id,
+			undefined,
+			input.owner,
+		);
 	}, BACKGROUND_CONTEXT);
 	const view = await readView(conversation);
 	return { id: conversation.id, view };
@@ -324,6 +342,23 @@ export interface SubmitOpOptions {
 	readonly whenBusy?: unknown;
 	/** The raw `?waitMs` value (validated against the §7.1 ceiling). */
 	readonly waitMs?: unknown;
+	/**
+	 * A server-built input entry (UI-blocks U5 Task 3, spec §8.4): a block
+	 * answer submits through this op as `sigrun.blocks.answer`. When set,
+	 * expansion is skipped entirely — the answer's `content` is a
+	 * server-built projection that never starts with `/`, so there is
+	 * nothing to expand — and a state where BOTH the expanded entry and
+	 * `entry` would be set throws (a programming error, never a silent
+	 * overwrite).
+	 */
+	readonly entry?: InputEntry;
+	/**
+	 * The one surface whose unnoted changes this turn does NOT note (spec
+	 * §8.4): a block answer folds its own surface's changes into the
+	 * answer content and advances its `notedThrough` itself; every other
+	 * surface still notes.
+	 */
+	readonly skipNoteFor?: string;
 }
 
 /**
@@ -383,6 +418,16 @@ export async function submitOp(
 	) {
 		throw new ConversationOpError({ error: "invalid_field", field: "whenBusy" });
 	}
+	// The §8.3 change note precedes EVERY turn admission (the note write
+	// precedes `expandInput`: an expansion failure — `invalid_input` —
+	// never strands unnoted edits without at least the note decision
+	// point). A block answer's surface is excluded (§8.4 folded it).
+	await writePendingNote(
+		opened.harness,
+		conversation,
+		opts.skipNoteFor,
+		BACKGROUND_CONTEXT,
+	);
 	// Resolve path-parts to inline content NOW, against the live
 	// workspace: missing paths become explicit error parts; other
 	// workspace failures throw — fail-loud. Command expansion (Task 2c)
@@ -396,31 +441,61 @@ export async function submitOp(
 	// ordinary user input: it maps to the same `invalid_input` 400 shape
 	// `parseSubmissionInput` uses, never a 500. Anything else expansion
 	// throws is a genuine bug and still falls through as one.
-	const env = await conversationEnv(opened, conversation);
+	// The workspace env resolves lazily (a promise, awaited only by
+	// resolvePartsLazy's file/image parts): an answer submission (opts.entry)
+	// never needs the filesystem, and on a host where the sandbox helper is
+	// unavailable the env would throw — the answer must not depend on it.
+	// A THUNK, not an eager promise: conversationEnv throws (not rejects)
+	// on hosts where the sandbox helper is unavailable, and an eager
+	// creation would fail the ANSWER path too (opts.entry never needs the
+	// filesystem). The thunk is invoked only by the expansion branch.
+	const envThunk = () => conversationEnv(opened, conversation);
 	let expansion: ExpansionResult;
-	try {
-		expansion = await expandInput(
-			parsed.parts,
-			opened.commandExpansion,
-			env,
-			BACKGROUND_CONTEXT,
-		);
-	} catch (error) {
-		if (error instanceof CommandUsageError) {
-			throw new ConversationOpError({ error: "invalid_input" });
+	if (opts.entry !== undefined) {
+		// A server-built entry (a block answer) skips expansion entirely:
+		// its content is a projection that never starts with `/`.
+		expansion = { parts: parsed.parts };
+	} else {
+		try {
+			const env = await envThunk();
+			expansion = await expandInput(
+				parsed.parts,
+				opened.commandExpansion,
+				env,
+				BACKGROUND_CONTEXT,
+			);
+		} catch (error) {
+			if (error instanceof CommandUsageError) {
+				throw new ConversationOpError({ error: "invalid_input" });
+			}
+			throw error;
 		}
-		throw error;
 	}
-	const content = await resolveParts(expansion.parts, env, BACKGROUND_CONTEXT);
-	const draft: InputSubmissionDraft = {
-		type: "input",
-		content,
-		...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
-		...(whenBusy === undefined ? {} : { whenBusy: whenBusy as WhenBusyMode }),
-		...(expansion.typed === undefined
-			? {}
-			: {
-					entry: {
+	// The entry disjunction (the brief's enforced invariant): `opts.entry`
+	// and expansion are mutually exclusive BY CONSTRUCTION — the answer's
+	// content is a server-built projection that never starts with `/`. A
+	// state where both would be set (an entry-carrying call whose input
+	// expansion claims) is a programming error, never a silent overwrite,
+	// and throws BEFORE any submission is admitted.
+	if (opts.entry !== undefined) {
+		const first = parsed.parts[0];
+		if (
+			first !== undefined &&
+			first.type === "text" &&
+			first.text.startsWith("/")
+		) {
+			throw new Error(
+				"submitOp: opts.entry with an expandable input is a programming error (entry and the expanded entry are mutually exclusive)",
+			);
+		}
+	}
+	const content = await resolvePartsLazy(expansion.parts, envThunk(), BACKGROUND_CONTEXT);
+	const entry: InputEntry | undefined =
+		opts.entry !== undefined
+			? opts.entry
+			: expansion.typed === undefined
+				? undefined
+				: {
 						kind: EXPANDED_ENTRY_KIND,
 						data: {
 							typed: expansion.typed,
@@ -428,8 +503,13 @@ export async function submitOp(
 								? {}
 								: { command: expansion.command }),
 						},
-					},
-				}),
+					};
+	const draft: InputSubmissionDraft = {
+		type: "input",
+		content,
+		...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
+		...(whenBusy === undefined ? {} : { whenBusy: whenBusy as WhenBusyMode }),
+		...(entry === undefined ? {} : { entry }),
 	};
 	// The submit pass-through is retired (§6.7): the memory seam's
 	// runSettled owns capture, so submissions admit directly.
@@ -572,7 +652,11 @@ export async function readMetaOp(
 export async function configureOp(
 	ctx: ServerContext,
 	conversation: Conversation,
-	body: { readonly model?: unknown; readonly thinking?: unknown },
+	body: {
+		readonly model?: unknown;
+		readonly thinking?: unknown;
+		readonly extensions?: unknown;
+	},
 ): Promise<ConfigureResponse> {
 	const { opened } = ctx;
 	if (
@@ -585,7 +669,7 @@ export async function configureOp(
 	}
 	const record = body as Record<string, unknown>;
 	const unknownKey = Object.keys(record).find(
-		(key) => key !== "model" && key !== "thinking",
+		(key) => key !== "model" && key !== "thinking" && key !== "extensions",
 	);
 	if (unknownKey !== undefined) {
 		throw new ConversationOpError({
@@ -595,7 +679,25 @@ export async function configureOp(
 	}
 	const model = record.model;
 	const thinking = record.thinking;
-	if (model === undefined && thinking === undefined) {
+	const extensions = record.extensions;
+	if (extensions !== undefined) {
+		if (
+			!Array.isArray(extensions) ||
+			extensions.some((name) => typeof name !== "string")
+		) {
+			throw new ConversationOpError({ error: "invalid_field", field: "extensions" });
+		}
+		const owner = (
+			await opened.harness.snapshot(SessionMetaDoc, conversation.id, BACKGROUND_CONTEXT)
+		)?.owner;
+		for (const name of extensions) {
+			const at = name.indexOf("@");
+			if (at > 0 && name.slice(at + 1) !== owner) {
+				throw new ConversationOpError({ error: "invalid_field", field: "extensions" });
+			}
+		}
+	}
+	if (model === undefined && thinking === undefined && extensions === undefined) {
 		// A configure that changes nothing is a client error, not a no-op.
 		throw new ConversationOpError({ error: "invalid_body" });
 	}
@@ -625,6 +727,13 @@ export async function configureOp(
 	await conversation.configure(
 		{
 			...(parsedModel === undefined ? {} : { model: parsedModel }),
+			...(extensions === undefined
+				? {}
+				: {
+						extensions: extensions.map((name) => ({
+							name,
+						})),
+					}),
 			...(thinking !== undefined
 				? { thinkingLevel: thinking as ModelThinkingLevel }
 				: storeThinking === undefined
@@ -796,11 +905,34 @@ export async function forkOp(
 	// The fork inherits the parent's agent model — read the resolved
 	// agent, fall back to the boot default like create.
 	const agent = await conversation.agent(BACKGROUND_CONTEXT);
+	const inheritedSelection = (
+		await opened.harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)
+	)?.extensions;
+	// Preserve the stored selection VERBATIM here. `AgentChange` wants
+	// Extension-shaped names and maps them back to strings; looking names
+	// up in the registry would silently drop unresolved/late-install names.
+	const inheritedExtensions = Array.isArray(inheritedSelection)
+		? inheritedSelection.map((name) => ({ name }))
+		: inheritedSelection === undefined
+			? undefined
+			: {
+					...(inheritedSelection.add === undefined
+						? {}
+						: { add: inheritedSelection.add.map((name) => ({ name })) }),
+					...(inheritedSelection.remove === undefined
+						? {}
+						: { remove: inheritedSelection.remove.map((name) => ({ name })) }),
+				};
 	const fork = await conversation.fork(
 		at as EntryId,
 		{
 			ownership: { kind: "ownerless" },
-			agent: { model: agent.model ?? opened.defaultModel },
+			agent: {
+				model: agent.model ?? opened.defaultModel,
+				...(inheritedExtensions === undefined
+					? {}
+					: { extensions: inheritedExtensions }),
+			},
 		},
 		BACKGROUND_CONTEXT,
 	);
@@ -837,6 +969,12 @@ export async function forkOp(
 		else draft.owner = opts.owner;
 		if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
 		draft.lastActivityAt = opened.now().toISOString();
+		await opened.rewriteUserSelection(
+			tx,
+			fork.id,
+			sourceMeta?.owner,
+			opts.owner,
+		);
 	}, BACKGROUND_CONTEXT);
 	const view = await readView(fork);
 	return { id: fork.id, view };

@@ -288,6 +288,11 @@ export async function scanSkills(
 	const listing = await env.listDir(SKILLS_DIRECTORY, context);
 	if (!listing.ok) {
 		if (listing.error.code === "not_found") return [];
+		// An unavailable sandbox env (the host has no usable isolation
+		// helper) degrades to "no skills" rather than failing the submit:
+		// the expansion is a courtesy lookup, and a 500 here would strand
+		// an ordinary user message on a Landlock-less machine.
+		if (listing.error.message.includes("isolation_unavailable")) return [];
 		throw new Error(
 			`Failed to list the ${SKILLS_DIRECTORY}/ directory: ${listing.error.message}`,
 			{ cause: listing.error },

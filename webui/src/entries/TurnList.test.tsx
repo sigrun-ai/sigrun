@@ -17,13 +17,15 @@
 
 import { act, createElement as h } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { SigrunClient } from "../api";
+import type { ConversationViewWire, SigrunClient } from "../api";
+import type { SurfaceLoad, SurfaceTransport } from "@sigrun/shared/blocks";
 import {
 	assistantTurnEntry,
 	findButton,
 	makeEntry,
 	makeView,
 	render,
+	renderAsync,
 	stubClipboard,
 	stubSessionStorage,
 	textBlock,
@@ -35,6 +37,7 @@ import {
 	userTurnEntry,
 } from "../test-utils";
 import { TurnList } from "./TurnList";
+import { ChatTransportContext } from "./chatTransportContext";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -545,6 +548,130 @@ describe("TurnList actions", () => {
 		});
 		expect(writeText).toHaveBeenCalledWith("The root has `bin` and `etc`.");
 		vi.useRealTimers();
+		renderer.unmount();
+	});
+});
+
+/** U5 Task 4: the chat-blocks fixtures — the entry order a real
+ *  `show_blocks` run produces (pi.user → pi.assistant(toolCall
+ *  show_blocks) → sigrun.blocks → pi.tool-result → sigrun.blocks.note →
+ *  pi.assistant(text)), plus an answer entry. */
+function blocksView(): ConversationViewWire {
+	return makeView({
+		entries: [
+			userTurnEntry(1, "show the ranking"),
+			assistantTurnEntry(2, [toolCallBlock("call-blocks", "show_blocks", { title: "Ranking" })]),
+			makeEntry("sigrun.blocks", [], {
+				id: 3,
+				data: {
+					title: "Ranking",
+					tree: {
+						v: 1,
+						root: {
+							type: "collection",
+							id: "ranking",
+							items: { $: "/cards" },
+							display: "list",
+							numbered: true,
+							reorder: { within: true },
+							onMove: "reorderCards",
+							item: { title: { $: "./title" } },
+						},
+					},
+					data: { cards: [{ id: "c1", title: "Clair de Lune" }] },
+				},
+			}),
+			toolResultTurnEntry(4, "call-blocks"),
+			makeEntry("sigrun.blocks.note", [textMessage("user", "UI changes: Ranking (alice): moved c1")], {
+				id: 5,
+				data: { advance: [{ entryId: "3", through: 1 }] },
+			}),
+			assistantTurnEntry(6, [textBlock("Here is the ranking.")]),
+			makeEntry("sigrun.blocks.answer", [textMessage("user", "Submitted 'Ranking': 1. Clair de Lune")], {
+				id: 7,
+				data: { entryId: "3", action: "submitRanking", payload: null, state: {} },
+			}),
+		],
+	});
+}
+
+
+	/** A stub chat-transport attach serving the blocksView surface (access write). */
+function stubAttach() {
+	const data = blocksView().entries[2]!.data as {
+		readonly tree: Parameters<typeof JSON.stringify>[0];
+		readonly data: Parameters<typeof JSON.stringify>[0];
+	};
+	const transport: SurfaceTransport = {
+		load: vi.fn(async () => ({
+			tree: data.tree as SurfaceLoad["tree"],
+			data: data.data as SurfaceLoad["data"],
+			rev: 1,
+			treeRev: 0,
+			access: "write" as const,
+		})),
+		fetchData: vi.fn(async () => ({ rev: 1, treeRev: 0, data: data.data as SurfaceLoad["data"] })),
+		act: vi.fn(),
+		upload: vi.fn(),
+		image: vi.fn(),
+		onChanged: vi.fn(() => () => {}),
+	};
+	return vi.fn(() => transport);
+}
+
+describe("TurnList: chat blocks (U5 Task 4)", () => {
+	test("the show_blocks tool row never renders; the block renders inline in the timeline view", async () => {
+		const attach = stubAttach();
+		const renderer = await renderAsync(
+			h(
+				ChatTransportContext.Provider,
+				{ value: attach },
+				h(TurnList, {
+					view: blocksView(),
+					showThinking: true,
+					timeline: true,
+					onNavigate: () => {},
+					client: makeTurnClient().client,
+				}),
+			),
+		);
+		const text = textContent(renderer.toJSON());
+		// The tool row is NOT shown (groupTurns leaves show_blocks out of
+		// tools and the timeline; the activity line never counts it).
+		expect(text).not.toContain("show_blocks");
+		// The block renders inline: its title + the loaded surface.
+		expect(text).toContain("Ranking");
+		expect(text).toContain("Clair de Lune");
+		// The note row is the collapsed disclosure.
+		expect(text).toContain("UI changes sent to the agent");
+		// The answer turn is a user bubble with the "from <title>" chip.
+		expect(text).toContain("Submitted 'Ranking'");
+		expect(text).toContain("from Ranking");
+		renderer.unmount();
+	});
+
+	test("the grouped view keeps the surface OUTSIDE the folded activity line", async () => {
+		const attach = stubAttach();
+		const renderer = await renderAsync(
+			h(
+				ChatTransportContext.Provider,
+				{ value: attach },
+				h(TurnList, {
+					view: blocksView(),
+					showThinking: true,
+					onNavigate: () => {},
+					client: makeTurnClient().client,
+				}),
+			),
+		);
+		// The activity line folds the turn's thinking/tools; the block
+		// surface must NOT live inside it (an ActivityLine's expanded
+		// content renders ToolRows and thinking — the surface's root is
+		// the proof the block sits outside).
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("Clair de Lune");
+		// The grouped view shows NO tool row for show_blocks either.
+		expect(text).not.toContain("show_blocks");
 		renderer.unmount();
 	});
 });

@@ -82,6 +82,7 @@ import { SessionMetaDoc } from "../server/session-meta.js";
 import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
 import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
+import { beginUserDeletion } from "./stores.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
 /** The internal host-event payload: the wire union plus the hub-only `providers.changed`/`job.changed` variants boot publishes directly. */
@@ -148,19 +149,26 @@ export type SettleGroup = {
  * interaction transitions detected at the interaction host-event site.
  */
 export type ExtensionLifecyclePayload = {
-	conversationCreated: { readonly conversationId: ConversationId };
+	conversationCreated: {
+		readonly conversationId: ConversationId;
+		readonly owner?: string;
+	};
 	conversationForked: {
 		readonly childId: ConversationId;
 		readonly parentId: ConversationId;
 		readonly at: EntryId;
+		/** The CHILD's owner at delivery; absent when the child is ownerless. */
+		readonly owner?: string;
 	};
 	conversationArchived: {
 		readonly conversationId: ConversationId;
 		readonly archived: boolean;
+		readonly owner?: string;
 	};
 	conversationIdle: {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
+		readonly owner?: string;
 	};
 	/** Gateway C6: one terminal interaction transition — the payload mirrors
 	 *  the record's terminal envelope fields. */
@@ -169,14 +177,13 @@ export type ExtensionLifecyclePayload = {
 		readonly callId: string;
 		readonly kind: string;
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
-		/** The answering user (C5 attribution), when a human answered. */
-		readonly answeredByUser?: string;
 		/**
 		 * The STORED answer's values — masked by construction (secret values
 		 * never persist; the commit's stored copy carries the mask), so a
 		 * consumer may render them without a one-shot delivery read.
 		 */
 		readonly answer?: Readonly<Record<string, unknown>>;
+		readonly owner?: string;
 	};
 };
 
@@ -196,6 +203,8 @@ export type LifecycleEvent = {
  */
 export type RunSettledEvent = {
 	readonly conversationId: ConversationId;
+	/** The conversation owner at delivery; absent when the conversation is ownerless. */
+	readonly owner?: string;
 	readonly inputs: readonly SubmissionId[];
 	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
 	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
@@ -337,7 +346,7 @@ export interface ExtensionEventHandlers {
 	/** The user-removal transfer event (W1 Task 4); direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
 	/** The settings-change hook (UI-blocks U4, spec §13.2). */
-	readonly onSettingsChanged?: (keys: readonly string[]) => void | Promise<void>;
+	readonly onSettingsChanged?: (keys: readonly string[], user?: string) => void | Promise<void>;
 	/** Factory-declared idle workers (memory-seam Task 5); the bus owns their timers. */
 	readonly workers?: readonly ExtensionWorker[];
 }
@@ -649,8 +658,9 @@ export class EventBus {
 
 	/**
 	 * Emit one `userDeleted` directly (core hardening W1 Task 4): the
-	 * DELETE /v1/users route's final step, AFTER the ownership transfer,
-	 * token revocation, and record removal have landed. Delivered exactly
+	 * DELETE /v1/users route's step 3, AFTER transfer/revocation/link
+	 * removal and service stop, but BEFORE the directory record is removed,
+	 * so per-user secrets remain readable. Delivered exactly
 	 * like `harnessShutdown` — inline to every registered extension's
 	 * handler in install order, each deadline-bounded, never queued —
 	 * because the directory is not durable conversation state (there is
@@ -662,13 +672,18 @@ export class EventBus {
 		context: Context,
 	): Promise<void> {
 		if (this.#closed) return;
-		const api = this.#apiFor(undefined);
-		for (const [name, handlers] of this.#extensions) {
-			const handler = handlers.userDeleted;
-			if (handler === undefined) continue;
-			await this.#bounded(`extension ${name} userDeleted`, () =>
-				handler(payload, api, context),
-			);
+		const endDeletion = beginUserDeletion(payload.user);
+		try {
+			const api = this.#apiFor(undefined);
+			for (const [name, handlers] of this.#extensions) {
+				const handler = handlers.userDeleted;
+				if (handler === undefined) continue;
+				await this.#bounded(`extension ${name} userDeleted`, () =>
+					handler(payload, api, context),
+				);
+			}
+		} finally {
+			endDeletion();
 		}
 	}
 
@@ -681,13 +696,13 @@ export class EventBus {
 	 * state (no commit to derive from), and §13.2's rule is explicit: a
 	 * throwing handler never fails the write.
 	 */
-	public async emitSettingsChanged(keys: readonly string[]): Promise<void> {
+	public async emitSettingsChanged(keys: readonly string[], user?: string): Promise<void> {
 		if (this.#closed) return;
 		for (const [name, handlers] of this.#extensions) {
 			const handler = handlers.onSettingsChanged;
 			if (handler === undefined) continue;
 			await this.#bounded(`extension ${name} onSettingsChanged`, () =>
-				handler(keys),
+				handler(keys, user),
 			);
 		}
 	}
@@ -1436,7 +1451,14 @@ export class EventBus {
 			([, handlers]) => handlers[type] !== undefined,
 		);
 		if (registered.length === 0) return;
-		const payload = this.#lifecyclePayload(event);
+		const owner = await this.#ownerOf(
+			this.#lifecycleConversation(event),
+			context,
+		);
+		const payload = {
+			...this.#lifecyclePayload(event),
+			...(owner === undefined ? {} : { owner }),
+		};
 		const api = this.#apiFor(this.#lifecycleConversation(event));
 		for (const [name, handlers] of registered) {
 			const handler = handlers[type]!;
@@ -1523,6 +1545,8 @@ export class EventBus {
 		group: SettleGroup,
 		context: Context,
 	): Promise<RunSettledEvent> {
+		const owner = await this.#ownerOf(group.conversationId, context);
+		const ownerField = owner === undefined ? {} : { owner };
 		const inputs: SubmissionId[] = [];
 		const inputTexts: string[] = [];
 		for (const one of group.settled) {
@@ -1551,6 +1575,7 @@ export class EventBus {
 			if (message !== undefined && message.role === "assistant") {
 				return {
 					conversationId: group.conversationId,
+					...ownerField,
 					inputs,
 					inputTexts,
 					outcome: { status: "answered", answerEntryId, answer: message },
@@ -1564,6 +1589,7 @@ export class EventBus {
 		const firstUnanswered = all.find((one) => one.status === "unanswered");
 		return {
 			conversationId: group.conversationId,
+			...ownerField,
 			inputs,
 			inputTexts,
 			outcome: {
@@ -1571,6 +1597,24 @@ export class EventBus {
 				reason: firstUnanswered?.reason ?? "unanswered",
 			},
 		};
+	}
+
+	/** The current SessionMeta owner; absent means the key is omitted from the event. */
+	async #ownerOf(
+		conversationId: ConversationId,
+		context: Context,
+	): Promise<string | undefined> {
+		try {
+			const meta = await this.#harness.snapshot(
+				SessionMetaDoc,
+				conversationId,
+				context,
+			);
+			return meta?.owner;
+		} catch (error) {
+			console.error("event-bus: owner read failed:", error);
+			return undefined;
+		}
 	}
 
 	/** One visible entry by exact id (`undefined` on absence or read failure). */

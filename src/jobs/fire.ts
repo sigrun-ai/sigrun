@@ -45,6 +45,7 @@ import type {
 	Registry,
 	Storage,
 	TaskId,
+	Tx,
 	TaskRuntime,
 } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -55,6 +56,7 @@ import { parseModelSpec } from "../config.js";
 import { expandInput } from "../commands/expand.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { noteThen } from "../server/turns/submit-turn.js";
 import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
 import type { ScheduleInput, ScheduleState } from "./task.js";
 
@@ -91,6 +93,13 @@ export interface JobRuntimeDeps {
 	 * that does not exist, which must be visible, never silent.
 	 */
 	gatewayLoaded: boolean;
+	/** Multi-user M2: owner selection rewrite in the run's creation commit. */
+	rewriteUserSelection?(
+		tx: Tx,
+		conversationId: ConversationId,
+		from: string | undefined,
+		to: string | undefined,
+	): Promise<void>;
 }
 
 export interface FireResult {
@@ -289,22 +298,24 @@ async function firePrompt(
 				draft.lastRun = run;
 			}, context);
 		}
-		await conversation.submit(
-			{
-				type: "input",
-				content: [
+		const prompt = await jobPromptText(
+			deps,
+			conversationId as ConversationId,
+			action.prompt,
+			context,
+		);
+		await noteThen(
+			deps.harness,
+			conversation,
+			() =>
+				conversation.submit(
 					{
-						type: "text",
-						text: await jobPromptText(
-							deps,
-							conversationId as number as ConversationId,
-							action.prompt,
-							context,
-						),
+						type: "input",
+						content: [{ type: "text", text: prompt }],
+						requestId: `job:${fireKey}`,
 					},
-				],
-				requestId: `job:${fireKey}`,
-			},
+					context,
+				),
 			context,
 		);
 		return { outcome: "running", conversationId };
@@ -346,6 +357,7 @@ async function firePrompt(
 					meta.jobId = id;
 					if (action.deliver !== undefined) meta.deliver = [...action.deliver];
 					if (record.owner !== undefined) meta.owner = record.owner;
+					await deps.rewriteUserSelection?.(tx, newId, undefined, record.owner);
 					if (action.runSharing !== undefined) meta.sharing = action.runSharing;
 					meta.name = runName(record.spec.name, deps.now(), record, deps);
 				},
@@ -368,22 +380,24 @@ async function firePrompt(
 		// fire (never silently succeed).
 		return { outcome: "blocked" };
 	}
-	await conversation.submit(
-		{
-			type: "input",
-			content: [
+	const prompt = await jobPromptText(
+		deps,
+		conversationId as ConversationId,
+		action.prompt,
+		context,
+	);
+	await noteThen(
+		deps.harness,
+		conversation,
+		() =>
+			conversation.submit(
 				{
-					type: "text",
-					text: await jobPromptText(
-						deps,
-						conversationId as ConversationId,
-						action.prompt,
-						context,
-					),
+					type: "input",
+					content: [{ type: "text", text: prompt }],
+					requestId: `job:${fireKey}`,
 				},
-			],
-			requestId: `job:${fireKey}`,
-		},
+				context,
+			),
 		context,
 	);
 	return { outcome: "running", conversationId };

@@ -57,8 +57,11 @@ import {
 	groupTurns,
 	type Turn,
 } from "@sigrun/shared/turns";
+import type { SurfaceTransport } from "@sigrun/shared/blocks";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { ConversationViewWire } from "../api.js";
+import { SurfaceState } from "../blocks/surface.js";
+import { SurfaceView } from "../blocks/surface-view.js";
 
 /** One §5 message's structural shape (B1's `TurnMessage` + content parts). */
 interface MessageShape {
@@ -91,6 +94,17 @@ export interface EntryShape {
 export interface ConversationPaneOptions {
 	/** The token theme; defaults to the plain (identity) fallback. */
 	readonly theme?: TuiTheme;
+	/**
+	 * U5 Task 4 (spec §8.2): the chat-block surface attach seam — one
+	 * `sigrun.blocks` timeline event mounts the block's `SurfaceView`
+	 * (the TUI's component host) over the transport this seam returns
+	 * (the app's `ChatSurfaceHub`-backed attach). Absent, the pane
+	 * renders the fail-visible placeholder (the unknown-kind rule).
+	 */
+	readonly attachChatTransport?: (
+		conversationId: number,
+		entryId: string,
+	) => SurfaceTransport;
 }
 
 /**
@@ -192,6 +206,24 @@ class RenderSlot implements Component {
 	invalidate(): void {}
 }
 
+/** The folded note row's summary (spec §8.3): collapsed to this line;
+ *  opening the turn's fold reveals the note text beneath it. */
+export const NOTE_SUMMARY = "UI changes sent to the agent";
+
+/** The blocks entry's title from its payload (the answer chip's label). */
+function blocksTitleOf(data: unknown): string | undefined {
+	if (typeof data !== "object" || data === null) return undefined;
+	const title = (data as { readonly title?: unknown }).title;
+	return typeof title === "string" && title !== "" ? title : undefined;
+}
+
+/** The answer entry's block entry id (spec §8.4's `data.entryId`). */
+function answerEntryIdOf(data: unknown): string | undefined {
+	if (typeof data !== "object" || data === null) return undefined;
+	const entryId = (data as { readonly entryId?: unknown }).entryId;
+	return typeof entryId === "string" && entryId !== "" ? entryId : undefined;
+}
+
 /** The blank separator between turns. */
 const TURN_GAP = 1;
 
@@ -211,11 +243,29 @@ export class ConversationPane implements Component {
 	readonly #container = new Container();
 	readonly #theme: TuiTheme;
 	readonly #markdownTheme: MarkdownTheme;
+	/** The chat-block attach seam (U5 Task 4; absent = placeholder). */
+	readonly #attachChatTransport:
+		| ((conversationId: number, entryId: string) => SurfaceTransport)
+		| undefined;
 	readonly #notices: PaneNotice[] = [];
 	/** The notices' mounted components, aligned with `#notices`. */
 	readonly #noticeComponents: Component[] = [];
 
 	#turns: readonly Turn<EntryShape>[] = [];
+	/** The open view's conversation id (the chat-block attach's address). */
+	#conversationId = 0;
+	/** The mounted chat-block surface states, keyed by entry id
+	 *  (`<conversationId>:<entryId>`). Every rebuild REUSES the state
+	 *  (one `load`, one hub subscription per block); states are disposed
+	 *  on conversation swap and when the block's event leaves the view
+	 *  (a fork rewound the transcript). Without this, every stream frame
+	 *  remounted a fresh state and subscription and never disposed the
+	 *  old one — N frames = N stale subscriptions fanning out refetches. */
+	readonly #surfaceStates = new Map<string, SurfaceState>();
+	/** The surface keys `#mountTurn` mounted during the in-flight
+	 *  `#rebuild` (undefined outside a rebuild) — the prune in `#rebuild`
+	 *  disposes every cached state NOT in this set. */
+	#mountKeysSeen: Set<string> | undefined;
 	#focus: number | undefined;
 	/** Fold state by turn index (assistant turns only fold). */
 	readonly #open = new Set<number>();
@@ -227,6 +277,7 @@ export class ConversationPane implements Component {
 	constructor(options?: ConversationPaneOptions) {
 		this.#theme = options?.theme ?? plainTuiTheme();
 		this.#markdownTheme = markdownTheme(this.#theme);
+		this.#attachChatTransport = options?.attachChatTransport;
 	}
 
 	/** The current view's turns (B1 grouping), in render order. */
@@ -317,11 +368,34 @@ export class ConversationPane implements Component {
 	 * turns.
 	 */
 	showView(wire: ConversationViewWire): void {
+		const conversationId = wire.conversation.id;
+		if (conversationId !== this.#conversationId) {
+			// Conversation swap: dispose every surface state (unsubscribe +
+			// cancel timers) — a stale state would keep refetching the OLD
+			// conversation's block on every hub event.
+			for (const state of this.#surfaceStates.values()) state.dispose();
+			this.#surfaceStates.clear();
+		}
+		this.#conversationId = conversationId;
 		this.#turns = groupTurns(wire.entries as readonly EntryShape[]);
 		if (this.#focus !== undefined && this.#focus >= this.#turns.length) {
 			this.#focus = undefined;
 		}
 		this.#rebuild();
+	}
+
+	/** Dispose every mounted chat-block surface state (the shell calls
+	 *  this on teardown — the pane never leaves a hub subscription or an
+	 *  action timer behind). */
+	dispose(): void {
+		for (const state of this.#surfaceStates.values()) state.dispose();
+		this.#surfaceStates.clear();
+	}
+
+	/** The cached surface state for a blocks entry id (test/debug seam —
+	 *  the turn components dispatch through their own closures). */
+	surfaceStateFor(entryId: number): SurfaceState | undefined {
+		return this.#surfaceStates.get(`${this.#conversationId}:${entryId}`);
 	}
 
 	/** Append an `[error]` line (a failed composer action's surface). */
@@ -366,9 +440,24 @@ export class ConversationPane implements Component {
 	#rebuild(): void {
 		this.#container.clear();
 		this.#noticeComponents.length = 0;
+		this.#mountKeysSeen = new Set<string>();
 		this.#mounted = this.#turns.map((turn, index) =>
 			this.#mountTurn(turn, index),
 		);
+		// Prune states whose block left the view (a fork rewound the
+		// transcript): an orphaned state would keep its live hub
+		// subscription + action timers forever. `#mountTurn` records the
+		// keys it mounted this pass in `#mountKeysSeen`.
+		const seen = this.#mountKeysSeen;
+		if (seen !== undefined) {
+			for (const [key, state] of this.#surfaceStates) {
+				if (!seen.has(key)) {
+					state.dispose();
+					this.#surfaceStates.delete(key);
+				}
+			}
+			this.#mountKeysSeen = undefined;
+		}
 		for (const mounted of this.#mounted) {
 			for (const component of mounted.components) {
 				this.#container.addChild(component);
@@ -434,6 +523,35 @@ export class ConversationPane implements Component {
 				if (text !== "") {
 					components.push(body(new Markdown(text, 0, 0, this.#markdownTheme)));
 				}
+				// U5 Task 4 (spec §8.4): a block answer is a user turn whose
+				// chip names the surface it answered (`from <title>` — the
+				// `sigrun.blocks` entry's title, else its entry id).
+				if (turn.entry.kind === "sigrun.blocks.answer") {
+					const answerEntryId = answerEntryIdOf(turn.entry.data);
+					const title = this.#turns
+						.map((candidate) =>
+							candidate.kind === "assistant"
+								? candidate.entries.find(
+										(entry) =>
+											entry.kind === "sigrun.blocks" &&
+											String(entry.id) === answerEntryId,
+									)
+								: undefined,
+						)
+						.map((entry) =>
+							entry === undefined ? undefined : blocksTitleOf(entry.data),
+						)
+						.find((candidate) => candidate !== undefined);
+					components.push(
+						new Text(
+							this.#theme.dim(
+								`from ${title ?? `entry ${answerEntryId ?? "?"}`}`,
+							),
+							0,
+							0,
+						),
+					);
+				}
 				break;
 			}
 			case "assistant": {
@@ -442,15 +560,75 @@ export class ConversationPane implements Component {
 						body(new Markdown(turn.text, 0, 0, this.#markdownTheme)),
 					);
 				}
+				// U5 Task 4: the chat-block surfaces render INLINE, OUTSIDE
+				// the folded activity line (the surface is the turn's visible
+				// artifact, never hidden behind the fold). Each mounts a
+				// SurfaceView over the attach seam's transport (the hub's
+				// onChanged refreshes it when another viewer edits the block).
+				for (const event of turn.timeline) {
+					if (event.kind !== "blocks") continue;
+				const attach = this.#attachChatTransport;
+				const key = `${this.#conversationId}:${event.entryId}`;
+				// Reuse the cached state across rebuilds; create + load once.
+				let state = this.#surfaceStates.get(key);
+				if (state !== undefined) this.#mountKeysSeen?.add(key);
+				if (state === undefined && attach !== undefined) {
+					const fresh = new SurfaceState(
+						attach(this.#conversationId, String(event.entryId)),
+					);
+					void fresh.load();
+					fresh.onChange(() => {
+						// Surface rejections/toasts as pane notices (the chat
+						// pane owns no toast surface of its own).
+						for (const notice of fresh.consumeNotices()) {
+							this.#appendNotice({ kind: "error", text: notice });
+						}
+						this.#container.invalidate();
+					});
+					this.#surfaceStates.set(key, fresh);
+					this.#mountKeysSeen?.add(key);
+					state = fresh;
+				}
+				if (attach === undefined) {
+						components.push(
+							new Text(
+								this.#theme.dim(
+									`[blocks entry ${event.entryId} — no chat transport]`,
+								),
+								0,
+								0,
+							),
+						);
+						continue;
+					}
+					// Narrowed above (state === undefined implies attach was too).
+					components.push(
+						new SurfaceView(state as SurfaceState, {
+							theme: this.#theme,
+							unicode: true,
+						}),
+					);
+				}
+				const notes = turn.timeline.filter((event) => event.kind === "note");
 				const label = activityLabel(turn);
-				if (label !== "") {
+				const summaryParts = [
+					...(label === "" ? [] : [label]),
+					...(notes.length > 0
+						? [
+								notes.length === 1
+									? NOTE_SUMMARY
+									: `${notes.length}× ${NOTE_SUMMARY}`,
+							]
+						: []),
+				];
+				if (summaryParts.length > 0) {
 					// The slot renders one line; the fold marker + label are
 					// painted per frame (the fold state changes after mount, and
 					// a Text's content cache would pin the stale marker).
 					const slot = new RenderSlot();
 					slot.paint = () =>
 						this.#theme.dim(
-							`${this.#open.has(index) ? "▾" : "▸"} ${label}`,
+							`${this.#open.has(index) ? "▾" : "▸"} ${summaryParts.join(" · ")}`,
 						);
 					components.push(
 						new MouseRegion(slot, (event) => {
@@ -484,6 +662,23 @@ export class ConversationPane implements Component {
 									0,
 								),
 							);
+						}
+						// The note texts ride the SAME fold (the note row's
+						// disclosure): opening the fold reveals the notes
+						// the turn admitted, in timeline order.
+						for (const event of turn.timeline) {
+							if (event.kind !== "note") continue;
+							const entry = turn.entries.find(
+								(candidate) => candidate.id === event.entryId,
+							);
+							const text =
+								entry === undefined ? "" : entryText(entry);
+							for (const line of text.split("\n")) {
+								if (line.trim() === "") continue;
+								components.push(
+									new Text(this.#theme.dim(line), 0, 0),
+								);
+							}
 						}
 					}
 				}
@@ -528,7 +723,7 @@ export class ConversationPane implements Component {
 	#recordRanges(_lines: string[], width: number): void {
 		const ranges: { start: number; end: number }[] = [];
 		let offset = 0;
-		for (const [index, mounted] of this.#mounted.entries()) {
+		for (const mounted of this.#mounted) {
 			let height = 0;
 			mounted.heights.length = 0;
 			for (const component of mounted.components) {

@@ -691,6 +691,14 @@ export interface AuthCheckResponse {
  * every served entry, empty when the extension declared none). The
  * webui's Extensions settings section renders this list.
  */
+export interface ServiceStatusWire {
+	readonly slug: string;
+	readonly name: string;
+	readonly user: string;
+	readonly state: "running" | "idle" | "failed";
+	readonly lastError?: string;
+}
+
 export interface ExtensionInfo {
 	readonly name: string;
 	readonly status: string;
@@ -704,6 +712,8 @@ export interface ExtensionInfo {
 	readonly workers: readonly WorkerStatus[];
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
+	/** Per-user service states; admin-only inventory. */
+	readonly services: readonly ServiceStatusWire[];
 	/** The declared surfaces, one `{id, title, icon, placement}` each (U3 Task 1); absent when none. */
 	surfaces?: readonly ExtensionSurfaceInfo[];
 	/**
@@ -786,6 +796,10 @@ export interface SettingsSectionEntry {
 	readonly id: string;
 	readonly title: string;
 	readonly icon: string;
+	/** Personal sections group under My settings and store caller-owned data. */
+	readonly scope?: "user";
+	/** Explicit admin gate (user sections are otherwise non-admin by default). */
+	readonly admin?: boolean;
 }
 
 /** One search-index row (the label search's hit shape, spec §13.4). */
@@ -1076,4 +1090,11 @@ export type HostEventWire =
 			readonly k: string;
 			readonly rev: number;
 			readonly treeRev: number;
+		}
+		| {
+			/** UI-blocks U5 Task 2 (spec §8.2): one CHAT block surface changed. The chat address is `(conversationId, entryId)` — no secret to watchers of that conversation (unlike params) — so the event names them directly instead of the hashed `k`. Delivered through the conversation-scoped path: the events route re-snapshots the SessionMeta and checks `accessOf` per event (hidden conversations see nothing). */
+			readonly type: "surface.changed";
+			readonly conversationId: number;
+			readonly entryId: string;
+			readonly rev: number;
 		};

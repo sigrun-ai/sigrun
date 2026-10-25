@@ -842,6 +842,59 @@ body {
 	word-break: break-word;
 }
 
+/* ── chat blocks (U5): the inline surface, the note row, the answer chip ── */
+
+/* The inline block surface: the compact-pinned tree inside the chat
+   column, framed as the turn's artifact (the rail-page surface's chrome
+   stays on the rail page — chat reads quieter). */
+
+.entry-blocks {
+	margin: 0.5rem 0;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 0.5rem 0.75rem;
+}
+
+.entry-blocks-title {
+	font-size: 0.8rem;
+	color: var(--muted);
+	margin-bottom: 0.25rem;
+}
+
+.entry-blocks-unknown {
+	font-size: 0.8rem;
+	font-style: italic;
+}
+
+/* The §8.3 note row: collapsed to its summary line; the text shows on
+   disclosure. Deliberately quiet — the note is model-facing text the
+   user never edits, only audits. */
+
+.entry-note summary {
+	cursor: pointer;
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+
+.entry-note-text {
+	padding: 6px 10px;
+	color: var(--muted);
+	font-size: 0.8rem;
+	white-space: pre-wrap;
+}
+
+/* The answer chip ("from <title>") under a block-answer user bubble. */
+
+.entry-answer-chip {
+	display: inline-block;
+	margin-top: 0.3rem;
+	padding: 0.1rem 0.5rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	color: var(--muted);
+	font-size: 0.75rem;
+}
+
 /* The assistant turn's prose — the Markdown renderer's `prose` variant
    (serif) lives inside; the wrapper only owns flow. */
 

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Per-user extension surface (multi-user M2): lifecycle events carry the
+  conversation owner; `stores.user(user)` provides per-user secrets,
+  settings, and data/state/cache paths; `/v1/me` exposes self-service
+  settings, secret-key management, and service status.
+- Per-user tool publications (`perUserTools` and
+  `host.tools.setUserTools`) with `<slug>@<user>` registry entries,
+  owner-driven selection on create/fork/transfer and boot reconciliation.
+  Every tool is wrapped with a committed-owner execution check: selection
+  is convenience, not the authorization boundary.
+- Per-user service processes (`userServices` and `services.connect`),
+  launched under the user's own sibling jail policy with idle stopping,
+  crash fencing, and lifecycle cleanup on deletion, quarantine, and
+  shutdown. Settings sections can use `scope: "user"` for personal
+  configuration.
+- The §10.6 deletion sequence: transfer ownership and remove external
+  identity access, stop per-user execution and tool entries, emit
+  `userDeleted` while credential revocation remains possible, remove the
+  record, then delete per-user credentials, settings, and cache. Data and
+  state remain extension-owned.
 - Multi-user login (M3b): extension-contributed `loginProviders` with
   core-owned, single-use state and callback routes; first-login setup and
   invite resolution with optional policy-gated auto-provisioning; webui
@@ -29,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Retired persisted `groupAdmin` in favor of stored groups; its user-wire
   compatibility field is now derived and retained for one release.
+
+### Fixed
+- Kept the extension inventory available to non-admin clients while limiting
+  service status projections to admins; quarantine now removes per-user
+  tools as well as services.
+- Preserved service crash fences across explicit stops and skipped the
+  per-user selection sweep when no per-user extensions are configured.
 
 ### Security
 - Added the opt-in Landlock kernel boundary suite for two-user execution

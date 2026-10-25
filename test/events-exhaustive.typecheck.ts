@@ -51,10 +51,13 @@ function classifyDelivery(event: HostEventWire): EventDelivery {
 		// Host machinery: never principal-facing.
 		case "taskSettled":
 			return "never";
-		// U3 Task 4: delivered only to streams in the watcher registry
-		// with stored access ≠ none (the events route's own registry read).
+			// U3 Task 4: delivered only to streams in the watcher registry
+			// with stored access ≠ none (the events route's own registry read).
+			// U5 Task 2: the CHAT shape joins the conversation-scoped class
+			// (SessionMeta re-snapshot + accessOf per event) — its members are
+			// named directly on the event, so no registry read applies.
 		case "surface.changed":
-			return "broadcast";
+			return "slug" in event ? "broadcast" : "conversation";
 		default: {
 			// A HostEventWire member without a case lands here: `event` is
 			// no longer `never`, this check fails, typecheck fails.

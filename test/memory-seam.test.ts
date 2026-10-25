@@ -56,6 +56,7 @@ const BAD_RUNSETTLED_SPECIFIER = pathToFileURL(
 type FixtureModule = {
 	readonly events: {
 		conversationId: number;
+		owner?: string;
 		inputs: number[];
 		inputTexts: string[];
 		outcome:
@@ -67,6 +68,7 @@ type FixtureModule = {
 	readonly lifecycle: {
 		readonly handler: string;
 		readonly conversationId?: number;
+		readonly owner?: string;
 		readonly childId?: number;
 		readonly parentId?: number;
 		readonly at?: number;
@@ -182,6 +184,7 @@ async function patchMeta(
 		pinned: boolean;
 		archived: boolean;
 		tagged: string[];
+		owner?: string;
 	}) => void,
 ): Promise<void> {
 	await conversation.commit(async (tx) => {
@@ -201,6 +204,39 @@ async function newestEntryId(conversation: Conversation) {
 // ─── The contract ─────────────────────────────────────────────────────────
 
 describe("runSettled contract", () => {
+	test("runSettled carries the conversation owner", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		await patchMeta(root, (draft) => {
+			draft.owner = "alice";
+		});
+		const submission = await root.submit(
+			{ type: "input", content: "remember this" },
+			BACKGROUND_CONTEXT,
+		);
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+
+		const [event] = await nextDelivered(fixture);
+		expect(event.owner).toBe("alice");
+	});
+
+	test("runSettled omits owner for an ownerless root", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const { record } = await runTurn(opened, "remember this");
+		expect(record.status).toBe("done");
+
+		const [event] = await nextDelivered(fixture);
+		expect(event).not.toHaveProperty("owner");
+		expect(JSON.stringify(event)).not.toContain('"owner"');
+	});
+
 	test("the fixture extension receives runSettled with paired inputTexts", async () => {
 		const { opened, fixture } = await bootFixture({
 			responses: [fauxAssistantMessage("the answer")],
@@ -440,6 +476,40 @@ describe("runSettled contract", () => {
 // ─── Task 4: lifecycle handlers + conversationIdle + harnessShutdown ──────
 
 describe("conversation lifecycle contract", () => {
+	test("conversationForked carries the child owner, not the parent owner", async () => {
+		const { opened, fixture } = await bootFixture({
+			responses: [fauxAssistantMessage("turn one")],
+		});
+		const { root } = await runTurn(opened, "hello");
+		await nextDelivered(fixture);
+		await patchMeta(root, (draft) => {
+			draft.owner = "alice";
+		});
+		const child = await root.fork(
+			await newestEntryId(root),
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+		await patchMeta(child, (draft) => {
+			draft.owner = "bob";
+		});
+
+		await vi.waitFor(
+			() =>
+				expect(
+					fixture.lifecycle.filter(
+						(one) => one.handler === "conversationForked",
+					),
+				).toHaveLength(1),
+			{ timeout: 15_000, interval: 100 },
+		);
+		const forked = fixture.lifecycle.find(
+			(one) => one.handler === "conversationForked",
+		);
+		expect(forked).toMatchObject({ childId: child.id, owner: "bob" });
+		expect(forked?.owner).not.toBe("alice");
+	}, 20_000);
+
 	test("the fixture extension receives conversationCreated/Forked and NOT archived for an inherited-archive fork", async () => {
 		const { opened, fixture } = await bootFixture({
 			responses: [fauxAssistantMessage("turn one")],

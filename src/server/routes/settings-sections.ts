@@ -21,7 +21,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { SettingsSectionDef } from "../../extension.js";
+import type { Principal, SettingsSectionDef } from "../../extension.js";
+import { isSuperuser } from "../auth/principal.js";
 import type {
 	SettingsSectionsResponse,
 	SettingsSectionEntry,
@@ -141,6 +142,8 @@ export function buildSettingsSections(
 				id: def.id,
 				title: def.title,
 				icon: def.icon ?? "key",
+				...(def.scope === "user" ? { scope: "user" as const } : {}),
+				...(def.scope === "user" ? { admin: def.admin === true } : {}),
 			});
 		}
 	}
@@ -209,7 +212,18 @@ export function registerSettingsSectionsRoutes(
 ): void {
 	app.get(
 		"/v1/settings/sections",
-		async (): Promise<SettingsSectionsResponse> =>
-			buildSettingsSections(ctx.opened.extensionSettingsSections),
+		async (request): Promise<SettingsSectionsResponse> => {
+			const response = buildSettingsSections(ctx.opened.extensionSettingsSections);
+			const admin = isSuperuser(request.principal as Principal) || request.principal.admin;
+			const allowed = new Set(
+				response.sections
+					.filter((section) => section.scope !== "user" || section.admin !== true || admin)
+					.map((section) => `${section.slug}\u0000${section.id}`),
+			);
+			return {
+				sections: response.sections.filter((section) => allowed.has(`${section.slug}\u0000${section.id}`)),
+				index: response.index.filter((entry) => allowed.has(`${entry.slug}\u0000${entry.sectionId}`)),
+			};
+		},
 	);
 }

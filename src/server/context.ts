@@ -100,6 +100,7 @@ export interface ServerContext {
 	readonly publishSettingsChanged: (
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	) => void;
 	/**
 	 * The restart callback (UI-blocks U4 Task 2, spec §13.3): the serve
@@ -174,8 +175,13 @@ declare module "fastify" {
 	 * drain — hijacked streams never end on their own, so the drain
 	 * would hang on each open webui tab. */
 	interface FastifyInstance {
+		/** The shared context (also used by hermetic op-level integration tests). */
+		sigrunContext: ServerContext;
 		sse: SseRegistry;
 		/** The surface service decoration (createServer decorates it) — Task 4's watcher registry reaches it from the app handle in tests. */
 		surfaces: SurfaceService;
+		/** The bound host bridge (createServer decorates it) — the in-process
+		 *  conversations surface tests drive the W5 bridge path through. */
+		hostBridge: import("./host-bridge.js").HostBridge;
 	}
 }

@@ -17,6 +17,7 @@ import {
 	type Reply,
 } from "./protocol.js";
 import type { UserPolicy } from "./policy.js";
+import { launchInJail } from "./launch.js";
 
 export interface Launch {
 	command: string;
@@ -591,20 +592,5 @@ export function testLauncher(workerEntry: WorkerEntry): Launcher {
 
 /** The production launcher applies Landlock before exec'ing the Node worker. */
 export function sandboxLauncher(helper: string, workerEntry: WorkerEntry): Launcher {
-	return (policy) => ({
-		command: helper,
-		args: ["run", "--", workerEntry.command, ...workerEntry.args],
-		env: {
-			...policy.env,
-			SIGRUN_SANDBOX_POLICY: JSON.stringify({
-				ro: policy.ro,
-				rw: policy.rw,
-				ensureDirs: policy.ensureDirs,
-				minAbi: 6,
-				...(policy.uid === undefined ? {} : { uid: policy.uid }),
-				...(policy.gid === undefined ? {} : { gid: policy.gid }),
-				...(policy.groups === undefined ? {} : { groups: policy.groups }),
-			}),
-		},
-	});
+	return (policy) => launchInJail(helper, policy, workerEntry.command, workerEntry.args, policy.env);
 }

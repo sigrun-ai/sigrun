@@ -124,6 +124,8 @@ export interface HandlerContext {
  */
 export type RunSettledEvent = {
 	readonly conversationId: ConversationId;
+	/** The conversation owner at delivery; absent when the conversation is ownerless. */
+	readonly owner?: string;
 	readonly inputs: readonly SubmissionId[];
 	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
 	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
@@ -169,19 +171,26 @@ export type MemoryEventApi = {
  * `type` field.
  */
 export type ExtensionLifecyclePayload = {
-	conversationCreated: { readonly conversationId: ConversationId };
+	conversationCreated: {
+		readonly conversationId: ConversationId;
+		readonly owner?: string;
+	};
 	conversationForked: {
 		readonly childId: ConversationId;
 		readonly parentId: ConversationId;
 		readonly at: EntryId;
+		/** The CHILD's owner at delivery; absent when the child is ownerless. */
+		readonly owner?: string;
 	};
 	conversationArchived: {
 		readonly conversationId: ConversationId;
 		readonly archived: boolean;
+		readonly owner?: string;
 	};
 	conversationIdle: {
 		readonly conversationId: ConversationId;
 		readonly idleMs: number;
+		readonly owner?: string;
 	};
 	/** Gateway C6: one terminal interaction transition — the payload mirrors
 	 *  the record's terminal envelope fields. */
@@ -194,6 +203,7 @@ export type ExtensionLifecyclePayload = {
 		readonly answeredByUser?: string;
 		/** The STORED (masked-by-construction) answer values — render-safe. */
 		readonly answer?: Readonly<Record<string, unknown>>;
+		readonly owner?: string;
 	};
 };
 
@@ -255,7 +265,7 @@ export type SigrunLifecycleHandlers = {
 	 * shared operator surface). Errors are caught and logged; the write
 	 * already succeeded and stays successful.
 	 */
-	onSettingsChanged?(keys: readonly string[]): void | Promise<void>;
+	onSettingsChanged?(keys: readonly string[], user?: string): void | Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -293,6 +303,35 @@ export interface ExtensionWorker {
 	readonly wakeOn: readonly WorkerWakeEvent[];
 	/** The work; rejects (or overruns the worker deadline) to fail the run. */
 	run(context: HandlerContext, wake?: WorkerWake): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Per-user services (multi-user M2, spec §10.3)
+// ---------------------------------------------------------------------------
+
+/** The command and extra environment/read rights for one per-user process. */
+export interface ServiceSpec {
+	readonly command: string;
+	readonly args: string[];
+	readonly env?: Record<string, string>;
+	readonly cwd?: string;
+	readonly readPaths?: string[];
+}
+
+/** One factory-declared long-lived per-user service. */
+export interface UserService {
+	readonly name: string;
+	start(user: string, ctx: HandlerContext): Promise<ServiceSpec | undefined>;
+	readonly idleMinutes?: number;
+}
+
+/** A shared-stdio attachment to a running per-user service. */
+export interface ServiceHandle {
+	readonly stdin: WritableStream<Uint8Array>;
+	readonly stdout: ReadableStream<Uint8Array>;
+	readonly stderr: ReadableStream<Uint8Array>;
+	readonly exited: Promise<{ code: number | null; signal: string | null }>;
+	release(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -749,8 +788,9 @@ export interface SurfaceDef<P extends "view" | "panel" | "settings"> {
 	readonly sharedData?: boolean;
 	/** Channels refetch data on this interval while visible (min 5000). */
 	readonly refreshMs?: number;
-	/** §7.3; default: canonical JSON of params. */
-	instanceKey?(params: JsonParams): string;
+	/** §7.3; default: canonical JSON of params. The principal argument
+	 *  lets principal-owned surfaces isolate their revision/action identity. */
+	instanceKey?(params: JsonParams, principal: Principal): string;
 	render(ctx: SurfaceContext): Promise<SurfaceRenderResult>;
 	data?(ctx: SurfaceContext): Promise<SurfaceDataResult>;
 	readonly actions?: Readonly<
@@ -778,8 +818,13 @@ export interface SettingsSectionDef {
 	readonly form: Tree;
 	/** Declared secrets, rendered as `secret` fields backed by the §7.7 secrets routes. */
 	readonly secrets?: readonly { key: string; label: string; help?: string }[];
-	/** Only admins see and edit it; default true (settings writes are admin-only). */
+	/** Only admins see and edit it; default true for shared sections.
+	 *  A user-scope section is visible to every signed-in user unless this
+	 *  is explicitly true. */
 	readonly admin?: boolean;
+	/** `"user"` reads/writes the calling user's settings; absent/`"server"`
+	 *  keeps the extension's shared settings file. */
+	readonly scope?: "server" | "user";
 }
 
 /**
@@ -826,8 +871,40 @@ export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
  * factory body.
  */
 export interface SigrunHost {
+	/**
+	 * Publish tools for ONE user (multi-user M2). Only factory results that
+	 * declared `perUserTools: true` may call this; other extensions throw
+	 * `perUserTools not declared`. An empty list uninstalls the user's entry.
+	 * Core wraps every tool with a committed-owner check at execute time.
+	 */
+	readonly tools: {
+		setUserTools(user: string, tools: readonly import("@earendil-works/pi-durable").ToolRegistration[]): void;
+	};
+
+	/** Connect to one declared per-user service; core owns its process lifecycle. */
+	readonly services: {
+		connect(name: string, user: string, ctx: HandlerContext): Promise<ServiceHandle>;
+	};
+
 	/** The scoped extension-stores handle (your secrets/settings sections + raw data/cache/state paths). */
 	readonly stores: {
+		/** One directory user's secrets/settings/paths, still scoped to your slug. */
+		user(user: string): {
+			readonly secrets: {
+				get(key: string): Promise<string | undefined>;
+				set(key: string, value: string): Promise<void>;
+				delete(key: string): Promise<void>;
+			};
+			readonly settings: {
+				get(): Promise<Record<string, unknown>>;
+				set(value: Record<string, unknown>): Promise<void>;
+			};
+			readonly paths: {
+				readonly data: string;
+				readonly state: string;
+				readonly cache: string;
+			};
+		};
 		/** Your section of secrets.json. */
 		readonly secrets: {
 			get(key: string): Promise<string | undefined>;
@@ -969,7 +1046,12 @@ export interface SigrunHost {
 		 */
 		configure(
 			id: ConversationId,
-			opts: { readonly model?: string; readonly thinking?: ThinkingLevelWire },
+			opts: {
+				readonly model?: string;
+				readonly thinking?: ThinkingLevelWire;
+				/** Exact extension selection; another user's `<slug>@<user>` entry is rejected. */
+				readonly extensions?: readonly string[];
+			},
 		): Promise<void>;
 		/** Admit one manual compaction task (gateway C4, the compact route's op). */
 		compact(id: ConversationId): Promise<void>;
@@ -1119,6 +1201,10 @@ export interface SigrunHost {
  * begins reading each when its task lands.
  */
 export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
+	/** Long-lived per-user sibling processes, launched and supervised by core. */
+	readonly userServices?: readonly UserService[];
+	/** Declare the per-user tool surface (`host.tools.setUserTools`). */
+	readonly perUserTools?: boolean;
 	/** The pi-durable `Extension` to install; its declared name is the slug source. */
 	readonly extension?: Extension;
 	/** The contributor-only identity (required when contributing without an `extension`). */

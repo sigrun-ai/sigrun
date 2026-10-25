@@ -503,6 +503,65 @@ export const VIEW_SCHEMA: Shape = {
 																"properties": {
 																	"kind": "object",
 																	"fields": {
+																		"title": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"tree": {
+																			"kind": "object",
+																			"fields": {
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"data": {
+																			"kind": "object",
+																			"fields": {
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
 																		"path": {
 																			"kind": "object",
 																			"fields": {
@@ -600,7 +659,7 @@ export const VIEW_SCHEMA: Shape = {
 																"properties": {
 																	"kind": "object",
 																	"fields": {
-																		"to": {
+																		"entryId": {
 																			"kind": "object",
 																			"fields": {
 																				"type": {
@@ -611,18 +670,7 @@ export const VIEW_SCHEMA: Shape = {
 																				}
 																			}
 																		},
-																		"text": {
-																			"kind": "object",
-																			"fields": {
-																				"type": {
-																					"kind": "string"
-																				},
-																				"description": {
-																					"kind": "string"
-																				}
-																			}
-																		},
-																		"files": {
+																		"ops": {
 																			"kind": "object",
 																			"fields": {
 																				"type": {
@@ -630,11 +678,7 @@ export const VIEW_SCHEMA: Shape = {
 																				},
 																				"items": {
 																					"kind": "object",
-																					"fields": {
-																						"type": {
-																							"kind": "string"
-																						}
-																					}
+																					"fields": {}
 																				},
 																				"description": {
 																					"kind": "string"
@@ -893,29 +937,6 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
-																}
-															}
-														}
-													}
-												},
-												{
-													"kind": "object",
-													"fields": {
-														"name": {
-															"kind": "string"
-														},
-														"description": {
-															"kind": "string"
-														},
-														"parameters": {
-															"kind": "object",
-															"fields": {
-																"type": {
-																	"kind": "string"
-																},
-																"properties": {
-																	"kind": "object",
-																	"fields": {}
 																}
 															}
 														}

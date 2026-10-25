@@ -169,6 +169,27 @@ export function registerEventRoutes(
 				// The DELIVERED frame is the wire shape (the internal field
 				// stripped — the stream list is routing metadata, never wire).
 				case "surface.changed": {
+					// The CHAT shape (U5 Task 2, spec §8.2): conversation-scoped —
+					// the event names its (conversationId, entryId) directly, so
+					// visibility is the conversation's own (SessionMeta
+					// re-snapshotted per event; hidden conversations see nothing).
+					if ("conversationId" in event) {
+						let meta;
+						try {
+							meta = await opened.harness.snapshot(
+								SessionMetaDoc,
+								event.conversationId as ConversationId,
+								BACKGROUND_CONTEXT,
+							);
+						} catch (error) {
+							console.error(
+								"events route: SessionMeta snapshot failed:",
+								error,
+							);
+							return undefined;
+						}
+						return accessOf(principal, meta ?? {}) !== "none" ? event : undefined;
+					}
 					// SAFETY: the hub carries the service's internal event (the
 					// wire shape plus the publish-time stream list); every
 					// surface.changed the hub sees comes from bumpRev, which

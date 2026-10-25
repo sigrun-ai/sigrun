@@ -303,11 +303,23 @@ export async function readView(conversation: Conversation) {
 export async function stampSessionOwner(
 	conversation: Conversation,
 	owner: string | undefined,
+	opened: OpenedHarness,
 ): Promise<void> {
 	if (owner === undefined) return;
+	await stampOwnerInCommit(conversation, owner, opened);
+}
+
+/** Stamp/replace an owner and rewrite per-user selection in ONE commit. */
+export async function stampOwnerInCommit(
+	conversation: Conversation,
+	owner: string,
+	opened: OpenedHarness,
+): Promise<void> {
 	await conversation.commit(async (tx) => {
 		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		const previous = draft.owner;
 		draft.owner = owner;
+		await opened.rewriteUserSelection(tx, conversation.id, previous, owner);
 	}, BACKGROUND_CONTEXT);
 }
 
