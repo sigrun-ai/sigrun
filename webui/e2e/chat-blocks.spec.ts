@@ -132,39 +132,15 @@ test("drag in one tab updates the second tab within 2 s; the order submit produc
 		bobBlock.locator('[data-lane="todo"] [data-drag-item="c1"]'),
 	).toBeVisible();
 
-	// Alice drags c1 todo → doing. The compact lanes view shows one lane;
-	// drag coordinates: c1's center to the "doing" lane target — the
-	// compact view's lane switcher is the drag's lane target only in the
-	// side-by-side layout; in compact the drop target is the OTHER lane
-	// reachable via the switcher. Drive the drag at the WIDE layout by
-	// widening alice's viewport so both lanes show (the surface reads the
-	// container: the pin keeps the chat column compact — so the drag
-	// lands via the MoveTo menu? No: the compact fallback's drag is the
-	// switcher, not a pointer drag. The e2e's drag needs the pointer
-	// path, so this surface is the compact-pinned chat block and the drag
-	// works WITHIN the shown lane (reorder) — but lanes reorders across
-	// lanes. The within-lane reorder is the compact fallback's own: drag
-	// c1 below c2 inside the todo lane (a move within the group).
+	// Alice drags c1 below c2 inside the todo lane (the compact pin
+	// shows one lane; the pointer reorder within it is the drag the
+	// chat surface supports — cross-lane drops are the switcher's job
+	// at this width).
 	const aliceC1 = aliceBlock.locator('[data-drag-item="c1"]');
 	const aliceC2 = aliceBlock.locator('[data-drag-item="c2"]');
-	const c1Box = await aliceC1.boundingBox();
-	const c2Box = await aliceC2.boundingBox();
-	if (c1Box === null || c2Box === null) {
-		throw new Error("drag geometry missing (board not laid out)");
-	}
-	await alice.mouse.move(
-		c1Box.x + c1Box.width / 2,
-		c1Box.y + c1Box.height / 2,
-	);
-	await alice.mouse.down();
-	await alice.mouse.move(
-		c2Box.x + c2Box.width / 2,
-		c2Box.y + c2Box.height + 4,
-		{ steps: 12 },
-	);
-	await alice.mouse.up();
+	await aliceC1.dragTo(aliceC2);
 
-	// Alice's own optimistic move lands at once (c1 after c2 in todo).
+	// Alice's own move lands at once (c1 after c2 in todo).
 	await expect(
 		aliceBlock.locator(
 			'[data-lane="todo"] [data-drag-item="c2"] ~ [data-drag-item="c1"]',
@@ -187,12 +163,6 @@ test("drag in one tab updates the second tab within 2 s; the order submit produc
 
 	// Alice submits the order form: the §8.4 answer submits ONE user
 	// turn (the requestId dedup pins the double-click/one-turn rule).
-	// The move above wrote the §8.3 note ahead of the answer's
-	// admission — its collapsed row renders on the previous turn.
-	const noteRow = alice.locator(".entry-note").first();
-	await expect(noteRow.locator(".entry-note-summary")).toContainText(
-		"UI changes sent to the agent",
-	);
 	const submit = aliceBlock.getByRole("button", { name: "Use this order" });
 	await expect(submit).toBeVisible();
 	await submit.click();
@@ -200,6 +170,13 @@ test("drag in one tab updates the second tab within 2 s; the order submit produc
 		"Order noted.",
 		{ timeout: 20_000 },
 	);
+	// §8.4's fold rule: the drag's change records folded into the
+	// ANSWER's own content (the answer's surface notes no further) —
+	// so no §8.3 note row renders for this surface, and the answer
+	// text the model saw names the drag ("moved 'Clair de Lune'").
+	await expect(
+		alice.locator(".chat-center"),
+	).toContainText("moved 'Clair de Lune'", { timeout: 20_000 });
 	// Exactly ONE new user turn (the answer), carrying the chip.
 	const aliceUserTurnsAfter = await alice
 		.locator('[data-turn-kind="user"]')
