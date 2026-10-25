@@ -183,6 +183,8 @@ export type ExtensionLifecyclePayload = {
 		 * consumer may render them without a one-shot delivery read.
 		 */
 		readonly answer?: Readonly<Record<string, unknown>>;
+		/** The answering user (C5 attribution), when a human answered. */
+		readonly answeredByUser?: string;
 		readonly owner?: string;
 	};
 };
