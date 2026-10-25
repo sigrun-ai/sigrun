@@ -258,6 +258,8 @@ what core does with each, and where its rules are documented:
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
 | `channels` | `readonly ChannelContribution[]` | chat-platform adapters the gateway engine drives; channel-id collisions across extensions quarantine the later loader | ["Channel adapters"](#channel-adapters) |
 | `gateway` | `GatewayEngine` | the ONE gateway engine (supervises every channel adapter); a second declarer quarantines — and never pair it with `health` | ["Gateway engines"](#gateway-engines) |
+| `perUserTools` | `boolean` | permits `host.tools.setUserTools`; core owns the `<slug>@<user>` entries and their execution-time owner check | ["Per-user tools"](#per-user-tools) |
+| `userServices` | `readonly UserService[]` | declares per-user service processes; core launches, supervises, and stops them | ["Per-user services"](#per-user-services) |
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
 above — **never a defaulted options object**. Sigrun passes the host only
@@ -1455,19 +1457,184 @@ not Landlock-discriminating. Successful `osUser` switching and the uid-switch
 discrimination need a privileged runner with `CAP_SETFCAP` and
 `SIGRUN_SANDBOX_IT_PRIVILEGED=1`; otherwise they skip with a named reason.
 
-The following are the **per-user extension surface covered by the M2
-workstream**, not APIs shipped by M1:
+The per-user APIs below are additive. They do not replace the shared stores
+or make an extension's in-process code untrusted.
 
-- Use `stores.user(user)` for a particular user's secrets, settings, and
-  data/state/cache paths rather than shared system stores.
-- Use `userServices` for services that run per user in their own jail, and
-  connect to them through the per-user service surface. Do not put their
-  credentials in the agent workspace.
-- Use `setUserTools(user, tools)` for tools owned by one user rather than
-  tools offered to every conversation.
-- Use `scope: "user"` sections for settings that each user views and edits
-  independently. Keep deployment-wide configuration in server-scoped
-  sections.
+### Per-user stores
+
+`host.stores.user(user)` returns the same five-store shape as the shared
+handle, scoped to one directory user **and still scoped to your slug**:
+
+| surface | location and behavior |
+|---|---|
+| `secrets` | Your section of `<configDir>/user-secrets/<user>.json`; atomic writes, mode `0600`, one top-level section per extension slug. |
+| `settings` | Your `<configDir>/user-settings/<user>/<slug>.json` object; absent reads as `{}`. |
+| `paths.data` | `<dataDir>/<slug>/users/<user>/` |
+| `paths.state` | `<stateDir>/<slug>/users/<user>/` |
+| `paths.cache` | `<cacheDir>/<slug>/users/<user>/` |
+
+Each per-user raw path is created synchronously on first access, including
+`data` and `state` (unlike the shared handle, whose data/state slug subdirs
+are yours to create). The handle throws for an unknown user, and validity
+is checked again on every operation rather than cached. The sole exception
+is the deletion window described below: while that user's `userDeleted`
+fan-out is active, their stores still resolve so you can revoke provider
+credentials before core removes them.
+
+Users can manage their own settings and secret keys through
+`/v1/me/extensions/<slug>/settings` and
+`/v1/me/extensions/<slug>/secrets/<key>`. Secret values are accepted on PUT
+but never returned by these HTTP routes. `GET /v1/me/services` reports only
+the calling user's services.
+
+### Per-user tools
+
+Declare `perUserTools: true` in the factory result, then publish or replace
+one user's tools:
+
+```ts
+import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
+import { defineTool } from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+
+export default function createAcmeTools(host: SigrunHost): SigrunExtensionResult {
+	host.tools.setUserTools("alice", [
+		defineTool({
+			name: "acme-profile",
+			description: "Read the calling user's Acme profile",
+			parameters: Type.Object({}),
+			execute: async () => ({
+				output: [{ type: "text", text: "Acme profile" }],
+			}),
+		}),
+	]);
+	return { perUserTools: true };
+}
+```
+
+Core installs the publication as `<slug>@<user>` (here,
+`acme-tools@alice`); an empty tool list removes that entry. Calling
+`setUserTools` without declaring `perUserTools: true` throws.
+
+For ordinary object/absent extension selections, core adds the owner's
+per-user entries when a conversation is created, forked, or transferred,
+and removes the previous owner's entries on transfer. Exact array
+selections stay exact: old-owner names are removed on transfer, but no new
+entries are inferred. At boot, core reconciles missing owner entries only
+for object/absent selections, never for exact arrays.
+
+**Selection is convenience; the wrapper is enforcement.** Core wraps every
+published per-user tool. On every execution the wrapper reads the
+conversation's **committed** owner and rejects the call without running
+your tool when that owner differs from the publication's user. This still
+holds if a hand-written exact selection names another user's entry.
+Selecting an entry never grants its tools.
+
+### Per-user services
+
+Declare long-lived per-user processes with `userServices`. Each declaration
+has a `name`, an optional `idleMinutes` (default 10; non-positive disables
+idle stopping), and `start(user, ctx)`, which returns a `ServiceSpec` or
+`undefined` when the service is unavailable for that user. Connect through
+`host.services.connect(name, user, ctx)`:
+
+```ts
+import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
+
+export default function createAcmeService(host: SigrunHost): SigrunExtensionResult {
+	return {
+		userServices: [
+			{
+				name: "acme-api",
+				idleMinutes: 10,
+				start: async (user) => {
+					const token = await host.stores.user(user).secrets.get("api-token");
+					if (token === undefined) return undefined;
+					return {
+						command: "node",
+						args: ["/opt/acme/service.js"],
+						env: { ACME_API_TOKEN: token },
+					};
+				},
+			},
+		],
+	};
+}
+```
+
+`ServiceSpec` supplies `command`, `args`, optional `env`, `cwd`, and
+`readPaths`. Core owns the process. A successful connect returns a
+`ServiceHandle` with `stdin`, `stdout`, `stderr`, `exited`, and `release()`;
+release the handle when done so the idle policy can apply. Repeated
+connections attach to the same process. After the last handle is released,
+the service stops once it has had no traffic for `idleMinutes`.
+
+Each service runs as its **own** jailed process under that user's policy.
+Workers and services are sibling jail domains: the user's agent cannot read
+the service's environment. Pass credentials through `ServiceSpec.env`, or
+have the service read a file under the user's data path; **never put them in
+the agent's workspace**. Service `env` is merged over the user's base
+execution environment, and `SSH_AUTH_SOCK` is removed.
+
+Three crashes within five minutes put the service in `failed`. Further
+connects fail rather than restart-looping. Only a committed settings write
+for **that extension and that same user** clears the failure fence (the
+self-service settings PUT performs it). Core stops a user's services on
+user deletion, stops an extension's services when it is quarantined, and
+stops all services during shutdown.
+
+The kernel boundary suite has not run yet; CI is its first execution. Do
+not treat service/worker isolation as kernel-verified from unit tests.
+
+### Per-user settings sections
+
+A `SettingsSectionDef` can set `scope: "user"`. The section then reads and
+writes the calling user's per-user settings instead of the shared
+`settings/<slug>.json`. It is visible to every signed-in user unless
+`admin: true` is explicit; a principal with no directory user gets `400`.
+Omit `scope`, or use `"server"`, for deployment-wide shared configuration.
+
+```ts
+const section = {
+	id: "acme-personal",
+	title: "Acme (personal)",
+	scope: "user" as const,
+	admin: false,
+	form: {
+		v: 1,
+		root: {
+			type: "form",
+			id: "acme-personal-form",
+			bind: "/settings",
+			mode: "submit",
+			onSubmit: "save",
+			children: [{ type: "text", name: "nickname", label: "Nickname" }],
+		},
+	},
+};
+```
+
+### What `userDeleted` guarantees
+
+An administrator deletes with `DELETE /v1/users/<user>?transferTo=<recipient>`.
+Core transfers owned resources, revokes the departing user's tokens and
+account links, stops their worker and services, and removes their per-user
+tool entries **before** emitting your `userDeleted({ user, transferTo })`
+handler.
+
+During that handler, the departing user's directory record and per-user
+secrets are still readable. Use this window to revoke credentials at the
+external provider or clean up extension-owned remote state. After the
+fan-out, core removes the directory record, then deletes:
+
+- `<configDir>/user-secrets/<user>.json`;
+- `<configDir>/user-settings/<user>/`; and
+- `<cacheDir>/<slug>/users/<user>/` for each cache slug.
+
+Credentials belong to the departing person: they are never transferred to
+the recipient. Per-user **data and state are your extension's decision** —
+core deliberately leaves them in place. Move, retain, or delete those in
+`userDeleted` according to your own ownership and retention rules.
 
 ## Uninstall
 
