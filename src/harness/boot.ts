@@ -1151,6 +1151,8 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		// engine loaded (core ships none — `gatewayEngine` is undefined
 		// unless an extension declared one).
 		gatewayLoaded: gatewayEngine !== undefined,
+		rewriteUserSelection: (tx, conversationId, from, to) =>
+			rewriteSelection(tx, conversationId, from, to, perUserSlugs),
 	};
 	registry.install({
 		name: "sigrun.jobs",

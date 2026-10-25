@@ -140,6 +140,10 @@ export async function rewriteSelection(
 	to: string | undefined,
 	perUserSlugs: readonly string[],
 ): Promise<void> {
+	// Re-stamping/forking for the SAME owner is a true no-op: arrays are
+	// exact and object edits must not drop then duplicate-check away the
+	// owner's existing entries.
+	if (from !== undefined && from === to) return;
 	const agent = await tx.doc(AgentDoc, conversationId);
 	const stored = agent.extensions;
 	const additions =

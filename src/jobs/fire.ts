@@ -45,6 +45,7 @@ import type {
 	Registry,
 	Storage,
 	TaskId,
+	Tx,
 	TaskRuntime,
 } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -91,6 +92,13 @@ export interface JobRuntimeDeps {
 	 * that does not exist, which must be visible, never silent.
 	 */
 	gatewayLoaded: boolean;
+	/** Multi-user M2: owner selection rewrite in the run's creation commit. */
+	rewriteUserSelection?(
+		tx: Tx,
+		conversationId: ConversationId,
+		from: string | undefined,
+		to: string | undefined,
+	): Promise<void>;
 }
 
 export interface FireResult {
@@ -346,6 +354,7 @@ async function firePrompt(
 					meta.jobId = id;
 					if (action.deliver !== undefined) meta.deliver = [...action.deliver];
 					if (record.owner !== undefined) meta.owner = record.owner;
+					await deps.rewriteUserSelection?.(tx, newId, undefined, record.owner);
 					if (action.runSharing !== undefined) meta.sharing = action.runSharing;
 					meta.name = runName(record.spec.name, deps.now(), record, deps);
 				},

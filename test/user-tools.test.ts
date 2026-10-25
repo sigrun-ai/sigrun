@@ -33,7 +33,7 @@ import {
 	userEntryName,
 } from "../src/harness/user-tools.js";
 import { createConversationOp, forkOp } from "../src/server/conversation-ops.js";
-import { stampOwnerInCommit } from "../src/server/helpers.js";
+import { stampOwnerInCommit, stampSessionOwner } from "../src/server/helpers.js";
 import { transferOwnership } from "../src/server/ownership.js";
 import { createServer } from "../src/server/index.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
@@ -288,6 +288,48 @@ describe("owner writes rewrite selections in the same commits", () => {
 		}
 	});
 
+	test("a same-owner fork keeps the owner's entries in both selection shapes", async () => {
+		const { opened, config } = await boot();
+		acmeHost(opened).tools.setUserTools("alice", [probe("same_owner_probe")]);
+		const app = await createServer(opened, config);
+		cleanups.push(async () => { await app.close(); });
+		for (const shape of ["object", "array"] as const) {
+			const source = await createConversationOp(app.sigrunContext, { owner: "alice" });
+			const sourceId = source.id as ConversationId;
+			const sourceConversation = await opened.harness.conversation(sourceId, BACKGROUND_CONTEXT);
+			if (sourceConversation === undefined) throw new Error("source missing");
+			await sourceConversation.submit({ type: "input", content: [{ type: "text", text: "history" }] }, BACKGROUND_CONTEXT);
+			await sourceConversation.waitForIdle(BACKGROUND_CONTEXT);
+			if (shape === "array") await withArraySelection(opened, sourceConversation, ["acme@alice"]);
+			const before = await storedSelection(opened, sourceId);
+			const forked = await forkOp(app.sigrunContext, sourceConversation, { owner: "alice" });
+			const forkedId = forked.id as ConversationId;
+			expect(await storedSelection(opened, forkedId)).toEqual(before);
+			const fork = await opened.harness.conversation(forkedId, BACKGROUND_CONTEXT);
+			if (fork === undefined) throw new Error("fork missing");
+			expect(await names(fork)).toContain("acme@alice");
+		}
+	});
+
+	test("re-stamping the same owner leaves the selection untouched", async () => {
+		const { opened, config } = await boot();
+		acmeHost(opened).tools.setUserTools("alice", [probe()]);
+		const app = await createServer(opened, config);
+		cleanups.push(async () => { await app.close(); });
+		const created = await createConversationOp(app.sigrunContext, { owner: "alice" });
+		const conversation = await opened.harness.conversation(created.id as ConversationId, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation missing");
+		await conversation.commit(async (tx) => {
+			(await tx.doc(AgentDoc, conversation.id)).extensions = {
+				add: ["keep", "acme@alice"],
+				remove: ["drop"],
+			};
+		}, BACKGROUND_CONTEXT);
+		const before = await storedSelection(opened, conversation.id);
+		await stampSessionOwner(conversation, "alice", opened);
+		expect(await storedSelection(opened, conversation.id)).toEqual(before);
+	});
+
 	test("transfer alice to bob rewrites both selection shapes", async () => {
 		const { opened, config } = await boot();
 		acmeHost(opened).tools.setUserTools("alice", [probe("alice_transfer")]);
@@ -365,6 +407,20 @@ describe("configure and boot sweep", () => {
 		await expect(acmeHost(opened).conversations.configure(id, {
 			extensions: ["acme@alice"],
 		})).resolves.toBeUndefined();
+	});
+
+	test("host create rejects another user's per-user entry", async () => {
+		const { opened, config } = await boot();
+		acmeHost(opened).tools.setUserTools("bob", [probe()]);
+		const app = await createServer(opened, config);
+		cleanups.push(async () => { await app.close(); });
+		await expect(acmeHost(opened).conversations.create({
+			owner: "alice",
+			agent: { extensions: ["acme@bob"] },
+		})).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "agent.extensions" },
+		});
 	});
 
 	test("the boot sweep adds missing owner entries once and a second boot changes nothing", async () => {

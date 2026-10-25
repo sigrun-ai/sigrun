@@ -260,6 +260,15 @@ export async function createConversationOp(
 				});
 			}
 		}
+		for (const name of input.agent.extensions ?? []) {
+			const at = name.indexOf("@");
+			if (at > 0 && name.slice(at + 1) !== input.owner) {
+				throw new ConversationOpError({
+					error: "invalid_field",
+					field: "agent.extensions",
+				});
+			}
+		}
 	}
 	const selection =
 		input.agent === undefined
@@ -845,8 +854,12 @@ export async function forkOp(
 		: inheritedSelection === undefined
 			? undefined
 			: {
-					add: (inheritedSelection.add ?? []).map((name) => ({ name })),
-					remove: (inheritedSelection.remove ?? []).map((name) => ({ name })),
+					...(inheritedSelection.add === undefined
+						? {}
+						: { add: inheritedSelection.add.map((name) => ({ name })) }),
+					...(inheritedSelection.remove === undefined
+						? {}
+						: { remove: inheritedSelection.remove.map((name) => ({ name })) }),
 				};
 	const fork = await conversation.fork(
 		at as EntryId,
