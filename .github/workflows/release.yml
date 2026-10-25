@@ -74,6 +74,10 @@ jobs:
         with:
           repository: sigrun-ai/sigrun-ext-tool-search
           path: sigrun-ext-tool-search
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-oauth
+          path: sigrun-ext-oauth
       - name: Derive image tag (v prefix stripped)
         shell: bash
         run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
@@ -99,6 +103,7 @@ jobs:
               '@sigrun/ext-codemode',
               '@sigrun/ext-mcp',
               '@sigrun/ext-tool-search',
+              '@sigrun/oauth',
             ];
             names.map((n) => n + '@' + d[n]).join(' ');
           ")"

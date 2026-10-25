@@ -49,6 +49,7 @@ for (const name of [
 	"@sigrun/ext-codemode",
 	"@sigrun/ext-mcp",
 	"@sigrun/ext-tool-search",
+	"@sigrun/oauth",
 ]) {
 	assert.ok(require.resolve(name), `cannot resolve ${name}`);
 }

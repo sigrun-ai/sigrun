@@ -579,8 +579,8 @@ export interface OpenHarnessOptions {
 	 */
 	readonly settings?: HarnessSettings;
 	/**
-	 * Built-in extensions (Task 2, pi parity): codemode, MCP and tool
-	 * search load by default from core's own node_modules, BEFORE the
+	 * Built-in extensions: codemode, MCP, tool search and OAuth load by
+	 * default from core's own node_modules, BEFORE the
 	 * configured list, governed by the settings file's
 	 * `builtinExtensions` toggles. `false` skips them entirely — the
 	 * hermetic-test seam for suites asserting exact extension outcomes
@@ -915,8 +915,7 @@ export async function openHarness(
 	// declarations install here — see src/harness/packages.ts).
 	const packagesDir =
 		options.packagesDir ?? packagesDirOf(options.settingsDir ?? defaultSettingsDir());
-	// Built-in extensions (Task 2, pi parity): codemode, MCP and tool
-	// search ship with core. Resolution needs the settings FILE (the
+	// Built-in extensions ship with core. Resolution needs the settings FILE (the
 	// `builtinExtensions` toggles live there), so the store is constructed
 	// HERE — before the loader — and the one instance threads on to the
 	// rest of boot (its `harnessSettings()` call below stays the single

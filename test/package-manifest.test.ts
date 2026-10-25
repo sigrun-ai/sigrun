@@ -13,10 +13,10 @@
  * - core's `files` whitelist (the runnable tarball: `dist` +
  *   `webui/dist` + the docs files; deploy assets live on GitHub, not in
  *   the tarball);
- * - the three built-in extension dependencies under their `@sigrun/ext-*`
- *   keys. Working-tree spec is `file:../sigrun-ext-*` (the dev shape —
+ * - the four built-in extension dependencies. Working-tree spec is
+ *   `file:../sigrun-ext-*` (the dev shape —
  *   npm refuses registry-spec + `overrides: file:` for direct deps,
- *   EOVERRIDE); Task 8 (publish) flips these three to exact `0.1.0`
+ *   EOVERRIDE); the publish-time rewrite flips these to exact versions
  *   before `npm publish`, which is the only published shape this test
  *   accepts beyond the dev shape.
  */
@@ -50,7 +50,7 @@ const PUBLISH_CONFIG = { access: "public", provenance: true };
 const NODE_ENGINE = ">=22.19.0";
 
 /** The published family members and their exact-version dep specs. */
-const FAMILY = ["@sigrun/shared", "@sigrun/tui", "@sigrun/ext-codemode", "@sigrun/ext-mcp", "@sigrun/ext-tool-search"] as const;
+const FAMILY = ["@sigrun/shared", "@sigrun/tui", "@sigrun/ext-codemode", "@sigrun/ext-mcp", "@sigrun/ext-tool-search", "@sigrun/oauth"] as const;
 
 /** The dev-shape-or-published spec for a built-in extension dependency. */
 function builtinSpec(repo: string): RegExp {
@@ -100,6 +100,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(root.dependencies?.["@sigrun/ext-codemode"]).toMatch(builtinSpec("sigrun-ext-codemode"));
 		expect(root.dependencies?.["@sigrun/ext-mcp"]).toMatch(builtinSpec("sigrun-ext-mcp"));
 		expect(root.dependencies?.["@sigrun/ext-tool-search"]).toMatch(builtinSpec("sigrun-ext-tool-search"));
+		expect(root.dependencies?.["@sigrun/oauth"]).toMatch(builtinSpec("sigrun-ext-oauth"));
 	});
 
 	test("shared: published leaf with directory-qualified repository", () => {

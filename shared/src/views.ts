@@ -733,7 +733,7 @@ export interface ExtensionInfo {
 	readonly inert?: "no gateway";
 	/**
 	 * Built-in extensions (Task 2, pi parity): `true` marks a core-shipped
-	 * built-in (codemode / MCP / tool search); ABSENT on configured
+	 * built-in (codemode / MCP / tool search / OAuth); ABSENT on configured
 	 * extensions. A replaced built-in reports its row with `builtin: true`
 	 * and `replacedBy` (its status is the skip, never `"ok"`); a disabled
 	 * built-in is absent from the list entirely.
