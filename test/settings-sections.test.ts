@@ -44,7 +44,11 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
-import { received, reset } from "./fixtures/fixture-settings-section/index.js";
+import {
+	received,
+	receivedUsers,
+	reset,
+} from "./fixtures/fixture-settings-section/index.js";
 
 const SECTION_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-settings-section", "index.js"),
@@ -63,6 +67,7 @@ interface TestServer {
 	readonly opened: OpenedHarness;
 	readonly aliceToken: string;
 	readonly bobToken: string;
+	readonly serviceToken: string;
 }
 
 let booted: Promise<TestServer> | undefined;
@@ -81,6 +86,7 @@ async function bootServer(): Promise<TestServer> {
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_WEBUI: "false",
 		SIGRUN_AUTH: "token",
+		SIGRUN_API_TOKEN: "settings-section-service-token",
 		SIGRUN_CONFIG_DIR: configDir,
 	});
 	const identity = await seededIdentity(join(dir, "seed"), "alice");
@@ -110,7 +116,7 @@ async function bootServer(): Promise<TestServer> {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened, aliceToken, bobToken };
+	return { app, opened, aliceToken, bobToken, serviceToken: "settings-section-service-token" };
 }
 
 interface CallResult {
@@ -144,9 +150,180 @@ async function call(
 const SECTION_URL =
 	"/v1/ext/acme-settings-section/surfaces/connection";
 const DISPLAY_URL = "/v1/ext/acme-settings-section/surfaces/display";
+const PROFILE_URL = "/v1/ext/acme-settings-section/surfaces/profile";
+const PERSONAL_ADMIN_URL = "/v1/ext/acme-settings-section/surfaces/personal-admin";
 
 beforeEach(() => {
 	reset();
+});
+
+async function saveSection(
+	app: FastifyInstance,
+	url: string,
+	token: string,
+	values: Record<string, unknown>,
+	actionId: string,
+): Promise<CallResult> {
+	const rendered = await call(app, { method: "GET", url, token });
+	if (rendered.status !== 200) return rendered;
+	return await call(app, {
+		method: "POST",
+		url: `${url}/actions`,
+		token,
+		payload: {
+			action: "save",
+			actionId,
+			params: {},
+			payload: {
+				rev: (rendered.body as unknown as { rev: number }).rev,
+				values,
+			},
+		},
+	});
+}
+
+function sectionSettings(result: CallResult): JsonObject {
+	return (result.body as unknown as { data: { settings: JsonObject } }).data.settings;
+}
+
+describe("per-user settings sections (multi-user M2 Task 6)", () => {
+	test("alice and bob round-trip their own values; saves never touch the shared file", async () => {
+		const { app, opened, aliceToken, bobToken } = await server();
+		await opened.extensionStores.settingsFor("acme-settings-section").set({
+			nickname: "shared-sentinel",
+		});
+		const sharedBefore = await opened.extensionStores
+			.settingsFor("acme-settings-section")
+			.get();
+
+		const aliceSave = await saveSection(
+			app,
+			PROFILE_URL,
+			aliceToken,
+			{ nickname: "Alice" },
+			"profile-alice",
+		);
+		expect(aliceSave.status).toBe(200);
+		expect((aliceSave.body as unknown as { ok: boolean }).ok).toBe(true);
+		const bobSave = await saveSection(
+			app,
+			PROFILE_URL,
+			bobToken,
+			{ nickname: "Bob" },
+			"profile-bob",
+		);
+		expect((bobSave.body as unknown as { ok: boolean }).ok).toBe(true);
+
+		const aliceRead = await call(app, {
+			method: "GET",
+			url: `${PROFILE_URL}?user=bob`,
+			token: aliceToken,
+		});
+		const bobRead = await call(app, {
+			method: "GET",
+			url: `${PROFILE_URL}?user=alice`,
+			token: bobToken,
+		});
+		expect(sectionSettings(aliceRead)).toEqual({ nickname: "Alice" });
+		expect(sectionSettings(bobRead)).toEqual({ nickname: "Bob" });
+		expect(
+			await opened.extensionStores.userExtensionStores("acme-settings-section", "alice").settings.get(),
+		).toEqual({ nickname: "Alice" });
+		expect(
+			await opened.extensionStores.userExtensionStores("acme-settings-section", "bob").settings.get(),
+		).toEqual({ nickname: "Bob" });
+		expect(
+			await opened.extensionStores.settingsFor("acme-settings-section").get(),
+		).toEqual(sharedBefore);
+		// The admin sees their own value through the same caller-pinned
+		// surface, never a directory-wide or another user's value.
+		expect(sectionSettings(aliceRead)).not.toEqual(sectionSettings(bobRead));
+		expect(received).toEqual([["nickname"], ["nickname"]]);
+		expect(receivedUsers).toEqual(["alice", "bob"]);
+
+		const secretSave = await saveSection(
+			app,
+			PROFILE_URL,
+			bobToken,
+			{ "personal-token": "bob-personal-secret" },
+			"profile-bob-secret",
+		);
+		expect((secretSave.body as unknown as { ok: boolean }).ok).toBe(true);
+		const bobSecrets = await call(app, {
+			method: "GET",
+			url: "/v1/me/extensions/acme-settings-section/secrets",
+			token: bobToken,
+		});
+		expect(bobSecrets.body).toEqual({ keys: ["personal-token"] });
+		const aliceSecrets = await call(app, {
+			method: "GET",
+			url: "/v1/me/extensions/acme-settings-section/secrets",
+			token: aliceToken,
+		});
+		expect(aliceSecrets.body).toEqual({ keys: [] });
+		const secretRender = await call(app, {
+			method: "GET",
+			url: PROFILE_URL,
+			token: bobToken,
+		});
+		expect(sectionSettings(secretRender)["personal-token"]).toBe("stored");
+		expect(JSON.stringify(secretRender.body)).not.toContain("bob-personal-secret");
+	});
+
+	test("shared sections keep their shared values and admin gate; admin+user is admin-only", async () => {
+		const { app, opened, aliceToken, bobToken } = await server();
+		const shared = await saveSection(
+			app,
+			SECTION_URL,
+			aliceToken,
+			{ apiUrl: "https://shared.example.invalid" },
+			"shared-still-shared",
+		);
+		expect((shared.body as unknown as { ok: boolean }).ok).toBe(true);
+		expect(
+			await opened.extensionStores.settingsFor("acme-settings-section").get(),
+		).toMatchObject({ apiUrl: "https://shared.example.invalid" });
+		expect(receivedUsers.at(-1)).toBeUndefined();
+
+		expect((await call(app, { method: "GET", url: SECTION_URL, token: bobToken })).status).toBe(404);
+		expect((await call(app, { method: "GET", url: PROFILE_URL, token: bobToken })).status).toBe(200);
+		expect((await call(app, { method: "GET", url: PERSONAL_ADMIN_URL, token: bobToken })).status).toBe(404);
+		expect((await call(app, { method: "GET", url: PERSONAL_ADMIN_URL, token: aliceToken })).status).toBe(200);
+		expect((await saveSection(
+			app,
+			PERSONAL_ADMIN_URL,
+			bobToken,
+			{ note: "not allowed" },
+			"personal-admin-bob",
+		)).status).toBe(404);
+	});
+
+	test("a userless principal gets 400 named_user_required on render, data, and save", async () => {
+		const { app, serviceToken } = await server();
+		for (const url of [PROFILE_URL, `${PROFILE_URL}/data`]) {
+			const result = await call(app, { method: "GET", url, token: serviceToken });
+			expect(result.status).toBe(400);
+			expect(result.body).toEqual({ error: "named_user_required" });
+		}
+		const saved = await saveSection(
+			app,
+			PROFILE_URL,
+			serviceToken,
+			{ nickname: "nobody" },
+			"profile-userless",
+		);
+		expect(saved.status).toBe(400);
+		expect(saved.body).toEqual({ error: "named_user_required" });
+		const adminScoped = await saveSection(
+			app,
+			PERSONAL_ADMIN_URL,
+			serviceToken,
+			{ note: "nobody" },
+			"personal-admin-userless",
+		);
+		expect(adminScoped.status).toBe(400);
+		expect(adminScoped.body).toEqual({ error: "named_user_required" });
+	});
 });
 
 describe("settings sections render (U4 Task 3)", () => {

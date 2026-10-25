@@ -98,6 +98,7 @@ export interface ServerContext {
 	readonly publishSettingsChanged: (
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	) => void;
 	/**
 	 * The restart callback (UI-blocks U4 Task 2, spec §13.3): the serve

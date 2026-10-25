@@ -43,6 +43,7 @@ import {
 	SurfaceFailedError,
 	UnknownActionError,
 } from "../surfaces/service.js";
+import { NamedUserRequiredError } from "../surfaces/settings-surfaces.js";
 
 /**
  * The one upload-name rule, shared with core's conversation upload
@@ -123,6 +124,9 @@ export function registerSurfaceRoutes(
 		id: string,
 		cause: unknown,
 	): Promise<FastifyReply> => {
+		if (cause instanceof NamedUserRequiredError) {
+			return reply.code(400).send({ error: "named_user_required" });
+		}
 		const failed =
 			cause instanceof SurfaceFailedError
 				? cause

@@ -317,6 +317,7 @@ export interface OpenedHarness {
 	publishSettingsChanged(
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	): void;
 	/**
 	 * The boot-shared extension store trio (core hardening W3 Task 7,
@@ -1440,6 +1441,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	const publishSettingsChanged = (
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	): void => {
 		events.publish({ type: "settings.changed", scope, keys: [...keys] });
 		if (
@@ -1450,7 +1452,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 			stopProviderRefresh();
 			stopProviderRefresh = armProviderRefresh();
 		}
-		void eventBus.emitSettingsChanged(keys);
+		if (user !== undefined && typeof scope !== "string") {
+			userServices.settingsChanged(scope.extension, user);
+		}
+		void eventBus.emitSettingsChanged(keys, user);
 	};
 	settingsChangedSinks.push(publishSettingsChanged);
 	// Activity stamping (UI refresh A1): every settled run stamps its

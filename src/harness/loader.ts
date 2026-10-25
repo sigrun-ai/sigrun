@@ -941,6 +941,7 @@ function validateSettingsSections(
 					form?: unknown;
 					secrets?: unknown;
 					admin?: unknown;
+					scope?: unknown;
 				  }
 			| null;
 		if (typeof def?.id !== "string" || def.id.length === 0) {
@@ -970,6 +971,11 @@ function validateSettingsSections(
 		if (def?.admin !== undefined && typeof def.admin !== "boolean") {
 			throw new Error(
 				`extension factory returned a settings section "${def.id}" whose admin is not a boolean`,
+			);
+		}
+		if (def?.scope !== undefined && def.scope !== "server" && def.scope !== "user") {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" whose scope is not "server" or "user"`,
 			);
 		}
 		if (def?.secrets !== undefined) {

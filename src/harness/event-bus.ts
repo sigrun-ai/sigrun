@@ -340,7 +340,7 @@ export interface ExtensionEventHandlers {
 	/** The user-removal transfer event (W1 Task 4); direct fan-out, not commit-derived. */
 	readonly userDeleted?: ExtensionUserDeletedHandler;
 	/** The settings-change hook (UI-blocks U4, spec §13.2). */
-	readonly onSettingsChanged?: (keys: readonly string[]) => void | Promise<void>;
+	readonly onSettingsChanged?: (keys: readonly string[], user?: string) => void | Promise<void>;
 	/** Factory-declared idle workers (memory-seam Task 5); the bus owns their timers. */
 	readonly workers?: readonly ExtensionWorker[];
 }
@@ -682,13 +682,13 @@ export class EventBus {
 	 * state (no commit to derive from), and §13.2's rule is explicit: a
 	 * throwing handler never fails the write.
 	 */
-	public async emitSettingsChanged(keys: readonly string[]): Promise<void> {
+	public async emitSettingsChanged(keys: readonly string[], user?: string): Promise<void> {
 		if (this.#closed) return;
 		for (const [name, handlers] of this.#extensions) {
 			const handler = handlers.onSettingsChanged;
 			if (handler === undefined) continue;
 			await this.#bounded(`extension ${name} onSettingsChanged`, () =>
-				handler(keys),
+				handler(keys, user),
 			);
 		}
 	}

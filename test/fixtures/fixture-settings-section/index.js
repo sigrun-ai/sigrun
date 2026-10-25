@@ -17,10 +17,13 @@ import { defineExtension } from "@earendil-works/pi-durable";
 
 /** Delivered `onSettingsChanged` key lists, in delivery order. */
 export const received = [];
+/** The optional user argument for each delivery (undefined for shared saves). */
+export const receivedUsers = [];
 
 /** Clear the records (tests own their fixtures' state). */
 export function reset() {
 	received.length = 0;
+	receivedUsers.length = 0;
 }
 
 /** The section forms the fixture declares (tests assert against these). */
@@ -73,10 +76,51 @@ export default function createSettingsSectionFixture() {
 						},
 					},
 				},
+				{
+					id: "profile",
+					title: "My profile",
+					icon: "key",
+					scope: "user",
+					secrets: [{ key: "personal-token", label: "Personal token" }],
+					form: {
+						v: 1,
+						root: {
+							type: "form",
+							id: "profile-form",
+							bind: "/settings",
+							mode: "submit",
+							onSubmit: "save",
+							children: [
+								{ type: "text", name: "nickname", label: "Nickname" },
+							],
+						},
+					},
+				},
+				{
+					id: "personal-admin",
+					title: "Personal admin",
+					icon: "key",
+					scope: "user",
+					admin: true,
+					form: {
+						v: 1,
+						root: {
+							type: "form",
+							id: "personal-admin-form",
+							bind: "/settings",
+							mode: "submit",
+							onSubmit: "save",
+							children: [
+								{ type: "text", name: "note", label: "Note" },
+							],
+						},
+					},
+				},
 			],
 		},
-		onSettingsChanged(keys) {
+		onSettingsChanged(keys, user) {
 			received.push([...keys]);
+			receivedUsers.push(user);
 		},
 	};
 }

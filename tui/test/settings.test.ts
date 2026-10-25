@@ -260,6 +260,22 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(lines).toContain("Acme settings");
 	});
 
+	test("user sections list under My settings for non-admins; admin+user stays admin-only", async () => {
+		const extra: readonly SettingsSectionEntry[] = [
+			{ slug: "acme-ext", id: "profile", title: "Profile", icon: "key", scope: "user", admin: false },
+			{ slug: "acme-ext", id: "personal-admin", title: "Personal admin", icon: "key", scope: "user", admin: true },
+		];
+		const nonAdmin = makeView(fakeWire({ admin: false, sectionsExtra: extra }));
+		await nonAdmin.load();
+		const nonAdminLines = nonAdmin.render(80).join("\n");
+		expect(nonAdminLines).toContain("My settings");
+		expect(nonAdminLines).toContain("Profile");
+		expect(nonAdminLines).not.toContain("Personal admin");
+		const admin = makeView(fakeWire({ admin: true, sectionsExtra: extra }));
+		await admin.load();
+		expect(admin.render(80).join("\n")).toContain("Personal admin");
+	});
+
 	test("the search index filters on label/help/key; 'naming' resolves to General's naming model", () => {
 		const index = [
 			{

@@ -585,8 +585,19 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		expect(extensions.map((s) => s.slug)).toEqual([
 			"acme-settings-section",
 			"acme-settings-section",
+			"acme-settings-section",
+			"acme-settings-section",
 		]);
-		expect(extensions.map((s) => s.id)).toEqual(["connection", "display"]);
+		expect(extensions.map((s) => s.id)).toEqual([
+			"connection",
+			"display",
+			"profile",
+			"personal-admin",
+		]);
+		expect(extensions.find((s) => s.id === "profile")).toMatchObject({
+			scope: "user",
+			admin: false,
+		});
 	});
 
 	test("the search index covers every core key's label and help; 'naming' resolves to General's naming model", async () => {

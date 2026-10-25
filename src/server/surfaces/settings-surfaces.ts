@@ -45,6 +45,14 @@ import {
 } from "../../settings/pending.js";
 import type { SurfaceService } from "./service.js";
 
+/** A user-scope surface requires a live directory user, exactly like /v1/me. */
+export class NamedUserRequiredError extends Error {
+	constructor() {
+		super("named_user_required");
+		this.name = "NamedUserRequiredError";
+	}
+}
+
 /** The save payload's shape (`{rev, values}`) — validated at runtime. */
 interface SavePayload {
 	readonly rev: number;
@@ -326,6 +334,7 @@ export interface SettingsSurfaceOptions {
 	readonly publishSettingsChanged: (
 		scope: "server" | { extension: string },
 		keys: readonly string[],
+		user?: string,
 	) => void;
 	/** The surface service (the rev read the save's optimistic check needs). */
 	readonly service: SurfaceService;
@@ -358,7 +367,17 @@ export function settingsSurfaceFor(
 	options: SettingsSurfaceOptions,
 ): SurfaceDef<"settings"> {
 	const { stores, publishSettingsChanged, service } = options;
-	const admin = section.admin !== false;
+	const userScope = section.scope === "user";
+	// User sections are personal by default. An explicit admin: true keeps
+	// the admin gate; shared sections retain their original default-true rule.
+	const admin = userScope ? section.admin === true : section.admin !== false;
+	const namedUser = (principal: Principal): string => {
+		const user = principal.user;
+		if (user === undefined || stores.users.get(user) === undefined) {
+			throw new NamedUserRequiredError();
+		}
+		return user;
+	};
 	const fields = collectFormFields(section.form.root);
 	// Secret-typed fields NEVER land in the plaintext settings file
 	// (§5.6/§13.4 write-only): saves route them to the secrets store and
@@ -384,6 +403,7 @@ export function settingsSurfaceFor(
 
 
 	const accessFor = (principal: Principal): "write" | "none" => {
+		if (userScope) namedUser(principal);
 		if (admin) {
 			return isSuperuser(principal) || principal.admin ? "write" : "none";
 		}
@@ -514,8 +534,14 @@ export function settingsSurfaceFor(
 		return { ok: true };
 	};
 
-	const readData = async (): Promise<{ settings: JsonObject; secrets: JsonObject }> => {
-		const stored = (await stores.settingsFor(slug).get()) as JsonObject;
+	const readData = async (principal: Principal): Promise<{ settings: JsonObject; secrets: JsonObject }> => {
+		const user = userScope ? namedUser(principal) : undefined;
+		const userStores = user === undefined
+			? undefined
+			: stores.userExtensionStores(slug, user);
+		const stored = (userStores === undefined
+			? await stores.settingsFor(slug).get()
+			: await userStores.settings.get()) as JsonObject;
 		// Secret-typed field values never render (§5.6/§13.4 write-only —
 		// the plaintext settings file shouldn't carry them either, but an
 		// older version or a hand edit may have left one behind). Secret
@@ -530,7 +556,12 @@ export function settingsSurfaceFor(
 		}
 		const secrets: JsonObject = {};
 		if (section.secrets !== undefined) {
-			const listed = await stores.secretKeys(slug);
+			const listed = user === undefined
+				? await stores.secretKeys(slug)
+				: (await stores.userSecretKeys(slug, user)).map((key) => ({
+						key,
+						source: "stored" as const,
+					}));
 			const byKey = new Map(listed.map((entry) => [entry.key, entry.source]));
 			for (const secret of section.secrets) {
 				const source = byKey.get(secret.key);
@@ -548,9 +579,9 @@ export function settingsSurfaceFor(
 		title: section.title,
 		icon: section.icon ?? "key",
 		placement: "settings",
-		// The data payload is identical for every principal with access,
-		// so reads never advance the concurrency rev (the save action's
-		// optimistic check compares against it; §7.3).
+		// Settings reads do not advance the concurrency rev (the save
+		// action's optimistic check compares against it; §7.3). User-scope
+		// data is still resolved from the calling principal on every read.
 		sharedData: true,
 		render: async (ctx): Promise<SurfaceRenderResult> => {
 			const access = accessFor(ctx.principal);
@@ -560,13 +591,17 @@ export function settingsSurfaceFor(
 					access === "none"
 						? {}
 						: core === undefined
-							? await readData()
+							? await readData(ctx.principal)
 							: readCoreData(),
 				access,
 			};
 		},
 		actions: {
 			save: async (ctx, payload): Promise<ActionResult> => {
+				const user = userScope ? namedUser(ctx.principal) : undefined;
+				const userStores = user === undefined
+					? undefined
+					: stores.userExtensionStores(slug, user);
 				const parsed = parseSavePayload(payload);
 				if (parsed === undefined) {
 					return { ok: false, error: { message: "save expects {rev, values}" } };
@@ -630,11 +665,17 @@ export function settingsSurfaceFor(
 				// the top-level keys the write touched. The per-slug promise
 				// chain serializes read-merge-writes across this slug's
 				// sections so interleaved saves can't drop each other's keys.
-				return enqueueWrite(slug, async (): Promise<ActionResult> => {
+				return enqueueWrite(user === undefined ? slug : `${slug}\u0000${user}`, async (): Promise<ActionResult> => {
 					for (const write of secretWrites) {
-						await stores.setSecret(slug, write.key, write.value);
+						if (userStores === undefined) {
+							await stores.setSecret(slug, write.key, write.value);
+						} else {
+							await userStores.secrets.set(write.key, write.value);
+						}
 					}
-					const stored = await stores.settingsFor(slug).get();
+					const stored = userStores === undefined
+						? await stores.settingsFor(slug).get()
+						: await userStores.settings.get();
 					const next = { ...stored, ...plainValues };
 					// A secret-typed field that previously leaked into the
 					// settings file is dropped by the next save (it lives in
@@ -642,8 +683,12 @@ export function settingsSurfaceFor(
 					for (const name of allSecretFieldNames) {
 						delete next[name];
 					}
-					await stores.settingsFor(slug).set(next);
-					publishSettingsChanged({ extension: slug }, Object.keys(parsed.values));
+					if (userStores === undefined) {
+						await stores.settingsFor(slug).set(next);
+					} else {
+						await userStores.settings.set(next);
+					}
+					publishSettingsChanged({ extension: slug }, Object.keys(parsed.values), user);
 					return { ok: true };
 				});
 			},

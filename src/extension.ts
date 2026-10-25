@@ -261,7 +261,7 @@ export type SigrunLifecycleHandlers = {
 	 * shared operator surface). Errors are caught and logged; the write
 	 * already succeeded and stays successful.
 	 */
-	onSettingsChanged?(keys: readonly string[]): void | Promise<void>;
+	onSettingsChanged?(keys: readonly string[], user?: string): void | Promise<void>;
 };
 
 // ---------------------------------------------------------------------------
@@ -813,8 +813,13 @@ export interface SettingsSectionDef {
 	readonly form: Tree;
 	/** Declared secrets, rendered as `secret` fields backed by the §7.7 secrets routes. */
 	readonly secrets?: readonly { key: string; label: string; help?: string }[];
-	/** Only admins see and edit it; default true (settings writes are admin-only). */
+	/** Only admins see and edit it; default true for shared sections.
+	 *  A user-scope section is visible to every signed-in user unless this
+	 *  is explicitly true. */
 	readonly admin?: boolean;
+	/** `"user"` reads/writes the calling user's settings; absent/`"server"`
+	 *  keeps the extension's shared settings file. */
+	readonly scope?: "server" | "user";
 }
 
 /**

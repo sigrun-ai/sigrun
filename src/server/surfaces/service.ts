@@ -41,6 +41,7 @@ import { ActionDedup } from "./dedup.js";
 import { eventKey, instanceKey as defaultInstanceKey } from "./instance.js";
 import { sniffMime } from "./mime.js";
 import { ActionRateLimit } from "./rate-limit.js";
+import { NamedUserRequiredError } from "./settings-surfaces.js";
 import { WatcherRegistry } from "./watchers.js";
 
 /** The shared-data op-log window (spec §7.3): the last 100 updates. */
@@ -537,9 +538,19 @@ export class SurfaceService {
 			const hit = this.dedup.check(actionId, composite, fingerprint);
 			if (hit !== undefined && hit !== null) return hit.result;
 		}
-		const result = await this.invokeWithTimeout(() =>
-			handler({ principal, params, key, signal }, payload as never),
-		);
+		let result: ActionResult;
+		try {
+			result = await this.invokeWithTimeout(() =>
+				handler({ principal, params, key, signal }, payload as never),
+			);
+		} catch (cause) {
+			if (cause instanceof NamedUserRequiredError) throw cause;
+			throw new SurfaceFailedError(
+				`surface ${slug}/${id} action "${action}" threw: ${
+					cause instanceof Error ? cause.message : String(cause)
+				}`,
+			);
+		}
 		const wrapped = this.wrapResult(slug, id, key, result);
 		if (actionId !== undefined) {
 			this.dedup.record(actionId, composite, fingerprint, wrapped);
@@ -730,6 +741,7 @@ export class SurfaceService {
 				signal: new AbortController().signal,
 			});
 		} catch (cause) {
+			if (cause instanceof NamedUserRequiredError) throw cause;
 			throw new SurfaceFailedError(
 				`surface ${located.slug}/${located.def.id} render() threw: ${
 					cause instanceof Error ? cause.message : String(cause)
