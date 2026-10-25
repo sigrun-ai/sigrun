@@ -301,7 +301,7 @@ export function registerConversationRoutes(
 			}, BACKGROUND_CONTEXT);
 			// The imported conversation is the IMPORTER's, not the source's
 			// (the JSONL never carries meta — the stamp is the only owner).
-			await stampSessionOwner(conversation, request.principal.user);
+			await stampSessionOwner(conversation, request.principal.user, opened);
 			const view = await readView(conversation);
 			return await reply.code(201).send({ id: conversation.id, view });
 		},

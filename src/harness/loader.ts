@@ -351,6 +351,8 @@ export interface LoginProviderBinding {
 
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
+	/** Slugs whose loaded factory result declared `perUserTools: true`. */
+	readonly perUserSlugs: readonly string[];
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
 	readonly outcomes: readonly ExtensionOutcome[];
 	/**
@@ -514,6 +516,8 @@ export interface ResolvedExtension {
 	readonly name?: string;
 	/** Present only when resolution came from a factory result carrying one. */
 	readonly health?: () => HealthStatus;
+	/** The factory declared `host.tools.setUserTools` (multi-user M2). */
+	readonly perUserTools?: boolean;
 	/**
 	 * Set when the factory result carried a `submit` pass-through — the
 	 * RETIRED pre-seam memory wiring (§6.7). The submit itself is ignored;
@@ -640,7 +644,8 @@ type LoaderReadKeys =
 	| "notifiers"
 	| "channels"
 	| "gateway"
-	| "surfaces";
+	| "surfaces"
+	| "perUserTools";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -1936,6 +1941,12 @@ async function resolvedFromFactory(
 	// and the `LoaderReadKeys` assertion (above ResolvedExtension) pins the
 	// full read list to the contract's keys.
 	const candidate = awaited as CandidateFactoryResult;
+	if (
+		candidate.perUserTools !== undefined &&
+		typeof candidate.perUserTools !== "boolean"
+	) {
+		throw new Error("extension factory returned a perUserTools field that is not a boolean");
+	}
 	const providers = validateProviders(candidate.providers);
 	const loginProviders = validateLoginProviders(candidate.loginProviders);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
@@ -2023,6 +2034,9 @@ async function resolvedFromFactory(
 	// `workers` is a contract key — the candidate read needs no cast.
 	const workers = validateWorkers(candidate.workers);
 	return {
+		...(candidate.perUserTools === undefined
+			? {}
+			: { perUserTools: candidate.perUserTools }),
 		// Identity: the extension when one was carried, else the
 		// provider-only contributor's validated `name`.
 		...(extension !== undefined
@@ -2328,6 +2342,7 @@ typeof spec === "string"
 : { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir },
 );
 const outcomes: ExtensionOutcome[] = [];
+const perUserSlugs: string[] = [];
 const providerContributors: ProviderContributor[] = [];
 const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
@@ -2624,6 +2639,7 @@ const display = label ?? entry ?? "skills-only";
 				if (extension !== undefined) {
 					registry.install(extension);
 				}
+				if (resolved.perUserTools === true) perUserSlugs.push(slug);
 				// Only a LOADED extension or contributor claims its slug — a
 				// later stage's quarantine (never loaded) leaves the slug free
 				// for the next boot's specifier list.
@@ -2799,6 +2815,7 @@ const display = label ?? entry ?? "skills-only";
 	warnToolNameCollisions(registry);
 	return {
 		outcomes,
+		perUserSlugs,
 		providerContributors,
 		loginProviders,
 		webuiBundles,

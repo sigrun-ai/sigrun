@@ -197,6 +197,7 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				await configureOp(ctx, conversation, {
 					...(opts.model === undefined ? {} : { model: opts.model }),
 					...(opts.thinking === undefined ? {} : { thinking: opts.thinking }),
+					...(opts.extensions === undefined ? {} : { extensions: opts.extensions }),
 				});
 			},
 			async compact(id) {

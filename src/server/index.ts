@@ -313,6 +313,7 @@ export async function createServer(
 			? {}
 			: { requestRestart: options.onRestart }),
 	};
+	app.decorate("sigrunContext", ctx);
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
 	// conversations/users/access/identity surface then runs the SAME

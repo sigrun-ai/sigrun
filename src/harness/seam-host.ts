@@ -18,7 +18,7 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type { ConversationId, Harness } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, ToolRegistration } from "@earendil-works/pi-durable";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
 import type { Tree } from "@sigrun/shared/blocks";
@@ -83,6 +83,8 @@ export interface SeamHost {
 	 * first `paths.cache` access, never at boot.
 	 */
 	readonly stores: ExtensionStores;
+	/** Multi-user M2: per-user publication, gated by the factory declaration. */
+	readonly tools: SigrunHost["tools"];
 	/**
 	 * Boot-owned two-phase re-key (the loader calls the host factory once
 	 * with the PROVISIONAL identity before the extension name/kinds are
@@ -223,6 +225,10 @@ export function createSeamHost(
 		readonly harness: () => Promise<Harness>;
 	},
 	sharedStores: SharedExtensionStores,
+	perUserTools?: {
+		readonly declared: (slug: string) => boolean;
+		readonly set: (slug: string, user: string, tools: readonly ToolRegistration[]) => void;
+	},
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
 	const ambientKinds = new Set(kinds.ambient ?? []);
@@ -260,6 +266,15 @@ export function createSeamHost(
 	return {
 		get stores() {
 			return stores;
+		},
+
+		tools: {
+			setUserTools(user, tools) {
+				if (perUserTools?.declared(identity.name) !== true) {
+					throw new Error("perUserTools not declared");
+				}
+				perUserTools.set(identity.name, user, tools);
+			},
 		},
 
 		rekey(nextIdentity, nextKinds) {

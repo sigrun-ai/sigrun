@@ -17,7 +17,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { configure } from "@earendil-works/pi-durable";
+import { AgentDoc, configure } from "@earendil-works/pi-durable";
 import type {
 	Conversation,
 	ConversationId,
@@ -312,6 +312,12 @@ export async function createConversationOp(
 		}
 		if (input.name !== undefined) draft.name = input.name;
 		if (input.source !== undefined) draft.source = input.source;
+		await opened.rewriteUserSelection(
+			tx,
+			conversation.id,
+			undefined,
+			input.owner,
+		);
 	}, BACKGROUND_CONTEXT);
 	const view = await readView(conversation);
 	return { id: conversation.id, view };
@@ -572,7 +578,11 @@ export async function readMetaOp(
 export async function configureOp(
 	ctx: ServerContext,
 	conversation: Conversation,
-	body: { readonly model?: unknown; readonly thinking?: unknown },
+	body: {
+		readonly model?: unknown;
+		readonly thinking?: unknown;
+		readonly extensions?: unknown;
+	},
 ): Promise<ConfigureResponse> {
 	const { opened } = ctx;
 	if (
@@ -585,7 +595,7 @@ export async function configureOp(
 	}
 	const record = body as Record<string, unknown>;
 	const unknownKey = Object.keys(record).find(
-		(key) => key !== "model" && key !== "thinking",
+		(key) => key !== "model" && key !== "thinking" && key !== "extensions",
 	);
 	if (unknownKey !== undefined) {
 		throw new ConversationOpError({
@@ -595,7 +605,25 @@ export async function configureOp(
 	}
 	const model = record.model;
 	const thinking = record.thinking;
-	if (model === undefined && thinking === undefined) {
+	const extensions = record.extensions;
+	if (extensions !== undefined) {
+		if (
+			!Array.isArray(extensions) ||
+			extensions.some((name) => typeof name !== "string")
+		) {
+			throw new ConversationOpError({ error: "invalid_field", field: "extensions" });
+		}
+		const owner = (
+			await opened.harness.snapshot(SessionMetaDoc, conversation.id, BACKGROUND_CONTEXT)
+		)?.owner;
+		for (const name of extensions) {
+			const at = name.indexOf("@");
+			if (at > 0 && name.slice(at + 1) !== owner) {
+				throw new ConversationOpError({ error: "invalid_field", field: "extensions" });
+			}
+		}
+	}
+	if (model === undefined && thinking === undefined && extensions === undefined) {
 		// A configure that changes nothing is a client error, not a no-op.
 		throw new ConversationOpError({ error: "invalid_body" });
 	}
@@ -625,6 +653,13 @@ export async function configureOp(
 	await conversation.configure(
 		{
 			...(parsedModel === undefined ? {} : { model: parsedModel }),
+			...(extensions === undefined
+				? {}
+				: {
+						extensions: extensions.map((name) => ({
+							name,
+						})),
+					}),
 			...(thinking !== undefined
 				? { thinkingLevel: thinking as ModelThinkingLevel }
 				: storeThinking === undefined
@@ -799,11 +834,30 @@ export async function forkOp(
 	// The fork inherits the parent's agent model — read the resolved
 	// agent, fall back to the boot default like create.
 	const agent = await conversation.agent(BACKGROUND_CONTEXT);
+	const inheritedSelection = (
+		await opened.harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)
+	)?.extensions;
+	// Preserve the stored selection VERBATIM here. `AgentChange` wants
+	// Extension-shaped names and maps them back to strings; looking names
+	// up in the registry would silently drop unresolved/late-install names.
+	const inheritedExtensions = Array.isArray(inheritedSelection)
+		? inheritedSelection.map((name) => ({ name }))
+		: inheritedSelection === undefined
+			? undefined
+			: {
+					add: (inheritedSelection.add ?? []).map((name) => ({ name })),
+					remove: (inheritedSelection.remove ?? []).map((name) => ({ name })),
+				};
 	const fork = await conversation.fork(
 		at as EntryId,
 		{
 			ownership: { kind: "ownerless" },
-			agent: { model: agent.model ?? opened.defaultModel },
+			agent: {
+				model: agent.model ?? opened.defaultModel,
+				...(inheritedExtensions === undefined
+					? {}
+					: { extensions: inheritedExtensions }),
+			},
 		},
 		BACKGROUND_CONTEXT,
 	);
@@ -840,6 +894,12 @@ export async function forkOp(
 		else draft.owner = opts.owner;
 		if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
 		draft.lastActivityAt = opened.now().toISOString();
+		await opened.rewriteUserSelection(
+			tx,
+			fork.id,
+			sourceMeta?.owner,
+			opts.owner,
+		);
 	}, BACKGROUND_CONTEXT);
 	const view = await readView(fork);
 	return { id: fork.id, view };

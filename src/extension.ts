@@ -832,6 +832,16 @@ export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
  * factory body.
  */
 export interface SigrunHost {
+	/**
+	 * Publish tools for ONE user (multi-user M2). Only factory results that
+	 * declared `perUserTools: true` may call this; other extensions throw
+	 * `perUserTools not declared`. An empty list uninstalls the user's entry.
+	 * Core wraps every tool with a committed-owner check at execute time.
+	 */
+	readonly tools: {
+		setUserTools(user: string, tools: readonly import("@earendil-works/pi-durable").ToolRegistration[]): void;
+	};
+
 	/** The scoped extension-stores handle (your secrets/settings sections + raw data/cache/state paths). */
 	readonly stores: {
 		/** One directory user's secrets/settings/paths, still scoped to your slug. */
@@ -992,7 +1002,12 @@ export interface SigrunHost {
 		 */
 		configure(
 			id: ConversationId,
-			opts: { readonly model?: string; readonly thinking?: ThinkingLevelWire },
+			opts: {
+				readonly model?: string;
+				readonly thinking?: ThinkingLevelWire;
+				/** Exact extension selection; another user's `<slug>@<user>` entry is rejected. */
+				readonly extensions?: readonly string[];
+			},
 		): Promise<void>;
 		/** Admit one manual compaction task (gateway C4, the compact route's op). */
 		compact(id: ConversationId): Promise<void>;
@@ -1142,6 +1157,8 @@ export interface SigrunHost {
  * begins reading each when its task lands.
  */
 export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
+	/** Declare the per-user tool surface (`host.tools.setUserTools`). */
+	readonly perUserTools?: boolean;
 	/** The pi-durable `Extension` to install; its declared name is the slug source. */
 	readonly extension?: Extension;
 	/** The contributor-only identity (required when contributing without an `extension`). */

@@ -160,6 +160,8 @@ declare module "fastify" {
 	 * drain — hijacked streams never end on their own, so the drain
 	 * would hang on each open webui tab. */
 	interface FastifyInstance {
+		/** The shared context (also used by hermetic op-level integration tests). */
+		sigrunContext: ServerContext;
 		sse: SseRegistry;
 		/** The surface service decoration (createServer decorates it) — Task 4's watcher registry reaches it from the app handle in tests. */
 		surfaces: SurfaceService;

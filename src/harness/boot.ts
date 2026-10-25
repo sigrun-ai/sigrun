@@ -103,6 +103,12 @@ import {
 	type ResolvedBuiltins,
 } from "./builtins.js";
 import { createRegistry } from "./registry.js";
+import {
+	isUserEntryName,
+	rewriteSelection,
+	sweepUserSelections,
+	UserToolRegistry,
+} from "./user-tools.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
 import {
 	resolveRefreshMinutes,
@@ -172,6 +178,17 @@ export interface OpenedHarness {
 	 */
 	readonly storage: Storage;
 	readonly registry: Registry;
+	/** Per-user tool publications and the loader-declared slug set (M2). */
+	readonly userTools: UserToolRegistry;
+	/** Selection edits applied during owner writes (shared with server ops). */
+	readonly rewriteUserSelection: (
+		tx: import("@earendil-works/pi-durable").Tx,
+		conversationId: import("@earendil-works/pi-durable").ConversationId,
+		from: string | undefined,
+		to: string | undefined,
+	) => Promise<void>;
+	/** The boot sweep's durable conversation count (zero on a no-op boot). */
+	readonly userToolSweep: { readonly scanned: number; readonly changed: number };
 	/** The merged `Models` store generation dispatches through. */
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
@@ -764,6 +781,10 @@ export async function openHarness(
 	}
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
+	// Late-filled by the loader: factories publish through the same registry
+	// instance, and selection rewrites read the declared set LIVE.
+	const perUserSlugs: string[] = [];
+	const userTools = new UserToolRegistry(registry, () => perUserSlugs);
 	// The skills convention's package roots (W5 Task 4, spec §9.4): a LATE
 	// array — the extension packages that contribute skill dirs load BELOW
 	// (after this install), and the section renders per REQUEST, so the
@@ -942,6 +963,7 @@ export async function openHarness(
 		gatewayEngine,
 		surfaces: surfaceBindings,
 		settingsSections: settingsSectionBindings,
+		perUserSlugs: loadedPerUserSlugs,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -963,7 +985,10 @@ export async function openHarness(
 					createSeamHost({ name: extensionName }, kinds, {
 						bindHarness,
 						harness: harnessOf,
-					}, sharedStores);
+					}, sharedStores, {
+						declared: (slug) => perUserSlugs.includes(slug),
+						set: (slug, user, tools) => userTools.set(slug, user, tools),
+					});
 				host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
 				// resolved: the PRE-import call must NOT file (its identity is
@@ -978,6 +1003,7 @@ export async function openHarness(
 			},
 		},
 );
+perUserSlugs.push(...loadedPerUserSlugs);
 // The late fill (W5 Task 4): the skills extension installed BEFORE the
 // loader ran, holding an empty package-roots array by reference — the
 // collected roots land HERE, and the section (which renders per request)
@@ -1295,7 +1321,13 @@ collectedSkillRoots.push(...extensionSkillRoots);
 				get stream() {
 					return callerSettings?.stream ?? fileSettings.stream;
 				},
-				extensions: callerSettings?.extensions,
+				get extensions() {
+					// Per-user entries are core-computed from SessionMeta.owner,
+					// never part of a host default — including an operator-supplied
+					// caller list (controller ruling: filter BOTH sources).
+					const selected = callerSettings?.extensions ?? registry.snapshot().installed();
+					return selected.filter((entry) => !isUserEntryName(entry.name));
+				},
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {
 					...config.compaction,
@@ -1304,6 +1336,17 @@ collectedSkillRoots.push(...extensionSkillRoots);
 			},
 		},
 		BACKGROUND_CONTEXT,
+	);
+	// M2 boot sweep: add each conversation owner's declared entries to every
+	// default-edited selection. Exact arrays are never widened. Runs before
+	// resume and is idempotent; late tool installs still resolve by name.
+	const userToolSweep = await sweepUserSelections(
+		harness,
+		storage,
+		perUserSlugs,
+	);
+	console.log(
+		`user tools: boot sweep scanned ${userToolSweep.scanned} conversation(s), changed ${userToolSweep.changed}`,
 	);
 	// The seam hosts' lazy binding resolves here: every seam call issued
 	// after boot completes finds the harness immediately; one issued from a
@@ -1594,6 +1637,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		sandboxPool,
 		storage,
 		registry,
+		userTools,
+		rewriteUserSelection: (tx, conversationId, from, to) =>
+			rewriteSelection(tx, conversationId, from, to, perUserSlugs),
+		userToolSweep,
 		models,
 		jobs,
 		jobRunTotals: () => jobRunTotals,
