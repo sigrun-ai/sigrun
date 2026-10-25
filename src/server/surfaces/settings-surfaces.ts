@@ -44,6 +44,7 @@ import {
 	type SettingsBootSnapshot,
 } from "../../settings/pending.js";
 import type { SurfaceService } from "./service.js";
+import { instanceKey as paramsInstanceKey } from "./instance.js";
 
 /** A user-scope surface requires a live directory user, exactly like /v1/me. */
 export class NamedUserRequiredError extends Error {
@@ -579,6 +580,15 @@ export function settingsSurfaceFor(
 		title: section.title,
 		icon: section.icon ?? "key",
 		placement: "settings",
+		// Personal settings are distinct surface instances per caller. The
+		// scoped key feeds revision state, action dedup, watchers, and upload
+		// caps alike; shared sections keep the default params-only identity.
+		...(userScope
+			? {
+					instanceKey: (params: JsonObject, principal: Principal): string =>
+						`${namedUser(principal)}\u0000${paramsInstanceKey(params)}`,
+				}
+			: {}),
 		// Settings reads do not advance the concurrency rev (the save
 		// action's optimistic check compares against it; §7.3). User-scope
 		// data is still resolved from the calling principal on every read.

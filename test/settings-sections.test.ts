@@ -67,6 +67,7 @@ interface TestServer {
 	readonly opened: OpenedHarness;
 	readonly aliceToken: string;
 	readonly bobToken: string;
+	readonly carolToken: string;
 	readonly serviceToken: string;
 }
 
@@ -96,6 +97,12 @@ async function bootServer(): Promise<TestServer> {
 		admin: false,
 		source: "cli",
 	});
+	await identity.users.add({
+		user: "carol",
+		name: "Carol Acme",
+		admin: true,
+		source: "cli",
+	});
 	const opened = await openHarness(config, {
 		identity,
 		extensionSpecifiers: [SECTION_SPECIFIER],
@@ -110,13 +117,17 @@ async function bootServer(): Promise<TestServer> {
 		"bob-cli",
 		"bob",
 	);
+	const { token: carolToken } = await opened.identity.tokens.create(
+		"carol-cli",
+		"carol",
+	);
 	const app = await createServer(opened, config);
 	cleanups.push(async () => {
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened, aliceToken, bobToken, serviceToken: "settings-section-service-token" };
+	return { app, opened, aliceToken, bobToken, carolToken, serviceToken: "settings-section-service-token" };
 }
 
 interface CallResult {
@@ -157,6 +168,27 @@ beforeEach(() => {
 	reset();
 });
 
+async function postSave(
+	app: FastifyInstance,
+	url: string,
+	token: string,
+	values: Record<string, unknown>,
+	actionId: string,
+	rev: number,
+): Promise<CallResult> {
+	return await call(app, {
+		method: "POST",
+		url: `${url}/actions`,
+		token,
+		payload: {
+			action: "save",
+			actionId,
+			params: {},
+			payload: { rev, values },
+		},
+	});
+}
+
 async function saveSection(
 	app: FastifyInstance,
 	url: string,
@@ -166,20 +198,14 @@ async function saveSection(
 ): Promise<CallResult> {
 	const rendered = await call(app, { method: "GET", url, token });
 	if (rendered.status !== 200) return rendered;
-	return await call(app, {
-		method: "POST",
-		url: `${url}/actions`,
+	return await postSave(
+		app,
+		url,
 		token,
-		payload: {
-			action: "save",
-			actionId,
-			params: {},
-			payload: {
-				rev: (rendered.body as unknown as { rev: number }).rev,
-				values,
-			},
-		},
-	});
+		values,
+		actionId,
+		(rendered.body as unknown as { rev: number }).rev,
+	);
 }
 
 function sectionSettings(result: CallResult): JsonObject {
@@ -305,24 +331,93 @@ describe("per-user settings sections (multi-user M2 Task 6)", () => {
 			expect(result.status).toBe(400);
 			expect(result.body).toEqual({ error: "named_user_required" });
 		}
-		const saved = await saveSection(
+		const saved = await postSave(
 			app,
 			PROFILE_URL,
 			serviceToken,
 			{ nickname: "nobody" },
 			"profile-userless",
+			0,
 		);
 		expect(saved.status).toBe(400);
 		expect(saved.body).toEqual({ error: "named_user_required" });
-		const adminScoped = await saveSection(
+		const adminScoped = await postSave(
 			app,
 			PERSONAL_ADMIN_URL,
 			serviceToken,
 			{ note: "nobody" },
 			"personal-admin-userless",
+			0,
 		);
 		expect(adminScoped.status).toBe(400);
 		expect(adminScoped.body).toEqual({ error: "named_user_required" });
+	});
+
+	test("identical actionIds and payloads from two users both execute and persist", async () => {
+		const { app, opened, aliceToken, bobToken } = await server();
+		reset();
+		const values = { nickname: "Same display name" };
+		const initial = await call(app, { method: "GET", url: PROFILE_URL, token: aliceToken });
+		const rev = (initial.body as unknown as { rev: number }).rev;
+		const first = await postSave(app, PROFILE_URL, aliceToken, values, "act-1", rev);
+		const bobRender = await call(app, { method: "GET", url: PROFILE_URL, token: bobToken });
+		const bobRev = (bobRender.body as unknown as { rev: number }).rev;
+		// Bob submits the byte-identical action body from his own render.
+		const second = await postSave(app, PROFILE_URL, bobToken, values, "act-1", bobRev);
+		expect((first.body as unknown as { ok: boolean }).ok).toBe(true);
+		expect((second.body as unknown as { ok: boolean }).ok).toBe(true);
+		// This is the execution assertion: a cached cross-user result would
+		// skip bob's handler and leave only alice's settings publication.
+		expect(receivedUsers).toEqual(["alice", "bob"]);
+		expect(
+			await opened.extensionStores.userExtensionStores("acme-settings-section", "alice").settings.get(),
+		).toEqual(values);
+		expect(
+			await opened.extensionStores.userExtensionStores("acme-settings-section", "bob").settings.get(),
+		).toEqual(values);
+	});
+
+	test("one user's save does not stale another user's revision", async () => {
+		const { app, aliceToken, bobToken } = await server();
+		reset();
+		const bobRender = await call(app, { method: "GET", url: PROFILE_URL, token: bobToken });
+		const bobRev = (bobRender.body as unknown as { rev: number }).rev;
+		const alice = await saveSection(
+			app,
+			PROFILE_URL,
+			aliceToken,
+			{ nickname: "Alice first" },
+			"alice-revision-independent",
+		);
+		expect((alice.body as unknown as { ok: boolean }).ok).toBe(true);
+		const bob = await postSave(
+			app,
+			PROFILE_URL,
+			bobToken,
+			{ nickname: "Bob first" },
+			"bob-revision-independent",
+			bobRev,
+		);
+		expect(bob.status).toBe(200);
+		expect(bob.body).toMatchObject({ ok: true });
+		expect(receivedUsers).toEqual(["alice", "bob"]);
+	});
+
+	test("shared sections retain cross-principal action dedup", async () => {
+		const { app, opened, aliceToken, carolToken } = await server();
+		reset();
+		const values = { apiUrl: "https://dedup.example.invalid" };
+		const initial = await call(app, { method: "GET", url: SECTION_URL, token: aliceToken });
+		const rev = (initial.body as unknown as { rev: number }).rev;
+		const first = await postSave(app, SECTION_URL, aliceToken, values, "shared-act-1", rev);
+		const second = await postSave(app, SECTION_URL, carolToken, values, "shared-act-1", rev);
+		expect((first.body as unknown as { ok: boolean }).ok).toBe(true);
+		expect(second.body).toEqual(first.body);
+		expect(received).toHaveLength(1);
+		expect(receivedUsers).toEqual([undefined]);
+		expect(
+			await opened.extensionStores.settingsFor("acme-settings-section").get(),
+		).toMatchObject(values);
 	});
 });
 

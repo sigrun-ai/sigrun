@@ -283,8 +283,9 @@ export class SurfaceService {
 	private keyFor(
 		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
+		principal: Principal,
 	): string {
-		if (def.instanceKey !== undefined) return def.instanceKey(params);
+		if (def.instanceKey !== undefined) return def.instanceKey(params, principal);
 		return defaultInstanceKey(params);
 	}
 
@@ -313,7 +314,7 @@ export class SurfaceService {
 	): Promise<RenderResult | undefined> {
 		const located = this.locate(slug, id);
 		if (located === undefined) return undefined;
-		const key = this.keyFor(located.def, params);
+		const key = this.keyFor(located.def, params, principal);
 		const result = await this.callRender(located, key, params, principal);
 		const validation = validateTree(result.tree, {
 			placement: located.def.placement,
@@ -371,7 +372,7 @@ export class SurfaceService {
 	): Promise<DataResult | undefined> {
 		const located = this.locate(slug, id);
 		if (located === undefined) return undefined;
-		const key = this.keyFor(located.def, params);
+		const key = this.keyFor(located.def, params, principal);
 		const state = this.stateFor(slug, id, key);
 		const access = await this.accessFor(slug, id, key, params, principal);
 		if (access === "none") return undefined;
@@ -462,8 +463,9 @@ export class SurfaceService {
 		slug: string,
 		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
+		principal: Principal,
 	): string {
-		return `${slug}${def.id}${this.keyFor(def, params)}`;
+		return `${slug}${def.id}${this.keyFor(def, params, principal)}`;
 	}
 
 	/**
@@ -569,10 +571,10 @@ export class SurfaceService {
 	 * views/panels AND settings surfaces, one source). A throwing
 	 * `instanceKey` propagates (the extension-fault 500 path).
 	 */
-	instanceKeyFor(slug: string, id: string, params: JsonObject): string | undefined {
+	instanceKeyFor(slug: string, id: string, params: JsonObject, principal: Principal): string | undefined {
 		const located = this.locate(slug, id);
 		if (located === undefined) return undefined;
-		return this.keyFor(located.def, params);
+		return this.keyFor(located.def, params, principal);
 	}
 
 	/**

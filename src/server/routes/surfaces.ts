@@ -249,7 +249,7 @@ export function registerSurfaceRoutes(
 		// locate covers the settings surfaces too (spec §13.4).
 		let key: string;
 		try {
-			const probe = surfaces.instanceKeyFor(slug, id, params);
+			const probe = surfaces.instanceKeyFor(slug, id, params, request.principal);
 			if (probe === undefined) {
 				return await reply.code(404).send(NOT_FOUND);
 			}
@@ -336,7 +336,7 @@ export function registerSurfaceRoutes(
 				}
 			let key: string;
 			try {
-				const probe = surfaces.instanceKeyFor(slug, id, parsed.params);
+				const probe = surfaces.instanceKeyFor(slug, id, parsed.params, request.principal);
 				if (probe === undefined) {
 					return await reply.code(404).send(NOT_FOUND);
 				}
