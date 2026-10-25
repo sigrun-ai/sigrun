@@ -828,4 +828,122 @@ describe("chat block routes (spec §8.2)", () => {
 		});
 		expect(badAction.status).toBe(400);
 	});
+
+	test("nextSeq stays monotonic when a trim empties the array (review minor 3)", async () => {
+		const server = await bootServer();
+		const { conversationId, entryId } = await conversationWithBlock(
+			server,
+			RANKING_TREE,
+			RANKING_DATA,
+			"Ranking",
+		);
+		// Seed: notedThrough past EVERY recorded seq, then the trim
+		// shape — an empty changes array with notedThrough > 0. Without
+		// the notedThrough anchor the next append would restart at seq 1,
+		// below notedThrough, breaking per-surface monotonicity.
+		const conversation = await server.opened.harness.conversation(
+			conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		await conversation!.commit(async (tx) => {
+			const draft = await tx.doc(
+				BlocksStateDoc,
+				conversationId as never,
+				entryId,
+				entryId,
+			);
+			draft.changes = [];
+			draft.notedThrough = 7;
+		}, BACKGROUND_CONTEXT);
+		const base = `/v1/conversations/${conversationId}/blocks/${entryId}`;
+		const result = await call(server.app, {
+			method: "POST",
+			url: `${base}/actions`,
+			token: server.aliceToken,
+			payload: {
+				action: "reorderCards",
+				payload: {
+					itemId: "c4",
+					from: { group: "", index: 3 },
+					to: { group: "", index: 0 },
+				},
+				actionId: "act-seq",
+			},
+		});
+		expect(result.status).toBe(200);
+		const state = await readBlocksState(
+			server.opened.harness,
+			conversationId,
+			entryId,
+			BACKGROUND_CONTEXT,
+		);
+		expect(state?.changes).toHaveLength(1);
+		expect(state?.changes[0]?.seq).toBe(8);
+	});
+
+	test("an interleaved move between planning and apply: the op addresses the CURRENT data (review important 1)", async () => {
+		const server = await bootServer();
+		const { conversationId, entryId } = await conversationWithBlock(
+			server,
+			RANKING_TREE,
+			RANKING_DATA,
+			"Ranking",
+		);
+		const base = `/v1/conversations/${conversationId}/blocks/${entryId}`;
+		// First action lands: c4 to the front.
+		const first = await call(server.app, {
+			method: "POST",
+			url: `${base}/actions`,
+			token: server.aliceToken,
+			payload: {
+				action: "reorderCards",
+				payload: {
+					itemId: "c4",
+					from: { group: "", index: 3 },
+					to: { group: "", index: 0 },
+				},
+				actionId: "act-ilv-a",
+			},
+		});
+		expect(first.body.rev).toBe(1);
+		// The second action's PAYLOAD is stale — `from.index: 0` is where
+		// c1 sat before the first move (it is now 2nd). The plan is
+		// derived inside the commit against the CURRENT data, so the ops
+		// address c1's actual index (1) and the summary names the
+		// positions at apply time.
+		const second = await call(server.app, {
+			method: "POST",
+			url: `${base}/actions`,
+			token: server.aliceToken,
+			payload: {
+				action: "reorderCards",
+				payload: {
+					itemId: "c1",
+					from: { group: "", index: 0 },
+					to: { group: "", index: 3 },
+				},
+				actionId: "act-ilv-b",
+			},
+		});
+		expect(second.status).toBe(200);
+		expect(second.body.ops).toEqual([
+			{ op: "move", from: "/cards/1", path: "/cards/3" },
+		]);
+		const state = await readBlocksState(
+			server.opened.harness,
+			conversationId,
+			entryId,
+			BACKGROUND_CONTEXT,
+		);
+		expect(state?.data.cards).toEqual([
+			{ id: "c4", title: "Clair de Lune" },
+			{ id: "c2", title: "Gymnopédie" },
+			{ id: "c3", title: "Reflets" },
+			{ id: "c1", title: "Arabesque" },
+		]);
+		const record = state?.changes[1] as ChangeRecord | undefined;
+		// The summary names the pre-edit position c1 ACTUALLY held (2nd),
+		// falling back from the payload's stale index.
+		expect(record?.summary).toBe("moved 'Arabesque' from 2nd to 4th in 'Ranking'");
+	});
 });

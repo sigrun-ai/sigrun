@@ -42,7 +42,7 @@ import {
 	trimChanges,
 	type BlocksState,
 } from "../../harness/blocks/state.js";
-import { chatSurfaceChanged } from "../../harness/blocks/tools.js";
+import { chatSurfaceChanged, parseEntryId } from "../../harness/blocks/tools.js";
 import { summarizeAction } from "./summaries.js";
 
 /** One located chat block: its immutable payload plus its live state. */
@@ -81,9 +81,10 @@ export async function readChatBlock(
 		BACKGROUND_CONTEXT,
 	);
 	if (conversation === undefined) return undefined;
-	const parsed = Number(entryId);
+	const parsed = parseEntryId(entryId);
+	if (parsed === undefined) return undefined;
 	const page = await conversation.entries(
-		{ minEntryId: parsed as never, maxEntryId: parsed as never },
+		{ minEntryId: parsed, maxEntryId: parsed },
 		1,
 		undefined,
 		BACKGROUND_CONTEXT,
@@ -320,9 +321,10 @@ function actionFor(actionKind: string, actionName: string): Action {
 	return { type: "submit", name: actionName };
 }
 
-/** The next change-record seq (1, or one past the last). */
-function nextSeq(changes: readonly { readonly seq: number }[]): number {
-	return changes.length === 0 ? 1 : changes[changes.length - 1]!.seq + 1;
+/** The next change-record seq, monotonic per surface even right after a
+ *  trim emptied the array (notedThrough anchors the sequence). */
+function nextSeq(changes: readonly { readonly seq: number }[], notedThrough: number): number {
+	return Math.max(changes[changes.length - 1]?.seq ?? 0, notedThrough) + 1;
 }
 
 /** The applied outcome the route answers (§6.3's accept-with-ops). */
@@ -341,12 +343,20 @@ export interface ChatRejected {
 export type ChatOutcome = ChatApplied | ChatRejected;
 
 /**
- * Apply one user edit (the core handler, spec §8.3): read the CURRENT
- * state, compute the ops against it, then commit ops + change record +
- * `rev` bump in ONE conversation commit. `undefined` outcome means the
- * entry id names no block in this conversation (the route answers
- * 404); a failed op batch unwinds the commit (no partial write) and
- * answers a reject naming the op index.
+ * Apply one user edit (the core handler, spec §8.3): read the entry
+ * (the tree is immutable, so its labels are always current), then —
+ * INSIDE ONE conversation commit — read the CURRENT draft state,
+ * compute the ops against it (planAction), and write ops + change
+ * record + `rev` bump. Planning inside the commit is what keeps an
+ * index-addressed op from relocating the WRONG row when a concurrent
+ * move (or an agent `update_blocks`) lands between the read and the
+ * write: `draft.data` at commit time IS the data the op addresses
+ * (Review Focus 3, spec §6.3 convergence), and the summary names the
+ * positions/labels the actor saw AT APPLY TIME (draft.data again,
+ * never a pre-commit snapshot). A failed op batch unwinds the commit
+ * (no partial write) and answers a reject naming the op index.
+ * `undefined` outcome means the entry id names no block in this
+ * conversation (the route answers 404).
  */
 export async function applyChatAction(
 	harness: Harness,
@@ -365,26 +375,32 @@ export async function applyChatAction(
 	if (block === undefined) return undefined;
 	const handlers = resolveChatHandlers(block.tree);
 	if (!handlers.has(actionName)) return undefined;
-	const plan = planAction(handlers, actionName, payload, block.state.data);
-	if (plan === undefined) {
-		return { ok: false, error: { message: `unappliable action payload: ${actionName}` } };
-	}
-	// The summary reads the labels the user saw — the PRE-edit data (the
-	// payload's positions are the pre-move ones).
-	const summary = summarizeAction(
-		block.tree,
-		block.state.data,
-		actionFor(plan.actionKind, actionName),
-		payload,
-	);
-	let rev: number;
+	let applied: { rev: number; ops: DataOp[] };
 	try {
-		rev = await conversation.commit(async (tx) => {
+		applied = await conversation.commit(async (tx) => {
 			const draft = await tx.doc(
 				BlocksStateDoc,
 				conversationId as ConversationId,
 				entryId,
 				entryId,
+			);
+			// The plan is derived from the DRAFT — the data as of the
+			// commit, not the pre-commit snapshot — so every index
+			// addresses the row the op is about to move.
+			const plan = planAction(handlers, actionName, payload, draft.data);
+			if (plan === undefined) {
+				// Signal out of the commit (a throw unwinds it); the
+				// caller answers the reject.
+				return { rev: -1, ops: [] };
+			}
+			// The summary reads the labels the user saw AT APPLY TIME — the
+			// draft's PRE-edit data (the payload's positions are the
+			// pre-move ones), so it is computed BEFORE the ops apply.
+			const summary = summarizeAction(
+				block.tree,
+				draft.data,
+				actionFor(plan.actionKind, actionName),
+				payload,
 			);
 			// applyOps throws DataOpError on a bad path — the throw unwinds
 			// the commit before anything persists.
@@ -393,7 +409,7 @@ export async function applyChatAction(
 			draft.changes = [
 				...draft.changes,
 				{
-					seq: nextSeq(draft.changes),
+					seq: nextSeq(draft.changes, draft.notedThrough),
 					at: Date.now(),
 					by,
 					action: plan.actionKind,
@@ -403,9 +419,10 @@ export async function applyChatAction(
 			// The trim (spec §8.2): once more than MAX_CHANGES accumulate,
 			// records at or below notedThrough drop on THIS append.
 			trimChanges(draft);
-			// Only the rev escapes the commit — never a draft value (the
-			// chord settle hazard Task 1 documented).
-			return draft.rev;
+			// Only the rev + ops escape the commit — never a draft value
+			// (the chord settle hazard Task 1 documented); rev/ops are the
+			// values the route echoes back, plain JSON.
+			return { rev: draft.rev, ops: plan.ops };
 		}, BACKGROUND_CONTEXT);
 	} catch (error) {
 		if (error instanceof DataOpError) {
@@ -416,13 +433,16 @@ export async function applyChatAction(
 		}
 		throw error;
 	}
+	if (applied.rev === -1) {
+		return { ok: false, error: { message: `unappliable action payload: ${actionName}` } };
+	}
 	chatSurfaceChanged({
 		type: "surface.changed",
 		conversationId,
 		entryId,
-		rev,
+		rev: applied.rev,
 	} satisfies Parameters<typeof chatSurfaceChanged>[0]);
-	return { ok: true, rev, ops: plan.ops };
+	return { ok: true, rev: applied.rev, ops: applied.ops };
 }
 
 /** applyOps over a plan's ops. */

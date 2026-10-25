@@ -226,6 +226,96 @@ describe("summarizeAction (spec §8.3)", () => {
 		expect(unchecked).toBe("unchecked 'bread' in 'Shopping'");
 	});
 
+	test("check: an omitted value is a toggle-on — 'checked', matching the written true", () => {
+		// planAction defaults an omitted `value` to true; the summary
+		// verb must agree with the written value (review minor 2).
+		const summary = summarizeAction(
+			SHOPPING_TREE,
+			SHOPPING_DATA,
+			{ type: "edit", name: "toggleBought" },
+			{ itemId: "m1" },
+		);
+		expect(summary).toBe("checked 'milk' in 'Shopping'");
+	});
+
+	test("move: a bound group title resolves against the surface data (the label the user saw)", () => {
+		// The declared group's title is a BINDING: the summary must
+		// resolve it against the surface data, not emit the raw group id
+		// (review minor 7).
+		const tree: Tree = {
+			v: 1,
+			root: {
+				type: "section",
+				title: "Board",
+				children: [
+					{
+						type: "collection",
+						id: "tasks",
+						items: { $: "/tasks" },
+						display: "lanes",
+						groupBy: "status",
+						groups: [
+							{ id: "todo", title: { $: "/groupLabels/todo" } },
+							{ id: "done", title: { $: "/groupLabels/done" } },
+						],
+						reorder: { within: true, across: true },
+						onMove: "moveTask",
+						item: { title: { $: "./title" } },
+					},
+				],
+			},
+		};
+		const data: JsonObject = {
+			tasks: LANES_DATA.tasks,
+			groupLabels: { todo: "Not started", done: "Finished" },
+		};
+		const summary = summarizeAction(
+			tree,
+			data,
+			{ type: "move", name: "moveTask" },
+			{
+				itemId: "t1",
+				from: { group: "todo", index: 0 },
+				to: { group: "done", index: 0 },
+			},
+		);
+		expect(summary).toBe("moved 'Write spec' from 1st to 1st in 'Finished'");
+	});
+
+	test("check: a bound section title resolves against the surface data", () => {
+		// Same fix, on the section scope: a section whose title is a
+		// binding resolves to the label the user saw.
+		const tree: Tree = {
+			v: 1,
+			root: {
+				type: "section",
+				title: { $: "/listName" },
+				children: [
+					{
+						type: "collection",
+						id: "shopping",
+						items: { $: "/items" },
+						display: "list",
+						checkable: "bought",
+						onCheck: "toggleBought",
+						item: { title: { $: "./name" } },
+					},
+				],
+			},
+		};
+		const data: JsonObject = {
+			listName: "Groceries",
+			items: SHOPPING_DATA.items,
+		};
+		const summary = summarizeAction(
+			tree,
+			data,
+			{ type: "edit", name: "toggleBought" },
+			{ itemId: "m1", value: true },
+		);
+		expect(summary).toBe("checked 'milk' in 'Groceries'");
+	});
+
 	test("submit: one 'set' per field, in the form's declared order, labels from the field's label", () => {
 		const summary = summarizeAction(
 			FORM_TREE,

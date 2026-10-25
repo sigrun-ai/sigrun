@@ -115,12 +115,12 @@ function* walkNodes(root: JsonObject): Generator<JsonObject> {
 }
 
 /** The label the user saw above one block: the nearest enclosing section title. */
-function sectionTitleAround(tree: Tree, inner: JsonObject): string | undefined {
+function sectionTitleAround(tree: Tree, inner: JsonObject, data: JsonObject): string | undefined {
 	const wanted = inner;
 	const visit = (node: JsonObject, title: string | undefined): string | undefined => {
 		const nextTitle =
-			node.type === "section" && typeof node.title === "string"
-				? bound(node.title as Bindable<string>, {}, undefined)
+			node.type === "section" && node.title !== undefined
+				? bound(node.title as Bindable<string>, data, undefined)
 				: title;
 		if (node === wanted) return nextTitle;
 		const childLists = [node.root, node.children, node.fields, node.main, node.sidebar, node.detail];
@@ -151,17 +151,19 @@ function sectionTitleAround(tree: Tree, inner: JsonObject): string | undefined {
 	return found;
 }
 
-/** The group's display title: the declared group's `title`, else its id. */
+/** The group's display title: the declared group's `title` (a binding resolves
+ *  against the surface data the actor saw), else its id. */
 function groupTitleOf(
 	collection: CollectionBlock,
 	groupId: string,
+	data: JsonObject,
 ): string {
 	const declared = (collection.groups ?? []).find(
 		(candidate) => candidate.id === groupId,
 	);
 	if (declared === undefined) return groupId;
 	return (
-		bound(declared.title as Bindable<string>, {}, undefined) ?? declared.id
+		bound(declared.title as Bindable<string>, data, undefined) ?? declared.id
 	);
 }
 
@@ -209,10 +211,14 @@ function moveSummary(
 		// user saw over the row); an ungrouped one by the section's.
 		const scope =
 			collection.groupBy === undefined
-				? (sectionTitleAround(tree, node) ?? "")
-				: groupTitleOf(collection, to.group ?? from.group ?? "");
+				? (sectionTitleAround(tree, node, data) ?? "")
+				: groupTitleOf(collection, to.group ?? from.group ?? "", data);
 		const where = scope === "" ? "" : ` in '${scope}'`;
-		return `moved '${title}' from ${ordinal(from.index ?? at)} to ${ordinal(
+		// The `from` position names the item's located (current) index —
+		// the payload's from.index is only a hint: an interleaved edit
+		// may have moved the row before this action's commit ran, and
+		// the summary must name the positions at APPLY time.
+		return `moved '${title}' from ${ordinal(at)} to ${ordinal(
 			to.index ?? at,
 		)}${where}`;
 	}
@@ -248,9 +254,12 @@ function checkSummary(
 				? undefined
 				: bound(card.title as Bindable<string>, data, item);
 		if (title === undefined) continue;
-		const scope = sectionTitleAround(tree, node) ?? "";
+		const scope = sectionTitleAround(tree, node, data) ?? "";
 		const where = scope === "" ? "" : ` in '${scope}'`;
-		const verb = payload.value === true ? "checked" : "unchecked";
+		// `value` omitted means the plain toggle-on the client sends for a
+		// check (planAction defaults true): the verb must agree with the
+		// written value.
+		const verb = payload.value === false ? "unchecked" : "checked";
 		return `${verb} '${title}'${where}`;
 	}
 	return undefined;

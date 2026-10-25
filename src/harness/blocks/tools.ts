@@ -333,7 +333,7 @@ export const updateBlocksTool = defineTool({
 });
 
 /** A numeric entry id (`EntryId` is a branded number; tool args are strings). */
-function parseEntryId(value: string): EntryId | undefined {
+export function parseEntryId(value: string): EntryId | undefined {
 	if (!/^\d+$/.test(value)) return undefined;
 	const id = Number(value);
 	return Number.isSafeInteger(id) && id > 0 ? (id as EntryId) : undefined;

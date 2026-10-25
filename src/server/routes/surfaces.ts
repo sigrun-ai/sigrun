@@ -35,7 +35,7 @@
 import { PassThrough } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { JsonObject } from "@sigrun/shared/blocks";
+import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
 import type { Principal } from "../auth/principal.js";
 import type { ServerContext } from "../context.js";
 import { instanceKey } from "../surfaces/instance.js";
@@ -676,7 +676,7 @@ export function registerSurfaceRoutes(
 				entryId,
 				request.principal.user ?? "",
 				body.action,
-				(body.payload ?? null) as never,
+				(body.payload ?? null) as JsonValue,
 			);
 			if (outcome === undefined) {
 				return await reply.code(404).send({ error: "block_not_found" });

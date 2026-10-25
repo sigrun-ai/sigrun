@@ -696,13 +696,18 @@ export class SurfaceService {
 	/**
 	 * Record one chat-block change (spec §8.2: chat data is shared by
 	 * everyone who can see the conversation, so ops are kept like
-	 * `sharedData` surfaces). `rev` is the DURABLE family's revision —
-	 * the chat block's source of truth — so the table merely mirrors
-	 * it: a rev that does not continue the recorded sequence (an
-	 * `update_blocks` agent edit announces its rev with NO ops, and a
-	 * restart resets memory) breaks the replay window's contiguity, and
-	 * the window RESETS rather than ever answering a fetch across a
-	 * missing rev (the client falls back to the full data).
+	 * `sharedData` surfaces). Only the chat surface ROUTES call this —
+	 * the core handler itself publishes the Task-1 `surface.changed`
+	 * seam event and never touches this table, and an `update_blocks`
+	 * agent edit likewise publishes ONLY the seam event (never an
+	 * announceChatRev), so after an agent edit the in-memory rev no
+	 * longer continues the recorded sequence and the rev-match guard
+	 * below forces the client's next fetch to a full-data answer.
+	 * `rev` is the DURABLE family's revision — the chat block's source
+	 * of truth — so the table merely mirrors it: a rev that does not
+	 * continue the recorded sequence (or a restart resetting memory)
+	 * breaks the replay window's contiguity, and the window RESETS
+	 * rather than ever answering a fetch across a missing rev.
 	 */
 	announceChatRev(
 		address: SurfaceAddress,
