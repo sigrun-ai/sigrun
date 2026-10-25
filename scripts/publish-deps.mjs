@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The three built-in extensions are `file:` dependencies in the working
+ * The built-in extensions are `file:` dependencies in the working
  * tree (they live in sibling checkouts and are not on npm until the
  * release's first publish), but a PUBLISHED tarball must declare registry
  * versions — `file:../sigrun-ext-mcp` resolves to nothing on a stranger's
@@ -49,6 +49,7 @@ const BUILTINS = {
 	"@sigrun/ext-codemode": "../sigrun-ext-codemode",
 	"@sigrun/ext-mcp": "../sigrun-ext-mcp",
 	"@sigrun/ext-tool-search": "../sigrun-ext-tool-search",
+	"@sigrun/oauth": "../sigrun-ext-oauth",
 };
 
 /**
