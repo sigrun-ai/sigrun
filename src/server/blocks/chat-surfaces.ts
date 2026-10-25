@@ -154,10 +154,14 @@ export function resolveChatHandlers(
 
 /**
  * Whether the handler `actionName` names starts a turn (spec §6.2/§8.4):
- * a form's `submit` defaults to `turn: true` (an answer); a move's or
- * check's `onMove`/`onCheck` node may set `turn: true` explicitly.
- * Chat handler names are free labels, so this reads the RESOLVED node's
- * `turn` flag — the only place the default rule lives.
+ * a form's `submit` defaults to `turn: true` (an answer) and may set
+ * `turn: false` to stay an edit. ONLY submit handlers start turns: a
+ * move/check `turn` flag is never consulted (the collection node's
+ * `turn` is not part of the declared wire contract — shared
+ * CollectionBlock has none — so depending on it here would lean on an
+ * undeclared, unvalidated contract). Chat handler names are free
+ * labels, so this reads the RESOLVED node — the only place the default
+ * rule lives.
  */
 export function chatActionStartsTurn(
 	tree: Tree,
@@ -165,12 +169,8 @@ export function chatActionStartsTurn(
 ): boolean {
 	const handler = resolveChatHandlers(tree).get(actionName);
 	if (handler === undefined) return false;
-	// A form submit defaults to a turn (§6.2's answer row); any other
-	// handler needs the explicit flag.
-	if (handler.kind === "submit") {
-		return handler.node.turn !== false;
-	}
-	return handler.node.turn === true;
+	if (handler.kind !== "submit") return false;
+	return handler.node.turn !== false;
 }
 
 /** A `move`/`edit` payload endpoint ({group?, index}). */

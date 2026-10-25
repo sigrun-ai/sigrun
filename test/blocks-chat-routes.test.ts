@@ -158,6 +158,51 @@ const SHOPPING_DATA: JsonObject = {
 	items: [{ id: "m1", name: "milk", bought: false }],
 };
 
+/** The ranking list with a collection-level `turn: true` (the undeclared flag the fix stops consulting: a move NEVER starts a turn). */
+const RANKING_TREE_TURN_MOVE: Tree = {
+	v: 1,
+	root: {
+		type: "section",
+		title: "Ranking",
+		children: [
+			{
+				type: "collection",
+				id: "ranking",
+				items: { $: "/cards" },
+				display: "list",
+				numbered: true,
+				reorder: { within: true },
+				onMove: "reorderCards",
+				// NOT part of CollectionBlock's declared type: deliberately
+				// carried so the route proves it is never consulted.
+				...({ turn: true } as unknown as Record<never, never>),
+				item: { title: { $: "./title" } },
+			},
+		],
+	},
+};
+
+/** The shopping list with a collection-level `turn: true` (same premise: a check NEVER starts a turn). */
+const SHOPPING_TREE_TURN_CHECK: Tree = {
+	v: 1,
+	root: {
+		type: "section",
+		title: "Shopping",
+		children: [
+			{
+				type: "collection",
+				id: "shopping",
+				items: { $: "/items" },
+				display: "list",
+				checkable: "bought",
+				onCheck: "toggleBought",
+				...({ turn: true } as unknown as Record<never, never>),
+				item: { title: { $: "./name" } },
+			},
+		],
+	},
+};
+
 /** A `turn: false` submit form (writes values at its bind). */
 const FORM_TREE: Tree = {
 	v: 1,
@@ -566,6 +611,101 @@ describe("chat block routes (spec §8.2)", () => {
 		]);
 		const record = state?.changes[0] as ChangeRecord | undefined;
 		expect(record?.summary).toBe("moved 'Write spec' from 1st to 1st in 'Done'");
+	});
+
+	test("a collection `turn: true` move applies the edit and starts NO turn (the flag is submit-only)", async () => {
+		const server = await bootServer();
+		const { conversationId, entryId } = await conversationWithBlock(
+			server,
+			RANKING_TREE_TURN_MOVE,
+			RANKING_DATA,
+			"Ranking",
+		);
+		const submissionsBefore = await server.opened.storage
+			.scanSubmissions(
+				{
+					conversationId: conversationId as ConversationId,
+					order: "ascending",
+				},
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+			)
+			.then((page) => [...page.items]);
+		const result = await call(server.app, {
+			method: "POST",
+			url: `/v1/conversations/${conversationId}/blocks/${entryId}/actions`,
+			token: server.aliceToken,
+			payload: {
+				action: "reorderCards",
+				payload: {
+					itemId: "c4",
+					from: { group: "", index: 3 },
+					to: { group: "", index: 0 },
+				},
+				actionId: "act-turn-move",
+			},
+		});
+		// The edit path, not the answer path: accept-with-ops, the data
+		// applied, and NO new submission (a move never starts a turn —
+		// the fix for the review finding: the collection `turn` flag is
+		// not part of the declared wire contract, so it is never
+		// consulted).
+		expect(result.status).toBe(200);
+		expect(result.body).toMatchObject({ ok: true, rev: 1 });
+		const state = await readBlocksState(
+			server.opened.harness,
+			conversationId,
+			entryId,
+			BACKGROUND_CONTEXT,
+		);
+		const cards = state?.data.cards as { id: string; title: string }[];
+		expect(cards[0]).toEqual({ id: "c4", title: "Clair de Lune" });
+		expect(state?.changes).toHaveLength(1);
+		const submissionsAfter = await server.opened.storage
+			.scanSubmissions(
+				{
+					conversationId: conversationId as ConversationId,
+					order: "ascending",
+				},
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+			)
+			.then((page) => [...page.items]);
+		expect(submissionsAfter).toHaveLength(submissionsBefore.length);
+	});
+
+	test("a collection `turn: true` check applies the edit and starts NO turn", async () => {
+		const server = await bootServer();
+		const { conversationId, entryId } = await conversationWithBlock(
+			server,
+			SHOPPING_TREE_TURN_CHECK,
+			SHOPPING_DATA,
+			"Shopping",
+		);
+		const result = await call(server.app, {
+			method: "POST",
+			url: `/v1/conversations/${conversationId}/blocks/${entryId}/actions`,
+			token: server.aliceToken,
+			payload: {
+				action: "toggleBought",
+				payload: { itemId: "m1", value: true },
+				actionId: "act-turn-check",
+			},
+		});
+		expect(result.status).toBe(200);
+		expect(result.body).toMatchObject({ ok: true, rev: 1 });
+		const state = await readBlocksState(
+			server.opened.harness,
+			conversationId,
+			entryId,
+			BACKGROUND_CONTEXT,
+		);
+		expect(state?.data.items).toEqual([
+			{ id: "m1", name: "milk", bought: true },
+		]);
+		expect(state?.changes).toHaveLength(1);
 	});
 
 	test("a check appends \"checked 'milk' in 'Shopping'\" and sets the field", async () => {

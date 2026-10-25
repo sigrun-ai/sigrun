@@ -36,6 +36,7 @@ import {
 import {
 	BlocksEntry,
 	BlocksNoteEntry,
+	type BlocksNoteData,
 	type BlocksPayload,
 } from "../../harness/blocks/entries.js";
 import {
@@ -226,10 +227,19 @@ export async function writePendingNote(
 		content: note.text,
 		timestamp: Date.now(),
 	};
-	await conversation.submit(
+	const submission = await conversation.submit(
 		{
 			type: "write",
-			entry: { kind: BlocksNoteEntry.kind, model: [message] },
+			entry: {
+				kind: BlocksNoteEntry.kind,
+				model: [message],
+				// The coverage rides the entry (the durable artifact): a
+				// deduped retry — pi-durable returns the EXISTING
+				// submission and discards this text+data — must advance
+				// only as far as the ADMITTED note named, never this
+				// attempt's freshly computed `advance`.
+				data: { advance: note.advance } satisfies BlocksNoteData,
+			},
 			requestId: note.requestId,
 		},
 		ctx,
@@ -240,10 +250,34 @@ export async function writePendingNote(
 		throwAfterNextAdmission = false;
 		throw new Error("injected crash after note admission");
 	}
+	// Read the ADMITTED note's coverage from its entry, not this
+	// compute's: a deduped submission's entry id names the entry the
+	// FIRST admission wrote. Entries are conversation-scoped (the
+	// submission's `entry` id is only meaningful inside its
+	// conversation), so the read goes through the conversation handle.
+	const status = await submission.status(ctx);
+	const admittedEntryId =
+		status.type === "write" && status.status === "done"
+			? status.entry
+			: undefined;
+	let advance = note.advance;
+	if (admittedEntryId !== undefined) {
+		const page = await conversation.entries(
+			{ minEntryId: admittedEntryId, maxEntryId: admittedEntryId },
+			1,
+			undefined,
+			ctx,
+		);
+		const data = page.items[0]?.data;
+		if (data !== undefined && typeof data === "object" && !Array.isArray(data)) {
+			const admitted = (data as BlocksNoteData).advance;
+			if (Array.isArray(admitted)) advance = admitted;
+		}
+	}
 	// Advance `notedThrough` per covered surface in ONE commit (the note
 	// is durable; the advance just moves the watermark).
 	await conversation.commit(async (tx) => {
-		for (const { entryId, through } of note.advance) {
+		for (const { entryId, through } of advance) {
 			const draft = await tx.doc(
 				BlocksStateDoc,
 				conversation.id,

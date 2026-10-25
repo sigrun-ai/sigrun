@@ -31,7 +31,11 @@
  * - crash recovery: a throw after the note's admission leaves
  *   `notedThrough` behind; a new edit plus another message recomputes
  *   the SAME requestId (positions never advanced) and exactly one note
- *   entry exists (pi-durable's `submissionByRequest` dedup).
+ *   entry exists (pi-durable's `submissionByRequest` dedup); the
+ *   deduped retry advances `notedThrough` only as far as the ADMITTED
+ *   note covered (the coverage rides the note entry's `data`), so the
+ *   later edit stays pending and a second note names it on the next
+ *   turn.
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -48,7 +52,6 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
-	Conversation,
 	ConversationId,
 	EntryRecord,
 	SubmissionRecord,
@@ -57,10 +60,7 @@ import type { JsonObject, Tree } from "@sigrun/shared/blocks";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { BlocksEntry, BlocksNoteEntry } from "../src/harness/blocks/entries.js";
-import {
-	BlocksStateDoc,
-	readBlocksState,
-} from "../src/harness/blocks/state.js";
+import { readBlocksState } from "../src/harness/blocks/state.js";
 import { createServer } from "../src/server/index.js";
 import { NOTE_HEADER } from "../src/server/blocks/notes.js";
 import { applyChatAction } from "../src/server/blocks/chat-surfaces.js";
@@ -443,7 +443,7 @@ describe("change notes in the submit path (spec §8.3)", () => {
 		expect(state?.notedThrough).toBe(1);
 	});
 
-	test("crash between the note admission and the notedThrough advance: the retry recomputes the same requestId, one note entry exists", async () => {
+	test("crash between the note admission and the notedThrough advance: the retry recomputes the same requestId, one note entry exists, and the deduped retry advances only what the ADMITTED note covered", async () => {
 		const server = await bootServer();
 		const { conversationId, entryIds } = await conversationWithBlocks(
 			server,
@@ -480,7 +480,10 @@ describe("change notes in the submit path (spec §8.3)", () => {
 		// A new edit, then another message: the retry computes the requestId
 		// from the PRE-advance positions — identical to the crashed attempt's
 		// — so pi-durable returns the existing submission and no second note
-		// entry ever appears.
+		// entry ever appears. The retry's freshly computed note would cover
+		// BOTH edits, but pi-durable DISCARDS it (the admitted text names
+		// only the first move) — so the advance must come from the ADMITTED
+		// entry's durable coverage, leaving the second edit still pending.
 		await move(server, conversationId, entryId!, "reorderCards", "c3", 0);
 		server.faux.setResponses([fauxAssistantMessage("got it")]);
 		await composerMessage(server, conversationId, "next message");
@@ -489,15 +492,38 @@ describe("change notes in the submit path (spec §8.3)", () => {
 		expect(
 			entries.filter((entry) => entry.kind === BlocksNoteEntry.kind),
 		).toHaveLength(1);
-		// The advance now covers both moves (the retry's advance list still
-		// covers every change above the pre-advance position).
+		// The advance covers ONLY what the admitted note named (seq 1).
+		// The second edit stays pending — advancing past it would mark a
+		// change noted that no admitted note ever described (the review
+		// finding this fix answers), and trimChanges would then make it
+		// unrecoverable.
 		const state = await readBlocksState(
 			server.opened.harness,
 			conversationId,
 			entryId!,
 			BACKGROUND_CONTEXT,
 		);
-		expect(state?.notedThrough).toBe(2);
+		expect(state?.notedThrough).toBe(1);
+
+		// The NEXT turn notes the surviving edit (the durable-coverage
+		// advance is position-stable, so its key differs from the first
+		// note's — a fresh note entry lands).
+		server.faux.setResponses([fauxAssistantMessage("noted")]);
+		await composerMessage(server, conversationId, "and now?");
+		const after = await entriesOf(server.opened, conversationId);
+		const notes = after.filter(
+			(entry) => entry.kind === BlocksNoteEntry.kind,
+		);
+		expect(notes).toHaveLength(2);
+		// The second note names the second edit.
+		expect(modelText(notes[1]!)).toContain("Reflets");
+		const final = await readBlocksState(
+			server.opened.harness,
+			conversationId,
+			entryId!,
+			BACKGROUND_CONTEXT,
+		);
+		expect(final?.notedThrough).toBe(2);
 	});
 
 	test("host.conversations.submit writes the pending note too (the W5 bridge path)", async () => {

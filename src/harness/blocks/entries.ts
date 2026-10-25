@@ -39,10 +39,34 @@ export const BlocksEntry: Entry<BlocksPayload> =
 	defineEntry<BlocksPayload>("sigrun.blocks");
 
 /**
- * The §8.3 change note entry: `model` is `[UserMessage]` carrying the
- * note text (Task 3 writes it before every turn admission); no payload.
+ * The §8.3 note's durable coverage: the `notedThrough` advances the
+ * ADMITTED note covered ({entryId → the covered top seq}). Written into
+ * the note entry's `data` at admission; the writer reads it BACK from
+ * the admitted submission's entry and advances from THAT, so a deduped
+ * retry (the retried text, naming newer changes, discarded by
+ * pi-durable) moves the watermark only past changes the admitted text
+ * named.
  */
-export const BlocksNoteEntry: Entry<never> = defineEntry("sigrun.blocks.note");
+export type BlocksNoteData = {
+	readonly advance: { entryId: string; through: number }[];
+};
+
+/**
+ * The §8.3 change note entry: `model` is `[UserMessage]` carrying the
+ * note text (Task 3 writes it before every turn admission). `data`
+ * carries the note's COVERAGE ({@link BlocksNoteData}): the durable
+ * artifact of which changes the admitted note names, so a deduped
+ * retry (pi-durable returns the existing submission, discarding the
+ * retried text) advances `notedThrough` only as far as the ADMITTED
+ * note covered — never past changes a later compute added but the
+ * admitted text never described.
+ *
+ * NOTE: `advance`'s element array is mutable-typed because pi-durable's
+ * `D extends JsonValue` constraint rejects `readonly` arrays; the
+ * stored value is still treated as immutable by the writer.
+ */
+export const BlocksNoteEntry: Entry<BlocksNoteData> =
+	defineEntry<BlocksNoteData>("sigrun.blocks.note");
 
 /**
  * A block answer as a user-turn entry (Task 3): `model` is `[UserMessage]`
