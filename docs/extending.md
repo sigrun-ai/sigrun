@@ -1660,6 +1660,35 @@ SVG and AVIF are never accepted (script payload; no TUI decoder), and
 markdown image from another origin simply doesn't load. A failure
 renders the block's `alt` text (which is required).
 
+The `src` forms side by side (each `alt` is required — it is the
+fallback when the image cannot load):
+
+```ts check
+import { image, stack, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function imageForms(): Tree {
+	return tree(
+		stack({
+			children: [
+				// A file from the extension's own assets directory.
+				image({ src: "asset:acme/diagram.png", alt: "Pipeline diagram" }),
+				// An inline data URL (PNG/JPEG/GIF/WebP, at most 192 KiB).
+				image({
+					src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+					alt: "One-pixel swatch",
+				}),
+				// A remote URL — rewritten to the signed /v1/image proxy.
+				image({
+					src: "https://images.example.invalid/chart.png",
+					alt: "Rendered chart from the images host",
+				}),
+			],
+		}),
+	);
+}
+```
+
 ### Settings sections with apply
 
 A settings section is a static `settings`-placement tree — a root
@@ -1669,10 +1698,14 @@ Every field declares **`apply: "live" | "restart"`**:
 
 - `live` (the default for extension fields): the value is read where
   it's used; saving takes effect with no restart.
-- `restart`: the value is read at boot. Saving stores it and marks it
-  pending — `GET /v1/settings` returns `pendingRestart: string[]`, and
-  the settings surface shows a `callout(tone: "warn")` listing them
-  with a Restart button for admins (when the server is supervised).
+- `restart`: the value is read at boot. For CORE sections, saving
+  stores it and marks it pending — `GET /v1/settings` returns
+  `pendingRestart: string[]`, and the core settings surface shows a
+  `callout(tone: "warn")` listing them with a Restart button for
+  admins (when the server is supervised). For EXTENSION sections the
+  marker is not wired yet: the loader accepts `apply: "restart"`, the
+  value is stored and read at the next boot, but no pending marker or
+  warn callout is produced today.
 
 Mark a field `restart` when your factory reads the value at load;
 everything else stays `live`.
@@ -1785,7 +1818,9 @@ export function settingsForm(): Tree {
 	return tree(
 		form({
 			id: "acme-settings",
-			bind: "/",
+			// The section's surface data is {settings, secrets}; fields
+			// resolve under the settings object.
+			bind: "/settings",
 			mode: "submit",
 			submitLabel: "Save",
 			children: [
@@ -1807,7 +1842,7 @@ export function settingsForm(): Tree {
 							label: "Endpoint URL",
 							kind: "url",
 							placeholder: "https://sync.example.invalid",
-							help: "Read at boot — saving marks it pending restart.",
+							help: "Read at boot — a saved change applies at the next restart.",
 							apply: "restart",
 							required: true,
 						}),
@@ -1831,8 +1866,9 @@ export function settingsForm(): Tree {
 
 Saving validates every field, writes the settings object, then fires
 `settings.changed` (your `onSettingsChanged(keys)` runs after the write
-commits). A `restart` field whose stored value differs from the boot
-snapshot lands in `pendingRestart`.
+commits). The core `pendingRestart` marker described above does not
+cover extension fields yet — a saved `restart` value applies at the
+next boot.
 
 ### Worked example: a dashboard
 
