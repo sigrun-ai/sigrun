@@ -568,10 +568,14 @@ array or entry, an invalid or duplicate id, a non-string label/icon, or a
 non-function `begin`/`complete` quarantines that extension. Boot continues
 without its login providers.
 
-The separately shipped `@sigrun/oauth` package implements this contract
-for OIDC and OAuth 2. It is **not bundled or installed by default**; the
-operator installs and configures it like other extensions. See
-[Authentication](README.md#authentication) for its operator configuration.
+The `@sigrun/oauth` package implements this contract for OIDC and OAuth 2.
+It is the fourth built-in extension: bundled and loaded by default.
+`builtinExtensions.oauth: false` disables it (restart-required), and a
+configured extension with the same package name replaces it. An unresolvable
+or failed built-in is quarantined rather than aborting boot. The package can
+still be installed separately for a deployment that wants it without the
+built-in. See [Authentication](README.md#authentication) for its operator
+configuration.
 
 ## Secrets precedence: stored wins, env bootstraps
 

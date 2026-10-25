@@ -292,8 +292,8 @@ export interface NotificationsSettings {
 }
 
 /**
- * The built-in extensions toggles (Task 2, pi parity): codemode, MCP and
- * tool search ship WITH core. Each key defaults to `true`; `false`
+ * The built-in extensions toggles: codemode, MCP, tool search and OAuth
+ * ship WITH core. Each key defaults to `true`; `false`
  * removes the built-in entirely (absent from `/v1/extensions`, its config
  * ignored with one log line). RESTART-REQUIRED: the built-in set resolves
  * at boot, like `extensions`.
@@ -302,6 +302,7 @@ export interface BuiltinExtensionsSettings {
 	readonly codemode?: boolean;
 	readonly mcp?: boolean;
 	readonly toolSearch?: boolean;
+	readonly oauth?: boolean;
 }
 
 /**

@@ -16,7 +16,7 @@
 #
 #   node scripts/publish-deps.mjs registry \
 #     && npm install @sigrun/ext-codemode@<ver> @sigrun/ext-mcp@<ver> \
-#          @sigrun/ext-tool-search@<ver> --package-lock-only \
+#          @sigrun/ext-tool-search@<ver> @sigrun/oauth@<ver> --package-lock-only \
 #     && docker build . \
 #     && node scripts/publish-deps.mjs file
 #

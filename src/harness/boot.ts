@@ -579,8 +579,8 @@ export interface OpenHarnessOptions {
 	 */
 	readonly settings?: HarnessSettings;
 	/**
-	 * Built-in extensions (Task 2, pi parity): codemode, MCP and tool
-	 * search load by default from core's own node_modules, BEFORE the
+	 * Built-in extensions: codemode, MCP, tool search and OAuth load by
+	 * default from core's own node_modules, BEFORE the
 	 * configured list, governed by the settings file's
 	 * `builtinExtensions` toggles. `false` skips them entirely — the
 	 * hermetic-test seam for suites asserting exact extension outcomes
@@ -594,6 +594,11 @@ export interface OpenHarnessOptions {
 	 * the shipped packages.
 	 */
 	readonly extraBuiltins?: readonly string[];
+	/** Test-only core built-in resolver override (unresolvable-package quarantine). */
+	readonly builtinResolver?: (
+		specifier: string,
+		fallback: (specifier: string) => ResolvedExtensionInput,
+	) => ResolvedExtensionInput;
 	/**
 	 * Extension package specifiers to load, overriding `config.extensions` —
 	 * the hermetic-test seam for the loader (specifiers resolve to local
@@ -910,8 +915,7 @@ export async function openHarness(
 	// declarations install here — see src/harness/packages.ts).
 	const packagesDir =
 		options.packagesDir ?? packagesDirOf(options.settingsDir ?? defaultSettingsDir());
-	// Built-in extensions (Task 2, pi parity): codemode, MCP and tool
-	// search ship with core. Resolution needs the settings FILE (the
+	// Built-in extensions ship with core. Resolution needs the settings FILE (the
 	// `builtinExtensions` toggles live there), so the store is constructed
 	// HERE — before the loader — and the one instance threads on to the
 	// rest of boot (its `harnessSettings()` call below stays the single
@@ -949,7 +953,12 @@ export async function openHarness(
 		typeof specifier === "string" ? { entry: specifier } : specifier,
 	);
 	const builtins: ResolvedBuiltins = builtinsEnabled
-		? resolveBuiltins(bootSettings, configuredInputs, options.extraBuiltins ?? [])
+		? resolveBuiltins(
+			bootSettings,
+			configuredInputs,
+			options.extraBuiltins ?? [],
+			options.builtinResolver,
+		)
 		: { load: [], skipped: [] };
 	// The loader input: built-ins FIRST (pi parity — the replacement rule
 	// already removed any built-in a configured entry claims), marked
