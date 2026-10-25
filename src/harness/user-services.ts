@@ -68,6 +68,7 @@ type Live = {
 	stderr: string[];
 	stdout: SharedServiceStream;
 	stderrStream: SharedServiceStream;
+	terminal: boolean;
 };
 type Entry = {
 	key: string;
@@ -78,6 +79,7 @@ type Entry = {
 	packageDir: string;
 	starting?: Promise<void>;
 	live?: Live;
+	terminal: boolean;
 	failures: number[];
 	lastError?: string;
 };
@@ -163,6 +165,7 @@ export class UserServices {
 				key, slug, name, user, declaration,
 				packageDir: this.directories.get(slug)!,
 				failures: [],
+				terminal: false,
 			};
 			// Only a settings change can clear the fence; a fresh restart
 			// entry never inherits another entry's crash history.
@@ -234,6 +237,7 @@ export class UserServices {
 			stderr: [],
 			stdout: new SharedServiceStream(),
 			stderrStream: new SharedServiceStream(),
+			terminal: false,
 			exited: Promise.resolve({ code: null, signal: null }),
 		};
 		const traffic = (): void => {
@@ -254,28 +258,30 @@ export class UserServices {
 			live.stderr.push(...lines.filter((line) => line !== ""));
 			if (live.stderr.length > 20) live.stderr.splice(0, live.stderr.length - 20);
 		});
-		live.exited = new Promise<Exit>((resolveExit) => {
-			child.once("error", () => {
-				live.stderr.push("process spawn failed");
-			});
-			child.once("exit", (code, signal) => {
-				live.stdout.end();
-				live.stderrStream.end();
-				if (pendingStderr !== "") live.stderr.push(pendingStderr);
-				if (entry.live === live) {
-					entry.live = undefined;
-					clearTimeout(live.timer);
-					const stopped = this.closed || !this.declarations.has(entry.slug);
-					if (!stopped) {
-						const now = this.deps.now();
-						entry.failures = entry.failures.filter((at) => now - at <= 300_000);
-						entry.failures.push(now);
-						entry.lastError = tail(live.stderr);
-					}
+		let settle: ((exit: Exit) => void) | undefined;
+		const terminal = (exit: Exit, spawnError?: Error): void => {
+			if (live.terminal) return;
+			live.terminal = true;
+			if (spawnError !== undefined) live.stderr.push(spawnError.message);
+			live.stdout.end();
+			live.stderrStream.end();
+			if (pendingStderr !== "") live.stderr.push(pendingStderr);
+			if (entry.live === live) {
+				entry.live = undefined;
+				clearTimeout(live.timer);
+				const stopped = this.closed || !this.declarations.has(entry.slug);
+				if (!stopped) {
+					const now = this.deps.now();
+					entry.failures = entry.failures.filter((at) => now - at <= 300_000);
+					entry.failures.push(now);
+					entry.lastError = tail(live.stderr);
 				}
-				resolveExit({ code, signal });
-			});
-		});
+			}
+			settle?.(exit);
+		};
+		child.once("error", (error) => terminal({ code: null, signal: null }, error));
+		child.once("exit", (code, signal) => terminal({ code, signal }));
+		live.exited = new Promise<Exit>((resolveExit) => { settle = resolveExit; });
 		return live;
 	}
 
@@ -327,7 +333,7 @@ export class UserServices {
 		if (entry.failures.length < 3) this.entries.delete(entry.key);
 		if (live === undefined) return;
 		await new Promise<void>((resolveStop) => {
-			if (live.child.exitCode !== null || live.child.signalCode !== null) {
+			if (live.terminal || live.child.exitCode !== null || live.child.signalCode !== null) {
 				resolveStop();
 				return;
 			}

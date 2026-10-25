@@ -295,6 +295,10 @@ export function registerUserRoutes(
 		await identity.accounts.removeUser(user);
 		if (grant === undefined) await identity.users.remove(user);
 		else await identity.users.removeWithGrant(user, to, grant);
+		// Stop credential-bearing sibling processes before their owner's
+		// lifecycle handlers run. Task 5 owns the full deletion ordering;
+		// this prevents deleted users' services from surviving meanwhile.
+		await ctx.opened.userServices.stopUser(user);
 		// The lifecycle event: extensions transfer their own records
 		// (deadlocked-ordering free — the core transfer already landed).
 		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);

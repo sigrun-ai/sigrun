@@ -138,6 +138,13 @@ describe("UserServices process lifecycle", () => {
 		await services.stopAll();
 	});
 
+	test("a nonexistent command resolves exited and records the crash without hanging stop", async () => {
+		const { services } = await unitServices(async () => ({ command: "/definitely/not/a/service-command", args: [] }));
+		const handle = await services.connect("acme", "echo", "alice", CTX);
+		await expect(handle.exited).resolves.toEqual({ code: null, signal: null });
+		await expect(services.stopUser("alice")).resolves.toBeUndefined();
+	});
+
 	test("three crashes in 300000ms fail with the last 20 stderr lines", async () => {
 		const { services } = await unitServices(startEcho);
 		for (let crash = 0; crash < 3; crash++) {

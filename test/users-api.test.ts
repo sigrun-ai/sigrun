@@ -318,6 +318,19 @@ describe("DELETE /v1/users/:user", () => {
 		expect(self.statusCode).toBe(400);
 	});
 
+	test("deleting a user stops their services before the record is removed", async () => {
+		const { app, opened } = await bootServer({});
+		const token = await mint(opened, "alice");
+		const stopUser = vi.spyOn(opened.userServices, "stopUser").mockResolvedValue();
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		expect(stopUser).toHaveBeenCalledWith("bob");
+	});
+
 	test("with transferTo → owner rewrite, token dead, userDeleted recorded", async () => {
 		const fixture = await fixtureModule();
 		fixture.resetDeletions();
