@@ -318,11 +318,15 @@ form when the effective auth methods include `token`; `/v1/auth/providers`
 returns an empty list on proxy-only deployments because their completed
 sign-ins could not authenticate the resulting session. The TUI continues to
 use tokens. Login providers come from extensions.
-The reference implementation is **`@sigrun/oauth`, shipped separately
-and not yet bundled or installed by default**. Install it through the normal
-`extensions` list (see [Extensions](#extensions)); there is no built-in
-`oauth` entry to enable. It is inert when its settings contain no valid
-providers.
+The reference implementation is **`@sigrun/oauth`, the fourth built-in
+extension**. It is bundled and loads by default, so no `extensions` entry is
+needed. Set `"builtinExtensions": {"oauth": false}` to disable it; like the
+other built-in toggles, this is restart-required. A configured extension
+whose package name is also `@sigrun/oauth` replaces the built-in. If the
+built-in cannot be resolved or loaded, it is quarantined without aborting
+boot. It remains separately installable through the normal `extensions`
+list (see [Extensions](#extensions)) for a deployment that wants it without
+the built-in. It is inert when its settings contain no valid providers.
 
 Create an OAuth/OIDC client at the identity service, with the redirect URI
 shown below. Configure providers in the extension's
