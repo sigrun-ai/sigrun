@@ -10,6 +10,47 @@ import { validateGrantPath } from "../sandbox/grants.js";
 import type { LaunchService } from "../sandbox/launch.js";
 import type { UserPolicy } from "../sandbox/policy.js";
 
+/** Buffered fan-out: every handle replays prior bytes, then receives new bytes. */
+class SharedServiceStream {
+	private readonly chunks: Uint8Array[] = [];
+	private readonly controllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
+	private ended = false;
+
+	stream(): ReadableStream<Uint8Array> {
+		return new ReadableStream<Uint8Array>({
+			start: (controller) => {
+				for (const chunk of this.chunks) controller.enqueue(chunk);
+				if (this.ended) controller.close();
+				else this.controllers.add(controller);
+			},
+			cancel: (reason) => {
+				for (const controller of this.controllers) {
+					try { controller.error(reason); } catch { /* already closed */ }
+				}
+				this.controllers.clear();
+			},
+		});
+	}
+
+	write(chunk: Uint8Array): void {
+		if (this.ended) return;
+		const copy = new Uint8Array(chunk);
+		this.chunks.push(copy);
+		for (const controller of this.controllers) {
+			try { controller.enqueue(copy); } catch { this.controllers.delete(controller); }
+		}
+	}
+
+	end(): void {
+		if (this.ended) return;
+		this.ended = true;
+		for (const controller of this.controllers) {
+			try { controller.close(); } catch { /* already closed */ }
+		}
+		this.controllers.clear();
+	}
+}
+
 export type ServiceStatus = {
 	slug: string;
 	name: string;
@@ -25,12 +66,8 @@ type Live = {
 	timer?: NodeJS.Timeout;
 	lastTraffic: number;
 	stderr: string[];
-	stdout: ReadableStream<Uint8Array>;
-	stderrStream: ReadableStream<Uint8Array>;
-	stdoutController: ReadableStreamDefaultController<Uint8Array>;
-	stderrController: ReadableStreamDefaultController<Uint8Array>;
-	stdoutFactory: () => ReadableStream<Uint8Array>;
-	stderrFactory: () => ReadableStream<Uint8Array>;
+	stdout: SharedServiceStream;
+	stderrStream: SharedServiceStream;
 };
 type Entry = {
 	key: string;
@@ -39,7 +76,7 @@ type Entry = {
 	user: string;
 	declaration: UserService;
 	packageDir: string;
-	starting?: Promise<ServiceHandle>;
+	starting?: Promise<void>;
 	live?: Live;
 	failures: number[];
 	lastError?: string;
@@ -123,13 +160,19 @@ export class UserServices {
 			this.entries.set(key, entry);
 		}
 		if (entry.live === undefined && entry.failures.length >= 3) throw serviceError(entry);
-		if (entry.live === undefined && entry.starting === undefined) {
-			entry.starting = this.start(entry, ctx).finally(() => { entry!.starting = undefined; });
+		if (entry.live !== undefined) return this.attach(entry);
+		if (entry.starting === undefined) {
+			const starting = this.start(entry, ctx);
+			entry.starting = starting;
+			void starting.finally(() => {
+				if (entry?.starting === starting) entry.starting = undefined;
+			}).catch(() => {});
 		}
-		return entry.starting ?? this.attach(entry);
+		await entry.starting;
+		return this.attach(entry);
 	}
 
-	private async start(entry: Entry, ctx: HandlerContext): Promise<ServiceHandle> {
+	private async start(entry: Entry, ctx: HandlerContext): Promise<void> {
 		const spec = await entry.declaration.start(entry.user, ctx);
 		if (spec === undefined) {
 			this.entries.delete(entry.key);
@@ -167,51 +210,29 @@ export class UserServices {
 			windowsHide: true,
 		});
 		entry.live = this.observe(entry, child);
-		return this.attach(entry);
 	}
 
 	private observe(entry: Entry, child: ChildProcessWithoutNullStreams): Live {
-			let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
-			let stderrController!: ReadableStreamDefaultController<Uint8Array>;
 		const live: Live = {
 			child,
 			handles: 0,
 			lastTraffic: this.deps.now(),
 			stderr: [],
-			stdout: new ReadableStream<Uint8Array>({ start(controller) { stdoutController = controller; } }),
-			stderrStream: new ReadableStream<Uint8Array>({ start(controller) { stderrController = controller; } }),
-			// Multiple handles share the underlying stream; each attachment gets
-			// its own unlocked reader over the same queued chunks.
-			stdoutFactory: undefined!,
-			stderrFactory: undefined!,
-			// SAFETY: the stream constructors run synchronously above; both fields
-			// are assigned from their start callbacks before observe returns.
-			stdoutController: undefined!,
-			stderrController: undefined!,
+			stdout: new SharedServiceStream(),
+			stderrStream: new SharedServiceStream(),
 			exited: Promise.resolve({ code: null, signal: null }),
 		};
 		const traffic = (): void => {
 			live.lastTraffic = this.deps.now();
 			this.armIdle(entry);
 		};
-		live.stdoutController = stdoutController;
-		live.stderrController = stderrController;
-		live.stdoutFactory = () => new ReadableStream<Uint8Array>({
-			start(controller) {
-				const onData = (chunk: Buffer): void => controller.enqueue(new Uint8Array(chunk));
-				child.stdout.on("data", onData);
-				child.stdout.once("end", () => controller.close());
-			},
+		child.stdout.on("data", (chunk: Buffer) => {
+			live.stdout.write(new Uint8Array(chunk));
+			traffic();
 		});
-		live.stderrFactory = () => new ReadableStream<Uint8Array>({
-			start(controller) {
-				child.stderr.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-				child.stderr.once("end", () => controller.close());
-			},
-		});
-		child.stdout.on("data", (chunk: Buffer) => { stdoutController.enqueue(new Uint8Array(chunk)); traffic(); });
 		let pendingStderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
+			live.stderrStream.write(new Uint8Array(chunk));
 			traffic();
 			pendingStderr += chunk.toString();
 			const lines = pendingStderr.split("\n");
@@ -224,8 +245,8 @@ export class UserServices {
 				live.stderr.push("process spawn failed");
 			});
 			child.once("exit", (code, signal) => {
-				stdoutController.close();
-				stderrController.close();
+				live.stdout.end();
+				live.stderrStream.end();
 				if (pendingStderr !== "") live.stderr.push(pendingStderr);
 				if (entry.live === live) {
 					entry.live = undefined;
@@ -236,7 +257,6 @@ export class UserServices {
 						entry.failures = entry.failures.filter((at) => now - at <= 300_000);
 						entry.failures.push(now);
 						entry.lastError = tail(live.stderr);
-	
 					}
 				}
 				resolveExit({ code, signal });
@@ -254,8 +274,8 @@ export class UserServices {
 		let released = false;
 		return {
 			stdin: Writable.toWeb(live.child.stdin) as WritableStream<Uint8Array>,
-			stdout: live.stdoutFactory(),
-			stderr: live.stderrFactory(),
+			stdout: live.stdout.stream(),
+			stderr: live.stderrStream.stream(),
 			exited: live.exited,
 			release: () => {
 				if (released) return;
@@ -275,7 +295,6 @@ export class UserServices {
 		if (!(minutes > 0)) return;
 		const remaining = Math.max(0, minutes * 60_000 - (this.deps.now() - live.lastTraffic));
 		live.timer = setTimeout(() => {
-			console.error("IDLE_DEBUG", this.deps.now(), live.lastTraffic, minutes);
 			if (entry.live === live && live.handles === 0 && this.deps.now() - live.lastTraffic >= minutes * 60_000) {
 				void this.stopEntry(entry);
 			} else {
@@ -287,7 +306,8 @@ export class UserServices {
 
 	private async stopEntry(entry: Entry): Promise<void> {
 		clearTimeout(entry.live?.timer);
-		entry.starting = undefined;
+		const starting = entry.starting;
+		if (starting !== undefined) await starting.catch(() => {});
 		const live = entry.live;
 		entry.live = undefined;
 		this.entries.delete(entry.key);

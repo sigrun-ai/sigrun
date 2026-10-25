@@ -42,14 +42,14 @@ async function readLine(stream: ReadableStream<Uint8Array>): Promise<string> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
 	try {
-	let text = "";
-	for (;;) {
-		const next = await reader.read();
-		if (next.done) return text;
-		text += decoder.decode(next.value, { stream: true });
-		const newline = text.indexOf("\n");
-		if (newline >= 0) return text.slice(0, newline);
-	}
+		let text = "";
+		for (;;) {
+			const newline = text.indexOf("\n");
+			if (newline >= 0) return text.slice(0, newline);
+			const next = await reader.read();
+			if (next.done) return text;
+			text += decoder.decode(next.value, { stream: true });
+		}
 	} finally { reader.releaseLock(); }
 }
 
@@ -101,12 +101,16 @@ describe("UserServices process lifecycle", () => {
 			services.connect("acme", "echo", "alice", CTX),
 			services.connect("acme", "echo", "alice", CTX),
 		]);
-		const firstReport = JSON.parse(await readLine(first.stdout));
+		const [firstReport, secondReport] = await Promise.all([
+			readLine(first.stdout).then((line) => JSON.parse(line)),
+			readLine(second.stdout).then((line) => JSON.parse(line)),
+		]);
+		expect(firstReport.pid).toBe(secondReport.pid);
 		expect(firstReport.pid).toBeGreaterThan(0);
 		expect(launches).toHaveLength(1);
 		first.release();
 		expect(services.statuses()).toEqual([
-			{ slug: "acme", name: "echo", user: "alice", state: "idle" },
+			{ slug: "acme", name: "echo", user: "alice", state: "running" },
 		]);
 		await writeLine(second, "still-running");
 		expect(await readLine(second.stdout)).toBe("echo:still-running");
@@ -116,15 +120,22 @@ describe("UserServices process lifecycle", () => {
 	test("idle stop needs no handles and no stdio traffic for idleMinutes", async () => {
 		vi.useFakeTimers();
 		const { services } = await unitServices(async () => ({ command: NODE, args: ["-e", "process.stdin.resume()"] }), 2);
+		cleanups.pop();
 		const handle = await services.connect("acme", "echo", "alice", CTX);
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(services.statuses()[0]?.state).toBe("running");
 		handle.release();
-		await vi.advanceTimersByTimeAsync(119_000);
 		expect(services.statuses()[0]?.state).toBe("idle");
-		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(90_000);
+		expect(services.statuses()).toEqual([]);
+		vi.useRealTimers();
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		await expect(handle.exited).resolves.toMatchObject({ signal: "SIGTERM" });
 		expect(services.statuses()).toEqual([]);
+		const restarted = await services.connect("acme", "echo", "alice", CTX);
+		expect(services.statuses()[0]?.state).toBe("running");
+		restarted.release();
+		await services.stopAll();
 	});
 
 	test("three crashes in 300000ms fail with the last 20 stderr lines", async () => {
