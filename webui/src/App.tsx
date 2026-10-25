@@ -48,6 +48,11 @@ import { GalleryView } from "./gallery/GalleryView";
 import { SurfacePage } from "./blocks/SurfacePage";
 import { ExtPanelHost } from "./blocks/ExtPanelHost";
 import { ExtSurfaceHub } from "./blocks/extTransport";
+import { ChatSurfaceHub } from "./blocks/chatTransport";
+import {
+	ChatTransportContext,
+	type AttachChatTransport,
+} from "./entries/chatTransportContext";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
@@ -181,6 +186,9 @@ function ChatCenter(props: {
 	/** The dock height as bottom padding, so the last message clears the
 	 *  composer dock that overlays the scroll area (the scroll fade, B5). */
 	readonly dockPadding: number;
+	/** U5 Task 4: the chat-block transport attach seam (App's hub) — the
+	 *  inline BlocksEntry surfaces subscribe through it. */
+	readonly attachChatTransport: AttachChatTransport;
 }) {
 	const { activeId, view, status, error, showThinking, timeline } = props;
 	if (activeId === null) {
@@ -213,14 +221,16 @@ function ChatCenter(props: {
 				<p className="chat-loading">loading…</p>
 			) : (
 				<>
-					<TurnList
-						view={view}
-						showThinking={showThinking}
-						timeline={timeline}
-						parent={props.parent}
-						client={props.client}
-						onNavigate={props.onNavigate}
-					/>
+					<ChatTransportContext.Provider value={props.attachChatTransport}>
+						<TurnList
+							view={view}
+							showThinking={showThinking}
+							timeline={timeline}
+							parent={props.parent}
+							client={props.client}
+							onNavigate={props.onNavigate}
+						/>
+					</ChatTransportContext.Provider>
 					{busy && (
 						<div className="chat-working" role="status">
 							<span className="chat-working-dot" />
@@ -371,6 +381,15 @@ export function App(options: AppOptions = {}) {
 	// The ONE change-event hub per app (the transports subscribe; the
 	// shared events source dispatches surface.changed into it).
 	const [extHub] = useState(() => new ExtSurfaceHub());
+	// U5 Task 4: the CHAT-block hub — the conversation-scoped
+	// `surface.changed` frames dispatch here; inline BlocksEntry
+	// transports attach through it (the ChatTransportContext's seam).
+	const [chatHub] = useState(() => new ChatSurfaceHub());
+	const attachChatTransport = useCallback(
+		(options: { conversationId: number; entryId: string }) =>
+			chatHub.attach(options),
+		[chatHub],
+	);
 	// The extension surfaces the principal cannot see (access none):
 	// `slug/id` keys — discovered at render time (a load's 404), the rail
 	// entry disappears at once (§6.5's "no rail entry").
@@ -436,6 +455,14 @@ export function App(options: AppOptions = {}) {
 				extHub.dispatch(event);
 			},
 			[extHub],
+		),
+		// U5 Task 4: the chat member of `surface.changed` fans into the
+		// chat hub (inline BlocksEntry surfaces re-fetch on it).
+		onChatChanged: useCallback(
+			(event: { conversationId: number; entryId: string; rev: number }) => {
+				chatHub.dispatch(event);
+			},
+			[chatHub],
 		),
 	});
 	// The open surface page's transport: the hub attach (its onChanged
@@ -1025,6 +1052,7 @@ export function App(options: AppOptions = {}) {
 							parent={parent}
 							onScrollRoot={setScrollRoot}
 							dockPadding={dockPadding}
+							attachChatTransport={attachChatTransport}
 						/>
 						{/* The scroll fade (B5): the pointer-events-none gradient +
 						    mask + 1.5px blur band over the transcript bottom, under the

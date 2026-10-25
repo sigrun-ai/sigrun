@@ -57,8 +57,11 @@ import {
 	groupTurns,
 	type Turn,
 } from "@sigrun/shared/turns";
+import type { SurfaceTransport } from "@sigrun/shared/blocks";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import type { ConversationViewWire } from "../api.js";
+import { SurfaceState } from "../blocks/surface.js";
+import { SurfaceView } from "../blocks/surface-view.js";
 
 /** One §5 message's structural shape (B1's `TurnMessage` + content parts). */
 interface MessageShape {
@@ -91,6 +94,17 @@ export interface EntryShape {
 export interface ConversationPaneOptions {
 	/** The token theme; defaults to the plain (identity) fallback. */
 	readonly theme?: TuiTheme;
+	/**
+	 * U5 Task 4 (spec §8.2): the chat-block surface attach seam — one
+	 * `sigrun.blocks` timeline event mounts the block's `SurfaceView`
+	 * (the TUI's component host) over the transport this seam returns
+	 * (the app's `ChatSurfaceHub`-backed attach). Absent, the pane
+	 * renders the fail-visible placeholder (the unknown-kind rule).
+	 */
+	readonly attachChatTransport?: (
+		conversationId: number,
+		entryId: string,
+	) => SurfaceTransport;
 }
 
 /**
@@ -192,6 +206,24 @@ class RenderSlot implements Component {
 	invalidate(): void {}
 }
 
+/** The folded note row's summary (spec §8.3): collapsed to this line;
+ *  opening the turn's fold reveals the note text beneath it. */
+export const NOTE_SUMMARY = "UI changes sent to the agent";
+
+/** The blocks entry's title from its payload (the answer chip's label). */
+function blocksTitleOf(data: unknown): string | undefined {
+	if (typeof data !== "object" || data === null) return undefined;
+	const title = (data as { readonly title?: unknown }).title;
+	return typeof title === "string" && title !== "" ? title : undefined;
+}
+
+/** The answer entry's block entry id (spec §8.4's `data.entryId`). */
+function answerEntryIdOf(data: unknown): string | undefined {
+	if (typeof data !== "object" || data === null) return undefined;
+	const entryId = (data as { readonly entryId?: unknown }).entryId;
+	return typeof entryId === "string" && entryId !== "" ? entryId : undefined;
+}
+
 /** The blank separator between turns. */
 const TURN_GAP = 1;
 
@@ -211,11 +243,17 @@ export class ConversationPane implements Component {
 	readonly #container = new Container();
 	readonly #theme: TuiTheme;
 	readonly #markdownTheme: MarkdownTheme;
+	/** The chat-block attach seam (U5 Task 4; absent = placeholder). */
+	readonly #attachChatTransport:
+		| ((conversationId: number, entryId: string) => SurfaceTransport)
+		| undefined;
 	readonly #notices: PaneNotice[] = [];
 	/** The notices' mounted components, aligned with `#notices`. */
 	readonly #noticeComponents: Component[] = [];
 
 	#turns: readonly Turn<EntryShape>[] = [];
+	/** The open view's conversation id (the chat-block attach's address). */
+	#conversationId = 0;
 	#focus: number | undefined;
 	/** Fold state by turn index (assistant turns only fold). */
 	readonly #open = new Set<number>();
@@ -227,6 +265,7 @@ export class ConversationPane implements Component {
 	constructor(options?: ConversationPaneOptions) {
 		this.#theme = options?.theme ?? plainTuiTheme();
 		this.#markdownTheme = markdownTheme(this.#theme);
+		this.#attachChatTransport = options?.attachChatTransport;
 	}
 
 	/** The current view's turns (B1 grouping), in render order. */
@@ -317,6 +356,7 @@ export class ConversationPane implements Component {
 	 * turns.
 	 */
 	showView(wire: ConversationViewWire): void {
+		this.#conversationId = wire.conversation.id;
 		this.#turns = groupTurns(wire.entries as readonly EntryShape[]);
 		if (this.#focus !== undefined && this.#focus >= this.#turns.length) {
 			this.#focus = undefined;
@@ -434,6 +474,35 @@ export class ConversationPane implements Component {
 				if (text !== "") {
 					components.push(body(new Markdown(text, 0, 0, this.#markdownTheme)));
 				}
+				// U5 Task 4 (spec §8.4): a block answer is a user turn whose
+				// chip names the surface it answered (`from <title>` — the
+				// `sigrun.blocks` entry's title, else its entry id).
+				if (turn.entry.kind === "sigrun.blocks.answer") {
+					const answerEntryId = answerEntryIdOf(turn.entry.data);
+					const title = this.#turns
+						.map((candidate) =>
+							candidate.kind === "assistant"
+								? candidate.entries.find(
+										(entry) =>
+											entry.kind === "sigrun.blocks" &&
+											String(entry.id) === answerEntryId,
+									)
+								: undefined,
+						)
+						.map((entry) =>
+							entry === undefined ? undefined : blocksTitleOf(entry.data),
+						)
+						.find((candidate) => candidate !== undefined);
+					components.push(
+						new Text(
+							this.#theme.dim(
+								`from ${title ?? `entry ${answerEntryId ?? "?"}`}`,
+							),
+							0,
+							0,
+						),
+					);
+				}
 				break;
 			}
 			case "assistant": {
@@ -442,15 +511,58 @@ export class ConversationPane implements Component {
 						body(new Markdown(turn.text, 0, 0, this.#markdownTheme)),
 					);
 				}
+				// U5 Task 4: the chat-block surfaces render INLINE, OUTSIDE
+				// the folded activity line (the surface is the turn's visible
+				// artifact, never hidden behind the fold). Each mounts a
+				// SurfaceView over the attach seam's transport (the hub's
+				// onChanged refreshes it when another viewer edits the block).
+				for (const event of turn.timeline) {
+					if (event.kind !== "blocks") continue;
+					const attach = this.#attachChatTransport;
+					if (attach === undefined) {
+						components.push(
+							new Text(
+								this.#theme.dim(
+									`[blocks entry ${event.entryId} — no chat transport]`,
+								),
+								0,
+								0,
+							),
+						);
+						continue;
+					}
+					const state = new SurfaceState(
+						attach(this.#conversationId, String(event.entryId)),
+					);
+					void state.load();
+					state.onChange(() => this.#container.invalidate());
+					components.push(
+						new SurfaceView(state, {
+							theme: this.#theme,
+							unicode: true,
+						}),
+					);
+				}
+				const notes = turn.timeline.filter((event) => event.kind === "note");
 				const label = activityLabel(turn);
-				if (label !== "") {
+				const summaryParts = [
+					...(label === "" ? [] : [label]),
+					...(notes.length > 0
+						? [
+								notes.length === 1
+									? NOTE_SUMMARY
+									: `${notes.length}× ${NOTE_SUMMARY}`,
+							]
+						: []),
+				];
+				if (summaryParts.length > 0) {
 					// The slot renders one line; the fold marker + label are
 					// painted per frame (the fold state changes after mount, and
 					// a Text's content cache would pin the stale marker).
 					const slot = new RenderSlot();
 					slot.paint = () =>
 						this.#theme.dim(
-							`${this.#open.has(index) ? "▾" : "▸"} ${label}`,
+							`${this.#open.has(index) ? "▾" : "▸"} ${summaryParts.join(" · ")}`,
 						);
 					components.push(
 						new MouseRegion(slot, (event) => {
@@ -484,6 +596,23 @@ export class ConversationPane implements Component {
 									0,
 								),
 							);
+						}
+						// The note texts ride the SAME fold (the note row's
+						// disclosure): opening the fold reveals the notes
+						// the turn admitted, in timeline order.
+						for (const event of turn.timeline) {
+							if (event.kind !== "note") continue;
+							const entry = turn.entries.find(
+								(candidate) => candidate.id === event.entryId,
+							);
+							const text =
+								entry === undefined ? "" : entryText(entry);
+							for (const line of text.split("\n")) {
+								if (line.trim() === "") continue;
+								components.push(
+									new Text(this.#theme.dim(line), 0, 0),
+								);
+							}
 						}
 					}
 				}

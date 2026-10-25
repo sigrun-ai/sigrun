@@ -14,6 +14,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	activityLabel,
+	BLOCKS_ANSWER_KIND,
+	BLOCKS_KIND,
+	BLOCKS_NOTE_KIND,
 	EXPANDED_USER_KIND,
 	expandedUserEntry,
 	groupTurns,
@@ -217,6 +220,160 @@ describe("groupTurns", () => {
 		expect(turn.entry.model?.[0]?.content).toEqual([
 				{ type: "text", text: "Review with focus: concurrency" },
 			]);
+	});
+
+	// U5 Task 4 (spec §8.2/§8.3): the chat-blocks kinds. The fixture mirrors
+	// the entry order a REAL `show_blocks` run produces (recorded from
+	// test/blocks-chat-tools.test.ts: pi.user → pi.system → pi.assistant with
+	// the toolCall → sigrun.blocks → pi.tool-result → pi.assistant text).
+	it("folds a show_blocks run into one assistant turn whose timeline is blocks, note, text, with tools empty", () => {
+		const turns = groupTurns([
+			userEntry(1, "show the ranking"),
+			{ id: 2, kind: "pi.system" },
+			assistantEntry(3, [
+				{
+					type: "toolCall",
+					id: "call-blocks",
+					name: "show_blocks",
+					arguments: { title: "Ranking" },
+				},
+			]),
+			{
+				id: 4,
+				kind: BLOCKS_KIND,
+				data: {
+					title: "Ranking",
+					tree: { v: 1, root: { type: "markdown", text: "…" } },
+					data: {},
+				},
+			},
+			toolResultEntry(5, "call-blocks"),
+			{
+				id: 6,
+				kind: BLOCKS_NOTE_KIND,
+				model: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: "UI changes: Ranking (alice): moved c2" },
+						],
+					},
+				],
+				data: { advance: [{ entryId: "4", through: 1 }] },
+			},
+			assistantEntry(7, [{ type: "text", text: "Here is the ranking." }]),
+		]);
+		// pi.system is an `other` turn (the boot record), then one user and
+		// ONE assistant turn — the blocks + note entries ride the pending
+		// turn (a boundary note mid-run must never split it).
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"other",
+			"assistant",
+		]);
+		const assistant = asAssistant(turns[2]!);
+		expect(assistant.entries.map((entry) => entry.id)).toEqual([3, 4, 5, 6, 7]);
+		// The show_blocks call is left OUT of tools (the activity line never
+		// counts it) but its result still joins: the tool is not counted, yet
+		// a later real tool call on the same turn still matches its result.
+		expect(assistant.tools).toEqual([]);
+		expect(
+			assistant.timeline.map((event) =>
+				event.kind === "blocks" || event.kind === "note"
+					? `${event.kind}:${event.entryId}`
+					: event.kind,
+			),
+		).toEqual(["blocks:4", "note:6", "text"]);
+		expect(assistant.text).toBe("Here is the ranking.");
+	});
+
+	it("a sigrun.blocks entry trailing a settled run still rides the assistant turn", () => {
+		// groupTurns has no turn-boundary signal: a blocks entry arriving
+		// after the run's last text is inside the still-pending assistant
+		// turn (the note-at-a-boundary rule's flip side — the grouping
+		// errs toward keeping the run's artifacts together).
+		const turns = groupTurns([
+			userEntry(1, "hi"),
+			assistantEntry(2, [{ type: "text", text: "hello" }]),
+			{
+				id: 3,
+				kind: BLOCKS_KIND,
+				data: { title: "T", tree: { v: 1, root: { type: "markdown", text: "x" } }, data: {} },
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual(["user", "assistant"]);
+		expect(
+			asAssistant(turns[1]!).timeline.map((event) =>
+				event.kind === "blocks" ? `blocks:${event.entryId}` : event.kind,
+			),
+		).toEqual(["text", "blocks:3"]);
+	});
+
+	it("a sigrun.blocks entry with NO pending run is an other turn", () => {
+		const turns = groupTurns([
+			userEntry(1, "hi"),
+			{
+				id: 2,
+				kind: BLOCKS_KIND,
+				data: { title: "T", tree: { v: 1, root: { type: "markdown", text: "x" } }, data: {} },
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual(["user", "other"]);
+	});
+
+	it("a sigrun.blocks.answer entry is a USER turn (like the expanded kind)", () => {
+		const turns = groupTurns([
+			userEntry(1, "show the ranking"),
+			assistantEntry(2, [{ type: "text", text: "Here." }]),
+			{
+				id: 3,
+				kind: BLOCKS_ANSWER_KIND,
+				data: { entryId: "4", action: "submitRanking", payload: null, state: {} },
+				model: [
+					{
+						role: "user",
+						content: [{ type: "text", text: "Submitted 'Ranking': …" }],
+					},
+				],
+			},
+			assistantEntry(4, [{ type: "text", text: "Thanks!" }]),
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+	});
+
+	it("a show_blocks call leaves the turn's tools alone even beside real tools", () => {
+		const turns = groupTurns([
+			userEntry(1, "show and list"),
+			assistantEntry(2, [
+				{
+					type: "toolCall",
+					id: "call-blocks",
+					name: "show_blocks",
+					arguments: { title: "Ranking" },
+				},
+				{
+					type: "toolCall",
+					id: "call-bash",
+					name: "bash",
+					arguments: { command: "ls /" },
+				},
+			]),
+			toolResultEntry(3, "call-blocks"),
+			toolResultEntry(4, "call-bash"),
+			assistantEntry(5, [{ type: "text", text: "done" }]),
+		]);
+		const assistant = asAssistant(turns[1]!);
+		expect(assistant.tools.map((tool) => tool.name)).toEqual(["bash"]);
+		expect(
+			assistant.timeline.map((event) =>
+				event.kind === "tool" ? `tool:${event.tool.name}` : event.kind,
+			),
+		).toEqual(["tool:bash", "text"]);
 	});
 
 	it("an expanded user entry ends the assistant run like a pi.user entry", () => {

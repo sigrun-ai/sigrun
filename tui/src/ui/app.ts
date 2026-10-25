@@ -61,13 +61,14 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ConversationViewWire, ModelEntry, SigrunClient, SlashCommand, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
-import type { JsonObject, SurfaceTransport } from "@sigrun/shared/blocks";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import {
 	ExtSurfaceHub,
 	surfaceKeyHash,
 	transportKey,
 	type ExtSurfaceTransportHandle,
 } from "../blocks/ext-transport.js";
+import { ChatSurfaceHub } from "../blocks/chat-transport.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { spawnSync } from "node:child_process";
 import type { TuiTheme } from "../theme.js";
@@ -151,6 +152,10 @@ export class TuiApp implements Component, ActionHost {
 	 *  `openExtView`'s transport subscribes through it; the launcher
 	 *  dispatches `surface.changed` events into it. */
 	readonly #extHub = new ExtSurfaceHub();
+	/** The chat-block transport hub (U5 Task 4): the conversation-scoped
+	 *  `surface.changed` frames dispatch here; the conversation pane's
+	 *  inline block surfaces subscribe through it. */
+	readonly #chatHub = new ChatSurfaceHub();
 	/** The open extension view (the main pane's surface state). The
 	 *  HANDLE (not the bare transport): a reconnect's new stream id
 	 *  lands via setStreamId without re-creating the transport. */
@@ -215,7 +220,21 @@ export class TuiApp implements Component, ActionHost {
 			resolveVimEditor({ configured: options.editor, env: process.env, which: whichPath }));
 		const theme = options.theme;
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
-		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
+		this.pane = new ConversationPane({
+			...(theme === undefined ? {} : { theme }),
+			attachChatTransport: (conversationId, entryId) =>
+				this.#chatHub.attach({
+					conversationId,
+					entryId,
+					baseUrl: this.#watchOptions.baseUrl,
+					...(this.#watchOptions.user === undefined
+						? {}
+						: { user: this.#watchOptions.user }),
+					...(this.#watchOptions.token === undefined
+						? {}
+						: { token: this.#watchOptions.token }),
+				}),
+		});
 		this.editor = new Editor(options.tui, plainEditorTheme());
 		this.interactions = new InteractionPrompter(client);
 		this.ambient = new AmbientChrome(client);
@@ -346,6 +365,16 @@ export class TuiApp implements Component, ActionHost {
 		treeRev: number;
 	}): void {
 		this.#extHub.dispatch(event);
+	}
+
+	/** The chat member of `surface.changed` (U5 Task 4): fan the
+	 *  conversation-scoped frame into the chat hub. */
+	dispatchChatSurfaceChanged(event: {
+		conversationId: number;
+		entryId: string;
+		rev: number;
+	}): void {
+		this.#chatHub.dispatch(event);
 	}
 
 	/** The focused region (the action layer's routing state). */

@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, test } from "vitest";
+import type { SurfaceTransport, Tree } from "@sigrun/shared/blocks";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
 import type { ConversationViewWire } from "../src/api.js";
 
@@ -322,5 +323,200 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		const lines = pane.render(80);
 		expect(lines[0]).toContain("<bg>");
 		expect(lines[1] ?? "").not.toContain("<bg>");
+	});
+});
+
+/**
+ * U5 Task 4 fixtures: the entry order a real `show_blocks` run produces
+ * (pi.user → pi.assistant(toolCall show_blocks) → sigrun.blocks →
+ * pi.tool-result → sigrun.blocks.note → pi.assistant(text)) plus the
+ * answer entry (a user turn with the "from <title>" chip).
+ */
+function chatBlocksEntries(): unknown[] {
+	return [
+		{
+			id: 1,
+			kind: "pi.user",
+			model: [{ role: "user", content: "show the ranking" }],
+		},
+		{
+			id: 2,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "call-blocks",
+							name: "show_blocks",
+							arguments: { title: "Ranking" },
+						},
+					],
+				},
+			],
+		},
+		{
+			id: 3,
+			kind: "sigrun.blocks",
+			data: {
+				title: "Ranking",
+				tree: {
+					v: 1,
+					root: {
+						type: "collection",
+						id: "ranking",
+						items: { $: "/cards" },
+						display: "list",
+						numbered: true,
+						reorder: { within: true },
+						onMove: "reorderCards",
+						item: { title: { $: "./title" } },
+					},
+				},
+				data: { cards: [{ id: "c1", title: "Clair de Lune" }] },
+			},
+		},
+		{
+			id: 4,
+			kind: "pi.tool-result",
+			model: [
+				{
+					role: "toolResult",
+					toolCallId: "call-blocks",
+					toolName: "show_blocks",
+					content: [{ type: "text", text: "1. Clair de Lune\nentryId: 3" }],
+				},
+			],
+		},
+		{
+			id: 5,
+			kind: "sigrun.blocks.note",
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "UI changes: Ranking (alice): moved c1" },
+					],
+				},
+			],
+			data: { advance: [{ entryId: "3", through: 1 }] },
+		},
+		{
+			id: 6,
+			kind: "pi.assistant",
+			model: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Here is the ranking." }],
+				},
+			],
+		},
+		{
+			id: 7,
+			kind: "sigrun.blocks.answer",
+			model: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Submitted 'Ranking': 1. Clair de Lune" }],
+				},
+			],
+			data: { entryId: "3", action: "submitRanking", payload: null, state: {} },
+		},
+	];
+}
+
+/** A stub chat transport serving the ranking block (write access). */
+function stubChatTransport(): SurfaceTransport {
+	const tree = {
+		v: 1,
+		root: {
+			type: "collection",
+			id: "ranking",
+			items: { $: "/cards" },
+			display: "list",
+			numbered: true,
+			reorder: { within: true },
+			onMove: "reorderCards",
+			item: { title: { $: "./title" } },
+		},
+	} as unknown as Tree;
+	return {
+		load: async () => ({
+			tree,
+			data: { cards: [{ id: "c1", title: "Clair de Lune" }] },
+			rev: 1,
+			treeRev: 0,
+			access: "write",
+		}),
+		fetchData: async () => ({ rev: 1, treeRev: 0, data: {} }),
+		act: async () => ({ ok: true as const, rev: 1 }),
+		upload: async () => {
+			throw new Error("no uploads in chat");
+		},
+		image: async () => {
+			throw new Error("no images yet");
+		},
+		onChanged: () => () => {},
+	};
+}
+
+describe("ConversationPane: chat blocks (U5 Task 4)", () => {
+	test("one assistant turn carries the blocks + note events; the show_blocks tool is absent", async () => {
+		const pane = new ConversationPane({
+			attachChatTransport: () => stubChatTransport(),
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		const turns = pane.turns();
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"user",
+		]);
+		const assistant = turns[1]!;
+		if (assistant.kind !== "assistant") throw new Error("expected assistant");
+		// The show_blocks call is left out of tools (the activity line
+		// never counts the surface's own rendering machinery).
+		expect(assistant.tools).toEqual([]);
+		// The timeline interleaves blocks, note, text.
+		expect(
+			assistant.timeline.map((event) =>
+				event.kind === "blocks" || event.kind === "note"
+					? `${event.kind}:${event.entryId}`
+					: event.kind,
+			),
+		).toEqual(["blocks:3", "note:5", "text"]);
+		// The render shows the note's collapsed summary row; the note text
+		// waits behind the fold.
+		const closed = pane.render(80).join("\n");
+		expect(closed).toContain("UI changes sent to the agent");
+		expect(closed).not.toContain("moved c1");
+		// Opening the fold reveals the note text.
+		pane.toggleFold(1);
+		const open = pane.render(80).join("\n");
+		expect(open).toContain("moved c1");
+		// The answer turn renders the user's message with the title chip.
+		const answerText = pane.textOf(2);
+		expect(answerText).toContain("Submitted 'Ranking'");
+		expect(pane.render(80).join("\n")).toContain("from Ranking");
+	});
+
+	test("the block surface loads inline through the attach seam", async () => {
+		const pane = new ConversationPane({
+			attachChatTransport: () => stubChatTransport(),
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		// The surface loads asynchronously; flush the microtask queue.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain("Clair de Lune");
+	});
+
+	test("without an attach seam the block renders the fail-visible placeholder", () => {
+		const pane = new ConversationPane();
+		pane.showView(view(1, chatBlocksEntries()));
+		expect(pane.render(80).join("\n")).toContain(
+			"blocks entry 3 — no chat transport",
+		);
 	});
 });

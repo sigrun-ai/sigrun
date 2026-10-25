@@ -23,6 +23,46 @@ import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
 import { attachmentParts, messageText } from "./content";
 
+/** The narrowed `data` of a `sigrun.blocks.answer` entry (U5 Task 4,
+ *  spec §8.4): the block it answers, the action taken, and the surface's
+ *  post-edit state. Defined exactly when the entry carries a non-empty
+ *  `entryId` and `action`; undefined otherwise. */
+export interface BlocksAnswerDataWire {
+	readonly entryId: string;
+	readonly action: string;
+	readonly payload?: unknown;
+	readonly state?: unknown;
+}
+
+export function blocksAnswerEntry(entry: {
+	readonly kind: string;
+	readonly data?: unknown;
+}): BlocksAnswerDataWire | undefined {
+	if (entry.kind !== "sigrun.blocks.answer") return undefined;
+	const data = entry.data;
+	if (typeof data !== "object" || data === null) return undefined;
+	const entryId = (data as { readonly entryId?: unknown }).entryId;
+	const action = (data as { readonly action?: unknown }).action;
+	if (typeof entryId !== "string" || entryId === "") return undefined;
+	if (typeof action !== "string" || action === "") return undefined;
+	const payload = (data as { readonly payload?: unknown }).payload;
+	const state = (data as { readonly state?: unknown }).state;
+	return {
+		entryId,
+		action,
+		...(payload === undefined ? {} : { payload }),
+		...(state === undefined ? {} : { state }),
+	};
+}
+
+/** The title a `sigrun.blocks` entry names (the answer chip's label);
+ *  undefined for any other shape. */
+export function blocksTitle(data: unknown): string | undefined {
+	if (typeof data !== "object" || data === null) return undefined;
+	const title = (data as { readonly title?: unknown }).title;
+	return typeof title === "string" && title !== "" ? title : undefined;
+}
+
 /** The entry's ADMITTED message texts joined (the model-facing source —
  *  for an expanded input this is the expanded text the chip reveals). */
 function admittedText(entry: ConversationEntryWire): string {
@@ -69,11 +109,28 @@ function ExpandedChip(props: {
 
 export function UserEntry(props: {
 	entry: ConversationEntryWire;
+	/** The conversation's entries (the answer chip resolves its block's
+	 *  title from the `sigrun.blocks` entry it names). */
+	entries?: readonly ConversationEntryWire[];
 	onFork(): void;
 	onEdit(): void;
 }) {
 	const { entry } = props;
 	const expanded = expandedUserEntry(entry);
+	// U5 Task 4 (spec §8.4): a block answer IS the user's message, with a
+	// chip naming the surface it answered (the `sigrun.blocks` entry's
+	// title; the entry id alone when that entry is not in the page).
+	const answer = blocksAnswerEntry(entry);
+	const answerBlock =
+		answer === undefined
+			? undefined
+			: (props.entries ?? []).find(
+					(candidate) =>
+						candidate.kind === "sigrun.blocks" &&
+						String(candidate.id) === answer.entryId,
+				);
+	const answerTitle =
+		answerBlock === undefined ? undefined : blocksTitle(answerBlock.data);
 	return (
 		<div
 			className="turn turn-user"
@@ -109,6 +166,11 @@ export function UserEntry(props: {
 				)}
 				{expanded !== undefined && (
 					<ExpandedChip expanded={expanded} fullText={admittedText(entry)} />
+				)}
+				{answer !== undefined && (
+					<span className="entry-answer-chip" data-answer-entry={answer.entryId}>
+						from {answerTitle ?? `entry ${answer.entryId}`}
+					</span>
 				)}
 			</div>
 			<MessageActions

@@ -26,6 +26,24 @@
  *  as (see the module doc); grouping treats it exactly like `pi.user`. */
 export const EXPANDED_USER_KIND = "sigrun.user.expanded";
 
+/** The chat-blocks entry kinds (UI-blocks U5, spec §8.2/§8.3/§8.4) the
+ *  grouping recognises. The server-side twins live in
+ *  `src/harness/blocks/entries.ts` (this module imports nothing, so the
+ *  tokens duplicate by design — one spelling per kind, pinned by the
+ *  grouping tests). */
+export const BLOCKS_KIND = "sigrun.blocks";
+export const BLOCKS_NOTE_KIND = "sigrun.blocks.note";
+export const BLOCKS_ANSWER_KIND = "sigrun.blocks.answer";
+
+/** The `show_blocks`/`update_blocks` tool names: a call to one of these
+ *  never joins the turn's `tools` or the timeline — the block surface it
+ *  created IS the visible artifact (the activity line would otherwise
+ *  count its own rendering machinery as activity). */
+const BLOCKS_TOOLS: ReadonlySet<string> = new Set([
+	"show_blocks",
+	"update_blocks",
+]);
+
 export interface TurnBlock {
 	readonly type: string;
 	readonly text?: string;
@@ -107,7 +125,14 @@ export type Turn<E extends TurnEntry> =
 export type TimelineEvent =
 	| { readonly kind: "thinking"; readonly text: string }
 	| { readonly kind: "tool"; readonly tool: ToolCall }
-	| { readonly kind: "text"; readonly text: string };
+	| { readonly kind: "text"; readonly text: string }
+	// U5 Task 4: the chat-blocks events. `blocks` = the surface one
+	// `sigrun.blocks` entry defines; `note` = the §8.3 change note. Both
+	// ride INSIDE the pending assistant turn (a note written at a
+	// boundary mid-run would otherwise split the turn in two); each
+	// carries the entry id the renderer re-fetches the live state with.
+	| { readonly kind: "blocks"; readonly entryId: number }
+	| { readonly kind: "note"; readonly entryId: number };
 
 /** Assembly-time ToolCall: the readonly fields fill in as results arrive. */
 interface PendingToolCall {
@@ -194,10 +219,16 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 								text: block.thinking,
 							});
 						} else if (block.type === "toolCall") {
+							const name = block.name ?? "";
+							// A blocks tool's call is invisible in the transcript: the
+							// `sigrun.blocks` entry it appends is the artifact. The
+							// RESULT entry still joins by callId below (matching only
+							// pending tools, so its join is a harmless no-op).
+							if (BLOCKS_TOOLS.has(name)) continue;
 							const call: PendingToolCall = {
 								callId: block.id ?? "",
-								name: block.name ?? "",
-								preview: toolPreview(block.name ?? "", block.arguments),
+								name,
+								preview: toolPreview(name, block.arguments),
 								isError: false,
 							};
 							pending.tools.push(call);
@@ -222,8 +253,29 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 			continue;
 		}
 
+		// U5 Task 4: the chat-blocks kinds ride the pending assistant turn
+		// (spec §8.2/§8.3) — a boundary note mid-run appends its event and
+		// does NOT flush; with no pending turn they fall through to `other`
+		// (fail visible, the unknown-kind rule). `sigrun.blocks.answer` is a
+		// user turn (§8.4: the answer submits through the normal path).
+		if (
+			(entry.kind === BLOCKS_KIND || entry.kind === BLOCKS_NOTE_KIND) &&
+			pending !== null
+		) {
+			pending.entries.push(entry);
+			pending.timeline.push({
+				kind: entry.kind === BLOCKS_KIND ? "blocks" : "note",
+				entryId: entry.id,
+			});
+			continue;
+		}
+
 		flush();
-		if (entry.kind === "pi.user" || entry.kind === EXPANDED_USER_KIND) {
+		if (
+			entry.kind === "pi.user" ||
+			entry.kind === EXPANDED_USER_KIND ||
+			entry.kind === BLOCKS_ANSWER_KIND
+		) {
 			turns.push({ kind: "user", entry });
 		} else {
 			turns.push({ kind: "other", entry });
