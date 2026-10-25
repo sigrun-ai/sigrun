@@ -2,6 +2,8 @@
 
 /** Delivered `onSettingsChanged` key lists, in delivery order. */
 export const received: string[][];
+/** The optional user argument for each delivery (undefined for shared saves). */
+export const receivedUsers: (string | undefined)[];
 
 /** Clear the records (tests own their fixtures' state). */
 export function reset(): void;

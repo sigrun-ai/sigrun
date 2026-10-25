@@ -99,6 +99,7 @@ import type {
 	SigrunLifecycleHandlers,
 	SurfaceDef,
 	SurfacesContribution,
+	UserService,
 	WebuiBundleContribution,
 } from "../extension.js";
 import { ICON_NAMES } from "@sigrun/shared/blocks";
@@ -351,6 +352,10 @@ export interface LoginProviderBinding {
 
 /** What `loadExtensions` yields: the wire-report outcomes + retained producers. */
 export interface LoadedExtensions {
+	/** Validated per-user process declarations and their resolved package dirs. */
+	readonly userServices: readonly { extension: string; services: readonly UserService[]; packageDir: string }[];
+	/** Slugs whose loaded factory result declared `perUserTools: true`. */
+	readonly perUserSlugs: readonly string[];
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
 	readonly outcomes: readonly ExtensionOutcome[];
 	/**
@@ -514,6 +519,8 @@ export interface ResolvedExtension {
 	readonly name?: string;
 	/** Present only when resolution came from a factory result carrying one. */
 	readonly health?: () => HealthStatus;
+	/** The factory declared `host.tools.setUserTools` (multi-user M2). */
+	readonly perUserTools?: boolean;
 	/**
 	 * Set when the factory result carried a `submit` pass-through — the
 	 * RETIRED pre-seam memory wiring (§6.7). The submit itself is ignored;
@@ -536,6 +543,8 @@ export interface ResolvedExtension {
 	readonly onSettingsChanged?: ExtensionSettingsChangedHandler;
 	/** Present only when the factory result carried any of them (memory-seam Task 4). */
 	readonly lifecycle?: ExtensionLifecycleHandlers;
+	/** Present only when the factory result carried per-user services. */
+	readonly userServices?: readonly UserService[];
 	/** Present only when the factory result carried one (memory-seam Task 5). */
 	readonly workers?: readonly ExtensionWorker[];
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
@@ -640,7 +649,9 @@ type LoaderReadKeys =
 	| "notifiers"
 	| "channels"
 	| "gateway"
-	| "surfaces";
+	| "surfaces"
+	| "perUserTools"
+	| "userServices";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -817,6 +828,23 @@ function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined
  * (the §8.2 grammar), and duplicate names within one extension are
  * rejected (they would collide on the `ext:<slug>:<name>` id).
  */
+function validateUserServices(value: unknown): readonly UserService[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) throw new Error("extension factory returned a userServices field that is not an array");
+	const names = new Set<string>();
+	for (const candidate of value) {
+		const service = candidate as Partial<UserService> | null;
+		if (typeof service?.name !== "string" || service.name === "") throw new Error("extension factory returned a user service without a name");
+		if (names.has(service.name)) throw new Error(`extension factory returned a duplicate user service name "${service.name}"`);
+		names.add(service.name);
+		if (typeof service.start !== "function") throw new Error(`extension factory returned a user service "${service.name}" whose start is not a function`);
+		if (service.idleMinutes !== undefined && (typeof service.idleMinutes !== "number" || !Number.isFinite(service.idleMinutes) || service.idleMinutes <= 0)) {
+			throw new Error(`extension factory returned a user service "${service.name}" with an invalid idleMinutes`);
+		}
+	}
+	return value as readonly UserService[];
+}
+
 function validateJobs(value: unknown): readonly JobSpec[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) {
@@ -913,6 +941,7 @@ function validateSettingsSections(
 					form?: unknown;
 					secrets?: unknown;
 					admin?: unknown;
+					scope?: unknown;
 				  }
 			| null;
 		if (typeof def?.id !== "string" || def.id.length === 0) {
@@ -942,6 +971,11 @@ function validateSettingsSections(
 		if (def?.admin !== undefined && typeof def.admin !== "boolean") {
 			throw new Error(
 				`extension factory returned a settings section "${def.id}" whose admin is not a boolean`,
+			);
+		}
+		if (def?.scope !== undefined && def.scope !== "server" && def.scope !== "user") {
+			throw new Error(
+				`extension factory returned a settings section "${def.id}" whose scope is not "server" or "user"`,
 			);
 		}
 		if (def?.secrets !== undefined) {
@@ -1936,10 +1970,17 @@ async function resolvedFromFactory(
 	// and the `LoaderReadKeys` assertion (above ResolvedExtension) pins the
 	// full read list to the contract's keys.
 	const candidate = awaited as CandidateFactoryResult;
+	if (
+		candidate.perUserTools !== undefined &&
+		typeof candidate.perUserTools !== "boolean"
+	) {
+		throw new Error("extension factory returned a perUserTools field that is not a boolean");
+	}
 	const providers = validateProviders(candidate.providers);
 	const loginProviders = validateLoginProviders(candidate.loginProviders);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
+	const userServices = validateUserServices(candidate.userServices);
 	const routes = validateRoutes(candidate.routes);
 	const commands = validateCommands(candidate.commands);
 	const skills = validateSkills(candidate.skills);
@@ -1964,7 +2005,8 @@ async function resolvedFromFactory(
 			providers === undefined &&
 			loginProviders === undefined &&
 			webuiBundles === undefined &&
-			channels === undefined
+			channels === undefined &&
+			userServices === undefined
 		) {
 			return undefined;
 		}
@@ -2023,6 +2065,9 @@ async function resolvedFromFactory(
 	// `workers` is a contract key — the candidate read needs no cast.
 	const workers = validateWorkers(candidate.workers);
 	return {
+		...(candidate.perUserTools === undefined
+			? {}
+			: { perUserTools: candidate.perUserTools }),
 		// Identity: the extension when one was carried, else the
 		// provider-only contributor's validated `name`.
 		...(extension !== undefined
@@ -2063,6 +2108,7 @@ async function resolvedFromFactory(
 		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
 		...(jobs === undefined ? {} : { jobs }),
+		...(userServices === undefined ? {} : { userServices }),
 		...(routes === undefined ? {} : { routes }),
 		...(commands === undefined ? {} : { commands }),
 		...(skills === undefined ? {} : { skills }),
@@ -2150,6 +2196,8 @@ export interface LoadExtensionsOptions {
 	readonly packagesDir?: string;
 	/** Optional context: the gitDir for the sync step's logging. */
 	readonly gitDir?: string;
+	/** A load failure stops any services this extension had previously started. */
+	readonly onQuarantine?: (slug: string) => void | Promise<void>;
 	/**
 	 * Host-context factory (the interaction/ambient seam): invoked TWICE
 	 * per resolving extension. The PRE-import call passes the PROVISIONAL
@@ -2328,6 +2376,7 @@ typeof spec === "string"
 : { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir },
 );
 const outcomes: ExtensionOutcome[] = [];
+const perUserSlugs: string[] = [];
 const providerContributors: ProviderContributor[] = [];
 const webuiBundles: ContributedWebuiBundle[] = [];
 const healthProducers: ExtensionHealthProducer[] = [];
@@ -2335,6 +2384,7 @@ const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const settingsChangedBindings: ExtensionSettingsChangedBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
+const userServiceBindings: { extension: string; services: readonly UserService[]; packageDir: string }[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
 const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
@@ -2380,6 +2430,7 @@ const slugs = new Map<string, string>();
 const channelIds = new Map<string, string>();
 for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
 const display = label ?? entry ?? "skills-only";
+let quarantineSlug = slugifyName(label ?? entry ?? "");
 				try {
 				// Skills-only resolution (§9.4): the package declared skill dirs and
 				// has NO loadable entry — nothing is imported. The outcome records
@@ -2505,6 +2556,7 @@ const display = label ?? entry ?? "skills-only";
 					);
 				}
 				const slug = slugifyName(declared);
+				quarantineSlug = slug;
 				if (slug === "") {
 					throw new Error(
 						`extension name "${declared}" sanitizes to an empty slug ` +
@@ -2624,6 +2676,7 @@ const display = label ?? entry ?? "skills-only";
 				if (extension !== undefined) {
 					registry.install(extension);
 				}
+				if (resolved.perUserTools === true) perUserSlugs.push(slug);
 				// Only a LOADED extension or contributor claims its slug — a
 				// later stage's quarantine (never loaded) leaves the slug free
 				// for the next boot's specifier list.
@@ -2698,9 +2751,16 @@ const display = label ?? entry ?? "skills-only";
 						workers: resolved.workers,
 					});
 				}
-				if (resolved.jobs !== undefined) {
-					jobBindings.push({ extension: slug, jobs: resolved.jobs });
-				}
+			if (resolved.jobs !== undefined) {
+				jobBindings.push({ extension: slug, jobs: resolved.jobs });
+			}
+			if (resolved.userServices !== undefined) {
+				userServiceBindings.push({
+					extension: slug,
+					services: resolved.userServices,
+					packageDir: realpathSync(packageDir ?? extensionModuleDir(loaded) ?? "."),
+				});
+			}
 				if (resolved.routes !== undefined) {
 					routeBindings.push({ extension: slug, routes: resolved.routes });
 				}
@@ -2779,6 +2839,7 @@ const display = label ?? entry ?? "skills-only";
 				skillRoots.push({ extension: slug, dir });
 			}
 		} catch (cause) {
+			await options.onQuarantine?.(quarantineSlug);
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
 				`extension quarantined: ${display} failed to load: ${message}`,
@@ -2799,6 +2860,8 @@ const display = label ?? entry ?? "skills-only";
 	warnToolNameCollisions(registry);
 	return {
 		outcomes,
+		userServices: userServiceBindings,
+		perUserSlugs,
 		providerContributors,
 		loginProviders,
 		webuiBundles,

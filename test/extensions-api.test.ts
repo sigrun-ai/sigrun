@@ -146,6 +146,22 @@ async function call(
 // ---------------------------------------------------------------------------
 
 describe("GET /v1/extensions", () => {
+	// The inventory stays readable for every principal (multi-user M2 §10.3:
+	// only the SERVICES projection is admin-visible). Gating the whole route
+	// silently emptied the TUI's Views group for non-admins, which fails quiet.
+	test("a non-admin reads the rows with services blanked, not a 403", async () => {
+		const { app, plebToken } = await bootServer();
+		const response = await call(app, {
+			method: "GET",
+			url: "/v1/extensions",
+			token: plebToken,
+		});
+		expect(response.status).toBe(200);
+		const body = response.json() as { extensions: { name: string; services: unknown[] }[] };
+		expect(body.extensions.length).toBeGreaterThan(0);
+		for (const extension of body.extensions) expect(extension.services).toEqual([]);
+	});
+
 	test("lists every loaded outcome with kinds, workers, and the manifest version", async () => {
 		const { app, adminToken } = await bootServer();
 		const response = await call(app, {
@@ -163,6 +179,7 @@ describe("GET /v1/extensions", () => {
 					interactionKinds: [],
 					ambientKeys: [],
 					workers: [],
+					services: [],
 					routes: [],
 				},
 				// fixture-stores-read: the manifest's version rides the outcome.
@@ -173,6 +190,7 @@ describe("GET /v1/extensions", () => {
 					interactionKinds: [],
 					ambientKeys: [],
 					workers: [],
+					services: [],
 					routes: [],
 				},
 			],

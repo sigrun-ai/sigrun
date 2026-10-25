@@ -3,8 +3,8 @@
  * admin-gated directory surface — list, patch (with the last-record-admin
  * guard: group-derived admins never count, Authelia can revoke them at
  * any moment), delete-with-transfer (ownership rewrite → token revocation
- * → account-link removal → record removal → the `userDeleted` lifecycle
- * event), and invite issuance.
+ * → account-link removal → stop services → the `userDeleted` lifecycle
+ * event → record removal, per spec §10.6), and invite issuance.
  *
  * The admin gate reads `request.principal.admin` — record admin, service
  * token, the naive loopback superuser, or a proxy-group grant. The
@@ -293,11 +293,19 @@ export function registerUserRoutes(
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
 		await identity.accounts.removeUser(user);
+		// §10.6 step 2: stop the user's worker and credential-bearing
+		// services, then uninstall every *@user entry.
+		await ctx.opened.sandboxPool.stopUser(user);
+		await ctx.opened.userServices.stopUser(user);
+		ctx.opened.userTools.removeUser(user);
+		// §10.6 step 3: provider credentials remain readable throughout the
+		// fan-out. Always release the deletion marker before record removal.
+		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
 		if (grant === undefined) await identity.users.remove(user);
 		else await identity.users.removeWithGrant(user, to, grant);
-		// The lifecycle event: extensions transfer their own records
-		// (deadlocked-ordering free — the core transfer already landed).
-		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
+		// §10.6 step 5: data/state stay for the recipient; core owns only
+		// the departing user's credentials, settings, and every cache slug.
+		await ctx.opened.extensionStores.removeUserData(user);
 		return await reply.code(204).send();
 	});
 }

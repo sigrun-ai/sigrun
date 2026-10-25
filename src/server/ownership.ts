@@ -97,6 +97,7 @@ export function registerCoreOwnershipParticipant(ctx: ServerContext): void {
 					else if (!isAbsolute(agent.cwd)) {
 						agent.cwd = resolve(fromWorkspace, agent.cwd);
 					}
+					await opened.rewriteUserSelection(tx, conversation.id, from, to);
 				}, BACKGROUND_CONTEXT);
 			}
 			cursor = page.next;

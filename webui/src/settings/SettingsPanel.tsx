@@ -91,7 +91,11 @@ export function visibleSettingsSections(
 	sections: readonly SettingsSectionEntryWire[],
 	admin: boolean | undefined,
 ): readonly SettingsSectionEntryWire[] {
-	return sections.filter((section) => !(section.id === "providers" && admin === false));
+	return sections.filter((section) => {
+		if (section.id === "providers" && admin === false) return false;
+		if (section.scope === "user" && section.admin === true && admin === false) return false;
+		return true;
+	});
 }
 
 export function SettingsPanel(props: {
@@ -282,7 +286,7 @@ export function SettingsPanel(props: {
 				{load.status === "ready" && (
 					<div className="settings-layout">
 						<nav className="settings-nav" aria-label="settings sections">
-							{navSections.map((section) => (
+							{navSections.filter((section) => section.scope !== "user").map((section) => (
 								<button
 									key={`${section.slug}/${section.id}`}
 									type="button"
@@ -299,6 +303,28 @@ export function SettingsPanel(props: {
 									{section.title}
 								</button>
 							))}
+							{navSections.some((section) => section.scope === "user") && (
+								<div className="settings-nav-group" role="group" aria-label="My settings">
+									<div className="settings-nav-heading">My settings</div>
+									{navSections.filter((section) => section.scope === "user").map((section) => (
+										<button
+											key={`${section.slug}/${section.id}`}
+											type="button"
+											className="settings-nav-item"
+											data-active={
+												open?.kind === "section" &&
+												open.entry.slug === section.slug &&
+												open.entry.id === section.id
+													? ""
+													: undefined
+											}
+											onClick={() => setOpen({ kind: "section", entry: section })}
+										>
+											{section.title}
+										</button>
+									))}
+								</div>
+							)}
 							{/* The extension-list cove (the raw-JSON editor): one row
 							    per loaded extension whose declared sections don't
 							    already cover it — the spec's "an extension without a

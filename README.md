@@ -464,6 +464,39 @@ owner can share one — household-wide or with named users and groups,
 lets a recipient submit, answer, and fork, but only the owner can
 re-share. Household sharing defaults to `read`.
 
+### Per-user extensions and deletion
+
+Extensions can offer personal tools, settings, credentials, and services
+instead of only server-wide resources. Each conversation selects its
+owner's per-user tools, and core also checks the committed owner every
+time one executes: selecting another user's entry does not permit its
+use. Per-user services run as that user in their own service jail,
+sibling to the agent's worker. A credential supplied to a service never
+belongs in the agent workspace. See
+[`docs/extending.md`](docs/extending.md#per-user-stores) for the extension
+contract and `/v1/me` self-service routes.
+
+A user's extension secrets live in
+`<configDir>/user-secrets/<user>.json`, mode `0600`, with one section
+per extension slug. Their settings live under
+`<configDir>/user-settings/<user>/`; extension data, state, and cache
+have separate per-user paths. Login, sessions, and account linking are
+documented in [External sign-in](#external-sign-in-oidc-and-oauth-2) and
+[Browser sessions and account links](#browser-sessions-and-account-links).
+
+`DELETE /v1/users/{user}?transferTo={recipient}` requires an admin and
+another directory user as recipient. Core transfers conversations and
+owned resources, then revokes the departing user's tokens and account
+links, stops their worker and services, and removes their per-user tool
+entries. Extensions then receive `userDeleted` while the old record and
+secrets remain readable, so they can revoke external provider
+credentials. Finally core removes the directory record, per-user secrets,
+user-settings directory, and per-user cache directories.
+
+**Credentials belong to a person and never transfer.** Data and state
+stay for the extension to retain, move, or delete according to its own
+rules; core does not make that choice.
+
 ## Multi-user execution isolation
 
 `server.isolation.mode` (or `SIGRUN_ISOLATION`) controls the execution jail:
@@ -548,9 +581,8 @@ permission therefore leaves these two cases unproven. The suite never runs
 `sudo` itself.
 
 The per-user-service process tests use a separate real-helper-launched
-service fixture. M2's per-user service lifecycle is a later workstream; this
-fixture proves the sibling-jail `/proc` and ptrace boundary, not that M2 has
-shipped.
+service fixture. They cover the sibling-jail `/proc` and ptrace boundary;
+the per-user service API and lifecycle are documented above.
 
 ## Backup
 

@@ -30,7 +30,9 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
+import { AgentDoc } from "@earendil-works/pi-durable";
 import type {
+	ConversationId,
 	Cursor,
 	TaskId,
 	TaskRecord,
@@ -53,6 +55,9 @@ const T0 = Date.parse("2026-10-19T12:00:00.000Z");
 /** The fixture-jobs entry, imported by specifier. */
 const FIXTURE_JOBS_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-jobs", "index.js"),
+).href;
+const USER_TOOLS_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-user-tools", "index.js"),
 ).href;
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -832,6 +837,27 @@ describe("an aborted task-action run settles failed WITH the error text", () => 
 		expect(settled.outcome).toBe("failed");
 		expect(settled.error).toBe("aborted");
 		fixture.resetFixtureJobs();
+	});
+});
+
+describe("multi-user job-created conversations", () => {
+	test("a new run conversation selects its owner's per-user entries at creation", async () => {
+		const rig = await bootRig({
+			extensions: [FIXTURE_JOBS_SPECIFIER, USER_TOOLS_SPECIFIER],
+			responses: [fauxAssistantMessage("tick")],
+		});
+		const host = rig.opened.seamHosts.get("acme");
+		if (host === undefined) throw new Error("per-user fixture host missing");
+		host.tools.setUserTools("alice", []);
+		const job = await rig.jobs.createApi(tickSpec(), "alice");
+		const fired = await rig.jobs.runNow(job.id);
+		if (fired.conversationId === undefined) throw new Error("job created no conversation");
+		const agent = await rig.opened.harness.snapshot(
+			AgentDoc,
+			fired.conversationId as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		expect(agent?.extensions).toMatchObject({ add: ["acme@alice"] });
 	});
 });
 

@@ -112,6 +112,8 @@ function makeHarness(init?: {
 			readonly id: string;
 			readonly title: string;
 			readonly icon: string;
+			readonly scope?: "user";
+			readonly admin?: boolean;
 		}[];
 		readonly index: readonly SettingsSectionIndexEntryWire[];
 	};
@@ -353,6 +355,27 @@ describe("SettingsPanel", () => {
 		);
 	});
 
+	test("user sections are visible to non-admins under My settings; admin+user stays admin-only", async () => {
+		const userSections = [
+			{ slug: "acme-ext", id: "profile", title: "Profile", icon: "key", scope: "user" as const, admin: false },
+			{ slug: "acme-ext", id: "personal-admin", title: "Personal admin", icon: "key", scope: "user" as const, admin: true },
+		];
+		const nonAdmin = makeHarness({
+			sectionsResponse: { sections: [...SECTIONS, ...userSections], index: [...INDEX] },
+		});
+		const { renderer } = await renderPanelWithPrefs(nonAdmin.client, { admin: false });
+		expect(visibleSettingsSections(userSections, false)).toEqual([userSections[0]]);
+		expect(visibleSettingsSections(userSections, true)).toEqual(userSections);
+		expect(textContent(renderer.toJSON())).toContain("My settings");
+		expect(textContent(renderer.toJSON())).toContain("Profile");
+		expect(textContent(renderer.toJSON())).not.toContain("Personal admin");
+		const admin = makeHarness({
+			sectionsResponse: { sections: [...SECTIONS, ...userSections], index: [...INDEX] },
+		});
+		const { renderer: adminRenderer } = await renderPanelWithPrefs(admin.client, { admin: true });
+		expect(textContent(adminRenderer.toJSON())).toContain("Personal admin");
+	});
+
 	test("renders the sections nav from GET /v1/settings/sections, General first", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderPanel(client);
@@ -522,6 +545,7 @@ describe("SettingsPanel Extensions cove", () => {
 			interactionKinds: [],
 			ambientKeys: [],
 			workers: [],
+			services: [],
 		},
 	];
 

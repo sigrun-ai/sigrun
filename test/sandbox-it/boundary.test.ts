@@ -139,8 +139,10 @@ beforeAll(async () => {
 	expect(aliceWorkerPid).toMatch(/^\d+$/);
 
 	if (native.available) {
-		// M2 per-user services are not shipped. This separate real-helper
-		// process exercises the sibling-service boundary they will use.
+		// This real-helper fixture proves the kernel's sibling-domain boundary:
+		// a jailed agent cannot inspect a separate service's environ. It does
+		// NOT exercise UserServices' declaration, spawn, or lifecycle wiring;
+		// those are covered by the unit and HTTP service suites.
 		service = spawnOutside(HELPER, ["run", "--", HELPER, "probe", "service-sleep"], {
 			SIGRUN_SANDBOX_POLICY: JSON.stringify(nativePolicy(HELPER)),
 			SIGRUN_BOUNDARY_SERVICE_SECRET: "service-env-must-not-leak",
