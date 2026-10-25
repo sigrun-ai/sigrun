@@ -420,6 +420,7 @@ describe("restart durability (Review Focus 4)", () => {
 						opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
 					stopSandboxWorkers: async () => {
 						await opened.sandboxPool.stopAll();
+						await opened.userServices.stopAll();
 					},
 					stopProviderRefresh: async () => {
 						opened.stopProviderRefresh();

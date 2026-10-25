@@ -153,16 +153,22 @@ describe("UserServices process lifecycle", () => {
 		expect(services.statuses()[0]).toMatchObject({ state: "failed", lastError: expect.stringContaining("stderr-25") });
 	});
 
-	test("stopUser and stopSlug stop their processes", async () => {
+	test("stopUser, quarantine, and stopAll stop their processes", async () => {
 		const { services } = await unitServices(startEcho);
 		const alice = await services.connect("acme", "echo", "alice", CTX);
 		const bob = await services.connect("acme", "echo", "bob", CTX);
 		await services.stopUser("alice");
 		await expect(alice.exited).resolves.toBeDefined();
 		expect(services.statuses().map((row) => row.user)).toEqual(["bob"]);
-		await services.stopSlug("acme");
+		await services.quarantine("acme");
 		await expect(bob.exited).resolves.toBeDefined();
 		expect(services.statuses()).toEqual([]);
+		await expect(services.connect("acme", "echo", "bob", CTX)).rejects.toThrow('unknown service "acme/echo"');
+		services.register("acme", [{ name: "echo", start: startEcho }], import.meta.dirname);
+		const shutdown = await services.connect("acme", "echo", "bob", CTX);
+		await services.stopAll();
+		await expect(shutdown.exited).resolves.toBeDefined();
+		await expect(services.connect("acme", "echo", "bob", CTX)).rejects.toThrow("user services are stopped");
 	});
 
 	test("an unavailable service has the exact rejection", async () => {
