@@ -56,8 +56,21 @@ export function initialValue(field: Field, bound: Record<string, JsonValue>): Js
 			// §13.4 fix: a default-ON settings toggle initializes ON when
 			// the bound value is absent (absent = the default).
 			return field.default === true;
-		case "choice":
+		case "choice": {
+			// An interaction's recommended option pre-selects (the §9.1
+			// presentation rule); bound data always wins (a settled record's
+			// stored answer seeds above).
+			if (Array.isArray(field.options)) {
+				const recommended = field.options
+					.filter((option) => option.recommended === true)
+					.map((option) => option.id);
+				if (field.multi === true) {
+					return recommended;
+				}
+				if (recommended.length > 0) return recommended[0] as string;
+			}
 			return field.multi === true ? [] : "";
+		}
 		case "list":
 			return [];
 		case "daterange":

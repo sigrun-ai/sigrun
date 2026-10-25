@@ -85,6 +85,14 @@ async function bootServer(
 		extensions: [contributor],
 		env: {},
 		settingsDir: dir,
+		// A second directory user is admitted only where isolation is
+		// available (multi-user M1 §9.1); this suite is not about the jail,
+		// so it declares the availability a real multi-user deploy has.
+		isolationProbe: async () => ({
+			available: true,
+			abi: 6,
+			helper: "/usr/local/lib/sigrun/sigrun-sandbox",
+		}),
 	});
 	const server: TestServer = {
 		app: undefined as unknown as FastifyInstance,
@@ -204,6 +212,12 @@ describe("POST /v1/admin/restart", () => {
 				} satisfies ProviderContributor,
 			],
 			env: {},
+			// See bootServer: a second user needs available isolation (M1 §9.1).
+			isolationProbe: async () => ({
+				available: true,
+				abi: 6,
+				helper: "/usr/local/lib/sigrun/sigrun-sandbox",
+			}),
 			settingsDir: dir,
 		});
 		let restartCalls = 0;
@@ -418,6 +432,9 @@ describe("restart durability (Review Focus 4)", () => {
 					gateway,
 					eventBusShutdown: () =>
 						opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
+					stopSandboxWorkers: async () => {
+						await opened.sandboxPool.stopAll();
+					},
 					stopProviderRefresh: async () => {
 						opened.stopProviderRefresh();
 						await opened.bootRefresh.catch(() => {});

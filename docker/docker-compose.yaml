@@ -32,11 +32,12 @@ services:
     # trampoline needs CAP_CHOWN/CAP_SETUID/CAP_SETGID, so a root start
     # means re-adding those caps yourself.
     user: "${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}"
-    # Docker's init (tini) as PID 1: it reaps zombies and forwards
-    # signals. The server spawns child processes (git, npm, agent
+    # PID 1 reaping and signal forwarding are owned by the image's tini
+    # ENTRYPOINT. The server spawns child processes (git, npm, agent
     # shells) whose orphans would otherwise accumulate as zombies under
-    # a non-reaping node PID 1.
-    init: true
+    # a non-reaping node PID 1, so compose does not add Docker's init.
+    # (A Docker init would also be placed ahead of the image ENTRYPOINT.)
+    # No `init: true` here: the image provides exactly one init process.
     # Least privilege (spec §6): the server needs no Linux
     # capabilities, and nothing it starts may gain any (no-new-privileges
     # also blocks setuid binaries inside the image).

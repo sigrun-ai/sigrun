@@ -7,11 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Multi-user login (M3b): extension-contributed `loginProviders` with
+  core-owned, single-use state and callback routes; first-login setup and
+  invite resolution with optional policy-gated auto-provisioning; webui
+  provider sign-in; and self-service account links that are never silently
+  re-pointed to another user.
 - Gateway built-in: `@sigrun/ext-gateway` supervises channel adapters,
   with pairing and self-linking, group conversations, live responses,
   durable outbound delivery, agent tools, home notifications, and job
   delivery. Enabled by default; operators can disable it with
   `builtinExtensions.gateway: false`.
+- Expiring, revocable browser sessions (`server.auth.sessionDays`, default
+  30 days). A session can mint the user's API tokens; revoking it leaves
+  those tokens independent.
+- Stored groups per authenticating source, effective group-derived admin,
+  and people-scoped group sharing. Groups refresh at the next login or
+  validated proxy request. The separately shipped `@sigrun/oauth`
+  package provides OIDC, GitHub, and Discord login providers; it is not yet
+  bundled or installed by default.
+
+### Changed
+- Retired persisted `groupAdmin` in favor of stored groups; its user-wire
+  compatibility field is now derived and retained for one release.
+
+### Security
+- Added the opt-in Landlock kernel boundary suite for two-user execution
+  isolation, with a hard ABI 6+ CI gate and explicit local skip reasons.
+  Documented the isolation boundary, trusted-extension and resource limits,
+  kernel requirements, OS-account setup, and proxy trust posture.
+  The suite also covers abstract sockets, ptrace, worker lifecycle, IPC
+  descriptors, and privileged-runner osUser switching; outside-jail controls
+  distinguish Landlock denials from Yama or missing-capability conditions.
 
 ## [0.1.7] - 2026-10-24
 ### Fixed

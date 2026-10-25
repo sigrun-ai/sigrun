@@ -39,7 +39,10 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { SeamHost } from "../src/harness/seam-host.js";
 import { createServer } from "../src/server/index.js";
+import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
+import { selfPackageRoot } from "../src/harness/packages.js";
 
 const CHANNEL_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-channel", "index.js"),
@@ -87,6 +90,7 @@ afterAll(async () => {
  */
 async function bootOpened(
 	env: Record<string, string> = {},
+	file?: { auth?: Record<string, unknown> },
 ): Promise<OpenedBoot> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-host-conv-"));
 	const configDir = join(dir, "config");
@@ -107,7 +111,7 @@ async function bootOpened(
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
 		...env,
-	});
+	}, { server: file ?? {} } as Parameters<typeof loadConfig>[1]);
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const identity = await seededIdentity(dir);
 	await identity.users.add({ user: "alice", admin: false, source: "cli" });
@@ -123,6 +127,8 @@ async function bootOpened(
 		// usual console warning — harmless here).
 		extensionSpecifiers: [CHANNEL_SPECIFIER, COMMANDS_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
 	});
 	cleanups.push(async () => {
@@ -135,8 +141,9 @@ async function bootOpened(
 /** Boot opened + server + tokens (the common shape). */
 async function bootServer(
 	env: Record<string, string> = {},
+	file?: { auth?: Record<string, unknown> },
 ): Promise<TestServer> {
-	const boot = await bootOpened(env);
+	const boot = await bootOpened(env, file);
 	const { opened } = boot;
 	const { token: aliceToken } = await opened.identity.tokens.create(
 		"alice-cli",
@@ -362,8 +369,8 @@ describe("host identity, users, and access (spec §9.7)", () => {
 		expect(await host.users.get("nosuch")).toBeUndefined();
 	});
 
-	test("host users expose EFFECTIVE admin: the stored flag OR the persisted group grant (gateway C8)", async () => {
-		const { opened } = await bootServer();
+	test("host users expose EFFECTIVE admin from stored groups", async () => {
+		const { opened } = await bootServer({}, { auth: { adminGroups: ["admins"] } });
 		const host = channelHost(opened);
 		// The gateway C8 write-through shape: a proxy admins-group user
 		// whose STORED admin is false but whose record carries the group
@@ -372,7 +379,7 @@ describe("host identity, users, and access (spec §9.7)", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["admins"], updatedAt: 1 }],
 			source: "proxy",
 		});
 		const bob = await host.users.get("bob");
@@ -380,6 +387,7 @@ describe("host identity, users, and access (spec §9.7)", () => {
 			user: "bob",
 			admin: true,
 			groupAdmin: true,
+			groups: ["admins"],
 		});
 		const listed = await host.users.list();
 		const listedBob = listed.find((user) => user.user === "bob");
@@ -639,6 +647,44 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
 	});
 
+	test("create preserves people-share groups and grants stored-group access", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		await opened.identity.users.setGroups("alice", "test", ["family"]);
+		const host = channelHost(opened);
+		const id = await host.conversations.create({
+			owner: "tester",
+			sharing: {
+				scope: "people",
+				users: [],
+				groups: ["family"],
+				level: "read",
+			},
+		});
+		const meta = await opened.harness.snapshot(
+			SessionMetaDoc,
+			id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta?.sharing).toEqual({
+			scope: "people",
+			users: [],
+			groups: ["family"],
+			level: "read",
+		});
+		expect(
+			await host.access.accessOf(
+				{ user: "alice", admin: false, service: false, method: "token" },
+				meta ?? {},
+			),
+		).toBe("read");
+		expect(
+			await host.access.accessOf(
+				{ user: "tester", admin: true, service: false, method: "token" },
+				{ owner: "someone-else", sharing: meta?.sharing },
+			),
+		).toBe("none");
+	});
+
 	test("create with agent.tools pins the offered tools; unknown names throw invalid_field", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
@@ -817,7 +863,7 @@ describe("host upload/readFile/models/commands (gateway C4b)", () => {
 	});
 
 	test("commands.run drives the extension command as alice: notice + principal method host, admin false; a group-admin user sees admin true", async () => {
-		const { opened } = await bootServer();
+		const { opened } = await bootServer({}, { auth: { adminGroups: ["admins"] } });
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
 		// Plain directory user: effective admin false, method "host".
@@ -835,7 +881,7 @@ describe("host upload/readFile/models/commands (gateway C4b)", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["admins"], updatedAt: 1 }],
 			source: "proxy",
 		});
 		await host.commands.run(id, "hello", "x", { user: "bob" });

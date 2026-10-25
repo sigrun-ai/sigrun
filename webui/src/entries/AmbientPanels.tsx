@@ -1,167 +1,149 @@
 /**
- * Ambient surfaces (the seam's channel half, docs/approval-ux-seams.md):
- * the generic panel for keyed status/panel surfaces.
+ * Ambient surfaces (the seam's channel half, docs/approval-ux-seams.md),
+ * UI-blocks U6 Task 3: keyed status/panel surfaces rendered FROM BLOCK
+ * TREES (placement `ambient`, spec §9.2).
  *
- * Rendering contract: one slot per key; `line` as text (segments joined by
- * zone); `rows` as a list — severity-sorted with quiet folded by default,
- * glyph per status enum, deps rendered as markers, metrics formatted via
- * the `format` hint; `gauge` as label+percent bar with phase/elapsed/recent
- * output; `ledger` as a newest-first feed. `details` renders collapsed,
- * never interpreted. Purely read-only — ambient surfaces don't take answers
- * in v1 (actions re-route through interaction records).
+ * The `place` envelope field picks the chrome zone:
+ *
+ * - `status`: one line in the status bar — the body is a single
+ *   line-level block (§9.2's one-line rule), rendered inline.
+ * - `footer`: the left/middle/right zones — the body is one `columns`
+ *   of one-line blocks, rendered inline per column.
+ * - `panel`: the full tree above the composer.
+ *
+ * The envelope's `maxRows`/`overflow` budget applies to a panel's
+ * root literal-rows collection (Review Focus 3): `drop` renders the
+ * first `maxRows` cards and folds the rest behind "N more" (the
+ * collection's quiet bucket), `summarize` replaces the tail with a
+ * count line. Quiet cards fold via the collection's own quiet bucket.
+ *
+ * Ambient bodies carry LITERAL content only (the 2026-10-24 ruling:
+ * the envelope has no data document, so validation rejects every
+ * binding outside a collection's item template), so the surface
+ * renders against an empty data document. Purely read-only —
+ * ambient surfaces don't take answers (actions re-route through
+ * interaction records). `details` renders collapsed, never interpreted.
  */
 
+import type { ReactNode } from "react";
 import type {
-	AmbientMetricsWire,
-	AmbientRowWire,
-	AmbientWire,
-} from "../api";
+	Block,
+	CollectionBlock,
+	JsonObject,
+	JsonValue,
+} from "@sigrun/shared/blocks";
+import type { AmbientWire } from "../api";
+import { BlockView } from "../blocks/BlockView";
+import {
+	SurfaceActionsContext,
+	SurfaceDataContext,
+} from "../blocks/context";
+import { ContainerWidth } from "../blocks/width";
 
-function formatMetric(value: number, format: string | undefined): string {
-	if (format === "usd") return `$${value.toFixed(4)}`;
-	if (format === "percent") return `${Math.round(value * 100)}%`;
-	if (format === "compact" && Math.abs(value) >= 1000) {
-		return `${(value / 1000).toFixed(1)}k`;
-	}
-	return String(value);
-}
+/** Ambient bodies never bind (the ruling): the data document is empty. */
+const EMPTY_DATA: JsonObject = {};
 
-function MetricsSpan(props: { metrics: AmbientMetricsWire | undefined }) {
-	const { metrics } = props;
-	if (metrics === undefined) return null;
-	const parts: string[] = [];
-	if (metrics.tokens !== undefined) {
-		parts.push(`tok ${formatMetric(metrics.tokens, metrics.format)}`);
-	}
-	if (metrics.cost !== undefined) {
-		parts.push(`$${metrics.cost.toFixed(4)}`);
-	}
-	if (metrics.total !== undefined) {
-		parts.push(`${metrics.completed ?? metrics.current ?? 0}/${metrics.total}`);
-	} else if (metrics.current !== undefined) {
-		parts.push(`cur ${metrics.current}`);
-	}
-	if (parts.length === 0) return null;
-	return <span className="ambient-metrics">{parts.join(" · ")}</span>;
-}
+/** The renderer's standalone actions context (read-only). */
+const AMBIENT_ACTIONS = {
+	dispatch: (): void => {},
+	access: "read" as const,
+	viewState: {} as JsonObject,
+	serverErrors: {} as Readonly<Record<string, string>>,
+	setView: (): void => {},
+};
 
-function RowsList(props: { rows: readonly AmbientRowWire[] }) {
-	const { rows } = props;
-	const sorted = [...rows].sort((a, b) => {
-		const sa = a.severity ?? 2;
-		const sb = b.severity ?? 2;
-		if (sa !== sb) return sa - sb;
-		return a.id < b.id ? -1 : 1;
+/** The quiet fold for the drop overflow: mark the tail rows quiet so
+ *  the collection's own "N more" toggle carries them (the panel's
+ *  budget never LOSES rows — the user can still unfold). A template
+ *  WITHOUT a `quiet` binding has no fold to ride (its isQuiet is
+ *  always false), so the budget falls back to truncating the tail
+ *  behind a one-line "<n> more" markdown row (Review fix — a
+ *  quiet-less template's drop overflow silently no-op'd). */
+function dropTail(
+	collection: CollectionBlock,
+	items: readonly JsonValue[],
+	maxRows: number,
+): Block {
+	// No quiet binding: truncate + count line (the fold has nothing to
+	// key on).
+	if (collection.item.quiet === undefined) {
+		const visible = items.slice(0, maxRows);
+		const dropped = items.length - visible.length;
+		// SAFETY: same block with a literal array swapped in (the ambient
+		// literal-rows shape the schema now admits).
+		const trimmed = { ...collection, items: [...visible] } as CollectionBlock;
+		return {
+			type: "stack",
+			children: [trimmed, { type: "markdown", text: `${dropped} more` }],
+		};
+	}
+	const visible = items.slice(0, maxRows);
+	const tail = items.slice(maxRows).map((row) => {
+		if (typeof row === "object" && row !== null && !Array.isArray(row)) {
+			return { ...(row as JsonObject), quiet: true } as JsonValue;
+		}
+		return row;
 	});
-	const visible = sorted.filter((row) => row.quiet !== true);
-	const quietCount = sorted.length - visible.length;
+	// SAFETY: `items` is the same block with a literal array swapped in
+	// (the ambient literal-rows shape the schema now admits); every other
+	// prop is verbatim.
+	return { ...collection, items: [...visible, ...tail] } as CollectionBlock;
+}
+
+/** Apply the panel row budget (Review Focus 3): only a root
+ *  literal-rows collection on a panel surface budgets; anything else
+ *  renders as authored. */
+function budgetTree(surface: AmbientWire, root: Block): Block {
+	if (surface.place !== "panel" || root.type !== "collection") return root;
+	if (!Array.isArray(root.items)) return root; // bound elsewhere; ambient rejects these
+	const maxRows = surface.maxRows;
+	if (maxRows === undefined || root.items.length <= maxRows) return root;
+	const dropped = root.items.length - maxRows;
+	if (surface.overflow === "summarize") {
+		// The count line: one markdown under the trimmed collection.
+		return {
+			type: "stack",
+			children: [
+				{ ...root, items: root.items.slice(0, maxRows) },
+				{ type: "markdown", text: `${dropped} rows` },
+			],
+		};
+	}
+	if (surface.overflow === "wrap") return root; // panels wrap rows — no fold
+	return dropTail(root, root.items, maxRows);
+}
+
+/** Render one ambient body (already placement-legal). */
+function AmbientBody(props: { surface: AmbientWire }): ReactNode {
+	const body = props.surface.body;
+	if (body === undefined) return null;
+	const root = budgetTree(props.surface, body.root);
 	return (
-		<ul className="ambient-rows">
-			{visible.map((row) => (
-				<li
-					key={row.id}
-					className="ambient-row"
-					data-status={row.status ?? "none"}
-					style={row.depth !== undefined ? { paddingLeft: `${row.depth * 1.2}rem` } : undefined}
-				>
-					<span className="ambient-row-glyph">
-						{row.status ?? "·"}
-					</span>
-					<span className="ambient-row-label">{row.label}</span>
-					{row.spinnerLabel !== undefined && (
-						<span className="ambient-row-spinner">{row.spinnerLabel}</span>
-					)}
-					{row.detail !== undefined && (
-						<span className="ambient-row-detail">{row.detail}</span>
-					)}
-					{row.deps !== undefined && row.deps.length > 0 && (
-						<span className="ambient-row-deps">⛓ {row.deps.join(",")}</span>
-					)}
-					<MetricsSpan metrics={row.metrics} />
-				</li>
-			))}
-			{quietCount > 0 && (
-				<li className="ambient-row ambient-quiet-summary">
-					+{quietCount} quiet
-				</li>
-			)}
-		</ul>
+		<SurfaceDataContext.Provider
+			value={{ data: EMPTY_DATA, locale: navigator.language }}
+		>
+			<SurfaceActionsContext.Provider value={AMBIENT_ACTIONS}>
+				<ContainerWidth>
+					<BlockView block={root} />
+				</ContainerWidth>
+			</SurfaceActionsContext.Provider>
+		</SurfaceDataContext.Provider>
 	);
 }
 
-/** One ambient surface. */
-export function AmbientPanel(props: { surface: AmbientWire }) {
+/** One ambient surface in its envelope. */
+export function AmbientPanel(props: { surface: AmbientWire }): ReactNode {
 	const { surface } = props;
-	const body = surface.body;
-	const line = body?.line;
-	const rows = body?.rows ?? [];
-	const gauge = body?.gauge;
-	const ledger = body?.ledger ?? [];
-	const empty =
-		line === undefined && rows.length === 0 && gauge === undefined && ledger.length === 0;
-	if (empty && surface.details === undefined) return null;
+	if (surface.body === undefined && surface.details === undefined) {
+		return null;
+	}
 	return (
-		<div className="ambient-surface" data-key={surface.key} data-place={surface.place}>
-			<div className="ambient-surface-title">
-				<span className="ambient-key">{surface.key}</span>
-				<span className="ambient-owner">{surface.owner}</span>
-			</div>
-			{line !== undefined && (
-				<div className="ambient-line">
-					{line.segments !== undefined && line.segments.length > 0
-						? line.segments.map((segment) => (
-								<span
-									key={segment.id}
-									className={`ambient-segment ambient-segment-${segment.place ?? "left"}`}
-								>
-									{segment.text}
-								</span>
-							))
-						: line.text}
-				</div>
-			)}
-			{rows.length > 0 && <RowsList rows={rows} />}
-			{gauge !== undefined && (
-				<div className="ambient-gauge">
-					<div className="ambient-gauge-label">
-						{gauge.label}
-						{gauge.phase !== undefined && ` · ${gauge.phase}`}
-						{gauge.elapsedMs !== undefined &&
-							` · ${(gauge.elapsedMs / 1000).toFixed(1)}s`}
-					</div>
-					{gauge.percent !== undefined && (
-						<div className="ambient-gauge-bar">
-							<div
-								className="ambient-gauge-fill"
-								style={{ width: `${Math.min(100, Math.max(0, gauge.percent))}%` }}
-							/>
-						</div>
-					)}
-					{gauge.checks !== undefined && gauge.checks.length > 0 && (
-						<RowsList rows={gauge.checks} />
-					)}
-					{gauge.recentOutput !== undefined && gauge.recentOutput.length > 0 && (
-						<pre className="ambient-recent-output">
-							{gauge.recentOutput.slice(-3).join("\n")}
-						</pre>
-					)}
-				</div>
-			)}
-			{ledger.length > 0 && (
-				<ul className="ambient-ledger">
-					{[...ledger].reverse().map((entry) => (
-						<li key={entry.id} className="ambient-ledger-entry">
-							<span className="ambient-ledger-kind">{entry.kind}</span>
-							<span className="ambient-ledger-summary">{entry.summary}</span>
-							{entry.detail !== undefined && entry.detail.length > 0 && (
-								<span className="ambient-ledger-detail">
-									{entry.detail.join(" · ")}
-								</span>
-							)}
-						</li>
-					))}
-				</ul>
-			)}
+		<div
+			className="ambient-surface"
+			data-key={surface.key}
+			data-place={surface.place}
+		>
+			<AmbientBody surface={surface} />
 			{surface.details !== undefined && (
 				<details className="ambient-details">
 					<summary>details</summary>
@@ -173,7 +155,9 @@ export function AmbientPanel(props: { surface: AmbientWire }) {
 }
 
 /** The ambient zone: one panel per surface key, stable order. */
-export function AmbientPanels(props: { surfaces: readonly AmbientWire[] }) {
+export function AmbientPanels(props: {
+	surfaces: readonly AmbientWire[];
+}): ReactNode {
 	const { surfaces } = props;
 	if (surfaces.length === 0) return null;
 	return (

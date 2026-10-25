@@ -180,9 +180,17 @@ function findMoveTarget(
 	if (tree === undefined) return undefined;
 	const found = findCollection(tree.root, name);
 	if (found === undefined) return undefined;
-	if (typeof found.items.$ !== "string") return undefined;
+	// Literal rows (the ambient shape) have no data path to overlay.
+	const items = found.items;
+	if (
+		typeof items !== "object" ||
+		Array.isArray(items) ||
+		!("$" in items)
+	) {
+		return undefined;
+	}
 	return {
-		itemsPath: found.items.$,
+		itemsPath: items.$,
 		groupBy: found.groupBy,
 		timeStart: found.time?.start,
 		timeEnd: found.time?.end,
@@ -462,7 +470,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 			);
 		}
 		void transport
-			.act({ action: name, payload, actionId })
+			.act({ action: name, type: action.type, payload, actionId })
 			.then((result) => {
 				// A move whose entry is already gone (10 s timeout fired, or
 				// an earlier settle dropped it) is STALE: no toast, no ops —

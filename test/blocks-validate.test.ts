@@ -45,6 +45,22 @@ function blockTypes(node: unknown): Set<string> {
 	return found;
 }
 
+/** Whether a tree carries a binding anywhere OUTSIDE a collection's
+ *  item template (the ambient ruling's line: bindings live in item
+ *  templates only). */
+function hasNonItemBinding(node: unknown): boolean {
+	const walk = (value: unknown, insideItem: boolean): boolean => {
+		if (Array.isArray(value)) return value.some((v) => walk(v, insideItem));
+		if (typeof value !== "object" || value === null) return false;
+		const record = value as Record<string, unknown>;
+		if (!insideItem && typeof record.$ === "string") return true;
+		return Object.entries(record).some(([key, v]) =>
+			walk(v, insideItem || key === "item"),
+		);
+	};
+	return walk(node, false);
+}
+
 /** The error list of a failed validation (throws if it passed). */
 function errorsOf(
 	result: ValidateResult | { ok: true } | { ok: false; errors: ValidationError[] },
@@ -302,6 +318,11 @@ describe("fixtures validate for their placements (spec §5.7)", () => {
 					// panel forbids a page root's sidebar (§5.7); ambient's
 					// one-line rule needs `ambientPlace` (§9.2) — skip, covered below.
 					if (placement === "panel" && rootType === "page" && sample.name === "page-sidebar") continue;
+					// The ambient literal-rows ruling (2026-10-24): bindings are OUT
+					// of ambient outside item templates (no data document), so a
+					// fixture carrying any non-item binding never validates there.
+					// Skip that cross-placement cell.
+					if (placement === "ambient" && hasNonItemBinding(sample.tree.root)) continue;
 					const result = validateTree(sample.tree, { placement });
 					expect(
 						result.ok,
@@ -1249,6 +1270,97 @@ describe("ambient one-line rule (spec §9.2)", () => {
 
 	it("a panel ambient root may stack freely", () => {
 		const tree = fixture("ambient-panel");
+		expect(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }).ok).toBe(true);
+	});
+
+	it("a collection with bound items fails in ambient (controller ruling 2026-10-24: literal rows only)", () => {
+		// Bindings are OUT of ambient placement: the envelope stays
+		// unchanged (no data slot), so a collection whose `items` is a
+		// binding has nothing to resolve against — the validator rejects
+		// it. Reversible: extending the envelope (a data slot) remains open.
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: { $: "/rows" },
+			display: "list",
+			item: { title: { $: "./label" } },
+		});
+		for (const ambientPlace of ["status", "footer", "panel"] as const) {
+			const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace }));
+			expect(errs.some((e) => e.path === "root.items")).toBe(true);
+		}
+	});
+
+	it("an ambient markdown.text binding fails validation naming the path", () => {
+		// The same no-data-document ruling as bound items: an absolute
+		// binding on ANY ambient prop outside an item template has nothing
+		// to resolve against and would render blank — reject it.
+		const tree = treeOf({ type: "markdown", text: { $: "/line" } });
+		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "status" }));
+		expect(errs.some((e) => e.path === "root.text.$")).toBe(true);
+		// …while the SAME tree is fine in a placement with a data document.
+		expect(validateTree(tree, { placement: "chat" }).ok).toBe(true);
+	});
+
+	it("an ambient binding nested one level inside a wrapper fails at its path", () => {
+		const tree = treeOf({
+			type: "stack",
+			children: [{ type: "markdown", text: { $: "/line" } }],
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }));
+		expect(errs.some((e) => e.path === "root.children[0].text.$")).toBe(true);
+	});
+
+	it("an ambient collection groups[].title binding fails naming its path", () => {
+		// groups/columns are structural (literal) props, so the generic
+		// binding walk skips them — but their title/label bindables are
+		// still bound nowhere in ambient and would render blank.
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: [{ id: "r1", state: "open", label: "deploy" }],
+			display: "list",
+			groups: [{ id: "open", title: { $: "/g0" } }],
+			item: { title: { $: "./label" } },
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }));
+		expect(errs.some((e) => e.path === "root.groups[0].title.$")).toBe(true);
+	});
+
+	it("an ambient collection columns[].label binding fails naming its path", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: [{ id: "r1", label: "deploy" }],
+			display: "list",
+			columns: [{ field: "label", label: { $: "/c0" } }],
+			item: { title: { $: "./label" } },
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }));
+		expect(errs.some((e) => e.path === "root.columns[0].label.$")).toBe(true);
+	});
+
+	it("an ambient collection item template keeps its relative bindings", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			items: [{ id: "r1", label: "deploy" }],
+			display: "list",
+			item: { title: { $: "./label" } },
+		});
+		expect(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }).ok).toBe(true);
+	});
+
+	it("a collection with a literal items array passes in ambient", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "goal",
+			// Literal rows: ambient collections have no data document, so
+			// `items` is the array itself (the ruling's literal-row shape).
+			items: [{ id: "r1", label: "deploy" }],
+			display: "list",
+			item: { title: { $: "./label" } },
+		});
 		expect(validateTree(tree, { placement: "ambient", ambientPlace: "panel" }).ok).toBe(true);
 	});
 

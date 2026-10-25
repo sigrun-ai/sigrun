@@ -373,7 +373,12 @@ function laneSizeFromData(
 	group: string,
 ): number {
 	const itemsValue = block.items;
-	if (typeof itemsValue !== "object" || typeof itemsValue.$ !== "string") {
+	// Literal rows (the ambient shape) carry no data path to size.
+	if (
+		typeof itemsValue !== "object" ||
+		Array.isArray(itemsValue) ||
+		!("$" in itemsValue)
+	) {
 		return 0;
 	}
 	const resolved = resolvePointer(data, itemsValue.$);

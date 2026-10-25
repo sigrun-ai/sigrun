@@ -7,7 +7,17 @@ set -eu
 image="${1-}"
 
 if [ "$#" -eq 1 ]; then
-	exec docker run --rm -i --entrypoint sh "$image" -s < "$0"
+	probe="$(docker run --rm "$image" /usr/local/lib/sigrun/sigrun-sandbox probe)"
+	PROBE="$probe" node -e '
+		const report = JSON.parse(process.env.PROBE);
+		if (!Number.isInteger(report.abi)) throw new Error("sandbox probe returned no integer abi");
+	'
+	init="$(docker run --rm "$image" sh -c 'ps -o comm= 1')"
+	if [ "$init" != "tini" ]; then
+		echo "expected tini as PID 1, got: $init" >&2
+		exit 1
+	fi
+	exec docker run --rm -i "$image" sh -s < "$0"
 elif [ "$#" -ne 0 ]; then
 	echo "usage: smoke-image.sh [IMAGE]" >&2
 	exit 2

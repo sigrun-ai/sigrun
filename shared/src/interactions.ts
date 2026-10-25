@@ -1,8 +1,9 @@
 /**
- * The interaction seam TYPES (spec: docs/approval-ux-seams.md): the
- * channel-neutral record shapes for "this conversation is waiting on a
- * human decision", written by extensions through the host context and
- * answered by channels through one generic route.
+ * The interaction seam TYPES (spec: docs/approval-ux-seams.md; the block
+ * mapping: docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md
+ * §9.1): the channel-neutral record shapes for "this conversation is
+ * waiting on a human decision", written by extensions through the host
+ * context and answered by channels through one generic route.
  *
  * The CANONICAL type declarations live here (the shared leaf package);
  * `src/harness/interactions.ts` imports them (type-only) for the doc
@@ -10,16 +11,19 @@
  * AS-IS (envelope + body + details — never projected), so these shapes
  * are the channel contract too (see `@sigrun/shared/views`).
  *
- * Layering (strict envelope / closed primitives / opaque details):
+ * Layering (strict envelope / block-tree body / opaque details):
  *
  * - envelope: kind, callId, status, timestamps, answer — load-bearing for
  *   joining tool slots and lifecycle arbitration. Strictly validated.
- * - body: composed ONLY from the closed primitives (text, options,
- *   fields, diff). Structurally validated; unknown body keys quarantine.
+ * - body: a block tree (placement `interaction` — a root `form` whose
+ *   submit is the answer). Validated by `validateTree`; the legacy
+ *   `text`/`options`/`fields`/`diff` primitives are REJECTED (ruling 16:
+ *   no compatibility layer).
  * - details: opaque extension-owned JSON. Never interpreted.
  */
 
-import type { JsonObject } from "./json.js";
+import type { Tree } from "./blocks/index.js";
+import type { JsonObject, JsonValue } from "./json.js";
 
 /** Lifecycle of one interaction record (spec statuses). */
 export type InteractionStatus =
@@ -29,54 +33,16 @@ export type InteractionStatus =
 	| "expired"
 	| "cancelled";
 
-/** One choice in the `options` primitive. */
-export type InteractionOption = {
-	readonly id: string;
-	readonly label: string;
-	/** Second line under the label (pi-advisor presets, rpiv options). */
-	readonly description?: string;
-	/** Channel-schemed color/severity hint: "danger" | "warn" | "ok" | "neutral". */
-	readonly tone?: "danger" | "warn" | "ok" | "neutral";
-	/** Pre-selected by the extension's recommendation (pi-interview conviction). */
-	readonly recommended?: boolean;
-}
-
-/** One light-form field in the `fields` primitive. */
-export type InteractionField = {
-	readonly name: string;
-	readonly type: "string" | "number" | "boolean" | "secret";
-	readonly label?: string;
-	readonly required?: boolean;
-}
-
-/** The `diff` primitive: before/after content, optionally path-scoped. */
-export type InteractionDiff = {
-	readonly before: string;
-	readonly after: string;
-	readonly path?: string;
-	readonly lang?: string;
-}
-
 /**
- * The interaction body: ONLY these four keys, each built only from the
- * closed primitives. Everything else belongs in `details`.
+ * What an answer carries (ruling 20): every field's value under its
+ * name — a `choice` value is its option id (or ids when `multi`), a
+ * `choice` with `allowOther` carries `{other: "…"}`.
  */
-export type InteractionBody = {
-	/** Prose prompt body (markdown). */
-	readonly text?: string;
-	readonly options?: InteractionOption[];
-	readonly fields?: InteractionField[];
-	readonly diff?: InteractionDiff;
-}
-
-/** What an answer may carry: chosen ids, form values, and/or free text. */
 export type InteractionAnswer = {
-	readonly ids?: string[];
-	readonly values?: Readonly<Record<string, string | number | boolean>>;
-	readonly text?: string;
+	readonly values: Readonly<Record<string, JsonValue>>;
 }
 
-/** The strict envelope + closed-primitive body of one interaction. */
+/** The strict envelope + block-tree body of one interaction. */
 export type InteractionRecord = {
 	/** Extension-declared kind id (e.g. "gating.confirm", "questions.form"). */
 	readonly kind: string;
@@ -98,7 +64,12 @@ export type InteractionRecord = {
 	 * model-asserted. Absent on the naive single-operator path (no user).
 	 */
 	readonly answeredByUser?: string;
-	readonly body?: InteractionBody;
+	/**
+	 * The interaction body: a block tree (placement `interaction` — a
+	 * root `form` whose `submit` is the answer). Legacy-shaped bodies
+	 * fail validation (ruling 16).
+	 */
+	readonly body?: Tree;
 	/** Opaque extension-owned payload; rendered collapsed, never interpreted. */
 	readonly details?: JsonObject;
 }

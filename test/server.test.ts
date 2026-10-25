@@ -248,7 +248,7 @@ describe("GET /v1/conversations/:id", () => {
 
 describe("GET /v1/meta", () => {
 	test("returns the static healthy shape with real boot facts", async () => {
-		const { app } = await bootServer();
+		const { app, opened } = await bootServer();
 		const response = await app.inject({ method: "GET", url: "/v1/meta" });
 		expect(response.statusCode).toBe(200);
 		const meta = response.json();
@@ -265,6 +265,16 @@ describe("GET /v1/meta", () => {
 			collisions: { webui: [], providers: [], commands: [] },
 			dev: false,
 			supervised: false,
+			isolation: {
+				mode: "auto",
+				active: false,
+				available: opened.isolation.available,
+				abi: opened.isolation.abi,
+				...(opened.isolation.reason === undefined
+					? {}
+					: { reason: opened.isolation.reason }),
+				osUsers: "off",
+			},
 		});
 	});
 

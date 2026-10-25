@@ -51,6 +51,7 @@ export const CORE_SECTION_IDS = [
 	"advanced",
 	"providers",
 	"extensions",
+	"accounts",
 ] as const;
 
 export type CoreSectionId = (typeof CORE_SECTION_IDS)[number];
@@ -505,6 +506,26 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 						],
 					},
 				],
+			},
+		},
+	},
+	{
+		id: "accounts",
+		title: "Account links",
+		icon: "key",
+		// Per-user identity management, not an administrator-only section.
+		admin: false,
+		// The channels render their native account-link cove over this entry.
+		form: {
+			v: 1,
+			root: {
+				type: "form",
+				id: "core-accounts-form",
+				bind: "/settings",
+				mode: "submit",
+				onSubmit: "save",
+				submitLabel: "Save",
+				children: [],
 			},
 		},
 	},

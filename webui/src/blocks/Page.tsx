@@ -70,7 +70,11 @@ function isMainEmpty(block: PageBlock, data: JsonObject): boolean {
 	if (block.empty === undefined) return false;
 	const collection = firstCollection(block.main);
 	if (collection === undefined) return false;
-	const items = resolvePointer(data, collection.items.$);
+	// Literal rows (the ambient shape) are never an empty main: only a
+	// binding can resolve missing/empty against the data document.
+	const binding = collection.items;
+	if (typeof binding !== "object" || !("$" in binding)) return false;
+	const items = resolvePointer(data, binding.$);
 	return !Array.isArray(items) || items.length === 0;
 }
 

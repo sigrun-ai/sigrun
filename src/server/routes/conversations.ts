@@ -10,7 +10,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Cursor, EntryDraft } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
-import { isSuperuser } from "../auth/principal.js";
+import { accessPrincipalOf } from "../auth/access-principal.js";
 import {
 	ConversationOpError,
 	createConversationOp,
@@ -107,10 +107,7 @@ export function registerConversationRoutes(
 		};
 		const conversations = await listConversationsOp(
 			ctx,
-			{
-				user: request.principal.user,
-				superuser: isSuperuser(request.principal),
-			},
+			accessPrincipalOf(request.principal, opened.identity.users),
 			filters,
 		);
 		return { conversations };

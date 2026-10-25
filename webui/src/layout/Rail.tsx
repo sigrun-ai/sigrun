@@ -84,7 +84,7 @@ export function Rail(props: {
 }) {
 	const { meta, onOpenSettings, identity, onLogout } = props;
 	const { onOpenGallery } = props;
-	const tokenSession = identity?.method === "token";
+	const browserSession = identity?.method === "token" || identity?.method === "session";
 	// The extension-view entries (U3 Task 5): after the core entries,
 	// in the user's saved order, minus the access-none set. App passes
 	// them controlled (a reorder re-renders); the fallback derivation
@@ -151,7 +151,7 @@ export function Rail(props: {
 				data-health={healthOf(meta)}
 				title={healthTitle(meta)}
 			/>
-			{tokenSession && (
+			{browserSession && (
 				<span
 					className="rail-user"
 					data-rail-user={identity.user ?? ""}
@@ -164,7 +164,7 @@ export function Rail(props: {
 					{identity.user ?? "—"}
 				</span>
 			)}
-			{tokenSession && onLogout !== undefined && (
+			{browserSession && onLogout !== undefined && (
 				<button
 					type="button"
 					className="rail-btn"

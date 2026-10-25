@@ -1,61 +1,83 @@
 /**
- * The interaction seam's TUI renderer (Task 8 — the parity rule): the
- * pending-interaction stack rendered as an answerable prompt strip
- * between the conversation pane and the composer (spec §3.2: "a visible
- * prompt in the conversation pane" — the TUI's medium-appropriate form is
- * a strip directly above the composer, where the answer keys live).
+ * The interaction seam's TUI renderer (UI-blocks U6 Task 3, the parity
+ * rule): the pending-interaction stack rendered FROM BLOCK TREES — each
+ * record's body is a root `form` (placement `interaction`, spec §9.1)
+ * rendered through the shared renderer against a
+ * {@link createInteractionTransport}: the record IS the surface (the
+ * tree is the load, the form's submit POSTs `{values}` to the ONE
+ * generic answer route — ruling 20). The strip sits between the
+ * conversation pane and the composer, where the answer keys live.
  *
- * Genericity (the seam's whole point): this component renders the closed
- * primitives (text / options / fields / diff) and the envelope, and knows
- * NOTHING about kinds — there is no gate-specific concept here. `details` renders as
- * one collapsed JSON line, never interpreted (the single read is the
- * webui-parity `details.multi === true` multi-select flag).
+ * Genericity (the seam's whole point): the renderer renders the tree
+ * and knows NOTHING about kinds. `details` renders as one collapsed
+ * JSON line, never interpreted.
  *
- * Answering: ctrl+o enters answer mode (the app routes it via
- * {@link TuiApp.handleKeybinding}; ctrl+a is the editor's cursorLineStart,
- * so the prompt uses ctrl+o). Digits 1-9 pick options — single-choice
- * answers immediately; multi (`details.multi`) toggles and enter submits
- * the accumulated set; esc exits. Answer mode PINS the record it was
- * armed on: if a poll replaces the top of the stack before the user keys
- * an answer, the mode exits instead of answering a record the user never
- * saw. The answer POSTs through the ONE generic route
- * (`answerInteraction`); the record clears when the next list poll
- * reflects the settle (the server drops answered records from pending).
+ * Answering: ctrl+o ARMS the prompt (the app routes it via
+ * {@link TuiApp.handleKeybinding}; ctrl+a is the editor's
+ * cursorLineStart, so the prompt uses ctrl+o); while armed, keys route
+ * to the rendered form (choice rows take digits 1-9 as a direct pick —
+ * the medium-appropriate accelerator — plus the form's own keys; a
+ * multi-question form's stepper advances with Tab, reviews, and submits
+ * ONCE with Enter). Answer mode PINS the record it was armed on: if a
+ * poll replaces the top of the stack before the user keys an answer,
+ * the mode exits instead of answering a record the user never saw.
  *
- * Medium limits (the parity rule's documented exceptions):
- * - Form `fields` render read-only with a "answer in the webui" hint —
- *   the TUI's composer is the conversation's text input; capturing it for
- *   form values would collide with submission routing. v1 answers
- *   option-based prompts only.
- * - Option `tone` is a color/severity hint; the shell pins a no-color
- *   theme (styling is a later task), so tone is not rendered.
+ * Expiry mid-stepper (Review Focus 2): a submit that lands on an
+ * already-settled record (404 not_pending) refetches the record through
+ * {@link SigrunClient.getInteraction}, renders its settled status, and
+ * keeps the typed values visible but read-only (the form's state
+ * survives — the tree never changed).
  *
  * Refetch triggers (W3 Task 4 — the 2s poll interval is RETIRED): kicks
- * arrive on each stream frame (a revision may change the pending set) and
- * on `interaction.*` host events (the app wires `watchEvents`'s
- * `interaction.pending`/`interaction.settled` to {@link kick}). Kicks
- * coalesce (one fetch in flight, one queued). Poll failures are
- * QUIET — the prompt keeps its last state; stream transport health is
- * reported separately by the watcher's error/open transition notices
- * (the launcher's stream-health wiring). Answer failures (user-initiated)
- * are LOUD via {@link onError} (the app routes them to the pane's
- * `[error]` line).
+ * arrive on each stream frame and on `interaction.*` host events. Kicks
+ * coalesce (one fetch in flight, one queued). Poll failures are QUIET —
+ * the prompt keeps its last state; answer failures (user-initiated) are
+ * LOUD via {@link onError}.
  */
 
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
-import type {
-	InteractionAnswerInput,
-	InteractionWire,
-	SigrunClient,
-} from "../api.js";
-import { diffLines } from "../blocks/diff.js";
+import type { JsonObject, JsonValue, Tree } from "@sigrun/shared/blocks";
+import type { InteractionWire, SigrunClient } from "../api.js";
+import { createInteractionTransport } from "../blocks/interaction-transport.js";
+import { SurfaceState } from "../blocks/surface.js";
+import { SurfaceView } from "../blocks/surface-view.js";
+import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import { describeCommandError } from "./composer.js";
 
-/** The answer-mode option pick keys: digits 1-9. */
+/** The answer-mode direct-pick keys: digits 1-9. */
 const DIGIT = /^[1-9]$/;
+
+/** The record-as-surface data document: the form binds `/values`, so
+ *  the document is `{values}` — a settled record's stored answer seeds
+ *  the read-only render (spec §6.5; secret fields render write-only
+ *  regardless). */
+function recordData(record: InteractionWire): JsonObject {
+	if (record.answer === undefined) return {};
+	return { values: { ...record.answer.values } } as JsonObject;
+}
+
+/** One rendered interaction record: the surface pair plus the settled
+ *  envelope a mid-edit settle refetch swapped in. */
+interface SurfaceCard {
+	readonly record: InteractionWire;
+	readonly state: SurfaceState;
+	readonly view: SurfaceView;
+	/** Whether the surface renders read-only (settled records). */
+	readonly access: "read" | "write";
+	/** The transport's submit action name (root.onSubmit ?? "submit") —
+	 *  the digit accelerator's direct pick must dispatch this action or
+	 *  the submit gate no-ops on a custom-onSubmit form. */
+	readonly submitAction: string;
+	/** The settled envelope a mid-edit settle refetch swapped in
+	 *  (preferred over `record` for rendering: a same-callId poll still
+	 *  serves the record PENDING, so the settled envelope must win or
+	 *  the read-only swap reverts on the next render — Review fix). */
+	readonly settled?: InteractionWire;
+}
 
 export class InteractionPrompter implements Component {
 	readonly #client: SigrunClient;
+	readonly #theme: TuiTheme;
 
 	#conversationId: number | undefined;
 	/** Monotonic per-conversation generation: stale fetches never land. */
@@ -65,13 +87,18 @@ export class InteractionPrompter implements Component {
 	/**
 	 * The record answer mode is ARMED ON. Pinned at beginAnswer: a poll can
 	 * replace the top of the stack at any time (the record settled via the
-	 * webui, the extension resolved it, it expired), and a digit keyed for
+	 * webui, the extension resolved it, it expired), and a key pressed for
 	 * the prompt the user READ must never answer the prompt that replaced
 	 * it. Any top-identity change exits answer mode instead.
 	 */
 	#answerCallId: string | undefined;
-	/** The multi-select working set (option ids), pre-seeded recommended. */
-	#selected: ReadonlySet<string> = new Set();
+	/**
+	 * The rendered surface of the TOP record (rebuilt when the top's
+	 * identity changes; NOT rebuilt on a mere list refresh of the same
+	 * record — the form's typed state must survive a poll, Review Focus
+	 * 2's "typed values stay visible").
+	 */
+	#surface: SurfaceCard | undefined;
 	/** Coalescing poll state: one fetch in flight, at most one queued. */
 	#inFlight = false;
 	#queued = false;
@@ -81,8 +108,11 @@ export class InteractionPrompter implements Component {
 	/** Rendered-state changes (the app requests a repaint). */
 	onChanged?: () => void;
 
-	constructor(client: SigrunClient) {
+	constructor(client: SigrunClient, options: { theme?: TuiTheme } = {}) {
 		this.#client = client;
+		// No-color default (the shell pins structure; styling rides the
+		// app's theme when the host passes one).
+		this.#theme = options.theme ?? plainTuiTheme();
 	}
 
 	/** The latest pending list (top of stack first). */
@@ -90,9 +120,15 @@ export class InteractionPrompter implements Component {
 		return this.#pending;
 	}
 
-	/** Whether digit/enter/esc keys are captured for answering. */
+	/** Whether keys are captured for answering. */
 	get answerMode(): boolean {
 		return this.#answerMode;
+	}
+
+	/** The live surface's state (tests drive non-submit dispatches
+	 *  through it). */
+	get surface(): SurfaceState | undefined {
+		return this.#surface?.state;
 	}
 
 	/**
@@ -104,6 +140,8 @@ export class InteractionPrompter implements Component {
 		this.#gen += 1;
 		this.#conversationId = id;
 		this.#pending = [];
+		this.#surface?.state.dispose();
+		this.#surface = undefined;
 		this.#exitAnswer();
 		// A fetch from the OLD conversation may still be in flight (or stuck);
 		// its result is fenced by the generation guard, so its promise is
@@ -131,21 +169,17 @@ export class InteractionPrompter implements Component {
 	}
 
 	/**
-	 * Enter answer mode — only when the top pending item is option-
-	 * answerable. Returns whether the mode was entered (the caller consumes
-	 * the key only then).
+	 * Enter answer mode — only when the top pending item carries a
+	 * block-tree body to answer. Returns whether the mode was entered (the
+	 * caller consumes the key only then).
 	 */
 	beginAnswer(): boolean {
 		const top = this.#pending[0];
-		const options = top?.body?.options ?? [];
-		if (top === undefined || options.length === 0) return false;
+		if (top === undefined || top.body === undefined) return false;
+		this.#ensureSurface(top);
 		this.#answerMode = true;
 		// Pin the target: keys answer THIS record or nothing.
 		this.#answerCallId = top.callId;
-		// The webui's pre-selection rule: recommended options start selected.
-		this.#selected = new Set(
-			options.filter((o) => o.recommended === true).map((o) => o.id),
-		);
 		this.#changed();
 		return true;
 	}
@@ -157,8 +191,7 @@ export class InteractionPrompter implements Component {
 	 */
 	handleKey(data: string): boolean {
 		const top = this.#pending[0];
-		const options = top?.body?.options ?? [];
-		if (!this.#answerMode || top === undefined || options.length === 0) {
+		if (!this.#answerMode || top === undefined) {
 			this.#exitAnswer();
 			return false;
 		}
@@ -175,61 +208,172 @@ export class InteractionPrompter implements Component {
 			this.#changed();
 			return true;
 		}
-		const multi = isMulti(top);
-		if (matchesKey(data, Key.enter)) {
-			if (multi && this.#selected.size > 0) {
-				this.#submit(top, [...this.#selected]);
-			}
-			return true;
+		this.#ensureSurface(top);
+		if (this.#surface === undefined) {
+			this.#exitAnswer();
+			return false;
 		}
+		// A digit aims at the top record's choice field — the
+		// one-question gate's direct pick (1-9 answers immediately).
+		// Everything else — arrows, Tab, Enter, typed text — is the
+		// form's own key language. The shortcut only fires on a
+		// ONE-question gate (no stepper): a multi-question stepper's
+		// digits belong to the form's per-step choice editing.
 		if (DIGIT.test(data)) {
-			const index = Number(data) - 1;
-			const option = options[index];
-			if (option !== undefined) {
-				if (multi) {
-					const next = new Set(this.#selected);
-					if (next.has(option.id)) {
-						next.delete(option.id);
-					} else {
-						next.add(option.id);
+			const body: Tree | undefined = top.body;
+			const choice = body === undefined ? undefined : firstChoice(body);
+			const stepper =
+				body !== undefined &&
+				body.root.type === "form" &&
+				stepperSections(body.root, true) !== null;
+			if (choice !== undefined && !stepper) {
+				const index = Number(data) - 1;
+				const option = Array.isArray(choice.options)
+					? choice.options[index]
+					: undefined;
+				if (option !== undefined) {
+					const form = formComponent(this.#surface);
+					if (form !== undefined) {
+						if (choice.multi === true) {
+							// Multi: toggle into the form's value; Enter (the
+							// form's key) submits the accumulated set.
+							const current = form.fieldValue(choice.name);
+							const set = new Set(
+								Array.isArray(current) ? (current as string[]) : [],
+							);
+							if (set.has(option.id)) {
+								set.delete(option.id);
+							} else {
+								set.add(option.id);
+							}
+							form.setFieldValue(choice.name, [...set]);
+							this.#changed();
+							return true;
+						}
+						form.setFieldValue(choice.name, option.id);
+						// Single-choice: the pick IS the answer — submit at
+						// once (the one-question gate's direct pick). The name
+						// must match the form's onSubmit action (custom actions
+						// like "decide" gate the transport's submit).
+						this.#surface.state.dispatch(
+							{ type: "submit", name: this.#surface.submitAction },
+							{ values: { ...(form.values ?? {}) } },
+						);
+						return true;
 					}
-					this.#selected = next;
-					this.#changed();
-				} else {
-					this.#submit(top, [option.id]);
 				}
+				// No matching option: the digit still belongs to the prompt.
+				return true;
 			}
-			// In-range or not, digits belong to the prompt in answer mode.
+			// A stepper's digits route to the form (its stepper owns the
+			// per-step choice editing).
+			if (choice !== undefined) {
+				this.#surface.view.handleInput(data);
+				return true;
+			}
 			return true;
 		}
-		return false;
+		this.#surface.view.handleInput(data);
+		return true;
 	}
 
-	/** Fire-and-forget answer; the next list poll reflects the settle. */
-	#submit(record: InteractionWire, ids: readonly string[]): void {
-		const id = this.#conversationId;
-		if (id === undefined) return;
-		// Belt to the handleKey pin check: never POST for a record the
-		// answer keys were not armed on.
-		if (this.#answerCallId !== record.callId) return;
-		this.#exitAnswer();
-		this.#changed();
-		const answer: InteractionAnswerInput = { ids };
-		this.#client.answerInteraction(id, record.callId, answer).then(
-			() => {
+
+
+	/** Build (or keep) the top record's surface pair. A mid-edit settle
+	 *  swap (Review Focus 2) reuses the same callId: the settled envelope
+	 *  flips access to read; the tree is unchanged so the typed values
+	 *  stay on screen. */
+	#ensureSurface(record: InteractionWire): void {
+		const existing = this.#surface;
+		if (existing !== undefined && existing.record.callId === record.callId) {
+			// A settled envelope (the mid-edit settle swap) sticks: the
+			// pending poll re-serves the record as pending, and the
+			// settled render must not revert to write access.
+			if (existing.settled !== undefined) return;
+			const access = record.status === "pending" ? "write" : "read";
+			if (existing.access === access) return;
+			this.#surface = { ...existing, record, access };
+			return;
+		}
+		const access = record.status === "pending" ? "write" : "read";
+		const conversationId = this.#conversationId;
+		if (conversationId === undefined || record.body === undefined) return;
+		const root = record.body.root;
+		const submitAction =
+			root.type === "form" ? (root.onSubmit ?? "submit") : "submit";
+		const transport = createInteractionTransport({
+			client: this.#client,
+			conversationId,
+			callId: record.callId,
+			tree: record.body,
+			data: recordData(record),
+			access,
+			submitAction,
+			onAnswered: () => {
+				// The settle lands via the next list poll (the server drops
+				// answered records from pending).
+				this.#exitAnswer();
 				void this.#refresh();
 			},
-			(error: unknown) => {
-				this.onError?.(describeCommandError("answer", error));
-				void this.#refresh();
+			onSettledElsewhere: (_message, cause) => {
+				// The settle raced the user's submit (expiry, another channel,
+				// the extension): refetch the record and render it settled —
+				// the typed values stay visible, read-only (Review Focus 2).
+				const id = this.#conversationId;
+				if (id === undefined) {
+					this.onError?.(describeCommandError("answer", cause));
+					return;
+				}
+				this.#client.getInteraction(id, record.callId).then(
+					(fresh: InteractionWire) => {
+						// Swap ONLY the record the user was working on; a
+						// conversation switch since the submit discards it.
+						if (this.#surface?.record.callId !== record.callId) return;
+						// Only a genuinely settled record swaps in — a still-
+						// pending refetch (a 400, a network blip) must NOT wedge
+						// the card read-only: report the failure and stay
+						// writable (Review fix).
+						if (fresh.status === "pending") {
+							this.onError?.(describeCommandError("answer", cause));
+							this.#changed();
+							return;
+						}
+						this.#surface = this.#surface === undefined
+							? undefined
+							: {
+									...this.#surface,
+									settled: fresh,
+									access: "read",
+								};
+						// Flip the LIVE surface's access so the read-only
+						// render takes effect immediately (the transport's
+						// access was captured at load).
+						this.#surface?.state.setAccess("read");
+						this.#exitAnswer();
+						this.#changed();
+					},
+					() => {
+						this.onError?.(describeCommandError("answer", cause));
+					},
+				);
 			},
-		);
+		});
+		const state = new SurfaceState(transport);
+		const view = new SurfaceView(state, {
+			theme: this.#theme,
+			unicode: true,
+			options: { interaction: true },
+		});
+		this.#surface = { record, state, view, access, submitAction };
+		// The record's tree is static, so the load resolves within a
+		// microtask; the repaint lands via the change subscription.
+		state.onChange(() => this.#changed());
+		void state.load();
 	}
 
 	#exitAnswer(): void {
 		this.#answerMode = false;
 		this.#answerCallId = undefined;
-		this.#selected = new Set();
 	}
 
 	/** Generation-guarded, coalesced fetch of the pending list. */
@@ -268,6 +412,20 @@ export class InteractionPrompter implements Component {
 				) {
 					this.#exitAnswer();
 				}
+				// A top-identity change rebuilds the surface; a same-record
+				// refresh keeps it (typed values survive the poll).
+				const top = this.#pending[0];
+				if (top === undefined) {
+					this.#surface?.state.dispose();
+					this.#surface = undefined;
+				} else if (this.#surface?.record.callId !== top.callId) {
+					this.#surface?.state.dispose();
+					this.#surface = undefined;
+					// Build eagerly (not at render) so the async load settles
+					// with the poll's flush — a strip that waits a frame for
+					// "loading…" reads as a flicker.
+					this.#ensureSurface(top);
+				}
 				this.#changed();
 			} while (this.#queued && gen === this.#gen);
 		} finally {
@@ -286,45 +444,26 @@ export class InteractionPrompter implements Component {
 
 	/**
 	 * The prompt strip: nothing when no item is pending; otherwise the top
-	 * item's header, body primitives, answer affordance, and a stack count.
+	 * item's header, its block tree, the answer affordance, and a stack
+	 * count.
 	 */
-	render(_width: number): string[] {
+	render(width: number): string[] {
 		const top = this.#pending[0];
 		if (top === undefined) return [];
-		const body = top.body;
-		const options = body?.options ?? [];
-		const fields = body?.fields ?? [];
-		const multi = isMulti(top);
 		const lines: string[] = [];
-		lines.push(
+		const shown = this.#surface?.settled ?? top;
+		const suffix =
 			this.#answerMode
-				? `[interaction] ${top.kind} — answering`
-				: `[interaction] ${top.kind}`,
-		);
-		if (body?.text !== undefined) {
-			for (const line of body.text.split("\n")) lines.push(line);
-		}
-		if (body?.diff !== undefined) {
-			lines.push(...diffLines(body.diff));
-		}
-		for (const [index, option] of options.entries()) {
-			const marker =
-				this.#answerMode && multi
-					? this.#selected.has(option.id)
-						? "[x] "
-						: "[ ] "
-					: "";
-			const recommended = option.recommended === true ? " (recommended)" : "";
-			const description =
-				option.description === undefined ? "" : ` — ${option.description}`;
-			lines.push(
-				`  ${marker}${index + 1}. ${option.label}${recommended}${description}`,
-			);
-		}
-		for (const field of fields) {
-			const label = field.label ?? field.name;
-			const required = field.required === true ? " required" : "";
-			lines.push(`  - ${label} (${field.type})${required}`);
+				? " — answering"
+				: shown.status === "pending"
+					? ""
+					: ` — ${shown.status}`;
+		lines.push(`[interaction] ${shown.kind}${suffix}`);
+		if (top.body !== undefined) {
+			this.#ensureSurface(top);
+			if (this.#surface !== undefined) {
+				lines.push(...this.#surface.view.render(width));
+			}
 		}
 		if (top.details !== undefined) {
 			lines.push(`[details] ${JSON.stringify(top.details)}`);
@@ -332,30 +471,63 @@ export class InteractionPrompter implements Component {
 		if (this.#pending.length > 1) {
 			lines.push(`+${this.#pending.length - 1} more pending`);
 		}
-		if (options.length > 0) {
-			if (this.#answerMode) {
-				lines.push(
-					multi
-						? "1-9 toggle · enter submit · esc cancel"
-						: "1-9 answer · esc cancel",
-				);
-			} else {
-				lines.push("ctrl+o to answer");
-			}
-		} else if (fields.length > 0) {
-			lines.push("needs form input — answer in the webui");
+		if (top.body !== undefined) {
+			lines.push(
+				this.#answerMode
+					? "1-9 answer · Tab next · esc cancel"
+					: "ctrl+o to answer",
+			);
 		}
 		return lines;
 	}
 
 	invalidate(): void {
-		// Stateless render: lines assemble from the current pending list.
+		this.#surface?.view.invalidate();
 	}
 }
 
-/** The webui's multi-select reading: `details.multi === true`. */
-function isMulti(record: InteractionWire): boolean {
-	return (
-		(record.details as { readonly multi?: boolean } | undefined)?.multi === true
-	);
+import type { ChoiceField } from "@sigrun/shared/blocks";
+import { stepperSections } from "../blocks/form/form.js";
+
+/** The form's first choice field (the digit accelerator's target), or
+ *  undefined when the form holds none. */
+function firstChoice(tree: Tree): ChoiceField | undefined {
+	const root = tree.root;
+	if (root.type !== "form") return undefined;
+	const walk = (children: readonly unknown[]): ChoiceField | undefined => {
+		for (const child of children) {
+			if (typeof child !== "object" || child === null) continue;
+			const record = child as JsonObject;
+			if (record.type === "choice" && typeof record.name === "string") {
+				// SAFETY: the type/name guard above is the choice field's
+				// identifying shape (the tree passed placement validation).
+				return record as unknown as ChoiceField;
+			}
+			if (record.type === "section" && Array.isArray(record.children)) {
+				const found = walk(record.children);
+				if (found !== undefined) return found;
+			}
+		}
+		return undefined;
+	};
+	return walk(root.children);
 }
+
+/** The wrapped form component, when the surface's root is a form. */
+function formComponent(surface: SurfaceCard): {
+	setFieldValue(name: string, value: JsonValue): void;
+	fieldValue(name: string): JsonValue | undefined;
+	values: JsonObject | undefined;
+} | undefined {
+	const inner = surface.view.inner;
+	if (inner === undefined) return undefined;
+	if (!("setFieldValue" in inner)) return undefined;
+	// SAFETY: the WidthGated wrapper forwards the form introspection
+	// (the render seam's forwarding contract).
+	return inner as unknown as {
+		setFieldValue(name: string, value: JsonValue): void;
+		fieldValue(name: string): JsonValue | undefined;
+		values: JsonObject | undefined;
+	};
+}
+

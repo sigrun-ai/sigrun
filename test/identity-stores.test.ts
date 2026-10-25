@@ -30,7 +30,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { rm } from "node:fs/promises";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import {
 	AccountLinkConflictError,
 	AccountStore,
@@ -46,6 +46,7 @@ import {
 	readSetupCode,
 	type IdentityStores,
 } from "../src/harness/identity/index.js";
+import { effectiveAdmin, storedGroups } from "../src/harness/identity/groups.js";
 
 const dirs: string[] = [];
 afterAll(async () => {
@@ -124,6 +125,26 @@ describe("UserDirectory", () => {
 		}
 	});
 
+	test("removeWithGrant reads the current recipient grants and removes the source in one mutation", async () => {
+		const users = new UserDirectory(join(tmpDir("remove-with-grant"), "users.json"));
+		await users.add(aliceUser());
+		await users.add({ user: "bob", admin: false, source: "cli" });
+		const concurrent = users.update("bob", {
+			grants: [{ path: "/existing", access: "ro" }],
+		});
+		const removal = users.removeWithGrant("alice", "bob", {
+			path: "/inherited",
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+		await Promise.all([concurrent, removal]);
+		expect(users.get("alice")).toBeUndefined();
+		expect(users.get("bob")?.grants).toEqual([
+			{ path: "/existing", access: "ro" },
+			{ path: "/inherited", access: "rw", inheritedFrom: "alice" },
+		]);
+	});
+
 	test("a second store instance on the same path sees the first's write", async () => {
 		const path = join(tmpDir("cross"), "users.json");
 		const first = new UserDirectory(path);
@@ -132,6 +153,65 @@ describe("UserDirectory", () => {
 		expect(second.get("alice")?.admin).toBe(true);
 		await second.add({ user: "bob", admin: false, source: "proxy" });
 		expect(first.get("bob")?.source).toBe("proxy");
+	});
+});
+
+describe("stored groups", () => {
+	test("setGroups replaces one source and keeps another", async () => {
+		const users = new UserDirectory(join(tmpDir("group-sources"), "users.json"));
+		await users.add({ user: "alice", admin: false, source: "proxy" });
+		await users.setGroups("alice", "proxy", ["users", "admins"], 100);
+		await users.setGroups("alice", "login:oauth:acme", ["family"], 200);
+		const updated = await users.setGroups("alice", "proxy", ["users"], 300);
+		expect(updated.groups).toEqual([
+			{ source: "proxy", values: ["users"], updatedAt: 300 },
+			{ source: "login:oauth:acme", values: ["family"], updatedAt: 200 },
+		]);
+		expect(users.get("alice")).toEqual(updated);
+	});
+
+	test("setGroups with unchanged values does not write the file", async () => {
+		const path = join(tmpDir("group-noop"), "users.json");
+		const users = new UserDirectory(path);
+		await users.add({ user: "alice", admin: false, source: "proxy" });
+		await users.setGroups("alice", "proxy", ["users", "admins"], 100);
+		const before = statSync(path).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const updated = await users.setGroups("alice", "proxy", ["users", "admins"], 200);
+		expect(statSync(path).mtimeMs).toBe(before);
+		expect(updated.groups).toEqual([
+			{ source: "proxy", values: ["users", "admins"], updatedAt: 100 },
+		]);
+	});
+
+	test("storedGroups is the deduplicated union and effectiveAdmin accepts any source", async () => {
+		const users = new UserDirectory(join(tmpDir("effective-admin"), "users.json"));
+		await users.add({ user: "alice", admin: false, source: "proxy" });
+		await users.setGroups("alice", "proxy", ["users", "family"], 100);
+		const record = await users.setGroups("alice", "login:oauth:acme", ["family", "admins"], 200);
+		expect(storedGroups(record)).toEqual(["users", "family", "admins"]);
+		expect(effectiveAdmin(record, ["admins"])).toBe(true);
+		expect(effectiveAdmin(record, ["other"])).toBe(false);
+		expect(effectiveAdmin({ ...record, admin: true }, [])).toBe(true);
+	});
+
+	test("a legacy groupAdmin grant is dropped and grants nothing after the next write", async () => {
+		const path = join(tmpDir("legacy-group-admin"), "users.json");
+		writeFileSync(path, JSON.stringify([{
+			user: "alice",
+			admin: false,
+			groupAdmin: true,
+			createdAt: 1,
+			source: "proxy",
+		}]));
+		const users = new UserDirectory(path);
+		const updated = await users.update("alice", { name: "Alice" });
+		expect(effectiveAdmin(updated, ["admins"])).toBe(false);
+		expect(updated).not.toHaveProperty("groupAdmin");
+		const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>[];
+		expect(raw[0]).not.toHaveProperty("groupAdmin");
+		const viaGroups = await users.setGroups("alice", "proxy", []);
+		expect(viaGroups).not.toHaveProperty("groupAdmin");
 	});
 });
 
@@ -163,6 +243,76 @@ describe("TokenStore", () => {
 		expect(file).not.toContain(token);
 		expect(file).toContain(record.sha256);
 		expect(record.sha256).toBe(hashToken(token));
+	});
+
+	test("createSession stores kind, provider, and expiresAt", async () => {
+		const tokens = new TokenStore(join(tmpDir("session"), "api-tokens.json"));
+		const now = 1_700_000_000_000;
+		const { record, token } = await tokens.createSession(
+			"alice",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		expect(record).toMatchObject({
+			name: "login:login:oauth:acme",
+			user: "alice",
+			kind: "session",
+			provider: "login:oauth:acme",
+			createdAt: now,
+			expiresAt: now + 60_000,
+		});
+		expect(tokens.verify(token, now)).toEqual(record);
+	});
+
+	test("verify rejects a session at expiresAt, not one millisecond before", async () => {
+		const tokens = new TokenStore(join(tmpDir("expiry"), "api-tokens.json"));
+		const now = 1_700_000_000_000;
+		const { record, token } = await tokens.createSession(
+			"alice",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		expect(tokens.verify(token, record.expiresAt! - 1)).toEqual(record);
+		expect(tokens.verify(token, record.expiresAt!)).toBeUndefined();
+	});
+
+	test("every mutation prunes expired records before writing", async () => {
+		const now = 1_700_000_000_000;
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const createStore = new TokenStore(join(tmpDir("prune-create"), "api-tokens.json"));
+			await createStore.createSession("alice", "login:oauth:acme", 1, now);
+			clock.mockReturnValue(now + 1);
+			await createStore.create("laptop", "alice");
+			expect(createStore.list().map((record) => record.name)).toEqual(["laptop"]);
+
+			clock.mockReturnValue(now);
+			const sessionStore = new TokenStore(join(tmpDir("prune-session"), "api-tokens.json"));
+			await sessionStore.createSession("alice", "login:oauth:acme", 1, now);
+			clock.mockReturnValue(now + 1);
+			await sessionStore.createSession("bob", "login:oauth:acme", 60_000, now + 1);
+			expect(sessionStore.list().map((record) => record.user)).toEqual(["bob"]);
+
+			clock.mockReturnValue(now);
+			const revokeStore = new TokenStore(join(tmpDir("prune-revoke"), "api-tokens.json"));
+			await revokeStore.createSession("alice", "login:oauth:acme", 1, now);
+			const live = await revokeStore.create("laptop", "alice");
+			clock.mockReturnValue(now + 1);
+			await revokeStore.revoke(live.record.id);
+			expect(revokeStore.list()).toEqual([]);
+
+			clock.mockReturnValue(now);
+			const allStore = new TokenStore(join(tmpDir("prune-all"), "api-tokens.json"));
+			await allStore.createSession("alice", "login:oauth:acme", 1, now);
+			await allStore.create("laptop", "alice");
+			clock.mockReturnValue(now + 1);
+			expect(await allStore.revokeAllFor("alice")).toBe(1);
+			expect(allStore.list()).toEqual([]);
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	test("revokeAllFor removes only that user's tokens", async () => {

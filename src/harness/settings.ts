@@ -544,6 +544,7 @@ function validateServer(server: unknown): void {
 		"webuiBundle",
 		"compaction",
 		"memorySeam",
+		"isolation",
 		"providers",
 		"auth",
 		"metrics",
@@ -699,6 +700,43 @@ function validateServer(server: unknown): void {
 			}
 		}
 	}
+	if (record.isolation !== undefined) {
+		const isolation = asRecord(record.isolation);
+		if (isolation === undefined) {
+			throw new SettingsValidationError("server.isolation", "must be an object");
+		}
+		checkKeys("server.isolation.", isolation, [
+			"mode",
+			"osUsers",
+			"workerIdleMinutes",
+		]);
+		if (
+			isolation.mode !== undefined &&
+			isolation.mode !== "auto" &&
+			isolation.mode !== "always" &&
+			isolation.mode !== "off"
+		) {
+			throw new SettingsValidationError(
+				"server.isolation.mode",
+				'must be "auto", "always", or "off"',
+			);
+		}
+		if (isolation.osUsers !== undefined && typeof isolation.osUsers !== "boolean") {
+			throw new SettingsValidationError(
+				"server.isolation.osUsers",
+				"must be a boolean",
+			);
+		}
+		if (
+			isolation.workerIdleMinutes !== undefined &&
+			!isPositiveInt(isolation.workerIdleMinutes)
+		) {
+			throw new SettingsValidationError(
+				"server.isolation.workerIdleMinutes",
+				"must be a positive integer",
+			);
+		}
+	}
 	if (record.providers !== undefined) {
 		const providers = asRecord(record.providers);
 		if (providers === undefined) {
@@ -722,11 +760,18 @@ function validateServer(server: unknown): void {
 		}
 		checkKeys("server.auth.", auth, [
 			"methods",
+			"sessionDays",
 			"proxy",
 			"adminGroups",
 			"allowedHosts",
 			"allowedOrigins",
 		]);
+		if (auth.sessionDays !== undefined && !isPositiveInt(auth.sessionDays)) {
+			throw new SettingsValidationError(
+				"server.auth.sessionDays",
+				"must be a positive integer",
+			);
+		}
 		if (auth.methods !== undefined) {
 			if (
 				!Array.isArray(auth.methods) ||

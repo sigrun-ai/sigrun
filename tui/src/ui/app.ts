@@ -300,8 +300,14 @@ export class TuiApp implements Component, ActionHost {
 		this.sidebar = new Sidebar(client, theme === undefined ? undefined : { theme });
 		this.pane = new ConversationPane(theme === undefined ? undefined : { theme });
 		this.editor = new Editor(options.tui, plainEditorTheme());
-		this.interactions = new InteractionPrompter(client);
-		this.ambient = new AmbientChrome(client);
+		this.interactions = new InteractionPrompter(
+			client,
+			theme === undefined ? undefined : { theme },
+		);
+		this.ambient = new AmbientChrome(
+			client,
+			theme === undefined ? undefined : { theme },
+		);
 
 		this.#body.addChild(this.sidebar, {
 			basis: options.sidebarWidth ?? 24,

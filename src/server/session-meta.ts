@@ -255,6 +255,9 @@ export function applySessionMetaPatch(
 			draft.sharing = {
 				scope: "people",
 				users: [...patch.sharing.users],
+				...(patch.sharing.groups === undefined
+					? {}
+					: { groups: [...patch.sharing.groups] }),
 				level: patch.sharing.level,
 			};
 		} else if (patch.sharing.scope === "household") {

@@ -31,6 +31,7 @@
 
 import type {
 	MetaResponse,
+	InteractionWire,
 	InteractionList as InteractionListWire,
 	InteractionAnswered as InteractionAnsweredWire,
 	AmbientList as AmbientListWire,
@@ -65,6 +66,8 @@ import type {
 	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
 	JobRunResponse,
+	AccountLinkWire,
+	AccountsResponse,
 } from "@sigrun/shared/views";
 import type {
 	JobRevisionWire,
@@ -113,6 +116,8 @@ export type {
 	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
 	JobRunResponse,
+	AccountLinkWire,
+	AccountsResponse,
 } from "@sigrun/shared/views";
 
 /** The jobs channel wire shapes (W4, spec §8.2/§8.4) — the shared leaf's
@@ -140,22 +145,10 @@ export interface JobRevisionsResponse {
  *  re-exported so the share UI and the patch type agree with the server. */
 export type { Sharing } from "@sigrun/shared/access";
 
-// The interaction/ambient seam sub-shapes — the seam records ARE the wire
-// (never projected), so their constituent primitives are the contract too.
-// The `*Wire` aliases keep the stable export names the seam renderers use.
-export type {
-	InteractionStatus,
-	InteractionOption as InteractionOptionWire,
-	InteractionField as InteractionFieldWire,
-	InteractionDiff as InteractionDiffWire,
-	InteractionBody as InteractionBodyWire,
-	AmbientMetrics as AmbientMetricsWire,
-	AmbientRow as AmbientRowWire,
-	AmbientLine as AmbientLineWire,
-	AmbientGauge as AmbientGaugeWire,
-	AmbientLedgerEntry as AmbientLedgerEntryWire,
-	AmbientBody as AmbientBodyWire,
-} from "@sigrun/shared/views";
+// The interaction/ambient seam records ARE the wire (never projected);
+// their bodies are block trees (`@sigrun/shared/blocks` — the tree types
+// are the contract). The legacy body sub-shape aliases are gone (ruling
+// 16: the legacy shapes are rejected server-side).
 
 /** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
 export type QueueModeWire = "all" | "one-at-a-time";
@@ -201,6 +194,23 @@ export interface ClaimInput {
  *  the credential — set by the response, never the body). */
 export interface LoginResponse {
 	readonly user: string;
+}
+
+/** One configured external sign-in provider (`GET /v1/auth/providers`). */
+export interface LoginProviderWire {
+	readonly provider: string;
+	readonly label: string;
+	readonly icon?: string;
+}
+
+/** The public login-provider catalog. */
+export interface LoginProvidersResponse {
+	readonly providers: readonly LoginProviderWire[];
+}
+
+/** A completed setup/invite code exchange: navigate to this local path. */
+export interface LoginCodeResponse {
+	readonly returnTo: string;
 }
 
 /**
@@ -489,16 +499,25 @@ export interface SigrunClient {
 	/** Pending interactions for a conversation (`GET .../interactions`). */
 	listInteractions(conversationId: number): Promise<InteractionListWire>;
 	/**
+	 * One interaction record in ANY status (`GET .../interactions/:callId`,
+	 * U6 Task 2) — the channel's settle-refetch path: an answer that lands
+	 * on an already-settled record (404 not_pending) refetches here and
+	 * renders the settled record read-only.
+	 */
+	getInteraction(
+		conversationId: number,
+		callId: string,
+	): Promise<InteractionWire>;
+	/**
 	 * Answer a pending interaction (the ONE generic route). `answer` is
-	 * `{ids?, values?, text?}`; resolution semantics stay extension-owned.
+	 * `{values}` (ruling 20: every field's value under its name);
+	 * resolution semantics stay extension-owned.
 	 */
 	answerInteraction(
 		conversationId: number,
 		callId: string,
 		answer: {
-			readonly ids?: readonly string[];
-			readonly values?: Readonly<Record<string, string | number | boolean>>;
-			readonly text?: string;
+			readonly values: Readonly<Record<string, unknown>>;
 		},
 	): Promise<InteractionAnsweredWire>;
 	/** The conversation's ambient surfaces (`GET .../ambient`). */
@@ -530,6 +549,14 @@ export interface SigrunClient {
 	logout(): Promise<void>;
 	/** The resolved principal (`GET /v1/auth/whoami`). */
 	whoami(): Promise<WhoamiResponse>;
+	/** The configured external sign-in providers (public boot data). */
+	providers(): Promise<LoginProvidersResponse>;
+	/** The caller's external account links. */
+	accounts(): Promise<AccountsResponse>;
+	/** Remove one of the caller's account links. */
+	removeAccount(provider: string, subject: string): Promise<void>;
+	/** Complete a parked setup/invite login; the response sets the cookie. */
+	submitLoginCode(key: string, code: string): Promise<LoginCodeResponse>;
 	/** The loaded-extension inventory (`GET /v1/extensions`). */
 	listExtensions(): Promise<ExtensionsResponseWire>;
 	/** One extension's settings (`GET /v1/extensions/:slug/settings`; U4 §13.2 shape). */
@@ -769,7 +796,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 	}
 
 	/** POST expecting NO body (204); fail-loud on non-2xx. */
-	async function sendVoid(method: "POST", path: string, body: unknown): Promise<void> {
+	async function sendVoid(method: "POST" | "DELETE", path: string, body: unknown): Promise<void> {
 		const response = await fetchImpl(`${baseUrl}${path}`, {
 			method,
 			headers: {
@@ -867,6 +894,10 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			get<InteractionListWire>(
 				`/v1/conversations/${conversationId}/interactions`,
 			),
+		getInteraction: (conversationId, callId) =>
+			get<InteractionWire>(
+				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}`,
+			),
 		answerInteraction: (conversationId, callId, answer) =>
 			send(
 				"POST",
@@ -887,6 +918,16 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			send("POST", "/v1/auth/login", { token }) as Promise<LoginResponse>,
 		logout: () => sendVoid("POST", "/v1/auth/logout", {}),
 		whoami: () => get<WhoamiResponse>("/v1/auth/whoami"),
+		providers: () => get<LoginProvidersResponse>("/v1/auth/providers"),
+		accounts: () => get<AccountsResponse>("/v1/auth/accounts"),
+		removeAccount: (provider, subject) =>
+			sendVoid(
+				"DELETE",
+				`/v1/auth/accounts?provider=${encodeURIComponent(provider)}&subject=${encodeURIComponent(subject)}`,
+				{},
+			),
+		submitLoginCode: (key, code) =>
+			send("POST", "/v1/auth/login/code", { key, code }) as Promise<LoginCodeResponse>,
 		listExtensions: () => get<ExtensionsResponseWire>("/v1/extensions"),
 		getExtensionSettings: (slug) =>
 			get<ExtensionSettingsWire>(

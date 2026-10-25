@@ -151,6 +151,60 @@ describe("ShareMenu", () => {
 		]);
 	});
 
+	test("People preserves existing groups and omits the key for an ungrouped share", async () => {
+		const grouped = makeHarness();
+		const groupedRenderer = await renderAsync(
+			<ShareMenu
+				client={grouped.client}
+				conversation={conversation({
+					sharing: {
+						scope: "people",
+						users: ["carol"],
+						groups: ["family"],
+						level: "read",
+					},
+				})}
+				onClose={() => undefined}
+				onSaved={() => undefined}
+			/>,
+		);
+		await setUsers(groupedRenderer, "dave");
+		await clickButton(groupedRenderer, "Share with people");
+		expect(patchBodies(grouped.calls)).toEqual([
+			{
+				sharing: {
+					scope: "people",
+					users: ["dave"],
+					groups: ["family"],
+					level: "read",
+				},
+			},
+		]);
+
+		const ungrouped = makeHarness();
+		const ungroupedRenderer = await renderAsync(
+			<ShareMenu
+				client={ungrouped.client}
+				conversation={conversation({
+					sharing: { scope: "people", users: ["carol"], level: "read" },
+				})}
+				onClose={() => undefined}
+				onSaved={() => undefined}
+			/>,
+		);
+		await setUsers(ungroupedRenderer, "dave");
+		await clickButton(ungroupedRenderer, "Share with people");
+		const [body] = patchBodies(ungrouped.calls) as {
+			sharing: Record<string, unknown>;
+		}[];
+		expect(body.sharing).toEqual({
+			scope: "people",
+			users: ["dave"],
+			level: "read",
+		});
+		expect(body.sharing).not.toHaveProperty("groups");
+	});
+
 	test("a people share with no users is refused client-side (no patch)", async () => {
 		const harness = makeHarness();
 		const renderer = await renderAsync(

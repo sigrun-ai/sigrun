@@ -93,6 +93,10 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["POST", "/v1/ext/:slug/surfaces/:id/actions"],
 	["PUT", "/v1/ext/:slug/surfaces/:id/uploads/:field/:name"],
 	["GET", "/v1/ext/:slug/assets/*"],
+	// The image proxy (UI-blocks U7 Task 3, spec §11.2): GET the signed
+	// or src form; POST the long data-URL body form.
+	["GET", "/v1/image"],
+	["POST", "/v1/image"],
 	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
 	["GET", "/v1/interactions"],
 	["POST", "/v1/conversations"],
@@ -105,6 +109,7 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["POST", "/v1/conversations/:id/configure"],
 	["POST", "/v1/conversations/:id/abort"],
 	["GET", "/v1/conversations/:id/interactions"],
+	["GET", "/v1/conversations/:id/interactions/:callId"],
 	["POST", "/v1/conversations/:id/interactions/:callId/answer"],
 	["GET", "/v1/conversations/:id/ambient"],
 	["POST", "/v1/conversations/:id/compact"],
@@ -188,9 +193,17 @@ const UNKNOWN_ID_CASES: readonly UnknownIdCase[] = [
 		body: { interactions: [] },
 	},
 	{
+		// The single-record read applies the visibility half itself (a
+		// hidden conversation is indistinguishable from an absent record).
+		method: "GET",
+		url: `/v1/conversations/${UNKNOWN_ID}/interactions/x`,
+		status: 404,
+		body: { error: "conversation_not_found" },
+	},
+	{
 		method: "POST",
 		url: `/v1/conversations/${UNKNOWN_ID}/interactions/x/answer`,
-		payload: { ids: ["a"] },
+		payload: { values: { decision: "allow" } },
 		status: 404,
 		body: { error: "conversation_not_found" },
 	},
@@ -350,9 +363,13 @@ describe("server route table", () => {
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/accounts",
+				"/v1/auth/callback/:provider",
 				"/v1/auth/check",
 				"/v1/auth/login",
+				"/v1/auth/login/:provider",
+				"/v1/auth/login/code",
 				"/v1/auth/logout",
+				"/v1/auth/providers",
 				"/v1/auth/tokens",
 				"/v1/auth/tokens/:id",
 				"/v1/auth/whoami",
@@ -368,6 +385,7 @@ describe("server route table", () => {
 				"/v1/extensions/:slug/secrets",
 				"/v1/extensions/:slug/secrets/:key",
 				"/v1/extensions/:slug/settings",
+				"/v1/image",
 				"/v1/ext/:slug/surfaces/:id",
 				"/v1/ext/:slug/surfaces/:id/data",
 				"/v1/ext/:slug/surfaces/:id/actions",
@@ -396,6 +414,7 @@ describe("server route table", () => {
 				"/v1/conversations/:id/configure",
 				"/v1/conversations/:id/abort",
 				"/v1/conversations/:id/interactions",
+				"/v1/conversations/:id/interactions/:callId",
 				"/v1/conversations/:id/interactions/:callId/answer",
 				"/v1/conversations/:id/ambient",
 				"/v1/conversations/:id/commands/:name",
@@ -417,6 +436,42 @@ describe("server route table", () => {
 				`hasRoute must be true for ${method} ${url}`,
 			).toBe(true);
 		}
+	});
+});
+
+describe("token list wire", () => {
+	test("GET /v1/auth/tokens shows kind and expiresAt", async () => {
+		const { app, opened } = await bootServer({ auth: "token" });
+		const api = await opened.identity.tokens.create("laptop", "tester");
+		const now = Date.now();
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/tokens",
+			headers: { authorization: `Bearer ${api.token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().tokens).toEqual([
+			{
+				id: api.record.id,
+				name: "laptop",
+				user: "tester",
+				createdAt: api.record.createdAt,
+			},
+			{
+				id: session.record.id,
+				name: "login:login:oauth:acme",
+				user: "tester",
+				createdAt: now,
+				kind: "session",
+				expiresAt: now + 60_000,
+			},
+		]);
 	});
 });
 

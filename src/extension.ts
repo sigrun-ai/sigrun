@@ -50,7 +50,6 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Access, Sharing } from "@sigrun/shared/access";
 import type {
-	AmbientBody,
 	AmbientPlace,
 	AmbientRecord,
 } from "@sigrun/shared/ambient";
@@ -325,6 +324,39 @@ export interface ProviderContribution {
 	readonly readiness?: ReadinessTracker;
 }
 
+/** Core-owned state for one external login, with provider-private scratch data. */
+export type LoginFlow = {
+	state: string;
+	callbackUrl: string;
+	data: Record<string, string>;
+}
+
+/** The identity proof a login provider returns after its callback. */
+export type LoginResult = {
+	subject: string;
+	profile: { username?: string; name?: string; email?: string; emailVerified?: boolean };
+	groups?: string[];
+}
+
+/** One extension identity provider; core owns the flow, state and callback. */
+export interface LoginProviderContribution {
+	readonly id: string;
+	readonly label: string;
+	readonly icon?: string;
+	/** Provider-declared provisioning policy, enforced by core. */
+	readonly policy?: {
+		readonly autoProvision?: boolean;
+		readonly allowedGroups?: string[];
+		readonly allowedDomains?: string[];
+	};
+	begin(flow: LoginFlow, ctx: HandlerContext): Promise<{ redirectUrl: string }>;
+	complete(
+		flow: LoginFlow,
+		callback: { query: Record<string, string>; body?: unknown },
+		ctx: HandlerContext,
+	): Promise<LoginResult>;
+}
+
 /** One contributed webui bundle: a selection name plus the bundle root directory. */
 export interface WebuiBundleContribution {
 	/** The selection key (`server.webui.bundle`); must match `^[a-z][a-z0-9_-]*$`. */
@@ -354,7 +386,9 @@ export interface Principal {
 	readonly admin: boolean;
 	/** True for the `SIGRUN_API_TOKEN` service principal. */
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy" | "host";
+	readonly method: "none" | "token" | "session" | "proxy" | "host";
+	/** The login provider that issued a session principal. */
+	readonly provider?: string;
 }
 
 /** One extension HTTP route, mounted at `/v1/ext/<slug>/<path>`. */
@@ -850,7 +884,7 @@ export interface SigrunHost {
 			readonly maxRows?: number;
 			readonly overflow?: "drop" | "wrap" | "summarize";
 			readonly refreshMs?: number;
-			readonly body?: AmbientBody;
+			readonly body?: Tree;
 			readonly details?: JsonObject;
 		},
 		context: HandlerContext,
@@ -1087,6 +1121,8 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly name?: string;
 	/** Provider contributions, merged into the boot model catalog (last-registered-wins, collisions recorded). */
 	readonly providers?: readonly ProviderContribution[];
+	/** External identity providers; core qualifies ids as `login:<slug>:<id>`. */
+	readonly loginProviders?: readonly LoginProviderContribution[];
 	/** Webui-bundle contributions; each `dir` anchors at the extension ENTRY's directory. */
 	readonly webuiBundles?: readonly WebuiBundleContribution[];
 	/** The surface's health producer, aggregated into `/v1/meta` `health` (any `"degraded"` degrades). */

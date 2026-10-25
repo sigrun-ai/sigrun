@@ -3,8 +3,8 @@
  * — the extraction of serve.ts's inline shutdown with the gateway
  * lifecycle inserted.
  *
- * Unit cases drive recording fakes (the seven-step order; a throwing
- * step still runs the remaining six and rides the AggregateError).
+ * Unit cases drive recording fakes (the eight-step order; a throwing
+ * step still runs the remaining seven and rides the AggregateError).
  *
  * The integration case boots the REAL composition (the
  * host-conversations pattern: faux provider + fixture-gateway-engine)
@@ -50,7 +50,7 @@ function gatewayLogs(): { type: string }[][] {
 }
 
 // ---------------------------------------------------------------------------
-// createShutdown: the seven steps, in order, failure-collecting
+// createShutdown: the eight steps, in order, failure-collecting
 // ---------------------------------------------------------------------------
 
 /** A recording fake for one step; `throwIn` makes the step throw. */
@@ -77,13 +77,14 @@ function fakeSteps(order: string[], overrides?: {
 			stop: step("gateway.stop", order, overrides?.gatewayStop),
 		},
 		eventBusShutdown: step("eventBusShutdown", order),
+		stopSandboxWorkers: step("stopSandboxWorkers", order),
 		stopProviderRefresh: step("stopProviderRefresh", order),
 		closeHarness: step("closeHarness", order),
 	};
 }
 
 describe("createShutdown", () => {
-	test("runs the seven steps in order", async () => {
+	test("runs the eight steps in order", async () => {
 		const order: string[] = [];
 		const shutdown = createShutdown(fakeSteps(order));
 		await shutdown();
@@ -93,12 +94,13 @@ describe("createShutdown", () => {
 			"gateway.stopIntake",
 			"eventBusShutdown",
 			"gateway.stop",
+			"stopSandboxWorkers",
 			"stopProviderRefresh",
 			"closeHarness",
 		]);
 	});
 
-	test("a throwing closeApp still runs the remaining six; the AggregateError carries it", async () => {
+	test("a throwing closeApp still runs the remaining seven; the AggregateError carries it", async () => {
 		const order: string[] = [];
 		const failure = new Error("closeApp exploded");
 		const shutdown = createShutdown(
@@ -117,6 +119,7 @@ describe("createShutdown", () => {
 			"gateway.stopIntake",
 			"eventBusShutdown",
 			"gateway.stop",
+			"stopSandboxWorkers",
 			"stopProviderRefresh",
 			"closeHarness",
 		]);
@@ -135,7 +138,7 @@ describe("createShutdown", () => {
 			return true;
 		});
 		// Every step ran regardless.
-		expect(order).toHaveLength(7);
+		expect(order).toHaveLength(8);
 	});
 });
 
@@ -242,6 +245,7 @@ describe("the booted composition's shutdown order", () => {
 				gateway,
 				eventBusShutdown: () =>
 					opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
+				stopSandboxWorkers: async () => {},
 				stopProviderRefresh: async () => {
 					opened.stopProviderRefresh();
 					// The serve path's bounded boot-refresh join (behavior

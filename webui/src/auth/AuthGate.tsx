@@ -29,6 +29,7 @@ import {
 import { App } from "../App";
 import type { EventSourceFactory } from "../stream";
 import { Login } from "./Login";
+import { LoginCode } from "./LoginCode";
 import { Onboarding } from "./Onboarding";
 
 /** The gate's state machine: probe → onboarding | login → ready. */
@@ -147,6 +148,25 @@ export function AuthGate(options: AuthGateOptions = {}) {
 				</button>
 			</div>
 		);
+	}
+	const location = (globalThis as { location?: { pathname?: string; search?: string; href?: string } }).location;
+	if (location?.pathname === "/login/code") {
+		const params = new URLSearchParams(location.search ?? "");
+		const key = params.get("key");
+		if (key !== null) {
+			return (
+				<div className="auth-screen" data-auth-screen="login-code">
+					<LoginCode
+						client={client}
+						flowKey={key}
+						reason={params.get("reason") ?? "invite"}
+						navigate={(path) => {
+							if (location.href !== undefined) location.href = path;
+						}}
+					/>
+				</div>
+			);
+		}
 	}
 	if (gate.status === "onboarding") {
 		return (

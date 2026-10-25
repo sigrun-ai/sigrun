@@ -1,0 +1,17 @@
+{
+	"v": 1,
+	"root": {
+		"type": "collection",
+		"id": "collection-literal",
+		"items": [
+			{ "id": "row-1", "title": "acme provision", "state": "todo", "quiet": false },
+			{ "id": "row-2", "title": "acme build", "state": "doing", "quiet": true }
+		],
+		"display": "list",
+		"item": {
+			"title": { "$": "./title" },
+			"status": { "label": { "$": "./state" } },
+			"quiet": { "$": "./quiet" }
+		}
+	}
+}

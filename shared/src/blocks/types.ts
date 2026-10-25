@@ -280,7 +280,10 @@ export interface LogLine {
 
 export interface LogBlock extends BlockBase {
 	readonly type: "log";
-	readonly lines: Binding;
+	/** Literal lines are legal (ambient placement requires them — the
+	 *  ambient envelope carries no data document); placements that
+	 *  resolve bindings keep the binding form. */
+	readonly lines: Bindable<readonly JsonValue[]>;
 	readonly follow?: boolean;
 	readonly wrap?: boolean;
 	/** Per-level tones; default `error`→bad, `warn`→warn, `info`→neutral, `debug`→subtle. */
@@ -412,8 +415,10 @@ export interface CollectionTime {
 
 export interface CollectionBlock extends BlockBase {
 	readonly type: "collection";
-	/** Binding to an array; each item has a unique `id`. */
-	readonly items: Binding;
+	/** Binding to an array (each item has a unique `id`) — or the array
+	 *  itself as literal rows, the only legal shape in ambient placement
+	 *  (the ambient envelope carries no data document). */
+	readonly items: Binding | readonly JsonValue[];
 	/** The card template. */
 	readonly item: Card;
 	readonly display: "list" | "table" | "lanes" | "grid" | "calendar";

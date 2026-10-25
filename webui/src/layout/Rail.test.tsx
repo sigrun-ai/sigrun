@@ -33,6 +33,7 @@ function makeMeta(init?: {
 		capabilities: { backup: false, channels: ["webui"] },
 		dev: false,
 		supervised: false,
+		isolation: { mode: "auto", active: false, available: false, abi: 0, osUsers: "off" },
 		seam: { interactions: [], ambient: [] },
 		collisions: { webui: [], providers: [], commands: [] },
 		};
@@ -121,6 +122,22 @@ describe("Rail", () => {
 			.props.title as string;
 		expect(title).toContain("extensions: none");
 		expect(title).toContain("backup: configured");
+	});
+
+	test("an IdP session shows the identity and sign-out controls", () => {
+		const onLogout = vi.fn();
+		const renderer = render(
+			<Rail
+				meta={makeMeta()}
+				onOpenSettings={() => {}}
+				identity={{ user: "idp-user", admin: false, service: false, method: "session", provider: "login:oauth:corp" }}
+				onLogout={onLogout}
+			/>,
+		);
+		expect(renderer.root.findByProps({ className: "rail-user" }).props.children).toBe("idp-user");
+		const logout = renderer.root.findByProps({ "data-rail-section": "logout" });
+		logout.props.onClick();
+		expect(onLogout).toHaveBeenCalledOnce();
 	});
 
 	test("the Settings button forwards onOpenSettings", () => {

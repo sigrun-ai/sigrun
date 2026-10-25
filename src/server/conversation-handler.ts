@@ -24,7 +24,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { preHandlerAsyncHookHandler } from "fastify";
 import { accessOf } from "@sigrun/shared/access";
-import { isSuperuser } from "./auth/principal.js";
+import { accessPrincipalOf } from "./auth/access-principal.js";
 import type { ServerContext } from "./context.js";
 import { conversationId } from "./helpers.js";
 import { SessionMetaDoc } from "./session-meta.js";
@@ -58,10 +58,7 @@ export function loadConversation(
 			BACKGROUND_CONTEXT,
 		);
 		const access = accessOf(
-			{
-				user: request.principal.user,
-				superuser: isSuperuser(request.principal),
-			},
+			accessPrincipalOf(request.principal, ctx.opened.identity.users),
 			meta ?? {},
 		);
 		if (access === "none") {

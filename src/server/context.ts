@@ -18,16 +18,21 @@ import type {
 import type { Env, SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import type { CommandCatalog } from "./commands.js";
+import type { ImageCache } from "./images/cache.js";
+import type { FetchDeps } from "./images/fetch.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
 import type { SurfaceService } from "./surfaces/service.js";
 import { SseRegistry } from "./sse-registry.js";
 import type { GatewayHandle } from "./gateway.js";
+import type { ManagedPaths } from "../sandbox/grants.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
 	readonly opened: OpenedHarness;
 	readonly config: SigrunConfig;
+	/** Protected paths used to validate per-user workspaces and grants. */
+	readonly managedPaths: ManagedPaths;
 	/**
 	 * The live-SSE registry (the ctrl+c fix): hijacked event streams never
 	 * end on their own, so shutdown drains this BEFORE app.close() — the
@@ -123,6 +128,18 @@ export interface ServerContext {
 	 * and Task 4's watcher registry read it.
 	 */
 	readonly surfaces: SurfaceService;
+	/**
+	 * The image-proxy wiring (UI-blocks U7 Task 3, spec §11.2): the
+	 * on-disk LRU cache (`<cacheDir>/images/`), the fetch deps (the
+	 * real `dns.lookup` + wall clock; tests inject a resolver + CA),
+	 * and the loaded signing key the routes verify against. Built once
+	 * in `createServer`; the image routes (`routes/images.ts`) read it.
+	 */
+	readonly imageProxy: {
+		readonly cache: ImageCache;
+		readonly deps: FetchDeps;
+		readonly key: Buffer;
+	};
 }
 
 declare module "fastify" {

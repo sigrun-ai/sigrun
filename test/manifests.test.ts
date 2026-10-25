@@ -1026,7 +1026,7 @@ describe("docker compose reference", () => {
 		expect(stdout).not.toMatch(/^\s+build:/m);
 	});
 
-	test("hardened defaults: read-only rootfs + tmpfs scratch, caps dropped, no-new-privileges, init", async () => {
+	test("hardened defaults: read-only rootfs + tmpfs scratch, caps dropped, no-new-privileges, image-owned init", async () => {
 		const doc = await composeDoc();
 		const service = doc.services.sigrun;
 		// spec §6: writes are confined to /data (volume), /cache and /tmp
@@ -1039,9 +1039,9 @@ describe("docker compose reference", () => {
 		expect(service.cap_drop).toEqual(["ALL"]);
 		expect(service.security_opt).toEqual(["no-new-privileges:true"]);
 		// Zombie reaping: the node process never reaps adopted children
-		// (git/npm invocations from agent shells) — compose's init makes
-		// PID 1 the reaper instead.
-		expect(service.init).toBe(true);
+		// (git/npm invocations from agent shells). The image's tini
+		// ENTRYPOINT owns PID 1, so compose must not layer another init.
+		expect(service.init).toBeUndefined();
 	});
 
 	test("image tag and uid/gid are parametrized with the release defaults", async () => {

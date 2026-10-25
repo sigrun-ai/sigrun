@@ -1,0 +1,16 @@
+{
+	"v": 1,
+	"root": {
+		"type": "stat",
+		"id": "stat-literal",
+		"label": "Latency",
+		"value": 42,
+		"unit": "ms",
+		"format": "number",
+		"tone": "good",
+		"icon": "clock",
+		"size": "l",
+		"caption": "p95 over 5m",
+		"sparkline": [30, 42, 38, 51, 44]
+	}
+}
