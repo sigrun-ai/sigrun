@@ -321,7 +321,11 @@ describe("DELETE /v1/users/:user", () => {
 	test("deleting a user stops their services before the record is removed", async () => {
 		const { app, opened } = await bootServer({});
 		const token = await mint(opened, "alice");
-		const stopUser = vi.spyOn(opened.userServices, "stopUser").mockResolvedValue();
+		const stopUser = vi.spyOn(opened.userServices, "stopUser").mockImplementation(async (user) => {
+			// The record must still exist while its services are stopped;
+			// otherwise their user-scoped credentials/policy cannot be resolved.
+			expect(opened.identity.users.get(user)).toBeDefined();
+		});
 		const deleted = await app.inject({
 			method: "DELETE",
 			url: "/v1/users/bob?transferTo=alice",

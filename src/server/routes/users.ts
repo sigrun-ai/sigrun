@@ -293,12 +293,12 @@ export function registerUserRoutes(
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
 		await identity.accounts.removeUser(user);
+		// Stop credential-bearing sibling processes while the directory
+		// record still exists and before userDeleted handlers run. Task 5
+		// owns the remaining per-user store cleanup ordering.
+		await ctx.opened.userServices.stopUser(user);
 		if (grant === undefined) await identity.users.remove(user);
 		else await identity.users.removeWithGrant(user, to, grant);
-		// Stop credential-bearing sibling processes before their owner's
-		// lifecycle handlers run. Task 5 owns the full deletion ordering;
-		// this prevents deleted users' services from surviving meanwhile.
-		await ctx.opened.userServices.stopUser(user);
 		// The lifecycle event: extensions transfer their own records
 		// (deadlocked-ordering free — the core transfer already landed).
 		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
