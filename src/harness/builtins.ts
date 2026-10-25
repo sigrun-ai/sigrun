@@ -1,11 +1,10 @@
 /**
- * Built-in extensions (Task 2, pi parity): codemode, MCP and tool search
- * ship WITH core — present by default, disableable via settings
- * `builtinExtensions`, replaceable by a same-named configured extension.
+ * Built-in extensions: codemode, MCP, tool search and OAuth ship WITH
+ * core — present by default, disableable via settings `builtinExtensions`,
+ * replaceable by a same-named configured extension.
  *
- * pi 1.3.0 ships these three as built-ins; a default sigrun install
- * mirrors that, so a friend installing sigrun gets pi's tool surface
- * without configuring anything.
+ * The first three mirror pi 1.3.0's built-in tool surface; OAuth adds
+ * sigrun's standard OIDC/OAuth2 login providers without extra setup.
  *
  * Resolution root (Ruling 2): built-ins resolve through core's OWN
  * node_modules via `createRequire(import.meta.url)` — they are core
@@ -24,7 +23,7 @@
  * (`readPackageName` for path-shaped entries, `parsePackageSpecifier`
  * otherwise), never by string equality on the raw specifier.
  *
- * Disabled (Ruling 6): `builtinExtensions: {codemode?, mcp?, toolSearch?}`
+ * Disabled (Ruling 6): `builtinExtensions: {codemode?, mcp?, toolSearch?, oauth?}`
  * (each defaulting to `true`, restart-required). A disabled built-in is
  * absent from `/v1/extensions` entirely; one log line records the skip.
  *
@@ -45,19 +44,19 @@ import { parsePackageSpecifier, readPackageName } from "./packages.js";
 /** One built-in extension's stable identity. */
 export interface BuiltinExtension {
 	/** The settings key (`builtinExtensions.<key>`). */
-	readonly key: "codemode" | "mcp" | "toolSearch";
-	/** The npm package name (the resolution specifier; `@sigrun/ext-*`). */
+	readonly key: "codemode" | "mcp" | "toolSearch" | "oauth";
+	/** The npm package name (the resolution specifier). */
 	readonly specifier: string;
 	/** The `/v1/extensions` row name — the slug the built-in's DECLARED
 	 * extension name loads under (`codemode`, `sigrun.mcp` → `sigrun-mcp`,
-	 * `tool-search`). The replacement row reports THIS name so a client
+	 * `tool-search`, `oauth`). The replacement row reports THIS name so a client
 	 * sees the built-in's row under the same identity whether it loaded,
 	 * was replaced or (absent, when disabled). */
 	readonly slug: string;
 }
 
 /**
- * The three built-ins, in load order (codemode before tool-search: both
+ * The four built-ins, in load order (codemode before tool-search: both
  * wrap pi-durable's own extensions and neither depends on the other, but
  * the order pins the tool-collision story should names ever overlap).
  * Specifiers are the published package names (Task 3) — npm keys a file:
@@ -69,6 +68,7 @@ export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
 	{ key: "codemode", specifier: "@sigrun/ext-codemode", slug: "codemode" },
 	{ key: "mcp", specifier: "@sigrun/ext-mcp", slug: "sigrun-mcp" },
 	{ key: "toolSearch", specifier: "@sigrun/ext-tool-search", slug: "tool-search" },
+	{ key: "oauth", specifier: "@sigrun/oauth", slug: "oauth" },
 ];
 
 /** The outcome of resolving the built-ins against settings + configured extensions. */
@@ -192,7 +192,10 @@ export function resolveBuiltins(
 	configured: readonly ResolvedExtensionInput[],
 	/** Test seam: additional built-in specifiers (fixtures), resolved like the real ones. */
 	extra: readonly string[] = [],
+	/** Test seam: replace core resolution to exercise an unresolvable built-in. */
+	resolveEntry?: (specifier: string, fallback: typeof builtinEntry) => ResolvedExtensionInput,
 ): ResolvedBuiltins {
+	const resolve = resolveEntry ?? ((specifier: string) => builtinEntry(specifier));
 	const toggles = settings.builtinExtensions;
 	const load: ResolvedExtensionInput[] = [];
 	const skipped: ResolvedBuiltins["skipped"][number][] = [];
@@ -221,13 +224,13 @@ export function resolveBuiltins(
 			skipped.push({ key: builtin.key, reason: "replaced", by: replacement });
 			continue;
 		}
-		load.push(builtinEntry(builtin.specifier));
+		load.push(resolve(builtin.specifier, builtinEntry));
 	}
 	// The test-seam extra entries (the boot's `extraBuiltins` option):
 	// resolved exactly like the real built-ins, appended after them,
 	// reported builtin.
 	for (const specifier of extra) {
-		load.push(builtinEntry(specifier));
+		load.push(resolve(specifier, builtinEntry));
 	}
 	return { load, skipped };
 }

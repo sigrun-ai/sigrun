@@ -495,8 +495,8 @@ function validate(value: Record<string, unknown>): void {
 		if (builtins === undefined) {
 			throw new SettingsValidationError("builtinExtensions", "must be an object");
 		}
-		checkKeys("builtinExtensions.", builtins, ["codemode", "mcp", "toolSearch"]);
-		for (const key of ["codemode", "mcp", "toolSearch"] as const) {
+		checkKeys("builtinExtensions.", builtins, ["codemode", "mcp", "toolSearch", "oauth"]);
+		for (const key of ["codemode", "mcp", "toolSearch", "oauth"] as const) {
 			if (builtins[key] !== undefined && typeof builtins[key] !== "boolean") {
 				throw new SettingsValidationError(
 					`builtinExtensions.${key}`,

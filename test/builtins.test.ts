@@ -1,6 +1,6 @@
 /**
- * Built-in extensions (Task 2, pi parity): codemode, MCP and tool search
- * ship WITH core — present by default, disableable via settings
+ * Built-in extensions: codemode, MCP, tool search and OAuth ship WITH
+ * core — present by default, disableable via settings
  * `builtinExtensions`, replaceable by a same-named configured extension.
  *
  * Hermetic pattern (server.test.ts): a faux provider serves `faux/m`
@@ -35,17 +35,26 @@ import {
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import type { ResolvedExtensionInput } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
-/** The replacement fixture whose manifest name matches the built-in MCP package. */
+/** Replacement fixtures whose manifest names match built-in packages. */
 const REPLACES_MCP_SPECIFIER = pathToFileURL(
 	join(
 		import.meta.dirname,
 		"fixtures",
 		"fixture-replaces-mcp",
+		"index.js",
+	),
+).href;
+const REPLACES_OAUTH_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-replaces-oauth",
 		"index.js",
 	),
 ).href;
@@ -87,6 +96,7 @@ async function bootBuiltins(options?: {
 	readonly settings?: Record<string, unknown>;
 	/** Test-only: additional built-in load entries (the quarantine seam). */
 	readonly extraBuiltins?: readonly string[];
+	readonly unresolvableOAuth?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-builtins-"));
 	const faux = fauxProvider({
@@ -142,6 +152,20 @@ async function bootBuiltins(options?: {
 		...(options?.extraBuiltins === undefined
 			? {}
 			: { extraBuiltins: options.extraBuiltins }),
+		...(options?.unresolvableOAuth === true
+			? {
+					builtinResolver: (
+						specifier: string,
+						fallback: (specifier: string) => ResolvedExtensionInput,
+					) =>
+						specifier === "@sigrun/oauth"
+							? {
+									name: specifier,
+									entry: pathToFileURL(join(tmpdir(), "missing-sigrun-oauth.js")).href,
+								}
+							: fallback(specifier),
+				}
+			: {}),
 		settingsDir: dir,
 	});
 	const app = await createServer(opened, config);
@@ -229,7 +253,7 @@ async function storedAgentDoc(
 // ---------------------------------------------------------------------------
 
 describe("default boot", () => {
-	test("loads all three built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
+	test("loads all four built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins();
 		const response = await app.inject({ method: "GET", url: "/v1/extensions" });
 		expect(response.statusCode).toBe(200);
@@ -242,6 +266,7 @@ describe("default boot", () => {
 		const codemode = rows.find((row) => row.name === "codemode");
 		const mcp = rows.find((row) => row.name === "sigrun-mcp");
 		const toolSearch = rows.find((row) => row.name === "tool-search");
+		const oauth = rows.find((row) => row.name === "oauth");
 		expect(codemode).toMatchObject({
 			status: "ok",
 			builtin: true,
@@ -257,10 +282,15 @@ describe("default boot", () => {
 			builtin: true,
 			version: "0.1.0",
 		});
+		expect(oauth).toMatchObject({
+			status: "ok",
+			builtin: true,
+			version: "0.1.0",
+		});
 		// A non-built-in outcome carries no builtin flag (the field is
 		// exactly true-or-absent).
 		const others = rows.filter(
-			(row) => !["codemode", "sigrun-mcp", "tool-search"].includes(row.name),
+			(row) => !["codemode", "sigrun-mcp", "tool-search", "oauth"].includes(row.name),
 		);
 		for (const row of others) expect(row.builtin).toBeUndefined();
 	});
@@ -363,7 +393,7 @@ describe("builtinExtensions disables", () => {
 		expect(lines).toHaveLength(1);
 	});
 
-	test("builtinExtensions: {codemode: false, toolSearch: false} → only MCP loads", { timeout: 60_000 }, async () => {
+	test("builtinExtensions: {codemode: false, toolSearch: false} → only MCP and OAuth load", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins({
 			settings: { builtinExtensions: { codemode: false, toolSearch: false } },
 		});
@@ -373,6 +403,26 @@ describe("builtinExtensions disables", () => {
 		expect(rows.some((row) => row.name === "codemode")).toBe(false);
 		expect(rows.some((row) => row.name === "tool-search")).toBe(false);
 		expect(rows.some((row) => row.name === "sigrun-mcp")).toBe(true);
+		expect(rows.some((row) => row.name === "oauth")).toBe(true);
+	});
+
+	test("builtinExtensions: {oauth: false} → OAuth absent, one log line", { timeout: 60_000 }, async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app } = await bootBuiltins({
+			settings: { builtinExtensions: { oauth: false } },
+		});
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as { name: string }[];
+		expect(rows.some((row) => row.name === "oauth")).toBe(false);
+		expect(rows.some((row) => row.name === "codemode")).toBe(true);
+		expect(rows.some((row) => row.name === "sigrun-mcp")).toBe(true);
+		expect(rows.some((row) => row.name === "tool-search")).toBe(true);
+		const lines = [...info.mock.calls, ...warn.mock.calls]
+			.map((call) => String(call[0]))
+			.filter((line) => line.includes("@sigrun/oauth"));
+		expect(lines).toHaveLength(1);
 	});
 });
 
@@ -421,6 +471,40 @@ describe("replacement", () => {
 		expect(warnings[0]).toContain(REPLACES_MCP_SPECIFIER);
 	});
 
+	test("a configured package named @sigrun/oauth replaces the built-in OAuth row", { timeout: 60_000 }, async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app, opened } = await bootBuiltins({
+			extensionSpecifiers: [REPLACES_OAUTH_SPECIFIER],
+		});
+		const names = opened.registry
+			.snapshot()
+			.tools()
+			.map((entry) => entry.tool.name);
+		expect(names).toContain("acme_oauth_replacement");
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as {
+			name: string;
+			status: string;
+			builtin?: boolean;
+			replacedBy?: string;
+		}[];
+		expect(rows.find((row) => row.name === "oauth")).toMatchObject({
+			status: "replaced",
+			builtin: true,
+			replacedBy: REPLACES_OAUTH_SPECIFIER,
+		});
+		expect(rows.find((row) => row.name === "acme-oauth-replacement")).toMatchObject({
+			status: "ok",
+		});
+		expect(rows.find((row) => row.name === "acme-oauth-replacement")?.builtin).toBeUndefined();
+		const warnings = warn.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.includes("@sigrun/oauth"));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain(REPLACES_OAUTH_SPECIFIER);
+	});
+
 	test("an unrelated configured extension replaces nothing", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins({
 			extensionSpecifiers: [THROWING_SPECIFIER.replace("fixture-throwing", "fixture-gate")],
@@ -440,6 +524,29 @@ describe("replacement", () => {
 // ---------------------------------------------------------------------------
 
 describe("quarantine", () => {
+	test("an unresolvable @sigrun/oauth is quarantined and boot continues", { timeout: 60_000 }, async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app } = await bootBuiltins({
+			settings: {
+				builtinExtensions: { codemode: false, mcp: false, toolSearch: false },
+			},
+			unresolvableOAuth: true,
+		});
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as {
+			name: string;
+			status: string;
+			error?: string;
+			builtin?: boolean;
+		}[];
+		const oauth = rows.find((row) => row.status === "quarantined" && row.builtin === true);
+		expect(oauth, JSON.stringify(rows)).toBeDefined();
+		expect(oauth?.name).toContain("@sigrun/oauth");
+		expect(oauth?.error).toContain("Cannot find module");
+		expect(rows.some((row) => row.name === "oauth" && row.status === "ok")).toBe(false);
+	});
+
 	test("a built-in that throws while loading is quarantined exactly like a configured extension; boot continues", { timeout: 60_000 }, async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { app } = await bootBuiltins({
@@ -448,6 +555,7 @@ describe("quarantine", () => {
 					codemode: false,
 					mcp: false,
 					toolSearch: false,
+					oauth: false,
 				},
 			},
 			extraBuiltins: [THROWING_SPECIFIER],
