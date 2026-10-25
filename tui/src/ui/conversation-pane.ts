@@ -254,6 +254,14 @@ export class ConversationPane implements Component {
 	#turns: readonly Turn<EntryShape>[] = [];
 	/** The open view's conversation id (the chat-block attach's address). */
 	#conversationId = 0;
+	/** The mounted chat-block surface states, keyed by entry id
+	 *  (`<conversationId>:<entryId>`). Every rebuild REUSES the state
+	 *  (one `load`, one hub subscription per block); states are disposed
+	 *  on conversation swap and when the block's event leaves the view
+	 *  (a fork rewound the transcript). Without this, every stream frame
+	 *  remounted a fresh state and subscription and never disposed the
+	 *  old one — N frames = N stale subscriptions fanning out refetches. */
+	readonly #surfaceStates = new Map<string, SurfaceState>();
 	#focus: number | undefined;
 	/** Fold state by turn index (assistant turns only fold). */
 	readonly #open = new Set<number>();
@@ -356,12 +364,34 @@ export class ConversationPane implements Component {
 	 * turns.
 	 */
 	showView(wire: ConversationViewWire): void {
-		this.#conversationId = wire.conversation.id;
+		const conversationId = wire.conversation.id;
+		if (conversationId !== this.#conversationId) {
+			// Conversation swap: dispose every surface state (unsubscribe +
+			// cancel timers) — a stale state would keep refetching the OLD
+			// conversation's block on every hub event.
+			for (const state of this.#surfaceStates.values()) state.dispose();
+			this.#surfaceStates.clear();
+		}
+		this.#conversationId = conversationId;
 		this.#turns = groupTurns(wire.entries as readonly EntryShape[]);
 		if (this.#focus !== undefined && this.#focus >= this.#turns.length) {
 			this.#focus = undefined;
 		}
 		this.#rebuild();
+	}
+
+	/** Dispose every mounted chat-block surface state (the shell calls
+	 *  this on teardown — the pane never leaves a hub subscription or an
+	 *  action timer behind). */
+	dispose(): void {
+		for (const state of this.#surfaceStates.values()) state.dispose();
+		this.#surfaceStates.clear();
+	}
+
+	/** The cached surface state for a blocks entry id (test/debug seam —
+	 *  the turn components dispatch through their own closures). */
+	surfaceStateFor(entryId: number): SurfaceState | undefined {
+		return this.#surfaceStates.get(`${this.#conversationId}:${entryId}`);
 	}
 
 	/** Append an `[error]` line (a failed composer action's surface). */
@@ -518,8 +548,27 @@ export class ConversationPane implements Component {
 				// onChanged refreshes it when another viewer edits the block).
 				for (const event of turn.timeline) {
 					if (event.kind !== "blocks") continue;
-					const attach = this.#attachChatTransport;
-					if (attach === undefined) {
+				const attach = this.#attachChatTransport;
+				const key = `${this.#conversationId}:${event.entryId}`;
+				// Reuse the cached state across rebuilds; create + load once.
+				let state = this.#surfaceStates.get(key);
+				if (state === undefined && attach !== undefined) {
+					const fresh = new SurfaceState(
+						attach(this.#conversationId, String(event.entryId)),
+					);
+					void fresh.load();
+					fresh.onChange(() => {
+						// Surface rejections/toasts as pane notices (the chat
+						// pane owns no toast surface of its own).
+						for (const notice of fresh.consumeNotices()) {
+							this.#appendNotice({ kind: "error", text: notice });
+						}
+						this.#container.invalidate();
+					});
+					this.#surfaceStates.set(key, fresh);
+					state = fresh;
+				}
+				if (attach === undefined) {
 						components.push(
 							new Text(
 								this.#theme.dim(
@@ -531,13 +580,9 @@ export class ConversationPane implements Component {
 						);
 						continue;
 					}
-					const state = new SurfaceState(
-						attach(this.#conversationId, String(event.entryId)),
-					);
-					void state.load();
-					state.onChange(() => this.#container.invalidate());
+					// Narrowed above (state === undefined implies attach was too).
 					components.push(
-						new SurfaceView(state, {
+						new SurfaceView(state as SurfaceState, {
 							theme: this.#theme,
 							unicode: true,
 						}),
@@ -657,7 +702,7 @@ export class ConversationPane implements Component {
 	#recordRanges(_lines: string[], width: number): void {
 		const ranges: { start: number; end: number }[] = [];
 		let offset = 0;
-		for (const [index, mounted] of this.#mounted.entries()) {
+		for (const mounted of this.#mounted) {
 			let height = 0;
 			mounted.heights.length = 0;
 			for (const component of mounted.components) {

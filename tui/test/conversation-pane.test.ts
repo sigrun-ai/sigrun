@@ -519,4 +519,122 @@ describe("ConversationPane: chat blocks (U5 Task 4)", () => {
 			"blocks entry 3 — no chat transport",
 		);
 	});
+
+	test("repeated showView frames reuse ONE surface state: one attach, one load, one subscription", async () => {
+		let loads = 0;
+		let subscriptions = 0;
+		const transport = {
+			...stubChatTransport(),
+			load: async () => {
+				loads += 1;
+				return stubChatTransport().load();
+			},
+			onChanged: () => {
+				subscriptions += 1;
+				return () => {};
+			},
+		};
+		let attaches = 0;
+		const pane = new ConversationPane({
+			attachChatTransport: () => {
+				attaches += 1;
+				return transport;
+			},
+		});
+		// Two frames (a snapshot then a delta — each triggers a rebuild).
+		pane.showView(view(1, chatBlocksEntries()));
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(attaches).toBe(1);
+		expect(loads).toBe(1);
+		expect(subscriptions).toBe(1);
+		pane.dispose();
+	});
+
+	test("a conversation swap disposes the old surface state (its unsubscribe fires)", async () => {
+		let unsubscribed = 0;
+		const transport = {
+			...stubChatTransport(),
+			onChanged: () => () => {
+				unsubscribed += 1;
+			},
+		};
+		const pane = new ConversationPane({
+			attachChatTransport: () => transport,
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(unsubscribed).toBe(0);
+		pane.showView(view(2, chatBlocksEntries()));
+		expect(unsubscribed).toBe(1);
+		// The swap's own state unsubscribes once its async load lands.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		pane.dispose();
+		expect(unsubscribed).toBe(2); // the swap's own state, now torn down
+	});
+
+	test("a note entry written after a compaction renders as a note, never unsupported", async () => {
+		// Auto-compaction lands at run end and flushes the pending turn;
+		// the next turn's note entry lands after the pi.compaction entry —
+		// it must open a fresh assistant turn (the note row renders), not
+		// fall through to the other-kind unsupported line.
+		const pane = new ConversationPane({
+			attachChatTransport: () => stubChatTransport(),
+		});
+		pane.showView(
+			view(1, [
+				{ id: 1, kind: "pi.user", model: [{ role: "user", content: "hi" }] },
+				{
+					id: 2,
+					kind: "pi.assistant",
+					model: [
+						{ role: "assistant", content: [{ type: "text", text: "hello" }] },
+					],
+				},
+				{ id: 3, kind: "pi.compaction" },
+				{
+					id: 4,
+					kind: "sigrun.blocks.note",
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "UI changes: Ranking (alice): moved c1" },
+							],
+						},
+					],
+					data: { advance: [{ entryId: "2", through: 1 }] },
+				},
+			]),
+		);
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain("UI changes sent to the agent");
+		expect(lines).not.toContain("unsupported entry kind");
+		pane.dispose();
+	});
+
+	test("a rejected action's notice drains into a pane [error] line", async () => {
+		const pane = new ConversationPane({
+			attachChatTransport: () => ({
+				...stubChatTransport(),
+				act: async () => ({
+					ok: false as const,
+					error: { message: "nope from acme" },
+				}),
+			}),
+		});
+		pane.showView(view(1, chatBlocksEntries()));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		// Dispatch an action through the cached state (a form button's
+		// path). The rejection's message must land as a pane notice.
+		const state = pane.surfaceStateFor(3);
+		expect(state).toBeDefined();
+		state!.dispatch(
+			{ type: "action", name: "submit" } as never,
+			{},
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(pane.render(80).join("\n")).toContain("[error] nope from acme");
+		pane.dispose();
+	});
 });

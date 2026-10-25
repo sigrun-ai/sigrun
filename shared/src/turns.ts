@@ -253,15 +253,24 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 			continue;
 		}
 
-		// U5 Task 4: the chat-blocks kinds ride the pending assistant turn
-		// (spec §8.2/§8.3) — a boundary note mid-run appends its event and
-		// does NOT flush; with no pending turn they fall through to `other`
-		// (fail visible, the unknown-kind rule). `sigrun.blocks.answer` is a
-		// user turn (§8.4: the answer submits through the normal path).
-		if (
-			(entry.kind === BLOCKS_KIND || entry.kind === BLOCKS_NOTE_KIND) &&
-			pending !== null
-		) {
+		// U5 Task 4: the chat-blocks kinds are RUN ARTIFACTS, never
+		// standalone records (spec §8.2/§8.3). With a pending assistant
+		// turn they ride it — a boundary note mid-run appends its event
+		// and does NOT flush. With NONE (auto-compaction's pi.compaction
+		// flushed the run; the trailing note/blocks entry lands after the
+		// flush) they START one: an assistant turn with no text whose
+		// timeline still renders the block/note rows — falling through to
+		// `other` would print "unsupported entry kind".
+		// `sigrun.blocks.answer` is a user turn (§8.4: the answer submits
+		// through the normal path).
+		if (entry.kind === BLOCKS_KIND || entry.kind === BLOCKS_NOTE_KIND) {
+			pending ??= {
+				entries: [],
+				thinking: [],
+				tools: [],
+				texts: [],
+				timeline: [],
+			};
 			pending.entries.push(entry);
 			pending.timeline.push({
 				kind: entry.kind === BLOCKS_KIND ? "blocks" : "note",

@@ -15,12 +15,26 @@
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
 	.IS_REACT_ACT_ENVIRONMENT = true;
 
-import { createElement as h } from "react";
+import { act, createElement as h } from "react";
 import { describe, expect, test, vi } from "vitest";
 import type { SurfaceLoad, SurfaceTransport } from "@sigrun/shared/blocks";
 import { renderAsync, textContent } from "../test-utils";
 import { BlocksEntry, NoteEntry, blocksEntryData } from "./BlocksEntry";
 import { ChatTransportContext } from "./chatTransportContext";
+
+/** A grid board (the rem-derived compact fallback's proving tree — a
+ *  minItemWidth "s" grid must collapse to ONE column under the chat
+ *  pin, never auto-fill into two columns inside the 720px column). */
+const GRID_TREE = {
+	v: 1,
+	root: {
+		type: "collection",
+		id: "gallery",
+		items: { $: "/cards" },
+		display: "grid",
+		item: { title: { $: "./title" } },
+	},
+};
 
 /** A two-lane ranking board (the compact fallback's proving tree). */
 const LANES_TREE = {
@@ -150,6 +164,95 @@ describe("BlocksEntry", () => {
 				(node) => typeof node.props["data-drag-item"] === "string",
 			).length,
 		).toBeGreaterThan(0);
+		renderer.unmount();
+	});
+
+	test("the compact pin forces a grid to one column (rem-derived fallback)", async () => {
+		// §12.3: at compact a wrap grid renders ONE column. The pin must
+		// carry a compact REM (not null) — null falls back to auto-fill
+		// and a minItemWidth "s" grid would render two columns inside the
+		// 720px chat column.
+		const { transport } = stubTransport("read");
+		transport.load = async () => ({
+			tree: GRID_TREE as unknown as SurfaceLoad["tree"],
+			data: LANES_DATA,
+			rev: 1,
+			treeRev: 0,
+			access: "read",
+		});
+		const renderer = await renderAsync(
+			h(
+				ChatTransportContext.Provider,
+				{ value: () => transport },
+				h(BlocksEntry, {
+					conversationId: 1,
+					entryId: 7,
+					data: { title: "Gallery", tree: GRID_TREE, data: LANES_DATA },
+				}),
+			),
+		);
+		const grid = renderer.root.findByProps({ className: "blk-grid-items" });
+		expect(
+			(grid.props.style as { gridTemplateColumns?: string })
+				.gridTemplateColumns,
+		).toBe("1fr");
+		renderer.unmount();
+	});
+
+	test("a rejected action surfaces its message as a toast row", async () => {
+		// useSurface collects a rejection into toasts; the chat BlocksEntry
+		// renders them inline (the chat column has no other notice surface).
+		// The dispatch rides a card's action button (the tree's own
+		// affordance — content.tsx dispatches its click).
+		const CALLOUT_TREE = {
+			v: 1,
+			root: {
+				type: "callout",
+				id: "c",
+				title: "Card",
+				actions: [
+					{
+						id: "submit",
+						label: "Submit",
+						action: { type: "submit", name: "submitRanking" },
+					},
+				],
+			},
+		};
+		const { transport } = stubTransport("write");
+		transport.load = async () => ({
+			tree: CALLOUT_TREE as unknown as SurfaceLoad["tree"],
+			data: {},
+			rev: 1,
+			treeRev: 0,
+			access: "write",
+		});
+		transport.act = async () => ({
+			ok: false as const,
+			error: { message: "nope from acme" },
+		});
+		const renderer = await renderAsync(
+			h(
+				ChatTransportContext.Provider,
+				{ value: () => transport },
+				h(BlocksEntry, {
+					conversationId: 1,
+					entryId: 7,
+					data: { title: "Ranking", tree: CALLOUT_TREE, data: {} },
+				}),
+			),
+		);
+		const button = renderer.root.findByProps({ type: "button" });
+		await act(async () => {
+			button.props.onClick();
+		});
+		// The rejection's message renders as the toast row SurfaceView
+		// would have shown (chat has no other notice surface).
+		const toasts = renderer.root.findAllByProps({
+			className: "blk-surface-toast",
+		});
+		expect(toasts.length).toBeGreaterThan(0);
+		expect(textContent(renderer.toJSON())).toContain("nope from acme");
 		renderer.unmount();
 	});
 });

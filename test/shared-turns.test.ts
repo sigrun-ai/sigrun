@@ -309,7 +309,11 @@ describe("groupTurns", () => {
 		).toEqual(["text", "blocks:3"]);
 	});
 
-	it("a sigrun.blocks entry with NO pending run is an other turn", () => {
+	it("a sigrun.blocks entry with NO pending run starts an assistant turn", () => {
+		// A blocks/note entry is a run artifact, never a standalone record:
+		// with no pending turn (e.g. after a compaction flush) it opens an
+		// empty assistant turn whose timeline still renders the block row —
+		// an `other` turn would print "unsupported entry kind".
 		const turns = groupTurns([
 			userEntry(1, "hi"),
 			{
@@ -318,7 +322,45 @@ describe("groupTurns", () => {
 				data: { title: "T", tree: { v: 1, root: { type: "markdown", text: "x" } }, data: {} },
 			},
 		]);
-		expect(turns.map((turn) => turn.kind)).toEqual(["user", "other"]);
+		expect(turns.map((turn) => turn.kind)).toEqual(["user", "assistant"]);
+		expect(
+			asAssistant(turns[1]!).timeline.map((event) =>
+				event.kind === "blocks" ? `blocks:${event.entryId}` : event.kind,
+			),
+		).toEqual(["blocks:2"]);
+	});
+
+	it("a note entry after a compaction flush renders as a note, not unsupported", () => {
+		// Auto-compaction lands at run end; the next turn's note is written
+		// AFTER the pi.compaction entry — the compaction flushed the pending
+		// turn, so the note must open a fresh assistant turn.
+		const turns = groupTurns([
+			userEntry(1, "hi"),
+			assistantEntry(2, [{ type: "text", text: "hello" }]),
+			{ id: 3, kind: "pi.compaction" },
+			{
+				id: 4,
+				kind: BLOCKS_NOTE_KIND,
+				model: [
+					{
+						role: "user",
+						content: [{ type: "text", text: "UI changes: T (alice): moved c1" }],
+					},
+				],
+				data: { advance: [{ entryId: "2", through: 1 }] },
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"other",
+			"assistant",
+		]);
+		expect(
+			asAssistant(turns[3]!).timeline.map((event) =>
+				event.kind === "note" ? `note:${event.entryId}` : event.kind,
+			),
+		).toEqual(["note:4"]);
 	});
 
 	it("a sigrun.blocks.answer entry is a USER turn (like the expanded kind)", () => {
