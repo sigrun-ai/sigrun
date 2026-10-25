@@ -47,7 +47,7 @@ import {
 import { applyChatAction, chatActionStartsTurn, readChatBlock, resolveChatHandlers } from "../blocks/chat-surfaces.js";
 import { answerBlock } from "../blocks/answers.js";
 import { accessOf } from "@sigrun/shared/access";
-import { isSuperuser } from "../auth/principal.js";
+import { accessPrincipalOf } from "../auth/access-principal.js";
 import { SessionMetaDoc } from "../session-meta.js";
 import { conversationId as brandConversationId } from "../helpers.js";
 
@@ -518,7 +518,7 @@ export function registerSurfaceRoutes(
 				BACKGROUND_CONTEXT,
 		);
 		return accessOf(
-				{ user: principal.user, superuser: isSuperuser(principal) },
+				accessPrincipalOf(principal, ctx.opened.identity.users),
 				meta ?? {},
 		);
 	};

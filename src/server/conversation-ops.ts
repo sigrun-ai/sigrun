@@ -44,7 +44,8 @@ import { touchActivity } from "../harness/activity.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
-import { isConfinedPath, parseSubmissionInput, resolveParts } from "./content-parts.js";
+import { isConfinedPath, parseSubmissionInput } from "./content-parts.js";
+import { resolvePartsLazy } from "./content-parts-lazy.js";
 import {
 	CommandUsageError,
 	expandInput,
@@ -425,7 +426,15 @@ export async function submitOp(
 	// ordinary user input: it maps to the same `invalid_input` 400 shape
 	// `parseSubmissionInput` uses, never a 500. Anything else expansion
 	// throws is a genuine bug and still falls through as one.
-	const env = await conversationEnv(opened, conversation);
+	// The workspace env resolves lazily (a promise, awaited only by
+	// resolvePartsLazy's file/image parts): an answer submission (opts.entry)
+	// never needs the filesystem, and on a host where the sandbox helper is
+	// unavailable the env would throw — the answer must not depend on it.
+	// A THUNK, not an eager promise: conversationEnv throws (not rejects)
+	// on hosts where the sandbox helper is unavailable, and an eager
+	// creation would fail the ANSWER path too (opts.entry never needs the
+	// filesystem). The thunk is invoked only by the expansion branch.
+	const envThunk = () => conversationEnv(opened, conversation);
 	let expansion: ExpansionResult;
 	if (opts.entry !== undefined) {
 		// A server-built entry (a block answer) skips expansion entirely:
@@ -433,6 +442,7 @@ export async function submitOp(
 		expansion = { parts: parsed.parts };
 	} else {
 		try {
+			const env = await envThunk();
 			expansion = await expandInput(
 				parsed.parts,
 				opened.commandExpansion,
@@ -464,7 +474,7 @@ export async function submitOp(
 			);
 		}
 	}
-	const content = await resolveParts(expansion.parts, env, BACKGROUND_CONTEXT);
+	const content = await resolvePartsLazy(expansion.parts, envThunk(), BACKGROUND_CONTEXT);
 	const entry: InputEntry | undefined =
 		opts.entry !== undefined
 			? opts.entry
