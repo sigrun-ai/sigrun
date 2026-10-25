@@ -302,6 +302,9 @@ export interface BuiltinExtensionsSettings {
 	readonly codemode?: boolean;
 	readonly mcp?: boolean;
 	readonly toolSearch?: boolean;
+	/** Gateway (gateway C3): the built-in engine, default true. */
+	readonly gateway?: boolean;
+	/** OAuth login providers (multi-user M3b), default true. */
 	readonly oauth?: boolean;
 }
 

@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
@@ -75,6 +75,7 @@ async function bootBus(
 		settings?: HarnessSettings;
 		queueMax?: number;
 		hookDeadlineMs?: number;
+		shutdownSettleWaitMs?: number;
 	} = {},
 ): Promise<TestBus> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
@@ -112,6 +113,9 @@ async function bootBus(
 	const bus = EventBus.open(opened.harness, {
 		queueMax: options.queueMax ?? 1000,
 		hookDeadlineMs: options.hookDeadlineMs ?? 5_000,
+		...(options.shutdownSettleWaitMs === undefined
+			? {}
+			: { shutdownSettleWaitMs: options.shutdownSettleWaitMs }),
 		// Required since the post-ship follow-ups (no bus-side default —
 		// config.ts owns the 600_000 production value; tests pick their own).
 		workerDeadlineMs: 10_000,
@@ -171,6 +175,80 @@ function recordAll(bus: EventBus): {
 	});
 	return { settled, lifecycle };
 }
+
+// ---------------------------------------------------------------------------
+// Ordered shutdown: the last admission window
+// ---------------------------------------------------------------------------
+
+describe("shutdownSequence with live runs", () => {
+	test("a placed run settling after shutdown starts reaches runSettled before close", { timeout: 20_000 }, async () => {
+		const { bus, root, faux } = await bootBus();
+		let release!: () => void;
+		let providerStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			providerStarted = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		faux.setResponses([async () => {
+			providerStarted();
+			await gate;
+			return fauxAssistantMessage("shutdown answer");
+		}]);
+		const order: string[] = [];
+		bus.registerExtension("fixture-shutdown", {
+			runSettled: () => {
+				order.push("runSettled");
+			},
+			harnessShutdown: () => {
+				order.push("harnessShutdown");
+			},
+		});
+		const submission = await root.submit(
+			{ type: "input", content: "settle during shutdown" },
+			BACKGROUND_CONTEXT,
+		);
+		await vi.waitFor(() => {
+			expect(bus.oldestLiveAdmissionMs()).toBeDefined();
+		});
+		const closing = bus.shutdownSequence(BACKGROUND_CONTEXT);
+		await started;
+		release();
+		await closing;
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		expect(order).toEqual(["runSettled", "harnessShutdown"]);
+	});
+
+	test("a wedged live run hits the injected bound, warns, and still closes", { timeout: 20_000 }, async () => {
+		const { bus, root, faux } = await bootBus({ shutdownSettleWaitMs: 30 });
+		const provider = withCancel(BACKGROUND_CONTEXT);
+		faux.setResponses([async () => await new Promise<AssistantMessage>((_resolve, reject) => {
+			provider.context.abortSignal?.addEventListener("abort", () => {
+				reject(new Error("aborted after the shutdown timeout assertion"));
+			}, { once: true });
+		})]);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await root.submit(
+				{ type: "input", content: "never settle" },
+				BACKGROUND_CONTEXT,
+			);
+			await vi.waitFor(() => {
+				expect(bus.oldestLiveAdmissionMs()).toBeDefined();
+			});
+			await bus.shutdownSequence(BACKGROUND_CONTEXT);
+			expect(warn).toHaveBeenCalledWith(
+				"event-bus: shutdown settle wait expired; stranded conversations: %s",
+				String(root.id),
+			);
+			provider.cancel();
+			await root.abort(BACKGROUND_CONTEXT);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
 
 // ---------------------------------------------------------------------------
 // Settle detection
@@ -597,6 +675,8 @@ type SettlementsModule = {
 		callId: string;
 		kind: string;
 		status: string;
+		answeredByUser?: string;
+		answer?: Readonly<Record<string, unknown>>;
 	}[];
 	readonly resetSettlements: () => void;
 };
@@ -719,6 +799,8 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 			callId: "c6-route",
 			kind: "fixture.ask",
 			status: "answered",
+			answeredByUser: undefined,
+			answer: { decision: "allow" },
 		});
 
 		// Writer 2: the host answers (the extension side).
@@ -728,6 +810,7 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 			"c6-host",
 			{ values: { decision: "allow" } },
 			BACKGROUND_CONTEXT,
+			{ user: "tester" },
 		);
 		expect(applied).toBe(true);
 		const hostEvent = await waitForSettlement(fixture, "c6-host");
@@ -736,6 +819,8 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 			callId: "c6-host",
 			kind: "fixture.ask",
 			status: "answered",
+			answeredByUser: "tester",
+			answer: { decision: "allow" },
 		});
 
 		// Writer 3: the host expires (settleInteraction's terminal write).

@@ -151,6 +151,10 @@ describe("npm run build", () => {
 				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 				SIGRUN_WORKSPACE_PATH: dir,
 				SIGRUN_CONFIG_DIR: join(dir, "config"),
+				// HOME keeps the durable roots hermetic: the gateway
+				// built-in's start-time state-dir mkdir would otherwise
+				// land under the operator's real ~/.local/state/sigrun.
+				HOME: dir,
 			}),
 			dir,
 		);
@@ -304,7 +308,13 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 			// quarantined extension row, not the built-in surface.
 			JSON.stringify({
 				extensions: [tsEntry],
-				builtinExtensions: { codemode: false, mcp: false, toolSearch: false, oauth: false },
+				builtinExtensions: {
+					codemode: false,
+					mcp: false,
+					toolSearch: false,
+					gateway: false,
+					oauth: false,
+				},
 			}) + "\n",
 			"utf8",
 		);

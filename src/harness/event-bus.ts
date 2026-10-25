@@ -177,6 +177,14 @@ export type ExtensionLifecyclePayload = {
 		readonly callId: string;
 		readonly kind: string;
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+		/**
+		 * The STORED answer's values — masked by construction (secret values
+		 * never persist; the commit's stored copy carries the mask), so a
+		 * consumer may render them without a one-shot delivery read.
+		 */
+		readonly answer?: Readonly<Record<string, unknown>>;
+		/** The answering user (C5 attribution), when a human answered. */
+		readonly answeredByUser?: string;
 		readonly owner?: string;
 	};
 };
@@ -356,6 +364,8 @@ export interface EventBusOptions {
 	readonly queueMax: number;
 	/** Bounds each handler call (Task 6: `SIGRUN_HOOK_DEADLINE`). */
 	readonly hookDeadlineMs: number;
+	/** Total wait for placed runs to settle during shutdown. */
+	readonly shutdownSettleWaitMs?: number;
 	/**
 	 * The idle threshold (Task 6: `SIGRUN_IDLE_THRESHOLD`); omitted = no
 	 * idle detection (the Task 2 substrate shape — tests that never sweep).
@@ -383,6 +393,10 @@ export interface EventBusOptions {
 
 /** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
 const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
+/** The default last-admission window (gateway spec §8.13). */
+const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
+/** Short pause between live-run checks while the commit side lane works. */
+const SHUTDOWN_SETTLE_POLL_MS = 10;
 
 /** Per-worker runtime state (the bus-owned half of the curator contract). */
 interface WorkerState {
@@ -447,6 +461,7 @@ export class EventBus {
 	/** The worker states, in registration order (memory-seam Task 5). */
 	#workers: WorkerState[] = [];
 	#workerDeadlineMs: number;
+	#shutdownSettleWaitMs: number;
 	#closed = false;
 
 	private constructor(harness: Harness, options: EventBusOptions) {
@@ -455,6 +470,7 @@ export class EventBus {
 		this.#hookDeadlineMs = options.hookDeadlineMs;
 		this.#idleThresholdMs = options.idleThresholdMs;
 		this.#workerDeadlineMs = options.workerDeadlineMs;
+		this.#shutdownSettleWaitMs = options.shutdownSettleWaitMs ?? SHUTDOWN_SETTLE_WAIT_MS;
 		if (options.onHostEvent !== undefined) {
 			this.onHostEvent(options.onHostEvent);
 		}
@@ -719,8 +735,9 @@ export class EventBus {
 	 * 2. stop idle workers FIRST (Task 5, spec §3): pending wakes dropped,
 	 *    in-flight runs awaited up to 30s then abandoned — a curator is not
 	 *    competing with the flush handlers for the window;
-	 * 3. drain pending settles — a run that settled just before shutdown
-	 *    delivers before the shutdown flush (the ordering constraint);
+	 * 3. drain pending settles and wait (bounded) for placed live runs —
+	 *    a run settling during this last admission window delivers before
+	 *    the shutdown flush; a wedged run logs its conversation ids;
 	 * 4. deliver `harnessShutdown` to every extension in install order,
 	 *    each deadline-bounded. Handlers may commit — admission is still
 	 *    open in this window (the seal is `Harness.close`, the caller's
@@ -736,6 +753,7 @@ export class EventBus {
 		}
 		await this.#stopWorkers();
 		await this.drain(this.#hookDeadlineMs, context);
+		await this.#drainLiveRuns(context);
 		// harnessShutdown carries no conversation: the conversation-scoped
 		// reads resolve empty and `document` serves any conversation.
 		const api = this.#apiFor(undefined);
@@ -783,6 +801,26 @@ export class EventBus {
 		return Promise.race([loop, deadline]).finally(() => {
 			if (timer !== undefined) clearTimeout(timer);
 		});
+	}
+
+	/** Drain runs placed before shutdown, bounded so a wedged run cannot hang close. */
+	async #drainLiveRuns(context: Context): Promise<void> {
+		const deadline = Date.now() + this.#shutdownSettleWaitMs;
+		for (;;) {
+			const live = [...this.#liveInputs.entries()]
+				.filter(([, count]) => count > 0)
+				.map(([conversationId]) => conversationId);
+			if (live.length === 0) return;
+			if (Date.now() >= deadline) {
+				console.warn(
+					"event-bus: shutdown settle wait expired; stranded conversations: %s",
+					live.map(String).join(", "),
+				);
+				return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_SETTLE_POLL_MS));
+			await this.drain(this.#hookDeadlineMs, context);
+		}
 	}
 
 	/** Stop everything: unsubscribe, empty the queue, stop the sweep + workers, and let a running loop exit. */
@@ -1002,12 +1040,30 @@ export class EventBus {
 							kind?: unknown;
 							callId?: unknown;
 							status?: unknown;
+							answeredByUser?: unknown;
+							answer?: unknown;
 						};
 						if (
 							typeof record.callId === "string" &&
 							typeof record.kind === "string" &&
 							typeof record.status === "string"
 						) {
+							// C6 widening: carry the attribution + the STORED
+							// (masked-by-construction) answer values — the stored
+							// copy never holds a secret's true value, so these are
+							// render-safe without any delivery-table read.
+							const recordAnsweredByUser =
+								typeof record.answeredByUser === "string"
+									? record.answeredByUser
+									: undefined;
+							const recordAnswerValues =
+								typeof record.answer === "object" &&
+								record.answer !== null &&
+								typeof (record.answer as { values?: unknown }).values ===
+									"object" &&
+								(record.answer as { values?: unknown }).values !== null
+									? ((record.answer as { values?: unknown }).values as Readonly<Record<string, unknown>>)
+									: undefined;
 							this.#emitHost({
 								type: INTERACTION_TERMINAL.has(record.status)
 									? "interaction.settled"
@@ -1034,6 +1090,12 @@ export class EventBus {
 									conversationId: change.conversationId,
 									callId: record.callId,
 									kind: record.kind,
+									...(recordAnsweredByUser === undefined
+										? {}
+										: { answeredByUser: recordAnsweredByUser }),
+									...(recordAnswerValues === undefined
+										? {}
+										: { answer: recordAnswerValues }),
 									// SAFETY: `record.status` is a narrowed `string`, but
 									// the payload wants the terminal union — sound because
 									// the union and the TERMINAL set share one definition
@@ -1432,6 +1494,10 @@ export class EventBus {
 					callId: event.callId,
 					kind: event.kind,
 					status: event.status,
+					...(event.answeredByUser === undefined
+						? {}
+						: { answeredByUser: event.answeredByUser }),
+					...(event.answer === undefined ? {} : { answer: event.answer }),
 				};
 		}
 	}

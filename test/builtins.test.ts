@@ -43,6 +43,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { SigrunHost } from "../src/extension.js";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { SettingsStore, SettingsValidationError, settingsPath } from "../src/harness/settings.js";
 import type { ResolvedExtensionInput } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
@@ -378,7 +379,10 @@ describe("default boot", () => {
 		// A non-built-in outcome carries no builtin flag (the field is
 		// exactly true-or-absent).
 		const others = rows.filter(
-			(row) => !["codemode", "sigrun-mcp", "tool-search", "oauth"].includes(row.name),
+			(row) =>
+				!["codemode", "sigrun-mcp", "tool-search", "gateway", "oauth"].includes(
+					row.name,
+				),
 		);
 		for (const row of others) expect(row.builtin).toBeUndefined();
 	});
@@ -800,5 +804,86 @@ describe("auto-enable", () => {
 		const offered = await offeredToolNames(app, opened);
 		expect(offered).not.toContain("codemode");
 		expect(offered).not.toContain("tool_search");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Gateway (gateway C3: the fourth built-in)
+// ---------------------------------------------------------------------------
+
+/** The loopback channel fixture (id "loop"; the inert-marker probe). */
+const LOOPBACK_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-loopback-channel",
+		"index.js",
+	),
+).href;
+
+describe("gateway built-in (C3)", () => {
+	test("the gateway built-in loads by default; /v1/extensions reports it builtin: true", { timeout: 60_000 }, async () => {
+		const { app } = await bootBuiltins();
+		const response = await app.inject({ method: "GET", url: "/v1/extensions" });
+		expect(response.statusCode).toBe(200);
+		const rows = response.json().extensions as {
+			name: string;
+			status: string;
+			builtin?: boolean;
+		}[];
+		const gateway = rows.find((row) => row.name === "gateway");
+		expect(gateway).toMatchObject({
+			status: "ok",
+			builtin: true,
+			version: "0.1.0",
+		});
+	});
+
+	test("builtinExtensions: {gateway: false} removes the gateway row and makes the loopback row inert: \"no gateway\"", { timeout: 60_000 }, async () => {
+		const { app } = await bootBuiltins({
+			settings: { builtinExtensions: { gateway: false } },
+			extensionSpecifiers: [LOOPBACK_SPECIFIER],
+		});
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as {
+			name: string;
+			status: string;
+			builtin?: boolean;
+			inert?: string;
+		}[];
+		// Disabled: absent ENTIRELY (ruling 6, the other keys' rule).
+		expect(rows.some((row) => row.name === "gateway")).toBe(false);
+		// The loopback adapter row is inert: no engine loaded, so its
+		// adapters never start (plan 1's marker).
+		const loopRow = rows.find(
+			(row) => row.name === "fixture-loopback-channel",
+		);
+		expect(loopRow).toMatchObject({ status: "ok" });
+		expect(loopRow?.inert).toBe("no gateway");
+	});
+
+	test("settings validation accepts gateway: false and rejects gateway: \"no\"", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-builtin-gw-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		const store = new SettingsStore({ dir });
+		// Accepts the boolean (and persists/reads back).
+		const accepted = store.update({ builtinExtensions: { gateway: false } });
+		expect(accepted.builtinExtensions).toEqual({ gateway: false });
+		// Rejects a non-boolean naming the field.
+		const file = settingsPath(dir);
+		await writeFile(
+			file,
+			'{"builtinExtensions": {"gateway": "no"}}',
+			"utf8",
+		);
+		let rejected: unknown;
+		try {
+			store.read();
+		} catch (error) {
+			rejected = error;
+		}
+		expect(rejected).toBeInstanceOf(SettingsValidationError);
+		expect(String(rejected)).toMatch(/builtinExtensions\.gateway/);
 	});
 });

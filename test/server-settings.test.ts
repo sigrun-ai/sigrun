@@ -724,7 +724,7 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 		// the stored name array against the composed selection).
 		expect(agent.tools.map((tool) => tool.name)).toEqual(["read", "bash"]);
 		// And unPATCHed settings (an absent file) leave every tool on:
-		// a second server booted with no file sees all 8 core tools.
+		// a second server booted with no file sees all core and built-in tools.
 		const bare = await bootServer();
 		const created = await bare.app.inject({
 			method: "POST",
@@ -738,16 +738,18 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 		);
 		const fullAgent = await conv!.agent(BACKGROUND_CONTEXT);
 		// Every core-installed tool (7 named core tools + load_skill from
-		// the skills convention + the 2 U5 blocks tools = 10) — the
-		// no-filter default.
+		// the skills convention + the 2 U5 blocks tools + the gateway's two
+		// agent tools = 12) — the no-filter default for a built-in install.
 		expect(fullAgent.tools.map((tool) => tool.name).sort()).toEqual([
 			"bash",
 			"edit",
 			"find",
 			"grep",
+			"list_chats",
 			"load_skill",
 			"ls",
 			"read",
+			"send_message",
 			"show_blocks",
 			"update_blocks",
 			"write",

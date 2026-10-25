@@ -1384,7 +1384,16 @@ every channel adapter. **One engine per boot**: the first declarer
 wins; a later extension declaring `gateway` quarantines at load with
 `gateway engine already declared by "<first slug>"` (an engine owns
 supervision over the whole channel set — never last-wins). Core ships
-no engine; it lives in its own extension package like the adapters.
+no engine of its own in the loader, but the **built-in `gateway`
+extension** (`@sigrun/ext-gateway`, the fourth built-in alongside
+codemode, MCP, and tool search) is exactly that engine: installed as a
+core dependency, enabled by default, disableable with
+`"builtinExtensions": {"gateway": false}`. With the built-in disabled
+(or replaced), adapters without a loaded engine are inert (below).
+
+Operators configuring channels, pairing, groups, job delivery, or
+shutdown should read the
+[@sigrun/ext-gateway operator guide](https://github.com/sigrun-ai/sigrun-ext-gateway#readme).
 
 ```js
 export default function acmeEngine(host) {

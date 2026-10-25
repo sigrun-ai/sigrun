@@ -117,12 +117,18 @@ async function bootServer(
 		models: [{ id: "m", contextWindow: 128_000 }],
 	});
 	faux.setResponses([fauxAssistantMessage("gateway answer")]);
+	// The durable roots pin inside the boot's tmpdir (the engine's
+	// start-time state-dir mkdir would otherwise land under the
+	// operator's real ~/.local/state/sigrun — a test-pollution class).
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
+		SIGRUN_DATA_DIR: dir,
+		SIGRUN_STATE_DIR: dir,
+		SIGRUN_CACHE_DIR: dir,
 	});
 	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const identity = await seededIdentity(dir);

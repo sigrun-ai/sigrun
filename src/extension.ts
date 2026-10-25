@@ -199,6 +199,10 @@ export type ExtensionLifecyclePayload = {
 		readonly callId: string;
 		readonly kind: string;
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
+		/** The answering user (C5 attribution), when a human answered. */
+		readonly answeredByUser?: string;
+		/** The STORED (masked-by-construction) answer values — render-safe. */
+		readonly answer?: Readonly<Record<string, unknown>>;
 		readonly owner?: string;
 	};
 };

@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invite resolution with optional policy-gated auto-provisioning; webui
   provider sign-in; and self-service account links that are never silently
   re-pointed to another user.
+- Gateway built-in: `@sigrun/ext-gateway` supervises channel adapters,
+  with pairing and self-linking, group conversations, live responses,
+  durable outbound delivery, agent tools, home notifications, and job
+  delivery. Enabled by default; operators can disable it with
+  `builtinExtensions.gateway: false`.
 - Expiring, revocable browser sessions (`server.auth.sessionDays`, default
   30 days). A session can mint the user's API tokens; revoking it leaves
   those tokens independent.

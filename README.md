@@ -791,18 +791,19 @@ a dashboard) are in
 ## Built-in extensions
 
 Four extensions are built into core — **codemode**, **MCP**, **tool
-search**, and **OAuth login**. The first three mirror pi 1.3.0's built-ins;
-OAuth provides OIDC, GitHub, and Discord login providers. They load by
-default on every boot, with no settings entry, and resolve from core's
-own `node_modules` (they are core dependencies, never installed into
-the packages dir — `extensions` has nothing to install for them, unless
-a same-named package is deliberately installed to replace one; see
-below).
+search**, **gateway**, and **OAuth login**. The first three mirror
+what pi 1.3.0 ships built-in; the gateway is sigrun's own channel-adapter
+engine; OAuth provides OIDC, GitHub, and Discord login providers. They
+load by default on every boot, with no settings entry, and resolve from
+core's own `node_modules` (they are core dependencies, never installed
+into the packages dir — `extensions` has nothing to install for them,
+unless a same-named package is deliberately installed to replace one;
+see below).
 A default install therefore has pi's tool surface without configuring
 anything. On `GET /v1/extensions` they report under the names
-`codemode`, `sigrun-mcp`, `tool-search`, and `oauth`. Configure OAuth
-providers in `settings/oauth.json`; see the `@sigrun/oauth` package README
-for provider settings and secrets.
+`codemode`, `sigrun-mcp`, `tool-search`, `gateway`, and `oauth`.
+Configure OAuth providers in `settings/oauth.json`; see the
+`@sigrun/oauth` package README for provider settings and secrets.
 
 **The tools stay off until needed** (pi parity): `codemode` and
 `tool_search` are not in a new conversation's model-offered tool set by
@@ -816,11 +817,10 @@ default. They join the offered set when an enabled MCP server's
   automatic decision (auto-enable only narrows the default set, never a
   named list).
 - **Turning one off** — `"builtinExtensions": {"codemode": false,
-  "mcp": false, "toolSearch": false, "oauth": false}`. Each defaults to
-  `true`; each is
-  restart-required. A disabled built-in disappears from
-  `GET /v1/extensions` entirely — no row, not even a skipped one — and
-  its config is then ignored.
+  "mcp": false, "toolSearch": false, "gateway": false, "oauth": false}`.
+  Each defaults to `true`; each is restart-required. A disabled built-in
+  disappears from `GET /v1/extensions` entirely — no row, not even a
+  skipped one — and its config is then ignored.
 - **Replacing one** — installing a package that resolves to the same
   package name as a built-in replaces it: the installed copy loads, the
   built-in is skipped, boot logs one warning naming both, and
@@ -839,10 +839,11 @@ server's `exposure` and the `SIGRUN_MCP_CONFIG` override.
   "extensions": [ // configured extensions install + load as above
     "@acme/sigrun-ext-example@^0.1.0"
   ],
-  "builtinExtensions": { // all four default to true; restart required
+  "builtinExtensions": { // all five default to true; restart required
     "codemode": true,
     "mcp": true,
     "toolSearch": false,
+    "gateway": true,
     "oauth": true
   }
 }
