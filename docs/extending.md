@@ -1550,8 +1550,9 @@ Selecting an entry never grants its tools.
 ### Per-user services
 
 Declare long-lived per-user processes with `userServices`. Each declaration
-has a `name`, an optional `idleMinutes` (default 10; non-positive disables
-idle stopping), and `start(user, ctx)`, which returns a `ServiceSpec` or
+has a `name`, an optional positive `idleMinutes` (default 10; zero,
+negative, non-finite, and non-number values quarantine the extension), and
+`start(user, ctx)`, which returns a `ServiceSpec` or
 `undefined` when the service is unavailable for that user. Connect through
 `host.services.connect(name, user, ctx)`:
 
@@ -1595,11 +1596,12 @@ the agent's workspace**. Service `env` is merged over the user's base
 execution environment, and `SSH_AUTH_SOCK` is removed.
 
 Three crashes within five minutes put the service in `failed`. Further
-connects fail rather than restart-looping. Only a committed settings write
-for **that extension and that same user** clears the failure fence (the
-self-service settings PUT performs it). Core stops a user's services on
-user deletion, stops an extension's services when it is quarantined, and
-stops all services during shutdown.
+connects fail rather than restart-looping. A committed settings write for
+**that extension and that same user** clears the failure fence (the
+self-service settings PUT performs it); a sigrun restart also clears the
+process-local crash history. Core stops a user's services on user deletion,
+stops an extension's services when it is quarantined, and stops all services
+during shutdown.
 
 The kernel boundary suite has not run yet; CI is its first execution. Do
 not treat service/worker isolation as kernel-verified from unit tests.
