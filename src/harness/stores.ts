@@ -37,7 +37,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Env } from "../config.js";
 import {
@@ -525,6 +525,8 @@ export interface SharedExtensionStores {
 	readonly users: UserDirectory;
 	/** One user's stores for one slug (the /v1/me routes ride this too). */
 	userExtensionStores(slug: string, user: string): UserExtensionStores;
+	/** §10.6 step 5: credentials/settings and cache only; data/state stay. */
+	removeUserData(user: string): Promise<void>;
 	/** One user/slug's stored secret names (never values, no env fallback). */
 	userSecretKeys(slug: string, user: string): Promise<readonly string[]>;
 	/** One slug's settings file get/set (the API's verbatim object store). */
@@ -650,6 +652,7 @@ export function sharedExtensionStores(
 		settings,
 		roots,
 		users: directory,
+		removeUserData: (user) => removeUserData(roots, user),
 		userExtensionStores: (slug, user) =>
 			userExtensionStores(roots, directory, slug, user),
 		userSecretKeys: async (slug, user) => {
@@ -750,6 +753,24 @@ export function scopedExtensionStores(
 /** The per-user file/dir layout (multi-user M2 §10.2, verbatim). */
 const USER_SECRETS_DIR = "user-secrets";
 const USER_SETTINGS_DIR = "user-settings";
+
+/** Core's §10.6 step-5 cleanup, after userDeleted and directory removal.
+ * Cache entries are enumerated because per-user registry entries may already
+ * have uninstalled slugs. Data/state deliberately remain extension-owned.
+ */
+async function removeUserData(roots: StoreRoots, user: string): Promise<void> {
+	await rm(join(roots.configDir, USER_SECRETS_DIR, `${user}.json`), { force: true });
+	await rm(join(roots.configDir, USER_SETTINGS_DIR, user), { recursive: true, force: true });
+	let slugs: readonly string[] = [];
+	try {
+		slugs = await readdir(roots.cacheDir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	await Promise.all(slugs.map((slug) =>
+		rm(join(roots.cacheDir, slug, "users", user), { recursive: true, force: true }),
+	));
+}
 
 /** Settings use sync mtime reload + queued atomic writes (0644, like shared settings). */
 const userSettingQueues = new Map<string, MutationQueue>();

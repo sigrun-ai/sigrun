@@ -41,6 +41,14 @@ export function resetDeletionChecks() {
 	deletionChecks.length = 0;
 }
 
+/** Optional failure injection for the handler-isolation contract. */
+export const deletionThrows = [];
+
+let deletionStatusObserver;
+export function setDeletionStatusObserver(observer) {
+	deletionStatusObserver = observer;
+}
+
 /** Default export: factory returning the extension + its event handlers. */
 export default function createFixtureUserEvents(host) {
 	return {
@@ -55,7 +63,13 @@ export default function createFixtureUserEvents(host) {
 				user: event.user,
 				record: await host.users.get(event.user),
 				secret: await host.stores.user(event.user).secrets.get("provider-token"),
+				...(deletionStatusObserver === undefined
+					? {}
+					: { services: deletionStatusObserver() }),
 			});
+			if (deletionThrows.includes(event.user)) {
+				throw new Error(`fixture userDeleted failure: ${event.user}`);
+			}
 		},
 		/** The factory-returned getter over the module-level records. */
 		getDeletions: () => [...deletions],

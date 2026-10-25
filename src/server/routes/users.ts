@@ -293,15 +293,18 @@ export function registerUserRoutes(
 		// credentials belong to a person, and a transferred link would hand
 		// the receiving user's account to whoever holds that chat identity.
 		await identity.accounts.removeUser(user);
-		// Stop credential-bearing sibling processes while the directory
-		// record still exists and before userDeleted handlers run. Task 5
-		// owns the remaining per-user store cleanup ordering.
+		// §10.6 step 2: stop credential-bearing sibling processes and
+		// uninstall every *@user entry while the directory record exists.
 		await ctx.opened.userServices.stopUser(user);
-		// Extensions revoke provider credentials here while the directory
-		// record and per-user secrets are still readable (§10.6 step 3).
+		ctx.opened.userTools.removeUser(user);
+		// §10.6 step 3: provider credentials remain readable throughout the
+		// fan-out. Always release the deletion marker before record removal.
 		await eventBus.emitUserDeleted({ user, transferTo: to }, BACKGROUND_CONTEXT);
 		if (grant === undefined) await identity.users.remove(user);
 		else await identity.users.removeWithGrant(user, to, grant);
+		// §10.6 step 5: data/state stay for the recipient; core owns only
+		// the departing user's credentials, settings, and every cache slug.
+		await ctx.opened.extensionStores.removeUserData(user);
 		return await reply.code(204).send();
 	});
 }

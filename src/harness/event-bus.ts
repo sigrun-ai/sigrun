@@ -82,6 +82,7 @@ import { SessionMetaDoc } from "../server/session-meta.js";
 import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
 import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
+import { beginUserDeletion } from "./stores.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
 /** The internal host-event payload: the wire union plus the hub-only `providers.changed`/`job.changed` variants boot publishes directly. */
@@ -657,13 +658,18 @@ export class EventBus {
 		context: Context,
 	): Promise<void> {
 		if (this.#closed) return;
-		const api = this.#apiFor(undefined);
-		for (const [name, handlers] of this.#extensions) {
-			const handler = handlers.userDeleted;
-			if (handler === undefined) continue;
-			await this.#bounded(`extension ${name} userDeleted`, () =>
-				handler(payload, api, context),
-			);
+		const endDeletion = beginUserDeletion(payload.user);
+		try {
+			const api = this.#apiFor(undefined);
+			for (const [name, handlers] of this.#extensions) {
+				const handler = handlers.userDeleted;
+				if (handler === undefined) continue;
+				await this.#bounded(`extension ${name} userDeleted`, () =>
+					handler(payload, api, context),
+				);
+			}
+		} finally {
+			endDeletion();
 		}
 	}
 
