@@ -50,6 +50,18 @@ import { seededIdentity } from "./helpers/identity.js";
 import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
 import { selfPackageRoot } from "../src/harness/packages.js";
 
+/**
+ * The extension names one stored selection adds or names. A boot whose
+ * built-ins declare per-user tools adds `<slug>@<owner>` entries beside the
+ * ones a test wrote, so the assertion is about membership, not the whole list.
+ */
+function selectionNames(selection: unknown): readonly string[] {
+	if (Array.isArray(selection)) return selection as readonly string[];
+	if (typeof selection !== "object" || selection === null) return [];
+	const add = (selection as { readonly add?: unknown }).add;
+	return Array.isArray(add) ? (add as readonly string[]) : [];
+}
+
 const T0 = Date.parse("2026-10-19T12:00:00.000Z");
 
 /** The fixture-jobs entry, imported by specifier. */
@@ -857,7 +869,7 @@ describe("multi-user job-created conversations", () => {
 			fired.conversationId as ConversationId,
 			BACKGROUND_CONTEXT,
 		);
-		expect(agent?.extensions).toMatchObject({ add: ["acme@alice"] });
+		expect(selectionNames(agent?.extensions)).toContain("acme@alice");
 	});
 });
 

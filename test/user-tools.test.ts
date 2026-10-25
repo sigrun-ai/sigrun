@@ -115,6 +115,20 @@ async function storedSelection(
 	)?.extensions;
 }
 
+/**
+ * The extension names one stored selection adds or names. Selections are
+ * per-install state, so a boot whose built-ins declare per-user tools adds
+ * `<slug>@<owner>` entries beside the ones a test wrote — asserting on the
+ * membership of the names this test cares about keeps that true without
+ * pinning the whole list to whatever else the boot installed.
+ */
+function selectionNames(selection: unknown): readonly string[] {
+	if (Array.isArray(selection)) return selection as readonly string[];
+	if (typeof selection !== "object" || selection === null) return [];
+	const add = (selection as { readonly add?: unknown }).add;
+	return Array.isArray(add) ? (add as readonly string[]) : [];
+}
+
 async function withArraySelection(
 	opened: OpenedHarness,
 	conversation: Conversation,
@@ -293,7 +307,7 @@ describe("owner writes rewrite selections in the same commits", () => {
 			const serialized = JSON.stringify(stored);
 			expect(serialized).not.toContain("@alice");
 			if (shape === "object") {
-				expect(stored).toMatchObject({ add: ["acme@bob"] });
+				expect(selectionNames(stored)).toContain("acme@bob");
 				const fork = await opened.harness.conversation(forkedId, BACKGROUND_CONTEXT);
 				if (fork === undefined) throw new Error("fork missing");
 				expect(await names(fork)).toContain("acme@bob");
@@ -361,7 +375,7 @@ describe("owner writes rewrite selections in the same commits", () => {
 			await transferOwnership(app.sigrunContext, "alice", "bob");
 			const stored = await storedSelection(opened, id);
 			expect(JSON.stringify(stored)).not.toContain("@alice");
-			if (shape === "object") expect(stored).toMatchObject({ add: ["acme@bob"] });
+			if (shape === "object") expect(selectionNames(stored)).toContain("acme@bob");
 			else expect(stored).toEqual([]);
 		}
 	});
@@ -460,11 +474,11 @@ describe("configure and boot sweep", () => {
 
 		const second = await boot({ dir: first.dir });
 		expect(second.opened.userToolSweep.changed).toBe(1);
-		expect(await storedSelection(second.opened, id)).toMatchObject({ add: ["acme@alice"] });
+		expect(selectionNames(await storedSelection(second.opened, id))).toContain("acme@alice");
 		await second.opened.harness.close(BACKGROUND_CONTEXT);
 
 		const third = await boot({ dir: first.dir });
-		expect(await storedSelection(third.opened, id)).toMatchObject({ add: ["acme@alice"] });
+		expect(selectionNames(await storedSelection(third.opened, id))).toContain("acme@alice");
 		expect(third.opened.userToolSweep.changed).toBe(0);
 	});
 });
