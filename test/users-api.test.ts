@@ -341,6 +341,14 @@ describe("DELETE /v1/users/:user", () => {
 			order.push("remove");
 			return removeWithGrant(user, to, grant);
 		});
+		// The FULL §10.6 sequence must be pinned, not one boundary: without
+		// this entry the test would still pass if userDeleted ran BEFORE
+		// stopUser. Call through so the real fan-out still happens.
+		const emitUserDeleted = opened.eventBus.emitUserDeleted.bind(opened.eventBus);
+		vi.spyOn(opened.eventBus, "emitUserDeleted").mockImplementation(async (event, context) => {
+			order.push("userDeleted");
+			return emitUserDeleted(event, context);
+		});
 		const deleted = await app.inject({
 			method: "DELETE",
 			url: "/v1/users/bob?transferTo=alice",
@@ -348,7 +356,7 @@ describe("DELETE /v1/users/:user", () => {
 		});
 		expect(deleted.statusCode).toBe(204);
 		expect(stopUser).toHaveBeenCalledWith("bob");
-		expect(order).toEqual(["stopUser", "remove"]);
+		expect(order).toEqual(["stopUser", "userDeleted", "remove"]);
 		expect(fixture.deletionChecks).toEqual([{
 			user: "bob",
 			record: expect.objectContaining({ user: "bob" }),
