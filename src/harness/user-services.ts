@@ -135,15 +135,20 @@ export class UserServices {
 	}
 
 	statuses(): ServiceStatus[] {
-		return [...this.entries.values()].map((entry) => {
+		return [...this.entries.values()].flatMap((entry) => {
 			const live = entry.live;
-			return {
+			const failed = live === undefined && entry.failures.length >= 3;
+			// A starting process is not failed, and one/two crashes are
+			// retryable rather than a persistent failed service. Do not expose
+			// a stale entry in either case; the next connect owns the restart.
+			if (live === undefined && !failed) return [];
+			return [{
 				slug: entry.slug,
 				name: entry.name,
 				user: entry.user,
-				state: live === undefined ? "failed" : live.handles === 0 ? "idle" : "running",
-				...(live === undefined && entry.lastError !== undefined ? { lastError: entry.lastError } : {}),
-			};
+				state: failed ? "failed" : live!.handles === 0 ? "idle" : "running",
+				...(failed && entry.lastError !== undefined ? { lastError: entry.lastError } : {}),
+			}];
 		});
 	}
 
