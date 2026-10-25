@@ -32,7 +32,15 @@ import {
 	fauxToolCall,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import {
+	defineTool,
+	type Conversation,
+	type ConversationId,
+	type ToolExecutionApi,
+	type ToolRegistration,
+} from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+import type { SigrunHost } from "../src/extension.js";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ResolvedExtensionInput } from "../src/harness/loader.js";
@@ -62,6 +70,11 @@ const REPLACES_OAUTH_SPECIFIER = pathToFileURL(
 /** The throwing fixture (the built-in quarantine path). */
 const THROWING_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-throwing", "index.js"),
+).href;
+
+/** The fixture declaring the host's per-user publication capability. */
+const USER_TOOLS_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-user-tools", "index.js"),
 ).href;
 
 /** The in-repo stdio MCP fixture server. */
@@ -97,6 +110,7 @@ async function bootBuiltins(options?: {
 	/** Test-only: additional built-in load entries (the quarantine seam). */
 	readonly extraBuiltins?: readonly string[];
 	readonly unresolvableOAuth?: boolean;
+	readonly multiUser?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-builtins-"));
 	const faux = fauxProvider({
@@ -111,7 +125,7 @@ async function bootBuiltins(options?: {
 	const env: Record<string, string> = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "none",
+		SIGRUN_AUTH: options?.multiUser === true ? "token" : "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	};
 	if (options?.mcpServers !== undefined) {
@@ -167,6 +181,9 @@ async function bootBuiltins(options?: {
 				}
 			: {}),
 		settingsDir: dir,
+		...(options?.multiUser === true
+			? { isolationProbe: async () => ({ available: true, abi: 6 }) }
+			: {}),
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {
@@ -181,6 +198,10 @@ async function bootBuiltins(options?: {
 /** The stdio MCP server entry naming the in-repo stub. */
 function stubServer(extra?: Record<string, unknown>): Record<string, unknown> {
 	return {
+		// These pre-catalog fixtures assert the system-tool surface. Catalog
+		// credentials default to per-user, so retain their original path.
+		credentials: "shared",
+		sharedAuthority: "Synthetic shared test authority",
 		command: process.execPath,
 		args: [STUB_MCP_SERVER],
 		...extra,
@@ -246,6 +267,73 @@ async function storedAgentDoc(
 	});
 	expect(response.statusCode).toBe(201);
 	return response.json().view.docs["pi.agent"] as Record<string, unknown>;
+}
+
+function acmeHost(opened: OpenedHarness): SigrunHost {
+	const host = opened.seamHosts.get("acme");
+	if (host === undefined) throw new Error("acme host missing");
+	return host;
+}
+
+function perUserProbe(deferred: boolean): ToolRegistration {
+	return defineTool({
+		name: "acme_probe",
+		description: "Alice's synthetic per-user probe",
+		parameters: Type.Object({}),
+		...(deferred ? { deferred: true } : {}),
+		execute: async () => ({ output: [{ type: "text" as const, text: "probe" }] }),
+	});
+}
+
+async function ownedConversation(
+	app: FastifyInstance,
+	opened: OpenedHarness,
+	owner: "alice" | "bob",
+): Promise<Conversation> {
+	await opened.identity.users.add({ user: owner, admin: false, source: "cli" });
+	const { token } = await opened.identity.tokens.create(`${owner}-cli`, owner);
+	const response = await app.inject({
+		method: "POST",
+		url: "/v1/conversations",
+		headers: { authorization: `Bearer ${token}` },
+	});
+	expect(response.statusCode).toBe(201);
+	const conversation = await opened.harness.conversation(
+		response.json().id as ConversationId,
+		BACKGROUND_CONTEXT,
+	);
+	if (conversation === undefined) throw new Error("owned conversation missing");
+	return conversation;
+}
+
+async function renderSection(
+	opened: OpenedHarness,
+	conversation: Conversation,
+	key: string,
+): Promise<string | undefined> {
+	const section = opened.registry.snapshot().sections().find(
+		(entry) => entry.section.key === key,
+	)?.section;
+	if (section === undefined) throw new Error(`section ${key} missing`);
+	const agent = await conversation.agent(BACKGROUND_CONTEXT);
+	return section.render({
+		conversationId: conversation.id,
+		agent,
+		env: undefined,
+		shown: {},
+		read: opened.harness,
+	}, BACKGROUND_CONTEXT);
+}
+
+function executionApi(
+	opened: OpenedHarness,
+	conversation: Conversation,
+): ToolExecutionApi {
+	return {
+		conversationId: conversation.id,
+		snapshot: opened.harness.snapshot.bind(opened.harness),
+		agent: () => conversation.agent(BACKGROUND_CONTEXT),
+	} as unknown as ToolExecutionApi;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +419,12 @@ describe("default boot", () => {
 			method: "POST",
 			url: "/v1/conversations",
 			payload: {},
-			headers: { "content-type": "application/json" },
+			headers: {
+				"content-type": "application/json",
+				// Shared MCP tools require an identified directory user; the
+				// fixture's seeded principal supplies that identity here.
+				"x-sigrun-user": "tester",
+			},
 		});
 		const { id } = create.json() as { id: number };
 		const conversation = await opened.harness.conversation(
@@ -358,6 +451,60 @@ describe("default boot", () => {
 		const sections = opened.registry.snapshot().sections();
 		const keys = sections.map((entry) => entry.section.key);
 		expect(keys).toContain("mcp_servers");
+	});
+});
+
+describe("per-user tools in built-in discovery", () => {
+	test("codemode renders acme@alice's tool for alice's conversation only", async () => {
+		const { app, opened } = await bootBuiltins({
+			extensionSpecifiers: [USER_TOOLS_SPECIFIER],
+			multiUser: true,
+		});
+		acmeHost(opened).tools.setUserTools("alice", [perUserProbe(false)]);
+		const alice = await ownedConversation(app, opened, "alice");
+		const bob = await ownedConversation(app, opened, "bob");
+		expect((await alice.agent(BACKGROUND_CONTEXT)).extensions.map(
+			(extension) => extension.name,
+		)).toContain("acme@alice");
+		const aliceSection = await renderSection(opened, alice, "codemode");
+		expect(aliceSection).toContain("acme_probe");
+		expect(aliceSection).not.toContain("acme@alice");
+		expect((await bob.agent(BACKGROUND_CONTEXT)).extensions.map(
+			(extension) => extension.name,
+		)).not.toContain("acme@alice");
+		expect(await renderSection(opened, bob, "codemode")).not.toContain("acme_probe");
+	});
+
+	test("tool_search finds acme@alice's deferred tool for alice's conversation only", async () => {
+		const { app, opened } = await bootBuiltins({
+			extensionSpecifiers: [USER_TOOLS_SPECIFIER],
+			multiUser: true,
+		});
+		acmeHost(opened).tools.setUserTools("alice", [perUserProbe(true)]);
+		const alice = await ownedConversation(app, opened, "alice");
+		const bob = await ownedConversation(app, opened, "bob");
+		const search = (await alice.agent(BACKGROUND_CONTEXT)).extensions
+			.flatMap((extension) => extension.tools ?? [])
+			.find((tool) => tool.name === "tool_search");
+		if (search === undefined) throw new Error("tool_search missing");
+		expect((await alice.agent(BACKGROUND_CONTEXT)).deferred.map(
+			(tool) => tool.name,
+		)).toContain("acme_probe");
+		const result = await search.execute(
+			{ query: "acme_probe" },
+			executionApi(opened, alice),
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.details).toEqual({ loaded: ["acme_probe"] });
+		expect((await bob.agent(BACKGROUND_CONTEXT)).deferred.map(
+			(tool) => tool.name,
+		)).not.toContain("acme_probe");
+		const bobResult = await search.execute(
+			{ query: "acme_probe" },
+			executionApi(opened, bob),
+			BACKGROUND_CONTEXT,
+		);
+		expect(bobResult.details).toEqual({ loaded: [] });
 	});
 });
 
