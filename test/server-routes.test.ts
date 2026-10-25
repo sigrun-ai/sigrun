@@ -93,6 +93,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["GET", "/v1/me/extensions/:slug/secrets"],
 	["PUT", "/v1/me/extensions/:slug/secrets/:key"],
 	["DELETE", "/v1/me/extensions/:slug/secrets/:key"],
+	// Multi-user M2 Task 4: the caller's own service inventory.
+	["GET", "/v1/me/services"],
 	// The UI-blocks U3 Task 2 surface routes (spec §7.2).
 	["GET", "/v1/ext/:slug/surfaces/:id"],
 	["GET", "/v1/ext/:slug/surfaces/:id/data"],
@@ -405,6 +407,7 @@ describe("server route table", () => {
 				"/v1/me/extensions/:slug/secrets",
 				"/v1/me/extensions/:slug/secrets/:key",
 				"/v1/me/extensions/:slug/settings",
+				"/v1/me/services",
 				"/v1/users",
 				"/v1/users/:user",
 				"/v1/users/invites",
