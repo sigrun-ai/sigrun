@@ -326,6 +326,7 @@ test(
 					mcp: false,
 					toolSearch: false,
 					gateway: false,
+					oauth: false,
 				},
 			}) + "\n",
 			"utf8",

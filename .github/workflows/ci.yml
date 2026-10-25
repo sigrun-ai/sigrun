@@ -31,6 +31,10 @@ jobs:
         with:
           repository: sigrun-ai/sigrun-ext-tool-search
           path: sigrun-ext-tool-search
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-oauth
+          path: sigrun-ext-oauth
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -76,6 +80,10 @@ jobs:
         with:
           repository: sigrun-ai/sigrun-ext-tool-search
           path: sigrun-ext-tool-search
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-oauth
+          path: sigrun-ext-oauth
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v5
         with:
@@ -176,6 +184,10 @@ jobs:
         with:
           repository: sigrun-ai/sigrun-ext-tool-search
           path: sigrun-ext-tool-search
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun-ext-oauth
+          path: sigrun-ext-oauth
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -200,6 +212,7 @@ jobs:
               '@sigrun/ext-codemode',
               '@sigrun/ext-mcp',
               '@sigrun/ext-tool-search',
+              '@sigrun/oauth',
             ];
             names.map((n) => n + '@' + d[n]).join(' ');
           ")"

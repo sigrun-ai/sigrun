@@ -392,6 +392,8 @@ describe("server route table", () => {
 				"/v1/providers/:id/refresh",
 				"/v1/events",
 				"/v1/ext/gateway/status",
+				"/v1/ext/sigrun-mcp/oauth/:server/start",
+				"/v1/ext/sigrun-mcp/oauth/:server/complete",
 				"/v1/extensions",
 				"/v1/extensions/:slug/secrets",
 				"/v1/extensions/:slug/secrets/:key",

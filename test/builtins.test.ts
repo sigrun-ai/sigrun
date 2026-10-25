@@ -1,6 +1,6 @@
 /**
- * Built-in extensions (Task 2, pi parity): codemode, MCP and tool search
- * ship WITH core — present by default, disableable via settings
+ * Built-in extensions: codemode, MCP, tool search and OAuth ship WITH
+ * core — present by default, disableable via settings
  * `builtinExtensions`, replaceable by a same-named configured extension.
  *
  * Hermetic pattern (server.test.ts): a faux provider serves `faux/m`
@@ -32,16 +32,25 @@ import {
 	fauxToolCall,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import {
+	defineTool,
+	type Conversation,
+	type ConversationId,
+	type ToolExecutionApi,
+	type ToolRegistration,
+} from "@earendil-works/pi-durable";
+import { Type } from "@earendil-works/pi-ai";
+import type { SigrunHost } from "../src/extension.js";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { SettingsStore, SettingsValidationError, settingsPath } from "../src/harness/settings.js";
+import type { ResolvedExtensionInput } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
-/** The replacement fixture whose manifest name matches the built-in MCP package. */
+/** Replacement fixtures whose manifest names match built-in packages. */
 const REPLACES_MCP_SPECIFIER = pathToFileURL(
 	join(
 		import.meta.dirname,
@@ -50,10 +59,23 @@ const REPLACES_MCP_SPECIFIER = pathToFileURL(
 		"index.js",
 	),
 ).href;
+const REPLACES_OAUTH_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-replaces-oauth",
+		"index.js",
+	),
+).href;
 
 /** The throwing fixture (the built-in quarantine path). */
 const THROWING_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-throwing", "index.js"),
+).href;
+
+/** The fixture declaring the host's per-user publication capability. */
+const USER_TOOLS_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-user-tools", "index.js"),
 ).href;
 
 /** The in-repo stdio MCP fixture server. */
@@ -88,6 +110,8 @@ async function bootBuiltins(options?: {
 	readonly settings?: Record<string, unknown>;
 	/** Test-only: additional built-in load entries (the quarantine seam). */
 	readonly extraBuiltins?: readonly string[];
+	readonly unresolvableOAuth?: boolean;
+	readonly multiUser?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-builtins-"));
 	const faux = fauxProvider({
@@ -102,7 +126,7 @@ async function bootBuiltins(options?: {
 	const env: Record<string, string> = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "none",
+		SIGRUN_AUTH: options?.multiUser === true ? "token" : "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	};
 	if (options?.mcpServers !== undefined) {
@@ -143,7 +167,24 @@ async function bootBuiltins(options?: {
 		...(options?.extraBuiltins === undefined
 			? {}
 			: { extraBuiltins: options.extraBuiltins }),
+		...(options?.unresolvableOAuth === true
+			? {
+					builtinResolver: (
+						specifier: string,
+						fallback: (specifier: string) => ResolvedExtensionInput,
+					) =>
+						specifier === "@sigrun/oauth"
+							? {
+									name: specifier,
+									entry: pathToFileURL(join(tmpdir(), "missing-sigrun-oauth.js")).href,
+								}
+							: fallback(specifier),
+				}
+			: {}),
 		settingsDir: dir,
+		...(options?.multiUser === true
+			? { isolationProbe: async () => ({ available: true, abi: 6 }) }
+			: {}),
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {
@@ -158,6 +199,10 @@ async function bootBuiltins(options?: {
 /** The stdio MCP server entry naming the in-repo stub. */
 function stubServer(extra?: Record<string, unknown>): Record<string, unknown> {
 	return {
+		// These pre-catalog fixtures assert the system-tool surface. Catalog
+		// credentials default to per-user, so retain their original path.
+		credentials: "shared",
+		sharedAuthority: "Synthetic shared test authority",
 		command: process.execPath,
 		args: [STUB_MCP_SERVER],
 		...extra,
@@ -225,12 +270,79 @@ async function storedAgentDoc(
 	return response.json().view.docs["pi.agent"] as Record<string, unknown>;
 }
 
+function acmeHost(opened: OpenedHarness): SigrunHost {
+	const host = opened.seamHosts.get("acme");
+	if (host === undefined) throw new Error("acme host missing");
+	return host;
+}
+
+function perUserProbe(deferred: boolean): ToolRegistration {
+	return defineTool({
+		name: "acme_probe",
+		description: "Alice's synthetic per-user probe",
+		parameters: Type.Object({}),
+		...(deferred ? { deferred: true } : {}),
+		execute: async () => ({ output: [{ type: "text" as const, text: "probe" }] }),
+	});
+}
+
+async function ownedConversation(
+	app: FastifyInstance,
+	opened: OpenedHarness,
+	owner: "alice" | "bob",
+): Promise<Conversation> {
+	await opened.identity.users.add({ user: owner, admin: false, source: "cli" });
+	const { token } = await opened.identity.tokens.create(`${owner}-cli`, owner);
+	const response = await app.inject({
+		method: "POST",
+		url: "/v1/conversations",
+		headers: { authorization: `Bearer ${token}` },
+	});
+	expect(response.statusCode).toBe(201);
+	const conversation = await opened.harness.conversation(
+		response.json().id as ConversationId,
+		BACKGROUND_CONTEXT,
+	);
+	if (conversation === undefined) throw new Error("owned conversation missing");
+	return conversation;
+}
+
+async function renderSection(
+	opened: OpenedHarness,
+	conversation: Conversation,
+	key: string,
+): Promise<string | undefined> {
+	const section = opened.registry.snapshot().sections().find(
+		(entry) => entry.section.key === key,
+	)?.section;
+	if (section === undefined) throw new Error(`section ${key} missing`);
+	const agent = await conversation.agent(BACKGROUND_CONTEXT);
+	return section.render({
+		conversationId: conversation.id,
+		agent,
+		env: undefined,
+		shown: {},
+		read: opened.harness,
+	}, BACKGROUND_CONTEXT);
+}
+
+function executionApi(
+	opened: OpenedHarness,
+	conversation: Conversation,
+): ToolExecutionApi {
+	return {
+		conversationId: conversation.id,
+		snapshot: opened.harness.snapshot.bind(opened.harness),
+		agent: () => conversation.agent(BACKGROUND_CONTEXT),
+	} as unknown as ToolExecutionApi;
+}
+
 // ---------------------------------------------------------------------------
 // Default boot
 // ---------------------------------------------------------------------------
 
 describe("default boot", () => {
-	test("loads all three built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
+	test("loads all four built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins();
 		const response = await app.inject({ method: "GET", url: "/v1/extensions" });
 		expect(response.statusCode).toBe(200);
@@ -243,6 +355,7 @@ describe("default boot", () => {
 		const codemode = rows.find((row) => row.name === "codemode");
 		const mcp = rows.find((row) => row.name === "sigrun-mcp");
 		const toolSearch = rows.find((row) => row.name === "tool-search");
+		const oauth = rows.find((row) => row.name === "oauth");
 		expect(codemode).toMatchObject({
 			status: "ok",
 			builtin: true,
@@ -258,11 +371,16 @@ describe("default boot", () => {
 			builtin: true,
 			version: "0.1.0",
 		});
+		expect(oauth).toMatchObject({
+			status: "ok",
+			builtin: true,
+			version: "0.1.0",
+		});
 		// A non-built-in outcome carries no builtin flag (the field is
 		// exactly true-or-absent).
 		const others = rows.filter(
 			(row) =>
-				!["codemode", "sigrun-mcp", "tool-search", "gateway"].includes(
+				!["codemode", "sigrun-mcp", "tool-search", "gateway", "oauth"].includes(
 					row.name,
 				),
 		);
@@ -305,7 +423,12 @@ describe("default boot", () => {
 			method: "POST",
 			url: "/v1/conversations",
 			payload: {},
-			headers: { "content-type": "application/json" },
+			headers: {
+				"content-type": "application/json",
+				// Shared MCP tools require an identified directory user; the
+				// fixture's seeded principal supplies that identity here.
+				"x-sigrun-user": "tester",
+			},
 		});
 		const { id } = create.json() as { id: number };
 		const conversation = await opened.harness.conversation(
@@ -332,6 +455,60 @@ describe("default boot", () => {
 		const sections = opened.registry.snapshot().sections();
 		const keys = sections.map((entry) => entry.section.key);
 		expect(keys).toContain("mcp_servers");
+	});
+});
+
+describe("per-user tools in built-in discovery", () => {
+	test("codemode renders acme@alice's tool for alice's conversation only", async () => {
+		const { app, opened } = await bootBuiltins({
+			extensionSpecifiers: [USER_TOOLS_SPECIFIER],
+			multiUser: true,
+		});
+		acmeHost(opened).tools.setUserTools("alice", [perUserProbe(false)]);
+		const alice = await ownedConversation(app, opened, "alice");
+		const bob = await ownedConversation(app, opened, "bob");
+		expect((await alice.agent(BACKGROUND_CONTEXT)).extensions.map(
+			(extension) => extension.name,
+		)).toContain("acme@alice");
+		const aliceSection = await renderSection(opened, alice, "codemode");
+		expect(aliceSection).toContain("acme_probe");
+		expect(aliceSection).not.toContain("acme@alice");
+		expect((await bob.agent(BACKGROUND_CONTEXT)).extensions.map(
+			(extension) => extension.name,
+		)).not.toContain("acme@alice");
+		expect(await renderSection(opened, bob, "codemode")).not.toContain("acme_probe");
+	});
+
+	test("tool_search finds acme@alice's deferred tool for alice's conversation only", async () => {
+		const { app, opened } = await bootBuiltins({
+			extensionSpecifiers: [USER_TOOLS_SPECIFIER],
+			multiUser: true,
+		});
+		acmeHost(opened).tools.setUserTools("alice", [perUserProbe(true)]);
+		const alice = await ownedConversation(app, opened, "alice");
+		const bob = await ownedConversation(app, opened, "bob");
+		const search = (await alice.agent(BACKGROUND_CONTEXT)).extensions
+			.flatMap((extension) => extension.tools ?? [])
+			.find((tool) => tool.name === "tool_search");
+		if (search === undefined) throw new Error("tool_search missing");
+		expect((await alice.agent(BACKGROUND_CONTEXT)).deferred.map(
+			(tool) => tool.name,
+		)).toContain("acme_probe");
+		const result = await search.execute(
+			{ query: "acme_probe" },
+			executionApi(opened, alice),
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.details).toEqual({ loaded: ["acme_probe"] });
+		expect((await bob.agent(BACKGROUND_CONTEXT)).deferred.map(
+			(tool) => tool.name,
+		)).not.toContain("acme_probe");
+		const bobResult = await search.execute(
+			{ query: "acme_probe" },
+			executionApi(opened, bob),
+			BACKGROUND_CONTEXT,
+		);
+		expect(bobResult.details).toEqual({ loaded: [] });
 	});
 });
 
@@ -367,7 +544,7 @@ describe("builtinExtensions disables", () => {
 		expect(lines).toHaveLength(1);
 	});
 
-	test("builtinExtensions: {codemode: false, toolSearch: false} → only MCP loads", { timeout: 60_000 }, async () => {
+	test("builtinExtensions: {codemode: false, toolSearch: false} → only MCP and OAuth load", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins({
 			settings: { builtinExtensions: { codemode: false, toolSearch: false } },
 		});
@@ -377,6 +554,26 @@ describe("builtinExtensions disables", () => {
 		expect(rows.some((row) => row.name === "codemode")).toBe(false);
 		expect(rows.some((row) => row.name === "tool-search")).toBe(false);
 		expect(rows.some((row) => row.name === "sigrun-mcp")).toBe(true);
+		expect(rows.some((row) => row.name === "oauth")).toBe(true);
+	});
+
+	test("builtinExtensions: {oauth: false} → OAuth absent, one log line", { timeout: 60_000 }, async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app } = await bootBuiltins({
+			settings: { builtinExtensions: { oauth: false } },
+		});
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as { name: string }[];
+		expect(rows.some((row) => row.name === "oauth")).toBe(false);
+		expect(rows.some((row) => row.name === "codemode")).toBe(true);
+		expect(rows.some((row) => row.name === "sigrun-mcp")).toBe(true);
+		expect(rows.some((row) => row.name === "tool-search")).toBe(true);
+		const lines = [...info.mock.calls, ...warn.mock.calls]
+			.map((call) => String(call[0]))
+			.filter((line) => line.includes("@sigrun/oauth"));
+		expect(lines).toHaveLength(1);
 	});
 });
 
@@ -425,6 +622,40 @@ describe("replacement", () => {
 		expect(warnings[0]).toContain(REPLACES_MCP_SPECIFIER);
 	});
 
+	test("a configured package named @sigrun/oauth replaces the built-in OAuth row", { timeout: 60_000 }, async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app, opened } = await bootBuiltins({
+			extensionSpecifiers: [REPLACES_OAUTH_SPECIFIER],
+		});
+		const names = opened.registry
+			.snapshot()
+			.tools()
+			.map((entry) => entry.tool.name);
+		expect(names).toContain("acme_oauth_replacement");
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as {
+			name: string;
+			status: string;
+			builtin?: boolean;
+			replacedBy?: string;
+		}[];
+		expect(rows.find((row) => row.name === "oauth")).toMatchObject({
+			status: "replaced",
+			builtin: true,
+			replacedBy: REPLACES_OAUTH_SPECIFIER,
+		});
+		expect(rows.find((row) => row.name === "acme-oauth-replacement")).toMatchObject({
+			status: "ok",
+		});
+		expect(rows.find((row) => row.name === "acme-oauth-replacement")?.builtin).toBeUndefined();
+		const warnings = warn.mock.calls
+			.map((call) => String(call[0]))
+			.filter((line) => line.includes("@sigrun/oauth"));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain(REPLACES_OAUTH_SPECIFIER);
+	});
+
 	test("an unrelated configured extension replaces nothing", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins({
 			extensionSpecifiers: [THROWING_SPECIFIER.replace("fixture-throwing", "fixture-gate")],
@@ -444,6 +675,29 @@ describe("replacement", () => {
 // ---------------------------------------------------------------------------
 
 describe("quarantine", () => {
+	test("an unresolvable @sigrun/oauth is quarantined and boot continues", { timeout: 60_000 }, async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app } = await bootBuiltins({
+			settings: {
+				builtinExtensions: { codemode: false, mcp: false, toolSearch: false },
+			},
+			unresolvableOAuth: true,
+		});
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as {
+			name: string;
+			status: string;
+			error?: string;
+			builtin?: boolean;
+		}[];
+		const oauth = rows.find((row) => row.status === "quarantined" && row.builtin === true);
+		expect(oauth, JSON.stringify(rows)).toBeDefined();
+		expect(oauth?.name).toContain("@sigrun/oauth");
+		expect(oauth?.error).toContain("Cannot find module");
+		expect(rows.some((row) => row.name === "oauth" && row.status === "ok")).toBe(false);
+	});
+
 	test("a built-in that throws while loading is quarantined exactly like a configured extension; boot continues", { timeout: 60_000 }, async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { app } = await bootBuiltins({
@@ -452,6 +706,7 @@ describe("quarantine", () => {
 					codemode: false,
 					mcp: false,
 					toolSearch: false,
+					oauth: false,
 				},
 			},
 			extraBuiltins: [THROWING_SPECIFIER],

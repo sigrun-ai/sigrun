@@ -309,11 +309,12 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 			JSON.stringify({
 				extensions: [tsEntry],
 				builtinExtensions: {
-				codemode: false,
-				mcp: false,
-				toolSearch: false,
-				gateway: false,
-			},
+					codemode: false,
+					mcp: false,
+					toolSearch: false,
+					gateway: false,
+					oauth: false,
+				},
 			}) + "\n",
 			"utf8",
 		);

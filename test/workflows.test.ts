@@ -189,14 +189,14 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(permissions?.contents).toBe("read");
 	});
 
-	test("the test job checks out all four repos in the sibling layout", () => {
+	test("the test job checks out all five repos in the sibling layout", () => {
 		const { jobs } = workflow();
 		const test = jobs.test;
 		expect(test).toBeDefined();
 		const paths = (test?.steps ?? [])
 			.filter((s) => s.uses?.startsWith("actions/checkout@"))
 			.map((s) => (s.with as { path?: string } | undefined)?.path);
-		expect(paths).toEqual(["sigrun", "sigrun-ext-codemode", "sigrun-ext-mcp", "sigrun-ext-tool-search"]);
+		expect(paths).toEqual(["sigrun", "sigrun-ext-codemode", "sigrun-ext-mcp", "sigrun-ext-tool-search", "sigrun-ext-oauth"]);
 	});
 
 	test("the test job runs npm ci, the suite, and typecheck on node 22", () => {
@@ -217,8 +217,8 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const runs = steps.map(runOf);
 		const dance = runs.find((r) => r.includes("publish-deps.mjs registry"));
 		expect(dance, "a step must run publish-deps.mjs registry").toBeDefined();
-		// The pins are derived, never hardcoded: the dance reads the three
-		// @sigrun/ext-* versions publish-deps.mjs just wrote into package.json
+		// The pins are derived, never hardcoded: the dance reads the four
+		// built-in versions publish-deps.mjs just wrote into package.json
 		// (each sourced from the sibling checkout's own manifest), then names
 		// them explicitly in the lock regen — a bare `npm install
 		// --package-lock-only` keeps the lock's `link:` entries and npm ci

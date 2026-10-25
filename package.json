@@ -48,6 +48,7 @@
 		"@sigrun/ext-gateway": "file:../sigrun-ext-gateway",
 		"@sigrun/ext-mcp": "file:../sigrun-ext-mcp",
 		"@sigrun/ext-tool-search": "file:../sigrun-ext-tool-search",
+		"@sigrun/oauth": "file:../sigrun-ext-oauth",
 		"@sigrun/shared": "0.1.2",
 		"croner": "^10.0.1",
 		"fastify": "^5.12.7",

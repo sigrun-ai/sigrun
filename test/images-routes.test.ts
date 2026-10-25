@@ -293,6 +293,10 @@ async function bootServer(upstream: Upstream): Promise<TestServer> {
 		SIGRUN_WEBUI: "false",
 		SIGRUN_AUTH: "token",
 		SIGRUN_CONFIG_DIR: configDir,
+		// The image cache is keyed only by upstream URL, so each fixture
+		// server needs its own root instead of the suite-wide fallback.
+		SIGRUN_CACHE_DIR: join(dir, "cache"),
+		SIGRUN_STATE_DIR: join(dir, "state"),
 	});
 	const identity = await seededIdentity(join(dir, "seed"), "alice");
 	const opened = await openHarness(config, {

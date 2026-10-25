@@ -292,8 +292,8 @@ export interface NotificationsSettings {
 }
 
 /**
- * The built-in extensions toggles (Task 2, pi parity): codemode, MCP and
- * tool search ship WITH core. Each key defaults to `true`; `false`
+ * The built-in extensions toggles: codemode, MCP, tool search and OAuth
+ * ship WITH core. Each key defaults to `true`; `false`
  * removes the built-in entirely (absent from `/v1/extensions`, its config
  * ignored with one log line). RESTART-REQUIRED: the built-in set resolves
  * at boot, like `extensions`.
@@ -304,6 +304,8 @@ export interface BuiltinExtensionsSettings {
 	readonly toolSearch?: boolean;
 	/** Gateway (gateway C3): the built-in engine, default true. */
 	readonly gateway?: boolean;
+	/** OAuth login providers (multi-user M3b), default true. */
+	readonly oauth?: boolean;
 }
 
 /**

@@ -42,8 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stored groups per authenticating source, effective group-derived admin,
   and people-scoped group sharing. Groups refresh at the next login or
   validated proxy request. The separately shipped `@sigrun/oauth`
-  package provides OIDC, GitHub, and Discord login providers; it is not yet
-  bundled or installed by default.
+  package provides OIDC, GitHub, and Discord login providers.
+- `@sigrun/oauth` is the fourth built-in extension. It loads by default,
+  resolves from core's dependencies, and supports the same disable,
+  replacement, and quarantine behavior as the other built-ins. The
+  `builtinExtensions.oauth` toggle defaults to true and is restart-required.
 
 ### Changed
 - Retired persisted `groupAdmin` in favor of stored groups; its user-wire
