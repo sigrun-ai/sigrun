@@ -18,7 +18,7 @@
  * server-submissions.test.ts).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -48,6 +48,15 @@ interface TestServer {
  * scripts its own responses before submitting. */
 async function bootServer(): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-sessmgmt-"));
+	// namingModel disabled through the sanctioned seam (`settingsDir` —
+	// a settings.json written into the bare dir does nothing: the store
+	// reads configDir, which defaults to the operator's real
+	// ~/.config/sigrun without SIGRUN_CONFIG_DIR). Without the disable the
+	// auto-namer draws naming completions from the SAME faux queue the test
+	// scripts — an unnamed conversation's first answered run races the
+	// imported copy's continue leg for responses, intermittently leaving it
+	// an empty completion and `unanswered`. Naming has dedicated suites.
+	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
@@ -66,6 +75,7 @@ async function bootServer(): Promise<TestServer> {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
+		settingsDir: dir,
 	});
 	const app = await createServer(opened, config);
 	const teardown = async () => {
