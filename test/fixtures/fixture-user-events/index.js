@@ -59,6 +59,8 @@ export default function createFixtureUserEvents() {
 				callId: event.callId,
 				kind: event.kind,
 				status: event.status,
+				answeredByUser: event.answeredByUser,
+				answer: event.answer,
 			});
 		},
 		/** The factory-returned getter over the module-level settlements. */

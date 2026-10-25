@@ -675,6 +675,8 @@ type SettlementsModule = {
 		callId: string;
 		kind: string;
 		status: string;
+		answeredByUser?: string;
+		answer?: Readonly<Record<string, unknown>>;
 	}[];
 	readonly resetSettlements: () => void;
 };
@@ -797,6 +799,8 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 			callId: "c6-route",
 			kind: "fixture.ask",
 			status: "answered",
+			answeredByUser: undefined,
+			answer: { decision: "allow" },
 		});
 
 		// Writer 2: the host answers (the extension side).
@@ -806,6 +810,7 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 			"c6-host",
 			{ values: { decision: "allow" } },
 			BACKGROUND_CONTEXT,
+			{ user: "tester" },
 		);
 		expect(applied).toBe(true);
 		const hostEvent = await waitForSettlement(fixture, "c6-host");
@@ -814,6 +819,8 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 			callId: "c6-host",
 			kind: "fixture.ask",
 			status: "answered",
+			answeredByUser: "tester",
+			answer: { decision: "allow" },
 		});
 
 		// Writer 3: the host expires (settleInteraction's terminal write).

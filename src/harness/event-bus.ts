@@ -1470,6 +1470,10 @@ export class EventBus {
 					callId: event.callId,
 					kind: event.kind,
 					status: event.status,
+					...(event.answeredByUser === undefined
+						? {}
+						: { answeredByUser: event.answeredByUser }),
+					...(event.answer === undefined ? {} : { answer: event.answer }),
 				};
 		}
 	}
