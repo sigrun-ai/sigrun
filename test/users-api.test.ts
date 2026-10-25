@@ -12,12 +12,13 @@
  * records are read by importing the SAME file:// URL the loader used.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { AgentDoc, configure } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import {
 	fauxAssistantMessage,
@@ -28,6 +29,9 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { TokenStore } from "../src/harness/identity/index.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { defaultModuleTrees, buildUserPolicy } from "../src/sandbox/policy.js";
+import { revalidate } from "../src/sandbox/grants.js";
+import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 /** The fixture-user-events entry, imported by specifier (contract: factory + userDeleted). */
@@ -103,6 +107,7 @@ async function bootServer(options: {
 		env,
 		identity,
 		extensionSpecifiers: [USER_EVENTS_SPECIFIER],
+		isolationProbe: async () => ({ available: true, abi: 6 }),
 	});
 	const app = await createServer(opened, config, [], {
 		listenHost: "0.0.0.0",
@@ -250,7 +255,7 @@ describe("PATCH /v1/users/:user", () => {
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["admins"], updatedAt: 1 }],
 			source: "proxy",
 		});
 		const token = await mint(opened, "tester");
@@ -361,6 +366,222 @@ describe("DELETE /v1/users/:user", () => {
 		});
 	});
 
+	test("transfer pins relative and absent cwd values and grants the departing workspace", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const aliceWorkspace = join(dir, "alice-workspace");
+		await mkdir(aliceWorkspace);
+		await opened.identity.users.update("alice", { workspace: aliceWorkspace });
+		const createOwned = async () => {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/conversations",
+				headers: { authorization: `Bearer ${adminToken}` },
+			});
+			expect(response.statusCode).toBe(201);
+			return (response.json() as { id: number }).id;
+		};
+		const relativeId = await createOwned();
+		const rootId = await createOwned();
+		const relative = await opened.harness.conversation(relativeId as never, BACKGROUND_CONTEXT);
+		await relative!.commit(
+			(tx) => configure(tx, relativeId as never, { cwd: "projects/x" }),
+			BACKGROUND_CONTEXT,
+		);
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/alice?transferTo=bob",
+			headers: { authorization: `Bearer ${await mint(opened, "tester")}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		const storedWorkspace = await realpath(aliceWorkspace);
+		expect(
+			(await opened.harness.snapshot(AgentDoc, relativeId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe(join(storedWorkspace, "projects/x"));
+		expect(
+			(await opened.harness.snapshot(AgentDoc, rootId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe(storedWorkspace);
+		expect(opened.identity.users.get("bob")?.grants).toContainEqual({
+			path: storedWorkspace,
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+		const listing = await app.inject({
+			method: "GET",
+			url: "/v1/users",
+			headers: { authorization: `Bearer ${await mint(opened, "tester")}` },
+		});
+		expect(
+			(listing.json().users as { user: string; grants?: unknown[] }[])
+				.find((record) => record.user === "bob")?.grants,
+		).toContainEqual({
+			path: storedWorkspace,
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+	});
+
+	test("default-workspace transfer creates a visible inherited grant the recipient can use", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const conversationId = (created.json() as { id: number }).id;
+		const dataDir = opened.extensionStores.roots.dataDir;
+		const defaultWorkspace = join(dataDir, "users", "alice", "workspace");
+		await mkdir(defaultWorkspace, { recursive: true });
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/alice?transferTo=bob",
+			headers: { authorization: `Bearer ${await mint(opened, "tester")}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		const storedWorkspace = await realpath(defaultWorkspace);
+		const recipient = opened.identity.users.get("bob");
+		expect(recipient?.grants).toContainEqual({
+			path: storedWorkspace,
+			access: "rw",
+			inheritedFrom: "alice",
+		});
+		expect(
+			(await opened.harness.snapshot(AgentDoc, conversationId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe(storedWorkspace);
+		const managed = {
+			roots: opened.extensionStores.roots,
+			storagePath: join(dir, "sigrun.db"),
+			coreRoot: process.cwd(),
+			userAreas: (user: string) => join(dataDir, "users", user),
+		};
+		expect(revalidate(recipient!, managed)).toEqual({ ok: true });
+		const policy = buildUserPolicy(recipient!, {
+			managed,
+			nodeBinDir: process.execPath,
+			moduleTrees: defaultModuleTrees(process.cwd()),
+		});
+		expect(policy.ok).toBe(true);
+		if (policy.ok) expect(policy.policy.rw).toContain(storedWorkspace);
+	});
+
+	test("an invalid departing-workspace grant is skipped with a warning", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		// Seed directly to exercise deletion's revalidation of stored state.
+		await opened.identity.users.update("alice", {
+			workspace: join(dir, "config"),
+			grants: [{ path: dir, access: "ro" }],
+		});
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const deleted = await app.inject({
+				method: "DELETE",
+				url: "/v1/users/alice?transferTo=bob",
+				headers: { authorization: `Bearer ${adminToken}` },
+			});
+			expect(deleted.statusCode).toBe(204);
+			expect(opened.identity.users.get("bob")?.grants).toBeUndefined();
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining("path is or contains configDir"),
+			);
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
+	test("deleting an osUser with transfer is refused before any mutation", async () => {
+		const fixture = await fixtureModule();
+		fixture.resetDeletions();
+		const { app, opened, dir } = await bootServer({});
+		const adminToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		await opened.identity.users.update("bob", {
+			workspace: dir,
+			osUser: "bob-os",
+		});
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const conversationId = (created.json() as { id: number }).id;
+		const conversation = await opened.harness.conversation(
+			conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		await conversation!.commit(
+			(tx) => configure(tx, conversationId as never, { cwd: "projects/x" }),
+			BACKGROUND_CONTEXT,
+		);
+		const directoryBefore = opened.identity.users.list();
+
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${adminToken}` },
+		});
+		expect(deleted.statusCode).toBe(409);
+		expect(deleted.json()).toEqual({
+			error: "invalid_transfer",
+			reason: "osUser workspace",
+		});
+		expect(opened.identity.users.list()).toEqual(directoryBefore);
+		expect(
+			(await opened.harness.snapshot(SessionMetaDoc, conversationId as never, BACKGROUND_CONTEXT))?.owner,
+		).toBe("bob");
+		expect(
+			(await opened.harness.snapshot(AgentDoc, conversationId as never, BACKGROUND_CONTEXT))?.cwd,
+		).toBe("projects/x");
+		const whoami = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(whoami.statusCode).toBe(200);
+		expect(fixture.deletions).toEqual([]);
+	});
+
+	test("deleting a user removes their account links and no one else's", async () => {
+		const { app, opened } = await bootServer({});
+		const token = await mint(opened, "alice");
+		// Bob holds two links (two providers); alice holds one. Links
+		// never transfer (multi-user §10.6 step 1).
+		await opened.identity.accounts.link({
+			provider: "chat:loop",
+			subject: "bob-chat",
+			user: "bob",
+			via: "self",
+		});
+		await opened.identity.accounts.link({
+			provider: "login:oauth:acme",
+			subject: "bob-sub",
+			user: "bob",
+			via: "login",
+		});
+		await opened.identity.accounts.link({
+			provider: "chat:loop",
+			subject: "alice-chat",
+			user: "alice",
+			via: "self",
+		});
+		const deleted = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/bob?transferTo=alice",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(deleted.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("bob")).toEqual([]);
+		expect(opened.identity.accounts.listForUser("alice")).toHaveLength(1);
+		expect(
+			opened.identity.accounts.lookup("chat:loop", "bob-chat"),
+		).toBeUndefined();
+	});
+
 	test("deleting the last record-admin → 409 (a group admin does not count)", async () => {
 		// tester is the ONLY record admin; the caller's admin comes from a
 		// proxy GROUP — which never counts toward the last-admin guard.
@@ -369,7 +590,7 @@ describe("DELETE /v1/users/:user", () => {
 				SIGRUN_AUTH: "proxy",
 				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
 			},
-			file: { auth: { adminGroups: ["admins"] } },
+			file: { auth: { adminGroups: ["admins"], proxy: { secretHeader: "x-sigrun-proxy-secret" } } },
 			seed: "admin-only",
 		});
 		await opened.identity.users.add({
@@ -389,8 +610,131 @@ describe("DELETE /v1/users/:user", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tokens API
+// accounts API
 // ---------------------------------------------------------------------------
+
+describe("/v1/auth/accounts", () => {
+	/** Seed one link per entry over the boot's store. */
+	async function seed(
+		opened: OpenedHarness,
+		links: Array<{ provider: string; subject: string; user: string }>,
+	): Promise<void> {
+		for (const link of links) {
+			await opened.identity.accounts.link({ ...link, via: "self" });
+		}
+	}
+
+	test("lists the caller's links; an admin may name another user", async () => {
+		const { app, opened } = await bootServer({});
+		const aliceToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		await seed(opened, [
+			{ provider: "chat:loop", subject: "bob-1", user: "bob" },
+			{ provider: "chat:loop", subject: "alice-1", user: "alice" },
+		]);
+		// Bob's own list: only his.
+		const bobOwn = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(bobOwn.statusCode).toBe(200);
+		expect(
+			(bobOwn.json() as { accounts: { subject: string }[] }).accounts.map(
+				(link) => link.subject,
+			),
+		).toEqual(["bob-1"]);
+		// An admin's window into bob's links.
+		const adminView = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts?user=bob",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(adminView.statusCode).toBe(200);
+		expect(
+			(adminView.json() as { accounts: { subject: string }[] }).accounts.map(
+				(link) => link.subject,
+			),
+		).toEqual(["bob-1"]);
+		// A non-admin naming someone else is refused before the store is read.
+		const refused = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts?user=alice",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(refused.statusCode).toBe(403);
+		expect(refused.json()).toEqual({ error: "forbidden" });
+		// A non-admin naming THEMSELVES is fine (the same payload as no query).
+		const bobNamed = await app.inject({
+			method: "GET",
+			url: "/v1/auth/accounts?user=bob",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(bobNamed.statusCode).toBe(200);
+		expect(
+			(bobNamed.json() as { accounts: { subject: string }[] }).accounts.map(
+				(link) => link.subject,
+			),
+		).toEqual(["bob-1"]);
+	});
+
+	test("a user removes their own link; the encoded subject round-trips", async () => {
+		const { app, opened } = await bootServer({});
+		const bobToken = await mint(opened, "bob");
+		await seed(opened, [
+			{ provider: "chat:signal", subject: "+15551234567", user: "bob" },
+		]);
+		const removed = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:signal&subject=%2B15551234567",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(removed.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("bob")).toEqual([]);
+	});
+
+	test("another user's link is refused for a non-admin; an admin may remove it", async () => {
+		const { app, opened } = await bootServer({});
+		const aliceToken = await mint(opened, "alice");
+		const bobToken = await mint(opened, "bob");
+		await seed(opened, [
+			{ provider: "chat:loop", subject: "alice-1", user: "alice" },
+		]);
+		const refused = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop&subject=alice-1",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(refused.statusCode).toBe(403);
+		expect(opened.identity.accounts.listForUser("alice")).toHaveLength(1);
+		const byAdmin = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop&subject=alice-1",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(byAdmin.statusCode).toBe(204);
+		expect(opened.identity.accounts.listForUser("alice")).toEqual([]);
+	});
+
+	test("an absent link → 404 unknown_account; a missing subject → 400 invalid_query", async () => {
+		const { app, opened } = await bootServer({});
+		const bobToken = await mint(opened, "bob");
+		const absent = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop&subject=nobody",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(absent.statusCode).toBe(404);
+		expect(absent.json()).toEqual({ error: "unknown_account" });
+		const missing = await app.inject({
+			method: "DELETE",
+			url: "/v1/auth/accounts?provider=chat:loop",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(missing.statusCode).toBe(400);
+		expect(missing.json()).toEqual({ error: "invalid_query" });
+	});
+});
 
 describe("tokens API", () => {
 	test("an admin POST /v1/auth/tokens with a user field → 403 forbidden", async () => {
@@ -513,5 +857,109 @@ describe("tokens API", () => {
 			headers: { authorization: `Bearer ${token}` },
 		});
 		expect(second.statusCode).toBe(401);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Multi-user M1 Task 3 — workspace, grants, and OS-account mapping
+// ---------------------------------------------------------------------------
+
+describe("PATCH /v1/users/:user — grants", () => {
+	test("admin PATCH stores realpaths for workspace/grants and accepts osUser", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const token = await mint(opened, "alice");
+		const grant = join(dir, "grant-target");
+		const link = join(dir, "grant-link");
+		await mkdir(grant);
+		await symlink(grant, link, "dir");
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: {
+				workspace: link,
+				grants: [{ path: link, access: "rw" }],
+				osUser: "bob",
+			},
+		});
+		expect(response.statusCode).toBe(200);
+		const stored = await realpath(grant);
+		expect(response.json()).toMatchObject({
+			workspace: stored,
+			grants: [{ path: stored, access: "rw" }],
+			osUser: "bob",
+		});
+		expect(opened.identity.users.get("bob")).toMatchObject({
+			workspace: stored,
+			grants: [{ path: stored, access: "rw" }],
+			osUser: "bob",
+		});
+	});
+
+	test("invalid workspace and grant paths → 400 invalid_grant with the exact reason", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const token = await mint(opened, "alice");
+		const workspace = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { workspace: join(dir, "config") },
+		});
+		expect(workspace.statusCode).toBe(400);
+		expect(workspace.json()).toEqual({
+			error: "invalid_grant",
+			path: join(dir, "config"),
+			reason: "path is or contains configDir",
+		});
+		const grant = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { grants: [{ path: "relative", access: "rw" }] },
+		});
+		expect(grant.statusCode).toBe(400);
+		expect(grant.json()).toEqual({
+			error: "invalid_grant",
+			path: "relative",
+			reason: "path must be absolute",
+		});
+	});
+
+	test("non-admin PATCH → 403", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const token = await mint(opened, "bob");
+		const response = await app.inject({
+			method: "PATCH",
+			url: "/v1/users/bob",
+			headers: { authorization: `Bearer ${token}` },
+			payload: { workspace: dir },
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toEqual({ error: "forbidden" });
+	});
+
+	test("whoami exposes only the caller's own workspace and grants", async () => {
+		const { app, opened, dir } = await bootServer({});
+		const own = join(dir, "own-workspace");
+		await mkdir(own);
+		await opened.identity.users.update("bob", {
+			workspace: own,
+			grants: [{ path: own, access: "ro" }],
+		});
+		await opened.identity.users.update("alice", {
+			workspace: dir,
+			grants: [{ path: dir, access: "rw" }],
+		});
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${await mint(opened, "bob")}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "bob",
+			workspace: own,
+			grants: [{ path: own, access: "ro" }],
+		});
 	});
 });

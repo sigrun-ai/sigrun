@@ -14,7 +14,8 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Cursor } from "@earendil-works/pi-durable";
+import { AgentDoc, type Cursor } from "@earendil-works/pi-durable";
+import { isAbsolute, join, resolve } from "node:path";
 import type { ServerContext } from "./context.js";
 import { SCAN_PAGE_SIZE } from "./helpers.js";
 import { SessionMetaDoc } from "./session-meta.js";
@@ -63,6 +64,9 @@ export async function transferOwnership(
 export function registerCoreOwnershipParticipant(ctx: ServerContext): void {
 	registerOwnershipParticipant(ctx, async (from, to) => {
 		const { opened } = ctx;
+		const fromWorkspace =
+			opened.identity.users.get(from)?.workspace ??
+			join(ctx.managedPaths.userAreas(from), "workspace");
 		let cursor: Cursor | undefined;
 		do {
 			const page = await opened.storage.scanConversations(
@@ -86,6 +90,13 @@ export function registerCoreOwnershipParticipant(ctx: ServerContext): void {
 				await conversation.commit(async (tx) => {
 					const draft = await tx.doc(SessionMetaDoc, conversation.id);
 					draft.owner = to;
+					const agent = await tx.doc(AgentDoc, conversation.id);
+					// Pin the old owner's resolution before ownership changes: a
+					// relative cwd must not retarget into the new owner's workspace.
+					if (agent.cwd === undefined) agent.cwd = fromWorkspace;
+					else if (!isAbsolute(agent.cwd)) {
+						agent.cwd = resolve(fromWorkspace, agent.cwd);
+					}
 				}, BACKGROUND_CONTEXT);
 			}
 			cursor = page.next;

@@ -241,6 +241,17 @@ export async function serveWebuiBundle(
 	await app.register(fastifyStatic, {
 		root: bundle.dir,
 		prefix: "/",
+		// U7 Task 3 (spec §11.2): the webui's HTML responses carry the
+		// one-directive CSP — remote https image sources are already
+		// rewritten to the /v1/image proxy at serve time, so img-src
+		// stays closed to the server itself plus data: URLs. A single
+		// img-src directive restricts images and nothing else: scripts
+		// and styles are unaffected. Static ASSETS keep no CSP.
+		setHeaders(res, path) {
+			if (path.endsWith(".html")) {
+				res.header("content-security-policy", "img-src 'self' data:");
+			}
+		},
 	});
 	app.setNotFoundHandler(async (request, reply) => {
 		const path = (request.raw.url ?? "/").split("?")[0] ?? "/";
@@ -252,6 +263,13 @@ export async function serveWebuiBundle(
 			return await reply
 				.code(200)
 				.type("text/html; charset=utf-8")
+				// U7 Task 3 (spec §11.2): the webui's HTML responses carry
+				// the one-directive CSP — remote https image sources are
+				// already rewritten to the /v1/image proxy at serve time, so
+				// img-src stays closed to the server itself plus data: URLs.
+				// A single img-src directive restricts images and nothing
+				// else: scripts and styles are unaffected.
+				.header("content-security-policy", "img-src 'self' data:")
 				.send(bundle.indexHtml);
 		}
 		// Fastify's default 404 body shape, restated so the API error surface

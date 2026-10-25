@@ -40,22 +40,10 @@ import type { Sharing } from "./access.js";
 import type { JobWire } from "./jobs.js";
 import type {
 	InteractionAnswer,
-	InteractionBody,
-	InteractionDiff,
-	InteractionField,
-	InteractionOption,
 	InteractionRecord,
 	InteractionStatus,
 } from "./interactions.js";
-import type {
-	AmbientBody,
-	AmbientGauge,
-	AmbientLedgerEntry,
-	AmbientLine,
-	AmbientMetrics,
-	AmbientRecord,
-	AmbientRow,
-} from "./ambient.js";
+import type { AmbientRecord } from "./ambient.js";
 import type { EffectiveServerSetting, SettingsFile } from "./settings.js";
 
 // ─── Upstream view shapes (structural) ───────────────────────────────────
@@ -407,25 +395,12 @@ export interface AmbientList {
 	readonly ambient: readonly AmbientWire[];
 }
 
-// The seam records ride the wire as-is, so their sub-shapes are the
-// contract too — re-exported here so channels (and a future generated
-// schema) resolve every wire shape from this one module without importing
-// the seam modules directly.
+// The seam records ride the wire as-is; their bodies are block trees
+// (`@sigrun/shared/blocks`), re-exported there — the dropped legacy
+// body sub-shapes have no wire spelling anymore (ruling 16).
 export type {
 	InteractionAnswer,
-	InteractionBody,
-	InteractionDiff,
-	InteractionField,
-	InteractionOption,
 	InteractionStatus,
-};
-export type {
-	AmbientBody,
-	AmbientGauge,
-	AmbientLedgerEntry,
-	AmbientLine,
-	AmbientMetrics,
-	AmbientRow,
 };
 
 // ─── Settings / meta / auth wire types ────────────────────────────────────
@@ -445,6 +420,23 @@ export type {
 export interface SettingsResponse extends SettingsFile {
 	/** The live registry snapshot's composed tool names, deduplicated. */
 	readonly toolRoster: readonly string[];
+	/**
+	 * The restart keys whose stored value differs from the boot snapshot
+	 * (UI-blocks U4, spec §13.2): the pending-restart callout's key list.
+	 * Computed per request over the fresh file read; `[]` when nothing
+	 * waits for a restart. NOT a settable key: the store's validation
+	 * rejects it on PATCH (400 `invalid_field`), and the wire patch type
+	 * Omits it.
+	 */
+	readonly pendingRestart: readonly string[];
+	/**
+	 * The write's own classification (§13.1) — present ONLY on a PATCH
+	 * response: which touched keys applied live vs. which are pending a
+	 * restart. NOT a settable key; absent on GET.
+	 */
+	readonly applied?: readonly string[];
+	/** The restart-pending companion of {@link applied}. PATCH responses only. */
+	readonly pending?: readonly string[];
 	/**
 	 * The resolved server section per flattened dotted key
 	 * (`"server.port"`, `"server.compaction.reserveTokens"`, …), each
@@ -556,6 +548,25 @@ export interface MetaResponse {
 	 * U4 — a boot constant, like the rest of meta.
 	 */
 	readonly dev: boolean;
+	/** The boot-time execution-jail decision (multi-user M1). */
+	readonly isolation: {
+		readonly mode: "auto" | "always" | "off";
+		/** Whether enforcement is active; filled by the later enforcement task. */
+		readonly active: boolean;
+		readonly available: boolean;
+		readonly abi: number;
+		readonly reason?: string;
+		readonly osUsers: "available" | "off" | string;
+	};
+	/**
+	 * The supervised flag (UI-blocks U4 Task 2, spec §13.3): `true` when
+	 * the deployment guarantees the process is restarted after an
+	 * intentional `exit 0` (the Helm chart and docker compose set
+	 * `SIGRUN_SUPERVISED=1`; a bare `docker run` does not). The §13.2
+	 * pendingRestart callout renders its Restart button only for a
+	 * supervised admin; otherwise it says "Restart sigrun to apply".
+	 */
+	readonly supervised: boolean;
 	/**
 	 * The seam inventory (docs/approval-ux-seams.md): per extension, the
 	 * interaction kinds / ambient surface keys its factory declared.
@@ -757,6 +768,64 @@ export interface ExtensionsResponse {
 }
 
 /**
+ * The `GET /v1/settings/sections` payload (UI-blocks U4 Task 4, spec
+ * §13.4): the settings panel's nav list + the search index. Core's
+ * sections come first (slug `core`), then the loaded extensions'
+ * sections ordered by slug. The index covers every searchable row —
+ * a section title, a core settings key, an extension section's field —
+ * with the section id a hit jumps to.
+ */
+export interface SettingsSectionsResponse {
+	readonly sections: readonly SettingsSectionEntry[];
+	readonly index: readonly SettingsSectionIndexEntry[];
+}
+
+/** One nav entry: the section's mount (slug + id) and its display. */
+export interface SettingsSectionEntry {
+	readonly slug: string;
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+}
+
+/** One search-index row (the label search's hit shape, spec §13.4). */
+export interface SettingsSectionIndexEntry {
+	/** The section the hit belongs to (the nav target). */
+	readonly slug: string;
+	readonly sectionId: string;
+	/** The row kind: a core settings key, an extension form field, or a section title. */
+	readonly kind: "core-key" | "field" | "section";
+	/** The searchable text (the field/section label). */
+	readonly label: string;
+	/** The field's help string, when it declares one. */
+	readonly help?: string;
+	/** The core key path / the field's form name, when the row has one. */
+	readonly key?: string;
+}
+
+/**
+ * The settings search's filter (UI-blocks U4 Task 4 round-2): the ONE
+ * implementation both channels run — the webui panel and the TUI view
+ * previously carried byte-identical copies, which drifted apart once
+ * (the TUI's lacked the key match). Case-insensitive over label + help
+ * + key; an empty query filters to nothing (the picker carries the
+ * full list).
+ */
+export function filterSettingsIndex(
+	index: readonly SettingsSectionIndexEntry[],
+	query: string,
+): readonly SettingsSectionIndexEntry[] {
+	const q = query.trim().toLowerCase();
+	if (q === "") return [];
+	return index.filter(
+		(entry) =>
+			entry.label.toLowerCase().includes(q) ||
+			(entry.help ?? "").toLowerCase().includes(q) ||
+			(entry.key ?? "").toLowerCase().includes(q),
+	);
+}
+
+/**
  * A `GET /v1/extensions/:slug/secrets` entry: the key and its winning
  * source — NEVER the value (the API lists and writes secrets; it never
  * returns them).
@@ -769,6 +838,19 @@ export interface ExtensionSecret {
 /** The `GET`/`PUT`/`DELETE `/v1/extensions/:slug/secrets` payloads: the key list. */
 export interface ExtensionSecretsResponse {
 	readonly secrets: readonly ExtensionSecret[];
+}
+
+/**
+ * The `GET`/`PUT /v1/extensions/:slug/settings` payload (UI-blocks U4,
+ * spec §13.2): the stored object verbatim under `settings`, plus the
+ * pending-restart slot. Extension-declared fields default to LIVE
+ * (§13.1), so `pendingRestart` is `[]` today; the field exists so the
+ * §13.4 callout renders from one shape across core and extension
+ * settings.
+ */
+export interface ExtensionSettingsResponse {
+	readonly settings: Record<string, unknown>;
+	readonly pendingRestart: readonly string[];
 }
 
 // ─── Sibling leaf re-exports ──────────────────────────────────────────────
@@ -792,9 +874,13 @@ export interface WhoamiResponse {
 	readonly user?: string;
 	readonly name?: string;
 	readonly email?: string;
+	/** The caller's own workspace/grants; never another directory user's. */
+	readonly workspace?: string;
+	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
 	readonly admin: boolean;
 	readonly service: boolean;
-	readonly method: "none" | "token" | "proxy" | "host";
+	readonly method: "none" | "token" | "session" | "proxy" | "host";
+	readonly provider?: string;
 }
 
 // ─── Onboarding, users, invites, tokens (core hardening W1 Task 4) ────────
@@ -823,20 +909,26 @@ export interface OnboardingState {
  * admin-visible material and the routes that serve this type are
  * admin-gated. `createdAt` is epoch ms.
  *
- * `admin` is the STORED flag (the users-admin UI toggles it); the proxy
- * group grant rides separately as `groupAdmin` (gateway C8): effective
- * admin is `admin || groupAdmin === true`, and the last-admin guard
- * counts `admin` alone.
+ * `admin` is the STORED flag (the users-admin UI toggles it); `groups`
+ * is the deduplicated union of stored source memberships. `groupAdmin`
+ * is DERIVED from those groups and `server.auth.adminGroups`, retained
+ * for one release for the users UI; the last-admin guard counts `admin`
+ * alone.
  */
 export interface UserWire {
 	readonly user: string;
 	readonly name?: string;
 	readonly email?: string;
 	readonly admin: boolean;
-	/** The persisted proxy-group grant — present only under `adminGroups`. */
+	/** DERIVED from stored groups and configured adminGroups; never persisted. */
 	readonly groupAdmin?: boolean;
+	/** The deduplicated union of groups stored by authenticating sources. */
+	readonly groups?: readonly string[];
+	readonly workspace?: string;
+	readonly grants?: readonly { readonly path: string; readonly access: "ro" | "rw" }[];
+	readonly osUser?: string;
 	readonly createdAt: number;
-	readonly source: "proxy" | "invite" | "cli";
+	readonly source: "proxy" | "invite" | "cli" | "login";
 }
 
 /** The `POST /v1/onboarding/claim` payload (Task 4): the user (plus the
@@ -865,6 +957,8 @@ export interface TokenWire {
 	readonly name: string;
 	readonly user: string;
 	readonly createdAt: number;
+	readonly kind?: "api" | "session";
+	readonly expiresAt?: number;
 }
 
 /** The `POST /v1/auth/tokens` payload (Task 4): the secret once, the
@@ -872,6 +966,31 @@ export interface TokenWire {
 export interface TokenCreateResponse {
 	readonly token: string;
 	readonly record: TokenWire;
+}
+
+/**
+ * One external identity linked to a directory user (multi-user §11.3):
+ * the `accounts.json` record verbatim. `provider` is `chat:<channel>` or
+ * `login:<slug>:<id>`; `subject` is the provider's stable subject
+ * (numeric id, `+E.164`, email-shaped — opaque to sigrun).
+ *
+ * Served to extensions as `host.accounts` and to users as
+ * `GET /v1/auth/accounts`.
+ */
+export interface AccountLinkWire {
+	readonly provider: string;
+	readonly subject: string;
+	readonly user: string;
+	readonly linkedAt: number;
+	readonly via: "login" | "self" | "pairing" | "admin";
+}
+
+/**
+ * The `GET /v1/auth/accounts` payload (multi-user §11.3): the caller's
+ * links, or one named user's for an admin.
+ */
+export interface AccountsResponse {
+	readonly accounts: readonly AccountLinkWire[];
 }
 
 // ─── Host events (GET /v1/events, core hardening W3 Task 4, spec §7.4) ───
@@ -936,7 +1055,20 @@ export type HostEventWire =
 			readonly type: "job.changed";
 			readonly job: Omit<JobWire, "access">;
 		}
-		| {
+	| {
+			/** UI-blocks U4 (spec §13.2): a settings write landed. `scope` is
+			 *  `"server"` for `PATCH /v1/settings` or `{extension: slug}` for
+			 *  an extension's settings PUT; `keys` are the flattened paths the
+			 *  write touched (dotted, the §13.1 registry vocabulary — extension
+			 *  writes name their own top-level object keys). Delivered to
+			 *  ADMINS only (settings are operator surface; the events route's
+			 *  exhaustive switch enforces it).
+			 */
+			readonly type: "settings.changed";
+			readonly scope: "server" | { readonly extension: string };
+			readonly keys: readonly string[];
+		}
+	| {
 			/** UI-blocks U3 Task 4 (spec §7.3): one surface instance changed. `k` is the hashed instance key (sha256(slug + "\0" + id + "\0" + key) hex) — the event NEVER carries params or data (render/data are principal-specific; the watcher refetches as itself). Delivered only to streams in the watcher registry whose stored access is not `"none"`. */
 			readonly type: "surface.changed";
 			readonly slug: string;

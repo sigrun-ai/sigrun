@@ -34,6 +34,8 @@ const META: MetaResponse = {
 	backup: {},
 	capabilities: { backup: false, channels: ["webui"] },
 	dev: false,
+	supervised: false,
+	isolation: { mode: "auto", active: false, available: false, abi: 0, osUsers: "off" },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [], commands: [] },
 };
@@ -60,6 +62,7 @@ const UNCLAIMED: OnboardingState = {
 function makeHarness(init?: {
 	readonly onboarding?: OnboardingState;
 	readonly whoamiStatus?: number;
+	readonly identity?: WhoamiResponse;
 }) {
 	const state = {
 		onboarding: init?.onboarding ?? UNCLAIMED,
@@ -79,10 +82,11 @@ function makeHarness(init?: {
 		if (state.failAll !== 0 && input.startsWith("/v1/")) {
 			return respond({ error: "unauthenticated" }, state.failAll);
 		}
+		if (input === "/v1/auth/providers") return respond({ providers: [] });
 		if (input === "/v1/onboarding") return respond(state.onboarding);
 		if (input === "/v1/auth/whoami") {
 			return state.whoamiStatus === 200
-				? respond(CLAIMED_IDENTITY)
+				? respond(init?.identity ?? CLAIMED_IDENTITY)
 				: respond({ error: "unauthenticated" }, state.whoamiStatus);
 		}
 		if (input === "/v1/auth/login") {
@@ -189,6 +193,17 @@ async function clickButton(
 }
 
 describe("AuthGate", () => {
+	test("a session-method principal is authenticated and reaches the shell, never the login screen", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: ["token"], codeRequired: true },
+			identity: { user: "idp-user", admin: false, service: false, method: "session" },
+		});
+		const renderer = await renderAsync(<AuthGate client={harness.client} createEventSource={harness.createEventSource} />);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "login" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ className: "session-list" })).toHaveLength(1);
+		expect(textContent(renderer.toJSON())).toContain("idp-user");
+	});
+
 	test("an unclaimed server renders the onboarding screen; the claim posts code + identity + issueToken, then the shell renders", async () => {
 		const harness = makeHarness();
 		const renderer = await renderAsync(

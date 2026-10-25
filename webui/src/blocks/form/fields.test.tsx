@@ -99,6 +99,7 @@ describe("secret (§5.6/§15)", () => {
 			findButton(renderer, "Save").props.onClick();
 		});
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { apiKey: "sk-acme-new" },
 		});
 	});
@@ -233,6 +234,7 @@ describe("list (§5.6)", () => {
 			findButton(renderer, "Save").props.onClick();
 		});
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { tags: ["beta", "alpha"] },
 		});
 	});
@@ -266,6 +268,7 @@ describe("daterange (§5.6)", () => {
 			findButton(renderer, "Save").props.onClick();
 		});
 		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
 			values: { window: { start, end } },
 		});
 	});

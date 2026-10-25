@@ -19,13 +19,26 @@
  * never a delegated act); listing serves the caller's tokens, with
  * `?user=` the admin-only window into another's; revocation deletes the
  * caller's own tokens, or any for an admin.
+ *
+ * Account links (multi-user M3a, spec §11.3) mirror the token routes
+ * exactly in who-may-see-what: `GET /v1/auth/accounts` lists the
+ * caller's own links (`?user=` is the admin-only window into another's),
+ * and `DELETE /v1/auth/accounts` removes one — the caller's own, or any
+ * for an admin. Both take QUERY parameters rather than path segments:
+ * provider ids contain `:` and subjects may contain `/`, `+`, or `@`.
  */
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
 import { ipAllowed } from "../auth/ip.js";
+import { sessionCookieOf } from "../auth/pipeline.js";
 import { LoginLimiter } from "../auth/login-limiter.js";
-import type { TokenCreateResponse, TokenWire } from "../views.js";
+import type {
+	AccountsResponse,
+	TokenCreateResponse,
+	TokenWire,
+} from "../views.js";
+import { accountLinkWire } from "../views.js";
 import type { TokenRecord } from "../../harness/identity/index.js";
 
 /** The session cookie name (spec §5.4). */
@@ -52,10 +65,19 @@ export function buildSessionCookie(
 	const forwardedProto = Array.isArray(forwarded) ? forwarded[0] : forwarded;
 	const secure =
 		request.protocol === "https" || (trusted && forwardedProto === "https");
+	const maxAge = sessionTtlMs(ctx) / 1_000;
 	return (
-		`${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/` +
+		`${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}` +
 		(secure ? "; Secure" : "")
 	);
+}
+
+/** The live session TTL consumed by the login flow (days → milliseconds). */
+export function sessionTtlMs(ctx: ServerContext): number {
+	const days =
+		ctx.opened.settings.read().server?.auth?.sessionDays ??
+		ctx.config.auth.sessionDays;
+	return days * 86_400_000;
 }
 
 /** The wire form of one token record — never the digest. */
@@ -65,6 +87,8 @@ function tokenWire(record: TokenRecord): TokenWire {
 		name: record.name,
 		user: record.user,
 		createdAt: record.createdAt,
+		...(record.kind === undefined ? {} : { kind: record.kind }),
+		...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
 	};
 }
 
@@ -110,7 +134,14 @@ export function registerAuthRoutes(
 			.send({ user: user.user });
 	});
 
-	app.post("/v1/auth/logout", async (_request, reply) => {
+	app.post("/v1/auth/logout", async (request, reply) => {
+		const presented = sessionCookieOf(request);
+		const record = presented
+			? ctx.opened.identity.tokens.verify(presented)
+			: undefined;
+		if (record?.kind === "session") {
+			await ctx.opened.identity.tokens.revoke(record.id);
+		}
 		return await reply
 			.code(204)
 			.header(
@@ -122,13 +153,20 @@ export function registerAuthRoutes(
 
 	app.get("/v1/auth/whoami", async (request) => {
 		const principal = request.principal;
+		const record =
+			principal.user === undefined
+				? undefined
+				: ctx.opened.identity.users.get(principal.user);
 		return {
 			...(principal.user === undefined ? {} : { user: principal.user }),
 			...(principal.name === undefined ? {} : { name: principal.name }),
 			...(principal.email === undefined ? {} : { email: principal.email }),
+			...(record?.workspace === undefined ? {} : { workspace: record.workspace }),
+			...(record?.grants === undefined ? {} : { grants: record.grants }),
 			admin: principal.admin,
 			service: principal.service,
 			method: principal.method,
+			...(principal.provider === undefined ? {} : { provider: principal.provider }),
 		};
 	});
 
@@ -209,6 +247,71 @@ export function registerAuthRoutes(
 			return await reply.code(403).send({ error: "forbidden" });
 		}
 		await ctx.opened.identity.tokens.revoke(id);
+		return await reply.code(204).send();
+	});
+
+	// ─── Account links (multi-user M3a, spec §11.3) ────────────────────
+
+	app.get("/v1/auth/accounts", async (request, reply) => {
+		const principal = request.principal;
+		const query = request.query as { user?: string };
+		// `?user=` is the admin-only window into another's links; naming
+		// oneself is the same payload as no query (the identity is theirs
+		// either way) and is allowed for the same reason the token list
+		// allows it.
+		if (query.user !== undefined) {
+			if (!principal.admin && query.user !== principal.user) {
+				return await reply.code(403).send({ error: "forbidden" });
+			}
+			const response: AccountsResponse = {
+				accounts: ctx.opened.identity.accounts
+					.listForUser(query.user)
+					.map(accountLinkWire),
+			};
+			return response;
+		}
+		// The caller's own links — a principal with no directory user (the
+		// naive single-operator superuser, a userless service principal)
+		// gets the whole store, which for that posture IS the operator's own
+		// (the same rule the token list applies).
+		const response: AccountsResponse = {
+			accounts:
+				principal.user === undefined
+					? ctx.opened.identity.accounts.list().map(accountLinkWire)
+					: ctx.opened.identity.accounts
+							.listForUser(principal.user)
+							.map(accountLinkWire),
+		};
+		return response;
+	});
+
+	app.delete("/v1/auth/accounts", async (request, reply) => {
+		const principal = request.principal;
+		const query = request.query as { provider?: string; subject?: string };
+		if (
+			query.provider === undefined ||
+			query.provider === "" ||
+			query.subject === undefined ||
+			query.subject === ""
+		) {
+			return await reply.code(400).send({ error: "invalid_query" });
+		}
+		// The lookup, the ownership check, and the removal happen INSIDE one
+		// serialized mutation: reading the link here and removing it later
+		// would leave a window where the subject is unlinked and re-linked
+		// to a different user, and this request would delete the NEW
+		// holder's link on the strength of a stale check.
+		const outcome = await ctx.opened.identity.accounts.unlinkAuthorized(
+			query.provider,
+			query.subject,
+			{ user: principal.user, admin: principal.admin },
+		);
+		if (outcome === "absent") {
+			return await reply.code(404).send({ error: "unknown_account" });
+		}
+		if (outcome === "forbidden") {
+			return await reply.code(403).send({ error: "forbidden" });
+		}
 		return await reply.code(204).send();
 	});
 }

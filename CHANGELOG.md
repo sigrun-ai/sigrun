@@ -6,6 +6,86 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Multi-user login (M3b): extension-contributed `loginProviders` with
+  core-owned, single-use state and callback routes; first-login setup and
+  invite resolution with optional policy-gated auto-provisioning; webui
+  provider sign-in; and self-service account links that are never silently
+  re-pointed to another user.
+- Expiring, revocable browser sessions (`server.auth.sessionDays`, default
+  30 days). A session can mint the user's API tokens; revoking it leaves
+  those tokens independent.
+- Stored groups per authenticating source, effective group-derived admin,
+  and people-scoped group sharing. Groups refresh at the next login or
+  validated proxy request. The separately shipped `@sigrun/oauth`
+  package provides OIDC, GitHub, and Discord login providers; it is not yet
+  bundled or installed by default.
+
+### Changed
+- Retired persisted `groupAdmin` in favor of stored groups; its user-wire
+  compatibility field is now derived and retained for one release.
+
+### Security
+- Added the opt-in Landlock kernel boundary suite for two-user execution
+  isolation, with a hard ABI 6+ CI gate and explicit local skip reasons.
+  Documented the isolation boundary, trusted-extension and resource limits,
+  kernel requirements, OS-account setup, and proxy trust posture.
+  The suite also covers abstract sockets, ptrace, worker lifecycle, IPC
+  descriptors, and privileged-runner osUser switching; outside-jail controls
+  distinguish Landlock denials from Yama or missing-capability conditions.
+
+## [0.1.7] - 2026-10-24
+### Fixed
+- The deploy entry binds the dual-stack wildcard (`::`) instead of the
+  IPv4-only `0.0.0.0`. On a dual-stack pod whose Service is IPv6-only
+  (`ipFamilies: ["IPv6"]` — the default shape on a cluster with an
+  `fd00::/8` ClusterIP range) the EndpointSlice advertises only the
+  pod's IPv6 address; the gateway dialed it, got connection-refused,
+  and answered `upstream connect error or disconnect/reset before
+  headers. reset reason: remote connection failure` while the
+  IPv4-loopback probes kept the pod Ready. `::` accepts both families
+  (`net.ipv6.bindv6only` is 0 on Linux), matching every other workload
+  in a dual-stack cluster. The reported listen line brackets the host
+  (`http://[::]:3000`).
+
+### Changed
+- The chart's main Service is `PreferDualStack` over `[IPv6, IPv4]`,
+  so it advertises both pod addresses regardless of the cluster's
+  default family. Converting an existing `SingleStack` Service is a
+  recreate (`spec.clusterIPs` is immutable).
+- `sigrun run` (workstation mode) still binds `127.0.0.1` only.
+
+## [0.1.6] - 2026-10-24
+### Added
+- Extension surfaces: typed block rendering, actions and uploads, live
+  transports, per-principal access control, and web/TUI surface views.
+- Web and TUI block renderers: content, charts, collections, forms,
+  navigation, live updates, and extension-provided views.
+
+### Fixed
+- The container image preserves the core, webui, shared, and TUI build
+  output paths and compiles the TUI workspace. The published 0.1.5 image
+  flattened core `dist/` into `/app`, so `node dist/index.js` could not
+  start. CI now smoke-checks the built image's runtime layout.
+
+### Changed
+- `@sigrun/shared` 0.1.2: surface and block-instance wire types.
+- `@sigrun/tui` 0.1.1: extension surfaces and the full block renderer.
+- Fastify 5.12.7 and `@fastify/static` 10.1.7 address the server's
+  header-validation and static-file path/authorization advisories; the
+  patched `fast-uri` transitive releases address its URI-normalization
+  advisories. `npm audit` reports zero vulnerabilities.
+
+### Security
+- Agent shells no longer inherit sigrun's environment. pi-durable's bash
+  tool ran every command with the server's full environment, so an
+  agent's `env` printed `SIGRUN_API_TOKEN`, `SIGRUN_PROXY_SECRET` and
+  provider keys. Every command now gets an allowlist (`PATH`, `HOME`,
+  `TMPDIR`, `LANG`, `LC_*`, `TZ`, `TERM`, `USER`, `LOGNAME`, `SHELL`,
+  `NPM_CONFIG_CACHE`, `SSH_AUTH_SOCK`) plus whatever the calling tool
+  sets. `NODE_ENV=production` from the image no longer reaches agent
+  shells, so an agent's `npm install` installs devDependencies again.
+  The bundled MCP extension's stdio servers get the same allowlist.
 
 ## [0.1.5] - 2026-10-23
 ### Added

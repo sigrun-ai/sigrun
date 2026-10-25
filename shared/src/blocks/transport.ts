@@ -72,6 +72,10 @@ export interface SurfaceTransport {
 	fetchData(since?: number): Promise<SurfaceFetch>;
 	act(body: {
 		action: string;
+		/** The action's wire type (submit/edit/move/…), carried alongside
+		 *  the resolved name so a transport can gate on KIND (an edit
+		 *  named like the submit action must never read as a submit). */
+		type: string;
 		payload: JsonValue;
 		actionId: string;
 	}): Promise<SurfaceActResult>;

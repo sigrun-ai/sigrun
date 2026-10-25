@@ -26,7 +26,9 @@
  */
 
 import type { JsonObject, Tree } from "@sigrun/shared/blocks";
-import type { DataOps } from "@sigrun/shared/blocks";
+import type { DataOps, JsonValue } from "@sigrun/shared/blocks";
+import type { ImageSign } from "../images/rewrite.js";
+import { rewriteImages } from "../images/rewrite.js";
 import { validateTree, type ValidationError } from "../../blocks/validate.js";
 import type {
 	ActionResult,
@@ -230,7 +232,7 @@ interface InstanceState {
 /** One located surface: its binding plus its def. */
 interface Located {
 	readonly slug: string;
-	readonly def: SurfaceDef<"view" | "panel">;
+	readonly def: SurfaceDef<"view" | "panel" | "settings">;
 }
 
 /**
@@ -246,6 +248,9 @@ export class SurfaceService {
 	private readonly maxUploadBytes: number;
 	private readonly watchers: WatcherRegistry;
 	private readonly publishChanged: ((event: SurfaceChangedInternal) => void) | undefined;
+	/** The image-signer (U7 Task 1, spec §11.2): every tree/data response passes through the rewriter before leaving the server. */
+	private readonly imageSign: ImageSign | undefined;
+	private readonly extra: { extension: string; defs: readonly SurfaceDef<"view" | "panel" | "settings">[] }[] = [];
 
 	constructor(
 		bindings: readonly ExtensionSurfaceBinding[],
@@ -255,13 +260,42 @@ export class SurfaceService {
 			watchers?: WatcherRegistry;
 			/** The hub publish (Task 4): bumpRev fans out surface.changed. */
 			publishChanged?: (event: SurfaceChangedInternal) => void;
+			/** Signs https image URLs into expiring proxy URLs (U7 Task 1); absent = pass-through. */
+			imageSign?: ImageSign;
+			/**
+			 * Settings-placement surfaces (UI-blocks U4 Task 3, spec §13.4):
+			 * the settings-surfaces adapter's output (extension sections +
+			 * core's own under the reserved `core` slug), located by the same
+			 * `(slug, id)` rule. Their actions (the save handler) reference
+			 * the service, so they attach AFTER construction.
+			 */
+			settingsSurfaces?: readonly {
+				extension: string;
+				defs: readonly SurfaceDef<"settings">[];
+			}[];
 		},
 	) {
 		this.bindings = bindings;
+		this.extra.push(...(options?.settingsSurfaces ?? []));
 		this.cache = new AccessCache();
 		this.maxUploadBytes = options?.maxUploadBytes ?? Number.MAX_SAFE_INTEGER;
 		this.watchers = options?.watchers ?? new WatcherRegistry();
 		this.publishChanged = options?.publishChanged;
+		this.imageSign = options?.imageSign;
+	}
+
+	/**
+	 * Attach the settings surfaces post-construction (their save
+	 * handlers close over THIS service for the optimistic-concurrency
+	 * rev read, so they can only be built once the service exists).
+	 */
+	attachSettingsSurfaces(
+		extra: readonly {
+			extension: string;
+			defs: readonly SurfaceDef<"settings">[];
+		}[],
+	): void {
+		this.extra.push(...extra);
 	}
 
 	/** The watcher registry (the events route reads it per event). */
@@ -276,12 +310,17 @@ export class SurfaceService {
 			const def = binding.defs.find((entry) => entry.id === id);
 			if (def !== undefined) return { slug, def };
 		}
+		for (const binding of this.extra) {
+			if (binding.extension !== slug) continue;
+			const def = binding.defs.find((entry) => entry.id === id);
+			if (def !== undefined) return { slug, def };
+		}
 		return undefined;
 	}
 
 	/** The instance key: the surface's own `instanceKey` or the default. */
 	private keyFor(
-		def: SurfaceDef<"view" | "panel">,
+		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
 	): string {
 		if (def.instanceKey !== undefined) return def.instanceKey(params);
@@ -346,8 +385,13 @@ export class SurfaceService {
 			}
 		}
 		return {
-			tree: validation.tree,
-			data: result.data,
+			// SAFETY: the rewriter is a structural JSON walk returning the same
+			// shape; `Tree` (interfaces) has no implicit index signature, so the
+			// generic JsonValue round-trip needs the bridge cast.
+			tree: this.rewriteForWire(
+				validation.tree as unknown as JsonValue,
+			) as unknown as Tree,
+			data: this.rewriteForWire(result.data),
 			rev: state.rev,
 			treeRev: state.treeRev,
 			access: result.access,
@@ -389,7 +433,18 @@ export class SurfaceService {
 			const ops = state.ops
 				.filter((entry) => entry.rev > since)
 				.flatMap((entry) => entry.ops);
-			return { rev: state.rev, treeRev: state.treeRev, ops };
+			// Ops answers are data responses too (spec §7.3): the client folds
+			// them into its local copy, so they must carry the SAME rewritten
+			// sources the full data answer would — else fold(data, ops) drifts
+			// from the server's data.
+			return {
+				rev: state.rev,
+				treeRev: state.treeRev,
+				// SAFETY: ops are wire JSON (DataOp values); the rewriter returns
+				// the same shape, and `unknown[]`'s lack of an index signature is
+				// the only reason for the bridge cast.
+				ops: this.rewriteForWire(ops as unknown as JsonValue) as unknown as readonly unknown[],
+			};
 		}
 
 		let data: JsonObject;
@@ -434,7 +489,21 @@ export class SurfaceService {
 		if (located.def.sharedData !== true) {
 			state.rev += 1;
 		}
-		return { rev: state.rev, treeRev: state.treeRev, data };
+		return { rev: state.rev, treeRev: state.treeRev, data: this.rewriteForWire(data) };
+	}
+
+	/**
+	 * The wire-side image rewrite (U7 Task 1, spec §11.1/§11.2): every
+	 * tree and data (and ops) response passes through `rewriteImages`
+	 * before leaving the server, replacing https image sources with
+	 * signed proxy URLs. Absent signer → verbatim pass-through. This is
+	 * the hook point U5's chat surfaces reuse when they land: they call
+	 * the same `rewriteImages` over their trees/data.
+	 */
+	private rewriteForWire<T extends JsonValue>(value: T): T {
+		return this.imageSign === undefined
+			? value
+			: rewriteImages(value, this.imageSign);
 	}
 
 	/**
@@ -460,7 +529,7 @@ export class SurfaceService {
 	/** The composite instance key (`slugidkey`) for one def + params. */
 	compositeFor(
 		slug: string,
-		def: SurfaceDef<"view" | "panel">,
+		def: SurfaceDef<"view" | "panel" | "settings">,
 		params: JsonObject,
 	): string {
 		return `${slug}${def.id}${this.keyFor(def, params)}`;
@@ -528,8 +597,14 @@ export class SurfaceService {
 			throw new ActionRateLimitedError();
 		}
 		const composite = `${slug}${id}${key}`;
+		// The request fingerprint (action + params + payload)
+		// disambiguates a RETRY (same body — replay the stored result)
+		// from an actionId REUSE (a second client whose channel restarted
+		// its id sequence — two tabs of one webui share the module-level
+		// counter; U4 Task 4).
+		const fingerprint = JSON.stringify({ action, params, payload });
 		if (actionId !== undefined) {
-			const hit = this.dedup.check(actionId, composite);
+			const hit = this.dedup.check(actionId, composite, fingerprint);
 			if (hit !== undefined && hit !== null) return hit.result;
 		}
 		const result = await this.invokeWithTimeout(() =>
@@ -537,9 +612,26 @@ export class SurfaceService {
 		);
 		const wrapped = this.wrapResult(slug, id, key, result);
 		if (actionId !== undefined) {
-			this.dedup.record(actionId, composite, wrapped);
+			this.dedup.record(actionId, composite, fingerprint, wrapped);
 		}
 		return wrapped;
+	}
+
+	/** The instance's current rev (the save action's optimistic check). */
+	currentRev(slug: string, id: string, key: string): number {
+		return this.stateFor(slug, id, key).rev;
+	}
+
+	/**
+	 * The instance key for one surface + params, or `undefined` when the
+	 * surface is unknown (the routes' located-check — covers extension
+	 * views/panels AND settings surfaces, one source). A throwing
+	 * `instanceKey` propagates (the extension-fault 500 path).
+	 */
+	instanceKeyFor(slug: string, id: string, params: JsonObject): string | undefined {
+		const located = this.locate(slug, id);
+		if (located === undefined) return undefined;
+		return this.keyFor(located.def, params);
 	}
 
 	/**
@@ -765,9 +857,10 @@ export class SurfaceService {
 	chatDedupCheck(
 		actionId: string,
 		address: SurfaceAddress,
+		fingerprint: string,
 	): ActionResponse | undefined | null {
 		const { slug, id, key } = partsOf(address);
-		const hit = this.dedup.check(actionId, `${slug}\u0001${id}\u0001${key}`);
+		const hit = this.dedup.check(actionId, `${slug}\u0001${id}\u0001${key}`, fingerprint);
 		return hit === undefined || hit === null ? hit : hit.result;
 	}
 
@@ -775,10 +868,11 @@ export class SurfaceService {
 	chatDedupRecord(
 		actionId: string,
 		address: SurfaceAddress,
+		fingerprint: string,
 		result: ActionResponse,
 	): void {
 		const { slug, id, key } = partsOf(address);
-		this.dedup.record(actionId, `${slug}\u0001${id}\u0001${key}`, result);
+		this.dedup.record(actionId, `${slug}\u0001${id}\u0001${key}`, fingerprint, result);
 	}
 
 	/** Call the surface's `render`, mapping throws to SurfaceFailedError. */

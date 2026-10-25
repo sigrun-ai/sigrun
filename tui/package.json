@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/tui",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "sigrun terminal client (pi-tui based) over the \u00a75 API \u2014 spawned by the sigrun CLI, or standalone against a server URL",
 	"type": "module",
 	"bin": {
@@ -20,7 +20,7 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-tui": "^1.3.0",
-		"@sigrun/shared": "0.1.1"
+		"@sigrun/shared": "0.1.2"
 	},
 	"devDependencies": {
 		"typescript": "^7.0.2",

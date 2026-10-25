@@ -58,12 +58,17 @@ test("the Extensions section renders the loaded extension, edits settings, and s
 	await row.getByRole("button", { name: /save settings/i }).click();
 	await expect(row.getByRole("status")).toContainText("saved");
 
-	// The server holds the file: settings/acme-tool.json on disk.
+	// The server holds the file: settings/acme-tool.json on disk. U4
+	// §13.2: the wire carries the object under `settings` plus the
+	// pending-restart slot (extension fields default live → []).
 	const settingsOnDisk = await page.evaluate(async () => {
 		const res = await fetch("/v1/extensions/acme-tool/settings");
 		return (await res.json()) as Record<string, unknown>;
 	});
-	expect(settingsOnDisk).toEqual({ theme: "dark" });
+	expect(settingsOnDisk).toEqual({
+		settings: { theme: "dark" },
+		pendingRestart: [],
+	});
 
 	// The secret input is write-only (password, empty) and never echoes
 	// a value back; setting one lists the key + source only.

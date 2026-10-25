@@ -104,7 +104,7 @@ entrypoints:
 | Command | Behavior |
 |---|---|
 | `sigrun [--user <name>]` | Workstation mode: boot the harness + server **in-process** and launch the terminal UI against the loopback port — the server binds **loopback (`127.0.0.1`) only**, so the naive-identity API never answers the LAN. The agent dies with the TUI — when the TUI exits, server and harness shut down with it. |
-| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`0.0.0.0`) — the container default; workstation `sigrun` (run) binds loopback only. |
+| `sigrun serve` | Headless: boot the API + web UI statics, no TUI. This is exactly the `npm start` / `src/index.ts` composition the Docker image and Helm chart run. Binds all interfaces (`::`, the dual-stack wildcard — accepts IPv4 and IPv6; a v4-only `0.0.0.0` bind is unreachable on a dual-stack pod's IPv6 endpoint) — the container default; workstation `sigrun` (run) binds loopback only. |
 | `sigrun attach [--server <url>] [--user <name>]` | TUI only, against a harness it can reach — the remote-client mode (e.g. attaching to a cluster or tailnet deployment). |
 
 Resolution chains for `attach` (and for the workstation-mode user):
@@ -265,8 +265,10 @@ list explicitly — explicit always wins, including `[]` on a non-
 loopback bind, which boots with a warning that any reachable client is
 trusted. The related env knobs: `SIGRUN_AUTH_TRUSTED_PROXIES` (CIDR
 csv), `SIGRUN_PROXY_SECRET` and `SIGRUN_API_TOKEN` (credentials —
-env-only, never in `settings.json`). Every auth setting is
-restart-required.
+env-only, never in `settings.json`). Every auth setting except
+`server.auth.sessionDays` is restart-required. `sessionDays` applies live to
+new sessions and has no core settings-section field; change it in the
+settings file or with `PATCH /v1/settings`.
 
 **Tokens.** API tokens are `sgr_`-prefixed secrets shown once at
 creation (the store keeps only SHA-256 digests) and are self-service:
@@ -275,7 +277,8 @@ an authenticated user lists and mints their own via
 admins may revoke anyone's). A token whose user was deleted is dead.
 A browser exchanges a token for a `sigrun_session` cookie at
 `POST /v1/auth/login` — invalid attempts are delayed and rate-limited —
-and `GET /v1/auth/whoami` returns the resolved principal.
+and `GET /v1/auth/whoami` returns the resolved principal. An IdP-signed-in
+user can mint their own API token for the TUI through the same token routes.
 
 **Proxy method (forward auth).** A trusted reverse proxy vouches for
 the caller through headers (Authelia's `Remote-*` defaults,
@@ -286,19 +289,162 @@ configurable) when the request comes from a peer inside
 proxy and nothing else: every peer in `trustedProxies` can forge any
 identity, including an admin.
 
-**Group-derived admin (persisted).** `server.auth.adminGroups` lists
-the proxy groups (Authelia's `Remote-Groups`) whose members act as
-admins. The request pipeline computes the grant per request and
-writes it through to the user's directory record as `groupAdmin`
-whenever it differs — so host-side surfaces with no request headers
-(chat commands, channel adapters) see effective admin (`admin ||
-groupAdmin`), while `/v1/users` keeps `admin` as the stored flag the
-users-admin UI toggles and shows `groupAdmin` alongside. The grant
-moves only on proxy-authenticated requests while `adminGroups` is
-non-empty: removal from the admin group takes effect at that user's
-next web request. Group-derived admin never counts toward the
-last-admin guard — demoting or deleting the only stored admin is
-still refused.
+**Stored groups and group-derived admin.** `server.auth.adminGroups`
+lists groups (Authelia's `Remote-Groups`, for example) whose members act as
+admins. Core stores groups per authenticating source: `proxy` for validated
+forward-auth headers and `login:<slug>:<id>` for an external login. Effective
+admin is the stored `admin` flag OR any stored group in `adminGroups`, so
+web, chat, and host-side checks agree. `/v1/users` keeps `admin` as the
+stored flag the users-admin UI toggles; its `groupAdmin` compatibility field
+is derived, never persisted, and is retained for one release. Group-derived
+admin never counts toward the last-admin guard — demoting or deleting the
+only stored admin is still refused.
+
+Login-provider groups participate in `server.auth.adminGroups`, so configure
+only providers whose group claims are administrator-controlled. A linked
+account's groups come from the provider at each sign-in; removing admin
+therefore requires changing the provider's claim or removing the link/user.
+
+Groups refresh only at that user's next login or proxy request. This
+staleness is deliberate: a group removal at the IdP does not take effect
+until then. Token and session requests only read the stored record; they
+never accept groups from the request. People-scoped conversation shares may
+also name groups, matched against the same stored groups.
+
+### External sign-in (OIDC and OAuth 2)
+
+The web sign-in screen lists configured external providers above the token
+form when the effective auth methods include `token`; `/v1/auth/providers`
+returns an empty list on proxy-only deployments because their completed
+sign-ins could not authenticate the resulting session. The TUI continues to
+use tokens. Login providers come from extensions.
+The reference implementation is **`@sigrun/oauth`, shipped separately
+and not yet bundled or installed by default**. Install it through the normal
+`extensions` list (see [Extensions](#extensions)); there is no built-in
+`oauth` entry to enable. It is inert when its settings contain no valid
+providers.
+
+Create an OAuth/OIDC client at the identity service, with the redirect URI
+shown below. Configure providers in the extension's
+`<config-dir>/settings/oauth.json`; an administrator can edit that JSON in
+Settings → Extensions → oauth. Set `server.publicUrl` (or
+`SIGRUN_PUBLIC_URL`) to sigrun's externally reachable origin so callback
+URLs are stable; otherwise core derives one from the request.
+
+For a generic OIDC service — Authelia, Authentik, and Keycloak are examples
+of products this form fits, not service-specific presets — configure its
+issuer and client:
+
+```json
+{
+  "providers": [
+    {
+      "id": "company",
+      "label": "Company SSO",
+      "kind": "oidc",
+      "issuer": "https://idp.example.invalid",
+      "clientId": "sigrun",
+      "scopes": "openid profile email",
+      "usernameClaim": "preferred_username",
+      "groupsClaim": "groups",
+      "autoProvision": false,
+      "allowedGroups": ["staff"],
+      "allowedDomains": ["example.invalid"]
+    }
+  ]
+}
+```
+
+The extension uses OIDC discovery, authorization code with PKCE S256 and a
+nonce, and validates the ID token. `scopes`, `usernameClaim`, and
+`groupsClaim` shown above are the defaults. For this example, register
+`https://sigrun.example.invalid/v1/auth/callback/login:oauth:company` as
+the redirect URI (the provider id is qualified, not merely `company`).
+Production identity endpoints must use HTTPS; plain HTTP is restricted to
+loopback development and tests.
+
+Every provider needs a client secret named `<id>.clientSecret` in the
+**oauth extension secret store** — `company.clientSecret` here. Set it in
+Settings → Extensions → oauth (write-only), or as an administrator with
+`PUT /v1/extensions/oauth/secrets/company.clientSecret` and body
+`{"value":"<client-secret>"}`. Never put a client secret in
+`settings/oauth.json`. Extension settings are read at boot; restart after
+changing them. Secrets are re-read per use, so a rotated client secret
+applies to the next login without a restart.
+
+The GitHub and Discord presets replace issuer/endpoint discovery with their
+protocol endpoints and user field mappings:
+
+```json
+{
+  "providers": [
+    {
+      "id": "github",
+      "label": "GitHub",
+      "kind": "oauth2",
+      "preset": "github",
+      "clientId": "acme-github-client-id"
+    },
+    {
+      "id": "discord",
+      "label": "Discord",
+      "kind": "oauth2",
+      "preset": "discord",
+      "clientId": "acme-discord-client-id"
+    }
+  ]
+}
+```
+
+**Both presets require `clientId` in settings and a client secret in the
+extension secret store** (`github.clientSecret` and
+`discord.clientSecret`). Their redirect URIs end in
+`/v1/auth/callback/login:oauth:github` and
+`/v1/auth/callback/login:oauth:discord` on the same sigrun origin. GitHub
+uses only a primary, verified email; Discord uses its verified flag.
+Neither preset supplies groups. A malformed provider entry is skipped with
+a warning naming it; other valid entries still load.
+
+For another OAuth 2 service, use `kind: "oauth2"` with explicit
+`authorizeUrl`, `tokenUrl`, and `userinfoUrl`, plus `fields` mapping a
+required `subject` and optional `username`, `name`, `email`,
+`emailVerified`, and `groups` dot-separated response paths. `clientId`, its
+`<id>.clientSecret` secret, and the same optional policy fields apply.
+
+**First login never auto-links by username or email.** An unlinked subject
+on an unclaimed server needs the one-shot setup code and becomes the first
+admin. On a claimed server, `autoProvision: false` (the default) requires an
+invite code; `true` creates a non-admin user, optionally restricted by
+`allowedGroups` and `allowedDomains`. **These filters apply only when
+creating a new user by auto-provisioning** — not to an already-linked
+account's logins or to invite-based provisioning. A linked account keeps
+working; remove its link (or the user) to remove access. A domain match
+additionally requires `emailVerified === true` from the provider. Core
+enforces the M1 admission prerequisites: adding a second user is refused
+without available execution isolation and real `token` and/or `proxy`
+authentication. An external IdP is not itself a trusted proxy.
+
+### Browser sessions and account links
+
+A successful external sign-in creates a `sigrun_session` cookie backed by a
+revocable session record in the token store. `server.auth.sessionDays`
+controls its lifetime (default **30 days**, live for newly created
+sessions). An expired session is rejected as unknown (401) and its record
+is pruned on the next token-store write. Logout revokes the current
+session; users can also see and revoke sessions in their token list.
+
+A session has the user's normal rights, including creating that user's own
+API tokens for the TUI. **Revoking a session does not revoke API tokens
+created with it**; revoke those separately. Core does not store provider
+access or refresh tokens.
+
+Settings → Account links is the self-service panel for external identities.
+Connect starts the provider flow with `?link=1` while signed in; the
+identity is linked to the caller instead of creating another sign-in.
+Users can remove their own links and administrators can manage others'
+links. One `(provider, subject)` pair belongs to one user: a link is never
+re-pointed to a different user. The holder or an administrator must remove
+a conflicting old link first.
 
 **Onboarding (the first claim).** An unclaimed server serves
 `GET /v1/onboarding` + `POST /v1/onboarding/claim`. On a loopback bind
@@ -313,10 +459,98 @@ users (`PATCH`/`DELETE /v1/users/{user}` — deletion transfers their
 conversations).
 
 **Sharing.** Conversations are private to their owner by default. The
-owner can share one — household-wide or with named users, `read` or
-`write` — through the web UI's ⋯ menu or the TUI's `/share`; `write`
+owner can share one — household-wide or with named users and groups,
+`read` or `write` — through the web UI's ⋯ menu; `write`
 lets a recipient submit, answer, and fork, but only the owner can
 re-share. Household sharing defaults to `read`.
+
+## Multi-user execution isolation
+
+`server.isolation.mode` (or `SIGRUN_ISOLATION`) controls the execution jail:
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Turns isolation on when the directory has more than one user. Once active, it stays active until restart. |
+| `always` | Confines every user, including a lone admin. |
+| `off` | No jail; permitted only with at most one directory user. |
+
+A second user is refused when isolation is unavailable or `off`, and a
+multi-user server never falls back to unconfined execution. Multi-user also
+requires real authentication (`token` and/or `proxy`).
+
+Isolation requires Linux with Landlock ABI 6 or newer (Linux 6.12+) and the
+`sigrun-sandbox` helper. Debian 12's default 6.1 kernel does not qualify;
+bookworm-backports' 6.12 kernel does. Ubuntu 24.04's GA 6.8 kernel does not
+qualify; its HWE 7.0 kernel does. Check the running host with
+`sigrun-sandbox probe`. The container needs no extra capabilities: uid 1000,
+no capabilities, and `RuntimeDefault` seccomp are sufficient.
+
+**When isolation is on**, a user's agent can reach only their workspace,
+their grants, their home and temp directories, and read-only system paths.
+It cannot read sigrun's files or environment, other users' files, or signal
+processes outside its jail.
+
+The kernel boundary suite has not run yet; CI is its first execution.
+Isolation must therefore not be treated as kernel-verified from the unit
+suite alone.
+
+**Not covered:** extensions run inside sigrun with full access, like any
+installed package — install only extensions you trust. One user's agent can
+still exhaust CPU, memory, or disk. Outbound network is not restricted.
+macOS and Windows hosts run single-user only.
+
+**Shared MCP servers** hand every permitted user's agent the admin's
+credential for that service.
+
+**File modes are not the boundary.** Workers that share sigrun's uid are
+confined by Landlock alone; `0700` directories are hygiene.
+
+**Single-user servers** run the agent with full host access.
+
+**Every peer in `trustedProxies` can forge any identity**; with isolation
+on, the shared secret is required for that reason. Configure
+`server.auth.proxy.secretHeader` and the env-only `SIGRUN_PROXY_SECRET`.
+
+For bare-metal OS-account mappings, enable `server.isolation.osUsers` and
+set a directory record's `osUser`. Grant the installed helper only the
+identity-switch capabilities once (replace `<helper>` with its path):
+
+```sh
+sudo setcap cap_setuid,cap_setgid+ep <helper>
+```
+
+The helper's boot self-test verifies the switch. This mapping is unavailable
+in containers, whose entrypoint drops every capability.
+
+### Kernel integration runner controls
+
+The opt-in suite is `SIGRUN_SANDBOX_IT=1 npx vitest run test/sandbox-it`.
+The CI `sandbox-it` job requires Landlock ABI 6 before running it. Its
+`/proc` and ptrace cases also perform the same operation as the same uid
+from outside any jail. The run log states, per case, either **Landlock
+discriminating** (the outside operation succeeds) or **Yama/host-policy
+satisfied, not Landlock-discriminating** (the outside operation is denied
+too). The latter still checks the denial but does not claim Landlock caused
+it. The abstract-socket case requires a successful outside-jail connection.
+The `pkill -x node` case needs unprivileged user/PID namespaces and `nsenter`:
+its outside control kills only PID 1 of a disposable namespace, never the
+test runner or another host Node process. If namespaces are unavailable,
+the suite skips with that named reason.
+
+The `osUser` success case and the in-jail uid-switch discrimination require
+a **privileged runner** with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`. The suite grants only
+`cap_setuid,cap_setgid+ep` to a temporary helper copy and verifies an
+unjailed uid/gid switch before testing the jailed denial. Without that
+successful outside control, both tests skip with a named reason; they never
+claim to prove confinement. An ordinary CI runner without file-capability
+permission therefore leaves these two cases unproven. The suite never runs
+`sudo` itself.
+
+The per-user-service process tests use a separate real-helper-launched
+service fixture. M2's per-user service lifecycle is a later workstream; this
+fixture proves the sibling-jail `/proc` and ptrace boundary, not that M2 has
+shipped.
 
 ## Backup
 
@@ -509,6 +743,15 @@ wins, env bootstraps). The author-facing contract — the store taxonomy,
 the directory map, the slug rule, the `host.stores` handle, uninstall
 and backup posture — is [`docs/extending.md`](docs/extending.md).
 
+**Building surfaces:** an extension can also contribute UI — views,
+panels, settings sections, chat and interaction cards, ambient status —
+as **block trees** rendered identically by the webui and the TUI. The
+typed builders come from `@sigrun/sigrun/blocks`; the placement table,
+block catalog, action kinds, access and `sharedData`, uploads, images,
+and three complete worked examples (a lanes board, a settings section,
+a dashboard) are in
+[`docs/extending.md`](docs/extending.md#building-surfaces).
+
 ## Built-in extensions
 
 Three extensions are built into core — **codemode**, **MCP**, and
@@ -680,11 +923,38 @@ In the web UI the Jobs panel (the clock icon in the header) lists jobs
 with a “Run now” button; in the TUI `/jobs` prints the table (name,
 next run, last outcome).
 
+## Restarting
+
+Restart-only settings (the registry marks every key `live` or
+`restart` — a `restart` key's stored write applies at the next boot)
+surface as `pendingRestart` on `GET /v1/settings`, and the settings
+panel lists them with a Restart button for admins. The button calls:
+
+- `POST /v1/admin/restart` — admin-only; runs the normal graceful
+  shutdown (SSE drains, in-flight runs reach a durable boundary and
+  resume after the restart — pi-durable's recovery) and exits 0, so the
+  deployment's supervisor brings the process back. Both channels show
+  "Restarting…" and reconnect when `/readyz` answers.
+
+The route exists ONLY when the server knows something restarts it:
+`server.supervised` (env `SIGRUN_SUPERVISED=1`, strict true/false)
+must be true, else 409 `not_supervised`. The Helm chart and
+`docker/docker-compose.yaml` set the env (both restart the container);
+the Dockerfile deliberately does NOT — a bare `docker run` without a
+restart policy would exit and stay down. `sigrun run` (the local TUI
+launcher) is not supervised either; there the callout says "Restart
+sigrun to apply" with no button. `GET /v1/meta` reports the posture
+(`supervised`).
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, auth posture
   (`methods`, `claimed`), capabilities.
-- `GET`/`PATCH /v1/settings` — the settings file (see above).
+- `GET`/`PATCH /v1/settings` — the settings file (see above);
+  responses carry `pendingRestart` (restart keys whose stored value
+  differs from boot) and PATCH reports `{applied, pending}`.
+- `POST /v1/admin/restart` — graceful restart (admin, supervised
+  deploys only; see Restarting).
 - `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
   the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
   now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are
@@ -697,9 +967,13 @@ next run, last outcome).
 - `GET /v1/onboarding`, `POST /v1/onboarding/claim` — the unclaimed
   state and the first-user claim.
 - `POST /v1/auth/login`, `POST /v1/auth/logout`, `GET /v1/auth/whoami` —
-  the browser session and the resolved principal.
+  token sign-in, logout, and the resolved principal.
+- `GET /v1/auth/providers`, `GET /v1/auth/login/{provider}`,
+  `GET`/`POST /v1/auth/callback/{provider}` — external sign-in.
 - `GET`/`POST /v1/auth/tokens`, `DELETE /v1/auth/tokens/{id}` —
-  self-service API tokens.
+  self-service API tokens and browser sessions.
+- `GET /v1/auth/accounts`, `DELETE /v1/auth/accounts` — self-service
+  external-account links (administrators may manage another user's).
 - `GET /v1/users`, `PATCH`/`DELETE /v1/users/{user}`,
   `POST /v1/users/invites` — the user directory and invite codes
   (admin-gated).

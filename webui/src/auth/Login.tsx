@@ -1,13 +1,27 @@
 /**
- * Login (core hardening W1 Task 8, spec §5.4): the token screen behind
- * every 401. Posts `{token}` to `POST /v1/auth/login` — the server sets
- * the `sigrun_session` cookie in that response, so success simply
- * re-probes; a wrong token surfaces the wire's error inline.
+ * Login: external providers above the existing token form. The provider
+ * catalog is public; a failed catalog read leaves token login available.
+ * Callback errors use fixed copy, never provider-supplied text.
  */
 
-import { useState } from "react";
-import type { SigrunClient } from "../api";
+import { useEffect, useState } from "react";
+import type { LoginProviderWire, SigrunClient } from "../api";
 import { messageOf } from "./Onboarding";
+
+const LOGIN_ERRORS: Readonly<Record<string, string>> = {
+	invalid_state: "That sign-in link was already used or came from another browser. Start again.",
+	login_expired: "This sign-in took too long or sigrun restarted. Start again.",
+	not_allowed: "Your account isn't allowed to use this sigrun.",
+	isolation_required: "This sigrun can't add another user yet. Ask the admin.",
+	auth_required: "This sigrun can't add another user yet. Ask the admin.",
+	account_link_conflict: "That account is already linked to another sigrun user.",
+	provider_error: "The sign-in provider returned an error. Try again.",
+};
+
+/** Map only known server codes; unknown input cannot inject provider text. */
+export function loginErrorCopy(code: string): string {
+	return LOGIN_ERRORS[code] ?? "Sign-in failed. Try again.";
+}
 
 export function Login(props: {
 	readonly client: SigrunClient;
@@ -18,8 +32,33 @@ export function Login(props: {
 }) {
 	const { client, message, onSuccess } = props;
 	const [token, setToken] = useState("");
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(() => {
+		const search = (globalThis as { location?: { search?: string } }).location?.search ?? "";
+		const code = new URLSearchParams(search).get("error");
+		return code === null ? null : loginErrorCopy(code);
+	});
 	const [busy, setBusy] = useState(false);
+	const [providers, setProviders] = useState<readonly LoginProviderWire[]>([]);
+
+	useEffect(() => {
+		let cancelled = false;
+		client.providers().then((response) => {
+			if (!cancelled) setProviders(response.providers);
+		}).catch(() => {
+			// The token form remains usable without the optional provider list.
+		});
+		return () => { cancelled = true; };
+	}, [client]);
+
+	useEffect(() => {
+		const search = (globalThis as { location?: { search?: string } }).location?.search ?? "";
+		if (new URLSearchParams(search).get("error") === null) return;
+		const historyApi = (globalThis as {
+			history?: { replaceState(data: unknown, title: string, url: string): void };
+		}).history;
+		const path = (globalThis as { location?: { pathname?: string } }).location?.pathname ?? "/login";
+		historyApi?.replaceState(null, "", path);
+	}, []);
 
 	async function signIn(): Promise<void> {
 		if (token.trim() === "") {
@@ -42,6 +81,19 @@ export function Login(props: {
 		<div className="auth-card">
 			<h1>Sign in to sigrun</h1>
 			{message !== undefined && <p className="auth-message">{message}</p>}
+			{providers.length > 0 && (
+				<div className="auth-providers">
+					{providers.map((provider) => (
+						<a
+							key={provider.provider}
+							className="auth-provider"
+							href={`/v1/auth/login/${encodeURIComponent(provider.provider)}?return=${encodeURIComponent("/")}`}
+						>
+							{provider.label}
+						</a>
+					))}
+				</div>
+			)}
 			<label className="auth-field">
 				API token
 				<input

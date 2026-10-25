@@ -17,6 +17,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { configure } from "@earendil-works/pi-durable";
 import type {
 	Conversation,
 	ConversationId,
@@ -297,13 +298,16 @@ export async function createConversationOp(
 		draft.lastActivityAt = opened.now().toISOString();
 		if (input.owner !== undefined) draft.owner = input.owner;
 		// Copy-on-assignment (the tracker requires alias-free roots):
-		// the people-scope array is cloned; the closed scopes spread.
+		// the people-scope arrays are cloned; the closed scopes spread.
 		if (input.sharing !== undefined) {
 			draft.sharing =
 				input.sharing.scope === "people"
 					? {
 							scope: "people",
 							users: [...input.sharing.users],
+							...(input.sharing.groups === undefined
+								? {}
+								: { groups: [...input.sharing.groups] }),
 							level: input.sharing.level,
 						}
 					: { ...input.sharing };
@@ -877,6 +881,11 @@ export async function forkOp(
 	);
 	const sourceName = sourceMeta?.name ?? sourceMeta?.autoName;
 	await fork.commit(async (tx) => {
+		// A relative source cwd belongs to the source owner's workspace.
+		// Do not let a fork by someone else silently retarget it into theirs.
+		if (sourceMeta?.owner !== opts.owner) {
+			await configure(tx, fork.id, { cwd: null });
+		}
 		const draft = await tx.doc(SessionMetaDoc, fork.id);
 		delete draft.name;
 		delete draft.autoName;

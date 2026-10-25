@@ -27,6 +27,8 @@ interface Step {
 	run?: string | number;
 	uses?: string;
 	with?: Record<string, unknown>;
+	env?: Record<string, string>;
+	"working-directory"?: string;
 }
 
 interface Job {
@@ -227,13 +229,99 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(install).toContain("@sigrun/ext-");
 	});
 
-	test("image-build: docker build-push-action with push:false, linux/amd64 only", () => {
+	test("image-build: docker build-push-action loads the local linux/amd64 image", () => {
 		const { jobs } = workflow();
 		const steps = jobs["image-build"]?.steps ?? [];
 		const build = steps.find((s) => s.uses?.startsWith("docker/build-push-action@"));
 		expect(build).toBeDefined();
 		expect((build?.with as { push?: boolean } | undefined)?.push).toBe(false);
 		expect((build?.with as { platforms?: string } | undefined)?.platforms).toBe("linux/amd64");
+		expect((build?.with as { load?: boolean } | undefined)?.load).toBe(true);
+		expect(steps.map(runOf).join("\n")).toContain("scripts/smoke-image.sh sigrun:ci-check");
+	});
+
+	test("image-build: loads the image for the smoke-check step", () => {
+		const { jobs } = workflow();
+		const steps = jobs["image-build"]?.steps ?? [];
+		const build = steps.find((s) => s.uses?.startsWith("docker/build-push-action@"));
+		expect((build?.with as { load?: boolean } | undefined)?.load).toBe(true);
+		const buildIndex = steps.indexOf(build as Step);
+		const smokeIndex = steps.findIndex((s) => runOf(s).includes("scripts/smoke-image.sh"));
+		expect(smokeIndex, "image smoke-check must follow its build").toBeGreaterThan(buildIndex);
+	});
+
+	test("sandbox: tests, lints, and builds both musl targets", () => {
+		const { jobs } = workflow();
+		const steps = jobs.sandbox?.steps ?? [];
+		expect(steps.length, "the sandbox job must exist").toBeGreaterThan(0);
+		const runs = steps.map(runOf).join("\n");
+		expect(runs).toContain("cargo test");
+		expect(runs).toContain("cargo clippy");
+		expect(runs).toContain("-- -D warnings");
+		expect(runs).toContain("--target x86_64-unknown-linux-musl");
+		expect(runs).toContain("--target aarch64-unknown-linux-musl");
+		expect(runs).toContain("musl-tools");
+		expect(runs).toContain("gcc-aarch64-linux-gnu");
+		const toolchain = steps.find((s) => s.uses?.startsWith("dtolnay/rust-toolchain@"));
+		expect(toolchain).toBeDefined();
+		expect(String(toolchain?.with?.targets ?? "")).toContain("x86_64-unknown-linux-musl");
+		expect(String(toolchain?.with?.targets ?? "")).toContain("aarch64-unknown-linux-musl");
+		const env = Object.assign({}, ...steps.map((s) => s.env ?? {}));
+		expect(env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER).toBe("aarch64-linux-gnu-gcc");
+		expect(env.CC_aarch64_unknown_linux_musl).toBe("aarch64-linux-gnu-gcc");
+	});
+
+	test("sandbox: assembles, packs, and uploads both platform packages", () => {
+		const { jobs } = workflow();
+		const steps = jobs.sandbox?.steps ?? [];
+		const runs = steps.map(runOf).join("\n");
+		for (const [target, platform] of [
+			["x86_64-unknown-linux-musl", "linux-x64"],
+			["aarch64-unknown-linux-musl", "linux-arm64"],
+		] as const) {
+			expect(runs).toContain(`sandbox/target/${target}/release/sigrun-sandbox`);
+			expect(runs).toContain(`sandbox/npm/${platform}/bin/sigrun-sandbox`);
+		}
+		expect(runs).toContain("chmod +x");
+		const packs = steps.filter((s) => runOf(s).includes("npm pack"));
+		expect(packs.map((s) => s["working-directory"])).toEqual([
+			"sandbox/npm/linux-x64",
+			"sandbox/npm/linux-arm64",
+		]);
+		const paths = steps
+			.filter((s) => s.uses?.startsWith("actions/upload-artifact@"))
+			.map((s) => String(s.with?.path ?? ""))
+			.join("\n");
+		expect(paths).toContain("sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox");
+		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
+		expect(paths).toContain("sandbox/npm/linux-x64/*.tgz");
+		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
+	});
+
+	test("sandbox: platform manifests match core and whitelist the helper binary", () => {
+		const core = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+		for (const [platform, cpu] of [["linux-x64", "x64"], ["linux-arm64", "arm64"]] as const) {
+			const manifest = JSON.parse(
+				readFileSync(new URL(`../sandbox/npm/${platform}/package.json`, import.meta.url), "utf8"),
+			);
+			expect(manifest).toEqual({
+				name: `@sigrun/sandbox-${platform}`,
+				version: core.version,
+				os: ["linux"],
+				cpu: [cpu],
+				// npm's files whitelist is the contract that puts
+				// package/bin/sigrun-sandbox in the packed tarball.
+				files: ["bin/"],
+			});
+		}
+	});
+
+	test("image smoke: probes the bundled helper and verifies tini is PID 1", () => {
+		const smoke = readFileSync(new URL("../scripts/smoke-image.sh", import.meta.url), "utf8");
+		expect(smoke).toContain('docker run --rm "$image" /usr/local/lib/sigrun/sigrun-sandbox probe');
+		expect(smoke).toContain("JSON.parse");
+		expect(smoke).toContain("ps -o comm= 1");
+		expect(smoke).toContain('"tini"');
 	});
 
 	test("chart-lint: fetches the gitignored vendored dependency, then lint + template", () => {

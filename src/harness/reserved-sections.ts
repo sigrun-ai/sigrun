@@ -22,3 +22,25 @@ export const RESERVED_CORE_SECTION_KEYS = [
 	"tool-guidance",
 	"execution-guidance",
 ] as const;
+
+/**
+ * Core-owned directory names directly under a store root (multi-user M1).
+ * The loader refuses these as extension identities before collecting any
+ * contribution. This list also feeds grant validation, which deliberately
+ * treats the data-side entries as CORE data dirs, not foreign extension
+ * dirs — see src/sandbox/grants.ts.
+ */
+export const RESERVED_EXTENSION_SLUGS = [
+	"users",
+	"workspace",
+	"models",
+	"sandbox",
+	"settings",
+	"user-settings",
+	"user-secrets",
+	"skills",
+	"prompts",
+	"packages",
+	"git",
+	"core",
+] as const;

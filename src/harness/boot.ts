@@ -19,7 +19,7 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { Env, SigrunConfig } from "../config.js";
+import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
@@ -37,8 +37,10 @@ import {
 	type ExtensionGatewayBinding,
 	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
+	type LoginProviderBinding,
 	type ExtensionRouteBinding,
 	type ExtensionSurfaceBinding,
+	type ExtensionSettingsSectionBinding,
 	type ResolvedExtensionInput,
 } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
@@ -83,7 +85,19 @@ import {
 } from "./providers/refresh.js";
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
-import { packagesDirOf } from "./packages.js";
+import { packagesDirOf, selfPackageRoot } from "./packages.js";
+import { resolveHelper } from "../sandbox/helper.js";
+import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
+import { IsolationState } from "../sandbox/isolation.js";
+import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.js";
+import { createAdmissionGuard } from "./identity/users.js";
+import { SessionMetaDoc } from "../server/session-meta.js";
+import {
+	probeIsolation,
+	runHelperProbe,
+	selfTestHelper,
+	type IsolationAvailability,
+} from "../sandbox/availability.js";
 import {
 	BUILTIN_EXTENSIONS,
 	resolveBuiltins,
@@ -91,6 +105,10 @@ import {
 } from "./builtins.js";
 import { createRegistry } from "./registry.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
+import {
+	resolveRefreshMinutes,
+	snapshotRestartKeys,
+} from "../settings/pending.js";
 import {
 	ensureStoreRoots,
 	resolveStoreRoots,
@@ -136,6 +154,14 @@ export const RESERVED_CORE_SECTION_OWNERS: Readonly<Record<string, string>> = {
 /** A live harness plus the application-owned registry it reads. */
 export interface OpenedHarness {
 	readonly harness: Harness;
+	/** The one boot-time execution-jail availability decision. */
+	readonly isolation: IsolationAvailability;
+	/** The live isolation mode/latch used by env resolution and /v1/meta. */
+	readonly isolationState: IsolationState;
+	/** The independent, opt-in OS uid/gid-switch probe result. */
+	readonly osUsers: OsUsersAvailability;
+	/** The shared per-user workers, stopped before the harness seal. */
+	readonly sandboxPool: WorkerPool;
 	/**
 	 * The durable storage handle the harness was opened over — the same
 	 * instance the Session owns and closes on `harness.close()`. Exposed so
@@ -181,6 +207,8 @@ export interface OpenedHarness {
 	 * `GET /v1/meta` (Task 9) renders this as `extensions[].status`.
 	 */
 	readonly extensionOutcomes: readonly ExtensionOutcome[];
+	/** Validated external identity providers, qualified as `login:<slug>:<id>`. */
+	readonly loginProviders: readonly LoginProviderBinding[];
 	/**
 	 * The built-in extensions that did not load this boot (Task 2):
 	 * `replaced` entries render on `/v1/extensions` as
@@ -248,6 +276,26 @@ export interface OpenedHarness {
 	 * submission without a restart).
 	 */
 	readonly settings: SettingsStore;
+	/**
+	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
+	 * restart key's stored value at boot, taken once after the settings
+	 * load validates and before listen. The `/v1/settings` response's
+	 * `pendingRestart` diffs the fresh file against THIS — a reverted
+	 * key leaves the pending list without a restart.
+	 */
+	readonly settingsBootSnapshot: ReadonlyMap<string, string>;
+	/**
+	 * Publish one `settings.changed` event (U4 §13.2): the server-side
+	 * fan-out seam — the hub publication (/v1/events) and the extension
+	 * `onSettingsChanged` fan-out (deadline-bounded, errors logged).
+	 * Wired in boot AFTER the hub and bus exist; the late-bound sink list
+	 * exists so the settings store's onWrite observer can reference it
+	 * before that. Also assignable onto ServerContext by createServer.
+	 */
+	publishSettingsChanged(
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	): void;
 	/**
 	 * The boot-shared extension store trio (core hardening W3 Task 7,
 	 * spec §7.7): the `/v1/extensions` settings/secrets routes ride its
@@ -348,6 +396,15 @@ export interface OpenedHarness {
 	 * inventories the rows. Quarantined extensions contribute nothing.
 	 */
 	readonly extensionSurfaces: readonly ExtensionSurfaceBinding[];
+	/**
+	 * Settings sections the loaded extensions declared (UI-blocks U4
+	 * Task 3, spec §13.3), slug-attributed — `createServer` adapts them
+	 * to settings-placement surfaces
+	 * (`src/server/surfaces/settings-surfaces.ts`) and appends them to
+	 * the surface service's bindings. Quarantined extensions contribute
+	 * nothing.
+	 */
+	readonly extensionSettingsSections: readonly ExtensionSettingsSectionBinding[];
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -455,6 +512,12 @@ export interface OpenedHarness {
 
 /** Optional `openHarness` inputs beyond the parsed config. */
 export interface OpenHarnessOptions {
+	/** Hermetic seam replacing the real helper/platform probe; still called once. */
+	readonly isolationProbe?: typeof probeIsolation;
+	/** Hermetic seam for the optional OS-account capability probe. */
+	readonly osUsersProbe?: typeof probeOsUsers;
+	/** Test/deployment launcher seam; defaults to the native helper. */
+	readonly sandboxLauncher?: import("../sandbox/pool.js").Launcher;
 	/**
 	 * PROVIDER contributors (Task 2 seam) — NOT the extension package list.
 	 * These feed the Models collector; they are distinct from the deployed
@@ -468,6 +531,8 @@ export interface OpenHarnessOptions {
 	readonly extensions?: readonly ProviderContributor[];
 	/** Environment the provider collector reads; defaults to `process.env`. */
 	readonly env?: Env;
+	/** The bind host used for effective auth defaults (serve passes its host). */
+	readonly listenHost?: string;
 	/**
 	 * The identity stores injection seam (core hardening W1 Task 3):
 	 * when present it WINS over `openIdentityStores(roots)` — tests seed
@@ -589,6 +654,35 @@ export async function openHarness(
 	// store-root resolution immediately below, and the provider
 	// collector further down (`providerEnv`).
 	const env = options.env ?? process.env;
+	const coreRoot = selfPackageRoot();
+	const isolation = await (options.isolationProbe ?? probeIsolation)({
+		platform: process.platform,
+		helper: coreRoot === undefined ? undefined : resolveHelper(env, coreRoot),
+		runProbe: runHelperProbe,
+		selfTest: selfTestHelper,
+	});
+	console.log(
+		`sandbox isolation: ${isolation.available ? `available (Landlock ABI ${isolation.abi})` : `unavailable (${isolation.reason ?? "unknown reason"})`}`,
+	);
+	if (coreRoot === undefined) throw new Error("sandbox worker entry requires the sigrun package root");
+	const workerEntry = resolveWorkerEntry(coreRoot);
+	const helper = isolation.helper;
+	const osUsers: OsUsersAvailability = !config.isolation.osUsers
+		? { available: false, status: "off" }
+		: options.osUsersProbe !== undefined
+			? await options.osUsersProbe(helper ?? "")
+			: helper === undefined || !isolation.available
+				? { available: false, status: "osUsers requires CAP_SETUID" }
+				: await probeOsUsers(helper);
+	const sandboxPool = new WorkerPool({
+		launcher: options.sandboxLauncher ?? ((policy) => {
+			if (helper === undefined) throw new Error("sandbox helper not found");
+			return sandboxLauncher(helper, workerEntry)(policy);
+		}),
+		idleMinutes: () => settingsStore?.read().server?.isolation?.workerIdleMinutes ?? config.isolation.workerIdleMinutes,
+		log: (line) => console.warn(line),
+		workerEntry,
+	});
 	// Store-root lifecycle (spec §6): every durable root except cache
 	// exists before anything touches disk — storage, the registry's
 	// first install, extension packages — so a fresh deploy (or a PVC
@@ -620,6 +714,39 @@ export async function openHarness(
 	// I/O here (each file materializes on its first write), so this is
 	// pure construction over paths boot already owns.
 	const identity = options.identity ?? openIdentityStores(roots);
+	const listenHost = options.listenHost ?? env.SIGRUN_LISTEN_HOST ?? "0.0.0.0";
+	const methods = effectiveMethods(config.auth, listenHost);
+	const isolationState = new IsolationState({
+		mode: config.isolation.mode,
+		availability: isolation,
+		userCount: () => identity.users.list().length,
+		log: (line) => console.warn(line),
+	});
+	// These refusals happen during openHarness, before createServer/listen.
+	if (identity.users.list().length >= 2 && methods.length === 0) {
+		throw new Error(
+			"multi-user requires authentication: configure SIGRUN_AUTH=token or SIGRUN_AUTH=proxy, or remove users until only one remains",
+		);
+	}
+	if (
+		(isolationState.active() || config.isolation.mode === "always") &&
+		methods.includes("proxy") &&
+		config.auth.proxy.secretHeader === undefined
+	) {
+		throw new Error(
+			"isolation with proxy authentication requires server.auth.proxy.secretHeader; configure a shared-secret header or disable isolation",
+		);
+	}
+	identity.users.configureAdmission({
+		firstWorkspace: config.workspace.path,
+		admit: createAdmissionGuard({
+			isolation,
+			mode: config.isolation.mode,
+			methods,
+			proxySecretHeader: config.auth.proxy.secretHeader,
+		}),
+	});
+	isolationState.active();
 	// The unclaimed onboarding posture (W1 Task 4, spec §5.8): every
 	// unclaimed boot (re)ensures the setup code under the pod-local cache
 	// root and logs it ONCE — the retrieval flow is `kubectl logs … | grep
@@ -719,12 +846,26 @@ export async function openHarness(
 	// `builtinExtensions` toggles live there), so the store is constructed
 	// HERE — before the loader — and the one instance threads on to the
 	// rest of boot (its `harnessSettings()` call below stays the single
-	// construction).
-	const settingsStore = new SettingsStore({ dir: options.settingsDir });
+	// construction). The onWrite observer (U4 §13.2) fires `settingsStore`
+	// writes' change events through a boot-owned sink assigned below (the
+	// hub does not exist yet here — a late-bound closure keeps the store
+	// constructor pure while every committed write still publishes).
+	const settingsChangedSinks: Array<(scope: "server" | { extension: string }, keys: readonly string[]) => void> = [];
+	const settingsStore = new SettingsStore({
+		dir: options.settingsDir,
+		onWrite: (keys) => {
+			for (const sink of settingsChangedSinks) sink("server", keys);
+		},
+	});
 	// Eager validation (the fail-loud boot posture, matching the
 	// `harnessSettings()` contract below): a malformed settings file
 	// throws HERE even when the caller seam overrides every field.
 	const bootSettings = settingsStore.read();
+	// The pending-restart boot snapshot (U4 §13.2): taken ONCE, after the
+	// settings load validates and before anything else reads it — the
+	// diff base `GET /v1/settings`'s `pendingRestart` reports. Pre-listen
+	// by construction: openHarness returns before serve listens.
+	const settingsBootSnapshot = snapshotRestartKeys(bootSettings);
 	const builtinsEnabled = options.builtins !== false;
 	// Skipped entirely (no resolution, no log lines) when the caller
 	// turns built-ins off.
@@ -791,9 +932,11 @@ export async function openHarness(
 		outcomes: extensionOutcomes,
 		healthProducers: extensionHealth,
 		runSettledBindings,
+		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
 		providerContributors,
+		loginProviders,
 		webuiBundles: extensionWebuiBundles,
 		skillRoots: extensionSkillRoots,
 		jobBindings,
@@ -803,6 +946,7 @@ export async function openHarness(
 		channelBindings,
 		gatewayEngine,
 		surfaces: surfaceBindings,
+		settingsSections: settingsSectionBindings,
 	} = await loadExtensions(
 		loaderInputs,
 		registry,
@@ -1066,18 +1210,44 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	// when the resolved interval is greater than zero (0 = the designed
 	// disable, no timer); the timer is unref()ed inside, and `stop()` rides
 	// on the returned handle for the deploy shutdown path.
-	const stopProviderRefresh =
-		config.providers.refreshIntervalMinutes > 0
-			? startProviderRefresh(models, {
-					intervalMinutes: config.providers.refreshIntervalMinutes,
-					onReadinessChange: observeReadiness,
-					snapshotReadiness,
-				}).stop
-			: (): void => {};
-	// The static workspace service (spec §4.5): every tool call's ExecutionEnv
-	// resolves through it, so a future resolver swap changes this wiring's
-	// inputs and nothing downstream.
-	const workspaceService = createWorkspaceService();
+	// The interval refresh scheduler (with the U4 §13.1 re-arm): the
+	// cadence is a LIVE setting — a committed write to
+	// `server.providers.refreshIntervalMinutes` re-arms the timer at the
+	// NEW interval (stop + start; `0` disables, no timer). The re-arm
+	// resolves env over the fresh file value exactly like boot does, so
+	// an env-pinned cadence (`SIGRUN_PROVIDER_REFRESH_MINUTES`) stays
+	// authoritative across re-arms.
+	const armProviderRefresh = (): (() => void) => {
+		const minutes = resolveRefreshMinutes(env, settingsStore);
+		if (!(minutes > 0)) return (): void => {};
+		return startProviderRefresh(models, {
+			intervalMinutes: minutes,
+			onReadinessChange: observeReadiness,
+			snapshotReadiness,
+		}).stop;
+	};
+	let stopProviderRefresh = armProviderRefresh();
+	// SAFETY: `stopProviderRefresh` is `let`-bound for the re-arm swap;
+	// the shutdown handle the deploy path calls stays this function (it
+	// always stops whatever arm is current).
+	const stopCurrentProviderRefresh = (): void => {
+		stopProviderRefresh();
+	};
+	// Every tool/file/upload/job env resolves through this one decision seam.
+	const workspaceService = createWorkspaceService({
+		isolation: isolationState,
+		osUsers,
+		pool: sandboxPool,
+		directory: identity.users,
+		managed: {
+			roots,
+			storagePath: config.storagePath,
+			coreRoot,
+			userAreas: (user) => join(roots.dataDir, "users", user),
+		},
+		ownerOf: async (conversationId, read, ctx) =>
+			(await read.snapshot(SessionMetaDoc, conversationId, ctx))?.owner,
+	});
 	const workspacePrefs = defaultWorkspacePrefs(config.workspace.path);
 	const envBuilder = toHarnessEnv(workspaceService, workspacePrefs);
 	// The job runtime's env-builder binding resolves here (the placeholder
@@ -1174,6 +1344,30 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		// wire it before any commit lands.
 		onHostEvent: (event) => events.publish(event),
 	});
+	// The settings-changed publication (U4 §13.2): ONE seam fanning a
+	// committed settings write out to (a) the hub — /v1/events delivers
+	// `settings.changed` to admins — and (b) every extension's
+	// `onSettingsChanged` through the bus's bounded fan-out (rejections
+	// logged, never propagated: §13.2's the-write-still-succeeds rule).
+	// The scheduler re-arm rides the same seam: a write touching
+	// `server.providers.refreshIntervalMinutes` (a LIVE key, §13.1) stops
+	// and re-arms the interval timer at the fresh cadence.
+	const publishSettingsChanged = (
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	): void => {
+		events.publish({ type: "settings.changed", scope, keys: [...keys] });
+		if (
+			keys.includes("server.providers.refreshIntervalMinutes") ||
+			keys.includes("server.providers") ||
+			keys.includes("server")
+		) {
+			stopProviderRefresh();
+			stopProviderRefresh = armProviderRefresh();
+		}
+		void eventBus.emitSettingsChanged(keys);
+	};
+	settingsChangedSinks.push(publishSettingsChanged);
 	// Activity stamping (UI refresh A1): every settled run stamps its
 	// conversation's `lastActivityAt` (the admission-side stamp lives in the
 	// submissions route). Registered directly after the bus opens — host-owned
@@ -1186,6 +1380,14 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		handlersByName.set(binding.extension.name, {
 			...handlersByName.get(binding.extension.name),
 			runSettled: binding.runSettled,
+		});
+	}
+	// UI-blocks U4 §13.2: the settings-change hook merges into the same
+	// per-extension registration (the fan-out below invokes it).
+	for (const binding of settingsChangedBindings) {
+		handlersByName.set(binding.extension.name, {
+			...handlersByName.get(binding.extension.name),
+			onSettingsChanged: binding.onSettingsChanged,
 		});
 	}
 	for (const binding of lifecycleBindings) {
@@ -1391,6 +1593,10 @@ collectedSkillRoots.push(...extensionSkillRoots);
 	harness.resume();
 	return {
 		harness,
+		isolation,
+		isolationState,
+		osUsers,
+		sandboxPool,
 		storage,
 		registry,
 		models,
@@ -1402,6 +1608,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		webuiBundleCollisions,
 		envBuilder,
 		extensionOutcomes,
+		loginProviders,
 		builtinSkipped: builtinsEnabled ? builtins.skipped : [],
 		providerHealth,
 		providerOwnership,
@@ -1421,6 +1628,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
 		extensionSurfaces: surfaceBindings,
+		extensionSettingsSections: settingsSectionBindings,
 		notifierBindings,
 		channelBindings,
 		gatewayEngine,
@@ -1433,6 +1641,8 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		autoNamer,
 		bootRefresh: bootRefreshDone,
 		refreshProvider: refreshOneProvider,
-		stopProviderRefresh,
+		stopProviderRefresh: stopCurrentProviderRefresh,
+		settingsBootSnapshot,
+		publishSettingsChanged,
 	};
 }

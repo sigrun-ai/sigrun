@@ -18,16 +18,21 @@ import type {
 import type { Env, SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import type { CommandCatalog } from "./commands.js";
+import type { ImageCache } from "./images/cache.js";
+import type { FetchDeps } from "./images/fetch.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
 import type { SurfaceService } from "./surfaces/service.js";
 import { SseRegistry } from "./sse-registry.js";
 import type { GatewayHandle } from "./gateway.js";
+import type { ManagedPaths } from "../sandbox/grants.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
 	readonly opened: OpenedHarness;
 	readonly config: SigrunConfig;
+	/** Protected paths used to validate per-user workspaces and grants. */
+	readonly managedPaths: ManagedPaths;
 	/**
 	 * The live-SSE registry (the ctrl+c fix): hijacked event streams never
 	 * end on their own, so shutdown drains this BEFORE app.close() — the
@@ -55,7 +60,9 @@ export interface ServerContext {
 	/**
 	 * The listen host the server binds (W1 Task 3): the pipeline's Host
 	 * check is strict on loopback binds, and `createServer` derives the
-	 * default method list from it. Defaults to `"0.0.0.0"`.
+	 * default method list from it. `serve()` passes its own default
+	 * (`DEFAULT_LISTEN_HOST`, the dual-stack `::`); `createServer`'s
+	 * fallback when the option is omitted is `"0.0.0.0"`.
 	 */
 	readonly listenHost: string;
 	/**
@@ -83,6 +90,28 @@ export interface ServerContext {
 	 */
 	readonly watchersByConversation: Map<ConversationId, number>;
 	/**
+	 * Publish one `settings.changed` event (UI-blocks U4, spec §13.2):
+	 * the opened harness's fan-out seam — the hub publication
+	 * (/v1/events, admins only) plus the extension
+	 * `onSettingsChanged` fan-out and the scheduler re-arm. Both write
+	 * routes (PATCH /v1/settings, PUT /v1/extensions/:slug/settings)
+	 * call this AFTER the write commits.
+	 */
+	readonly publishSettingsChanged: (
+		scope: "server" | { extension: string },
+		keys: readonly string[],
+	) => void;
+	/**
+	 * The restart callback (UI-blocks U4 Task 2, spec §13.3): the serve
+	 * composition's graceful shutdown + `process.exit(0)`. `POST
+	 * /v1/admin/restart` schedules it on the next tick (the 202 flushes
+	 * first). PRESENT only in the serve composition — a hand-built test
+	 * server omits it; the route then answers supervised posts with a
+	 * loud composition error (never a silent no-op). Absent or present,
+	 * an unsupervised config never reaches it (409 first).
+	 */
+	readonly requestRestart?: () => Promise<void> | void;
+	/**
 	 * The gateway handle (gateway C2): created by the serve composition
 	 * BEFORE `createServer` and threaded through the `gateway` option so
 	 * the meta route reads the wrapped engine health. ABSENT on hand-built
@@ -99,6 +128,18 @@ export interface ServerContext {
 	 * and Task 4's watcher registry read it.
 	 */
 	readonly surfaces: SurfaceService;
+	/**
+	 * The image-proxy wiring (UI-blocks U7 Task 3, spec §11.2): the
+	 * on-disk LRU cache (`<cacheDir>/images/`), the fetch deps (the
+	 * real `dns.lookup` + wall clock; tests inject a resolver + CA),
+	 * and the loaded signing key the routes verify against. Built once
+	 * in `createServer`; the image routes (`routes/images.ts`) read it.
+	 */
+	readonly imageProxy: {
+		readonly cache: ImageCache;
+		readonly deps: FetchDeps;
+		readonly key: Buffer;
+	};
 }
 
 declare module "fastify" {

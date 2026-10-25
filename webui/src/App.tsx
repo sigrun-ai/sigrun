@@ -24,7 +24,7 @@
  * accent) runs here for its root-application side effect.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { displayName } from "@sigrun/shared/conversations";
 import type { JsonObject } from "@sigrun/shared/blocks";
 import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
@@ -71,15 +71,26 @@ import { useConversationView } from "./useConversationView";
 import { useStickToBottom } from "./useStickToBottom";
 import { WorkspaceBrowser } from "./workspace/WorkspaceBrowser";
 
-/** The boot state machine: meta fetch → schema gate → shell. */
+/** The boot state machine: meta fetch → schema gate → shell. The
+ *  `"restarting"` state (U4 Task 2, spec §13.3) replaces the shell
+ *  after an admin restart call: the app polls `/readyz` and re-boots
+ *  (a keyed remount re-runs the schema gate) when it answers. */
 type Boot =
 	| { readonly status: "loading" }
 	| { readonly status: "refused"; readonly message: string }
-	| { readonly status: "ready"; readonly meta: MetaResponse };
+	| { readonly status: "ready"; readonly meta: MetaResponse }
+	| { readonly status: "restarting" };
 /** The default client (same-origin); tests inject a stub-backed one. */
 const defaultClient = createClient();
 
 const PANEL_STORAGE_KEY = "sigrun.panel";
+
+/** §13.3: how long the restart-recovery poll waits for /readyz before
+ *  surfacing a stalled restart as a refusal (never a silent hang).
+ *  DUPLICATE of the tui's `RESTART_READYZ_DEADLINE_MS`
+ *  (tui/src/ui/app.ts) — the tui consumes only `@sigrun/shared` wire
+ *  types; keep the two in sync by hand. */
+const RESTART_READYZ_DEADLINE_MS = 60_000;
 
 /** Load the persisted panel mode; garbage/absent → null (closed). */
 function loadPanel(): PanelMode | null {
@@ -169,6 +180,31 @@ export interface AppOptions {
 	/** The AuthGate's logout flip: App performs the logout call, then hands
 	 *  the session-end back. */
 	readonly onLogout?: () => void;
+	/**
+	 * Test/Task-4 seam (U4 Task 2, spec §13.3): the app hands its
+	 * restart action out once the shell mounts — Task 4's pendingRestart
+	 * callout wires its Restart button to it; the tests drive it
+	 * directly (no shell surface exposes it before Task 4). Providing it
+	 * ALSO publishes the action on `window.__sigrunAppActions` (the e2e
+	 * drives the same registry via the `__sigrunE2E` page flag).
+	 */
+	readonly onExposeActions?: (actions: AppActions) => void;
+	/** INTERNAL (the wrapper's remount signal): the shell calls this when
+	 *  the recovery poll sees /readyz answer; the wrapper bumps the
+	 *  shell's key so the recovery remounts the whole tree. Never passed
+	 *  by callers. */
+	readonly onRestarting?: () => void;
+}
+
+/** The app-level actions the §13.3 restart surface exposes. */
+export interface AppActions {
+	/**
+	 * Admin restart: POST /v1/admin/restart, flip the shell to
+	 * "Restarting…", poll `/readyz`, and re-boot the app when it
+	 * answers. Failures (403/409) surface as the shell error, never
+	 * silently.
+	 */
+	restart(): Promise<void>;
 }
 
 function ChatCenter(props: {
@@ -345,16 +381,96 @@ export function locationHash(): string {
 	return readHash();
 }
 
-export function App(options: AppOptions = {}) {
+function AppShell(options: AppOptions = {}) {
 	const client = options.client ?? defaultClient;
 	const identity = options.identity;
 	const onLogout = options.onLogout;
+	const onRestarting = options.onRestarting;
 	// The theme hook runs here for its root-application side effect; the
 	// STATE feeds the settings panel's Interface section (B7) — its picks
 	// apply immediately through this instance.
 	const theme = useTheme();
 	const prefsState: PrefsState = usePrefs();
 	const [boot, setBoot] = useState<Boot>({ status: "loading" });
+
+	// §13.3 (U4 Task 2): the admin restart action. POST the restart, flip
+	// the shell to "Restarting…", and poll /readyz — when it answers the
+	// supervisor has brought the process back, so the shell re-boots by
+	// REMOUNT: effects with [client]-shaped deps (the schema gate's meta
+	// fetch among them) never refire on a status flip inside the same
+	// component instance — the restart is the one place a fresh boot MUST
+	// re-run them, so this instance signals the App wrapper
+	// (`onRestarting`), whose key bump remounts the whole tree.
+	const restart = useCallback(async (): Promise<void> => {
+		try {
+			await client.requestRestart();
+		} catch (cause) {
+			setShellError(
+				`restart failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+			);
+			return;
+		}
+		setShellError(null);
+		setBoot({ status: "restarting" });
+		// The wrapper bumps the shell's key at recovery (the poll below
+		// flips the wrapper's state via this signal; this component
+		// instance never leaves "restarting" — the REMOUNT is the boot).
+		const deadline = Date.now() + RESTART_READYZ_DEADLINE_MS;
+		// Free-running poll (never an effect: it must outlive the boot
+		// state it drives, and a stalled recovery must surface, not hang).
+		// SLEEP FIRST (the TUI's shape): between the 202 and the deferred
+		// drain the OLD listener can still answer /readyz — probing
+		// immediately would read a dying process as ready, remount, and
+		// land the meta fetch on a closing server (the schema gate then
+		// refuses with no retry). The first probe waits out that window.
+		for (;;) {
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			let ready = false;
+			try {
+				ready = await client.checkReady();
+			} catch {
+				// Connection refused mid-restart: keep polling.
+			}
+			if (ready) {
+				// Remount the shell (the wrapper's key bump) — the fresh
+				// instance re-runs the whole boot chain. The fallback
+				// setBoot covers a bare embed with no wrapper (tests
+				// mounting AppShell-shaped App directly).
+				if (onRestarting !== undefined) onRestarting();
+				else setBoot({ status: "loading" });
+				return;
+			}
+			if (Date.now() > deadline) {
+				setBoot({
+					status: "refused",
+					message:
+						"restart did not come back: /readyz never answered within " +
+						`${RESTART_READYZ_DEADLINE_MS / 1000}s — check the deployment's supervisor`,
+				});
+				return;
+			}
+		}
+	}, [client, onRestarting]);
+	// Expose the action surface (Task 4's callout button; the tests).
+	// The window handle lets a browser drive the REAL action path (the
+	// e2e's restart-surface check); it is overwritten per remount, never
+	// accumulated. The global publishes ONLY when a test/e2e drives the
+	// app (`onExposeActions` is the unit-test seam; the e2e declares
+	// `__sigrunE2E` before load) — a production page carries neither and
+	// never publishes it. The dep array is ONLY `restart`: a new
+	// callback identity re-exposes the action without re-running the
+	// options churn.
+	useEffect(() => {
+		options.onExposeActions?.({ restart });
+		const expose =
+			options.onExposeActions !== undefined ||
+			(globalThis as { __sigrunE2E?: boolean }).__sigrunE2E === true;
+		if (expose) {
+			(
+				globalThis as { __sigrunAppActions?: AppActions }
+			).__sigrunAppActions = { restart };
+		}
+	}, [restart]);
 	const [activeId, setActiveId] = useState<number | null>(null);
 	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
@@ -373,7 +489,13 @@ export function App(options: AppOptions = {}) {
 		boot.status === "ready" && win.location?.hash.startsWith("#/blocks")
 			? "blocks"
 			: "chats";
-	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(() =>
+		new URLSearchParams(
+			(globalThis as { location?: { pathname?: string; search?: string } }).location?.pathname === "/settings"
+				? (globalThis as { location?: { search?: string } }).location?.search ?? ""
+				: "",
+		).has("section"),
+	);
 	// The hash route (U3 Task 5): the main pane renders either the chat
 	// column or one extension surface page. `navigate({params})` pushes a
 	// new hash entry; popstate walks back/forward through them.
@@ -393,7 +515,7 @@ export function App(options: AppOptions = {}) {
 	// The extension surfaces the principal cannot see (access none):
 	// `slug/id` keys — discovered at render time (a load's 404), the rail
 	// entry disappears at once (§6.5's "no rail entry").
-	const [hiddenExtSurfaces, setHiddenExtSurfaces] = useState<readonly string[]>([]);
+	const [hiddenExtSurfaces] = useState<readonly string[]>([]);
 	// The open extension PANEL tab's `slug/id` key (RightPanel state).
 	const [extPanel, setExtPanel] = useState<string | null>(null);
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
@@ -877,6 +999,13 @@ export function App(options: AppOptions = {}) {
 			</div>
 		);
 	}
+	if (boot.status === "restarting") {
+		return (
+			<div className="app-boot" role="status">
+				<p>sigrun — Restarting…</p>
+			</div>
+		);
+	}
 	if (boot.status === "refused") {
 		return (
 			<div className="app-refused" role="alert">
@@ -1064,6 +1193,7 @@ export function App(options: AppOptions = {}) {
 								conversationId={activeId}
 								view={view}
 								onNavigate={onSelect}
+								onOpenSettings={() => setSettingsOpen(true)}
 								enterToSend={prefsState.prefs.enterToSend}
 								readOnly={
 									list.rows.find((row) => row.id === activeId)?.access ===
@@ -1139,6 +1269,10 @@ export function App(options: AppOptions = {}) {
 					prefsState={prefsState}
 					theme={theme}
 					admin={identity?.admin}
+					initialSection={new URLSearchParams(
+						(globalThis as { location?: { search?: string } }).location?.search ?? "",
+					).get("section") ?? undefined}
+					onRestart={restart}
 					onClose={() => setSettingsOpen(false)}
 				/>
 			)}
@@ -1166,5 +1300,23 @@ export function App(options: AppOptions = {}) {
 					);
 				})()}
 		</div>
+	);
+}
+
+/**
+ * The restart-remount wrapper (U4 Task 2, spec §13.3): AppShell's
+ * `onRestarting` flips this wrapper's state, which swaps AppShell's
+ * React `key` — the recovery (or a repeated restart) remounts the whole
+ * shell, so every boot effect (the schema gate's meta fetch among them)
+ * re-runs by construction rather than by dep-array gymnastics.
+ */
+export function App(options: AppOptions = {}): ReactElement {
+	const [generation, setGeneration] = useState(0);
+	return (
+		<AppShell
+			key={generation}
+			{...options}
+			onRestarting={() => setGeneration((g) => g + 1)}
+		/>
 	);
 }

@@ -76,7 +76,7 @@ export interface E2EServerOptions {
 	 * onboards through the real claim route. The default boot stays the
 	 * naive workstation posture (`SIGRUN_AUTH=none` + a claimed admin).
 	 */
-	readonly auth?: { readonly setupCode: string };
+	readonly auth?: { readonly setupCode: string } | { readonly claimed: true };
 	/** U1 Task 6: boot the server with `SIGRUN_DEV=true` (the gallery's
 	 *  rail gate reads `/v1/meta`'s `dev`). */
 	readonly dev?: boolean;
@@ -87,6 +87,20 @@ export interface E2EServerOptions {
 	 * this hermetic boot).
 	 */
 	readonly extensionSpecifiers?: readonly string[];
+	/**
+	 * U7 Task 3 (the images e2e): the proxy fetch deps override threaded
+	 * to `createServer`'s `imageFetch` option — the spec's image server
+	 * is a local TLS fixture, so the resolver maps its public test host
+	 * onto this host's own global address and the CA pin trusts the
+	 * fixture's self-signed cert.
+	 */
+	readonly imageFetch?: { resolve(host: string): Promise<string[]>; ca?: Buffer };
+	/**
+	 * Load the built-in extensions (Task 2). Defaults to FALSE (see the
+	 * boot below) — scripted-response specs opt out; the built-in
+	 * surface specs opt in.
+	 */
+	readonly builtins?: boolean;
 }
 
 export interface E2EServer {
@@ -101,13 +115,6 @@ export interface E2EServer {
 	/** The per-boot tmpdir — the conversation's workspace root (the checklist
 	 * tests write files here for the workspace-browser + upload items). */
 	readonly workspaceDir: string;
-	/**
-	 * Load the built-in extensions (Task 2). Defaults to FALSE: these specs
-	 * script exact faux response queues, and the built-ins' `codemode` prompt
-	 * section changes the token counts those scripts depend on. Opt in when
-	 * a spec is about the built-in surface.
-	 */
-	readonly builtins?: boolean;
 	/** Idempotent teardown: close the app, the harness, remove the tmpdir. */
 	readonly cleanup: () => Promise<void>;
 	/**
@@ -190,15 +197,18 @@ async function bootOnDir(
 		// (Task 8) is the one deliberate exception: unclaimed, with the
 		// pinned setup code the browser's onboarding screen presents.
 		identity:
-			options.auth === undefined
+			options.auth === undefined || "claimed" in options.auth
 				? await seededIdentity(dir)
 				: await unclaimedIdentity(dir),
 		extensions: [contributor],
 		env:
-			options.auth === undefined
+			options.auth === undefined || "claimed" in options.auth
 				? {}
 				: { SIGRUN_SETUP_CODE: options.auth.setupCode },
 		settingsDir,
+		// The login e2e auto-provisions a second user: admission requires
+		// an available isolation probe, as in the in-process login tests.
+		isolationProbe: async () => ({ available: true, abi: 6 }),
 		...(options.extensionSpecifiers === undefined
 			? {}
 			: { extensionSpecifiers: options.extensionSpecifiers }),
@@ -212,7 +222,14 @@ async function bootOnDir(
 		// test/builtins.test.ts's subject; pass `builtins: true` to opt in.
 		builtins: options.builtins === true,
 	});
-	const app = await createServer(opened, config);
+	const app = await createServer(opened, config, [], {
+		...(options.imageFetch === undefined ? {} : { imageFetch: options.imageFetch }),
+	});
+	// Browser-login fixture: a loopback destination for the provider's
+	// synthetic .invalid URL (the spec continues the request here).
+	app.get("/fixture-idp", async (_request, reply) => {
+		await reply.type("text/html").send("<html><body>fixture identity</body></html>");
+	});
 	let closed = false;
 	let ownsDir = true;
 	// Close the listener + harness WITHOUT removing the tmpdir (the restart
@@ -220,6 +237,11 @@ async function bootOnDir(
 	const close = async () => {
 		if (closed) return;
 		closed = true;
+		// SSE FIRST (the deploy path's shutdown.ts order): an open
+		// /v1/events stream never ends on its own, and the app drain
+		// below waits on in-flight requests — a spec that leaves a
+		// browser tab streaming would hang the teardown.
+		app.sse?.endAll?.();
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
 	};

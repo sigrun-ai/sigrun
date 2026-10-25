@@ -32,6 +32,8 @@
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
+import { join } from "node:path";
+import { LoginFlows } from "./login/flows.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
@@ -44,7 +46,9 @@ import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
+import { registerAdminRoutes } from "./routes/admin.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerLoginRoutes, type LoginResolver } from "./routes/login.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { registerExtensionRoutes as registerExtensionSettingsRoutes } from "./routes/extensions.js";
@@ -59,14 +63,22 @@ import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerSettingsSectionsRoutes } from "./routes/settings-sections.js";
 import { registerStreamRoutes } from "./routes/stream.js";
 import type { GatewayHandle } from "./gateway.js";
 import { startNotifications } from "./notifications.js";
+import { selfPackageRoot } from "../harness/packages.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import { subscribeChatSurfaceChanged } from "../harness/blocks/tools.js";
+import { loadOrCreateKey, signUrl } from "./images/sign.js";
+import { ImageCache } from "./images/cache.js";
+import type { FetchDeps } from "./images/fetch.js";
+import { registerImageRoutes } from "./routes/images.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
+import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
+import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -90,8 +102,9 @@ import {
  * checks, the public surface, the env service token, the setup gate,
  * then the configured methods — the resolved principal stamps
  * `SessionMeta.owner` at create/fork/import.
- * @param options.listenHost the host the server will bind (default
- * `"0.0.0.0"`); the pipeline's Host check and the default method list
+ * @param options.listenHost the host the server will bind (fallback
+ * `"0.0.0.0"` when omitted; `serve()` passes the dual-stack `::`);
+ * the pipeline's Host check and the default method list
  * (`effectiveMethods`) both derive from it.
  * @param contributedBundles the extension-contributed webui-bundle registry
  * (build-and-webui Task 6 threads it here from boot; the serve-time
@@ -119,9 +132,38 @@ export async function createServer(
 		 * an engine loaded — the field is the serve composition's report.
 		 */
 		gateway?: GatewayHandle;
+		/**
+		 * The image-proxy fetch deps override (U7 Task 3): tests inject a
+		 * resolver + CA so the proxy's upstream is a local TLS fixture
+		 * instead of the public internet. Absent = the real `dns.lookup`
+		 * and wall clock (the deploy default).
+		 */
+		imageFetch?: Partial<FetchDeps>;
+		/**
+		 * The restart callback (U4 Task 2, spec §13.3): the serve
+		 * composition threads its graceful-shutdown + exit-0 path here so
+		 * `POST /v1/admin/restart` runs exactly what SIGTERM runs. Absent
+		 * on hand-built test servers — their restart tests inject a stub
+		 * through this same option.
+		 */
+		onRestart?: () => Promise<void> | void;
+		/** Test-only resolver injection; production uses the core account/session resolver. */
+		loginResolver?: LoginResolver;
+		/** Hermetic login-flow clock; production uses the server's own Date.now. */
+		loginNow?: () => number;
 	},
 ): Promise<FastifyInstance> {
-	const app = Fastify({ logger: false });
+	const app = Fastify({
+		logger: false,
+		// U7 Task 3: the image route's GET `src=data:` form carries up to
+		// 192 KiB of base64 in the query string, which counts toward
+		// Node's 16 KiB default header cap and would be 431-rejected at
+		// the HTTP layer before the route's own §11.1 413 could answer.
+		// 256 KiB admits the cap-sized URL; the route enforces the real
+		// limit (192 KiB) itself. The POST form (the body path) stays the
+		// recommended shape for long data URLs.
+		http: { maxHeaderSize: 256 * 1024 },
+	});
 	const listenHost = options?.listenHost ?? "0.0.0.0";
 	const env = options?.env ?? {};
 	// The one body-limit error shape (spec §6.2, W2): Fastify's
@@ -204,8 +246,30 @@ export async function createServer(
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
 	// way to hand that handle up without widening ServerContext's consumers.
 	app.decorate("sse", sse);
+	// The image-proxy signer (U7 Task 1, spec §11.2): the key is loaded
+	// (created at first boot) from the state dir — deleting the file
+	// rotates it — and every surface tree/data answer rewrites https
+	// image sources through it at serve time.
+	const imageKey = await loadOrCreateKey(config.stateDir);
+	const imageSign = (u: string): string => signUrl(imageKey, u, Date.now());
+	// The proxy cache + fetch deps (U7 Task 3, spec §11.2): the on-disk
+	// LRU under `<cacheDir>/images/`; the deps are the real resolver +
+	// clock unless a test injects its own.
+	const imageCache = new ImageCache(config.cacheDir);
+	const imageDeps: FetchDeps = {
+		resolve: async (host) => {
+			const { lookup } = await import("node:dns/promises");
+			const addresses = await lookup(host, { all: true, verbatim: true });
+			return addresses.map((entry) => entry.address);
+		},
+		now: Date.now,
+		...options?.imageFetch,
+	};
 	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
 		maxUploadBytes: config.maxUploadBytes,
+		// Signs https image URLs into expiring proxy URLs (U7 Task 1,
+		// spec §11.2) on every tree/data response.
+		imageSign,
 		// Task 4: bumpRev (actions AND the host seam's changed()) fans the
 		// surface.changed event out to the hub; the events route's
 		// visibility case delivers it to watching streams only.
@@ -217,6 +281,56 @@ export async function createServer(
 			opened.events.publish(event as unknown as HostEventWire);
 		},
 	});
+	// The settings sections (UI-blocks U4 Task 3, spec §13.3): each
+	// declared section adapts to a settings-placement surface served under
+	// the declaring extension's own `/v1/ext/<slug>/surfaces/` mount. The
+	// save handlers close over the service (the optimistic-concurrency
+	// rev read), so the adaptation attaches AFTER the service exists.
+	surfacesService.attachSettingsSurfaces(
+		opened.extensionSettingsSections.map((binding) => ({
+			extension: binding.extension,
+			defs: binding.defs.map((section) =>
+				settingsSurfaceFor(binding.extension, section, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				}),
+			),
+		})),
+	);
+	// The core settings sections (U4 Task 4, spec §13.4): the same
+	// renderer under the reserved `core` slug — core and extensions run
+	// ONE code path. The core saves write the core SettingsStore (dotted
+	// names land at their nested paths, apply-typed), not the extension
+	// settings dir.
+	surfacesService.attachSettingsSurfaces([
+		{
+			extension: "core",
+			defs: CORE_SETTINGS_SECTIONS.map((section) =>
+				settingsSurfaceFor("core", section, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				core: {
+					settings: opened.settings,
+					bootSnapshot: opened.settingsBootSnapshot,
+					env,
+					// The Tools section's default-tools options (the boot
+					// registry's tool names, deduped — the roster the
+					// checkbox list edits against).
+					toolRoster: [
+						...new Set(
+							opened.registry
+								.snapshot()
+								.tools()
+								.map((entry) => entry.tool.name),
+						),
+					],
+				},
+				}),
+			),
+		},
+	]);
 	app.decorate("surfaces", surfacesService);
 	// The chat-block change seam (UI-blocks U5 Task 2, spec §8.2):
 	// show_blocks/update_blocks AND the user-edit route publish
@@ -230,19 +344,33 @@ export async function createServer(
 		// the publish types on the union the events switch discriminates.
 		opened.events.publish(event as HostEventWire);
 	});
+	const roots = opened.extensionStores.roots;
 	const ctx: ServerContext = {
 		opened,
 		config,
+		managedPaths: {
+			roots,
+			storagePath: config.storagePath,
+			coreRoot: selfPackageRoot() ?? process.cwd(),
+			userAreas: (user) => join(roots.dataDir, "users", user),
+		},
 		rootId,
 		webuiBundle,
 		commandCatalog,
 		listenHost,
 		methods,
 		env,
+		// U4 §13.2: the harness's settings-changed fan-out (hub publish +
+		// extension onSettingsChanged + the scheduler re-arm).
+		publishSettingsChanged: opened.publishSettingsChanged,
 		watchersByConversation: new Map(),
 		surfaces: surfacesService,
 		sse,
+		imageProxy: { cache: imageCache, deps: imageDeps, key: imageKey },
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
+		...(options?.onRestart === undefined
+			? {}
+			: { requestRestart: options.onRestart }),
 	};
 	// The host bridge (W5 Task 5, spec §9.5/§9.7): ONE bridge over this
 	// server's context, bound onto every seam host — the extension-facing
@@ -270,10 +398,15 @@ export async function createServer(
 	// `request.principal` before any route runs.
 	registerAuthPipeline(app, ctx);
 	registerAuthRoutes(app, ctx);
+	registerLoginRoutes(app, ctx, {
+		...(options?.loginResolver === undefined ? {} : { resolver: options.loginResolver }),
+		...(options?.loginNow === undefined ? {} : { flows: new LoginFlows(options.loginNow) }),
+	});
 	registerOnboardingRoutes(app, ctx);
 	registerUserRoutes(app, ctx);
 	registerProbeRoutes(app, ctx);
 	registerMetaRoutes(app, ctx);
+	registerAdminRoutes(app, ctx);
 	registerMetricsRoutes(app, ctx);
 	registerConversationRoutes(app, ctx);
 	registerStreamRoutes(app, ctx);
@@ -283,6 +416,7 @@ export async function createServer(
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);
+	registerSettingsSectionsRoutes(app, ctx);
 	registerExtensionSettingsRoutes(app, ctx);
 	// The extension HTTP routes (W5 Task 2, spec §9.2): every collected
 	// `routes` contribution mounted at `/v1/ext/<slug>/<path>` behind the
@@ -297,6 +431,10 @@ export async function createServer(
 	// `/v1/ext/<slug>/assets/*` serves the package's declared
 	// `sigrun.assets` dir, realpath-contained, sniffed content types.
 	registerExtAssetRoutes(app, ctx);
+	// The image-proxy routes (UI-blocks U7 Task 3, spec §11.2): signed
+	// remote fetches through the on-disk LRU, the `src=` asset/data form,
+	// and the POST long-data-URL form.
+	registerImageRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable

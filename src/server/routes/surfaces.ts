@@ -247,23 +247,16 @@ export function registerSurfaceRoutes(
 		}
 		// The §6.5 access gate: cache or re-render decides BEFORE the
 		// handler runs. A located-check first keeps unknown slugs/ids on
-		// the same 404 body without a render.
-		const binding = ctx.opened.extensionSurfaces.find(
-			(entry) => entry.extension === slug,
-		);
-		const def = binding?.defs.find((entry) => entry.id === id);
-		if (def === undefined) {
-			return await reply.code(404).send(NOT_FOUND);
-		}
-		// A throwing `instanceKey` is an extension fault: 500
-		// surface_failed, the extension stays loaded (deferred minor from
-		// Task 2 — this ran outside the try before).
+		// the same 404 body without a render; a throwing extension
+		// `instanceKey` is a 500 (the extension-fault path). The service's
+		// locate covers the settings surfaces too (spec §13.4).
 		let key: string;
 		try {
-			key =
-				def.instanceKey !== undefined
-					? def.instanceKey(params)
-					: instanceKey(params);
+			const probe = surfaces.instanceKeyFor(slug, id, params);
+			if (probe === undefined) {
+				return await reply.code(404).send(NOT_FOUND);
+			}
+			key = probe;
 		} catch (cause) {
 			return await failureReply(reply, slug, id, cause);
 		}
@@ -344,22 +337,16 @@ export function registerSurfaceRoutes(
 						.code(400)
 						.send({ error: "invalid_field", field: "params" });
 				}
-				const binding = ctx.opened.extensionSurfaces.find(
-					(entry) => entry.extension === slug,
-				);
-				const def = binding?.defs.find((entry) => entry.id === id);
-				if (def === undefined) {
+			let key: string;
+			try {
+				const probe = surfaces.instanceKeyFor(slug, id, parsed.params);
+				if (probe === undefined) {
 					return await reply.code(404).send(NOT_FOUND);
 				}
-				let key: string;
-				try {
-					key =
-						def.instanceKey !== undefined
-							? def.instanceKey(parsed.params)
-							: instanceKey(parsed.params);
-				} catch (cause) {
-					return await failureReply(reply, slug, id, cause);
-				}
+				key = probe;
+			} catch (cause) {
+				return await failureReply(reply, slug, id, cause);
+			}
 				// The §6.5 access gate, BEFORE the body is consumed.
 				let access: string;
 				try {
@@ -661,8 +648,9 @@ export function registerSurfaceRoutes(
 			if (!ctx.surfaces.chatTakeToken(address, request.principal.user ?? "")) {
 				return await reply.code(429).send({ error: "rate_limited" });
 			}
+			const fingerprint = JSON.stringify({ action: body.action, payload: body.payload });
 			if (actionId !== undefined) {
-				const hit = ctx.surfaces.chatDedupCheck(actionId, address);
+				const hit = ctx.surfaces.chatDedupCheck(actionId, address, fingerprint);
 				if (hit !== undefined && hit !== null) return await reply.send(hit);
 			}
 		// A handler name no node in the tree declares is unknown
@@ -689,7 +677,7 @@ export function registerSurfaceRoutes(
 						actionId,
 				);
 				if (actionId !== undefined) {
-						ctx.surfaces.chatDedupRecord(actionId, address, wrapped);
+						ctx.surfaces.chatDedupRecord(actionId, address, fingerprint, wrapped);
 				}
 				return await reply.send(wrapped);
 			}
@@ -718,7 +706,7 @@ export function registerSurfaceRoutes(
 				ops: outcome.ops as unknown[],
 			});
 			if (actionId !== undefined) {
-				ctx.surfaces.chatDedupRecord(actionId, address, wrapped);
+				ctx.surfaces.chatDedupRecord(actionId, address, fingerprint, wrapped);
 			}
 			return await reply.send(wrapped);
 		},

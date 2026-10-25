@@ -45,6 +45,8 @@ import { createScheduleTask } from "../src/jobs/task.js";
 import { patchJob, readJob } from "../src/jobs/docs.js";
 import { specHash } from "../src/jobs/spec.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
+import { selfPackageRoot } from "../src/harness/packages.js";
 
 const T0 = Date.parse("2026-10-19T12:00:00.000Z");
 
@@ -115,7 +117,7 @@ async function bootRig(options?: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "none",
+		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_TIMEZONE: "UTC",
 	});
@@ -124,6 +126,8 @@ async function bootRig(options?: {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
 		...(options?.extensions === undefined
 			? {}

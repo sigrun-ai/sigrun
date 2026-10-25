@@ -62,9 +62,10 @@ story to guess.
   `packages/` and `git/` (the extension install machinery), `skills/`
   (your user-wide skills — the same SKILL.md convention the workspace
   ships, listed under the reserved `skills` section for every
-  conversation), the identity surfaces `users.json` and `api-tokens.json`
-  (mode 0600, sigrun-owned — user accounts and token digests), and
-  channel client configs such as `tui.json`.
+  conversation), the identity surfaces `users.json`,
+  `api-tokens.json`, and `accounts.json` (mode 0600, sigrun-owned — user
+  accounts, token digests, and external-identity links), and channel
+  client configs such as `tui.json`.
 
 ## One resolution chain — workstation and container
 
@@ -236,6 +237,7 @@ what core does with each, and where its rules are documented:
 | `extension` | pi-durable `Extension` | installed into the registry before `Harness.open`; its declared name is the slug source | this page ("The stores handle", "Prompt sections") |
 | `name` | `string` | the identity of a contributor-only result (no `extension`) | "Contributing model providers" |
 | `providers` | `readonly ProviderContribution[]` | merged into the boot model catalog; last-registered-wins, collisions recorded and surfaced | "Contributing model providers" |
+| `loginProviders` | `readonly LoginProviderContribution[]` | qualified as `login:<slug>:<id>` and mounted on core-owned begin/callback routes | ["Login providers"](#login-providers) |
 | `webuiBundles` | `readonly WebuiBundleContribution[]` | each `dir` anchored at the entry; the name-keyed registry `server.webui.bundle` selects from | "Contributing webui bundles" |
 | `health` | `() => HealthStatus` | aggregated into `/v1/meta` `health` — any `"degraded"` degrades the surface | "Contributing model providers" |
 | `runSettled` | `ExtensionRunSettledHandler` | registered on the event bus; one call per settled run, deadline-bounded | this table |
@@ -351,21 +353,222 @@ handling):
 
 ## The users surface
 
-`host.users.get/list` serve the directory with **effective admin**
-(gateway C8): `admin` is the stored flag OR the persisted proxy-group
-grant (`groupAdmin`), and `groupAdmin` rides along as a definite
-boolean. Host-side code (chat commands, channel adapters) has no
-request headers to recompute a group grant, so the write-through that
-lands it on the record is what makes host-side admin checks possible.
-The HTTP surface is deliberately different: `/v1/users` keeps `admin`
-= the stored flag (the users-admin UI toggles that one) and carries
-`groupAdmin` alongside; group-derived admin never counts toward the
-last-admin guard.
+`host.users.get/list` serve the directory with **effective admin**:
+`admin` is the stored flag OR any stored group in
+`server.auth.adminGroups`. The directory stores groups per
+authenticating source (`proxy`, `login:<slug>:<id>`); each source's
+entry is replaced on its next login or proxy request. Host-side code
+(chat commands, channel adapters) reads these stored groups, never
+request headers.
 
-The grant updates only on proxy-authenticated requests while
-`server.auth.adminGroups` is non-empty: removal from the admin group
-takes effect for host-side checks at that user's **next web request**
-(a user who never browses again keeps the stale grant until then).
+The HTTP surface is deliberately different: `/v1/users` keeps `admin`
+= the stored flag (the users-admin UI toggles that one), exposes the
+deduplicated union as `groups`, and derives `groupAdmin` as
+`effectiveAdmin && !admin`. The wire `groupAdmin` is retained for one
+release for the users UI; it is never persisted. Group-derived admin
+never counts toward the last-admin guard.
+
+Proxy group removal takes effect for host-side checks at that user's
+**next web request** (a user who never browses again keeps the stale
+stored groups until then).
+
+## The accounts surface
+
+A **link** is one external identity bound to one directory user. Sigrun
+keeps every link in ONE table, `<configDir>/accounts.json` (mode 0600,
+atomic writes, mtime-reload reads — the same discipline as
+`users.json`), because chat senders and login subjects are the same
+question: "who is this, in the directory?". A link records `provider`,
+`subject`, `user`, `linkedAt`, and `via` (`login`, `self`, `pairing`, or
+`admin`).
+
+Provider ids have two forms:
+
+- `chat:<channel>` — a chat sender (the gateway writes these);
+- `login:<slug>:<id>` — a login subject, where `slug` is the login
+  extension's slug and `id` its provider id (so an extension with slug
+  `oauth` contributes ids reading `login:oauth:<id>`).
+
+A subject is opaque to sigrun: a Telegram or Discord numeric id, a
+Signal `+E.164` number, and an email-shaped subject all pass — any
+non-empty string up to 512 characters.
+
+A provider id is **lowercase, no spaces**: it must match
+`^(login|chat):[a-z0-9][a-z0-9._:-]*$`, so `chat:Telegram` is rejected
+with `invalid_provider: chat:Telegram`. Use the channel's own, already
+lowercase name.
+
+```ts
+await host.accounts.lookup("chat:telegram", "12345");   // AccountLinkWire | undefined
+await host.accounts.link("chat:telegram", "12345", "alice", "pairing");
+await host.accounts.unlink("chat:telegram", "12345");   // boolean
+await host.accounts.listForUser("alice");                // readonly AccountLinkWire[]
+```
+
+Rules, all enforced by core:
+
+- **One link per `(provider, subject)`.** Re-linking to the SAME user is
+  a no-op that returns the existing record. Linking to a DIFFERENT user
+  is refused — never silently re-pointed, because re-pointing an
+  existing external identity is an account-takeover path. The holder (or
+  an admin) removes the old link first.
+- **Errors.** An unknown user throws `unknown user "<user>"`; a
+  malformed provider id throws `invalid_provider: <provider>`; an empty
+  or over-long (513+ characters) subject throws `invalid_subject`; a
+  conflict throws an `Error` whose message starts
+  `account_link_conflict:` and never names the current holder — match on
+  the prefix, as you would on `command_not_found:`.
+- **User deletion removes the departing user's links** and never
+  transfers them: credentials belong to a person, so the new owner of a
+  transferred conversation does not inherit the old owner's chat
+  identity.
+- **Core owns the file.** Extensions go through `host.accounts`; nothing
+  else may write `accounts.json`. Core is the single write path, which is
+  what keeps the gateway and the login seam from disagreeing about who a
+  sender is.
+- **`accounts.json` is in `configDir`**, so the existing `config` backup
+  section carries it alongside `users.json`.
+
+Users manage their own links over HTTP, mirroring `/v1/auth/tokens`:
+
+- `GET /v1/auth/accounts` lists the caller's links as
+  `{accounts: AccountLinkWire[]}`. A principal with no directory user (a
+  userless service token) gets the whole store — the same single-operator
+  rule the token list applies. `?user=<name>` is the admin-only window
+  into another user's links; naming yourself is allowed and returns the
+  same payload as no query. A non-admin naming someone else gets 403
+  `forbidden` before the store is read.
+- `DELETE /v1/auth/accounts?provider=<p>&subject=<s>` removes one link
+  (204). A missing or empty `provider`/`subject` is 400 `invalid_query`;
+  an absent link is 404 `unknown_account`; a link belonging to another
+  user is 403 `forbidden` unless the caller is an admin.
+
+Both take QUERY parameters rather than path segments because provider ids
+contain `:` and subjects may contain `/`, `+`, or `@` (URL-encode them:
+`%2B` for a Signal `+E.164` number).
+
+One consequence worth knowing: because a `(provider, subject)` pair is
+usually guessable (a Discord handle, an email address), a signed-in
+non-admin can tell 404 from 403 and so learn whether a given external
+identity is registered — though never to whom. The authorization rule
+is checked inside the same serialized mutation as the removal, so a
+subject re-linked to someone else mid-request is not removed on the
+strength of a stale read.
+
+## Login providers
+
+An extension can prove an external identity by returning `loginProviders`
+from its factory. Core owns the browser flow and everything after the
+proof; the provider owns only the protocol exchange with the external
+identity service.
+
+```ts
+import type {
+  LoginProviderContribution,
+  SigrunExtensionResult,
+  SigrunHost,
+} from "@sigrun/sigrun/extension";
+
+const company: LoginProviderContribution = {
+  id: "company",
+  label: "Company SSO",
+  icon: "key",                         // optional
+  policy: {
+    autoProvision: true,
+    allowedGroups: ["staff"],
+    allowedDomains: ["example.invalid"],
+  },
+  async begin(flow, ctx) {
+    // Keep provider-private values (PKCE verifier, nonce) in flow.data.
+    flow.data.verifier = makeVerifier();
+    return { redirectUrl: authorizeUrl(flow.state, flow.callbackUrl) };
+  },
+  async complete(flow, callback, ctx) {
+    // callback.query is Record<string, string>; callback.body is unknown.
+    const identity = await exchangeCallback(flow, callback);
+    return {
+      subject: identity.subject,
+      profile: {
+        username: identity.username,
+        name: identity.name,
+        email: identity.email,
+        emailVerified: identity.emailVerified,
+      },
+      groups: identity.groups,
+    };
+  },
+};
+
+export default function createLogin(host: SigrunHost): SigrunExtensionResult {
+  return { name: "acme-login", loginProviders: [company] };
+}
+```
+
+The provider id is local to the extension and must match
+`^[a-z0-9][a-z0-9._-]*$`; duplicate ids within one extension are invalid.
+Core prefixes the extension slug, so this contribution's public provider id
+is `login:acme-login:company`. For slug `oauth` and id `company`, it is
+`login:oauth:company`.
+
+`GET /v1/auth/login/:provider` calls `begin`, and core redirects the browser
+to the returned URL. `flow.callbackUrl` is the callback to register with the
+identity service; core accepts that callback by GET or POST at
+`/v1/auth/callback/:provider`, then calls `complete` with the same flow and
+the callback's query and body. `GET /v1/auth/providers` publishes the id,
+label, and optional icon for the sign-in screen.
+
+**Core, not the provider, generates and verifies `state`.** State is
+single-use, bound to a separate HttpOnly browser cookie and to the provider.
+Core retains `flow.data` in memory for 10 minutes and passes it back to
+`complete`; a restart invalidates an in-flight login. Core also owns the
+callback route, first-login resolution, provisioning policy, session
+creation and cookie, and stored groups. The provider only builds the authorize
+URL and turns its callback into `{subject, profile, groups}`. The subject
+must be stable within that provider; matching usernames or emails never
+implicitly links an existing sigrun user.
+
+The optional `policy` fields are declarations **core enforces within their
+provisioning scope**, not checks the provider must repeat:
+
+- `autoProvision: true` admits a previously unlinked subject without an
+  invite, subject to the filters below. Its default is `false`, which
+  requires an invite after the first claim.
+- `allowedGroups` requires at least one named group in the login result.
+- `allowedDomains` requires an email in one of the listed domains **and**
+  `profile.emailVerified === true`. An absent or unverified email never
+  satisfies this filter.
+
+**The two filters apply only when auto-provisioning a NEW user.** They do
+not filter subsequent logins by an already-linked account, and they do not
+apply to invite-based provisioning. A linked account keeps working even if
+it no longer satisfies a changed filter; removing that account's access
+requires removing its link (or the user).
+
+**Groups have a narrow trust boundary.** Core accepts groups only from a
+login result or from proxy headers that passed trusted-peer validation and
+any configured secret validation. With execution isolation on, the proxy
+shared secret is mandatory; see the M1 isolation requirements in the
+operator documentation. A token- or session-authenticated request only reads
+groups already stored on the user; nothing in that request can set or add them.
+Each source replaces its own stored entry at the next login or proxy
+request, so changes at the identity service deliberately take effect then,
+not continuously. Stored groups participate in effective-admin and
+group-sharing checks.
+
+Login-provider groups participate in `server.auth.adminGroups`, so configure
+only providers whose group claims are administrator-controlled. A linked
+account's groups come from the provider at each sign-in; removing admin
+therefore requires changing the provider's claim or removing the link/user.
+
+Login-provider validation is all-or-nothing for one extension: a malformed
+array or entry, an invalid or duplicate id, a non-string label/icon, or a
+non-function `begin`/`complete` quarantines that extension. Boot continues
+without its login providers.
+
+The separately shipped `@sigrun/oauth` package implements this contract
+for OIDC and OAuth 2. It is **not bundled or installed by default**; the
+operator installs and configures it like other extensions. See
+[Authentication](README.md#authentication) for its operator configuration.
 
 ## Secrets precedence: stored wins, env bootstraps
 
@@ -486,10 +689,25 @@ sigrun — the builders behind `@sigrun/sigrun/blocks` must emit the
 server's block-set version, which only the running copy does. Import the
 builders from `@sigrun/sigrun/blocks`:
 
-```ts
-import { bind, collection, page, tree } from "@sigrun/sigrun/blocks";
+```ts check
+import { bind, card, collection, page, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
 
-tree(page({ title: "Board", main: [collection({ items: bind("/cards") })] }));
+export function board(): Tree {
+	return tree(
+		page({
+			title: "Board",
+			main: [
+				collection({
+					id: "cards",
+					items: bind("/cards"),
+					display: "lanes",
+					item: card({ title: bind("./label") }),
+				}),
+			],
+		}),
+	);
+}
 ```
 
 Reference plugins: [sigrun-provider-ollama](https://github.com/sigrun-ai/sigrun-provider-ollama)
@@ -685,6 +903,190 @@ commands: [
   choice the operator can see, never a silent shadowing.
 - A malformed declaration (bad name shape, missing `description`,
   non-function `run`) quarantines the extension at load.
+
+## Interactions: a pending human decision is a block tree
+
+An **interaction record** is how your extension says "this conversation
+is waiting on a human decision" and receives the answer durably
+([approval-ux-seams.md](approval-ux-seams.md)). Its **body is a block
+tree** — placement `interaction`, a root `form` whose submit IS the
+answer — built with the typed builders from `@sigrun/sigrun/blocks`
+(the host-linked copy; `tree()` stamps the server's block-set version,
+so never bundle your own). Declare every kind you seed in the factory
+result's `interactionKinds`; seeding an undeclared kind throws at the
+write. The envelope (kind, callId, status, timestamps, answer) is
+core-owned; channels render the tree generically with no per-extension
+UI.
+
+An allow/deny gate (the pi-warden shape — a toned `choice` and a
+`longtext` reason, with `markdown` context above the decision section;
+a form's direct children are fields and `section`s, so prose blocks
+group inside a section):
+
+```ts check
+import { choice, form, longtext, markdown, section, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function gatingConfirmBody(command: string, reason: string): Tree {
+	return tree(
+		form({
+			id: "confirm",
+			bind: "/values",
+			mode: "submit",
+			submitLabel: "Send",
+			children: [
+				section({
+					title: "Confirm",
+					children: [
+						markdown({ text: `About to run \`${command}\` — it matched a confirm rule.` }),
+					],
+				}),
+				section({
+					title: "Decision",
+					children: [
+						choice({
+							name: "decision",
+							label: "Allow this call?",
+							options: [
+								{ id: "allow", label: "Allow", tone: "good" },
+								{ id: "deny", label: "Deny", tone: "bad" },
+							],
+						}),
+						longtext({ name: "reason", label: "Why (optional)", placeholder: reason }),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+A multi-question form (the ask-user-question shape — one `section` per
+question, per-option `preview` markdown, `allowOther` for free text):
+
+```ts check
+import { choice, form, section, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function questionsFormBody(): Tree {
+	return tree(
+		form({
+			id: "ask",
+			bind: "/values",
+			mode: "submit",
+			children: [
+				section({
+					title: "Pick a store",
+					children: [
+						choice({
+							name: "store",
+							label: "Which store should the extension use?",
+							multi: false,
+							allowOther: { label: "Something else" },
+							options: [
+								{
+									id: "sqlite",
+									label: "SQLite",
+									description: "A single file under your data dir",
+									recommended: true,
+									preview: "**SQLite**: zero setup, durable, local-only.",
+								},
+								{
+									id: "markdown",
+									label: "Markdown files",
+									preview: "**Markdown**: greppable, versionable by hand.",
+								},
+							],
+						}),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+**The answer is `{values}`** (ruling 20): when a human submits, the
+generic answer route (`POST /v1/conversations/:id/interactions/:callId/answer`,
+body `{values}`) writes `answer: { values: { <field name>: value } }`
+onto the record — every field's value under its name; a `choice` value
+is its option id (or ids when `multi`), a `choice` with `allowOther`
+carries `{ other: "…" }`. Your poll loop reads `record.answer?.values`
+via `host.snapshotInteraction`; `host.answerInteraction` (extension-side
+answer) takes the same `{values}` shape. A `secret` field's value
+reaches your `snapshotInteraction` read once — the stored record keeps
+only `"[secret]"` (there is no answer handler; your poll loop reads the
+live answer envelope) — and channels and logs never see it (the settled
+event carries no answer values). First answer wins: a second answer gets
+`404 not_pending`.
+
+## Ambient surfaces: persistent read-mostly state as a block tree
+
+An **ambient surface** is the other direction — keyed, persistent,
+read-mostly state (a statusline slot, a footer zone, a panel) you
+REPLACE wholesale, never block on. Same discipline: strict core-owned
+envelope (`key`, `place`, `maxRows?`, `overflow?`, `refreshMs?`,
+`expires`, `updatedAt`) around a **block-tree body** (placement
+`ambient`) built with the same builders. Declare every key in
+`ambientKinds`. `place: "status"` and `"footer"` allow ONE line — a
+single one-line `markdown`, or one `columns` of one-line blocks (the
+footer's left/middle/right zones are three columns); validation rejects
+anything taller. A footer with the three zones:
+
+```ts check
+import { columns, markdown, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function footer(left: string, middle: string, right: string): Tree {
+	return tree(
+		columns({
+			children: [
+				{ block: markdown({ text: left }) },
+				{ block: markdown({ text: middle }), weight: 1 },
+				{ block: markdown({ text: right }) },
+			],
+		}),
+	);
+}
+```
+
+`expires` and `updatedAt` are host-assigned envelope fields — the host
+stamps them on the record; you never pass them to `setAmbient`. The
+envelope may also carry `details?` (opaque JSON the channel renders as
+one collapsed line, never interpreted).
+
+A statusline slot and a panel of rows (the rpiv-todo shape — a
+`collection(display: "list")` of literal rows; ambient bodies bind
+nowhere outside a collection's item template — the envelope carries no
+data model):
+
+```ts check
+import { bind, card, collection, markdown, tree } from "@sigrun/sigrun/blocks";
+import type { JsonValue, Tree } from "@sigrun/sigrun/blocks";
+
+export function statusline(text: string): Tree {
+	return tree(markdown({ text }));
+}
+
+export function todoPanel(rows: readonly JsonValue[]): Tree {
+	return tree(
+		collection({
+			id: "todos",
+			items: rows,
+			display: "list",
+			item: card({
+				title: bind("./label"),
+				status: { label: bind("./status"), spinner: bind("./running") },
+			}),
+		}),
+	);
+}
+```
+
+Write with `host.setAmbient(conversationId, { key, place, body }, context)`
+from a tool execute or hook (never the factory body); clear with
+`host.clearAmbient`. One slot key is owned by exactly one extension —
+allocation, not silent composition.
 
 ## Idle workers: `wakeOn` only
 
@@ -1019,6 +1421,681 @@ Rules for engine authors:
   `/v1/meta` omits `health.gateway` entirely.
 - A malformed declaration (a missing `start`/`stopIntake`/`stop`/
   `health` function) quarantines the extension at load.
+
+## Building surfaces
+
+A **surface** is a block tree with a data model behind it, rendered by
+both channels (webui and TUI) from one definition. You build trees with
+the typed builders from `@sigrun/sigrun/blocks` — the host-linked copy
+(the `tree()` wrapper stamps the server's block-set version, so never
+bundle your own builders):
+
+```ts
+import { page, collection, card, bind, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+```
+
+Builders return plain JSON; there is no runtime besides them. Any prop
+whose value can change at runtime takes a literal or a **binding** —
+`bind("/cards")` is a JSON Pointer into the surface's data model, and
+inside a collection's card template `bind("./title")` resolves against
+the current item. Structural props (`type`, `id`, `display`, `groupBy`,
+field `name`s, handler names, ...) are literals, never bindings.
+
+### Placements
+
+Where a tree may appear decides which blocks, collection displays and
+form fields it may use (spec §5.7; `validateTree` enforces the table):
+
+| | view | panel | settings | chat | interaction | ambient |
+|---|---|---|---|---|---|---|
+| root block | `page` (required) | `page` (required, no `sidebar`) | `form` (required) | any (no `page`) | `form` (required) | any (no `page`, no `form`) |
+| layout | all | all | `section` only | all | `stack`, `section` | `stack`, `columns` |
+| content (`markdown`, `fields`, `callout`, `diff`, `details`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `stat`, `meter`, `log` | ✓ | ✓ | — | ✓ | — | ✓ |
+| `chart`, `image`, `tree` | ✓ | ✓ | — | ✓ | — | — |
+| `collection` | all displays | all displays | `list`, `table` | all displays | `list` | `list` |
+| `form` | ✓ | ✓ | root only | ✓ | root only | — |
+| fields in a form | all | all | all but `file` | all but `secret` | `text`, `longtext`, `number`, `toggle`, `choice`, `secret` | — |
+
+**Ambient is literal-content only** (the 2026-10-24 ruling): the
+ambient envelope carries no data document, so every value in the tree
+is a literal — a binding is allowed only inside a collection's item
+template (`bind("./label")` against a literal `items` array).
+
+### The block catalog
+
+One builder per block. Every example below is a complete tree.
+
+**Content** — prose, key/value rows, status numbers, progress and logs:
+
+```ts check
+import { bind, markdown, stat, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function statusNote(): Tree {
+	return tree(
+		markdown({ text: "Deploy **finished**; see the status line." }),
+	);
+}
+
+export function uptime(): Tree {
+	return tree(
+		stat({
+			label: "Uptime",
+			value: bind("/uptime"),
+			format: "duration",
+			tone: bind("/uptimeTone"),
+		}),
+	);
+}
+```
+
+**Chart** — time series with thresholds:
+
+```ts check
+import { bind, chart, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function cpuChart(): Tree {
+	return tree(
+		chart({
+			title: "CPU",
+			x: { kind: "time", format: "time" },
+			y: { format: "percent", min: 0, max: 1 },
+			series: [{ name: "cpu", kind: "area", data: bind("/cpu") }],
+			thresholds: [{ at: 0.8, tone: "warn" }, { at: 0.95, tone: "bad" }],
+		}),
+	);
+}
+```
+
+**Collection** — one item block with five displays (`list`, `table`,
+`lanes`, `grid`, `calendar`). `items` binds an array of objects each
+with a unique `id`; `card` is the item template, its `bind("./…")`
+pointers resolving against the current item:
+
+```ts check
+import { bind, card, collection, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function recentJobs(): Tree {
+	return tree(
+		collection({
+			id: "jobs",
+			items: bind("/jobs"),
+			display: "list",
+			item: card({
+				title: bind("./name"),
+				subtitle: bind("./lastRun"),
+				status: { label: bind("./state"), tone: bind("./tone") },
+			}),
+		}),
+	);
+}
+
+export function jobsTable(): Tree {
+	return tree(
+		collection({
+			id: "jobs",
+			items: bind("/jobs"),
+			display: "table",
+			columns: [
+				{ field: "name", label: "Name", sortable: true },
+				{ field: "duration", label: "Duration", format: "duration" },
+				{ field: "state", label: "State", cell: "badge" },
+			],
+			item: card({ title: bind("./name") }),
+		}),
+	);
+}
+```
+
+**Form and fields** — a `form` binds an object path; each field's
+`name` is its path inside it. All eleven field builders share the same
+base props (`name`, `label`, `help`, `required`, validation,
+`apply`):
+
+```ts check
+import { choice, form, number, text, toggle, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function filterForm(): Tree {
+	return tree(
+		form({
+			id: "filter",
+			bind: "/view/filter",
+			mode: "live",
+			children: [
+				text({ name: "query", label: "Search", kind: "search" }),
+				choice({
+					name: "state",
+					label: "State",
+					options: [
+						{ id: "open", label: "Open" },
+						{ id: "done", label: "Done" },
+					],
+				}),
+				number({ name: "limit", label: "Max items", min: 1, max: 500 }),
+				toggle({ name: "archived", label: "Include archived" }),
+			],
+		}),
+	);
+}
+```
+
+The rest of the field set: `longtext` (with `syntax`/`lang`), `date`,
+`datetime`, `daterange` (with presets), `secret` (write-only — the
+channel shows `set (stored)` / `set (env)` / `not set` from a bound
+status), `file` (uploads through the surface's upload route; see
+"Uploads and assets"), and `list` (a repeatable group of fields).
+
+**Stat, meter, log** — the dashboard and ambient trio:
+
+```ts check
+import { log, meter, stat, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function gauges(): Tree {
+	return tree(
+		stat({ label: "Requests", value: 12840, format: "compact", sparkline: [3, 5, 4, 8, 7] }),
+	);
+}
+
+export function disk(): Tree {
+	return tree(
+		meter({
+			label: "Disk",
+			value: 0.62,
+			format: "percent",
+			thresholds: [{ at: 0.8, tone: "warn" }, { at: 0.95, tone: "bad" }],
+		}),
+	);
+}
+
+export function recentOutput(): Tree {
+	return tree(
+		log({
+			lines: [{ level: "info", text: "backup completed" }],
+			follow: true,
+		}),
+	);
+}
+```
+
+**Callout, diff, details** — attention, review, and collapsed JSON:
+
+```ts check
+import { callout, details, diff, tree } from "@sigrun/sigrun/blocks";
+import type { JsonValue, Tree } from "@sigrun/sigrun/blocks";
+
+export function restartNotice(pending: readonly string[]): Tree {
+	return tree(
+		callout({
+			tone: "warn",
+			title: "Restart required",
+			body: `Pending: ${pending.join(", ")}`,
+			actions: [
+				{
+					id: "restart",
+					label: "Restart",
+					action: { type: "restart", confirm: { title: "Restart sigrun?" } },
+				},
+			],
+		}),
+	);
+}
+
+export function proposedEdit(): Tree {
+	return tree(
+		diff({ path: "src/index.ts", lang: "ts", before: "const a = 1;", after: "const a = 2;" }),
+	);
+}
+
+export function rawPayload(payload: JsonValue): Tree {
+	return tree(details({ value: payload }));
+}
+```
+
+(The `details` value is `JsonValue` — opaque JSON the channel shows
+collapsed and pretty-printed.)
+
+Also available: the layout blocks `stack`, `columns`, `grid`,
+`section`; `image` (see "Images"); `fields` (key/value rows); and
+`treeBlock` (a lazy `tree` block — the `tree` name belongs to the root
+wrapper).
+
+### Actions and the turn rule
+
+Actions live where a block offers buttons (`page.actions`, card
+`actions`, `callout.actions`, `onActivate`) or as a block's named
+gesture handler (`onMove`, `onCheck`, `onSubmit`, `onUpload`, ...).
+There are three kinds (spec §6.2):
+
+- **view-only** — sort, filter, expand, `navigate(params)`, a live form
+  bound under `/view/…`. The channel applies it locally; nothing
+  reaches the server, and it never starts a turn.
+- **edit** — `move`, `edit` (checkbox toggles, inline field edits), a
+  `submit` with `turn: false`. The placement's handler runs and the
+  change is saved, silently. The agent hears about it in the next
+  change note, not immediately.
+- **answer** — a `submit` (default `turn: true`), or any action with
+  `turn: true`. The handler runs, then a turn starts: the user sees the
+  result NOW.
+
+The rule of thumb: **`turn: true` only when the user must see the
+result immediately.** A lanes board's drag is a `move` — saving each
+drag as it happens is right, but interrupting the agent with a turn per
+drag is not. Set `turn: true` on a `move` or `edit` only when each one
+needs an immediate reply. `turn` is valid only in the `chat` placement;
+validation rejects it anywhere else.
+
+### Access and sharedData
+
+Every render and every action carries the **principal** (who is
+looking). Your `render` returns `access: "none" | "read" | "write"`
+for that principal (spec §6.5):
+
+- `none` — the surface is `404 surface_not_found` on every route
+  (indistinguishable from one that doesn't exist), no events, no rail
+  entry.
+- `read` — the channel hides every edit and answer action and disables
+  reorder, checkable, inputs and bulk actions. You never build a second
+  tree for read-only users.
+- `write` — everything.
+
+The server enforces the verdict per principal (a 60-second cache keyed
+by `(slug, id, key, principal.user)`); your handlers still check access
+themselves — the server's check is defence in depth, not your only
+guard.
+
+**`sharedData: true`** declares that every principal with access sees
+the SAME data (a shared board). It changes what the server keeps
+(spec §7.3): ops passed to `changed` and accepted actions are retained
+(last 100 per instance), so a `since` fetch inside the window returns
+just the ops. Without it (the default — data is principal-specific),
+the server keeps nothing: ops passed to `changed` are ignored and every
+data fetch re-runs your `data()` as the fetching principal. Never mark
+a surface `sharedData` if its data differs per user.
+
+### Freshness: `changed` and the rev
+
+A surface's data has a monotonic **`rev`, assigned by the server** —
+you hand the server `DataOps`, never a rev. Three ways a channel learns
+data moved (spec §7.3):
+
+1. **`host.surfaces.changed(id, key, update?)`** — publish that instance
+   `key` (the string `instanceKey(params)` returns) changed. Watchers
+   (streams whose last fetch's access wasn't `none`) get a
+   `surface.changed` event carrying `{slug, id, k, rev, treeRev}` —
+   params never appear in events and the event carries no data — then
+   fetch `…/data?since=<rev>` as their own principal.
+2. **Since-windows** — on a `sharedData` surface the server keeps the
+   last 100 ops per instance; a `since` fetch within the window returns
+   `{rev, treeRev, ops}`, older fetches re-run `data()`.
+3. **`refreshMs`** — channels refetch data on that interval while the
+   surface is visible (min 5000), with no event at all. Dashboards use
+   this.
+
+Declare `data()` whenever you set `refreshMs` or call `changed` —
+without it a refetch would re-run the whole `render`. A gap in `rev`
+means the channel fetches the full data again.
+
+### Uploads and assets
+
+A `file` field uploads through the surface's own upload route
+(`PUT /v1/ext/<slug>/surfaces/<id>/uploads/<field>/<name>`): the raw
+bytes go to your `onUpload` handler and NOWHERE else — core keeps no
+copy. The payload is `{field, name, mime, bytes}` with the filename
+sanitised to a basename, the mime sniffed from the bytes (never the
+client's claim), and `bytes` capped by the field's `maxBytes` and
+`server.maxUploadBytes`. Store what you want in your own stores.
+
+Static files ship in your package's `assets` directory (declared as
+`sigrun.assets` in the package manifest) and are served at
+`/v1/ext/<slug>/assets/<path>` — public to every signed-in user, like
+any static file of an installed package, so never put private data in
+`assets`. Paths are resolved with `realpath` and must stay inside the
+assets directory; `..` segments and symlinks out of it are 404.
+
+### Images
+
+An `image` block's `src` takes three forms (spec §11.1):
+
+- **`asset:<path>`** — a file from your assets directory (above).
+  Untouched by the proxy.
+- **`data:image/png|jpeg|gif|webp;base64,…`** — at most 192 KiB of
+  base64 text, counted toward whichever of the tree or the data holds
+  it (§4.5). Untouched by the proxy.
+- **`https://…`** — the server REWRITES it to a signed `/v1/image`
+  proxy URL before the tree or data leaves the server (24-hour
+  signature; the proxy re-resolves and vetoes private/refused address
+  ranges, caps the fetch at 10 s / 10 MiB, and sniffs the body as PNG,
+  JPEG, GIF or WebP).
+
+SVG and AVIF are never accepted (script payload; no TUI decoder), and
+`http:` URLs are rejected. The CSP consequence: the webui sends
+`Content-Security-Policy: img-src 'self' data:` — a missed rewrite or a
+markdown image from another origin simply doesn't load. A failure
+renders the block's `alt` text (which is required).
+
+The `src` forms side by side (each `alt` is required — it is the
+fallback when the image cannot load):
+
+```ts check
+import { image, stack, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function imageForms(): Tree {
+	return tree(
+		stack({
+			children: [
+				// A file from the extension's own assets directory.
+				image({ src: "asset:acme/diagram.png", alt: "Pipeline diagram" }),
+				// An inline data URL (PNG/JPEG/GIF/WebP, at most 192 KiB).
+				image({
+					src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+					alt: "One-pixel swatch",
+				}),
+				// A remote URL — rewritten to the signed /v1/image proxy.
+				image({
+					src: "https://images.example.invalid/chart.png",
+					alt: "Rendered chart from the images host",
+				}),
+			],
+		}),
+	);
+}
+```
+
+### Settings sections with apply
+
+A settings section is a static `settings`-placement tree — a root
+`form` bound to your settings object (`settings/<slug>.json`) —
+declared in the factory result's `surfaces.settings` (spec §13.3).
+Every field declares **`apply: "live" | "restart"`**:
+
+- `live` (the default for extension fields): the value is read where
+  it's used; saving takes effect with no restart.
+- `restart`: the value is read at boot. For CORE sections, saving
+  stores it and marks it pending — `GET /v1/settings` returns
+  `pendingRestart: string[]`, and the core settings surface shows a
+  `callout(tone: "warn")` listing them with a Restart button for
+  admins (when the server is supervised). For EXTENSION sections the
+  marker is not wired yet: the loader accepts `apply: "restart"`, the
+  value is stored and read at the next boot, but no pending marker or
+  warn callout is produced today.
+
+Mark a field `restart` when your factory reads the value at load;
+everything else stays `live`.
+
+### Worked example: a lanes board
+
+A kanban board view: cards grouped into lanes, drag within and across,
+a live filter in the sidebar, and a detail pane (the H2/S1 shape from
+the sizing pass):
+
+```ts check
+import { bind, card, choice, collection, form, markdown, page, text, toggle, tree } from "@sigrun/sigrun/blocks";
+import type { JsonObject, Tone, Tree } from "@sigrun/sigrun/blocks";
+
+export interface BoardCard {
+	readonly id: string;
+	readonly title: string;
+	readonly status: string;
+	readonly assignee: string;
+	readonly assigneeName: string;
+	readonly age: string;
+	readonly staleness: Tone;
+}
+
+export function boardTree(): Tree {
+	return tree(
+		page({
+			title: "Board",
+			switcher: choice({
+				name: "board",
+				label: "Board",
+				options: bind("/boards"),
+			}),
+			sidebar: [
+				form({
+					id: "filter",
+					bind: "/view/filter",
+					mode: "live",
+					children: [
+						text({ name: "q", label: "Search", kind: "search" }),
+						choice({ name: "assignee", label: "Assignee", options: bind("/people") }),
+						toggle({ name: "mine", label: "Only mine" }),
+					],
+				}),
+			],
+			main: [
+				collection({
+					id: "cards",
+					items: bind("/cards"),
+					display: "lanes",
+					groupBy: "status",
+					groups: [
+						{ id: "todo", title: "To do" },
+						{ id: "doing", title: "Doing" },
+						{ id: "done", title: "Done" },
+					],
+					reorder: { within: true, across: true },
+					onMove: "move",
+					item: card({
+						eyebrow: bind("./id"),
+						title: bind("./title"),
+						meta: [
+							{ person: { user: bind("./assignee"), name: bind("./assigneeName") } },
+							{ time: bind("./age"), format: "relative" },
+						],
+						tone: bind("./staleness"),
+					}),
+				}),
+			],
+			detail: [markdown({ text: bind("/detail") })],
+			empty: { icon: "board", title: "No cards", hint: "Create one to get started." },
+		}),
+	);
+}
+
+export function boardData(cards: readonly BoardCard[]): JsonObject {
+	return {
+		boards: [
+			{ id: "ops", label: "Ops" },
+			{ id: "home", label: "Home" },
+		],
+		people: [
+			{ id: "ada", label: "Ada" },
+			{ id: "grace", label: "Grace" },
+		],
+		// The wire data is plain JSON; a typed record list widens to it.
+		cards: cards.map((c) => ({ ...c })),
+		detail: "Select a card.",
+		view: { filter: { q: "", assignee: "", mine: false } },
+	};
+}
+```
+
+The `move` handler receives `{itemId, from, to}` and answers
+`{ok: true}` — the server increments `rev` and announces it; the
+channel's optimistic overlay holds the card where the user dropped it
+until your data catches up (spec §6.3). A read-only principal gets the
+same tree with `reorder` disabled by the channel.
+
+### Worked example: a settings section
+
+A section for an extension with one live field, one restart field, and
+a write-only secret (the S2 shape):
+
+```ts check
+import { choice, form, secret, section, text, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function settingsForm(): Tree {
+	return tree(
+		form({
+			id: "acme-settings",
+			// The section's surface data is {settings, secrets}; fields
+			// resolve under the settings object.
+			bind: "/settings",
+			mode: "submit",
+			submitLabel: "Save",
+			children: [
+				section({
+					title: "Sync",
+					children: [
+						choice({
+							name: "interval",
+							label: "Sync interval",
+							help: "Read where it is used — saving applies immediately.",
+							apply: "live",
+							options: [
+								{ id: "5m", label: "Every 5 minutes" },
+								{ id: "1h", label: "Hourly", recommended: true },
+							],
+						}),
+						text({
+							name: "endpoint",
+							label: "Endpoint URL",
+							kind: "url",
+							placeholder: "https://sync.example.invalid",
+							help: "Read at boot — a saved change applies at the next restart.",
+							apply: "restart",
+							required: true,
+						}),
+					],
+				}),
+				section({
+					title: "Credentials",
+					children: [
+						secret({
+							name: "apiKey",
+							label: "API key",
+							help: "Write-only; the field shows set (stored) / set (env) / not set.",
+						}),
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+Saving validates every field, writes the settings object, then fires
+`settings.changed` (your `onSettingsChanged(keys)` runs after the write
+commits). The core `pendingRestart` marker described above does not
+cover extension fields yet — a saved `restart` value applies at the
+next boot.
+
+### Worked example: a dashboard
+
+A metrics dashboard view: stats with sparklines, thresholded charts,
+and a refresh interval — data-only updates on the tick, layout sent
+once (the S7 shape):
+
+```ts check
+import { bind, chart, grid, meter, page, stat, tree } from "@sigrun/sigrun/blocks";
+import type { Tree } from "@sigrun/sigrun/blocks";
+
+export function dashboardTree(): Tree {
+	return tree(
+		page({
+			title: bind("/name"),
+			main: [
+				grid({
+					minItemWidth: "m",
+					children: [
+						{
+							block: stat({
+								label: "Up",
+								value: bind("/up"),
+								format: "percent",
+								tone: bind("/upTone"),
+								sparkline: bind("/upSeries"),
+							}),
+						},
+						{
+							span: 2,
+							block: chart({
+								title: "CPU",
+								x: { kind: "time", format: "time" },
+								y: { format: "percent", min: 0, max: 1 },
+								series: [{ name: "cpu", kind: "area", data: bind("/cpu") }],
+								thresholds: [
+									{ at: 0.8, tone: "warn" },
+									{ at: 0.95, tone: "bad" },
+								],
+							}),
+						},
+						{
+							block: meter({
+								label: "Disk",
+								value: bind("/disk"),
+								format: "percent",
+								thresholds: [{ at: 0.9, tone: "bad" }],
+							}),
+						},
+					],
+				}),
+			],
+		}),
+	);
+}
+```
+
+Declare it with `refreshMs: 15000` and a `data()` handler: channels
+refetch data every 15 s while the dashboard is visible, as their own
+principal, with no event — and a refetch re-runs `data()`, never
+`render`, so the layout is sent once.
+
+## Execution isolation and the per-user surface
+
+**When isolation is on**, a user's agent can reach only their workspace,
+their grants, their home and temp directories, and read-only system paths.
+It cannot read sigrun's files or environment, other users' files, or signal
+processes outside its jail.
+
+**Not covered:** extensions run inside sigrun with full access, like any
+installed package — install only extensions you trust. One user's agent can
+still exhaust CPU, memory, or disk. Outbound network is not restricted.
+macOS and Windows hosts run single-user only.
+
+**Shared MCP servers** hand every permitted user's agent the admin's
+credential for that service.
+
+**File modes are not the boundary.** Workers that share sigrun's uid are
+confined by Landlock alone; `0700` directories are hygiene.
+
+**Single-user servers** run the agent with full host access.
+
+**Every peer in `trustedProxies` can forge any identity**; with isolation
+on, the shared secret is required for that reason.
+
+System-level extensions need none of the per-user APIs below: they run as
+trusted code inside sigrun and use the system stores documented above.
+
+For kernel-suite provenance, `/proc` and ptrace denials are compared with
+the same operation outside a jail. When the outside operation also fails
+(for example under Yama), CI labels the case Yama/host-policy satisfied and
+not Landlock-discriminating. Successful `osUser` switching and the uid-switch
+discrimination need a privileged runner with `CAP_SETFCAP` and
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`; otherwise they skip with a named reason.
+
+The following are the **per-user extension surface covered by the M2
+workstream**, not APIs shipped by M1:
+
+- Use `stores.user(user)` for a particular user's secrets, settings, and
+  data/state/cache paths rather than shared system stores.
+- Use `userServices` for services that run per user in their own jail, and
+  connect to them through the per-user service surface. Do not put their
+  credentials in the agent workspace.
+- Use `setUserTools(user, tools)` for tools owned by one user rather than
+  tools offered to every conversation.
+- Use `scope: "user"` sections for settings that each user views and edits
+  independently. Keep deployment-wide configuration in server-scoped
+  sections.
 
 ## Uninstall
 

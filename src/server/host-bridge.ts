@@ -18,14 +18,14 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
-import {
-	accessOf as accessOfShared,
-	type AccessPrincipal,
-} from "@sigrun/shared/access";
+import { accessOf as accessOfShared } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
+import { effectiveAdmin } from "../harness/identity/groups.js";
+import { userWire } from "./routes/users.js";
 import type { DataOps } from "@sigrun/shared/blocks";
-import { isSuperuser, type Principal } from "./auth/principal.js";
+import type { Principal } from "./auth/principal.js";
+import { accessPrincipalOf } from "./auth/access-principal.js";
 import {
 	abortOp,
 	compactOp,
@@ -43,21 +43,19 @@ import {
 import { listModels } from "./helpers.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
-import { serializeConversationView } from "./views.js";
+import { accountLinkWire, serializeConversationView } from "./views.js";
 
 /**
- * The effective-admin projection of one directory user (gateway C8):
- * host-side callers (chat commands, no request headers) see the STORED
- * flag OR the persisted group grant, plus the raw `groupAdmin` as a
- * definite boolean. The `/v1/users` wire keeps `admin` = the stored
- * flag (the users-admin UI toggles that one); the two surfaces are
- * deliberately different.
+ * Host-side callers see effective admin derived from stored groups;
+ * `groupAdmin` remains the derived compatibility field on the wire.
  */
-function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
+function effectiveAdminOf(
+	record: DirectoryUser,
+	adminGroups: readonly string[],
+): ReturnType<typeof userWire> {
 	return {
-		...record,
-		admin: record.admin || record.groupAdmin === true,
-		groupAdmin: record.groupAdmin === true,
+		...userWire(record, adminGroups),
+		admin: effectiveAdmin(record, adminGroups),
 	};
 }
 
@@ -70,6 +68,7 @@ function effectiveAdminOf(record: DirectoryUser): DirectoryUser {
 export interface HostBridge {
 	readonly conversations: SigrunHost["conversations"];
 	readonly users: SigrunHost["users"];
+	readonly accounts: SigrunHost["accounts"];
 	readonly access: SigrunHost["access"];
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
@@ -238,11 +237,36 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			// admin-gated /v1/users routes) — with EFFECTIVE admin (gateway
 			// C8): a persisted group grant counts for host-side checks.
 			async list() {
-				return opened.identity.users.list().map(effectiveAdminOf);
+				return opened.identity.users.list().map((record) => effectiveAdminOf(record, ctx.config.auth.adminGroups));
 			},
 			async get(user) {
 				const record = opened.identity.users.get(user);
-				return record === undefined ? undefined : effectiveAdminOf(record);
+				return record === undefined ? undefined : effectiveAdminOf(record, ctx.config.auth.adminGroups);
+			},
+		},
+		accounts: {
+			// The one link table (multi-user §11.3): core code over core's
+			// store — the single write path, with the store's own validation
+			// and conflict refusal. `account_link_conflict:` errors cross the
+			// bridge as plain Errors (extensions match the message prefix).
+			async lookup(provider, subject) {
+				const link = opened.identity.accounts.lookup(provider, subject);
+				return link === undefined ? undefined : accountLinkWire(link);
+			},
+			async link(provider, subject, user, via) {
+				const link = await opened.identity.accounts.link({
+					provider,
+					subject,
+					user,
+					via,
+				});
+				return accountLinkWire(link);
+			},
+			async unlink(provider, subject) {
+				return await opened.identity.accounts.unlink(provider, subject);
+			},
+			async listForUser(user) {
+				return opened.identity.accounts.listForUser(user).map(accountLinkWire);
 			},
 		},
 		access: {
@@ -251,12 +275,12 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				// server's routes use (naive-loopback or service — a
 				// directory admin is not a superuser for accessOf); the bare
 				// `{user}` shape is the shared rule's own principal.
-				const resolved: AccessPrincipal =
+				const resolved =
 					"admin" in principal
-						? {
-								user: principal.user,
-								superuser: isSuperuser(principal as Principal),
-							}
+						? accessPrincipalOf(
+								principal as Principal,
+								opened.identity.users,
+							)
 						: { user: principal.user };
 				return accessOfShared(resolved, resource);
 			},
@@ -308,7 +332,7 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					user: record.user,
 					...(record.name === undefined ? {} : { name: record.name }),
 					...(record.email === undefined ? {} : { email: record.email }),
-					admin: effectiveAdminOf(record).admin,
+					admin: effectiveAdmin(record, ctx.config.auth.adminGroups),
 					service: false,
 					method: "host",
 				};

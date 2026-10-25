@@ -26,6 +26,7 @@ import {
 	type SigrunConfig,
 } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { pendingRestart } from "../settings/pending.js";
 import { DEFAULT_AUTH_KEY } from "../harness/auth.js";
 import { OPENAI_API_KEY_ENV } from "../harness/providers/index.js";
 import { SessionMetaDoc } from "./session-meta.js";
@@ -242,15 +243,19 @@ export const ID_PARAMS_SCHEMA = {
 /** The settings response over the live store + registry snapshot. */
 /**
  * The `/v1/settings` payload (GET and the post-PATCH readback): the
- * file's effective contents, the registry-computed `toolRoster`, and
- * the `effective` block (spec §6.6) — every server key's resolved value
- * and source, computed PER REQUEST over the fresh file read (a PATCH
- * lands as a `file` source on the next GET) and the boot env/config.
+ * file's effective contents, the registry-computed `toolRoster`, the
+ * `effective` block (spec §6.6), and the `pendingRestart` diff
+ * (UI-blocks U4 §13.2) — every server key's resolved value and source,
+ * computed PER REQUEST over the fresh file read (a PATCH lands as a
+ * `file` source on the next GET) and the boot env/config. A PATCH
+ * response additionally carries the write's own `applied`/`pending`
+ * classification (§13.1) via the optional `write` argument.
  */
 export function settingsResponse(
 	opened: OpenedHarness,
 	config: SigrunConfig,
 	env: Env,
+	write?: { applied: readonly string[]; pending: readonly string[] },
 ): SettingsResponse {
 	const names = opened.registry
 		.snapshot()
@@ -263,6 +268,8 @@ export function settingsResponse(
 		...file,
 		toolRoster: [...new Set(names)],
 		effective: effectiveServerSection(env, file.server, config),
+		pendingRestart: pendingRestart(file, opened.settingsBootSnapshot),
+		...(write === undefined ? {} : { applied: write.applied, pending: write.pending }),
 	};
 }
 

@@ -28,11 +28,14 @@ import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { sessionTtlMs } from "../src/server/routes/auth.js";
+import { stat } from "node:fs/promises";
 import { seededIdentity } from "./helpers/identity.js";
 
 interface TestServer {
 	app: FastifyInstance;
 	opened: OpenedHarness;
+	config: SigrunConfig;
 	dir: string;
 }
 
@@ -50,6 +53,7 @@ async function bootServer(options: {
 	fakeTimers?: boolean;
 	webuiBundle?: string;
 	extensionSpecifiers?: string[];
+	isolationAvailable?: boolean;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-pipeline-"));
 	const faux = fauxProvider({
@@ -78,10 +82,14 @@ async function bootServer(options: {
 	const opened = await openHarness(config, {
 		extensions: [contributor],
 		env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
+		settingsDir: join(dir, "config"),
 		...(claimed ? { identity: await seededIdentity(dir) } : {}),
 		...(options.extensionSpecifiers === undefined
 			? {}
 			: { extensionSpecifiers: options.extensionSpecifiers }),
+		isolationProbe: async () => options.isolationAvailable === false
+			? { available: false, abi: 0, reason: "not linux" }
+			: { available: true, abi: 6 },
 	});
 	const app = await createServer(opened, config, [], {
 		listenHost: options.listenHost ?? "127.0.0.1",
@@ -92,7 +100,7 @@ async function bootServer(options: {
 		await rm(dir, { recursive: true, force: true });
 	};
 	cleanups.push(teardown);
-	return { app, opened, dir };
+	return { app, opened, config, dir };
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -143,6 +151,119 @@ describe("token method", () => {
 		});
 	});
 
+	test("a session cookie resolves method session with its provider", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const { token } = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			user: "tester",
+			method: "session",
+			provider: "login:oauth:acme",
+		});
+	});
+
+	test("token and session principals derive admin from stored groups without rewriting the directory", async () => {
+		const { app, opened, dir } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+			file: { auth: { adminGroups: ["admins"] } },
+		});
+		await opened.identity.users.add({
+			user: "alice",
+			admin: false,
+			groups: [{ source: "proxy", values: ["users", "admins"], updatedAt: 1 }],
+			source: "proxy",
+		});
+		await opened.identity.users.add({ user: "bob", admin: false, source: "cli" });
+		const aliceToken = await mintToken(opened, "alice");
+		const bobToken = await mintToken(opened, "bob");
+		const session = await opened.identity.tokens.createSession(
+			"alice",
+			"login:oauth:acme",
+			60_000,
+		);
+		const usersPath = join(dir, "users.json");
+		const before = (await stat(usersPath)).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		const tokenAdmin = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(tokenAdmin.statusCode).toBe(200);
+		expect(tokenAdmin.json()).toMatchObject({ user: "alice", admin: true, method: "token" });
+		const usersRoute = await app.inject({
+			method: "GET",
+			url: "/v1/users",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(usersRoute.statusCode).toBe(200);
+
+		const sessionAdmin = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${session.token}` },
+		});
+		expect(sessionAdmin.statusCode).toBe(200);
+		expect(sessionAdmin.json()).toMatchObject({
+			user: "alice",
+			admin: true,
+			method: "session",
+			provider: "login:oauth:acme",
+		});
+		const plainToken = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${bobToken}` },
+		});
+		expect(plainToken.statusCode).toBe(200);
+		expect(plainToken.json()).toMatchObject({ user: "bob", admin: false, method: "token" });
+		expect((await stat(usersPath)).mtimeMs).toBe(before);
+	});
+
+	test("an expired session cookie → 401", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const now = Date.now();
+		const { token } = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+			now,
+		);
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+		// Time travel through the store's injected clock: at expiresAt the
+		// credential is unknown, exactly like a revoked session.
+		vi.spyOn(Date, "now").mockReturnValue(now + 60_000);
+		try {
+			const expired = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				headers: { cookie: `sigrun_session=${token}` },
+			});
+			expect(expired.statusCode).toBe(401);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
 	test("an unknown token → 401", async () => {
 		const { app } = await bootServer({
 			env: { SIGRUN_AUTH: "token" },
@@ -154,6 +275,16 @@ describe("token method", () => {
 		});
 		expect(response.statusCode).toBe(401);
 	});
+});
+
+test("sessionTtlMs reads sessionDays live and defaults to 30 days", async () => {
+	const { opened, config } = await bootServer({
+		env: { SIGRUN_AUTH: "token" },
+	});
+	const ctx = { opened, config } as Parameters<typeof sessionTtlMs>[0];
+	expect(sessionTtlMs(ctx)).toBe(30 * 86_400_000);
+	opened.settings.update({ server: { auth: { sessionDays: 2 } } });
+	expect(sessionTtlMs(ctx)).toBe(2 * 86_400_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -179,6 +310,7 @@ describe("POST /v1/auth/login", () => {
 		expect(cookieLine).toContain("sigrun_session=");
 		expect(cookieLine).toContain("HttpOnly");
 		expect(cookieLine).toContain("SameSite=Strict");
+		expect(cookieLine).toContain("Max-Age=2592000");
 
 		const whoami = await app.inject({
 			method: "GET",
@@ -200,6 +332,82 @@ describe("POST /v1/auth/login", () => {
 		const cookieLine = Array.isArray(cookie) ? cookie[0] : cookie;
 		expect(cookieLine).toContain("sigrun_session=");
 		expect(cookieLine).toContain("Max-Age=0");
+	});
+
+	test("a session can mint an API token that survives session revocation", async () => {
+		const { app, opened } = await bootServer({ env: { SIGRUN_AUTH: "token" } });
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+		);
+		const cookie = `sigrun_session=${session.token}`;
+		const minted = await app.inject({
+			method: "POST",
+			url: "/v1/auth/tokens",
+			headers: { cookie },
+			payload: { name: "tui" },
+		});
+		expect(minted.statusCode).toBe(201);
+		const apiToken = minted.json().token as string;
+		const logout = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+			headers: { cookie },
+		});
+		expect(logout.statusCode).toBe(204);
+		const revokedSession = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie },
+		});
+		expect(revokedSession.statusCode).toBe(401);
+		const independentToken = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { authorization: `Bearer ${apiToken}` },
+		});
+		expect(independentToken.statusCode).toBe(200);
+		expect(independentToken.json()).toMatchObject({ user: "tester", method: "token" });
+	});
+
+	test("logout revokes a session cookie; logout only clears an API-token cookie", async () => {
+		const { app, opened } = await bootServer({
+			env: { SIGRUN_AUTH: "token" },
+		});
+		const session = await opened.identity.tokens.createSession(
+			"tester",
+			"login:oauth:acme",
+			60_000,
+		);
+		const logout = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+			headers: { cookie: `sigrun_session=${session.token}` },
+		});
+		expect(logout.statusCode).toBe(204);
+		expect(opened.identity.tokens.verify(session.token)).toBeUndefined();
+		const second = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${session.token}` },
+		});
+		expect(second.statusCode).toBe(401);
+
+		const apiToken = await mintToken(opened, "tester");
+		const clearOnly = await app.inject({
+			method: "POST",
+			url: "/v1/auth/logout",
+			headers: { cookie: `sigrun_session=${apiToken}` },
+		});
+		expect(clearOnly.statusCode).toBe(204);
+		expect(opened.identity.tokens.verify(apiToken)).toBeDefined();
+		const stillValid = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { cookie: `sigrun_session=${apiToken}` },
+		});
+		expect(stillValid.statusCode).toBe(200);
 	});
 });
 
@@ -263,7 +471,7 @@ const PROXY_ENV = {
 	SIGRUN_AUTH: "proxy",
 	SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
 };
-const PROXY_FILE = { auth: { adminGroups: ["admins"] } };
+const PROXY_FILE = { auth: { adminGroups: ["admins"], proxy: { secretHeader: "x-sigrun-proxy-secret" } } };
 
 describe("proxy method", () => {
 	test("trusted peer + Remote-User/Remote-Groups → whoami alice, admin via groups, directory record NOT admin", async () => {
@@ -286,13 +494,12 @@ describe("proxy method", () => {
 			admin: true,
 			method: "proxy",
 		});
-		// Auto-provisioned with admin:false — the group grant lands on the
-		// record as `groupAdmin` (the gateway C8 write-through), while the
-		// STORED `admin` flag stays false (toggled only via /v1/users).
+		// Auto-provisioned with admin:false — the proxy groups are stored
+		// while the STORED `admin` flag stays false.
 		expect(opened.identity.users.get("alice")).toMatchObject({
 			user: "alice",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["users", "admins"] }],
 			source: "proxy",
 		});
 	});
@@ -390,17 +597,30 @@ describe("proxy autoProvision", () => {
 	});
 });
 
+test("second user via proxy auto-provision -> 403 isolation_required when unavailable", async () => {
+	const { app, opened } = await bootServer({ env: { ...PROXY_ENV, SIGRUN_ISOLATION: "auto" }, file: PROXY_FILE, isolationAvailable: false });
+	const response = await app.inject({
+		method: "GET",
+		url: "/v1/auth/whoami",
+		remoteAddress: "10.42.3.4",
+		headers: { "remote-user": "bob", "x-sigrun-proxy-secret": "s3cret" },
+	});
+	expect(response.statusCode).toBe(403);
+	expect(response.json()).toEqual({ error: "isolation_required" });
+	expect(opened.identity.users.get("bob")).toBeUndefined();
+});
+
 // ---------------------------------------------------------------------------
 // gateway C8 — proxy group-admin write-through
 // ---------------------------------------------------------------------------
 
-describe("proxy group-admin write-through (gateway C8)", () => {
+describe("proxy group write-through", () => {
 	test("auto-provision carries the computed group admin; a later group-less request clears it", async () => {
 		const { app, opened } = await bootServer({
 			env: PROXY_ENV,
 			file: PROXY_FILE,
 		});
-		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const setGroupsSpy = vi.spyOn(opened.identity.users, "setGroups");
 		const first = await app.inject({
 			method: "GET",
 			url: "/v1/auth/whoami",
@@ -416,12 +636,12 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		// The record is the only place host-side checks (chat commands,
 		// no request headers) can read the grant — so the write-through
 		// lands it on the directory, while the STORED admin stays false.
-		// Provision carried the flag (the add itself) — no separate update.
-		expect(updateSpy).not.toHaveBeenCalled();
+		// Provision writes the proxy source, while the STORED admin stays false.
+		expect(setGroupsSpy).toHaveBeenCalledTimes(1);
 		expect(opened.identity.users.get("bob")).toMatchObject({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "proxy", values: ["users", "admins"] }],
 			source: "proxy",
 		});
 
@@ -433,18 +653,17 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		});
 		expect(later.statusCode).toBe(200);
 		expect(later.json()).toMatchObject({ user: "bob", admin: false });
-		// Group exit flips the stored flag at that user's next request.
+		// Group exit replaces the stored proxy source at the next request.
 		expect(opened.identity.users.get("bob")).toMatchObject({
 			admin: false,
-			groupAdmin: false,
+			groups: [{ source: "proxy", values: ["users"] }],
 		});
-		// The exit was ONE write (true → false), not one per request.
-		expect(updateSpy).toHaveBeenCalledTimes(1);
-		expect(updateSpy).toHaveBeenCalledWith("bob", { groupAdmin: false });
+		expect(setGroupsSpy).toHaveBeenCalledTimes(2);
+		expect(setGroupsSpy).toHaveBeenLastCalledWith("bob", "proxy", ["users"]);
 	});
 
 	test("write-through only on change: two identical requests → ONE update", async () => {
-		const { app, opened } = await bootServer({
+		const { app, opened, dir } = await bootServer({
 			env: PROXY_ENV,
 			file: PROXY_FILE,
 		});
@@ -453,7 +672,7 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 			admin: false,
 			source: "cli",
 		});
-		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const usersPath = join(dir, "users.json");
 		for (const attempt of [1, 2]) {
 			const response = await app.inject({
 				method: "GET",
@@ -463,24 +682,30 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 			});
 			expect(response.statusCode, `attempt ${attempt}`).toBe(200);
 		}
-		// The steady state must not rewrite the directory per request —
-		// one write for the undefined→true flip, none for the repeat.
-		expect(updateSpy).toHaveBeenCalledTimes(1);
-		expect(updateSpy).toHaveBeenCalledWith("bob", { groupAdmin: true });
+		// The steady state must not rewrite the directory per request.
+		const before = (await stat(usersPath)).mtimeMs;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "remote-groups": "admins" },
+		});
+		expect((await stat(usersPath)).mtimeMs).toBe(before);
 	});
 
 	test("adminGroups: [] — C8 inactive: nothing is written, a stored grant is not cleared", async () => {
 		const { app, opened } = await bootServer({
 			env: PROXY_ENV,
-			file: { auth: { adminGroups: [] } },
+			file: { auth: { ...PROXY_FILE.auth, adminGroups: [] } },
 		});
 		await opened.identity.users.add({
 			user: "bob",
 			admin: false,
-			groupAdmin: true,
+			groups: [{ source: "login:oauth:acme", values: ["admins"], updatedAt: 1 }],
 			source: "cli",
 		});
-		const updateSpy = vi.spyOn(opened.identity.users, "update");
+		const setGroupsSpy = vi.spyOn(opened.identity.users, "setGroups");
 		const response = await app.inject({
 			method: "GET",
 			url: "/v1/auth/whoami",
@@ -489,16 +714,18 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toMatchObject({ user: "bob", admin: false });
-		// With no configured admin groups the proxy grants nothing and no
-		// request writes the field — not even a clearing write (the value
-		// only moves when adminGroups is non-empty).
-		expect(updateSpy).not.toHaveBeenCalled();
+		// With no configured admin groups the proxy grants nothing; stored
+		// groups from other sources remain, but do not grant admin here.
+		expect(setGroupsSpy).toHaveBeenCalledWith("bob", "proxy", ["admins"]);
 		expect(opened.identity.users.get("bob")).toMatchObject({
-			groupAdmin: true,
+			groups: [
+				{ source: "login:oauth:acme", values: ["admins"] },
+				{ source: "proxy", values: ["admins"] },
+			],
 		});
 	});
 
-	test("/v1/users keeps admin = the stored flag and adds groupAdmin", async () => {
+	test("/v1/users keeps admin = the stored flag and derives groupAdmin from stored groups", async () => {
 		const { app } = await bootServer({
 			env: PROXY_ENV,
 			file: PROXY_FILE,
@@ -526,7 +753,7 @@ describe("proxy group-admin write-through (gateway C8)", () => {
 			groupAdmin?: boolean;
 		}[];
 		const bob = rows.find((row) => row.user === "bob");
-		expect(bob).toMatchObject({ admin: false, groupAdmin: true });
+		expect(bob).toMatchObject({ admin: false, groupAdmin: true, groups: ["admins"] });
 	});
 });
 

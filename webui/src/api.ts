@@ -31,6 +31,7 @@
 
 import type {
 	MetaResponse,
+	InteractionWire,
 	InteractionList as InteractionListWire,
 	InteractionAnswered as InteractionAnsweredWire,
 	AmbientList as AmbientListWire,
@@ -57,10 +58,16 @@ import type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	ExtensionSettingsResponse as ExtensionSettingsWire,
+	SettingsSectionsResponse as SettingsSectionsResponseWire,
+	SettingsSectionEntry as SettingsSectionEntryWire,
+	SettingsSectionIndexEntry as SettingsSectionIndexEntryWire,
 	AuthCheckProvider as AuthCheckProviderWire,
 	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
 	JobRunResponse,
+	AccountLinkWire,
+	AccountsResponse,
 } from "@sigrun/shared/views";
 import type {
 	JobRevisionWire,
@@ -101,10 +108,16 @@ export type {
 	ExtensionInfo as ExtensionInfoWire,
 	ExtensionSecret as ExtensionSecretWire,
 	ExtensionSecretsResponse as ExtensionSecretsResponseWire,
+	ExtensionSettingsResponse as ExtensionSettingsWire,
+	SettingsSectionsResponse as SettingsSectionsResponseWire,
+	SettingsSectionEntry as SettingsSectionEntryWire,
+	SettingsSectionIndexEntry as SettingsSectionIndexEntryWire,
 	AuthCheckProvider as AuthCheckProviderWire,
 	ProvidersResponse as ProvidersResponseWire,
 	JobsResponse,
 	JobRunResponse,
+	AccountLinkWire,
+	AccountsResponse,
 } from "@sigrun/shared/views";
 
 /** The jobs channel wire shapes (W4, spec §8.2/§8.4) — the shared leaf's
@@ -132,22 +145,10 @@ export interface JobRevisionsResponse {
  *  re-exported so the share UI and the patch type agree with the server. */
 export type { Sharing } from "@sigrun/shared/access";
 
-// The interaction/ambient seam sub-shapes — the seam records ARE the wire
-// (never projected), so their constituent primitives are the contract too.
-// The `*Wire` aliases keep the stable export names the seam renderers use.
-export type {
-	InteractionStatus,
-	InteractionOption as InteractionOptionWire,
-	InteractionField as InteractionFieldWire,
-	InteractionDiff as InteractionDiffWire,
-	InteractionBody as InteractionBodyWire,
-	AmbientMetrics as AmbientMetricsWire,
-	AmbientRow as AmbientRowWire,
-	AmbientLine as AmbientLineWire,
-	AmbientGauge as AmbientGaugeWire,
-	AmbientLedgerEntry as AmbientLedgerEntryWire,
-	AmbientBody as AmbientBodyWire,
-} from "@sigrun/shared/views";
+// The interaction/ambient seam records ARE the wire (never projected);
+// their bodies are block trees (`@sigrun/shared/blocks` — the tree types
+// are the contract). The legacy body sub-shape aliases are gone (ruling
+// 16: the legacy shapes are rejected server-side).
 
 /** The queue modes (`steeringMode`/`followUpMode`; pi-durable `QueueMode`). */
 export type QueueModeWire = "all" | "one-at-a-time";
@@ -193,6 +194,23 @@ export interface ClaimInput {
  *  the credential — set by the response, never the body). */
 export interface LoginResponse {
 	readonly user: string;
+}
+
+/** One configured external sign-in provider (`GET /v1/auth/providers`). */
+export interface LoginProviderWire {
+	readonly provider: string;
+	readonly label: string;
+	readonly icon?: string;
+}
+
+/** The public login-provider catalog. */
+export interface LoginProvidersResponse {
+	readonly providers: readonly LoginProviderWire[];
+}
+
+/** A completed setup/invite code exchange: navigate to this local path. */
+export interface LoginCodeResponse {
+	readonly returnTo: string;
 }
 
 /**
@@ -380,6 +398,37 @@ export interface SubmitOptions {
 /** The §5 client surface. */
 export interface SigrunClient {
 	getMeta(): Promise<MetaResponse>;
+	/**
+	 * The raw fetch the settings surfaces' transports ride (U4 Task 4,
+	 * the `ExtFetchLike` shape): non-2xx does NOT throw — the surface
+	 * transport reads status itself. The same auth/cookie posture as
+	 * every other call (the ambient fetch carries the session cookie).
+	 */
+	rawFetch(
+		input: string,
+		init?: {
+			readonly method?: string;
+			readonly headers?: Record<string, string>;
+			readonly body?: string | Uint8Array;
+		},
+	): Promise<{
+		readonly ok: boolean;
+		readonly status: number;
+		json(): Promise<unknown>;
+	}>;
+	/**
+	 * `POST /v1/admin/restart` (admin; U4 Task 2, spec §13.3): resolves
+	 * once the server answered 202 (the restart begins after the reply);
+	 * rejects fail-loud on 403/409 (the shell shows the error and stays
+	 * up — no restart began).
+	 */
+	requestRestart(): Promise<void>;
+	/**
+	 * `GET /readyz` readiness probe (U4 Task 2): `true` only on a 200.
+	 * The restart-recovery poll rides this; a connection-level failure
+	 * (the process mid-restart) resolves `false`, never throws.
+	 */
+	checkReady(): Promise<boolean>;
 	listConversations(): Promise<ConversationList>;
 	listModels(): Promise<ModelsResponse>;
 	getConversationMeta(conversationId: number): Promise<ConversationMeta>;
@@ -450,22 +499,37 @@ export interface SigrunClient {
 	/** Pending interactions for a conversation (`GET .../interactions`). */
 	listInteractions(conversationId: number): Promise<InteractionListWire>;
 	/**
+	 * One interaction record in ANY status (`GET .../interactions/:callId`,
+	 * U6 Task 2) — the channel's settle-refetch path: an answer that lands
+	 * on an already-settled record (404 not_pending) refetches here and
+	 * renders the settled record read-only.
+	 */
+	getInteraction(
+		conversationId: number,
+		callId: string,
+	): Promise<InteractionWire>;
+	/**
 	 * Answer a pending interaction (the ONE generic route). `answer` is
-	 * `{ids?, values?, text?}`; resolution semantics stay extension-owned.
+	 * `{values}` (ruling 20: every field's value under its name);
+	 * resolution semantics stay extension-owned.
 	 */
 	answerInteraction(
 		conversationId: number,
 		callId: string,
 		answer: {
-			readonly ids?: readonly string[];
-			readonly values?: Readonly<Record<string, string | number | boolean>>;
-			readonly text?: string;
+			readonly values: Readonly<Record<string, unknown>>;
 		},
 	): Promise<InteractionAnsweredWire>;
 	/** The conversation's ambient surfaces (`GET .../ambient`). */
 	listAmbient(conversationId: number): Promise<AmbientListWire>;
 	/** The effective settings (`GET /v1/settings`; absent file = `{}`). */
 	getSettings(): Promise<SettingsWire>;
+	/**
+	 * The settings sections list + search index (`GET
+	 * /v1/settings/sections`, UI-blocks U4 Task 4): the panel's nav and
+	 * its label search build from one payload.
+	 */
+	listSettingsSections(): Promise<SettingsSectionsResponseWire>;
 	/**
 	 * Merge a settings patch (`PATCH /v1/settings`); an explicit `null`
 	 * clears a key. Resolves to the new effective settings.
@@ -485,17 +549,25 @@ export interface SigrunClient {
 	logout(): Promise<void>;
 	/** The resolved principal (`GET /v1/auth/whoami`). */
 	whoami(): Promise<WhoamiResponse>;
+	/** The configured external sign-in providers (public boot data). */
+	providers(): Promise<LoginProvidersResponse>;
+	/** The caller's external account links. */
+	accounts(): Promise<AccountsResponse>;
+	/** Remove one of the caller's account links. */
+	removeAccount(provider: string, subject: string): Promise<void>;
+	/** Complete a parked setup/invite login; the response sets the cookie. */
+	submitLoginCode(key: string, code: string): Promise<LoginCodeResponse>;
 	/** The loaded-extension inventory (`GET /v1/extensions`). */
 	listExtensions(): Promise<ExtensionsResponseWire>;
-	/** One extension's settings object (`GET /v1/extensions/:slug/settings`). */
+	/** One extension's settings (`GET /v1/extensions/:slug/settings`; U4 §13.2 shape). */
 	getExtensionSettings(
 		slug: string,
-	): Promise<Record<string, unknown>>;
+	): Promise<ExtensionSettingsWire>;
 	/** Replace one extension's settings object (`PUT`, admin). */
 	putExtensionSettings(
 		slug: string,
 		value: Record<string, unknown>,
-	): Promise<Record<string, unknown>>;
+	): Promise<ExtensionSettingsWire>;
 	/** One extension's secret keys with their sources (`GET .../secrets`). */
 	listExtensionSecrets(
 		slug: string,
@@ -566,6 +638,24 @@ export interface SigrunClientOptions {
 	readonly baseUrl?: string;
 	/** Injected for tests; defaults to the ambient `fetch`. */
 	readonly fetch?: FetchLike;
+	/**
+	 * The RAW fetch the settings surfaces' transports ride (U4 Task 4):
+	 * the `ExtFetchLike` shape (non-2xx does NOT throw — the surface
+	 * transport reads status itself). Absent → the ambient `fetch`.
+	 * Tests pass the same stub as `fetch`.
+	 */
+	readonly rawFetch?: (
+		input: string,
+		init?: {
+			readonly method?: string;
+			readonly headers?: Record<string, string>;
+			readonly body?: string | Uint8Array;
+		},
+	) => Promise<{
+		readonly ok: boolean;
+		readonly status: number;
+		json(): Promise<unknown>;
+	}>;
 }
 
 /**
@@ -632,6 +722,16 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			// `Uint8Array` is a valid `BodyInit` at runtime; the lib's newer
 			// `Uint8Array<ArrayBufferLike>` generic just can't prove it.
 			globalThis.fetch(input, init as RequestInit | undefined)) as FetchLike);
+	// The settings surfaces' raw fetch (the ext transport's ExtFetchLike):
+	// the options' rawFetch wins, else the ambient fetch. The client's
+	// own calls never ride it (they use the fail-loud fetchImpl).
+	const rawFetch =
+		options.rawFetch ??
+		(((input, init) =>
+			globalThis.fetch(
+				input,
+				init as Parameters<typeof globalThis.fetch>[1],
+			)) as NonNullable<SigrunClientOptions["rawFetch"]>);
 
 	async function get<T>(path: string): Promise<T> {
 		const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -696,7 +796,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 	}
 
 	/** POST expecting NO body (204); fail-loud on non-2xx. */
-	async function sendVoid(method: "POST", path: string, body: unknown): Promise<void> {
+	async function sendVoid(method: "POST" | "DELETE", path: string, body: unknown): Promise<void> {
 		const response = await fetchImpl(`${baseUrl}${path}`, {
 			method,
 			headers: {
@@ -712,6 +812,22 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 
 	return {
 		getMeta: () => get<MetaResponse>("/v1/meta"),
+		rawFetch: (input, init) => rawFetch(input, init),
+		requestRestart: async () => {
+			await send("POST", "/v1/admin/restart", {});
+		},
+		checkReady: async () => {
+			try {
+				const response = await fetchImpl(`${baseUrl}/readyz`, {
+					method: "GET",
+					headers: { accept: "application/json" },
+				});
+				return response.ok;
+			} catch {
+				// Connection refused while the process is down: not ready.
+				return false;
+			}
+		},
 		listConversations: () => get<ConversationList>("/v1/conversations"),
 		listModels: () => get<ModelsResponse>("/v1/models"),
 		getConversationMeta: (conversationId) =>
@@ -778,6 +894,10 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			get<InteractionListWire>(
 				`/v1/conversations/${conversationId}/interactions`,
 			),
+		getInteraction: (conversationId, callId) =>
+			get<InteractionWire>(
+				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}`,
+			),
 		answerInteraction: (conversationId, callId, answer) =>
 			send(
 				"POST",
@@ -787,6 +907,8 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 		listAmbient: (conversationId) =>
 			get<AmbientListWire>(`/v1/conversations/${conversationId}/ambient`),
 		getSettings: () => get<SettingsWire>("/v1/settings"),
+		listSettingsSections: () =>
+			get<SettingsSectionsResponseWire>("/v1/settings/sections"),
 		patchSettings: (patch) =>
 			send("PATCH", "/v1/settings", patch) as Promise<SettingsWire>,
 		getOnboarding: () => get<OnboardingState>("/v1/onboarding"),
@@ -796,9 +918,19 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			send("POST", "/v1/auth/login", { token }) as Promise<LoginResponse>,
 		logout: () => sendVoid("POST", "/v1/auth/logout", {}),
 		whoami: () => get<WhoamiResponse>("/v1/auth/whoami"),
+		providers: () => get<LoginProvidersResponse>("/v1/auth/providers"),
+		accounts: () => get<AccountsResponse>("/v1/auth/accounts"),
+		removeAccount: (provider, subject) =>
+			sendVoid(
+				"DELETE",
+				`/v1/auth/accounts?provider=${encodeURIComponent(provider)}&subject=${encodeURIComponent(subject)}`,
+				{},
+			),
+		submitLoginCode: (key, code) =>
+			send("POST", "/v1/auth/login/code", { key, code }) as Promise<LoginCodeResponse>,
 		listExtensions: () => get<ExtensionsResponseWire>("/v1/extensions"),
 		getExtensionSettings: (slug) =>
-			get<Record<string, unknown>>(
+			get<ExtensionSettingsWire>(
 				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
 			),
 		putExtensionSettings: (slug, value) =>
@@ -806,7 +938,7 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				"PUT",
 				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
 				value,
-			) as Promise<Record<string, unknown>>,
+			) as Promise<ExtensionSettingsWire>,
 		listExtensionSecrets: (slug) =>
 			get<ExtensionSecretsResponseWire>(
 				`/v1/extensions/${encodeURIComponent(slug)}/secrets`,

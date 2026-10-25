@@ -139,7 +139,7 @@ export function hostModuleVersion(name: string): string | undefined {
  * install resolves through its OWN root, which is this same dir).
  * `undefined` when no ancestor carries the manifest.
  */
-function selfPackageRoot(): string | undefined {
+export function selfPackageRoot(): string | undefined {
 	let dir = dirname(fileURLToPath(import.meta.url));
 	for (let hops = 0; hops < 10; hops++) {
 		const manifest = join(dir, "package.json");

@@ -31,6 +31,16 @@ export interface TokenRecord {
 	readonly user: string;
 	readonly sha256: string;
 	readonly createdAt: number;
+	readonly kind?: "api" | "session";
+	readonly expiresAt?: number;
+	readonly provider?: string;
+}
+
+/** Drop expired session records before every store mutation is written. */
+function pruneExpired(records: TokenRecord[], now: number): TokenRecord[] {
+	return records.filter(
+		(record) => record.expiresAt === undefined || record.expiresAt > now,
+	);
 }
 
 /** A fresh token: `sgr_` + 32 random bytes in base64url (43 chars). */
@@ -71,9 +81,13 @@ export class TokenStore {
 	 * Verify a presented token: hash it, compare against every stored
 	 * digest with `timingSafeEqual`. Absent/unknown/malformed → undefined.
 	 */
-	verify(token: string): TokenRecord | undefined {
+	verify(token: string, now = Date.now()): TokenRecord | undefined {
 		const digest = hashToken(token);
-		return this.list().find((record) => sameDigest(record.sha256, digest));
+		return this.list().find(
+			(record) =>
+				sameDigest(record.sha256, digest) &&
+				(record.expiresAt === undefined || record.expiresAt > now),
+		);
 	}
 
 	/**
@@ -93,7 +107,31 @@ export class TokenStore {
 				sha256: hashToken(token),
 				createdAt: Date.now(),
 			};
-			await writeJson(this.path, [...this.list(), record]);
+			await writeJson(this.path, [...pruneExpired(this.list(), Date.now()), record]);
+			return { record, token };
+		});
+	}
+
+	/** Mint a revocable, expiring browser session for an IdP sign-in. */
+	createSession(
+		user: string,
+		provider: string,
+		ttlMs: number,
+		now = Date.now(),
+	): Promise<{ token: string; record: TokenRecord }> {
+		return this.mutations.run(async () => {
+			const token = generateToken();
+			const record: TokenRecord = {
+				id: randomUUID(),
+				name: `login:${provider}`,
+				user,
+				sha256: hashToken(token),
+				createdAt: now,
+				kind: "session",
+				provider,
+				expiresAt: now + ttlMs,
+			};
+			await writeJson(this.path, [...pruneExpired(this.list(), now), record]);
 			return { record, token };
 		});
 	}
@@ -101,7 +139,7 @@ export class TokenStore {
 	/** Revoke by record id; false when no such record existed. */
 	revoke(id: string): Promise<boolean> {
 		return this.mutations.run(async () => {
-			const records = this.list();
+			const records = pruneExpired(this.list(), Date.now());
 			const index = records.findIndex((record) => record.id === id);
 			if (index === -1) return false;
 			records.splice(index, 1);
@@ -113,7 +151,7 @@ export class TokenStore {
 	/** Revoke every token of one user (user removal's companion); returns the count. */
 	revokeAllFor(user: string): Promise<number> {
 		return this.mutations.run(async () => {
-			const records = this.list();
+			const records = pruneExpired(this.list(), Date.now());
 			const kept = records.filter((record) => record.user !== user);
 			const removed = records.length - kept.length;
 			if (removed > 0) {

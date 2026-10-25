@@ -45,6 +45,7 @@ import { InteractionDoc } from "../src/harness/interactions.js";
 import { createServer } from "../src/server/index.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
+import { askTree } from "./helpers/trees.js";
 
 /** One booted harness + bus, its root conversation, and its faux provider. */
 interface TestBus {
@@ -662,7 +663,7 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 				callId,
 				status: "pending",
 				createdAt: Date.now(),
-				body: { text: `c6: ${callId}` },
+				body: askTree(),
 			},
 			BACKGROUND_CONTEXT,
 		);
@@ -709,7 +710,7 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 		const answered = await app.inject({
 			method: "POST",
 			url: `/v1/conversations/${root.id}/interactions/c6-route/answer`,
-			payload: { ids: ["a"] },
+			payload: { values: { decision: "allow" } },
 		});
 		expect(answered.statusCode).toBe(200);
 		const routeEvent = await waitForSettlement(fixture, "c6-route");
@@ -725,7 +726,7 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 		const applied = await host.answerInteraction(
 			root.id as ConversationId,
 			"c6-host",
-			{ ids: ["a"] },
+			{ values: { decision: "allow" } },
 			BACKGROUND_CONTEXT,
 		);
 		expect(applied).toBe(true);

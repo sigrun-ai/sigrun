@@ -121,6 +121,24 @@ describe("webui bundle present", () => {
 		expect(response.body).toContain("sigrun-webui-fixture-asset");
 	});
 
+	test("the index.html response carries exactly Content-Security-Policy: img-src 'self' data:", async () => {
+		const { app } = await bootServer({ webuiBundleEnv: FIXTURE_BUNDLE });
+		// The SPA root AND a deep-link fallback both carry the header
+		// (U7 Task 3, spec §11.2: one img-src directive — scripts and
+		// styles are unaffected by it).
+		const root = await app.inject({ method: "GET", url: "/" });
+		expect(root.headers["content-security-policy"]).toBe(
+			"img-src 'self' data:",
+		);
+		const deepLink = await app.inject({ method: "GET", url: "/some/client/route" });
+		expect(deepLink.headers["content-security-policy"]).toBe(
+			"img-src 'self' data:",
+		);
+		// A static ASSET (not an HTML response) carries no CSP header.
+		const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
+		expect(asset.headers["content-security-policy"]).toBeUndefined();
+	});
+
 	test("/v1/meta capabilities.channels includes webui", async () => {
 		const { app } = await bootServer({ webuiBundleEnv: FIXTURE_BUNDLE });
 		const response = await app.inject({ method: "GET", url: "/v1/meta" });
