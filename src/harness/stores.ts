@@ -761,14 +761,16 @@ const USER_SETTINGS_DIR = "user-settings";
 async function removeUserData(roots: StoreRoots, user: string): Promise<void> {
 	await rm(join(roots.configDir, USER_SECRETS_DIR, `${user}.json`), { force: true });
 	await rm(join(roots.configDir, USER_SETTINGS_DIR, user), { recursive: true, force: true });
-	let slugs: readonly string[] = [];
+	let entries: import("node:fs").Dirent[] = [];
 	try {
-		slugs = await readdir(roots.cacheDir);
+		entries = await readdir(roots.cacheDir, { withFileTypes: true });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
-	await Promise.all(slugs.map((slug) =>
-		rm(join(roots.cacheDir, slug, "users", user), { recursive: true, force: true }),
+	await Promise.all(entries.flatMap((entry) =>
+		entry.isDirectory()
+			? [rm(join(roots.cacheDir, entry.name, "users", user), { recursive: true, force: true })]
+			: [],
 	));
 }
 

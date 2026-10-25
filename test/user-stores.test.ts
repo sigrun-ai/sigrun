@@ -144,6 +144,34 @@ test("unknown users throw verbatim; M1 already reserves the per-user dir names",
 	expect(RESERVED_EXTENSION_SLUGS).toContain("user-settings");
 });
 
+test("removeUserData removes credentials/settings and every cache slug, not data/state", async () => {
+	const shared = sharedExtensionStores(roots, {}, users);
+	const alice = host.stores.user("alice");
+	await alice.secrets.set("token", "delete-me");
+	await alice.settings.set({ theme: "dark" });
+	const data = alice.paths.data;
+	const state = alice.paths.state;
+	const cache = alice.paths.cache;
+	const staleCache = shared.userExtensionStores("uninstalled", "alice").paths.cache;
+	const fileSlug = join(roots.cacheDir, "file-shaped");
+	await writeFile(fileSlug, "not a directory");
+	await users.remove("alice");
+
+	await shared.removeUserData("alice");
+
+	for (const path of [
+		join(roots.configDir, "user-secrets", "alice.json"),
+		join(roots.configDir, "user-settings", "alice"),
+		cache,
+		staleCache,
+	]) {
+		await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+	}
+	expect((await stat(data)).isDirectory()).toBe(true);
+	expect((await stat(state)).isDirectory()).toBe(true);
+	expect((await stat(fileSlug)).isFile()).toBe(true);
+});
+
 test("the deleting marker admits only its bounded fan-out window, never a stale handle afterwards", async () => {
 	await host.stores.user("alice").secrets.set("provider", "revoke-me");
 	await users.remove("alice");
