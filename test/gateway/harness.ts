@@ -25,6 +25,8 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
 import { loadConfig, type SigrunConfig } from "../../src/config.js";
+import { selfPackageRoot } from "../../src/harness/packages.js";
+import { resolveWorkerEntry, testLauncher, type Launcher } from "../../src/sandbox/pool.js";
 import { openHarness, type OpenedHarness } from "../../src/harness/boot.js";
 import { createServer } from "../../src/server/index.js";
 import { startGateway, type GatewayHandle } from "../../src/server/gateway.js";
@@ -108,6 +110,23 @@ export interface BootGatewayOptions {
 		readonly backgroundTokens?: number;
 	};
 	/**
+	 * The isolation availability probe for `openHarness`. Multi-user M1's
+	 * admission guard refuses a second directory user while isolation is
+	 * unavailable (`auto` + no sandbox helper in the test env → every
+	 * proxy-provisioned third user 403s `isolation_required`). Tests that
+	 * provision additional users pass an available probe; the guard's
+	 * refusal paths are test/sandbox-isolation.test.ts's subject.
+	 */
+	readonly isolationProbe?: () => Promise<{ available: boolean; abi?: number; reason?: string }>;
+	/**
+	 * The sandbox worker launcher. With an available probe and 2+ users,
+	 * M1 isolation ACTIVATES: per-user workspaces resolve through real
+	 * sandbox workers (the helper is not built in this environment, so
+	 * tests use the in-process `testLauncher` — the same seam
+	 * host-conversations/jobs use).
+	 */
+	readonly sandboxLauncher?: Launcher;
+	/**
 	 * A CALLER-OWNED stores root for the harness's state (the engine's
 	 * `host.stores.paths.state` roots here too): two boots over the same
 	 * dir share the engine's persisted state (the restart e2e). Absent →
@@ -171,9 +190,12 @@ export async function bootGateway(
 		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
-		SIGRUN_DATA_DIR: dir,
-		SIGRUN_STATE_DIR: dir,
-		SIGRUN_CACHE_DIR: dir,
+		// M1's per-user workspaces live at `<dataDir>/users/<u>/workspace`:
+		// four DISTINCT roots (the sandbox grant checker refuses any
+		// workspace that nests inside stateDir/cacheDir/configDir).
+		SIGRUN_DATA_DIR: join(dir, "data"),
+		SIGRUN_STATE_DIR: join(dir, "state"),
+		SIGRUN_CACHE_DIR: join(dir, "cache"),
 		...(opts.compactionEnv?.keepRecentTokens === undefined
 			? {}
 			: { SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: String(opts.compactionEnv.keepRecentTokens) }),
@@ -251,6 +273,12 @@ export async function bootGateway(
 			: [LOOPBACK_SPECIFIER],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: join(dir, "config"),
+		...(opts.isolationProbe === undefined
+			? {}
+			: { isolationProbe: opts.isolationProbe }),
+		...(opts.sandboxLauncher === undefined
+			? {}
+			: { sandboxLauncher: opts.sandboxLauncher }),
 	});
 	const tokens: Record<string, string> = {};
 	// An unclaimed directory has no users to mint for (the claimed-gate
@@ -291,6 +319,12 @@ export async function bootGateway(
 			gateway,
 			eventBusShutdown: () =>
 				opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT),
+			// Multi-user M2's step: the gateway boot has no per-user sandbox
+			// workers (sandboxPool is the serve composition's; the harness's
+			// pool is empty and stopping it is a no-op).
+			stopSandboxWorkers: async () => {
+				await opened.sandboxPool.stopAll();
+			},
 			// stopProviderRefresh is sync (`() => void` — the scheduler's own
 			// stop joins internally); the shutdown steps await every value, and
 			// `undefined` satisfies `Promise<void>` only when wrapped.

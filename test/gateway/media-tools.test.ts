@@ -13,6 +13,8 @@ import {
 import type { FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import type { InboundEvent } from "../../src/extension.js";
 import { bootGateway, type GatewayBoot } from "./harness.js";
+import { selfPackageRoot } from "../../src/harness/packages.js";
+import { resolveWorkerEntry, testLauncher } from "../../src/sandbox/pool.js";
 
 const GATEWAY_SETTINGS = {
 	channels: {
@@ -80,7 +82,9 @@ async function entries(boot: GatewayBoot, conversationId: number): Promise<reado
 
 describe("gateway media and agent tools e2e (Task 11)", () => {
 	test("an image attachment becomes an image part on the submitted entry", { timeout: 60_000 }, async () => {
-		const boot = await bootGateway({ gatewaySettings: GATEWAY_SETTINGS });
+		const boot = await bootGateway({
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)), gatewaySettings: GATEWAY_SETTINGS });
 		try {
 			const outcome = await boot.loop.inbound(dmEvent({
 				messageId: "image-1",
@@ -111,6 +115,8 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 
 	test("an oversized declared attachment is never fetched and submits the size note", { timeout: 60_000 }, async () => {
 		const boot = await bootGateway({
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 			gatewaySettings: { ...GATEWAY_SETTINGS, media: { maxBytes: 2 } },
 		});
 		try {
@@ -133,6 +139,8 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 
 	test("a scripted send_message call to loop delivers to alice's home DM", { timeout: 60_000 }, async () => {
 		const boot = await bootGateway({
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 			gatewaySettings: GATEWAY_SETTINGS,
 			responses: [
 				fauxAssistantMessage(
@@ -155,7 +163,9 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 
 	test("a scripted send_message file arrives at loop with its bytes", { timeout: 60_000 }, async () => {
 		const bytes = new Uint8Array([9, 8, 7]);
-		const boot = await bootGateway({ gatewaySettings: GATEWAY_SETTINGS });
+		const boot = await bootGateway({
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)), gatewaySettings: GATEWAY_SETTINGS });
 		try {
 			await boot.loop.inbound(dmEvent({ messageId: "file-tool-1" }));
 			const conversation = await gatewayConversation(boot);
@@ -203,7 +213,9 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 			prompts.push(Object.values(system?.sections ?? {}).join("\n"));
 			return fauxAssistantMessage("captured");
 		};
-		const boot = await bootGateway({ gatewaySettings: GATEWAY_SETTINGS, responses: [capture, capture] });
+		const boot = await bootGateway({
+		isolationProbe: async () => ({ available: true, abi: 6 }),
+		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)), gatewaySettings: GATEWAY_SETTINGS, responses: [capture, capture] });
 		try {
 			await boot.loop.inbound(dmEvent({ messageId: "prompt-1" }));
 			const bound = await gatewayConversation(boot);
@@ -223,9 +235,14 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 			});
 			expect(submitted.statusCode).toBe(202);
 			await boot.waitFor(() => prompts.length >= 2);
-			expect(prompts[0]).toContain("<gateway-channel>");
-			expect(prompts[0]).toContain("This conversation is connected to Loop (direct message).");
-			expect(prompts[1]).not.toContain("<gateway-channel>");
+			// Prompt capture order is settlement order, not submission order:
+			// identify by content (the webui conversation never carries the
+			// channel section; the bound one always does).
+			const boundPrompt = prompts.find((p) => p.includes("<gateway-channel>"));
+			const webuiPrompt = prompts.find((p) => !p.includes("<gateway-channel>"));
+			expect(boundPrompt).toBeDefined();
+			expect(webuiPrompt).toBeDefined();
+			expect(boundPrompt).toContain("This conversation is connected to Loop (direct message).");
 			expect(bound.id).not.toBe(webui.id);
 		} finally {
 			await boot.shutdown();

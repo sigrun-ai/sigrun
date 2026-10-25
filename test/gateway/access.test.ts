@@ -351,7 +351,16 @@ describe("gateway access e2e (Task 4)", () => {
 				SIGRUN_AUTH: "proxy",
 				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
 			},
-			serverAuth: { adminGroups: ["admins"] },
+			serverAuth: {
+				adminGroups: ["admins"],
+				// The proxy secret header (M1's guard: proxy isolation needs a
+				// shared secret before it activates).
+				proxy: { secretHeader: "x-sigrun-proxy-secret" },
+			},
+			// M1's admission guard refuses a third user while the sandbox is
+			// unavailable; this e2e exercises the PROXY+GROUP pipeline, not
+			// isolation, so the probe reports available.
+			isolationProbe: async () => ({ available: true, abi: 6 }),
 		});
 		try {
 			await boot.loop.inbound(dmEvent("200000002", "m1", "pair me", "Bob"));
@@ -396,6 +405,7 @@ describe("gateway access e2e (Task 4)", () => {
 				headers: plainHeaders,
 			});
 			const conversationId2 = (created2.json() as ConversationRow).id;
+			console.log("DEBUG created2:", created2.statusCode, created2.body, "conv2:", (created2.json() as ConversationRow).id);
 			const refused = await boot.app.inject({
 				method: "POST",
 				url: `/v1/conversations/${conversationId2}/commands/pair`,

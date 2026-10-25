@@ -74,7 +74,7 @@ describe("gateway two-channel boot", () => {
 			);
 			expect(await boot.loop.inbound(dm("100000001", "loop-bound"))).toEqual({ outcome: "admitted" });
 			expect(await loop2.inbound(dm("200000002", "loop2-bound"))).toEqual({ outcome: "admitted" });
-			const bindingsPath = join(boot.dir, "ext-gateway", "gateway", "bindings.json");
+			const bindingsPath = join(boot.dir, "state", "ext-gateway", "gateway", "bindings.json");
 			await boot.waitFor(async () => {
 				const state = JSON.parse(await readFile(bindingsPath, "utf8")) as {
 					bindings: Record<string, unknown>;

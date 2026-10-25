@@ -173,7 +173,7 @@ describe("gateway shutdown e2e (Task 12)", () => {
 				headers: { authorization: `Bearer ${boot.tokens.alice}` },
 			});
 			expect(deleted.statusCode).toBe(204);
-			const identitiesPath = join(boot.dir, "ext-gateway", "gateway", "identities.json");
+			const identitiesPath = join(boot.dir, "state", "ext-gateway", "gateway", "identities.json");
 			await boot.waitFor(async () => {
 				const raw = JSON.parse(await readFile(identitiesPath, "utf8")) as {
 					links: Record<string, { user: string }>;

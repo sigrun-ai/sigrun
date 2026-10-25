@@ -201,6 +201,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 			// send array cannot show a non-event).
 			const bindingsPath = join(
 				boot.dir,
+				"state",
 				"ext-gateway",
 				"gateway",
 				"bindings.json",
@@ -240,7 +241,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 		// into the engine's ledger BEFORE this boot.
 		const storesDir = await mkdtemp(join(tmpdir(), "sigrun-gw-restart-"));
 		try {
-			const stateDir = join(storesDir, "ext-gateway", "gateway");
+			const stateDir = join(storesDir, "state", "ext-gateway", "gateway");
 			await mkdir(stateDir, { recursive: true });
 			const ledgerFile = join(stateDir, "ledger.json");
 			const entry = {
@@ -324,6 +325,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 				// sharing private (the default) — bob has NO access.
 				const bindingsPath = join(
 					storesDir,
+					"state",
 					"ext-gateway",
 					"gateway",
 					"bindings.json",
@@ -366,6 +368,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 				// The binding is GONE (the unbind path ran).
 				const bindingsPath = join(
 					storesDir,
+					"state",
 					"ext-gateway",
 					"gateway",
 					"bindings.json",

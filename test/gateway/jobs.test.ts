@@ -36,7 +36,7 @@ async function linkAlice(boot: GatewayBoot, messageId: string): Promise<void> {
 	});
 	expect(response.statusCode).toBe(200);
 	await boot.waitFor(async () => {
-		const raw = JSON.parse(await readFile(join(boot.dir, "ext-gateway", "gateway", "identities.json"), "utf8")) as {
+		const raw = JSON.parse(await readFile(join(boot.dir, "state", "ext-gateway", "gateway", "identities.json"), "utf8")) as {
 			homes: Record<string, unknown>;
 		};
 		return raw.homes.alice !== undefined;
@@ -252,7 +252,7 @@ describe("gateway jobs and home notifications e2e (Task 10)", () => {
 				// The run settles without enqueueing any job-target entry;
 				// the engine's warn above is the required rejection log.
 				await new Promise((resolve) => setTimeout(resolve, 300));
-				const ledger = JSON.parse(await readFile(join(storesDir, "ext-gateway", "gateway", "ledger.json"), "utf8")) as {
+				const ledger = JSON.parse(await readFile(join(storesDir, "state", "ext-gateway", "gateway", "ledger.json"), "utf8")) as {
 					entries: { tag?: string }[];
 				};
 				expect(ledger.entries.some((entry) => entry.tag?.startsWith("job:") === true)).toBe(false);

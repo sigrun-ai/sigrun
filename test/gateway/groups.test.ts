@@ -212,7 +212,7 @@ describe("gateway groups e2e (Task 8)", () => {
 			});
 			const row = await gatewayConversation(boot);
 			await waitForSubmission(boot, row.id, 1);
-			const bindingsPath = join(boot.dir, "ext-gateway", "gateway", "bindings.json");
+			const bindingsPath = join(boot.dir, "state", "ext-gateway", "gateway", "bindings.json");
 			const before = JSON.parse(await readFile(bindingsPath, "utf8")) as {
 				bindings: Record<string, unknown>;
 			};
