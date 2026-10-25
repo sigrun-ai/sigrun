@@ -3,8 +3,8 @@
  * admin-gated directory surface — list, patch (with the last-record-admin
  * guard: group-derived admins never count, Authelia can revoke them at
  * any moment), delete-with-transfer (ownership rewrite → token revocation
- * → account-link removal → record removal → the `userDeleted` lifecycle
- * event), and invite issuance.
+ * → account-link removal → stop services → the `userDeleted` lifecycle
+ * event → record removal, per spec §10.6), and invite issuance.
  *
  * The admin gate reads `request.principal.admin` — record admin, service
  * token, the naive loopback superuser, or a proxy-group grant. The
