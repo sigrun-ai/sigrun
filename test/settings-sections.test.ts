@@ -356,14 +356,17 @@ describe("per-user settings sections (multi-user M2 Task 6)", () => {
 	test("identical actionIds and payloads from two users both execute and persist", async () => {
 		const { app, opened, aliceToken, bobToken } = await server();
 		reset();
+		const url = "/v1/ext/acme-settings-section/surfaces/dedup-profile";
 		const values = { nickname: "Same display name" };
-		const initial = await call(app, { method: "GET", url: PROFILE_URL, token: aliceToken });
+		const initial = await call(app, { method: "GET", url, token: aliceToken });
 		const rev = (initial.body as unknown as { rev: number }).rev;
-		const first = await postSave(app, PROFILE_URL, aliceToken, values, "act-1", rev);
-		const bobRender = await call(app, { method: "GET", url: PROFILE_URL, token: bobToken });
+		const first = await postSave(app, url, aliceToken, values, "act-1", rev);
+		const bobRender = await call(app, { method: "GET", url, token: bobToken });
 		const bobRev = (bobRender.body as unknown as { rev: number }).rev;
-		// Bob submits the byte-identical action body from his own render.
-		const second = await postSave(app, PROFILE_URL, bobToken, values, "act-1", bobRev);
+		expect(bobRev).toBe(rev);
+		// The complete action bodies are identical: a mismatched revision
+		// would change the fingerprint and accidentally avoid the dedup path.
+		const second = await postSave(app, url, bobToken, values, "act-1", bobRev);
 		expect((first.body as unknown as { ok: boolean }).ok).toBe(true);
 		expect((second.body as unknown as { ok: boolean }).ok).toBe(true);
 		// This is the execution assertion: a cached cross-user result would

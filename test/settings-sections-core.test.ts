@@ -587,11 +587,13 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			"acme-settings-section",
 			"acme-settings-section",
 			"acme-settings-section",
+			"acme-settings-section",
 		]);
 		expect(extensions.map((s) => s.id)).toEqual([
 			"connection",
 			"display",
 			"profile",
+			"dedup-profile",
 			"personal-admin",
 		]);
 		expect(extensions.find((s) => s.id === "profile")).toMatchObject({

@@ -97,6 +97,25 @@ export default function createSettingsSectionFixture() {
 					},
 				},
 				{
+					id: "dedup-profile",
+					title: "Dedup profile",
+					icon: "key",
+					scope: "user",
+					form: {
+						v: 1,
+						root: {
+							type: "form",
+							id: "dedup-profile-form",
+							bind: "/settings",
+							mode: "submit",
+							onSubmit: "save",
+							children: [
+								{ type: "text", name: "nickname", label: "Nickname" },
+							],
+						},
+					},
+				},
+				{
 					id: "personal-admin",
 					title: "Personal admin",
 					icon: "key",

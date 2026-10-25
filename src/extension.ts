@@ -784,7 +784,7 @@ export interface SurfaceDef<P extends "view" | "panel" | "settings"> {
 	readonly sharedData?: boolean;
 	/** Channels refetch data on this interval while visible (min 5000). */
 	readonly refreshMs?: number;
-	/** §7.3; default: canonical JSON of params. The optional principal
+	/** §7.3; default: canonical JSON of params. The principal argument
 	 *  lets principal-owned surfaces isolate their revision/action identity. */
 	instanceKey?(params: JsonParams, principal: Principal): string;
 	render(ctx: SurfaceContext): Promise<SurfaceRenderResult>;
