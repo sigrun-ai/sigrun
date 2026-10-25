@@ -17,12 +17,14 @@ class SharedServiceStream {
 	private readonly chunks: Uint8Array[] = [];
 	private bytes = 0;
 	private truncated = false;
+	private handles = 0;
 	private readonly controllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 	private ended = false;
 
 	get retainedBytes(): number { return this.bytes; }
 
 	setHandles(count: number): void {
+		this.handles = count;
 		if (count === 0) {
 			this.chunks.length = 0;
 			this.bytes = 0;
@@ -48,7 +50,7 @@ class SharedServiceStream {
 	}
 
 	write(chunk: Uint8Array): void {
-		if (this.ended) return;
+		if (this.ended || this.handles === 0) return;
 		const copy = new Uint8Array(chunk);
 		this.chunks.push(copy);
 		this.bytes += copy.byteLength;

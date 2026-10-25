@@ -145,6 +145,24 @@ describe("UserServices process lifecycle", () => {
 		await services.stopAll();
 	});
 
+	test("zero-handle output is discarded; a later handle receives only live output", async () => {
+		const { services } = await unitServices(async () => ({
+			command: NODE,
+			args: ["-e", "process.stdout.write('stale\\n'); process.stdin.setEncoding('utf8'); process.stdin.on('data', x => process.stdout.write(x))"],
+		}));
+		const first = await services.connect("acme", "echo", "alice", CTX);
+		expect(await readLine(first.stdout)).toBe("stale");
+		first.release();
+		await writeLine(first, "x".repeat(SERVICE_STDIO_REPLAY_BYTES + 100));
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(services.retainedStdioBytes("acme", "echo", "alice")).toEqual({ stdout: 0, stderr: 0 });
+		const second = await services.connect("acme", "echo", "alice", CTX);
+		await writeLine(second, "live\n");
+		expect(await readLine(second.stdout)).toBe("live");
+		second.release();
+		await services.stopAll();
+	});
+
 	test("idle stop needs no handles and no stdio traffic for idleMinutes", async () => {
 		vi.useFakeTimers();
 		const { services } = await unitServices(async () => ({ command: NODE, args: ["-e", "process.stdin.resume()"] }), 2);
