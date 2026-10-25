@@ -222,6 +222,23 @@ describe("UserServices process lifecycle", () => {
 		expect(services.statuses()[0]).toMatchObject({ state: "failed", lastError: expect.stringContaining("stderr-25") });
 	});
 
+	test("an explicit stop preserves the crash fence until settings change", async () => {
+		const { services } = await unitServices(startEcho);
+		for (let crash = 0; crash < 3; crash++) {
+			const handle = await services.connect("acme", "echo", "alice", CTX);
+			await writeLine(handle, "crash");
+			await handle.exited;
+			handle.release();
+		}
+		expect(services.statuses()[0]?.state).toBe("failed");
+		await services.stopUser("alice");
+		expect(services.statuses()[0]?.state).toBe("failed");
+		services.settingsChanged("acme", "alice");
+		expect(services.statuses()).toEqual([]);
+		const restarted = await services.connect("acme", "echo", "alice", CTX);
+		restarted.release();
+	});
+
 	test("stopUser, quarantine, and stopAll stop their processes", async () => {
 		const { services } = await unitServices(startEcho);
 		const alice = await services.connect("acme", "echo", "alice", CTX);
@@ -322,6 +339,9 @@ describe("loaded services and HTTP surfaces", () => {
 		await expect(host(opened).services.connect("echo", "alice", CTX)).rejects.toThrow("stderr-25");
 		// A stop/start cycle is not a settings change and must not clear it.
 		await opened.userServices.stopUser("alice");
+		expect(opened.userServices.statuses()).toEqual([
+			expect.objectContaining({ slug: "acme", user: "alice", state: "failed" }),
+		]);
 		await expect(host(opened).services.connect("echo", "alice", CTX)).rejects.toThrow("stderr-25");
 		const response = await app.inject({ method: "PUT", url: "/v1/me/extensions/acme/settings", headers: { authorization: `Bearer ${tokens.alice}` }, payload: { changed: true } });
 		expect(response.statusCode).toBe(200);

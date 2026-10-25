@@ -181,6 +181,7 @@ export async function sweepUserSelections(
 	storage: Storage,
 	perUserSlugs: readonly string[],
 ): Promise<{ readonly scanned: number; readonly changed: number }> {
+	if (perUserSlugs.length === 0) return { scanned: 0, changed: 0 };
 	let scanned = 0;
 	let changed = 0;
 	let cursor: Cursor | undefined;

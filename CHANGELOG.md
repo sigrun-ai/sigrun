@@ -44,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retired persisted `groupAdmin` in favor of stored groups; its user-wire
   compatibility field is now derived and retained for one release.
 
+### Fixed
+- Kept the extension inventory available to non-admin clients while limiting
+  service status projections to admins; quarantine now removes per-user
+  tools as well as services.
+- Preserved service crash fences across explicit stops and skipped the
+  per-user selection sweep when no per-user extensions are configured.
+
 ### Security
 - Added the opt-in Landlock kernel boundary suite for two-user execution
   isolation, with a hard ABI 6+ CI gate and explicit local skip reasons.

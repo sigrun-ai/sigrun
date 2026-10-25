@@ -295,8 +295,9 @@ effects are identical by construction:
 - `abort(id)` — the abort route's op. On an IDLE conversation it
   resolves (chat `/stop` on an idle chat is not an error); the HTTP route
   keeps its exact 404 `no_active_submission`.
-- `configure(id, {model, thinking})` — the configure route's op
-  ("provider/modelId", the thinking-level union).
+- `configure(id, {model, thinking, extensions})` — the configure route's op
+  ("provider/modelId", the thinking-level union, or an exact extension-name
+  array). Per-user entries must belong to the conversation's owner.
 - `compact(id)` — the manual-compaction route's op (admits the durable
   compaction task; the summary lands as a `pi.compaction` entry).
 - `fork(id, {at, owner})` — the fork route's op: `at` defaults to the
@@ -1587,6 +1588,9 @@ export default function createAcmeService(host: SigrunHost): SigrunExtensionResu
 release the handle when done so the idle policy can apply. Repeated
 connections attach to the same process. After the last handle is released,
 the service stops once it has had no traffic for `idleMinutes`.
+
+With isolation inactive (a single-user server), services run as plain child
+processes with the M0 allowlist environment and the same API.
 
 Each service runs as its **own** jailed process under that user's policy.
 Workers and services are sibling jail domains: the user's agent cannot read

@@ -29,6 +29,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import {
 	isUserEntryName,
 	rewriteSelection,
+	sweepUserSelections,
 	UserToolRegistry,
 	userEntryName,
 } from "../src/harness/user-tools.js";
@@ -195,6 +196,20 @@ describe("per-user registry and selection", () => {
 		users.set("acme", "alice", [probe("a")]);
 		users.removeSlug("acme");
 		expect(registry.snapshot().installed()).toEqual([]);
+	});
+
+	test("quarantine removes a slug's per-user tool entries", async () => {
+		const registry = createRegistry();
+		const userTools = new UserToolRegistry(registry, () => ["acme"]);
+		userTools.set("acme", "alice", [probe()]);
+		const { loadExtensions } = await import("../src/harness/loader.js");
+		const loaded = await loadExtensions([
+			pathToFileURL(join(import.meta.dirname, "fixtures", "fixture-quarantined-user-tools", "index.js")).href,
+		], registry, { onQuarantine: (slug) => userTools.removeSlug(slug) });
+		expect(loaded.outcomes).toEqual([
+			expect.objectContaining({ name: expect.stringContaining("fixture-quarantined-user-tools"), status: "quarantined" }),
+		]);
+		expect(registry.snapshot().installed().map((entry) => entry.name)).not.toContain("acme@alice");
 	});
 
 	test("setUserTools requires perUserTools: true", async () => {
@@ -374,6 +389,13 @@ describe("owner writes rewrite selections in the same commits", () => {
 });
 
 describe("configure and boot sweep", () => {
+	test("the sweep skips storage when there are no per-user slugs", async () => {
+		const scanConversations = vi.fn();
+		const storage = { scanConversations } as unknown as Parameters<typeof sweepUserSelections>[1];
+		const harness = {} as Parameters<typeof sweepUserSelections>[0];
+		await expect(sweepUserSelections(harness, storage, [])).resolves.toEqual({ scanned: 0, changed: 0 });
+		expect(scanConversations).not.toHaveBeenCalled();
+	});
 	test("configure with another user's entry is rejected on both the route and host bridge", async () => {
 		const { opened, config } = await boot();
 		acmeHost(opened).tools.setUserTools("bob", [probe()]);

@@ -1049,18 +1049,23 @@ export async function openHarness(
 					seamKinds.set(extensionName, kinds);
 				}
 				return host;
-				},
-			onQuarantine: (slug) => userServices.quarantine(slug),
+			},
+			onQuarantine: (slug) => {
+				userTools.removeSlug(slug);
+				return userServices.quarantine(slug);
+			},
 		},
-);
-perUserSlugs.push(...loadedPerUserSlugs);
-for (const binding of userServiceBindings) userServices.register(binding.extension, binding.services, binding.packageDir);
-// The late fill (W5 Task 4): the skills extension installed BEFORE the
-// loader ran, holding an empty package-roots array by reference — the
-// collected roots land HERE, and the section (which renders per request)
-// observes them from its next render on. Core sections still lead the
-// prompt; only the discovery content is late.
-collectedSkillRoots.push(...extensionSkillRoots);
+	);
+	perUserSlugs.push(...loadedPerUserSlugs);
+	for (const binding of userServiceBindings) {
+		userServices.register(binding.extension, binding.services, binding.packageDir);
+	}
+	// The late fill (W5 Task 4): the skills extension installed BEFORE the
+	// loader ran, holding an empty package-roots array by reference — the
+	// collected roots land HERE, and the section (which renders per request)
+	// observes them from its next render on. Core sections still lead the
+	// prompt; only the discovery content is late.
+	collectedSkillRoots.push(...extensionSkillRoots);
 	// The prompt-template package roots (Task 2c): derived from the loaded
 	// entries' package roots — each package that ships a `prompts/`
 	// directory becomes an attributed root (the loader has no fs coupling

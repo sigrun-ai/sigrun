@@ -2430,6 +2430,7 @@ const slugs = new Map<string, string>();
 const channelIds = new Map<string, string>();
 for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
 const display = label ?? entry ?? "skills-only";
+let quarantineSlug = slugifyName(label ?? entry ?? "");
 				try {
 				// Skills-only resolution (§9.4): the package declared skill dirs and
 				// has NO loadable entry — nothing is imported. The outcome records
@@ -2555,6 +2556,7 @@ const display = label ?? entry ?? "skills-only";
 					);
 				}
 				const slug = slugifyName(declared);
+				quarantineSlug = slug;
 				if (slug === "") {
 					throw new Error(
 						`extension name "${declared}" sanitizes to an empty slug ` +
@@ -2837,7 +2839,7 @@ const display = label ?? entry ?? "skills-only";
 				skillRoots.push({ extension: slug, dir });
 			}
 		} catch (cause) {
-			await options.onQuarantine?.(slugifyName(label ?? entry ?? ""));
+			await options.onQuarantine?.(quarantineSlug);
 			const message = cause instanceof Error ? cause.message : String(cause);
 			console.warn(
 				`extension quarantined: ${display} failed to load: ${message}`,

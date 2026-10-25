@@ -203,13 +203,8 @@ export class UserServices {
 				failures: [],
 				terminal: false,
 			};
-			// Only a settings change can clear the fence; a fresh restart
-			// entry never inherits another entry's crash history.
-			const previous = this.entries.get(key);
-			if (previous !== undefined && previous.failures.length > 0 && previous.live === undefined) {
-				entry.failures = [...previous.failures];
-				entry.lastError = previous.lastError;
-			}
+			// Failed entries stay in the map across explicit stops, so this new
+			// entry is used only when there is no crash history to preserve.
 			this.entries.set(key, entry);
 		}
 		if (entry.live === undefined && entry.failures.length >= 3) throw serviceError(entry);
