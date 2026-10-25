@@ -19,7 +19,8 @@
  *
  * Ops apply inside ONE conversation commit (a failed batch unwinds
  * before anything persists), and the commit returns only the new `rev`
- * — never a draft value (the chord settle hazard Task 1 documented).
+ * and the applied `ops` — plain JSON echoes the route answers, never a
+ * draft value (the chord settle hazard Task 1 documented).
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

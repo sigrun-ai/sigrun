@@ -45,7 +45,14 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord";
+import type {
+	Conversation,
+	ConversationId,
+	Harness,
+	Tx,
+} from "@earendil-works/pi-durable";
 import type { JsonObject, Tree } from "@sigrun/shared/blocks";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
@@ -56,6 +63,7 @@ import {
 	type ChangeRecord,
 } from "../src/harness/blocks/state.js";
 import { createServer } from "../src/server/index.js";
+import { applyChatAction } from "../src/server/blocks/chat-surfaces.js";
 import { seededIdentity } from "./helpers/identity.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 
@@ -945,5 +953,137 @@ describe("chat block routes (spec §8.2)", () => {
 		// The summary names the pre-edit position c1 ACTUALLY held (2nd),
 		// falling back from the payload's stale index.
 		expect(record?.summary).toBe("moved 'Arabesque' from 2nd to 4th in 'Ranking'");
-	});
+});
+
+		test("a move committed INSIDE this action's commit window: ops and summary address the post-compete data (fix round 2)", async () => {
+				// The serialized-POST test above still lets pre-in-commit-planning
+				// code pass: the first move is committed before the second handler
+				// starts, so even a plan computed at handler-entry sees the new
+				// data. THIS test lands the competing move INSIDE the window — a
+				// harness proxy whose conversation().commit performs the competing
+				// commit before delegating — so only a plan derived from the
+				// COMMIT-TIME draft can address the right row.
+				const server = await bootServer();
+				const { conversationId, entryId } = await conversationWithBlock(
+						server,
+						RANKING_TREE,
+						RANKING_DATA,
+						"Ranking",
+				);
+				const realHarness = server.opened.harness;
+				const realConversation = await realHarness.conversation(
+						conversationId as ConversationId,
+						BACKGROUND_CONTEXT,
+				);
+				expect(realConversation).toBeDefined();
+				// A commit wrapper whose FIRST invocation (applyChatAction's own
+				// edit commit) lands a competing move — c4 to the front — before
+				// the real commit runs. Competing commits afterwards would be
+				// queued, not interleaved, so exactly one wrap.
+		let competed = false;
+		// A call-forwarding proxy: the concrete Conversation's methods
+		// touch private fields, so a prototype-spread is out — every
+		// member forwards to the real instance bound as receiver, with
+		// `commit` wrapped. The competing commit runs BEFORE this
+		// action's own commit, inside the first commit call.
+		const real = realConversation!;
+		const competingConversation: Conversation = {
+			get id(): ConversationId {
+				return real.id;
+			},
+			agent: (context) => real.agent(context),
+			configure: (change, context) => real.configure(change, context),
+			submit: (submission, context) => real.submit(submission, context),
+			reset: (handoff, context) => real.reset(handoff, context),
+			compact: (instructions, context) => real.compact(instructions, context),
+			commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T> {
+				if (!competed) {
+					competed = true;
+					return real
+						.commit(async (tx) => {
+							const draft = await tx.doc(
+								BlocksStateDoc,
+								conversationId as ConversationId,
+								entryId,
+								entryId,
+							);
+							draft.data = {
+								cards: [
+									{ id: "c4", title: "Clair de Lune" },
+									{ id: "c1", title: "Arabesque" },
+									{ id: "c2", title: "Gymnopédie" },
+									{ id: "c3", title: "Reflets" },
+								],
+							};
+							draft.rev += 1;
+						}, context)
+						.then(() => real.commit(change, context));
+				}
+				return real.commit(change, context);
+			},
+			context: (context, options) => real.context(context, options),
+			entries: (query, limit, cursor, context) =>
+				real.entries(query, limit, cursor, context),
+			fork: (at, options, context) => real.fork(at, options, context),
+			abort: (context, options) => real.abort(context, options),
+			waitForIdle: (context) => real.waitForIdle(context),
+			viewState: (context) => real.viewState(context),
+			watch: (context) => real.watch(context),
+		};
+		// A Proxy (not a prototype spread): every member forwards BOUND
+		// to the real instance, so pi-durable's private fields stay
+		// reachable; only `conversation` is wrapped.
+		const proxyHarness: Harness = new Proxy(realHarness, {
+			get(target, property) {
+				if (property === "conversation") {
+					return (
+						id: ConversationId,
+						context: Context,
+					): Promise<Conversation | undefined> =>
+						target.conversation(id, context).then((handle) =>
+							handle === undefined ||
+							id !== (conversationId as ConversationId)
+								? handle
+								: competingConversation,
+						);
+				}
+				const value: unknown = Reflect.get(target, property);
+				return typeof value === "function" && property !== "constructor"
+					? (value as (...args: never[]) => unknown).bind(target)
+					: value;
+			},
+		});
+				// Stale payload (from.index 0): c1 sat 1st when the user dragged
+				// it; the competing move already put c4 ahead of it.
+				const outcome = await applyChatAction(
+						proxyHarness,
+						conversationId,
+						entryId,
+						"alice",
+						"reorderCards",
+						{
+								itemId: "c1",
+								from: { group: "", index: 0 },
+								to: { group: "", index: 3 },
+						},
+				);
+				expect(outcome).toMatchObject({
+						ok: true,
+						rev: 2,
+						ops: [{ op: "move", from: "/cards/1", path: "/cards/3" }],
+				});
+				const state = await readBlocksState(
+						server.opened.harness,
+						conversationId,
+						entryId,
+						BACKGROUND_CONTEXT,
+				);
+				expect(state?.rev).toBe(2);
+				const record = state?.changes[state.changes.length - 1] as
+						| ChangeRecord
+						| undefined;
+				expect(record?.summary).toBe(
+						"moved 'Arabesque' from 2nd to 4th in 'Ranking'",
+				);
+		});
 });

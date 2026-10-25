@@ -217,9 +217,26 @@ function moveSummary(
 		// The `from` position names the item's located (current) index —
 		// the payload's from.index is only a hint: an interleaved edit
 		// may have moved the row before this action's commit ran, and
-		// the summary must name the positions at APPLY time.
-		return `moved '${title}' from ${ordinal(at)} to ${ordinal(
-			to.index ?? at,
+		// the summary must name the positions at APPLY time. A grouped
+		// collection renders WITHIN-GROUP positions (the client's
+		// to.index is the drop index inside the lane), so the "from"
+		// ordinal counts only the item's own lane members — the raw
+		// array index would name a position the user never saw.
+		let fromIndex = at;
+		const groupBy = collection.groupBy;
+		if (groupBy !== undefined && isRec(item)) {
+			const groupValue = item[groupBy];
+			let before = 0;
+			for (let earlier = 0; earlier < at; earlier++) {
+				const candidate = items[earlier];
+				if (isRec(candidate) && candidate[groupBy] === groupValue) {
+					before += 1;
+				}
+			}
+			fromIndex = before;
+		}
+		return `moved '${title}' from ${ordinal(fromIndex)} to ${ordinal(
+			to.index ?? fromIndex,
 		)}${where}`;
 	}
 	return undefined;

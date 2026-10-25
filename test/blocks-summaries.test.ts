@@ -114,6 +114,20 @@ const LANES_DATA: JsonObject = {
 	],
 };
 
+/**
+ * NON-CONTIGUOUS lanes (the grouped-position test's stricter twin):
+ * the todo lane's rows do NOT sit at the array head, so an absolute
+ * `findIndex` position differs from the within-lane one ("3rd" vs the
+ * "2nd" the user saw).
+ */
+const LANES_DATA_NONCONTIGUOUS: JsonObject = {
+	tasks: [
+		{ id: "d1", title: "Review", status: "done" },
+		{ id: "t1", title: "Write spec", status: "todo" },
+		{ id: "t2", title: "Ship it", status: "todo" },
+	],
+};
+
 /** A submit-mode form with a longtext Notes field. */
 const FORM_TREE: Tree = {
 	v: 1,
@@ -207,6 +221,23 @@ describe("summarizeAction (spec §8.3)", () => {
 			},
 		);
 		expect(across).toBe("moved 'Write spec' from 1st to 1st in 'Done'");
+	});
+
+	test("move: grouped positions are within the group even when the lane's rows are not at the array head", () => {
+		// The done row leads the bound array, so Ship it's ABSOLUTE index
+		// is 2 ("3rd") while its within-'To do' position — what the user
+		// saw in the lane — is 2nd. The summary must name the lane one.
+		const summary = summarizeAction(
+			LANES_TREE,
+			LANES_DATA_NONCONTIGUOUS,
+			{ type: "move", name: "moveTask" },
+			{
+				itemId: "t2",
+				from: { group: "todo", index: 1 },
+				to: { group: "todo", index: 0 },
+			},
+		);
+		expect(summary).toBe("moved 'Ship it' from 2nd to 1st in 'To do'");
 	});
 
 	test("check: checked/unchecked with the item title and the section's title", () => {
