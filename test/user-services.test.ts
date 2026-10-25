@@ -329,7 +329,7 @@ describe("loaded services and HTTP surfaces", () => {
 		restarted.release();
 	});
 
-	test("/v1/me/services shows only the caller; admin inventory shows all", async () => {
+	test("/v1/me/services shows only the caller; the extension inventory is readable with admin-only services", async () => {
 		const { opened, app, tokens } = await boot();
 		const alice = await host(opened).services.connect("echo", "alice", CTX);
 		const bob = await host(opened).services.connect("echo", "bob", CTX);
@@ -337,6 +337,10 @@ describe("loaded services and HTTP surfaces", () => {
 		expect(own.statusCode).toBe(200);
 		expect(own.json().services).toEqual([{ slug: "acme", name: "echo", user: "alice", state: "running" }]);
 		expect(own.body).not.toContain('"user":"bob"');
+		const userInventory = await app.inject({ method: "GET", url: "/v1/extensions", headers: { authorization: `Bearer ${tokens.alice}` } });
+		expect(userInventory.statusCode).toBe(200);
+		expect(userInventory.json().extensions.length).toBeGreaterThan(0);
+		expect(userInventory.json().extensions.every((row: { services: unknown[] }) => row.services.length === 0)).toBe(true);
 		const inventory = await app.inject({ method: "GET", url: "/v1/extensions", headers: { authorization: `Bearer ${tokens.tester}` } });
 		const acme = inventory.json().extensions.find((row: { name: string }) => row.name === "acme");
 		expect(acme.services).toEqual([
