@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import type { HandlerContext, ServiceHandle, UserService } from "../src/extension.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
-import { UserServices } from "../src/harness/user-services.js";
+import { SERVICE_STDIO_REPLAY_BYTES, UserServices } from "../src/harness/user-services.js";
 import type { UserPolicy } from "../src/sandbox/policy.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
@@ -115,6 +115,34 @@ describe("UserServices process lifecycle", () => {
 		await writeLine(second, "still-running");
 		expect(await readLine(second.stdout)).toBe("echo:still-running");
 		second.release();
+	});
+
+	test("stdin traffic keeps an unheld service alive", async () => {
+		vi.useFakeTimers();
+		const { services } = await unitServices(async () => ({ command: NODE, args: ["-e", "process.stdin.resume()"] }), 1);
+		cleanups.pop();
+		const handle = await services.connect("acme", "echo", "alice", CTX);
+		handle.release();
+		await vi.advanceTimersByTimeAsync(45_000);
+		await writeLine(handle, "still-active");
+		await vi.advanceTimersByTimeAsync(45_000);
+		expect(services.statuses()[0]?.state).toBe("idle");
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(services.statuses()).toEqual([]);
+		await services.stopAll();
+	});
+
+	test("stdio replay is capped and dropped when no handles remain", async () => {
+		const { services } = await unitServices(async () => ({
+			command: NODE,
+			args: ["-e", "process.stdout.write('x'.repeat(100000)); process.stdin.resume()"],
+		}));
+		const handle = await services.connect("acme", "echo", "alice", CTX);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(services.retainedStdioBytes("acme", "echo", "alice").stdout).toBeLessThanOrEqual(SERVICE_STDIO_REPLAY_BYTES);
+		handle.release();
+		expect(services.retainedStdioBytes("acme", "echo", "alice")).toEqual({ stdout: 0, stderr: 0 });
+		await services.stopAll();
 	});
 
 	test("idle stop needs no handles and no stdio traffic for idleMinutes", async () => {

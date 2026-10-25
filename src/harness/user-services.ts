@@ -3,22 +3,37 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { Writable } from "node:stream";
 import type { HandlerContext, ServiceHandle, UserService } from "../extension.js";
 import type { ManagedPaths } from "../sandbox/grants.js";
 import { validateGrantPath } from "../sandbox/grants.js";
 import type { LaunchService } from "../sandbox/launch.js";
 import type { UserPolicy } from "../sandbox/policy.js";
 
-/** Buffered fan-out: every handle replays prior bytes, then receives new bytes. */
+/** Replay is capped so a noisy service cannot grow core memory without bound. */
+export const SERVICE_STDIO_REPLAY_BYTES = 64 * 1024;
+const SERVICE_STDIO_TRUNCATED = "[service output truncated]\n";
+
 class SharedServiceStream {
 	private readonly chunks: Uint8Array[] = [];
+	private bytes = 0;
+	private truncated = false;
 	private readonly controllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
 	private ended = false;
+
+	get retainedBytes(): number { return this.bytes; }
+
+	setHandles(count: number): void {
+		if (count === 0) {
+			this.chunks.length = 0;
+			this.bytes = 0;
+			this.truncated = false;
+		}
+	}
 
 	stream(): ReadableStream<Uint8Array> {
 		return new ReadableStream<Uint8Array>({
 			start: (controller) => {
+				if (this.truncated) controller.enqueue(new TextEncoder().encode(SERVICE_STDIO_TRUNCATED));
 				for (const chunk of this.chunks) controller.enqueue(chunk);
 				if (this.ended) controller.close();
 				else this.controllers.add(controller);
@@ -36,6 +51,19 @@ class SharedServiceStream {
 		if (this.ended) return;
 		const copy = new Uint8Array(chunk);
 		this.chunks.push(copy);
+		this.bytes += copy.byteLength;
+		while (this.bytes > SERVICE_STDIO_REPLAY_BYTES && this.chunks.length > 0) {
+			const dropped = this.chunks.shift()!;
+			this.bytes -= dropped.byteLength;
+			this.truncated = true;
+		}
+		if (this.bytes > SERVICE_STDIO_REPLAY_BYTES) {
+			const last = this.chunks[this.chunks.length - 1]!;
+			const excess = this.bytes - SERVICE_STDIO_REPLAY_BYTES;
+			this.chunks[0] = last.subarray(excess);
+			this.bytes = SERVICE_STDIO_REPLAY_BYTES;
+			this.truncated = true;
+		}
 		for (const controller of this.controllers) {
 			try { controller.enqueue(copy); } catch { this.controllers.delete(controller); }
 		}
@@ -134,6 +162,12 @@ export class UserServices {
 				if (entry.live === undefined) this.entries.delete(entry.key);
 			}
 		}
+	}
+
+	/** Retained replay bytes, exposed for lifecycle diagnostics and tests. */
+	retainedStdioBytes(slug: string, name: string, user: string): { stdout: number; stderr: number } {
+		const live = this.entries.get(`${slug}\0${name}\0${user}`)?.live;
+		return { stdout: live?.stdout.retainedBytes ?? 0, stderr: live?.stderrStream.retainedBytes ?? 0 };
 	}
 
 	statuses(): ServiceStatus[] {
@@ -289,11 +323,23 @@ export class UserServices {
 		const live = entry.live;
 		if (live === undefined) throw serviceError(entry);
 		live.handles++;
+		live.stdout.setHandles(live.handles);
+		live.stderrStream.setHandles(live.handles);
 		clearTimeout(live.timer);
 		live.lastTraffic = this.deps.now();
 		let released = false;
 		return {
-			stdin: Writable.toWeb(live.child.stdin) as WritableStream<Uint8Array>,
+			stdin: new WritableStream<Uint8Array>({
+				write: (chunk) => new Promise<void>((resolveWrite, rejectWrite) => {
+					live.lastTraffic = this.deps.now();
+					this.armIdle(entry);
+					live.child.stdin.write(chunk, (error) => {
+						if (error) rejectWrite(error); else resolveWrite();
+					});
+				}),
+				close: async () => { live.child.stdin.end(); },
+				abort: async (reason) => { live.child.stdin.destroy(reason as Error); },
+			}),
 			stdout: live.stdout.stream(),
 			stderr: live.stderrStream.stream(),
 			exited: live.exited,
@@ -301,6 +347,8 @@ export class UserServices {
 				if (released) return;
 				released = true;
 				live.handles--;
+				live.stdout.setHandles(live.handles);
+				live.stderrStream.setHandles(live.handles);
 				this.armIdle(entry);
 			},
 		};
