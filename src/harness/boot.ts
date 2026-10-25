@@ -86,6 +86,11 @@ import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
+import { launchInJail } from "../sandbox/launch.js";
+import { buildUserPolicy, defaultModuleTrees } from "../sandbox/policy.js";
+import { lookupOsAccount } from "../sandbox/os-account.js";
+import { agentEnv } from "./agent-env.js";
+import { UserServices } from "./user-services.js";
 import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool.js";
 import { IsolationState } from "../sandbox/isolation.js";
 import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.js";
@@ -167,6 +172,7 @@ export interface OpenedHarness {
 	readonly osUsers: OsUsersAvailability;
 	/** The shared per-user workers, stopped before the harness seal. */
 	readonly sandboxPool: WorkerPool;
+	readonly userServices: UserServices;
 	/**
 	 * The durable storage handle the harness was opened over — the same
 	 * instance the Session owns and closes on `harness.close()`. Exposed so
@@ -779,6 +785,47 @@ export async function openHarness(
 		const code = await ensureSetupCode(identity.cacheDir, env);
 		console.log(`sigrun setup code: ${code}`);
 	}
+	const managedPaths = {
+		roots,
+		storagePath: config.storagePath,
+		coreRoot,
+		userAreas: (user: string) => join(roots.dataDir, "users", user),
+	};
+	const userServices = new UserServices({
+		launch: (policy, command, args, serviceEnv) => {
+			if (helper === undefined) throw new Error("sandbox helper not found");
+			return launchInJail(helper, policy, command, args, serviceEnv);
+		},
+		policyFor: (user) => {
+			const record = identity.users.get(user);
+			if (record === undefined) return { reason: `unknown user "${user}"` };
+			let osAccount: ReturnType<typeof lookupOsAccount>;
+			if (record.osUser !== undefined) {
+				if (!osUsers.available) return { reason: "osUser requires CAP_SETUID" };
+				try { osAccount = lookupOsAccount(record.osUser); } catch { return { reason: `OS account not found: ${record.osUser}` }; }
+				if (osAccount === undefined) return { reason: `OS account not found: ${record.osUser}` };
+			}
+			const built = buildUserPolicy(record, {
+				managed: managedPaths,
+				nodeBinDir: process.execPath,
+				moduleTrees: defaultModuleTrees(coreRoot),
+				...(osAccount === undefined ? {} : { osAccount }),
+			});
+			if (!built.ok) return { reason: built.reason };
+			if (!isolationState.active()) {
+				const serviceEnv = agentEnv(env);
+				delete serviceEnv.SSH_AUTH_SOCK;
+				serviceEnv.HOME = built.policy.home;
+				serviceEnv.TMPDIR = built.policy.tmp;
+				serviceEnv.USER = user;
+				return { ...built.policy, env: serviceEnv };
+			}
+			return built.policy;
+		},
+		isolationActive: () => isolationState.active(),
+		now: () => Date.now(),
+		managed: managedPaths,
+	});
 	const storage = await openNodeSqliteStorage(config.storagePath);
 	const registry = createRegistry();
 	// Late-filled by the loader: factories publish through the same registry
@@ -951,6 +998,7 @@ export async function openHarness(
 		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
+		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
 		webuiBundles: extensionWebuiBundles,
@@ -988,7 +1036,7 @@ export async function openHarness(
 					}, sharedStores, {
 						declared: (slug) => perUserSlugs.includes(slug),
 						set: (slug, user, tools) => userTools.set(slug, user, tools),
-					});
+					}, userServices);
 				host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
 				// resolved: the PRE-import call must NOT file (its identity is
@@ -1000,10 +1048,12 @@ export async function openHarness(
 					seamKinds.set(extensionName, kinds);
 				}
 				return host;
-			},
+				},
+			onQuarantine: (slug) => userServices.quarantine(slug),
 		},
 );
 perUserSlugs.push(...loadedPerUserSlugs);
+for (const binding of userServiceBindings) userServices.register(binding.extension, binding.services, binding.packageDir);
 // The late fill (W5 Task 4): the skills extension installed BEFORE the
 // loader ran, holding an empty package-roots array by reference — the
 // collected roots land HERE, and the section (which renders per request)
@@ -1262,12 +1312,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		osUsers,
 		pool: sandboxPool,
 		directory: identity.users,
-		managed: {
-			roots,
-			storagePath: config.storagePath,
-			coreRoot,
-			userAreas: (user) => join(roots.dataDir, "users", user),
-		},
+		managed: managedPaths,
 		ownerOf: async (conversationId, read, ctx) =>
 			(await read.snapshot(SessionMetaDoc, conversationId, ctx))?.owner,
 	});
@@ -1637,6 +1682,7 @@ collectedSkillRoots.push(...extensionSkillRoots);
 		isolationState,
 		osUsers,
 		sandboxPool,
+		userServices,
 		storage,
 		registry,
 		userTools,

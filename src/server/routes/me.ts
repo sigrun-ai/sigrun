@@ -20,6 +20,14 @@ export function registerMeRoutes(
 ): void {
 	const { opened } = ctx;
 
+	app.get("/v1/me/services", async (request, reply) => {
+		const user = request.principal.user;
+		if (user === undefined || opened.identity.users.get(user) === undefined) {
+			return await reply.code(400).send({ error: "named_user_required" });
+		}
+		return { services: opened.userServices.statuses().filter((status) => status.user === user) };
+	});
+
 	/** Resolve the caller + slug before any store I/O. */
 	const resolve = (
 		request: FastifyRequest,
@@ -57,6 +65,8 @@ export function registerMeRoutes(
 		}
 		const settings = body as Record<string, unknown>;
 		await stores.settings.set(settings);
+		const { slug } = request.params as { slug: string };
+		opened.userServices.settingsChanged(slug, request.principal.user!);
 		const response: ExtensionSettingsResponse = { settings, pendingRestart: [] };
 		return response;
 	});

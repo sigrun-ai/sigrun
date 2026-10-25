@@ -691,6 +691,14 @@ export interface AuthCheckResponse {
  * every served entry, empty when the extension declared none). The
  * webui's Extensions settings section renders this list.
  */
+export interface ServiceStatusWire {
+	readonly slug: string;
+	readonly name: string;
+	readonly user: string;
+	readonly state: "running" | "idle" | "failed";
+	readonly lastError?: string;
+}
+
 export interface ExtensionInfo {
 	readonly name: string;
 	readonly status: string;
@@ -704,6 +712,8 @@ export interface ExtensionInfo {
 	readonly workers: readonly WorkerStatus[];
 	/** The declared HTTP routes, one `{method, path, auth}` each (W5 Task 2). */
 	routes?: readonly ExtensionRouteInfo[];
+	/** Per-user service states; admin-only inventory. */
+	readonly services: readonly ServiceStatusWire[];
 	/** The declared surfaces, one `{id, title, icon, placement}` each (U3 Task 1); absent when none. */
 	surfaces?: readonly ExtensionSurfaceInfo[];
 	/**

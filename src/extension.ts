@@ -302,6 +302,35 @@ export interface ExtensionWorker {
 }
 
 // ---------------------------------------------------------------------------
+// Per-user services (multi-user M2, spec §10.3)
+// ---------------------------------------------------------------------------
+
+/** The command and extra environment/read rights for one per-user process. */
+export interface ServiceSpec {
+	readonly command: string;
+	readonly args: string[];
+	readonly env?: Record<string, string>;
+	readonly cwd?: string;
+	readonly readPaths?: string[];
+}
+
+/** One factory-declared long-lived per-user service. */
+export interface UserService {
+	readonly name: string;
+	start(user: string, ctx: HandlerContext): Promise<ServiceSpec | undefined>;
+	readonly idleMinutes?: number;
+}
+
+/** A shared-stdio attachment to a running per-user service. */
+export interface ServiceHandle {
+	readonly stdin: WritableStream<Uint8Array>;
+	readonly stdout: ReadableStream<Uint8Array>;
+	readonly stderr: ReadableStream<Uint8Array>;
+	readonly exited: Promise<{ code: number | null; signal: string | null }>;
+	release(): void;
+}
+
+// ---------------------------------------------------------------------------
 // Provider + webui-bundle contributions
 // ---------------------------------------------------------------------------
 
@@ -842,6 +871,11 @@ export interface SigrunHost {
 		setUserTools(user: string, tools: readonly import("@earendil-works/pi-durable").ToolRegistration[]): void;
 	};
 
+	/** Connect to one declared per-user service; core owns its process lifecycle. */
+	readonly services: {
+		connect(name: string, user: string, ctx: HandlerContext): Promise<ServiceHandle>;
+	};
+
 	/** The scoped extension-stores handle (your secrets/settings sections + raw data/cache/state paths). */
 	readonly stores: {
 		/** One directory user's secrets/settings/paths, still scoped to your slug. */
@@ -1157,6 +1191,8 @@ export interface SigrunHost {
  * begins reading each when its task lands.
  */
 export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
+	/** Long-lived per-user sibling processes, launched and supervised by core. */
+	readonly userServices?: readonly UserService[];
 	/** Declare the per-user tool surface (`host.tools.setUserTools`). */
 	readonly perUserTools?: boolean;
 	/** The pi-durable `Extension` to install; its declared name is the slug source. */

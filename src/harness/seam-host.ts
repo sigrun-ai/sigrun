@@ -85,6 +85,7 @@ export interface SeamHost {
 	readonly stores: ExtensionStores;
 	/** Multi-user M2: per-user publication, gated by the factory declaration. */
 	readonly tools: SigrunHost["tools"];
+	readonly services: SigrunHost["services"];
 	/**
 	 * Boot-owned two-phase re-key (the loader calls the host factory once
 	 * with the PROVISIONAL identity before the extension name/kinds are
@@ -229,6 +230,7 @@ export function createSeamHost(
 		readonly declared: (slug: string) => boolean;
 		readonly set: (slug: string, user: string, tools: readonly ToolRegistration[]) => void;
 	},
+	services?: { connect(slug: string, name: string, user: string, ctx: Parameters<SigrunHost["services"]["connect"]>[2]): ReturnType<SigrunHost["services"]["connect"]> },
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
 	const ambientKinds = new Set(kinds.ambient ?? []);
@@ -274,6 +276,12 @@ export function createSeamHost(
 					throw new Error("perUserTools not declared");
 				}
 				perUserTools.set(identity.name, user, tools);
+			},
+		},
+		services: {
+			connect: (name, user, ctx) => {
+				if (services === undefined) return Promise.reject(new Error("user services unavailable"));
+				return services.connect(identity.name, name, user, ctx);
 			},
 		},
 

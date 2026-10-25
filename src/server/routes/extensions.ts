@@ -19,7 +19,7 @@
  * among the loaded outcomes (the same list `GET /v1/meta` reports).
  */
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ServerContext } from "../context.js";
 import { BUILTIN_EXTENSIONS } from "../../harness/builtins.js";
 import type {
@@ -58,7 +58,8 @@ export function registerExtensionRoutes(
 	// row here — `builtin: true`, `replacedBy` the configured specifier,
 	// status "replaced" — while a DISABLED one is absent entirely
 	// (ruling 6).
-	app.get("/v1/extensions", async (): Promise<ExtensionsResponse> => {
+	app.get("/v1/extensions", async (request, reply): Promise<ExtensionsResponse | FastifyReply> => {
+		if (!request.principal.admin) return reply.code(403).send({ error: "forbidden" });
 		const workerStatuses = opened.workerStatuses();
 		const extensions: ExtensionInfo[] = opened.extensionOutcomes.map(
 			(outcome) => {
@@ -93,6 +94,7 @@ export function registerExtensionRoutes(
 					interactionKinds: [...(kinds?.interaction ?? [])],
 					ambientKeys: [...(kinds?.ambient ?? [])],
 					workers: workers ?? [],
+					services: opened.userServices.statuses().filter((status) => status.slug === outcome.name),
 					routes:
 						routes?.routes.map((route) => ({
 							method: route.method,
@@ -136,6 +138,7 @@ export function registerExtensionRoutes(
 				interactionKinds: [],
 				ambientKeys: [],
 				workers: [],
+				services: [],
 				routes: [],
 			});
 		}
