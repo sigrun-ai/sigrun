@@ -1490,31 +1490,48 @@ the calling user's services.
 ### Per-user tools
 
 Declare `perUserTools: true` in the factory result, then publish or replace
-one user's tools:
+one user's tools **after the factory has resolved**. The declaration is read
+from the return value, so calling `setUserTools` in the factory body throws
+`perUserTools not declared`. There is no dedicated after-factory publication
+hook: publish from a post-load entry point such as a route, command, worker,
+or lifecycle handler. This example publishes when a conversation is created
+for its owner:
 
 ```ts
 import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension";
-import { defineTool } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 
 export default function createAcmeTools(host: SigrunHost): SigrunExtensionResult {
-	host.tools.setUserTools("alice", [
-		defineTool({
-			name: "acme-profile",
-			description: "Read the calling user's Acme profile",
-			parameters: Type.Object({}),
-			execute: async () => ({
-				output: [{ type: "text", text: "Acme profile" }],
-			}),
-		}),
-	]);
-	return { perUserTools: true };
+	return {
+		extension: defineExtension({ name: "acme-tools" }),
+		perUserTools: true,
+		conversationCreated: ({ owner }) => {
+			if (owner === undefined) return;
+			host.tools.setUserTools(owner, [
+				defineTool({
+					name: "acme-profile",
+					description: "Read the calling user's Acme profile",
+					parameters: Type.Object({}),
+					execute: async () => ({
+						output: [{ type: "text", text: "Acme profile" }],
+					}),
+				}),
+			]);
+		},
+	};
 }
 ```
 
+This mirrors the shipped fixture's declaration and its post-boot
+publication through the captured host. Choose the post-load entry point
+that fits your extension's provisioning flow; `conversationCreated` alone
+does not backfill publications for users who create no new conversation.
+
 Core installs the publication as `<slug>@<user>` (here,
-`acme-tools@alice`); an empty tool list removes that entry. Calling
-`setUserTools` without declaring `perUserTools: true` throws.
+`acme-tools@alice` for owner `alice`); an empty tool list removes that
+entry. Calling `setUserTools` without declaring `perUserTools: true`
+throws.
 
 For ordinary object/absent extension selections, core adds the owner's
 per-user entries when a conversation is created, forked, or transferred,
@@ -1543,6 +1560,7 @@ import type { SigrunExtensionResult, SigrunHost } from "@sigrun/sigrun/extension
 
 export default function createAcmeService(host: SigrunHost): SigrunExtensionResult {
 	return {
+		name: "acme-service",
 		userServices: [
 			{
 				name: "acme-api",
