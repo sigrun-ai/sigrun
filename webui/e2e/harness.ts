@@ -87,6 +87,19 @@ export interface E2EServerOptions {
 	 * this hermetic boot).
 	 */
 	readonly extensionSpecifiers?: readonly string[];
+	/**
+	 * U7 Task 3 (the images e2e): the proxy fetch deps override threaded
+	 * to `createServer`'s `imageFetch` option — the spec's image server
+	 * is a local TLS fixture, so the resolver maps its public test host
+	 * onto this host's own global address and the CA pin trusts the
+	 * fixture's self-signed cert.
+	 */
+	readonly imageFetch?: { resolve(host: string): Promise<string[]>; ca?: Buffer };
+	/**
+	 * Load the built-in extensions (Task 2). Defaults to FALSE (see the
+	 * boot below) — scripted-response specs opt out; the built-in
+	 * surface specs opt in.
+	 */
 	readonly builtins?: boolean;
 }
 
@@ -102,13 +115,6 @@ export interface E2EServer {
 	/** The per-boot tmpdir — the conversation's workspace root (the checklist
 	 * tests write files here for the workspace-browser + upload items). */
 	readonly workspaceDir: string;
-	/**
-	 * Load the built-in extensions (Task 2). Defaults to FALSE: these specs
-	 * script exact faux response queues, and the built-ins' `codemode` prompt
-	 * section changes the token counts those scripts depend on. Opt in when
-	 * a spec is about the built-in surface.
-	 */
-	readonly builtins?: boolean;
 	/** Idempotent teardown: close the app, the harness, remove the tmpdir. */
 	readonly cleanup: () => Promise<void>;
 	/**
@@ -216,7 +222,9 @@ async function bootOnDir(
 		// test/builtins.test.ts's subject; pass `builtins: true` to opt in.
 		builtins: options.builtins === true,
 	});
-	const app = await createServer(opened, config);
+	const app = await createServer(opened, config, [], {
+		...(options.imageFetch === undefined ? {} : { imageFetch: options.imageFetch }),
+	});
 	// Browser-login fixture: a loopback destination for the provider's
 	// synthetic .invalid URL (the spec continues the request here).
 	app.get("/fixture-idp", async (_request, reply) => {

@@ -26,7 +26,9 @@
  */
 
 import type { JsonObject, Tree } from "@sigrun/shared/blocks";
-import type { DataOps } from "@sigrun/shared/blocks";
+import type { DataOps, JsonValue } from "@sigrun/shared/blocks";
+import type { ImageSign } from "../images/rewrite.js";
+import { rewriteImages } from "../images/rewrite.js";
 import { validateTree, type ValidationError } from "../../blocks/validate.js";
 import type {
 	ActionResult,
@@ -213,6 +215,8 @@ export class SurfaceService {
 	private readonly maxUploadBytes: number;
 	private readonly watchers: WatcherRegistry;
 	private readonly publishChanged: ((event: SurfaceChangedInternal) => void) | undefined;
+	/** The image-signer (U7 Task 1, spec §11.2): every tree/data response passes through the rewriter before leaving the server. */
+	private readonly imageSign: ImageSign | undefined;
 	private readonly extra: { extension: string; defs: readonly SurfaceDef<"view" | "panel" | "settings">[] }[] = [];
 
 	constructor(
@@ -223,6 +227,8 @@ export class SurfaceService {
 			watchers?: WatcherRegistry;
 			/** The hub publish (Task 4): bumpRev fans out surface.changed. */
 			publishChanged?: (event: SurfaceChangedInternal) => void;
+			/** Signs https image URLs into expiring proxy URLs (U7 Task 1); absent = pass-through. */
+			imageSign?: ImageSign;
 			/**
 			 * Settings-placement surfaces (UI-blocks U4 Task 3, spec §13.4):
 			 * the settings-surfaces adapter's output (extension sections +
@@ -242,6 +248,7 @@ export class SurfaceService {
 		this.maxUploadBytes = options?.maxUploadBytes ?? Number.MAX_SAFE_INTEGER;
 		this.watchers = options?.watchers ?? new WatcherRegistry();
 		this.publishChanged = options?.publishChanged;
+		this.imageSign = options?.imageSign;
 	}
 
 	/**
@@ -345,8 +352,13 @@ export class SurfaceService {
 			}
 		}
 		return {
-			tree: validation.tree,
-			data: result.data,
+			// SAFETY: the rewriter is a structural JSON walk returning the same
+			// shape; `Tree` (interfaces) has no implicit index signature, so the
+			// generic JsonValue round-trip needs the bridge cast.
+			tree: this.rewriteForWire(
+				validation.tree as unknown as JsonValue,
+			) as unknown as Tree,
+			data: this.rewriteForWire(result.data),
 			rev: state.rev,
 			treeRev: state.treeRev,
 			access: result.access,
@@ -388,7 +400,18 @@ export class SurfaceService {
 			const ops = state.ops
 				.filter((entry) => entry.rev > since)
 				.flatMap((entry) => entry.ops);
-			return { rev: state.rev, treeRev: state.treeRev, ops };
+			// Ops answers are data responses too (spec §7.3): the client folds
+			// them into its local copy, so they must carry the SAME rewritten
+			// sources the full data answer would — else fold(data, ops) drifts
+			// from the server's data.
+			return {
+				rev: state.rev,
+				treeRev: state.treeRev,
+				// SAFETY: ops are wire JSON (DataOp values); the rewriter returns
+				// the same shape, and `unknown[]`'s lack of an index signature is
+				// the only reason for the bridge cast.
+				ops: this.rewriteForWire(ops as unknown as JsonValue) as unknown as readonly unknown[],
+			};
 		}
 
 		let data: JsonObject;
@@ -433,7 +456,21 @@ export class SurfaceService {
 		if (located.def.sharedData !== true) {
 			state.rev += 1;
 		}
-		return { rev: state.rev, treeRev: state.treeRev, data };
+		return { rev: state.rev, treeRev: state.treeRev, data: this.rewriteForWire(data) };
+	}
+
+	/**
+	 * The wire-side image rewrite (U7 Task 1, spec §11.1/§11.2): every
+	 * tree and data (and ops) response passes through `rewriteImages`
+	 * before leaving the server, replacing https image sources with
+	 * signed proxy URLs. Absent signer → verbatim pass-through. This is
+	 * the hook point U5's chat surfaces reuse when they land: they call
+	 * the same `rewriteImages` over their trees/data.
+	 */
+	private rewriteForWire<T extends JsonValue>(value: T): T {
+		return this.imageSign === undefined
+			? value
+			: rewriteImages(value, this.imageSign);
 	}
 
 	/**

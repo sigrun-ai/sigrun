@@ -743,6 +743,15 @@ wins, env bootstraps). The author-facing contract — the store taxonomy,
 the directory map, the slug rule, the `host.stores` handle, uninstall
 and backup posture — is [`docs/extending.md`](docs/extending.md).
 
+**Building surfaces:** an extension can also contribute UI — views,
+panels, settings sections, chat and interaction cards, ambient status —
+as **block trees** rendered identically by the webui and the TUI. The
+typed builders come from `@sigrun/sigrun/blocks`; the placement table,
+block catalog, action kinds, access and `sharedData`, uploads, images,
+and three complete worked examples (a lanes board, a settings section,
+a dashboard) are in
+[`docs/extending.md`](docs/extending.md#building-surfaces).
+
 ## Built-in extensions
 
 Three extensions are built into core — **codemode**, **MCP**, and

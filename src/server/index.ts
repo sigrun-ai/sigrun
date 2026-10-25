@@ -70,6 +70,10 @@ import { startNotifications } from "./notifications.js";
 import { selfPackageRoot } from "../harness/packages.js";
 import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
+import { loadOrCreateKey, signUrl } from "./images/sign.js";
+import { ImageCache } from "./images/cache.js";
+import type { FetchDeps } from "./images/fetch.js";
+import { registerImageRoutes } from "./routes/images.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
 import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
@@ -128,6 +132,13 @@ export async function createServer(
 		 */
 		gateway?: GatewayHandle;
 		/**
+		 * The image-proxy fetch deps override (U7 Task 3): tests inject a
+		 * resolver + CA so the proxy's upstream is a local TLS fixture
+		 * instead of the public internet. Absent = the real `dns.lookup`
+		 * and wall clock (the deploy default).
+		 */
+		imageFetch?: Partial<FetchDeps>;
+		/**
 		 * The restart callback (U4 Task 2, spec §13.3): the serve
 		 * composition threads its graceful-shutdown + exit-0 path here so
 		 * `POST /v1/admin/restart` runs exactly what SIGTERM runs. Absent
@@ -141,7 +152,17 @@ export async function createServer(
 		loginNow?: () => number;
 	},
 ): Promise<FastifyInstance> {
-	const app = Fastify({ logger: false });
+	const app = Fastify({
+		logger: false,
+		// U7 Task 3: the image route's GET `src=data:` form carries up to
+		// 192 KiB of base64 in the query string, which counts toward
+		// Node's 16 KiB default header cap and would be 431-rejected at
+		// the HTTP layer before the route's own §11.1 413 could answer.
+		// 256 KiB admits the cap-sized URL; the route enforces the real
+		// limit (192 KiB) itself. The POST form (the body path) stays the
+		// recommended shape for long data URLs.
+		http: { maxHeaderSize: 256 * 1024 },
+	});
 	const listenHost = options?.listenHost ?? "0.0.0.0";
 	const env = options?.env ?? {};
 	// The one body-limit error shape (spec §6.2, W2): Fastify's
@@ -221,8 +242,30 @@ export async function createServer(
 	// OUTSIDE before app.close() — a decoration is the typed, discoverable
 	// way to hand that handle up without widening ServerContext's consumers.
 	app.decorate("sse", sse);
+	// The image-proxy signer (U7 Task 1, spec §11.2): the key is loaded
+	// (created at first boot) from the state dir — deleting the file
+	// rotates it — and every surface tree/data answer rewrites https
+	// image sources through it at serve time.
+	const imageKey = await loadOrCreateKey(config.stateDir);
+	const imageSign = (u: string): string => signUrl(imageKey, u, Date.now());
+	// The proxy cache + fetch deps (U7 Task 3, spec §11.2): the on-disk
+	// LRU under `<cacheDir>/images/`; the deps are the real resolver +
+	// clock unless a test injects its own.
+	const imageCache = new ImageCache(config.cacheDir);
+	const imageDeps: FetchDeps = {
+		resolve: async (host) => {
+			const { lookup } = await import("node:dns/promises");
+			const addresses = await lookup(host, { all: true, verbatim: true });
+			return addresses.map((entry) => entry.address);
+		},
+		now: Date.now,
+		...options?.imageFetch,
+	};
 	const surfacesService = new SurfaceService(opened.extensionSurfaces, {
 		maxUploadBytes: config.maxUploadBytes,
+		// Signs https image URLs into expiring proxy URLs (U7 Task 1,
+		// spec §11.2) on every tree/data response.
+		imageSign,
 		// Task 4: bumpRev (actions AND the host seam's changed()) fans the
 		// surface.changed event out to the hub; the events route's
 		// visibility case delivers it to watching streams only.
@@ -307,6 +350,7 @@ export async function createServer(
 		watchersByConversation: new Map(),
 		surfaces: surfacesService,
 		sse,
+		imageProxy: { cache: imageCache, deps: imageDeps, key: imageKey },
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),
 		...(options?.onRestart === undefined
 			? {}
@@ -367,6 +411,10 @@ export async function createServer(
 	// `/v1/ext/<slug>/assets/*` serves the package's declared
 	// `sigrun.assets` dir, realpath-contained, sniffed content types.
 	registerExtAssetRoutes(app, ctx);
+	// The image-proxy routes (UI-blocks U7 Task 3, spec §11.2): signed
+	// remote fetches through the on-disk LRU, the `src=` asset/data form,
+	// and the POST long-data-URL form.
+	registerImageRoutes(app, ctx);
 	// The jobs routes (W4 Task 4, spec §8.4): the access-scoped CRUD +
 	// run-now + history surface over `OpenedHarness.jobs` (Task 3's
 	// service). Hidden-is-404 per §5.9; `file:`/`ext:` ids are immutable
