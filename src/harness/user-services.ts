@@ -126,8 +126,10 @@ export class UserServices {
 	/** Only a committed write to THIS user's settings for THIS slug clears its failure fence. */
 	settingsChanged(slug: string, user: string): void {
 		for (const entry of this.entries.values()) {
-			if (entry.slug === slug && entry.user === user && entry.live === undefined) {
-				this.entries.delete(entry.key);
+			if (entry.slug === slug && entry.user === user) {
+				entry.failures = [];
+				entry.lastError = undefined;
+				if (entry.live === undefined) this.entries.delete(entry.key);
 			}
 		}
 	}
@@ -157,6 +159,13 @@ export class UserServices {
 				packageDir: this.directories.get(slug)!,
 				failures: [],
 			};
+			// Only a settings change can clear the fence; a fresh restart
+			// entry never inherits another entry's crash history.
+			const previous = this.entries.get(key);
+			if (previous !== undefined && previous.failures.length > 0 && previous.live === undefined) {
+				entry.failures = [...previous.failures];
+				entry.lastError = previous.lastError;
+			}
 			this.entries.set(key, entry);
 		}
 		if (entry.live === undefined && entry.failures.length >= 3) throw serviceError(entry);
@@ -310,7 +319,7 @@ export class UserServices {
 		if (starting !== undefined) await starting.catch(() => {});
 		const live = entry.live;
 		entry.live = undefined;
-		this.entries.delete(entry.key);
+		if (entry.failures.length < 3) this.entries.delete(entry.key);
 		if (live === undefined) return;
 		await new Promise<void>((resolveStop) => {
 			if (live.child.exitCode !== null || live.child.signalCode !== null) {

@@ -230,7 +230,10 @@ export function createSeamHost(
 		readonly declared: (slug: string) => boolean;
 		readonly set: (slug: string, user: string, tools: readonly ToolRegistration[]) => void;
 	},
-	services?: { connect(slug: string, name: string, user: string, ctx: Parameters<SigrunHost["services"]["connect"]>[2]): ReturnType<SigrunHost["services"]["connect"]> },
+	services?: {
+		connect(slug: string, name: string, user: string, ctx: Parameters<SigrunHost["services"]["connect"]>[2]): ReturnType<SigrunHost["services"]["connect"]>;
+		settingsChanged(slug: string, user: string): void;
+	},
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
 	const ambientKinds = new Set(kinds.ambient ?? []);
@@ -240,6 +243,19 @@ export function createSeamHost(
 	// factory-captured host object re-scopes IN PLACE (never a second
 	// host, never a stale view).
 	let stores = scopedExtensionStores(sharedStores, identity.name);
+	const userStores = (user: string): ReturnType<SigrunHost["stores"]["user"]> => {
+		const scoped = stores.user(user);
+		return {
+			...scoped,
+			settings: {
+				get: scoped.settings.get,
+				set: async (value) => {
+					await scoped.settings.set(value);
+					services?.settingsChanged(identity.name, user);
+				},
+			},
+		};
+	};
 
 	async function harness(context: Context): Promise<Harness> {
 		const h = await bind.harness();
@@ -267,7 +283,7 @@ export function createSeamHost(
 
 	return {
 		get stores() {
-			return stores;
+			return { ...stores, user: userStores };
 		},
 
 		tools: {

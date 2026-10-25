@@ -251,6 +251,9 @@ describe("loaded services and HTTP surfaces", () => {
 			handle.release();
 		}
 		await expect(host(opened).services.connect("echo", "alice", CTX)).rejects.toThrow("stderr-25");
+		// A stop/start cycle is not a settings change and must not clear it.
+		await opened.userServices.stopUser("alice");
+		await expect(host(opened).services.connect("echo", "alice", CTX)).rejects.toThrow("stderr-25");
 		const response = await app.inject({ method: "PUT", url: "/v1/me/extensions/acme/settings", headers: { authorization: `Bearer ${tokens.alice}` }, payload: { changed: true } });
 		expect(response.statusCode).toBe(200);
 		const restarted = await host(opened).services.connect("echo", "alice", CTX);
