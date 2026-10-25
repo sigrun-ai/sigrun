@@ -152,6 +152,27 @@ export function resolveChatHandlers(
 	return handlers;
 }
 
+/**
+ * Whether the handler `actionName` names starts a turn (spec §6.2/§8.4):
+ * a form's `submit` defaults to `turn: true` (an answer); a move's or
+ * check's `onMove`/`onCheck` node may set `turn: true` explicitly.
+ * Chat handler names are free labels, so this reads the RESOLVED node's
+ * `turn` flag — the only place the default rule lives.
+ */
+export function chatActionStartsTurn(
+	tree: Tree,
+	actionName: string,
+): boolean {
+	const handler = resolveChatHandlers(tree).get(actionName);
+	if (handler === undefined) return false;
+	// A form submit defaults to a turn (§6.2's answer row); any other
+	// handler needs the explicit flag.
+	if (handler.kind === "submit") {
+		return handler.node.turn !== false;
+	}
+	return handler.node.turn === true;
+}
+
 /** A `move`/`edit` payload endpoint ({group?, index}). */
 function readSpot(value: unknown): { group?: string; index?: number } | undefined {
 	if (!isRec(value)) return undefined;

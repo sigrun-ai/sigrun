@@ -251,7 +251,11 @@ export async function createServer(
 	// implementation). Bound here, after the context exists and before any
 	// route or extension code can serve a request; calls issued earlier
 	// (a factory body) have been waiting on exactly this assignment.
-	opened.bindHostBridge(createHostBridge(ctx));
+	const hostBridge = createHostBridge(ctx);
+	opened.bindHostBridge(hostBridge);
+	// Decorated like `sse`/`surfaces`: the bridge is the server-owned
+	// handle tests (and only tests) reach the W5 bridge path through.
+	app.decorate("hostBridge", hostBridge);
 	// The notifications surface (W5 Task 6, spec §9.6): one hub
 	// subscription turning host events into per-recipient
 	// NotificationEvents for every collected notifier contribution,

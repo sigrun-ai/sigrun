@@ -44,7 +44,8 @@ import {
 	SurfaceFailedError,
 	UnknownActionError,
 } from "../surfaces/service.js";
-import { applyChatAction, readChatBlock, resolveChatHandlers } from "../blocks/chat-surfaces.js";
+import { applyChatAction, chatActionStartsTurn, readChatBlock, resolveChatHandlers } from "../blocks/chat-surfaces.js";
+import { answerBlock } from "../blocks/answers.js";
 import { accessOf } from "@sigrun/shared/access";
 import { isSuperuser } from "../auth/principal.js";
 import { SessionMetaDoc } from "../session-meta.js";
@@ -669,6 +670,28 @@ export function registerSurfaceRoutes(
 			// chat names are free labels).
 			if (!resolveChatHandlers(block.tree).has(body.action)) {
 				return await reply.code(400).send({ error: "unknown_action" });
+			}
+			// The answer path (§8.4): a turn action submits a user message
+			// through `submitOp` for the acting user — the fold and the
+			// `notedThrough` advance happen inside `answerBlock`. The §6.3
+			// response wraps no ops (the surface's data is unchanged by the
+			// answer itself; the channel already applied the optimistic edits
+			// that produced the payload).
+			if (chatActionStartsTurn(block.tree, body.action)) {
+				const answerPayload = (body.payload ?? null) as JsonValue;
+				const wrapped = { ok: true as const, rev: block.state.rev };
+				await answerBlock(
+						ctx,
+						id,
+						entryId,
+						body.action,
+						answerPayload,
+						actionId,
+				);
+				if (actionId !== undefined) {
+						ctx.surfaces.chatDedupRecord(actionId, address, wrapped);
+				}
+				return await reply.send(wrapped);
 			}
 			const outcome = await applyChatAction(
 				ctx.opened.harness,

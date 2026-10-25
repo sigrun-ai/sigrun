@@ -23,6 +23,7 @@ import type {
 	Cursor,
 	EntryId,
 	Extension,
+	InputEntry,
 	InputSubmissionDraft,
 	ModelRef,
 	Submission,
@@ -59,6 +60,7 @@ import {
 	WHEN_BUSY_MODES,
 	type WhenBusyMode,
 } from "./helpers.js";
+import { writePendingNote } from "./blocks/notes.js";
 import {
 	applySessionMetaPatch,
 	DEFAULT_SESSION_META,
@@ -320,6 +322,23 @@ export interface SubmitOpOptions {
 	readonly whenBusy?: unknown;
 	/** The raw `?waitMs` value (validated against the §7.1 ceiling). */
 	readonly waitMs?: unknown;
+	/**
+	 * A server-built input entry (UI-blocks U5 Task 3, spec §8.4): a block
+	 * answer submits through this op as `sigrun.blocks.answer`. When set,
+	 * expansion is skipped entirely — the answer's `content` is a
+	 * server-built projection that never starts with `/`, so there is
+	 * nothing to expand — and a state where BOTH the expanded entry and
+	 * `entry` would be set throws (a programming error, never a silent
+	 * overwrite).
+	 */
+	readonly entry?: InputEntry;
+	/**
+	 * The one surface whose unnoted changes this turn does NOT note (spec
+	 * §8.4): a block answer folds its own surface's changes into the
+	 * answer content and advances its `notedThrough` itself; every other
+	 * surface still notes.
+	 */
+	readonly skipNoteFor?: string;
 }
 
 /**
@@ -379,6 +398,16 @@ export async function submitOp(
 	) {
 		throw new ConversationOpError({ error: "invalid_field", field: "whenBusy" });
 	}
+	// The §8.3 change note precedes EVERY turn admission (the note write
+	// precedes `expandInput`: an expansion failure — `invalid_input` —
+	// never strands unnoted edits without at least the note decision
+	// point). A block answer's surface is excluded (§8.4 folded it).
+	await writePendingNote(
+		opened.harness,
+		conversation,
+		opts.skipNoteFor,
+		BACKGROUND_CONTEXT,
+	);
 	// Resolve path-parts to inline content NOW, against the live
 	// workspace: missing paths become explicit error parts; other
 	// workspace failures throw — fail-loud. Command expansion (Task 2c)
@@ -394,29 +423,50 @@ export async function submitOp(
 	// throws is a genuine bug and still falls through as one.
 	const env = await conversationEnv(opened, conversation);
 	let expansion: ExpansionResult;
-	try {
-		expansion = await expandInput(
-			parsed.parts,
-			opened.commandExpansion,
-			env,
-			BACKGROUND_CONTEXT,
-		);
-	} catch (error) {
-		if (error instanceof CommandUsageError) {
-			throw new ConversationOpError({ error: "invalid_input" });
+	if (opts.entry !== undefined) {
+		// A server-built entry (a block answer) skips expansion entirely:
+		// its content is a projection that never starts with `/`.
+		expansion = { parts: parsed.parts };
+	} else {
+		try {
+			expansion = await expandInput(
+				parsed.parts,
+				opened.commandExpansion,
+				env,
+				BACKGROUND_CONTEXT,
+			);
+		} catch (error) {
+			if (error instanceof CommandUsageError) {
+				throw new ConversationOpError({ error: "invalid_input" });
+			}
+			throw error;
 		}
-		throw error;
+	}
+	// The entry disjunction (the brief's enforced invariant): `opts.entry`
+	// and expansion are mutually exclusive BY CONSTRUCTION — the answer's
+	// content is a server-built projection that never starts with `/`. A
+	// state where both would be set (an entry-carrying call whose input
+	// expansion claims) is a programming error, never a silent overwrite,
+	// and throws BEFORE any submission is admitted.
+	if (opts.entry !== undefined) {
+		const first = parsed.parts[0];
+		if (
+			first !== undefined &&
+			first.type === "text" &&
+			first.text.startsWith("/")
+		) {
+			throw new Error(
+				"submitOp: opts.entry with an expandable input is a programming error (entry and the expanded entry are mutually exclusive)",
+			);
+		}
 	}
 	const content = await resolveParts(expansion.parts, env, BACKGROUND_CONTEXT);
-	const draft: InputSubmissionDraft = {
-		type: "input",
-		content,
-		...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
-		...(whenBusy === undefined ? {} : { whenBusy: whenBusy as WhenBusyMode }),
-		...(expansion.typed === undefined
-			? {}
-			: {
-					entry: {
+	const entry: InputEntry | undefined =
+		opts.entry !== undefined
+			? opts.entry
+			: expansion.typed === undefined
+				? undefined
+				: {
 						kind: EXPANDED_ENTRY_KIND,
 						data: {
 							typed: expansion.typed,
@@ -424,8 +474,13 @@ export async function submitOp(
 								? {}
 								: { command: expansion.command }),
 						},
-					},
-				}),
+					};
+	const draft: InputSubmissionDraft = {
+		type: "input",
+		content,
+		...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
+		...(whenBusy === undefined ? {} : { whenBusy: whenBusy as WhenBusyMode }),
+		...(entry === undefined ? {} : { entry }),
 	};
 	// The submit pass-through is retired (§6.7): the memory seam's
 	// runSettled owns capture, so submissions admit directly.
