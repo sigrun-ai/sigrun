@@ -1,7 +1,6 @@
 /**
  * The ambient seam (spec: docs/approval-ux-seams.md, "Ambient surfaces";
- * the block mapping: docs/superpowers/specs/
- * 2026-10-19-sigrun-ui-blocks-design.md §9.2): core-owned,
+ * the block mapping: UI-blocks design §9.2): core-owned,
  * channel-neutral records for persistent read-mostly state — statusline
  * slots and panel widgets — written by extensions through the host
  * context and rendered by channels generically.

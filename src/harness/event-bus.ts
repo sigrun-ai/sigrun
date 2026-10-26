@@ -1,7 +1,7 @@
 /**
  * The event bus (memory-seam Tasks 2 + 4): commit observation + bounded
- * side lane + idle detection + shutdown sequencing. See
- * docs/superpowers/specs/2026-10-15-sigrun-memory-seam.md §"Design".
+ * side lane + idle detection + shutdown sequencing. See the memory-seam
+ * spec §"Design".
  *
  * The bus subscribes to pi-durable's `Session.subscribeCommits` (sigrun's
  * harness IS a Session) and reduces each `CommitPublication` into the

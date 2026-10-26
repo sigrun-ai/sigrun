@@ -1,7 +1,6 @@
 /**
  * The interaction seam TYPES (spec: docs/approval-ux-seams.md; the block
- * mapping: docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md
- * §9.1): the channel-neutral record shapes for "this conversation is
+ * mapping: UI-blocks design §9.1): the channel-neutral record shapes for "this conversation is
  * waiting on a human decision", written by extensions through the host
  * context and answered by channels through one generic route.
  *

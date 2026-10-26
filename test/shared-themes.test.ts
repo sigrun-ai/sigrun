@@ -2,8 +2,7 @@
  * Task B1 (UI refresh): the shared theme data.
  *
  * `@sigrun/shared/themes` is pure colour data copied verbatim from the
- * palette mockup (docs/superpowers/specs/assets/2026-10-17-ui-refresh/
- * palettes.html). These tests pin the SHAPE completely (every palette
+ * UI-refresh palette mockup (palettes.html). These tests pin the SHAPE completely (every palette
  * carries a full dark/light token set, every accent a dark/light pair)
  * and pin a few sentinel VALUES so a sloppy re-copy from the mockup
  * cannot pass unnoticed — the sentinels span the id→name remapping

@@ -80,7 +80,7 @@ InteractionRecord (core-owned doc family, e.g. sigrun.interaction, keyed by call
 ruling 16 — no compatibility layer): the interaction body is a block
 tree from the closed block set, and the mapping from this section's
 `text` / `options[]` / `fields[]` / `diff` primitives onto blocks is
-spec §9.1 (`docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md`):
+UI-blocks design §9.1:
 `text` → `markdown`, `options[]` → a `choice` field, `fields[]` →
 `text` / `number` / `toggle` / `secret` fields, `diff` → `diff`,
 `details` → `details`; the answer shape is `{values}` (every field's
@@ -206,7 +206,7 @@ survey record.
 
 2026-10-14 second survey (8 extensions: pi-goal-x, rpiv-todo, pi-fabric,
 pi-warden, plannotator, pi-advisor, pi-goal-schovest, pi-interview-tool;
-reports preserved in `docs/interaction-seam-survey/ambient-*`): the
+reports preserved in the interaction-seam survey (ambient-*): the
 widget/statusline family is persistent, keyed, state-replacement
 rendering — a different lifecycle from interactions (no answer, no
 pending join, update-cadence foreign to the conversation stream) but

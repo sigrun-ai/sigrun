@@ -2,7 +2,7 @@
  * icons (B2, UI refresh): the app's inline SVG icon set. No icon font, no
  * extra dependency (the webui dep contract) — every glyph is a stroke
  * path copied or traced from the refresh mockup
- * (docs/superpowers/specs/assets/2026-10-17-ui-refresh/web-main-view.html),
+ * (web-main-view.html),
  * rendered at 24×24 viewBox and sized by CSS (`.rail-btn svg`, …).
  *
  * All icons share the same stroke conventions as the mockup (no fill,

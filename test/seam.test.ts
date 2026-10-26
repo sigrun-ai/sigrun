@@ -1,7 +1,6 @@
 /**
  * The interaction/ambient seam (docs/approval-ux-seams.md implementation;
- * block mapping: docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md
- * §9.1/§9.2): host-context contract (loader), seam-host record writes
+ * block mapping: UI-blocks design §9.1/§9.2): host-context contract (loader), seam-host record writes
  * (validation, index maintenance, first-answer-wins, ambient ownership),
  * and the generic routes (list/answer/list-ambient + the /v1/meta seam
  * inventory).

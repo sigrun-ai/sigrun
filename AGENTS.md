@@ -20,8 +20,8 @@ Guidance for coding agents working in this repository.
   mirrored schemas).
 - `charts/sigrun/` — the Helm chart (reference k8s deploy).
 - `docker/` — compose reference. `Dockerfile` — image build.
-- `docs/superpowers/` — internal specs/plans/audits (agent-session artifacts,
-  not shipped to npm). `docs/private.md` is gitignored.
+- `docs/private.md` is gitignored. Planning docs are kept outside this
+  repository.
 - `test/` — vitest suites for `src/`.
 
 ## Run and test

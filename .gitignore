@@ -9,6 +9,9 @@ pi-warden.md
 dist/
 data/
 webui/test-results/
+/test-results/
+/docs/superpowers/
+/docs/interaction-seam-survey/
 .docker-ext/
 
 # agent/dev artifacts (repo root only — a fixture may carry a tracked .pi/)

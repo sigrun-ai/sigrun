@@ -1,7 +1,6 @@
 /**
  * The interaction seam (spec: docs/approval-ux-seams.md; the block
- * mapping: docs/superpowers/specs/2026-10-19-sigrun-ui-blocks-design.md
- * §9.1): core-owned, channel-neutral records for "this conversation is
+ * mapping: UI-blocks design §9.1): core-owned, channel-neutral records for "this conversation is
  * waiting on a human decision", written by extensions through the host
  * context and answered by channels through one generic route.
  *

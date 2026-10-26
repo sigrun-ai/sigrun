@@ -7,9 +7,8 @@
  * consume this file from a single source; any import would drag a
  * dependency only one client can load or resolve.
  *
- * Colour values are copied verbatim from the palette mockup
- * (docs/superpowers/specs/assets/2026-10-17-ui-refresh/palettes.html),
- * with the mockup ids renamed to the plan ids: palette `iron` →
+ * Colour values are copied verbatim from the UI-refresh palette mockup
+ * (palettes.html), with the mockup ids renamed to the plan ids: palette `iron` →
  * `iron-ember`, `aurora` → `polar-night`, `birch` → `birch-moss`;
  * accent `amber` → `baltic-amber`; token key `surface-2` → `surface2`.
  */
