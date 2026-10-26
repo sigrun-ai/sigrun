@@ -13,7 +13,7 @@
  * - core's `files` whitelist (the runnable tarball: `dist` +
  *   `webui/dist` + the docs files; deploy assets live on GitHub, not in
  *   the tarball);
- * - the four built-in extension dependencies. Working-tree spec is
+ * - the five built-in extension dependencies. Working-tree spec is
  *   `file:../sigrun-ext-*` (the dev shape —
  *   npm refuses registry-spec + `overrides: file:` for direct deps,
  *   EOVERRIDE); the publish-time rewrite flips these to exact versions
@@ -65,11 +65,11 @@ const PUBLISH_CONFIG = { access: "public", provenance: true };
 const NODE_ENGINE = ">=22.19.0";
 
 /** The published family members and their exact-version dep specs. */
-const FAMILY = ["@sigrun/shared", "@sigrun/tui", "@sigrun/ext-codemode", "@sigrun/ext-mcp", "@sigrun/ext-tool-search", "@sigrun/oauth"] as const;
+const FAMILY = ["@sigrun/shared", "@sigrun/tui", "@sigrun/ext-codemode", "@sigrun/ext-gateway", "@sigrun/ext-mcp", "@sigrun/ext-tool-search", "@sigrun/oauth"] as const;
 
 /** The dev-shape-or-published spec for a built-in extension dependency. */
 function builtinSpec(repo: string): RegExp {
-	return new RegExp(`^(0\\.[12]\\.0|file:\\.\\./${repo})$`);
+	return new RegExp(`^(0\\.[0-9]+\\.[0-9]+|file:\\.\\./${repo})$`);
 }
 
 describe("package manifests (release-0.1 Global Constraints)", () => {
@@ -113,6 +113,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		// The built-ins resolve from core's own tree under their scoped
 		// names (src/harness/builtins.ts keys on these).
 		expect(root.dependencies?.["@sigrun/ext-codemode"]).toMatch(builtinSpec("sigrun-ext-codemode"));
+		expect(root.dependencies?.["@sigrun/ext-gateway"]).toMatch(builtinSpec("sigrun-ext-gateway"));
 		expect(root.dependencies?.["@sigrun/ext-mcp"]).toMatch(builtinSpec("sigrun-ext-mcp"));
 		expect(root.dependencies?.["@sigrun/ext-tool-search"]).toMatch(builtinSpec("sigrun-ext-tool-search"));
 		expect(root.dependencies?.["@sigrun/oauth"]).toMatch(builtinSpec("sigrun-ext-oauth"));
@@ -188,7 +189,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 					// webui's private dev shape may use the workspace link;
 					// every published manifest pins exactly.
 					if (path === "webui/package.json") continue;
-					expect(spec, `${path}: ${name}`).toMatch(/^(0\.[12]\.[012]|file:\.\.\/sigrun-ext-[a-z-]+)$/);
+					expect(spec, `${path}: ${name}`).toMatch(/^(0\.[0-9]+\.[0-9]+|file:\.\.\/sigrun-ext-[a-z-]+)$/);
 				}
 			}
 		}

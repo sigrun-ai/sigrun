@@ -62,22 +62,10 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           path: sigrun
-      - uses: actions/checkout@v5
-        with:
-          repository: sigrun-ai/sigrun-ext-codemode
-          path: sigrun-ext-codemode
-      - uses: actions/checkout@v5
-        with:
-          repository: sigrun-ai/sigrun-ext-mcp
-          path: sigrun-ext-mcp
-      - uses: actions/checkout@v5
-        with:
-          repository: sigrun-ai/sigrun-ext-tool-search
-          path: sigrun-ext-tool-search
-      - uses: actions/checkout@v5
-        with:
-          repository: sigrun-ai/sigrun-ext-oauth
-          path: sigrun-ext-oauth
+      # The five built-in siblings at default-branch HEAD (their pinned
+      # versions publish independently; the composite action checks out
+      # ONLY the siblings — never core, so the tag checkout stands).
+      - uses: ./sigrun/.github/actions/family-checkout
       - name: Derive image tag (v prefix stripped)
         shell: bash
         run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
@@ -89,24 +77,15 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       # The Dockerfile's build precondition: registry-shaped manifest
       # and lock — identical dance to ci.yml's image-build job (the
-      # derived pins are read back from package.json and named
-      # explicitly; a bare --package-lock-only keeps link: entries →
+      # pins come from publish-deps.mjs's read-only `pins` mode and are
+      # named explicitly; a bare --package-lock-only keeps link: entries →
       # dangling built-in symlinks → boot quarantine).
       - name: Registry-mode lock regen
         shell: bash
         working-directory: sigrun
         run: |
           node scripts/publish-deps.mjs registry
-          pins="$(node -p "
-            const d = require('./package.json').dependencies;
-            const names = [
-              '@sigrun/ext-codemode',
-              '@sigrun/ext-mcp',
-              '@sigrun/ext-tool-search',
-              '@sigrun/oauth',
-            ];
-            names.map((n) => n + '@' + d[n]).join(' ');
-          ")"
+          pins="$(node scripts/publish-deps.mjs pins)"
           npm install ${pins} --package-lock-only
       - uses: docker/login-action@v3
         with:

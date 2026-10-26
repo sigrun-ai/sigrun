@@ -1,0 +1,39 @@
+# Composite action: check out the five built-in extension siblings next
+# to the caller's `sigrun/` checkout, in the workspace-root sibling layout
+# the `file:../sigrun-ext-*` specifiers and publish-deps.mjs's manifest
+# reads resolve against.
+#
+# Scope rule (release workstream Task 1.2): this action checks out ONLY
+# the siblings — never core. The caller always owns the core checkout
+# itself (`path: sigrun`, with its own `ref` — the release job pins
+# `refs/tags/${TAG}`), so a composite step can never overwrite a tag
+# checkout with a default-branch one. The sibling set is pinned by
+# test/builtins-wiring.test.ts against `publish-deps.mjs list`, core's
+# manifest, and src/harness/builtins.ts — a new built-in that lands here
+# but not there (or the reverse) fails that test.
+
+name: family-checkout
+description: Check out the sigrun built-in extension sibling repos
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-ext-codemode
+        path: sigrun-ext-codemode
+    - uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-ext-gateway
+        path: sigrun-ext-gateway
+    - uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-ext-mcp
+        path: sigrun-ext-mcp
+    - uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-ext-tool-search
+        path: sigrun-ext-tool-search
+    - uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-ext-oauth
+        path: sigrun-ext-oauth

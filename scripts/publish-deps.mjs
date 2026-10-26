@@ -27,6 +27,13 @@
  * registry versions (the release's clean-install smoke) runs this script
  * itself, exactly as the smoke's transcript shows.
  *
+ * Two READ-ONLY modes derive from the same BUILTINS map (no marker, no
+ * writes): `list` prints one `<name> <sibling-dir>` line per built-in
+ * (the smoke's resolve list; the composite-action test compares it), and
+ * `pins` prints the space-separated `<name>@<version>` install list the
+ * workflows' lock regen consumes (`npm install ${pins}
+ * --package-lock-only`).
+ *
  * The rewrite is the ONLY difference: `dependencies` keeps every other
  * entry untouched, and the restore is byte-exact (the original specifiers
  * are recorded in the marker file, not reconstructed).
@@ -44,9 +51,17 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST = join(ROOT, "package.json");
 const MARKER = join(ROOT, ".publish-deps-applied.json");
 
-/** The built-in extensions and the sibling checkout each one lives in. */
+/**
+ * The built-in extensions and the sibling checkout each one lives in.
+ * ALL FIVE ship in core — this map is the single list every other
+ * enumeration (the workflows' checkouts, the lock regen, the image
+ * smoke's resolve list) derives from via the `list`/`pins` modes, so a
+ * new built-in lands here ONCE (test/builtins-wiring.test.ts asserts the
+ * four enumerations agree).
+ */
 const BUILTINS = {
 	"@sigrun/ext-codemode": "../sigrun-ext-codemode",
+	"@sigrun/ext-gateway": "../sigrun-ext-gateway",
 	"@sigrun/ext-mcp": "../sigrun-ext-mcp",
 	"@sigrun/ext-tool-search": "../sigrun-ext-tool-search",
 	"@sigrun/oauth": "../sigrun-ext-oauth",
@@ -87,7 +102,23 @@ function writeManifest(manifest) {
 
 const mode = process.argv[2];
 
-if (mode === "registry") {
+if (mode === "list") {
+	// Read-only: one `<name> <sibling-dir>` line per built-in, BUILTINS
+	// order. The composite-action test and the image smoke consume this
+	// (the smoke passes it into the container as the resolve list).
+	for (const [name, dir] of Object.entries(BUILTINS)) {
+		process.stdout.write(`${name} ${dir.replace(/^\.\.\//, "")}\n`);
+	}
+} else if (mode === "pins") {
+	// Read-only: the space-separated `<name>@<version>` list the
+	// workflows' lock regen installs (`npm install ${pins}
+	// --package-lock-only`). Each version is the sibling checkout's own
+	// manifest version (familyVersion's fail-loud read applies).
+	const pins = Object.keys(BUILTINS).map(
+		(name) => `${name}@${familyVersion(name)}`,
+	);
+	process.stdout.write(`${pins.join(" ")}\n`);
+} else if (mode === "registry") {
 	if (existsSync(MARKER)) {
 		// A previous run left the marker behind (it died between writing the
 		// marker and finishing, or a publish failed before its restore). The
@@ -141,6 +172,6 @@ if (mode === "registry") {
 	rmSync(MARKER);
 	process.stdout.write("publish-deps: dev mode restored\n");
 } else {
-	process.stderr.write("usage: publish-deps.mjs <registry|file>\n");
+	process.stderr.write("usage: publish-deps.mjs <registry|file|list|pins>\n");
 	process.exit(2);
 }

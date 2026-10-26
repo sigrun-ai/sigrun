@@ -15,6 +15,7 @@
  * same YAML 1.2 reading GitHub's own parser uses.
  */
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { describe, expect, test } from "vitest";
@@ -48,6 +49,32 @@ function workflow(): { on: Record<string, unknown>; jobs: Record<string, Job>; p
  * as non-strings; the contract is the text). */
 function runOf(step: Step): string {
 	return typeof step.run === "string" ? step.run : String(step.run ?? "");
+}
+
+/** The sibling directories `publish-deps.mjs list` prints (Task 1.2: the
+ * single enumeration the checkout set derives from — an inline names
+ * array in a workflow would drift). */
+function publishDepsListDirs(): string[] {
+	const out = execFileSync(
+		process.execPath,
+		[new URL("../scripts/publish-deps.mjs", import.meta.url).pathname, "list"],
+		{ encoding: "utf8" },
+	).trim();
+	return out === "" ? [] : out.split("\n").map((line) => line.split(" ")[1] ?? "");
+}
+
+/** The `repository:` values of the family-checkout composite action's
+ * checkout steps (`sigrun-ai/<repo>` per sibling). */
+function actionSiblingRepositories(): string[] {
+	const action = YAML.parse(
+		readFileSync(
+			new URL("../.github/actions/family-checkout/action.yml", import.meta.url),
+			"utf8",
+		),
+	) as { runs?: { steps?: { uses?: string; with?: Record<string, unknown> }[] } };
+	return (action.runs?.steps ?? [])
+		.filter((step) => step.uses?.startsWith("actions/checkout@"))
+		.map((step) => String(step.with?.repository ?? ""));
 }
 
 /** Parsed release.yml (same contract: a missing/malformed release
@@ -146,7 +173,10 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(dance, "release build must run publish-deps.mjs registry").toBeDefined();
 		const install = runs.find((r) => r.includes("npm install") && r.includes("--package-lock-only"));
 		expect(install, "lock regen must carry --package-lock-only").toBeDefined();
-		expect(install).toContain("@sigrun/ext-");
+		// The pins come from publish-deps.mjs's `pins` mode — the single
+		// list every job shares; an inline names array would drift.
+		expect(install).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
+		expect(install).toContain("npm install ${pins} --package-lock-only");
 	});
 
 	test("the chart job rewrites Chart.yaml from the tag and pushes to the OCI registry", () => {
@@ -160,6 +190,25 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(runs).toMatch(/sed.*Chart\.yaml/s);
 	});
 
+	test("release image job: core checkout pins the tag; siblings come from the composite action", () => {
+		const { jobs } = releaseWorkflow();
+		const steps = jobs.image?.steps ?? [];
+		const checkouts = steps.filter((s) => s.uses?.startsWith("actions/checkout@"));
+		// tag-probe (the guard's clone, no ref) + the tag-pinned core
+		// checkout — the siblings arrive via the composite action, which
+		// must follow the core checkout (it is referenced FROM the core
+		// checkout's tree).
+		const core = checkouts.find(
+			(s) => (s.with as { path?: string } | undefined)?.path === "sigrun",
+		);
+		expect(core, "the image job checks out core at path sigrun").toBeDefined();
+		expect((core?.with as { ref?: string } | undefined)?.ref).toBe("refs/tags/${{ env.TAG }}");
+		const family = steps.find(
+			(s) => s.uses === "./sigrun/.github/actions/family-checkout",
+		);
+		expect(family, "the image job's siblings check out via family-checkout").toBeDefined();
+		expect(steps.indexOf(family as Step)).toBeGreaterThan(steps.indexOf(core as Step));
+	});
 	test("authenticates with GITHUB_TOKEN only — no PAT secrets anywhere", () => {
 		const raw = readFileSync(RELEASE_FILE, "utf8");
 		const secretRefs = new Set(
@@ -193,10 +242,29 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const { jobs } = workflow();
 		const test = jobs.test;
 		expect(test).toBeDefined();
-		const paths = (test?.steps ?? [])
-			.filter((s) => s.uses?.startsWith("actions/checkout@"))
-			.map((s) => (s.with as { path?: string } | undefined)?.path);
-		expect(paths).toEqual(["sigrun", "sigrun-ext-codemode", "sigrun-ext-mcp", "sigrun-ext-tool-search", "sigrun-ext-oauth"]);
+		const steps = test?.steps ?? [];
+		// Exactly ONE actions/checkout step: core at path `sigrun` (the
+		// composite action can never overwrite the caller's own checkout —
+		// in release.yml that checkout pins refs/tags/<tag>).
+		const checkouts = steps.filter((s) => s.uses?.startsWith("actions/checkout@"));
+		expect(checkouts).toHaveLength(1);
+		expect((checkouts[0]?.with as { path?: string } | undefined)?.path).toBe("sigrun");
+		// The siblings come from the composite family-checkout action,
+		// immediately after the core checkout.
+		const family = steps.find(
+			(s) => s.uses === "./sigrun/.github/actions/family-checkout",
+		);
+		expect(family, "the siblings check out via the family-checkout action").toBeDefined();
+		expect(steps.indexOf(family as Step)).toBe(steps.indexOf(checkouts[0] as Step) + 1);
+		// And the action's repository list IS the publish-deps list (so the
+		// checkout set covers the gateway built-in and can never drift from
+		// the packument rewrite — builtins-wiring.test.ts asserts the same
+		// equality from the other side).
+		const actionRepositories = actionSiblingRepositories();
+		const listedDirs = publishDepsListDirs();
+		expect(actionRepositories.map((repo) => repo.split("/")[1]).sort()).toEqual(
+			[...listedDirs].sort(),
+		);
 	});
 
 	test("the test job runs npm ci, the suite, and typecheck on node 22", () => {
@@ -217,16 +285,17 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const runs = steps.map(runOf);
 		const dance = runs.find((r) => r.includes("publish-deps.mjs registry"));
 		expect(dance, "a step must run publish-deps.mjs registry").toBeDefined();
-		// The pins are derived, never hardcoded: the dance reads the four
-		// built-in versions publish-deps.mjs just wrote into package.json
-		// (each sourced from the sibling checkout's own manifest), then names
-		// them explicitly in the lock regen — a bare `npm install
-		// --package-lock-only` keeps the lock's `link:` entries and npm ci
-		// materializes dangling built-in symlinks (boot quarantine).
+		// The pins are derived, never hardcoded: publish-deps.mjs's `pins`
+		// mode reads each built-in's version from its sibling manifest (the
+		// single list every job shares), then the lock regen names them
+		// explicitly — a bare `npm install --package-lock-only` keeps the
+		// lock's `link:` entries and npm ci materializes dangling built-in
+		// symlinks (boot quarantine).
 		expect(dance).toContain("publish-deps.mjs registry");
 		const install = runs.find((r) => r.includes("npm install") && r.includes("--package-lock-only"));
 		expect(install, "an npm-install step must carry --package-lock-only").toBeDefined();
-		expect(install).toContain("@sigrun/ext-");
+		expect(install).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
+		expect(install).toContain("npm install ${pins} --package-lock-only");
 	});
 
 	test("image-build: docker build-push-action loads the local linux/amd64 image", () => {
