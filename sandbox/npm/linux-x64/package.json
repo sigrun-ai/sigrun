@@ -1,6 +1,19 @@
 {
   "name": "@sigrun/sandbox-linux-x64",
   "version": "0.1.7",
+  "license": "MIT",
+  "repository": {
+    "type": "github",
+    "url": "git+https://github.com/sigrun-ai/sigrun.git",
+    "directory": "sandbox/npm/linux-x64"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "os": ["linux"],
   "cpu": ["x64"],
   "files": ["bin/"]

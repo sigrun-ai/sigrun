@@ -27,6 +27,7 @@ import { describe, expect, test } from "vitest";
 interface LockPackage {
 	version?: string;
 	resolved?: string;
+	link?: boolean;
 	dependencies?: Record<string, string>;
 }
 
@@ -35,6 +36,8 @@ interface MinimalManifest {
 	version?: string;
 	private?: boolean;
 	license?: string;
+	os?: string[];
+	cpu?: string[];
 	engines?: { node?: string };
 	publishConfig?: Record<string, unknown>;
 	files?: string[];
@@ -77,6 +80,8 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 	const shared = manifest("../shared/package.json");
 	const tui = manifest("../tui/package.json");
 	const webui = manifest("../webui/package.json");
+	const sandboxX64 = manifest("../sandbox/npm/linux-x64/package.json");
+	const sandboxArm64 = manifest("../sandbox/npm/linux-arm64/package.json");
 
 	test("core: @sigrun/sigrun, published, exact family pins, tarball-only files", () => {
 		expect(root.name).toBe("@sigrun/sigrun");
@@ -109,7 +114,29 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		]);
 		// Exact intra-family pins.
 		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.1.2");
-		expect(root.optionalDependencies).toEqual({ "@sigrun/tui": "0.1.1" });
+		// Optional platform packages. The tui is a workspace member pinned
+		// to its registry version; the sandbox pair are NOT workspace
+		// members (a linked optional dep with os/cpu constraints makes
+		// `npm ci` fail EBADPLATFORM instead of skipping) — dev shape is
+		// `file:./sandbox/npm/<platform>`, which npm's platform skip DOES
+		// honor, and the publish-time rewrite (scripts/publish-deps.mjs)
+		// flips them to the registry version before `npm publish`. A
+		// missed rewrite (registry shape left behind is the other
+		// accepted form: exactly core's version).
+		const platformSpec = (platform: string) =>
+			new RegExp(`^(${root.version?.replace(/\./g, "\\.")}|file:\\./sandbox/npm/${platform})$`);
+		expect(root.optionalDependencies?.["@sigrun/tui"]).toBe(tui.version);
+		expect(root.optionalDependencies?.["@sigrun/sandbox-linux-x64"]).toMatch(
+			platformSpec("linux-x64"),
+		);
+		expect(root.optionalDependencies?.["@sigrun/sandbox-linux-arm64"]).toMatch(
+			platformSpec("linux-arm64"),
+		);
+		expect(Object.keys(root.optionalDependencies ?? {}).sort()).toEqual([
+			"@sigrun/sandbox-linux-arm64",
+			"@sigrun/sandbox-linux-x64",
+			"@sigrun/tui",
+		]);
 		// The built-ins resolve from core's own tree under their scoped
 		// names (src/harness/builtins.ts keys on these).
 		expect(root.dependencies?.["@sigrun/ext-codemode"]).toMatch(builtinSpec("sigrun-ext-codemode"));
@@ -119,15 +146,17 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(root.dependencies?.["@sigrun/oauth"]).toMatch(builtinSpec("sigrun-ext-oauth"));
 	});
 
-	test("OAuth's lock package node carries its runtime dependency for clean installs", () => {
+	test("the built-in link nodes resolve to their sibling checkouts", () => {
+		// The five built-ins are `file:` dependencies, so npm records each as
+		// a LINK node pointing at its sibling — never an installed copy. The
+		// package's own dependencies resolve from the sibling's node_modules
+		// (ext-oauth carries oauth4webapi there), which is why the link node
+		// itself carries no `dependencies` map. T1.1 dropped oauth's
+		// `@sigrun/sigrun` peer, which is what used to give this node a
+		// `version`/`peerDependencies` block.
 		expect(lockPackage("node_modules/@sigrun/oauth")).toMatchObject({
-			version: "0.1.0",
-			resolved: "file:../sigrun-ext-oauth",
-			dependencies: { oauth4webapi: "3.8.8" },
-		});
-		expect(lockPackage("node_modules/oauth4webapi")).toMatchObject({
-			version: "3.8.8",
-			resolved: "https://registry.npmjs.org/oauth4webapi/-/oauth4webapi-3.8.8.tgz",
+			resolved: "../sigrun-ext-oauth",
+			link: true,
 		});
 	});
 
@@ -162,6 +191,30 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		});
 	});
 
+	test("sandbox platform packages: published, version-locked to core, bin-only tarballs", () => {
+		for (const [pkg, platform, cpu] of [
+			[sandboxX64, "linux-x64", "x64"],
+			[sandboxArm64, "linux-arm64", "arm64"],
+		] as const) {
+			expect(pkg.name).toBe(`@sigrun/sandbox-${platform}`);
+			expect(pkg.version).toBe(root.version);
+			expect(pkg.private).toBeUndefined();
+			expect(pkg.license).toBe("MIT");
+			expect(pkg.engines?.node).toBe(NODE_ENGINE);
+			expect(pkg.publishConfig).toEqual(PUBLISH_CONFIG);
+			expect(pkg.os).toEqual(["linux"]);
+			expect(pkg.cpu).toEqual([cpu]);
+			// npm's files whitelist is the contract that puts
+			// package/bin/sigrun-sandbox in the packed tarball.
+			expect(pkg.files).toEqual(["bin/"]);
+			expect(pkg.repository).toEqual({
+				type: "github",
+				url: "git+https://github.com/sigrun-ai/sigrun.git",
+				directory: `sandbox/npm/${platform}`,
+			});
+		}
+	});
+
 	test("webui: stays a private build input (never published)", () => {
 		// The webui bundle ships inside core's tarball (webui/dist); the
 		// workspace package itself is never published — private, no
@@ -177,6 +230,8 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			["shared/package.json", shared],
 			["tui/package.json", tui],
 			["webui/package.json", webui],
+			["sandbox/npm/linux-x64/package.json", sandboxX64],
+			["sandbox/npm/linux-arm64/package.json", sandboxArm64],
 		] as const;
 		for (const [path, pkg] of manifests) {
 			const deps = {
@@ -190,6 +245,12 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 					// every published manifest pins exactly.
 					if (path === "webui/package.json") continue;
 					expect(spec, `${path}: ${name}`).toMatch(/^(0\.[0-9]+\.[0-9]+|file:\.\.\/sigrun-ext-[a-z-]+)$/);
+				}
+				// The sandbox platform packages are a separate family
+				// (Task 1.3): optional, dev shape `file:./sandbox/npm/*`,
+				// publish shape core's exact version.
+				if (name.startsWith("@sigrun/sandbox-linux-")) {
+					expect(spec, `${path}: ${name}`).toMatch(/^(0\.[0-9]+\.[0-9]+|file:\.\/sandbox\/npm\/linux-(x64|arm64))$/);
 				}
 			}
 		}

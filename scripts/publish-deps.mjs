@@ -4,7 +4,11 @@
  * tree (they live in sibling checkouts and are not on npm until the
  * release's first publish), but a PUBLISHED tarball must declare registry
  * versions — `file:../sigrun-ext-mcp` resolves to nothing on a stranger's
- * machine.
+ * machine. The sandbox platform packages (Task 1.3) have the same
+ * publish/dev split one level over: `optionalDependencies` carry
+ * `file:./sandbox/npm/<platform>` in dev (a non-matching platform's
+ * os/cpu fields make npm skip it), and must publish as registry
+ * versions.
  *
  * npm offers no way to express "this specifier for dev, that one for
  * publish": `overrides` refuses to differ from a direct dependency's own
@@ -36,11 +40,14 @@
  * `<name> <loader-slug>` line per built-in — `/v1/meta` rows key on the
  * loader SLUG (`codemode`, `sigrun-mcp`, …), never the package name, so
  * the image smoke's boot assertion derives its names from here rather
- * than hardcoding a second enumeration.
+ * than hardcoding a second enumeration. The read-only modes enumerate
+ * ONLY the built-in extensions; the sandbox platform packages are a
+ * separate family (PLATFORMS) that `registry`/`file` rewrite alongside.
  *
- * The rewrite is the ONLY difference: `dependencies` keeps every other
- * entry untouched, and the restore is byte-exact (the original specifiers
- * are recorded in the marker file, not reconstructed).
+ * The rewrite is the ONLY difference: `dependencies` and
+ * `optionalDependencies` keep every other entry untouched, and the
+ * restore is byte-exact (the original specifiers are recorded in the
+ * marker file, not reconstructed).
  *
  * RECOVERY: if a run dies mid-publish the tree may be left in registry
  * mode (git shows the tracked package.json diff). `node
@@ -88,16 +95,27 @@ const SLUGS = {
 };
 
 /**
- * The version each built-in publishes: read from the sibling checkout's
- * own manifest (the repo next door is the source of truth — versions
- * diverge across the family once a built-in ships features on its own
- * cadence, e.g. ext-mcp 0.2.0 while the others stay 0.1.0). Throws
- * fail-loud naming the sibling when its manifest is missing/malformed:
- * publishing against a guessed pin is worse than stopping.
+ * The sandbox platform packages (Task 1.3) and their in-repo dirs. A
+ * SEPARATE family from BUILTINS: they are optionalDependencies, never
+ * appear in `list`/`pins`/`slugs` (those enumerate extensions), and are
+ * never workspace members — a linked optional dep with os/cpu
+ * constraints makes `npm ci` fail EBADPLATFORM instead of skipping, so
+ * the dev specifier is a plain `file:` optional dependency, which npm's
+ * platform skip DOES honor. `registry`/`file` rewrite them exactly like
+ * the built-ins: the published manifest must carry the registry version
+ * (equal to core's version), never the in-repo `file:` path.
  */
-function familyVersion(name) {
-	const sibling = BUILTINS[name];
-	const manifestPath = join(ROOT, sibling, "package.json");
+const PLATFORMS = {
+	"@sigrun/sandbox-linux-x64": "sandbox/npm/linux-x64",
+	"@sigrun/sandbox-linux-arm64": "sandbox/npm/linux-arm64",
+};
+
+/**
+ * Fail-loud manifest version read shared by both families: throws naming
+ * the manifest when it is missing/malformed — publishing against a
+ * guessed pin is worse than stopping.
+ */
+function versionAt(manifestPath) {
 	let version;
 	try {
 		version = JSON.parse(readFileSync(manifestPath, "utf8")).version;
@@ -110,6 +128,21 @@ function familyVersion(name) {
 		throw new Error(`publish-deps: ${manifestPath} has no version`);
 	}
 	return version;
+}
+
+/**
+ * The version each built-in publishes: read from the sibling checkout's
+ * own manifest (the repo next door is the source of truth — versions
+ * diverge across the family once a built-in ships features on its own
+ * cadence, e.g. ext-mcp 0.2.0 while the others stay 0.1.0).
+ */
+function familyVersion(name) {
+	return versionAt(join(ROOT, BUILTINS[name], "package.json"));
+}
+
+/** The version each platform package publishes: its own in-repo manifest. */
+function platformVersion(name) {
+	return versionAt(join(ROOT, PLATFORMS[name], "package.json"));
 }
 
 function readManifest() {
@@ -154,11 +187,22 @@ if (mode === "list") {
 		// between the two writes leaves file: specifiers in place, and a
 		// publish would then ship them.
 		const manifest = readManifest();
-		const stale = Object.entries(BUILTINS)
+		const staleBuiltins = Object.entries(BUILTINS)
 			.filter(([name]) => manifest.dependencies?.[name] !== familyVersion(name))
 			.map(([name]) => name);
+		const stalePlatforms = Object.entries(PLATFORMS)
+			.filter(
+				([name]) => manifest.optionalDependencies?.[name] !== platformVersion(name),
+			)
+			.map(([name]) => name);
+		const stale = [...staleBuiltins, ...stalePlatforms];
 		if (stale.length > 0) {
-			for (const name of stale) manifest.dependencies[name] = familyVersion(name);
+			for (const name of staleBuiltins) {
+				manifest.dependencies[name] = familyVersion(name);
+			}
+			for (const name of stalePlatforms) {
+				manifest.optionalDependencies[name] = platformVersion(name);
+			}
 			writeManifest(manifest);
 			process.stderr.write(
 				`publish-deps: marker present but the manifest still carried ${stale.join(", ")} — re-applied\n`,
@@ -171,19 +215,33 @@ if (mode === "list") {
 		process.exit(0);
 	}
 	const manifest = readManifest();
-	const original = {};
+	const original = { dependencies: {}, optionalDependencies: {} };
 	for (const name of Object.keys(BUILTINS)) {
 		const current = manifest.dependencies?.[name];
 		if (current === undefined) {
 			process.stderr.write(`publish-deps: ${name} is not a dependency\n`);
 			process.exit(1);
 		}
-		original[name] = current;
+		original.dependencies[name] = current;
 		manifest.dependencies[name] = familyVersion(name);
+	}
+	for (const name of Object.keys(PLATFORMS)) {
+		const current = manifest.optionalDependencies?.[name];
+		if (current === undefined) {
+			process.stderr.write(
+				`publish-deps: ${name} is not an optionalDependency\n`,
+			);
+			process.exit(1);
+		}
+		original.optionalDependencies[name] = current;
+		manifest.optionalDependencies[name] = platformVersion(name);
 	}
 	writeFileSync(MARKER, `${JSON.stringify(original, null, "\t")}\n`);
 	writeManifest(manifest);
-	const pins = Object.keys(BUILTINS).map((name) => `${name}@${familyVersion(name)}`);
+	const pins = [
+		...Object.keys(BUILTINS).map((name) => `${name}@${familyVersion(name)}`),
+		...Object.keys(PLATFORMS).map((name) => `${name}@${platformVersion(name)}`),
+	];
 	process.stdout.write(`publish-deps: registry mode (${pins.join(", ")})\n`);
 } else if (mode === "file") {
 	if (!existsSync(MARKER)) {
@@ -192,8 +250,11 @@ if (mode === "list") {
 	}
 	const original = JSON.parse(readFileSync(MARKER, "utf8"));
 	const manifest = readManifest();
-	for (const [name, specifier] of Object.entries(original)) {
+	for (const [name, specifier] of Object.entries(original.dependencies ?? {})) {
 		manifest.dependencies[name] = specifier;
+	}
+	for (const [name, specifier] of Object.entries(original.optionalDependencies ?? {})) {
+		manifest.optionalDependencies[name] = specifier;
 	}
 	writeManifest(manifest);
 	rmSync(MARKER);

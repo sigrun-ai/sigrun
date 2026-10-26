@@ -55,14 +55,18 @@ LABEL org.opencontainers.image.source="https://github.com/sigrun-ai/sigrun" \
       org.opencontainers.image.url="https://github.com/sigrun-ai/sigrun"
 
 # Deps stage: package manifests — root + EVERY workspace the lockfile
-# links (shared/tui/webui): npm ci resolves the workspace members from
-# their package.json files, so a missing manifest silently drops that
-# workspace's node_modules link (the runtime import then fails).
+# links (shared/tui/webui), plus the sandbox platform packages the
+# root's file: optionalDependencies point at (sandbox/npm/linux-*):
+# npm ci resolves each of those from its own package.json, so a missing
+# manifest silently drops that package's node_modules link (the runtime
+# import then fails).
 FROM base AS deps
 COPY package.json package-lock.json ./
 COPY shared/package.json shared/package.json
 COPY webui/package.json webui/package.json
 COPY tui/package.json tui/package.json
+COPY sandbox/npm/linux-x64/package.json sandbox/npm/linux-x64/package.json
+COPY sandbox/npm/linux-arm64/package.json sandbox/npm/linux-arm64/package.json
 # Full install (dev included): the build needs the toolchain. The
 # cache-mounted npm store survives across CI builds.
 RUN --mount=type=cache,target=/root/.npm npm ci
@@ -85,14 +89,17 @@ COPY sandbox/tests ./tests
 RUN cargo build --locked --release
 
 # Prod stage: the runtime's node_modules — the SAME manifest set as deps
-# (the workspace links again), but --omit=dev. Manifests are re-copied
-# rather than inherited so this layer's cache key is the manifests
-# alone: a source-only change never re-installs.
+# (the workspace links and the sandbox platform file: deps again), but
+# --omit=dev. Manifests are re-copied rather than inherited so this
+# layer's cache key is the manifests alone: a source-only change never
+# re-installs.
 FROM base AS prod
 COPY package.json package-lock.json ./
 COPY shared/package.json shared/package.json
 COPY webui/package.json webui/package.json
 COPY tui/package.json tui/package.json
+COPY sandbox/npm/linux-x64/package.json sandbox/npm/linux-x64/package.json
+COPY sandbox/npm/linux-arm64/package.json sandbox/npm/linux-arm64/package.json
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
 
 # Runtime: base + the agent userland + the prod tree.
@@ -125,8 +132,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates curl fd-find git jq procps ripgrep sqlite3 tini unzip zip \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 # Debian bookworm installs tini at /usr/bin/tini. The sandbox helper is
-# resolved through this explicit path before npm-platform or source-tree
-# fallbacks, so the image uses the binary built in the sandbox stage.
+# resolved through this explicit SIGRUN_SANDBOX_HELPER path before the
+# optional platform packages or the source-tree fallback, so the image
+# always uses the binary built in the sandbox stage above — never the
+# npm package's copy.
 COPY --from=sandbox /sandbox/target/release/sigrun-sandbox /usr/local/lib/sigrun/sigrun-sandbox
 COPY --from=prod /app/node_modules ./node_modules
 # The built tree + the workspace packages the prod node_modules SYMLINK

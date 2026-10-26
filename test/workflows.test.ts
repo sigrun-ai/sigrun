@@ -367,23 +367,9 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
 	});
 
-	test("sandbox: platform manifests match core and whitelist the helper binary", () => {
-		const core = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-		for (const [platform, cpu] of [["linux-x64", "x64"], ["linux-arm64", "arm64"]] as const) {
-			const manifest = JSON.parse(
-				readFileSync(new URL(`../sandbox/npm/${platform}/package.json`, import.meta.url), "utf8"),
-			);
-			expect(manifest).toEqual({
-				name: `@sigrun/sandbox-${platform}`,
-				version: core.version,
-				os: ["linux"],
-				cpu: [cpu],
-				// npm's files whitelist is the contract that puts
-				// package/bin/sigrun-sandbox in the packed tarball.
-				files: ["bin/"],
-			});
-		}
-	});
+	// The sandbox platform manifests' shape is pinned in
+	// test/package-manifest.test.ts (moved there in Task 1.3 — the
+	// manifest-shape suite is the single source of truth).
 
 	test("image smoke: probes the bundled helper and verifies tini is PID 1", () => {
 		const smoke = readFileSync(new URL("../scripts/smoke-image.sh", import.meta.url), "utf8");

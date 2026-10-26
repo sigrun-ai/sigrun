@@ -155,6 +155,24 @@ describe("resolveHelper", () => {
 		expect(resolveHelper({}, coreRoot)).toBe(packageHelper);
 	});
 
+	test("an installed platform package without bin/ falls through to the repo build", async () => {
+		// The dev shape (Task 1.3): the platform package is a `file:`
+		// optionalDependency of core, linked into node_modules, but its
+		// `bin/` exists only in the CI-packed tarball — resolution must
+		// fall through to the repo build rather than stop at the link.
+		const coreRoot = await tempDir();
+		const packageDir = join(
+			coreRoot,
+			`node_modules/@sigrun/sandbox-linux-${process.arch}`,
+		);
+		await mkdir(packageDir, { recursive: true });
+		await writeFile(join(packageDir, "package.json"), "{}");
+		const repoHelper = join(coreRoot, "sandbox/target/release/sigrun-sandbox");
+		await mkdir(dirname(repoHelper), { recursive: true });
+		await writeFile(repoHelper, "");
+		expect(resolveHelper({}, coreRoot)).toBe(repoHelper);
+	});
+
 	test("the repo release build is the final candidate and absence returns undefined", async () => {
 		const coreRoot = await tempDir();
 		expect(resolveHelper({}, coreRoot)).toBeUndefined();

@@ -1,6 +1,19 @@
 {
   "name": "@sigrun/sandbox-linux-arm64",
   "version": "0.1.7",
+  "license": "MIT",
+  "repository": {
+    "type": "github",
+    "url": "git+https://github.com/sigrun-ai/sigrun.git",
+    "directory": "sandbox/npm/linux-arm64"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "os": ["linux"],
   "cpu": ["arm64"],
   "files": ["bin/"]

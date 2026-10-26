@@ -59,6 +59,8 @@
 		"@sigrun/shared"
 	],
 	"optionalDependencies": {
+		"@sigrun/sandbox-linux-arm64": "file:./sandbox/npm/linux-arm64",
+		"@sigrun/sandbox-linux-x64": "file:./sandbox/npm/linux-x64",
 		"@sigrun/tui": "0.1.1"
 	},
 	"devDependencies": {
