@@ -225,8 +225,14 @@ test.describe("item 6: tool card", () => {
 		await expect(page.locator(".composer-send")).toBeEnabled();
 		await page.locator(".composer-send").click();
 		// The default chronological view renders the tool row in place;
-		// expanding it shows the output.
+		// expanding it shows the output. (The guard above switches to the
+		// grouped view when the timeline toggle was pressed — there the tool
+		// rows live inside the collapsed ActivityLine, so expand it first.)
+		const activity = page.locator(".activity-toggle").first();
 		const toolRow = page.locator(".tool-row-toggle").first();
+		if ((await toolRow.count()) === 0 && (await activity.count()) > 0) {
+			await activity.click();
+		}
 		await expect(toolRow).toBeVisible();
 		await toolRow.click();
 		await expect(page.locator(".tool-row-output").first()).toBeVisible();

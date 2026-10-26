@@ -46,7 +46,10 @@ test("round 2: in-place live render, autoscroll, token meta, one-line bubble", a
 	await page
 		.locator(".entry-user-message")
 		.first()
-		.waitFor({ state: "visible", timeout: 8000 });
+		// 15s: the full-suite runs share the box with parallel workers; the
+		// 8s budget flaked on admission latency (verified pre-existing on the
+		// clean base — the same wait timing-out at d75f8df under load).
+		.waitFor({ state: "visible", timeout: 15_000 });
 	const bubbleH = await page
 		.locator(".entry-user-message")
 		.first()
@@ -55,9 +58,6 @@ test("round 2: in-place live render, autoscroll, token meta, one-line bubble", a
 		throw new Error(`user bubble wraps: height=${bubbleH}`);
 	}
 	await page.waitForTimeout(900);
-	if (bubbleH > 55) {
-		throw new Error(`user bubble wraps: height=${bubbleH}`);
-	}
 
 	// The meta label splits tokens (the faux usage has in/out legs).
 	const meta = await page.locator(".message-meta").first().textContent();

@@ -267,13 +267,17 @@ test.describe("item 7: compaction recall", () => {
 				.locator('[data-turn-kind="assistant"]')
 				.filter({ hasText: "ZEBRA-COMPACTED-OUT" }),
 		).toBeVisible({ timeout: 15_000 });
-		// Turn 2: forces the compaction.
+		// Turn 2: forces the compaction. The compaction may land while this
+		// turn settles (it replaces the compacted-out entries with the summary
+		// and consumes a scripted response), so the visible evidence is EITHER
+		// the turn-2 answer OR the compaction boundary. The load-bearing
+		// assertion is the recall tool row below.
 		await page.locator(".composer-input").pressSequentially("another turn");
 		await page.locator(".composer-send").click();
 		await expect(
 			page
-				.locator('[data-turn-kind="assistant"]')
-				.filter({ hasText: "a second turn" }),
+				.locator('[data-turn-kind="assistant"], [data-turn-kind="compaction"]')
+				.filter({ hasText: /a second turn|Context compacted/ }),
 		).toBeVisible({ timeout: 15_000 });
 		// Turn 3: the model recalls the compacted-out marker. The memory_recall
 		// tool call's result (a pi.tool-result entry) must carry the marker —
@@ -282,8 +286,14 @@ test.describe("item 7: compaction recall", () => {
 		await page.locator(".composer-input").pressSequentially("what was the marker?");
 		await page.locator(".composer-send").click();
 		// The default chronological view renders the tool row in place;
-		// expanding it shows the recalled content.
+		// expanding it shows the recalled content. (The guard above switched
+		// to the grouped view — there the tool rows live inside the collapsed
+		// ActivityLine, so expand it first.)
+		const activity = page.locator(".activity-toggle").first();
 		const card = page.locator(".tool-row-toggle").filter({ hasText: "memory_recall" }).first();
+		if ((await card.count()) === 0 && (await activity.count()) > 0) {
+			await activity.click();
+		}
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		await card.click();
 		await expect(
