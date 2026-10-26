@@ -14,26 +14,40 @@
 
 name: family-checkout
 description: Check out the sigrun built-in extension sibling repos
+inputs:
+  exclude:
+    description: >-
+      A sibling dir name to skip — an extension repo's own workflow
+      excludes ITSELF here, then checks itself out at the triggering
+      SHA, so this action never overwrites the code under test with a
+      default-branch checkout.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v5
+    - if: ${{ inputs.exclude != 'sigrun-ext-codemode' }}
+      uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-codemode
         path: sigrun-ext-codemode
-    - uses: actions/checkout@v5
+    - if: ${{ inputs.exclude != 'sigrun-ext-gateway' }}
+      uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-gateway
         path: sigrun-ext-gateway
-    - uses: actions/checkout@v5
+    - if: ${{ inputs.exclude != 'sigrun-ext-mcp' }}
+      uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-mcp
         path: sigrun-ext-mcp
-    - uses: actions/checkout@v5
+    - if: ${{ inputs.exclude != 'sigrun-ext-tool-search' }}
+      uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-tool-search
         path: sigrun-ext-tool-search
-    - uses: actions/checkout@v5
+    - if: ${{ inputs.exclude != 'sigrun-ext-oauth' }}
+      uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-oauth
         path: sigrun-ext-oauth

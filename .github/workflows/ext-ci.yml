@@ -1,0 +1,100 @@
+# Reusable extension CI (release workstream Task 2.2): build, test and
+# typecheck for the 10 sigrun-family extension/provider repos, so the
+# caller repos carry a ~15-line thin caller instead of a drifting copy.
+#
+# Callers:
+#
+#   jobs:
+#     test:
+#       uses: sigrun-ai/sigrun/.github/workflows/ext-ci.yml@main
+#       with:
+#         needs-core: true   # only the file:-linked repos
+#
+# needs-core is true ONLY for the repos whose devDependencies hold a
+# file:../ sibling spec (ext-mcp/ext-gateway/ext-oauth -> sigrun,
+# ext-tool-search -> sigrun-ext-mcp). For those, the job checks core out
+# at path `sigrun`, checks the four OTHER built-in siblings out via the
+# family-checkout composite action with `exclude: <this repo>`, and
+# builds core first so the file: link resolves against real build
+# output. The repo under test is ALWAYS the caller's own checkout at the
+# triggering SHA — never a family-checkout default-branch checkout.
+name: ext-ci
+
+on:
+  workflow_call:
+    inputs:
+      package-dir:
+        description: "Directory holding the extension package (manifest, lock)"
+        required: false
+        type: string
+        default: "."
+      needs-core:
+        description: "Check out and build core plus the family siblings first"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # needs-core layout: the file:../sigrun (and file:../sigrun-ext-*)
+      # dev specs resolve against the WORKSPACE ROOT, so core sits at
+      # `sigrun` and the repo under test sits at its own sibling name —
+      # matching the layout its own lockfile was generated in.
+      - uses: actions/checkout@v5
+        if: inputs.needs-core
+        with:
+          repository: sigrun-ai/sigrun
+          path: sigrun
+      - name: Check out the built-in family siblings
+        if: inputs.needs-core
+        uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
+        with:
+          exclude: ${{ github.event.repository.name }}
+      # After family-checkout: the repo under test at the TRIGGERING SHA
+      # (a PR head for pull_request, the pushed commit for push). This
+      # must come after the family action so the family action's
+      # default-branch checkouts can never overwrite the code under test.
+      - uses: actions/checkout@v5
+        if: inputs.needs-core
+        with:
+          path: ${{ github.event.repository.name }}
+      # needs-core == false: a plain root checkout of the repo under
+      # test; package-dir stays "." and no sibling layout exists.
+      - uses: actions/checkout@v5
+        if: "!inputs.needs-core"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Build core (file:-linked repos)
+        if: inputs.needs-core
+        working-directory: sigrun
+        run: |
+          npm ci
+          npm run build
+      # WORKDIR: needs-core puts the package under the sibling layout
+      # (<repo>/<package-dir>); the plain lane stays at package-dir.
+      - name: Resolve the package working directory
+        id: workdir
+        shell: bash
+        env:
+          REPO: ${{ github.event.repository.name }}
+          PKGDIR: ${{ inputs.package-dir }}
+          NEEDS_CORE: ${{ inputs.needs-core }}
+        run: |
+          if [ "$NEEDS_CORE" = "true" ]; then
+            echo "dir=${REPO}/${PKGDIR}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=${PKGDIR}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install, build, test, typecheck
+        working-directory: ${{ steps.workdir.outputs.dir }}
+        run: |
+          npm ci
+          npm run build
+          npm test
+          npm run typecheck

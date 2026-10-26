@@ -1,0 +1,248 @@
+# Reusable extension release (release workstream Task 2.2): guard → test
+# → publish for the 10 sigrun-family extension/provider repos. Callers
+# wire this to `push tags v*` plus a `workflow_dispatch` dry-run path:
+#
+#   jobs:
+#     release:
+#       uses: sigrun-ai/sigrun/.github/workflows/ext-release.yml@main
+#       secrets: inherit
+#       permissions:
+#         id-token: write
+#       with:
+#         needs-core: true      # only the file:-linked repos
+#         dry-run: ${{ inputs.dry-run || false }}
+#
+# Publishing is OIDC trusted publishing ONLY — no NPM_TOKEN anywhere.
+# Trusted publishing validates the CALLER's workflow filename, so every
+# caller's file is named release.yml; the reusable workflow's own name
+# is not part of the trust configuration.
+#
+# needs-core: true ONLY for sigrun-ext-mcp, sigrun-ext-gateway and
+# sigrun-ext-oauth (file:../sigrun dev deps) and sigrun-ext-tool-search
+# (file:../sigrun-ext-mcp); see ext-ci.yml for the layout contract.
+name: ext-release
+
+on:
+  workflow_call:
+    inputs:
+      package-dir:
+        description: "Directory holding the extension package (manifest, lock)"
+        required: false
+        type: string
+        default: "."
+      needs-core:
+        description: "Check out and build core plus the family siblings first"
+        required: false
+        type: boolean
+        default: false
+      dry-run:
+        description: "Run npm publish --dry-run instead of publishing"
+        required: false
+        type: boolean
+        default: false
+      dry-run-ref:
+        description: "SHA the guard checks against origin/main when dry-run"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # The guard runs BEFORE anything builds or publishes: tag shape,
+  # tag == manifest version, and ancestry against origin/main.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      # Tooling checkout: release-guard.mjs lives in sigrun-ai/sigrun and
+      # is dependency-free (node: built-ins only), so no npm ci here.
+      - uses: actions/checkout@v5
+        with:
+          repository: sigrun-ai/sigrun
+          ref: main
+          path: .sigrun-tools
+      # The repo under test with FULL history — the default fetch-depth 1
+      # leaves origin/main absent and the ancestry check fails closed.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Fetch origin/main for the ancestry check
+        run: git fetch origin main:refs/remotes/origin/main
+      - name: Resolve the tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: "Guard: tag, manifest version, ancestry"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            git fetch --depth 1 origin "${{ inputs.dry-run-ref }}"
+            node .sigrun-tools/scripts/release-guard.mjs \
+              --dry-run-ref "${{ inputs.dry-run-ref }}" \
+              v0.0.0-dry-run \
+              "${{ inputs.package-dir }}/package.json"
+          else
+            tag="${{ steps.tag.outputs.tag }}"
+            git fetch origin "+refs/tags/${tag}:refs/tags/${tag}"
+            node .sigrun-tools/scripts/release-guard.mjs \
+              "$tag" \
+              "${{ inputs.package-dir }}/package.json"
+          fi
+
+  test:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      # Same sibling layout as ext-ci.yml: core at `sigrun`, the repo
+      # under test at its own sibling name, family-checkout excluding it.
+      - uses: actions/checkout@v5
+        if: inputs.needs-core
+        with:
+          repository: sigrun-ai/sigrun
+          path: sigrun
+      - name: Check out the built-in family siblings
+        if: inputs.needs-core
+        uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
+        with:
+          exclude: ${{ github.event.repository.name }}
+      # Release: pin the repo under test to the TAG, never the default
+      # branch; dry-run: the caller's dispatch ref (or triggering SHA).
+      - uses: actions/checkout@v5
+        if: inputs.needs-core
+        with:
+          path: ${{ github.event.repository.name }}
+          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+      - uses: actions/checkout@v5
+        if: "!inputs.needs-core"
+        with:
+          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Build core (file:-linked repos)
+        if: inputs.needs-core
+        working-directory: sigrun
+        run: |
+          npm ci
+          npm run build
+      - name: Resolve the package working directory
+        id: workdir
+        shell: bash
+        env:
+          REPO: ${{ github.event.repository.name }}
+          PKGDIR: ${{ inputs.package-dir }}
+        run: |
+          if [ "${{ inputs.needs-core }}" = "true" ]; then
+            echo "dir=${REPO}/${PKGDIR}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=${PKGDIR}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install, build, test, typecheck
+        working-directory: ${{ steps.workdir.outputs.dir }}
+        run: |
+          npm ci
+          npm run build
+          npm test
+          npm run typecheck
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        if: "!inputs.needs-core"
+        with:
+          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+      - uses: actions/checkout@v5
+        if: inputs.needs-core
+        with:
+          repository: sigrun-ai/sigrun
+          path: sigrun
+      - name: Check out the built-in family siblings
+        if: inputs.needs-core
+        uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
+        with:
+          exclude: ${{ github.event.repository.name }}
+      - uses: actions/checkout@v5
+        if: inputs.needs-core
+        with:
+          path: ${{ github.event.repository.name }}
+          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Build core (file:-linked repos)
+        if: inputs.needs-core
+        working-directory: sigrun
+        run: |
+          npm ci
+          npm run build
+      - name: Resolve the package working directory
+        id: workdir
+        shell: bash
+        env:
+          REPO: ${{ github.event.repository.name }}
+          PKGDIR: ${{ inputs.package-dir }}
+        run: |
+          if [ "${{ inputs.needs-core }}" = "true" ]; then
+            echo "dir=${REPO}/${PKGDIR}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=${PKGDIR}" >> "$GITHUB_OUTPUT"
+          fi
+      # npm 11.21+ is the OIDC trusted-publishing-capable line; the
+      # runner's bundled npm may be older.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.21
+      - name: Install
+        working-directory: ${{ steps.workdir.outputs.dir }}
+        run: npm ci
+      # Idempotency: a tag re-run after a partial failure must not error
+      # on "version already published". The tarball URL 200s only once
+      # the registry serves the version; skip cleanly in that case.
+      - name: Check whether the version is already live
+        id: live
+        shell: bash
+        working-directory: ${{ steps.workdir.outputs.dir }}
+        run: |
+          set -euo pipefail
+          name="$(node -p 'require("./package.json").name')"
+          ver="$(node -p 'require("./package.json").version')"
+          base="${name##*/}"
+          url="https://registry.npmjs.org/${name}/-/${base}-${ver}.tgz"
+          if curl -sf -o /dev/null "$url"; then
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "live=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Prereleases (-rc.N etc.) publish under --tag next, never onto
+      # latest; releases publish to latest by default.
+      - name: Publish (trusted publishing, OIDC)
+        if: steps.live.outputs.live == 'false' && !inputs.dry-run
+        working-directory: ${{ steps.workdir.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(node -p 'require("./package.json").version')"
+          case "$ver" in
+            *-*) npm publish --access public --tag next ;;
+            *)   npm publish --access public ;;
+          esac
+      - name: Publish (dry run)
+        if: steps.live.outputs.live == 'false' && inputs.dry-run
+        working-directory: ${{ steps.workdir.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(node -p 'require("./package.json").version')"
+          case "$ver" in
+            *-*) npm publish --access public --tag next --dry-run ;;
+            *)   npm publish --access public --dry-run ;;
+          esac

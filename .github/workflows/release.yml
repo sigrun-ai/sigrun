@@ -30,6 +30,14 @@ jobs:
       # enforces exactly that).
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      # Tooling checkout: release-guard.mjs lives here and is
+      # dependency-free (node: built-ins only), so a dry run against an
+      # old tag still finds the CURRENT scripts — no npm ci in
+      # .sigrun-tools.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
       # Probe clone, any state — the guard only needs git + origin.
       - uses: actions/checkout@v5
         with:
@@ -57,11 +65,24 @@ jobs:
       # The release workspace: the tag itself, in the sibling layout
       # the registry-mode dance needs (same as ci.yml — the file:
       # ../sigrun-ext-* specifiers and publish-deps.mjs's manifest
-      # reads resolve against the workspace root).
+      # reads resolve against the workspace root). FULL history: the
+      # shared guard's ancestry check needs it.
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
           path: sigrun
+          fetch-depth: 0
+      # The shared guard: tag shape, tag == manifest version (read at
+      # the TAG, not on main), and the tag's commit reachable from
+      # origin/main. Runs in the full-history tag checkout.
+      - name: "Guard: tag, manifest version, ancestry"
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          node ../.sigrun-tools/scripts/release-guard.mjs \
+            "${TAG}" package.json
       # The five built-in siblings at default-branch HEAD (their pinned
       # versions publish independently; the composite action checks out
       # ONLY the siblings — never core, so the tag checkout stands).
@@ -111,6 +132,11 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      # Tooling checkout (same contract as the image job).
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
       - uses: actions/checkout@v5
         with:
           path: tag-probe
@@ -132,10 +158,21 @@ jobs:
           # image job's guard).
           git describe --tags --exact-match "${TAG}" >/dev/null
           echo "releasing ${TAG} (chart version: ${TAG#v})"
+      # Full history: the shared guard's ancestry check needs it.
       - uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
           path: sigrun
+          fetch-depth: 0
+      # The shared guard (same contract as the image job).
+      - name: "Guard: tag, manifest version, ancestry"
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          node ../.sigrun-tools/scripts/release-guard.mjs \
+            "${TAG}" package.json
       - name: Derive chart version (v prefix stripped)
         shell: bash
         run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
