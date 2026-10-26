@@ -21,9 +21,13 @@
  *  (d) the specifiers `src/harness/builtins.ts` keys on.
  *
  * Plus: `pins` prints exactly one `<name>@<semver>` per built-in, each
- * version read from the sibling checkout's own manifest; and no
- * built-in's `peerDependencies` may skew against the host pins core
- * itself carries (the peer-skew case from Task 1.1's Step 4).
+ * version read from the sibling checkout's own manifest; `slugs` prints
+ * exactly the loader slugs `src/harness/builtins.ts` declares (the fifth
+ * enumeration — `/v1/meta` rows key on the slug, so the image smoke's
+ * boot assertion derives its names from `slugs`, never a second
+ * hardcoded list); and no built-in's `peerDependencies` may skew against
+ * the host pins core itself carries (the peer-skew case from Task 1.1's
+ * Step 4).
  */
 
 import { execFileSync } from "node:child_process";
@@ -205,6 +209,25 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 				sibling?.manifest.version,
 			);
 		}
+	});
+
+	test("slugs prints exactly the loader slugs builtins.ts declares", () => {
+		const out = publishDeps("slugs").trim();
+		const rows = out === "" ? [] : out.split("\n");
+		expect(rows, "one slug row per built-in").toHaveLength(5);
+		const printed = new Map(
+			rows.map((line) => {
+				const [name, slug] = line.split(" ");
+				return [name, slug] as const;
+			}),
+		);
+		// The fifth enumeration: the slug set must equal builtins.ts's
+		// declared slugs exactly — /v1/meta rows key on the slug, so drift
+		// here false-fails (or worse, false-passes) the image smoke.
+		const declared = new Map(
+			BUILTIN_EXTENSIONS.map((builtin) => [builtin.specifier, builtin.slug] as const),
+		);
+		expect(Object.fromEntries(printed)).toEqual(Object.fromEntries(declared));
 	});
 
 	test("no peer skew: every built-in's host peers pin core's own version of that module", () => {

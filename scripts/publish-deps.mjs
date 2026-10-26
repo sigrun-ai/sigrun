@@ -32,7 +32,11 @@
  * (the smoke's resolve list; the composite-action test compares it), and
  * `pins` prints the space-separated `<name>@<version>` install list the
  * workflows' lock regen consumes (`npm install ${pins}
- * --package-lock-only`).
+ * --package-lock-only`). A third read-only mode, `slugs`, prints one
+ * `<name> <loader-slug>` line per built-in — `/v1/meta` rows key on the
+ * loader SLUG (`codemode`, `sigrun-mcp`, …), never the package name, so
+ * the image smoke's boot assertion derives its names from here rather
+ * than hardcoding a second enumeration.
  *
  * The rewrite is the ONLY difference: `dependencies` keeps every other
  * entry untouched, and the restore is byte-exact (the original specifiers
@@ -65,6 +69,22 @@ const BUILTINS = {
 	"@sigrun/ext-mcp": "../sigrun-ext-mcp",
 	"@sigrun/ext-tool-search": "../sigrun-ext-tool-search",
 	"@sigrun/oauth": "../sigrun-ext-oauth",
+};
+
+/**
+ * The loader SLUG each built-in reports under (its declared extension
+ * name, slugified — `src/harness/builtins.ts` is the source of truth and
+ * test/builtins-wiring.test.ts asserts the two enumerations agree). The
+ * `/v1/meta` row's `name` is this slug, not the package name, so the
+ * image smoke's boot assertion matches on these (a package-name match
+ * false-fails on a healthy boot: `sigrun-mcp` ≠ `@sigrun/ext-mcp`).
+ */
+const SLUGS = {
+	"@sigrun/ext-codemode": "codemode",
+	"@sigrun/ext-gateway": "gateway",
+	"@sigrun/ext-mcp": "sigrun-mcp",
+	"@sigrun/ext-tool-search": "tool-search",
+	"@sigrun/oauth": "oauth",
 };
 
 /**
@@ -118,6 +138,13 @@ if (mode === "list") {
 		(name) => `${name}@${familyVersion(name)}`,
 	);
 	process.stdout.write(`${pins.join(" ")}\n`);
+} else if (mode === "slugs") {
+	// Read-only: one `<name> <loader-slug>` line per built-in, BUILTINS
+	// order (the image smoke's boot-assertion name set — /v1/meta rows
+	// key on the slug).
+	for (const name of Object.keys(BUILTINS)) {
+		process.stdout.write(`${name} ${SLUGS[name]}\n`);
+	}
 } else if (mode === "registry") {
 	if (existsSync(MARKER)) {
 		// A previous run left the marker behind (it died between writing the
@@ -172,6 +199,6 @@ if (mode === "list") {
 	rmSync(MARKER);
 	process.stdout.write("publish-deps: dev mode restored\n");
 } else {
-	process.stderr.write("usage: publish-deps.mjs <registry|file|list|pins>\n");
+	process.stderr.write("usage: publish-deps.mjs <registry|file|list|pins|slugs>\n");
 	process.exit(2);
 }

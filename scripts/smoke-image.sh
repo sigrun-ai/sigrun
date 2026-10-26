@@ -12,11 +12,15 @@ set -eu
 image="${1-}"
 
 if [ "$#" -eq 1 ]; then
-	# The built-in resolve list, derived on the HOST (the single source
-	# of truth is publish-deps.mjs's BUILTINS map — the container has no
-	# sibling checkouts to re-derive it from).
+	# The built-in resolve list (package names) and the loader-slug list,
+	# both derived on the HOST — the single source of truth is
+	# publish-deps.mjs's BUILTINS map (the container has no sibling
+	# checkouts to re-derive from). /v1/meta rows key on the loader SLUG
+	# (`codemode`, `sigrun-mcp`, …), never the package name, so the boot
+	# assertion matches on slugs; the static require.resolve check keeps
+	# the package names.
 	resolve_list="$(node scripts/publish-deps.mjs list | cut -d' ' -f1)"
-	builtin_names="$(printf '%s\n' "$resolve_list" | paste -sd, -)"
+	builtin_slugs="$(node scripts/publish-deps.mjs slugs | cut -d' ' -f2 | paste -sd, -)"
 	probe="$(docker run --rm "$image" /usr/local/lib/sigrun/sigrun-sandbox probe)"
 	PROBE="$probe" node -e '
 		const report = JSON.parse(process.env.PROBE);
@@ -56,21 +60,21 @@ if [ "$#" -eq 1 ]; then
 		fi
 		sleep 1
 	done
-	BUILTIN_NAMES="$builtin_names" docker exec -e BUILTIN_NAMES sigrun-smoke node -e '
+	BUILTIN_SLUGS="$builtin_slugs" docker exec -e BUILTIN_SLUGS sigrun-smoke node -e '
 		fetch("http://127.0.0.1:3000/v1/meta", {
 			headers: { authorization: "Bearer sigrun-smoke-token" },
 		}).then(async (response) => {
 			if (!response.ok) throw new Error(`/v1/meta answered ${response.status}`);
 			const meta = await response.json();
 			const byName = new Map(meta.extensions.map((row) => [row.name, row]));
-			for (const name of process.env.BUILTIN_NAMES.split(",")) {
-				const row = byName.get(name);
-				if (row === undefined) throw new Error(`built-in ${name} absent from /v1/meta`);
+			for (const slug of process.env.BUILTIN_SLUGS.split(",")) {
+				const row = byName.get(slug);
+				if (row === undefined) throw new Error(`built-in ${slug} absent from /v1/meta`);
 				if (row.status !== "ok") {
-					throw new Error(`built-in ${name} did not load: status=${row.status} ${row.error ?? ""}`);
+					throw new Error(`built-in ${slug} did not load: status=${row.status} ${row.error ?? ""}`);
 				}
 			}
-			console.log(`boot smoke OK: ${process.env.BUILTIN_NAMES.split(",").length} built-ins loaded`);
+			console.log(`boot smoke OK: ${process.env.BUILTIN_SLUGS.split(",").length} built-ins loaded`);
 		}).catch((error) => {
 			console.error(error instanceof Error ? error.message : String(error));
 			process.exit(1);
