@@ -31,7 +31,6 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as https from "node:https";
 import type { AddressInfo } from "node:net";
-import { networkInterfaces } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -202,29 +201,16 @@ async function startUpstream(): Promise<Upstream> {
 
 import { isRefusedAddress } from "../src/server/images/ranges.js";
 
-/** This host's first global IPv6 (or vetted IPv4 fallback): the stand-in
- *  for a public address the vetting passes while the connection dials
- *  the local fixture. */
+/** The address the fixture dials: loopback (see images-fetch.test.ts).
+ *  It must be dialable AND vetted-accepted, and nothing satisfies both
+ *  portably — so the proxy's `vet` seam is overridden for these tests and
+ *  the vetting stays covered by its own range-table tests. Deriving it
+ *  from this host's interfaces failed on CI runners, which have no
+ *  globally-routable interface at all. */
+const PUBLIC_STAND_IN = "127.0.0.1";
+
 function publicStandIn(): string {
-	let v4: string | undefined;
-	for (const list of Object.values(networkInterfaces())) {
-		for (const iface of list ?? []) {
-			if (iface.internal) continue;
-			if (
-				iface.family === "IPv6" &&
-				iface.scopeid === 0 &&
-				!iface.address.startsWith("fd") &&
-				!iface.address.startsWith("fe80:")
-			) {
-				return iface.address;
-			}
-			if (iface.family === "IPv4" && v4 === undefined && !isRefusedAddress(iface.address)) {
-				v4 = iface.address;
-			}
-		}
-	}
-	if (v4 !== undefined) return v4;
-	throw new Error("no global IPv6 or vetted IPv4 address for the public stand-in");
+	return PUBLIC_STAND_IN;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +303,10 @@ async function bootServer(upstream: Upstream): Promise<TestServer> {
 		imageFetch: {
 			resolve: async () => [publicStandIn()],
 			ca: upstream.ca,
+			// The stand-in is loopback, which the real vetting refuses by
+			// design; the vetting has its own tests (images-fetch's range
+			// table), so it is not what these route tests exercise.
+			vet: () => false,
 		},
 	});
 	await app.listen({ host: "127.0.0.1", port: 0 });
