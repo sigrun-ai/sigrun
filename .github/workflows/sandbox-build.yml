@@ -1,0 +1,64 @@
+# Reusable sandbox build: cargo test + clippy + both musl cross-builds,
+# assembled and packed platform packages, uploaded as the
+# `sigrun-sandbox-musl` artifact. Consumed by ci.yml (the `sandbox` job)
+# and release.yml (Task 2.3) via `uses:` — reusable workflows can't pass
+# artifacts as outputs, so consumers fetch it with
+# actions/download-artifact in a job that `needs:` this one. No inputs:
+# the platform packages carry core's version (Task 1.3).
+name: sandbox-build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - name: Install musl and the arm64 cross-linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+      - run: cargo test --locked
+        working-directory: sandbox
+      - run: cargo clippy --locked -- -D warnings
+        working-directory: sandbox
+      - name: Build the x64 musl helper
+        working-directory: sandbox
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
+      - name: Build the arm64 musl helper
+        working-directory: sandbox
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
+        run: cargo build --locked --release --target aarch64-unknown-linux-musl
+      - name: Assemble the platform packages
+        run: |
+          mkdir -p sandbox/npm/linux-x64/bin sandbox/npm/linux-arm64/bin
+          cp sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox \
+            sandbox/npm/linux-x64/bin/sigrun-sandbox
+          cp sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox \
+            sandbox/npm/linux-arm64/bin/sigrun-sandbox
+          chmod +x sandbox/npm/linux-x64/bin/sigrun-sandbox \
+            sandbox/npm/linux-arm64/bin/sigrun-sandbox
+      - name: Pack the x64 platform package
+        working-directory: sandbox/npm/linux-x64
+        run: npm pack
+      - name: Pack the arm64 platform package
+        working-directory: sandbox/npm/linux-arm64
+        run: npm pack
+      - name: Upload musl helpers and platform packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: sigrun-sandbox-musl
+          path: |
+            sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox
+            sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox
+            sandbox/npm/linux-x64/*.tgz
+            sandbox/npm/linux-arm64/*.tgz

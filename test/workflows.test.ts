@@ -22,6 +22,7 @@ import { describe, expect, test } from "vitest";
 
 const WORKFLOW_FILE = new URL("../.github/workflows/ci.yml", import.meta.url);
 const RELEASE_FILE = new URL("../.github/workflows/release.yml", import.meta.url);
+const SANDBOX_BUILD_FILE = new URL("../.github/workflows/sandbox-build.yml", import.meta.url);
 
 interface Step {
 	name?: string;
@@ -34,15 +35,28 @@ interface Step {
 
 interface Job {
 	"runs-on"?: string | string[];
+	uses?: string;
 	steps?: Step[];
 }
 
-/** Parsed ci.yml (fails loud when the file is absent/malformed — a
- * missing workflow is a missing deliverable, not a skip). */
-function workflow(): { on: Record<string, unknown>; jobs: Record<string, Job>; permissions?: Record<string, string> } {
-	const parsed = YAML.parse(readFileSync(WORKFLOW_FILE, "utf8"));
-	expect(parsed, "ci.yml must exist and parse").toBeTypeOf("object");
-	return parsed as { on: Record<string, unknown>; jobs: Record<string, Job>; permissions?: Record<string, string> };
+interface ParsedWorkflow {
+	on: Record<string, unknown>;
+	jobs: Record<string, Job>;
+	permissions?: Record<string, string>;
+}
+
+/** Parse a workflow file as data (fails loud when absent/malformed — a
+ * missing workflow is a missing deliverable, not a skip). The single
+ * loader every workflow assertion in this file goes through. */
+function parseWorkflowFile(url: URL, label: string): ParsedWorkflow {
+	const parsed = YAML.parse(readFileSync(url, "utf8"));
+	expect(parsed, `${label} must exist and parse`).toBeTypeOf("object");
+	return parsed as ParsedWorkflow;
+}
+
+/** Parsed ci.yml. */
+function workflow(): ParsedWorkflow {
+	return parseWorkflowFile(WORKFLOW_FILE, "ci.yml");
 }
 
 /** A step's run body as a string (YAML may parse bare `run:` short forms
@@ -77,20 +91,16 @@ function actionSiblingRepositories(): string[] {
 		.map((step) => String(step.with?.repository ?? ""));
 }
 
-/** Parsed release.yml (same contract: a missing/malformed release
- * workflow is a missing deliverable, not a skip). */
-function releaseWorkflow(): {
-	on: Record<string, unknown>;
-	jobs: Record<string, Job>;
-	permissions?: Record<string, string>;
-} {
-	const parsed = YAML.parse(readFileSync(RELEASE_FILE, "utf8"));
-	expect(parsed, "release.yml must exist and parse").toBeTypeOf("object");
-	return parsed as {
-		on: Record<string, unknown>;
-		jobs: Record<string, Job>;
-		permissions?: Record<string, string>;
-	};
+/** Parsed release.yml. */
+function releaseWorkflow(): ParsedWorkflow {
+	return parseWorkflowFile(RELEASE_FILE, "release.yml");
+}
+
+/** Parsed sandbox-build.yml (the Task 2.1 reusable workflow both ci.yml's
+ * `sandbox` job and release.yml consume — the musl build's single source
+ * of truth). */
+function sandboxBuildWorkflow(): ParsedWorkflow {
+	return parseWorkflowFile(SANDBOX_BUILD_FILE, "sandbox-build.yml");
 }
 
 /** All steps of all jobs flattened (release assertions span jobs). */
@@ -319,52 +329,17 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(smokeIndex, "image smoke-check must follow its build").toBeGreaterThan(buildIndex);
 	});
 
-	test("sandbox: tests, lints, and builds both musl targets", () => {
+	test("sandbox: delegates to the shared reusable sandbox-build workflow", () => {
 		const { jobs } = workflow();
-		const steps = jobs.sandbox?.steps ?? [];
-		expect(steps.length, "the sandbox job must exist").toBeGreaterThan(0);
-		const runs = steps.map(runOf).join("\n");
-		expect(runs).toContain("cargo test");
-		expect(runs).toContain("cargo clippy");
-		expect(runs).toContain("-- -D warnings");
-		expect(runs).toContain("--target x86_64-unknown-linux-musl");
-		expect(runs).toContain("--target aarch64-unknown-linux-musl");
-		expect(runs).toContain("musl-tools");
-		expect(runs).toContain("gcc-aarch64-linux-gnu");
-		const toolchain = steps.find((s) => s.uses?.startsWith("dtolnay/rust-toolchain@"));
-		expect(toolchain).toBeDefined();
-		expect(String(toolchain?.with?.targets ?? "")).toContain("x86_64-unknown-linux-musl");
-		expect(String(toolchain?.with?.targets ?? "")).toContain("aarch64-unknown-linux-musl");
-		const env = Object.assign({}, ...steps.map((s) => s.env ?? {}));
-		expect(env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER).toBe("aarch64-linux-gnu-gcc");
-		expect(env.CC_aarch64_unknown_linux_musl).toBe("aarch64-linux-gnu-gcc");
-	});
-
-	test("sandbox: assembles, packs, and uploads both platform packages", () => {
-		const { jobs } = workflow();
-		const steps = jobs.sandbox?.steps ?? [];
-		const runs = steps.map(runOf).join("\n");
-		for (const [target, platform] of [
-			["x86_64-unknown-linux-musl", "linux-x64"],
-			["aarch64-unknown-linux-musl", "linux-arm64"],
-		] as const) {
-			expect(runs).toContain(`sandbox/target/${target}/release/sigrun-sandbox`);
-			expect(runs).toContain(`sandbox/npm/${platform}/bin/sigrun-sandbox`);
-		}
-		expect(runs).toContain("chmod +x");
-		const packs = steps.filter((s) => runOf(s).includes("npm pack"));
-		expect(packs.map((s) => s["working-directory"])).toEqual([
-			"sandbox/npm/linux-x64",
-			"sandbox/npm/linux-arm64",
-		]);
-		const paths = steps
-			.filter((s) => s.uses?.startsWith("actions/upload-artifact@"))
-			.map((s) => String(s.with?.path ?? ""))
-			.join("\n");
-		expect(paths).toContain("sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox");
-		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
-		expect(paths).toContain("sandbox/npm/linux-x64/*.tgz");
-		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
+		const sandbox = jobs.sandbox;
+		expect(sandbox, "the sandbox job must exist").toBeDefined();
+		// The musl build lives in sandbox-build.yml (Task 2.1) so
+		// release.yml consumes the identical steps; the caller job is a
+		// bare `uses:` — no runner, no steps (a `uses:` job can't have
+		// either).
+		expect(sandbox?.uses).toBe("./.github/workflows/sandbox-build.yml");
+		expect(sandbox?.steps).toBeUndefined();
+		expect(sandbox?.["runs-on"]).toBeUndefined();
 	});
 
 	// The sandbox platform manifests' shape is pinned in
@@ -386,5 +361,62 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(joined).toContain("helm dependency update charts/sigrun");
 		expect(joined).toContain("helm lint charts/sigrun");
 		expect(joined).toContain("helm template charts/sigrun");
+	});
+});
+
+describe(".github/workflows/sandbox-build.yml (Task 2.1 reusable musl build)", () => {
+	test("is workflow_call-only with a single build job declaring its own runner", () => {
+		const { on, jobs } = sandboxBuildWorkflow();
+		expect(on).toHaveProperty("workflow_call");
+		expect(Object.keys(jobs)).toEqual(["build"]);
+		expect(jobs.build?.["runs-on"], "the reusable workflow declares its own runner").toBeDefined();
+	});
+
+	test("tests, lints, and builds both musl targets", () => {
+		const { jobs } = sandboxBuildWorkflow();
+		const steps = jobs.build?.steps ?? [];
+		expect(steps.length, "the build job must exist").toBeGreaterThan(0);
+		const runs = steps.map(runOf).join("\n");
+		expect(runs).toContain("cargo test");
+		expect(runs).toContain("cargo clippy");
+		expect(runs).toContain("-- -D warnings");
+		expect(runs).toContain("--target x86_64-unknown-linux-musl");
+		expect(runs).toContain("--target aarch64-unknown-linux-musl");
+		expect(runs).toContain("musl-tools");
+		expect(runs).toContain("gcc-aarch64-linux-gnu");
+		const toolchain = steps.find((s) => s.uses?.startsWith("dtolnay/rust-toolchain@"));
+		expect(toolchain).toBeDefined();
+		expect(String(toolchain?.with?.targets ?? "")).toContain("x86_64-unknown-linux-musl");
+		expect(String(toolchain?.with?.targets ?? "")).toContain("aarch64-unknown-linux-musl");
+		const env = Object.assign({}, ...steps.map((s) => s.env ?? {}));
+		expect(env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER).toBe("aarch64-linux-gnu-gcc");
+		expect(env.CC_aarch64_unknown_linux_musl).toBe("aarch64-linux-gnu-gcc");
+	});
+
+	test("assembles, packs, and uploads both platform packages", () => {
+		const { jobs } = sandboxBuildWorkflow();
+		const steps = jobs.build?.steps ?? [];
+		const runs = steps.map(runOf).join("\n");
+		for (const [target, platform] of [
+			["x86_64-unknown-linux-musl", "linux-x64"],
+			["aarch64-unknown-linux-musl", "linux-arm64"],
+		] as const) {
+			expect(runs).toContain(`sandbox/target/${target}/release/sigrun-sandbox`);
+			expect(runs).toContain(`sandbox/npm/${platform}/bin/sigrun-sandbox`);
+		}
+		expect(runs).toContain("chmod +x");
+		const packs = steps.filter((s) => runOf(s).includes("npm pack"));
+		expect(packs.map((s) => s["working-directory"])).toEqual([
+			"sandbox/npm/linux-x64",
+			"sandbox/npm/linux-arm64",
+		]);
+		const uploads = steps.filter((s) => s.uses?.startsWith("actions/upload-artifact@"));
+		expect(uploads).toHaveLength(1);
+		expect(String(uploads[0]?.with?.name ?? "")).toBe("sigrun-sandbox-musl");
+		const paths = String(uploads[0]?.with?.path ?? "");
+		expect(paths).toContain("sandbox/target/x86_64-unknown-linux-musl/release/sigrun-sandbox");
+		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
+		expect(paths).toContain("sandbox/npm/linux-x64/*.tgz");
+		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
 	});
 });
