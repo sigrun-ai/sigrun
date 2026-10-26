@@ -18,7 +18,6 @@
 import { createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as https from "node:https";
-import { networkInterfaces } from "node:os";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { FETCH_MAX_REDIRECTS, FETCH_TIMEOUT_MS, fetchImage, type FetchDeps } from "../src/server/images/fetch.js";
 import { isRefusedAddress } from "../src/server/images/ranges.js";
@@ -190,7 +189,14 @@ async function startHarness(): Promise<TlsHarness> {
 		connections += 1;
 	});
 	return {
-		deps: { now: Date.now, ca: Buffer.from(certPem, "utf8") },
+		// `vet` is overridden here, once, so every connection test may dial
+		// the loopback stand-in — see PUBLIC_STAND_IN. The vetting itself
+		// is covered by the range-table tests with the REAL predicate.
+		deps: {
+			now: Date.now,
+			ca: Buffer.from(certPem, "utf8"),
+			vet: () => false,
+		},
 		port: address.port,
 		// Normalize IPv4-mapped remotes ("::ffff:192.0.2.5") to the bare
 		// IPv4 literal so assertions match both the v6 and the v4
@@ -210,33 +216,24 @@ async function startHarness(): Promise<TlsHarness> {
 }
 
 /**
- * This host's first global IPv6 address: the stand-in for a public
- * address the vetting passes (documentation IPs are not dialable, so
- * the connection tests dial this one while the range table keeps the
- * `203.0.113.5` literal rows pure). Hosts with no global IPv6 (suite
- * portability) fall back to the first non-internal IPv4 the vetting
- * accepts.
+ * The address the CONNECTION tests dial: loopback.
+ *
+ * Two properties are needed at once and no fixture has both portably — the
+ * address must be dialable (a documentation IP is vetted but ENETUNREACH)
+ * and accepted by the vetting (loopback is dialable but refused BY DESIGN).
+ * So the connection tests pair this with `vet: () => false` in their
+ * FetchDeps, which bypasses only the refusal check for that test; the
+ * vetting itself is covered exhaustively by the range-table tests above,
+ * against real literals, with the real `isRefusedAddress`.
+ *
+ * Deriving the address from this host's interfaces (the previous
+ * approach) made the suite machine-dependent and threw "no global IPv6 or
+ * vetted IPv4 address" on GitHub's runners, which expose none.
  */
+const PUBLIC_STAND_IN = "127.0.0.1";
+
 function publicStandIn(): string {
-	let v4: string | undefined;
-	for (const list of Object.values(networkInterfaces())) {
-		for (const iface of list ?? []) {
-			if (iface.internal) continue;
-			if (
-				iface.family === "IPv6" &&
-				iface.scopeid === 0 &&
-				!iface.address.startsWith("fd") &&
-				!iface.address.startsWith("fe80:")
-			) {
-				return iface.address;
-			}
-			if (iface.family === "IPv4" && v4 === undefined && !isRefusedAddress(iface.address)) {
-				v4 = iface.address;
-			}
-		}
-	}
-	if (v4 !== undefined) return v4;
-	throw new Error("no global IPv6 or vetted IPv4 address for the public stand-in");
+	return PUBLIC_STAND_IN;
 }
 
 /** `FetchDeps.resolve` over a scripted answer list (last entry repeats). */
@@ -427,7 +424,9 @@ describe("fetchImage", () => {
 		await expect(
 			fetchImage(urlFor(h), {
 				...h.deps,
-				resolve: resolver([[publicStandIn(), "10.0.0.7"]]).deps.resolve,
+				resolve: resolver([["203.0.113.5", "10.0.0.7"]]).deps.resolve,
+				// This test is ABOUT the vetting, so restore the real one.
+				vet: isRefusedAddress,
 			}),
 		).rejects.toThrow(/refused address 10\.0\.0\.7/);
 		expect(h.remoteAddresses()).toEqual([]); // never connected
@@ -491,16 +490,23 @@ describe("fetchImage", () => {
 
 	test("refuses a redirect whose target host resolves private", async () => {
 		const h = await harness();
-		const standIn = publicStandIn();
 		h.onRequest((_req, res) => {
 			res.writeHead(302, { location: "https://private.example.invalid/y.png" });
 			res.end();
 		});
-		const r = resolver([[standIn], ["192.168.1.50"]]);
+		// The FIRST hop must actually be dialable (the harness listens on
+		// loopback), so it uses the stand-in with the vetting overridden;
+		// the REDIRECT target then answers a private address, which the
+		// real predicate must refuse. `vet` is therefore a function that
+		// accepts the stand-in and defers everything else to the real
+		// check — the redirect refusal is the assertion under test.
+		const r = resolver([[publicStandIn()], ["192.168.1.50"]]);
 		await expect(
 			fetchImage(urlFor(h), {
 				...h.deps,
 				resolve: r.deps.resolve,
+				vet: (address: string) =>
+					address !== publicStandIn() && isRefusedAddress(address),
 			}),
 		).rejects.toThrow(/refused address 192\.168\.1\.50/);
 	});
@@ -758,6 +764,7 @@ describe("fetchImage", () => {
 			fetchImage(`https://127.0.0.1:${h.port}/x.png`, {
 				...h.deps,
 				resolve: r.deps.resolve,
+				vet: isRefusedAddress,
 			}),
 		).rejects.toThrow(/refused address 127\.0\.0\.1/);
 		expect(h.remoteAddresses()).toEqual([]);

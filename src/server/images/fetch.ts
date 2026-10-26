@@ -54,6 +54,14 @@ export interface FetchDeps {
 	now(): number;
 	/** Extra CA certificates to trust (tests' self-signed cert). */
 	ca?: Buffer;
+	/**
+	 * The refused-address predicate. Defaults to `isRefusedAddress`; the
+	 * only override is the test harness, which must dial a LOCAL address
+	 * (loopback) to exercise the connection path and cannot also satisfy
+	 * the real vetting. The vetting itself is covered exhaustively against
+	 * real literals by the range-table tests, so nothing goes untested.
+	 */
+	vet?(address: string): boolean;
 }
 
 /** Every refusal reason `fetchImage` can fail with. */
@@ -133,8 +141,9 @@ async function vettedAddress(
 	if (addresses.length === 0) {
 		throw new FetchRefusal("resolve", `${host} resolved to no addresses`);
 	}
+	const vet = deps.vet ?? isRefusedAddress;
 	for (const address of addresses) {
-		if (isRefusedAddress(address)) {
+		if (vet(address)) {
 			throw new FetchRefusal(
 				"refused-address",
 				`${host} resolves to refused address ${address}`,
