@@ -28,6 +28,7 @@ interface Step {
 	name?: string;
 	run?: string | number;
 	uses?: string;
+	if?: string;
 	with?: Record<string, unknown>;
 	env?: Record<string, string>;
 	"working-directory"?: string;
@@ -36,6 +37,10 @@ interface Step {
 interface Job {
 	"runs-on"?: string | string[];
 	uses?: string;
+	needs?: string | string[];
+	if?: string;
+	permissions?: Record<string, string>;
+	env?: Record<string, string>;
 	steps?: Step[];
 }
 
@@ -110,18 +115,27 @@ function releaseSteps(): Step[] {
 }
 
 describe(".github/workflows/release.yml (image-workflow §3, release half)", () => {
-	test("triggers on v-tags and exposes a REQUIRED tag input via workflow_dispatch", () => {
+	test("triggers on v-tags and exposes the tag/dry-run/ref dispatch inputs", () => {
 		const { on } = releaseWorkflow();
 		const tags = (on.push as Record<string, unknown> | undefined)?.tags;
 		expect(tags).toEqual(["v*"]);
 		const dispatch = on.workflow_dispatch as
-			| { inputs?: Record<string, { required?: boolean }> }
+			| {
+					inputs?: Record<
+						string,
+						{ required?: boolean; type?: string; default?: unknown }
+					>;
+				}
 			| undefined;
 		expect(dispatch, "workflow_dispatch trigger must exist").toBeDefined();
-		// Required: the dispatch exists to RE-RUN an existing tag's release,
-		// never to build an arbitrary SHA — an optional tag input would let a
-		// typo silently release whatever HEAD happens to be.
+		// Tag stays REQUIRED: the dispatch re-runs an EXISTING tag's
+		// release, never an arbitrary SHA — except in dry-run mode, where
+		// the (also required) `ref` input replaces it.
 		expect(dispatch?.inputs?.tag?.required).toBe(true);
+		expect(dispatch?.inputs?.["dry-run"]?.type).toBe("boolean");
+		expect(dispatch?.inputs?.["dry-run"]?.default).toBe(false);
+		expect(dispatch?.inputs?.ref?.type).toBe("string");
+		expect(dispatch?.inputs?.ref?.default).toBe("main");
 	});
 
 	test("workflow-level permissions are contents:read + packages:write", () => {
@@ -162,7 +176,12 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect((build?.with as { platforms?: string } | undefined)?.platforms).toBe(
 			"linux/amd64,linux/arm64",
 		);
-		expect((build?.with as { push?: boolean } | undefined)?.push).toBe(true);
+		// push: is dry-run gated — true on a real release, false on a
+		// dispatch dry run (the dry-run gating is pinned in its own case
+		// below; here we only require that pushing is POSSIBLE, not that
+		// the literal is `true`).
+		expect(build?.with?.push, "the build must declare push:").toBeDefined();
+		expect(String(build?.with?.push)).not.toBe("false");
 		const tags = (build?.with as { tags?: string | string[] } | undefined)?.tags;
 		const tagsText = Array.isArray(tags) ? tags.join("\n") : String(tags ?? "");
 		expect(tagsText).toContain("ghcr.io/sigrun-ai/sigrun");
@@ -173,7 +192,7 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		];
 		expect(String(buildArgs ?? "")).toContain("APP_VERSION=");
 		// v prefix stripped for the image tag (v0.1.5 tag → 0.1.5 image).
-		expect(runs).toContain("${TAG#v}");
+		expect(runs).toMatch(/#v\}/);
 	});
 
 	test("the image job runs the registry-mode dance (explicit-specs lock regen)", () => {
@@ -204,15 +223,17 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		const { jobs } = releaseWorkflow();
 		const steps = jobs.image?.steps ?? [];
 		const checkouts = steps.filter((s) => s.uses?.startsWith("actions/checkout@"));
-		// tag-probe (the guard's clone, no ref) + the tag-pinned core
-		// checkout — the siblings arrive via the composite action, which
-		// must follow the core checkout (it is referenced FROM the core
-		// checkout's tree).
+		// The tag-pinned core checkout — the siblings arrive via the
+		// composite action, which must follow the core checkout (it is
+		// referenced FROM the core checkout's tree).
 		const core = checkouts.find(
 			(s) => (s.with as { path?: string } | undefined)?.path === "sigrun",
 		);
 		expect(core, "the image job checks out core at path sigrun").toBeDefined();
-		expect((core?.with as { ref?: string } | undefined)?.ref).toBe("refs/tags/${{ env.TAG }}");
+		expect(
+			String((core?.with as { ref?: string } | undefined)?.ref ?? ""),
+			"the image job's core checkout must pin the release tag",
+		).toContain("refs/tags/");
 		const family = steps.find(
 			(s) => s.uses === "./sigrun/.github/actions/family-checkout",
 		);
@@ -231,6 +252,178 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 			"GITHUB_TOKEN",
 		]);
 		expect(raw).toContain("secrets.GITHUB_TOKEN");
+	});
+
+	// ---- Task 2.3: the npm-publish half of the job graph ----
+
+	test("guard is the FIRST job: every job needs it, directly or transitively", () => {
+		const { jobs } = releaseWorkflow();
+		const needsOf = (name: string): string[] => {
+			const needs = jobs[name]?.needs;
+			return Array.isArray(needs) ? needs : needs ? [String(needs)] : [];
+		};
+		// The tag guard stays first EVERYWHERE: walk the needs graph from
+		// every non-guard job and assert every path bottoms out at guard.
+		for (const name of Object.keys(jobs)) {
+			if (name === "guard") continue;
+			const visited = new Set<string>();
+			const queue = [...needsOf(name)];
+			expect(queue.length, `${name} must declare needs`).toBeGreaterThan(0);
+			while (queue.length > 0) {
+				const next = queue.pop() as string;
+				if (visited.has(next)) continue;
+				visited.add(next);
+				queue.push(...needsOf(next));
+			}
+			expect(visited.has("guard"), `${name} must reach guard transitively`).toBe(true);
+		}
+	});
+
+	test("publish-npm declares id-token: write (OIDC trusted publishing — no npm token anywhere)", () => {
+		const { jobs } = releaseWorkflow();
+		const permissions = jobs["publish-npm"]?.permissions;
+		expect(permissions?.["id-token"], "publish-npm must declare id-token: write").toBe(
+			"write",
+		);
+		// Publishing is trusted publishing ONLY: no token secret may ever
+		// be REFERENCED (the rule is about secret wiring, not comments
+		// documenting the posture; secrets.GITHUB_TOKEN is the workflow's
+		// own auth for ghcr and stays allowed).
+		const raw = readFileSync(RELEASE_FILE, "utf8");
+		expect(raw).not.toMatch(/secrets\.NPM/);
+		const tokens = [...raw.matchAll(/secrets\.([A-Za-z_][A-Za-z0-9_]*TOKEN)/g)].map(
+			(m) => m[1],
+		);
+		expect(tokens, "only secrets.GITHUB_TOKEN may be referenced").toEqual([
+			"GITHUB_TOKEN",
+			"GITHUB_TOKEN",
+		]);
+	});
+
+	test("publish-npm needs guard+sandbox, publishes leaf-first, each step skip-if-live and dry-run-aware", () => {
+		const { jobs } = releaseWorkflow();
+		const job = jobs["publish-npm"];
+		expect(job, "publish-npm must exist").toBeDefined();
+		const needs = job?.needs;
+		expect(Array.isArray(needs) ? needs : [String(needs)]).toContain("guard");
+		expect(Array.isArray(needs) ? needs : [String(needs)]).toContain("sandbox");
+		// The sandbox platform tarballs publish from the reusable build's
+		// artifact, not a rebuild.
+		const download = (job?.steps ?? []).find((s) =>
+			s.uses?.startsWith("actions/download-artifact@"),
+		);
+		expect(String(download?.with?.name ?? "")).toBe("sigrun-sandbox-musl");
+		const runs = (job?.steps ?? []).map(runOf).join("\n");
+		// Every publish step is skip-if-live (the tarball-URL curl probe is
+		// the same idempotency contract ext-release.yml's live-check uses).
+		expect(runs).toContain("curl -sf");
+		// Dry-run aware: the workflow input gates real publishes (the DRY
+		// env the run bodies read is populated FROM inputs.dry-run at job
+		// level — assert both halves of the chain).
+		expect(runs).toContain('"${DRY}"');
+		expect(String(job?.env?.DRY ?? "")).toContain("inputs.dry-run");
+		// Pre-check that every built-in pin is already live (one-shot).
+		expect(runs).toContain("--timeout-min 0");
+		// Prereleases publish under --tag next, never onto latest.
+		expect(runs).toContain("--tag next");
+		// npm 11.21+ is the OIDC trusted-publishing-capable line.
+		expect(runs).toContain("npm@^11.21");
+		// Core's publish runs its existing registry-mode dance: the
+		// publish-deps.mjs registry/file bracket that prepublishOnly and
+		// postpublish wrap around npm publish.
+		expect(runs).toContain("publish-deps.mjs registry");
+		expect(runs).toContain("publish-deps.mjs file");
+	});
+
+	test("publish order is leaf-first: sandbox platforms, shared, tui, then core", () => {
+		const { jobs } = releaseWorkflow();
+		const publishRuns = (jobs["publish-npm"]?.steps ?? [])
+			.map(runOf)
+			.filter((body) => body.includes("npm publish"));
+		// Leaves go first: a failure part-way never leaves a live core
+		// pointing at a missing family version. Assert each package's
+		// publish step appears in exactly this order.
+		const needles = [
+			"linux-x64",
+			"linux-arm64",
+			"@sigrun/shared",
+			"@sigrun/tui",
+			"@sigrun/sigrun",
+		];
+		const positions = needles.map((needle) =>
+			publishRuns.findIndex((body) => body.includes(needle)),
+		);
+		positions.forEach((position, index) => {
+			expect(position, `a publish step must cover ${needles[index]}`).toBeGreaterThanOrEqual(
+				0,
+			);
+		});
+		for (let i = 1; i < positions.length; i += 1) {
+			expect(
+				positions[i],
+				`${needles[i]} must publish AFTER ${needles[i - 1]} (leaf-first)`,
+			).toBeGreaterThan(positions[i - 1] ?? -1);
+		}
+	});
+
+	test("await-registry needs publish-npm, is skipped on dry-run, polls 15 min over the five versions", () => {
+		const { jobs } = releaseWorkflow();
+		const job = jobs["await-registry"];
+		expect(job, "await-registry must exist").toBeDefined();
+		// guard joins the needs list so needs.guard.outputs resolves
+		// (needs contexts expose only DIRECT dependencies' outputs).
+		expect(job?.needs).toEqual(["publish-npm", "guard"]);
+		expect(String(job?.if ?? "")).toContain("inputs.dry-run");
+		const runs = (job?.steps ?? []).map(runOf).join("\n");
+		expect(runs).toContain("await-registry.mjs");
+		expect(runs).toContain("--timeout-min 15");
+		// The five core-family versions: two sandbox platforms, shared, tui,
+		// core — derived, never hardcoded.
+		expect(runs).toContain("@sigrun/shared@");
+		expect(runs).toContain("@sigrun/tui@");
+		expect(runs).toContain("@sigrun/sigrun@");
+	});
+
+	test("smoke needs await-registry and runs the registry-install smoke", () => {
+		const { jobs } = releaseWorkflow();
+		const job = jobs.smoke;
+		expect(job, "smoke must exist").toBeDefined();
+		expect(job?.needs).toEqual(["await-registry", "guard"]);
+		const runs = (job?.steps ?? []).map(runOf).join("\n");
+		expect(runs).toContain("smoke-registry.sh");
+	});
+
+	test("image and chart need smoke; on dry-run they need publish-npm and never push", () => {
+		const { jobs } = releaseWorkflow();
+		for (const name of ["image", "chart"] as const) {
+			const job = jobs[name];
+			const needs = job?.needs;
+			expect(needs, `${name} must need smoke`).toContain("smoke");
+			// Dry-run joins publish-npm: a skipped smoke would otherwise
+			// cascade-skip the dry-run build.
+			expect(needs, `${name} must need publish-npm`).toContain("publish-npm");
+			// Every push-side step (registry login, push) must carry a
+			// dry-run `if:` gate.
+			const gated = (job?.steps ?? []).filter(
+				(s) => s.if !== undefined && String(s.if).includes("dry"),
+			);
+			expect(
+				gated.length,
+				`${name} must gate its push steps on the dry-run resolution`,
+			).toBeGreaterThan(0);
+		}
+		// The image build itself still builds on a dry run — only the
+		// push flips off. build-push-action's push: must be an expression
+		// that is false when the guard resolved dry=true.
+		const build = (jobs.image?.steps ?? []).find((s) =>
+			s.uses?.startsWith("docker/build-push-action@"),
+		);
+		expect(String(build?.with?.push ?? "")).toContain("guard.outputs.dry");
+		expect(String(build?.with?.push ?? "")).not.toBe("true");
+		// The chart push step is skipped entirely on dry-run (helm has no
+		// --dry-run push).
+		const chartPush = (jobs.chart?.steps ?? []).find((s) => runOf(s).includes("helm push"));
+		expect(String(chartPush?.if ?? "")).toContain("guard.outputs.dry");
 	});
 });
 

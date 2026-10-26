@@ -1,9 +1,24 @@
 # Release: on v<semver> tags (and workflow_dispatch re-runs of an
-# EXISTING tag) — build and push the multi-arch image to GHCR and the
+# EXISTING tag) — publish the npm family (trusted publishing ONLY: no
+# npm token secret anywhere; publishing jobs declare id-token: write),
+# wait for the registry to serve every tarball, smoke the registry
+# install, then build and push the multi-arch image to GHCR and the
 # chart to the GHCR OCI registry. Auth is the workflow's own
 # GITHUB_TOKEN (permissions below) — no PATs, no stored secrets.
 # Runbook, smoke procedure, and idempotency boundary:
 # charts/sigrun/RELEASE.md.
+#
+# Job graph (the guard stays FIRST everywhere — every job reaches it
+# transitively through needs):
+#
+#   guard -> sandbox -> publish-npm -> await-registry -> smoke -> image
+#                                                              -> chart
+#
+# In dry-run mode (`workflow_dispatch` with dry-run: true) the `ref`
+# input replaces `tag`, nothing is pushed or published, await-registry
+# and smoke are skipped, and image/chart build WITHOUT pushing (their
+# dry-run needs-join is publish-npm, since a skipped smoke would
+# otherwise cascade-skip them).
 name: release
 
 on:
@@ -12,84 +27,421 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing v<semver> tag to re-release"
+        description: "Existing v<semver> tag to re-release (ignored on dry-run)"
         required: true
         type: string
+      dry-run:
+        description: >-
+          Exercise the whole graph against `ref` without pushing or
+          publishing
+        required: true
+        type: boolean
+        default: false
+      ref:
+        description: >-
+          main-ref the dry run releases (guard: must be an ancestor of
+          origin/main)
+        required: true
+        type: string
+        default: "main"
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  image:
+  # The guard runs BEFORE anything builds or publishes: in tag mode the
+  # tag must exist as an exact refs/tags ref, equal the manifest
+  # version, and be reachable from origin/main; in dry-run mode the
+  # `ref` input must be an ancestor of origin/main (no tag exists yet
+  # by definition). One job, one shared release-guard.mjs call — the
+  # duplicated inline guard the image/chart jobs used to carry is gone.
+  guard:
     runs-on: ubuntu-latest
-    env:
-      # The tag being released: the pushed tag itself, or the dispatch
-      # input. Dispatch exists to RE-RUN an existing tag's release
-      # after a fix — never to build an arbitrary SHA (the guard step
-      # enforces exactly that).
-      TAG: ${{ inputs.tag || github.ref_name }}
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      dry: ${{ steps.resolve.outputs.dry }}
+      ref: ${{ steps.resolve.outputs.ref }}
     steps:
-      # Tooling checkout: release-guard.mjs lives here and is
-      # dependency-free (node: built-ins only), so a dry run against an
-      # old tag still finds the CURRENT scripts — no npm ci in
-      # .sigrun-tools.
+      # Tooling checkout: release-guard.mjs and await-registry.mjs live
+      # here and are dependency-free (node: built-ins only), so a dry
+      # run against an old ref still finds the CURRENT scripts — no
+      # npm ci in .sigrun-tools.
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.workflow_sha }}
           path: .sigrun-tools
-      # Probe clone, any state — the guard only needs git + origin.
-      - uses: actions/checkout@v5
-        with:
-          path: tag-probe
-      - name: "Guard: tag must exist as an exact refs/tags ref"
+      # Resolve the release coordinates: the pushed tag, the dispatch's
+      # existing-tag input, or the dry-run ref. The guard reads them.
+      - name: Resolve release coordinates
+        id: resolve
         shell: bash
-        working-directory: tag-probe
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY: ${{ inputs.dry-run }}
+          INPUT_REF: ${{ inputs.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth 1 origin \
-            "+refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
-          if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" \
-              >/dev/null 2>&1; then
-            echo "::error::tag '${TAG}' does not exist as"
-            echo "::error::refs/tags/${TAG} — releases build EXISTING"
-            echo "::error::tags only; re-release via dispatch with the tag."
-            exit 1
+          if [ "${INPUT_DRY}" = "true" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "dry=true" >> "$GITHUB_OUTPUT"
+            echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${INPUT_TAG}" ]; then
+            # Dispatch re-run of an EXISTING tag: github.ref_name is the
+            # branch the dispatch ran from (e.g. main), never the tag —
+            # the explicit tag input wins.
+            echo "tag=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          else
+            # Tag push: the pushed tag itself is the release target.
+            echo "tag=${REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+            echo "ref=" >> "$GITHUB_OUTPUT"
           fi
-          # Exact-match belt: the fetched tag resolves to a real commit.
-          # --tags, because the release runbook's `git tag v<semver>` form
-          # is lightweight — bare --exact-match would only accept
-          # annotated tags.
-          git describe --tags --exact-match "${TAG}" >/dev/null
-          echo "releasing ${TAG} (image tag: ${TAG#v})"
-      # The release workspace: the tag itself, in the sibling layout
-      # the registry-mode dance needs (same as ci.yml — the file:
-      # ../sigrun-ext-* specifiers and publish-deps.mjs's manifest
-      # reads resolve against the workspace root). FULL history: the
-      # shared guard's ancestry check needs it.
+      # The workspace the guard runs in: the tag (tag mode) or the
+      # dry-run ref, with FULL history — the ancestry check needs
+      # origin/main, and the default fetch-depth 1 leaves it absent
+      # (a guard that cannot verify ancestry fails closed, by design).
       - uses: actions/checkout@v5
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: >-
+            ${{
+              steps.resolve.outputs.dry == 'true'
+              && steps.resolve.outputs.ref
+              || format('refs/tags/{0}', steps.resolve.outputs.tag)
+            }}
           path: sigrun
           fetch-depth: 0
-      # The shared guard: tag shape, tag == manifest version (read at
-      # the TAG, not on main), and the tag's commit reachable from
-      # origin/main. Runs in the full-history tag checkout.
-      - name: "Guard: tag, manifest version, ancestry"
+      - name: "Guard: tag shape, manifest version, ancestry"
+        shell: bash
+        working-directory: sigrun
+        env:
+          GUARD_TAG: ${{ steps.resolve.outputs.tag }}
+          GUARD_DRY: ${{ steps.resolve.outputs.dry }}
+          GUARD_REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if [ "${GUARD_DRY}" = "true" ]; then
+            # Dry run: no tag applies; only the candidate SHA's
+            # ancestry matters.
+            node ../.sigrun-tools/scripts/release-guard.mjs \
+              --dry-run-ref "${GUARD_REF}" \
+              v0.0.0-dry-run \
+              package.json
+            # Belt: the checked-out ref IS the ref the guard accepted.
+            test "$(git rev-parse HEAD)" = "${GUARD_REF}"
+          else
+            # Tag mode: the tag must exist as an exact refs/tags ref
+            # (releases build EXISTING tags only), match the manifest
+            # version, and be an ancestor of origin/main. The
+            # exact-match belt is --tags-safe: the runbook's `git tag
+            # v<semver>` form is lightweight.
+            git fetch origin \
+              "+refs/tags/${GUARD_TAG}:refs/tags/${GUARD_TAG}"
+            git rev-parse -q --verify \
+              "refs/tags/${GUARD_TAG}^{commit}" >/dev/null
+            git describe --tags --exact-match "${GUARD_TAG}" >/dev/null
+            node ../.sigrun-tools/scripts/release-guard.mjs \
+              "${GUARD_TAG}" \
+              package.json
+          fi
+          echo "release coordinates OK (dry=${GUARD_DRY})"
+
+  # The musl sandbox build, from the single reusable workflow ci.yml
+  # also consumes — the release never rebuilds a different binary.
+  sandbox:
+    needs: guard
+    uses: ./.github/workflows/sandbox-build.yml
+
+  # Publish the five core-family npm packages, LEAF-FIRST: a failure
+  # part-way never leaves a live core pointing at a missing family
+  # version. Order: sandbox-linux-x64, sandbox-linux-arm64 (from the
+  # reusable build's packed tarballs), @sigrun/shared, @sigrun/tui,
+  # then @sigrun/sigrun (registry mode via its existing prepublishOnly
+  # dance). Every step is skip-if-live (the tarball-URL curl probe is
+  # the same idempotency contract ext-release.yml's live-check uses)
+  # and dry-run-aware (npm publish --dry-run exercises the pack path
+  # without publishing). Prereleases publish every package with
+  # --tag next, the same rule as ext-release.yml (T2.2).
+  #
+  # Publishing is OIDC trusted publishing ONLY — no npm token secret anywhere.
+  publish-npm:
+    needs: [guard, sandbox]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DRY: ${{ inputs.dry-run || false }}
+    steps:
+      # Tooling checkout (same contract as the guard job).
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
+      # The release workspace: the tag (or dry-run ref), in the sibling
+      # layout the registry-mode dance needs (publish-deps.mjs's
+      # manifest reads resolve against the workspace root; the
+      # composite action checks out ONLY the siblings — never core).
+      - uses: actions/checkout@v5
+        with:
+          ref: >-
+            ${{
+              needs.guard.outputs.dry == 'true'
+              && needs.guard.outputs.ref
+              || format('refs/tags/{0}', needs.guard.outputs.tag)
+            }}
+          path: sigrun
+          fetch-depth: 0
+      - uses: ./sigrun/.github/actions/family-checkout
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # npm 11.21+ is the OIDC trusted-publishing-capable line; the
+      # runner's bundled npm may be older.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.21
+      # The packed platform tarballs the reusable sandbox build
+      # assembled (bin/ already chmod +x'd and npm pack'ed there).
+      - name: Download the sandbox musl packages
+        uses: actions/download-artifact@v5
+        with:
+          name: sigrun-sandbox-musl
+          path: sandbox-artifacts
+      - name: Derive the release versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          core="$(node -p 'require("./sigrun/package.json").version')"
+          shared="$(node -p 'require("./sigrun/shared/package.json").version')"
+          tui="$(node -p 'require("./sigrun/tui/package.json").version')"
+          x64p="./sigrun/sandbox/npm/linux-x64/package.json"
+          armp="./sigrun/sandbox/npm/linux-arm64/package.json"
+          sbx="$(node -p "require('${x64p}').version")"
+          sba="$(node -p "require('${armp}').version")"
+          {
+            echo "CORE_VERSION=${core}"
+            echo "SHARED_VERSION=${shared}"
+            echo "TUI_VERSION=${tui}"
+            echo "SANDBOX_X64_VERSION=${sbx}"
+            echo "SANDBOX_ARM64_VERSION=${sba}"
+          } >> "$GITHUB_ENV"
+      # Pre-check: every built-in pin must already be live — extension
+      # releases publish independently, and core's registry-mode
+      # manifest resolves to their pinned versions. One-shot: a missing
+      # pin fails fast here instead of mid-publish.
+      - name: "Pre-check: every built-in pin is live"
         shell: bash
         working-directory: sigrun
         run: |
           set -euo pipefail
-          git fetch origin main:refs/remotes/origin/main
-          node ../.sigrun-tools/scripts/release-guard.mjs \
-            "${TAG}" package.json
-      # The five built-in siblings at default-branch HEAD (their pinned
-      # versions publish independently; the composite action checks out
-      # ONLY the siblings — never core, so the tag checkout stands).
+          pins="$(node scripts/publish-deps.mjs pins)"
+          node ../.sigrun-tools/scripts/await-registry.mjs \
+            --timeout-min 0 ${pins}
+      # Leaves first. The sandbox platform tarballs publish STRAIGHT
+      # from the artifact (npm publish <tarball> uploads it verbatim —
+      # repacking would rebuild bin/ permissions against the runner's
+      # umask for no gain).
+      - name: "Publish @sigrun/sandbox-linux-x64 (skip-if-live)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://registry.npmjs.org/@sigrun/sandbox-linux-x64/-"
+          url="${base}/sandbox-linux-x64-${SANDBOX_X64_VERSION}.tgz"
+          if curl -sf -o /dev/null "${url}"; then
+            echo "sandbox-linux-x64@${SANDBOX_X64_VERSION} live — skip"
+          else
+            tarball="$(ls sandbox-artifacts/*linux-x64*.tgz)"
+            if [ "${DRY}" = "true" ]; then
+              npm publish --dry-run "${tarball}"
+            else
+              case "${SANDBOX_X64_VERSION}" in
+                *-*) npm publish "${tarball}" --tag next ;;
+                *)   npm publish "${tarball}" ;;
+              esac
+            fi
+          fi
+      - name: "Publish @sigrun/sandbox-linux-arm64 (skip-if-live)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://registry.npmjs.org/@sigrun/sandbox-linux-arm64/-"
+          url="${base}/sandbox-linux-arm64-${SANDBOX_ARM64_VERSION}.tgz"
+          if curl -sf -o /dev/null "${url}"; then
+            echo "sandbox-linux-arm64@${SANDBOX_ARM64_VERSION} live — skip"
+          else
+            tarball="$(ls sandbox-artifacts/*linux-arm64*.tgz)"
+            if [ "${DRY}" = "true" ]; then
+              npm publish --dry-run "${tarball}"
+            else
+              case "${SANDBOX_ARM64_VERSION}" in
+                *-*) npm publish "${tarball}" --tag next ;;
+                *)   npm publish "${tarball}" ;;
+              esac
+            fi
+          fi
+      - name: "Publish @sigrun/shared (skip-if-live)"
+        shell: bash
+        working-directory: sigrun/shared
+        run: |
+          set -euo pipefail
+          base="https://registry.npmjs.org/@sigrun/shared/-"
+          url="${base}/shared-${SHARED_VERSION}.tgz"
+          if curl -sf -o /dev/null "${url}"; then
+            echo "@sigrun/shared@${SHARED_VERSION} live — skip"
+          elif [ "${DRY}" = "true" ]; then
+            case "${SHARED_VERSION}" in
+              *-*) npm publish --access public --tag next --dry-run ;;
+              *)   npm publish --access public --dry-run ;;
+            esac
+          else
+            case "${SHARED_VERSION}" in
+              *-*) npm publish --access public --tag next ;;
+              *)   npm publish --access public ;;
+            esac
+          fi
+      - name: "Publish @sigrun/tui (skip-if-live)"
+        shell: bash
+        working-directory: sigrun/tui
+        run: |
+          set -euo pipefail
+          base="https://registry.npmjs.org/@sigrun/tui/-"
+          url="${base}/tui-${TUI_VERSION}.tgz"
+          if curl -sf -o /dev/null "${url}"; then
+            echo "@sigrun/tui@${TUI_VERSION} live — skip"
+          elif [ "${DRY}" = "true" ]; then
+            case "${TUI_VERSION}" in
+              *-*) npm publish --access public --tag next --dry-run ;;
+              *)   npm publish --access public --dry-run ;;
+            esac
+          else
+            case "${TUI_VERSION}" in
+              *-*) npm publish --access public --tag next ;;
+              *)   npm publish --access public ;;
+            esac
+          fi
+      # Core LAST: its published manifest pins every family version
+      # above, so a live core never points at a missing leaf. The
+      # existing prepublishOnly runs the registry-mode dance
+      # (publish-deps.mjs registry, then build + webui build);
+      # postpublish restores file: specifiers. --dry-run exercises the
+      # same lifecycle scripts without publishing.
+      - name: "Publish @sigrun/sigrun (skip-if-live, prepublishOnly)"
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          base="https://registry.npmjs.org/@sigrun/sigrun/-"
+          url="${base}/sigrun-${CORE_VERSION}.tgz"
+          if curl -sf -o /dev/null "${url}"; then
+            echo "@sigrun/sigrun@${CORE_VERSION} live — skip"
+            exit 0
+          fi
+          # The registry-mode dance needs the lock's built-ins to be
+          # registry-shaped too (a link:-shaped lock keeps the dance's
+          # npm ci from materializing the built-ins at build time).
+          node scripts/publish-deps.mjs registry
+          pins="$(node scripts/publish-deps.mjs pins)"
+          npm install ${pins} --package-lock-only
+          node scripts/publish-deps.mjs file
+          npm ci
+          if [ "${DRY}" = "true" ]; then
+            case "${CORE_VERSION}" in
+              *-*) npm publish --access public --tag next --dry-run ;;
+              *)   npm publish --access public --dry-run ;;
+            esac
+          else
+            case "${CORE_VERSION}" in
+              *-*) npm publish --access public --tag next ;;
+              *)   npm publish --access public ;;
+            esac
+          fi
+          # postpublish already restored file: mode; make the tree clean
+          # again even on a failure path so later jobs read a dev-shape
+          # manifest.
+          node scripts/publish-deps.mjs file
+
+  # Registry propagation lag only: publish's submit returning 200 does
+  # NOT mean every CDN edge serves the tarball yet. Skipped on dry-run
+  # (nothing was published).
+  await-registry:
+    # guard joins for the tag/dry outputs (needs contexts expose only
+    # DIRECT dependencies' outputs).
+    needs: [publish-npm, guard]
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
+      # Read-only workspace for the versions (no builds here).
+      - uses: actions/checkout@v5
+        with:
+          ref: "refs/tags/${{ needs.guard.outputs.tag }}"
+          path: sigrun
+      - name: "Wait for every core-family tarball to go live (15 min)"
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          core="$(node -p 'require("./package.json").version')"
+          shared="$(node -p 'require("./shared/package.json").version')"
+          tui="$(node -p 'require("./tui/package.json").version')"
+          x64p="./sandbox/npm/linux-x64/package.json"
+          armp="./sandbox/npm/linux-arm64/package.json"
+          sbx="$(node -p "require('${x64p}').version")"
+          sba="$(node -p "require('${armp}').version")"
+          node ../.sigrun-tools/scripts/await-registry.mjs \
+            --timeout-min 15 \
+            "@sigrun/sandbox-linux-x64@${sbx}" \
+            "@sigrun/sandbox-linux-arm64@${sba}" \
+            "@sigrun/shared@${shared}" \
+            "@sigrun/tui@${tui}" \
+            "@sigrun/sigrun@${core}"
+
+  # The registry-install smoke: prove the PUBLISHED tarball installs and
+  # boots from the registry with every built-in loaded.
+  smoke:
+    needs: [await-registry, guard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
+      - uses: actions/checkout@v5
+        with:
+          ref: "refs/tags/${{ needs.guard.outputs.tag }}"
+          path: sigrun
+      - name: Smoke the registry install
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          sh scripts/smoke-registry.sh "${version}"
+
+  image:
+    # smoke on a real release; publish-npm joins so a dry run (where
+    # smoke is skipped) still builds the image.
+    needs: [publish-npm, smoke, guard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: "refs/tags/${{ needs.guard.outputs.tag }}"
+          path: sigrun
+          fetch-depth: 0
       - uses: ./sigrun/.github/actions/family-checkout
       - name: Derive image tag (v prefix stripped)
         shell: bash
-        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        env:
+          GUARD_TAG: ${{ needs.guard.outputs.tag }}
+        run: echo "VERSION=${GUARD_TAG#v}" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -99,8 +451,8 @@ jobs:
       # The Dockerfile's build precondition: registry-shaped manifest
       # and lock — identical dance to ci.yml's image-build job (the
       # pins come from publish-deps.mjs's read-only `pins` mode and are
-      # named explicitly; a bare --package-lock-only keeps link: entries →
-      # dangling built-in symlinks → boot quarantine).
+      # named explicitly; a bare --package-lock-only keeps link: entries
+      # → dangling built-in symlinks → boot quarantine).
       - name: Registry-mode lock regen
         shell: bash
         working-directory: sigrun
@@ -109,6 +461,7 @@ jobs:
           pins="$(node scripts/publish-deps.mjs pins)"
           npm install ${pins} --package-lock-only
       - uses: docker/login-action@v3
+        if: ${{ needs.guard.outputs.dry != 'true' }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -117,65 +470,31 @@ jobs:
         with:
           context: sigrun
           platforms: linux/amd64,linux/arm64
-          push: true
-          # Image tags carry the semver WITHOUT the v prefix, and so does
-          # the APP_VERSION build-arg (the Dockerfile's version label) —
-          # image tag, docker inspect label, and chart appVersion all
-          # read the same 0.1.5 form.
+          # Dry runs BUILD but never push.
+          push: ${{ needs.guard.outputs.dry != 'true' }}
+          # Image tags carry the semver WITHOUT the v prefix, and so
+          # does the APP_VERSION build-arg (the Dockerfile's version
+          # label) — image tag, docker inspect label, and chart
+          # appVersion all read the same 0.1.5 form.
           tags: |
             ghcr.io/sigrun-ai/sigrun:${{ env.VERSION }}
             ghcr.io/sigrun-ai/sigrun:latest
           build-args: APP_VERSION=${{ env.VERSION }}
 
   chart:
+    needs: [publish-npm, smoke, guard]
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      # Tooling checkout (same contract as the image job).
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.workflow_sha }}
-          path: .sigrun-tools
-      - uses: actions/checkout@v5
-        with:
-          path: tag-probe
-      - name: "Guard: tag must exist as an exact refs/tags ref"
-        shell: bash
-        working-directory: tag-probe
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --depth 1 origin \
-            "+refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || true
-          if ! git rev-parse -q --verify "refs/tags/${TAG}^{commit}" \
-              >/dev/null 2>&1; then
-            echo "::error::tag '${TAG}' does not exist as"
-            echo "::error::refs/tags/${TAG} — releases build EXISTING"
-            echo "::error::tags only; re-release via dispatch with the tag."
-            exit 1
-          fi
-          # Exact-match belt (lightweight-tag-safe --tags, matching the
-          # image job's guard).
-          git describe --tags --exact-match "${TAG}" >/dev/null
-          echo "releasing ${TAG} (chart version: ${TAG#v})"
-      # Full history: the shared guard's ancestry check needs it.
-      - uses: actions/checkout@v5
-        with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: "refs/tags/${{ needs.guard.outputs.tag }}"
           path: sigrun
           fetch-depth: 0
-      # The shared guard (same contract as the image job).
-      - name: "Guard: tag, manifest version, ancestry"
-        shell: bash
-        working-directory: sigrun
-        run: |
-          set -euo pipefail
-          git fetch origin main:refs/remotes/origin/main
-          node ../.sigrun-tools/scripts/release-guard.mjs \
-            "${TAG}" package.json
       - name: Derive chart version (v prefix stripped)
         shell: bash
-        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        env:
+          GUARD_TAG: ${{ needs.guard.outputs.tag }}
+        run: echo "VERSION=${GUARD_TAG#v}" >> "$GITHUB_ENV"
       - uses: azure/setup-helm@v4
       # Rewrite the two pinned-format Chart.yaml lines from the tag
       # (chart version AND appVersion both the semver without v), fetch
@@ -191,13 +510,17 @@ jobs:
             charts/sigrun/Chart.yaml
           helm dependency update charts/sigrun
           helm package charts/sigrun
+      # Dry runs package but never push: helm has no --dry-run push, so
+      # both the login and the push are skipped entirely.
       - name: Helm registry login (ghcr.io)
+        if: ${{ needs.guard.outputs.dry != 'true' }}
         shell: bash
         working-directory: sigrun
         run: >
           printf '%s' "${{ secrets.GITHUB_TOKEN }}" | helm registry
           login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Push chart to GHCR OCI
+        if: ${{ needs.guard.outputs.dry != 'true' }}
         shell: bash
         working-directory: sigrun
         run: >
