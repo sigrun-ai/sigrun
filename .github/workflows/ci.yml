@@ -33,6 +33,23 @@ jobs:
       # manifests suites render the chart.
       - run: helm dependency update charts/sigrun
         working-directory: sigrun
+      # Each built-in is a `file:` link, so core's npm ci points at the
+      # sibling directories without installing THEIR dependencies. Their
+      # committed dist/ imports those at load time (@sigrun/shared/live in
+      # the gateway, oauth4webapi in oauth, pi-durable in three of them), so
+      # without this every built-in quarantines and the suite sees
+      # "Cannot find package ..." instead of the real behaviour.
+      - name: Install the built-in siblings' own dependencies
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          for d in sigrun-ext-codemode sigrun-ext-gateway sigrun-ext-mcp \
+                   sigrun-ext-tool-search sigrun-ext-oauth; do
+            echo "::group::npm ci $d"
+            ( cd "$d" && npm ci --ignore-scripts )
+            echo "::endgroup::"
+          done
       - run: npm ci
         working-directory: sigrun
       # The suite imports @sigrun/shared subpaths (access, blocks) through
@@ -62,6 +79,23 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: sigrun/package-lock.json
+      # Each built-in is a `file:` link, so core's npm ci points at the
+      # sibling directories without installing THEIR dependencies. Their
+      # committed dist/ imports those at load time (@sigrun/shared/live in
+      # the gateway, oauth4webapi in oauth, pi-durable in three of them), so
+      # without this every built-in quarantines and the suite sees
+      # "Cannot find package ..." instead of the real behaviour.
+      - name: Install the built-in siblings' own dependencies
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          for d in sigrun-ext-codemode sigrun-ext-gateway sigrun-ext-mcp \
+                   sigrun-ext-tool-search sigrun-ext-oauth; do
+            echo "::group::npm ci $d"
+            ( cd "$d" && npm ci --ignore-scripts )
+            echo "::endgroup::"
+          done
       - run: npm ci
         working-directory: sigrun
       - run: npm run build

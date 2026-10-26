@@ -441,6 +441,43 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(permissions?.contents).toBe("read");
 	});
 
+	test("every job that boots built-ins installs the siblings' own dependencies", () => {
+		// A regression guard with a real history: core's `npm ci` installs
+		// the five `file:` built-ins as LINKS into the sibling directories
+		// but never installs THEIR node_modules. Each built-in's committed
+		// dist/ imports its own runtime deps at load time
+		// (@sigrun/shared/live in the gateway, oauth4webapi in oauth,
+		// pi-durable in codemode/mcp/tool-search), so without a sibling
+		// install every built-in quarantines and the suite reports
+		// "Cannot find package ..." instead of testing behaviour. The
+		// first real push of main failed exactly this way.
+		const { jobs } = workflow();
+		// Jobs that load built-ins: the suite itself, and sandbox-it
+		// (it boots a real harness).
+		for (const name of ["test", "sandbox-it"]) {
+			const steps = jobs[name]?.steps ?? [];
+			const install = steps.find((s) =>
+				runOf(s).includes("npm ci --ignore-scripts"),
+			);
+			expect(install, `${name} must install the sibling dependencies`).toBeDefined();
+			// It must run BEFORE the core build that compiles against them
+			// and before the suite.
+			const installIndex = steps.indexOf(install as Step);
+			const coreInstall = steps.findIndex(
+				(s) =>
+					runOf(s).trim() === "npm ci" &&
+					s["working-directory"] === "sigrun",
+			);
+			expect(coreInstall, `${name} must npm ci core`).toBeGreaterThan(-1);
+			expect(installIndex).toBeLessThan(coreInstall);
+			// And it must cover the whole sibling set, not an ad-hoc subset.
+			const body = runOf(install as Step);
+			for (const dir of publishDepsListDirs()) {
+				expect(body, `${name} must install ${dir}`).toContain(dir);
+			}
+		}
+	});
+
 	test("the test job checks out all five repos in the sibling layout", () => {
 		const { jobs } = workflow();
 		const test = jobs.test;
