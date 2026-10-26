@@ -254,7 +254,17 @@ jobs:
           if curl -sf -o /dev/null "${url}"; then
             echo "sandbox-linux-x64@${SANDBOX_X64_VERSION} live — skip"
           else
-            tarball="$(ls sandbox-artifacts/*linux-x64*.tgz)"
+            # The artifact's internal layout depends on upload-artifact's
+            # least-common-ancestor rule for sandbox-build.yml's four
+            # paths (it lands under sandbox-artifacts/npm/linux-x64/), so
+            # find by NAME rather than assuming a depth. Empty is fatal:
+            # publishing an empty path would fail obscurely later.
+            tarball="$(find sandbox-artifacts -type f -name '*linux-x64*.tgz' | head -n 1)"
+            if [ -z "${tarball}" ]; then
+              echo "::error::no linux-x64 sandbox tarball in the sigrun-sandbox-musl artifact"
+              find sandbox-artifacts -type f | sort >&2
+              exit 1
+            fi
             if [ "${DRY}" = "true" ]; then
               npm publish --dry-run "${tarball}"
             else
@@ -273,7 +283,12 @@ jobs:
           if curl -sf -o /dev/null "${url}"; then
             echo "sandbox-linux-arm64@${SANDBOX_ARM64_VERSION} live — skip"
           else
-            tarball="$(ls sandbox-artifacts/*linux-arm64*.tgz)"
+            tarball="$(find sandbox-artifacts -type f -name '*linux-arm64*.tgz' | head -n 1)"
+            if [ -z "${tarball}" ]; then
+              echo "::error::no linux-arm64 sandbox tarball in the sigrun-sandbox-musl artifact"
+              find sandbox-artifacts -type f | sort >&2
+              exit 1
+            fi
             if [ "${DRY}" = "true" ]; then
               npm publish --dry-run "${tarball}"
             else
@@ -441,7 +456,18 @@ jobs:
         shell: bash
         env:
           GUARD_TAG: ${{ needs.guard.outputs.tag }}
-        run: echo "VERSION=${GUARD_TAG#v}" >> "$GITHUB_ENV"
+          DRY: ${{ needs.guard.outputs.dry }}
+        run: |
+          set -euo pipefail
+          # A dry run has no tag (the guard resolves a ref instead), so an
+          # empty VERSION would silently tag the build ":" and stamp
+          # APP_VERSION="" — a dry run that proves nothing about the real
+          # release path. Fall back to a clearly-marked sentinel.
+          version="${GUARD_TAG#v}"
+          if [ "${DRY}" = "true" ] || [ -z "${version}" ]; then
+            version="0.0.0-dryrun"
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -494,7 +520,17 @@ jobs:
         shell: bash
         env:
           GUARD_TAG: ${{ needs.guard.outputs.tag }}
-        run: echo "VERSION=${GUARD_TAG#v}" >> "$GITHUB_ENV"
+          DRY: ${{ needs.guard.outputs.dry }}
+        run: |
+          set -euo pipefail
+          # Same sentinel rule as the image job: a dry run has no tag, and
+          # an empty version would sed Chart.yaml to version: "" and helm
+          # package a nameless chart — a dry run that proves nothing.
+          version="${GUARD_TAG#v}"
+          if [ "${DRY}" = "true" ] || [ -z "${version}" ]; then
+            version="0.0.0-dryrun"
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
       - uses: azure/setup-helm@v4
       # Rewrite the two pinned-format Chart.yaml lines from the tag
       # (chart version AND appVersion both the semver without v), fetch

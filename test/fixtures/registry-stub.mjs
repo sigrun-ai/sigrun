@@ -4,9 +4,7 @@
 // So the stub runs here, as a child process, and reports its port on
 // stdout as a JSON line once listening.
 //
-// Usage: node stub-server.mjs '<json array of live tarball paths>'
-//        node stub-server.mjs --add <path>   (not used; the test drives
-//                                             liveness via a control file)
+// Usage: node registry-stub.mjs
 //
 // Liveness is re-read from the file named by SIGRUN_STUB_LIVE_FILE on
 // every request, so the test can flip a tarball live mid-poll without

@@ -80,7 +80,9 @@ root="$(npm root -g)"
 
 # Boot: the pi-ai built-in provider model needs no credential to BOOT
 # (mirrors test/build.test.ts's serve-spawn env shape); the token is
-# synthetic. serve binds 127.0.0.1 via SIGRUN_PORT. The state roots
+# synthetic. serve listens on SIGRUN_PORT inside the container (its
+# default bind is 0.0.0.0, which is fine here — the probes below target
+# 127.0.0.1 and the container publishes no ports). The state roots
 # keep the run hermetic inside the container's own /tmp.
 state="$(mktemp -d)"
 SIGRUN_CONFIG_DIR="$state/config" \
