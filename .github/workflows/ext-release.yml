@@ -1,6 +1,8 @@
 # Reusable extension release (release workstream Task 2.2): guard → test
 # → publish for the 10 sigrun-family extension/provider repos. Callers
-# wire this to `push tags v*` plus a `workflow_dispatch` dry-run path:
+# wire this to `push tags v*` plus a `workflow_dispatch` path that either
+# re-runs an EXISTING tag (the `tag` input) or dry-runs a SHA (the
+# `dry-run` + `dry-run-ref` inputs):
 #
 #   jobs:
 #     release:
@@ -45,6 +47,14 @@ on:
         required: false
         type: string
         default: ""
+      tag:
+        description: >-
+          Existing v<semver> tag to re-release (workflow_dispatch re-run
+          of an existing tag); empty on a tag push, where the pushed tag
+          itself is the release target.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -73,11 +83,21 @@ jobs:
       - name: Resolve the tag
         id: tag
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           if [ "${{ inputs.dry-run }}" = "true" ]; then
+            # Dry runs exercise --dry-run-ref instead; no tag applies.
             echo "tag=" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_TAG" ]; then
+            # Dispatch re-run of an EXISTING tag: github.ref_name is the
+            # branch the dispatch ran from (e.g. main), never the tag —
+            # the caller's explicit tag input wins.
+            echo "tag=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            # Tag push: the pushed tag itself is the release target.
+            echo "tag=${REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
       - name: "Guard: tag, manifest version, ancestry"
         shell: bash
@@ -115,15 +135,27 @@ jobs:
           exclude: ${{ github.event.repository.name }}
       # Release: pin the repo under test to the TAG, never the default
       # branch; dry-run: the caller's dispatch ref (or triggering SHA).
+      # The tag comes from the caller's input on a dispatch re-run
+      # (github.ref is the branch there), else the pushed tag ref.
       - uses: actions/checkout@v5
         if: inputs.needs-core
         with:
           path: ${{ github.event.repository.name }}
-          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+          ref: >-
+            ${{
+              inputs.dry-run && inputs.dry-run-ref
+              || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)
+              || github.ref)
+            }}
       - uses: actions/checkout@v5
         if: "!inputs.needs-core"
         with:
-          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+          ref: >-
+            ${{
+              inputs.dry-run && inputs.dry-run-ref
+              || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)
+              || github.ref)
+            }}
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -160,7 +192,12 @@ jobs:
       - uses: actions/checkout@v5
         if: "!inputs.needs-core"
         with:
-          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+          ref: >-
+            ${{
+              inputs.dry-run && inputs.dry-run-ref
+              || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)
+              || github.ref)
+            }}
       - uses: actions/checkout@v5
         if: inputs.needs-core
         with:
@@ -175,7 +212,12 @@ jobs:
         if: inputs.needs-core
         with:
           path: ${{ github.event.repository.name }}
-          ref: ${{ inputs.dry-run && inputs.dry-run-ref || github.ref }}
+          ref: >-
+            ${{
+              inputs.dry-run && inputs.dry-run-ref
+              || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)
+              || github.ref)
+            }}
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
