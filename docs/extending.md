@@ -680,16 +680,22 @@ The contract rules, all load-bearing:
   from your package name, so a factory-time read resolves your file
   when the declared `name` matches the package name.)
 
-**Dependency posture.** Declare `@earendil-works/pi-ai`,
-`@earendil-works/pi-durable`, and `@sigrun/shared` (whose types the
-`@sigrun/sigrun/extension` contract references) as **devDependencies
-only**. Sigrun ships them at runtime, the packages-dir install omits dev
-dependencies, and the loader links the host's own copies into the
-packages dir so your bare imports resolve — you consume the SAME module
-instances the host runs, matched structurally at runtime (never by
-`instanceof`). `typebox` (pi-ai's own dependency) resolves the same way.
-The one exception is `@sigrun/sigrun` itself: declare it a
-**`peerDependency: `"*"`** (never a dependency and never a pinned range).
+**Dependency posture.** Host modules you import at **runtime** —
+`@earendil-works/pi-ai`, `@earendil-works/pi-durable`,
+`@earendil-works/chord`, `@sigrun/shared` (whose types the
+`@sigrun/sigrun/extension` contract references), and `typebox` (pi-ai's
+own dependency) — are declared as **exact-pinned peerDependencies,
+mirrored in devDependencies**: the peer pin equals the version sigrun
+itself depends on, and the devDependency reproduces that exact version
+(or the workspace `file:` shape during development). Sigrun ships them
+at runtime, the packages-dir install omits dev dependencies, and the
+loader links the host's own copies into the packages dir so your bare
+imports resolve — you consume the SAME module instances the host runs,
+matched structurally at runtime (never by `instanceof`).
+`@sigrun/sigrun` itself follows the import kind: declare it a
+**`peerDependency: `"*"`** (never a dependency and never a pinned range)
+**only** if you import runtime code from `@sigrun/sigrun/blocks`;
+type-only consumers declare it a **devDependency** and never a peer.
 Sigrun links its own running package into the packages dir the same way,
 and the loader quarantines an extension whose tree resolves a DIFFERENT
 sigrun — the builders behind `@sigrun/sigrun/blocks` must emit the
