@@ -254,7 +254,7 @@ describe("GET /v1/meta", () => {
 		const meta = response.json();
 		expect(meta).toEqual({
 			harnessVersion: PI_DURABLE_VERSION,
-			version: "0.1.7",
+			version: "0.2.0",
 			schemaVersion: SCHEMA_VERSION,
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },

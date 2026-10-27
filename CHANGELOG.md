@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-10-27
 ### Added
 - Per-user extension surface (multi-user M2): lifecycle events carry the
   conversation owner; `stores.user(user)` provides per-user secrets,
@@ -47,10 +49,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolves from core's dependencies, and supports the same disable,
   replacement, and quarantine behavior as the other built-ins. The
   `builtinExtensions.oauth` toggle defaults to true and is restart-required.
+- Chat blocks (U5): an entry and state family plus `show`/`update` tools,
+  surface routes with authored change records, change notes before every
+  turn admission, block answers as `InputEntry` turns, transcript
+  rendering, and the webui and TUI transports.
+- Interactions and ambient surfaces on block trees (U6): `{values}` answers
+  with write-only secrets, channel renderers, and the ambient
+  literal-content ruling.
+- Images (U7): an HMAC-signed proxy, a rebinding-safe fetcher, an LRU cache
+  with `sharp` conversion, and CSP headers.
+- Core settings sections rebuilt on blocks (U4): one settings renderer for
+  webui and TUI, extension-declared sections, a `/v1/settings` sections
+  route, `pendingRestart` with an admin restart route, live/restart
+  metadata for every core key, label search, and
+  `settings.changed`/`onSettingsChanged`.
 
 ### Changed
+- Family versions move together to 0.2.0: `@sigrun/shared` 0.2.0
+  (surface, block, interaction, ambient, and settings-section wire types)
+  and `@sigrun/tui` 0.2.0 (chat-block transcripts, interaction and ambient
+  rendering, settings forms).
 - Retired persisted `groupAdmin` in favor of stored groups; its user-wire
   compatibility field is now derived and retained for one release.
+- The execution jail (multi-user M1): per-user workers are Landlock-confined
+  and multi-user fails closed when the boundary is unavailable.
 
 ### Fixed
 - Kept the extension inventory available to non-admin clients while limiting

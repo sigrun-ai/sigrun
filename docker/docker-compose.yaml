@@ -17,7 +17,7 @@ services:
     # local checkout instead, comment the image line and uncomment the
     # build stanza below:
     #   docker build -t sigrun:local .
-    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.1.7}
+    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.2.0}
     # build:
     #   context: ..
     #   dockerfile: Dockerfile

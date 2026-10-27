@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+### Added
+- Block rendering extended for the U5/U6/U7 workstreams: chat-block
+  transcripts, interaction and ambient surfaces rendered from block trees,
+  settings forms on the live surface revision, and the block transports.
+
 ## [0.1.1] - 2026-10-24
 ### Added
 - Extension surfaces and live surface updates.
