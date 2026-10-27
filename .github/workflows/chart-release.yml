@@ -227,8 +227,15 @@ jobs:
         working-directory: sigrun
         run: |
           set -euo pipefail
+          # 30 min, not 10: a FIRST release of a version whose core run is
+          # still in flight has to outlast core's whole graph (sandbox build
+          # -> npm publish -> registry wait -> smoke -> multi-arch image),
+          # which measured ~17 min for 0.2.0. The wait exits as soon as the
+          # manifest appears, so a larger bound costs nothing in the normal
+          # case — it only decides how long a genuinely missing image is
+          # tolerated before failing.
           node ../.sigrun-tools/scripts/await-image.mjs \
-            --timeout-min 10 \
+            --timeout-min 30 \
             "sigrun-ai/sigrun:${APP_VERSION}"
       - name: Version, package
         if: steps.live.outputs.live != 'true'
