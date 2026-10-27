@@ -35,6 +35,7 @@ function makeMeta(init?: {
 		version: "0.0.0-test",
 		harnessVersion: "1.0.2",
 		schemaVersion: init?.schemaVersion ?? PINNED_SCHEMA_VERSION,
+		listener: { host: "::", port: 3000, families: ["ipv4", "ipv6"] },
 		extensions: init?.extensions ?? [
 			{ name: "memory", status: "ok" },
 			{ name: "gatekeeper", status: "ok" },

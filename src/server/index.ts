@@ -104,8 +104,9 @@ import {
  * then the configured methods — the resolved principal stamps
  * `SessionMeta.owner` at create/fork/import.
  * @param options.listenHost the host the server will bind (fallback
- * `"0.0.0.0"` when omitted; `serve()` passes the dual-stack `::`);
- * the pipeline's Host check and the default method list
+ * `"0.0.0.0"` when omitted; `serve()` passes its ONE resolved host —
+ * `options.host` → `SIGRUN_LISTEN_HOST` → the dual-stack `::`, serving
+ * spec §1); the pipeline's Host check and the default method list
  * (`effectiveMethods`) both derive from it.
  * @param contributedBundles the extension-contributed webui-bundle registry
  * (build-and-webui Task 6 threads it here from boot; the serve-time
@@ -360,6 +361,13 @@ export async function createServer(
 		commandCatalog,
 		listenHost,
 		methods,
+		// The listener record (release-readiness Task 1, serving spec §2):
+		// host + port are the server construction's inputs; `families`
+		// starts EMPTY (never listened) and `serve()` fills it in place
+		// with the measured families after `app.listen` resolves — the
+		// meta route reads whichever state exists at request time, never
+		// probing itself. A hand-built test server serves intent only.
+		listener: { host: listenHost, port: config.port, families: [] },
 		env,
 		// U4 §13.2: the harness's settings-changed fan-out (hub publish +
 		// extension onSettingsChanged + the scheduler re-arm).

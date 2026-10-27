@@ -794,6 +794,21 @@ export default function createAcmeWebui() {
   factory result carrying `webuiBundles` and no `extension` is a valid
   contributor — identified by its `name` field.
 
+## The listener block in `GET /v1/meta`
+
+`GET /v1/meta` carries a `listener` object — `{host, port, families}` —
+reporting the ONE listen host the server resolved (`serve({host})` →
+`SIGRUN_LISTEN_HOST` → the `::` default) and the address families the
+live listener accepts (measured once at listen, retained, never probed
+per request). A hostname or wildcard `host` is the configured string,
+never a resolved peer address.
+
+`listener` is a required field in the shared `MetaResponse` type, but an
+**additive** wire field: servers up to 0.2.0 omit it entirely. If your
+extension or client consumes it, tolerate its absence (a mixed-version
+upgrade briefly serves the old shape) — treat a missing `listener` as
+"unknown", never as a bind failure.
+
 ## Declaring jobs (the only time-based scheduler)
 
 A factory result may declare `jobs` — scheduled work sigrun runs for you,

@@ -49,6 +49,7 @@ const META: MetaResponse = {
 	version: "0.0.0-test",
 		harnessVersion: "h-0",
 	schemaVersion: "s-0",
+	listener: { host: "127.0.0.1", port: 3000, families: ["ipv4"] },
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 	auth: { methods: [], claimed: true },

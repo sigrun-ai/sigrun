@@ -259,6 +259,10 @@ describe("GET /v1/meta", () => {
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 			auth: { methods: [], claimed: true },
+			// Release-readiness Task 1 (serving spec §2): the retained listener
+			// facts — this hand-built (never-listened) server reports the
+			// listenHost + configured port verbatim, with no measured families.
+			listener: { host: "0.0.0.0", port: 3000, families: [] },
 			backup: {},
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },

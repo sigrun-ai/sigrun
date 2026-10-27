@@ -28,6 +28,7 @@ const META: MetaResponse = {
 	version: "0.0.0-test",
 		harnessVersion: "1.0.2",
 	schemaVersion: PINNED_SCHEMA_VERSION,
+	listener: { host: "127.0.0.1", port: 3000, families: ["ipv4"] },
 	extensions: [],
 	health: { backup: "unconfigured", memory: "ok", providers: "ok" },
 	auth: { methods: ["token"], claimed: true },

@@ -1032,3 +1032,186 @@ describe("encoded paths", () => {
 		expect(hook.body).toBe("x");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// proxy-auth rejection diagnostics (release-readiness Task 1, spec §3)
+// ---------------------------------------------------------------------------
+
+describe("proxy-auth rejection diagnostics", () => {
+	const SECRET_ENV = {
+		...PROXY_ENV,
+		SIGRUN_PROXY_SECRET: "s3cret",
+	};
+	const SECRET_FILE = {
+		auth: {
+			...PROXY_FILE.auth,
+			proxy: { secretHeader: "x-sigrun-proxy-secret" },
+		},
+	};
+	// Values that must NEVER appear in the log line (spec §3's hygiene
+	// rule): tokens, cookies, identity-header values, query strings, the
+	// full URL, and header NAMES other than the configured auth headers
+	// the reason itself names.
+	const SENSITIVE = [
+		"s3cret",
+		"alice",
+		"sk-token-value",
+		"session=abc",
+		"/v1/auth/whoami?x=1",
+		"x=1",
+		"remote-user",
+		"authorization",
+		"cookie",
+	];
+
+	test("a presented credential marks the request as token-attempting (the diagnostic stays silent)", async () => {
+		const { app } = await bootServer({ env: SECRET_ENV, file: SECRET_FILE });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// An untrusted peer carrying a Bearer: 401 without a proxy warn
+			// (the credential makes this a token attempt, and token failures
+			// never log).
+			const untrustedBearer = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "203.0.113.7",
+				headers: { authorization: "Bearer sk-token-value" },
+			});
+			expect(untrustedBearer.statusCode).toBe(401);
+			// A trusted peer missing the secret but carrying a cookie.
+			const cookieOnly = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { cookie: "sigrun_session=abc" },
+			});
+			expect(cookieOnly.statusCode).toBe(401);
+			expect(warn).not.toHaveBeenCalled();
+			const lines = warn.mock.calls.map((call) => call.join(" "));
+			for (const line of lines) {
+				for (const forbidden of SENSITIVE) {
+					expect(line).not.toContain(forbidden);
+				}
+			}
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("each rejection shape logs exactly ONE sanitized warn naming the peer", async () => {
+		const { app } = await bootServer({ env: SECRET_ENV, file: SECRET_FILE });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// 1. Untrusted proxy peer (carrying every sensitive value — no
+			// credential headers: a presented Bearer would mark the request
+			// as token-attempting and suppress the diagnostic).
+			const untrusted = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami?x=1",
+				remoteAddress: "203.0.113.7",
+				headers: {
+					"remote-user": "alice",
+					"x-sigrun-proxy-secret": "s3cret",
+				},
+			});
+			expect(untrusted.statusCode).toBe(401);
+			// 2. Trusted peer, missing the shared secret.
+			const missingSecret = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "alice" },
+			});
+			expect(missingSecret.statusCode).toBe(401);
+			// 3. Trusted peer, wrong shared secret.
+			const wrongSecret = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "alice", "x-sigrun-proxy-secret": "wr0ng" },
+			});
+			expect(wrongSecret.statusCode).toBe(401);
+			// 4. Trusted peer + secret, missing identity header.
+			const missingIdentity = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { "x-sigrun-proxy-secret": "s3cret" },
+			});
+			expect(missingIdentity.statusCode).toBe(401);
+
+			expect(warn).toHaveBeenCalledTimes(4);
+			const lines = warn.mock.calls.map((call) => call.join(" "));
+			expect(lines[0]).toContain("203.0.113.7");
+			expect(lines[0]).toContain("untrusted proxy");
+			expect(lines[1]).toContain("10.42.3.4");
+			expect(lines[1]).toContain("shared secret");
+			expect(lines[2]).toContain("10.42.3.4");
+			expect(lines[2]).toContain("shared secret");
+			expect(lines[3]).toContain("10.42.3.4");
+			expect(lines[3]).toContain("identity header");
+			for (const line of lines) {
+				// The request method and the RESOLVED route template.
+				expect(line).toContain("GET");
+				expect(line).toContain("/v1/auth/whoami");
+				for (const forbidden of SENSITIVE) {
+					expect(line).not.toContain(forbidden);
+				}
+			}
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("no warn on token-auth failures or successful proxy authentication", async () => {
+		const { app, opened } = await bootServer({
+			// Both methods configured: the token leg's failure must stay
+			// silent even when the proxy method never ran for it.
+			env: { ...SECRET_ENV, SIGRUN_AUTH: "token,proxy" },
+			file: SECRET_FILE,
+		});
+		// The token leg's user: added BEFORE the spy installs (the store
+		// write warns when a second user is added while the sandbox is
+		// unavailable — that boot-posture warning is not this diagnostic).
+		// The admin flag keeps the multi-user admission guard satisfied
+		// without touching group-derived admin machinery.
+		await opened.identity.users.add({
+			user: "carol",
+			admin: true,
+			source: "cli",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// A trusted proxy peer presenting ONLY a bad Bearer: the token
+			// method's failure — never proxy diagnostics.
+			const badToken = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { authorization: "Bearer sk-not-a-token" },
+			});
+			expect(badToken.statusCode).toBe(401);
+			// A valid token with NO proxy headers: proxy misses identity, the
+			// token authenticates — the request succeeded, nothing to log.
+			const token = await mintToken(opened, "carol");
+			const goodToken = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { authorization: `Bearer ${token}` },
+			});
+			expect(goodToken.statusCode).toBe(200);
+			// A successful proxy authentication.
+			const proxied = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "alice", "x-sigrun-proxy-secret": "s3cret" },
+			});
+			expect(proxied.statusCode).toBe(200);
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});

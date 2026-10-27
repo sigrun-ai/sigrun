@@ -156,6 +156,7 @@ still override it per field.
 | `OPENAI_API_KEY` | string | — | `auth.json` (see below) | Credential for the env-driven OpenAI-compatible provider; the `auth.json` fallback after file entries. |
 | `OPENAI_BASE_URL` | URL | OpenAI | `defaultProvider.baseUrl` | Endpoint for the env-driven provider (any compatible host). |
 | `SIGRUN_PORT` | positive int | `3000` | `server.port` | HTTP listen port. |
+| `SIGRUN_LISTEN_HOST` | host | `::` | — | HTTP listen host — the environment equivalent of the programmatic `serve({host})` option (the option wins when both are set). One resolved value drives the bind AND the auth defaults: a loopback bind derives the no-auth workstation posture, any other bind derives `token` auth. `GET /v1/meta` reports the effective listener (`listener.host`/`port`/`families`). |
 | `SIGRUN_STORAGE_PATH` | path | `<dataDir>/sigrun.db` | `server.storagePath` | SQLite database location. Relative values resolve against the data root (absolute values verbatim; the cwd-relative `data/sigrun.db` default is retired). |
 | `SIGRUN_WORKSPACE_PATH` | path | `<dataDir>/workspace` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. The default rides the data root (chart/compose deploys set the path explicitly); it is never persisted on first boot. |
 | `SIGRUN_DATA_DIR` | path | `$XDG_DATA_HOME/sigrun` or `~/.local/share/sigrun` | `server.dataDir` | Data root (the DB default and extension data dirs). Env/file values win verbatim. |

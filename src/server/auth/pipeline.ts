@@ -34,8 +34,14 @@
  *     request before handlers run) + a non-empty user header; a
  *     directory miss auto-provisions (`source:"proxy"`, admin:false)
  *     unless `autoProvision:false` → 403 `user_not_provisioned`.
+ *     Every proxy rejection (401/403) emits ONE sanitized `warn` naming
+ *     the socket peer + a short reason (release-readiness Task 1, spec
+ *     §3 — never tokens, cookies, identity-header VALUES, query
+ *     strings, or the full URL; a request presenting a Bearer/cookie
+ *     credential is a token attempt and stays silent).
  *     `token`: Bearer or the `sigrun_session` cookie → `tokens.verify`;
- *     the token's user must exist in the directory, else 401.
+ *     the token's user must exist in the directory, else 401 (no log —
+ *     token failures are not proxy diagnostics).
  *  6. **Empty list** (the naive workstation path): the trimmed
  *     `X-Sigrun-User` header verbatim, `admin: true`, method `"none"`.
  */
@@ -190,6 +196,28 @@ function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
 }
 
 /**
+ * The proxy-auth rejection diagnostic (release-readiness Task 1, spec §3):
+ * ONE `warn` per rejected request, naming the socket peer, the request
+ * method, a short reason, and — only when Fastify already resolved it —
+ * the ROUTE TEMPLATE (`routeOptions.url`, never the raw URL). The line
+ * must never carry API tokens, cookies, identity-header VALUES, query
+ * strings, or the full request URL; a header NAME appears only where the
+ * reason itself is "that configured header was absent/wrong" (its value
+ * never does). This is diagnostic logging, not evidence that the
+ * configured allowlist is correct.
+ */
+function warnProxyRejected(
+	request: FastifyRequest,
+	reason: string,
+): void {
+	const peer = request.socket.remoteAddress ?? "unknown";
+	const route = request.routeOptions.url;
+	console.warn(
+		`sigrun: proxy auth rejected ${request.method} request from ${peer} (${reason})${route === undefined ? "" : ` on ${route}`}`,
+	);
+}
+
+/**
  * Stage 5a (proxy): resolve the forward-auth headers, or reply with the
  * rejection. The secret header is DELETED from the request before any
  * handler (or test hook) can observe it.
@@ -199,7 +227,20 @@ async function resolveProxy(
 	ctx: ServerContext,
 ): Promise<Principal | { status: number; error?: string }> {
 	const { proxy, adminGroups } = ctx.config.auth;
+	// A request presenting a Bearer/cookie CREDENTIAL is attempting token
+	// auth (or riding the stage-3 service token), not claiming a proxy
+	// identity: suppress the rejection diagnostic — a denied credential is
+	// the token method's failure, which never logs (spec §3). The pipeline
+	// visits the proxy method FIRST for it (the proxy is a trusted peer
+	// presenting a session without proxy headers — a legitimate client
+	// shape behind forward-auth), and a "missing secret" warn would fire
+	// even when the token then authenticates.
+	const attemptingToken =
+		bearerOf(request) !== undefined || sessionCookieOf(request) !== undefined;
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
+		if (!attemptingToken) {
+			warnProxyRejected(request, "untrusted proxy");
+		}
 		return { status: 401 };
 	}
 	if (proxy.secret !== undefined && proxy.secretHeader !== undefined) {
@@ -207,11 +248,19 @@ async function resolveProxy(
 		const presented = headerOf(request, name);
 		delete request.headers[name];
 		if (presented === undefined || !timingSafeStringEqual(presented, proxy.secret)) {
+			if (!attemptingToken) {
+				warnProxyRejected(request, `missing or wrong shared secret (${proxy.secretHeader} header)`);
+			}
 			return { status: 401 };
 		}
 	}
 	const user = headerOf(request, proxy.userHeader);
-	if (user === undefined) return { status: 401 };
+	if (user === undefined) {
+		if (!attemptingToken) {
+			warnProxyRejected(request, `missing identity header (${proxy.userHeader})`);
+		}
+		return { status: 401 };
+	}
 	const groups =
 		headerOf(request, proxy.groupsHeader)
 			?.split(",")
@@ -226,6 +275,7 @@ async function resolveProxy(
 	}
 	const existing = users.get(user);
 	if (existing === undefined && !proxy.autoProvision) {
+		warnProxyRejected(request, "untrusted identity source");
 		return { status: 403, error: "user_not_provisioned" };
 	}
 	let record;

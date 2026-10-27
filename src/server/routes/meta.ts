@@ -51,6 +51,10 @@ export function registerMetaRoutes(
 			version: SIGRUN_VERSION,
 			harnessVersion: HARNESS_VERSION,
 			schemaVersion: SCHEMA_VERSION,
+			// The retained listener facts (release-readiness Task 1, serving
+			// spec §2): measured once at listen, projected verbatim — this
+			// route never probes (a pure synchronous projection).
+			listener: ctx.listener,
 			extensions: opened.extensionOutcomes.map((outcome) => {
 				const workers = workerStatuses.get(outcome.name);
 				const surfaces = opened.extensionSurfaces.find(

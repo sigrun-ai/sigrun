@@ -25,6 +25,8 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import net from "node:net";
+import type { ListenerInfo } from "@sigrun/shared/views";
 import { envServerSection, loadConfig } from "./config.js";
 import { openHarness } from "./harness/boot.js";
 import { packagesDirOf, syncPackages } from "./harness/packages.js";
@@ -84,18 +86,96 @@ export const DEFAULT_LISTEN_HOST = "::";
  * bind would be unreachable on a dual-stack pod's IPv6 endpoint); the
  * CLI's `run` passes `127.0.0.1` — workstation mode is local-only (the
  * TUI dials loopback; the naive-identity API must not answer on the LAN).
+ * `SIGRUN_LISTEN_HOST` (in the env passed to {@link serve}) is the
+ * environment equivalent of `host` (serving spec §1).
  */
 export interface ServeOptions {
 	/**
-	 * The listen host (default {@link DEFAULT_LISTEN_HOST}; `run` passes
-	 * `"127.0.0.1"`).
+	 * The listen host (wins over `SIGRUN_LISTEN_HOST`; both default to
+	 * {@link DEFAULT_LISTEN_HOST}; `run` passes `"127.0.0.1"`).
 	 */
 	readonly host?: string;
 }
 
+/** One loopback probe: whether a TCP connection to `host:port` succeeds. */
+function probeLoopback(host: string, port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.connect({ host, port });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolve(false);
+		});
+	});
+}
+
+/**
+ * Measure the live listener's address families ONCE (release-readiness
+ * Task 1, serving spec §2) and return the retained {@link ListenerInfo}.
+ *
+ * - A literal IPv4/IPv6 host reports its family without probing.
+ * - A hostname bind reports the bound socket's family (`address()` —
+ *   Node binds ONE resolved address for a hostname listen). A hostname
+ *   or wildcard is never reported as a concrete peer address: the wire
+ *   host stays the configured string.
+ * - The `::` wildcard does NOT assume dual-stack from the spelling: one
+ *   startup loopback probe against `127.0.0.1` and `[::1]` on the bound
+ *   port, retaining exactly the families that connect. Absence of
+ *   exactly one family is a legitimate result (an IPv6-only host).
+ *   INCONCLUSIVE — neither loopback connects while the listener is bound
+ *   — throws: serving fails loudly rather than advertising unmeasured
+ *   reachability.
+ *
+ * @param host the effective host string supplied to `listen`.
+ * @param address `app.server.address()` after listen (null → loud).
+ * @param connect the probe (tests inject; production is
+ *   {@link probeLoopback}).
+ */
+export async function measureListener(
+	host: string,
+	address: string | { address: string; family: string | number; port: number } | null,
+	connect: (host: string, port: number) => Promise<boolean> = probeLoopback,
+): Promise<ListenerInfo> {
+	if (address === null || typeof address === "string") {
+		throw new Error(
+			"listener measurement failed: the server reports no bound address",
+		);
+	}
+	const port = address.port;
+	const literal = net.isIP(host);
+	if (literal === 4) return { host, port, families: ["ipv4"] };
+	if (literal === 6 && host !== "::") {
+		return { host, port, families: ["ipv6"] };
+	}
+	if (literal === 0) {
+		// A hostname bind: the bound socket's family, verbatim.
+		const family =
+			address.family === "IPv4" || address.family === 4 ? "ipv4" : "ipv6";
+		return { host, port, families: [family] };
+	}
+	// host === "::": measure, never infer dual-stack from the wildcard.
+	const [v4, v6] = await Promise.all([
+		connect("127.0.0.1", port),
+		connect("::1", port),
+	]);
+	const families: ("ipv4" | "ipv6")[] = [];
+	if (v4) families.push("ipv4");
+	if (v6) families.push("ipv6");
+	if (families.length === 0) {
+		throw new Error(
+			`listener reachability check inconclusive on ${host}:${port} — neither 127.0.0.1 nor [::1] connected while the listener is bound`,
+		);
+	}
+	return { host, port, families };
+}
+
 /**
  * Boot the harness + server composition and listen on
- * `options.host ?? "::"` + `<port>` (the default is the container's
+ * `options.host ?? env.SIGRUN_LISTEN_HOST ?? "::"` + `<port>` (the
+ * default is the container's
  * dual-stack wildcard — loopback-only would be unreachable behind the
  * Service, and a v4-only bind is unreachable on an IPv6 endpoint;
  * `loadConfig` refuses port 0, so a real port is always bound).
@@ -166,10 +246,17 @@ export async function serve(
 	// in `resolveRefreshMinutes`) see the SAME env `loadConfig` just
 	// resolved — a serve-harness env override must win over process.env
 	// here exactly like it does in the config.
+	// The ONE listener decision (release-readiness Task 1, serving spec §1):
+	// `options.host` → `SIGRUN_LISTEN_HOST` (from the env `serve` received)
+	// → `DEFAULT_LISTEN_HOST`, resolved ONCE here and handed verbatim to
+	// `openHarness` (the boot-side auth derivation), `createServer` (the
+	// pipeline's Host check + method list), and `app.listen` (the actual
+	// bind) — the three consumers can never disagree.
+	const host = options?.host ?? env.SIGRUN_LISTEN_HOST ?? DEFAULT_LISTEN_HOST;
 	const opened = await openHarness(config, {
 		extensionEntries: extensionResolutions,
 		env,
-		listenHost: options?.host ?? "0.0.0.0",
+		listenHost: host,
 	});
 	// The gateway handle (gateway C2) exists BEFORE the server: the meta
 	// route reaches it through ServerContext, so the engine's health is
@@ -194,7 +281,7 @@ export async function serve(
 	// the loader's extension contributions into the name-keyed registry;
 	// the server's serve-time NAME-selector resolution reads it here.
 	const app = await createServer(opened, config, opened.webuiBundles, {
-		listenHost: options?.host ?? DEFAULT_LISTEN_HOST,
+		listenHost: host,
 		env,
 		gateway,
 		// U4 Task 2 (spec §13.3): the admin restart route's callback runs
@@ -228,8 +315,14 @@ export async function serve(
 					process.exit(1);
 				}),
 	});
-	const host = options?.host ?? DEFAULT_LISTEN_HOST;
 	await app.listen({ port: config.port, host });
+	// Measure the live listener ONCE and retain the facts (spec §2): the
+	// meta route projects this record; no probe ever runs per request. A
+	// failed or inconclusive measurement THROWS here — serving fails
+	// loudly rather than advertising unmeasured reachability.
+	const listener = await measureListener(host, app.server.address());
+	(app.sigrunContext.listener as { families: ListenerInfo["families"] })
+		.families = listener.families;
 	// The engine starts with the listener live (gateway C2's lifecycle:
 	// start after listen — a failed start latches degraded inside the
 	// handle, never wedges boot). AWAITED: serve() resolves only once the

@@ -465,11 +465,39 @@ export type WorkerStatus = {
 };
 
 /** The `GET /v1/meta` payload (spec §5; the health block is Task 9e). */
+/**
+ * The measured listener facts (release-readiness Task 1, serving spec §2):
+ * captured ONCE when the listener goes live (never probed per request) and
+ * retained on the server context; `GET /v1/meta` projects them verbatim.
+ */
+export interface ListenerInfo {
+	/** The effective host string supplied to `listen` — never a resolved peer. */
+	readonly host: string;
+	/** The configured/selected port the listener bound. */
+	readonly port: number;
+	/**
+	 * The address families the listener accepts, in stable `ipv4`, `ipv6`
+	 * order. Literal binds report the bound socket's family; the `::`
+	 * wildcard reports exactly the loopback families a startup reachability
+	 * check connected on (measured, never inferred from the wildcard
+	 * spelling). Empty on a server that never listened (a hand-built test
+	 * server projecting intent only).
+	 */
+	readonly families: readonly ("ipv4" | "ipv6")[];
+}
+
 export interface MetaResponse {
 	/** The sigrun server's own version (the package manifest). */
 	readonly version: string;
 	readonly harnessVersion: string;
 	readonly schemaVersion: string;
+	/**
+	 * The listener facts (release-readiness Task 1, serving spec §2). A
+	 * REQUIRED field on this type; OLDER SERVERS (≤0.2.0) omit it on the
+	 * wire, so clients consuming it must tolerate its absence during
+	 * mixed-version upgrades.
+	 */
+	readonly listener: ListenerInfo;
 	readonly extensions: readonly {
 		readonly name: string;
 		readonly status: string;

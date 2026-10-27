@@ -26,6 +26,7 @@ import type { SurfaceService } from "./surfaces/service.js";
 import { SseRegistry } from "./sse-registry.js";
 import type { GatewayHandle } from "./gateway.js";
 import type { ManagedPaths } from "../sandbox/grants.js";
+import type { ListenerInfo } from "./views.js";
 
 /** Boot-time shared state handed to every route module. */
 export interface ServerContext {
@@ -60,9 +61,10 @@ export interface ServerContext {
 	/**
 	 * The listen host the server binds (W1 Task 3): the pipeline's Host
 	 * check is strict on loopback binds, and `createServer` derives the
-	 * default method list from it. `serve()` passes its own default
-	 * (`DEFAULT_LISTEN_HOST`, the dual-stack `::`); `createServer`'s
-	 * fallback when the option is omitted is `"0.0.0.0"`.
+	 * default method list from it. `serve()` resolves the ONE effective
+	 * host (`options.host` → `SIGRUN_LISTEN_HOST` → `DEFAULT_LISTEN_HOST`,
+	 * serving spec §1) and passes it here; `createServer`'s fallback when
+	 * the option is omitted is `"0.0.0.0"` (hand-built test servers).
 	 */
 	readonly listenHost: string;
 	/**
@@ -72,6 +74,16 @@ export interface ServerContext {
 	 * path.
 	 */
 	readonly methods: readonly ("token" | "proxy")[];
+	/**
+	 * The measured listener facts (release-readiness Task 1, serving spec
+	 * §2): the effective host + configured port from `createServer`, plus
+	 * the address FAMILIES measured once the listener is live. `serve()`
+	 * fills `listener.families` in place immediately after `app.listen`
+	 * resolves (see `measureListener`); a hand-built test server that
+	 * never listens serves `families: []` (intent only). `GET /v1/meta`
+	 * projects this retained record — never a per-request probe.
+	 */
+	readonly listener: ListenerInfo;
 	/**
 	 * The boot env (the deploy entry's `process.env`; the CLI passes the
 	 * same env `serve` resolved). The `/v1/settings` `effective` block

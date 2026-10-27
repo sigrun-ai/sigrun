@@ -750,6 +750,12 @@ export async function openHarness(
 	// I/O here (each file materializes on its first write), so this is
 	// pure construction over paths boot already owns.
 	const identity = options.identity ?? openIdentityStores(roots);
+	// The caller-supplied host wins (serving spec §1: `serve()` resolves
+	// the ONE effective host — options.host → SIGRUN_LISTEN_HOST →
+	// DEFAULT_LISTEN_HOST — and passes it here). The env read below is
+	// NOT a second source on the serve path (the option is always set
+	// there); it remains for direct `openHarness` callers that never
+	// bind a listener (tests) and must derive the same auth posture.
 	const listenHost = options.listenHost ?? env.SIGRUN_LISTEN_HOST ?? "0.0.0.0";
 	const methods = effectiveMethods(config.auth, listenHost);
 	const isolationState = new IsolationState({
