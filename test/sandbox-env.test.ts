@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -251,14 +252,53 @@ describe("sandbox process invariants", { timeout: 30_000 }, () => {
 		if (process.platform !== "linux") return;
 		const { env } = await envFor();
 		const output: string[] = [];
-		getOrThrow(await env.exec("ls /proc/self/fd", {
+		// List fds by their TARGET, not by `ls /proc/self/fd`'s bare names:
+		// the lister necessarily holds a descriptor on the very directory it
+		// is reading, so a plain listing always contains one extra entry.
+		// `ls /proc/self/fd` happens to use the lowest free fd (3 on this
+		// host, which is why the old assertion tolerated 3), but WHICH fd
+		// that is depends on the implementation — CI's GNU coreutils and
+		// this host's uutils coreutils differ. Printing `ls -l` gives the
+		// symlink TARGET, so the lister's own handle is identifiable (it
+		// points at /proc/<pid>/fd) and can be excluded exactly.
+		getOrThrow(await env.exec("ls -l /proc/self/fd", {
 			onOutput: (text) => output.push(text),
 		}, context));
-		const descriptors = output.join("").trim().split(/\s+/).map(Number).sort((a, b) => a - b);
-		expect(descriptors.every((fd) => fd === 0 || fd === 1 || fd === 2 || fd === 3)).toBe(true);
-		expect(descriptors).toContain(0);
-		expect(descriptors).toContain(1);
-		expect(descriptors).toContain(2);
+		const lines = output.join("").split("\n").filter((line) => line.includes(" -> "));
+		const descriptors = lines.map((line) => {
+			// `lr-x------ 1 user group 64 Oct 26 21:26 3 -> /proc/1234/fd`
+			// Split on the arrow (always present here), then take the last
+			// whitespace field before it as the fd number.
+			const [left, target = ""] = line.split(" -> ");
+			const fields = (left ?? "").trim().split(/\s+/);
+			return { fd: Number(fields[fields.length - 1]), target: target.trim() };
+		}).filter((d) => Number.isInteger(d.fd));
+		expect(descriptors.length, "the listing must yield fd entries").toBeGreaterThan(0);
+		// The reader's own directory handle is not the command's descriptor.
+		const own = descriptors.filter((d) => /^\/proc\/\d+\/fd$/.test(d.target));
+		expect(own.length, "exactly one fd is the lister's own directory handle").toBe(1);
+		const numbers = descriptors
+			.filter((d) => !own.includes(d))
+			.map((d) => d.fd)
+			.sort((a, b) => a - b);
+		// The invariant: exactly the stdio triple the worker passes down
+		// (stdio: ["pipe","pipe","pipe"], so 0/1/2 are pipes; stdin may be
+		// /dev/null when the command needs no stdin). An inherited worker
+		// IPC channel — or any leaked descriptor — would appear as a fourth
+		// entry, which is the leak this test exists to catch.
+		expect(numbers).toEqual([0, 1, 2]);
+		expect(descriptors.filter((d) => !own.includes(d)).every((d) => d.target !== "")).toBe(true);
+	});
+
+	test("the worker passes no IPC channel down to commands", () => {
+		// The stdio contract the assertion above measures: three pipes and
+		// NO `"ipc"` entry. If someone adds an IPC channel to the worker
+		// spawn, this fails at the source instead of surfacing as an extra
+		// descriptor inside a child.
+		const source = readFileSync(new URL("../src/sandbox/pool.ts", import.meta.url), "utf8");
+		const stdio = /stdio:\s*(\[[^\]]*\])/.exec(source)?.[1] ?? "";
+		expect(stdio, "the worker spawn must declare a stdio shape").not.toBe("");
+		expect(stdio).not.toContain("ipc");
 	});
 
 	test("a completed real exec forgets its command pid", async () => {

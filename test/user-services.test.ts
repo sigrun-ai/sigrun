@@ -16,7 +16,14 @@ import { seededIdentity } from "./helpers/identity.js";
 const CTX: HandlerContext = { abortSignal: undefined };
 const FIXTURE = pathToFileURL(join(import.meta.dirname, "fixtures", "fixture-user-service", "index.js")).href;
 const ECHO = join(import.meta.dirname, "fixtures", "fixture-user-service", "echo.js");
-const NODE = "/usr/bin/node";
+// The node that runs the FIXTURE SERVICE. Must be `process.execPath`, not a
+// hardcoded path: GitHub runners have no /usr/bin/node at all (setup-node
+// puts it in /opt/hostedtoolcache), so the fixture never started there and
+// every test in this file saw an empty stdout — surfacing as
+// "SyntaxError: Unexpected end of JSON input" at the first JSON.parse.
+// process.execPath is the interpreter already running this suite, so it
+// always exists and always matches the version under test.
+const NODE = process.execPath;
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	vi.useRealTimers();
