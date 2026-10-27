@@ -27,9 +27,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
+        # NOT required: a dry run uses `ref` instead and has no tag. A real
+        # dispatch needs it, and the guard resolves it from here, from the
+        # pushed tag, or (dry-run) from `ref`.
         description: "Existing v<semver> tag to re-release (ignored on dry-run)"
-        required: true
+        required: false
         type: string
+        default: ""
       dry-run:
         description: >-
           Exercise the whole graph against `ref` without pushing or
