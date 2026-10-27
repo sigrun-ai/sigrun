@@ -21,6 +21,7 @@
  * into the full default-offered set instead of a frozen boot snapshot.
  */
 
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -341,6 +342,24 @@ function executionApi(
 // Default boot
 // ---------------------------------------------------------------------------
 
+/**
+ * A built-in's version, read from its OWN sibling manifest.
+ *
+ * Deliberately not hardcoded: a built-in ships on its own cadence (ext-mcp
+ * went 0.2.0 -> 0.2.1 for the stdio env-leak fix), and a literal here turns
+ * every such release into an unrelated core-suite failure. Reading the
+ * manifest still catches the wire bug this assertion exists for — the
+ * `/v1/extensions` row must report the version the loader read off the
+ * package directory.
+ */
+function siblingVersion(dir: string): string {
+	return (
+		JSON.parse(
+			readFileSync(new URL(`../../${dir}/package.json`, import.meta.url), "utf8"),
+		) as { version: string }
+	).version;
+}
+
 describe("default boot", () => {
 	test("loads all four built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins();
@@ -359,22 +378,22 @@ describe("default boot", () => {
 		expect(codemode).toMatchObject({
 			status: "ok",
 			builtin: true,
-			version: "0.1.0",
+			version: siblingVersion("sigrun-ext-codemode"),
 		});
 		expect(mcp).toMatchObject({
 			status: "ok",
 			builtin: true,
-			version: "0.2.0",
+			version: siblingVersion("sigrun-ext-mcp"),
 		});
 		expect(toolSearch).toMatchObject({
 			status: "ok",
 			builtin: true,
-			version: "0.1.0",
+			version: siblingVersion("sigrun-ext-tool-search"),
 		});
 		expect(oauth).toMatchObject({
 			status: "ok",
 			builtin: true,
-			version: "0.1.0",
+			version: siblingVersion("sigrun-ext-oauth"),
 		});
 		// A non-built-in outcome carries no builtin flag (the field is
 		// exactly true-or-absent).
@@ -835,7 +854,7 @@ describe("gateway built-in (C3)", () => {
 		expect(gateway).toMatchObject({
 			status: "ok",
 			builtin: true,
-			version: "0.1.0",
+			version: siblingVersion("sigrun-ext-gateway"),
 		});
 	});
 
