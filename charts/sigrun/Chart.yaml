@@ -6,6 +6,13 @@ description: >-
   Reference deployment for the sigrun core (spec §4.4): single replica,
   Recreate strategy, RWO block-like PVC for sqlite, ClusterIP Service.
 type: application
+# version  — the CHART's own packaging version, set from the chart-v<semver>
+#            tag by chart-release.yml. Advances independently of the core
+#            (so a chart-only fix does not need a core release).
+# appVersion — the CORE release this chart deploys; its default image tag.
+#            Read from package.json at the tagged commit by the release
+#            workflow — never hand-edited here, and NOT checked against
+#            `version` (they are deliberately independent).
 version: 0.2.0
 appVersion: "0.2.0"
 keywords:

@@ -1,10 +1,14 @@
-# Release: on v<semver> tags (and workflow_dispatch re-runs of an
+# Release (CORE): on v<semver> tags (and workflow_dispatch re-runs of an
 # EXISTING tag) — publish the npm family (trusted publishing ONLY: no
 # npm token secret anywhere; publishing jobs declare id-token: write),
 # wait for the registry to serve every tarball, smoke the registry
-# install, then build and push the multi-arch image to GHCR and the
-# chart to the GHCR OCI registry. Auth is the workflow's own
-# GITHUB_TOKEN (permissions below) — no PATs, no stored secrets.
+# install, then build and push the multi-arch image to GHCR. Auth is the
+# workflow's own GITHUB_TOKEN (permissions below) — no PATs, no stored
+# secrets.
+#
+# The CHART is NOT released here — it has its own version line and its own
+# workflow (chart-release.yml, `chart-v*` tags). A core release that also
+# ships a chart is two tags on one commit; see charts/sigrun/RELEASE.md.
 # Runbook (bump/tag order, dry runs, re-run semantics, idempotency
 # boundary): charts/sigrun/RELEASE.md.
 #
@@ -12,13 +16,12 @@
 # transitively through needs):
 #
 #   guard -> sandbox -> publish-npm -> await-registry -> smoke -> image
-#                                                              -> chart
 #
 # In dry-run mode (`workflow_dispatch` with dry-run: true) the `ref`
 # input replaces `tag`, nothing is pushed or published, await-registry
-# and smoke are skipped, and image/chart build WITHOUT pushing (their
-# dry-run needs-join is publish-npm, since a skipped smoke would
-# otherwise cascade-skip them).
+# and smoke are skipped, and image builds WITHOUT pushing (its dry-run
+# needs-join is publish-npm, since a skipped smoke would otherwise
+# cascade-skip it).
 name: release
 
 on:
@@ -59,7 +62,7 @@ jobs:
   # version, and be reachable from origin/main; in dry-run mode the
   # `ref` input must be an ancestor of origin/main (no tag exists yet
   # by definition). One job, one shared release-guard.mjs call — the
-  # duplicated inline guard the image/chart jobs used to carry is gone.
+  # duplicated inline guard the image job used to carry is gone.
   guard:
     runs-on: ubuntu-latest
     outputs:
@@ -515,65 +518,10 @@ jobs:
           push: ${{ needs.guard.outputs.dry != 'true' }}
           # Image tags carry the semver WITHOUT the v prefix, and so
           # does the APP_VERSION build-arg (the Dockerfile's version
-          # label) — image tag, docker inspect label, and chart
-          # appVersion all read the same 0.1.5 form.
+          # label) — image tag and docker inspect label both read the
+          # same 0.1.5 form. (The chart's appVersion reads this release's
+          # version separately, in chart-release.yml.)
           tags: |
             ghcr.io/sigrun-ai/sigrun:${{ env.VERSION }}
             ghcr.io/sigrun-ai/sigrun:latest
           build-args: APP_VERSION=${{ env.VERSION }}
-
-  chart:
-    needs: [publish-npm, smoke, guard]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: "refs/tags/${{ needs.guard.outputs.tag }}"
-          path: sigrun
-          fetch-depth: 0
-      - name: Derive chart version (v prefix stripped)
-        shell: bash
-        env:
-          GUARD_TAG: ${{ needs.guard.outputs.tag }}
-          DRY: ${{ needs.guard.outputs.dry }}
-        run: |
-          set -euo pipefail
-          # Same sentinel rule as the image job: a dry run has no tag, and
-          # an empty version would sed Chart.yaml to version: "" and helm
-          # package a nameless chart — a dry run that proves nothing.
-          version="${GUARD_TAG#v}"
-          if [ "${DRY}" = "true" ] || [ -z "${version}" ]; then
-            version="0.0.0-dryrun"
-          fi
-          echo "VERSION=${version}" >> "$GITHUB_ENV"
-      - uses: azure/setup-helm@v4
-      # Rewrite the two pinned-format Chart.yaml lines from the tag
-      # (chart version AND appVersion both the semver without v), fetch
-      # the gitignored vendored dependency, then package.
-      - name: Version, package
-        shell: bash
-        working-directory: sigrun
-        run: |
-          set -euo pipefail
-          sed -i "s/^version: .*/version: ${VERSION}/" \
-            charts/sigrun/Chart.yaml
-          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" \
-            charts/sigrun/Chart.yaml
-          helm dependency update charts/sigrun
-          helm package charts/sigrun
-      # Dry runs package but never push: helm has no --dry-run push, so
-      # both the login and the push are skipped entirely.
-      - name: Helm registry login (ghcr.io)
-        if: ${{ needs.guard.outputs.dry != 'true' }}
-        shell: bash
-        working-directory: sigrun
-        run: >
-          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | helm registry
-          login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Push chart to GHCR OCI
-        if: ${{ needs.guard.outputs.dry != 'true' }}
-        shell: bash
-        working-directory: sigrun
-        run: >
-          helm push "sigrun-${VERSION}.tgz"
-          oci://ghcr.io/sigrun-ai/charts/sigrun

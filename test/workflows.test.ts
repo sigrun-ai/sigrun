@@ -24,6 +24,7 @@ const WORKFLOW_FILE = new URL("../.github/workflows/ci.yml", import.meta.url);
 const RELEASE_FILE = new URL("../.github/workflows/release.yml", import.meta.url);
 const SANDBOX_BUILD_FILE = new URL("../.github/workflows/sandbox-build.yml", import.meta.url);
 const EXT_RELEASE_FILE = new URL("../.github/workflows/ext-release.yml", import.meta.url);
+const CHART_RELEASE_FILE = new URL("../.github/workflows/chart-release.yml", import.meta.url);
 
 interface Step {
 	name?: string;
@@ -216,15 +217,18 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(install).toContain("npm install --save-exact ${pins} --package-lock-only");
 	});
 
-	test("the chart job rewrites Chart.yaml from the tag and pushes to the OCI registry", () => {
+	test("core release no longer publishes the chart (it has its own workflow)", () => {
+		// The chart has an independent version line, so a core tag must not
+		// push it: `helm push` refuses an existing chart version, and a
+		// chart-only release ahead of core would burn numbers core later
+		// needs. The chart moved to chart-release.yml.
 		const { jobs } = releaseWorkflow();
-		const runs = (jobs.chart?.steps ?? []).map(runOf).join("\n");
-		expect(runs, "chart job must exist").toContain("helm package charts/sigrun");
-		expect(runs).toContain("oci://ghcr.io/sigrun-ai/charts/sigrun");
-		expect(runs).toContain("helm registry login ghcr.io");
-		// The rewrite is sed on the two pinned-format lines (version +
-		// appVersion), v-prefix stripped.
-		expect(runs).toMatch(/sed.*Chart\.yaml/s);
+		expect(jobs.chart, "release.yml must not carry a chart job").toBeUndefined();
+		const runs = Object.values(jobs)
+			.flatMap((job) => (job?.steps ?? []).map(runOf))
+			.join("\n");
+		expect(runs).not.toContain("helm push");
+		expect(runs).not.toContain("helm package");
 	});
 
 	test("release image job: core checkout pins the tag; siblings come from the composite action", () => {
@@ -299,13 +303,16 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		// own auth for ghcr and stays allowed).
 		const raw = readFileSync(RELEASE_FILE, "utf8");
 		expect(raw).not.toMatch(/secrets\.NPM/);
-		const tokens = [...raw.matchAll(/secrets\.([A-Za-z_][A-Za-z0-9_]*TOKEN)/g)].map(
+		const tokens = [...raw.matchAll(/secrets\.([A-Za-z_][A-Za-z0-9_]*)/g)].map(
 			(m) => m[1],
 		);
-		expect(tokens, "only secrets.GITHUB_TOKEN may be referenced").toEqual([
-			"GITHUB_TOKEN",
-			"GITHUB_TOKEN",
-		]);
+		// Assert the SET, not a count: the count changes whenever a job that
+		// logs in to ghcr enters or leaves this workflow (the chart job did,
+		// when it gained its own chart-release.yml).
+		expect(
+			[...new Set(tokens)].sort(),
+			"only secrets.GITHUB_TOKEN may be referenced",
+		).toEqual(["GITHUB_TOKEN"]);
 	});
 
 	test("publish-npm needs guard+sandbox, publishes leaf-first, each step skip-if-live and dry-run-aware", () => {
@@ -448,37 +455,33 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(runs).toContain("smoke-registry.sh");
 	});
 
-	test("image and chart need smoke; on dry-run they need publish-npm and never push", () => {
+	test("image needs smoke; on dry-run it needs publish-npm and never pushes", () => {
+		// The chart is no longer in this workflow (chart-release.yml owns
+		// it), so only the image job is checked here.
 		const { jobs } = releaseWorkflow();
-		for (const name of ["image", "chart"] as const) {
-			const job = jobs[name];
-			const needs = job?.needs;
-			expect(needs, `${name} must need smoke`).toContain("smoke");
-			// Dry-run joins publish-npm: a skipped smoke would otherwise
-			// cascade-skip the dry-run build.
-			expect(needs, `${name} must need publish-npm`).toContain("publish-npm");
-			// Every push-side step (registry login, push) must carry a
-			// dry-run `if:` gate.
-			const gated = (job?.steps ?? []).filter(
-				(s) => s.if !== undefined && String(s.if).includes("dry"),
-			);
-			expect(
-				gated.length,
-				`${name} must gate its push steps on the dry-run resolution`,
-			).toBeGreaterThan(0);
-		}
+		const job = jobs.image;
+		const needs = job?.needs;
+		expect(needs, "image must need smoke").toContain("smoke");
+		// Dry-run joins publish-npm: a skipped smoke would otherwise
+		// cascade-skip the dry-run build.
+		expect(needs, "image must need publish-npm").toContain("publish-npm");
+		// Every push-side step (registry login, push) must carry a
+		// dry-run `if:` gate.
+		const gated = (job?.steps ?? []).filter(
+			(s) => s.if !== undefined && String(s.if).includes("dry"),
+		);
+		expect(
+			gated.length,
+			"image must gate its push steps on the dry-run resolution",
+		).toBeGreaterThan(0);
 		// The image build itself still builds on a dry run — only the
 		// push flips off. build-push-action's push: must be an expression
 		// that is false when the guard resolved dry=true.
-		const build = (jobs.image?.steps ?? []).find((s) =>
+		const build = (job?.steps ?? []).find((s) =>
 			s.uses?.startsWith("docker/build-push-action@"),
 		);
 		expect(String(build?.with?.push ?? "")).toContain("guard.outputs.dry");
 		expect(String(build?.with?.push ?? "")).not.toBe("true");
-		// The chart push step is skipped entirely on dry-run (helm has no
-		// --dry-run push).
-		const chartPush = (jobs.chart?.steps ?? []).find((s) => runOf(s).includes("helm push"));
-		expect(String(chartPush?.if ?? "")).toContain("guard.outputs.dry");
 	});
 });
 
@@ -793,5 +796,80 @@ describe(".github/workflows/ext-release.yml (family releases)", () => {
 		// skip-if-live is what makes a tag re-run idempotent.
 		expect(runs).toContain("curl -sf");
 		expect(runs).toContain("registry.npmjs.org");
+	});
+});
+
+describe(".github/workflows/chart-release.yml (chart decoupling)", () => {
+	function chartWorkflow(): ParsedWorkflow {
+		return parseWorkflowFile(CHART_RELEASE_FILE, "chart-release.yml");
+	}
+
+	test("triggers on chart-v* only, never on a core v* tag", () => {
+		const { on } = chartWorkflow();
+		const push = on as { push?: { tags?: string[] } };
+		expect(push.push?.tags).toEqual(["chart-v*"]);
+	});
+
+	test("guards with --chart against Chart.yaml, not package.json", () => {
+		const { jobs } = chartWorkflow();
+		const runs = (jobs.guard?.steps ?? []).map(runOf).join("\n");
+		expect(runs).toContain("release-guard.mjs");
+		expect(runs).toContain("--chart");
+		expect(runs).toContain("charts/sigrun/Chart.yaml");
+		// The chart's version is the tag; a core-style tag would publish a
+		// chart under the core's number.
+		expect(runs).toContain("chart-v");
+	});
+
+	test("derives appVersion from SOURCE, never from the tag or the registry", () => {
+		// The race this prevents: resolving appVersion by asking the
+		// registry "what is latest?" can publish the chart pinned to the
+		// PREVIOUS core version, permanently, when both tags go on one
+		// commit. Reading package.json at the tagged commit is
+		// deterministic.
+		const { jobs } = chartWorkflow();
+		const steps = jobs.chart?.steps ?? [];
+		const appStep = steps.find((s) => (s.name ?? "").includes("appVersion"));
+		expect(appStep, "the chart job must derive appVersion").toBeDefined();
+		const body = runOf(appStep as Step);
+		expect(body).toContain("package.json");
+		// It must NOT consult the registry for the version.
+		expect(body).not.toContain("npm view");
+		expect(body).not.toContain("registry.npmjs.org");
+		// Only the chart's OWN version is rewritten from the tag; appVersion
+		// is written from the derived value.
+		const runs = steps.map(runOf).join("\n");
+		expect(runs).toContain('s/^version: .*/version: ${VERSION}/');
+		expect(runs).toContain('appVersion: \\"${APP_VERSION}\\"');
+	});
+
+	test("waits for the appVersion image before pushing the chart", () => {
+		// The chart's default image tag IS appVersion, so pushing before
+		// that image exists deploys into ImagePullBackOff — and a pushed
+		// chart version is immutable.
+		const { jobs } = chartWorkflow();
+		const steps = jobs.chart?.steps ?? [];
+		const wait = steps.find((s) => (s.name ?? "").includes("Wait for the appVersion image"));
+		expect(wait, "the chart job must wait for its image").toBeDefined();
+		expect(runOf(wait as Step)).toContain("await-image.mjs");
+		expect(runOf(wait as Step)).toContain("sigrun-ai/sigrun:${APP_VERSION}");
+		// The wait must run BEFORE the push.
+		const names = steps.map((s) => s.name ?? "");
+		const waitIndex = names.findIndex((n) => n.includes("Wait for the appVersion image"));
+		const pushIndex = names.findIndex((n) => n.includes("Push chart"));
+		expect(waitIndex).toBeGreaterThan(-1);
+		expect(pushIndex).toBeGreaterThan(waitIndex);
+	});
+
+	test("skips a chart version that is already live (helm push cannot overwrite)", () => {
+		const { jobs } = chartWorkflow();
+		const steps = jobs.chart?.steps ?? [];
+		const probe = steps.find((s) => (s.name ?? "").includes("already live"));
+		expect(probe, "the chart job needs a skip-if-live probe").toBeDefined();
+		expect(runOf(probe as Step)).toContain("await-image.mjs");
+		expect(runOf(probe as Step)).toContain("charts/sigrun/sigrun:${VERSION}");
+		// Every push step is gated on live != true.
+		const push = steps.find((s) => (s.name ?? "").includes("Push chart"));
+		expect(String(push?.if ?? "")).toContain("steps.live.outputs.live");
 	});
 });

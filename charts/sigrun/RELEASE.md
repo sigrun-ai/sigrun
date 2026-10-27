@@ -12,7 +12,13 @@ before tagging anything.
 | What a tag does | Job |
 | --- | --- |
 | Every extension/provider repo | `release.yml` → `guard` → `test` → `publish` (npm) |
-| `sigrun` (core) | `release.yml` → `guard` → `sandbox` → `publish-npm` → `await-registry` → `smoke` → `image` + `chart` |
+| `sigrun` (core) `v*` | `release.yml` → `guard` → `sandbox` → `publish-npm` → `await-registry` → `smoke` → `image` |
+| `sigrun` (core) `chart-v*` | `chart-release.yml` → `guard` → `chart` (Helm only) |
+
+**The chart has its own tag namespace and its own version line.** A chart's
+`version` is its packaging version; its `appVersion` is the CORE release it
+deploys. They are deliberately independent, so a chart-only fix never needs a
+core release (and never burns a core version number).
 
 ## Before you tag: bump order
 
@@ -35,24 +41,57 @@ whose siblings are not published yet stops before it ships the image.
    A core bump that forgets the sandbox manifests or a built-in's
    `@sigrun/shared` peer fails core's own suite — that is deliberate.
 
-   The chart's `version`/`appVersion` are rewritten from the tag by the
-   workflow; do not set them by hand. The Dockerfile's version label comes from
-   the `APP_VERSION` build-arg, also derived from the tag.
+   The chart's `appVersion` is NOT hand-set and NOT part of the family bump:
+   `chart-release.yml` reads it from `package.json` at the tagged commit. The
+   chart's `version` comes from the `chart-v<semver>` tag. The Dockerfile's
+   version label comes from the `APP_VERSION` build-arg, derived from the tag.
+
+## Releasing the chart alongside a core release
+
+The chart is published by `chart-release.yml`, which triggers on `chart-v*`
+tags — separately from core's `v*`. To ship both, **put both tags on the same
+commit**:
+
+```sh
+git tag v0.2.0          # npm + image
+git tag chart-v0.2.0    # chart; appVersion auto-reads 0.2.0
+git push origin v0.2.0 chart-v0.2.0
+```
+
+The two workflows run independently and neither blocks the other. The chart
+job resolves `appVersion` from the tagged commit's `package.json` (not from a
+registry query — that would race the core publish and could pin the chart to
+the PREVIOUS version permanently), then **waits for that image to be live**
+before pushing. A chart that names an image nobody built yet would deploy into
+`ImagePullBackOff` and could not be replaced.
+
+Chart-only fix (no core change): bump `charts/sigrun/Chart.yaml`'s `version`,
+commit, then tag `chart-v<that version>` on that commit. `appVersion` keeps
+pointing at the current core release automatically.
+
+**Caveat:** `appVersion` reads `package.json` at the tagged commit, so a
+chart-only tag must be cut while `main` still carries the released core
+version. If `package.json` has already moved ahead (say to `0.3.0`) without
+that release shipping, the chart job waits 10 minutes for an image that never
+appears and fails — which is the honest outcome, not a silent bad chart.
 
 ## Tag order
 
 1. Tag the extensions and providers.
 2. **Wait for each release run to go green.** Their publish is what core's
    `await-registry` waits on; a red sibling means core stops before the image.
-3. Tag core. Its release then ships npm, waits for the registry, smokes a real
-   registry install, and only then pushes the image and chart — so a `v*` tag
-   on core means "npm + image + chart, or nothing".
+3. Tag core (`v*`). Its release ships npm, waits for the registry, smokes a
+   real registry install, and only then pushes the image — so a `v*` tag on
+   core means "npm + image, or nothing".
+4. For a chart release, put `chart-v<semver>` on the SAME commit (see above).
+   It runs independently and waits for the image itself.
 
 **A tag push publishes, so it needs the operator's explicit go for that
-specific tag.** Never create, push, move, or delete a `v*` tag on your own
-initiative. Since the tag rulesets landed, `v*` tags can no longer be moved or
-deleted at all (creation stays allowed) — a mistyped tag is permanent and its
-version number is burned, because npm refuses to republish a version.
+specific tag.** Never create, push, move, or delete a `v*` or `chart-v*` tag
+on your own initiative. Since the tag rulesets landed, BOTH namespaces are
+immutable (creation stays allowed) — a mistyped tag is permanent and its
+version number is burned, because npm and `helm push` both refuse to
+republish a version.
 
 ## Dry runs (use these instead of a throwaway tag)
 
@@ -63,9 +102,12 @@ replaces it and touches nothing:
 
 ```sh
 # Core: guard (dry-run-ref mode), sandbox build, npm publish --dry-run,
-# image build without pushing, chart package without pushing.
-# await-registry and smoke are skipped on a dry run.
+# image build without pushing. await-registry and smoke are skipped.
 gh workflow run release.yml -R sigrun-ai/sigrun \
+  -f dry-run=true -f ref="$(git rev-parse origin/main)"
+
+# The chart: guard (dry-run-ref mode) then package without pushing.
+gh workflow run chart-release.yml -R sigrun-ai/sigrun \
   -f dry-run=true -f ref="$(git rev-parse origin/main)"
 
 # An extension or provider:
@@ -88,17 +130,18 @@ After a partial failure, re-run the same tag. What happens per artifact:
 | --- | --- |
 | **npm** | **Idempotent.** Every publish step checks the tarball URL first and skips a version that is already live. |
 | **Image** | **Converges.** Re-pushing the same image tags overwrites them in GHCR. |
-| **Chart** | **Refuses.** `helm push` cannot overwrite an existing chart version; cut a new tag, or delete the GHCR package version first. |
+| **Chart** | **Skips if live.** `chart-release.yml` probes the OCI manifest first and skips a published version (`helm push` itself cannot overwrite one). To REPLACE a published chart, cut a new `chart-v` tag. |
 
-A core release re-run is therefore safe up to the chart. Because core's
-`image`/`chart` jobs need `smoke`, a re-run does not reach them at all unless
-npm and the registry smoke pass first.
+A core release re-run is therefore safe up to the image. Because core's
+`image` job needs `smoke`, a re-run does not reach it at all unless npm and
+the registry smoke pass first. The chart re-run is separately safe — it skips
+when its version is already on the OCI registry.
 
 ## What a red step means
 
-- **`guard` red** — the tag is not shaped like `v<semver>`, its version does
-  not match `package.json`, or it is not on `main`. Nothing published; no
-  cleanup needed.
+- **`guard` red** — the tag is not shaped like `v<semver>` (or `chart-v<semver>
+  for the chart workflow), its version does not match `package.json` /
+  `Chart.yaml`, or it is not on `main`. Nothing published; no cleanup needed.
 - **`test` red in an extension** — a real clean-clone breakage in that repo.
   Fix it there and cut a new tag (the version number of a failed tag is not
   burned unless the publish step ran).

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
  * release-guard.mjs (release workstream Task 2.2): the pre-publish guard
- * every extension release job runs. It answers one question: "is it safe
- * to publish what this run is about to publish?"
+ * every release job runs. It answers one question: "is it safe to
+ * publish what this run is about to publish?"
  *
  *   release-guard.mjs <tag> <package.json path> [--skip-ancestry]
  *   release-guard.mjs <tag> <package.json path> --dry-run-ref <sha>
+ *   release-guard.mjs --chart <chart-v tag> <Chart.yaml path>
  *
  * Tag mode checks, in order:
  *
@@ -14,6 +15,13 @@
  *   3. `git merge-base --is-ancestor <tag> origin/main` succeeds in the
  *      process CWD (the tag is reachable from main — a release never
  *      ships a commit that isn't).
+ *
+ * `--chart` mode is the same three checks against the CHART's own
+ * versioning: the tag is `chart-v<semver>` and its stripped form must
+ * equal the `version:` line of Chart.yaml. The chart's `appVersion` is
+ * deliberately NOT checked here — it is the CORE release it deploys,
+ * read from source by the chart job, and is expected to differ from the
+ * chart's own version (that is the whole point of decoupling them).
  *
  * `--dry-run-ref <sha>` replaces the tag and version checks with
  * "`<sha>` is an ancestor of `origin/main`", so a `workflow_dispatch`
@@ -36,6 +44,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const TAG_PATTERN = /^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
+const CHART_TAG_PATTERN = /^chart-v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
 
 function fail(reason) {
 	process.stderr.write(`release-guard: ${reason}\n`);
@@ -44,7 +53,8 @@ function fail(reason) {
 
 function usage() {
 	process.stderr.write(
-		"usage: release-guard.mjs <tag> <package.json path> [--skip-ancestry | --dry-run-ref <sha>]\n",
+		"usage: release-guard.mjs <tag> <package.json path> [--skip-ancestry | --dry-run-ref <sha>]\n" +
+			"       release-guard.mjs --chart <chart-v tag> <Chart.yaml path> [--skip-ancestry]\n",
 	);
 	process.exit(2);
 }
@@ -53,9 +63,12 @@ const args = process.argv.slice(2);
 const positional = [];
 let skipAncestry = false;
 let dryRunRef;
+let chartMode = false;
 for (let i = 0; i < args.length; i += 1) {
 	const arg = args[i];
-	if (arg === "--skip-ancestry") {
+	if (arg === "--chart") {
+		chartMode = true;
+	} else if (arg === "--skip-ancestry") {
 		skipAncestry = true;
 	} else if (arg === "--dry-run-ref") {
 		i += 1;
@@ -70,6 +83,8 @@ for (let i = 0; i < args.length; i += 1) {
 if (positional.length !== 2 || (skipAncestry && dryRunRef !== undefined)) {
 	usage();
 }
+// A dry run has no tag by definition, so it cannot be a chart run.
+if (chartMode && dryRunRef !== undefined) usage();
 const [tag, manifestPath] = positional;
 
 function git(args) {
@@ -98,29 +113,59 @@ if (dryRunRef !== undefined) {
 }
 
 // 1. Tag shape.
-if (!TAG_PATTERN.test(tag)) {
+if (chartMode) {
+	if (!CHART_TAG_PATTERN.test(tag)) {
+		fail(
+			`tag '${tag}' does not match ^chart-v\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.]+)?$ — chart tags are chart-v<semver>`,
+		);
+	}
+} else if (!TAG_PATTERN.test(tag)) {
 	fail(
 		`tag '${tag}' does not match ^v\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.]+)?$ — tags are v<semver>`,
 	);
 }
-const version = tag.slice(1);
+const version = chartMode ? tag.slice("chart-v".length) : tag.slice(1);
 
-// 2. Manifest version equals the stripped tag. Read the manifest FIRST
-// (fail-loud on the path before any git work runs).
-let manifestVersion;
-try {
-	manifestVersion = JSON.parse(readFileSync(manifestPath, "utf8")).version;
-} catch (cause) {
-	fail(
-		`cannot read manifest ${manifestPath} (${cause instanceof Error ? cause.message : String(cause)})`,
-	);
+// 2. The artifact's own version equals the stripped tag. Read the file
+// FIRST (fail-loud on the path before any git work runs). Chart mode
+// reads `version:` from Chart.yaml (NOT appVersion — that is the core
+// release the chart deploys, expected to differ); package mode reads
+// `version` from package.json.
+let artifactVersion;
+if (chartMode) {
+	let yaml;
+	try {
+		yaml = readFileSync(manifestPath, "utf8");
+	} catch (cause) {
+		fail(
+			`cannot read chart ${manifestPath} (${cause instanceof Error ? cause.message : String(cause)})`,
+		);
+	}
+	// Deliberately a LINE match, not a YAML parse: the guard is
+	// dependency-free (no yaml package at .sigrun-tools), and Chart.yaml's
+	// top-level `version:`/`appVersion:` are pinned-format lines the
+	// workflow itself rewrites with sed. `appVersion` is explicitly
+	// excluded (the chart's app is not the chart's version).
+	const match = /^version:[ \t]*(.+?)[ \t]*$/m.exec(yaml);
+	if (match === null) {
+		fail(`chart ${manifestPath} has no top-level 'version:' line`);
+	}
+	artifactVersion = match[1].replace(/^["']|["']$/g, "");
+} else {
+	try {
+		artifactVersion = JSON.parse(readFileSync(manifestPath, "utf8")).version;
+	} catch (cause) {
+		fail(
+			`cannot read manifest ${manifestPath} (${cause instanceof Error ? cause.message : String(cause)})`,
+		);
+	}
 }
-if (typeof manifestVersion !== "string" || manifestVersion === "") {
-	fail(`manifest ${manifestPath} has no version`);
+if (typeof artifactVersion !== "string" || artifactVersion === "") {
+	fail(`${manifestPath} has no version`);
 }
-if (manifestVersion !== version) {
+if (artifactVersion !== version) {
 	fail(
-		`tag ${tag} (version ${version}) does not match manifest ${manifestPath} version ${manifestVersion}`,
+		`tag ${tag} (version ${version}) does not match ${manifestPath} version ${artifactVersion}`,
 	);
 }
 

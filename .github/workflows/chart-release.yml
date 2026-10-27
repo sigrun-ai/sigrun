@@ -1,0 +1,270 @@
+# Chart release: on `chart-v<semver>` tags (and workflow_dispatch re-runs
+# of an EXISTING chart tag) — package and push ONLY the Helm chart to the
+# GHCR OCI registry. No npm, no image, no registry wait: the chart is a
+# separate artifact with its own version line.
+#
+# WHY A SEPARATE WORKFLOW. The chart's `version` (its packaging version)
+# and `appVersion` (the core release it deploys) are different numbers:
+#
+#   version    = the chart-v<semver> tag, stripped
+#   appVersion = the version in package.json AT THE TAGGED COMMIT
+#
+# Deriving appVersion from SOURCE rather than by querying the registry is
+# what makes a core release and its chart race-free: both tags point at
+# the same commit, so the chart reads the new version deterministically no
+# matter when this job runs. Resolving "latest published core" instead
+# would race — the chart could publish pinned to the PREVIOUS version,
+# permanently, because a pushed chart version is immutable.
+#
+# The chart's runtime dependency is the image it names, so this job WAITS
+# for that image before pushing (await-image.mjs). A chart pushed ahead of
+# its image would deploy into ImagePullBackOff and could not be replaced.
+#
+# Auth: the workflow's own GITHUB_TOKEN (packages: write) — no PATs, no
+# stored secrets. Runbook: charts/sigrun/RELEASE.md.
+name: chart-release
+
+on:
+  push:
+    tags: ["chart-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing chart-v<semver> tag to re-release"
+        required: false
+        type: string
+        default: ""
+      dry-run:
+        description: >-
+          Exercise the graph against `ref` without pushing
+        required: true
+        type: boolean
+        default: false
+      ref:
+        description: >-
+          main ref the dry run releases (guard: must be an ancestor of
+          origin/main)
+        required: true
+        type: string
+        default: "main"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      dry: ${{ steps.resolve.outputs.dry }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      # Tooling checkout: release-guard.mjs and await-image.mjs live here
+      # and are dependency-free (node: built-ins only), so a dry run
+      # against an old ref still finds the CURRENT scripts.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
+      - name: Resolve release coordinates
+        id: resolve
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY: ${{ inputs.dry-run }}
+          INPUT_REF: ${{ inputs.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "${INPUT_DRY}" = "true" ]; then
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "dry=true" >> "$GITHUB_OUTPUT"
+            echo "ref=${INPUT_REF}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${INPUT_TAG}" ]; then
+            echo "tag=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v5
+        with:
+          ref: >-
+            ${{
+              steps.resolve.outputs.dry == 'true'
+              && steps.resolve.outputs.ref
+              || format('refs/tags/{0}', steps.resolve.outputs.tag)
+            }}
+          path: sigrun
+          fetch-depth: 0
+      - name: "Guard: chart tag shape, Chart.yaml version, ancestry"
+        shell: bash
+        working-directory: sigrun
+        env:
+          GUARD_TAG: ${{ steps.resolve.outputs.tag }}
+          GUARD_DRY: ${{ steps.resolve.outputs.dry }}
+          GUARD_REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          if [ "${GUARD_DRY}" = "true" ]; then
+            # Dry run: no tag applies; only the candidate SHA's ancestry
+            # matters. The chart guard is skipped (there is no chart tag
+            # to check) but the ref is still verified against main.
+            node ../.sigrun-tools/scripts/release-guard.mjs \
+              --dry-run-ref "${GUARD_REF}" \
+              v0.0.0-dry-run \
+              package.json
+            test "$(git rev-parse HEAD)" = "${GUARD_REF}"
+          else
+            # Chart mode: chart-v<semver> must equal Chart.yaml's
+            # `version:` (NOT appVersion — that is the core release this
+            # chart deploys, and is expected to differ).
+            git fetch origin \
+              "+refs/tags/${GUARD_TAG}:refs/tags/${GUARD_TAG}"
+            git rev-parse -q --verify \
+              "refs/tags/${GUARD_TAG}^{commit}" >/dev/null
+            git describe --tags --exact-match "${GUARD_TAG}" >/dev/null
+            node ../.sigrun-tools/scripts/release-guard.mjs \
+              --chart \
+              "${GUARD_TAG}" \
+              charts/sigrun/Chart.yaml
+          fi
+          echo "chart release coordinates OK (dry=${GUARD_DRY})"
+
+  chart:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      # Tooling checkout: release-guard.mjs and await-image.mjs live here
+      # and are dependency-free (node: built-ins only). Both checkouts
+      # carry an explicit `path:`, so neither cleans the other's
+      # directory (the ext-release.yml trap was a root checkout with no
+      # path, which cleans the whole workspace).
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .sigrun-tools
+      - uses: actions/checkout@v5
+        with:
+          ref: >-
+            ${{
+              needs.guard.outputs.dry == 'true'
+              && needs.guard.outputs.ref
+              || format('refs/tags/{0}', needs.guard.outputs.tag)
+            }}
+          path: sigrun
+          fetch-depth: 0
+      # The chart's own version, from the tag. The DRY sentinel keeps a
+      # dry run from packaging a nameless chart (an empty version would
+      # sed Chart.yaml to `version:` with no value).
+      - name: Derive chart version (chart-v prefix stripped)
+        shell: bash
+        env:
+          GUARD_TAG: ${{ needs.guard.outputs.tag }}
+          DRY: ${{ needs.guard.outputs.dry }}
+        run: |
+          set -euo pipefail
+          version="${GUARD_TAG#chart-v}"
+          if [ "${DRY}" = "true" ] || [ -z "${version}" ]; then
+            version="0.0.0-dryrun"
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+      # appVersion is the CORE release this chart deploys, read from the
+      # tagged commit's manifest — never from the tag, never from a
+      # registry query (the race the workflow header explains).
+      - name: Derive appVersion (from source, at the tagged commit)
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          app="$(node -p 'require("./package.json").version')"
+          if [ -z "${app}" ]; then
+            echo "::error::package.json carries no version;" \
+              "cannot derive appVersion"
+            exit 1
+          fi
+          echo "APP_VERSION=${app}" >> "$GITHUB_ENV"
+          echo "chart ${VERSION} deploys sigrun ${app}"
+      - uses: azure/setup-helm@v4
+      # Skip-if-live: `helm push` REFUSES an existing chart version, so a
+      # re-run of an already-published tag must skip cleanly rather than
+      # fail. The OCI repository is <registry>/charts/<chart>/<chart>
+      # (helm appends the chart name as a final path segment).
+      - name: Check whether the chart version is already live
+        id: live
+        shell: bash
+        working-directory: sigrun
+        env:
+          DRY: ${{ needs.guard.outputs.dry }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY}" = "true" ]; then
+            echo "live=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if node ../.sigrun-tools/scripts/await-image.mjs \
+            --timeout-min 0 \
+            "sigrun-ai/charts/sigrun/sigrun:${VERSION}" >/dev/null 2>&1; then
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "live=false" >> "$GITHUB_OUTPUT"
+          fi
+      # The chart's default image tag IS appVersion, so the image it will
+      # deploy must exist before the chart does — otherwise a pushed,
+      # immutable chart deploys into ImagePullBackOff. A dry run skips
+      # this (nothing is pushed, and no image was built for the sentinel).
+      - name: Wait for the appVersion image to be live
+        if: >-
+          ${{
+            needs.guard.outputs.dry != 'true'
+            && steps.live.outputs.live != 'true'
+          }}
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          node ../.sigrun-tools/scripts/await-image.mjs \
+            --timeout-min 10 \
+            "sigrun-ai/sigrun:${APP_VERSION}"
+      - name: Version, package
+        if: steps.live.outputs.live != 'true'
+        shell: bash
+        working-directory: sigrun
+        run: |
+          set -euo pipefail
+          # Only the chart's OWN version is rewritten from the tag;
+          # appVersion comes from source and is written verbatim.
+          sed -i "s/^version: .*/version: ${VERSION}/" \
+            charts/sigrun/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${APP_VERSION}\"/" \
+            charts/sigrun/Chart.yaml
+          helm dependency update charts/sigrun
+          helm package charts/sigrun
+      - name: Helm registry login (ghcr.io)
+        if: >-
+          ${{
+            needs.guard.outputs.dry != 'true'
+            && steps.live.outputs.live != 'true'
+          }}
+        shell: bash
+        run: >
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | helm registry
+          login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Push chart to GHCR OCI
+        if: >-
+          ${{
+            needs.guard.outputs.dry != 'true'
+            && steps.live.outputs.live != 'true'
+          }}
+        shell: bash
+        working-directory: sigrun
+        run: >
+          helm push "sigrun-${VERSION}.tgz"
+          oci://ghcr.io/sigrun-ai/charts/sigrun
+      - name: Skipped (already live)
+        if: steps.live.outputs.live == 'true'
+        run: echo "chart ${VERSION} is already live — nothing to push"

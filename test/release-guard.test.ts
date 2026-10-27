@@ -221,3 +221,89 @@ describe("release-guard.mjs", () => {
 		expect(res.stderr).toContain("v9.9.9");
 	});
 });
+
+/** A temp git repo carrying a Chart.yaml, with a `chart-v<version>` tag on
+ * the first commit and `refs/remotes/origin/main` at HEAD (the CI checkout
+ * contract). `appVersion` is deliberately NOT equal to `version` — that is
+ * the decoupling the guard must tolerate. */
+function chartRepoWithTag(version: string, appVersion: string): { dir: string } {
+	const dir = mkdtempSync(join(tmpdir(), "release-guard-chart-"));
+	execFileSync("git", ["init", "-b", "main"], { cwd: dir, env: GIT_ENV });
+	writeFileSync(
+		join(dir, "Chart.yaml"),
+		`apiVersion: v2\nname: sigrun\nversion: ${version}\nappVersion: "${appVersion}"\n`,
+	);
+	commitFile(dir, "one.txt", "one\n");
+	execFileSync("git", ["tag", `chart-v${version}`], { cwd: dir, env: GIT_ENV });
+	commitFile(dir, "two.txt", "two\n");
+	execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], {
+		cwd: dir,
+		env: GIT_ENV,
+	});
+	return { dir };
+}
+
+describe("release-guard.mjs --chart (chart decoupling)", () => {
+	test("a chart-v tag matching Chart.yaml version passes, even when appVersion differs", () => {
+		// appVersion is the CORE release the chart deploys — expected to
+		// differ from the chart's own version. The guard must NOT compare it.
+		const { dir } = chartRepoWithTag("0.2.1", "0.2.0");
+		const res = runGuard(["--chart", "chart-v0.2.1", "Chart.yaml"], dir);
+		expect(res.code, res.stderr).toBe(0);
+	});
+
+	test("a chart-v tag disagreeing with Chart.yaml version fails, naming both", () => {
+		const { dir } = chartRepoWithTag("0.2.1", "0.2.0");
+		const res = runGuard(["--chart", "chart-v0.9.9", "Chart.yaml"], dir);
+		expect(res.code).toBe(1);
+		expect(res.stderr).toContain("0.9.9");
+		expect(res.stderr).toContain("0.2.1");
+	});
+
+	test("a core-style v tag is rejected in chart mode, and vice versa", () => {
+		const { dir } = chartRepoWithTag("0.2.1", "0.2.0");
+		// The two namespaces must not be interchangeable: a core tag would
+		// otherwise publish a chart under the core's version number.
+		execFileSync("git", ["tag", "v0.2.1"], { cwd: dir, env: GIT_ENV });
+		const chartMode = runGuard(["--chart", "v0.2.1", "Chart.yaml"], dir);
+		expect(chartMode.code).toBe(1);
+		expect(chartMode.stderr).toContain("chart-v");
+		const coreMode = runGuard(["chart-v0.2.1", "Chart.yaml"], dir);
+		expect(coreMode.code).toBe(1);
+		expect(coreMode.stderr).toContain("v<semver>");
+	});
+
+	test("a chart tag not on origin/main fails the ancestry check", () => {
+		const { dir } = chartRepoWithTag("0.2.1", "0.2.0");
+		const headSha = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: dir,
+			env: GIT_ENV,
+			encoding: "utf8",
+		}).trim();
+		execFileSync("git", ["tag", "chart-v9.9.9", headSha], { cwd: dir, env: GIT_ENV });
+		writeFileSync(
+			join(dir, "Chart.yaml"),
+			`apiVersion: v2\nname: sigrun\nversion: 9.9.9\nappVersion: "0.2.0"\n`,
+		);
+		// Move origin/main back to the FIRST commit, so the tagged HEAD commit
+		// is ahead of it (not an ancestor).
+		execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD~1"], {
+			cwd: dir,
+			env: GIT_ENV,
+		});
+		const res = runGuard(["--chart", "chart-v9.9.9", "Chart.yaml"], dir);
+		expect(res.code).toBe(1);
+		expect(res.stderr).toContain("ancestor");
+	});
+
+	test("a Chart.yaml without a top-level version fails loud", () => {
+		const { dir } = chartRepoWithTag("0.2.1", "0.2.0");
+		writeFileSync(
+			join(dir, "Chart.yaml"),
+			`apiVersion: v2\nname: sigrun\nappVersion: "0.2.0"\n`,
+		);
+		const res = runGuard(["--chart", "chart-v0.2.1", "Chart.yaml"], dir);
+		expect(res.code).toBe(1);
+		expect(res.stderr).toContain("version");
+	});
+});

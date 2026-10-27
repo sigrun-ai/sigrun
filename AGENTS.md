@@ -18,7 +18,13 @@ Guidance for coding agents working in this repository.
   client), spawned by the CLI as a child process (optional dep). Its
   wire types come from `@sigrun/shared` (NodeNext — no codegen or
   mirrored schemas).
-- `charts/sigrun/` — the Helm chart (reference k8s deploy).
+- `charts/sigrun/` — the Helm chart (reference k8s deploy). It has its OWN
+  version line and its own release workflow (`chart-release.yml`, triggered by
+  `chart-v*` tags): `version` is the chart's packaging version, `appVersion`
+  is the core release it deploys (read from `package.json` at the tagged
+  commit, never hand-edited). A core release ships npm + image; to ship a
+  chart too, put both tags on the same commit. See
+  `charts/sigrun/RELEASE.md`.
 - `docker/` — compose reference. `Dockerfile` — image build.
 - `docs/private.md` is gitignored. Planning docs are kept outside this
   repository.
