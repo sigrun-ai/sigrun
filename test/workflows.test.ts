@@ -129,14 +129,21 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 				}
 			| undefined;
 		expect(dispatch, "workflow_dispatch trigger must exist").toBeDefined();
-		// Tag stays REQUIRED: the dispatch re-runs an EXISTING tag's
-		// release, never an arbitrary SHA — except in dry-run mode, where
-		// the (also required) `ref` input replaces it.
-		expect(dispatch?.inputs?.tag?.required).toBe(true);
+		// `tag` is OPTIONAL, and must stay so: a dry run passes `ref`
+		// instead and has no tag at all, so a required `tag` makes the
+		// dry-run path impossible to invoke ("Required input 'tag' not
+		// provided"). A real dispatch with no tag still fails closed —
+		// the guard resolves the empty tag to the branch name and refuses
+		// it, since it is not v<semver> and does not match the manifest.
+		expect(dispatch?.inputs?.tag?.required).toBe(false);
+		expect(dispatch?.inputs?.tag?.type).toBe("string");
 		expect(dispatch?.inputs?.["dry-run"]?.type).toBe("boolean");
 		expect(dispatch?.inputs?.["dry-run"]?.default).toBe(false);
+		expect(dispatch?.inputs?.["dry-run"]?.required).toBe(true);
 		expect(dispatch?.inputs?.ref?.type).toBe("string");
 		expect(dispatch?.inputs?.ref?.default).toBe("main");
+		// `ref` is what a dry run releases, so it must be supplied.
+		expect(dispatch?.inputs?.ref?.required).toBe(true);
 	});
 
 	test("workflow-level permissions are contents:read + packages:write", () => {
