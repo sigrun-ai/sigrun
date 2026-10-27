@@ -1,186 +1,222 @@
-# Releasing sigrun (image + chart)
+# Releasing the sigrun family
 
-The release pipeline is `.github/workflows/release.yml`: push a `v<semver>`
-tag and it ships the multi-arch image to `ghcr.io/sigrun-ai/sigrun` and the
-Helm chart to the GHCR OCI registry (`ghcr.io/sigrun-ai/charts/sigrun`).
-This runbook covers the flow, the re-release semantics, the one-time GHCR
-visibility flip, the throwaway smoke procedure, and the Flux wiring pointer.
+Twelve repos ship together: `sigrun` (core), five built-in extensions, the
+memory extension, and four providers. **Pushing a `v*` tag publishes.** Each
+repo publishes itself, so a tag is the approval point and there is no separate
+publish step to remember — and no stored npm token anywhere: the workflows
+authenticate with OIDC trusted publishing.
 
-## Release flow (the human's part)
+That also means a tag cannot be "just a marker". Read the bump order below
+before tagging anything.
 
-1. **Bump family versions** — sigrun and any extension/provider family
-   members being released (`package.json` versions; the chart's
-   `version`/`appVersion` in `charts/sigrun/Chart.yaml` are rewritten
-   from the tag by the workflow, so only the npm-side versions need
-   bumping by hand).
-2. **Publish the npm family from the dev machine** — unchanged today:
-   `npm publish` per repo (the `prepublishOnly`/`postpublish` hooks run
-   `scripts/publish-deps.mjs registry`/`file` for sigrun's built-ins).
-   A fast-follow replaces this manual publish with workflow-driven
-   publishing.
-3. **Push main**: the commits being released must be on `main` (CI's
-   test gate runs there).
-4. **Tag and push the tag**:
+| What a tag does | Job |
+| --- | --- |
+| Every extension/provider repo | `release.yml` → `guard` → `test` → `publish` (npm) |
+| `sigrun` (core) | `release.yml` → `guard` → `sandbox` → `publish-npm` → `await-registry` → `smoke` → `image` + `chart` |
 
-   ```sh
-   git tag v0.1.5
-   git push origin v0.1.5
-   ```
+## Before you tag: bump order
 
-5. The workflow ships:
-   - `ghcr.io/sigrun-ai/sigrun:0.1.5` and `:latest` —
-     `linux/amd64` + `linux/arm64`, the `APP_VERSION` build-arg (the
-     image's `org.opencontainers.image.version` label) set to the
-     stripped semver, so image tag, label, and chart appVersion all
-     read `0.1.5`.
-   - `ghcr.io/sigrun-ai/charts/sigrun/sigrun` chart version `0.1.5`
-     (`Chart.yaml` `version` and `appVersion` rewritten from the tag,
-     `v` stripped; `helm push` appends the chart NAME as a final path
-     segment, so the OCI repo is `charts/sigrun/sigrun` — flux's
-     `HelmRepository` must point at `oci://ghcr.io/sigrun-ai/charts/sigrun`
-     and request chart `sigrun`).
+Extensions and providers **first**, core last. Core's release waits for the
+registry to serve its siblings' versions (`await-registry`), so a core tag
+whose siblings are not published yet stops before it ships the image.
 
-Authentication is the workflow's own `GITHUB_TOKEN`
-(`permissions: contents: read, packages: write`) — no PATs, no stored
-secrets anywhere in the pipeline.
+1. **Extension and provider versions** — one `package.json` bump each, plus a
+   CHANGELOG entry.
+2. **Core-family versions** — these four move together, and tests enforce it:
 
-## Dispatch re-release semantics
+   | Bump | Enforced by |
+   | --- | --- |
+   | `package.json` (core) | — |
+   | `shared/package.json` | `test/package-manifest.test.ts` |
+   | `tui/package.json` | `test/package-manifest.test.ts` |
+   | **both** `sandbox/npm/linux-{x64,arm64}/package.json` | `test/package-manifest.test.ts` |
+   | every built-in's `@sigrun/shared` peer | `test/builtins-wiring.test.ts` |
 
-`workflow_dispatch` takes a **required `tag` input** and re-runs the
-release for an EXISTING tag: the workflow checks out `refs/tags/<tag>`
-and a guard step fails loud if that ref does not exist as an
-exact-match tag. It exists for re-running a failed release after a fix
-— **never for building arbitrary SHAs**.
+   A core bump that forgets the sandbox manifests or a built-in's
+   `@sigrun/shared` peer fails core's own suite — that is deliberate.
 
-Idempotency boundary (by design, not worked around):
+   The chart's `version`/`appVersion` are rewritten from the tag by the
+   workflow; do not set them by hand. The Dockerfile's version label comes from
+   the `APP_VERSION` build-arg, also derived from the tag.
 
-- **Image**: re-pushing a tag overwrites the image tags in GHCR — the
-  re-run converges.
-- **Chart**: `helm push` of an already-existing chart version FAILS
-  (the registry refuses the overwrite). To re-ship a chart you must
-  delete the package version in GHCR first (see the smoke cleanup
-  commands below) — or, normally, cut a new tag.
+## Tag order
 
-A re-run is therefore *half-idempotent*: safe for the image, refused
-for the chart.
+1. Tag the extensions and providers.
+2. **Wait for each release run to go green.** Their publish is what core's
+   `await-registry` waits on; a red sibling means core stops before the image.
+3. Tag core. Its release then ships npm, waits for the registry, smokes a real
+   registry install, and only then pushes the image and chart — so a `v*` tag
+   on core means "npm + image + chart, or nothing".
 
-## GHCR visibility flip (one-time, manual — WEB UI only)
+**A tag push publishes, so it needs the operator's explicit go for that
+specific tag.** Never create, push, move, or delete a `v*` tag on your own
+initiative. Since the tag rulesets landed, `v*` tags can no longer be moved or
+deleted at all (creation stays allowed) — a mistyped tag is permanent and its
+version number is burned, because npm refuses to republish a version.
 
-Packages are born private in GHCR. After the first release, flip the two
-packages to public so anonymous pulls work (the homelab cluster's
-included). **There is no API for this**: the REST org-packages surface
-exposes only Get/List/Delete/Restore (verified against the official
-endpoint index and by live probes — a PATCH to
-`/orgs/<org>/packages/container/<name>` returns 404, and GraphQL has no
-package-visibility mutation; blog recipes claiming a PATCH work-around
-are cargo-cult). The scopes `write:packages`/`delete:packages` govern
-deletion and restore, not visibility. Do it once, in the browser:
+## Dry runs (use these instead of a throwaway tag)
 
-1. `https://github.com/orgs/sigrun-ai/packages` → package
-   `sigrun` → *Package settings* → *Danger Zone* → *Change visibility* →
-   **Public**.
-2. Same for the chart package: it appears in the org list under the
-   `charts/sigrun/sigrun` name — `helm push` appends the chart NAME as
-   a final path segment, so the OCI repository is
-   `ghcr.io/sigrun-ai/charts/sigrun/sigrun` (NOT `.../charts/sigrun`).
+The old procedure pushed a `v0.0.0-ci.<sha>` tag and deleted it afterwards.
+Both halves are now impossible or pointless: tags are immutable, and the guard
+rejects a tag whose version does not match `package.json`. The dry-run dispatch
+replaces it and touches nothing:
+
+```sh
+# Core: guard (dry-run-ref mode), sandbox build, npm publish --dry-run,
+# image build without pushing, chart package without pushing.
+# await-registry and smoke are skipped on a dry run.
+gh workflow run release.yml -R sigrun-ai/sigrun \
+  -f dry-run=true -f ref="$(git rev-parse origin/main)"
+
+# An extension or provider:
+gh workflow run release.yml -R sigrun-ai/sigrun-ext-mcp \
+  -f dry-run=true -f ref="$(git rev-parse origin/main)"
+```
+
+Run a dry run whenever the release machinery changed, and always before a
+release whose pipeline you have not exercised since the last change.
+
+`-f ref` is used only when `dry-run=true`. On a real dispatch, `-f tag=<tag>`
+re-runs an **existing** tag; the guard refuses a tag that does not exist or
+whose version does not match the manifest.
+
+## Re-run semantics
+
+After a partial failure, re-run the same tag. What happens per artifact:
+
+| Artifact | Re-run behaviour |
+| --- | --- |
+| **npm** | **Idempotent.** Every publish step checks the tarball URL first and skips a version that is already live. |
+| **Image** | **Converges.** Re-pushing the same image tags overwrites them in GHCR. |
+| **Chart** | **Refuses.** `helm push` cannot overwrite an existing chart version; cut a new tag, or delete the GHCR package version first. |
+
+A core release re-run is therefore safe up to the chart. Because core's
+`image`/`chart` jobs need `smoke`, a re-run does not reach them at all unless
+npm and the registry smoke pass first.
+
+## What a red step means
+
+- **`guard` red** — the tag is not shaped like `v<semver>`, its version does
+  not match `package.json`, or it is not on `main`. Nothing published; no
+  cleanup needed.
+- **`test` red in an extension** — a real clean-clone breakage in that repo.
+  Fix it there and cut a new tag (the version number of a failed tag is not
+  burned unless the publish step ran).
+- **Core `publish-npm` "pre-check" red** — a pinned family version is not on
+  the registry yet. That means an extension or provider tag has not published;
+  publish it, then re-run core.
+- **`await-registry` timeout** — npm has not propagated the version to its CDN
+  within 15 minutes. The packages are published; re-run the job. `npm view`
+  lagging is not evidence of anything — the wait polls the tarball URL.
+- **`smoke` red** — a registry install of core is broken (missing built-in,
+  unresolvable sandbox helper, missing `@sigrun/tui`). **The image and chart
+  do not ship.** This is the gate that catches a packument regression.
+
+## Adding a package to the family
+
+Two things are needed before CI can publish a new package: the name must exist
+on npm, and a trusted publisher must point at the repo's `release.yml`.
+
+**1. Register the name.** Staged publishing creates the placeholder for a name
+npm has never seen — this is the whole bootstrap, and the reject is *not* part
+of it (rejecting unpublishes the name again):
+
+```sh
+cd <package dir>
+npm stage publish --provenance=false    # required locally: no OIDC here
+```
+
+`--provenance=false` is needed on a workstation only. Every package sets
+`publishConfig.provenance: true`, and npm refuses to generate provenance
+without an OIDC provider ("Automatic provenance generation not supported for
+provider: null"). CI has one, so the real publish keeps its attestation.
+
+Do **not** try to `npm publish` a `0.0.0-stage` tarball: npm reserves that
+version for staged publishing and refuses ("You cannot publish using the
+version: 0.0.0-stage").
+
+**2. Configure the trusted publisher.** `npm trust github` is 2FA-gated, and a
+granular access token cannot perform 2FA-gated account actions — it returns
+`403 Granular access tokens that bypass two-factor authentication may not
+perform this action`, and no key-touch changes that. Use the browser:
+
+> npmjs.com → the package → **Settings** → **Trusted Publisher** →
+> **GitHub Actions** → org `sigrun-ai`, repository `<repo>`, workflow
+> filename **`release.yml`**, and tick **Allow npm publish**.
+
+The workflow filename matters more than it looks: under `workflow_call`
+npm validates the **caller's** filename, which is why every family repo's
+caller is named `release.yml`. It must match exactly, including `.yml`.
+
+All core-family packages (`sigrun`, `shared`, `tui`, and both `sandbox-*`)
+name the repository **`sigrun`** — core's release publishes them, so they have
+no repo of their own.
+
+Once a config exists, `npm trust github` returns `409 Conflict` ("a trusted
+publisher configuration that a token could also match already exists") — that
+is a re-run succeeding, not a failure. Verify the four fields by eye in the
+browser instead, because npm does not validate them at save time and a typo
+only surfaces at publish.
+
+**3. Add it to the enumerations.** `scripts/publish-deps.mjs` is the single
+list the workflows' checkouts, the lock regen, and the smoke all derive from.
+`test/builtins-wiring.test.ts` asserts the enumerations agree, so a package
+added in one place and forgotten in another fails core's suite.
+
+## Trusted publishers expire
+
+A trusted-publisher configuration **expires if no successful publish uses it
+within 2 days** of creation. Configure it immediately before the release that
+validates it, not weeks earlier. If a release is more than two days out,
+configure only the packages being released now and the rest at release time.
+
+A config that expired is indistinguishable from one that was never set until
+you publish: the publish fails with `ENEEDAUTH`. Re-add it in the browser.
+
+## GHCR visibility (one-time, manual — browser only)
+
+Packages are born private in GHCR. Flip the two core packages to public once
+so anonymous pulls work. **There is no API for this**: the REST org-packages
+surface exposes only Get/List/Delete/Restore (a `PATCH` returns 404, and
+GraphQL has no package-visibility mutation — recipes claiming otherwise are
+cargo-cult). `write:packages`/`delete:packages` govern deletion and restore,
+not visibility.
+
+1. `https://github.com/orgs/sigrun-ai/packages` → package `sigrun` →
+   *Package settings* → *Danger Zone* → *Change visibility* → **Public**.
+2. Same for the chart package, listed as `charts/sigrun/sigrun` — `helm push`
+   appends the chart NAME as a final path segment, so the OCI repository is
+   `ghcr.io/sigrun-ai/charts/sigrun/sigrun`, not `.../charts/sigrun`.
 
 Until the flip, pulls need a GitHub token with `read:packages`.
 
-## Release smoke test (throwaway)
+## Flux wiring (pointer only)
 
-The push path can't be exercised off-repo (a fork's `GITHUB_TOKEN`
-cannot push to the org GHCR namespace), so the smoke is a full workflow
-run against a throwaway tag on the REAL repo. Packages stay private
-until the visibility flip, so nothing transient is ever publicly
-visible.
+The homelab consumes the artifacts through Flux, not by hand:
 
-1. **Push a throwaway tag** (short SHA of any main commit):
+- Hub cluster: an `ImageRepository` watching `ghcr.io/sigrun-ai/sigrun`, and
+  an OCI `HelmRepository` at `oci://ghcr.io/sigrun-ai/charts/sigrun` serving
+  chart `sigrun` (helm's path-segment convention: the repository URL ends one
+  segment above the chart name).
+- Satellite: the `HelmRelease` referencing chart `sigrun`, with
+  `chart.spec.version` advanced per release or automated by an
+  `ImagePolicy`/`Policy` controller.
 
-   ```sh
-   git tag "v0.0.0-ci.$(git rev-parse --short HEAD)"
-   git push origin "v0.0.0-ci.$(git rev-parse --short HEAD)"
-   ```
-
-2. **Verify the artifacts** once the run is green:
-
-   ```sh
-   # Multi-arch image manifest (both platforms present):
-   # (needs a docker login to ghcr.io until the visibility flip)
-   docker manifest inspect ghcr.io/sigrun-ai/sigrun:0.0.0-ci.<shortsha>
-   # Chart round-trip from the OCI registry — NOTE the /sigrun suffix
-   # (helm push appends the chart name as a path segment):
-   helm registry login ghcr.io -u <user>   # needs read:packages until public
-   helm pull oci://ghcr.io/sigrun-ai/charts/sigrun/sigrun \
-     --version 0.0.0-ci.<shortsha>   # v stripped for the chart version
-   ```
-
-   (Image runs can be spot-checked with the verification steps in the
-   design doc's smoke section: version label, uid 1000, `/healthz`.)
-
-3. **Delete the tag**:
-
-   ```sh
-   git push origin :refs/tags/v0.0.0-ci.<shortsha>
-   ```
-
-4. **Delete the ci package versions** from GHCR so the throwaway
-   artifacts don't linger. The image package is at `container/sigrun`;
-   the chart is a CONTAINER package named `charts/sigrun/sigrun`
-   (URL-encoded `charts%2Fsigrun%2Fsigrun` in API paths). The
-   `0.0.0-ci.*` prefix filter in the jq is the safety boundary — the
-   command must never see real release versions (an unfiltered pipe
-   would delete every released image/chart version once real releases
-   exist). One extra trap, learned live: **the LAST TAGGED version of a
-   package cannot be deleted** (400 — "you must delete the package
-   instead"); and the smoke's multi-arch push leaves UNtagged platform
-   versions beside the tagged one that the filter won't match. For a
-   pure-smoke package the honest move is deleting the whole PACKAGE
-   (both packages hold nothing but smoke artifacts, and the first real
-   release re-creates them):
-
-   ```sh
-   # smoke cleanup, package-level (safe ONLY while the package holds
-   # nothing but 0.0.0-ci.* artifacts — this is the smoke's own state):
-   gh api -X DELETE /orgs/sigrun-ai/packages/container/sigrun
-   gh api -X DELETE /orgs/sigrun-ai/packages/container/charts%2Fsigrun%2Fsigrun
-
-   # version-level alternative for a package that ALSO holds real
-   # releases (0.0.0-ci.* filter; will 400 on the last tagged ci
-   # version — untoggle it by deleting the package, or leave the last
-   # ci version as a marker):
-   gh api /orgs/sigrun-ai/packages/container/sigrun/versions \
-     --jq '.[] | select(.metadata.container.tags[] | startswith("0.0.0-ci.")) | .id' \
-     | xargs -r -n1 -I{} gh api -X DELETE \
-         /orgs/sigrun-ai/packages/container/sigrun/versions/{}
-   ```
-
-   Note: version/package deletion needs `read:packages` +
-   `delete:packages` scopes (classic PAT) and admin on the package —
-   org owners have it automatically.
-
-## Flux wiring (the GitOps move — pointer only)
-
-The homelab consumes the artifacts via Flux, not by hand:
-
-- Hub cluster: an `ImageRepository` watching `ghcr.io/sigrun-ai/sigrun`
-  and an OCI `HelmRepository` at
-  `oci://ghcr.io/sigrun-ai/charts/sigrun` serving chart `sigrun`
-  (helm's path-segment convention: the repository URL ends one segment
-  above the chart name — needs an `imagePullSecret`/cert config if the
-  chart package is still private).
-- Satellite: the `HelmRelease` referencing chart `sigrun` from that
-  repository, `chart.spec.version` advanced per release (or automated
-  via an `ImagePolicy`/`Policy` controller).
-
-The exact manifests are the user's GitOps move in the flux repos —
-kept out of this runbook on purpose.
+The exact manifests are the user's GitOps work in the flux repos, deliberately
+kept out of this runbook.
 
 ## Where things live
 
 | Thing | Path |
 | --- | --- |
-| Release workflow | `.github/workflows/release.yml` |
+| Core release workflow | `.github/workflows/release.yml` |
+| Reusable extension CI / release | `.github/workflows/ext-ci.yml`, `ext-release.yml` |
+| Shared sandbox build | `.github/workflows/sandbox-build.yml` |
+| Tag + version guard | `scripts/release-guard.mjs` |
+| Registry wait | `scripts/await-registry.mjs` |
+| Registry smoke | `scripts/smoke-registry.sh` |
+| Built-in enumeration | `scripts/publish-deps.mjs` |
 | CI (build check, no push) | `.github/workflows/ci.yml` |
-| Workflow contract tests | `test/workflows.test.ts` |
+| Workflow contract tests | `test/workflows.test.ts`, `test/release-guard.test.ts`, `test/builtins-wiring.test.ts` |
 | Dockerfile (APP_VERSION label) | `Dockerfile` |
 | Chart | `charts/sigrun/` |

@@ -5,8 +5,8 @@
 # install, then build and push the multi-arch image to GHCR and the
 # chart to the GHCR OCI registry. Auth is the workflow's own
 # GITHUB_TOKEN (permissions below) — no PATs, no stored secrets.
-# Runbook, smoke procedure, and idempotency boundary:
-# charts/sigrun/RELEASE.md.
+# Runbook (bump/tag order, dry runs, re-run semantics, idempotency
+# boundary): charts/sigrun/RELEASE.md.
 #
 # Job graph (the guard stays FIRST everywhere — every job reaches it
 # transitively through needs):
