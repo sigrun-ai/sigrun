@@ -66,6 +66,17 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
+      # The repo under test with FULL history — the default fetch-depth 1
+      # leaves origin/main absent and the ancestry check fails closed.
+      #
+      # It must be checked out FIRST: actions/checkout cleans the worktree
+      # by default (git clean -ffdx), so a checkout that runs after the
+      # tooling one deletes .sigrun-tools. That is exactly how the first
+      # pilot tag failed — "Cannot find module
+      # .../.sigrun-tools/scripts/release-guard.mjs".
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       # Tooling checkout: release-guard.mjs lives in sigrun-ai/sigrun and
       # is dependency-free (node: built-ins only), so no npm ci here.
       - uses: actions/checkout@v5
@@ -73,11 +84,7 @@ jobs:
           repository: sigrun-ai/sigrun
           ref: main
           path: .sigrun-tools
-      # The repo under test with FULL history — the default fetch-depth 1
-      # leaves origin/main absent and the ancestry check fails closed.
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
+          clean: false
       - name: Fetch origin/main for the ancestry check
         run: git fetch origin main:refs/remotes/origin/main
       - name: Resolve the tag

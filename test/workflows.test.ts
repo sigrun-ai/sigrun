@@ -23,6 +23,7 @@ import { describe, expect, test } from "vitest";
 const WORKFLOW_FILE = new URL("../.github/workflows/ci.yml", import.meta.url);
 const RELEASE_FILE = new URL("../.github/workflows/release.yml", import.meta.url);
 const SANDBOX_BUILD_FILE = new URL("../.github/workflows/sandbox-build.yml", import.meta.url);
+const EXT_RELEASE_FILE = new URL("../.github/workflows/ext-release.yml", import.meta.url);
 
 interface Step {
 	name?: string;
@@ -648,5 +649,57 @@ describe(".github/workflows/sandbox-build.yml (Task 2.1 reusable musl build)", (
 		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
 		expect(paths).toContain("sandbox/npm/linux-x64/*.tgz");
 		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
+	});
+});
+
+describe(".github/workflows/ext-release.yml (family releases)", () => {
+	const parsed = () =>
+		parseWorkflowFile(EXT_RELEASE_FILE, "ext-release.yml");
+
+	test("the guard job checks out the repo under test BEFORE the tooling", () => {
+		// actions/checkout cleans the worktree by default (git clean -ffdx),
+		// so a checkout ordered after the tooling one deletes .sigrun-tools.
+		// The first pilot tag failed exactly that way: "Cannot find module
+		// .../.sigrun-tools/scripts/release-guard.mjs".
+		const guard = parsed().jobs.guard;
+		const checkouts = (guard?.steps ?? []).filter((step) =>
+			step.uses?.startsWith("actions/checkout@"),
+		);
+		expect(checkouts.length, "the guard job needs both checkouts").toBe(2);
+		const underTest = checkouts[0];
+		const tools = checkouts[1];
+		expect(
+			(underTest?.with as { "fetch-depth"?: number } | undefined)?.["fetch-depth"],
+			"the repo under test goes first, with full history for the ancestry check",
+		).toBe(0);
+		expect(
+			(tools?.with as { path?: string } | undefined)?.path,
+			"the tooling goes second, into .sigrun-tools",
+		).toBe(".sigrun-tools");
+		expect(
+			(tools?.with as { clean?: boolean } | undefined)?.clean,
+			"the tooling checkout must not clean away the repo under test",
+		).toBe(false);
+		// And the guard must actually run the tooling script from there.
+		const runs = (guard?.steps ?? []).map(runOf).join("\n");
+		expect(runs).toContain(".sigrun-tools/scripts/release-guard.mjs");
+	});
+
+	test("the publish job declares id-token: write and uses no npm token", () => {
+		const publish = parsed().jobs.publish;
+		expect(publish, "the publish job must exist").toBeDefined();
+		const raw = readFileSync(EXT_RELEASE_FILE, "utf8");
+		expect(raw).not.toMatch(/secrets\.NPM_TOKEN/);
+		expect(raw).toMatch(/npm publish/);
+		// OIDC is granted at the workflow level for this reusable workflow.
+		const permissions = parsed().permissions ?? {};
+		expect(permissions["id-token"]).toBe("write");
+	});
+
+	test("the publish job skips a version that is already live", () => {
+		const runs = (parsed().jobs.publish?.steps ?? []).map(runOf).join("\n");
+		// skip-if-live is what makes a tag re-run idempotent.
+		expect(runs).toContain("curl -sf");
+		expect(runs).toContain("registry.npmjs.org");
 	});
 });
