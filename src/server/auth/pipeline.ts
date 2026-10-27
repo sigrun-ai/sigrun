@@ -229,14 +229,19 @@ async function resolveProxy(
 	const { proxy, adminGroups } = ctx.config.auth;
 	// A request presenting a Bearer/cookie CREDENTIAL is attempting token
 	// auth (or riding the stage-3 service token), not claiming a proxy
-	// identity: suppress the rejection diagnostic — a denied credential is
-	// the token method's failure, which never logs (spec §3). The pipeline
-	// visits the proxy method FIRST for it (the proxy is a trusted peer
-	// presenting a session without proxy headers — a legitimate client
-	// shape behind forward-auth), and a "missing secret" warn would fire
-	// even when the token then authenticates.
+	// identity: when the token method is ALSO configured, suppress the
+	// rejection diagnostic — a denied credential is the token method's
+	// failure, which never logs (spec §3). The pipeline visits the proxy
+	// method FIRST for such a request (a trusted peer presenting a session
+	// without proxy headers is a legitimate client shape behind
+	// forward-auth), and a "missing secret" warn would fire even when the
+	// token then authenticates. In a PROXY-ONLY deployment the suppression
+	// does not apply: a rejected credential-bearing request there IS a
+	// proxy-method 401 and must log (spec §3 exempts token-auth failures,
+	// and no token method exists).
 	const attemptingToken =
-		bearerOf(request) !== undefined || sessionCookieOf(request) !== undefined;
+		(bearerOf(request) !== undefined || sessionCookieOf(request) !== undefined) &&
+		ctx.methods.includes("token");
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
 		if (!attemptingToken) {
 			warnProxyRejected(request, "untrusted proxy");
@@ -269,8 +274,10 @@ async function resolveProxy(
 	const { users } = ctx.opened.identity;
 	// The invalid-username case (a proxy header that can't be a directory
 	// user) is a loud 403, not a 500: the proxy vouched for an identity
-	// this server can never represent.
+	// this server can never represent. The warn's reason never carries the
+	// claimed value (spec §3: no identity-header values).
 	if (!/^[a-z0-9][a-z0-9._-]*$/.test(user)) {
+		warnProxyRejected(request, "unusable identity claim");
 		return { status: 403, error: "invalid_username" };
 	}
 	const existing = users.get(user);

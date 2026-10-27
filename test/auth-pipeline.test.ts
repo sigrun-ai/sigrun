@@ -1049,9 +1049,11 @@ describe("proxy-auth rejection diagnostics", () => {
 		},
 	};
 	// Values that must NEVER appear in the log line (spec §3's hygiene
-	// rule): tokens, cookies, identity-header values, query strings, the
-	// full URL, and header NAMES other than the configured auth headers
-	// the reason itself names.
+	// rule): tokens, cookies, identity-header VALUES, query strings, and
+	// the full URL. Header NAMES are spec-legal (the reason names the
+	// configured header that was missing/wrong); only VALUES are banned,
+	// so this list deliberately contains no header names — a name needle
+	// could never fail while the configured name is logged.
 	const SENSITIVE = [
 		"s3cret",
 		"alice",
@@ -1059,18 +1061,17 @@ describe("proxy-auth rejection diagnostics", () => {
 		"session=abc",
 		"/v1/auth/whoami?x=1",
 		"x=1",
-		"remote-user",
-		"authorization",
-		"cookie",
+		"wr0ng",
+		"INVALID_USER!",
 	];
 
-	test("a presented credential marks the request as token-attempting (the diagnostic stays silent)", async () => {
+	test("a proxy-only deployment logs exactly one warn for a rejected credential-bearing request", async () => {
+		// SIGRUN_AUTH: "proxy" — NO token method exists, so a Bearer on an
+		// untrusted peer is a proxy-method 401, not a token failure: the
+		// diagnostic MUST fire (spec §3 exempts token-auth failures only).
 		const { app } = await bootServer({ env: SECRET_ENV, file: SECRET_FILE });
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			// An untrusted peer carrying a Bearer: 401 without a proxy warn
-			// (the credential makes this a token attempt, and token failures
-			// never log).
 			const untrustedBearer = await app.inject({
 				method: "GET",
 				url: "/v1/auth/whoami",
@@ -1078,21 +1079,12 @@ describe("proxy-auth rejection diagnostics", () => {
 				headers: { authorization: "Bearer sk-token-value" },
 			});
 			expect(untrustedBearer.statusCode).toBe(401);
-			// A trusted peer missing the secret but carrying a cookie.
-			const cookieOnly = await app.inject({
-				method: "GET",
-				url: "/v1/auth/whoami",
-				remoteAddress: "10.42.3.4",
-				headers: { cookie: "sigrun_session=abc" },
-			});
-			expect(cookieOnly.statusCode).toBe(401);
-			expect(warn).not.toHaveBeenCalled();
-			const lines = warn.mock.calls.map((call) => call.join(" "));
-			for (const line of lines) {
-				for (const forbidden of SENSITIVE) {
-					expect(line).not.toContain(forbidden);
-				}
-			}
+			expect(warn).toHaveBeenCalledTimes(1);
+			const line = warn.mock.calls[0]!.join(" ");
+			expect(line).toContain("203.0.113.7");
+			expect(line).toContain("untrusted proxy");
+			// The presented credential's VALUE never logs.
+			expect(line).not.toContain("sk-token-value");
 		} finally {
 			warn.mockRestore();
 		}
@@ -1139,8 +1131,21 @@ describe("proxy-auth rejection diagnostics", () => {
 				headers: { "x-sigrun-proxy-secret": "s3cret" },
 			});
 			expect(missingIdentity.statusCode).toBe(401);
+			// 5. Trusted peer + secret, an identity claim the directory can
+			// never represent → 403 invalid_username, logged with a
+			// value-free reason.
+			const invalidUsername = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: {
+					"remote-user": "INVALID_USER!",
+					"x-sigrun-proxy-secret": "s3cret",
+				},
+			});
+			expect(invalidUsername.statusCode).toBe(403);
 
-			expect(warn).toHaveBeenCalledTimes(4);
+			expect(warn).toHaveBeenCalledTimes(5);
 			const lines = warn.mock.calls.map((call) => call.join(" "));
 			expect(lines[0]).toContain("203.0.113.7");
 			expect(lines[0]).toContain("untrusted proxy");
@@ -1150,6 +1155,8 @@ describe("proxy-auth rejection diagnostics", () => {
 			expect(lines[2]).toContain("shared secret");
 			expect(lines[3]).toContain("10.42.3.4");
 			expect(lines[3]).toContain("identity header");
+			expect(lines[4]).toContain("10.42.3.4");
+			expect(lines[4]).toContain("unusable identity claim");
 			for (const line of lines) {
 				// The request method and the RESOLVED route template.
 				expect(line).toContain("GET");

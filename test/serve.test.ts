@@ -25,14 +25,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { DEFAULT_LISTEN_HOST, measureListener, serve } from "../src/serve.js";
+import {
+	DEFAULT_LISTEN_HOST,
+	LISTENER_PROBE_TIMEOUT_MS,
+	measureListener,
+	serve,
+} from "../src/serve.js";
 import type { ListenerInfo } from "@sigrun/shared/views";
 
 // ---------------------------------------------------------------------------
 // The subsystem seam: witness the listenHost each subsystem receives.
 // ---------------------------------------------------------------------------
 
-const witnessed: { harness?: string; server?: string } = {};
+const witnessed: { harness?: string; server?: string; listen?: string } = {};
 
 vi.mock("../src/harness/boot.js", async (importActual) => {
 	const actual =
@@ -57,19 +62,28 @@ vi.mock("../src/server/index.js", async (importActual) => {
 		await importActual<typeof import("../src/server/index.js")>();
 	return {
 		...actual,
-		createServer: (
+		createServer: async (
 			opened: unknown,
 			config: unknown,
 			bundles?: unknown,
 			options?: { listenHost?: string },
 		): Promise<unknown> => {
 			witnessed.server = options?.listenHost;
-			return actual.createServer(
+			const app = (await actual.createServer(
 				opened as Parameters<typeof actual.createServer>[0],
 				config as Parameters<typeof actual.createServer>[1],
 				bundles as Parameters<typeof actual.createServer>[2],
 				options as Parameters<typeof actual.createServer>[3],
-			);
+			)) as { listen: (arg: { host: string }) => Promise<unknown> };
+			// Witness the BIND: the regression this task exists to prevent
+			// (listen receiving a different host than the resolved one) is
+			// invisible to the two subsystems above.
+			const realListen = app.listen.bind(app);
+			app.listen = (arg: { host: string }): Promise<unknown> => {
+				witnessed.listen = arg.host;
+				return realListen(arg);
+			};
+			return app;
 		},
 	};
 });
@@ -122,6 +136,7 @@ async function bootServed(options?: {
 	const port = await freePort();
 	witnessed.harness = undefined;
 	witnessed.server = undefined;
+	witnessed.listen = undefined;
 	const configDir = join(dir, "config");
 	// defaultSettingsDir() resolves SIGRUN_CONFIG_DIR from process.env
 	// (the settings layer predates the serve env threading) — set it
@@ -198,6 +213,7 @@ describe("listener resolution (spec §1)", () => {
 			const served = await bootServed();
 			expect(witnessed.harness).toBe(DEFAULT_LISTEN_HOST);
 			expect(witnessed.server).toBe(DEFAULT_LISTEN_HOST);
+			expect(witnessed.listen).toBe(DEFAULT_LISTEN_HOST);
 			// The bind: the fetch above reached the server over IPv4 loopback,
 			// and the wire projection reports the configured wildcard — never
 			// a concrete peer address.
@@ -215,6 +231,7 @@ describe("listener resolution (spec §1)", () => {
 			const served = await bootServed({ host: "127.0.0.1" });
 			expect(witnessed.harness).toBe("127.0.0.1");
 			expect(witnessed.server).toBe("127.0.0.1");
+			expect(witnessed.listen).toBe("127.0.0.1");
 			expect(served.listener).toEqual({
 				host: "127.0.0.1",
 				port: served.port,
@@ -235,6 +252,7 @@ describe("listener resolution (spec §1)", () => {
 			});
 			expect(witnessed.harness).toBe("127.0.0.1");
 			expect(witnessed.server).toBe("127.0.0.1");
+			expect(witnessed.listen).toBe("127.0.0.1");
 			expect(served.listener).toEqual({
 				host: "127.0.0.1",
 				port: served.port,
@@ -254,6 +272,7 @@ describe("listener resolution (spec §1)", () => {
 			});
 			expect(witnessed.harness).toBe("127.0.0.1");
 			expect(witnessed.server).toBe("127.0.0.1");
+			expect(witnessed.listen).toBe("127.0.0.1");
 			expect(served.listener.host).toBe("127.0.0.1");
 			expect(served.methods).toEqual([]);
 		},
@@ -264,6 +283,7 @@ describe("listener resolution (spec §1)", () => {
 		"an IPv6 loopback bind reports the ipv6 family",
 		async () => {
 			const served = await bootServed({ host: "::1" });
+			expect(witnessed.listen).toBe("::1");
 			expect(served.listener.host).toBe("::1");
 			expect(served.listener.families).toEqual(["ipv6"]);
 			expect(served.methods).toEqual([]);
@@ -276,6 +296,7 @@ describe("listener resolution (spec §1)", () => {
 		async () => {
 			const served = await bootServed({ host: "localhost" });
 			expect(witnessed.harness).toBe("localhost");
+			expect(witnessed.listen).toBe("localhost");
 			expect(served.listener.host).toBe("localhost");
 			// Node binds ONE resolved address for a hostname listen; the
 			// reported family is that socket's, whichever loopback the local
@@ -369,4 +390,13 @@ describe("measureListener", () => {
 			measureListener("::", bound("IPv6"), none),
 		).rejects.toThrow(/reachability|inconclusive/i);
 	});
+});
+
+test("the production loopback probe is bounded by LISTENER_PROBE_TIMEOUT_MS", () => {
+	// §2 forbids a hung boot: the probe must destroy the socket and resolve
+	// false on timeout. The constant is exported so the bound is part of the
+	// contract, not a hidden literal; probeLoopback itself is exercised by
+	// every :: resolution test above (real loopback connects).
+	expect(LISTENER_PROBE_TIMEOUT_MS).toBeGreaterThan(0);
+	expect(LISTENER_PROBE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
 });

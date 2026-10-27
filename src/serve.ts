@@ -97,18 +97,26 @@ export interface ServeOptions {
 	readonly host?: string;
 }
 
-/** One loopback probe: whether a TCP connection to `host:port` succeeds. */
+export const LISTENER_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * One loopback probe: whether a TCP connection to `host:port` succeeds.
+ * Bounded by {@link LISTENER_PROBE_TIMEOUT_MS}: a silently dropped
+ * loopback connect resolves `false` (never hangs boot — an inconclusive
+ * measurement must fail loudly, spec §2).
+ */
 function probeLoopback(host: string, port: number): Promise<boolean> {
 	return new Promise((resolve) => {
 		const socket = net.connect({ host, port });
-		socket.once("connect", () => {
+		const settle = (ok: boolean): void => {
+			clearTimeout(timer);
 			socket.destroy();
-			resolve(true);
-		});
-		socket.once("error", () => {
-			socket.destroy();
-			resolve(false);
-		});
+			resolve(ok);
+		};
+		const timer = setTimeout(() => settle(false), LISTENER_PROBE_TIMEOUT_MS);
+		timer.unref();
+		socket.once("connect", () => settle(true));
+		socket.once("error", () => settle(false));
 	});
 }
 
