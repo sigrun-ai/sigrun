@@ -213,7 +213,7 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		// The pins come from publish-deps.mjs's `pins` mode — the single
 		// list every job shares; an inline names array would drift.
 		expect(install).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
-		expect(install).toContain("npm install ${pins} --package-lock-only");
+		expect(install).toContain("npm install --save-exact ${pins} --package-lock-only");
 	});
 
 	test("the chart job rewrites Chart.yaml from the tag and pushes to the OCI registry", () => {
@@ -341,6 +341,53 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		// postpublish wrap around npm publish.
 		expect(runs).toContain("publish-deps.mjs registry");
 		expect(runs).toContain("publish-deps.mjs file");
+	});
+
+	test("core's registry-mode dance keeps the manifest registry-shaped THROUGH npm ci", () => {
+		// Two coupled invariants, both learned from a real dry-run failure
+		// (the step had never executed before the extension publishes
+		// unblocked it):
+		//
+		//  1. `npm ci` requires the manifest and lock to AGREE. Restoring
+		//     file: specifiers before it aborts with EUSAGE ("Missing:
+		//     <name>@<version> from lock file"). The restore belongs in
+		//     postpublish, after the publish — never between the lock regen
+		//     and the ci.
+		//  2. A bare `npm install <name>@<version>` REWRITES the spec to a
+		//     caret range, which would publish `^0.1.1` and fail core's own
+		//     manifest gate. The regen must pin exactly.
+		const { jobs } = releaseWorkflow();
+		const core = (jobs["publish-npm"]?.steps ?? [])
+			.map(runOf)
+			.find(
+				(body) =>
+					body.includes('base="https://registry.npmjs.org/@sigrun/sigrun/-"') &&
+					body.includes("publish-deps.mjs registry"),
+			);
+		expect(core, "the core publish step must exist").toBeDefined();
+		const body = core ?? "";
+		// Anchor on the COMMAND, not the substring: the comment above the
+		// dance names `npm ci` in prose, which would match first.
+		const ci = body
+			.split("\n")
+			.findIndex((line) => line.trim() === "npm ci");
+		const regenLine = body
+			.split("\n")
+			.findIndex((line) => line.trim() === "node scripts/publish-deps.mjs registry");
+		const restoreLine = body
+			.split("\n")
+			.findIndex((line) => line.trim() === "node scripts/publish-deps.mjs file");
+		const restore = restoreLine === -1 ? -1 : restoreLine;
+		expect(regenLine, "the dance must switch to registry mode").toBeGreaterThanOrEqual(0);
+		expect(ci, "the dance must run npm ci").toBeGreaterThanOrEqual(0);
+		expect(regenLine, "registry mode must precede npm ci").toBeLessThan(ci);
+		// No restore between the regen and the ci (the EUSAGE trap).
+		expect(
+			restore === -1 || restore > ci,
+			"the file: restore must NOT run before npm ci (manifest/lock mismatch → EUSAGE)",
+		).toBe(true);
+		// Exact pins: the regen must not let npm widen the spec.
+		expect(body).toContain("npm install --save-exact");
 	});
 
 	test("publish order is leaf-first: sandbox platforms, shared, tui, then core", () => {
@@ -543,7 +590,7 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const install = runs.find((r) => r.includes("npm install") && r.includes("--package-lock-only"));
 		expect(install, "an npm-install step must carry --package-lock-only").toBeDefined();
 		expect(install).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
-		expect(install).toContain("npm install ${pins} --package-lock-only");
+		expect(install).toContain("npm install --save-exact ${pins} --package-lock-only");
 	});
 
 	test("image-build: docker build-push-action loads the local linux/amd64 image", () => {
@@ -590,6 +637,44 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(smoke).toContain("JSON.parse");
 		expect(smoke).toContain("ps -o comm= 1");
 		expect(smoke).toContain('"tini"');
+	});
+
+	test("image smoke: boots as the invoking uid, matching the bind-mount owner", () => {
+		// The smoke `mktemp -d`s a 0700 state dir and bind-mounts it at
+		// /data. A bind mount carries the host owner in verbatim, and on a
+		// GitHub runner that owner is the runner uid (1001) — NOT the
+		// image's default 1000. A container pinned to 1000 therefore cannot
+		// write /data at all and boot dies with EACCES (the failure this
+		// asserts against). Running as the invoking uid is what a rootless
+		// runtime does for sigrun in production (k8s runAsUser + fsGroup,
+		// compose `user:`).
+		const smoke = readFileSync(new URL("../scripts/smoke-image.sh", import.meta.url), "utf8");
+		const boot = smoke.slice(smoke.indexOf("docker run --rm -d"));
+		expect(boot, "the smoke's boot run must pass --user").toContain(
+			'--user "$(id -u):$(id -g)"',
+		);
+	});
+
+	test("entrypoint: sets HOME under the data volume, overridable via SIGRUN_HOME", () => {
+		// Docker derives HOME from the runtime uid's passwd entry, so any
+		// uid the image has no entry for gets "/" — and sigrun's tier-3
+		// store roots are homedir()-relative, so boot would mkdir '/.local'
+		// and die. The entrypoint therefore sets HOME itself, defaulting
+		// onto the data volume and overridable by its OWN knob (never
+		// derived from SIGRUN_CONFIG_DIR/SIGRUN_DATA_DIR, so home and
+		// config can live on separate volumes).
+		const entrypoint = readFileSync(new URL("../docker/entrypoint.sh", import.meta.url), "utf8");
+		expect(entrypoint).toContain('export HOME="${SIGRUN_HOME:-/data/home}"');
+		// The drop must not NEED a passwd entry: --init-groups fails outright
+		// for any uid the image has no entry for, which is exactly the
+		// rootless case the trampoline serves. Assert on the EXEC line (the
+		// comment above it names the rejected flag in prose).
+		const exec = entrypoint
+			.split("\n")
+			.find((line) => line.trimStart().startsWith("exec setpriv"));
+		expect(exec, "the root path must exec setpriv").toBeDefined();
+		expect(exec).toContain("--clear-groups");
+		expect(exec).not.toContain("--init-groups");
 	});
 
 	test("chart-lint: fetches the gitignored vendored dependency, then lint + template", () => {

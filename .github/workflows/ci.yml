@@ -154,7 +154,7 @@ jobs:
         run: |
           node scripts/publish-deps.mjs registry
           pins="$(node scripts/publish-deps.mjs pins)"
-          npm install ${pins} --package-lock-only
+          npm install --save-exact ${pins} --package-lock-only
       - uses: docker/build-push-action@v6
         with:
           context: sigrun

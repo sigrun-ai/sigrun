@@ -37,10 +37,20 @@ if [ "$#" -eq 1 ]; then
 	# token. Poll /healthz, then /v1/meta: every built-in must report an
 	# ok status — a registry-mode build that shipped dangling file:
 	# symlinks quarantines them, and ONLY this check sees it.
+	#
+	# The container runs as the INVOKING uid, not the image's default
+	# 1000: `mktemp -d` below creates a 0700 dir owned by whoever runs
+	# this script (uid 1001 on a GitHub runner), and a bind mount carries
+	# that ownership in verbatim — so a fixed uid 1000 could not write
+	# /data at all. Matching the mount owner is what a rootless runtime
+	# (k8s runAsUser + fsGroup, compose `user:`) does for sigrun in
+	# production; this mirrors it instead of sidestepping it with a
+	# world-writable dir.
 	state="$(mktemp -d)"
 	trap 'rm -rf "$state"' EXIT
 	docker run --rm -d \
 		--name sigrun-smoke \
+		--user "$(id -u):$(id -g)" \
 		-e SIGRUN_DEFAULT_MODEL=openai/gpt-4o \
 		-e SIGRUN_API_TOKEN=sigrun-smoke-token \
 		-e SIGRUN_CONFIG_DIR=/data/config \

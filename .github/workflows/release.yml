@@ -362,10 +362,21 @@ jobs:
           # The registry-mode dance needs the lock's built-ins to be
           # registry-shaped too (a link:-shaped lock keeps the dance's
           # npm ci from materializing the built-ins at build time).
+          # --save-exact: a bare `npm install <name>@<version>` REWRITES
+          # the manifest spec to a caret range, which would both publish
+          # a `^0.1.1` dependency and fail core's own manifest gate
+          # (test/package-manifest.test.ts accepts only an exact version
+          # or the file: dev shape).
+          #
+          # The manifest stays in registry mode THROUGH `npm ci`: `npm ci`
+          # requires the manifest and lock to agree, so restoring file:
+          # specifiers here would abort with EUSAGE ("Missing:
+          # <name>@<version> from lock file"). postpublish restores
+          # file: mode after the publish, which is the only point that
+          # needs it.
           node scripts/publish-deps.mjs registry
           pins="$(node scripts/publish-deps.mjs pins)"
-          npm install ${pins} --package-lock-only
-          node scripts/publish-deps.mjs file
+          npm install --save-exact ${pins} --package-lock-only
           npm ci
           if [ "${DRY}" = "true" ]; then
             case "${CORE_VERSION}" in
@@ -489,7 +500,7 @@ jobs:
         run: |
           node scripts/publish-deps.mjs registry
           pins="$(node scripts/publish-deps.mjs pins)"
-          npm install ${pins} --package-lock-only
+          npm install --save-exact ${pins} --package-lock-only
       - uses: docker/login-action@v3
         if: ${{ needs.guard.outputs.dry != 'true' }}
         with:
