@@ -19,7 +19,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -131,6 +131,8 @@ interface Served {
 async function bootServed(options?: {
 	readonly host?: string;
 	readonly env?: Record<string, string>;
+	/** Pre-existing settings file content (bootstrap never overwrites it). */
+	readonly settingsJson?: string;
 }): Promise<Served> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-serve-listener-"));
 	const port = await freePort();
@@ -138,6 +140,10 @@ async function bootServed(options?: {
 	witnessed.server = undefined;
 	witnessed.listen = undefined;
 	const configDir = join(dir, "config");
+	if (options?.settingsJson !== undefined) {
+		await mkdir(configDir, { recursive: true });
+		await writeFile(join(configDir, "settings.json"), options.settingsJson, { mode: 0o600 });
+	}
 	// defaultSettingsDir() resolves SIGRUN_CONFIG_DIR from process.env
 	// (the settings layer predates the serve env threading) — set it
 	// process-wide for the boot, restored below.
@@ -389,6 +395,28 @@ describe("measureListener", () => {
 		await expect(
 			measureListener("::", bound("IPv6"), none),
 		).rejects.toThrow(/reachability|inconclusive/i);
+	});
+});
+
+describe("extension resolution through serve()", () => {
+	test("an env-declared extension installs and loads over an existing settings file", async () => {
+		// Regression: serve() used to sync only the settings file's
+		// `extensions` list, silently discarding SIGRUN_EXTENSIONS — an
+		// env-declared provider never loaded. The merged config.extensions
+		// (env over file) must reach syncPackages. The file PRE-EXISTS so
+		// the settings bootstrap cannot paper over the env by mirroring it.
+		const fixture = join(
+			import.meta.dirname,
+			"fixtures",
+			"fixture-ext",
+			"index.js",
+		);
+		const served = await bootServed({
+			env: { SIGRUN_EXTENSIONS: fixture },
+			settingsJson: '{"namingModel":false}\n',
+		});
+		const extensions = served.meta.extensions as { name: string; status: string }[];
+		expect(extensions).toContainEqual({ name: "sigrun-fixture-ext", status: "ok" });
 	});
 });
 

@@ -237,10 +237,14 @@ export async function serve(
 	// undeclared BEFORE any extension loads. Fail-loud: an uninstallable
 	// declaration fails the boot here, naming the specifier. Steady state
 	// (the dir already matches) costs one manifest read, no subprocess.
-	const settingsFile = settingsStore.read();
 	const packagesDir = packagesDirOf(defaultSettingsDir());
+	// The MERGED extension list (env SIGRUN_EXTENSIONS over the file — the
+	// same precedence loadConfig applied above), not the file's list alone:
+	// an env-declared extension must install and load even when the file
+	// declares none (e.g. a pre-existing settings file blocks the bootstrap
+	// mirror).
 	const extensionResolutions = await syncPackages(
-		settingsFile.extensions ?? [],
+		config.extensions,
 		packagesDir,
 	);
 	// The workspace directory must exist before any files endpoint or tool

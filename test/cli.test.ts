@@ -654,9 +654,19 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 	test("second user add refuses unavailable isolation with exit 1 and the message", async () => {
 		const dir = await tmpConfigDir();
 		const { errors, io } = captureIo();
-		const env = { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" };
+		// Token auth first: on a host where the sandbox helper is BUILT and
+		// the kernel has Landlock >= 6, isolation is AVAILABLE, so the guard
+		// proceeds to the auth check and would refuse with auth_required
+		// without it. The isolation assertion targets a helperless platform:
+		// probeIsolation reports "not linux" regardless of helper state.
+		const env = { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_AUTH: "token" };
 		expect(await cliMain(["user", "add", "alice", "--admin"], env, undefined, io)).toBe(0);
-		expect(await cliMain(["user", "add", "bob"], env, undefined, io)).toBe(1);
+		const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		try {
+			expect(await cliMain(["user", "add", "bob"], env, undefined, io)).toBe(1);
+		} finally {
+			platformSpy.mockRestore();
+		}
 		expect(errors.join("\n")).toContain("isolation_required");
 		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")).map((user: { user: string }) => user.user)).toEqual(["alice"]);
 	});
