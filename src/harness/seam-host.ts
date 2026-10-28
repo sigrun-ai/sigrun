@@ -130,7 +130,15 @@ export interface SeamHost {
 		status: "skipped" | "expired" | "cancelled",
 		context: Context,
 	): Promise<boolean>;
-	/** Read one interaction record (the poll loop's read). */
+	/** Inspect one record WITHOUT consuming the one-shot secret delivery
+	 *  (the stored projection, masked; safe to repeat). */
+	peekInteraction(
+		conversationId: ConversationId,
+		callId: string,
+		context: Context,
+	): Promise<Readonly<InteractionRecord> | undefined>;
+	/** The owning extension's delivery read (first applicable read merges
+	 *  the raw secrets once; later reads are masked). */
 	snapshotInteraction(
 		conversationId: ConversationId,
 		callId: string,
@@ -394,6 +402,23 @@ export function createSeamHost(
 				sweepSecretDelivery(conversationId, callId);
 				return true;
 			}, context);
+		},
+
+		async peekInteraction(conversationId, callId, context) {
+			// The non-consuming inspection read (release-readiness-2 §1):
+			// the SAME stored projection as snapshotInteraction, with NO
+			// path to takeSecretDelivery — an inspector (the gateway
+			// notifier, outcome edits, answer correlation) can never eat
+			// the owning extension's one-shot raw-secret delivery.
+			const h = await harness(context);
+			const stored = await h.snapshot(
+				InteractionDoc,
+				conversationId,
+				callId,
+				context,
+			);
+			if (stored === undefined) return undefined;
+			return asInteractionRecord(stored);
 		},
 
 		async snapshotInteraction(conversationId, callId, context) {

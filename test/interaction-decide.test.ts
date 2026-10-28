@@ -636,6 +636,92 @@ describe("secret answers (Review Focus 4)", () => {
 		expect(again?.answer?.values).toEqual({ token: MASK, altToken: MASK });
 	});
 
+	test("peek is non-consuming: repeated peeks see the mask, then the owner still gets the secret exactly once", { timeout: 30_000 }, async () => {
+		// Task 4 (release-readiness-2 §1): the early-answer race. A user
+		// answers in the webui BEFORE any inspecting reader (the gateway
+		// notifier) makes its first pass. The inspector peeks masked data;
+		// the OWNING extension's snapshot still receives the raw secret
+		// exactly once, and its second read is masked.
+		const { app, opened } = await bootGateServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT);
+		const host = opened.seamHosts.get("sigrun-fixture-seam");
+		if (host === undefined) throw new Error("fixture-seam host missing");
+		await host.seedInteraction(
+			root.id as never,
+			{
+				kind: "fixture.ask",
+				callId: "peek-race",
+				status: "pending",
+				createdAt: 1,
+				body: secretTree(),
+			},
+			BACKGROUND_CONTEXT,
+		);
+		// A PENDING record peeks as itself (status/metadata visible, no
+		// delivery exists yet to consume or disturb).
+		const pending = await host.peekInteraction(
+			root.id as never,
+			"peek-race",
+			BACKGROUND_CONTEXT,
+		);
+		expect(pending?.status).toBe("pending");
+		expect(pending?.answer).toBeUndefined();
+		// The webui answer lands FIRST (the race's losing-notifier order).
+		const answer = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/interactions/peek-race/answer`,
+			payload: { values: { token: TOKEN, account: "acme" } },
+			headers: { "content-type": "application/json" },
+		});
+		expect(answer.statusCode).toBe(200);
+		// Every inspection sees the MASK, never the value — repeated
+		// peeks are stable (no one-shot consumption).
+		for (let pass = 0; pass < 3; pass += 1) {
+			const peeked = await host.peekInteraction(
+				root.id as never,
+				"peek-race",
+				BACKGROUND_CONTEXT,
+			);
+			expect(peeked?.status).toBe("answered");
+			expect(peeked?.answer?.values).toEqual({ token: MASK, account: "acme" });
+		}
+		// The owning extension's FIRST snapshot still merges the true
+		// values — the peeks did not eat the delivery.
+		const owned = await host.snapshotInteraction(
+			root.id as never,
+			"peek-race",
+			BACKGROUND_CONTEXT,
+		);
+		expect(owned?.answer?.values).toEqual({ token: TOKEN, account: "acme" });
+		// peek → snapshot → snapshot: the owner's second read is masked.
+		const again = await host.snapshotInteraction(
+			root.id as never,
+			"peek-race",
+			BACKGROUND_CONTEXT,
+		);
+		expect(again?.answer?.values).toEqual({ token: MASK, account: "acme" });
+		// And a peek AFTER delivery is the same stored masked record.
+		const after = await host.peekInteraction(
+			root.id as never,
+			"peek-race",
+			BACKGROUND_CONTEXT,
+		);
+		expect(after?.answer?.values).toEqual({ token: MASK, account: "acme" });
+	});
+
+	test("peek returns undefined for an absent record", { timeout: 30_000 }, async () => {
+		const { opened } = await bootGateServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT);
+		const host = opened.seamHosts.get("sigrun-fixture-seam");
+		if (host === undefined) throw new Error("fixture-seam host missing");
+		const missing = await host.peekInteraction(
+			root.id as never,
+			"peek-no-such-record",
+			BACKGROUND_CONTEXT,
+		);
+		expect(missing).toBeUndefined();
+	});
+
 	test("a losing answer leaves the winner's secret delivery intact", { timeout: 30_000 }, async () => {
 		const { app, opened } = await bootGateServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT);

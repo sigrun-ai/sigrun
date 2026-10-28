@@ -298,6 +298,16 @@ async function waitForEvent(
 	}
 }
 
+/** Narrow one recorded event to the settled variant (the union's point). */
+function asSettled(
+	event: NotificationEvent,
+): Extract<NotificationEvent, { type: "run.settled" }> {
+	if (event.type !== "run.settled") {
+		throw new Error(`expected run.settled, got ${event.type}`);
+	}
+	return event;
+}
+
 /** Poll the conversation view until an assistant entry lands. */
 async function waitAssistant(
 	app: FastifyInstance,
@@ -508,9 +518,9 @@ describe("run.settled per notifications.runSettled", () => {
 		server.faux.appendResponses([fauxAssistantMessage("unwatched answer")]);
 		resetNotifierEvents();
 		await submit(server.app, server.bob, conv, "unwatched turn");
-		const settled = await waitForEvent(
+		const settled = asSettled(await waitForEvent(
 			(event) => event.type === "run.settled",
-		);
+		));
 		expect(settled).toEqual({
 			type: "run.settled",
 			conversationId: conv,
@@ -519,6 +529,8 @@ describe("run.settled per notifications.runSettled", () => {
 			title: "Reply ready",
 			body: `Conversation ${conv}`,
 			url: `https://sigrun.example.invalid/#/c/${conv}`,
+			// Task 4: the settled outcome rides the event (answered here).
+			outcome: { status: "answered" },
 		});
 		// Gateway C6: callId rides ONLY interaction.pending — never settle events.
 		expect("callId" in settled).toBe(false);
@@ -645,6 +657,92 @@ describe("job.failed", () => {
 	});
 });
 
+describe("run.settled structured outcome (release-readiness-2 §2)", () => {
+	// Translation of the EXISTING host-event outcome/reason — no second
+	// answer read, no status vocabulary of its own. These inject hub
+	// events directly (the abort/fault paths are not scriptable through
+	// the faux provider) and assert the settled variant's outcome.
+	test("answered runs carry {status:'answered'}", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const conv = await createConversation(server.app, server.bob);
+		resetNotifierEvents();
+		await submit(server.app, server.bob, conv, "answered turn");
+		const settled = asSettled(await waitForEvent(
+			(event) => event.type === "run.settled",
+		));
+		expect(settled.title).toBe("Reply ready");
+		expect(settled.outcome).toEqual({ status: "answered" });
+	});
+
+	test("model-error settles carry {status:'unanswered', reason} verbatim", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const conv = await createConversation(server.app, server.bob);
+		resetNotifierEvents();
+		server.opened.events.publish({
+			type: "run.settled",
+			conversationId: conv,
+			outcome: "unanswered",
+			reason: "model_error: faux provider failure",
+		});
+		const settled = asSettled(await waitForEvent(
+			(event) => event.type === "run.settled",
+		));
+		expect(settled.outcome).toEqual({
+			status: "unanswered",
+			reason: "model_error: faux provider failure",
+		});
+		// A non-answered outcome NEVER titles itself "Reply ready".
+		expect(settled.title).not.toContain("Reply ready");
+	});
+
+	test("abort settles carry the abort reason", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const conv = await createConversation(server.app, server.bob);
+		resetNotifierEvents();
+		server.opened.events.publish({
+			type: "run.settled",
+			conversationId: conv,
+			outcome: "unanswered",
+			reason: "aborted",
+		});
+		const settled = asSettled(await waitForEvent(
+			(event) => event.type === "run.settled",
+		));
+		expect(settled.outcome).toEqual({ status: "unanswered", reason: "aborted" });
+		expect(settled.title).not.toContain("Reply ready");
+	});
+
+	test("a missing answer (no reason on the wire) still carries a truthful string reason", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const conv = await createConversation(server.app, server.bob);
+		resetNotifierEvents();
+		server.opened.events.publish({
+			type: "run.settled",
+			conversationId: conv,
+			outcome: "unanswered",
+		});
+		const settled = asSettled(await waitForEvent(
+			(event) => event.type === "run.settled",
+		));
+		expect(settled.outcome).toEqual({
+			status: "unanswered",
+			reason: "unanswered",
+		});
+		expect(settled.title).not.toContain("Reply ready");
+	});
+
+	test("interaction.pending and job.failed never gain an outcome field", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const conv = await createConversation(server.app, server.bob);
+		resetNotifierEvents();
+		await seedInteraction(server.opened, conv, "no-outcome-field");
+		const pending = await waitForEvent(
+			(event) => event.type === "interaction.pending",
+		);
+		expect("outcome" in pending).toBe(false);
+	});
+});
+
 describe("delivery isolation (best-effort, logged)", () => {
 	test("a throwing notifier is logged; the recorder still receives the event; no unhandled rejection", { timeout: 30_000 }, async () => {
 		const server = await bootServer();
@@ -662,6 +760,9 @@ describe("delivery isolation (best-effort, logged)", () => {
 				(event) =>
 					event.type === "interaction.pending" && event.user === "bob",
 			);
+			if (recorded.type !== "interaction.pending") {
+				throw new Error("expected interaction.pending");
+			}
 			// Gateway C6: the seeded record's callId — exactly, not just present.
 			expect(recorded.callId).toBe("notif-isolation");
 			expect(recorded.body).toBe(`Conversation ${conv}`);

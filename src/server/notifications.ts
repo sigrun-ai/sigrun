@@ -39,7 +39,7 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import { accessOf, type Sharing } from "@sigrun/shared/access";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { JobRunWire, JobWire } from "@sigrun/shared/jobs";
-import type { NotificationEvent, NotifierContribution, SigrunHost } from "../extension.js";
+import type { NotificationEvent, NotifierContribution, RunSettledOutcome, SigrunHost } from "../extension.js";
 import type { ServerContext } from "./context.js";
 import type { HostEventWire } from "./events/types.js";
 import { SessionMetaDoc } from "./session-meta.js";
@@ -69,6 +69,8 @@ interface EventBase {
 	readonly callId: string | undefined;
 	readonly title: string;
 	readonly body: string;
+	/** The settled run's outcome — set on `run.settled` only. */
+	readonly outcome?: RunSettledOutcome;
 }
 
 /** The conversation's display name (spec §9.6): name ?? autoName ?? fallback. */
@@ -118,7 +120,11 @@ export function startNotifications(ctx: ServerContext): () => void {
 				title: base.title,
 				body: base.body,
 				...(url === undefined ? {} : { url }),
-			};
+				// The settled outcome rides ONLY run.settled events — the
+				// other variants never gain the field (the type is the union;
+				// the conditional spread keeps the wire shape exact).
+				...(base.outcome === undefined ? {} : { outcome: base.outcome }),
+			} as NotificationEvent;
 			for (const target of targets) {
 				// Fire-and-forget per transport call: one notifier's failure or
 				// hang neither blocks nor loses the others' deliveries.
@@ -185,6 +191,8 @@ export function startNotifications(ctx: ServerContext): () => void {
 	/** run.settled → the owner, gated by the live `notifications.runSettled` mode. */
 	const handleRunSettled = async (
 		conversationId: number,
+		outcome: "answered" | "unanswered",
+		reason: string | undefined,
 	): Promise<void> => {
 		const mode =
 			opened.settings.read().notifications?.runSettled ?? "unwatched";
@@ -197,14 +205,30 @@ export function startNotifications(ctx: ServerContext): () => void {
 		) {
 			return;
 		}
+		// Translate the EXISTING wire outcome/reason straight across (no
+		// second answer read, no inferred status). An unanswered run never
+		// titles itself "Reply ready": the reason is the run's own, with
+		// the bare status as the fallback for a reason-less settle.
+		const settledOutcome: RunSettledOutcome =
+			outcome === "answered"
+				? { status: "answered" }
+				: { status: "unanswered", reason: reason ?? "unanswered" };
+		const settledReason = reason ?? "unanswered";
 		deliver(
 			{
 				type: "run.settled",
 				conversationId,
 				jobId: undefined,
 				callId: undefined,
-				title: "Reply ready",
-				body: displayName(meta, conversationId),
+				title:
+					outcome === "answered"
+						? "Reply ready"
+						: "Run ended without a reply",
+				body:
+					outcome === "answered"
+						? displayName(meta, conversationId)
+						: `${displayName(meta, conversationId)} — ${settledReason}`,
+				outcome: settledOutcome,
 			},
 			[meta?.owner],
 		);
@@ -248,7 +272,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 			);
 		} else if (event.type === "run.settled") {
 			void bus.runBounded("notifications run.settled", () =>
-				handleRunSettled(event.conversationId),
+				handleRunSettled(event.conversationId, event.outcome, event.reason),
 			);
 		} else if (event.type === "job.changed") {
 			void bus.runBounded("notifications job.changed", () => {

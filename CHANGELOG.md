@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `host.peekInteraction(conversationId, callId, context)`: a
+  non-consuming interaction inspection read beside
+  `snapshotInteraction`. It returns the same stored record projection
+  (secret values stay masked) but NEVER touches the one-shot raw-secret
+  delivery — safe to repeat for notifiers, outcome edits, and answer
+  correlation. `snapshotInteraction` remains the ONLY read that merges
+  and consumes an unread delivery, reserved for the interaction's
+  owning extension; its first-read/second-read semantics are unchanged.
+- `NotificationEvent` is now a discriminated union (shared base plus
+  `interaction.pending` / `job.failed` / `run.settled` variants), and
+  the `run.settled` variant carries a structured
+  `outcome: { status: "answered" } | { status: "unanswered"; reason: string }`
+  translated directly from the host event's existing `outcome`/`reason`
+  (no second answer read, no inferred status). The other variants do
+  not gain the field; exhaustive narrowing on `type` now typechecks.
+
+### Changed
+- Settled-run notifications are truthful: an answered run keeps the
+  `"Reply ready"` title, while an unanswered run (model error, abort,
+  or a missing answer) is titled `"Run ended without a reply"` with the
+  settle reason appended to the body — a failed run no longer
+  masquerades as a ready reply. Recipient, dedup, and
+  `notifications.runSettled` gating are unchanged.
+
+### Added (earlier release-readiness work)
 - `GET /v1/meta` now reports the effective listener: `listener.host`,
   `listener.port`, and `listener.families` — the address families the
   live listener accepts, measured once at listen (the `::` wildcard

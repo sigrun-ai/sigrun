@@ -1048,6 +1048,16 @@ live answer envelope) — and channels and logs never see it (the settled
 event carries no answer values). First answer wins: a second answer gets
 `404 not_pending`.
 
+**Two reads, one rule** (`peekInteraction` / `snapshotInteraction`):
+`snapshotInteraction` is the OWNING extension's delivery read — the
+first applicable read of an answered secret record merges the raw secret
+values back ONCE, and every later read sees the stored mask.
+`peekInteraction` is the inspection read: the same stored projection
+(masked), but it NEVER touches the one-shot delivery — safe to repeat,
+no TTL change, no mutation. If you only inspect a record (a notifier,
+an outcome edit, answer correlation), you MUST peek: a consuming read
+by a non-owner silently destroys the owner's one-shot delivery.
+
 ## Ambient surfaces: persistent read-mostly state as a block tree
 
 An **ambient surface** is the other direction — keyed, persistent,
@@ -1276,38 +1286,48 @@ notifiers: [
 ]
 ```
 
-Core emits one event per **recipient** (`user` is who it is for):
+Core emits one event per **recipient** (`user` is who it is for). The
+event is a discriminated union on `type`; `outcome` rides `run.settled`
+ONLY:
 
 ```ts
-{
-	type: "interaction.pending" | "job.failed" | "run.settled",
+type NotificationEvent = {
 	conversationId?: number,   // the conversation, when one is involved
 	jobId?: string,            // the failed job's id
-	callId?: string,           // the pending record's id — interaction.pending ONLY
 	user: string | undefined,  // the recipient
 	title: string,
 	body: string,
 	url?: string,              // `${server.publicUrl}/#/c/<id>` when set
-}
+} & (
+	| { type: "interaction.pending"; callId?: string }  // the pending record's id
+	| { type: "job.failed" }
+	| { type: "run.settled"; outcome:
+		| { status: "answered" }
+		| { status: "unanswered"; reason: string } }     // the wire reason verbatim
+)
 ```
 
 - **Emitted events.** `interaction.pending` — always (an agent needs a
-  human); it carries the record's `callId` so a notifier can read the
-  record via `ctx.host.snapshotInteraction` (the only type that carries
+  human); it carries the record's `callId` so a notifier can inspect the
+  record via `ctx.host.peekInteraction` (the only type that carries
   it). `job.failed` — always, once per failed run. `run.settled` —
   per the `notifications.runSettled` setting: `"unwatched"` (default)
   only when no client stream is attached to the conversation (the
   away-from-desk case), `"cron"` only for job-run conversations,
   `"always"` every settle, `"never"` none. The setting is live — a
   `settings.json` PATCH reaches the next settle without a restart.
+  Its `outcome` says whether the run answered; an `unanswered` outcome
+  carries the settle reason (model error, abort, …) verbatim.
 - **Recipients.** Each event goes to the resource's owner. For
   `interaction.pending` it also goes to every directory user with
   `write` access — anyone who can answer.
 - **Titles.** `interaction.pending` → `"Sigrun needs you"` with the
   conversation's display name; `job.failed` → `"Job <name> failed"`
   with the run's error; `run.settled` → `"Reply ready"` with the
-  display name. The display name is `name ?? autoName ??
-  "Conversation <id>"`.
+  display name for an ANSWERED run, and `"Run ended without a reply"`
+  (display name plus the reason) for an unanswered one — a failed or
+  aborted run never reads as a ready reply. The display name is
+  `name ?? autoName ?? "Conversation <id>"`.
 - **Delivery is best-effort.** Each `notify` call runs deadline-bounded
   on the event bus's side lane; a throwing or over-deadline notifier is
   logged and isolated — the other notifiers still receive the event —

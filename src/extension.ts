@@ -464,14 +464,16 @@ export interface ExtensionCommandContribution {
 	}): Promise<{ readonly notice?: string } | void>;
 }
 
-/** One notification core delivers to every registered notifier (best-effort). */
-export interface NotificationEvent {
-	readonly type: "interaction.pending" | "job.failed" | "run.settled";
+/** The settled-run outcome: the notification-safe projection of the host
+ *  event's `outcome`/`reason` (status and reason only — no answer text). */
+export type RunSettledOutcome =
+	| { readonly status: "answered" }
+	| { readonly status: "unanswered"; readonly reason: string };
+
+/** Fields shared by every notification variant. */
+interface NotificationEventBase {
 	readonly conversationId?: number;
 	readonly jobId?: string;
-	/** Gateway C6: the pending record's id — set on `interaction.pending` only
-	 *  (read the record via `host.snapshotInteraction`). */
-	readonly callId?: string;
 	/** The recipient. */
 	readonly user: string | undefined;
 	readonly title: string;
@@ -479,6 +481,25 @@ export interface NotificationEvent {
 	/** `${server.publicUrl}/#/c/<conversationId>` when `server.publicUrl` is set; absent otherwise. */
 	readonly url?: string;
 }
+
+/** One notification core delivers to every registered notifier (best-effort). */
+export type NotificationEvent = NotificationEventBase &
+	(
+		| {
+				readonly type: "interaction.pending";
+				/** Gateway C6: the pending record's id — set on `interaction.pending` only
+				 *  (inspect it via `host.peekInteraction`; the OWNING extension's
+				 *  delivery read is `host.snapshotInteraction`). */
+				readonly callId?: string;
+		  }
+		| { readonly type: "job.failed" }
+		| {
+				readonly type: "run.settled";
+				/** Whether the run answered or not (model error, abort, …), with
+				 *  the wire reason verbatim. Never infer success from the body. */
+				readonly outcome: RunSettledOutcome;
+		  }
+	);
 
 /** One notifier transport (ntfy, Signal, web push — core ships none). */
 export interface NotifierContribution {
@@ -950,7 +971,26 @@ export interface SigrunHost {
 		status: "skipped" | "expired" | "cancelled",
 		context: HandlerContext,
 	): Promise<boolean>;
-	/** Read one interaction record (the poll loop's read). */
+	/**
+	 * Inspect one interaction record WITHOUT consuming anything: returns
+	 * the same stored projection as {@link SigrunHost.snapshotInteraction}
+	 * (secret values stay `SECRET_MASK`), but never touches the one-shot
+	 * secret-delivery `take` path. Safe to repeat; neither extends nor
+	 * shortens secret TTL; creates, settles, and mutates nothing. Use for
+	 * inspection/rendering (notifiers, outcome edits, correlation).
+	 */
+	peekInteraction(
+		conversationId: ConversationId,
+		callId: string,
+		context: HandlerContext,
+	): Promise<Readonly<InteractionRecord> | undefined>;
+	/**
+	 * The OWNING extension's delivery read: the first applicable read of
+	 * an answered secret record merges its raw secret values back ONCE;
+	 * subsequent reads see the stored mask. Inspection-only callers must
+	 * use {@link SigrunHost.peekInteraction} instead — a consuming read
+	 * by a non-owner silently destroys the owner's one-shot delivery.
+	 */
 	snapshotInteraction(
 		conversationId: ConversationId,
 		callId: string,
