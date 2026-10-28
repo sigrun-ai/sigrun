@@ -66,7 +66,11 @@ export function registerMeRoutes(
 		const settings = body as Record<string, unknown>;
 		await stores.settings.set(settings);
 		const { slug } = request.params as { slug: string };
-		opened.userServices.settingsChanged(slug, request.principal.user!);
+		ctx.publishSettingsChanged(
+			{ extension: slug },
+			Object.keys(settings),
+			request.principal.user,
+		);
 		const response: ExtensionSettingsResponse = { settings, pendingRestart: [] };
 		return response;
 	});

@@ -30,7 +30,7 @@
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
 		"build:shared": "npm --workspace @sigrun/shared run build",
-		"build": "npm run build:shared && tsc -p tsconfig.build.json && tsc -p tsconfig.extension.json && node -e \"require('node:fs').rmSync('dist/extension.js',{force:true})\"",
+		"build": "npm run build:shared && tsc -p tsconfig.build.json && tsc -p tsconfig.extension.json && node scripts/stamp-block-build.mjs && node -e \"require('node:fs').rmSync('dist/extension.js',{force:true})\"",
 		"build:webui": "npm --workspace @sigrun/webui run build",
 		"typecheck:webui": "npm --workspace @sigrun/webui run typecheck",
 		"test:e2e": "npm run build:webui && npm --workspace @sigrun/webui run test:e2e",

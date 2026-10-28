@@ -699,7 +699,12 @@ type-only consumers declare it a **devDependency** and never a peer.
 Sigrun links its own running package into the packages dir the same way,
 and the loader quarantines an extension whose tree resolves a DIFFERENT
 sigrun — the builders behind `@sigrun/sigrun/blocks` must emit the
-server's block-set version, which only the running copy does. Import the
+server's block-set version, which only the running copy does.
+
+The normal core build ships the matching TypeScript declarations at
+`dist/blocks/**/*.d.ts`, including the `dist/blocks/index.d.ts` named by
+the package export. Type-only consumers therefore use the real built
+package declarations; no ambient block-module shim is needed. Import the
 builders from `@sigrun/sigrun/blocks`:
 
 ```ts check
@@ -2042,7 +2047,12 @@ export function settingsForm(): Tree {
 
 Saving validates every field, writes the settings object, then fires
 `settings.changed` (your `onSettingsChanged(keys)` runs after the write
-commits). The core `pendingRestart` marker described above does not
+commits). Successful writes through either extension settings API publish
+through this same path. A per-user `/v1/me` write carries its caller so
+`onSettingsChanged(keys, user)` reconciles that user, and the committed
+settings are readable during reconciliation. Rejected writes publish
+nothing; repeated successful writes retain their normal notification
+semantics. The core `pendingRestart` marker described above does not
 cover extension fields yet — a saved `restart` value applies at the
 next boot.
 

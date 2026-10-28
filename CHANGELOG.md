@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The normal core build now emits real `dist/blocks/**/*.d.ts`
+  declarations, including the `dist/blocks/index.d.ts` named by the
+  `@sigrun/sigrun/blocks` export. Pack/type-resolution coverage compiles
+  an external consumer against those declarations; extension consumers
+  no longer need an ambient block-module shim.
+
+### Fixed
+- Successful `PUT /v1/me/extensions/:slug/settings` writes now publish
+  through the same post-commit settings-change seam as section saves:
+  one per-user failure-fence clear, one observing-extension reconciliation,
+  and the extension slug plus changed body keys. Invalid, unknown, and
+  otherwise rejected writes publish nothing; repeated successful writes
+  retain the existing notification semantics.
 - `host.peekInteraction(conversationId, callId, context)`: a
   non-consuming interaction inspection read beside
   `snapshotInteraction`. It returns the same stored record projection
