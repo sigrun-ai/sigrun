@@ -2318,8 +2318,9 @@ quarantine cleanup, or a sigrun restart. OAuth token changes in particular
 can wait for the idle stop; extensions must not expect an immediate
 per-user restart call.
 
-The kernel boundary suite has not run yet; CI is its first execution. Do
-not treat service/worker isolation as kernel-verified from unit tests.
+The kernel boundary suite passed 19 unprivileged cases in a local run on
+this host (Linux, Landlock ABI 7); the hosted-CI run is pending. Do not
+treat service/worker isolation as kernel-verified from unit tests alone.
 
 ### Per-user settings sections
 

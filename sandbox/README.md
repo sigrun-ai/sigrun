@@ -92,9 +92,10 @@ which determines its own output and exit status.
 
 ## Kernel boundary verification
 
-The CI boundary job runs the 19 unprivileged cases in
-`test/sandbox-it/boundary.test.ts`. Two cases need more privilege than CI
-grants: the `osUser` success case and the case proving that the same helper's
+A local run on this host (Linux, Landlock ABI 7) passed the 19 unprivileged
+cases in `test/sandbox-it/boundary.test.ts`. The hosted-CI boundary run is
+**pending**; no post-change hosted-CI result is claimed. Two cases need more
+privilege than CI grants: the `osUser` success case and the case proving that the same helper's
 uid/gid switch succeeds outside a jail and fails inside it. They remain
 **UNVERIFIED**. An approved privileged run showed that the current fixture
 cannot pass them: its file-capability target conflicts with the helper's

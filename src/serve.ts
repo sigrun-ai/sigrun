@@ -99,6 +99,9 @@ export interface ServeOptions {
 
 export const LISTENER_PROBE_TIMEOUT_MS = 5_000;
 
+/** Test-only seam for the post-listen failure boundary; production uses the real probe. */
+export const listenerProbe = { connect: probeLoopback };
+
 /**
  * One loopback probe: whether a TCP connection to `host:port` succeeds.
  * Bounded by {@link LISTENER_PROBE_TIMEOUT_MS}: a silently dropped
@@ -155,7 +158,7 @@ export async function measureListener(
 	const port = address.port;
 	const literal = net.isIP(host);
 	if (literal === 4) return { host, port, families: ["ipv4"] };
-	if (literal === 6 && host !== "::") {
+	if (literal === 6 && address.address !== "::") {
 		return { host, port, families: ["ipv6"] };
 	}
 	if (literal === 0) {
@@ -164,7 +167,9 @@ export async function measureListener(
 			address.family === "IPv4" || address.family === 4 ? "ipv4" : "ipv6";
 		return { host, port, families: [family] };
 	}
-	// host === "::": measure, never infer dual-stack from the wildcard.
+	// The BOUND socket identifies the wildcard: Node canonicalizes alternate
+	// spellings such as ::0 to ::. Measure, never infer dual-stack from the
+	// configured spelling.
 	const [v4, v6] = await Promise.all([
 		connect("127.0.0.1", port),
 		connect("::1", port),
@@ -330,35 +335,10 @@ export async function serve(
 					process.exit(1);
 				}),
 	});
-	await app.listen({ port: config.port, host });
-	// Measure the live listener ONCE and retain the facts (spec §2): the
-	// meta route projects this record; no probe ever runs per request. A
-	// failed or inconclusive measurement THROWS here — serving fails
-	// loudly rather than advertising unmeasured reachability.
-	const listener = await measureListener(host, app.server.address());
-	(app.sigrunContext.listener as { families: ListenerInfo["families"] })
-		.families = listener.families;
-	// The engine starts with the listener live (gateway C2's lifecycle:
-	// start after listen — a failed start latches degraded inside the
-	// handle, never wedges boot). AWAITED: serve() resolves only once the
-	// engine start completed (or failed-and-latched) — the constraint's
-	// intent; the lazy `started` never rejects, so this await cannot throw.
-	await gateway.started;
-	// Machine-greppable: the deploy-entry test waits for this line, and an
-	// operator reading pod logs sees the bound port without guessing. The
-	// version rides the same line (what an operator quotes in a bug report).
-	// An IPv6 host is bracketed — the URL form (`http://[::]:3000`), not the
-	// ambiguous `http://:::3000`.
-	const shownHost = host.includes(":") ? `[${host}]` : host;
-	console.log(
-		`sigrun v${SIGRUN_VERSION} listening on http://${shownHost}:${config.port}`,
-	);
-
-	// The ordered shutdown (gateway C2's extraction of the inline original
-	// into src/server/shutdown.ts): SSE streams FIRST, the app drain, the
-	// engine's intake close, the event-bus sequence (drain + flush), the
-	// engine stop, the refresh stop + bounded boot-refresh join, the
-	// harness close — each failure collected, all steps always run.
+	// The ordered shutdown exists before listen so a failed measurement can
+	// run the SAME cleanup as an ordinary stop. In particular, a rejected
+	// serve() must not leave the bound listener or harness keeping the
+	// caller's process alive.
 	const shutdown = createShutdown({
 		endStreams: () => app.sse.endAll(),
 		closeApp: () => app.close(),
@@ -399,6 +379,40 @@ export async function serve(
 		},
 		closeHarness: () => opened.harness.close(BACKGROUND_CONTEXT),
 	});
+
+	await app.listen({ port: config.port, host });
+	// Measure the live listener ONCE and retain the facts (spec §2): the
+	// meta route projects this record; no probe ever runs per request. A
+	// failed or inconclusive measurement closes the listener and harness,
+	// then rethrows — serving fails loudly without stranding live resources.
+	let listener: ListenerInfo;
+	try {
+		listener = await measureListener(host, app.server.address(), listenerProbe.connect);
+	} catch (error) {
+		try {
+			await shutdown();
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "sigrun boot and boot-failure cleanup failed");
+		}
+		throw error;
+	}
+	(app.sigrunContext.listener as { families: ListenerInfo["families"] })
+		.families = listener.families;
+	// The engine starts with the listener live (gateway C2's lifecycle:
+	// start after listen — a failed start latches degraded inside the
+	// handle, never wedges boot). AWAITED: serve() resolves only once the
+	// engine start completed (or failed-and-latched) — the constraint's
+	// intent; the lazy `started` never rejects, so this await cannot throw.
+	await gateway.started;
+	// Machine-greppable: the deploy-entry test waits for this line, and an
+	// operator reading pod logs sees the bound port without guessing. The
+	// version rides the same line (what an operator quotes in a bug report).
+	// An IPv6 host is bracketed — the URL form (`http://[::]:3000`), not the
+	// ambiguous `http://:::3000`.
+	const shownHost = host.includes(":") ? `[${host}]` : host;
+	console.log(
+		`sigrun v${SIGRUN_VERSION} listening on http://${shownHost}:${config.port}`,
+	);
 
 	let stopping: Promise<void> | undefined;
 	const booted: BootedServer = {

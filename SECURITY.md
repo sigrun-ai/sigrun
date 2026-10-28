@@ -59,8 +59,10 @@ before publishing details.
 
 ## Verification limits
 
-The ordinary CI sandbox boundary run passes (**19 unprivileged cases** in
-`test/sandbox-it/boundary.test.ts`). Two cases remain **unverified**: the
+A local run on this host passed **19 unprivileged cases** in
+`test/sandbox-it/boundary.test.ts` (Linux, Landlock ABI 7). The hosted-CI
+boundary run is **pending**; no post-change hosted-CI result is claimed.
+Two cases remain **unverified**: the
 `osUser` success case and the in-jail uid-switch discrimination case. An
 executed privileged run *failed* to verify them — the privileged fixture is
 incompatible with the helper's own `no_new_privs` hardening and with

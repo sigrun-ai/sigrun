@@ -28,6 +28,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	DEFAULT_LISTEN_HOST,
 	LISTENER_PROBE_TIMEOUT_MS,
+	listenerProbe,
 	measureListener,
 	serve,
 } from "../src/serve.js";
@@ -37,22 +38,34 @@ import type { ListenerInfo } from "@sigrun/shared/views";
 // The subsystem seam: witness the listenHost each subsystem receives.
 // ---------------------------------------------------------------------------
 
-const witnessed: { harness?: string; server?: string; listen?: string } = {};
+const witnessed: {
+	harness?: string;
+	server?: string;
+	listen?: string;
+	harnessClosed?: boolean;
+	appClosed?: boolean;
+} = {};
 
 vi.mock("../src/harness/boot.js", async (importActual) => {
 	const actual =
 		await importActual<typeof import("../src/harness/boot.js")>();
 	return {
 		...actual,
-		openHarness: (
+		openHarness: async (
 			config: unknown,
 			options?: { listenHost?: string },
 		): Promise<unknown> => {
 			witnessed.harness = options?.listenHost;
-			return actual.openHarness(
+			const opened = await actual.openHarness(
 				config as Parameters<typeof actual.openHarness>[0],
 				options as Parameters<typeof actual.openHarness>[1],
 			);
+			const close = opened.harness.close.bind(opened.harness);
+			opened.harness.close = async (...args: Parameters<typeof close>) => {
+				witnessed.harnessClosed = true;
+				return await close(...args);
+			};
+			return opened;
 		},
 	};
 });
@@ -74,7 +87,10 @@ vi.mock("../src/server/index.js", async (importActual) => {
 				config as Parameters<typeof actual.createServer>[1],
 				bundles as Parameters<typeof actual.createServer>[2],
 				options as Parameters<typeof actual.createServer>[3],
-			)) as { listen: (arg: { host: string }) => Promise<unknown> };
+			)) as {
+				listen: (arg: { host: string }) => Promise<unknown>;
+				close: () => Promise<unknown>;
+			};
 			// Witness the BIND: the regression this task exists to prevent
 			// (listen receiving a different host than the resolved one) is
 			// invisible to the two subsystems above.
@@ -82,6 +98,11 @@ vi.mock("../src/server/index.js", async (importActual) => {
 			app.listen = (arg: { host: string }): Promise<unknown> => {
 				witnessed.listen = arg.host;
 				return realListen(arg);
+			};
+			const close = app.close.bind(app);
+			app.close = async () => {
+				witnessed.appClosed = true;
+				return await close();
 			};
 			return app;
 		},
@@ -139,6 +160,8 @@ async function bootServed(options?: {
 	witnessed.harness = undefined;
 	witnessed.server = undefined;
 	witnessed.listen = undefined;
+	witnessed.harnessClosed = undefined;
+	witnessed.appClosed = undefined;
 	const configDir = join(dir, "config");
 	if (options?.settingsJson !== undefined) {
 		await mkdir(configDir, { recursive: true });
@@ -353,6 +376,17 @@ describe("measureListener", () => {
 		expect(connect).not.toHaveBeenCalled();
 	});
 
+	test("an alternate wildcard spelling is measured from the bound socket address", async () => {
+		const connect = vi.fn(async () => true);
+		const wildcard = { address: "::", family: "IPv6", port: 4321 };
+		await expect(measureListener("::0", wildcard, connect)).resolves.toEqual({
+			host: "::0",
+			port: 4321,
+			families: ["ipv4", "ipv6"],
+		});
+		expect(connect).toHaveBeenCalledTimes(2);
+	});
+
 	test("a literal IPv6 host is ipv6 without probing", async () => {
 		const connect = vi.fn();
 		const info = await measureListener("::1", bound("IPv6"), connect);
@@ -375,27 +409,74 @@ describe("measureListener", () => {
 
 	test("the :: wildcard retains only the families that connect", async () => {
 		const both = async () => true;
+		const wildcard = { address: "::", family: "IPv6", port: 4321 };
 		await expect(
-			measureListener("::", bound("IPv6"), both),
+			measureListener("::", wildcard, both),
 		).resolves.toEqual({ host: "::", port: 4321, families: ["ipv4", "ipv6"] });
 		// IPv6-only host: the v4 probe fails — a legitimate result, not an
 		// error (spec §2).
 		const onlyV6 = async (host: string) => host === "::1";
 		await expect(
-			measureListener("::", bound("IPv6"), onlyV6),
+			measureListener("::", wildcard, onlyV6),
 		).resolves.toMatchObject({ families: ["ipv6"] });
 		const onlyV4 = async (host: string) => host === "127.0.0.1";
 		await expect(
-			measureListener("::", bound("IPv6"), onlyV4),
+			measureListener("::", wildcard, onlyV4),
 		).resolves.toMatchObject({ families: ["ipv4"] });
 	});
+
+	test("a real ::0 dual-stack listener is measured, not reported ipv6-only", async () => {
+		const served = await bootServed({ host: "::0" });
+		expect(witnessed.listen).toBe("::0");
+		expect(served.listener.host).toBe("::0");
+		expect(served.listener.families).toContain("ipv4");
+		expect(served.listener.families).toContain("ipv6");
+	}, 60_000);
 
 	test("an inconclusive :: probe (neither family connects) fails loudly", async () => {
 		const none = async () => false;
 		await expect(
-			measureListener("::", bound("IPv6"), none),
+			measureListener("::", { address: "::", family: "IPv6", port: 4321 }, none),
 		).rejects.toThrow(/reachability|inconclusive/i);
 	});
+});
+
+describe("serve() boot-failure cleanup", () => {
+	test("an inconclusive measurement closes the listener and harness before rejecting", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-serve-measure-fail-"));
+		const port = await freePort();
+		const configDir = join(dir, "config");
+		const previousConfigDir = process.env.SIGRUN_CONFIG_DIR;
+		process.env.SIGRUN_CONFIG_DIR = configDir;
+		witnessed.harnessClosed = undefined;
+		witnessed.appClosed = undefined;
+		// Force the real post-listen probe to be inconclusive for one boot.
+		// This is the failure boundary itself, not a replacement listener or
+		// harness: the deployed composition boots and binds normally.
+		const realConnect = listenerProbe.connect;
+		listenerProbe.connect = async () => false;
+		try {
+			await expect(serve({
+				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+				OPENAI_API_KEY: "smoke-test-key-never-sent",
+				SIGRUN_API_TOKEN: "sgr_test_env",
+				SIGRUN_PORT: String(port),
+				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+				SIGRUN_WORKSPACE_PATH: join(dir, "workspace"),
+				SIGRUN_DATA_DIR: join(dir, "data"),
+				SIGRUN_CACHE_DIR: join(dir, "cache"),
+				SIGRUN_STATE_DIR: join(dir, "state"),
+			}, { host: "::" })).rejects.toThrow(/inconclusive/);
+			expect(witnessed.appClosed).toBe(true);
+			expect(witnessed.harnessClosed).toBe(true);
+			expect(await canConnect("127.0.0.1", port)).toBe(false);
+		} finally {
+			listenerProbe.connect = realConnect;
+			if (previousConfigDir === undefined) delete process.env.SIGRUN_CONFIG_DIR;
+			else process.env.SIGRUN_CONFIG_DIR = previousConfigDir;
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
 });
 
 describe("extension resolution through serve()", () => {
