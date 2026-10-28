@@ -170,17 +170,19 @@ chmod -R a+rX "$source_dir"
 
 # Create and start are separate so cleanup owns the exact ID returned by a
 # successful create, including a container that only partially starts.
+# SETFCAP only sets the file-capability xattr. Executing the capped helper
+# also requires its granted SETUID/SETGID capabilities in the bounding set.
+# The boundary suite's namespace control uses unshare; Docker's default
+# seccomp profile rejects it. Keep the capability set exactly as above.
+# Keep this continued invocation a pure argument list: a comment inside it
+# terminates the command instead of continuing onto the remaining arguments.
 container_id=$("$runtime" create \
 	--name "$container" \
 	--user 0:0 \
 	--cap-drop ALL \
-	# SETFCAP only sets the file-capability xattr. Executing the capped helper
-	# also requires its granted SETUID/SETGID capabilities in the bounding set.
 	--cap-add SETFCAP \
 	--cap-add SETUID \
 	--cap-add SETGID \
-	# The boundary suite's namespace control uses unshare; Docker's default
-	# seccomp profile rejects it. Keep the capability set exactly as above.
 	--security-opt seccomp=unconfined \
 	--volume "$source_dir:/src:ro" \
 	--entrypoint /bin/sh \
