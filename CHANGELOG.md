@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not gain the field; exhaustive narrowing on `type` now typechecks.
 
 ### Fixed (continued)
+- Restored per-user worker startup by placing the selected device paths
+  under read-only Landlock rules. Their ordinary I/O works, while
+  `/dev/shm` and writes outside workspace/home/tmp remain denied.
 - Preserved composer text and attachments when a slow conversation-meta
   restore resolves after a local edit or clear. The interaction visual
   drain now covers required secrets and multi-step forms, and the visual

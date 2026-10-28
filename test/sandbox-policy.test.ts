@@ -94,6 +94,12 @@ describe("buildUserPolicy", () => {
 				workspace,
 				home,
 				tmp,
+			].sort(),
+		);
+		expect(result.policy.rw).toEqual([...result.policy.rw].sort());
+		expect([...result.policy.ro].sort()).toEqual(
+			[
+				"/dev",
 				"/dev/null",
 				"/dev/zero",
 				"/dev/full",
@@ -101,11 +107,6 @@ describe("buildUserPolicy", () => {
 				"/dev/urandom",
 				"/dev/tty",
 				"/dev/pts",
-			].sort(),
-		);
-		expect(result.policy.rw).toEqual([...result.policy.rw].sort());
-		expect([...result.policy.ro].sort()).toEqual(
-			[
 				"/usr",
 				"/bin",
 				"/sbin",

@@ -292,6 +292,12 @@ export function buildUserPolicy(
 		...grants.flatMap((grant) => (grant.access === "rw" ? [grant.path] : [])),
 		realHome,
 		realTmp,
+		// Device creation belongs to rw, but the selected devices' ordinary
+		// read/write I/O survives a read-only Landlock rule. rw stays empty
+		// except for workspace/home/tmp/grants so /dev/shm remains denied.
+	]);
+	const ro = sortedUnique([
+		"/dev",
 		"/dev/null",
 		"/dev/zero",
 		"/dev/full",
@@ -299,8 +305,6 @@ export function buildUserPolicy(
 		"/dev/urandom",
 		"/dev/tty",
 		"/dev/pts",
-	]);
-	const ro = sortedUnique([
 		"/usr",
 		"/bin",
 		"/sbin",

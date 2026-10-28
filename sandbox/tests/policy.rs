@@ -286,6 +286,42 @@ fn run_refuses_an_abi_below_min_abi_without_executing() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn run_allows_the_device_directory_and_still_denies_other_writes() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sigrun-sandbox"))
+        .args([
+            "run",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf ok > /dev/null && printf denied > /dev/shm/sigrun-denied",
+        ])
+        .env(
+            "SIGRUN_SANDBOX_POLICY",
+            serde_json::to_string(&json!({
+                "ro": ["/bin", "/usr", "/lib", "/lib64", "/etc", "/dev", "/dev/null"],
+                "rw": [],
+                "minAbi": 6
+            }))
+            .expect("policy should serialize"),
+        )
+        .output()
+        .expect("sandboxed command should return");
+
+    assert!(
+        !output.status.success(),
+        "outside-device write must be denied"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Permission denied"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn run_denies_a_file_outside_the_policy() {
     use std::io::Write;
     use std::process::Command;
