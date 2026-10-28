@@ -834,6 +834,11 @@ default. They join the offered set when an enabled MCP server's
 The MCP servers themselves live in the MCP config file — the
 `@sigrun/ext-mcp` package's README documents its format, including each
 server's `exposure` and the `SIGRUN_MCP_CONFIG` override.
+**User-supplied MCP servers are remote-only in 0.2** (URL transport);
+a user-supplied stdio server fails loudly with a config error. Dynamic
+jailed per-user stdio services are a post-release feature — per-user
+services are declared statically by extensions (see
+docs/extending.md).
 
 ```jsonc
 {

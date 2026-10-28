@@ -572,10 +572,12 @@ The `@sigrun/oauth` package implements this contract for OIDC and OAuth 2.
 It is the fourth built-in extension: bundled and loaded by default.
 `builtinExtensions.oauth: false` disables it (restart-required), and a
 configured extension with the same package name replaces it. An unresolvable
-or failed built-in is quarantined rather than aborting boot. The package can
-still be installed separately for a deployment that wants it without the
-built-in. See [Authentication](README.md#authentication) for its operator
-configuration.
+or failed built-in is quarantined rather than aborting boot. The package
+uses core **type-only** (its `@sigrun/sigrun` dependency is a devDependency
+for the contract types, never a runtime peer); standalone installation
+outside the built-in is not a supported use case in 0.2, and that
+dependency posture is accepted for this release. See
+[Authentication](README.md#authentication) for its operator configuration.
 
 ## Secrets precedence: stored wins, env bootstraps
 
@@ -1340,6 +1342,10 @@ type NotificationEvent = {
   concern).
 - A malformed declaration (missing name, non-function `notify`)
   quarantines the extension at load.
+- **`notify.home` gates notices only.** The gateway's `notify.home`
+  setting suppresses home-DM notification delivery; it never gates
+  interaction answer prompts — an `interaction.pending` still reaches
+  every surface and user who can answer regardless of the setting.
 
 ## Channel adapters
 
@@ -2242,6 +2248,12 @@ Selecting an entry never grants its tools.
 
 ### Per-user services
 
+Per-user services are declared STATICALLY at load, by extensions. In 0.2
+there is no dynamic per-user stdio launch path: user-supplied MCP servers
+are remote-only (URL transport), and a user-supplied stdio server fails
+loudly with a config error because the host passes no server name to
+`start`. Dynamic jailed user services are a post-release feature.
+
 Declare long-lived per-user processes with `userServices`. Each declaration
 has a `name`, an optional positive `idleMinutes` (default 10; zero,
 negative, non-finite, and non-number values quarantine the extension), and
@@ -2298,6 +2310,13 @@ self-service settings PUT performs it); a sigrun restart also clears the
 process-local crash history. Core stops a user's services on user deletion,
 stops an extension's services when it is quarantined, and stops all services
 during shutdown.
+
+There is **no `host.services.restart`** in 0.2: a credential or
+configuration change that a running service already consumed takes effect
+when the service next starts — after its idle stop, its user's deletion or
+quarantine cleanup, or a sigrun restart. OAuth token changes in particular
+can wait for the idle stop; extensions must not expect an immediate
+per-user restart call.
 
 The kernel boundary suite has not run yet; CI is its first execution. Do
 not treat service/worker isolation as kernel-verified from unit tests.

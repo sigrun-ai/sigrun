@@ -118,11 +118,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal-content ruling.
 - Images (U7): an HMAC-signed proxy, a rebinding-safe fetcher, an LRU cache
   with `sharp` conversion, and CSP headers.
-- Core settings sections rebuilt on blocks (U4): one settings renderer for
-  webui and TUI, extension-declared sections, a `/v1/settings` sections
-  route, `pendingRestart` with an admin restart route, live/restart
-  metadata for every core key, label search, and
-  `settings.changed`/`onSettingsChanged`.
 
 ### Changed
 - Family versions move together to 0.2.0: `@sigrun/shared` 0.2.0
@@ -151,6 +146,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinguish Landlock denials from Yama or missing-capability conditions.
 
 ## [0.1.7] - 2026-10-24
+
+*Correction (2026-10-28): the original entry omitted substantial scope
+that shipped in this release — the U4 settings rebuild, the M3a
+account-link store and routes, and the accompanying `@sigrun/shared` /
+`@sigrun/tui` settings-surface work. Those entries are restored below;
+the Service-migration claim is also corrected (adding a secondary
+family while retaining the primary is an in-place patch, not a
+recreate).*
+
+### Added
+- Core settings sections rebuilt on blocks (U4): one settings renderer
+  for webui and TUI, extension-declared sections, a `/v1/settings`
+  sections route, `pendingRestart` with an admin restart route,
+  live/restart metadata for every core key, label search, and
+  `settings.changed`/`onSettingsChanged`. The shared and TUI packages
+  carry the matching settings-surface and settings-form work (live
+  surface revs, default-on toggle handling, roster-driven tool
+  defaults, walk-based search).
+- Account links (multi-user M3a): the core account-link store plus
+  routes to list and remove an account's linked external identities.
+
 ### Fixed
 - The deploy entry binds the dual-stack wildcard (`::`) instead of the
   IPv4-only `0.0.0.0`. On a dual-stack pod whose Service is IPv6-only
@@ -167,8 +183,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - The chart's main Service is `PreferDualStack` over `[IPv6, IPv4]`,
   so it advertises both pod addresses regardless of the cluster's
-  default family. Converting an existing `SingleStack` Service is a
-  recreate (`spec.clusterIPs` is immutable).
+  default family. Adding a secondary family while retaining the
+  primary is an in-place patch (`spec.ipFamilies` gains the new
+  family); only changing the PRIMARY family requires recreation
+  (`spec.clusterIPs` is immutable). *Corrected 2026-10-28: the
+  original entry claimed every conversion is a recreate.*
 - `sigrun run` (workstation mode) still binds `127.0.0.1` only.
 
 ## [0.1.6] - 2026-10-24
