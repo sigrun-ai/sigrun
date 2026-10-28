@@ -139,7 +139,11 @@ export class ImageCache {
 		entry.pins += 1;
 		await this.persist();
 		const stream = createReadStream(file);
+		let unpinned = false;
 		const unpin = (): void => {
+			// Node emits close after error: one hit releases one pin.
+			if (unpinned) return;
+			unpinned = true;
 			entry.pins -= 1;
 		};
 		stream.once("close", unpin);

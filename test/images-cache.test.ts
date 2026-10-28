@@ -105,6 +105,33 @@ describe("image cache", () => {
 		expect(await cache.get("https://img.acme.example/c.png", "orig", 8)).toBeDefined();
 	});
 
+	test("a stream error releases its pin exactly once while another hit stays pinned", async () => {
+		const { cache } = await makeCache(10);
+		await cache.put("https://img.acme.example/a.png", "orig", "png", Buffer.from("aaaa"), 1);
+		await cache.put("https://img.acme.example/b.png", "orig", "png", Buffer.from("bbbb"), 2);
+		const broken = await cache.get("https://img.acme.example/a.png", "orig", 3);
+		const held = await cache.get("https://img.acme.example/a.png", "orig", 4);
+		expect(broken).toBeDefined();
+		expect(held).toBeDefined();
+		// Node emits close after error. Only ONE of those events may
+		// release this hit's pin; the other hit must keep a pinned.
+		await new Promise<void>((resolve) => {
+			broken!.stream.once("error", () => {});
+			broken!.stream.once("close", resolve);
+			broken!.stream.destroy(new Error("injected stream failure"));
+		});
+		// Make a the LRU victim. Its remaining held hit must keep it
+		// pinned, so eviction takes b instead.
+		const hitB = await cache.get("https://img.acme.example/b.png", "orig", 5);
+		if (hitB !== undefined) for await (const _ of hitB.stream) void _;
+		await cache.put("https://img.acme.example/c.png", "orig", "png", Buffer.from("cccc"), 6);
+		expect(await cache.get("https://img.acme.example/a.png", "orig", 7)).toBeDefined();
+		expect(await cache.get("https://img.acme.example/b.png", "orig", 8)).toBeUndefined();
+		const chunks: Buffer[] = [];
+		for await (const chunk of held!.stream) chunks.push(chunk as Buffer);
+		expect(Buffer.concat(chunks).toString()).toBe("aaaa");
+	});
+
 	test("Review Focus 5: an entry being streamed is never evicted", async () => {
 		const { cache } = await makeCache(10);
 		// a is held mid-stream when c arrives; eviction must skip the

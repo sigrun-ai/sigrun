@@ -36,18 +36,35 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { createServer } from "../src/server/index.js";
 import { signUrl } from "../src/server/images/sign.js";
 import { seededIdentity } from "./helpers/identity.js";
 
+// The write-time test advances the controlled clock while the real
+// conversion is delayed; all other calls pass through unchanged.
+vi.mock("../src/server/images/convert.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/server/images/convert.js")>();
+	return {
+		...actual,
+		toPng: async (...args: Parameters<typeof actual.toPng>) => {
+			if (advanceDuringConversion) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				controlledNow += 2000;
+			}
+			return await actual.toPng(...args);
+		},
+	};
+});
+
 /** The public host the resolver maps onto the local TLS server. */
 const UPSTREAM_HOST = "img.example.invalid";
 
 /** The cache/fetch clock, advanced explicitly by freshness tests. */
 let controlledNow = Date.now();
+let advanceDuringConversion = false;
 
 const ASSETS_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-surfaces-assets", "index.js"),
@@ -488,6 +505,30 @@ describe("GET /v1/image (the signed form)", () => {
 		expect(refused.status).toBe(502);
 		expect((await refused.json()).error).toBe("bad-type");
 		expect(upstream.requests).toHaveLength(2);
+	});
+
+	test("a slow fetch stamps addedAt at write time, not request start", async () => {
+		const upstream = await startUpstream();
+		cleanups.push(upstream.close);
+		const server = await bootServer(upstream);
+		upstream.setBody(await jpegBytes(), "image/jpeg", 1);
+		const signed = server.sign(upstream.url);
+		const before = controlledNow;
+		advanceDuringConversion = true;
+		let response: Response;
+		try {
+			response = await get(server, `${signed}&as=png`, server.aliceToken);
+		} finally {
+			advanceDuringConversion = false;
+		}
+		expect(response.status).toBe(200);
+		const index = JSON.parse(
+			await readFile(join(server.cacheDir, "images", "index.json"), "utf8"),
+		) as { entries: Record<string, { addedAt: number }> };
+		const entries = Object.entries(index.entries);
+		expect(entries).toHaveLength(2);
+		const png = entries.find(([key]) => key.endsWith(".png"))?.[1];
+		expect(png?.addedAt).toBe(before + 2000);
 	});
 
 	test("?as=png converts a JPEG to PNG and caches the converted variant beside the original", async () => {

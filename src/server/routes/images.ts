@@ -161,10 +161,10 @@ export function registerImageRoutes(app: FastifyInstance, ctx: ServerContext): v
 			// BOTH variants (the conversion reads the fetched bytes). The
 			// clamped hint is BOTH the response header and the cache TTL.
 			const maxAge = clampedMaxAge(fetched.maxAge);
-			await cache.put(u, "orig", fetched.type, fetched.bytes, now, maxAge);
+			await cache.put(u, "orig", fetched.type, fetched.bytes, deps.now(), maxAge);
 			if (variant === "png") {
 				const converted = await toPng(fetched.bytes);
-				await cache.put(u, "png", "png", converted, now, maxAge);
+				await cache.put(u, "png", "png", converted, deps.now(), maxAge);
 				return {
 					bytes: converted,
 					type: "png",
