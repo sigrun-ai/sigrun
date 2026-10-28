@@ -152,11 +152,9 @@ runtime executable (default `docker`); Docker's usual `DOCKER_HOST` selects the
 target daemon. The runner needs network access for `npm ci`, Linux with
 Landlock ABI 6 or newer, and support for unprivileged user and PID namespaces.
 
-The run emits the kernel release, Landlock ABI, and per-case results. With the
-current fixture, both privileged cases are expected to **FAIL** for the reasons
-recorded in the 2026-10-27 release verification evidence. A green result
-requires the fixture redesign. The script does not tolerate those failures: it
-exits non-zero if either privileged case fails, if the ordinary suite
-regresses, or if the ABI is too old. A trap removes the container and temporary
-source archive on success or failure. Running the script is an operator action;
-the dry run is not evidence that either privileged case passed.
+The run emits the kernel release, Landlock ABI, and per-case results. The
+script exits non-zero if either privileged case fails or skips, if the ordinary
+suite regresses, or if the ABI is too old. A trap removes the container and
+temporary source archive on success or failure. Running the script is an
+operator action; the dry run is not evidence that either privileged case
+passed.

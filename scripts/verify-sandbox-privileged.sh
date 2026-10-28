@@ -24,10 +24,8 @@ container with every capability dropped except SETFCAP, SETUID, and SETGID,
 execute the two privileged cases and the ordinary regression suite, and remove
 the container and temporary source archive on every exit.
 
-CURRENT LIMITATION: the two privileged cases are expected to FAIL with the
-existing fixture, as recorded in the 2026-10-27 release verification evidence.
-A green result requires the fixture redesign; this script never tolerates or
-hides those failures and exits non-zero when either case fails.
+Both privileged cases must pass, followed by the ordinary regression suite.
+Any failure or unexpected skip is fatal.
 EOF
 }
 
@@ -87,9 +85,7 @@ Privileged sandbox verification plan (dry run; nothing was created or started):
   phase 2: privileged opt-in unset; require all ordinary cases to pass and those two cases to skip
   evidence: kernel release, Landlock ABI, and per-case JSON-reported results
   cleanup: remove the container and temporary source archive on success or failure
-CURRENT LIMITATION: the two privileged cases are expected to FAIL with the
-existing fixture (see the 2026-10-27 release verification evidence). A green
-result requires the fixture redesign; failures are never tolerated.
+Both privileged cases must pass; failures and unexpected skips are fatal.
 No privileged workload is run without --run.
 EOF
 }
@@ -207,7 +203,7 @@ done
 	exit 1
 }
 printf 'VERIFY core %s\n' "$revision"
-printf 'LIMITATION current fixture is expected to fail both privileged cases; a green result requires the fixture redesign recorded in the 2026-10-27 release evidence\n'
+printf 'REQUIRE both privileged cases pass; failures and unexpected skips are fatal\n'
 printf 'KERNEL %s\n' "$(uname -srmo)"
 mkdir -p sandbox/target/release
 cp /usr/local/lib/sigrun/sigrun-sandbox sandbox/target/release/sigrun-sandbox
