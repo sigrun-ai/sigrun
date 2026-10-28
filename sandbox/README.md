@@ -98,9 +98,9 @@ cases in `test/sandbox-it/boundary.test.ts`. The hosted-CI boundary run is
 privilege than CI grants: the `osUser` success case and the case proving that the same helper's
 uid/gid switch succeeds outside a jail and fails inside it. They remain
 **UNVERIFIED**. An approved privileged run showed that the current fixture
-cannot pass them: its file-capability target conflicts with the helper's
-`no_new_privs` hardening, its temporary-directory permissions prevent traversal,
-and its `osUser` policy nests protected roots. Verification therefore needs
+cannot pass them: its temporary-directory permissions (`mkdtemp` is mode
+0700) prevent the jailed uid from traversing to the target, and its `osUser`
+policy nests protected roots. Verification therefore needs
 both a privileged runner and a fixture redesign; a runner alone cannot settle
 these claims.
 

@@ -65,8 +65,8 @@ boundary run is **pending**; no post-change hosted-CI result is claimed.
 Two cases remain **unverified**: the
 `osUser` success case and the in-jail uid-switch discrimination case. An
 executed privileged run *failed* to verify them — the privileged fixture is
-incompatible with the helper's own `no_new_privs` hardening and with
-`mkdtemp` permissions — so verifying them needs both a privileged runner
-**and** a fixture redesign. These cases are neither operator-verified nor
+incompatible with `mkdtemp` permissions and with the `osUser` policy's root
+nesting — so verifying them needs both a privileged runner **and** a fixture
+redesign. These cases are neither operator-verified nor
 CI-verified; see [`sandbox/README.md`](sandbox/README.md) for the boundary
 suite and runner details rather than this policy duplicating case specifics.
