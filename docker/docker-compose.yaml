@@ -29,8 +29,11 @@ services:
     # by your uid; a NON-ROOT override keeps working the same way. Setting
     # SIGRUN_UID=0 (root start: the entrypoint chowns the mount points
     # then drops via setpriv) does NOT work with cap_drop ALL below — the
-    # trampoline needs CAP_CHOWN/CAP_SETUID/CAP_SETGID, so a root start
-    # means re-adding those caps yourself.
+    # trampoline needs CAP_CHOWN to chown the mount points and
+    # CAP_SETUID/CAP_SETGID for the setpriv drop, so a root start means
+    # re-adding those three yourself. Note this is NOT an osUsers enabler:
+    # one container still has one uid afterwards, so a root start buys
+    # mount-point ownership, not per-user isolation.
     user: "${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}"
     # PID 1 reaping and signal forwarding are owned by the image's tini
     # ENTRYPOINT. The server spawns child processes (git, npm, agent
@@ -40,7 +43,14 @@ services:
     # No `init: true` here: the image provides exactly one init process.
     # Least privilege (spec §6): the server needs no Linux
     # capabilities, and nothing it starts may gain any (no-new-privileges
-    # also blocks setuid binaries inside the image).
+    # also blocks setuid binaries inside the image). Verified: with
+    # no-new-privileges on, a non-root process exec'ing a
+    # file-capability-carrying helper fails at the first privileged call
+    # ("cannot set supplementary groups: EPERM"), even when SETUID/SETGID
+    # are in the bounding set — so osUsers-style uid switching is
+    # excluded here by construction, not by omission. This does NOT
+    # affect the entrypoint's setpriv drop in a root start: that drops
+    # privileges rather than gaining them, and works unchanged.)
     cap_drop:
       - ALL
     security_opt:

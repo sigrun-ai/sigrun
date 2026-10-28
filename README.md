@@ -574,8 +574,23 @@ identity-switch capabilities once (replace `<helper>` with its path):
 sudo setcap cap_setuid,cap_setgid+ep <helper>
 ```
 
-The helper's boot self-test verifies the switch. This mapping is unavailable
-in containers, whose entrypoint drops every capability.
+The helper's boot self-test verifies the switch.
+
+File capabilities only take effect when the capabilities they grant are
+already in the **caller's** bounding set: executing the capped helper needs
+`CAP_SETUID` and `CAP_SETGID` present in the process that launches it —
+`CAP_SETFCAP` alone only permits writing the xattr and is not enough. A root
+shell, or a host that runs sigrun as root and maps users to real OS accounts,
+normally satisfies this.
+
+This mapping is bare-metal only. The container entrypoint starts as the image's
+non-root `USER` and execs straight through (one uid for the whole container), so
+it holds no identity-switch capabilities to inherit — containers use the
+Landlock jail alone, which is where container multi-user isolation comes from.
+A root container start (`SIGRUN_UID=0`) does exist, but it is a mount-point
+ownership trampoline, not an `osUsers` enabler: it needs
+`CAP_CHOWN`/`CAP_SETUID`/`CAP_SETGID` for the chown-and-drop and still leaves
+you with a single container uid.
 
 ### Kernel integration runner controls
 

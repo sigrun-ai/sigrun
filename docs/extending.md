@@ -2153,8 +2153,11 @@ For kernel-suite provenance, `/proc` and ptrace denials are compared with
 the same operation outside a jail. When the outside operation also fails
 (for example under Yama), CI labels the case Yama/host-policy satisfied and
 not Landlock-discriminating. Successful `osUser` switching and the uid-switch
-discrimination need a privileged runner with `CAP_SETFCAP` and
-`SIGRUN_SANDBOX_IT_PRIVILEGED=1`; otherwise they skip with a named reason.
+discrimination need a privileged runner with `SIGRUN_SANDBOX_IT_PRIVILEGED=1`
+**plus** `CAP_SETFCAP` (to set the helper's file-capability xattr) and
+`CAP_SETUID`/`CAP_SETGID` (which must be in the caller's bounding set, or
+`execve` of the capped helper fails with `EPERM`); otherwise they skip with a
+named reason.
 
 The per-user APIs below are additive. They do not replace the shared stores
 or make an extension's in-process code untrusted.
