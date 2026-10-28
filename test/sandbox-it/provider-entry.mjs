@@ -10,16 +10,26 @@ function userText(context) {
 	return input?.content.filter((part) => part.type === "text").map((part) => part.text).join("") ?? "";
 }
 
-faux.setResponses([
-	(context) => {
-		const script = JSON.parse(userText(context));
-		return fauxAssistantMessage(
-			script.calls.map((call) => fauxToolCall(call.name, call.args, { id: call.id })),
-			{ stopReason: "toolUse" },
-		);
-	},
-	fauxAssistantMessage("boundary turn complete"),
-]);
+// The queue is process-wide while conversations are per-conversation:
+// each conversation's tool round shifts TWO entries (tool call, final
+// text), so the provider re-arms itself after every scripted answer.
+const scriptedToolCall = (context) => {
+	const script = JSON.parse(userText(context));
+	return fauxAssistantMessage(
+		script.calls.map((call) => fauxToolCall(call.name, call.args, { id: call.id })),
+		{ stopReason: "toolUse" },
+	);
+};
+const rearm = () => {
+	faux.appendResponses([
+		scriptedToolCall,
+		(context) => {
+			rearm();
+			return fauxAssistantMessage("boundary turn complete");
+		},
+	]);
+};
+rearm();
 
 export default function createBoundaryProvider() {
 	return { name: "boundary-faux", providers: [{ provider: faux.provider }] };

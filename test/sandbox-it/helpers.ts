@@ -69,7 +69,9 @@ catch (error) { console.log("KILL_ERRNO:" + (error && error.code || "UNKNOWN"));
 `;
 export const WORKER_PID_PROBE = `
 // pi-durable exec uses a detached direct shell, so this Node process's
-// parent is the actual worker, not an intermediate shell.
+// parent is the actual worker, not an intermediate shell. The probe
+// records the worker's pid AS THE JAIL SEES IT (the pid-namespace view);
+// the host view is resolved from it via hostPidForNsPid on the outside.
 require("node:fs").writeFileSync(process.argv[1], String(process.ppid));
 console.log("WORKER_PID:" + process.ppid);
 `;
@@ -189,6 +191,7 @@ export async function directWorker(root: string, idleMinutes = 10): Promise<Dire
 	return { pool, client, env, policy: built.policy };
 }
 
+/** The worker's pid AS THE WORKER'S OWN NAMESPACE SEES IT (the probe file). */
 export async function captureWorkerPid(env: DirectWorker["env"], path: string): Promise<number> {
 	let output = "";
 	const result = await env.exec(nodeProbe(WORKER_PID_PROBE, path), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
@@ -217,6 +220,7 @@ function toolResults(view: ConversationView): ToolResult[] {
 	);
 }
 
+
 export interface Deployment {
 	readonly root: string;
 	readonly configDir: string;
@@ -227,7 +231,10 @@ export interface Deployment {
 	readonly aliceWorkspace: string;
 	readonly bobWorkspace: string;
 	readonly baseUrl: string;
+	/** The server's pid as seen INSIDE the jail (in-jail /proc targets). */
 	readonly namespacePid: number;
+	/** The server's pid on the HOST (outside controls, stop, identity). */
+	readonly hostPid: number;
 	readonly wrapperPid: number;
 	readonly aliceToken: string;
 	readonly bobToken: string;
@@ -299,24 +306,87 @@ export async function bootDeployment(options?: { root?: string; storagePath?: st
 	const logs = () => output, baseUrl = `http://127.0.0.1:${port}`;
 	try {
 		await waitForHealth(baseUrl, child, logs);
-		const serverPid = Number((await readFile(pidFile, "utf8")).trim());
-		expect(Number.isInteger(serverPid) && serverPid > 0, `invalid server pid in ${pidFile}`).toBe(true);
-		const stop = async (): Promise<void> => {
-			if (child.exitCode === null && child.signalCode === null) {
-				child.kill("SIGTERM");
-				const deadline = Date.now() + 20_000;
-				while (child.exitCode === null && child.signalCode === null && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-			}
-			if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); throw new Error(`sigrun did not stop\n${logs()}`); }
+		const namespacePid = Number((await readFile(pidFile, "utf8")).trim());
+		expect(Number.isInteger(namespacePid) && namespacePid > 0, `invalid server pid in ${pidFile}`).toBe(true);
+		// The pid file records the server's pid INSIDE the disposable PID
+		// namespace. Host-side procfs/ptrace controls and the stop path need
+		// the HOST pid: the unshare wrapper's direct child.
+		const hostPid = await hostPidOf(child);
+		const serverPid = hostPid;
+		const alive = (pid: number): boolean => {
+			try { process.kill(pid, 0); return true; } catch { return false; }
 		};
-		// serverPid is read from the server entry's own pid file, not the
-		// unshare wrapper. namespacePid is used only for the safe nsenter
-		// pkill control.
-		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid: 1, wrapperPid: child.pid!, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: serverPid, logs, stop };
+		const stop = async (): Promise<void> => {
+			// Signal the SERVER process directly: the unshare wrapper does not
+			// reliably forward a TERM to its grandchild (tsx's module thread),
+			// so killing only the wrapper can wedge the stop path while the
+			// server keeps listening.
+			if (alive(serverPid)) {
+				try { process.kill(serverPid, "SIGTERM"); } catch { /* already gone */ }
+			}
+			const deadline = Date.now() + 20_000;
+			while (Date.now() < deadline && (alive(serverPid) || (child.exitCode === null && child.signalCode === null))) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			if (alive(serverPid)) {
+				try { process.kill(serverPid, "SIGKILL"); } catch { /* already gone */ }
+			}
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			if (alive(serverPid)) throw new Error(`sigrun did not stop\n${logs()}`);
+		};
+		// pid is the namespace pid (in-jail /proc targets); hostPid is the
+		// host pid (outside controls, identity, stop). namespacePid is also
+		// used for the safe nsenter pkill control.
+		return { root, configDir, dataDir, stateDir, cacheDir, dbPath: options?.storagePath ?? join(dataDir, "sigrun.db"), aliceWorkspace, bobWorkspace, baseUrl, namespacePid, hostPid, wrapperPid: child.pid!, aliceToken: tokens.aliceToken, bobToken: tokens.bobToken, pid: namespacePid, logs, stop };
 	} catch (error) {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		throw error;
 	}
+}
+
+/**
+ * The server's pid on the HOST: the unshare wrapper's direct child, proven
+ * to be the same process by reading the recorded namespace pid from inside
+ * its namespace (nsenter -t <candidate> -p cat <pidFile> must return 1).
+ */
+/**
+ * Host pid for a pid-namespace pid: sweep every process and pick the one
+ * whose /proc/<host>/status NSpid trail ENDS at the namespace pid. The
+ * trail must have at least two entries, which excludes the host's own
+ * low-pid noise (WSL init reports a single-column NSpid). The wrapper
+ * argument pins the deployment this lookup belongs to for the error.
+ */
+export async function hostPidForNsPid(wrapperPid: number, nsPid: number): Promise<number> {
+	const listing = await execFileAsync("ps", ["-eo", "pid="], { encoding: "utf8", timeout: 10_000 });
+	for (const line of listing.stdout.split("\n")) {
+		const hostPid = Number(line.trim());
+		if (!Number.isInteger(hostPid) || hostPid <= 0) continue;
+		let status: string;
+		try {
+			status = await readFile(`/proc/${hostPid}/status`, "utf8");
+		} catch {
+			continue;
+		}
+		const match = /^NSpid:\s*(.+)$/m.exec(status);
+		if (match === null) continue;
+		const trail = match[1]!.trim().split(/\s+/).map(Number);
+		if (trail.length >= 2 && trail[trail.length - 1] === nsPid) return hostPid;
+	}
+	throw new Error(`no host pid maps to namespace pid ${nsPid} (wrapper ${wrapperPid})`);
+}
+
+async function hostPidOf(wrapper: ChildProcess): Promise<number> {
+	const listing = await execFileAsync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8", timeout: 10_000 });
+	const children = listing.stdout
+		.split("\n")
+		.map((line) => line.trim().split(/\s+/))
+		.filter((parts) => parts.length === 2 && Number(parts[1]) === wrapper.pid)
+		.map((parts) => Number(parts[0]));
+	if (children.length !== 1) {
+		throw new Error(`expected exactly one host child of unshare wrapper ${wrapper.pid}, found ${children.join(",")}`);
+	}
+	return children[0]!;
 }
 
 async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => string): Promise<void> {
@@ -337,12 +407,19 @@ async function waitForHealth(baseUrl: string, child: ChildProcess, logs: () => s
 }
 
 export class AgentConversation {
+	/** Highest entry id the previous run consumed; the view is CUMULATIVE. */
+	private baseline = 0;
 	private constructor(readonly deployment: Deployment, readonly id: number, readonly token: string) {}
 	static async create(deployment: Deployment, user: "alice" | "bob"): Promise<AgentConversation> {
 		const token = user === "alice" ? deployment.aliceToken : deployment.bobToken;
 		const response = await fetch(`${deployment.baseUrl}/v1/conversations`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
 		const body = await response.text(); expect(response.status, body).toBe(201);
 		return new AgentConversation(deployment, (JSON.parse(body) as { id: number }).id, token);
+	}
+	private async readView(): Promise<ConversationView> {
+		const view = await fetch(`${this.deployment.baseUrl}/v1/conversations/${this.id}`, { headers: { authorization: `Bearer ${this.token}` } });
+		const viewBody = await view.text(); expect(view.status, viewBody).toBe(200);
+		return JSON.parse(viewBody) as ConversationView;
 	}
 	async run(calls: { name: string; args: Record<string, unknown> }[]): Promise<ToolResult[]> {
 		const script = { calls: calls.map((call, index) => ({ ...call, id: `boundary-${Date.now()}-${index}` })) };
@@ -352,9 +429,14 @@ export class AgentConversation {
 		});
 		const submittedBody = await submitted.text(); expect(submitted.status, submittedBody).toBe(202);
 		expect((JSON.parse(submittedBody) as any).submission?.status, submittedBody).toBe("done");
-		const view = await fetch(`${this.deployment.baseUrl}/v1/conversations/${this.id}`, { headers: { authorization: `Bearer ${this.token}` } });
-		const viewBody = await view.text(); expect(view.status, viewBody).toBe(200);
-		const results = toolResults(JSON.parse(viewBody) as ConversationView);
+		const parsed = await this.readView();
+		// Only THIS run's tool results: entries the view already held before
+		// the submission are an earlier submission's (the baseline marker).
+		const entries = parsed.entries as ({ id?: number } & ConversationView["entries"][number])[];
+		const results = toolResults({
+			entries: entries.filter((entry) => (entry.id ?? 0) > this.baseline),
+		});
+		this.baseline = entries.length === 0 ? this.baseline : Math.max(...entries.map((entry) => entry.id ?? 0));
 		expect(results.map((result) => result.name)).toEqual(calls.map((call) => call.name));
 		return results;
 	}

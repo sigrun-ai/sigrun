@@ -130,6 +130,15 @@ export function defaultModuleTrees(coreRoot: string): string[] {
 	return [code, join(coreRoot, "shared"), join(coreRoot, "node_modules")];
 }
 
+/**
+ * The worker's ESM scope resolution reads coreRoot/package.json even when
+ * the entry lives in a granted module tree; an unreadable package config
+ * is a fatal startup error, so the worker policy grants this one file.
+ */
+export function defaultPackageConfig(coreRoot: string): string {
+	return join(coreRoot, "package.json");
+}
+
 function validateUserPath(
 	path: string,
 	record: DirectoryUser,
@@ -255,7 +264,16 @@ export function buildUserPolicy(
 	const realWorkspace = workspaceValidation.realpath;
 	const realHome = homeValidation.realpath;
 
-	const moduleTrees = canonicalModuleTrees(ctx.moduleTrees, ctx.managed);
+	// A source checkout that has ever been built has BOTH src/ and dist/;
+	// defaultModuleTrees picks one while the worker entry may use the other
+	// (dist worker.js when present, src worker.ts via tsx otherwise).
+	// Grant whichever sibling code tree exists so both shapes stay readable.
+	const siblingTree = join(ctx.managed.coreRoot, "src");
+	const extraTrees =
+		existsSync(siblingTree) && !ctx.moduleTrees.includes(siblingTree)
+			? [...ctx.moduleTrees, siblingTree]
+			: ctx.moduleTrees;
+	const moduleTrees = canonicalModuleTrees(extraTrees, ctx.managed);
 	if (!moduleTrees.ok) return moduleTrees;
 
 	const grants = [];
@@ -295,6 +313,7 @@ export function buildUserPolicy(
 		"/sys",
 		...nodeRuntimePaths(process.execPath, ctx.managed),
 		...moduleTrees.paths,
+		defaultPackageConfig(ctx.managed.coreRoot),
 		...grants.flatMap((grant) => (grant.access === "ro" ? [grant.path] : [])),
 	]);
 	const env = agentEnv();

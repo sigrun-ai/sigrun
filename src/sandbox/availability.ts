@@ -110,6 +110,7 @@ async function runSelfTestLeg(
 	probe: string,
 	probeDir: string,
 	grantProbe: boolean,
+	opensslConf: string,
 ): Promise<{ stdout: string; stderr: string }> {
 	// The runtime grants are exactly what policy.ts derives for the worker:
 	// the node binary directory plus every ldd-reported shared-library
@@ -128,6 +129,11 @@ async function runSelfTestLeg(
 		env: {
 			...process.env,
 			LC_ALL: "C",
+			// Node auto-loads OpenSSL config relative to its prefix
+			// (--openssl-shared-config). In the jail that file is not granted,
+			// and node exits before reaching the reader. Point it at the
+			// self-test's own (granted) empty config instead.
+			OPENSSL_CONF: opensslConf,
 			SIGRUN_SANDBOX_POLICY: JSON.stringify({ ro, rw: [], minAbi: 6 }),
 		},
 	});
@@ -161,23 +167,27 @@ export async function selfTestHelper(helper: string): Promise<boolean> {
 	const probeDir = join(root, "probe");
 	const reader = join(grantedDir, "reader.cjs");
 	const probe = join(probeDir, "probe");
+	const opensslConf = join(grantedDir, "openssl.cnf");
 	const content = "sandbox boundary probe\n";
 	try {
 		await mkdir(grantedDir);
 		await mkdir(probeDir);
 		await writeFile(reader, SELF_TEST_READER, { mode: 0o600 });
 		await writeFile(probe, content, { mode: 0o600 });
+		// An empty config satisfies Node's --openssl-shared-config auto-load
+		// without granting any system OpenSSL tree.
+		await writeFile(opensslConf, "", { mode: 0o600 });
 
 		let control: { stdout: string; stderr: string };
 		try {
-			control = await runSelfTestLeg(helper, reader, probe, probeDir, true);
+			control = await runSelfTestLeg(helper, reader, probe, probeDir, true, opensslConf);
 		} catch {
 			return false;
 		}
 		if (control.stdout !== `BEGIN\nREAD_OK:${content}\n`) return false;
 
 		try {
-			await runSelfTestLeg(helper, reader, probe, probeDir, false);
+			await runSelfTestLeg(helper, reader, probe, probeDir, false, opensslConf);
 			return false;
 		} catch (error) {
 			if (typeof error !== "object" || error === null) return false;

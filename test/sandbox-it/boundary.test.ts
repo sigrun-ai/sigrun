@@ -22,6 +22,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+	hostPidForNsPid,
+	installWorkspaceHelper,
 	AgentConversation,
 	assertFileExists,
 	BOB_CONTROL,
@@ -75,6 +77,8 @@ let native: NativeProbes;
 let privileged: PrivilegedHelper;
 let service: ChildProcess | undefined;
 let servicePid = 0;
+let serviceNsPid = 0;
+let jailHelper = "";
 let abstractSocket: ChildProcess | undefined;
 const abstractName = `sigrun-boundary-${process.pid}-${Date.now()}`;
 const roots: string[] = [];
@@ -101,17 +105,20 @@ beforeAll(async () => {
 	// The PID must identify the actual sigrun process, not unshare's
 	// wrapper. The test-only server entry writes a marker from inside
 	// that process; the host reads it through the recorded host PID.
-	const serverIdentity = await readFile(`/proc/${deployment.pid}/environ`);
+	const serverIdentity = await readFile(`/proc/${deployment.hostPid}/environ`);
 	expect(serverIdentity.toString()).toContain("SIGRUN_BOUNDARY_SERVER_IDENTITY=sigrun-real-server");
 	expect(serverIdentity.toString()).toContain("SIGRUN_BOUNDARY_IT=1");
-	expect(deployment.pid).not.toBe(deployment.wrapperPid);
+	expect(deployment.hostPid).not.toBe(deployment.wrapperPid);
 	native = await buildNativeProbes(root);
 	privileged = await privilegedHelper(root);
 	coreEnv = await plantCoreEnv();
 	await Promise.all([
 		writeFile(join(deployment.aliceWorkspace, "alice-secret.txt"), "ALICE-WORKSPACE-SECRET\n"),
 		writeFile(join(deployment.bobWorkspace, "bob-control.txt"), `${BOB_CONTROL}\n`),
-		writeFile(join(deployment.configDir, "auth.json"), '{"boundary":"AUTH-JSON-SECRET"}\n'),
+		// Credential-store-valid shape: the store validates every entry as
+		// {apiKey}, and an invalid shape fails EVERY model call at submit
+		// with a store error that would masquerade as a boundary denial.
+		writeFile(join(deployment.configDir, "auth.json"), '{"boundary":{"apiKey":"AUTH-JSON-SECRET"}}\n'),
 	]);
 	for (const path of [
 		join(deployment.aliceWorkspace, "alice-secret.txt"),
@@ -137,20 +144,33 @@ beforeAll(async () => {
 	expect(pidProbe.isError, pidProbe.text).toBe(false);
 	aliceWorkerPid = (await readFile(join(deployment.aliceWorkspace, "worker-pid.txt"), "utf8")).trim();
 	expect(aliceWorkerPid).toMatch(/^\d+$/);
+	// In-jail probes exec a workspace-resident helper: the policy's ro
+	// grants do not cover the repo's sandbox/target tree by design, so the
+	// jail-side probe binary is a copy in bob's (granted) workspace.
+	jailHelper = await installWorkspaceHelper(deployment.bobWorkspace);
 
 	if (native.available) {
 		// This real-helper fixture proves the kernel's sibling-domain boundary:
 		// a jailed agent cannot inspect a separate service's environ. It does
 		// NOT exercise UserServices' declaration, spawn, or lifecycle wiring;
 		// those are covered by the unit and HTTP service suites.
-		service = spawnOutside(HELPER, ["run", "--", HELPER, "probe", "service-sleep"], {
+		// The fixture runs INSIDE the deployment's pid/mount/user namespaces
+		// (nsenter needs -U --preserve-credentials for the user ns) so the
+		// jail can name it; its stdout SERVICE_READY carries the ns pid.
+		service = spawnOutside("nsenter", ["-t", String(deployment.hostPid), "-U", "--preserve-credentials", "-p", "-m", "--", HELPER, "run", "--", HELPER, "probe", "service-sleep"], {
 			SIGRUN_SANDBOX_POLICY: JSON.stringify(nativePolicy(HELPER)),
 			SIGRUN_BOUNDARY_SERVICE_SECRET: "service-env-must-not-leak",
 		});
+		// service.pid is the NSENTER wrapper; the real service's host pid is
+		// resolved from the ns pid via the ps sweep.
 		servicePid = service.pid!;
 		let serviceReady = false;
 		service.stdout!.on("data", (chunk: Buffer) => {
-			if (chunk.toString().includes("SERVICE_READY:")) serviceReady = true;
+			const match = /SERVICE_READY:(\d+)/.exec(chunk.toString());
+			if (match !== null) {
+				serviceNsPid = Number(match[1]);
+				serviceReady = true;
+			}
 		});
 		const socketCommand = probeCommand("abstract-listen", abstractName);
 		abstractSocket = spawnOutside(socketCommand[0]!, socketCommand.slice(1));
@@ -195,7 +215,10 @@ async function readDenied(path: string): Promise<void> {
 }
 
 async function probeDenied(source: string, path: string, prefix: string): Promise<string> {
-	await assertFileExists(path);
+	// In-jail /proc targets are namespace pids — a HOST-side stat of
+	// /proc/<nspid> would stat an unrelated host process (or ENOENT), so
+	// existence is proven by the outside control, never by stat.
+	if (!path.startsWith("/proc/")) await assertFileExists(path);
 	const result = await bob.bash(nodeProbe(source, path));
 	expect(result.isError, result.text).toBe(true);
 	expect(result.text).toContain(`${prefix}:EACCES`);
@@ -255,11 +278,18 @@ function recordControl(
 	console.warn(`sandbox-it control: ${caseName} is Yama/host-policy-satisfied and NOT Landlock-discriminating; outside-jail ${outsideOperation} denied (${control.output.trim()})`);
 }
 
-async function ptraceDenied(caseName: string, pid: number): Promise<void> {
+/**
+ * The outside control attaches the HOST pid; the in-jail probe must name
+ * the same process by its NAMESPACE pid — the jail's /proc cannot name
+ * host pids at all (a host pid is ESRCH there, never a boundary denial).
+ */
+async function ptraceDenied(caseName: string, hostPid: number, nsPid: number): Promise<void> {
 	expect(native.available, native.reason).toBe(true);
-	const control = await outsideProbe(["ptrace", String(pid)]);
+	const control = await outsideProbe(["ptrace", String(hostPid)]);
 	recordControl(caseName, control, "ptrace(PTRACE_ATTACH)", ["ATTACH"]);
-	const denied = await bob.bash(directCommand(probeCommand("ptrace", pid)));
+	// The in-jail probe runs the workspace-resident helper copy: the repo's
+	// target tree is deliberately NOT in any policy's ro grants.
+	const denied = await bob.bash(directCommand([jailHelper, "probe", "ptrace", String(nsPid)]));
 	expect(denied.isError, denied.text).toBe(true);
 	expect(denied.text).toMatch(/ATTACH:(EPERM|EACCES)/);
 }
@@ -291,46 +321,52 @@ describeKernel("real tools in real two-user conversations", () => {
 		const own = await bob.bash(nodeProbe(READ_PROBE, "/proc/self/environ"));
 		expect(own.isError, own.text).toBe(false);
 		expect(own.text).toContain("READ_OK:");
-		const control = await outsideProbe(["read-environ", String(deployment.pid)]);
+		const control = await outsideProbe(["read-environ", String(deployment.hostPid)]);
 		recordControl("sigrun environ", control, "read /proc/<sigrun>/environ", ["OPEN_ENVIRON", "READ_ENVIRON"]);
 		await probeDenied(READ_PROBE, `/proc/${deployment.pid}/environ`, "READ_ERRNO");
 	});
 
 	test("bob cannot read a per-user service's /proc/<pid>/environ", async () => {
 		expect(native.available, native.reason).toBe(true);
-		expect(servicePid).toBeGreaterThan(0);
-		const control = await outsideProbe(["read-environ", String(servicePid)]);
+		expect(serviceNsPid).toBeGreaterThan(0);
+		const serviceHostPid = await hostPidForNsPid(deployment.wrapperPid, serviceNsPid);
+		const control = await outsideProbe(["read-environ", String(serviceHostPid)]);
 		recordControl("service environ", control, "read /proc/<service>/environ", ["OPEN_ENVIRON", "READ_ENVIRON"]);
-		await probeDenied(READ_PROBE, `/proc/${servicePid}/environ`, "READ_ERRNO");
+		await probeDenied(READ_PROBE, `/proc/${serviceNsPid}/environ`, "READ_ERRNO");
 	});
 
 	test("bob cannot read another worker's environ or memory", async () => {
 		const refreshedPid = await alice.bash(nodeProbe(WORKER_PID_PROBE, join(deployment.aliceWorkspace, "worker-pid.txt")));
 		expect(refreshedPid.isError, refreshedPid.text).toBe(false);
 		aliceWorkerPid = (await readFile(join(deployment.aliceWorkspace, "worker-pid.txt"), "utf8")).trim();
+		const aliceWorkerNsPid = Number(aliceWorkerPid);
+		// Outside controls read the worker's HOST pid (resolved through the
+		// namespace sweep); the in-jail assertions target the pid as the
+		// jail's /proc names it.
+		const aliceWorkerHostPid = await hostPidForNsPid(deployment.wrapperPid, aliceWorkerNsPid);
 		const own = await bob.bash(nodeProbe(READ_PROBE, "/proc/self/environ"));
 		expect(own.isError, own.text).toBe(false);
-		const envControl = await outsideProbe(["read-environ", aliceWorkerPid]);
+		const envControl = await outsideProbe(["read-environ", String(aliceWorkerHostPid)]);
 		recordControl("other worker environ", envControl, "read /proc/<worker>/environ", ["OPEN_ENVIRON", "READ_ENVIRON"]);
-		const memControl = await outsideProbe(["mem-open", aliceWorkerPid]);
+		const memControl = await outsideProbe(["mem-open", String(aliceWorkerHostPid)]);
 		recordControl("other worker mem", memControl, "open /proc/<worker>/mem", ["OPEN_MEM"]);
-		await probeDenied(READ_PROBE, `/proc/${aliceWorkerPid}/environ`, "READ_ERRNO");
-		await probeDenied(MEM_PROBE, `/proc/${aliceWorkerPid}/mem`, "MEM_ERRNO");
+		await probeDenied(READ_PROBE, `/proc/${aliceWorkerNsPid}/environ`, "READ_ERRNO");
+		await probeDenied(MEM_PROBE, `/proc/${aliceWorkerNsPid}/mem`, "MEM_ERRNO");
 	});
 
 	test("reading sigrun's /proc/<pid>/mem fails (the ptrace-access test)", async () => {
 		const own = await bob.bash(nodeProbe(MEM_PROBE, "/proc/self/mem"));
 		expect(own.isError, own.text).toBe(false);
 		expect(own.text).toContain("MEM_OK");
-		const control = await outsideProbe(["mem-open", String(deployment.pid)]);
+		const control = await outsideProbe(["mem-open", String(deployment.hostPid)]);
 		recordControl("sigrun mem", control, "open /proc/<sigrun>/mem", ["OPEN_MEM"]);
 		await probeDenied(MEM_PROBE, `/proc/${deployment.pid}/mem`, "MEM_ERRNO");
 	});
 
 	test("ptrace attach is denied against sigrun, a service, and the other worker", async () => {
-		await ptraceDenied("sigrun ptrace", deployment.pid);
-		await ptraceDenied("service ptrace", servicePid);
-		await ptraceDenied("other worker ptrace", Number(aliceWorkerPid));
+		await ptraceDenied("sigrun ptrace", deployment.hostPid, deployment.namespacePid);
+		await ptraceDenied("service ptrace", await hostPidForNsPid(deployment.wrapperPid, serviceNsPid), serviceNsPid);
+		await ptraceDenied("other worker ptrace", await hostPidForNsPid(deployment.wrapperPid, Number(aliceWorkerPid)), Number(aliceWorkerPid));
 	});
 
 	test("abstract Unix sockets outside the jail cannot be connected", async () => {
@@ -339,7 +375,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		recordControl("abstract socket connect", control, "connect abstract Unix socket", ["CONNECT_ABSTRACT"]);
 		expect(control.allowed, control.output).toBe(true);
 		expect(control.output).toContain("ABSTRACT_CONNECT_OK");
-		const denied = await bob.bash(directCommand(probeCommand("abstract-connect", abstractName)));
+		const denied = await bob.bash(directCommand([jailHelper, "probe", "abstract-connect", abstractName]));
 		expect(denied.isError, denied.text).toBe(true);
 		expect(denied.text).toMatch(/CONNECT_ABSTRACT:(EPERM|EACCES)/);
 		expect(denied.text).not.toContain("ABSTRACT_CONNECT_OK");
@@ -347,10 +383,15 @@ describeKernel("real tools in real two-user conversations", () => {
 
 	test("two-user pkill node cannot kill sigrun and /healthz stays up", async () => {
 		// The main deployment is PID 1 in a disposable PID namespace. This
-		// control really runs pkill -x node there and kills ONLY that server,
-		// never vitest or another host node process.
+		// control really runs pkill on the server's process name there and
+		// kills ONLY that server, never vitest or another host node process.
+		// tsx renames the main thread ("node-MainThread"), so the pattern is
+		// the server's ACTUAL comm, not the bare "node" literal.
+		const serverComm = await readFile(`/proc/${deployment.hostPid}/comm`, "utf8");
 		const control = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-			const child = spawnOutside("nsenter", ["-t", String(deployment.pid), "-p", "pkill", "-x", "node"]);
+			// -m: pkill reads the namespace's /proc; entering the pid ns alone
+			// leaves pkill scanning the HOST proc and matching nothing.
+			const child = spawnOutside("nsenter", ["-t", String(deployment.hostPid), "-U", "--preserve-credentials", "-p", "-m", "pkill", "-x", serverComm.trim()]);
 			let output = "";
 			child.stdout!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
 			child.stderr!.on("data", (chunk: Buffer) => { output += chunk.toString(); });
@@ -374,7 +415,7 @@ describeKernel("real tools in real two-user conversations", () => {
 		const pidProbe = await alice.bash(nodeProbe(WORKER_PID_PROBE, join(deployment.aliceWorkspace, "worker-pid.txt")));
 		expect(pidProbe.isError, pidProbe.text).toBe(false);
 		aliceWorkerPid = (await readFile(join(deployment.aliceWorkspace, "worker-pid.txt"), "utf8")).trim();
-		const denied = await bob.bash("pkill -x node; status=$?; printf 'PKILL_STATUS=%s\\n' \"$status\"");
+		const denied = await bob.bash(`pkill -x ${serverComm.trim()}; status=$?; printf 'PKILL_STATUS=%s\\n' "$status"`);
 		expect(denied.isError, denied.text).toBe(true);
 		const health = await fetch(`${deployment.baseUrl}/healthz`);
 		expect(health.status).toBe(200);
@@ -386,10 +427,9 @@ describeKernel("real tools in real two-user conversations", () => {
 
 	test("kill -TERM <sigrun pid> fails and /healthz keeps answering", async () => {
 		const ownChild = await bob.bash(`
-			child=$(sleep 30 & echo $!)
+			child=$(setsid sleep 30 & echo $!)
 			kill -TERM "$child"
 			status=$?
-			wait "$child" 2>/dev/null
 			printf 'OWN_CHILD_KILL_STATUS=%s\\n' "$status"
 		`);
 		expect(ownChild.isError, ownChild.text).toBe(false);
@@ -488,8 +528,11 @@ describeKernel("real tools in real two-user conversations", () => {
 	test("commands inherit no worker IPC descriptors", async () => {
 		const direct = await directWorker(join(root, "lifecycle-ipc"));
 		try {
+			// The direct worker's policy grants its OWN workspace — install the
+			// helper there (the jail cannot exec the repo's target tree).
+			const helper = await installWorkspaceHelper(direct.policy.workspace);
 			let output = "";
-			const result = await direct.env.exec(directCommand([HELPER, "probe", "fds"]), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
+			const result = await direct.env.exec(directCommand([helper, "probe", "fds"]), { onOutput: (text) => { output += text; } }, BACKGROUND_CONTEXT);
 			expect(result.ok, output).toBe(true);
 			expect(output).toContain("INHERITED_FDS:0");
 			expect(direct.client.pid).toBeTypeOf("number");
@@ -513,9 +556,14 @@ describeKernel("real tools in real two-user conversations", () => {
 			expect(direct.client.trackedCommandGroups().length).toBeGreaterThan(0);
 			expect(direct.client.pid).toBe(oldPid);
 			terminateOutside(oldPid);
-			const crashed = await inFlight;
-			expect(crashed.ok).toBe(false);
-			if (!crashed.ok) expect(crashed.error.message).toMatch(/sandbox worker.*exited|aborted/i);
+			// A dead worker settles the in-flight exec EITHER as an error
+			// Result (the worker reported the kill) or as an RPC rejection
+			// (the transport observed the exit first) — both name the crash.
+			const crashed = await inFlight.then(
+				(result) => ({ ok: false as const, message: result.ok ? "" : result.error.message }),
+				(error: unknown) => ({ ok: false as const, message: error instanceof Error ? error.message : String(error) }),
+			);
+			expect(crashed.message).toMatch(/sandbox worker.*exited|aborted/i);
 			const nextPid = await captureWorkerPid(direct.env, pidPath);
 			expect(nextPid).not.toBe(oldPid);
 			expect(direct.client.pid).toBe(nextPid);

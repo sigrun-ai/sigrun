@@ -28,6 +28,14 @@ export function launchInJail(
 		args: ["run", "--", command, ...args],
 		env: {
 			...env,
+			// Node compiled with --openssl-shared-config auto-loads
+			// $OPENSSLDIR/openssl.cnf at startup. On a package-managed
+			// Node (Homebrew) that directory lives OUTSIDE every policy
+			// prefix, and an unreadable config is a FATAL startup error —
+			// the jailed worker cannot start node at all. The worker
+			// policy grants tmp rw, so point the loader there; node does
+			// not require the file to exist.
+			OPENSSL_CONF: `${policy.tmp}/openssl.cnf`,
 			SIGRUN_SANDBOX_POLICY: JSON.stringify({
 				ro: policy.ro,
 				rw: policy.rw,

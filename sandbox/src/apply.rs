@@ -1,3 +1,4 @@
+use std::os::fd::AsFd;
 use std::path::Path;
 
 use landlock::{
@@ -79,11 +80,33 @@ fn add_paths(
     paths: &[std::path::PathBuf],
     access: BitFlags<AccessFs>,
 ) -> Result<landlock::RulesetCreated, String> {
+    // A rule for a FILE may carry only file rights (ReadFile, WriteFile,
+    // Execute, Truncate, IoctlDev); handing it the directory rights makes
+    // the crate downgrade the whole ruleset to PartiallyEnforced even
+    // though the kernel applies the intersected rule exactly as intended.
+    // /dev/null et al. are file grants by design, so intersect here. The
+    // fd's OWN metadata classifies the entry (a procfs symlink like
+    // /proc/self must stay a file rule — following it with fs::metadata
+    // would classify the RESOLVED directory and hand directory rights to
+    // the kernel, which rejects a ReadDir rule on a symlink).
+    let file_access = access
+        & (AccessFs::ReadFile
+            | AccessFs::WriteFile
+            | AccessFs::Execute
+            | AccessFs::Truncate
+            | AccessFs::IoctlDev);
     for path in paths {
         match PathFd::new(path) {
             Ok(fd) => {
+                let is_file = nix::sys::stat::fstat(fd.as_fd())
+                    .map(|stat| {
+                        !nix::sys::stat::SFlag::from_bits_truncate(stat.st_mode)
+                            .contains(nix::sys::stat::SFlag::S_IFDIR)
+                    })
+                    .unwrap_or(false);
+                let rule_access = if is_file { file_access } else { access };
                 ruleset = ruleset
-                    .add_rule(PathBeneath::new(fd, access))
+                    .add_rule(PathBeneath::new(fd, rule_access))
                     .map_err(|error| format!("cannot allow {}: {error}", path.display()))?;
             }
             Err(landlock::PathFdError::OpenCall { source, .. })
