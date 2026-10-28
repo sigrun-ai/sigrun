@@ -418,6 +418,24 @@ describe("extension resolution through serve()", () => {
 		const extensions = served.meta.extensions as { name: string; status: string }[];
 		expect(extensions).toContainEqual({ name: "sigrun-fixture-ext", status: "ok" });
 	});
+
+	test("a file-declared disabled extension neither installs nor loads", async () => {
+		// Regression: serving the flattened config.extensions string[]
+		// through syncPackages discarded `enabled: false` (and entry/ref),
+		// so a disabled object-form spec installed and LOADED through
+		// serve(). The spec-level merge must preserve the object entries.
+		const fixture = join(
+			import.meta.dirname,
+			"fixtures",
+			"fixture-ext",
+			"index.js",
+		);
+		const served = await bootServed({
+			settingsJson: `${JSON.stringify({ extensions: [{ source: fixture, enabled: false }] })}\n`,
+		});
+		const extensions = served.meta.extensions as { name: string; status: string }[];
+		expect(extensions.find((entry) => entry.name === "sigrun-fixture-ext")).toBeUndefined();
+	});
 });
 
 test("the production loopback probe is bounded by LISTENER_PROBE_TIMEOUT_MS", () => {

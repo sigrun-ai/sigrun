@@ -135,6 +135,28 @@ describe("self-test runtime derivation", () => {
 		});
 	});
 
+	test("a denial-leg failure is named as a boundary failure, not a runtime one", async () => {
+		// A helper that runs the command UNCONFINED: the control leg passes
+		// and the denial leg also reads the probe — the real selfTestHelper
+		// reports the denial leg, and probeIsolation must not mislabel that
+		// as a runtime-derivation failure.
+		const dir = await tempDir();
+		const helper = join(dir, "fake-sigrun-sandbox");
+		await writeFile(helper, "#!/bin/sh\nshift 2\nexec \"$@\"\n", { mode: 0o700 });
+		await expect(
+			probeIsolation({
+				platform: "linux",
+				helper,
+				runProbe: async () => ({ abi: 7 }),
+				selfTest: selfTestHelper,
+			}),
+		).resolves.toEqual({
+			available: false,
+			abi: 7,
+			reason: "self-test failed: isolation boundary did not deny the ungranted read",
+		});
+	});
+
 	test.skipIf(process.platform !== "linux")(
 		"a missing ldd leaves the binary-directory fallback and fails closed on a package-managed node",
 		async (ctx) => {

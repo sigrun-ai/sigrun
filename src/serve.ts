@@ -27,7 +27,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import net from "node:net";
 import type { ListenerInfo } from "@sigrun/shared/views";
-import { envServerSection, loadConfig } from "./config.js";
+import { envServerSection, loadConfig, parseExtensionList } from "./config.js";
 import { openHarness } from "./harness/boot.js";
 import { packagesDirOf, syncPackages } from "./harness/packages.js";
 import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
@@ -238,15 +238,18 @@ export async function serve(
 	// declaration fails the boot here, naming the specifier. Steady state
 	// (the dir already matches) costs one manifest read, no subprocess.
 	const packagesDir = packagesDirOf(defaultSettingsDir());
-	// The MERGED extension list (env SIGRUN_EXTENSIONS over the file — the
-	// same precedence loadConfig applied above), not the file's list alone:
-	// an env-declared extension must install and load even when the file
-	// declares none (e.g. a pre-existing settings file blocks the bootstrap
-	// mirror).
-	const extensionResolutions = await syncPackages(
-		config.extensions,
-		packagesDir,
-	);
+	// The MERGED extension spec list (env SIGRUN_EXTENSIONS over the file —
+	// the same precedence loadConfig applied above), not the file's list
+	// alone: an env-declared extension must install and load even when the
+	// file declares none (e.g. a pre-existing settings file blocks the
+	// bootstrap mirror). Merge at SPEC level: config.extensions is the
+	// loader's flattened string[] view (entry/ref/enabled already
+	// discarded); syncPackages needs the full ExtensionSpec objects, so the
+	// env list or the file's verbatim entries feed it directly.
+	const settingsFile = settingsStore.read();
+	const extensionSpecs =
+		parseExtensionList(env.SIGRUN_EXTENSIONS) ?? settingsFile.extensions ?? [];
+	const extensionResolutions = await syncPackages(extensionSpecs, packagesDir);
 	// The workspace directory must exist before any files endpoint or tool
 	// call touches it. The deploy manifest mounts a volume at /data; the
 	// workspace is /data/workspace. Without this, the first files request

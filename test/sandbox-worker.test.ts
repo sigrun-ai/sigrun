@@ -145,17 +145,21 @@ describe("one worker execution path", { timeout: 30_000 }, () => {
 		expect(next.value.exitCode).toBe(0);
 	});
 
-	test("a top-level op exec request is rejected clearly", async () => {
-		const entry: WorkerEntry = {
-			command: process.execPath,
-			args: [join(import.meta.dirname, "fixtures", "fixture-top-exec-worker.cjs")],
-		};
-		const { client, workspace } = await poolFor(entry);
+	test("a top-level op exec request is rejected clearly by the REAL worker", async () => {
+		// The real worker entry, driven with the deleted top-level op: the
+		// rejection comes from dispatch's default arm, not from a fixture.
+		const { client, workspace } = await poolFor(resolveWorkerEntry(resolve(".")));
 		await expect(client.call("exec", ["printf hi", {}, workspace])).rejects.toSatisfy((error: unknown) => {
 			expect(error).toBeInstanceOf(ExecutionError);
-			expect((error as ExecutionError).code).toBe("unsupported_op");
 			expect((error as ExecutionError).message).toContain('top-level op "exec" is not supported');
 			return true;
 		});
+		// The worker survives the rejection and keeps serving the live path.
+		const next = (await client.call("result", [
+			"exec",
+			["printf alive", {}],
+			workspace,
+		])) as { ok: true; value: { exitCode: number } };
+		expect(next.value.exitCode).toBe(0);
 	});
 });

@@ -34,7 +34,10 @@ export function launchInJail(
 			// prefix, and an unreadable config is a FATAL startup error —
 			// the jailed worker cannot start node at all. The worker
 			// policy grants tmp rw, so point the loader there; node does
-			// not require the file to exist.
+			// not require the file to exist. This deliberately overrides
+			// any operator-supplied OPENSSL_CONF: an operator config path
+			// is not granted inside the jail, so honoring it would be the
+			// same fatal startup error.
 			OPENSSL_CONF: `${policy.tmp}/openssl.cnf`,
 			SIGRUN_SANDBOX_POLICY: JSON.stringify({
 				ro: policy.ro,

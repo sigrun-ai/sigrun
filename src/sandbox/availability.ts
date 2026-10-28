@@ -152,6 +152,15 @@ try {
 `;
 
 /**
+ * Why the self-test failed: the control leg (node cannot run the granted
+ * read — the runtime-derivation class: missing `ldd` on a package-managed
+ * Node, a helper policy failure, or broken reader machinery) or the denial
+ * leg (the ungranted read did NOT fail with EACCES — the isolation
+ * boundary itself is suspect).
+ */
+export type SelfTestFailure = "control" | "denial";
+
+/**
  * The security boundary check runs OUR reader twice with identical argv;
  * only the probe-directory grant changes. The reader prints BEGIN before
  * touching the file, then READ_OK with the content or READ_DENIED with the
@@ -161,7 +170,10 @@ try {
  * line. No locale-dependent stderr text classifies the failure: the errno is
  * the positive evidence, and BEGIN proves the reader actually executed.
  */
-export async function selfTestHelper(helper: string): Promise<boolean> {
+export async function selfTestHelper(
+	helper: string,
+	onFailure?: (leg: SelfTestFailure) => void,
+): Promise<boolean> {
 	const root = await mkdtemp(join(tmpdir(), "sigrun-sandbox-self-test-"));
 	const grantedDir = join(root, "granted");
 	const probeDir = join(root, "probe");
@@ -182,29 +194,41 @@ export async function selfTestHelper(helper: string): Promise<boolean> {
 		try {
 			control = await runSelfTestLeg(helper, reader, probe, probeDir, true, opensslConf);
 		} catch {
+			onFailure?.("control");
 			return false;
 		}
-		if (control.stdout !== `BEGIN\nREAD_OK:${content}\n`) return false;
+		if (control.stdout !== `BEGIN\nREAD_OK:${content}\n`) {
+			onFailure?.("control");
+			return false;
+		}
 
 		try {
 			await runSelfTestLeg(helper, reader, probe, probeDir, false, opensslConf);
+			onFailure?.("denial");
 			return false;
 		} catch (error) {
-			if (typeof error !== "object" || error === null) return false;
+			if (typeof error !== "object" || error === null) {
+				onFailure?.("denial");
+				return false;
+			}
 			const outcome = error as {
 				code?: unknown;
 				stdout?: unknown;
 				stderr?: unknown;
 			};
-			if (typeof outcome.stderr !== "string") return false;
-			return (
+			if (typeof outcome.stderr !== "string") {
+				onFailure?.("denial");
+				return false;
+			}
+			const denied =
 				typeof outcome.code === "number" &&
 				outcome.code !== 0 &&
 				outcome.stdout === "BEGIN\nREAD_DENIED:EACCES\n" &&
 				!outcome.stderr
 					.split(/\r?\n/)
-					.some((line) => line.startsWith("sigrun-sandbox:"))
-			);
+					.some((line) => line.startsWith("sigrun-sandbox:"));
+			if (!denied) onFailure?.("denial");
+			return denied;
 		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -232,11 +256,22 @@ export async function probeIsolation(opts: {
 			reason: `landlock ABI ${abi} < 6`,
 		};
 	}
-	if (!(await opts.selfTest(opts.helper))) {
+	// The reason names the leg that failed: a control-leg failure is the
+	// runtime-derivation class (the jailed node could not run at all); a
+	// denial-leg failure means the isolation boundary itself did not hold.
+	let failure: SelfTestFailure | undefined;
+	const selfTest =
+		opts.selfTest === selfTestHelper
+			? (helper: string) => selfTestHelper(helper, (leg) => { failure = leg; })
+			: opts.selfTest;
+	if (!(await selfTest(opts.helper))) {
 		return {
 			available: false,
 			abi,
-			reason: "self-test failed: node runtime libraries unavailable",
+			reason:
+				failure === "denial"
+					? "self-test failed: isolation boundary did not deny the ungranted read"
+					: "self-test failed: node runtime libraries unavailable",
 		};
 	}
 	return { available: true, abi, helper: opts.helper };
