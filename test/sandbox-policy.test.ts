@@ -1,16 +1,22 @@
 /** Multi-user M1 Task 4: the exact per-user Landlock grant and env policy. */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
+import { SELF_TEST_READER } from "../src/sandbox/availability.js";
+
+const execFileAsync = promisify(execFile);
 import type { DirectoryUser } from "../src/harness/identity/users.js";
 import type { ManagedPaths } from "../src/sandbox/grants.js";
 import {
 	buildUserPolicy,
 	defaultModuleTrees,
+	defaultPackageConfig,
 	nodeRuntimePaths,
 } from "../src/sandbox/policy.js";
 
@@ -112,6 +118,7 @@ describe("buildUserPolicy", () => {
 				"/sys",
 				...nodeRuntimePaths(),
 				...moduleTrees,
+				defaultPackageConfig(coreRoot),
 			].filter((path, index, paths) => paths.indexOf(path) === index).sort(),
 		);
 		expect(result.policy.ro).toEqual([...result.policy.ro].sort());
@@ -391,6 +398,144 @@ describe("defaultModuleTrees", () => {
 		]);
 		expect(defaultModuleTrees(coreRoot)).not.toContain(coreRoot);
 	});
+});
+
+describe("the boot self-test on a package-managed Node layout", () => {
+	const coreRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+	const helperPath = join(coreRoot, "sandbox", "target", "release", "sigrun-sandbox");
+	const helperAbi = (): number | undefined => {
+		if (!existsSync(helperPath)) return undefined;
+		try {
+			const probe = JSON.parse(
+				execFileSync(helperPath, ["probe"], { encoding: "utf8" }),
+			) as { abi: number };
+			return probe.abi;
+		} catch {
+			return undefined;
+		}
+	};
+
+	/** The copied binary's loader still needs its REAL library directories. */
+	const loaderLibraryDirs = (execPath: string): string[] =>
+		nodeRuntimePaths(execPath, undefined, () =>
+			execFileSync("/usr/bin/ldd", [execPath], { encoding: "utf8" }),
+		);
+
+	const jailed = async (
+		execPath: string,
+		ro: readonly string[],
+		args: readonly string[],
+		extraEnv: Record<string, string> = {},
+	): Promise<{ stdout: string; stderr: string }> =>
+		execFileAsync(helperPath, ["run", "--", execPath, ...args], {
+			env: {
+				...process.env,
+				LC_ALL: "C",
+				...extraEnv,
+				SIGRUN_SANDBOX_POLICY: JSON.stringify({ ro: [...ro], rw: [], minAbi: 6 }),
+			},
+		});
+
+	test.skipIf(process.platform !== "linux")(
+		"grants resolve a node whose shared libraries live outside its directory",
+		async (ctx) => {
+			const abi = helperAbi();
+			if (abi === undefined || abi < 6) {
+				ctx.skip("sandbox helper not built or Landlock ABI < 6");
+				return;
+			}
+			// A package-managed prefix: bin/node (a COPY of the real binary, so
+			// the /usr|/bin prefix list cannot match it) with a "shared library"
+			// in prefix/lib, which nodeRuntimePaths must derive via ldd. The
+			// copied binary's real libraries come from loaderLibraryDirs — the
+			// same derivation, of the binary's actual linkage — so the jail is
+			// synthetic in layout but real in loader mechanics.
+			const dir = await tempDir();
+			const binDir = join(dir, "bin");
+			const libDir = join(dir, "lib");
+			await mkdir(binDir);
+			await mkdir(libDir);
+			await copyFile(process.execPath, join(binDir, "node"));
+			// Landlock execute rights need an executable bit.
+			await chmod(join(binDir, "node"), 0o755);
+			await writeFile(join(libDir, "libfake.so.1"), "fake library payload\n");
+			const execPath = join(binDir, "node");
+			const readLdd = (): string => `\tlibfake.so.1 => ${join(libDir, "libfake.so.1")} (0x1)`;
+
+			const runtime = nodeRuntimePaths(execPath, undefined, readLdd);
+			expect(runtime).toContain(binDir);
+			expect(runtime).toContain(libDir);
+
+			const root = await tempDir();
+			const grantedDir = join(root, "granted");
+			const probeDir = join(root, "probe");
+			const reader = join(grantedDir, "reader.cjs");
+			await mkdir(grantedDir);
+			await mkdir(probeDir);
+			await writeFile(reader, SELF_TEST_READER, { mode: 0o600 });
+			await writeFile(join(probeDir, "probe"), "sandbox boundary probe\n", { mode: 0o600 });
+			// Satisfy Node's --openssl-shared-config auto-load the way the
+			// self-test does: an empty granted config inside the prefix.
+			const opensslConf = join(grantedDir, "openssl.cnf");
+			await writeFile(opensslConf, "", { mode: 0o600 });
+
+			const loader = loaderLibraryDirs(execPath);
+			const leg = (grantProbe: boolean) =>
+				jailed(
+					execPath,
+					[...runtime, ...loader, dirname(reader), ...(grantProbe ? [probeDir] : [])],
+					[reader, join(probeDir, "probe")],
+					{ OPENSSL_CONF: opensslConf },
+				);
+			// Control: node starts and reads the granted probe.
+			const control = await leg(true);
+			expect(control.stdout).toBe("BEGIN\nREAD_OK:sandbox boundary probe\n\n");
+			// Denial: the same read without the probe-dir grant is EACCES.
+			await expect(leg(false)).rejects.toSatisfy((error: unknown) => {
+				const outcome = error as { code?: number; stdout?: string };
+				expect(outcome.stdout).toBe("BEGIN\nREAD_DENIED:EACCES\n");
+				return true;
+			});
+		},
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"the old hardcoded self-test grants cannot start a package-managed node",
+		async (ctx) => {
+			const abi = helperAbi();
+			if (abi === undefined || abi < 6) {
+				ctx.skip("sandbox helper not built or Landlock ABI < 6");
+				return;
+			}
+			// The OLD grant list: system prefixes plus the executable's own
+			// directory — no ldd-derived library directories. On this host
+			// (Homebrew Node in a package prefix) the loader fails and the
+			// self-test control leg cannot even start node — the exact failure
+			// this task removes. A distribution-managed node (all libraries
+			// under /usr or /lib) still starts; that shape cannot discriminate.
+			const dir = await tempDir();
+			const reader = join(dir, "reader.cjs");
+			await writeFile(reader, "console.log('BEGIN')\n", { mode: 0o600 });
+			const ro = [
+				"/bin", "/usr/bin", "/lib", "/lib64", "/usr/lib", "/usr/lib64",
+				dirname(reader),
+				dirname(process.execPath),
+			];
+			const outcome = await jailed(process.execPath, ro, [reader]).then(
+				() => "started" as const,
+				(error: unknown) => error as { code?: number; stdout?: string },
+			);
+			if (outcome === "started") {
+				ctx.skip("host node starts under the old grants; layout is not discriminating");
+				return;
+			}
+			const failed = outcome as { code?: number; stdout?: string };
+			expect(typeof failed.code).toBe("number");
+			expect(failed.code).not.toBe(0);
+			// It never reached the reader.
+			expect(failed.stdout ?? "").not.toContain("BEGIN");
+		},
+	);
 });
 
 describe("nodeRuntimePaths", () => {

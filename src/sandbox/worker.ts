@@ -187,7 +187,12 @@ async function dispatch(request: Request): Promise<unknown> {
 		case "remove": return env.remove(args[0] as string, args[1] as { recursive?: boolean; force?: boolean } | undefined, BACKGROUND_CONTEXT);
 		case "createTempDir": return env.createTempDir(args[0] as string | undefined, BACKGROUND_CONTEXT);
 		case "createTempFile": return env.createTempFile(args[0] as { prefix?: string; suffix?: string } | undefined, BACKGROUND_CONTEXT);
-		default: throw new TypeError(`unknown sandbox operation ${request.op}`);
+		default:
+			throw new TypeError(
+				request.op === "exec"
+					? 'top-level op "exec" is not supported; the worker dispatches only op "result"'
+					: `unknown sandbox operation ${request.op}`,
+			);
 	}
 }
 
@@ -209,27 +214,6 @@ async function runWithSpawnAttribution<T>(
 		// processRequest's settlement sweep owns end events, not this finally.
 		pending.delete(requestId);
 	}
-}
-
-async function execute(request: Request): Promise<void> {
-	const args = argsOf(request);
-	const command = args[0] as string | readonly string[];
-	const supplied = (args[1] ?? {}) as Record<string, unknown>;
-	const options = {
-		...supplied,
-		// The worker's process.env is the already-scrubbed per-user allowlist,
-		// so inheriting it is the point. The caller's env remains the override.
-		onOutput: (text: string, _context: unknown, info: { stream: "stdout" | "stderr"; skipped?: JsonValue }) => {
-			write({ id: request.id, event: "output", stream: info.stream, text, ...(info.skipped === undefined ? {} : { skipped: encodeValue(info.skipped) }) });
-		},
-	};
-	const cwd = args[2];
-	if (typeof cwd !== "string") throw new TypeError("exec requires cwd");
-	const env = environment(cwd);
-	const result = await runWithSpawnAttribution(env, request.id, () =>
-		env.exec(command, options as never, active.get(request.id) === undefined ? BACKGROUND_CONTEXT : withAbortSignal(active.get(request.id)!.signal, BACKGROUND_CONTEXT)),
-	);
-	write(result.ok ? { id: request.id, ok: true, value: encodeValue(result.value) } : errorReply(request.id, result.error, "exec"));
 }
 
 async function dispatchResult(request: Request, controller: AbortController): Promise<unknown> {
@@ -277,10 +261,6 @@ async function processRequest(request: Request): Promise<void> {
 			const forwarded = { id: request.id, op: "result.dispatch", args: request.args };
 			const result = await dispatchResult(forwarded, controller);
 			write({ id: request.id, ok: true, value: encodeValue(operationResultValue(result, forwarded.args[0] === "exec" ? "exec" : "file")) });
-			return;
-		}
-		if (request.op === "exec") {
-			await execute(request);
 			return;
 		}
 		const result = await dispatch(request);

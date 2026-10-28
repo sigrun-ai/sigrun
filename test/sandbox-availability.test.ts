@@ -4,20 +4,25 @@
  * matrix; the real binary, when this checkout has built it, is probed as-is.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { resolveHelper } from "../src/sandbox/helper.js";
 import {
 	probeIsolation,
 	runHelperProbe,
+	SELF_TEST_READER,
 	selfTestHelper,
 } from "../src/sandbox/availability.js";
+import { nodeRuntimePaths } from "../src/sandbox/policy.js";
+
+const execFileAsync = promisify(execFile);
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
 import { createServer } from "../src/server/index.js";
@@ -83,12 +88,12 @@ describe("probeIsolation", () => {
 		expect(options.selfTest).not.toHaveBeenCalled();
 	});
 
-	test("reports self-test failed after an ABI-capable helper", async () => {
+	test("reports the runtime-derivation reason after an ABI-capable helper", async () => {
 		const options = probeOptions({ abi: 6, selfTest: false });
 		await expect(probeIsolation(options)).resolves.toEqual({
 			available: false,
 			abi: 6,
-			reason: "self-test failed",
+			reason: "self-test failed: node runtime libraries unavailable",
 		});
 		expect(options.selfTest).toHaveBeenCalledOnce();
 		expect(options.selfTest).toHaveBeenCalledWith("/opt/sigrun-sandbox");
@@ -104,6 +109,93 @@ describe("probeIsolation", () => {
 		expect(options.runProbe).toHaveBeenCalledOnce();
 		expect(options.selfTest).toHaveBeenCalledOnce();
 	});
+});
+
+describe("self-test runtime derivation", () => {
+	const coreRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+	const helperPath = join(coreRoot, "sandbox", "target", "release", "sigrun-sandbox");
+	const helperAbi = (): number | undefined => {
+		if (!existsSync(helperPath)) return undefined;
+		try {
+			const probe = JSON.parse(
+				execFileSync(helperPath, ["probe"], { encoding: "utf8" }),
+			) as { abi: number };
+			return probe.abi;
+		} catch {
+			return undefined;
+		}
+	};
+
+	test("a failed self-test reports the runtime derivation as its reason", async () => {
+		const options = probeOptions({ abi: 6, selfTest: false });
+		await expect(probeIsolation(options)).resolves.toEqual({
+			available: false,
+			abi: 6,
+			reason: "self-test failed: node runtime libraries unavailable",
+		});
+	});
+
+	test.skipIf(process.platform !== "linux")(
+		"a missing ldd leaves the binary-directory fallback and fails closed on a package-managed node",
+		async (ctx) => {
+			const abi = helperAbi();
+			if (abi === undefined || abi < 6) {
+				ctx.skip("sandbox helper not built or Landlock ABI < 6");
+				return;
+			}
+			// Package-managed prefix with bin/node but NO ldd in the layout and
+			// no ldd result: the derivation degrades to the binary directory
+			// alone, so the self-test control leg cannot start a node whose
+			// real libraries live in prefix/lib.
+			const dir = await tempDir();
+			const binDir = join(dir, "bin");
+			await mkdir(binDir);
+			const execPath = join(binDir, "node");
+			await copyFile(process.execPath, execPath);
+			await chmod(execPath, 0o755);
+			const runtime = nodeRuntimePaths(execPath, undefined, () => {
+				throw new Error("ldd unavailable");
+			});
+			expect(runtime).toEqual([binDir]);
+
+			const root = await tempDir();
+			const grantedDir = join(root, "granted");
+			const probeDir = join(root, "probe");
+			await mkdir(grantedDir);
+			await mkdir(probeDir);
+			const reader = join(grantedDir, "reader.cjs");
+			await writeFile(reader, SELF_TEST_READER, { mode: 0o600 });
+			await writeFile(join(probeDir, "probe"), "sandbox boundary probe\n", { mode: 0o600 });
+
+			// The control leg with only the fallback grant cannot start node.
+			const outcome = await execFileAsync(
+				helperPath,
+				["run", "--", execPath, reader, join(probeDir, "probe")],
+				{
+					env: {
+						...process.env,
+						LC_ALL: "C",
+						OPENSSL_CONF: join(grantedDir, "openssl.cnf"),
+						SIGRUN_SANDBOX_POLICY: JSON.stringify({
+							ro: [...runtime, grantedDir, probeDir],
+							rw: [],
+							minAbi: 6,
+						}),
+					},
+				},
+			).then(
+				() => "started" as const,
+				(error: unknown) => error as { code?: number; stdout?: string },
+			);
+			if (outcome === "started") {
+				// A static node has no library directories to lose; the fallback
+				// suffices and there is nothing to fail closed on.
+				ctx.skip("host node is static; the fallback cannot discriminate");
+				return;
+			}
+			expect(outcome.stdout ?? "").not.toContain("BEGIN");
+		},
+	);
 });
 
 describe("resolveHelper", () => {

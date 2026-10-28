@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { lookupOsAccount, type OsAccountReader } from "./os-account.js";
+import { nodeRuntimePaths } from "./policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,7 +58,19 @@ export async function probeOsUsers(
 			env: {
 				LC_ALL: "C",
 				SIGRUN_SANDBOX_POLICY: JSON.stringify({
-					ro: ["/usr", "/usr/bin", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/etc", "/opt", "/proc", "/sys"],
+					ro: [
+						"/usr",
+						"/usr/bin",
+						"/bin",
+						"/sbin",
+						"/lib",
+						"/lib32",
+						"/lib64",
+						"/etc",
+						"/opt",
+						"/proc",
+						"/sys",
+					],
 					rw: [],
 					minAbi: 6,
 					uid: account.uid,
@@ -98,15 +111,17 @@ async function runSelfTestLeg(
 	probeDir: string,
 	grantProbe: boolean,
 ): Promise<{ stdout: string; stderr: string }> {
+	// The runtime grants are exactly what policy.ts derives for the worker:
+	// the node binary directory plus every ldd-reported shared-library
+	// directory. A package-managed Node (Homebrew, nvm, nix) resolves its
+	// libraries OUTSIDE the executable's directory; granting only system
+	// prefixes cannot start it, and broadening prefixes is the trap. When
+	// ldd is unreadable the derivation degrades to the binary directory
+	// alone, and the control leg then fails closed — reported by
+	// probeIsolation as a runtime-derivation failure, never as a pass.
 	const ro = [
-		"/bin",
-		"/usr/bin",
-		"/lib",
-		"/lib64",
-		"/usr/lib",
-		"/usr/lib64",
+		...nodeRuntimePaths(process.execPath),
 		dirname(reader),
-		dirname(process.execPath),
 		...(grantProbe ? [probeDir] : []),
 	];
 	return execFileAsync(helper, ["run", "--", process.execPath, reader, probe], {
@@ -118,7 +133,8 @@ async function runSelfTestLeg(
 	});
 }
 
-const SELF_TEST_READER = `
+/** Exported for the layout tests, which run it under synthetic grants. */
+export const SELF_TEST_READER = `
 console.log("BEGIN");
 try {
 	const content = require("node:fs").readFileSync(process.argv[2], "utf8");
@@ -207,7 +223,11 @@ export async function probeIsolation(opts: {
 		};
 	}
 	if (!(await opts.selfTest(opts.helper))) {
-		return { available: false, abi, reason: "self-test failed" };
+		return {
+			available: false,
+			abi,
+			reason: "self-test failed: node runtime libraries unavailable",
+		};
 	}
 	return { available: true, abi, helper: opts.helper };
 }
