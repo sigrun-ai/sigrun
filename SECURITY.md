@@ -60,8 +60,11 @@ before publishing details.
 ## Verification limits
 
 A local run on this host passed **19 unprivileged cases** in
-`test/sandbox-it/boundary.test.ts` (Linux, Landlock ABI 7). The hosted-CI
-boundary run is **pending**; no post-change hosted-CI result is claimed.
+`test/sandbox-it/boundary.test.ts` (Linux, Landlock ABI 7). The hosted-CI job
+passes, but its current GitHub runner forbids unprivileged user/PID namespaces,
+so it **skips all 21 cases rather than executing them**. This is an accepted
+verification limitation, not evidence of hosted kernel-boundary coverage.
+
 Two of those cases need more privilege than CI grants — the `osUser` success
 case and the in-jail uid/gid-switch discrimination case. Both **pass in a
 privileged run** (all 21 cases green in a container whose capability bounding

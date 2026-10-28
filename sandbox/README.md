@@ -93,13 +93,15 @@ which determines its own output and exit status.
 ## Kernel boundary verification
 
 A local run on this host (Linux, Landlock ABI 7) passed the 19 unprivileged
-cases in `test/sandbox-it/boundary.test.ts`. The hosted-CI boundary run is
-**pending**; no post-change hosted-CI result is claimed. Two cases need more
-privilege than CI grants: the `osUser` success case and the case proving that
-the same helper's uid/gid switch succeeds outside a jail and fails inside it.
-Both **pass** under `SIGRUN_SANDBOX_IT_PRIVILEGED=1` with a privileged runner
-(all 21 cases green). They are operator-verified rather than CI-verified,
-because no hosted job grants the identity-switch capabilities.
+cases in `test/sandbox-it/boundary.test.ts`. The hosted-CI job passes, but its
+current GitHub runner forbids unprivileged user/PID namespaces, so it **skips
+all 21 cases rather than executing them**. This is an accepted verification
+limitation, not evidence of hosted kernel-boundary coverage. Two cases need
+more privilege than CI grants: the `osUser` success case and the case proving
+that the same helper's uid/gid switch succeeds outside a jail and fails inside
+it. Both **pass** under `SIGRUN_SANDBOX_IT_PRIVILEGED=1` with a privileged
+runner (all 21 cases green). They are operator-verified rather than
+CI-verified, because no hosted job grants the identity-switch capabilities.
 
 Running them needs the fixture's own prerequisites, which are easy to get
 wrong and which previously made the cases look unverifiable:
