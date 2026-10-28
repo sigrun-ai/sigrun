@@ -224,10 +224,6 @@ test.describe("item 7: compaction recall", () => {
 					backgroundTokens: 400,
 				},
 			},
-			// The spec counts faux responses per submission; A2's background
-			// auto-namer would otherwise consume one after the first settled
-			// run (naming has its own vitest coverage, test/naming.test.ts).
-			settingsFile: { namingModel: false },
 			responses: [
 				fauxAssistantMessage("the marker answer: ZEBRA-COMPACTED-OUT"),
 				fauxAssistantMessage("a second turn"),
@@ -251,13 +247,13 @@ test.describe("item 7: compaction recall", () => {
 	test("degenerate recall returns the compacted-out content", async ({
 		page,
 	}) => {
+		await page.addInitScript(() => {
+			localStorage.setItem("sigrun.timeline", "0");
+		});
 		await page.goto(server.url);
-		// The tool row lives under the GROUPED transcript's activity line
-		// (B4); the default is the chronological timeline — switch first.
+		// This case deliberately exercises the grouped transcript's activity line.
 		const timelineToggle = page.locator('button[aria-label="chronological view"]');
-		if ((await timelineToggle.getAttribute("aria-pressed")) === "true") {
-			await timelineToggle.click();
-		}
+		await expect(timelineToggle).toHaveAttribute("aria-pressed", "false");
 		await expect(page.locator(".composer-input")).toBeEnabled();
 		// Turn 1: the content that will compact out.
 		await page.locator(".composer-input").pressSequentially("remember ZEBRA");
@@ -285,15 +281,14 @@ test.describe("item 7: compaction recall", () => {
 		// binding), not the live window.
 		await page.locator(".composer-input").pressSequentially("what was the marker?");
 		await page.locator(".composer-send").click();
-		// The default chronological view renders the tool row in place;
-		// expanding it shows the recalled content. (The guard above switched
-		// to the grouped view — there the tool rows live inside the collapsed
-		// ActivityLine, so expand it first.)
+		// Grouped mode keeps the recall tool row inside the ActivityLine;
+		// expand that line before expanding the row.
 		const activity = page.locator(".activity-toggle").first();
 		const card = page.locator(".tool-row-toggle").filter({ hasText: "memory_recall" }).first();
-		if ((await card.count()) === 0 && (await activity.count()) > 0) {
-			await activity.click();
-		}
+		await expect(activity).toBeVisible({ timeout: 15_000 });
+		await expect(activity).toHaveAttribute("aria-expanded", "false");
+		await activity.click();
+		await expect(activity).toHaveAttribute("aria-expanded", "true");
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		await card.click();
 		await expect(
@@ -311,9 +306,6 @@ test.describe("item 10: restart resume", () => {
 	}) => {
 		let server = await bootE2EServer({
 			responses: [fauxAssistantMessage("pre-restart answer")],
-			// Same response-counting determinism as item 7: no background
-			// naming call against the scripted faux queue.
-			settingsFile: { namingModel: false },
 		});
 		try {
 			await initialPage.goto(server.url);

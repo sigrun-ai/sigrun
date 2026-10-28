@@ -45,6 +45,27 @@ npm --workspace @sigrun/tui run typecheck
 npm start              # tsx src/index.ts (== `sigrun serve`)
 ```
 
+### E2E failure triage
+
+Run the release gate with `npm run test:e2e` (Chromium, one worker, no
+retries). Before classifying any failure as a known load flake:
+
+1. Retain and identify the failing spec, attempt number, trace, and screenshot
+   from `webui/test-results/`; record the run's worker shape and count.
+2. Reproduce it both solo (`npm --workspace @sigrun/webui run test:e2e --
+   <spec>`) and under the original full-suite worker shape (`npm run
+   test:e2e`). A solo green is NOT classification.
+3. Record mechanism evidence explaining WHY the failure occurs, not merely
+   that it passes alone. Distinguish response-queue desynchronization (a
+   harness bug fixed by the background-consumer defaults) from admission
+   latency and rendering jitter; do not conflate them.
+4. Never hide, skip, or quarantine a test as closure. A change is incomplete
+   while a failure is unexplained, newly introduced, or not evidenced as the
+   same pre-existing mechanism.
+5. Report a known pre-existing load failure separately only after both
+   reproduction shapes and mechanism evidence are recorded. Release approval
+   remains the user's decision.
+
 ## Conventions
 
 - **Installs**: users install via npm, git source, or file path —

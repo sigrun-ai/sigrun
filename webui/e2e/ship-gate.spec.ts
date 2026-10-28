@@ -80,10 +80,6 @@ test.describe("item 2: send text + image", () => {
 				fauxAssistantMessage("text answer"),
 				fauxAssistantMessage("image answer"),
 			],
-			// The spec counts faux responses per submission; A2's background
-			// auto-namer would otherwise consume one after the first settled
-			// run. Naming has its own vitest coverage (test/naming.test.ts).
-			settingsFile: { namingModel: false },
 		});
 		// The image upload path carries the image buffer in the request (the
 		// setInputFiles payload), not a workspace file — no workspace setup
@@ -197,6 +193,14 @@ test.describe("item 6: tool card", () => {
 					{ stopReason: "toolUse" },
 				),
 				fauxAssistantMessage("the skill says hello"),
+				fauxAssistantMessage(
+					[
+						{ type: "text", text: "loading a skill" },
+						fauxToolCall("load_skill", { name: "demo" }, { id: "call-2" }),
+					],
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("the skill says hello again"),
 			],
 		});
 		await writeFile(
@@ -209,34 +213,46 @@ test.describe("item 6: tool card", () => {
 		await server.cleanup();
 	});
 
-	test("expand a tool card and see the output", async ({ page }) => {
-		await page.goto(server.url);
-		// The activity line is the GROUPED transcript's tool home (B4); the
-		// default view is the chronological timeline (tools inline), so
-		// switch to grouped first (the toggle is pressed when timeline is on).
-		const timelineToggle = page.locator('button[aria-label="chronological view"]');
-		if ((await timelineToggle.getAttribute("aria-pressed")) === "true") {
-			await timelineToggle.click();
-		}
-		// Wait for the boot-time default selection + the draft restore to
-		// settle (the composer goes live once a conversation is active).
-		await expect(page.locator(".composer-input")).toBeEnabled();
-		await page.locator(".composer-input").fill("read notes.txt");
-		await expect(page.locator(".composer-send")).toBeEnabled();
-		await page.locator(".composer-send").click();
-		// The default chronological view renders the tool row in place;
-		// expanding it shows the output. (The guard above switches to the
-		// grouped view when the timeline toggle was pressed — there the tool
-		// rows live inside the collapsed ActivityLine, so expand it first.)
-		const activity = page.locator(".activity-toggle").first();
-		const toolRow = page.locator(".tool-row-toggle").first();
-		if ((await toolRow.count()) === 0 && (await activity.count()) > 0) {
-			await activity.click();
-		}
-		await expect(toolRow).toBeVisible();
-		await toolRow.click();
-		await expect(page.locator(".tool-row-output").first()).toBeVisible();
-	});
+	for (const mode of ["timeline", "grouped"] as const) {
+		test(`${mode} view renders and expands a tool card`, async ({ page }) => {
+			await page.addInitScript((timeline) => {
+				localStorage.setItem("sigrun.timeline", timeline);
+			}, mode === "timeline" ? "1" : "0");
+			await page.goto(server.url);
+			const timelineToggle = page.locator(
+				'button[aria-label="chronological view"]',
+			);
+			await expect(timelineToggle).toHaveAttribute(
+				"aria-pressed",
+				mode === "timeline" ? "true" : "false",
+			);
+			await expect(page.locator(".composer-input")).toBeEnabled();
+			await page.locator(".composer-input").fill("read notes.txt");
+			await expect(page.locator(".composer-send")).toBeEnabled();
+			await page.locator(".composer-send").click();
+			await expect(
+				page.locator('[data-turn-kind="assistant"]').filter({
+					hasText: mode === "timeline"
+						? "the skill says hello"
+						: "the skill says hello again",
+				}),
+			).toBeVisible();
+
+			if (mode === "timeline") {
+				await expect(page.locator(".activity-toggle")).toHaveCount(0);
+			} else {
+				const activity = page.locator(".activity-toggle").first();
+				await expect(activity).toBeVisible();
+				await expect(activity).toHaveAttribute("aria-expanded", "false");
+				await activity.click();
+				await expect(activity).toHaveAttribute("aria-expanded", "true");
+			}
+			const toolRow = page.locator(".tool-row-toggle").first();
+			await expect(toolRow).toBeVisible();
+			await toolRow.click();
+			await expect(page.locator(".tool-row-output").first()).toBeVisible();
+		});
+	}
 });
 
 // ---------------------------------------------------------------------------
