@@ -89,3 +89,50 @@ the handled rights is then required regardless of `minAbi`.
 Every failure before `exec` emits one `sigrun-sandbox:` diagnostic on stderr
 and exits 125. Successful `run` never returns: it is replaced by the command,
 which determines its own output and exit status.
+
+## Kernel boundary verification
+
+The CI boundary job runs the 19 unprivileged cases in
+`test/sandbox-it/boundary.test.ts`. Two cases need more privilege than CI
+grants: the `osUser` success case and the case proving that the same helper's
+uid/gid switch succeeds outside a jail and fails inside it. They remain
+**unverified in CI** until a privileged verification run is executed and its
+results are recorded.
+
+`scripts/verify-sandbox-privileged.sh` provides that one-shot run without
+creating a broadly privileged workload. It uses a disposable Docker-compatible
+container as root, drops every capability, and adds back only `SETFCAP`. The
+test fixture uses that capability to grant the helper its file capabilities;
+the container receives neither `SYS_ADMIN` nor the `privileged` flag. The
+script then runs exactly those two cases with
+`SIGRUN_SANDBOX_IT_PRIVILEGED=1`, followed by the ordinary suite with that
+opt-in unset as a regression check.
+
+A dry run is the default and creates nothing:
+
+```sh
+scripts/verify-sandbox-privileged.sh
+```
+
+An actual run needs an explicit `--run`, a full core commit, and a
+digest-pinned image containing Node 22, `setcap`, and the sandbox helper at
+`/usr/local/lib/sigrun/sigrun-sandbox`:
+
+```sh
+SIGRUN_SANDBOX_VERIFY_IMAGE='IMAGE@sha256:64-lowercase-hex-digest' \
+  scripts/verify-sandbox-privileged.sh --run 40-lowercase-hex-commit
+```
+
+The core checkout must contain that commit, and the five built-in extension
+checkouts must be its siblings in the same parent directory. The script
+archives the requested core commit and each sibling's current `HEAD`, printing
+every source revision. `SIGRUN_SANDBOX_VERIFY_RUNTIME` selects the container
+runtime executable (default `docker`); Docker's usual `DOCKER_HOST` selects the
+target daemon. The runner needs network access for `npm ci`, Linux with
+Landlock ABI 6 or newer, and support for unprivileged user and PID namespaces.
+
+The run emits the kernel release, Landlock ABI, and per-case results. It fails
+if either privileged case does not pass, if the ordinary suite regresses, or
+if the ABI is too old. A trap removes the container and temporary source
+archive on success or failure. Running the script is an operator action; the
+dry run is not evidence that either privileged case passed.
