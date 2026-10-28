@@ -74,16 +74,17 @@ describe("image cache", () => {
 		expect((await cache.get(u, "png"))?.type).toBe("png");
 	});
 
-	test("the index survives close() + re-open over the same dir", async () => {
+	test("the index survives close() + re-open over the same dir, including the clamped max-age", async () => {
 		const { cache, dir } = await makeCache();
 		const u = "https://img.acme.example/a.png";
-		await cache.put(u, "orig", "png", Buffer.from("persisted"), 42);
+		await cache.put(u, "orig", "png", Buffer.from("persisted"), 42, 604800);
 		await cache.close();
 		caches.pop(); // closed already
 		const reopened = new ImageCache(dir);
 		caches.push(reopened);
 		const hit = await reopened.get(u, "orig");
 		expect(hit?.type).toBe("png");
+		expect(hit?.maxAge).toBe(604800);
 		const chunks: Buffer[] = [];
 		for await (const chunk of hit!.stream) chunks.push(chunk as Buffer);
 		expect(Buffer.concat(chunks).toString()).toBe("persisted");

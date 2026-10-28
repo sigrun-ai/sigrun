@@ -17,9 +17,10 @@
  *   POSTed as the raw text body; the route's `bodyLimit` is the §11.1
  *   192 KiB rule (an over-limit body is Fastify's 413 `too_large`).
  *
- * Fetches go through the on-disk LRU cache (`<cacheDir>/images/`,
- * `images/cache.ts`): a hit re-serves without an upstream call, and
- * concurrent requests for one URL share ONE in-flight upstream fetch
+ * Fetches go through the on-disk LRU cache: a hit fresher than its
+ * clamped max-age re-serves without an upstream call; an older hit
+ * revalidates, and a refusal is never replaced by stale bytes.
+ * Concurrent requests for one URL share ONE in-flight upstream fetch
  * (Review Focus 4). Failures are never cached. Responses carry the
  * sniffed Content-Type, `X-Content-Type-Options: nosniff`, and
  * `Cache-Control: private, max-age=<upstream hint clamped to 1 h–7 d>`.
@@ -142,23 +143,28 @@ export function registerImageRoutes(app: FastifyInstance, ctx: ServerContext): v
 		u: string,
 		variant: "orig" | "png",
 	): Promise<ResolvedImage> {
-		const hit = await cache.get(u, variant);
-		if (hit !== undefined) {
+		const now = deps.now();
+		const hit = await cache.get(u, variant, now);
+		if (hit !== undefined && now - hit.addedAt < hit.maxAge * 1000) {
 			const chunks: Buffer[] = [];
 			for await (const chunk of hit.stream) chunks.push(chunk as Buffer);
-			return { bytes: Buffer.concat(chunks), type: hit.type };
+			return { bytes: Buffer.concat(chunks), type: hit.type, maxAge: hit.maxAge };
 		}
+		// A stale hit is never served: close its pin and revalidate.
+		if (hit !== undefined) hit.stream.destroy();
 		const inflightKey = `${variant}${u}`;
 		const existing = inflight.get(inflightKey);
 		if (existing !== undefined) return await existing;
 		const work = (async (): Promise<ResolvedImage> => {
 			const fetched = await fetchImage(u, deps);
 			// Cache the original variant first — `as=png` requests cache
-			// BOTH variants (the conversion reads the fetched bytes).
-			await cache.put(u, "orig", fetched.type, fetched.bytes);
+			// BOTH variants (the conversion reads the fetched bytes). The
+			// clamped hint is BOTH the response header and the cache TTL.
+			const maxAge = clampedMaxAge(fetched.maxAge);
+			await cache.put(u, "orig", fetched.type, fetched.bytes, now, maxAge);
 			if (variant === "png") {
 				const converted = await toPng(fetched.bytes);
-				await cache.put(u, "png", "png", converted);
+				await cache.put(u, "png", "png", converted, now, maxAge);
 				return {
 					bytes: converted,
 					type: "png",

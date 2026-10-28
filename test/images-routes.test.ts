@@ -46,6 +46,9 @@ import { seededIdentity } from "./helpers/identity.js";
 /** The public host the resolver maps onto the local TLS server. */
 const UPSTREAM_HOST = "img.example.invalid";
 
+/** The cache/fetch clock, advanced explicitly by freshness tests. */
+let controlledNow = Date.now();
+
 const ASSETS_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-surfaces-assets", "index.js"),
 ).href;
@@ -302,6 +305,7 @@ async function bootServer(upstream: Upstream): Promise<TestServer> {
 		// the CA pin trusts the fixture's self-signed cert.
 		imageFetch: {
 			resolve: async () => [publicStandIn()],
+			now: () => controlledNow,
 			ca: upstream.ca,
 			// The stand-in is loopback, which the real vetting refuses by
 			// design; the vetting has its own tests (images-fetch's range
@@ -434,13 +438,21 @@ describe("GET /v1/image (the signed form)", () => {
 		expect(cached).toEqual(await jpegBytes());
 	});
 
-	test("max-age clamps down to the 7 d ceiling and defaults to 1 h without an upstream hint", async () => {
+	test("max-age clamps down to the 7 d ceiling on the live response AND its cache hit, and defaults to 1 h without an upstream hint", async () => {
 		const upstream = await startUpstream();
 		cleanups.push(upstream.close);
 		const server = await bootServer(upstream);
 		upstream.setBody(await jpegBytes(), "image/jpeg", 30 * 24 * 3600);
-		const huge = await get(server, server.sign(upstream.url), server.aliceToken);
+		const signed = server.sign(upstream.url);
+		const huge = await get(server, signed, server.aliceToken);
 		expect(huge.headers.get("cache-control")).toBe(
+			`private, max-age=${7 * 24 * 3600}`,
+		);
+		// The persisted hit retains the SAME clamped ceiling; only one
+		// upstream fetch happened.
+		const hit = await get(server, signed, server.aliceToken);
+		expect(upstream.requests).toHaveLength(1);
+		expect(hit.headers.get("cache-control")).toBe(
 			`private, max-age=${7 * 24 * 3600}`,
 		);
 		// No upstream Cache-Control at all → the 1 h floor applies.
@@ -451,6 +463,31 @@ describe("GET /v1/image (the signed form)", () => {
 			server.aliceToken,
 		);
 		expect(noHint.headers.get("cache-control")).toBe("private, max-age=3600");
+	});
+
+	test("an expired entry revalidates at the max-age boundary and an upstream refusal is 502, never stale 200", async () => {
+		const upstream = await startUpstream();
+		cleanups.push(upstream.close);
+		const server = await bootServer(upstream);
+		// Upstream 1 s clamps to 3600 s, which is also the cache TTL.
+		upstream.setBody(await jpegBytes(), "image/jpeg", 1);
+		const signed = server.sign(upstream.url);
+		const live = await get(server, signed, server.aliceToken);
+		expect(live.status).toBe(200);
+		expect(upstream.requests).toHaveLength(1);
+		// One ms before the boundary the entry is still fresh: no fetch.
+		controlledNow += 3600_000 - 1;
+		const freshHit = await get(server, signed, server.aliceToken);
+		expect(freshHit.status).toBe(200);
+		expect(upstream.requests).toHaveLength(1);
+		// At age == max-age the entry is stale. The upstream now refuses;
+		// failures are never cached and stale bytes are not substituted.
+		controlledNow += 1;
+		upstream.setBody(Buffer.from("not an image"), "text/plain", 1);
+		const refused = await get(server, signed, server.aliceToken);
+		expect(refused.status).toBe(502);
+		expect((await refused.json()).error).toBe("bad-type");
+		expect(upstream.requests).toHaveLength(2);
 	});
 
 	test("?as=png converts a JPEG to PNG and caches the converted variant beside the original", async () => {

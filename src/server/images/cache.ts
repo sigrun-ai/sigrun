@@ -8,8 +8,8 @@
  * only).
  *
  * Layout: each entry is one file `<sha256(u)>.<variant>` beside ONE
- * `index.json` (the metadata table: type, size, added-at, last-hit,
- * pin). The index is written atomically on every mutation, so a re-open
+ * `index.json` (the metadata table: type, size, added-at, clamped
+ * max-age, last-hit, pin). The index is written atomically on every mutation, so a re-open
  * (the same cache dir, a new process) serves the prior entries.
  *
  * Eviction never deletes a file currently being STREAMED or WRITTEN
@@ -37,8 +37,10 @@ interface IndexEntry {
 	readonly type: SniffedImage;
 	/** Byte size (the capacity accounting's unit). */
 	readonly size: number;
-	/** Epoch ms the entry was written (eviction tie-break). */
+	/** Epoch ms the entry was written (freshness + eviction tie-break). */
 	readonly addedAt: number;
+	/** The clamped freshness lifetime, in seconds. */
+	readonly maxAge: number;
 	/** Epoch ms of the last `get` hit (the LRU order). */
 	lastHit: number;
 	/** Open streams + in-flight writes (eviction skips pinned entries). */
@@ -46,12 +48,19 @@ interface IndexEntry {
 }
 
 interface IndexFile {
-	readonly entries: Record<string, { type: SniffedImage; size: number; addedAt: number; lastHit: number }>;
+	readonly entries: Record<
+		string,
+		{ type: SniffedImage; size: number; addedAt: number; lastHit: number; maxAge?: number }
+	>;
 }
 
-/** One cache hit: the type and a streaming reader over the file. */
+/** One cache hit: the type, clamped max-age, and streaming reader. */
 export interface CacheHit {
 	readonly type: SniffedImage;
+	/** Epoch ms the entry was written (the route's freshness input). */
+	readonly addedAt: number;
+	/** The clamped freshness lifetime, in seconds. */
+	readonly maxAge: number;
 	readonly stream: Readable;
 }
 
@@ -105,7 +114,8 @@ export class ImageCache {
 			return;
 		}
 		for (const [key, entry] of Object.entries(parsed.entries)) {
-			this.entries.set(key, { ...entry, pins: 0 });
+			// Pre-max-age indexes used the original default: one hour.
+			this.entries.set(key, { ...entry, maxAge: entry.maxAge ?? 3600, pins: 0 });
 		}
 	}
 
@@ -134,7 +144,7 @@ export class ImageCache {
 		};
 		stream.once("close", unpin);
 		stream.once("error", unpin);
-		return { type: entry.type, stream };
+		return { type: entry.type, addedAt: entry.addedAt, maxAge: entry.maxAge, stream };
 	}
 
 	/**
@@ -149,6 +159,7 @@ export class ImageCache {
 		type: SniffedImage,
 		body: Buffer,
 		now?: number,
+		maxAge = 3600,
 	): Promise<void> {
 		await this.open();
 		if (this.closed) return;
@@ -158,6 +169,7 @@ export class ImageCache {
 			type,
 			size: body.byteLength,
 			addedAt: at,
+			maxAge,
 			lastHit: at,
 			pins: 1,
 		};
@@ -214,6 +226,7 @@ export class ImageCache {
 						type: entry.type,
 						size: entry.size,
 						addedAt: entry.addedAt,
+						maxAge: entry.maxAge,
 						lastHit: entry.lastHit,
 					},
 				]),
