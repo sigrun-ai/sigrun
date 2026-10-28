@@ -571,6 +571,16 @@ describe("the entry disjunction in submitOp (the brief's enforced invariant)", (
 			BACKGROUND_CONTEXT,
 		);
 		expect(answerEntry.items[0]?.kind).toBe(BlocksAnswerEntry.kind);
+		// Admission is not settlement: submitting the next turn while this
+		// answer is still running queues it, and a queued SubmissionRecord
+		// has no entry id until its boundary places it. Settle this run so
+		// the next submission exercises the same idle admission path.
+		const answerSubmission = await server.opened.harness.submission(
+			answerRecord.id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(answerSubmission).toBeDefined();
+		await answerSubmission!.wait(BACKGROUND_CONTEXT);
 
 		// 2. A `/skill:name` input on the SAME path still expands (the
 		// expansion entry carries what was typed).
