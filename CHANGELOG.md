@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+
 ### Added
+- `GET /v1/meta` now reports the effective listener: `listener.host`,
+  `listener.port`, and `listener.families` — the address families the
+  live listener accepts, measured once at listen (the `::` wildcard
+  probes both loopbacks and reports exactly the families that connect;
+  a hostname bind reports the bound socket's family, never a concrete
+  peer address). Additive wire field: pre-upgrade servers omit
+  `listener`; clients consuming it must tolerate its absence.
+- `SIGRUN_LISTEN_HOST` is now honored as the environment equivalent of
+  the programmatic `serve({host})` option. One host value is resolved
+  at the serving boundary (`options.host` → `SIGRUN_LISTEN_HOST` → `::`)
+  and drives the bind AND both auth derivations — the previously split
+  defaults (the boot auth derivation's independent env read, and the
+  harness-side `0.0.0.0` fallback) are gone.
+- Proxy-auth rejections (401) now log one sanitized `warn` per rejected
+  request: the socket peer, the method, a short reason (`untrusted
+  proxy`, `missing or wrong shared secret`, `missing identity header`,
+  `untrusted identity source`), and the resolved route template — never
+  tokens, cookies, identity-header values, query strings, or the full
+  URL. Token-auth failures and successful proxy authentications stay
+  silent.
 - The normal core build now emits real `dist/blocks/**/*.d.ts`
   declarations, including the `dist/blocks/index.d.ts` named by the
   `@sigrun/sigrun/blocks` export. Pack/type-resolution coverage compiles
@@ -37,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (no second answer read, no inferred status). The other variants do
   not gain the field; exhaustive narrowing on `type` now typechecks.
 
+### Fixed (continued)
+- Preserved composer text and attachments when a slow conversation-meta
+  restore resolves after a local edit or clear. The interaction visual
+  drain now covers required secrets and multi-step forms, and the visual
+  e2e gate passes all 163 cases.
+
 ### Changed
 - Settled-run notifications are truthful: an answered run keeps the
   `"Reply ready"` title, while an unanswered run (model error, abort,
@@ -44,28 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   settle reason appended to the body — a failed run no longer
   masquerades as a ready reply. Recipient, dedup, and
   `notifications.runSettled` gating are unchanged.
-
-### Added (earlier release-readiness work)
-- `GET /v1/meta` now reports the effective listener: `listener.host`,
-  `listener.port`, and `listener.families` — the address families the
-  live listener accepts, measured once at listen (the `::` wildcard
-  probes both loopbacks and reports exactly the families that connect;
-  a hostname bind reports the bound socket's family, never a concrete
-  peer address). Additive wire field: pre-upgrade servers omit
-  `listener`; clients consuming it must tolerate its absence.
-- `SIGRUN_LISTEN_HOST` is now honored as the environment equivalent of
-  the programmatic `serve({host})` option. One host value is resolved
-  at the serving boundary (`options.host` → `SIGRUN_LISTEN_HOST` → `::`)
-  and drives the bind AND both auth derivations — the previously split
-  defaults (the boot auth derivation's independent env read, and the
-  harness-side `0.0.0.0` fallback) are gone.
-- Proxy-auth rejections (401) now log one sanitized `warn` per rejected
-  request: the socket peer, the method, a short reason (`untrusted
-  proxy`, `missing or wrong shared secret`, `missing identity header`,
-  `untrusted identity source`), and the resolved route template — never
-  tokens, cookies, identity-header values, query strings, or the full
-  URL. Token-auth failures and successful proxy authentications stay
-  silent.
 
 ## [0.2.0] - 2026-10-27
 ### Added

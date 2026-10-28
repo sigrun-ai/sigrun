@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+### Fixed
+- No user-facing TUI changes; versioned with the core family for the
+  listener, interaction, notification, and webui draft-restore fixes.
+
 ## [0.2.0] - 2026-10-27
 ### Added
 - Block rendering extended for the U5/U6/U7 workstreams: chat-block

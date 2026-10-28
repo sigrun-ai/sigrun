@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+### Added
+- Additive listener metadata on the meta response: host, port, and
+  measured address families.
+
 ## [0.2.0] - 2026-10-27
 ### Added
 - Surface and block wire types extended for the U5/U6/U7 workstreams:
