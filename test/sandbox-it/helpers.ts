@@ -103,10 +103,24 @@ export async function privilegedHelper(root: string): Promise<PrivilegedHelper> 
 	if (process.env.SIGRUN_SANDBOX_IT_PRIVILEGED !== "1") {
 		return { reason: "requires a privileged runner with SIGRUN_SANDBOX_IT_PRIVILEGED=1 and CAP_SETFCAP; uid-switch controls cannot discriminate without helper file capabilities" };
 	}
+	// `mkdtemp` is mode 0700 and the jail switches to uid 1 before exec, so
+	// the target's ANCESTOR chain must be traversable by that uid: without
+	// o+x on the root the helper fails to open the target
+	// (`cannot open ...: Permission denied`) whatever its own mode. Making
+	// the root traversable is required; it does not make the target reachable
+	// by a jailed other-uid process, which is what the denial cases assert.
+	await chmod(root, 0o755);
 	const helper = join(root, "sigrun-sandbox-cap");
-	const target = helper;
+	// The target is a SEPARATE, NON-CAPPED copy. Production always execs a
+	// non-capped program (`node` via launchInJail); pointing the target at
+	// the capped helper made the helper exec its own capped self, which is a
+	// shape production never has and which the later in-jail case also needs
+	// to be capability-free in order to prove the confinement.
+	const target = join(root, "sigrun-sandbox-native");
 	await copyFile(HELPER, helper);
+	await copyFile(HELPER, target);
 	await chmod(helper, 0o755);
+	await chmod(target, 0o755);
 	try {
 		await execFileAsync("setcap", ["cap_setuid,cap_setgid+ep", helper], { timeout: 10_000 });
 		const { stdout } = await execFileAsync(helper, ["run", "--", target, "probe", "identity"], {

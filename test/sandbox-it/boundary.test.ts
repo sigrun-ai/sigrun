@@ -101,6 +101,13 @@ beforeAll(async () => {
 	if (!process.env.SIGRUN_SANDBOX_IT || !probe.available || namespaceReason !== undefined) return;
 	root = await mkdtemp(join(tmpdir(), "sigrun-kernel-boundary-"));
 	roots.push(root);
+	// The privileged uid-switch cases run the helper as uid 1, so that uid
+	// must be able to TRAVERSE to their targets. mkdtemp is 0700; a directory
+	// the switched-to uid cannot enter makes the exec fail with EACCES before
+	// the policy is even consulted, which is a fixture artifact rather than a
+	// boundary result. Every denial assertion below still targets paths the
+	// jail does not grant, so nothing is weakened by making ancestors o+x.
+	await chmod(root, 0o755);
 	deployment = await bootDeployment({ root });
 	// The PID must identify the actual sigrun process, not unshare's
 	// wrapper. The test-only server entry writes a marker from inside
@@ -471,8 +478,13 @@ describeKernel("real tools in real two-user conversations", () => {
 		await chmod(helper, 0o755);
 		await promisify(execFile)("setcap", ["cap_setuid,cap_setgid+ep", helper]);
 		const policy = { ...nativePolicy(nativePath), uid: 1, gid: 1, groups: [1] };
+		// The control must run the SAME helper/policy/target as the in-jail
+		// case below — only "inside a jail" may differ. The policy grants
+		// `nativePath`, so executing any other copy (e.g. the helper's own
+		// root path) would be denied by the policy itself and the control
+		// would fail for a reason unrelated to confinement.
 		const outside = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-			const child = spawnOutside(privileged.helper!, ["run", "--", privileged.native!, "probe", "identity"], {
+			const child = spawnOutside(helper, ["run", "--", nativePath, "probe", "identity"], {
 				SIGRUN_SANDBOX_POLICY: JSON.stringify(policy),
 			});
 			let output = "";
@@ -497,7 +509,19 @@ describeKernel("real tools in real two-user conversations", () => {
 		}
 		const osRoot = await mkdtemp(join(tmpdir(), "sigrun-osuser-policy-"));
 		roots.push(osRoot);
-		const account = { uid: 1, gid: 1, groups: [1], home: osRoot };
+		// buildOsUserPolicy rejects a home that IS or CONTAINS configDir, and
+		// osRoot holds config/data/cache/state beneath it — so the account's
+		// home must be a dedicated child of osRoot, not osRoot itself.
+		// The policy's ensureDirs are created BY the switched-to uid, so that
+		// uid needs write access to the deepest existing ancestor (osRoot).
+		// Production owns these directories via a real OS account; the fixture
+		// has to grant the equivalent, or the switch succeeds and directory
+		// creation fails for a reason unrelated to the assertion.
+		await chmod(osRoot, 0o777);
+		const osHome = join(osRoot, "home");
+		await mkdir(osHome, { recursive: true });
+		await chmod(osHome, 0o777);
+		const account = { uid: 1, gid: 1, groups: [1], home: osHome };
 		const built = buildOsUserPolicy(osRoot, account);
 		expect(built.uid).toBe(1);
 		expect(built.gid).toBe(1);
