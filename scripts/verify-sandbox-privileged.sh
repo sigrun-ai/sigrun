@@ -12,17 +12,22 @@ Usage:
 
 REVISION must be a full 40-character sigrun core commit. The checkout's
 five built-in extension siblings are archived at their current HEAD commits,
-which are printed so a green run records the exact dependency set it verified.
-IMAGE must be digest-pinned and contain Node 22, setcap, ps (procps), and the
-sandbox helper at /usr/local/lib/sigrun/sigrun-sandbox. --runtime defaults to
-docker; DOCKER_HOST selects the target daemon when using Docker. The image can
-also be supplied as SIGRUN_SANDBOX_VERIFY_IMAGE and the runtime as
-SIGRUN_SANDBOX_VERIFY_RUNTIME.
+which are printed so a completed run records the exact dependency set it
+tested. IMAGE must be digest-pinned and contain Node 22, setcap, ps (procps),
+and the sandbox helper at /usr/local/lib/sigrun/sigrun-sandbox. --runtime
+defaults to docker; DOCKER_HOST selects the target daemon when using Docker.
+The image can also be supplied as SIGRUN_SANDBOX_VERIFY_IMAGE and the runtime
+as SIGRUN_SANDBOX_VERIFY_RUNTIME.
 
 Without --run, print the plan and exit 0. With --run, create one disposable
-container with every capability dropped except SETFCAP, execute the two
-privileged cases and the ordinary regression suite, and remove the container
-and temporary source archive on every exit.
+container with every capability dropped except SETFCAP, SETUID, and SETGID,
+execute the two privileged cases and the ordinary regression suite, and remove
+the container and temporary source archive on every exit.
+
+CURRENT LIMITATION: the two privileged cases are expected to FAIL with the
+existing fixture, as recorded in the 2026-10-27 release verification evidence.
+A green result requires the fixture redesign; this script never tolerates or
+hides those failures and exits non-zero when either case fails.
 EOF
 }
 
@@ -76,12 +81,15 @@ Privileged sandbox verification plan (dry run; nothing was created or started):
   image: ${image:-<IMAGE@sha256:64-hex-digest>}
   container runtime: ${runtime}
   source: git archive of the pinned core revision and five sibling HEADs
-  container: disposable, root user, ALL capabilities dropped, only SETFCAP added
+  container: disposable, root user, ALL dropped except SETFCAP, SETUID, SETGID
   seccomp: unconfined for the suite's unshare namespace control; capabilities stay narrow
   phase 1: SIGRUN_SANDBOX_IT_PRIVILEGED=1; require the osUser and in-jail uid-switch cases to pass
   phase 2: privileged opt-in unset; require all ordinary cases to pass and those two cases to skip
   evidence: kernel release, Landlock ABI, and per-case JSON-reported results
   cleanup: remove the container and temporary source archive on success or failure
+CURRENT LIMITATION: the two privileged cases are expected to FAIL with the
+existing fixture (see the 2026-10-27 release verification evidence). A green
+result requires the fixture redesign; failures are never tolerated.
 No privileged workload is run without --run.
 EOF
 }
@@ -166,7 +174,11 @@ container_id=$("$runtime" create \
 	--name "$container" \
 	--user 0:0 \
 	--cap-drop ALL \
+	# SETFCAP only sets the file-capability xattr. Executing the capped helper
+	# also requires its granted SETUID/SETGID capabilities in the bounding set.
 	--cap-add SETFCAP \
+	--cap-add SETUID \
+	--cap-add SETGID \
 	# The boundary suite's namespace control uses unshare; Docker's default
 	# seccomp profile rejects it. Keep the capability set exactly as above.
 	--security-opt seccomp=unconfined \
@@ -193,6 +205,7 @@ done
 	exit 1
 }
 printf 'VERIFY core %s\n' "$revision"
+printf 'LIMITATION current fixture is expected to fail both privileged cases; a green result requires the fixture redesign recorded in the 2026-10-27 release evidence\n'
 printf 'KERNEL %s\n' "$(uname -srmo)"
 mkdir -p sandbox/target/release
 cp /usr/local/lib/sigrun/sigrun-sandbox sandbox/target/release/sigrun-sandbox

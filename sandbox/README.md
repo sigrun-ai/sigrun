@@ -96,14 +96,20 @@ The CI boundary job runs the 19 unprivileged cases in
 `test/sandbox-it/boundary.test.ts`. Two cases need more privilege than CI
 grants: the `osUser` success case and the case proving that the same helper's
 uid/gid switch succeeds outside a jail and fails inside it. They remain
-**unverified in CI** until a privileged verification run is executed and its
-results are recorded.
+**UNVERIFIED**. An approved privileged run showed that the current fixture
+cannot pass them: its file-capability target conflicts with the helper's
+`no_new_privs` hardening, its temporary-directory permissions prevent traversal,
+and its `osUser` policy nests protected roots. Verification therefore needs
+both a privileged runner and a fixture redesign; a runner alone cannot settle
+these claims.
 
-`scripts/verify-sandbox-privileged.sh` provides that one-shot run without
-creating a broadly privileged workload. It uses a disposable Docker-compatible
-container as root, drops every capability, and adds back only `SETFCAP`. The
-test fixture uses that capability to grant the helper its file capabilities;
-the container receives neither `SYS_ADMIN` nor the `privileged` flag. Docker's
+`scripts/verify-sandbox-privileged.sh` runs the checks without creating a
+broadly privileged workload. It uses a disposable Docker-compatible container
+as root, drops every capability, and adds back only `SETFCAP`, `SETUID`, and
+`SETGID`. `SETFCAP` permits setting the helper's file-capability xattr, while
+the other two must be present in the process bounding set for `execve` of the
+file-capability-carrying helper to succeed. The container receives neither
+`SYS_ADMIN` nor the `privileged` flag. Docker's
 default seccomp profile is disabled for this disposable container because the
 suite's namespace control requires `unshare`; this does not widen its capability
 set. The script then runs exactly those two cases with
@@ -128,14 +134,17 @@ SIGRUN_SANDBOX_VERIFY_IMAGE='IMAGE@sha256:64-lowercase-hex-digest' \
 The core checkout must contain that commit, and the five built-in extension
 checkouts must be its siblings in the same parent directory. The script
 archives the requested core commit and each sibling's current `HEAD`, printing
-every source revision so a green run records the exact dependency set it
-verified. `SIGRUN_SANDBOX_VERIFY_RUNTIME` selects the container
+every source revision so a completed run records the exact dependency set it
+tested. `SIGRUN_SANDBOX_VERIFY_RUNTIME` selects the container
 runtime executable (default `docker`); Docker's usual `DOCKER_HOST` selects the
 target daemon. The runner needs network access for `npm ci`, Linux with
 Landlock ABI 6 or newer, and support for unprivileged user and PID namespaces.
 
-The run emits the kernel release, Landlock ABI, and per-case results. It fails
-if either privileged case does not pass, if the ordinary suite regresses, or
-if the ABI is too old. A trap removes the container and temporary source
-archive on success or failure. Running the script is an operator action; the
-dry run is not evidence that either privileged case passed.
+The run emits the kernel release, Landlock ABI, and per-case results. With the
+current fixture, both privileged cases are expected to **FAIL** for the reasons
+recorded in the 2026-10-27 release verification evidence. A green result
+requires the fixture redesign. The script does not tolerate those failures: it
+exits non-zero if either privileged case fails, if the ordinary suite
+regresses, or if the ABI is too old. A trap removes the container and temporary
+source archive on success or failure. Running the script is an operator action;
+the dry run is not evidence that either privileged case passed.
