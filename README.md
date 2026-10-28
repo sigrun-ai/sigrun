@@ -1,11 +1,27 @@
 # Sigrun
 
-Sigrun is a durable personal-assistant harness built on
-[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable):
-long-lived conversations over a SQLite store (surviving restarts, with
-resumable generation), an HTTP API plus web and terminal UIs, and an
-extension system that installs extra tools, providers, prompt sections,
-and capabilities at boot.
+Sigrun is a **durable, multi-user personal-assistant server** built on
+[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable).
+One agent loop serves every surface — a web UI, a terminal UI, an HTTP
+API, and chat channels — over long-lived conversations stored in SQLite.
+An extension model installs extra tools, providers, prompt sections,
+memory systems, and login providers at boot.
+
+**Why use it?** Conversations survive restarts and resume where they
+stopped; memory and integrations are extension-owned and individually
+replaceable; multi-user boundaries are explicit (real authentication plus
+a per-user execution jail); and it deploys as an npm package, a Docker
+compose reference, or a Helm chart. [`docs/why.md`](docs/why.md) is the
+longer rationale.
+
+**Status:** 0.x — useful and exercised, but extension and settings
+contracts can still evolve between minor releases. See
+[`SECURITY.md`](SECURITY.md) for the support, trust, and verification
+posture, and [`CONTRIBUTING.md`](CONTRIBUTING.md) to build and test.
+
+**Try it:** `npm i -g @sigrun/sigrun && sigrun run` — or jump to
+[Install](#install) and [Quickstart](#quickstart) for the model/credential
+setup every install needs.
 
 - **Durable** — conversations, submissions, and schedules live in one
   SQLite database (`SIGRUN_STORAGE_PATH`); a restart resumes where it
@@ -791,7 +807,7 @@ a dashboard) are in
 
 ## Built-in extensions
 
-Four extensions are built into core — **codemode**, **MCP**, **tool
+Five extensions are built into core — **codemode**, **MCP**, **tool
 search**, **gateway**, and **OAuth login**. The first three mirror
 what pi 1.3.0 ships built-in; the gateway is sigrun's own channel-adapter
 engine; OAuth provides OIDC, GitHub, and Discord login providers. They

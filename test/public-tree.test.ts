@@ -6,7 +6,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" })
 	.split("\0").filter(Boolean);
 const PRIVATE_DIRS = ["test-results/", "docs/superpowers/", "docs/interaction-seam-survey/"];
-const EXEMPT = new Set(["CONTEXT.md", "test/public-tree.test.ts"]); // CONTEXT.md: until Phase 4
+const EXEMPT = new Set(["test/public-tree.test.ts"]);
 
 describe("public tree hygiene", () => {
 	test("no tracked file lives under a private or artifact dir", () => {

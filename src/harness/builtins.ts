@@ -56,7 +56,7 @@ export interface BuiltinExtension {
 }
 
 /**
- * The four built-ins, in load order (codemode before tool-search: both
+ * The five built-ins, in load order (codemode before tool-search: both
  * wrap pi-durable's own extensions and neither depends on the other, but
  * the order pins the tool-collision story should names ever overlap).
  * Specifiers are the published package names (Task 3) — npm keys a file:

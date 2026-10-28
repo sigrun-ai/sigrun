@@ -90,8 +90,7 @@
 		"THIRD_PARTY_NOTICES.md",
 		"README.md",
 		"LICENSE",
-		"CHANGELOG.md",
-		"CONTEXT.md"
+		"CHANGELOG.md"
 	],
 	"allowScripts": {
 		"@google/genai@2.21.0": true,

@@ -369,7 +369,7 @@ function siblingVersion(dir: string): string {
 }
 
 describe("default boot", () => {
-	test("loads all four built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
+	test("loads all five built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins();
 		const response = await app.inject({ method: "GET", url: "/v1/extensions" });
 		expect(response.statusCode).toBe(200);

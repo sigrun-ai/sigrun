@@ -110,7 +110,6 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			"README.md",
 			"LICENSE",
 			"CHANGELOG.md",
-			"CONTEXT.md",
 		]);
 		// Exact intra-family pins.
 		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.2.0");
