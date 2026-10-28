@@ -35,9 +35,14 @@ const FIXTURE_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),
 ).href;
 
-/** The fixture memory extension (contract: factory; its legacy `submit` is the retirement-warning vehicle). */
+/** The fixture memory extension (contract: factory; current per-conversation recall). */
 const MEMORY_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-memory", "index.js"),
+).href;
+
+/** The minimal legacy-submit fixture: the retirement-warning vehicle (the retired `{extension, submit}` shape). */
+const LEGACY_SUBMIT_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-legacy-submit", "index.js"),
 ).href;
 
 /** The seam fixture extension (host-context contract): for the re-key identity test. */
@@ -435,8 +440,8 @@ test("a memory extension loads: memory_recall tool + long-term-memory section", 
 					(entry) => entry.section.key === "long-term-memory",
 				),
 			).toBe(true);
-			// The fixture's legacy `submit` pass-through is RETIRED (§6.7):
-			// the load stays `ok` and boot exposes no submit surface.
+			// The `submit` pass-through surface is RETIRED (§6.7): boot
+			// exposes no submit surface regardless of the fixture's shape.
 			expect((opened as unknown as { memorySubmit?: unknown }).memorySubmit).toBeUndefined();
 			// A memory extension owns the section: the no-op default must NOT be installed.
 			expect(
@@ -460,8 +465,8 @@ test("a factory result carrying submit loads ok and warns (retired pass-through)
 	// dropped its `submit` in 1ae6c90, so the surface is gone — but a result
 	// still carrying one must NOT quarantine (old packages keep loading):
 	// it is ignored with exactly one warning naming the extension slug.
-	// fixture-memory keeps the legacy `{ extension, submit }` shape on
-	// purpose — the vehicle for this pin.
+	// fixture-legacy-submit is the dedicated minimal vehicle for this pin
+	// (fixture-memory itself follows the CURRENT per-conversation contract).
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-submit-"));
 	try {
@@ -470,11 +475,11 @@ test("a factory result carrying submit loads ok and warns (retired pass-through)
 			// built-in surface (builtins: false = the pre-Task-2 boot shape).
 			builtins: false,
 			env: {},
-			extensionSpecifiers: [MEMORY_SPECIFIER],
+			extensionSpecifiers: [LEGACY_SUBMIT_SPECIFIER],
 		});
 		try {
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "sigrun-memory", status: "ok" },
+				{ name: "sigrun-fixture-legacy-submit", status: "ok" },
 			]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
@@ -483,7 +488,7 @@ test("a factory result carrying submit loads ok and warns (retired pass-through)
 			.map((call) => String(call[0]))
 			.filter((line) => line.includes("the submit pass-through was retired"));
 		expect(retirementWarnings).toEqual([
-			'extension "sigrun-memory": the submit pass-through was retired; ignoring',
+			'extension "sigrun-fixture-legacy-submit": the submit pass-through was retired; ignoring',
 		]);
 	} finally {
 		warn.mockRestore();

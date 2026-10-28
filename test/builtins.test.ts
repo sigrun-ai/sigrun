@@ -327,15 +327,27 @@ async function renderSection(
 	}, BACKGROUND_CONTEXT);
 }
 
+/**
+ * A deliberately partial ToolExecutionApi double for direct tool-execute
+ * calls in this suite (tool_search reads ONLY `api.agent(context)`).
+ *
+ * The double is built as a narrow typed Pick FIRST: if the `agent` or
+ * `conversationId` members drift (rename, signature change), the Pick
+ * fails typecheck here — the old `as unknown as ToolExecutionApi` double
+ * cast silenced exactly that drift. The single widening cast at the end
+ * only asserts the fields the tool never reads; it cannot hide changes
+ * to the fields it does.
+ */
 function executionApi(
 	opened: OpenedHarness,
 	conversation: Conversation,
 ): ToolExecutionApi {
-	return {
+	void opened;
+	const used: Pick<ToolExecutionApi, "conversationId" | "agent"> = {
 		conversationId: conversation.id,
-		snapshot: opened.harness.snapshot.bind(opened.harness),
 		agent: () => conversation.agent(BACKGROUND_CONTEXT),
-	} as unknown as ToolExecutionApi;
+	};
+	return used as ToolExecutionApi;
 }
 
 // ---------------------------------------------------------------------------
