@@ -138,8 +138,30 @@ for (const options of [
 		compaction: true,
 		settingsFile: { server: { compaction: { enabled: false } } },
 	},
+	{
+		autoNaming: false,
+		settingsFile: { namingModel: "faux/m" },
+	},
+	{
+		compaction: false,
+		settingsFile: { server: { compaction: { enabled: true } } },
+	},
 ] as const) {
 	test(`contradictory options fail fast: ${JSON.stringify(options)}`, async () => {
 		await expect(bootE2EServer(options)).rejects.toThrow(/contradict/);
 	});
 }
+
+test("deep merge preserves unrelated nested server settings", async () => {
+	const server = await bootE2EServer({
+		settingsFile: { server: { port: 1 } },
+	});
+	try {
+		expect(server.opened.settings.read()).toMatchObject({
+			namingModel: false,
+			server: { port: 1, compaction: { enabled: false } },
+		});
+	} finally {
+		await server.cleanup();
+	}
+});

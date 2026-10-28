@@ -245,20 +245,19 @@ async function bootOnDir(
 		providers: [{ provider: faux.provider }],
 	};
 	const config = loadConfig({
-			SIGRUN_DEFAULT_MODEL: "faux/m",
-			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-			// W1 Task 3: the naive workstation path — claimed identity below,
-			// no authenticators. The auth boot (Task 8) is the token method:
-			// every /v1 call needs the session cookie the onboarding claim
-			// (or a login) sets.
-			SIGRUN_AUTH: options.auth === undefined ? "none" : "token",
-			SIGRUN_WORKSPACE_PATH: dir,
-			...(options.dev === true ? { SIGRUN_DEV: "true" } : {}),
-		}, settingsFile);
+		SIGRUN_DEFAULT_MODEL: "faux/m",
+		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		// W1 Task 3: the naive workstation path — claimed identity below,
+		// no authenticators. The auth boot (Task 8) is the token method:
+		// every /v1 call needs the session cookie the onboarding claim
+		// (or a login) sets.
+		SIGRUN_AUTH: options.auth === undefined ? "none" : "token",
+		SIGRUN_WORKSPACE_PATH: dir,
+		...(options.dev === true ? { SIGRUN_DEV: "true" } : {}),
+	}, settingsFile);
 	const bootConfig = {
 		...config,
-		webuiBundle: WEBUI_DIST,
-		webuiBundleExplicit: true,
+		webui: { ...config.webui, bundle: WEBUI_DIST },
 	};
 	// The hermetic settings dir: ALWAYS inside the tmpdir (the boot otherwise
 	// reads the developer's real config dir — not hermetic). The merged file
