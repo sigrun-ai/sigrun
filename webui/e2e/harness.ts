@@ -63,12 +63,25 @@ export interface E2EServerOptions {
 	 * The settings FILE the booted server reads (`<tmpdir>/config/settings.json`
 	 * — the `OpenHarnessOptions.settingsDir` seam). The boot's settingsDir is
 	 * ALWAYS the tmpdir (never the developer's real config dir — the harness
-	 * is hermetic); this option writes the given document into it. The
-	 * response-counting specs use `{ namingModel: false }`: A2's background
-	 * auto-namer otherwise consumes one scripted faux response after the
-	 * first settled run (naming has its own vitest coverage).
+	 * is hermetic); this option writes the given document into it. Background
+	 * model consumers are disabled by default below; unrelated custom fields
+	 * deep-merge over those TEST-ONLY defaults (production defaults are not
+	 * changed). Contradictory feature options fail fast.
 	 */
 	readonly settingsFile?: Record<string, unknown>;
+	/**
+	 * Opt in to the background auto-namer. Defaults to FALSE so its completion
+	 * cannot consume a scripted foreground response. `true` leaves
+	 * `namingModel` unset (the default model) or preserves a custom model.
+	 */
+	readonly autoNaming?: boolean;
+	/**
+	 * Opt in to compaction model calls. Defaults to FALSE so background or
+	 * threshold compaction cannot shift the scripted response queue. `true`
+	 * leaves `server.compaction.enabled` unset (the production default) or
+	 * preserves an explicitly enabled custom setting.
+	 */
+	readonly compaction?: boolean;
 	/**
 	 * W1 Task 8 (spec §5.4/§5.8): boot TOKEN-ONLY and UNCLAIMED —
 	 * `SIGRUN_AUTH=token` with the setup code pinned via the env seam
@@ -130,12 +143,79 @@ export interface E2EServer {
 	readonly restart: (options?: E2EServerOptions) => Promise<E2EServer>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergeSettings(
+	base: Record<string, unknown>,
+	override: Record<string, unknown>,
+): Record<string, unknown> {
+	const merged = { ...base };
+	for (const [key, value] of Object.entries(override)) {
+		const current = merged[key];
+		merged[key] = isRecord(current) && isRecord(value)
+			? mergeSettings(current, value)
+			: value;
+	}
+	return merged;
+}
+
+function rejectContradiction(
+	option: "autoNaming" | "compaction",
+	optionValue: boolean,
+	setting: "namingModel" | "server.compaction.enabled",
+	settingValue: unknown,
+): void {
+	if (settingValue === undefined || settingValue === optionValue) return;
+	// Auto-naming has no boolean enable value in the settings document: any
+	// model string enables it; false disables it. Compaction is boolean.
+	const enables = option === "autoNaming"
+		? typeof settingValue === "string"
+		: settingValue === true;
+	if (enables !== optionValue) {
+		throw new Error(
+			`e2e harness: contradictory ${option} option (${String(optionValue)}) ` +
+				`and settingsFile.${setting} (${JSON.stringify(settingValue)})`,
+		);
+	}
+}
+
+/** Resolve the test-harness defaults and custom settings into one document. */
+function settingsFileForBoot(options: E2EServerOptions): Record<string, unknown> {
+	const autoNaming = options.autoNaming ?? false;
+	const compaction = options.compaction ?? false;
+	const custom = options.settingsFile ?? {};
+	const server = isRecord(custom.server) ? custom.server : {};
+	const customCompaction = isRecord(server.compaction) ? server.compaction : {};
+	rejectContradiction("autoNaming", autoNaming, "namingModel", custom.namingModel);
+	rejectContradiction(
+		"compaction",
+		compaction,
+		"server.compaction.enabled",
+		customCompaction.enabled,
+	);
+	return mergeSettings(
+		{
+			...(autoNaming ? {} : { namingModel: false }),
+			server: {
+				compaction: {
+					...(compaction ? {} : { enabled: false }),
+				},
+			},
+		},
+		custom,
+	);
+}
+
 /** Boot a hermetic E2E server on an ephemeral loopback port. */
 export async function bootE2EServer(
 	options: E2EServerOptions = {},
 ): Promise<E2EServer> {
+	// Validate conflicts before allocating a tmpdir.
+	const settingsFile = settingsFileForBoot(options);
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-e2e-"));
-	return await bootOnDir(dir, options);
+	return await bootOnDir(dir, { ...options, settingsFile });
 }
 
 /**
@@ -146,6 +226,7 @@ async function bootOnDir(
 	dir: string,
 	options: E2EServerOptions,
 ): Promise<E2EServer> {
+	const settingsFile = settingsFileForBoot(options);
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [
@@ -163,8 +244,7 @@ async function bootOnDir(
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
 	};
-	const config = {
-		...loadConfig({
+	const config = loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			// W1 Task 3: the naive workstation path — claimed identity below,
@@ -174,22 +254,22 @@ async function bootOnDir(
 			SIGRUN_AUTH: options.auth === undefined ? "none" : "token",
 			SIGRUN_WORKSPACE_PATH: dir,
 			...(options.dev === true ? { SIGRUN_DEV: "true" } : {}),
-		}),
+		}, settingsFile);
+	const bootConfig = {
+		...config,
 		webuiBundle: WEBUI_DIST,
 		webuiBundleExplicit: true,
 	};
 	// The hermetic settings dir: ALWAYS inside the tmpdir (the boot otherwise
-	// reads the developer's real config dir — not hermetic). Specs that need a
-	// non-default setting (namingModel: false) write it via `options.settingsFile`.
+	// reads the developer's real config dir — not hermetic). The merged file
+	// disables background model consumers unless this spec opted in.
 	const settingsDir = join(dir, "config");
 	await mkdir(settingsDir, { recursive: true });
-	if (options.settingsFile !== undefined) {
-		await writeFile(
-			join(settingsDir, "settings.json"),
-			JSON.stringify(options.settingsFile, null, "\t"),
-			"utf8",
-		);
-	}
+	await writeFile(
+		join(settingsDir, "settings.json"),
+		JSON.stringify(settingsFile, null, "\t"),
+		"utf8",
+	);
 	const opened = await openHarness(config, {
 		// The unclaimed gate 403s an empty directory under every method —
 		// the e2e boots a claimed admin ("tester") exactly like the
@@ -222,7 +302,7 @@ async function bootOnDir(
 		// test/builtins.test.ts's subject; pass `builtins: true` to opt in.
 		builtins: options.builtins === true,
 	});
-	const app = await createServer(opened, config, [], {
+	const app = await createServer(opened, bootConfig, [], {
 		...(options.imageFetch === undefined ? {} : { imageFetch: options.imageFetch }),
 	});
 	// Browser-login fixture: a loopback destination for the provider's

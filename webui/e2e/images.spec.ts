@@ -209,7 +209,6 @@ test.beforeAll(async () => {
 	setFixtureImageUrl(images.url);
 	server = await bootE2EServer({
 		extensionSpecifiers: [FIXTURE],
-		settingsFile: { namingModel: false },
 		imageFetch: {
 			resolve: async () => [publicStandIn()],
 			ca: images.ca,

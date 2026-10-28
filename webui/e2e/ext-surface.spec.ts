@@ -28,7 +28,6 @@ let server: E2EServer;
 test.beforeAll(async () => {
 	server = await bootE2EServer({
 		extensionSpecifiers: [FIXTURE],
-		settingsFile: { namingModel: false },
 	});
 });
 

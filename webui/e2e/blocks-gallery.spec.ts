@@ -69,7 +69,6 @@ let server: E2EServer;
 
 test.beforeAll(async () => {
 	server = await bootE2EServer({
-		settingsFile: { namingModel: false },
 		dev: true,
 	});
 });

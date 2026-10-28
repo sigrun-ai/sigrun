@@ -64,7 +64,6 @@ let server: E2EServer;
 
 test.beforeAll(async () => {
 	server = await bootE2EServer({
-		settingsFile: { namingModel: false },
 		responses: [
 			// Turn 1: the model shows the board.
 			fauxAssistantMessage(
