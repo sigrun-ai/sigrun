@@ -3,7 +3,8 @@
 Sigrun is a **durable, multi-user personal-assistant server** built on
 [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable).
 One agent loop serves every surface — a web UI, a terminal UI, an HTTP
-API, and chat channels — over long-lived conversations stored in SQLite.
+API, and (via the gateway extension) chat channels — over long-lived
+conversations stored in SQLite.
 An extension model installs extra tools, providers, prompt sections,
 memory systems, and login providers at boot.
 

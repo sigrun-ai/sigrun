@@ -26,8 +26,9 @@ at hand. That wants three properties most agent stacks don't have together:
 Sigrun is built on [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable)
 because it makes the "second agent loop" problem structurally impossible.
 Conversations, submissions, retries, compaction, and crash recovery live in
-the harness; the web UI, terminal UI, HTTP API, scheduled jobs, and chat
-channels are all clients submitting to and watching the same durable
+the harness; the web UI, terminal UI, HTTP API, scheduled jobs, and (via
+the gateway extension) chat channels are all clients submitting to and
+watching the same durable
 conversations. A restart resumes where the process stopped rather than
 losing the run.
 
@@ -53,5 +54,5 @@ Install only extensions you trust: they run in-process with the server.
   installs skip all of this.
 - **Evolving contracts.** Sigrun is 0.x. The extension and settings
   contracts are useful and exercised, but they can still change between
-  minor releases. See `SECURITY.md` for the support and verification
+  minor releases. See [`SECURITY.md`](../SECURITY.md) for the support and verification
   posture, including what has and has not been verified.
