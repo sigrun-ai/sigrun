@@ -160,6 +160,14 @@ test("settled-event and tool-api conversation ids match across two conversations
 	// conversation recalls its OWN transcript.
 	const b = await conversationWithRecall(opened, faux, "beta-marker-B");
 
+	// Submission completion does NOT guarantee the event bus's side-lane
+	// runSettled delivery. Wait for BOTH turns of BOTH conversations before
+	// reading the settled record (the same synchronization as the second
+	// test), so this assertion cannot race the delivery lane.
+	await vi.waitFor(
+		() => expect(fixture.settledConversationIds).toHaveLength(4),
+		{ timeout: 5_000, interval: 100 },
+	);
 	// Two settled runs per conversation (turn 1 + turn 2), so the event
 	// record holds both ids; the tool record holds exactly the two recall
 	// calls, one per conversation.

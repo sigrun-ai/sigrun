@@ -338,11 +338,7 @@ async function renderSection(
  * only asserts the fields the tool never reads; it cannot hide changes
  * to the fields it does.
  */
-function executionApi(
-	opened: OpenedHarness,
-	conversation: Conversation,
-): ToolExecutionApi {
-	void opened;
+function executionApi(conversation: Conversation): ToolExecutionApi {
 	const used: Pick<ToolExecutionApi, "conversationId" | "agent"> = {
 		conversationId: conversation.id,
 		agent: () => conversation.agent(BACKGROUND_CONTEXT),
@@ -527,7 +523,7 @@ describe("per-user tools in built-in discovery", () => {
 		)).toContain("acme_probe");
 		const result = await search.execute(
 			{ query: "acme_probe" },
-			executionApi(opened, alice),
+			executionApi(alice),
 			BACKGROUND_CONTEXT,
 		);
 		expect(result.details).toEqual({ loaded: ["acme_probe"] });
@@ -536,7 +532,7 @@ describe("per-user tools in built-in discovery", () => {
 		)).not.toContain("acme_probe");
 		const bobResult = await search.execute(
 			{ query: "acme_probe" },
-			executionApi(opened, bob),
+			executionApi(bob),
 			BACKGROUND_CONTEXT,
 		);
 		expect(bobResult.details).toEqual({ loaded: [] });

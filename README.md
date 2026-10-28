@@ -325,9 +325,9 @@ needed. Set `"builtinExtensions": {"oauth": false}` to disable it; like the
 other built-in toggles, this is restart-required. A configured extension
 whose package name is also `@sigrun/oauth` replaces the built-in. If the
 built-in cannot be resolved or loaded, it is quarantined without aborting
-boot. It remains separately installable through the normal `extensions`
-list (see [Extensions](#extensions)) for a deployment that wants it without
-the built-in. It is inert when its settings contain no valid providers.
+boot. Standalone installation outside the built-in is not a supported use
+case in 0.2; the package's type-only core dependency posture is accepted
+for this release. It is inert when its settings contain no valid providers.
 
 Create an OAuth/OIDC client at the identity service, with the redirect URI
 shown below. Configure providers in the extension's

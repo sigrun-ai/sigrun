@@ -36,11 +36,11 @@ import {
 	AssistantEntry,
 	defineExtension,
 	defineTool,
+	GenerationTask,
 	hook,
 	section,
 	UserEntry,
 } from "@earendil-works/pi-durable";
-import { GenerationTask } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 
 /** The stable placeholder text (mirrors the real package byte-for-byte). */
