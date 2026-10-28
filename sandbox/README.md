@@ -103,8 +103,10 @@ results are recorded.
 creating a broadly privileged workload. It uses a disposable Docker-compatible
 container as root, drops every capability, and adds back only `SETFCAP`. The
 test fixture uses that capability to grant the helper its file capabilities;
-the container receives neither `SYS_ADMIN` nor the `privileged` flag. The
-script then runs exactly those two cases with
+the container receives neither `SYS_ADMIN` nor the `privileged` flag. Docker's
+default seccomp profile is disabled for this disposable container because the
+suite's namespace control requires `unshare`; this does not widen its capability
+set. The script then runs exactly those two cases with
 `SIGRUN_SANDBOX_IT_PRIVILEGED=1`, followed by the ordinary suite with that
 opt-in unset as a regression check.
 
@@ -115,8 +117,8 @@ scripts/verify-sandbox-privileged.sh
 ```
 
 An actual run needs an explicit `--run`, a full core commit, and a
-digest-pinned image containing Node 22, `setcap`, and the sandbox helper at
-`/usr/local/lib/sigrun/sigrun-sandbox`:
+digest-pinned image containing Node 22, `setcap`, `ps` (from `procps`), and
+the sandbox helper at `/usr/local/lib/sigrun/sigrun-sandbox`:
 
 ```sh
 SIGRUN_SANDBOX_VERIFY_IMAGE='IMAGE@sha256:64-lowercase-hex-digest' \
@@ -126,7 +128,8 @@ SIGRUN_SANDBOX_VERIFY_IMAGE='IMAGE@sha256:64-lowercase-hex-digest' \
 The core checkout must contain that commit, and the five built-in extension
 checkouts must be its siblings in the same parent directory. The script
 archives the requested core commit and each sibling's current `HEAD`, printing
-every source revision. `SIGRUN_SANDBOX_VERIFY_RUNTIME` selects the container
+every source revision so a green run records the exact dependency set it
+verified. `SIGRUN_SANDBOX_VERIFY_RUNTIME` selects the container
 runtime executable (default `docker`); Docker's usual `DOCKER_HOST` selects the
 target daemon. The runner needs network access for `npm ci`, Linux with
 Landlock ABI 6 or newer, and support for unprivileged user and PID namespaces.

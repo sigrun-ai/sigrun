@@ -11,11 +11,13 @@ Usage:
   verify-sandbox-privileged.sh [--image IMAGE@sha256:DIGEST] [--runtime PATH] [--run] [REVISION]
 
 REVISION must be a full 40-character sigrun core commit. The checkout's
-five built-in extension siblings are archived at their current HEAD commits.
-IMAGE must be digest-pinned and contain Node 22, setcap, plus the sandbox
-helper at /usr/local/lib/sigrun/sigrun-sandbox. --runtime defaults to docker; DOCKER_HOST
-selects the target daemon when using Docker. The image can also be supplied as
-SIGRUN_SANDBOX_VERIFY_IMAGE and the runtime as SIGRUN_SANDBOX_VERIFY_RUNTIME.
+five built-in extension siblings are archived at their current HEAD commits,
+which are printed so a green run records the exact dependency set it verified.
+IMAGE must be digest-pinned and contain Node 22, setcap, ps (procps), and the
+sandbox helper at /usr/local/lib/sigrun/sigrun-sandbox. --runtime defaults to
+docker; DOCKER_HOST selects the target daemon when using Docker. The image can
+also be supplied as SIGRUN_SANDBOX_VERIFY_IMAGE and the runtime as
+SIGRUN_SANDBOX_VERIFY_RUNTIME.
 
 Without --run, print the plan and exit 0. With --run, create one disposable
 container with every capability dropped except SETFCAP, execute the two
@@ -75,6 +77,7 @@ Privileged sandbox verification plan (dry run; nothing was created or started):
   container runtime: ${runtime}
   source: git archive of the pinned core revision and five sibling HEADs
   container: disposable, root user, ALL capabilities dropped, only SETFCAP added
+  seccomp: unconfined for the suite's unshare namespace control; capabilities stay narrow
   phase 1: SIGRUN_SANDBOX_IT_PRIVILEGED=1; require the osUser and in-jail uid-switch cases to pass
   phase 2: privileged opt-in unset; require all ordinary cases to pass and those two cases to skip
   evidence: kernel release, Landlock ABI, and per-case JSON-reported results
@@ -121,12 +124,18 @@ for sibling in $siblings; do
 done
 
 source_dir=$(mktemp -d "${TMPDIR:-/tmp}/sigrun-sandbox-verify.XXXXXX")
-container="sigrun-sandbox-verify-$$"
+# The name is collision-resistant even when clients on a shared daemon reuse
+# PIDs. Destructive cleanup is registered only after create returns this
+# invocation's own ID; a name conflict therefore cannot remove another
+# client's pre-existing container.
+container_suffix=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+container="sigrun-sandbox-verify-$$-$container_suffix"
+container_id=
 cleanup() {
 	status=$?
 	trap - EXIT HUP INT TERM
-	if [ -n "${container_started:-}" ]; then
-		"$runtime" rm -f "$container" >/dev/null 2>&1 || true
+	if [ -n "$container_id" ]; then
+		"$runtime" rm -f "$container_id" >/dev/null 2>&1 || true
 	fi
 	rm -rf -- "$source_dir"
 	exit "$status"
@@ -145,26 +154,46 @@ for sibling in $siblings; do
 	git -C "$workspace_root/$sibling" archive HEAD | tar -x -C "$source_dir/$sibling"
 	printf 'SOURCE %s %s\n' "$sibling" "$sibling_revision"
 done
+# With DAC_OVERRIDE dropped, container root cannot traverse mktemp's 0700
+# directory or read host-private files. The archive is public source, so make
+# this temporary copy readable rather than widening the capability set.
+chmod 0755 "$source_dir"
+chmod -R a+rX "$source_dir"
 
-container_started=1
-"$runtime" run --rm -i \
+# Create and start are separate so cleanup owns the exact ID returned by a
+# successful create, including a container that only partially starts.
+container_id=$("$runtime" create \
 	--name "$container" \
 	--user 0:0 \
 	--cap-drop ALL \
 	--cap-add SETFCAP \
+	# The boundary suite's namespace control uses unshare; Docker's default
+	# seccomp profile rejects it. Keep the capability set exactly as above.
+	--security-opt seccomp=unconfined \
 	--volume "$source_dir:/src:ro" \
 	--entrypoint /bin/sh \
-	"$image" -s -- "$revision" <<'INNER'
+	"$image" -s -- "$revision")
+"$runtime" start -a -i "$container_id" <<'INNER'
 set -eu
 revision=$1
 work=/work
 mkdir "$work"
-cp -a /src/. "$work/"
+# CHOWN is deliberately absent, so do not ask cp to preserve ownership.
+cp -R /src/. "$work/"
 cd "$work/sigrun"
 
+for command in node setcap ps unshare; do
+	command -v "$command" >/dev/null 2>&1 || {
+		echo "the verification image is missing required command: $command (install procps for ps)" >&2
+		exit 1
+	}
+done
+[ -x /usr/local/lib/sigrun/sigrun-sandbox ] || {
+	echo "the verification image is missing executable helper: /usr/local/lib/sigrun/sigrun-sandbox" >&2
+	exit 1
+}
 printf 'VERIFY core %s\n' "$revision"
 printf 'KERNEL %s\n' "$(uname -srmo)"
-command -v setcap >/dev/null 2>&1 || { echo "the verification image must provide setcap" >&2; exit 1; }
 mkdir -p sandbox/target/release
 cp /usr/local/lib/sigrun/sigrun-sandbox sandbox/target/release/sigrun-sandbox
 probe=$(sandbox/target/release/sigrun-sandbox probe)
