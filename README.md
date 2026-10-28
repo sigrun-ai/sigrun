@@ -574,7 +574,10 @@ identity-switch capabilities once (replace `<helper>` with its path):
 sudo setcap cap_setuid,cap_setgid+ep <helper>
 ```
 
-The helper's boot self-test verifies the switch.
+The helper's boot self-test verifies the switch. `SIGRUN_SANDBOX_HELPER`
+points sigrun at a helper binary at a non-default absolute path (it falls back
+to the installed location with one warning if the path does not exist), which is
+how a staged copy gets used.
 
 File capabilities only take effect when the capabilities they grant are
 already in the **caller's** bounding set: executing the capped helper needs
@@ -591,6 +594,52 @@ A root container start (`SIGRUN_UID=0`) does exist, but it is a mount-point
 ownership trampoline, not an `osUsers` enabler: it needs
 `CAP_CHOWN`/`CAP_SETUID`/`CAP_SETGID` for the chown-and-drop and still leaves
 you with a single container uid.
+
+#### If you insist on `osUsers` in a container — and why you shouldn't
+
+It is possible, and two of the three pieces need no image change. A capped
+helper can be staged at runtime on any writable path (a named volume, a
+`tmpfs`, a bind mount), and the caps come from the container's own flags:
+
+```yaml
+# the runtime half — no derived image required
+services:
+  sigrun:
+    user: "1000:1000"
+    cap_add: [SETUID, SETGID]   # bounding set for the helper's file caps
+    volumes:
+      - sigrun-data:/data
+      - helper:/opt/helper        # a writable path for the capped copy
+    # then, once per volume: copy the helper in, chmod 755, setcap
+    # cap_setuid,cap_setgid+ep under --cap-add SETFCAP, and point
+    # SIGRUN_SANDBOX_HELPER at it
+    security_opt:
+      - no-new-privileges:false   # REQUIRED — see below
+```
+
+The blocker is the third piece: **`osUser` maps to a login name**, resolved from
+`/etc/passwd`, so every user you want needs an account. The image ships exactly
+two non-root accounts (`node` and `nobody`). That is what forces either a
+derived image (`RUN useradd …` per user) or mounting a `passwd` file over
+`/etc/passwd` through a `subPath`, which is fragile and surprises tooling.
+
+And the default posture actively prevents it, three ways: `read_only: true`
+makes `setcap` on the image layer fail with "Read-only file system",
+`cap_drop: ALL` grants nothing, and `no-new-privileges: true` suppresses the
+file-capability gain on `execve` even when `SETUID`/`SETGID` are in the bounding
+set (the helper dies at its first privileged call). Enabling this therefore
+means adding capabilities **and** permitting privilege escalation — a
+deliberate threat-model relaxation, not a configuration tweak.
+
+The reason not to is structural rather than configurational: inside one
+container every `osUser` shares **one filesystem and one mount namespace**. You
+would gain per-process uids and Landlock's per-process confinement, but not the
+kernel-level user separation a host provides — because there is only one
+container boundary to separate. You would be paying a real security cost (an
+identity-switch capability held by the main process, privilege escalation
+permitted) for isolation the container boundary already substantially provides.
+Use the Landlock jail alone in containers; use `osUsers` on bare metal, where
+the accounts and the separation are real.
 
 ### Kernel integration runner controls
 
