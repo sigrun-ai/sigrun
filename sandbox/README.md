@@ -95,16 +95,27 @@ which determines its own output and exit status.
 A local run on this host (Linux, Landlock ABI 7) passed the 19 unprivileged
 cases in `test/sandbox-it/boundary.test.ts`. The hosted-CI boundary run is
 **pending**; no post-change hosted-CI result is claimed. Two cases need more
-privilege than CI grants: the `osUser` success case and the case proving that the same helper's
-uid/gid switch succeeds outside a jail and fails inside it. They remain
-**UNVERIFIED**. An approved privileged run showed that the current fixture
-cannot pass them: its temporary-directory permissions (`mkdtemp` is mode
-0700) prevent the jailed uid from traversing to the target, and its `osUser`
-policy nests protected roots. Verification therefore needs
-both a privileged runner and a fixture redesign; a runner alone cannot settle
-these claims.
+privilege than CI grants: the `osUser` success case and the case proving that
+the same helper's uid/gid switch succeeds outside a jail and fails inside it.
+Both **pass** under `SIGRUN_SANDBOX_IT_PRIVILEGED=1` with a privileged runner
+(all 21 cases green). They are operator-verified rather than CI-verified,
+because no hosted job grants the identity-switch capabilities.
 
-`scripts/verify-sandbox-privileged.sh` runs the checks without creating a
+Running them needs the fixture's own prerequisites, which are easy to get
+wrong and which previously made the cases look unverifiable:
+
+- the target's **ancestor directories must be traversable** by the
+  switched-to uid (`mkdtemp` is mode 0700, and the jail switches uid before
+  `execve`, so an untraversable root fails with `EACCES` before the policy is
+  consulted);
+- the exec target must be a **non-capped** binary, as production always has
+  (`launchInJail` execs `node`); pointing the target at the capped helper made
+  it exec its own capped self;
+- the `osUser` account's home must **not be the managed root** that contains
+  `configDir`, and the switched-to uid needs write access to create the
+  policy's `ensureDirs`.
+
+`scripts/verify-sandbox-privileged.sh` runs both cases without creating a
 broadly privileged workload. It uses a disposable Docker-compatible container
 as root, drops every capability, and adds back only `SETFCAP`, `SETUID`, and
 `SETGID`. `SETFCAP` permits setting the helper's file-capability xattr, while

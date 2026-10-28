@@ -62,11 +62,11 @@ before publishing details.
 A local run on this host passed **19 unprivileged cases** in
 `test/sandbox-it/boundary.test.ts` (Linux, Landlock ABI 7). The hosted-CI
 boundary run is **pending**; no post-change hosted-CI result is claimed.
-Two cases remain **unverified**: the
-`osUser` success case and the in-jail uid-switch discrimination case. An
-executed privileged run *failed* to verify them — the privileged fixture is
-incompatible with `mkdtemp` permissions and with the `osUser` policy's root
-nesting — so verifying them needs both a privileged runner **and** a fixture
-redesign. These cases are neither operator-verified nor
-CI-verified; see [`sandbox/README.md`](sandbox/README.md) for the boundary
-suite and runner details rather than this policy duplicating case specifics.
+Two of those cases need more privilege than CI grants — the `osUser` success
+case and the in-jail uid/gid-switch discrimination case. Both **pass in a
+privileged run** (all 21 cases green in a container whose capability bounding
+set carries `SETUID`/`SETGID`, with `SIGRUN_SANDBOX_IT_PRIVILEGED=1`). They are
+**operator-verified, not CI-verified**: no hosted-CI job grants that privilege,
+so CI continues to skip them. See [`sandbox/README.md`](sandbox/README.md) for
+the boundary suite and runner details rather than this policy duplicating case
+specifics.
