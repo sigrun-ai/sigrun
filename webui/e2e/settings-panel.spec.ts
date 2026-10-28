@@ -25,7 +25,8 @@ test.beforeAll(async () => {
 	server = await bootE2EServer();
 });
 
-test.afterAll(async () => {
+test.afterAll(async ({ browser }) => {
+	await Promise.all(browser.contexts().map((context) => context.close()));
 	await server.cleanup();
 });
 
@@ -175,4 +176,5 @@ test("the settings callout: the naming-model save needs no restart; the port sav
 	await expect(
 		callout.getByRole("button", { name: /restart/i }),
 	).toHaveCount(0);
+	await page.close();
 });

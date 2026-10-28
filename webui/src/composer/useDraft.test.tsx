@@ -13,7 +13,7 @@ import { act, useEffect } from "react";
 import type TestRenderer from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createClient, type ConversationMeta, type FetchLike } from "../api";
-import { renderAsync, textContent } from "../test-utils";
+import { render, renderAsync, textContent } from "../test-utils";
 import { useDraft, type UseDraftResult } from "./useDraft";
 
 function metaWithDraft(text: string, attachments: string[] = []): ConversationMeta {
@@ -107,6 +107,44 @@ describe("useDraft", () => {
 		metaById.set(1, metaWithDraft("half-finished reply"));
 		const { renderer } = await renderHost(client, 1);
 		expect(textContent(renderer.toJSON())).toBe("half-finished reply");
+	});
+
+	test("a late restore never overwrites edits made while it was loading", async () => {
+		let resolveJson!: (value: ConversationMeta) => void;
+		const fetchImpl: FetchLike = () => Promise.resolve({ ok: true, status: 200, json: () => new Promise((resolve) => { resolveJson = resolve; }), text: () => Promise.resolve("") });
+		const client = createClient({ fetch: fetchImpl });
+		let api: UseDraftResult | undefined;
+		const renderer = render(
+			<Host client={client} conversationId={1} capture={(next) => { api = next; }} />,
+		);
+		await setText(renderer, api!, "typed before restore");
+		await act(async () => {
+			api!.addAttachment("uploads/1/new.png");
+			resolveJson(metaWithDraft("stale", ["uploads/1/old.png"]));
+		});
+		expect(textContent(renderer.toJSON())).toBe("typed before restore");
+		expect(api!.attachments).toEqual(["uploads/1/new.png"]);
+	});
+
+	test("a late restore never resurrects cleared text or attachments", async () => {
+		let resolveJson!: (value: ConversationMeta) => void;
+		const fetchImpl: FetchLike = () => Promise.resolve({ ok: true, status: 200, json: () => new Promise((resolve) => { resolveJson = resolve; }), text: () => Promise.resolve("") });
+		const client = createClient({ fetch: fetchImpl });
+		let api: UseDraftResult | undefined;
+		function ClearBeforeRestore() {
+			api = useDraft(client, 1);
+			return <p>{api!.text}</p>;
+		}
+		const renderer = render(<ClearBeforeRestore />);
+		await setText(renderer, api!, "typed before clear");
+		await act(async () => {
+			api!.addAttachment("uploads/1/new.png");
+			api!.clear(true);
+		});
+		resolveJson(metaWithDraft("stale", ["uploads/1/old.png"]));
+		await act(async () => {});
+		expect(textContent(renderer.toJSON())).toBe("");
+		expect(api!.attachments).toEqual([]);
 	});
 
 	test("switching conversations restores THAT conversation's draft", async () => {

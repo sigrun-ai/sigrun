@@ -13,7 +13,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type { Context } from "@earendil-works/chord";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { SeamHost } from "../../src/harness/seam-host.js";
@@ -306,32 +306,38 @@ test.describe("seam visual verification", () => {
 		// sections before its submit shows; radios before checkboxes
 		// before text inputs).
 		const cards = page.locator(".interaction-card");
-		const count = await cards.count();
-		for (let i = 0; i < count; i += 1) {
-			const card = cards.nth(i);
+		while ((await cards.count()) > 0) {
+			const remaining = await cards.count();
+			const card = cards.first();
 			for (;;) {
+				const next = card.locator(".blk-stepper-nav button", { hasText: /Next|Review/ });
+				if ((await next.count()) > 0 && (await next.first().isVisible())) {
+					await next.first().click();
+					continue;
+				}
 				const radio = card.locator('input[type="radio"]:not(:checked)').first();
 				const checkbox = card.locator('input[type="checkbox"]:not(:checked)').first();
 				const textInput = card.locator('input[type="text"]').first();
+				const secretInput = card.locator('input[type="password"]').first();
 				if (await radio.isVisible().catch(() => false)) {
 					await radio.check();
 				} else if (await checkbox.isVisible().catch(() => false)) {
 					await checkbox.check();
+				} else if (await secretInput.isVisible().catch(() => false)) {
+					await secretInput.fill("synthetic-secret");
 				} else if (await textInput.isVisible().catch(() => false)) {
 					await textInput.fill("probe-value");
 				}
 				const submit = card.locator("button.blk-form-submit");
 				if ((await submit.count()) > 0 && (await submit.isVisible())) {
 					await submit.click();
+					await expect(cards).toHaveCount(remaining - 1);
 					break;
 				}
-				// The stepper: advance (Next / Review) until the submit shows.
-				const next = card.locator(".blk-stepper-nav button", { hasText: /Next|Review/ });
-				if ((await next.count()) === 0) break;
-				await next.first().click();
+				break;
 			}
 		}
-		await page.waitForTimeout(800);
+		await expect(page.locator(".interaction-card")).toHaveCount(0);
 		await page.screenshot({ path: join(SHOT_DIR, "seam-drained.png"), fullPage: true });
 	});
 });

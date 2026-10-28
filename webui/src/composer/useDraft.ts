@@ -77,6 +77,7 @@ export function useDraft(
 	// that exact list.
 	const attachmentsRef = useRef<readonly string[]>(attachments);
 	attachmentsRef.current = attachments;
+	const editGenerationRef = useRef(0);
 	const dirtyRef = useRef(false);
 	// The latest client/id, read by the debounce timer callback.
 	const saveRef = useRef({ client, conversationId });
@@ -119,15 +120,20 @@ export function useDraft(
 		attachmentsRef.current = [];
 		dirtyRef.current = false;
 		if (conversationId === null) return;
+		const restoreGeneration = editGenerationRef.current;
 		let cancelled = false;
 		client
 			.getConversationMeta(conversationId)
 			.then((meta) => {
 				if (cancelled) return;
-				setTextState(meta.draft.text);
-				textRef.current = meta.draft.text;
-				setAttachmentsState(meta.draft.attachments);
-				attachmentsRef.current = meta.draft.attachments;
+				// A slow restore is older than any local edit made while it was
+				// in flight. Never replace that newer work with the served draft.
+				if (restoreGeneration === editGenerationRef.current) {
+					setTextState(meta.draft.text);
+					textRef.current = meta.draft.text;
+					setAttachmentsState(meta.draft.attachments);
+					attachmentsRef.current = meta.draft.attachments;
+				}
 			})
 			.catch((cause: unknown) => {
 				if (cancelled) return;
@@ -167,6 +173,7 @@ export function useDraft(
 
 	const setText = useCallback(
 		(next: string) => {
+			editGenerationRef.current += 1;
 			setTextState(next);
 			textRef.current = next;
 			dirtyRef.current = true;
@@ -187,6 +194,7 @@ export function useDraft(
 			textRef.current = "";
 			setAttachmentsState([]);
 			attachmentsRef.current = [];
+			editGenerationRef.current += 1;
 			dirtyRef.current = false;
 			if (debounceRef.current !== null) {
 				clearTimeout(debounceRef.current);
@@ -218,6 +226,7 @@ export function useDraft(
 		(path: string) => {
 			if (attachmentsRef.current.includes(path)) return;
 			const next = [...attachmentsRef.current, path];
+			editGenerationRef.current += 1;
 			attachmentsRef.current = next;
 			setAttachmentsState(next);
 			const id = saveRef.current.conversationId;
@@ -230,6 +239,7 @@ export function useDraft(
 		(path: string) => {
 			if (!attachmentsRef.current.includes(path)) return;
 			const next = attachmentsRef.current.filter((p) => p !== path);
+			editGenerationRef.current += 1;
 			attachmentsRef.current = next;
 			setAttachmentsState(next);
 			const id = saveRef.current.conversationId;

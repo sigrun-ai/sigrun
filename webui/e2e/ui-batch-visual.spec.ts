@@ -8,7 +8,7 @@
 
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { bootE2EServer, type E2EServer } from "./harness";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 
@@ -38,10 +38,12 @@ test("round 2: in-place live render, autoscroll, token meta, one-line bubble", a
 	await page.goto(server.url);
 	await page.getByRole("button", { name: /new/i }).first().click();
 	const composer = page.locator(".composer-input");
+	await expect(composer).toHaveCount(1);
 	await composer.waitFor({ state: "visible" });
 
 	// The user bubble: 24 chars render ONE line (the wrap bug measured 3).
 	await composer.fill("What tools can you see?");
+	await expect(composer).toHaveValue("What tools can you see?");
 	await composer.press("Control+Enter");
 	await page
 		.locator(".entry-user-message")
