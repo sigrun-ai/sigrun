@@ -178,14 +178,15 @@ export function Onboarding(props: {
  *  other errors retain their existing message. These codes are never raw. */
 export function messageOf(cause: unknown): string {
 	if (cause instanceof ApiError) {
-		const copy = {
+		const copy: Record<string, string> = {
 			proxy_identity_required:
 				"This sigrun signs people in through its sign-in proxy. Open it through the proxy.",
 			username_taken: "That username is taken. Choose another.",
 			invalid_username:
 				"That name has no usable characters — use at least one letter or digit.",
-		}[cause.error ?? ""];
-		if (copy !== undefined) return copy;
+		};
+		const key = cause.error ?? "";
+		if (Object.hasOwn(copy, key)) return copy[key];
 		if (cause.error !== undefined) return cause.error;
 	}
 	return cause instanceof Error ? cause.message : String(cause);

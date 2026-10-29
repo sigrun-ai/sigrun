@@ -1,9 +1,9 @@
 {{/*
 Sigrun CiliumNetworkPolicy — opt-in ingress-only policy.
 
-The main controller is selected with the same labels as the Deployment's
-selector (including the bjw-s controller label), so the policy cannot drift
-onto another controller. The default admits Cilium's ingress entity and the
+The endpoint selector follows the Service's controller, so the policy and
+the Service always select the same pods. The default admits Cilium's ingress
+entity and the
 host entity (kubelet HTTP probes) on the main Service port. Additional CNP
 ingress rules are appended verbatim for deployment-specific clients.
 
