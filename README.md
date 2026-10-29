@@ -422,22 +422,26 @@ also name groups, matched against the same stored groups.
 Every external identity — proxy header, OIDC subject, invite claim,
 CLI argument — resolves to one **directory user key**. The key is the
 stable identifier: it names the user's storage directory
-(`data/users/<user>`), their config directories, their per-user
+(`<dataDir>/users/<user>`), their config directories, their per-user
 extension stores, and it appears in tool registrations as
 `<slug>@<user>`, split at the **first `@`**. The key pattern is
 therefore a safety rule, not a style choice:
 
-- lowercase letters, digits, `.`, `_`, `-` only;
+- lowercase letters, digits, `.`, `_`, `-` only, and no `/` against
+  traversal (case-insensitive filesystems would otherwise let `Alice`
+  and `alice` collide on one directory);
 - must start with a letter or digit (no leading `.` against hidden
-  paths, no `/` against traversal);
+  paths or `..` keys);
 - no `@` — it is the tool-registration delimiter;
-- at most 128 characters.
+- at most 128 characters, bounding key length for storage and tool
+  names.
 
 `deriveUsername(input)` maps any input onto that pattern: Unicode NFKD
 and strip combining marks, lowercase, `@` → `_`, every other disallowed
 character → `-` (no collapsing), strip leading non-alphanumerics,
-truncate to 128. Empty result → the input is refused
-(`invalid_username`). The normative vectors:
+truncate to 128. Empty result → no usable key: proxy authentication
+refuses with 403 `invalid_username`, typed forms with 400, and login
+derivation falls back to the literal key `user`. The normative vectors:
 
 | Input | Key |
 |---|---|
@@ -452,11 +456,13 @@ truncate to 128. Empty result → the input is refused
 | `Alice Smith` | `alice-smith` |
 | `.hidden` | `hidden` |
 | `mike.` | `mike.` (valid key, unchanged) |
-| `` (empty) | refused |
-| `@@@` | refused |
+| `` (empty) | `undefined` (login: `user`) |
+| `@@@` | `undefined` (login: `user`) |
 
-Derivation is idempotent and every valid key is a fixed point, so a
-key that already exists is adopted as-is rather than re-derived.
+Derivation is idempotent and every valid key is a fixed point. On the
+proxy path, a folded subject that is itself a valid key adopts the
+existing user with that key; a derived-key collision under login
+auto-provisioning takes the next free suffix instead.
 
 **Proxy uniqueness assumption (deployment requirement).** Proxy
 identity matching is case-insensitive: the proxy's usernames are
@@ -498,9 +504,18 @@ resolve. The boot sweep logs one line per orphan:
 identity: proxy user "alice-2" has no proxy link; repair with: sigrun user link alice-2 --proxy <username>
 ```
 
-Run the printed `sigrun user link <key> --proxy <username>` command,
-then delete the `-2` user if it was a duplicate (Settings → Users, or
-`DELETE /v1/users/alice-2` as an admin).
+Choose the repair that matches the intended owner:
+
+- If the orphaned `-2` user should own the identity, run the printed
+  `sigrun user link <key> --proxy <username>` command.
+- If the correct account already exists, delete the duplicate as an
+  admin with `DELETE /v1/users/alice-2?transferTo=alice`, where
+  `transferTo` names that existing account and receives its transferable
+  resources.
+
+These are alternatives, not a sequence: deleting a user also removes
+its links, so linking and then deleting the same `-2` user would undo
+the repair.
 
 ### External sign-in (OIDC and OAuth 2)
 
