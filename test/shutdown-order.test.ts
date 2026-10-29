@@ -19,7 +19,7 @@ import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -29,6 +29,10 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { DEFAULT_MEMORY_SEAM, loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import {
+	SHUTDOWN_SETTLE_WAIT_MS,
+	WORKER_SHUTDOWN_AWAIT_MS,
+} from "../src/harness/event-bus.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { startGateway, type GatewayHandle } from "../src/server/gateway.js";
@@ -97,8 +101,12 @@ function fakeSteps(order: string[], overrides?: {
 describe("shutdownBudgetMs", () => {
 	test("equals the sum of every ordered stage cap", () => {
 		const hookDeadlineMs = 12_345;
+		// worker stop + initial drain + (settle wait and its final drain)
+		// + all extension handlers under one shared deadline.
 		const eventBusShutdownCapMs =
-			30_000 + hookDeadlineMs + 10_000 + hookDeadlineMs;
+			WORKER_SHUTDOWN_AWAIT_MS +
+			3 * hookDeadlineMs +
+			SHUTDOWN_SETTLE_WAIT_MS;
 		expect(shutdownBudgetMs({ hookDeadlineMs })).toBe(
 				END_STREAMS_SHUTDOWN_CAP_MS +
 					CLOSE_APP_SHUTDOWN_CAP_MS +
@@ -161,6 +169,45 @@ describe("shutdownBudgetMs", () => {
 });
 
 describe("createShutdown", () => {
+	test("a wedged stage is abandoned at its cap and the remaining stages still run", async () => {
+		vi.useFakeTimers();
+		try {
+			const order: string[] = [];
+			const steps = fakeSteps(order);
+			let rejectClose!: (error: Error) => void;
+			steps.closeApp = () => new Promise<void>((_resolve, reject) => {
+				rejectClose = reject;
+			});
+			const error = vi.spyOn(console, "error").mockImplementation(() => {});
+			const shutdown = createShutdown(steps);
+			const closing = shutdown();
+			await vi.advanceTimersByTimeAsync(CLOSE_APP_SHUTDOWN_CAP_MS);
+			await closing;
+			expect(order).toEqual([
+				"endStreams",
+				"gateway.stopIntake",
+				"eventBusShutdown",
+				"gateway.stop",
+				"stopSandboxWorkers",
+				"stopProviderRefresh",
+				"closeHarness",
+			]);
+			expect(error).toHaveBeenCalledWith(
+				`sigrun: shutdown stage closeApp exceeded ${CLOSE_APP_SHUTDOWN_CAP_MS}ms — abandoning the wait`,
+			);
+			// A late rejection after abandonment is logged, never unhandled.
+			rejectClose(new Error("late close failure"));
+			await vi.runAllTimersAsync();
+			expect(error).toHaveBeenCalledWith(
+				"sigrun: shutdown stage closeApp rejected after abandonment:",
+				expect.any(Error),
+			);
+			error.mockRestore();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("runs the eight steps in order", async () => {
 		const order: string[] = [];
 		const shutdown = createShutdown(fakeSteps(order));

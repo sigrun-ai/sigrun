@@ -220,6 +220,28 @@ describe("shutdownSequence with live runs", () => {
 		expect(order).toEqual(["runSettled", "harnessShutdown"]);
 	});
 
+	test("the final live-run drain can consume settle + hook within the event-bus budget", { timeout: 20_000 }, async () => {
+		vi.useFakeTimers();
+		try {
+			const { bus } = await bootBus({
+				hookDeadlineMs: 100,
+				shutdownSettleWaitMs: 60,
+			});
+			// Deterministic bus-state boundary: a live conversation remains
+			// through the settle deadline, with one queue item whose drain
+			// consumes the hook deadline. This is the final-loop path, without
+			// relying on provider steering or wall-clock response timing.
+			bus["#liveInputs" as never] = new Map([[1, 1]]) as never;
+			bus["#queue" as never] = [{ kind: "lifecycle" }] as never;
+			const closing = bus.shutdownSequence(BACKGROUND_CONTEXT);
+			await vi.advanceTimersByTimeAsync(60);
+			await vi.advanceTimersByTimeAsync(100);
+			await expect(closing).resolves.toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a wedged live run hits the injected bound, warns, and still closes", { timeout: 20_000 }, async () => {
 		const { bus, root, faux } = await bootBus({ shutdownSettleWaitMs: 30 });
 		const provider = withCancel(BACKGROUND_CONTEXT);
@@ -254,21 +276,28 @@ describe("harnessShutdown fan-out", () => {
 	test("handlers run concurrently under one shared deadline", { timeout: 10_000 }, async () => {
 		const hookDeadlineMs = 250;
 		const { bus } = await bootBus({ hookDeadlineMs });
-		const started: string[] = [];
+		const events: string[] = [];
 		for (const name of ["first", "second", "third"]) {
 			bus.registerExtension(name, {
 				harnessShutdown: async () => {
-					started.push(name);
+					events.push(`start:${name}`);
 					await new Promise((resolve) =>
 						setTimeout(resolve, hookDeadlineMs - 100),
 					);
+					events.push(`end:${name}`);
 				},
 			});
 		}
 		const before = performance.now();
 		await bus.shutdownSequence(BACKGROUND_CONTEXT);
 		const elapsed = performance.now() - before;
-		expect(started).toHaveLength(3);
+		const firstEnd = events.findIndex((event) => event.startsWith("end:"));
+		expect(firstEnd).toBeGreaterThanOrEqual(3);
+		expect(events.slice(0, firstEnd)).toEqual([
+			"start:first",
+			"start:second",
+			"start:third",
+		]);
 		expect(elapsed).toBeLessThan(2 * hookDeadlineMs);
 	});
 

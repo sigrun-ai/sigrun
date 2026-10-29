@@ -30,14 +30,16 @@
  * entry exits 0/1; the CLI's `run` returns to its exit code).
  */
 
+import {
+	SHUTDOWN_SETTLE_WAIT_MS,
+	WORKER_SHUTDOWN_AWAIT_MS,
+} from "../harness/event-bus.js";
 import type { GatewayHandle } from "./gateway.js";
 
 /** Every ordered stage has a bound; these are the bounds used by the budget. */
 export const END_STREAMS_SHUTDOWN_CAP_MS = 0;
 export const CLOSE_APP_SHUTDOWN_CAP_MS = 10_000;
 export const GATEWAY_STOP_INTAKE_SHUTDOWN_CAP_MS = 10_000;
-export const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
-export const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
 export const GATEWAY_STOP_SHUTDOWN_CAP_MS = 10_000;
 export const SANDBOX_WORKERS_SHUTDOWN_CAP_MS = 5_000;
 export const PROVIDER_REFRESH_SHUTDOWN_CAP_MS = 2_000;
@@ -49,12 +51,18 @@ export const PROVIDER_REFRESH_SHUTDOWN_CAP_MS = 2_000;
  */
 export const CLOSE_HARNESS_SHUTDOWN_CAP_MS = 10_000;
 
-/** The event bus's four bounded stages, in their ordered-shutdown order. */
+/**
+ * The event bus's bounded stages: worker stop + the initial drain + the
+ * live-run settle wait AND the final drain that can start just before its
+ * deadline + all extension handlers under one shared deadline. The settle
+ * wait is a per-boot test override; the production budget uses its default.
+ */
 export function eventBusShutdownCapMs(config: { hookDeadlineMs: number }): number {
 	return (
 		WORKER_SHUTDOWN_AWAIT_MS +
 		config.hookDeadlineMs +
 		SHUTDOWN_SETTLE_WAIT_MS +
+		config.hookDeadlineMs +
 		config.hookDeadlineMs
 	);
 }
@@ -91,8 +99,14 @@ async function boundedStage(
 			resolve();
 		}, capMs);
 	});
+	const stage = Promise.resolve().then(run);
+	// The race can abandon a stage that later rejects. Observe that rejection
+	// here so it is logged rather than becoming an unhandled rejection.
+	stage.catch((error: unknown) => {
+		console.error(`sigrun: shutdown stage ${name} rejected after abandonment:`, error);
+	});
 	try {
-		await Promise.race([Promise.resolve().then(run), deadline]);
+		await Promise.race([stage, deadline]);
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
 	}

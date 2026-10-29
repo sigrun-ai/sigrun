@@ -152,7 +152,7 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
-    stop_grace_period: 15s
+    stop_grace_period: 195s
 
 volumes:
   # The sqlite + workspace data — the compose analogue of the sigrun-data PVC.

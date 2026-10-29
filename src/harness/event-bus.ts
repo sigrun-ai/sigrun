@@ -392,9 +392,9 @@ export interface EventBusOptions {
 }
 
 /** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
-const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
+export const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
 /** The default last-admission window (gateway spec §8.13). */
-const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
+export const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
 /** Short pause between live-run checks while the commit side lane works. */
 const SHUTDOWN_SETTLE_POLL_MS = 10;
 
