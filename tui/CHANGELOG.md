@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+### Changed
+- No user-facing TUI changes; versioned with the core family for the
+  pi-durable 1.4.0 upgrade and shared settings type additions.
+
 ## [0.2.1] - 2026-10-28
 ### Fixed
 - No user-facing TUI changes; versioned with the core family for the

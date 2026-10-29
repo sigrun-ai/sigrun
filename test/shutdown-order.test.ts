@@ -249,7 +249,7 @@ describe("createShutdown", () => {
 		await expect(shutdown()).rejects.toSatisfy((error: unknown) => {
 			expect(error).toBeInstanceOf(AggregateError);
 			const aggregate = error as AggregateError;
-			expect(aggregate.message).toBe("sigrun shutdown failed");
+			expect(aggregate.message).toBe("sigrun shutdown failed: closeApp");
 			expect(aggregate.errors).toEqual([failure]);
 			return true;
 		});
@@ -274,6 +274,9 @@ describe("createShutdown", () => {
 		);
 		await expect(shutdown()).rejects.toSatisfy((error: unknown) => {
 			const aggregate = error as AggregateError;
+			expect(aggregate.message).toBe(
+				"sigrun shutdown failed: gateway.stopIntake, gateway.stop",
+			);
 			expect(aggregate.errors).toEqual([intake, stop]);
 			return true;
 		});

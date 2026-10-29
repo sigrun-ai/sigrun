@@ -25,6 +25,9 @@ core release (and never burns a core version number).
 Extensions and providers **first**, core last. Core's release waits for the
 registry to serve its siblings' versions (`await-registry`), so a core tag
 whose siblings are not published yet stops before it ships the image.
+Gateway's published 0.1.3 has an exact `@sigrun/shared` 0.2.1 peer, so a fresh
+registry-mode core 0.3.0 install can fail with `ERESOLVE` until gateway
+republishes; extensions-first ordering avoids that skew.
 
 1. **Extension and provider versions** — one `package.json` bump each, plus a
    CHANGELOG entry.

@@ -154,8 +154,12 @@ function harnessBuiltinNames(): string[] {
  * Leg A leaves that published sibling untouched; integration may move it
  * directly to the 0.3.0 family version. Older shared versions remain skew.
  */
-function acceptedSharedPeers(name: string, own: string): Set<string> {
-	return name === "@sigrun/ext-gateway" && own === "0.3.0"
+function acceptedSharedPeers(
+	name: string,
+	siblingVersion: string | undefined,
+	own: string,
+): Set<string> {
+	return name === "@sigrun/ext-gateway" && siblingVersion === "0.1.3" && own === "0.3.0"
 		? new Set(["0.2.1", "0.3.0"])
 		: new Set([own]);
 }
@@ -242,11 +246,20 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 	});
 
 	test("the Part A ext-gateway shared-peer exception stays narrow", () => {
-		const accepted = acceptedSharedPeers("@sigrun/ext-gateway", "0.3.0");
+		const siblings = siblingManifests();
+		const gateway = siblings.get("@sigrun/ext-gateway");
+		expect(gateway?.manifest.version).toBe("0.1.3");
+		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"]).toBe("0.2.1");
+		const accepted = acceptedSharedPeers(
+			"@sigrun/ext-gateway",
+			gateway?.manifest.version,
+			"0.3.0",
+		);
 		expect(accepted.has("0.2.1")).toBe(true);
 		expect(accepted.has("0.3.0")).toBe(true);
 		expect(accepted.has("0.1.2")).toBe(false);
-		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.3.0").has("0.2.1")).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.4", "0.3.0").has("0.2.1")).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0").has("0.2.1")).toBe(false);
 	});
 
 	test("no peer skew: every built-in's host peers pin core's own version of that module", () => {
@@ -262,7 +275,9 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
 					expect(
 						module === "@sigrun/shared"
-							? [...accepted].some((pin) => acceptedSharedPeers(name, own).has(pin))
+							? [...accepted].some((pin) =>
+								acceptedSharedPeers(name, sibling.manifest.version, own).has(pin),
+							)
 							: accepted.has(own),
 						`${name} peer ${module} accepts core's pin ${own}`,
 					).toBe(true);

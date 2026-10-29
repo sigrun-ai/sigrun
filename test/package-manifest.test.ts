@@ -161,6 +161,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 
 	test("shared: published leaf with directory-qualified repository", () => {
 		expect(shared.name).toBe("@sigrun/shared");
+		expect(shared.version).toBe(root.version);
 		expect(shared.private).toBeUndefined();
 		expect(shared.license).toBe("MIT");
 		expect(shared.engines?.node).toBe(NODE_ENGINE);

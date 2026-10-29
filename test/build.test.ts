@@ -165,7 +165,7 @@ describe("npm run build", () => {
 		} finally {
 			entry.child.kill("SIGTERM");
 			const exit = await entry.exited;
-			expect(exit.code).toBe(0);
+			expect(exit.code, `built CLI stderr:\n${entry.getStderr()}`).toBe(0);
 			await rm(dir, { recursive: true, force: true });
 		}
 	}, 120_000);

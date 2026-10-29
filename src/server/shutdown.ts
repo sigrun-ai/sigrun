@@ -149,16 +149,16 @@ export interface ShutdownSteps {
  */
 export function createShutdown(steps: ShutdownSteps): () => Promise<void> {
 	return async (): Promise<void> => {
-		const failures: unknown[] = [];
+		const failures: { stage: string; error: unknown }[] = [];
 		try {
 			steps.endStreams();
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "endStreams", error });
 		}
 		try {
 			await boundedStage("closeApp", CLOSE_APP_SHUTDOWN_CAP_MS, () => steps.closeApp());
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "closeApp", error });
 		}
 		try {
 			await boundedStage(
@@ -167,19 +167,19 @@ export function createShutdown(steps: ShutdownSteps): () => Promise<void> {
 				() => steps.gateway.stopIntake(),
 			);
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "gateway.stopIntake", error });
 		}
 		try {
 			await steps.eventBusShutdown();
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "eventBusShutdown", error });
 		}
 		try {
 			await boundedStage("gateway.stop", GATEWAY_STOP_SHUTDOWN_CAP_MS, () =>
 				steps.gateway.stop(),
 			);
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "gateway.stop", error });
 		}
 		try {
 			await boundedStage(
@@ -188,12 +188,12 @@ export function createShutdown(steps: ShutdownSteps): () => Promise<void> {
 				() => steps.stopSandboxWorkers(),
 			);
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "stopSandboxWorkers", error });
 		}
 		try {
 			await steps.stopProviderRefresh();
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "stopProviderRefresh", error });
 		}
 		try {
 			await boundedStage(
@@ -202,10 +202,13 @@ export function createShutdown(steps: ShutdownSteps): () => Promise<void> {
 				() => steps.closeHarness(),
 			);
 		} catch (error) {
-			failures.push(error);
+			failures.push({ stage: "closeHarness", error });
 		}
 		if (failures.length > 0) {
-			throw new AggregateError(failures, "sigrun shutdown failed");
+			throw new AggregateError(
+				failures.map(({ error }) => error),
+				`sigrun shutdown failed: ${failures.map(({ stage }) => stage).join(", ")}`,
+			);
 		}
 	};
 }
