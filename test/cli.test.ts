@@ -387,6 +387,15 @@ describe("cliMain run", () => {
 		]);
 	});
 
+	test("an empty SIGRUN_USER means the user is unset", async () => {
+		const { deps, calls } = stubDeps();
+		const code = await cliMain(["attach"], { SIGRUN_USER: "" }, deps);
+		expect(code).toBe(0);
+		expect(calls.launchTui).toEqual([
+			{ baseUrl: "http://localhost:3000", user: undefined },
+		]);
+	});
+
 	test("a launchTui failure shuts the booted server down (never leaves it serving)", async () => {
 		const { deps, calls } = stubDeps({
 			launchTui: async () => {
@@ -1451,6 +1460,26 @@ describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
 		expect(claims).toEqual([]);
 		expect(calls.launchTui).toEqual([]);
 		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("a loopback proxy-only unclaimed server keeps its no-code CLI claim path", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({
+			state: "unclaimed",
+			methods: ["proxy"],
+			codeRequired: false,
+		});
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+		);
+		expect(code).toBe(0);
+		expect(questions).toEqual(["username: ", "name (optional): ", "email (optional): "]);
+		expect(claims).toHaveLength(1);
+		expect(calls.launchTui).toHaveLength(1);
 	});
 
 	test("a token-method unclaimed server still prompts for the setup code", async () => {

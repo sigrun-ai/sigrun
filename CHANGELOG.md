@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parked-task visibility and recovery: pi-durable reports now reach logs,
   metrics, alerts, and job status, and administrators can list and retry
   parked tasks through the admin API.
+- Proxy identity links with case-insensitive matching, plus typed-username
+  normalization for `user add --proxy`, `link`, and `unlink`.
+- An optional chart `networkPolicy`, `OnboardingState.proxyIdentity.subject`,
+  the ProxyUnidentified screen, and the shared `./usernames` export.
 
 ### Changed
 - Upgraded the Earendil runtime to pi-durable 1.4.0 (with chord and pi-ai
@@ -25,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to fail later at runtime.
 - `settings.compaction.modelOverrides` supports per-model compaction
   settings while preserving environment-over-file precedence.
+- Proxy-only non-loopback boots refuse unvouched account creation, including
+  login and code paths, and mint no setup code there. Login derives from the
+  full email; boot sweeps orphaned proxy links, gates own-host peers, and
+  throttles proxy diagnostics.
+
+### Fixed
+- CLI empty-string identity values now mean "unset".
+
+### Breaking
+- When `SIGRUN_API_TOKEN` is set, `SIGRUN_API_TOKEN_USER` must be a valid
+  username key (the validation error includes a derivation suggestion). The
+  user value is validated only when the token is set.
 
 ### Upgrade notes
 - **One-way storage migration:** the first 0.3.0 boot migrates the SQLite

@@ -163,7 +163,7 @@ export class UserDirectory {
 		return this.mutations.run(async () => {
 			if (!isUsernameKey(user.user)) {
 				throw new Error(
-					`invalid username "${user.user}": must match ^[a-z0-9][a-z0-9._-]*$`,
+					`invalid username "${user.user}": must match ^[a-z0-9][a-z0-9._-]*$ and be at most 128 characters`,
 				);
 			}
 			const records = this.list();

@@ -20,7 +20,7 @@ metadata:
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/controller: main
+      app.kubernetes.io/controller: {{ .Values.service.main.controller }}
       {{- include "bjw-s.common.lib.metadata.selectorLabels" . | nindent 6 }}
   ingress:
     - fromEntities:

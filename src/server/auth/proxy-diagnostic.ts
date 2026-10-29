@@ -27,6 +27,7 @@ const THROTTLE_MS = 60_000;
 export const ProxyRejectReason = {
 	UNTRUSTED: "untrusted proxy",
 	UNUSABLE: "unusable identity claim",
+	UNTRUSTED_IDENTITY_SOURCE: "untrusted identity source",
 	OWN_HOST: "own-host peer without shared secret",
 	secretReason: (header: string): string =>
 		`missing or wrong shared secret (${header} header)`,

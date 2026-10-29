@@ -295,7 +295,7 @@ async function resolveProxy(
 			return { status: 403, error: "invalid_username" };
 		}
 		if (resolved.kind === "not_provisioned") {
-			warnProxyRejected(request, "untrusted identity source");
+			warnProxyRejected(request, ProxyRejectReason.UNTRUSTED_IDENTITY_SOURCE);
 			return { status: 403, error: "user_not_provisioned" };
 		}
 		record = resolved.record;

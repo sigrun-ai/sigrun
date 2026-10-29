@@ -667,6 +667,10 @@ describe("proxy username derivation and account links", () => {
 			const response = await whoami(app, "Bob");
 			expect(response.statusCode).toBe(403);
 			expect(response.json()).toEqual({ error: "user_not_provisioned" });
+			expect(warn).toHaveBeenCalledOnce();
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.UNTRUSTED_IDENTITY_SOURCE,
+			);
 		} finally {
 			warn.mockRestore();
 		}

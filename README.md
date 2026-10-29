@@ -184,6 +184,7 @@ still override it per field.
 | — | — | *(none)* | `gitDir` is always `<configDir>/git` | Git extension checkouts clone here (pi layout). Not env-configurable. |
 | `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | `server.webuiBundle` | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
 | `SIGRUN_CONFIG_DIR` | path | `~/.config/sigrun` | *env-only* | The settings file's own directory. |
+| `SIGRUN_API_TOKEN_USER` | username key | `sigrun` | *env-only* | User for `SIGRUN_API_TOKEN`. Must already be a valid username key (`^[a-z0-9][a-z0-9._-]*$`, at most 128 characters); invalid values fail boot with a derivation suggestion. Validated only when `SIGRUN_API_TOKEN` is non-empty. |
 | `SIGRUN_COMPACTION_ENABLED` | `true`/`false` | `true` | `server.compaction.enabled` | Context compaction on/off. |
 | `SIGRUN_COMPACTION_RESERVE_TOKENS` | positive int | `16384` | `server.compaction.reserveTokens` | Headroom reserved for the model's reply. |
 | `SIGRUN_COMPACTION_KEEP_RECENT_TOKENS` | positive int | `20000` | `server.compaction.keepRecentTokens` | Recent context retained verbatim through a compaction. |
@@ -676,7 +677,11 @@ code cannot be redeemed without a vouch), and an unvouched
 account-creating request is refused with 403
 `proxy_identity_required`. A browser reaching sigrun without a trusted
 proxy identity sees a ProxyUnidentified screen instead of a token or
-setup-code form.
+setup-code form. As a deliberate, bounded exception,
+`/v1/auth/callback/:provider` still lets a login provider with
+`policy.autoProvision` create its own non-admin account on a proxy-only
+server, although the resulting session cannot authenticate because the
+token method is off.
 
 **Sharing.** Conversations are private to their owner by default. The
 owner can share one — household-wide or with named users and groups,

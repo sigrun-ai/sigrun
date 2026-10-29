@@ -431,6 +431,17 @@ describe("SIGRUN_API_TOKEN_USER (Task 6: must already be a username key)", () =>
 		});
 		expect(config.auth.serviceToken?.user).toBe("svc");
 	});
+
+	test("a bad user is ignored when the token is unset or trim-empty", () => {
+		for (const SIGRUN_API_TOKEN of [undefined, "", "   "]) {
+			const config = loadConfig({
+				...MODEL_ENV,
+				SIGRUN_API_TOKEN,
+				SIGRUN_API_TOKEN_USER: "Svc Bot",
+			});
+			expect(config.auth.serviceToken).toBeUndefined();
+		}
+	});
 });
 
 describe("isolation settings", () => {

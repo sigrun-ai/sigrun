@@ -770,7 +770,7 @@ function resolveUser(
 	file: TuiFile,
 ): string | undefined {
 	const raw = parsed.user ?? env.SIGRUN_USER ?? file.user;
-	if (raw === undefined) return undefined;
+	if (raw === undefined || raw.trim() === "") return undefined;
 	const derived = deriveUsername(raw);
 	if (derived === undefined) {
 		throw new Error(`invalid_username: "${raw}" derives no usable username`);
@@ -1179,7 +1179,7 @@ async function onboardIfUnclaimed(
 	// Proxy-trust Task 6: a proxy-only server without a vouched identity
 	// refuses the claim (403 proxy_identity_required) and never mints a
 	// setup code — prompt for one and the operator can only lose.
-	if (isProxyOnly(state.methods) && state.proxyIdentity === undefined) {
+	if (isProxyOnly(state.methods) && state.codeRequired && state.proxyIdentity === undefined) {
 		throw new Error(
 			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
 		);

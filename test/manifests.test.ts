@@ -503,6 +503,30 @@ describe("chart CiliumNetworkPolicy", () => {
 		]);
 	});
 
+	test("the CiliumNetworkPolicy follows the Service's configured controller", async () => {
+		const docs = await render([
+			"networkPolicy.enabled=true",
+			"controllers.backup.enabled=true",
+			"service.main.controller=backup",
+		]);
+		const policy = docOf(docs, "CiliumNetworkPolicy") as NetworkPolicyDoc;
+		const service = docOf(docs, "Service") as {
+			spec: { selector: Record<string, string> };
+		};
+		const cron = docOf(docs, "CronJob") as {
+			spec: {
+				jobTemplate: {
+					spec: { template: { metadata: { labels: Record<string, string> } } };
+				};
+			};
+		};
+		expect(policy.spec.endpointSelector.matchLabels).toEqual(service.spec.selector);
+		expect(service.spec.selector["app.kubernetes.io/controller"]).toBe("backup");
+		expect(policy.spec.endpointSelector.matchLabels).toMatchObject(
+			cron.spec.jobTemplate.spec.template.metadata.labels,
+		);
+	});
+
 	test("extraIngress appends the supplied rule verbatim", async () => {
 		const extraIngress = {
 			fromEndpoints: [

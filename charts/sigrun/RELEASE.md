@@ -270,8 +270,8 @@ When sigrun runs behind a Cilium Gateway API / Ingress forward-auth
 proxy, `server.auth.proxy.trustedProxies` must list the per-node Cilium
 ingress IPs (the address the proxy connects from, out of the pod CIDR).
 If you trust the whole pod CIDR instead, enable the chart's
-`networkPolicy.enabled` so only the `ingress` entity can reach the
-Service; the default policy also admits `host` for kubelet probes.
+`networkPolicy.enabled` so only the `ingress` entity (plus `host`, for
+kubelet probes) can reach the Service.
 Remember that the `ingress` entity covers every Cilium gateway in the
 cluster, so every route to sigrun must pass through forward auth.
 The full deploy contract (header hygiene, dual-stack, own-host peers,

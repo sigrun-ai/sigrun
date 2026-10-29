@@ -89,7 +89,7 @@ describe("UserDirectory", () => {
 	test("add rejects an invalid username", async () => {
 		const users = new UserDirectory(join(tmpDir("badname"), "users.json"));
 		await expect(users.add({ ...aliceUser(), user: "Alice" })).rejects.toThrow(
-			/username/,
+			"invalid username \"Alice\": must match ^[a-z0-9][a-z0-9._-]*$ and be at most 128 characters",
 		);
 		await expect(users.add({ ...aliceUser(), user: "-alice" })).rejects.toThrow(
 			/username/,
@@ -109,7 +109,7 @@ describe("UserDirectory", () => {
 		const users = new UserDirectory(join(tmpDir("long-new-key"), "users.json"));
 		await expect(
 			users.add({ ...aliceUser(), user: "a".repeat(129) }),
-		).rejects.toThrow(/username/);
+		).rejects.toThrow(/at most 128 characters/);
 		expect(users.list()).toEqual([]);
 	});
 

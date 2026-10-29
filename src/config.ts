@@ -802,7 +802,7 @@ function parseAuth(env: Env, server?: ServerSettings["auth"]): AuthConfig {
 	// time (unlike the header/CLI sources, which derive). Anything else is
 	// a config error naming the derived suggestion.
 	const serviceTokenUser = env.SIGRUN_API_TOKEN_USER?.trim() || "sigrun";
-	if (!isUsernameKey(serviceTokenUser)) {
+	if (token !== undefined && !isUsernameKey(serviceTokenUser)) {
 		throw new Error(
 			`SIGRUN_API_TOKEN_USER must already be a username key, got "${serviceTokenUser}" — ` +
 				`did you mean "${deriveUsername(serviceTokenUser) ?? "sigrun"}"?`,

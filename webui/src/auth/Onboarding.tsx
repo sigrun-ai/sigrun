@@ -52,7 +52,7 @@ export function Onboarding(props: {
 			return;
 		}
 		if (username === "") {
-			setError("choose a username (lowercase letters, digits, . _ -)");
+			setError("choose a username");
 			return;
 		}
 		setBusy(true);
@@ -175,13 +175,18 @@ export function Onboarding(props: {
 }
 
 /** The user-facing spelling of a rejection: known wire codes get fixed copy;
- *  other errors retain their existing message. This proxy code is never raw. */
+ *  other errors retain their existing message. These codes are never raw. */
 export function messageOf(cause: unknown): string {
-	if (cause instanceof ApiError && cause.error === "proxy_identity_required") {
-		return "This sigrun signs people in through its sign-in proxy. Open it through the proxy.";
-	}
-	if (cause instanceof ApiError && cause.error !== undefined) {
-		return cause.error;
+	if (cause instanceof ApiError) {
+		const copy = {
+			proxy_identity_required:
+				"This sigrun signs people in through its sign-in proxy. Open it through the proxy.",
+			username_taken: "That username is taken. Choose another.",
+			invalid_username:
+				"That name has no usable characters — use at least one letter or digit.",
+		}[cause.error ?? ""];
+		if (copy !== undefined) return copy;
+		if (cause.error !== undefined) return cause.error;
 	}
 	return cause instanceof Error ? cause.message : String(cause);
 }
