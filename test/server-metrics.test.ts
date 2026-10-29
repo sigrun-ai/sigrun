@@ -175,6 +175,28 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 				line.startsWith("sigrun_backup_last_success_timestamp_seconds"),
 			),
 		).toBe(false);
+		// D5: fixed label vocabularies, including zero-valued series.
+		for (const type of [
+			"session_failed", "task_faulted", "task_parked", "migration_failed",
+			"task_outdated", "task_error", "extension_error", "host_error", "listener_error",
+		]) {
+			expect(samples).toContain(`sigrun_durable_reports_total{type="${type}"} 0`);
+		}
+		for (const reason of ["missing_task", "task_too_old", "migration_failed", "restart_limit"]) {
+			expect(samples).toContain(`sigrun_tasks_blocked{reason="${reason}"} 0`);
+		}
+	});
+
+	test("increments durable report counters and counts blocked task reasons", async () => {
+		const { app, opened } = await bootServer();
+		opened.reports.onReport(new Error("parked"), {
+			type: "task_parked",
+			task: { id: 999 as never, kind: "sigrun.schedule", conversationId: 1 as never },
+		});
+		const samples = parseExposition(await getMetrics(app));
+		expect(samples).toContain('sigrun_durable_reports_total{type="task_parked"} 1');
+		expect(samples).toContain('sigrun_durable_reports_total{type="session_failed"} 0');
+		expect(samples).toContain('sigrun_tasks_blocked{reason="restart_limit"} 0');
 	});
 
 	test("a scrape racing shutdown (harness closed) answers 200 with sigrun_up 0", async () => {

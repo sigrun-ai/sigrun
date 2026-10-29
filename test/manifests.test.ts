@@ -656,6 +656,14 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(byName.get("SigrunJobFailed")?.expr).toBe(
 			'increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0',
 		);
+		// D5: the restart-limit park and failed-session alerts.
+		expect(byName.get("SigrunTaskParked")?.expr).toBe(
+			'sigrun_tasks_blocked{reason="restart_limit"} > 0',
+		);
+		expect(byName.get("SigrunTaskParked")?.for).toBe("5m");
+		expect(byName.get("SigrunDurableSessionFailed")?.expr).toBe(
+			'increase(sigrun_durable_reports_total{type="session_failed"}[10m]) > 0',
+		);
 
 		// The backup alert's gate: backup disabled in values ⇒ the rule is
 		// absent (an unbacked deploy would page forever on a series the

@@ -27,6 +27,8 @@ import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
 import { reconcileJobs } from "../jobs/reconcile.js";
+import { applyParkedJobs } from "../jobs/parked.js";
+import { createDurableReports } from "./reports.js";
 import { registerJobObservers } from "../jobs/observe.js";
 import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
@@ -496,6 +498,8 @@ export interface OpenedHarness {
 	 * through it.
 	 */
 	readonly jobs: JobsService;
+	/** The process-local durable report counts and post-open park drain (D5). */
+	readonly reports: ReturnType<typeof createDurableReports>;
 	/**
 	 * The in-process job-run outcome counts (W4 Task 4, §6.9): outcome →
 	 * count for `sigrun_job_runs_total{outcome}` — counted from run-record
@@ -670,6 +674,11 @@ export interface OpenHarnessOptions {
 	 * `nativeTimer`).
 	 */
 	readonly setTimer?: SetTimer;
+	/**
+	 * Observe pi-durable failure reports (D5). Composed with the boot's own
+	 * logging/counting; observer failures are contained.
+	 */
+	readonly onReport?: (error: unknown, info: import("@earendil-works/pi-durable").ReportInfo) => void;
 }
 
 /**
@@ -1392,6 +1401,12 @@ export async function openHarness(
 	// deadlines live on the harness clock; pinning the seam pins both —
 	// the jobs tests' time-injection lever).
 	const clockNow = options.now ?? (() => new Date());
+	// D5: reports may arrive inside Harness.open. The collector logs/counts
+	// synchronously and queues parks; job patches drain after binding below.
+	const reports = createDurableReports({
+		log: (line) => console.error(line),
+		onReport: options.onReport,
+	});
 	const harness = await Harness.open(
 		storage,
 		{
@@ -1400,6 +1415,7 @@ export async function openHarness(
 			env: envBuilder,
 			now: () => clockNow().getTime(),
 			setTimer: options.setTimer,
+			onReport: reports.onReport,
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
 			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the
@@ -1461,6 +1477,9 @@ export async function openHarness(
 	// JobsService — happens after this point.
 	jobRuntimeDeps.harness = harness;
 	jobRuntimeDeps.storage = storage;
+	// Drain the restart-limit parks reported during open before scheduling
+	// resumes. A failed status patch is logged and dropped by applyParkedJobs.
+	await applyParkedJobs(harness, reports.takeParked(), BACKGROUND_CONTEXT);
 	// The memory-seam event bus (Tasks 2-4): subscribe BEFORE `resume()` so
 	// recovery settles (faulted/orphaned submissions the scheduler drains)
 	// are observed like any other commit. Extension handlers register under
@@ -1752,6 +1771,7 @@ export async function openHarness(
 		userToolSweep,
 		models,
 		jobs,
+		reports,
 		jobRunTotals: () => jobRunTotals,
 		defaultModel,
 		providerCollisions: sink.collisions,
