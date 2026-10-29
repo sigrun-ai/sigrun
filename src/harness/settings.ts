@@ -663,16 +663,7 @@ function validateServer(server: unknown): void {
 			// backgroundTokens' minimum is 0 — the designed "background off"
 			// value, same as `SIGRUN_COMPACTION_BACKGROUND_TOKENS`.
 			const minimum = key === "backgroundTokens" ? 0 : 1;
-			if (
-				typeof v !== "number" ||
-				!Number.isInteger(v) ||
-				v < minimum
-			) {
-				throw new SettingsValidationError(
-					`server.compaction.${key}`,
-					minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
-				);
-			}
+			assertIntegerMinimum(`server.compaction.${key}`, v, minimum);
 		}
 		if (compaction.modelOverrides !== undefined) {
 			const overrides = asRecord(compaction.modelOverrides);
@@ -707,16 +698,7 @@ function validateServer(server: unknown): void {
 					const v = policy[key];
 					if (v === undefined) continue;
 					const minimum = key === "backgroundTokens" ? 0 : 1;
-					if (
-						typeof v !== "number" ||
-						!Number.isInteger(v) ||
-						v < minimum
-					) {
-						throw new SettingsValidationError(
-							`${prefix}${key}`,
-							minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
-						);
-					}
+					assertIntegerMinimum(`${prefix}${key}`, v, minimum);
 				}
 			}
 		}
@@ -981,6 +963,31 @@ function isNonEmptyString(value: unknown): boolean {
 	return typeof value === "string" && value !== "";
 }
 
+/**
+ * The shared compaction numeric rule (parent block and per-model overrides):
+ * an integer at or above `minimum` — `0` for `backgroundTokens` (the designed
+ * "background off" value), `1` for the other token counts. Throws naming the
+ * full dotted field path.
+ */
+function assertIntegerMinimum(
+	field: string,
+	value: unknown,
+	minimum: 0 | 1,
+): void {
+	if (
+		typeof value !== "number" ||
+		!Number.isInteger(value) ||
+		value < minimum
+	) {
+		throw new SettingsValidationError(
+			field,
+			minimum === 0
+				? "must be a non-negative integer"
+				: "must be a positive integer",
+		);
+	}
+}
+
 function isNonEmptyStringArray(value: unknown): boolean {
 	return (
 		Array.isArray(value) &&
@@ -1170,14 +1177,10 @@ export class SettingsStore {
 							for (const [compKey, compValue] of Object.entries(
 								subValue as Record<string, unknown>,
 							)) {
-								// modelOverrides REPLACES the whole map (its keys
-								// are model ids, not a mergeable schema); every
-								// other compaction key merges one level deep.
-								if (compKey === "modelOverrides") {
-									if (compValue === null) delete mergedCompaction[compKey];
-									else mergedCompaction[compKey] = compValue;
-									continue;
-								}
+								// modelOverrides REPLACES the whole map by
+								// construction: it is a leaf value here, so this
+								// per-key assign swaps it verbatim rather than
+								// merging into the previous map.
 								if (compValue === null) delete mergedCompaction[compKey];
 								else mergedCompaction[compKey] = compValue;
 							}

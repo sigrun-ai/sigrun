@@ -573,11 +573,13 @@ export interface OpenHarnessOptions {
 	readonly identity?: IdentityStores;
 	/**
 	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
-	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
-	 * every field a caller sets here wins over the config value. The four
-	 * file-backed fields (steeringMode/followUpMode/retry/stream) resolve per
-	 * access — caller-set first, then the settings FILE's live getter (Task 8a):
-	 * the file is the deployment default, this seam the test override, and an
+	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning,
+	 * env over file); `modelOverrides` additionally falls back to the boot
+	 * file's map when config carries none (D9). Every field a caller sets
+	 * here wins over both. The four file-backed fields
+	 * (steeringMode/followUpMode/retry/stream) resolve per access —
+	 * caller-set first, then the settings FILE's live getter (Task 8a): the
+	 * file is the deployment default, this seam the test override, and an
 	 * unset field here keeps the harness reading the file's CURRENT value (a
 	 * PATCH becomes effective on the next admission without a restart).
 	 * Pass `settings: {}` (or only `compaction`) to keep the file in charge of
@@ -1448,13 +1450,14 @@ export async function openHarness(
 			// snapshots the file's boot-time values, silently freezing the
 			// queue modes and clobbering the caller seam (the round-1 defects).
 			// `extensions`/`toolExecution` have no file backing — plain passthrough.
-			// Compaction (D9): the file's `server.compaction` block merges
-			// BETWEEN config and the caller seam. serve resolves the file into
-			// config already (loadConfig's second argument); this read keeps
-			// file-backed fields — `modelOverrides` above all, which has no env
-			// spelling — authoritative for direct `openHarness` boots too.
-			// Boot-time by design: the block is read ONCE, here, so a PATCH is
-			// a restart-pending change, exactly like the other compaction keys.
+			// Compaction (D9): ONLY `modelOverrides` comes from the file here —
+			// it has no env spelling, so this adds a file tier without touching
+			// the four env-backed knobs' precedence (env over file, resolved by
+			// loadConfig). serve already folds the file into config; the
+			// conditional spread keeps a config-resolved map authoritative and
+			// covers direct `openHarness` boots. Read ONCE (boot-time), so a
+			// PATCH is restart-pending exactly like the other compaction keys.
+			// Order: caller seam > config (env over file) > this file fallback.
 			settings: {
 				get steeringMode() {
 					return callerSettings?.steeringMode ?? fileSettings.steeringMode;
@@ -1478,7 +1481,10 @@ export async function openHarness(
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {
 					...config.compaction,
-					...bootSettings.server?.compaction,
+					...(config.compaction.modelOverrides === undefined &&
+					bootSettings.server?.compaction?.modelOverrides !== undefined
+						? { modelOverrides: bootSettings.server.compaction.modelOverrides }
+						: {}),
 					...callerSettings?.compaction,
 				},
 			},
