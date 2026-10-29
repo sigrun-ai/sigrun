@@ -112,6 +112,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { satisfies, validRange } from "semver";
 import type { DeclaredKinds } from "./seam-host.js";
 import {
 	HOST_RUNTIME_MODULES,
@@ -1894,6 +1895,62 @@ function checkHostModules(moduleDir: string): void {
 }
 
 /**
+ * The Earendil host modules whose DECLARED peer ranges the loader checks.
+ * Other peers (typebox and @sigrun/sigrun) have different compatibility
+ * contracts and are deliberately outside this guard.
+ */
+const DECLARED_PEER_MODULES = [
+	"@earendil-works/pi-durable",
+	"@earendil-works/chord",
+	"@earendil-works/pi-ai",
+] as const;
+
+/**
+ * The declared-peer guard (pi-durable 1.4.0 D7): after the resolved-version
+ * guard, reject an Earendil peer range that excludes the running host.
+ * Non-semver specifiers (file:, link:, git:, URLs, workspace:) and wildcards
+ * pass; a missing or unreadable manifest also passes because the guard never
+ * quarantines what it cannot read.
+ *
+ * @param moduleDir the extension ENTRY's directory; the owning package
+ * manifest is the nearest manifest at or above it.
+ * @returns the quarantine reason, or undefined when the declaration admits
+ * the host or cannot be evaluated.
+ */
+function checkDeclaredPeers(moduleDir: string): string | undefined {
+	const manifestPath = nearestManifest(moduleDir);
+	if (manifestPath === undefined) return undefined;
+	let peers: Record<string, unknown>;
+	try {
+		const parsed = JSON.parse(
+			readFileSync(manifestPath, "utf8"),
+		) as { peerDependencies?: unknown };
+		if (
+			typeof parsed.peerDependencies !== "object" ||
+			parsed.peerDependencies === null ||
+			Array.isArray(parsed.peerDependencies)
+		) {
+			return undefined;
+		}
+		peers = parsed.peerDependencies as Record<string, unknown>;
+	} catch {
+		return undefined;
+	}
+	for (const name of DECLARED_PEER_MODULES) {
+		const range = peers[name];
+		if (typeof range !== "string" || validRange(range) === null) continue;
+		const hostVersion = hostModuleVersion(name);
+		if (
+			hostVersion !== undefined &&
+			!satisfies(hostVersion, range)
+		) {
+			return `peer ${name} ${range} excludes host ${hostVersion}`;
+		}
+	}
+	return undefined;
+}
+
+/**
  * The extension module's DIRECTORY — the anchor a contributed bundle's
  * relative `dir` resolves against (build-and-webui Task 6: an
  * npm-installed extension's bundle lives in its own package, so the dir
@@ -2504,7 +2561,11 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 			// here rides the existing per-extension try (quarantine, boot
 			// continues) exactly like the reserved-section check below.
 			const moduleDir = extensionModuleDir(loaded);
-			if (moduleDir !== undefined) checkHostModules(moduleDir);
+			if (moduleDir !== undefined) {
+				checkHostModules(moduleDir);
+				const peerReason = checkDeclaredPeers(moduleDir);
+				if (peerReason !== undefined) throw new Error(peerReason);
+			}
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its
 			// RESULT. The loader therefore invokes the host factory TWICE with

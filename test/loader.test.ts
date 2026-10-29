@@ -283,6 +283,222 @@ test("an extension resolving a different @sigrun/sigrun is quarantined (the bloc
 	}
 });
 
+test("a declared Earendil peer range excluding the host quarantines; the healthy one still loads", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-declared-peer-"));
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const pkgDir = join(dir, "old-peer-ext");
+	const specifier = pathToFileURL(join(pkgDir, "index.js")).href;
+	await mkdir(pkgDir, { recursive: true });
+	await writeFile(
+		join(pkgDir, "package.json"),
+		JSON.stringify({
+			name: "old-peer-ext",
+			version: "0.1.0",
+			private: true,
+			type: "module",
+			main: "index.js",
+			peerDependencies: { "@earendil-works/pi-durable": "1.3.0" },
+		}),
+	);
+	await writeFile(
+		join(pkgDir, "index.js"),
+		"export default function createOldPeer() {\n" +
+			"\treturn { extension: { name: 'old-peer-ext', hooks: [], tools: [], sections: [] } };\n" +
+		"}\n",
+	);
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [specifier, FIXTURE_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: specifier,
+					status: "quarantined",
+					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.4.0",
+				},
+				{ name: "sigrun-fixture-ext", status: "ok" },
+			]);
+			expect(opened.registry.snapshot().extension("old-peer-ext")).toBeUndefined();
+			expect(opened.registry.snapshot().extension("sigrun-fixture-ext")).toBeDefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a dist-entry package's root peer manifest quarantines an excluding range", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-dist-peer-"));
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const pkgDir = join(dir, "dist-peer-ext");
+	const specifier = pathToFileURL(join(pkgDir, "dist", "index.js")).href;
+	await mkdir(join(pkgDir, "dist"), { recursive: true });
+	await writeFile(
+		join(pkgDir, "package.json"),
+		JSON.stringify({
+			name: "dist-peer-ext",
+			version: "0.1.0",
+			private: true,
+			type: "module",
+			main: "dist/index.js",
+			peerDependencies: { "@earendil-works/pi-durable": "1.3.0" },
+		}),
+	);
+	await writeFile(
+		join(pkgDir, "dist", "index.js"),
+		"export default function createDistPeer() {\n" +
+			"\treturn { extension: { name: 'dist-peer-ext', hooks: [], tools: [], sections: [] } };\n" +
+		"}\n",
+	);
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [specifier],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: specifier,
+					status: "quarantined",
+					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.4.0",
+				},
+			]);
+			expect(opened.registry.snapshot().extension("dist-peer-ext")).toBeUndefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a chord peer range excluding the host quarantines", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-chord-peer-"));
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const pkgDir = join(dir, "old-chord-peer-ext");
+	const specifier = pathToFileURL(join(pkgDir, "index.js")).href;
+	await mkdir(pkgDir, { recursive: true });
+	await writeFile(
+		join(pkgDir, "package.json"),
+		JSON.stringify({
+			name: "old-chord-peer-ext",
+			version: "0.1.0",
+			private: true,
+			type: "module",
+			main: "index.js",
+			peerDependencies: { "@earendil-works/chord": "1.3.0" },
+		}),
+	);
+	await writeFile(
+		join(pkgDir, "index.js"),
+		"export default function createOldChordPeer() {\n" +
+			"\treturn { extension: { name: 'old-chord-peer-ext', hooks: [], tools: [], sections: [] } };\n" +
+		"}\n",
+	);
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [specifier],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: specifier,
+					status: "quarantined",
+					error: "peer @earendil-works/chord 1.3.0 excludes host 1.4.0",
+				},
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("an unparseable owning manifest passes the declared-peer guard", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-bad-peer-manifest-"));
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const pkgDir = join(dir, "bad-peer-manifest-ext");
+	await mkdir(join(pkgDir, "dist"), { recursive: true });
+	await writeFile(join(pkgDir, "package.json"), "{ invalid JSON");
+	await writeFile(
+		join(pkgDir, "dist", "index.js"),
+		"export default function createBadPeerManifest() {\n" +
+			"\treturn { extension: { name: 'bad-peer-manifest-ext', hooks: [], tools: [], sections: [] } };\n" +
+		"}\n",
+	);
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [pathToFileURL(join(pkgDir, "dist", "index.js")).href],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "bad-peer-manifest-ext", status: "ok" },
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test.each([
+	["widened range", { "@earendil-works/pi-durable": "1.3.0 || 1.4.0" }],
+	// Review Focus 4: ^1.3.0 admits 1.4.0, so this is deliberately not quarantined.
+	["caret range", { "@earendil-works/pi-durable": "^1.3.0" }],
+	["wildcard", { "@earendil-works/pi-durable": "*" }],
+	["file specifier", { "@earendil-works/pi-durable": "file:../sigrun" }],
+	["unrelated exact pin", { typebox: "1.3.27" }],
+])("a declared peer does not quarantine for %s", async (_case, peerDependencies) => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-declared-peer-pass-"));
+	const { mkdir, writeFile } = await import("node:fs/promises");
+	const pkgDir = join(dir, "passing-peer-ext");
+	await mkdir(pkgDir, { recursive: true });
+	await writeFile(
+		join(pkgDir, "package.json"),
+		JSON.stringify({
+			name: "passing-peer-ext",
+			version: "0.1.0",
+			private: true,
+			type: "module",
+			main: "index.js",
+			peerDependencies,
+		}),
+	);
+	await writeFile(
+		join(pkgDir, "index.js"),
+		"export default function createPassingPeer() {\n" +
+			"\treturn { extension: { name: 'passing-peer-ext', hooks: [], tools: [], sections: [] } };\n" +
+		"}\n",
+	);
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [pathToFileURL(join(pkgDir, "index.js")).href],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "passing-peer-ext", status: "ok", version: "0.1.0" },
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("a failing specifier is quarantined; the valid one still installs", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-"));
 	try {
