@@ -81,12 +81,35 @@ async function bootServer(options: {
 			admit: () => { throw new AdmissionRefusedError("isolation_required", "isolation_required: unavailable in test"); },
 		});
 	}
-	const app = await createServer(opened, config, [], {
-		listenHost: options.listenHost ?? "127.0.0.1",
-		...(options.resolver === undefined ? {} : { loginResolver: options.resolver }),
+	let app: FastifyInstance;
+	if (
+		options.auth === "proxy" &&
+		(options.listenHost === undefined || options.listenHost === "127.0.0.1")
+	) {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			app = await createServer(opened, config, [], {
+				listenHost: options.listenHost ?? "127.0.0.1",
+				...(options.resolver === undefined ? {} : { loginResolver: options.resolver }),
 
-		...(options.now === undefined ? {} : { loginNow: options.now }),
-	});
+				...(options.now === undefined ? {} : { loginNow: options.now }),
+			});
+			const warning =
+				"sigrun: trusting local address 127.0.0.1/32 without a shared secret lets any local process impersonate users; set server.auth.proxy.secretHeader";
+			expect(
+				warn.mock.calls.filter((call) => call.join(" ") === warning),
+			).toHaveLength(1);
+		} finally {
+			warn.mockRestore();
+		}
+	} else {
+		app = await createServer(opened, config, [], {
+			listenHost: options.listenHost ?? "127.0.0.1",
+			...(options.resolver === undefined ? {} : { loginResolver: options.resolver }),
+
+			...(options.now === undefined ? {} : { loginNow: options.now }),
+		});
+	}
 	cleanups.push(async () => {
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);

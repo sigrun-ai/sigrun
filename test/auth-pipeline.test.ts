@@ -831,7 +831,9 @@ describe("own-host proxy peers (C5)", () => {
 			});
 			expect(missing.statusCode).toBe(401);
 			expect(warn).toHaveBeenCalledTimes(1);
-			expect(warn.mock.calls[0]!.join(" ")).toContain("shared secret");
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.secretReason("x-sigrun-proxy-secret"),
+			);
 			const present = await app.inject({
 				method: "GET",
 				url: "/v1/auth/whoami",
@@ -889,7 +891,9 @@ describe("own-host proxy peers (C5)", () => {
 				exactWarn.mock.calls.some((call) =>
 					call
 						.join(" ")
-						.includes("trusting local address 127.0.0.1"),
+						.includes(
+							"trusting local address 127.0.0.1/32 without a shared secret lets any local process impersonate users; set server.auth.proxy.secretHeader",
+						),
 				),
 			).toBe(true);
 			const response = await exact.app.inject({

@@ -8,6 +8,15 @@
 
 import { BlockList, isIP } from "node:net";
 
+/** Fold a v4-mapped v6 spelling (`::ffff:10.42.3.4`) to the v4 address. */
+export function normalizePeerAddress(address: string): string {
+	const trimmed = address.trim();
+	if (trimmed.startsWith("::ffff:") && isIP(trimmed.slice(7)) === 4) {
+		return trimmed.slice(7);
+	}
+	return trimmed;
+}
+
 /**
  * Whether `address` (a socket remote address) falls in any of `cidrs`
  * (CIDR ranges or bare IPs). Malformed entries never match; an
@@ -18,10 +27,7 @@ export function ipAllowed(
 	cidrs: readonly string[],
 ): boolean {
 	if (address === undefined) return false;
-	let candidate = address.trim();
-	if (candidate.startsWith("::ffff:") && isIP(candidate.slice(7)) === 4) {
-		candidate = candidate.slice(7);
-	}
+	const candidate = normalizePeerAddress(address);
 	const family = isIP(candidate);
 	if (family === 0) return false;
 	const list = new BlockList();

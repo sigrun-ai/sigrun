@@ -19,6 +19,7 @@
 
 import { networkInterfaces } from "node:os";
 import { isIP } from "node:net";
+import { normalizePeerAddress } from "./ip.js";
 
 /** Interface addresses refresh at most this often (milliseconds). */
 const CACHE_TTL_MS = 30_000;
@@ -40,19 +41,6 @@ function ownHostAddresses(): readonly string[] {
 	return cached.addresses;
 }
 
-/**
- * Fold a v4-mapped v6 spelling (`::ffff:10.42.9.9`) to the v4 address —
- * `ipAllowed`'s normalization, so the own-host check sees the same
- * address the allowlist check did.
- */
-function unwrap(address: string): string {
-	const trimmed = address.trim();
-	if (trimmed.startsWith("::ffff:") && isIP(trimmed.slice(7)) === 4) {
-		return trimmed.slice(7);
-	}
-	return trimmed;
-}
-
 function isLoopback(address: string): boolean {
 	if (address === "::1") return true;
 	if (isIP(address) !== 4) return false;
@@ -62,23 +50,25 @@ function isLoopback(address: string): boolean {
 /** Loopback (127.0.0.0/8, ::1) or any current interface address; `::ffff:` unwrapped. */
 export function isOwnHostAddress(address: string | undefined): boolean {
 	if (address === undefined) return false;
-	const candidate = unwrap(address);
+	const candidate = normalizePeerAddress(address);
 	if (isLoopback(candidate)) return true;
-	return ownHostAddresses().some((entry) => unwrap(entry) === candidate);
+	return ownHostAddresses().some(
+		(entry) => normalizePeerAddress(entry) === candidate,
+	);
 }
 
 /** True when `address` is listed exactly in `cidrs`: a bare address, or a /32 (IPv4) or /128 (IPv6) entry for it. */
 export function listedExactly(address: string, cidrs: readonly string[]): boolean {
-	const candidate = unwrap(address);
+	const candidate = normalizePeerAddress(address);
 	for (const raw of cidrs) {
 		const entry = raw.trim();
 		if (entry === "") continue;
 		const slash = entry.indexOf("/");
 		if (slash === -1) {
-			if (unwrap(entry) === candidate) return true;
+			if (normalizePeerAddress(entry) === candidate) return true;
 			continue;
 		}
-		const base = unwrap(entry.slice(0, slash));
+		const base = normalizePeerAddress(entry.slice(0, slash));
 		if (base !== candidate) continue;
 		const prefix = Number(entry.slice(slash + 1));
 		const family = isIP(candidate);
@@ -114,7 +104,7 @@ export function listedOwnHostEntries(trustedProxies: readonly string[]): string[
 		const base = slash === -1 ? trimmed : trimmed.slice(0, slash);
 		if (slash !== -1) {
 			const prefix = Number(trimmed.slice(slash + 1));
-			const family = isIP(unwrap(base));
+			const family = isIP(normalizePeerAddress(base));
 			if (family === 4 && prefix !== 32) return false;
 			if (family === 6 && prefix !== 128) return false;
 			if (family === 0) return false;
