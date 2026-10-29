@@ -15,7 +15,7 @@
  * stop only once every settle has been delivered).
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,12 +27,23 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { loadConfig, type SigrunConfig } from "../src/config.js";
+import { DEFAULT_MEMORY_SEAM, loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { startGateway, type GatewayHandle } from "../src/server/gateway.js";
-import { createShutdown, type ShutdownSteps } from "../src/server/shutdown.js";
+import {
+	CLOSE_APP_SHUTDOWN_CAP_MS,
+	CLOSE_HARNESS_SHUTDOWN_CAP_MS,
+	END_STREAMS_SHUTDOWN_CAP_MS,
+	GATEWAY_STOP_INTAKE_SHUTDOWN_CAP_MS,
+	GATEWAY_STOP_SHUTDOWN_CAP_MS,
+	PROVIDER_REFRESH_SHUTDOWN_CAP_MS,
+	SANDBOX_WORKERS_SHUTDOWN_CAP_MS,
+	createShutdown,
+	shutdownBudgetMs,
+	type ShutdownSteps,
+} from "../src/server/shutdown.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 const ENGINE_SPECIFIER = pathToFileURL(
@@ -82,6 +93,72 @@ function fakeSteps(order: string[], overrides?: {
 		closeHarness: step("closeHarness", order),
 	};
 }
+
+describe("shutdownBudgetMs", () => {
+	test("equals the sum of every ordered stage cap", () => {
+		const hookDeadlineMs = 12_345;
+		const eventBusShutdownCapMs =
+			30_000 + hookDeadlineMs + 10_000 + hookDeadlineMs;
+		expect(shutdownBudgetMs({ hookDeadlineMs })).toBe(
+				END_STREAMS_SHUTDOWN_CAP_MS +
+					CLOSE_APP_SHUTDOWN_CAP_MS +
+					GATEWAY_STOP_INTAKE_SHUTDOWN_CAP_MS +
+					eventBusShutdownCapMs +
+					GATEWAY_STOP_SHUTDOWN_CAP_MS +
+					SANDBOX_WORKERS_SHUTDOWN_CAP_MS +
+					PROVIDER_REFRESH_SHUTDOWN_CAP_MS +
+					CLOSE_HARNESS_SHUTDOWN_CAP_MS,
+			);
+		expect(shutdownBudgetMs(DEFAULT_MEMORY_SEAM)).toBe(
+				shutdownBudgetMs({ hookDeadlineMs: 30_000 }),
+		);
+	});
+
+	test("the harness-close cap is at least four times the measured 1.4.0 fixture close", { timeout: 60_000 }, async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-shutdown-close-measure-"));
+		const storagePath = join(dir, "sigrun.db");
+		await cp(
+			join(import.meta.dirname, "fixtures", "durable-v1", "sigrun.db"),
+			storagePath,
+		);
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: storagePath,
+			SIGRUN_AUTH: "none",
+			SIGRUN_WORKSPACE_PATH: dir,
+		});
+		const opened = await openHarness(config, {
+			identity: await seededIdentity(dir),
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		let measuredMs = 0;
+		try {
+			const before = performance.now();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+			measuredMs = performance.now() - before;
+			console.info(
+				`sigrun: measured 1.4.0 durable-v1 fixture close ${measuredMs.toFixed(1)}ms; cap ${CLOSE_HARNESS_SHUTDOWN_CAP_MS}ms`,
+			);
+			expect(measuredMs).toBeGreaterThan(0);
+			expect(CLOSE_HARNESS_SHUTDOWN_CAP_MS).toBeGreaterThanOrEqual(
+				4 * measuredMs,
+			);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT).catch(() => {});
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("createShutdown", () => {
 	test("runs the eight steps in order", async () => {

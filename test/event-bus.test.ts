@@ -250,6 +250,65 @@ describe("shutdownSequence with live runs", () => {
 	});
 });
 
+describe("harnessShutdown fan-out", () => {
+	test("handlers run concurrently under one shared deadline", { timeout: 10_000 }, async () => {
+		const hookDeadlineMs = 250;
+		const { bus } = await bootBus({ hookDeadlineMs });
+		const started: string[] = [];
+		for (const name of ["first", "second", "third"]) {
+			bus.registerExtension(name, {
+				harnessShutdown: async () => {
+					started.push(name);
+					await new Promise((resolve) =>
+						setTimeout(resolve, hookDeadlineMs - 100),
+					);
+				},
+			});
+		}
+		const before = performance.now();
+		await bus.shutdownSequence(BACKGROUND_CONTEXT);
+		const elapsed = performance.now() - before;
+		expect(started).toHaveLength(3);
+		expect(elapsed).toBeLessThan(2 * hookDeadlineMs);
+	});
+
+	test("one never-settling handler does not outlast the shared deadline, and other commits are durable", { timeout: 10_000 }, async () => {
+		const hookDeadlineMs = 100;
+		const { bus, root, opened } = await bootBus({ hookDeadlineMs });
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			for (const name of ["first", "second"]) {
+				bus.registerExtension(name, {
+					harnessShutdown: async (_api, context) => {
+						await root.commit(async (tx) => {
+							const draft = await tx.doc(SessionMetaDoc, root.id);
+							draft.tagged = [...draft.tagged, name];
+						}, context);
+					},
+				});
+			}
+			bus.registerExtension("wedged", {
+				harnessShutdown: () => new Promise<void>(() => {}),
+			});
+			const before = performance.now();
+			await bus.shutdownSequence(BACKGROUND_CONTEXT);
+			const elapsed = performance.now() - before;
+			expect(elapsed).toBeGreaterThanOrEqual(hookDeadlineMs - 25);
+			expect(elapsed).toBeLessThan(2 * hookDeadlineMs);
+			const meta = await opened.harness.snapshot(
+				SessionMetaDoc,
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
+			expect(meta?.tagged).toEqual(
+				expect.arrayContaining(["first", "second"]),
+			);
+		} finally {
+			error.mockRestore();
+		}
+	});
+});
+
 // ---------------------------------------------------------------------------
 // Settle detection
 // ---------------------------------------------------------------------------

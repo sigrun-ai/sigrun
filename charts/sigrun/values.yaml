@@ -101,6 +101,12 @@ controllers:
     # schedule, fsGroup 1000 makes the kubelet chown the sigrun-data PVC
     # to the same uid on mount.
     pod:
+      # The D6 shutdown budget at default settings (147s) plus the 15s
+      # termination margin, rounded up to five seconds. SIGRUN_HOOK_DEADLINE
+      # (30s, counted twice) and the fixed 30s worker-shutdown await feed the
+      # budget; SIGRUN_WORKER_DEADLINE bounds each worker run before that
+      # await. Raise this value when raising SIGRUN_HOOK_DEADLINE.
+      terminationGracePeriodSeconds: 165
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

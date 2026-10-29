@@ -37,6 +37,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
 import { beforeAll, describe, expect, test } from "vitest";
+import { DEFAULT_MEMORY_SEAM } from "../src/config.js";
+import { shutdownBudgetMs } from "../src/server/shutdown.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -252,6 +254,21 @@ describe("chart Deployment", () => {
 				(c) => c.name === "main",
 		) as DeploymentDoc["spec"]["template"]["spec"]["containers"][number];
 		expect(container).toBeDefined();
+	});
+
+	test("termination grace covers the computed shutdown budget plus 15s", () => {
+		const grace = (
+			deployment.spec.template.spec as typeof deployment.spec.template.spec & {
+				terminationGracePeriodSeconds?: number;
+			}
+		).terminationGracePeriodSeconds;
+		expect(grace).toBeTypeOf("number");
+		expect(grace!).toBeGreaterThanOrEqual(
+			shutdownBudgetMs(DEFAULT_MEMORY_SEAM) / 1000 + 15,
+		);
+		// Keep the literal default and the computed contract together: the
+		// budget+15 default is rounded up to a five-second boundary.
+		expect(grace! % 5).toBe(0);
 	});
 
 	test("single replica with Recreate strategy (RWO PVC — RollingUpdate deadlocks)", () => {

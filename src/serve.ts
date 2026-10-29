@@ -34,7 +34,36 @@ import { defaultSettingsDir, SettingsStore } from "./harness/settings.js";
 import { startGateway } from "./server/gateway.js";
 import { SIGRUN_VERSION } from "./server/schema-fixture.js";
 import { createServer } from "./server/index.js";
-import { createShutdown } from "./server/shutdown.js";
+import {
+	createShutdown,
+	PROVIDER_REFRESH_SHUTDOWN_CAP_MS,
+	shutdownBudgetMs,
+} from "./server/shutdown.js";
+
+/**
+ * Arm the admin-restart force-exit watchdog. The injected timer/exit seams
+ * make the contract testable without exiting the suite's process. Returns
+ * the disarm function used after a clean ordered shutdown.
+ */
+export function armRestartWatchdog(
+	budgetMs: number,
+	opts?: {
+		setTimer?: (cb: () => void, ms: number) => { unref?(): void };
+		exit?: (code: number) => void;
+	},
+): () => void {
+	const setTimer: (cb: () => void, ms: number) => { unref?(): void } =
+		opts?.setTimer ?? setTimeout;
+	const exit = opts?.exit ?? process.exit;
+	const watchdog = setTimer(() => {
+		console.error(
+			`sigrun: restart shutdown exceeded ${budgetMs}ms; forcing exit`,
+		);
+		exit(1);
+	}, budgetMs);
+	watchdog.unref?.();
+	return () => clearTimeout(watchdog as ReturnType<typeof setTimeout>);
+}
 
 /** A booted harness+server pair: the bound port and the ordered shutdown. */
 export interface BootedServer {
@@ -313,21 +342,13 @@ export async function serve(
 		onRestart: () =>
 			bootedReady
 				.then(async (handle) => {
-					// Force-exit lever (the review's finding 4): the ordered
-					// shutdown's drain is unbounded — a wedged close would be
-					// an unrecoverable outage (the supervisor never sees the
-					// process die, so it never restarts it). The watchdog is
-					// unref'd: the normal path (shutdown settles, exit below)
-					// is unaffected.
-					const watchdog = setTimeout(() => {
-						console.error(
-							"sigrun: restart shutdown exceeded 30s; forcing exit",
-						);
-						process.exit(1);
-					}, 30_000);
-					watchdog.unref();
+					// A wedged stage must never leave the supervisor waiting for
+					// a process that cannot die. The watchdog shares the ordered
+					// shutdown's computed fixed budget; it is unref'd, so the
+					// normal path (shutdown settles, exit below) is unaffected.
+					const disarmWatchdog = armRestartWatchdog(shutdownBudgetMs(config.memorySeam));
 					await handle.shutdownOnce();
-					clearTimeout(watchdog);
+					disarmWatchdog();
 					process.exit(0);
 				})
 				.catch((error: unknown) => {
@@ -363,7 +384,7 @@ export async function serve(
 					joined = true;
 				})
 				.catch(() => {});
-			const BOOT_REFRESH_JOIN_MS = 2_000;
+			const BOOT_REFRESH_JOIN_MS = PROVIDER_REFRESH_SHUTDOWN_CAP_MS;
 			await Promise.race([
 				join,
 				new Promise<void>((resolve) => {
