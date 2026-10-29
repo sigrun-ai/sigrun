@@ -1076,6 +1076,34 @@ launcher) is not supervised either; there the callout says "Restart
 sigrun to apply" with no button. `GET /v1/meta` reports the posture
 (`supervised`).
 
+## Parked tasks
+
+A task cut off repeatedly without progress (a crash loop) is parked by
+pi-durable's restart limit: it shows `blocked` with reason
+`restart_limit` and does not run again until an administrator retries
+it. The `SigrunTaskParked` alert fires on this. Two admin-only
+endpoints inspect and recover parked tasks:
+
+- `GET /v1/admin/tasks?state=blocked` — lists blocked tasks with
+  `{id, kind, reason, conversationId, owner?, extension?}` per row
+  (owner is the conversation's session owner when it has one; extension
+  is the registered task definition's owner when known).
+- `POST /v1/admin/tasks/:id/retry` — re-runs a restart-parked task:
+  204 on success, 404 `unknown_task` for an unknown id, 409
+  `not_parked` for a task that isn't parked (including one blocked for
+  another reason, such as `missing_task`). A retried schedule job's
+  status returns to `waiting` as the task runs again.
+
+```sh
+# List blocked tasks (admin token).
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:3000/v1/admin/tasks?state=blocked"
+
+# Retry a parked task.
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/v1/admin/tasks/7/retry
+```
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, auth posture
@@ -1085,6 +1113,8 @@ sigrun to apply" with no button. `GET /v1/meta` reports the posture
   differs from boot) and PATCH reports `{applied, pending}`.
 - `POST /v1/admin/restart` — graceful restart (admin, supervised
   deploys only; see Restarting).
+- `GET /v1/admin/tasks?state=blocked`, `POST /v1/admin/tasks/{id}/retry`
+  — parked-task inspection and recovery (admin; see Parked tasks).
 - `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
   the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
   now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are

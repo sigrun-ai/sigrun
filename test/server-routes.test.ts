@@ -371,6 +371,8 @@ describe("server route table", () => {
 				"/readyz",
 				"/metrics",
 				"/v1/admin/restart",
+				"/v1/admin/tasks",
+				"/v1/admin/tasks/:id/retry",
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/accounts",
