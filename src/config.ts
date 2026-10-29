@@ -220,6 +220,13 @@ export interface SigrunConfig {
 	dataDir: string;
 	cacheDir: string;
 	stateDir: string;
+	/**
+	 * SQLite store path (`SIGRUN_STORAGE_PATH` over `server.storagePath`).
+	 * Before this store opens, boot snapshots an older durable schema unless
+	 * `SIGRUN_SKIP_MIGRATION_SNAPSHOT=1` is set (spec D4). That env-only
+	 * escape hatch is for operators with an independent backup; it never
+	 * becomes a settings-file field.
+	 */
 	storagePath: string;
 	models: SigrunModels;
 	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS` or the file's top-level `extensions`. */
@@ -1242,6 +1249,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_PORT` | `port` |
  * | `SIGRUN_WORKSPACE_PATH` | `workspacePath` |
  * | `SIGRUN_STORAGE_PATH` | `storagePath` |
+| `SIGRUN_SKIP_MIGRATION_SNAPSHOT` | — (boot escape hatch; never persisted) |
  * | `SIGRUN_DATA_DIR` | `dataDir` |
  * | `SIGRUN_CACHE_DIR` | `cacheDir` |
  * | `SIGRUN_STATE_DIR` | `stateDir` |

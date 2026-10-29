@@ -155,6 +155,29 @@ when its version is already on the OCI registry.
   unresolvable sandbox helper, missing `@sigrun/tui`). **The image and chart
   do not ship.** This is the gate that catches a packument regression.
 
+## Core 0.3.0 storage migration and rollback
+
+The first 0.3.0 boot performs a **one-way SQLite durable-schema migration**
+for pi-durable 1.4.0. Before opening storage, boot writes a crash-consistent
+snapshot beside the database named
+`<storagePath>.pre-durable-schema-v<CURRENT>-<UTC stamp>.bak`. Snapshots are
+never deleted automatically. If a needed snapshot cannot be written, boot
+stops before migration. `SIGRUN_SKIP_MIGRATION_SNAPSHOT=1` is the emergency
+opt-out for an operator with an independent backup.
+
+**Rollback to 0.2.x (SQLite):**
+
+1. Stop sigrun.
+2. Restore the `.bak` over the database file.
+3. Remove the database's `-wal` and `-shm` sidecars.
+4. Deploy 0.2.x.
+
+Anything committed after the upgrade is lost.
+
+**JSONL storage:** there is no snapshot because its schema does not change.
+A 0.2.x process nevertheless never resumes a task left `sleeping` by 0.3.0,
+so rollback can strand that task.
+
 ## Adding a package to the family
 
 Two things are needed before CI can publish a new package: the name must exist

@@ -22,6 +22,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
+import { snapshotBeforeMigration } from "./migration-snapshot.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
@@ -856,7 +857,18 @@ export async function openHarness(
 		now: () => Date.now(),
 		managed: managedPaths,
 	});
-	const storage = await openNodeSqliteStorage(config.storagePath);
+	const storage = await (async () => {
+		// D4: preserve the last schema the previous release can read BEFORE
+		// openNodeSqliteStorage applies its one-way durable migration. The
+		// injected clock keeps snapshots deterministic in tests; a needed
+		// snapshot failure aborts boot here, before any migration write.
+		await snapshotBeforeMigration(config.storagePath, {
+			env,
+			now: options.now ?? (() => new Date()),
+			log: (line) => console.log(line),
+		});
+		return await openNodeSqliteStorage(config.storagePath);
+	})();
 	const registry = createRegistry();
 	// Late-filled by the loader: factories publish through the same registry
 	// instance, and selection rewrites read the declared set LIVE.

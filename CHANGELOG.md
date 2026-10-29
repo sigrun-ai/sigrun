@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 0.3.0 upgrade notes (unreleased)
+- **One-way storage migration:** the first 0.3.0 boot migrates the SQLite
+  durable schema to pi-durable 1.4.0's format. Before opening storage, boot
+  writes a crash-consistent snapshot beside the database named
+  `<storagePath>.pre-durable-schema-v<CURRENT>-<UTC stamp>.bak`. Snapshots
+  are never deleted automatically. If a needed snapshot cannot be written,
+  boot stops before migration. `SIGRUN_SKIP_MIGRATION_SNAPSHOT=1` is the
+  emergency opt-out for an operator with an independent backup.
+- **Rollback to 0.2.x (SQLite):** stop sigrun, restore the `.bak` over the
+  database file, remove the database's `-wal` and `-shm` sidecars, then
+  deploy 0.2.x. Anything committed after the upgrade is lost.
+- **JSONL storage:** there is no snapshot because its schema does not
+  change. A 0.2.x process nevertheless never resumes a task left `sleeping`
+  by 0.3.0, so rollback can strand that task.
+
 ## [0.2.1] - 2026-10-28
 
 ### Added
