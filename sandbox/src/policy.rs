@@ -24,7 +24,11 @@ impl Policy {
         if self.gid == Some(0) {
             return Err("gid 0 is forbidden".to_owned());
         }
-        if self.groups.as_ref().is_some_and(|groups| groups.contains(&0)) {
+        if self
+            .groups
+            .as_ref()
+            .is_some_and(|groups| groups.contains(&0))
+        {
             return Err("group 0 is forbidden".to_owned());
         }
         for path in self.ro.iter().chain(&self.rw).chain(&self.ensure_dirs) {
