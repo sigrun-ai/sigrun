@@ -102,26 +102,24 @@ interface TestRig {
 	now(): number;
 }
 
-/** A short real-time beat for async settling that no fake timer drives. */
-async function beat(ms = 25): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Poll until `predicate` holds (fail-loud bound, real time). */
+/**
+ * Wait for async task/observer commits by stepping the fake clock. The
+ * zero-time flush also drains non-timer work; the small advance prevents
+ * a wedged condition from spinning forever without letting a timer fire.
+ */
 async function until<T>(
+	clock: FakeClock,
 	read: () => Promise<T>,
 	predicate: (value: T) => boolean,
 	description: string,
-	timeoutMs = 10_000,
 ): Promise<T> {
-	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		const value = await read();
 		if (predicate(value)) return value;
-		if (Date.now() > deadline) {
-			throw new Error(`timed out waiting for ${description}`);
-		}
-		await beat();
+		await clock.flush();
+		const settled = await read();
+		if (predicate(settled)) return settled;
+		await clock.advance(1);
 	}
 }
 
@@ -280,19 +278,18 @@ async function createTask(
 	);
 }
 
-/** Poll for a task's terminal state (fail-loud bound). */
+/** Wait for a task's terminal state by stepping the fake clock. */
 async function waitTerminal(
 	rig: TestRig,
 	taskId: TaskId<void>,
-	timeoutMs = 10_000,
 ): Promise<TaskRecord<JsonValue, JsonValue, void>> {
 	return await until(
+		rig.clock,
 		() => rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT),
 		(record) =>
 			record !== undefined &&
 			(record.state.status === "terminal" || record.state.status === "completing"),
 		`task ${String(taskId)} to settle`,
-		timeoutMs,
 	) as TaskRecord<JsonValue, JsonValue, void>;
 }
 
@@ -305,6 +302,7 @@ async function inspection(rig: TestRig, taskId: TaskId<void>) {
 /** Wait until the task is `sleeping` and return its `until`. */
 async function waitSleeping(rig: TestRig, taskId: TaskId<void>): Promise<number> {
 	const entry = await until(
+		rig.clock,
 		() => inspection(rig, taskId),
 		(task) => task?.state.kind === "sleeping",
 		`task ${String(taskId)} to sleep`,
@@ -354,6 +352,7 @@ describe("the schedule task on durable sleeps", () => {
 
 		await rig.clock.advance(61_000);
 		await until(
+			rig.clock,
 			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
 			(record) => record?.lastRun !== undefined,
 			"the reopened job to fire",
@@ -415,6 +414,7 @@ describe("the schedule task on durable sleeps", () => {
 		await rig.reopen();
 
 		await until(
+			rig.clock,
 			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
 			(record) => record?.lastRun !== undefined,
 			"the catch-up fire",
@@ -449,6 +449,7 @@ describe("the schedule task on durable sleeps", () => {
 		await rig.reopen();
 
 		await until(
+			rig.clock,
 			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
 			(record) => record?.lastRun !== undefined,
 			"the skipped run",
@@ -502,6 +503,7 @@ describe("the schedule task on durable sleeps", () => {
 		await rig.clock.advance(86_400_000 + 1_000);
 		const id = "api:fixture-job";
 		await until(
+			rig.clock,
 			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
 			(record) => record?.lastRun !== undefined,
 			"the fixture job to fire",
@@ -552,6 +554,7 @@ describe("the schedule task on durable sleeps", () => {
 			BACKGROUND_CONTEXT,
 		);
 		const terminal = await until(
+			rig.clock,
 			() => rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT),
 			(record) =>
 				record !== undefined &&
@@ -635,6 +638,7 @@ describe("fireJob", () => {
 		// The first waiting phase derives the overdue sleep (already due),
 		// so the task fires without any clock advance.
 		await until(
+			rig.clock,
 			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
 			(record) => record?.lastRun !== undefined,
 			"the overdue fire",
@@ -885,6 +889,7 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 	expect(outcome.outcome).toBe("running");
 	const conversationId = outcome.conversationId as number;
 	await until(
+		rig.clock,
 		async () => {
 			const conversation = await rig.opened.harness.conversation(
 				conversationId as never,

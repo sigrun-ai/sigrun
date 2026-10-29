@@ -44,6 +44,8 @@ export interface FakeClock {
 	nowMs(): number;
 	/** Set the clock without firing timers (downtime simulation). */
 	set(ms: number): void;
+	/** Flush async task/observer work without moving the clock. */
+	flush(): Promise<void>;
 	/**
 	 * Move the clock forward by `ms`, firing every timer that comes due
 	 * in time order, awaiting microtasks between firings.
@@ -85,6 +87,7 @@ export function createFakeClock(start: number): FakeClock {
 	return {
 		now: () => new Date(current),
 		nowMs: () => current,
+		flush,
 		setTimer,
 		set: (ms) => {
 			current = ms;
