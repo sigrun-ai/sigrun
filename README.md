@@ -417,6 +417,91 @@ until then. Token and session requests only read the stored record; they
 never accept groups from the request. People-scoped conversation shares may
 also name groups, matched against the same stored groups.
 
+### Usernames
+
+Every external identity — proxy header, OIDC subject, invite claim,
+CLI argument — resolves to one **directory user key**. The key is the
+stable identifier: it names the user's storage directory
+(`data/users/<user>`), their config directories, their per-user
+extension stores, and it appears in tool registrations as
+`<slug>@<user>`, split at the **first `@`**. The key pattern is
+therefore a safety rule, not a style choice:
+
+- lowercase letters, digits, `.`, `_`, `-` only;
+- must start with a letter or digit (no leading `.` against hidden
+  paths, no `/` against traversal);
+- no `@` — it is the tool-registration delimiter;
+- at most 128 characters.
+
+`deriveUsername(input)` maps any input onto that pattern: Unicode NFKD
+and strip combining marks, lowercase, `@` → `_`, every other disallowed
+character → `-` (no collapsing), strip leading non-alphanumerics,
+truncate to 128. Empty result → the input is refused
+(`invalid_username`). The normative vectors:
+
+| Input | Key |
+|---|---|
+| `michaelmacleod` | `michaelmacleod` |
+| `Mike` | `mike` |
+| `mike@example.ca` | `mike_example.ca` |
+| `mike@example.com` | `mike_example.com` |
+| `Mike.Smith@Example.COM` | `mike.smith_example.com` |
+| `mike+test@example.com` | `mike-test_example.com` |
+| `José García` | `jose-garcia` |
+| `DOMAIN\mike` | `domain-mike` |
+| `Alice Smith` | `alice-smith` |
+| `.hidden` | `hidden` |
+| `mike.` | `mike.` (valid key, unchanged) |
+| `` (empty) | refused |
+| `@@@` | refused |
+
+Derivation is idempotent and every valid key is a fixed point, so a
+key that already exists is adopted as-is rather than re-derived.
+
+**Proxy uniqueness assumption (deployment requirement).** Proxy
+identity matching is case-insensitive: the proxy's usernames are
+assumed unique case-insensitively, so `Alice` and `alice` are the same
+person. Authelia/LDAP satisfy this. On a proxy where they are distinct
+accounts, `Alice` would resolve to `alice`'s account — including admin
+rights. Verify your identity source satisfies this before enabling the
+proxy method.
+
+**Derived vs typed collisions.** When a derived key is already taken
+(proxy auto-provisioning, login auto-provisioning), the next free
+suffix is chosen automatically: `alice`, then `alice-2`, `alice-3`,
+…. Typed names — `sigrun user add`, the invite claim form, the
+onboarding claim form — **refuse** with `username_taken` instead: an
+admin choosing a name never gets silently suffixed.
+
+**Login rule.** A new login user with no username claim derives from
+the **full email** (`mike@example.com` → `mike_example.com`), never
+just the local part. Existing linked users are unchanged — links are
+matched by exact subject, not by re-deriving the key.
+
+**Recipes.** Pre-provision a proxy user (and optionally grant admin):
+
+```sh
+sigrun user add alice --proxy Alice --admin
+```
+
+Link an additional proxy identity to an existing user:
+
+```sh
+sigrun user link alice --proxy alice.smith
+```
+
+**Crash-orphan repair.** If the process crashed between writing the
+user row and writing the proxy link, the user exists but cannot
+resolve. The boot sweep logs one line per orphan:
+
+```
+identity: proxy user "alice-2" has no proxy link; repair with: sigrun user link alice-2 --proxy <username>
+```
+
+Run the printed `sigrun user link <key> --proxy <username>` command,
+then delete the `-2` user if it was a duplicate (Settings → Users, or
+`DELETE /v1/users/alice-2` as an admin).
+
 ### External sign-in (OIDC and OAuth 2)
 
 The web sign-in screen lists configured external providers above the token
