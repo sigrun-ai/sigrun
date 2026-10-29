@@ -340,14 +340,16 @@ export function registerOnboardingRoutes(
 					return { status: 403, error: "invalid_code" } as const;
 				}
 				if (!typed.ok) return { status: 409, error: typed.error } as const;
-				if (await identity.invites.redeem(validated.code, typed.key) === undefined) {
+				identity.users.checkAdmission();
+				const redeemed = await identity.invites.redeem(validated.code, typed.key);
+				if (redeemed === undefined) {
 					return { status: 403, error: "invalid_code" } as const;
 				}
 				const record = await identity.users.add({
 					user: typed.key,
 					...(validated.name === undefined ? {} : { name: validated.name }),
 					...(validated.email === undefined ? {} : { email: validated.email }),
-					admin: invite.admin,
+					admin: redeemed.admin,
 					source: "invite",
 				});
 				return { status: 200, record } as const;

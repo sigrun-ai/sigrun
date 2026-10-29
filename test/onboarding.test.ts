@@ -907,7 +907,7 @@ describe("typed invite usernames", () => {
 
 describe("multi-user admission", () => {
 	test("second user via invite -> 409 isolation_required when unavailable", async () => {
-		const { app, opened } = await bootServer({ listenHost: "0.0.0.0", env: { SIGRUN_ISOLATION: "auto" } });
+		const { app, opened, dir } = await bootServer({ listenHost: "0.0.0.0", env: { SIGRUN_ISOLATION: "auto" } });
 		const setup = readSetupCode(opened.identity.cacheDir);
 		expect((await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code: setup, user: "alice" } })).statusCode).toBe(200);
 		const { code } = await opened.identity.invites.create({ admin: false });
@@ -915,10 +915,12 @@ describe("multi-user admission", () => {
 		expect(response.statusCode).toBe(409);
 		expect(response.json()).toEqual({ error: "isolation_required" });
 		expect(opened.identity.users.get("bob")).toBeUndefined();
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
 	});
 
 	test("second user with SIGRUN_AUTH=none -> 409 auth_required", async () => {
-		const { app, opened } = await bootServer({
+		const { app, opened, dir } = await bootServer({
 			listenHost: "127.0.0.1",
 			env: { SIGRUN_AUTH: "none", SIGRUN_ISOLATION: "auto" },
 			isolationAvailable: true,
@@ -928,6 +930,9 @@ describe("multi-user admission", () => {
 		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
 		expect(response.statusCode).toBe(409);
 		expect(response.json()).toEqual({ error: "auth_required" });
+		expect(opened.identity.users.get("bob")).toBeUndefined();
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
 	});
 });
 

@@ -125,9 +125,13 @@ export class UserDirectory {
 		await writeJson(this.path, records.map(withoutLegacyGroupAdmin));
 	}
 
-	/** Run the same admission guard used by add, before consuming an invite. */
+	/** Run the shared admission guard before consuming an invite. Writes nothing. */
 	checkAdmission(): void {
-		this.options.admit?.(this.list().length);
+		this.checkAdmissionFor(this.list());
+	}
+
+	private checkAdmissionFor(records: readonly DirectoryUser[]): void {
+		if (records.length >= 1) this.options.admit?.(records.length);
 	}
 
 	/** Every user, insertion order (the first add is the onboarding claim). */
@@ -167,7 +171,7 @@ export class UserDirectory {
 				throw new Error(`user "${user.user}" already exists`);
 			}
 			if (records.length >= 1) {
-				this.options.admit?.(records.length);
+				this.checkAdmissionFor(records);
 				if (records.length === 1 && records[0]!.workspace === undefined && this.options.firstWorkspace !== undefined) {
 					records[0] = { ...records[0], workspace: this.options.firstWorkspace };
 				}
