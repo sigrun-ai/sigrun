@@ -357,8 +357,9 @@ kubectl get ciliumnodes -o jsonpath='{..spec.ingress}'
 Listing those addresses exactly is the tightest posture. Trusting the
 whole pod CIDR (e.g. `10.42.0.0/16`, `fd00:42::/64`) is acceptable
 **only together with a policy admitting the `ingress` entity** — the
-chart's `networkPolicy.enabled` option installs exactly that
-CiliumNetworkPolicy. Without it, any pod in the CIDR can forge
+chart's `networkPolicy.enabled` option installs that
+CiliumNetworkPolicy, whose default also admits `host` for kubelet
+probes. Without it, any pod in the CIDR can forge
 identity headers directly to the Service. Note that the `ingress`
 entity covers **every Cilium gateway in the cluster**, so every route
 to sigrun must pass through forward auth; a gateway route that skips
@@ -379,14 +380,14 @@ or a `/32` / `/128` entry) does vouch, as an explicit operator
 decision, and boot logs a warning for each such entry when no shared
 secret is configured.
 
-**Rejection diagnostics.** Every proxy rejection logs one sanitized
-line naming the socket peer, the method, a short reason, and the route
-template — never tokens, cookies, or identity-header values. The
-throttle emits one line per reason per 60 s, with `(N suppressed)` on
-the next line for that reason. The reasons:
+**Rejection diagnostics.** Each rejection logs one sanitized line
+(subject to the throttle below) naming the socket peer, the method, a
+short reason, and the route, when known — never tokens, cookies, or
+identity-header values. The throttle emits one line per reason per 60 s,
+with `(N suppressed)` on the next line for that reason. The reasons:
 
 | Reason | Meaning |
-| --- | --- |
+|---|---|
 | `untrusted proxy` | The socket peer is outside `trustedProxies`. |
 | `own-host peer without shared secret` | The peer is a local address trusted only through a range, and no shared secret is configured — see C5 above. |
 | `missing or wrong shared secret (<header> header)` | The named secret header was absent or did not match `SIGRUN_PROXY_SECRET`. |
@@ -570,7 +571,8 @@ conversations).
 **Proxy-only onboarding.** On a proxy-only server bound beyond
 loopback, onboarding happens entirely **through the proxy**: the first
 claim and every later sign-in arrive as trusted proxy identities, no
-setup or invite codes apply (none are minted), and an unvouched
+setup or invite codes apply (no setup code is minted, and an invite
+code cannot be redeemed without a vouch), and an unvouched
 account-creating request is refused with 403
 `proxy_identity_required`. A browser reaching sigrun without a trusted
 proxy identity sees a ProxyUnidentified screen instead of a token or
