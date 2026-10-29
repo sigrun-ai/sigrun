@@ -8,6 +8,10 @@
 			"types": "./dist/themes.d.ts",
 			"default": "./dist/themes.js"
 		},
+		"./usernames": {
+			"types": "./dist/usernames.d.ts",
+			"default": "./dist/usernames.js"
+		},
 		"./conversations": {
 			"types": "./dist/conversations.d.ts",
 			"default": "./dist/conversations.js"
