@@ -54,6 +54,7 @@ import { isLoopbackHost } from "./loopback.js";
 import { listedOwnHostEntries, ownHostPeerPermitted } from "./own-host.js";
 import type { Principal } from "./principal.js";
 import { ProxyRejectReason, warnProxyRejected } from "./proxy-diagnostic.js";
+import { resolveProxyUser } from "./proxy-identity.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { effectiveAdmin } from "../../harness/identity/groups.js";
 
@@ -267,34 +268,34 @@ async function resolveProxy(
 			?.split(",")
 			.map((group) => group.trim())
 			.filter((group) => group !== "") ?? [];
-	const { users } = ctx.opened.identity;
-	// The invalid-username case (a proxy header that can't be a directory
-	// user) is a loud 403, not a 500: the proxy vouched for an identity
-	// this server can never represent. The warn's reason never carries the
-	// claimed value (spec §3: no identity-header values).
-	if (!/^[a-z0-9][a-z0-9._-]*$/.test(user)) {
-		warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
-		return { status: 403, error: "invalid_username" };
-	}
-	const existing = users.get(user);
-	if (existing === undefined && !proxy.autoProvision) {
-		warnProxyRejected(request, "untrusted identity source");
-		return { status: 403, error: "user_not_provisioned" };
-	}
+	const { users, accounts } = ctx.opened.identity;
 	let record;
 	try {
-		record = existing ??
-			(await users.add({
-				user,
+		const resolved = await resolveProxyUser(
+			{ users, accounts },
+			user,
+			{
 				...(headerOf(request, proxy.nameHeader) === undefined
 					? {}
 					: { name: headerOf(request, proxy.nameHeader) as string }),
 				...(headerOf(request, proxy.emailHeader) === undefined
 					? {}
 					: { email: headerOf(request, proxy.emailHeader) as string }),
-				admin: false,
-				source: "proxy",
-			}));
+			},
+			{ provision: proxy.autoProvision },
+		);
+		// The invalid-username case is a loud 403, not a 500: the proxy
+		// vouched for an identity this server can never represent. The warn
+		// never carries the claimed value (spec §3).
+		if (resolved.kind === "invalid") {
+			warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
+			return { status: 403, error: "invalid_username" };
+		}
+		if (resolved.kind === "not_provisioned") {
+			warnProxyRejected(request, "untrusted identity source");
+			return { status: 403, error: "user_not_provisioned" };
+		}
+		record = resolved.record;
 	} catch (error) {
 		if (error instanceof AdmissionRefusedError) {
 			return { status: 403, error: error.code };
@@ -305,7 +306,7 @@ async function resolveProxy(
 	// setGroups avoids the write when the values are unchanged. Effective
 	// admin is computed over the UPDATED record, so a group exit revokes
 	// the request's grant immediately and host-side checks agree.
-	record = await users.setGroups(user, "proxy", groups);
+	record = await users.setGroups(record.user, "proxy", groups);
 	return {
 		user: record.user,
 		...(record.name === undefined ? {} : { name: record.name }),

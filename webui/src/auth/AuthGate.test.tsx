@@ -273,7 +273,7 @@ describe("AuthGate", () => {
 				state: "unclaimed",
 				methods: ["proxy"],
 				codeRequired: false,
-				proxyIdentity: { user: "bob", name: "Bob Vouched" },
+				proxyIdentity: { user: "bob", subject: "bob", name: "Bob Vouched" },
 			},
 		});
 		const renderer = await renderAsync(

@@ -535,6 +535,176 @@ describe("proxy method", () => {
 	});
 });
 
+describe("proxy username derivation and account links", () => {
+	async function whoami(app: FastifyInstance, header: string) {
+		return await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": header },
+		});
+	}
+
+	test("Mike then mike resolves one user and one folded-subject link", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		expect((await whoami(app, "Mike")).statusCode).toBe(200);
+		const second = await whoami(app, "mike");
+		expect(second.statusCode).toBe(200);
+		expect(second.json().user).toBe("mike");
+		expect(opened.identity.users.list().filter((user) => user.user === "mike")).toHaveLength(1);
+		expect(opened.identity.accounts.list().filter((link) => link.provider === "proxy")).toEqual([
+			expect.objectContaining({ subject: "mike", user: "mike", via: "proxy" }),
+		]);
+	});
+
+	test("mike@example.ca and mike@example.com derive distinct users", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		expect((await whoami(app, "mike@example.ca")).json().user).toBe("mike_example.ca");
+		expect((await whoami(app, "mike@example.com")).json().user).toBe("mike_example.com");
+		expect(opened.identity.users.get("mike_example.ca")).toBeDefined();
+		expect(opened.identity.users.get("mike_example.com")).toBeDefined();
+	});
+
+	test("a preexisting alice is adopted by Alice and linked via proxy", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		await opened.identity.users.add({ user: "alice", admin: false, source: "cli" });
+		const response = await whoami(app, "Alice");
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("alice");
+		expect(opened.identity.accounts.lookup("proxy", "alice")).toMatchObject({
+			user: "alice",
+			via: "proxy",
+		});
+	});
+
+	test("a preexisting unlinked mike_example.com is not adopted by mike@example.com", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		await opened.identity.users.add({ user: "mike_example.com", admin: false, source: "invite" });
+		const response = await whoami(app, "mike@example.com");
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("mike_example.com-2");
+		expect(opened.identity.accounts.lookup("proxy", "mike@example.com")?.user).toBe("mike_example.com-2");
+	});
+
+	test("20 concurrent requests for one new identity create exactly one user", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const responses = await Promise.all(
+			Array.from({ length: 20 }, () => whoami(app, "New.User@Example.com")),
+		);
+		expect(responses.map((response) => response.statusCode)).toEqual(Array(20).fill(200));
+		expect(opened.identity.users.list().filter((user) => user.user === "new.user_example.com")).toHaveLength(1);
+		expect(opened.identity.accounts.list().filter((link) => link.provider === "proxy" && link.subject === "new.user@example.com")).toHaveLength(1);
+	});
+
+	test("concurrent similar derivations provision a set of two users with their own links", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const responses = await Promise.all([whoami(app, "a+b@example.com"), whoami(app, "a-b@example.com")]);
+		expect(responses.map((response) => response.statusCode)).toEqual([200, 200]);
+		expect(new Set(responses.map((response) => response.json().user))).toEqual(
+			new Set(["a-b_example.com", "a-b_example.com-2"]),
+		);
+		expect(new Set(opened.identity.accounts.list().filter((link) => link.provider === "proxy").map((link) => link.subject))).toEqual(
+			new Set(["a+b@example.com", "a-b@example.com"]),
+		);
+	});
+
+	test("isolation unavailable + existing user + a new header → 403 isolation_required", async () => {
+		const { app, opened } = await bootServer({
+			env: { ...PROXY_ENV, SIGRUN_ISOLATION: "auto" },
+			file: PROXY_FILE,
+			isolationAvailable: false,
+			seedUser: "first",
+		});
+		const response = await whoami(app, "New.User@Example.com");
+		expect(response.statusCode).toBe(403);
+		expect(response.json()).toEqual({ error: "isolation_required" });
+		expect(opened.identity.users.get("new.user_example.com")).toBeUndefined();
+	});
+
+	test("whitespace-trimmed Mike resolves mike", async () => {
+		const { app } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const response = await whoami(app, "  Mike  ");
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("mike");
+	});
+
+	test("--- → 403 invalid_username with one unusable-identity warn", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await whoami(app, "---");
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "invalid_username" });
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain("unusable identity claim");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a 513-character header → 403 invalid_username", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await whoami(app, "a".repeat(513));
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "invalid_username" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("autoProvision false + unlinked Bob → 403 user_not_provisioned", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({
+			env: PROXY_ENV,
+			file: { auth: { ...PROXY_FILE.auth, proxy: { autoProvision: false } } },
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await whoami(app, "Bob");
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "user_not_provisioned" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("deleting mike with transferTo admin2 allows Mike to be re-provisioned", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		const initial = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "Mike", "remote-groups": "admins" },
+		});
+		expect(initial.statusCode).toBe(200);
+		await opened.identity.users.add({ user: "admin2", admin: true, source: "cli" });
+		const removed = await app.inject({
+			method: "DELETE",
+			url: "/v1/users/mike?transferTo=admin2",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "Mike", "remote-groups": "admins" },
+		});
+		expect(removed.statusCode).toBe(204);
+		expect(opened.identity.users.get("mike")).toBeUndefined();
+		const response = await whoami(app, "Mike");
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("mike");
+		expect(opened.identity.users.get("mike")?.source).toBe("proxy");
+	});
+
+	test("a crash orphan is not adopted: the next header gets the suffixed key", async () => {
+		const { app, opened } = await bootServer({ env: PROXY_ENV, file: PROXY_FILE });
+		await opened.identity.users.add({ user: "orphan_example.com", admin: false, source: "proxy" });
+		const response = await whoami(app, "orphan@example.com");
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toBe("orphan_example.com-2");
+	});
+});
+
 // ---------------------------------------------------------------------------
 // proxy secret header
 // ---------------------------------------------------------------------------
@@ -1220,7 +1390,7 @@ describe("proxy-auth rejection diagnostics", () => {
 		"/v1/auth/whoami?x=1",
 		"x=1",
 		"wr0ng",
-		"INVALID_USER!",
+		"!!!",
 	];
 
 	test("a proxy-only deployment logs exactly one warn for a rejected credential-bearing request", async () => {
@@ -1297,7 +1467,7 @@ describe("proxy-auth rejection diagnostics", () => {
 				url: "/v1/auth/whoami",
 				remoteAddress: "10.42.3.4",
 				headers: {
-					"remote-user": "INVALID_USER!",
+					"remote-user": "!!!",
 					"x-sigrun-proxy-secret": "s3cret",
 				},
 			});

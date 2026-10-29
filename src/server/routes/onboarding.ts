@@ -14,6 +14,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { isUsernameKey } from "@sigrun/shared/usernames";
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
@@ -21,12 +22,14 @@ import { withClaimLock } from "../auth/claim-lock.js";
 import { ipAllowed } from "../auth/ip.js";
 import { isLoopbackHost } from "../auth/loopback.js";
 import { ownHostPeerPermitted } from "../auth/own-host.js";
+import { previewProxyUser, provisionProxyUser } from "../auth/proxy-identity.js";
 import {
 	ProxyRejectReason,
 	warnProxyRejected,
 } from "../auth/proxy-diagnostic.js";
 import { requiresProxyVouch } from "../auth/proxy-only.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
+import type { DirectoryUser } from "../../harness/identity/users.js";
 import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { stampSessionOwner } from "../helpers.js";
@@ -40,12 +43,10 @@ function headerOf(request: FastifyRequest, name: string): string | undefined {
 	return single?.trim() || undefined;
 }
 
-/** The username rule (spec §5.8, shared with the directory's own check). */
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
-
-/** What a trusted proxy vouches for — identity the claim may take as-is. */
+/** What a trusted proxy vouches for — its raw subject and would-be key. */
 interface ProxyIdentity {
 	readonly user: string;
+	readonly subject: string;
 	readonly name?: string;
 	readonly email?: string;
 }
@@ -128,14 +129,15 @@ function resolveProxyIdentity(
 		}
 		return undefined;
 	}
-	if (!USERNAME_PATTERN.test(user)) {
+	const preview = previewProxyUser(ctx.opened.identity, user);
+	if (preview === undefined) {
 		if (diagnose) warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
 		return undefined;
 	}
 	const name = headerOf(request, proxy.nameHeader);
 	const email = headerOf(request, proxy.emailHeader);
 	return {
-		user,
+		...preview,
 		...(name === undefined ? {} : { name }),
 		...(email === undefined ? {} : { email }),
 	};
@@ -252,11 +254,27 @@ export function registerOnboardingRoutes(
 			if (!claimed) {
 				// The first admin: proxy headers, loopback bind, or the setup
 				// code ("the first invite" — same shape, admin grant).
-				let grant: { user: string; name?: string; email?: string; source: "proxy" | "cli" };
+				let grant: DirectoryUser | { user: string; name?: string; email?: string; source: "cli" };
 				if (proxyIdentity !== undefined) {
-					// Proxy claims take identity from the headers, verbatim
-					// (body identity fields are ignored — the proxy vouched).
-					grant = { ...proxyIdentity, source: "proxy" };
+					// Body identity fields are ignored — the proxy vouched. This
+					// route already holds the claim lock, so call the lock-free
+					// resolver body, never the pipeline entry.
+					const resolved = await provisionProxyUser(
+						identity,
+						proxyIdentity.subject,
+						{
+							...(proxyIdentity.name === undefined ? {} : { name: proxyIdentity.name }),
+							...(proxyIdentity.email === undefined ? {} : { email: proxyIdentity.email }),
+						},
+						{ provision: true, admin: true },
+					);
+					if (resolved.kind === "invalid") {
+						return { status: 400, error: "invalid_username" } as const;
+					}
+					if (resolved.kind === "not_provisioned") {
+						return { status: 409, error: "already_claimed" } as const;
+					}
+					grant = resolved.record;
 				} else if (loopback) {
 					if (validated.user === undefined) return { status: 400, error: "invalid_body" } as const;
 					grant = {
@@ -277,10 +295,11 @@ export function registerOnboardingRoutes(
 					// Wrong or absent code where one is required.
 					return { status: 403, error: "invalid_code" } as const;
 				}
-				if (!USERNAME_PATTERN.test(grant.user)) {
+				if (!isUsernameKey(grant.user)) {
 					return { status: 400, error: "invalid_username" } as const;
 				}
-				const record = await identity.users.add({
+				// The proxy resolver already added and linked its record.
+				const record: DirectoryUser = "createdAt" in grant ? grant : await identity.users.add({
 					user: grant.user,
 					...(grant.name === undefined ? {} : { name: grant.name }),
 					...(grant.email === undefined ? {} : { email: grant.email }),
@@ -332,16 +351,21 @@ export function registerOnboardingRoutes(
 			if (proxyIdentity === undefined) {
 				return { status: 409, error: "already_claimed" } as const;
 			}
-			const existing = identity.users.get(proxyIdentity.user);
-			if (existing !== undefined) return { status: 200, record: existing } as const;
-			const record = await identity.users.add({
-				user: proxyIdentity.user,
-				...(proxyIdentity.name === undefined ? {} : { name: proxyIdentity.name }),
-				...(proxyIdentity.email === undefined ? {} : { email: proxyIdentity.email }),
-				admin: false,
-				source: "proxy",
-			});
-			return { status: 200, record } as const;
+			const resolved = await provisionProxyUser(
+				identity,
+				proxyIdentity.subject,
+				{
+					...(proxyIdentity.name === undefined ? {} : { name: proxyIdentity.name }),
+					...(proxyIdentity.email === undefined ? {} : { email: proxyIdentity.email }),
+				},
+				// A codeless onboarding claim has always auto-provisioned the
+				// vouched identity, independent of the pipeline's policy.
+				{ provision: true, admin: false },
+			);
+			if (resolved.kind !== "user") {
+				return { status: 409, error: "already_claimed" } as const;
+			}
+			return { status: 200, record: resolved.record } as const;
 			} catch (error) {
 				if (error instanceof AdmissionRefusedError) {
 					return { status: 409, error: error.code } as const;

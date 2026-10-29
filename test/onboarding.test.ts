@@ -175,6 +175,7 @@ describe("GET /v1/onboarding", () => {
 			codeRequired: false,
 			proxyIdentity: {
 				user: "michael",
+				subject: "michael",
 				name: "Michael",
 				email: "michael@example.invalid",
 			},
@@ -266,7 +267,7 @@ describe("onboarding proxy-rejection diagnostics", () => {
 				method: "GET",
 				url: "/v1/onboarding",
 				remoteAddress: "10.42.3.4",
-				headers: { "remote-user": "Bad User" },
+				headers: { "remote-user": "---" },
 			});
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(warn.mock.calls[0]!.join(" ")).toContain(
@@ -362,6 +363,91 @@ describe("onboarding own-host peer (C5)", () => {
 			expect(warn.mock.calls[0]!.join(" ")).toContain(
 				ProxyRejectReason.OWN_HOST,
 			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("derived proxy onboarding identity", () => {
+	const env = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+		SIGRUN_ISOLATION: "auto",
+	};
+	const file = { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } };
+
+	test("GET previews Mike@Example.com without writing a user or link", async () => {
+		const { app, opened } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/onboarding",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "Mike@Example.com" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().proxyIdentity).toEqual({
+			user: "mike_example.com",
+			subject: "Mike@Example.com",
+		});
+		expect(opened.identity.users.list()).toEqual([]);
+		expect(opened.identity.accounts.list()).toEqual([]);
+	});
+
+	test("the same vouch claims the derived admin and link without lock recursion", async () => {
+		const { app, opened } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "Mike@Example.com" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toMatchObject({ user: "mike_example.com", admin: true, source: "proxy" });
+		expect(opened.identity.accounts.lookup("proxy", "mike@example.com")).toMatchObject({
+			user: "mike_example.com",
+			via: "proxy",
+		});
+	}, 5_000);
+
+	test("configured secretHeader + missing secret yields no proxyIdentity", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({
+			env: { ...env, SIGRUN_PROXY_SECRET: "s3cret" },
+			file,
+			listenHost: "0.0.0.0",
+			isolationAvailable: true,
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "Mike@Example.com" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().proxyIdentity).toBeUndefined();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("--- yields no proxyIdentity and the unusable-identity warn", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "---" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().proxyIdentity).toBeUndefined();
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain("unusable identity claim");
 		} finally {
 			warn.mockRestore();
 		}

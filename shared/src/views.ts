@@ -940,7 +940,9 @@ export interface OnboardingState {
 	readonly methods: readonly ("token" | "proxy")[];
 	readonly codeRequired: boolean;
 	readonly proxyIdentity?: {
+		/** The would-be directory key; `subject` is the raw proxy header. */
 		readonly user: string;
+		readonly subject: string;
 		readonly name?: string;
 		readonly email?: string;
 	};
