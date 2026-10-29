@@ -181,9 +181,25 @@ describe("createShutdown", () => {
 			const error = vi.spyOn(console, "error").mockImplementation(() => {});
 			const shutdown = createShutdown(steps);
 			const closing = shutdown();
+			await vi.advanceTimersByTimeAsync(0);
+			// An early rejection is collected by createShutdown, not logged
+			// again as an abandoned stage.
+			rejectClose(new Error("early close failure"));
+			await expect(closing).rejects.toBeInstanceOf(AggregateError);
+			expect(error).not.toHaveBeenCalledWith(
+				"sigrun: shutdown stage closeApp rejected after abandonment:",
+				expect.any(Error),
+			);
+			const wedged = createShutdown({
+				...steps,
+				closeApp: () => new Promise<void>((_resolve, reject) => {
+					rejectClose = reject;
+				}),
+			});
+			const abandoned = wedged();
 			await vi.advanceTimersByTimeAsync(CLOSE_APP_SHUTDOWN_CAP_MS);
-			await closing;
-			expect(order).toEqual([
+			await abandoned;
+			expect(order.slice(7)).toEqual([
 				"endStreams",
 				"gateway.stopIntake",
 				"eventBusShutdown",

@@ -221,24 +221,67 @@ describe("shutdownSequence with live runs", () => {
 	});
 
 	test("the final live-run drain can consume settle + hook within the event-bus budget", { timeout: 20_000 }, async () => {
-		vi.useFakeTimers();
+		const settleMs = 60;
+		const hookMs = 100;
+		const { bus, root, opened, faux } = await bootBus({
+			hookDeadlineMs: hookMs,
+			shutdownSettleWaitMs: settleMs,
+		});
+		const provider = withCancel(BACKGROUND_CONTEXT);
+		faux.setResponses([async () => await new Promise<AssistantMessage>((_resolve, reject) => {
+			provider.context.abortSignal?.addEventListener("abort", () => {
+				reject(new Error("aborted after the settle-budget assertion"));
+			}, { once: true });
+		})]);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			const { bus } = await bootBus({
-				hookDeadlineMs: 100,
-				shutdownSettleWaitMs: 60,
+			// One REAL run remains live through the settle deadline. A real
+			// terminal-interaction commit after that deadline queues lifecycle
+			// work for the final drain, exactly the budgeted settle+hook path.
+			await root.submit(
+				{ type: "input", content: "remain live through the final drain" },
+				BACKGROUND_CONTEXT,
+			);
+			await vi.waitFor(() => {
+				expect(bus.oldestLiveAdmissionMs()).toBeDefined();
 			});
-			// Deterministic bus-state boundary: a live conversation remains
-			// through the settle deadline, with one queue item whose drain
-			// consumes the hook deadline. This is the final-loop path, without
-			// relying on provider steering or wall-clock response timing.
-			bus["#liveInputs" as never] = new Map([[1, 1]]) as never;
-			bus["#queue" as never] = [{ kind: "lifecycle" }] as never;
-			const closing = bus.shutdownSequence(BACKGROUND_CONTEXT);
-			await vi.advanceTimersByTimeAsync(60);
-			await vi.advanceTimersByTimeAsync(100);
-			await expect(closing).resolves.toBeUndefined();
+			// Settle any creation/placement work before the measured sequence;
+			// the lifecycle commit below is then the only queued work.
+			await bus.drain(hookMs, BACKGROUND_CONTEXT);
+			let handled = false;
+			bus.onLifecycle(async () => {
+				handled = true;
+				// Start before the settle deadline, finish one hook later. The
+				// live run keeps the settle loop active while this drain waits.
+				await new Promise((resolve) =>
+					setTimeout(resolve, settleMs + hookMs),
+				);
+			});
+			await opened.harness.commit(async (tx) => {
+				const draft = await tx.doc(
+					InteractionDoc,
+					root.id,
+					"settle-budget",
+					"settle-budget",
+				);
+				Object.assign(draft, {
+					kind: "fixture.ask",
+					callId: "settle-budget",
+					status: "cancelled",
+					createdAt: 1,
+					settledAt: Date.now(),
+				});
+			}, BACKGROUND_CONTEXT);
+			const before = performance.now();
+			await bus.shutdownSequence(BACKGROUND_CONTEXT);
+			const elapsed = performance.now() - before;
+			expect(elapsed).toBeGreaterThanOrEqual(settleMs + hookMs - 25);
+			expect(elapsed).toBeLessThan(settleMs + hookMs + 150);
+			expect(handled).toBe(true);
+			provider.cancel();
+			await root.abort(BACKGROUND_CONTEXT);
 		} finally {
-			vi.useRealTimers();
+			warn.mockRestore();
 		}
 	});
 

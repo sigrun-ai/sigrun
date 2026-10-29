@@ -56,6 +56,10 @@ export const CLOSE_HARNESS_SHUTDOWN_CAP_MS = 10_000;
  * live-run settle wait AND the final drain that can start just before its
  * deadline + all extension handlers under one shared deadline. The settle
  * wait is a per-boot test override; the production budget uses its default.
+ * This bounds each drain WAIT, not work a caller can ride on an already
+ * running side lane: the grace holds when the side lane is idle at shutdown
+ * (the quiet admission window). An outer boundedStage wrap or stopping
+ * enqueue at shutdownSequence entry is a deferred structural option.
  */
 export function eventBusShutdownCapMs(config: { hookDeadlineMs: number }): number {
 	return (
@@ -99,14 +103,21 @@ async function boundedStage(
 			resolve();
 		}, capMs);
 	});
+	let abandoned = false;
 	const stage = Promise.resolve().then(run);
 	// The race can abandon a stage that later rejects. Observe that rejection
-	// here so it is logged rather than becoming an unhandled rejection.
+	// here so it is logged rather than becoming an unhandled rejection. An
+	// early rejection already propagated to createShutdown's failure collector,
+	// so it must not also be reported as an abandonment.
 	stage.catch((error: unknown) => {
-		console.error(`sigrun: shutdown stage ${name} rejected after abandonment:`, error);
+		if (abandoned) {
+			console.error(`sigrun: shutdown stage ${name} rejected after abandonment:`, error);
+		}
 	});
 	try {
-		await Promise.race([stage, deadline]);
+		await Promise.race([stage, deadline.then(() => {
+			abandoned = true;
+		})]);
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
 	}
