@@ -13,7 +13,7 @@ type: application
 #            Read from package.json at the tagged commit by the release
 #            workflow — never hand-edited here, and NOT checked against
 #            `version` (they are deliberately independent).
-version: 0.2.0
+version: 0.3.0
 appVersion: "0.2.0"
 keywords:
   - assistant

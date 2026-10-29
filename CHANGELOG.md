@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### 0.3.0 upgrade notes (unreleased)
+## [0.3.0] - 2026-10-29
+
+### Added
+- Parked-task visibility and recovery: pi-durable reports now reach logs,
+  metrics, alerts, and job status, and administrators can list and retry
+  parked tasks through the admin API.
+
+### Changed
+- Upgraded the Earendil runtime to pi-durable 1.4.0 (with chord and pi-ai
+  1.4.0), including durable schedule sleeps, retry backoffs that survive
+  restarts, and the crash-loop parked-task guard.
+- Extension shutdown now runs in parallel within a fixed budget, with the
+  chart's termination grace period matched to that budget.
+- The loader quarantines extensions whose declared Earendil peer range
+  excludes the host version instead of allowing an incompatible extension
+  to fail later at runtime.
+- `settings.compaction.modelOverrides` supports per-model compaction
+  settings while preserving environment-over-file precedence.
+
+### Upgrade notes
 - **One-way storage migration:** the first 0.3.0 boot migrates the SQLite
   durable schema to pi-durable 1.4.0's format. Before opening storage, boot
   writes a crash-consistent snapshot beside the database named
