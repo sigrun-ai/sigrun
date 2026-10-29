@@ -50,6 +50,7 @@ import { Writable } from "node:stream";
 import { resolveStoreRoots, writeFileAtomic } from "./harness/stores.js";
 import { openIdentityStores } from "./harness/identity/index.js";
 import { normalizeTypedUsername } from "./harness/identity/typed-username.js";
+import { deriveUsername } from "@sigrun/shared/usernames";
 import { pathToFileURL } from "node:url";
 import { effectiveMethods, loadConfig, type Env } from "./config.js";
 import { probeIsolation, runHelperProbe, selfTestHelper } from "./sandbox/availability.js";
@@ -745,13 +746,24 @@ export interface CliIO {
 	out?(text: string): void;
 }
 
-/** Resolve the attach/run user: `--user` > `SIGRUN_USER` > tui.json. */
+/**
+ * Resolve the attach/run user: `--user` > `SIGRUN_USER` > tui.json. The
+ * source is operator-typed (unchecked): derive the canonical key before
+ * it reaches the wire (the server derives on receipt too). Unusable
+ * input fails loud, never a silent empty identity.
+ */
 function resolveUser(
 	parsed: ParsedArgs,
 	env: Env,
 	file: TuiFile,
 ): string | undefined {
-	return parsed.user ?? env.SIGRUN_USER ?? file.user;
+	const raw = parsed.user ?? env.SIGRUN_USER ?? file.user;
+	if (raw === undefined) return undefined;
+	const derived = deriveUsername(raw);
+	if (derived === undefined) {
+		throw new Error(`invalid_username: "${raw}" derives no usable username`);
+	}
+	return derived;
 }
 
 /**
@@ -945,7 +957,16 @@ async function runIdentityCommand(
 	if (parsed.command === "token") {
 		switch (parsed.sub) {
 			case "create": {
-				const user = parsed.user as string;
+				// A typed source, same rule as `user add`: the resulting key
+				// is what the token (and its printed secret) belongs to.
+				const raw = parsed.user as string;
+				const derived = deriveUsername(raw);
+				if (derived === undefined) {
+					throw new Error(
+						`invalid_username: "${raw}" derives no usable username`,
+					);
+				}
+				const user = derived;
 				if (stores.users.get(user) === undefined) {
 					throw new Error(
 						`unknown user "${user}" — add it first: sigrun user add ${user}`,

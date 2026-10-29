@@ -152,6 +152,27 @@ describe("cliMain run/attach spawn the sigrun-tui bin", () => {
 		expect(await run).toBe(0);
 	});
 
+	test("run --user \"Mike Smith\" normalises to mike-smith on the child argv", async () => {
+		const rec = spawnRecorder();
+		const run = cliMain(
+			["--user", "Mike Smith"],
+			await hermeticEnv(),
+			rec.deps(),
+		);
+		await vi.waitFor(() => {
+			expect(rec.spawns).toHaveLength(1);
+		});
+		expect(rec.spawns[0]?.args).toEqual([
+			"/resolved/node_modules/@sigrun/tui/dist/launch.js",
+			"--server",
+			"http://localhost:4321",
+			"--user",
+			"mike-smith",
+		]);
+		rec.child.exit(0);
+		expect(await run).toBe(0);
+	});
+
 	test("attach spawns node + the resolved bin against the --server URL", async () => {
 		const rec = spawnRecorder();
 		const run = cliMain(

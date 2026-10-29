@@ -1105,6 +1105,60 @@ describe("verified identity wins over the header hint", () => {
 });
 
 // ---------------------------------------------------------------------------
+// naive loopback X-Sigrun-User derivation (Task 6: unchecked sources)
+// ---------------------------------------------------------------------------
+
+describe("naive loopback X-Sigrun-User", () => {
+	test("X-Sigrun-User: Mike → conversation owner mike", async () => {
+		const { app } = await bootServer({ env: { SIGRUN_AUTH: "none" } });
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { "x-sigrun-user": "Mike" },
+		});
+		expect(created.statusCode).toBe(201);
+		const meta = await app.inject({
+			method: "GET",
+			url: `/v1/conversations/${created.json().id as number}/meta`,
+		});
+		expect(meta.statusCode).toBe(200);
+		expect(meta.json().owner).toBe("mike");
+	});
+
+	test("X-Sigrun-User: @@@ → 400 invalid_username", async () => {
+		const { app } = await bootServer({ env: { SIGRUN_AUTH: "none" } });
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+			headers: { "x-sigrun-user": "@@@" },
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_username" });
+	});
+
+	test("absent header behaves as today (whoami has no user; create stays ownerless)", async () => {
+		const { app } = await bootServer({ env: { SIGRUN_AUTH: "none" } });
+		const whoami = await app.inject({
+			method: "GET",
+			url: "/v1/auth/whoami",
+		});
+		expect(whoami.statusCode).toBe(200);
+		expect(whoami.json().user).toBeUndefined();
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+		});
+		expect(created.statusCode).toBe(201);
+		const meta = await app.inject({
+			method: "GET",
+			url: `/v1/conversations/${created.json().id as number}/meta`,
+		});
+		expect(meta.statusCode).toBe(200);
+		expect(meta.json().owner).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Host + Origin checks
 // ---------------------------------------------------------------------------
 

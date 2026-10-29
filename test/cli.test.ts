@@ -762,6 +762,23 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/token/);
 	});
 
+	test("token create --user \"Mike\" normalises to mike", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		await cliMain(["user", "add", "mike"], { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" }, undefined, io);
+		out.length = 0;
+
+		expect(
+			await cliMain(["token", "create", "laptop", "--user", "Mike"], storeEnv(dir), undefined, io),
+		).toBe(0);
+		const secretLines = out.filter((line) => line.trim() !== "");
+		expect(secretLines).toHaveLength(1);
+		expect(secretLines[0]).toMatch(/^sgr_/);
+		const stored = JSON.parse(await readFile(join(dir, "api-tokens.json"), "utf8"));
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({ name: "laptop", user: "mike" });
+	});
+
 	test("token create for an unknown user fails loud naming the user", async () => {
 		const dir = await tmpConfigDir();
 		const { errors, io } = captureIo();

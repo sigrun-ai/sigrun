@@ -43,7 +43,9 @@
  *     the token's user must exist in the directory, else 401 (no log —
  *     token failures are not proxy diagnostics).
  *  6. **Empty list** (the naive workstation path): the trimmed
- *     `X-Sigrun-User` header verbatim, `admin: true`, method `"none"`.
+ *     `X-Sigrun-User` header DERIVED to its canonical key (`admin: true`,
+ *     method `"none"`). An unusable header (no derivable key) is a loud
+ *     400 `invalid_username`; an absent header behaves as before.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -57,6 +59,7 @@ import { ProxyRejectReason, warnProxyRejected } from "./proxy-diagnostic.js";
 import { resolveProxyUser } from "./proxy-identity.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { effectiveAdmin } from "../../harness/identity/groups.js";
+import { deriveUsername } from "@sigrun/shared/usernames";
 
 /** One header read: Fastify headers may be string | string[]; first wins. */
 function headerOf(
@@ -417,8 +420,17 @@ export function registerAuthPipeline(
 		// Stage 5/6: the configured methods, in order; the empty list is
 		// the naive loopback path.
 		if (ctx.methods.length === 0) {
+			const header = headerOf(request, "x-sigrun-user");
+			// The header is an unchecked (operator-typed) source: derive the
+			// canonical key on receipt, the same rule the CLI applies before
+			// sending. An unusable value is a loud 400, never a verbatim
+			// identity; an absent header keeps today's ownerless behavior.
+			const user = header === undefined ? undefined : deriveUsername(header);
+			if (header !== undefined && user === undefined) {
+				return await reply.code(400).send({ error: "invalid_username" });
+			}
 			request.principal = {
-				user: headerOf(request, "x-sigrun-user"),
+				user,
 				admin: true,
 				service: false,
 				method: "none",

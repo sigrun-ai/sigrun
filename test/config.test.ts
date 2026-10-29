@@ -412,6 +412,27 @@ describe("loadConfig with a settings file (env over file over defaults)", () => 
 	});
 });
 
+describe("SIGRUN_API_TOKEN_USER (Task 6: must already be a username key)", () => {
+	test("a non-key value throws a config error naming the derived suggestion", () => {
+		expect(() =>
+			loadConfig({
+				...MODEL_ENV,
+				SIGRUN_API_TOKEN: "sgr_test-token",
+				SIGRUN_API_TOKEN_USER: "Svc Bot",
+			}),
+		).toThrow(/svc-bot/);
+	});
+
+	test("a valid key loads", () => {
+		const config = loadConfig({
+			...MODEL_ENV,
+			SIGRUN_API_TOKEN: "sgr_test-token",
+			SIGRUN_API_TOKEN_USER: "svc",
+		});
+		expect(config.auth.serviceToken?.user).toBe("svc");
+	});
+});
+
 describe("isolation settings", () => {
 	test("defaults to auto, osUsers off, and a 10-minute worker idle timeout", () => {
 		expect(loadConfig({ ...MODEL_ENV }).isolation).toEqual({
