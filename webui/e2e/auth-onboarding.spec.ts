@@ -37,6 +37,26 @@ test.afterAll(async () => {
 	await server.cleanup();
 });
 
+test("claimed proxy-only boots to ProxyUnidentified when the browser peer is untrusted", async ({
+	page,
+}) => {
+	const proxyServer = await bootE2EServer({
+		auth: { proxy: { trustedProxies: ["10.42.0.0/16"] }, claimed: true },
+	});
+	try {
+		await page.goto(proxyServer.url);
+		await expect(
+			page.locator('[data-auth-screen="proxy-unidentified"]'),
+		).toBeVisible();
+		await expect(page.locator('[data-auth-field="token"]')).toHaveCount(0);
+		await expect(page.locator('input[type="password"]')).toHaveCount(0);
+		await expect(page.locator("input")).toHaveCount(0);
+		await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+	} finally {
+		await proxyServer.cleanup();
+	}
+});
+
 test("boots token-only, onboards with the setup code, and renders the SSE stream under the session cookie", async ({
 	page,
 }) => {

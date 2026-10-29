@@ -10,6 +10,7 @@
 import { act } from "react";
 import { describe, expect, test } from "vitest";
 import {
+	ApiError,
 	createClient,
 	type FetchLike,
 	type MetaResponse,
@@ -20,6 +21,7 @@ import { PINNED_SCHEMA_VERSION } from "../schema-version";
 import type { EventSourceFactory } from "../stream";
 import { renderAsync, StubEventSource, textContent } from "../test-utils";
 import { AuthGate } from "./AuthGate";
+import { messageOf } from "./Onboarding";
 
 /** One recorded fetch (input + init), for body/path asserts. */
 type Call = { input: string; method?: string; body?: string | Uint8Array };
@@ -63,6 +65,7 @@ const UNCLAIMED: OnboardingState = {
 function makeHarness(init?: {
 	readonly onboarding?: OnboardingState;
 	readonly whoamiStatus?: number;
+	readonly whoamiError?: string;
 	readonly identity?: WhoamiResponse;
 }) {
 	const state = {
@@ -88,7 +91,10 @@ function makeHarness(init?: {
 		if (input === "/v1/auth/whoami") {
 			return state.whoamiStatus === 200
 				? respond(init?.identity ?? CLAIMED_IDENTITY)
-				: respond({ error: "unauthenticated" }, state.whoamiStatus);
+				: respond(
+						{ error: init?.whoamiError ?? "unauthenticated" },
+						state.whoamiStatus,
+					);
 		}
 		if (input === "/v1/auth/login") {
 			// A successful login establishes the session: the next whoami
@@ -194,6 +200,17 @@ async function clickButton(
 }
 
 describe("AuthGate", () => {
+	test("proxy_identity_required uses fixed user-facing copy", () => {
+		const copy = messageOf(new ApiError({
+			method: "POST",
+			path: "/v1/onboarding/claim",
+			status: 403,
+			error: "proxy_identity_required",
+		}));
+		expect(copy).toBe("This sigrun signs people in through its sign-in proxy. Open it through the proxy.");
+		expect(copy).not.toContain("proxy_identity_required");
+	});
+
 	test("a session-method principal is authenticated and reaches the shell, never the login screen", async () => {
 		const harness = makeHarness({
 			onboarding: { state: "claimed", methods: ["token"], codeRequired: true },
@@ -338,6 +355,143 @@ describe("AuthGate", () => {
 		).toHaveLength(1);
 		expect(
 			renderer.root.findAllByProps({ className: "session-list" }),
+		).toHaveLength(0);
+	});
+
+	test("claimed proxy-only + a 401 whoami renders ProxyUnidentified with no credential inputs", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: ["proxy"], codeRequired: true },
+			whoamiStatus: 401,
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(1);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "login" }),
+		).toHaveLength(0);
+		expect(renderer.root.findAllByType("input")).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ type: "password" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-auth-field": "token" })).toHaveLength(0);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("sign-in proxy");
+		expect(text).not.toContain("unauthenticated");
+	});
+
+	test("claimed proxy-only + invalid_username renders the username rule", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: ["proxy"], codeRequired: true },
+			whoamiStatus: 403,
+			whoamiError: "invalid_username",
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(1);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("lowercase letters, digits");
+		expect(text).not.toContain("invalid_username");
+	});
+
+	test("claimed proxy-only + user_not_provisioned renders the admin contact copy", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: ["proxy"], codeRequired: true },
+			whoamiStatus: 403,
+			whoamiError: "user_not_provisioned",
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(1);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("auto-provisioning is off");
+		expect(text).toContain("admin");
+		expect(text).not.toContain("user_not_provisioned");
+	});
+
+	test("a later 401 under proxy-only renders the session-ended ProxyUnidentified screen", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: ["proxy"], codeRequired: true },
+			identity: { user: "alice", admin: true, service: false, method: "proxy" },
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(renderer.root.findAllByProps({ className: "session-list" })).toHaveLength(1);
+
+		harness.state.failAll = 401;
+		const newButton = renderer.root.findByProps({ className: "session-new" });
+		await act(async () => {
+			await newButton.props.onClick();
+		});
+
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "login" })).toHaveLength(0);
+		expect(textContent(renderer.toJSON())).toContain("Your session ended.");
+	});
+
+	test("proxy + token keeps the token login screen on a 401", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: ["proxy", "token"], codeRequired: true },
+			whoamiStatus: 401,
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "login" })).toHaveLength(1);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(0);
+	});
+
+	test("unclaimed proxy-only with a required code and no vouch renders ProxyUnidentified", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "unclaimed", methods: ["proxy"], codeRequired: true },
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "onboarding" })).toHaveLength(0);
+		expect(renderer.root.findAllByType("input")).toHaveLength(0);
+	});
+
+	test("unclaimed proxy-only without a required code keeps the claim form", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "unclaimed", methods: ["proxy"], codeRequired: false },
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "onboarding" })).toHaveLength(1);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
+		).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-auth-field": "user" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-auth-field": "code" })).toHaveLength(0);
+	});
+
+	test("an empty methods list is not proxy-only and keeps token login on a 401", async () => {
+		const harness = makeHarness({
+			onboarding: { state: "claimed", methods: [], codeRequired: true },
+			whoamiStatus: 401,
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "login" })).toHaveLength(1);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
 		).toHaveLength(0);
 	});
 });
