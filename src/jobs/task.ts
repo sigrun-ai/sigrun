@@ -129,6 +129,7 @@ export function createScheduleTask(
 					task.input.jobId,
 					(draft) => {
 						draft.state = "waiting";
+						delete draft.reason;
 						draft.nextRun = new Date(nextAt).toISOString();
 					},
 					context,
@@ -202,6 +203,7 @@ export function createScheduleTask(
 						task.input.jobId,
 						(draft) => {
 							draft.state = "waiting";
+							delete draft.reason;
 							draft.nextRun = new Date(next).toISOString();
 						},
 						context,
@@ -220,6 +222,7 @@ export function createScheduleTask(
 					task.input.jobId,
 					(draft) => {
 						draft.state = "firing";
+						delete draft.reason;
 					},
 					context,
 				);
@@ -253,6 +256,7 @@ export function createScheduleTask(
 						task.input.jobId,
 						(draft) => {
 							draft.state = "waiting";
+							delete draft.reason;
 							delete draft.nextRun;
 						},
 						context,
@@ -278,6 +282,7 @@ export function createScheduleTask(
 					task.input.jobId,
 					(draft) => {
 						draft.state = "waiting";
+						delete draft.reason;
 						draft.nextRun = new Date(next).toISOString();
 					},
 					context,

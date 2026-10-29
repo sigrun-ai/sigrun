@@ -14,6 +14,7 @@
  */
 
 import {
+	chmod,
 	cp,
 	mkdir,
 	mkdtemp,
@@ -257,6 +258,29 @@ describe("snapshotBeforeMigration", () => {
 		expect(await snapshots(dir)).toEqual([]);
 		expect(log.lines.join("\n").toLowerCase()).toContain("skip");
 	});
+
+	// chmod 0500 cannot make a directory unwritable to root. Under an
+	// ordinary uid, SQLite's first SELECT needs WAL sidecar access in that
+	// directory: that environmental probe failure must abort, never skip.
+	test.skipIf(process.getuid?.() === 0)(
+		"an unwritable WAL-mode database directory throws during the schema probe",
+		async () => {
+			const dir = await tempDir();
+			const storagePath = join(dir, "sigrun.db");
+			await cp(FIXTURE_DB, storagePath);
+			const db = new DatabaseSync(storagePath);
+			db.exec("PRAGMA journal_mode=WAL");
+			db.close();
+			await chmod(dir, 0o500);
+			try {
+				await expect(
+					snapshotBeforeMigration(storagePath, opts().values),
+				).rejects.toBeInstanceOf(MigrationSnapshotError);
+			} finally {
+				await chmod(dir, 0o700);
+			}
+		},
+	);
 
 	test("an occupied snapshot target throws MigrationSnapshotError and leaves the database byte-identical", async () => {
 		const dir = await tempDir();

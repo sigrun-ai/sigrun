@@ -22,7 +22,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { DEFAULT_COMPACTION_POLICY } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import { DEFAULT_COMPACTION_POLICY, defineTask } from "@earendil-works/pi-durable";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
@@ -146,6 +147,95 @@ test("SIGRUN_COMPACTION_* rejects non-positive or non-integer token counts", () 
 			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
 		}).compaction.backgroundTokens,
 	).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// Boot: the resolved policy preserves env-over-file precedence (B8).
+// ---------------------------------------------------------------------------
+
+test("openHarness resolves compaction env over file and retains file modelOverrides", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-compaction-precedence-"));
+	try {
+		await writeFile(
+			join(dir, "settings.json"),
+			JSON.stringify({
+				namingModel: false,
+				server: {
+					compaction: {
+						reserveTokens: 4096,
+						modelOverrides: { "faux/m": { keepRecentTokens: 123 } },
+					},
+				},
+			}),
+		);
+		const { contributor } = fauxContributor("faux", "m", 128_000, []);
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_DATA_DIR: dir,
+			SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
+		});
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		try {
+			const root = await opened.harness.root(BACKGROUND_CONTEXT);
+			// The resolved settings object is public only through a task runtime.
+			const probe = defineTask<
+				Record<string, never>,
+				{ phase: "read" },
+				JsonValue,
+				object
+			>({
+				name: "sigrun.test.compaction-settings-probe",
+				version: 1,
+				initial: () => ({ phase: "read" }),
+				phases: {
+					read: async (_task, runtime, context) => {
+						await runtime.commit(
+							() => ({
+								status: "terminal" as const,
+								outcome: {
+									status: "completed" as const,
+									result: runtime.settings.compaction,
+								},
+							}),
+							context,
+						);
+					},
+				},
+				abort: async () => {},
+			});
+			opened.registry.install({
+				name: "sigrun.test.compaction-probe",
+				tasks: [probe],
+			});
+			const taskId = await root.commit(
+				async (tx) =>
+					await tx.createTask(probe, {}, {
+						ownership: { kind: "conversation" },
+						background: true,
+					}),
+				BACKGROUND_CONTEXT,
+			);
+			const settled = await opened.harness.waitForTask(taskId, BACKGROUND_CONTEXT);
+			expect(settled.state.outcome).toEqual({
+				status: "completed",
+				result: {
+					...DEFAULT_COMPACTION_POLICY,
+					reserveTokens: 127400,
+					modelOverrides: { "faux/m": { keepRecentTokens: 123 } },
+				},
+			});
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });
 
 // ---------------------------------------------------------------------------

@@ -82,6 +82,7 @@ import { SessionMetaDoc } from "../server/session-meta.js";
 import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
 import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
+import { toDurableContext } from "./context.js";
 import { beginUserDeletion } from "./stores.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
@@ -1699,7 +1700,7 @@ export class EventBus {
 					token: ConversationDocToken<JsonObject>,
 					id: ConversationId,
 					context: Context,
-				) => harness.snapshot(token, id, context)) as MemoryEventApi["document"],
+				) => harness.snapshot(token, id, toDurableContext(context))) as MemoryEventApi["document"],
 			};
 		}
 		return {
@@ -1707,9 +1708,9 @@ export class EventBus {
 			entries: (query, limit, cursor, context) =>
 				this.#entriesOf(conversationId, query, limit, cursor, context),
 			// The snapshot overloads are generic per call; the narrowed shape
-			// carries one conversation-doc read, forwarded verbatim.
+			// carries one conversation-doc read with the D1 context upgrade.
 			document: ((token: ConversationDocToken<JsonObject>, id: ConversationId, context: Context) =>
-				harness.snapshot(token, id, context)) as MemoryEventApi["document"],
+				harness.snapshot(token, id, toDurableContext(context))) as MemoryEventApi["document"],
 		};
 	}
 

@@ -26,8 +26,12 @@ Extensions and providers **first**, core last. Core's release waits for the
 registry to serve its siblings' versions (`await-registry`), so a core tag
 whose siblings are not published yet stops before it ships the image.
 Gateway's published 0.1.3 has an exact `@sigrun/shared` 0.2.1 peer, so a fresh
-registry-mode core 0.3.0 install can fail with `ERESOLVE` until gateway
-republishes; extensions-first ordering avoids that skew.
+registry-mode core 0.3.0 install can fail with `ERESOLVE`. Before core's
+`smoke` release gate runs, gateway must complete its phase-2b republish with a
+widened `@sigrun/shared` peer; extensions-first ordering alone does not avoid
+this skew. With the published core shape, the stale-peer case instead degrades
+to a warning because shared is bundled: npm nests core's 0.3.0 copy alongside
+the top-level 0.2.1 copy, leaving two shared copies in the install tree.
 
 1. **Extension and provider versions** — one `package.json` bump each, plus a
    CHANGELOG entry.
@@ -44,8 +48,9 @@ republishes; extensions-first ordering avoids that skew.
    A core bump that forgets the sandbox manifests or a built-in's
    `@sigrun/shared` peer fails core's own suite — that is deliberate.
 
-   The chart's `appVersion` is NOT hand-set and NOT part of the family bump:
-   `chart-release.yml` reads it from `package.json` at the tagged commit. The
+   The chart's `appVersion` is bumped WITH the core family (the in-tree value
+   tracks the current core version); `chart-release.yml` additionally re-reads
+   it from package.json at the tagged commit. The
    chart's `version` comes from the `chart-v<semver>` tag. The Dockerfile's
    version label comes from the `APP_VERSION` build-arg, derived from the tag.
 

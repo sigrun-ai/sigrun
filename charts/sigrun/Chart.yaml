@@ -10,11 +10,12 @@ type: application
 #            tag by chart-release.yml. Advances independently of the core
 #            (so a chart-only fix does not need a core release).
 # appVersion — the CORE release this chart deploys; its default image tag.
-#            Read from package.json at the tagged commit by the release
-#            workflow — never hand-edited here, and NOT checked against
+#            Bumped WITH the core family (the in-tree value tracks the current
+#            core version), and re-derived from package.json at the tagged
+#            commit by the release workflow — not checked against
 #            `version` (they are deliberately independent).
 version: 0.3.0
-appVersion: "0.2.0"
+appVersion: "0.3.0"
 keywords:
   - assistant
   - agent

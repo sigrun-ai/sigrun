@@ -54,6 +54,7 @@ import {
 	JobDoc,
 	JobRunDoc,
 	listRuns,
+	patchJob,
 	readJob,
 	writeJobChange,
 } from "../src/jobs/docs.js";
@@ -513,6 +514,38 @@ describe("the schedule task on durable sleeps", () => {
 		expect(runs[0]!.fireAt).toBe(new Date(firstAt).toISOString());
 	});
 
+	test("retry clears restart_limit when the schedule waits again", async () => {
+		const rig = await bootRig({});
+		const id = "api:job-retry-reason";
+		const { hash } = await seedJob(rig, id, everyMinuteSpec());
+		const firstAt = rig.now() + 60_000;
+		const taskId = await createTask(rig, id, hash, firstAt);
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+		await rig.close();
+		await rig.reopen();
+
+		// B5 parks the durable task and stamps the owning job on reopen.
+		// Seed that exact recovery surface, then retry the real task.
+		await patchJob(
+			rig.opened.harness,
+			id,
+			(draft) => {
+				draft.state = "blocked";
+				draft.reason = "restart_limit";
+			},
+			BACKGROUND_CONTEXT,
+		);
+		await rig.opened.harness.retryTask(taskId, BACKGROUND_CONTEXT);
+		const record = await until(
+			rig.clock,
+			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
+			(job) => job?.state === "waiting",
+			"the retried job to wait again",
+		);
+		expect(record?.state).toBe("waiting");
+		expect(record).not.toHaveProperty("reason");
+	});
+
 	test("afterFailedRun stays keep", async () => {
 		const rig = await bootRig({});
 		// The harness's RESOLVED settings, read through a probe task's
@@ -686,6 +719,59 @@ describe("fireJob", () => {
 			BACKGROUND_CONTEXT,
 		);
 		expect(skipped?.outcome).toBe("skipped");
+	});
+
+	test("a registered task action clears a prior blocked reason", async () => {
+		const rig = await bootRig({});
+		const id = "api:job-task-recovery";
+		const target = defineTask<
+			Record<string, never>,
+			{ phase: "wait" },
+			void,
+			object
+		>({
+			name: "sigrun.test.job-target",
+			version: 1,
+			initial: () => ({ phase: "wait" }),
+			phases: {
+				wait: async (_task, runtime) =>
+					await new Promise<void>((resolve) => {
+						runtime.signal.addEventListener("abort", () => resolve(), { once: true });
+					}),
+			},
+			abort: async () => {},
+		});
+		rig.opened.registry.install({
+			name: "sigrun.test.job-target",
+			tasks: [target],
+		});
+		await seedJob(
+			rig,
+			id,
+			everyMinuteSpec({
+				action: { kind: "task", task: "sigrun.test.job-target" },
+			}),
+		);
+		await patchJob(
+			rig.opened.harness,
+			id,
+			(draft) => {
+				draft.state = "blocked";
+				draft.reason = "restart_limit";
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const outcome = await fireJob(
+			rig.deps,
+			id,
+			`${id}:manual:1000`,
+			rig.now(),
+			BACKGROUND_CONTEXT,
+		);
+		expect(outcome.outcome).toBe("running");
+		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
+		expect(record?.state).toBe("waiting");
+		expect(record).not.toHaveProperty("reason");
 	});
 
 	test("fireJob on an absent job record returns blocked", async () => {
