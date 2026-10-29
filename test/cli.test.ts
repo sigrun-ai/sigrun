@@ -881,7 +881,9 @@ describe("cliMain user proxy links (username derivation D4)", () => {
 			deps,
 			io,
 		)).toBe(1);
-		expect(errors.join("\n")).toContain("other");
+		expect(errors).toContain(
+			'sigrun: account_link_conflict: proxy identity is linked to other; removed user "fresh"',
+		);
 		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8"))
 			.map((user: { user: string }) => user.user)).toEqual(["other"]);
 		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
