@@ -337,6 +337,63 @@ configurable) when the request comes from a peer inside
 proxy and nothing else: every peer in `trustedProxies` can forge any
 identity, including an admin.
 
+**Which address to list.** `trustedProxies` must list the address the
+proxy **connects from**, as the pod sees it — not the proxy's own
+Service or DNS name. The same list also gates trust in
+`X-Forwarded-Host` (the Origin check) and `X-Forwarded-Proto` (the
+Secure-cookie decision): a peer outside the list cannot steer either.
+On a dual-stack cluster the Service may be reached over either family
+(the Service can be IPv6-first while the proxy still connects over
+IPv4), so list every address the proxy actually sources from.
+
+**Cilium Gateway API / Ingress.** The connect-from address is the
+per-node **Cilium ingress IP**, allocated from that node's pod CIDR —
+enumerate them with:
+
+```sh
+kubectl get ciliumnodes -o jsonpath='{..spec.ingress}'
+```
+
+Listing those addresses exactly is the tightest posture. Trusting the
+whole pod CIDR (e.g. `10.42.0.0/16`, `fd00:42::/64`) is acceptable
+**only together with a policy admitting the `ingress` entity** — the
+chart's `networkPolicy.enabled` option installs exactly that
+CiliumNetworkPolicy. Without it, any pod in the CIDR can forge
+identity headers directly to the Service. Note that the `ingress`
+entity covers **every Cilium gateway in the cluster**, so every route
+to sigrun must pass through forward auth; a gateway route that skips
+it is an open impersonation path.
+
+**Forward-auth header hygiene.** Forward auth must return **every
+identity header sigrun reads** on every authenticated response, and
+its upstream-header mode must **override, not append** — Envoy's
+`allowed_upstream_headers`, not `allowed_upstream_headers_to_append`.
+With append semantics a client can supply the headers forward auth
+omits and sigrun will read the client's copies.
+
+**Own-host peers (C5).** A trusted **range** never vouches for
+sigrun's own addresses — loopback or any local interface address —
+without the shared secret, because every local process shares those
+source addresses. An **exactly listed** local address (a bare address,
+or a `/32` / `/128` entry) does vouch, as an explicit operator
+decision, and boot logs a warning for each such entry when no shared
+secret is configured.
+
+**Rejection diagnostics.** Every proxy rejection logs one sanitized
+line naming the socket peer, the method, a short reason, and the route
+template — never tokens, cookies, or identity-header values. The
+throttle emits one line per reason per 60 s, with `(N suppressed)` on
+the next line for that reason. The reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `untrusted proxy` | The socket peer is outside `trustedProxies`. |
+| `own-host peer without shared secret` | The peer is a local address trusted only through a range, and no shared secret is configured — see C5 above. |
+| `missing or wrong shared secret (<header> header)` | The named secret header was absent or did not match `SIGRUN_PROXY_SECRET`. |
+| `missing identity header (<header>)` | The proxy vouched but sent no user header — forward auth is not returning every identity header. |
+| `unusable identity claim` | The vouched username cannot be a directory user (403 `invalid_username`). |
+| `untrusted identity source` | The user does not exist and `autoProvision` is off (403 `user_not_provisioned`). |
+
 **Stored groups and group-derived admin.** `server.auth.adminGroups`
 lists groups (Authelia's `Remote-Groups`, for example) whose members act as
 admins. Core stores groups per authenticating source: `proxy` for validated
@@ -509,6 +566,15 @@ conversation. Later users join by invite code (`POST /v1/users/invites`,
 admin) or by trusted-proxy auto-provision; admins can transfer or remove
 users (`PATCH`/`DELETE /v1/users/{user}` — deletion transfers their
 conversations).
+
+**Proxy-only onboarding.** On a proxy-only server bound beyond
+loopback, onboarding happens entirely **through the proxy**: the first
+claim and every later sign-in arrive as trusted proxy identities, no
+setup or invite codes apply (none are minted), and an unvouched
+account-creating request is refused with 403
+`proxy_identity_required`. A browser reaching sigrun without a trusted
+proxy identity sees a ProxyUnidentified screen instead of a token or
+setup-code form.
 
 **Sharing.** Conversations are private to their owner by default. The
 owner can share one — household-wide or with named users and groups,
