@@ -20,6 +20,10 @@ import type { ServerContext } from "../context.js";
 import { withClaimLock } from "../auth/claim-lock.js";
 import { ipAllowed } from "../auth/ip.js";
 import { isLoopbackHost } from "../auth/loopback.js";
+import {
+	ProxyRejectReason,
+	warnProxyRejected,
+} from "../auth/proxy-diagnostic.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
 import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
@@ -68,8 +72,15 @@ function resolveProxyIdentity(
 	ctx: ServerContext,
 ): ProxyIdentity | undefined {
 	if (!ctx.methods.includes("proxy")) return undefined;
+	// The rejection diagnostic (proxy-trust C1): while the instance is
+	// UNCLAIMED, every rejection branch reports WHY via the shared,
+	// throttled warn — these routes sit on the public path the pipeline
+	// never visits, so without this their proxy rejections are silent.
+	// Once claimed the onboarding surface no longer needs the signal.
+	const diagnose = !ctx.opened.identity.users.isClaimed();
 	const { proxy } = ctx.config.auth;
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
+		if (diagnose) warnProxyRejected(request, ProxyRejectReason.UNTRUSTED);
 		return undefined;
 	}
 	if (proxy.secret !== undefined && proxy.secretHeader !== undefined) {
@@ -80,11 +91,32 @@ function resolveProxyIdentity(
 			presented === undefined ||
 			!timingSafeStringEqual(presented, proxy.secret)
 		) {
+			if (diagnose) {
+				warnProxyRejected(
+					request,
+					ProxyRejectReason.secretReason(proxy.secretHeader),
+				);
+			}
 			return undefined;
 		}
 	}
 	const user = headerOf(request, proxy.userHeader);
-	if (user === undefined || !USERNAME_PATTERN.test(user)) return undefined;
+	// An absent OR EMPTY (headerOf trims to undefined) user header is the
+	// missing-header reason; a present-but-unrepresentable claim is the
+	// unusable-claim reason. Neither line carries the claimed VALUE.
+	if (user === undefined) {
+		if (diagnose) {
+			warnProxyRejected(
+				request,
+				ProxyRejectReason.missingHeaderReason(proxy.userHeader.toLowerCase()),
+			);
+		}
+		return undefined;
+	}
+	if (!USERNAME_PATTERN.test(user)) {
+		if (diagnose) warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
+		return undefined;
+	}
 	const name = headerOf(request, proxy.nameHeader);
 	const email = headerOf(request, proxy.emailHeader);
 	return {

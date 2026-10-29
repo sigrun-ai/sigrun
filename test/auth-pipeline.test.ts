@@ -17,7 +17,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -25,6 +25,7 @@ import {
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
+import { resetProxyDiagnostic } from "../src/server/auth/proxy-diagnostic.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
@@ -1038,6 +1039,12 @@ describe("encoded paths", () => {
 // ---------------------------------------------------------------------------
 
 describe("proxy-auth rejection diagnostics", () => {
+	beforeEach(() => {
+		// The shared diagnostic's per-reason 60 s throttle is module state
+		// (proxy-trust C1): reset it so each test sees every first emission.
+		resetProxyDiagnostic();
+	});
+
 	const SECRET_ENV = {
 		...PROXY_ENV,
 		SIGRUN_PROXY_SECRET: "s3cret",
@@ -1145,18 +1152,19 @@ describe("proxy-auth rejection diagnostics", () => {
 			});
 			expect(invalidUsername.statusCode).toBe(403);
 
-			expect(warn).toHaveBeenCalledTimes(5);
+			// The diagnostic now throttles per reason (proxy-trust C1):
+			// rejections 2 and 3 share the missing/wrong-secret reason, so
+			// the second is suppressed — FIVE rejections, FOUR lines.
+			expect(warn).toHaveBeenCalledTimes(4);
 			const lines = warn.mock.calls.map((call) => call.join(" "));
 			expect(lines[0]).toContain("203.0.113.7");
 			expect(lines[0]).toContain("untrusted proxy");
 			expect(lines[1]).toContain("10.42.3.4");
 			expect(lines[1]).toContain("shared secret");
 			expect(lines[2]).toContain("10.42.3.4");
-			expect(lines[2]).toContain("shared secret");
+			expect(lines[2]).toContain("identity header");
 			expect(lines[3]).toContain("10.42.3.4");
-			expect(lines[3]).toContain("identity header");
-			expect(lines[4]).toContain("10.42.3.4");
-			expect(lines[4]).toContain("unusable identity claim");
+			expect(lines[3]).toContain("unusable identity claim");
 			for (const line of lines) {
 				// The request method and the RESOLVED route template.
 				expect(line).toContain("GET");

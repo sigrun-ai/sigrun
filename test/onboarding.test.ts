@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -26,6 +26,10 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { readSetupCode } from "../src/harness/identity/index.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import {
+	ProxyRejectReason,
+	resetProxyDiagnostic,
+} from "../src/server/auth/proxy-diagnostic.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
 
 interface TestServer {
@@ -149,6 +153,149 @@ describe("GET /v1/onboarding", () => {
 				email: "michael@example.invalid",
 			},
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// the proxy-rejection diagnostic on the public onboarding path (C1)
+// ---------------------------------------------------------------------------
+
+describe("onboarding proxy-rejection diagnostics", () => {
+	const PROXY_ONLY_ENV = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+	};
+
+	beforeEach(() => {
+		resetProxyDiagnostic();
+	});
+
+	/** Boot a proxy-only, unclaimed server and spy the diagnostic. */
+	async function bootProxyOnly() {
+		const server = await bootServer({
+			env: PROXY_ONLY_ENV,
+			listenHost: "0.0.0.0",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		return { ...server, warn };
+	}
+
+	test("an untrusted peer warns 'untrusted proxy'", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.9.9.9",
+			});
+			expect(response.statusCode).toBe(200);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.UNTRUSTED,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a trusted peer with no remote-user warns 'missing identity header'", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+			});
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.missingHeaderReason("remote-user"),
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("an EMPTY remote-user is the missing-header reason, not unusable", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "" },
+			});
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.missingHeaderReason("remote-user"),
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("an unrepresentable remote-user warns 'unusable identity claim'", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "Bad User" },
+			});
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.UNUSABLE,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a CLAIMED instance emits zero onboarding warns", async () => {
+		const { app, opened, warn } = await bootProxyOnly();
+		try {
+			const code = readSetupCode(opened.identity.cacheDir);
+			const claim = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "michael" },
+				payload: { code },
+			});
+			expect(claim.statusCode).toBe(200);
+			expect(opened.identity.users.isClaimed()).toBe(true);
+			warn.mockClear();
+			for (const [remoteAddress, headers] of [
+				["10.9.9.9", {}],
+				["10.42.3.4", {}],
+				["10.42.3.4", { "remote-user": "Bad User" }],
+			] as const) {
+				await app.inject({
+					method: "GET",
+					url: "/v1/onboarding",
+					remoteAddress,
+					headers,
+				});
+			}
+			expect(warn).toHaveBeenCalledTimes(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a token-only boot emits zero proxy warns", async () => {
+		const { app } = await bootServer({ listenHost: "0.0.0.0" });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.9.9.9",
+			});
+			expect(warn).toHaveBeenCalledTimes(0);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

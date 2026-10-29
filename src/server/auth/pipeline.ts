@@ -52,6 +52,7 @@ import type { ServerContext } from "../context.js";
 import { ipAllowed } from "./ip.js";
 import { isLoopbackHost } from "./loopback.js";
 import type { Principal } from "./principal.js";
+import { ProxyRejectReason, warnProxyRejected } from "./proxy-diagnostic.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { effectiveAdmin } from "../../harness/identity/groups.js";
 
@@ -196,28 +197,6 @@ function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
 }
 
 /**
- * The proxy-auth rejection diagnostic (release-readiness Task 1, spec §3):
- * ONE `warn` per rejected request, naming the socket peer, the request
- * method, a short reason, and — only when Fastify already resolved it —
- * the ROUTE TEMPLATE (`routeOptions.url`, never the raw URL). The line
- * must never carry API tokens, cookies, identity-header VALUES, query
- * strings, or the full request URL; a header NAME appears only where the
- * reason itself is "that configured header was absent/wrong" (its value
- * never does). This is diagnostic logging, not evidence that the
- * configured allowlist is correct.
- */
-function warnProxyRejected(
-	request: FastifyRequest,
-	reason: string,
-): void {
-	const peer = request.socket.remoteAddress ?? "unknown";
-	const route = request.routeOptions.url;
-	console.warn(
-		`sigrun: proxy auth rejected ${request.method} request from ${peer} (${reason})${route === undefined ? "" : ` on ${route}`}`,
-	);
-}
-
-/**
  * Stage 5a (proxy): resolve the forward-auth headers, or reply with the
  * rejection. The secret header is DELETED from the request before any
  * handler (or test hook) can observe it.
@@ -254,7 +233,7 @@ async function resolveProxy(
 		delete request.headers[name];
 		if (presented === undefined || !timingSafeStringEqual(presented, proxy.secret)) {
 			if (!attemptingToken) {
-				warnProxyRejected(request, `missing or wrong shared secret (${proxy.secretHeader} header)`);
+				warnProxyRejected(request, ProxyRejectReason.secretReason(proxy.secretHeader));
 			}
 			return { status: 401 };
 		}
@@ -262,7 +241,7 @@ async function resolveProxy(
 	const user = headerOf(request, proxy.userHeader);
 	if (user === undefined) {
 		if (!attemptingToken) {
-			warnProxyRejected(request, `missing identity header (${proxy.userHeader})`);
+			warnProxyRejected(request, ProxyRejectReason.missingHeaderReason(proxy.userHeader));
 		}
 		return { status: 401 };
 	}
@@ -277,7 +256,7 @@ async function resolveProxy(
 	// this server can never represent. The warn's reason never carries the
 	// claimed value (spec §3: no identity-header values).
 	if (!/^[a-z0-9][a-z0-9._-]*$/.test(user)) {
-		warnProxyRejected(request, "unusable identity claim");
+		warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
 		return { status: 403, error: "invalid_username" };
 	}
 	const existing = users.get(user);
