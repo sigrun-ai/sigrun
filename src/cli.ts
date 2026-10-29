@@ -49,6 +49,7 @@ import * as readline from "node:readline/promises";
 import { Writable } from "node:stream";
 import { resolveStoreRoots, writeFileAtomic } from "./harness/stores.js";
 import { openIdentityStores } from "./harness/identity/index.js";
+import { normalizeTypedUsername } from "./harness/identity/typed-username.js";
 import { pathToFileURL } from "node:url";
 import { effectiveMethods, loadConfig, type Env } from "./config.js";
 import { probeIsolation, runHelperProbe, selfTestHelper } from "./sandbox/availability.js";
@@ -982,6 +983,17 @@ async function runIdentityCommand(
 	}
 	switch (parsed.sub) {
 		case "add": {
+			const typed = normalizeTypedUsername(
+				parsed.user as string,
+				(key) => stores.users.get(key) !== undefined,
+			);
+			if (!typed.ok) {
+				throw new Error(
+					typed.error === "invalid_username"
+						? `invalid_username: "${parsed.user as string}" derives no usable username`
+						: `username_taken: user "${parsed.user as string}" already exists`,
+				);
+			}
 			const config = loadConfig(
 				env,
 				new SettingsStore({ dir: defaultConfigDir(env) }).read(),
@@ -1003,13 +1015,14 @@ async function runIdentityCommand(
 					proxySecretHeader: config.auth.proxy.secretHeader,
 				}),
 			});
-			await stores.users.add({
-				user: parsed.user as string,
+			const record = await stores.users.add({
+				user: typed.key,
 				admin: parsed.admin ?? false,
 				...(parsed.name === undefined ? {} : { name: parsed.name }),
 				...(parsed.email === undefined ? {} : { email: parsed.email }),
 				source: "cli",
 			});
+			io.out?.(record.user);
 			return 0;
 		}
 		case "list": {

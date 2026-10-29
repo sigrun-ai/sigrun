@@ -14,7 +14,6 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { isUsernameKey } from "@sigrun/shared/usernames";
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
@@ -29,6 +28,7 @@ import {
 } from "../auth/proxy-diagnostic.js";
 import { requiresProxyVouch } from "../auth/proxy-only.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
+import { normalizeTypedUsername } from "../../harness/identity/typed-username.js";
 import type { DirectoryUser } from "../../harness/identity/users.js";
 import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
@@ -275,18 +275,15 @@ export function registerOnboardingRoutes(
 						return { status: 409, error: "already_claimed" } as const;
 					}
 					grant = resolved.record;
-				} else if (loopback) {
+				} else if (loopback || codeWasSetup) {
 					if (validated.user === undefined) return { status: 400, error: "invalid_body" } as const;
+					const typed = normalizeTypedUsername(
+						validated.user,
+						(key) => identity.users.get(key) !== undefined,
+					);
+					if (!typed.ok) return { status: typed.error === "invalid_username" ? 400 : 409, error: typed.error } as const;
 					grant = {
-						user: validated.user,
-						...(validated.name === undefined ? {} : { name: validated.name }),
-						...(validated.email === undefined ? {} : { email: validated.email }),
-						source: "cli",
-					};
-				} else if (codeWasSetup) {
-					if (validated.user === undefined) return { status: 400, error: "invalid_body" } as const;
-					grant = {
-						user: validated.user,
+						user: typed.key,
 						...(validated.name === undefined ? {} : { name: validated.name }),
 						...(validated.email === undefined ? {} : { email: validated.email }),
 						source: "cli",
@@ -294,9 +291,6 @@ export function registerOnboardingRoutes(
 				} else {
 					// Wrong or absent code where one is required.
 					return { status: 403, error: "invalid_code" } as const;
-				}
-				if (!isUsernameKey(grant.user)) {
-					return { status: 400, error: "invalid_username" } as const;
 				}
 				// The proxy resolver already added and linked its record.
 				const record: DirectoryUser = "createdAt" in grant ? grant : await identity.users.add({
@@ -329,15 +323,28 @@ export function registerOnboardingRoutes(
 				return { status: 409, error: "already_claimed" } as const;
 			}
 			if (validated.code !== undefined) {
-				const invite =
-					validated.user === undefined
-						? undefined
-						: await identity.invites.redeem(validated.code, validated.user);
+				if (validated.user === undefined) {
+					return { status: 403, error: "invalid_code" } as const;
+				}
+				const typed = normalizeTypedUsername(
+					validated.user,
+					(key) => identity.users.get(key) !== undefined,
+				);
+				if (!typed.ok && typed.error === "invalid_username") {
+					return { status: 400, error: typed.error } as const;
+				}
+				// Validate before revealing a collision, but never consume
+				// the invite until every refusal check has passed.
+				const invite = await identity.invites.peek(validated.code);
 				if (invite === undefined) {
 					return { status: 403, error: "invalid_code" } as const;
 				}
+				if (!typed.ok) return { status: 409, error: typed.error } as const;
+				if (await identity.invites.redeem(validated.code, typed.key) === undefined) {
+					return { status: 403, error: "invalid_code" } as const;
+				}
 				const record = await identity.users.add({
-					user: validated.user!,
+					user: typed.key,
 					...(validated.name === undefined ? {} : { name: validated.name }),
 					...(validated.email === undefined ? {} : { email: validated.email }),
 					admin: invite.admin,

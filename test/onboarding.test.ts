@@ -11,7 +11,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -23,7 +23,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
-import { readSetupCode } from "../src/harness/identity/index.js";
+import { readSetupCode, type InviteRecord } from "../src/harness/identity/index.js";
 import { ensureSetupCode } from "../src/harness/identity/setup-code.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
@@ -587,6 +587,28 @@ describe("POST /v1/onboarding/claim", () => {
 		});
 	});
 
+	test("loopback claim normalises a typed username", async () => {
+		const { app } = await bootServer({ listenHost: "127.0.0.1" });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "Alice Smith" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user.user).toBe("alice-smith");
+	});
+
+	test("typed claim usernames with no usable characters are invalid", async () => {
+		const { app } = await bootServer({ listenHost: "127.0.0.1" });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "@@@" },
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_username" });
+	});
+
 	test("a configured proxy secret is required on the public claim path too", async () => {
 		const { app } = await bootServer({
 			env: {
@@ -798,6 +820,88 @@ describe("proxy-only vouch rule (C2)", () => {
 			admin: true,
 			source: "cli",
 		});
+	});
+});
+
+describe("typed invite usernames", () => {
+	test("a collision refuses without consuming the invite", async () => {
+		const { app, opened, dir } = await bootServer({ listenHost: "127.0.0.1" });
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "Taken" },
+		})).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code, user: "Taken" },
+		});
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "username_taken" });
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
+	});
+
+	test("a typed invite username is normalised before redemption", async () => {
+		const { app, opened, dir } = await bootServer({
+			listenHost: "127.0.0.1",
+			env: { SIGRUN_ISOLATION: "auto" },
+			isolationAvailable: true,
+		});
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "founder" },
+		})).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code, user: "Bob Jones" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user.user).toBe("bob-jones");
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBe("bob-jones");
+		expect(opened.identity.users.get("bob-jones")).toMatchObject({ source: "invite" });
+	});
+
+	test("an invalid code has the same refusal for taken and fresh usernames", async () => {
+		const { app } = await bootServer({ listenHost: "127.0.0.1" });
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "taken" },
+		})).statusCode).toBe(200);
+		for (const user of ["taken", "fresh"]) {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				payload: { code: "ZZZZ-ZZZZ", user },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "invalid_code" });
+		}
+	});
+
+	test("an invite username with no usable characters is invalid and unconsumed", async () => {
+		const { app, opened, dir } = await bootServer({ listenHost: "127.0.0.1" });
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "founder" },
+		})).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code, user: "@@@" },
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_username" });
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
 	});
 });
 

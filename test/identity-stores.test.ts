@@ -350,6 +350,26 @@ describe("TokenStore", () => {
 });
 
 describe("InviteStore", () => {
+	test("peek validates without consuming the invite", async () => {
+		const path = join(tmpDir("peek"), "invites.json");
+		const invites = new InviteStore(path);
+		const { code } = await invites.create({ admin: true });
+		expect(await invites.peek(code)).toEqual({ admin: true });
+		expect(await invites.peek(code)).toEqual({ admin: true });
+		expect(JSON.parse(readFileSync(path, "utf8"))[0].usedBy).toBeUndefined();
+		expect(await invites.redeem(code, "alice")).toEqual({ admin: true });
+		expect(await invites.peek(code)).toBeUndefined();
+	});
+
+	test("peek rejects expired and unknown codes without writing", async () => {
+		const path = join(tmpDir("peek-expired"), "invites.json");
+		const invites = new InviteStore(path);
+		const { code } = await invites.create({ admin: false, expiresInMs: 1_000 });
+		expect(await invites.peek(code, Date.now() + 2_000)).toBeUndefined();
+		expect(await invites.peek("ZZZZ-ZZZZ")).toBeUndefined();
+		expect(JSON.parse(readFileSync(path, "utf8"))[0].usedBy).toBeUndefined();
+	});
+
 	test("a code redeems once; a second redeem is undefined", async () => {
 		const invites = new InviteStore(join(tmpDir("once"), "invites.json"));
 		const { code } = await invites.create({ admin: true });

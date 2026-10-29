@@ -651,6 +651,18 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/bob/);
 	});
 
+	test("user add normalises typed names and refuses a collision", async () => {
+		const dir = await tmpConfigDir();
+		const { out, errors, io } = captureIo();
+		const env = { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" };
+		expect(await cliMain(["user", "add", "Alice Smith"], env, undefined, io)).toBe(0);
+		expect(out).toEqual(["alice-smith"]);
+		expect(await cliMain(["user", "add", "Alice Smith"], env, undefined, io)).toBe(1);
+		expect(errors.join("\n")).toContain("username_taken");
+		const raw = JSON.parse(await readFile(join(dir, "users.json"), "utf8"));
+		expect(raw.map((user: { user: string }) => user.user)).toEqual(["alice-smith"]);
+	});
+
 	test("second user add refuses unavailable isolation with exit 1 and the message", async () => {
 		const dir = await tmpConfigDir();
 		const { errors, io } = captureIo();
