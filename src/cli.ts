@@ -1030,6 +1030,16 @@ async function runIdentityCommand(
 	throw new Error(`unhandled ${parsed.command} subcommand`);
 }
 
+/**
+ * The CLI-local mirror of the server's proxy-only rule (proxy-trust
+ * Task 6): no token callers exist, so a setup-code prompt can never
+ * be redeemed. Kept here rather than imported from src/server — the
+ * CLI does not import server auth modules.
+ */
+function isProxyOnly(methods: readonly string[]): boolean {
+	return methods.includes("proxy") && !methods.includes("token");
+}
+
 /** What a successful onboarding claim returned (Task 7, spec §5.8). */
 interface OnboardedIdentity {
 	readonly user: string;
@@ -1077,6 +1087,15 @@ async function onboardIfUnclaimed(
 		return undefined;
 	}
 	if (state.state !== "unclaimed") return undefined;
+
+	// Proxy-trust Task 6: a proxy-only server without a vouched identity
+	// refuses the claim (403 proxy_identity_required) and never mints a
+	// setup code — prompt for one and the operator can only lose.
+	if (isProxyOnly(state.methods) && state.proxyIdentity === undefined) {
+		throw new Error(
+			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
+		);
+	}
 
 	let code: string | undefined;
 	if (state.codeRequired) {
