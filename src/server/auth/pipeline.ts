@@ -51,6 +51,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
 import { ipAllowed } from "./ip.js";
 import { isLoopbackHost } from "./loopback.js";
+import { listedOwnHostEntries, ownHostPeerPermitted } from "./own-host.js";
 import type { Principal } from "./principal.js";
 import { ProxyRejectReason, warnProxyRejected } from "./proxy-diagnostic.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
@@ -227,6 +228,22 @@ async function resolveProxy(
 		}
 		return { status: 401 };
 	}
+	// C5: an own-host peer (loopback or a local interface address) can
+	// originate from ANY local process, so trust through a range alone
+	// never vouches — the shared secret must be configured (its check
+	// then decides), or the exact address must be listed explicitly.
+	if (
+		!ownHostPeerPermitted(
+			request.socket.remoteAddress,
+			proxy.trustedProxies,
+			proxy.secret !== undefined && proxy.secretHeader !== undefined,
+		)
+	) {
+		if (!attemptingToken) {
+			warnProxyRejected(request, ProxyRejectReason.OWN_HOST);
+		}
+		return { status: 401 };
+	}
 	if (proxy.secret !== undefined && proxy.secretHeader !== undefined) {
 		const name = proxy.secretHeader.toLowerCase();
 		const presented = headerOf(request, name);
@@ -331,6 +348,22 @@ export function registerAuthPipeline(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
+	// C5 boot warning: an explicitly listed own-host trust entry WITHOUT
+	// a shared secret is the one shape where a local process can still
+	// impersonate users by connecting directly. Surface it once per
+	// entry, at registration (a boot-time config warning, not a request
+	// diagnostic — the throttled warnProxyRejected does not apply).
+	const { proxy } = ctx.config.auth;
+	if (
+		ctx.methods.includes("proxy") &&
+		!(proxy.secret !== undefined && proxy.secretHeader !== undefined)
+	) {
+		for (const entry of listedOwnHostEntries(proxy.trustedProxies)) {
+			console.warn(
+				`sigrun: trusting local address ${entry} without a shared secret lets any local process impersonate users; set server.auth.proxy.secretHeader`,
+			);
+		}
+	}
 	app.addHook("onRequest", async (request, reply) => {
 		// Stage 1: Host + Origin.
 		const hostStatus = checkHost(request, ctx);

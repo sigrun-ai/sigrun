@@ -20,6 +20,7 @@ import type { ServerContext } from "../context.js";
 import { withClaimLock } from "../auth/claim-lock.js";
 import { ipAllowed } from "../auth/ip.js";
 import { isLoopbackHost } from "../auth/loopback.js";
+import { ownHostPeerPermitted } from "../auth/own-host.js";
 import {
 	ProxyRejectReason,
 	warnProxyRejected,
@@ -82,6 +83,19 @@ function resolveProxyIdentity(
 	const { proxy } = ctx.config.auth;
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
 		if (diagnose) warnProxyRejected(request, ProxyRejectReason.UNTRUSTED);
+		return undefined;
+	}
+	// C5: the same own-host discipline as the pipeline — an own-host
+	// peer reached through a range without the shared secret never
+	// vouches (any local process could claim the first admin).
+	if (
+		!ownHostPeerPermitted(
+			request.socket.remoteAddress,
+			proxy.trustedProxies,
+			proxy.secret !== undefined && proxy.secretHeader !== undefined,
+		)
+	) {
+		if (diagnose) warnProxyRejected(request, ProxyRejectReason.OWN_HOST);
 		return undefined;
 	}
 	if (proxy.secret !== undefined && proxy.secretHeader !== undefined) {

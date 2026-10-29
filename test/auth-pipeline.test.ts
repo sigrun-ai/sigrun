@@ -17,7 +17,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -25,7 +25,11 @@ import {
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
-import { resetProxyDiagnostic } from "../src/server/auth/proxy-diagnostic.js";
+import {
+	ProxyRejectReason,
+	resetProxyDiagnostic,
+} from "../src/server/auth/proxy-diagnostic.js";
+import { setOwnHostAddressesForTests } from "../src/server/auth/own-host.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
@@ -55,6 +59,8 @@ async function bootServer(options: {
 	webuiBundle?: string;
 	extensionSpecifiers?: string[];
 	isolationAvailable?: boolean;
+	/** Seed the claimed directory under this user instead of "tester". */
+	seedUser?: string;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-pipeline-"));
 	const faux = fauxProvider({
@@ -84,7 +90,7 @@ async function bootServer(options: {
 		extensions: [contributor],
 		env: { SIGRUN_CONFIG_DIR: join(dir, "config") },
 		settingsDir: join(dir, "config"),
-		...(claimed ? { identity: await seededIdentity(dir) } : {}),
+		...(claimed ? { identity: await seededIdentity(dir, options.seedUser) } : {}),
 		...(options.extensionSpecifiers === undefined
 			? {}
 			: { extensionSpecifiers: options.extensionSpecifiers }),
@@ -755,6 +761,147 @@ describe("proxy group write-through", () => {
 		}[];
 		const bob = rows.find((row) => row.user === "bob");
 		expect(bob).toMatchObject({ admin: false, groupAdmin: true, groups: ["admins"] });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// C5: an own-host peer needs the shared secret or an exact trust entry
+// ---------------------------------------------------------------------------
+
+describe("own-host proxy peers (C5)", () => {
+	beforeEach(() => {
+		resetProxyDiagnostic();
+		setOwnHostAddressesForTests(["10.42.9.9"]);
+	});
+
+	afterEach(() => {
+		setOwnHostAddressesForTests(undefined);
+	});
+
+	test("an own-host peer trusted only through a range, without a secret → 401 + OWN_HOST warn", async () => {
+		const { app } = await bootServer({
+			env: { ...PROXY_ENV, SIGRUN_ISOLATION: "off" },
+			// Seed the claimed directory AS alice: a second add under proxy
+			// without secretHeader would hit the multi-user admission guard.
+			seedUser: "alice",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			for (const peer of ["10.42.9.9", "::ffff:10.42.9.9"]) {
+				resetProxyDiagnostic();
+				warn.mockClear();
+				const response = await app.inject({
+					method: "GET",
+					url: "/v1/auth/whoami",
+					remoteAddress: peer,
+					headers: { "remote-user": "alice" },
+				});
+				expect(response.statusCode, `peer ${peer}`).toBe(401);
+				expect(warn, `peer ${peer}`).toHaveBeenCalledTimes(1);
+				expect(warn.mock.calls[0]!.join(" ")).toContain(
+					ProxyRejectReason.OWN_HOST,
+				);
+			}
+			// A remote peer inside the same range is unaffected.
+			const remote = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "alice" },
+			});
+			expect(remote.statusCode).toBe(200);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("an own-host peer WITH the shared secret configured: correct secret → 200, absent → 401 shared-secret reason", async () => {
+		const { app } = await bootServer({
+			env: { ...PROXY_ENV, SIGRUN_PROXY_SECRET: "s3cret", SIGRUN_ISOLATION: "off" },
+			file: PROXY_FILE,
+			seedUser: "alice",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const missing = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.9.9",
+				headers: { "remote-user": "alice" },
+			});
+			expect(missing.statusCode).toBe(401);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain("shared secret");
+			const present = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "10.42.9.9",
+				headers: {
+					"remote-user": "alice",
+					"x-sigrun-proxy-secret": "s3cret",
+				},
+			});
+			expect(present.statusCode).toBe(200);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("loopback trusted via 127.0.0.0/8 without a secret → 401; via exact 127.0.0.1/32 → 200 + the boot warning", async () => {
+		const { app } = await bootServer({
+			env: {
+				SIGRUN_AUTH: "proxy",
+				SIGRUN_AUTH_TRUSTED_PROXIES: "127.0.0.0/8",
+				SIGRUN_ISOLATION: "off",
+			},
+			seedUser: "alice",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "127.0.0.1",
+				headers: { "remote-user": "alice" },
+			});
+			expect(response.statusCode).toBe(401);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.OWN_HOST,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+
+		// The exact-listing escape hatch: no secret, but the address is
+		// trusted verbatim — and the boot warned about that posture.
+		const exactWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const exact = await bootServer({
+				env: {
+					SIGRUN_AUTH: "proxy",
+					SIGRUN_AUTH_TRUSTED_PROXIES: "127.0.0.1/32",
+					SIGRUN_ISOLATION: "off",
+				},
+				seedUser: "alice",
+			});
+			expect(
+				exactWarn.mock.calls.some((call) =>
+					call
+						.join(" ")
+						.includes("trusting local address 127.0.0.1"),
+				),
+			).toBe(true);
+			const response = await exact.app.inject({
+				method: "GET",
+				url: "/v1/auth/whoami",
+				remoteAddress: "127.0.0.1",
+				headers: { "remote-user": "alice" },
+			});
+			expect(response.statusCode).toBe(200);
+		} finally {
+			exactWarn.mockRestore();
+		}
 	});
 });
 

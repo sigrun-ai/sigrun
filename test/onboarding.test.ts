@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -32,6 +32,7 @@ import {
 	resetProxyDiagnostic,
 } from "../src/server/auth/proxy-diagnostic.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
+import { setOwnHostAddressesForTests } from "../src/server/auth/own-host.js";
 
 interface TestServer {
 	app: FastifyInstance;
@@ -318,6 +319,49 @@ describe("onboarding proxy-rejection diagnostics", () => {
 				remoteAddress: "10.9.9.9",
 			});
 			expect(warn).toHaveBeenCalledTimes(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// C5: an own-host peer without the shared secret does not vouch
+// ---------------------------------------------------------------------------
+
+describe("onboarding own-host peer (C5)", () => {
+	beforeEach(() => {
+		resetProxyDiagnostic();
+		setOwnHostAddressesForTests(["10.42.9.9"]);
+	});
+
+	afterEach(() => {
+		setOwnHostAddressesForTests(undefined);
+	});
+
+	test("an own-host peer trusted only through a range, without a secret → no proxyIdentity + OWN_HOST warn", async () => {
+		const { app } = await bootServer({
+			env: {
+				SIGRUN_AUTH: "proxy",
+				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+			},
+			listenHost: "0.0.0.0",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.9.9",
+				headers: { "remote-user": "michael" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().proxyIdentity).toBeUndefined();
+			expect(response.json().codeRequired).toBe(true);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.OWN_HOST,
+			);
 		} finally {
 			warn.mockRestore();
 		}
