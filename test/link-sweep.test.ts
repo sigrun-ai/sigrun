@@ -4,13 +4,13 @@
  * stores open, before serving — never on the request path and never
  * inside the claim lock.
  *
- - a link whose user no longer exists is REMOVED (counted);
- - a `source === "proxy"` user with NO proxy link is a crash orphan
-   (the user row was written, the link write never landed) — listed,
-   never auto-repaired, because the sweep cannot know the proxy
-   username the link should carry;
- - boot logs the removal count (only when > 0) and one repair-command
-   line per orphan; a clean store logs nothing.
+ * - a link whose user no longer exists is REMOVED (counted);
+ * - a `source === "proxy"` user with NO proxy link is a crash orphan
+ *   (the user row was written, the link write never landed) — listed,
+ *   never auto-repaired, because the sweep cannot know the proxy
+ *   username the link should carry;
+ * - boot logs the removal count (only when > 0) and one repair-command
+ *   line per orphan; a clean store logs nothing.
  *
  * Tests own their literals: tmp dirs, `alice`/`carol` users,
  * `example.com` proxy subjects.
@@ -34,7 +34,12 @@ import { unclaimedIdentity } from "./helpers/identity.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 
 const dirs: string[] = [];
+const cleanups: Array<() => Promise<void>> = [];
+// ONE teardown hook: drain harness closes FIRST (they may still write
+// under the tmp roots), then remove the dirs — no reverse-ordering
+// dependency between sibling afterAll hooks.
 afterAll(async () => {
+	for (const teardown of cleanups.splice(0)) await teardown();
 	for (const dir of dirs.splice(0)) {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -99,6 +104,23 @@ describe("sweepAccountLinks", () => {
 		expect(users.get("carol_example.com")).toBeDefined();
 	});
 
+	test("a proxy-source user holding ONLY a chat link is still an orphan", async () => {
+		const { users, accounts } = await stores("chat-only");
+		await accounts.link({
+			provider: "chat:telegram",
+			subject: "67890",
+			user: "carol_example.com",
+			via: "pairing",
+		});
+		const result = await sweepAccountLinks(users, accounts);
+		expect(result.removedDangling).toBe(0);
+		expect(result.orphans).toEqual(["carol_example.com"]);
+		// The chat link is healthy and untouched.
+		expect(accounts.lookup("chat:telegram", "67890")?.user).toBe(
+			"carol_example.com",
+		);
+	});
+
 	test("a linked proxy user is NOT an orphan; a clean store is a no-op", async () => {
 		const { users, accounts } = await stores("clean");
 		await accounts.link({
@@ -118,11 +140,6 @@ describe("sweepAccountLinks", () => {
 // ---------------------------------------------------------------------------
 // boot wiring: the sweep runs after the identity stores open and logs
 // ---------------------------------------------------------------------------
-
-const cleanups: Array<() => Promise<void>> = [];
-afterAll(async () => {
-	for (const teardown of cleanups.splice(0)) await teardown();
-});
 
 /**
  * Boot one hermetic harness over a seeded identity bundle (the
@@ -201,6 +218,30 @@ describe("boot sweep logging", () => {
 			);
 		} finally {
 			log.mockRestore();
+		}
+	});
+
+	test("a corrupt accounts.json warns and CONTINUES boot (sweep is best-effort)", async () => {
+		const dir = tmpDir("boot-corrupt");
+		const identity = await unclaimedIdentity(dir);
+		await identity.users.add({ user: "tester", admin: true, source: "cli" });
+		// Garbage bytes: the store's reader throws on read, which must NOT
+		// turn into a boot-fatal error.
+		writeFileSync(join(dir, "accounts.json"), "not json at all{{{", {
+			mode: 0o600,
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const opened = await bootHarness(dir, async () => {});
+			expect(opened.harness).toBeDefined();
+			const lines = warn.mock.calls.map((call) => String(call[0]));
+			expect(
+				lines.some((line) =>
+					line.startsWith("identity: account-link sweep failed: "),
+				),
+			).toBe(true);
+		} finally {
+			warn.mockRestore();
 		}
 	});
 

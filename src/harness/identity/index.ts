@@ -44,6 +44,10 @@ import {
 	setupCodePath,
 	CODE_ALPHABET,
 } from "./setup-code.js";
+import {
+	sweepAccountLinks,
+	type LinkSweepResult,
+} from "./link-sweep.js";
 
 export {
 	UserDirectory,
@@ -68,6 +72,8 @@ export {
 	generateCode,
 	setupCodePath,
 	CODE_ALPHABET,
+	sweepAccountLinks,
+	type LinkSweepResult,
 };
 
 /** The file names each store owns under its root. */

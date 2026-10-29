@@ -32,9 +32,9 @@ export interface LinkSweepResult {
 
 /**
  * Remove links whose user is gone and list proxy-source users with no
- * proxy link. Reads each store once (mtime-reloading reads), then
- * unlinks the dangling rows through the store's own serialized
- * mutation.
+ * proxy link. After the initial reads and the serialized unlinks, the
+ * orphan pass deliberately RE-READS accounts.json so a removed link
+ * cannot leave stale state in the orphan list.
  */
 export async function sweepAccountLinks(
 	users: UserDirectory,

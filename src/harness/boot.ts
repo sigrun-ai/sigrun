@@ -778,15 +778,27 @@ export async function openHarness(
 	// before serving — dangling links are removed, proxy-source crash
 	// orphans are logged with their repair command (never auto-repaired:
 	// the original proxy username is not derivable from the key).
-	const linkSweep = await sweepAccountLinks(identity.users, identity.accounts);
-	if (linkSweep.removedDangling > 0) {
-		console.log(
-			`identity: removed ${linkSweep.removedDangling} dangling account link(s)`,
+	// BEST-EFFORT posture: a sweep failure (e.g. a corrupt accounts.json)
+	// must not crash-loop a serving deployment; the stores' own readers
+	// still fail loud on the request paths if the file is truly corrupt.
+	try {
+		const linkSweep = await sweepAccountLinks(
+			identity.users,
+			identity.accounts,
 		);
-	}
-	for (const orphan of linkSweep.orphans) {
-		console.log(
-			`identity: proxy user "${orphan}" has no proxy link; repair with: sigrun user link ${orphan} --proxy <username>`,
+		if (linkSweep.removedDangling > 0) {
+			console.log(
+				`identity: removed ${linkSweep.removedDangling} dangling account link(s)`,
+			);
+		}
+		for (const orphan of linkSweep.orphans) {
+			console.log(
+				`identity: proxy user "${orphan}" has no proxy link; repair with: sigrun user link ${orphan} --proxy <username>`,
+			);
+		}
+	} catch (error) {
+		console.warn(
+			`identity: account-link sweep failed: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 	// The caller-supplied host wins (serving spec §1: `serve()` resolves
