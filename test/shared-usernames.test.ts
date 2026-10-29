@@ -68,7 +68,7 @@ function generateCorpus(): { inputs: string[]; validKeys: string[] } {
 const { inputs, validKeys } = generateCorpus();
 
 test.each([
-	["michaelmacleod", "michaelmacleod"],
+	["mikemacleod", "mikemacleod"],
 	["Mike", "mike"],
 	["mike@example.ca", "mike_example.ca"],
 	["mike@example.com", "mike_example.com"],

@@ -441,7 +441,7 @@ truncate to 128. Empty result → the input is refused
 
 | Input | Key |
 |---|---|
-| `michaelmacleod` | `michaelmacleod` |
+| `mikemacleod` | `mikemacleod` |
 | `Mike` | `mike` |
 | `mike@example.ca` | `mike_example.ca` |
 | `mike@example.com` | `mike_example.com` |
