@@ -4,7 +4,7 @@
  * copy of any of them under node_modules is the silent-failure class the
  * loader's host-module version guard exists to catch — objects from a
  * duplicate module pass structural typing but never the host's identity
- * checks. pi-durable pins its @earendil-works family exactly (1.3.0), so a
+ * checks. pi-durable pins its @earendil-works family exactly (1.4.0), so a
  * caret-resolved second version beside them is a bump gone wrong, not a
  * benign extra.
  *
@@ -99,7 +99,7 @@ test("exactly one installed copy of each @earendil-works host module", async () 
 	}
 });
 
-test("the @earendil-works host modules are installed at 1.3.0", async () => {
+test("the @earendil-works host modules are installed at 1.4.0", async () => {
 	for (const moduleName of HOST_MODULES) {
 		const copies = await installedCopies(moduleName);
 		expect(copies.length, moduleName).toBeGreaterThan(0);
@@ -107,7 +107,7 @@ test("the @earendil-works host modules are installed at 1.3.0", async () => {
 			const pkg = JSON.parse(await readFile(manifest, "utf8")) as {
 				version: string;
 			};
-			expect(pkg.version, manifest).toBe("1.3.0");
+			expect(pkg.version, manifest).toBe("1.4.0");
 		}
 	}
 });

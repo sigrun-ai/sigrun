@@ -237,18 +237,26 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 			for (const [module, pin] of Object.entries(sibling.manifest.peerDependencies ?? {})) {
 				const own = core.dependencies?.[module];
 				if (own !== undefined) {
-					// Core carries the module directly: the peer must be the
-					// same pin (exact equality — a divergent range or version is
-					// the skew class this test exists to catch).
-					expect(pin, `${name} peer ${module} == core's pin`).toBe(own);
+					// Phase-1 peers deliberately accept both host majors while
+					// core develops against 1.4.0. A range that excludes core's
+					// pin is the skew class this test exists to catch.
+					const accepted = new Set(pin.split("||").map((part) => part.trim()));
+					expect(
+						accepted.has(own),
+						`${name} peer ${module} accepts core's pin ${own}`,
+					).toBe(true);
 				} else {
 					// A transitive host module (e.g. @earendil-works/pi-codemode,
 					// which arrives via pi-durable): the peer must equal the
 					// version core's tree actually resolves.
 					const resolved = manifest(
 						join(REPO_ROOT, "node_modules", module, "package.json"),
-					).version;
-					expect(pin, `${name} peer ${module} == core's resolved ${resolved}`).toBe(resolved);
+					).version as string;
+					const accepted = new Set(pin.split("||").map((part) => part.trim()));
+					expect(
+						accepted.has(resolved),
+						`${name} peer ${module} accepts core's resolved ${resolved}`,
+					).toBe(true);
 				}
 			}
 		}

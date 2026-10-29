@@ -34,7 +34,7 @@ import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** The pi-durable version `GET /v1/meta` must report (pinned dependency). */
-const PI_DURABLE_VERSION = "1.3.0";
+const PI_DURABLE_VERSION = "1.4.0";
 
 /** The test fixture extension package's entry (loader contract: default factory). */
 const FIXTURE_SPECIFIER = pathToFileURL(

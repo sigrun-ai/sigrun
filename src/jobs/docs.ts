@@ -68,6 +68,7 @@ export const JobDoc = defineDocFamily<JobRecord, JobRecord>({
 	kind: "sigrun.job",
 	version: 1,
 	scope: "session",
+	checkpointWhen: () => false,
 	family: true,
 	initial: (seed) => seed,
 });
@@ -77,6 +78,7 @@ export const JobRevisionDoc = defineDocFamily<JobRevisionWire, JobRevisionWire>(
 	kind: "sigrun.job.revision",
 	version: 1,
 	scope: "session",
+	checkpointWhen: () => false,
 	family: true,
 	initial: (seed) => seed,
 });
@@ -86,6 +88,7 @@ export const JobRunDoc = defineDocFamily<JobRunWire, JobRunWire>({
 	kind: "sigrun.job.run",
 	version: 1,
 	scope: "session",
+	checkpointWhen: () => false,
 	family: true,
 	initial: (seed) => seed,
 });

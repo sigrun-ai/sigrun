@@ -16,6 +16,7 @@ import {
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
+	type SetTimer,
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -654,11 +655,20 @@ export interface OpenHarnessOptions {
 	 * The activity clock (UI refresh A1), default `() => new Date()` — the
 	 * seam `lastActivityAt` stamps come from, overridable so tests pin time.
 	 * Jobs Task 2: the SAME seam feeds `HarnessOptions.now` (the harness
-	 * clock `runtime.sleep`/`runtime.now()` read), so a test that pins
+	 * clock `runtime.sleepUntil`/`runtime.now()` read), so a test that pins
 	 * `now` pins BOTH the activity stamps and the schedule task's durable
 	 * waits (the jobs tests step the clock instead of waiting 60s).
 	 */
 	readonly now?: () => Date;
+	/**
+	 * The harness timer seam (pi-durable 1.4.0 `HarnessOptions.setTimer`),
+	 * passed straight to `Harness.open`. A sleeping task wakes from ONE
+	 * foreground timer armed for `until - now`, so a fake `now` alone
+	 * cannot wake it — the jobs tests inject `createFakeClock`'s `setTimer`
+	 * next to `now`. Production leaves this unset (pi-durable's
+	 * `nativeTimer`).
+	 */
+	readonly setTimer?: SetTimer;
 }
 
 /**
@@ -1366,9 +1376,9 @@ export async function openHarness(
 	const fileSettings = settingsStore.harnessSettings();
 	const callerSettings = options.settings;
 	// The ONE boot clock (options.now ?? real): the activity stamper AND
-	// the harness clock share it (the schedule task's `runtime.sleep`
-	// reads the harness clock; pinning the seam pins both — the jobs
-	// tests' time-injection lever).
+	// the harness clock share it (the schedule task's `sleepUntil`
+	// deadlines live on the harness clock; pinning the seam pins both —
+	// the jobs tests' time-injection lever).
 	const clockNow = options.now ?? (() => new Date());
 	const harness = await Harness.open(
 		storage,
@@ -1377,6 +1387,7 @@ export async function openHarness(
 			registry,
 			env: envBuilder,
 			now: () => clockNow().getTime(),
+			setTimer: options.setTimer,
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
 			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the

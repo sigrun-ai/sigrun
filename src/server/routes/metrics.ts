@@ -142,12 +142,14 @@ export function registerMetricsRoutes(
 				"Age of the oldest in-flight submission's admission (0 when none; in-process clock — a pre-restart run is invisible until it settles)",
 				[{ labels: {}, value: Math.round((oldestMs ?? 0) / 1000) }],
 			);
-			// Live tasks by scheduler state kind. The full five-kind
-			// vocabulary is emitted (0s included) for label stability.
+			// Live tasks by scheduler state kind. The full six-kind
+			// vocabulary is emitted (0s included) for label stability
+			// (1.4.0 adds `sleeping` — the durable-sleep state).
 			const taskStatuses: Record<string, number> = {
 				running: 0,
 				ready: 0,
 				waiting: 0,
+				sleeping: 0,
 				completing: 0,
 				blocked: 0,
 			};

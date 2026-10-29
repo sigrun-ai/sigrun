@@ -292,18 +292,21 @@ async function main(): Promise<never> {
 			BACKGROUND_CONTEXT,
 		);
 		await writeJobState(dir, { jobId: JOB_ID, fireAt, hash, taskId: taskId as number });
-		// The task's first waiting phase sleeps on the overdue nextAt,
-		// which returns IMMEDIATELY, so the fire lands in THIS process
-		// unless we kill before it. But the marker must guarantee the
-		// task is at its waiting checkpoint before the kill. Poll the
-		// task record's checkpoint.
+		// 1.4.0: the task's first waiting phase commits a DURABLE sleep
+		// and ends with checkpoint `due`. The overdue nextAt makes the
+		// resumed task fire immediately, so the kill must land while this
+		// durable sleep is visible. Poll both the status and checkpoint.
 		const deadline = Date.now() + 20_000;
 		for (;;) {
 			const record = await opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
 			const checkpoint = record?.state.checkpoint as
 				| { phase: string; nextAt?: number }
 				| undefined;
-			if (record !== undefined && checkpoint?.phase === "waiting") break;
+			if (
+				record !== undefined &&
+				record.state.status === "sleeping" &&
+				checkpoint?.phase === "due"
+			) break;
 			if (Date.now() > deadline) {
 				return verifyFailed(
 					`the task never reached its waiting checkpoint (state=${JSON.stringify(record?.state)})`,

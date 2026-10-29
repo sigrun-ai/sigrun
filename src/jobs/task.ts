@@ -1,7 +1,8 @@
 /**
  * Jobs Task 2 (spec §8.1 "The executor"): the `sigrun.schedule` task —
  * one long-lived background pi-durable task per ENABLED job, looping
- * `waiting` → `firing` → `waiting` over a durable `runtime.sleep`.
+ * `waiting` → `due` → `firing` → `waiting` over durable
+ * `runtime.sleepUntil` sleeps (pi-durable 1.4.0).
  *
  * The input is only `{jobId, hash, firstAt?}` (the plan's Global
  * Constraints): the task NEVER trusts its input's spec — EVERY phase
@@ -12,7 +13,12 @@
  * fire (`nextFireAt(schedule, now, tz)`).
  *
  * The phases:
- * - `waiting`: durable `runtime.sleep(nextAt)`. On wake: under
+ * - `waiting`: re-read + stale check, derive `nextAt`, patch the job's
+ *   status fields, then END with
+ *   `runtime.sleepUntil(nextAt, {phase:"due", nextAt})` — the task holds
+ *   no invocation while asleep; the scheduler wakes it from one
+ *   foreground timer. NOTHING runs after the sleep in this phase.
+ * - `due` (the old post-sleep body): re-read + stale → terminal; under
  *   `catchUp: "none"` and `now - nextAt > 60_000`, the missed slot is
  *   recorded `skipped` and the task re-commits `waiting` at the NEXT
  *   slot from NOW. Otherwise it commits `{phase: "firing", fireAt:
@@ -26,6 +32,13 @@
  *   completed (a past one-shot `at`).
  *
  * `abort` commits terminal (aborted) — the disable/delete path's signal.
+ * 1.4.0 makes an abort-requested SLEEPING task schedulable, so the
+ * handler also runs while the task sleeps.
+ *
+ * Records persisted mid-`waiting` by 0.2.x (pi-durable 1.3.0, whose
+ * in-process `runtime.sleep` committed no state) re-enter `waiting` on
+ * reopen and sleep durably. No migration code; the definition version
+ * stays 1.
  *
  * The record's status fields (`state`, `nextRun`, `lastRun`) ride
  * `patchJob` — small status edits, never version bumps.
@@ -52,15 +65,16 @@ export interface ScheduleInput {
 	firstAt?: number;
 }
 
-/** The task's checkpoint (the two-phase loop). */
+/** The task's checkpoint (the three-phase loop). */
 export type ScheduleState =
 	| { phase: "waiting"; nextAt: number }
+	| { phase: "due"; nextAt: number }
 	| { phase: "firing"; fireAt: number };
 
 /**
  * The per-job executor. `deps` threads the harness + the injectable
- * clock (`deps.now` — the tests' lever; `runtime.sleep` reads the same
- * clock through the harness, which is why the phases re-check it).
+ * clock (`deps.now` — the tests' lever; `runtime.sleepUntil` deadlines
+ * live on the same harness clock, which is why the phases re-check it).
  */
 export function createScheduleTask(
 	deps: JobRuntimeDeps,
@@ -108,9 +122,26 @@ export function createScheduleTask(
 					}
 					nextAt = first;
 				}
-				// The durable wait — the crash point the battery kills inside.
-				await runtime.sleep(nextAt, context);
-				// Re-check the record after the sleep (it may have changed).
+				// Patch the job's status fields BEFORE sleeping (D3): the
+				// record shows the durable deadline while the task sleeps.
+				await patchJob(
+					deps.harness,
+					task.input.jobId,
+					(draft) => {
+						draft.state = "waiting";
+						draft.nextRun = new Date(nextAt).toISOString();
+					},
+					context,
+				);
+				// The durable wait — the phase ENDS here. The scheduler
+				// resumes the task at the `due` checkpoint when the harness
+				// clock reaches nextAt (or immediately when it already has).
+				await runtime.sleepUntil(nextAt, { phase: "due", nextAt }, context);
+			},
+
+			due: async (task, runtime, context) => {
+				const nextAt = task.state.checkpoint.nextAt;
+				// Re-check the record on wake (it may have changed).
 				const after = await readJob(deps.harness, task.input.jobId, context);
 				if (stale(after, task.input.hash)) {
 					await runtime.commit(
@@ -272,5 +303,5 @@ function stale(record: JobRecord | undefined, hash: string): record is undefined
 	);
 }
 
-/** Awaiting `runtime.sleep` on the harness's background context. */
+/** The schedule task's commits run on the harness's background context. */
 export const SCHEDULE_CONTEXT = BACKGROUND_CONTEXT;

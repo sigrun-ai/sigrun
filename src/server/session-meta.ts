@@ -64,6 +64,7 @@ export const SessionMetaDoc = defineDoc<SessionMeta>({
 	kind: "sigrun.session-meta",
 	version: 1,
 	scope: "conversation",
+	checkpointWhen: () => false,
 	history: "latest",
 	fork: "current",
 	// Defensive copy (the alias-free-ownership pattern): the tracker takes

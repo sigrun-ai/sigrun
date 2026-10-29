@@ -109,6 +109,7 @@ export const InteractionDoc: ConversationDocFamilyToken<
 	kind: "sigrun.interaction",
 	version: 1,
 	scope: "conversation",
+	checkpointWhen: () => false,
 	history: "latest",
 	fork: "current",
 	family: true,
@@ -136,6 +137,7 @@ export const InteractionsIndexDoc = defineDoc<InteractionsIndex>({
 	kind: "sigrun.interactions.index",
 	version: 1,
 	scope: "session",
+	checkpointWhen: () => false,
 	initial: () => ({ pending: {} }),
 });
 

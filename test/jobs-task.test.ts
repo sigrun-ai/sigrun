@@ -1,28 +1,34 @@
 /**
- * Jobs Task 2 (spec §8.1): the schedule task and `fireJob`, in-process.
+ * Jobs Task 2 (spec §8.1) on pi-durable 1.4.0: the schedule task and
+ * `fireJob`, in-process on the FAKE harness clock (Task B1 Step 2).
  *
- * These tests drive a REAL harness (faux provider, tmp sqlite) with an
- * injectable `deps.now` clock the `waiting` phase's `runtime.sleep(until)`
- * reads (`#sleep` re-checks the harness clock after every MAX_TIMER_DELAY
- * step; the tests step the clock forward and wait out one timer tick), so
- * no test ever waits a real 60s interval.
+ * In 1.4.0 the `waiting` phase ends with a durable
+ * `runtime.sleepUntil(nextAt, {phase:"due", nextAt})`: the task holds no
+ * invocation while asleep, and the scheduler wakes it from ONE foreground
+ * timer armed for `until - now`. Moving an injected `now` forward does
+ * NOT fire a real timer, so these tests drive BOTH `HarnessOptions.now`
+ * and `HarnessOptions.setTimer` from `createFakeClock`; `advance(ms)`
+ * fires the due timers and the `due` phase runs.
  *
- * Covered (plan Task 2 Step 1):
- * - one fire of an `every:"60s"` prompt job creates the run conversation
- *   (SessionMeta `{source:"cron", jobId, owner}`) + the run record
- *   (`{outcome:"running", conversationId}`) + the job's `lastRun` copy;
- * - a changed record `hash` under a live task → that task commits terminal
- *   at its next phase (the stale-executor rule; reconciliation owns the
- *   replacement);
- * - overlap skip: a second fire while the previous run is `running` writes
- *   an immediately-settled `skipped` run and returns `skipped`;
- * - a downtime-overdue fire (three slots in the past, catchUp "once")
- *   fires ONCE and the next `nextAt` is computed from NOW (> now), never
- *   once per missed interval;
- * - the auto-namer does not name the cron conversation (source "cron").
+ * Covered (B1 Step 2):
+ * - `waiting` commits a sleep and ends the phase (inspect: `sleeping`,
+ *   `until === firstAt`, no running invocation);
+ * - the sleep survives a close/reopen, and firing happens after
+ *   `advance` past `until`;
+ * - abort while sleeping (until 3 days out) settles `aborted` with NO
+ *   advance (Review Focus 1);
+ * - a missed slot while down: `catchUp:"once"` fires once; `catchUp:
+ *   "none"` past the 60s grace records one `skipped` run and computes
+ *   the next slot from NOW (Review Focus 2);
+ * - a version-1 `waiting` checkpoint written by pi-durable 1.3.0 (the
+ *   Step 0b fixture) migrates on open, sleeps, and fires after advance;
+ * - `afterFailedRun` stays `keep` (the spec's non-goal pin).
+ *
+ * Plus the pre-existing `fireJob` behaviour (overlap skip, blocked
+ * fires, cron meta, deliver targets, prompt expansion), unchanged.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
@@ -33,13 +39,24 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { ModelRef, TaskId, TaskRecord } from "@earendil-works/pi-durable";
+import {
+	defineTask,
+	type ModelRef,
+	type TaskId,
+	type TaskRecord,
+} from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { JobSpec } from "@sigrun/shared/jobs";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
-import { JobDoc, JobRunDoc, readJob, writeJobChange } from "../src/jobs/docs.js";
+import {
+	JobDoc,
+	JobRunDoc,
+	listRuns,
+	readJob,
+	writeJobChange,
+} from "../src/jobs/docs.js";
 import { fireJob, type JobRuntimeDeps } from "../src/jobs/fire.js";
 import { specHash } from "../src/jobs/spec.js";
 import {
@@ -48,97 +65,158 @@ import {
 	type ScheduleState,
 } from "../src/jobs/task.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
+import { createFakeClock, type FakeClock } from "./helpers/fake-clock.js";
 import { seededIdentity } from "./helpers/identity.js";
+import type { IdentityStores } from "../src/harness/identity/index.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
 });
 
-/** One hermetic harness with a controllable clock and the schedule task registered. */
+const T0 = Date.parse("2026-10-19T12:00:00.000Z");
+const FIXTURE_DB = join(
+	import.meta.dirname,
+	"fixtures",
+	"durable-v1",
+	"sigrun.db",
+);
+
+/** One hermetic harness on the fake clock with the schedule task registered. */
 interface TestRig {
 	opened: OpenedHarness;
 	faux: FauxProviderHandle;
 	deps: JobRuntimeDeps;
-	/** Advance the clock `deps.now` reads (the scheduler re-checks it). */
-	setNow(ms: number): void;
-	now(): number;
+	clock: FakeClock;
+	dir: string;
+	config: SigrunConfig;
+	identity: IdentityStores;
+	contributor: ProviderContributor;
+	responses: readonly ReturnType<typeof fauxAssistantMessage>[];
 	rootId: number;
+	/** Close the harness (idempotent); the storage stays on disk. */
+	close(): Promise<void>;
+	/** Reopen on the SAME storage + clock; a fresh harness over the old data. */
+	reopen(): Promise<void>;
+	/** Current fake time in epoch ms. */
+	now(): number;
 }
 
-/** One tick past a timer step of pi-durable's sleep loop (`MAX_TIMER_DELAY` is huge; the loop re-checks after it OR the deadline, whichever is sooner — but real timers arm per loop, so we wait one short real beat after stepping the clock). */
-async function tick(ms = 150): Promise<void> {
+/** A short real-time beat for async settling that no fake timer drives. */
+async function beat(ms = 25): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Poll until `predicate` holds (fail-loud bound, real time). */
+async function until<T>(
+	read: () => Promise<T>,
+	predicate: (value: T) => boolean,
+	description: string,
+	timeoutMs = 10_000,
+): Promise<T> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const value = await read();
+		if (predicate(value)) return value;
+		if (Date.now() > deadline) {
+			throw new Error(`timed out waiting for ${description}`);
+		}
+		await beat();
+	}
 }
 
 async function bootRig(options?: {
 	readonly responses?: readonly ReturnType<typeof fauxAssistantMessage>[];
 	readonly startNow?: number;
+	readonly storagePath?: string;
+	readonly dir?: string;
+	readonly createRoot?: boolean;
 }): Promise<TestRig> {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-task-"));
+	const dir = options?.dir ?? (await mkdtemp(join(tmpdir(), "sigrun-jobs-task-")));
+	const responses = options?.responses ?? [];
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
 	});
-	faux.setResponses([...(options?.responses ?? [])]);
+	faux.setResponses([...responses]);
 	const contributor: ProviderContributor = {
 		name: "ext-faux",
 		providers: [{ provider: faux.provider }],
 	};
-		const config = loadConfig({
+	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
-		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_STORAGE_PATH: options?.storagePath ?? join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
-	let clock = options?.startNow ?? Date.parse("2026-10-19T12:00:00.000Z");
-	const opened = await openHarness(config, {
-		identity: await seededIdentity(dir),
-		extensions: [contributor],
-		env: {},
-		settingsDir: dir,
-		// The clock seam pins BOTH the activity stamper and the harness
-		// clock the schedule task's runtime.sleep reads (boot wires the
-		// same seam into HarnessOptions.now) — the jobs tests step time
-		// instead of waiting real 60s intervals.
-		now: () => new Date(clock),
-	});
-	cleanups.push(async () => {
-		await opened.harness.close(BACKGROUND_CONTEXT);
-		await rm(dir, { recursive: true, force: true });
-	});
-	const defaultModel: ModelRef = opened.defaultModel;
-	const deps: JobRuntimeDeps = {
-		harness: opened.harness,
-		// The Task-3 carry-forward: storage + registry from the PUBLIC
-		// OpenedHarness fields, never a private-field reach.
-		storage: opened.storage,
-		registry: opened.registry,
-		models: opened.models as Models,
-		defaultModel,
-		now: () => clock,
-		defaultTz: "UTC",
-		// Gateway C7: the rig loads no gateway engine, so deliver-carrying
-		// fires take the no-gateway warning path (one warning per run).
-		gatewayLoaded: false,
-	};
-	opened.registry.install({
-		name: "sigrun.jobs",
-		tasks: [createScheduleTask(deps)],
-	});
-	const root = await opened.harness.root(BACKGROUND_CONTEXT, {
-		agent: { model: defaultModel },
-	});
-	return {
-		opened,
+	const clock = createFakeClock(options?.startNow ?? T0);
+	const identity = await seededIdentity(dir);
+
+	const rig = {
 		faux,
-		deps,
-		setNow: (ms) => {
-			clock = ms;
-		},
-		now: () => clock,
-		rootId: root.id as number,
+		clock,
+		dir,
+		config,
+		identity,
+		contributor,
+		responses,
+	} as TestRig & { closed: boolean };
+
+	const open = async (createRoot: boolean): Promise<void> => {
+		const opened = await openHarness(config, {
+			identity,
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+			// BOTH seams come from the one fake clock: a sleeping task wakes
+			// from a foreground timer, so `now` alone cannot wake it.
+			now: clock.now,
+			setTimer: clock.setTimer,
+		});
+		rig.opened = opened;
+		const defaultModel: ModelRef = opened.defaultModel;
+		rig.deps = {
+			harness: opened.harness,
+			storage: opened.storage,
+			registry: opened.registry,
+			models: opened.models as Models,
+			defaultModel,
+			now: () => clock.nowMs(),
+			defaultTz: "UTC",
+			gatewayLoaded: false,
+		};
+		opened.registry.install({
+			name: "sigrun.jobs",
+			tasks: [createScheduleTask(rig.deps)],
+		});
+		if (createRoot) {
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: defaultModel },
+			});
+			rig.rootId = root.id as number;
+		}
 	};
+
+	rig.closed = false;
+	rig.close = async () => {
+		if (rig.closed) return;
+		rig.closed = true;
+		await rig.opened.harness.close(BACKGROUND_CONTEXT);
+	};
+	rig.reopen = async () => {
+		faux.setResponses([...responses]);
+		await open(false);
+		rig.closed = false;
+	};
+	rig.now = () => clock.nowMs();
+	await open(options?.createRoot ?? true);
+	cleanups.push(async () => {
+		await rig.close();
+		if (options?.dir === undefined) {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+	return rig;
 }
 
 /** The spec every test shares: a 60s-interval prompt job, conversation "new". */
@@ -208,86 +286,299 @@ async function waitTerminal(
 	taskId: TaskId<void>,
 	timeoutMs = 10_000,
 ): Promise<TaskRecord<JsonValue, JsonValue, void>> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		const record = await rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
-		if (
+	return await until(
+		() => rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT),
+		(record) =>
 			record !== undefined &&
-			(record.state.status === "terminal" || record.state.status === "completing")
-		) {
-			return record;
-		}
-		if (Date.now() > deadline) {
-			throw new Error(
-				`task ${String(taskId)} never settled (state=${JSON.stringify(record?.state)})`,
-			);
-		}
-		await tick(100);
-	}
+			(record.state.status === "terminal" || record.state.status === "completing"),
+		`task ${String(taskId)} to settle`,
+		timeoutMs,
+	) as TaskRecord<JsonValue, JsonValue, void>;
 }
 
-describe("the schedule task", () => {
-	test("fires an overdue every-job once and computes nextAt from now", async () => {
-		const t0 = Date.parse("2026-10-19T12:00:00.000Z");
-		const rig = await bootRig({
-			startNow: t0,
-			responses: [fauxAssistantMessage("tick")],
-		});
-		const id = "api:job-one";
-		const spec = everyMinuteSpec();
-		const { hash } = await seedJob(rig, id, spec);
-		// Three slots in the past → catchUp "once": exactly one fire.
-		const taskId = await createTask(rig, id, hash, t0 - 180_000);
+/** The task's `inspect()` entry (the live scheduler view). */
+async function inspection(rig: TestRig, taskId: TaskId<void>) {
+	const view = await rig.opened.harness.inspect(BACKGROUND_CONTEXT);
+	return view.tasks.find((task) => String(task.record.id) === String(taskId));
+}
 
-		// Let the task reach `waiting`, step the clock past nextAt, then let
-		// it fire and settle.
-		await tick(200);
-		rig.setNow(t0 + 1_000); // past nextAt (t0-180s), i.e. overdue by 181s
-		// The waiting phase's sleep is anchored at nextAt, already past → the
-		// sleep loop returns on its next re-check.
-		await tick(500);
+/** Wait until the task is `sleeping` and return its `until`. */
+async function waitSleeping(rig: TestRig, taskId: TaskId<void>): Promise<number> {
+	const entry = await until(
+		() => inspection(rig, taskId),
+		(task) => task?.state.kind === "sleeping",
+		`task ${String(taskId)} to sleep`,
+	);
+	if (entry?.state.kind !== "sleeping") throw new Error("unreachable");
+	return entry.state.until;
+}
 
+// ─── The 1.4.0 durable-sleep schedule (B1 Step 2) ─────────────────────────
+
+describe("the schedule task on durable sleeps", () => {
+	test("waiting commits a sleep and ends the phase", async () => {
+		const rig = await bootRig({});
+		const id = "api:job-sleep";
+		const { hash } = await seedJob(rig, id, everyMinuteSpec());
+		const firstAt = rig.now() + 60_000;
+		const taskId = await createTask(rig, id, hash, firstAt);
+
+		const until_ = await waitSleeping(rig, taskId);
+		expect(until_).toBe(firstAt);
+		// No running invocation: the phase ENDED at sleepUntil.
+		const entry = await inspection(rig, taskId);
+		expect(entry?.state.kind).toBe("sleeping");
+		// The job's status fields were patched BEFORE the sleep.
 		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
-		expect(record).toBeDefined();
-		expect(record!.lastRun).toBeDefined();
-		expect(record!.lastRun!.jobId).toBe(id);
-		expect(record!.lastRun!.version).toBe(1);
-		expect(record!.lastRun!.manual).toBe(false);
-		expect(record!.lastRun!.outcome === "running" || record!.lastRun!.outcome === "succeeded").toBe(true);
-		expect(record!.lastRun!.conversationId).toBeTypeOf("number");
-		// The run conversation carries the cron meta.
-		const meta = await rig.opened.harness.snapshot(
-			SessionMetaDoc,
-			record!.lastRun!.conversationId as never,
-			BACKGROUND_CONTEXT,
-		);
-		expect(meta?.source).toBe("cron");
-		// The typed C7 field: no cast needed any more (SessionMeta.jobId).
-		expect(meta?.jobId).toBe(id);
-		expect(meta?.owner).toBe("tester");
-		// nextRun is computed from NOW (t0+1s), not from the missed slot:
-		// it must be strictly after now and not fire once per missed interval.
-		expect(record!.nextRun).toBeDefined();
-		const nextRun = Date.parse(record!.nextRun!);
-		expect(nextRun).toBeGreaterThan(rig.now());
-		expect(nextRun).toBeLessThanOrEqual(rig.now() + 60_000);
-		// The task is back at waiting with nextAt == nextRun.
+		expect(record?.state).toBe("waiting");
+		expect(record?.nextRun).toBe(new Date(firstAt).toISOString());
+		// The checkpoint is the durable `due` continuation.
 		const taskRecord = await rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
+		expect(taskRecord?.state.status).toBe("sleeping");
 		const checkpoint = taskRecord?.state.checkpoint as ScheduleState | undefined;
-		expect(checkpoint?.phase).toBe("waiting");
-		if (checkpoint?.phase === "waiting") {
-			expect(checkpoint.nextAt).toBe(nextRun);
+		expect(checkpoint).toEqual({ phase: "due", nextAt: firstAt });
+	});
+
+	test("sleep survives reopen: advance past until fires one run", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("tick")] });
+		const id = "api:job-reopen";
+		const { hash } = await seedJob(rig, id, everyMinuteSpec());
+		const firstAt = rig.now() + 60_000;
+		const taskId = await createTask(rig, id, hash, firstAt);
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+
+		await rig.close();
+		await rig.reopen();
+		// The sleeping record is durable: it reappears without any advance.
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+
+		await rig.clock.advance(61_000);
+		await until(
+			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
+			(record) => record?.lastRun !== undefined,
+			"the reopened job to fire",
+		);
+		const runs = await listRuns(rig.opened.storage, id, 10, BACKGROUND_CONTEXT);
+		expect(runs).toHaveLength(1);
+		expect(runs[0]!.fireAt).toBe(new Date(firstAt).toISOString());
+		expect(["running", "succeeded"]).toContain(runs[0]!.outcome);
+	});
+
+	test("abort while sleeping settles aborted with no advance", async () => {
+		const rig = await bootRig({});
+		const id = "api:job-abort-sleep";
+		const { hash } = await seedJob(rig, id, everyMinuteSpec());
+		const firstAt = rig.now() + 3 * 86_400_000; // three days out
+		const taskId = await createTask(rig, id, hash, firstAt);
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+
+		// The disable path's signal: the record flips off and the task is
+		// abort-marked. 1.4.0 makes an abort-requested sleeping task
+		// schedulable, so the abort handler runs WITHOUT any advance.
+		const nowIso = new Date(rig.now()).toISOString();
+		await rig.opened.harness.commit(async (tx) => {
+			await writeJobChange(
+				tx,
+				id,
+				{
+					source: "api",
+					spec: everyMinuteSpec(),
+					owner: "tester",
+					enabled: false,
+					createdAt: nowIso,
+					hash,
+					state: "disabled",
+				},
+				"tester",
+				nowIso,
+			);
+		}, BACKGROUND_CONTEXT);
+		await rig.opened.harness.abortTask(taskId, BACKGROUND_CONTEXT);
+		const terminal = await waitTerminal(rig, taskId);
+		expect(terminal.state.status).toBe("terminal");
+		if (terminal.state.status === "terminal") {
+			expect(terminal.state.outcome.status).toBe("aborted");
 		}
 	});
 
+	test("missed slot while down, catchUp once: one fire", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("tick")] });
+		const id = "api:job-catchup-once";
+		const { hash } = await seedJob(rig, id, everyMinuteSpec());
+		const firstAt = rig.now() + 60_000;
+		const taskId = await createTask(rig, id, hash, firstAt);
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+
+		await rig.close();
+		// Downtime: the clock moves three slots past the deadline.
+		rig.clock.set(firstAt + 180_000);
+		await rig.reopen();
+
+		await until(
+			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
+			(record) => record?.lastRun !== undefined,
+			"the catch-up fire",
+		);
+		const runs = await listRuns(rig.opened.storage, id, 10, BACKGROUND_CONTEXT);
+		expect(runs).toHaveLength(1);
+		// Exactly ONE fire for the missed slot, never one per interval.
+		expect(runs[0]!.fireAt).toBe(new Date(firstAt).toISOString());
+		expect(["running", "succeeded"]).toContain(runs[0]!.outcome);
+		// The next slot is computed from NOW (the reopened clock).
+		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
+		const nextRun = Date.parse(record!.nextRun!);
+		expect(nextRun).toBeGreaterThan(rig.now());
+		expect(nextRun).toBeLessThanOrEqual(rig.now() + 60_000);
+	});
+
+	test("missed slot while down, catchUp none past the grace: one skipped run, next from now", async () => {
+		const rig = await bootRig({});
+		const id = "api:job-catchup-none";
+		const { hash } = await seedJob(
+			rig,
+			id,
+			everyMinuteSpec({ catchUp: "none" }),
+		);
+		const firstAt = rig.now() + 60_000;
+		const taskId = await createTask(rig, id, hash, firstAt);
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+
+		await rig.close();
+		// >60 000 ms late: the slot is skipped, not fired.
+		rig.clock.set(firstAt + 90_000);
+		await rig.reopen();
+
+		await until(
+			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
+			(record) => record?.lastRun !== undefined,
+			"the skipped run",
+		);
+		const runs = await listRuns(rig.opened.storage, id, 10, BACKGROUND_CONTEXT);
+		expect(runs).toHaveLength(1);
+		expect(runs[0]!.outcome).toBe("skipped");
+		expect(runs[0]!.fireAt).toBe(new Date(firstAt).toISOString());
+		expect(runs[0]!.settledAt).toBeDefined();
+		// No conversation was created for a skipped run.
+		expect(runs[0]!.conversationId).toBeUndefined();
+		// The next slot comes from NOW.
+		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
+		const nextRun = Date.parse(record!.nextRun!);
+		expect(nextRun).toBeGreaterThan(rig.now());
+		expect(nextRun).toBeLessThanOrEqual(rig.now() + 60_000);
+		// And the task is sleeping for that next slot.
+		expect(await waitSleeping(rig, taskId)).toBe(nextRun);
+	});
+
+	test("version-1 waiting checkpoint resumes: the 1.3.0 fixture migrates, sleeps, and fires", async () => {
+		// The Step 0b fixture (written by pi-durable 1.3.0): conversation 1
+		// with an answered turn, job "api:fixture-job" mid-`waiting` with
+		// nextAt = T0 + 1 day, SessionMeta deltas.
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-fixture-resume-"));
+		const storagePath = join(dir, "sigrun.db");
+		await cp(FIXTURE_DB, storagePath);
+		const rig = await bootRig({
+			dir,
+			storagePath,
+			createRoot: false,
+			responses: [fauxAssistantMessage("fixture tick")],
+		});
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+
+		// The job's task (id 15 in the fixture) migrates on open: the
+		// running 1.3.0 record re-enters `waiting` and commits a durable
+		// sleep for its stored nextAt.
+		const taskId = 15 as unknown as TaskId<void>;
+		const firstAt = T0 + 86_400_000;
+		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
+		// The answered turn and the meta doc survived the migration.
+		const meta = await rig.opened.harness.snapshot(
+			SessionMetaDoc,
+			1 as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta?.pinned).toBe(true);
+		expect(meta?.tagged).toEqual(["fixture"]);
+
+		await rig.clock.advance(86_400_000 + 1_000);
+		const id = "api:fixture-job";
+		await until(
+			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
+			(record) => record?.lastRun !== undefined,
+			"the fixture job to fire",
+		);
+		const runs = await listRuns(rig.opened.storage, id, 10, BACKGROUND_CONTEXT);
+		expect(runs).toHaveLength(1);
+		expect(runs[0]!.fireAt).toBe(new Date(firstAt).toISOString());
+	});
+
+	test("afterFailedRun stays keep", async () => {
+		const rig = await bootRig({});
+		// The harness's RESOLVED settings, read through a probe task's
+		// runtime (the only public accessor of the resolved object).
+		const probe = defineTask<Record<string, never>, { phase: "read" }, string, object>({
+			name: "sigrun.test.settings-probe",
+			version: 1,
+			initial: () => ({ phase: "read" }),
+			phases: {
+				read: async (_task, runtime, context) => {
+					const value = runtime.settings.afterFailedRun;
+					await runtime.commit(
+						() => ({
+							status: "terminal" as const,
+							outcome: { status: "completed" as const, result: value },
+						}),
+						context,
+					);
+				},
+			},
+			abort: async (_task, runtime, context) => {
+				await runtime.commit(
+					() => ({
+						status: "terminal" as const,
+						outcome: { status: "aborted" as const, reason: "probe aborted" },
+					}),
+					context,
+				);
+			},
+		});
+		rig.opened.registry.install({ name: "sigrun.test.probe", tasks: [probe] });
+		const taskId = await rig.opened.harness.commit(
+			async (tx) =>
+				await tx.createTask(probe, {}, {
+					ownership: { kind: "conversation" },
+					conversationId: rig.rootId as never,
+					background: true,
+				}),
+			BACKGROUND_CONTEXT,
+		);
+		const terminal = await until(
+			() => rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT),
+			(record) =>
+				record !== undefined &&
+				(record.state.status === "terminal" || record.state.status === "completing"),
+			"the settings probe to settle",
+		);
+		if (terminal?.state.status === "terminal") {
+			expect(terminal.state.outcome.status).toBe("completed");
+			if (terminal.state.outcome.status === "completed") {
+				expect(terminal.state.outcome.result).toBe("keep");
+			}
+		} else {
+			throw new Error("probe task did not reach terminal");
+		}
+	});
+});
+
+// ─── The stale-executor rule (pre-existing, on the fake clock) ────────────
+
+describe("the stale-executor rule", () => {
 	test("a record with a changed hash commits the live task terminal", async () => {
-		const t0 = Date.parse("2026-10-19T12:00:00.000Z");
-		const rig = await bootRig({ startNow: t0 });
+		const rig = await bootRig({});
 		const id = "api:job-stale";
 		const spec = everyMinuteSpec();
 		const { hash } = await seedJob(rig, id, spec);
-		const taskId = await createTask(rig, id, hash, t0 + 60_000);
-		await tick(200);
+		const taskId = await createTask(rig, id, hash, rig.now() + 60_000);
+		await waitSleeping(rig, taskId);
 		// Change the record under the live task: the hash it was created
 		// with no longer matches (reconciliation would own a replacement).
 		const nowIso = new Date(rig.now()).toISOString();
@@ -308,13 +599,9 @@ describe("the schedule task", () => {
 				nowIso,
 			);
 		}, BACKGROUND_CONTEXT);
-		// The task notices the change at its NEXT phase. Its durable sleep
-		// is anchored at nextAt with no wake-on-change (pi-durable's sleep
-		// only re-checks the clock after each timer step), so drive the
-		// abort path instead: `abortTask` signals the sleeping invocation,
-		// the task's abort handler commits terminal, and a FRESH task
-		// (reconciliation's replacement) would observe the new hash. The
-		// abort commits terminal honestly.
+		// A sleeping task notices no record change by itself (no
+		// wake-on-change): drive the abort path — `abortTask` makes the
+		// sleeping task schedulable and its abort handler commits terminal.
 		await rig.opened.harness.abortTask(taskId, BACKGROUND_CONTEXT);
 		const terminal = await waitTerminal(rig, taskId);
 		expect(
@@ -333,15 +620,54 @@ describe("the schedule task", () => {
 		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
 		expect(record?.lastRun).toBeUndefined();
 	});
+});
+
+// ─── fireJob behaviour (pre-existing, unchanged) ──────────────────────────
+
+describe("fireJob", () => {
+	test("fires an overdue every-job once and computes nextAt from now", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("tick")] });
+		const id = "api:job-one";
+		const spec = everyMinuteSpec();
+		const { hash } = await seedJob(rig, id, spec);
+		// Three slots in the past → catchUp "once": exactly one fire.
+		const taskId = await createTask(rig, id, hash, T0 - 180_000);
+		// The first waiting phase derives the overdue sleep (already due),
+		// so the task fires without any clock advance.
+		await until(
+			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
+			(record) => record?.lastRun !== undefined,
+			"the overdue fire",
+		);
+		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
+		expect(record!.lastRun!.jobId).toBe(id);
+		expect(record!.lastRun!.version).toBe(1);
+		expect(record!.lastRun!.manual).toBe(false);
+		expect(["running", "succeeded"]).toContain(record!.lastRun!.outcome);
+		expect(record!.lastRun!.conversationId).toBeTypeOf("number");
+		// The run conversation carries the cron meta.
+		const meta = await rig.opened.harness.snapshot(
+			SessionMetaDoc,
+			record!.lastRun!.conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta?.source).toBe("cron");
+		expect(meta?.jobId).toBe(id);
+		expect(meta?.owner).toBe("tester");
+		// nextRun is computed from NOW, not from the missed slot.
+		const nextRun = Date.parse(record!.nextRun!);
+		expect(nextRun).toBeGreaterThan(rig.now());
+		expect(nextRun).toBeLessThanOrEqual(rig.now() + 60_000);
+		// The task is sleeping for that next slot.
+		expect(await waitSleeping(rig, taskId)).toBe(nextRun);
+		const runs = await listRuns(rig.opened.storage, id, 10, BACKGROUND_CONTEXT);
+		expect(runs).toHaveLength(1);
+	});
 
 	test("overlap skip: a second fire while the last run is running returns skipped", async () => {
-		const t0 = Date.parse("2026-10-19T12:00:00.000Z");
-		const rig = await bootRig({ startNow: t0 });
+		const rig = await bootRig({});
 		const id = "api:job-overlap";
-		const spec = everyMinuteSpec();
-		await seedJob(rig, id, spec);
-		// Simulate a live previous run: fire once (the run record goes
-		// running), then fire again immediately — overlap "skip" wins.
+		await seedJob(rig, id, everyMinuteSpec());
 		const first = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
 		expect(first.outcome).toBe("running");
 		const second = await fireJob(rig.deps, id, `${id}:2000`, 2000, BACKGROUND_CONTEXT);
@@ -350,7 +676,6 @@ describe("the schedule task", () => {
 		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
 		expect(record!.lastRun!.outcome).toBe("skipped");
 		expect(record!.lastRun!.settledAt).toBeDefined();
-		// The skipped run's record exists under its fire key.
 		const skipped = await rig.opened.harness.snapshot(
 			JobRunDoc,
 			`${id}:2000`,
@@ -372,8 +697,7 @@ describe("the schedule task", () => {
 	});
 
 	test("a disabled job's fire is blocked and writes no run", async () => {
-		const t0 = Date.parse("2026-10-19T12:00:00.000Z");
-		const rig = await bootRig({ startNow: t0 });
+		const rig = await bootRig({});
 		const id = "api:job-disabled";
 		await seedJob(rig, id, everyMinuteSpec(), { enabled: false });
 		const outcome = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
@@ -387,9 +711,7 @@ describe("the schedule task", () => {
 	});
 
 	test("the auto-namer does not name the cron conversation", async () => {
-		const t0 = Date.parse("2026-10-19T12:00:00.000Z");
 		const rig = await bootRig({
-			startNow: t0,
 			responses: [
 				fauxAssistantMessage("tick"),
 				// If the namer fired it would consume this; it must never run.
@@ -400,7 +722,6 @@ describe("the schedule task", () => {
 		await seedJob(rig, id, everyMinuteSpec());
 		const first = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
 		expect(first.outcome).toBe("running");
-		// Let the run settle, deliver the settle event, wait out naming.
 		await rig.opened.harness.waitForIdle(BACKGROUND_CONTEXT);
 		await rig.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
 		await rig.opened.autoNamer.idle();
@@ -489,11 +810,9 @@ describe("deliver targets (gateway C7)", () => {
 				BACKGROUND_CONTEXT,
 			);
 			expect(outcome.outcome).toBe("running");
-			// A job without deliver never warns (the stamp absent, nothing to ignore).
 			const quiet = "api:job-deliver-quiet";
 			await seedJob(rig, quiet, everyMinuteSpec());
 			await fireJob(rig.deps, quiet, `${quiet}:1000`, 1000, BACKGROUND_CONTEXT);
-			// Assert BEFORE mockRestore (restore clears the spy's history).
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(warn).toHaveBeenCalledWith("deliver targets ignored: no gateway");
 		} finally {
@@ -513,8 +832,6 @@ describe("deliver targets (gateway C7)", () => {
 				deliver: ["telegram:42"],
 			},
 		});
-		// The boot seam's value: no engine loaded in the rig → flip the flag
-		// the way a loaded engine's boot would.
 		rig.deps.gatewayLoaded = true;
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
@@ -526,7 +843,6 @@ describe("deliver targets (gateway C7)", () => {
 				BACKGROUND_CONTEXT,
 			);
 			expect(outcome.outcome).toBe("running");
-			// Assert BEFORE mockRestore (restore clears the spy's history).
 			expect(warn).not.toHaveBeenCalled();
 		} finally {
 			warn.mockRestore();
@@ -538,10 +854,6 @@ describe("deliver targets (gateway C7)", () => {
 
 test("a job prompt naming a prompt template sends the expanded text", async () => {
 	const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
-	// A hermetic template root (the boot's own user dir resolves to the
-	// machine's config dir — the test pins its own instead) plus the boot
-	// handle's skills roots and command names: the SAME shape
-	// `expandInput` reads on the submit path.
 	const promptsDir = await (async () => {
 		const { writeFile } = await import("node:fs/promises");
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-prompts-"));
@@ -572,10 +884,20 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 	);
 	expect(outcome.outcome).toBe("running");
 	const conversationId = outcome.conversationId as number;
-	await tick(300);
-	// The admitted text is the SUBSTITUTED template, and no
-	// sigrun.user.expanded entry is written for a job prompt (there is no
-	// user turn to attribute).
+	await until(
+		async () => {
+			const conversation = await rig.opened.harness.conversation(
+				conversationId as never,
+				BACKGROUND_CONTEXT,
+			);
+			const state = await conversation!.viewState(BACKGROUND_CONTEXT);
+			const found = state.value.entries.some((entry) => entry.kind === "pi.assistant");
+			await state.dispose();
+			return found;
+		},
+		(found) => found,
+		"the expanded-prompt answer",
+	);
 	const conversation = await rig.opened.harness.conversation(
 		conversationId as never,
 		BACKGROUND_CONTEXT,
@@ -599,3 +921,6 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 		force: true,
 	});
 });
+
+// Keep the JobDoc import meaningful for the family types used above.
+void JobDoc;
