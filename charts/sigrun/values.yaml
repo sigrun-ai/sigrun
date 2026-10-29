@@ -332,6 +332,18 @@ controllers:
           limits:
             memory: 512Mi
 
+networkPolicy:
+  # Opt-in CiliumNetworkPolicy (requires Cilium). Ingress-only: admit only
+  # the listed entities on the main Service port, plus extraIngress rules.
+  # REQUIRED when trustedProxies covers the pod CIDR — application-layer
+  # proxy trust does not prevent clients from bypassing the proxy.
+  enabled: false
+  # Cilium entities allowed to reach the Service port. The host entity
+  # admits kubelet HTTP probes; remove it only if probes are reconfigured.
+  allowEntities: [ingress, host]
+  # Raw CiliumNetworkPolicy ingress rules appended verbatim.
+  extraIngress: []
+
 service:
   main:
     # -- The controller this Service fronts (two controllers exist: main +

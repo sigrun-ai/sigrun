@@ -198,6 +198,336 @@ describe("charts/sigrun lint + default render", () => {
 			expect(doc.kind).toBeTruthy();
 		}
 	});
+
+	test("default render stays document-identical without networkPolicy", async () => {
+		// Captured on feat/proxy-trust at 27bdb3a before the CNP template.
+		const docs = await render();
+		expect(docs).toMatchInlineSnapshot(`
+			[
+			  {
+			    "apiVersion": "v1",
+			    "kind": "ServiceAccount",
+			    "metadata": {
+			      "labels": {
+			        "app.kubernetes.io/instance": "sigrun",
+			        "app.kubernetes.io/managed-by": "Helm",
+			        "app.kubernetes.io/name": "sigrun",
+			        "app.kubernetes.io/version": "0.2.0",
+			        "helm.sh/chart": "sigrun-0.2.0",
+			      },
+			      "name": "sigrun",
+			      "namespace": "sigrun",
+			    },
+			  },
+			  {
+			    "apiVersion": "v1",
+			    "kind": "PersistentVolumeClaim",
+			    "metadata": {
+			      "labels": {
+			        "app.kubernetes.io/instance": "sigrun",
+			        "app.kubernetes.io/managed-by": "Helm",
+			        "app.kubernetes.io/name": "sigrun",
+			        "app.kubernetes.io/version": "0.2.0",
+			        "helm.sh/chart": "sigrun-0.2.0",
+			      },
+			      "name": "sigrun-data",
+			      "namespace": "sigrun",
+			    },
+			    "spec": {
+			      "accessModes": [
+			        "ReadWriteOnce",
+			      ],
+			      "resources": {
+			        "requests": {
+			          "storage": "5Gi",
+			        },
+			      },
+			    },
+			  },
+			  {
+			    "apiVersion": "v1",
+			    "kind": "Service",
+			    "metadata": {
+			      "labels": {
+			        "app.kubernetes.io/instance": "sigrun",
+			        "app.kubernetes.io/managed-by": "Helm",
+			        "app.kubernetes.io/name": "sigrun",
+			        "app.kubernetes.io/service": "sigrun",
+			        "app.kubernetes.io/version": "0.2.0",
+			        "helm.sh/chart": "sigrun-0.2.0",
+			      },
+			      "name": "sigrun",
+			      "namespace": "sigrun",
+			    },
+			    "spec": {
+			      "ipFamilies": [
+			        "IPv6",
+			        "IPv4",
+			      ],
+			      "ipFamilyPolicy": "PreferDualStack",
+			      "ports": [
+			        {
+			          "name": "http",
+			          "port": 3000,
+			          "protocol": "TCP",
+			          "targetPort": "http",
+			        },
+			      ],
+			      "selector": {
+			        "app.kubernetes.io/controller": "main",
+			        "app.kubernetes.io/instance": "sigrun",
+			        "app.kubernetes.io/name": "sigrun",
+			      },
+			      "type": "ClusterIP",
+			    },
+			  },
+			  {
+			    "apiVersion": "apps/v1",
+			    "kind": "Deployment",
+			    "metadata": {
+			      "labels": {
+			        "app.kubernetes.io/controller": "main",
+			        "app.kubernetes.io/instance": "sigrun",
+			        "app.kubernetes.io/managed-by": "Helm",
+			        "app.kubernetes.io/name": "sigrun",
+			        "app.kubernetes.io/version": "0.2.0",
+			        "helm.sh/chart": "sigrun-0.2.0",
+			      },
+			      "name": "sigrun",
+			      "namespace": "sigrun",
+			    },
+			    "spec": {
+			      "replicas": 1,
+			      "revisionHistoryLimit": 3,
+			      "selector": {
+			        "matchLabels": {
+			          "app.kubernetes.io/controller": "main",
+			          "app.kubernetes.io/instance": "sigrun",
+			          "app.kubernetes.io/name": "sigrun",
+			        },
+			      },
+			      "strategy": {
+			        "type": "Recreate",
+			      },
+			      "template": {
+			        "metadata": {
+			          "labels": {
+			            "app.kubernetes.io/controller": "main",
+			            "app.kubernetes.io/instance": "sigrun",
+			            "app.kubernetes.io/name": "sigrun",
+			          },
+			        },
+			        "spec": {
+			          "automountServiceAccountToken": false,
+			          "containers": [
+			            {
+			              "args": [
+			                "node",
+			                "dist/index.js",
+			              ],
+			              "env": [
+			                {
+			                  "name": "SIGRUN_STORAGE_PATH",
+			                  "value": "/data/sigrun.db",
+			                },
+			                {
+			                  "name": "SIGRUN_WORKSPACE_PATH",
+			                  "value": "/data/workspace",
+			                },
+			                {
+			                  "name": "SIGRUN_CONFIG_DIR",
+			                  "value": "/data/config",
+			                },
+			                {
+			                  "name": "SIGRUN_SUPERVISED",
+			                  "value": "1",
+			                },
+			                {
+			                  "name": "SIGRUN_DATA_DIR",
+			                  "value": "/data/data",
+			                },
+			                {
+			                  "name": "SIGRUN_CACHE_DIR",
+			                  "value": "/cache",
+			                },
+			                {
+			                  "name": "SIGRUN_STATE_DIR",
+			                  "value": "/data/state",
+			                },
+			                {
+			                  "name": "SIGRUN_PORT",
+			                  "value": "3000",
+			                },
+			                {
+			                  "name": "SIGRUN_METRICS_PUBLIC",
+			                  "value": "true",
+			                },
+			              ],
+			              "envFrom": [
+			                {
+			                  "secretRef": {
+			                    "name": "sigrun-env",
+			                  },
+			                },
+			              ],
+			              "image": "ghcr.io/sigrun-ai/sigrun:0.2.0",
+			              "imagePullPolicy": "IfNotPresent",
+			              "livenessProbe": {
+			                "failureThreshold": 3,
+			                "httpGet": {
+			                  "path": "/healthz",
+			                  "port": "http",
+			                  "scheme": "HTTP",
+			                },
+			                "initialDelaySeconds": 0,
+			                "periodSeconds": 30,
+			                "timeoutSeconds": 5,
+			              },
+			              "name": "main",
+			              "ports": [
+			                {
+			                  "containerPort": 3000,
+			                  "name": "http",
+			                  "protocol": "TCP",
+			                },
+			              ],
+			              "readinessProbe": {
+			                "failureThreshold": 3,
+			                "httpGet": {
+			                  "path": "/readyz",
+			                  "port": "http",
+			                  "scheme": "HTTP",
+			                },
+			                "initialDelaySeconds": 0,
+			                "periodSeconds": 10,
+			                "timeoutSeconds": 5,
+			              },
+			              "resources": {
+			                "limits": {
+			                  "memory": "1Gi",
+			                },
+			                "requests": {
+			                  "cpu": "100m",
+			                  "memory": "512Mi",
+			                },
+			              },
+			              "volumeMounts": [
+			                {
+			                  "mountPath": "/cache",
+			                  "name": "cache",
+			                },
+			                {
+			                  "mountPath": "/data",
+			                  "name": "data",
+			                },
+			              ],
+			              "workingDir": "/app",
+			            },
+			          ],
+			          "dnsPolicy": "ClusterFirst",
+			          "enableServiceLinks": false,
+			          "hostIPC": false,
+			          "hostNetwork": false,
+			          "hostPID": false,
+			          "securityContext": {
+			            "fsGroup": 1000,
+			            "runAsGroup": 1000,
+			            "runAsNonRoot": true,
+			            "runAsUser": 1000,
+			          },
+			          "serviceAccountName": "sigrun",
+			          "volumes": [
+			            {
+			              "emptyDir": {},
+			              "name": "cache",
+			            },
+			            {
+			              "name": "data",
+			              "persistentVolumeClaim": {
+			                "claimName": "sigrun-data",
+			              },
+			            },
+			          ],
+			        },
+			      },
+			    },
+			  },
+			]
+		`);
+		expect(docs.some((doc) => doc.kind === "CiliumNetworkPolicy")).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// CiliumNetworkPolicy (opt-in ingress-only posture)
+// ---------------------------------------------------------------------------
+
+describe("chart CiliumNetworkPolicy", () => {
+	type NetworkPolicyDoc = {
+		apiVersion: string;
+		kind: string;
+		metadata: { name: string };
+		spec: {
+			endpointSelector: { matchLabels: Record<string, string> };
+			ingress: Record<string, unknown>[];
+		};
+	};
+
+	test("enabled renders one policy selecting the Deployment on the main Service port", async () => {
+		const docs = await render(["networkPolicy.enabled=true"]);
+		const policies = docs.filter((doc) => doc.kind === "CiliumNetworkPolicy");
+		expect(policies).toHaveLength(1);
+		const policy = policies[0] as NetworkPolicyDoc;
+		const deployment = docOf(docs, "Deployment") as {
+			spec: { selector: { matchLabels: Record<string, string> } };
+		};
+		const service = docOf(docs, "Service") as {
+			spec: { ports: { port: number }[] };
+		};
+		expect(policy.apiVersion).toBe("cilium.io/v2");
+		expect(policy.metadata.name).toBe("sigrun");
+		expect(policy.spec.endpointSelector.matchLabels).toEqual(
+			deployment.spec.selector.matchLabels,
+		);
+		expect(policy.spec.ingress).toEqual([
+			{
+				fromEntities: ["ingress", "host"],
+				toPorts: [
+					{
+						ports: [
+							{ port: String(service.spec.ports[0].port), protocol: "TCP" },
+						],
+					},
+				],
+			},
+		]);
+	});
+
+	test("extraIngress appends the supplied rule verbatim", async () => {
+		const extraIngress = {
+			fromEndpoints: [
+				{ matchLabels: { "app.kubernetes.io/name": "example-client" } },
+			],
+			toPorts: [{ ports: [{ port: "3000", protocol: "TCP" }] }],
+		};
+		const docs = await renderWith({
+			networkPolicy: { enabled: true, extraIngress: [extraIngress] },
+		});
+		const policy = docOf(docs, "CiliumNetworkPolicy") as NetworkPolicyDoc;
+		expect(policy.spec.ingress).toHaveLength(2);
+		expect(policy.spec.ingress[1]).toEqual(extraIngress);
+	});
+
+	test("helm lint passes with the policy enabled", async () => {
+		const { stdout, stderr } = await execFileAsync(
+			"helm",
+			["lint", CHART_DIR, "--set", "networkPolicy.enabled=true"],
+			{ timeout: 30_000 },
+		);
+		expect(`${stdout}${stderr}`).toMatch(
+			/1 chart\(s\) linted, 0 chart\(s\) failed/,
+		);
+	});
 });
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,33 @@
 	"$id": "https://raw.githubusercontent.com/sigrun-ai/sigrun/main/charts/sigrun/values.schema.json",
 	"type": "object",
 	"properties": {
+		"networkPolicy": {
+			"description": "Opt-in ingress-only CiliumNetworkPolicy. REQUIRED when `trustedProxies` covers the pod CIDR: application-layer proxy trust does not prevent direct pod access.",
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"description": "Render the CiliumNetworkPolicy (requires Cilium).",
+					"type": "boolean"
+				},
+				"allowEntities": {
+					"description": "Cilium entities admitted on the main Service port; the host entity permits kubelet HTTP probes.",
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"extraIngress": {
+					"description": "Raw CiliumNetworkPolicy ingress rules appended verbatim.",
+					"type": "array",
+					"items": {
+						"type": "object",
+						"additionalProperties": true
+					}
+				}
+			},
+			"additionalProperties": false
+		},
 		"sigrun": {
 			"description": "The sigrun deployment block (image-workflow spec §4): extension fleet, operator Secret refs, and deploy-time tools. Everything here is re-asserted into the config volume by the seed initContainer.",
 			"type": "object",
