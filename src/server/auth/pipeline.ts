@@ -223,7 +223,7 @@ async function resolveProxy(
 		ctx.methods.includes("token");
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
 		if (!attemptingToken) {
-			warnProxyRejected(request, "untrusted proxy");
+			warnProxyRejected(request, ProxyRejectReason.UNTRUSTED);
 		}
 		return { status: 401 };
 	}

@@ -73,6 +73,6 @@ export function warnProxyRejected(
 	const peer = request.socket.remoteAddress ?? "unknown";
 	const route = request.routeOptions.url;
 	console.warn(
-		`sigrun: proxy auth rejected ${request.method} request from ${peer} (${reason})${suppressed > 0 ? ` (${suppressed} suppressed)` : ""}${route === undefined ? "" : ` on ${route}`}`,
+		`sigrun: proxy auth rejected ${request.method} request from ${peer} (${reason})${route === undefined ? "" : ` on ${route}`}${suppressed > 0 ? ` (${suppressed} suppressed)` : ""}`,
 	);
 }

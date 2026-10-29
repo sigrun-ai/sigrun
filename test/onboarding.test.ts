@@ -442,6 +442,9 @@ describe("POST /v1/onboarding/claim", () => {
 			file: { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } },
 			listenHost: "0.0.0.0",
 		});
+		// The claim path now emits the shared proxy-rejection diagnostic
+		// (C1); spy it so this pre-existing test stays quiet.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		// A trusted peer WITHOUT the secret is not a proxy identity here —
 		// the pipeline never runs on public paths, so the claim route owns
 		// the same secret discipline (an in-CIDR attacker cannot self-mint
@@ -468,6 +471,7 @@ describe("POST /v1/onboarding/claim", () => {
 		});
 		expect(present.statusCode).toBe(200);
 		expect(present.json().user).toMatchObject({ user: "michael", admin: true });
+		warn.mockRestore();
 	});
 });
 

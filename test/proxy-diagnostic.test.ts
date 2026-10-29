@@ -59,7 +59,7 @@ describe("proxy-rejection diagnostic throttle", () => {
 		warnProxyRejected(fakeRequest(), ProxyRejectReason.UNTRUSTED);
 		expect(warn).toHaveBeenCalledTimes(2);
 		expect(warn.mock.calls[1]!.join(" ")).toBe(
-			"sigrun: proxy auth rejected GET request from 10.42.3.4 (untrusted proxy) (1 suppressed) on /v1/x",
+			"sigrun: proxy auth rejected GET request from 10.42.3.4 (untrusted proxy) on /v1/x (1 suppressed)",
 		);
 	});
 
