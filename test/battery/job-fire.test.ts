@@ -34,6 +34,16 @@ test(
 		try {
 			setup = spawnDriver(DRIVER, ["setup-waiting", dir]);
 			await setup.waitForLine("READY", BOOT_DEADLINE_MS);
+			const preFire = await setup.waitForLine(
+				"PRE_FIRE:",
+				KILL_MARKER_DEADLINE_MS,
+			);
+			// The kill marker is honest only with a pre-fire sleep and no
+			// existing run. Without this proof the verify pass could inherit
+			// a fire from the setup process and the scenario would be vacuous.
+			expect(preFire).toContain("PRE_FIRE:no-run");
+			expect(preFire).toContain('"status":"sleeping"');
+			expect(preFire).toContain('"phase":"due"');
 			await setup.waitForLine("WAITING", KILL_MARKER_DEADLINE_MS);
 			const exit = await setup.kill();
 			expect(exit.code).toBeNull();
@@ -42,6 +52,8 @@ test(
 			const payload = await runVerifyPass(DRIVER, ["verify", dir], VERIFY_DEADLINE_MS);
 			expect(payload.submissions).toBe(1);
 			expect(payload.conversationId).toBeTypeOf("number");
+			expect(payload.firedAfterRestart).toBe(true);
+			expect(payload.runAbsentAtRestart).toBe(true);
 			expect(["succeeded", "failed", "running"]).toContain(payload.outcome);
 		} finally {
 			await setup?.kill().catch(() => undefined);

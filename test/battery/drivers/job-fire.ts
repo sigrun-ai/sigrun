@@ -5,8 +5,9 @@
  *
  * Marker protocol (see test/battery/lib.ts + drivers/lib.ts):
  * - setup: boot, seed the job record, create the schedule task with the
- *   job's fireAt FAR IN THE FUTURE so the task parks at its `waiting`
- *   checkpoint, then print `WAITING` (kill point a). `setup-created`
+ *   job's fireAt shortly in the future so its only committed task state
+ *   is the pre-fire durable sleep, assert NO run exists, then print
+ *   `WAITING` (kill point a). `setup-created`
  *   creates the task with firstAt overdue and prints
  *   `CONVERSATION_CREATED:<id>` the instant the run record's
  *   conversationId is durable (the run record is written ATOMICALLY
@@ -18,6 +19,9 @@
  *   conversation (`SessionMeta.source:"cron"` + `jobId`), exactly one
  *   submission with requestId `job:<jobId>:<fireAt>`, exactly one run
  *   record for the fire key, and the job record's `lastRun` matching.
+ *   Kill point (a) additionally requires the setup pass's pre-kill
+ *   `PRE_FIRE:no-run` proof and reports the fire appearing only after
+ *   restart; an inherited run fails the driver.
  *
  * The fire instant rides the scenario file (`fireAt`), so the setup and
  * verify passes agree on the fire key — determinism across processes.
@@ -53,6 +57,8 @@ interface JobScenario {
 	readonly fireAt: number;
 	readonly hash: string;
 	readonly taskId?: string | number;
+	/** Kill point (a): the setup pass proved this run absent at SIGKILL. */
+	readonly preFire?: boolean;
 }
 
 async function readJobState(dir: string): Promise<JobScenario> {
@@ -114,6 +120,19 @@ async function main(): Promise<never> {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: deps.defaultModel },
 		});
+		// Kill point (a) proved the run absent before SIGKILL. It must not
+		// be present when this process opens, so the fire observed below is
+		// new work after restart, never inherited state.
+		const runAtOpen = await opened.harness.snapshot(
+			JobRunDoc,
+			fireKey,
+			BACKGROUND_CONTEXT,
+		);
+		if (state.preFire === true && runAtOpen !== undefined) {
+			return verifyFailed(
+				`the pre-fire kill inherited run ${fireKey}; the kill did not land before the fire`,
+			);
+		}
 		// setup-before killed before the task existed: create it now, with
 		// the pinned fireAt overdue so the resumed task fires once.
 		if (state.taskId === undefined) {
@@ -221,6 +240,9 @@ async function main(): Promise<never> {
 			conversationId: run.conversationId,
 			requestId: matched[0]!.requestId,
 			submissions: matched.length,
+			...(state.preFire === true
+				? { firedAfterRestart: true, runAbsentAtRestart: true }
+				: {}),
 		});
 	}
 
@@ -274,10 +296,10 @@ async function main(): Promise<never> {
 	marker("READY");
 
 	if (mode === "setup-waiting") {
-		// Kill point (a): the task parks at its `waiting` checkpoint with
-		// nextAt FAR in the future (the kill lands during the durable
-		// sleep); the verify pass resumes and fires exactly once.
-		const fireAt = Date.now() - 1_000; // overdue: the resumed task fires
+		// Kill point (a): a short REAL-TIME future slot gives the kill a
+		// genuine pre-fire window. The only committed task state at WAITING
+		// is the durable sleep; no run record or run conversation exists.
+		const fireAt = Date.now() + 8_000;
 		const taskId = await opened.harness.commit(
 			async (tx) =>
 				await tx.createTask(
@@ -291,12 +313,17 @@ async function main(): Promise<never> {
 				),
 			BACKGROUND_CONTEXT,
 		);
-		await writeJobState(dir, { jobId: JOB_ID, fireAt, hash, taskId: taskId as number });
+		await writeJobState(dir, {
+			jobId: JOB_ID,
+			fireAt,
+			hash,
+			taskId: taskId as number,
+			preFire: true,
+		});
 		// 1.4.0: the task's first waiting phase commits a DURABLE sleep
-		// and ends with checkpoint `due`. The overdue nextAt makes the
-		// resumed task fire immediately, so the kill must land while this
-		// durable sleep is visible. Poll both the status and checkpoint.
-		const deadline = Date.now() + 20_000;
+		// and ends with checkpoint `due`. Poll both the status and the
+		// exact pre-fire deadline, then prove the run is still absent.
+		const deadline = Date.now() + 5_000;
 		for (;;) {
 			const record = await opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
 			const checkpoint = record?.state.checkpoint as
@@ -305,14 +332,30 @@ async function main(): Promise<never> {
 			if (
 				record !== undefined &&
 				record.state.status === "sleeping" &&
-				checkpoint?.phase === "due"
-			) break;
+				checkpoint?.phase === "due" &&
+				checkpoint.nextAt === fireAt
+			) {
+				const runBeforeKill = await opened.harness.snapshot(
+					JobRunDoc,
+					`${JOB_ID}:${fireAt}`,
+					BACKGROUND_CONTEXT,
+				);
+				if (runBeforeKill !== undefined) {
+					return verifyFailed(
+						`the run already existed before the kill (state=${JSON.stringify(record.state)})`,
+					);
+				}
+				console.log(
+					`PRE_FIRE:no-run task=${JSON.stringify(record.state)}`,
+				);
+				break;
+			}
 			if (Date.now() > deadline) {
 				return verifyFailed(
-					`the task never reached its waiting checkpoint (state=${JSON.stringify(record?.state)})`,
+					`the task never reached its pre-fire sleep (state=${JSON.stringify(record?.state)})`,
 				);
 			}
-			await new Promise((resolve) => setTimeout(resolve, 100));
+			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
 		marker("WAITING");
 		setInterval(() => {}, 1_000);

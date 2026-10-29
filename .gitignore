@@ -29,3 +29,7 @@ docs/private.md
 
 # The publish-deps rewrite marker (scripts/publish-deps.mjs)
 .publish-deps-applied.json
+
+# Local WAL sidecars from direct reads of the durable-v1 fixture
+test/fixtures/durable-v1/*.db-wal
+test/fixtures/durable-v1/*.db-shm
