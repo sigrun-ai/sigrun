@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { LoginFlow, LoginResult } from "../../extension.js";
 import { ipAllowed } from "../auth/ip.js";
+import { requiresProxyVouch } from "../auth/proxy-only.js";
 import { bearerOf, resolveToken, sessionCookieOf } from "../auth/pipeline.js";
 import type { ServerContext } from "../context.js";
 import { LoginFlows, type StoredFlow } from "../login/flows.js";
@@ -232,6 +233,13 @@ export function registerLoginRoutes(
 		// The webui client requests JSON so fetch never follows a redirect
 		// into an HTML document. Existing form callers keep the 302 contract.
 		const asJson = request.headers.accept?.includes("application/json") === true;
+		// C2: this route creates an account from a parked external-identity
+		// flow plus a setup/invite code — it carries NO proxy identity, so
+		// on a proxy-only non-loopback bind it ALWAYS refuses, before any
+		// code evaluation or account provisioning.
+		if (requiresProxyVouch(ctx.methods, ctx.listenHost)) {
+			return browserError(reply, 403, "proxy_identity_required", asJson);
+		}
 		const pending = flows.takePending(record.key);
 		if (pending === undefined) return browserError(reply, 400, "login_expired", asJson);
 		const outcome = await resolveLogin({

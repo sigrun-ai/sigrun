@@ -21,6 +21,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
+import { requiresProxyVouch } from "../server/auth/proxy-only.js";
 import { wireActivity } from "./activity.js";
 import { snapshotBeforeMigration } from "./migration-snapshot.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
@@ -818,8 +819,10 @@ export async function openHarness(
 	// is 0600 + atomic, and the cache root is never a backup section).
 	// `SIGRUN_SETUP_CODE` pins the value instead (the k8s Secret shape).
 	// Claimed boots (every identity-seeded test, every post-onboarding
-	// deploy) write nothing.
-	if (!identity.users.isClaimed()) {
+	// deploy) write nothing. A proxy-only non-loopback boot writes and
+	// logs NOTHING either (C2): account creation there is vouch-only, so
+	// a setup code would be an unvouched account-creation path.
+	if (!identity.users.isClaimed() && !requiresProxyVouch(methods, listenHost)) {
 		// `identity.cacheDir`, not `roots.cacheDir`: the claim route reads
 		// `readSetupCode(identity.cacheDir)`, and an injected identity
 		// bundle (the test seam) may root elsewhere than the resolved

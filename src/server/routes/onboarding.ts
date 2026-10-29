@@ -24,6 +24,7 @@ import {
 	ProxyRejectReason,
 	warnProxyRejected,
 } from "../auth/proxy-diagnostic.js";
+import { requiresProxyVouch } from "../auth/proxy-only.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
 import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
@@ -209,6 +210,17 @@ export function registerOnboardingRoutes(
 		}
 		const proxyIdentity = resolveProxyIdentity(request, ctx);
 		const loopback = isLoopbackHost(ctx.listenHost);
+		// C2: a proxy-only non-loopback server creates accounts ONLY
+		// through a proxy vouch — refuse BEFORE code evaluation, so even
+		// a valid setup code or invite code cannot mint an account
+		// unvouched on this posture. Mixed [proxy, token] and loopback
+		// binds keep the code paths.
+		if (
+			requiresProxyVouch(ctx.methods, ctx.listenHost) &&
+			proxyIdentity === undefined
+		) {
+			return await reply.code(403).send({ error: "proxy_identity_required" });
+		}
 		// The code's validity is evaluated ONCE, BEFORE the mutex: the winner
 		// clears the setup-code file inside its critical section, so a claim
 		// that loses the race must still be recognizable as having held a

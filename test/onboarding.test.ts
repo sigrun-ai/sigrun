@@ -24,6 +24,7 @@ import {
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { readSetupCode } from "../src/harness/identity/index.js";
+import { ensureSetupCode } from "../src/harness/identity/setup-code.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import {
@@ -105,6 +106,30 @@ describe("unclaimed boot", () => {
 		const { dir } = await bootServer({});
 		expect(existsSync(join(dir, "cache", "setup-code"))).toBe(true);
 		expect(existsSync(join(dir, "state", "setup-code"))).toBe(false);
+	});
+
+	test("a proxy-only non-loopback boot generates and logs NO setup code (C2)", async () => {
+		// A proxy-only public deployment admits accounts ONLY through a
+		// proxy vouch — a minted setup code would be an unvouched
+		// account-creation path, so boot never creates (or logs) one.
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { opened } = await bootServer({
+				env: {
+					SIGRUN_AUTH: "proxy",
+					SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+				},
+				listenHost: "0.0.0.0",
+			});
+			expect(readSetupCode(opened.identity.cacheDir)).toBeUndefined();
+			expect(
+				log.mock.calls.some((call) =>
+					call.join(" ").includes("sigrun setup code:"),
+				),
+			).toBe(false);
+		} finally {
+			log.mockRestore();
+		}
 	});
 });
 
@@ -457,7 +482,9 @@ describe("POST /v1/onboarding/claim", () => {
 			payload: { user: "spoof" },
 		});
 		expect(missing.statusCode).toBe(403);
-		expect(missing.json()).toEqual({ error: "invalid_code" });
+		// C2: the proxy-only public claim path refuses EVERY unvouched
+		// claim with the dedicated code — not the setup-code error.
+		expect(missing.json()).toEqual({ error: "proxy_identity_required" });
 		// With the secret, the header identity claims admin.
 		const present = await app.inject({
 			method: "POST",
@@ -472,6 +499,175 @@ describe("POST /v1/onboarding/claim", () => {
 		expect(present.statusCode).toBe(200);
 		expect(present.json().user).toMatchObject({ user: "michael", admin: true });
 		warn.mockRestore();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// C2: proxy-only non-loopback servers refuse account creation without a vouch
+// ---------------------------------------------------------------------------
+
+describe("proxy-only vouch rule (C2)", () => {
+	const PROXY_ONLY_ENV = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+	};
+
+	beforeEach(() => {
+		resetProxyDiagnostic();
+	});
+
+	/** Boot proxy-only + non-loopback with the warn spy installed. */
+	async function bootPublicProxyOnly() {
+		const server = await bootServer({
+			env: PROXY_ONLY_ENV,
+			listenHost: "0.0.0.0",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		return { ...server, warn };
+	}
+
+	test("unclaimed claim without vouch and no code → 403 proxy_identity_required", async () => {
+		const { app, warn } = await bootPublicProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				payload: { user: "eve" },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "proxy_identity_required" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("unclaimed claim without vouch but WITH a valid setup code → 403 proxy_identity_required", async () => {
+		const { app, opened, warn } = await bootPublicProxyOnly();
+		try {
+			// Materialize a valid setup code directly (a proxy-only public
+			// boot no longer writes one — that is the OTHER C2 assertion);
+			// the point here is that even a VALID code cannot create an
+			// account without a vouch on this posture.
+			const code = await ensureSetupCode(opened.identity.cacheDir, {});
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				payload: { code, user: "eve" },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "proxy_identity_required" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("vouched claim (remote-user michael, peer 10.42.3.4) → 200 admin", async () => {
+		const { app, warn } = await bootPublicProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "michael" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().user).toMatchObject({
+				user: "michael",
+				admin: true,
+				source: "proxy",
+			});
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("vouched claim from an IPv4-mapped peer (::ffff:10.42.3.4) → 200 (Review Focus 1)", async () => {
+		const { app, warn } = await bootPublicProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "::ffff:10.42.3.4",
+				headers: { "remote-user": "michael" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().user).toMatchObject({
+				user: "michael",
+				admin: true,
+				source: "proxy",
+			});
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("claimed instance, invite code + user, no vouch → 403 proxy_identity_required", async () => {
+		const { app, opened, warn } = await bootPublicProxyOnly();
+		try {
+			const claimed = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "michael" },
+			});
+			expect(claimed.statusCode).toBe(200);
+			const { code } = await opened.identity.invites.create({ admin: false });
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				payload: { code, user: "bob" },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "proxy_identity_required" });
+			expect(opened.identity.users.get("bob")).toBeUndefined();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("loopback bind proxy-only: codeRequired false; claim with user → 200 (Review Focus 5)", async () => {
+		const { app } = await bootServer({
+			env: PROXY_ONLY_ENV,
+			listenHost: "127.0.0.1",
+		});
+		const state = await app.inject({ method: "GET", url: "/v1/onboarding" });
+		expect(state.statusCode).toBe(200);
+		expect(state.json().codeRequired).toBe(false);
+		const claim = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "local" },
+		});
+		expect(claim.statusCode).toBe(200);
+		expect(claim.json().user).toMatchObject({
+			user: "local",
+			admin: true,
+			source: "cli",
+		});
+	});
+
+	test("mixed [proxy, token], unclaimed, setup code, no vouch → 200 (Review Focus 3)", async () => {
+		const { app, opened } = await bootServer({
+			env: { ...PROXY_ONLY_ENV, SIGRUN_AUTH: "proxy,token" },
+			listenHost: "0.0.0.0",
+		});
+		const code = readSetupCode(opened.identity.cacheDir);
+		expect(code).toBeDefined();
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			remoteAddress: "10.42.3.4",
+			payload: { code, user: "founder" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toMatchObject({
+			user: "founder",
+			admin: true,
+			source: "cli",
+		});
 	});
 });
 

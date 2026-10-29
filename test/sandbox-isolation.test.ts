@@ -145,6 +145,9 @@ describe("proxy-secret transition admission", () => {
 		SIGRUN_AUTH: "proxy",
 		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
 		SIGRUN_ISOLATION: "auto",
+		// The vouched claim below presents this secret when the boot
+		// configures secretHeader (the pipeline's env-only credential).
+		SIGRUN_PROXY_SECRET: "test-secret",
 	};
 
 	async function bootProxyServer(withSecretHeader: boolean) {
@@ -174,7 +177,19 @@ describe("proxy-secret transition admission", () => {
 	test("auto proxy without secretHeader refuses the second user with 409 isolation_required", async () => {
 		const { app, opened } = await bootProxyServer(false);
 		const { code } = await opened.identity.invites.create({ admin: false });
-		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
+		// C2 (proxy-trust Task 4): this claimed server is proxy-only on a
+		// non-loopback bind, so an UNVOUCHED invite claim is now refused
+		// 403 proxy_identity_required before the admission guard runs.
+		// Vouch the request (trusted peer + identity header, no secret
+		// configured on this boot) so it still reaches the admission
+		// logic this test exists to exercise.
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob" },
+			payload: { code, user: "bob" },
+		});
 		expect(response.statusCode).toBe(409);
 		expect(response.json()).toEqual({ error: "isolation_required" });
 		expect(opened.identity.users.list().map((user) => user.user)).toEqual(["alice"]);
@@ -183,7 +198,14 @@ describe("proxy-secret transition admission", () => {
 	test("auto proxy with secretHeader permits the second user", async () => {
 		const { app, opened } = await bootProxyServer(true);
 		const { code } = await opened.identity.invites.create({ admin: false });
-		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
+		// Vouched as above, plus the configured shared-secret header.
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "bob", "x-sigrun-proxy-secret": "test-secret" },
+			payload: { code, user: "bob" },
+		});
 		expect(response.statusCode).toBe(200);
 		expect(opened.identity.users.list().map((user) => user.user)).toEqual(["alice", "bob"]);
 	});

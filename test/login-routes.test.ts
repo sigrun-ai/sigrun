@@ -39,6 +39,7 @@ async function bootServer(options: {
 	extensionSpecifiers?: string[];
 	isolationAvailable?: boolean;
 	unclaimed?: boolean;
+	listenHost?: string;
 } = {}): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-login-routes-"));
 	const faux = fauxProvider({
@@ -57,7 +58,14 @@ async function bootServer(options: {
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: join(dir, "config"),
 		SIGRUN_PUBLIC_URL: "https://sigrun.example.invalid",
-		...(options.auth === "proxy" ? { SIGRUN_AUTH_TRUSTED_PROXIES: "127.0.0.1/32" } : {}),
+		...(options.auth === "proxy"
+			? {
+					SIGRUN_AUTH_TRUSTED_PROXIES:
+						options.listenHost !== undefined && options.listenHost !== "127.0.0.1"
+							? "10.42.0.0/16"
+							: "127.0.0.1/32",
+				}
+			: {}),
 	});
 	const opened = await openHarness(config, {
 		extensions: [contributor],
@@ -74,7 +82,7 @@ async function bootServer(options: {
 		});
 	}
 	const app = await createServer(opened, config, [], {
-		listenHost: "127.0.0.1",
+		listenHost: options.listenHost ?? "127.0.0.1",
 		...(options.resolver === undefined ? {} : { loginResolver: options.resolver }),
 
 		...(options.now === undefined ? {} : { loginNow: options.now }),
@@ -342,6 +350,71 @@ describe("login provider routes", () => {
 		expect(success.headers["set-cookie"]).toContain("sigrun_session=");
 		expect(opened.identity.users.get("fixture-user")).toMatchObject({ admin: true, source: "login" });
 		expect(readSetupCode(opened.identity.cacheDir)).toBeUndefined();
+	});
+
+	test("proxy-only non-loopback: POST /v1/auth/login/code is refused proxy_identity_required (json + redirect)", async () => {
+		// C2: this route creates an account from a parked external-identity
+		// flow and a setup code — it has NO proxy identity, so on a
+		// proxy-only public bind it always refuses, before resolveLogin.
+		const { app, opened } = await bootServer({
+			auth: "proxy",
+			unclaimed: true,
+			listenHost: "0.0.0.0",
+		});
+		await ensureSetupCode(opened.identity.cacheDir, { SIGRUN_SETUP_CODE: "AAAA-BBBB" });
+		const started = await begin(app);
+		const callback = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+			headers: { cookie: started.cookie },
+		});
+		expect(callback.statusCode).toBe(302);
+		const key = new URL(callback.headers.location as string, "https://sigrun.example.invalid").searchParams.get("key") as string;
+		expect(key).not.toBeNull();
+		const asJson = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			headers: { accept: "application/json" },
+			payload: { key, code: "AAAA-BBBB" },
+		});
+		expect(asJson.statusCode).toBe(403);
+		expect(asJson.json()).toEqual({ error: "proxy_identity_required" });
+		const asForm = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			payload: { key, code: "AAAA-BBBB" },
+		});
+		// The refusal carries the wire 403 AND the browser redirect —
+		// sendLoginResolution's established refused/needs_code shape (the
+		// browser follows the location on any status; the code stays 403).
+		expect(asForm.statusCode).toBe(403);
+		expect(asForm.headers.location).toBe("/login?error=proxy_identity_required");
+		// No account was created by either attempt.
+		expect(opened.identity.users.get("fixture-user")).toBeUndefined();
+	});
+
+	test("under [token] the same login/code request keeps today's behaviour", async () => {
+		const { app, opened } = await bootServer({
+			auth: "token",
+			unclaimed: true,
+			listenHost: "0.0.0.0",
+		});
+		await ensureSetupCode(opened.identity.cacheDir, { SIGRUN_SETUP_CODE: "AAAA-BBBB" });
+		const started = await begin(app);
+		const callback = await app.inject({
+			method: "GET",
+			url: `/v1/auth/callback/login:fixture-login:fixture?state=${started.state}`,
+			headers: { cookie: started.cookie },
+		});
+		const key = new URL(callback.headers.location as string, "https://sigrun.example.invalid").searchParams.get("key") as string;
+		const success = await app.inject({
+			method: "POST",
+			url: "/v1/auth/login/code",
+			payload: { key, code: "AAAA-BBBB" },
+		});
+		expect(success.statusCode).toBe(302);
+		expect(success.headers["set-cookie"]).toContain("sigrun_session=");
+		expect(opened.identity.users.get("fixture-user")).toMatchObject({ admin: true, source: "login" });
 	});
 
 	test("a code-resume key expires after ten more minutes", async () => {
