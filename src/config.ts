@@ -1,5 +1,5 @@
 import { isIanaTimeZone } from "./jobs/spec.js";
-import type { CompactionPolicy } from "@earendil-works/pi-durable";
+import type { CompactionPolicy, CompactionSettings } from "@earendil-works/pi-durable";
 import { isAbsolute, join } from "node:path";
 import type {
 	EffectiveServerSetting,
@@ -271,8 +271,10 @@ export interface SigrunConfig {
 	 * `DEFAULT_COMPACTION_POLICY`; `backgroundTokens > 0` keeps background
 	 * compaction on (spec §3.1 "Background compaction on" — upstream starts
 	 * one `backgroundTokens` below the blocking threshold; `0` disables it).
+	 * `modelOverrides` (file-only, no env knob) tunes individual models
+	 * under pi-durable's exact `provider/modelId` key.
 	 */
-	compaction: CompactionPolicy;
+	compaction: CompactionPolicy & Pick<CompactionSettings, "modelOverrides">;
 	/**
 	 * The memory-seam bounds (spec §2/§3), parsed from the
 	 * `SIGRUN_{HOOK_DEADLINE,IDLE_THRESHOLD,WORKER_DEADLINE,QUEUE_MAX}`
@@ -932,11 +934,16 @@ export function parseBackupSections(
 function parseCompaction(
 	env: Env,
 	server?: ServerSettings["compaction"],
-): CompactionPolicy {
+): CompactionPolicy & Pick<CompactionSettings, "modelOverrides"> {
 	// Env parse first (a bad env value fails loud even when the file's
 	// value is valid); a file field applies only where its env var is
-	// absent; code defaults last.
+	// absent; code defaults last. `modelOverrides` is file-only (a map
+	// has no env spelling), passed through verbatim — pi-durable's
+	// `compactionPolicy` applies it per model at compaction time.
 	return {
+		...(server?.modelOverrides === undefined
+			? {}
+			: { modelOverrides: server.modelOverrides }),
 		enabled:
 			parseCompactionEnabled(env) ??
 			server?.enabled ??
@@ -1431,6 +1438,13 @@ export function effectiveServerSection(
 		config.compaction.backgroundTokens,
 		["compaction", "backgroundTokens"],
 	);
+	if (config.compaction.modelOverrides !== undefined) {
+		emit(
+			"compaction.modelOverrides",
+			config.compaction.modelOverrides,
+			["compaction", "modelOverrides"],
+		);
+	}
 	emit(
 		"memorySeam.hookDeadlineMs",
 		config.memorySeam.hookDeadlineMs,

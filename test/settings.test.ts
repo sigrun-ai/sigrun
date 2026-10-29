@@ -309,6 +309,12 @@ describe("SettingsStore", () => {
 			[{ server: { compaction: { enabled: "yes" } } }, /server\.compaction\.enabled/],
 			[{ server: { compaction: { reserveTokens: 0 } } }, /server\.compaction\.reserveTokens/],
 			[{ server: { compaction: { backgroundTokens: -1 } } }, /server\.compaction\.backgroundTokens/],
+			[{ server: { compaction: { modelOverrides: "all" } } }, /server\.compaction\.modelOverrides must be an object/],
+			[{ server: { compaction: { modelOverrides: { "acme/acme/small": { enabled: true, extra: 1 } } } } }, /server\.compaction\.modelOverrides\.acme\/acme\/small\.extra/],
+			[{ server: { compaction: { modelOverrides: { "acme/acme/small": { reserveTokens: 0 } } } } }, /server\.compaction\.modelOverrides\.acme\/acme\/small\.reserveTokens/],
+			[{ server: { compaction: { modelOverrides: { "acme/acme/small": { keepRecentTokens: 0 } } } } }, /server\.compaction\.modelOverrides\.acme\/acme\/small\.keepRecentTokens/],
+			[{ server: { compaction: { modelOverrides: { "acme/acme/small": { backgroundTokens: -1 } } } } }, /server\.compaction\.modelOverrides\.acme\/acme\/small\.backgroundTokens/],
+			[{ server: { compaction: { modelOverrides: { "acme/acme/small": { enabled: "yes" } } } } }, /server\.compaction\.modelOverrides\.acme\/acme\/small\.enabled/],
 			[{ server: { memorySeam: "fast" } }, /server\.memorySeam/],
 			[{ server: { memorySeam: { hookDeadlineMs: "30000" } } }, /server\.memorySeam\.hookDeadlineMs/],
 			[{ server: { memorySeam: { idleThresholdMs: 0 } } }, /server\.memorySeam\.idleThresholdMs/],
@@ -456,6 +462,30 @@ describe("SettingsStore", () => {
 			reserveTokens: 4096,
 			keepRecentTokens: 20000,
 			backgroundTokens: 32768,
+		});
+		// modelOverrides: a PATCH REPLACES the whole map (no deep merge
+		// across keys) while a PATCH of another compaction key leaves it
+		// intact.
+		store.update({
+			server: {
+				compaction: {
+					modelOverrides: { "acme/acme/small": { reserveTokens: 1024 } },
+				},
+			},
+		});
+		store.update({
+			server: {
+				compaction: {
+					modelOverrides: { "acme/acme/other": { keepRecentTokens: 512 } },
+				},
+			},
+		});
+		expect(store.read().server?.compaction?.modelOverrides).toEqual({
+			"acme/acme/other": { keepRecentTokens: 512 },
+		});
+		store.update({ server: { compaction: { reserveTokens: 8192 } } });
+		expect(store.read().server?.compaction?.modelOverrides).toEqual({
+			"acme/acme/other": { keepRecentTokens: 512 },
 		});
 		// Null clears one server field; the section survives.
 		store.update({ server: { extensionsDir: null } });

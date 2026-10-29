@@ -123,6 +123,7 @@ const EXPECTED_KEYS = [
 	"server.compaction.reserveTokens",
 	"server.compaction.keepRecentTokens",
 	"server.compaction.backgroundTokens",
+	"server.compaction.modelOverrides",
 	"server.memorySeam.hookDeadlineMs",
 	"server.memorySeam.idleThresholdMs",
 	"server.memorySeam.workerDeadlineMs",
@@ -295,6 +296,7 @@ describe("the core settings registry (spec §13.1)", () => {
 				"server.compaction.reserveTokens",
 				"server.compaction.keepRecentTokens",
 				"server.compaction.backgroundTokens",
+				"server.compaction.modelOverrides",
 				"server.memorySeam.hookDeadlineMs",
 				"server.memorySeam.idleThresholdMs",
 				"server.memorySeam.workerDeadlineMs",
@@ -360,12 +362,20 @@ async function bootServer(
 			"utf8",
 		);
 	}
-	const config = loadConfig({
-		SIGRUN_DEFAULT_MODEL: "faux/m",
-		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "none",
-		SIGRUN_WORKSPACE_PATH: dir,
-	});
+	// The file tier is explicit (the serve shape): file-only settings like
+	// server.compaction.modelOverrides resolve through the second
+	// loadConfig argument, and SIGRUN_CONFIG_DIR mirrors the file's dir
+	// for the effective block's env projection.
+	const config = loadConfig(
+		{
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_AUTH: "none",
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_CONFIG_DIR: dir,
+		},
+		opts.file as Parameters<typeof loadConfig>[1],
+	);
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		// The fixture extensions carry `onSettingsChanged` handlers (one
@@ -443,6 +453,63 @@ describe("PATCH /v1/settings: applied, pending, pendingRestart", () => {
 		const get = (await app.inject({ method: "GET", url: "/v1/settings" }))
 			.json() as { pendingRestart: string[] };
 		expect(get.pendingRestart).toEqual([]);
+	});
+
+	test("server.compaction.modelOverrides is a restart key with a resolved effective entry", async () => {
+		const { app } = await bootServer({
+			file: {
+				server: {
+					compaction: {
+						modelOverrides: {
+							"acme/acme/small": { reserveTokens: 4096 },
+						},
+					},
+				},
+			},
+		});
+		const before = (await app.inject({ method: "GET", url: "/v1/settings" }))
+			.json() as {
+			effective: Record<string, { value: unknown; source: string }>;
+			pendingRestart: string[];
+		};
+		expect(before.effective["server.compaction.modelOverrides"]).toEqual({
+			value: { "acme/acme/small": { reserveTokens: 4096 } },
+			source: "file",
+		});
+		// A PATCH replaces the whole map and is boot-time (pending) like
+		// the rest of compaction; it never merges into the previous map.
+		const response = await patch(app, {
+			server: {
+				compaction: {
+					modelOverrides: { "acme/acme/large": { keepRecentTokens: 2048 } },
+				},
+			},
+		});
+		expect(response.statusCode).toBe(200);
+		const body = response.json() as {
+			server?: { compaction?: { modelOverrides?: unknown } };
+			pending: string[];
+			applied: string[];
+			effective: Record<string, { value: unknown; source: string }>;
+		};
+		expect(body.pending).toEqual(["server.compaction.modelOverrides"]);
+		expect(body.applied).toEqual([]);
+		expect(body.server?.compaction?.modelOverrides).toEqual({
+			"acme/acme/large": { keepRecentTokens: 2048 },
+		});
+		// The resolved `effective` view is BOOT-resolved (config), so it
+		// still shows the boot map — the restart-pending state is what
+		// `pending`/`pendingRestart` report. A settings.json change takes
+		// effect at the next restart, as for the other compaction keys.
+		expect(body.effective["server.compaction.modelOverrides"]).toEqual({
+			value: { "acme/acme/small": { reserveTokens: 4096 } },
+			source: "file",
+		});
+		const after = (await app.inject({ method: "GET", url: "/v1/settings" }))
+			.json() as { pendingRestart: string[] };
+		expect(after.pendingRestart).toEqual([
+			"server.compaction.modelOverrides",
+		]);
 	});
 });
 

@@ -652,6 +652,7 @@ function validateServer(server: unknown): void {
 			"reserveTokens",
 			"keepRecentTokens",
 			"backgroundTokens",
+			"modelOverrides",
 		]);
 		if (compaction.enabled !== undefined && typeof compaction.enabled !== "boolean") {
 			throw new SettingsValidationError("server.compaction.enabled", "must be a boolean");
@@ -671,6 +672,52 @@ function validateServer(server: unknown): void {
 					`server.compaction.${key}`,
 					minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
 				);
+			}
+		}
+		if (compaction.modelOverrides !== undefined) {
+			const overrides = asRecord(compaction.modelOverrides);
+			if (overrides === undefined) {
+				throw new SettingsValidationError(
+					"server.compaction.modelOverrides",
+					"must be an object",
+				);
+			}
+			// Each entry is a partial policy with the SAME fields and
+			// minimums as the parent block; unknown inner keys fail naming
+			// the full `...modelOverrides.<model>.<field>` path.
+			for (const [modelKey, entry] of Object.entries(overrides)) {
+				const policy = asRecord(entry);
+				if (policy === undefined) {
+					throw new SettingsValidationError(
+						`server.compaction.modelOverrides.${modelKey}`,
+						"must be an object",
+					);
+				}
+				const prefix = `server.compaction.modelOverrides.${modelKey}.`;
+				checkKeys(prefix, policy, [
+					"enabled",
+					"reserveTokens",
+					"keepRecentTokens",
+					"backgroundTokens",
+				]);
+				if (policy.enabled !== undefined && typeof policy.enabled !== "boolean") {
+					throw new SettingsValidationError(`${prefix}enabled`, "must be a boolean");
+				}
+				for (const key of ["reserveTokens", "keepRecentTokens", "backgroundTokens"] as const) {
+					const v = policy[key];
+					if (v === undefined) continue;
+					const minimum = key === "backgroundTokens" ? 0 : 1;
+					if (
+						typeof v !== "number" ||
+						!Number.isInteger(v) ||
+						v < minimum
+					) {
+						throw new SettingsValidationError(
+							`${prefix}${key}`,
+							minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
+						);
+					}
+				}
 			}
 		}
 	}
@@ -1123,6 +1170,14 @@ export class SettingsStore {
 							for (const [compKey, compValue] of Object.entries(
 								subValue as Record<string, unknown>,
 							)) {
+								// modelOverrides REPLACES the whole map (its keys
+								// are model ids, not a mergeable schema); every
+								// other compaction key merges one level deep.
+								if (compKey === "modelOverrides") {
+									if (compValue === null) delete mergedCompaction[compKey];
+									else mergedCompaction[compKey] = compValue;
+									continue;
+								}
 								if (compValue === null) delete mergedCompaction[compKey];
 								else mergedCompaction[compKey] = compValue;
 							}

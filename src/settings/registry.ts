@@ -319,6 +319,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "compaction policy resolves into the boot harness settings",
 	},
 	{
+		key: "server.compaction.modelOverrides",
+		apply: "restart",
+		section: "advanced",
+		reason: "compaction policy resolves into the boot harness settings",
+	},
+	{
 		key: "server.memorySeam.hookDeadlineMs",
 		apply: "restart",
 		section: "advanced",

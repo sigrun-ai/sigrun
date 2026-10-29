@@ -142,6 +142,25 @@ export interface ServerSettings {
 		readonly reserveTokens?: number;
 		readonly keepRecentTokens?: number;
 		readonly backgroundTokens?: number;
+		/**
+		 * Per-model compaction policy overrides, keyed by the exact
+		 * `provider/modelId` string pi-durable composes — a chain-shaped
+		 * model id doubles the prefix (e.g. `bifrost/bifrost/<chain>`).
+		 * Each field replaces the harness-wide one for that model, so a
+		 * small-window model can sit alongside the large-window default.
+		 * Boot-time lifetime, like the rest of compaction.
+		 */
+		readonly modelOverrides?: Readonly<
+			Record<
+				string,
+				Partial<{
+					enabled: boolean;
+					reserveTokens: number;
+					keepRecentTokens: number;
+					backgroundTokens: number;
+				}>
+			>
+		>;
 	};
 	/**
 	 * The memory-seam bounds (memory-seam Task 6), mirroring the

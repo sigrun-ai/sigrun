@@ -188,6 +188,32 @@ still override it per field.
 | `SIGRUN_COMPACTION_RESERVE_TOKENS` | positive int | `16384` | `server.compaction.reserveTokens` | Headroom reserved for the model's reply. |
 | `SIGRUN_COMPACTION_KEEP_RECENT_TOKENS` | positive int | `20000` | `server.compaction.keepRecentTokens` | Recent context retained verbatim through a compaction. |
 | `SIGRUN_COMPACTION_BACKGROUND_TOKENS` | non-negative int | `32768` | `server.compaction.backgroundTokens` | Background compaction threshold; `0` disables background compaction. |
+
+Per-model overrides: `server.compaction.modelOverrides` is a map keyed by
+the exact `provider/modelId` string pi-durable composes — note that a
+chain-shaped model id doubles the prefix. Use it when a small-window model
+must sit alongside the large-window default policy (lower
+`reserveTokens`/`keepRecentTokens`/`backgroundTokens`, or `enabled: false`
+for a model that must never compact):
+
+```jsonc
+"server": {
+  "compaction": {
+    "reserveTokens": 16384,
+    "modelOverrides": {
+      // Synthetic example: provider "bifrost", model id "bifrost/small-chat".
+      "bifrost/bifrost/small-chat": { "reserveTokens": 4096, "keepRecentTokens": 6000 }
+    }
+  }
+}
+```
+
+Each entry is a partial policy (the same fields and minimums as the parent
+block); unset fields inherit the global policy. Boot-time lifetime like the
+rest of compaction, and there is no env spelling. After the boot catalog
+refresh an override key that matches no known model logs one warning
+(`compaction override "<key>" matches no known model`) — never an error,
+since catalogs move.
 | `SIGRUN_BACKUP_PATH` | path | *(unset)* | `server.backup.path` | Path backup target (mutually exclusive with the S3 target). |
 | `SIGRUN_BACKUP_S3_BUCKET` | string | *(unset)* | `server.backup.s3.bucket` | S3 backup bucket. |
 | `SIGRUN_BACKUP_S3_PREFIX` | string | *(unset)* | `server.backup.s3.prefix` | Key prefix within the bucket. |
@@ -219,7 +245,10 @@ still override it per field.
       "enabled": true,
       "reserveTokens": 16384,        // positive integer
       "keepRecentTokens": 20000,     // positive integer
-      "backgroundTokens": 32768      // non-negative integer (0 = off)
+      "backgroundTokens": 32768,     // non-negative integer (0 = off)
+      "modelOverrides": {            // per-model partial policies, keyed by exact provider/modelId
+        "bifrost/bifrost/small-chat": { "reserveTokens": 4096 }
+      }
     },
     "backup": { // target: { "path": "/backups" } XOR { "s3": { "bucket": "...", "prefix": "...", "endpoint": "..." } }
       "staleAfterHours": 36            // positive number: health.backup degrades past this marker age

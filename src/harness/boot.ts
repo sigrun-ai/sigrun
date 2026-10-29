@@ -1332,6 +1332,27 @@ export async function openHarness(
 		onReadinessChange: observeReadiness,
 		snapshotReadiness,
 	});
+	// Per-model compaction overrides (D9): after the boot refresh the
+	// catalog is as complete as boot gets, so an override key matching no
+	// known model is almost always a typo (or a stale chain name). Warn
+	// once per unmatched key — never an error: catalogs move and an
+	// unmatched override is simply inert. pi-durable's own key composition
+	// is `${provider}/${modelId}`, so a chain-shaped model id yields a
+	// doubled prefix (e.g. "bifrost/bifrost/<chain>").
+	void bootRefreshDone.then(() => {
+		const overrides =
+			config.compaction.modelOverrides ??
+			bootSettings.server?.compaction?.modelOverrides;
+		if (overrides === undefined) return;
+		const known = new Set(
+			models.getModels().map((model) => `${model.provider}/${model.id}`),
+		);
+		for (const key of Object.keys(overrides)) {
+			if (!known.has(key)) {
+				console.warn(`compaction override "${key}" matches no known model`);
+			}
+		}
+	});
 	// The boot-wired single-provider refresh (W3 Task 6): the route
 	// surface's refresh — the same bound policy `resolveServedModelRefreshing`
 	// runs on a miss, with the same readiness observation so a provider a
@@ -1427,6 +1448,13 @@ export async function openHarness(
 			// snapshots the file's boot-time values, silently freezing the
 			// queue modes and clobbering the caller seam (the round-1 defects).
 			// `extensions`/`toolExecution` have no file backing — plain passthrough.
+			// Compaction (D9): the file's `server.compaction` block merges
+			// BETWEEN config and the caller seam. serve resolves the file into
+			// config already (loadConfig's second argument); this read keeps
+			// file-backed fields — `modelOverrides` above all, which has no env
+			// spelling — authoritative for direct `openHarness` boots too.
+			// Boot-time by design: the block is read ONCE, here, so a PATCH is
+			// a restart-pending change, exactly like the other compaction keys.
 			settings: {
 				get steeringMode() {
 					return callerSettings?.steeringMode ?? fileSettings.steeringMode;
@@ -1450,6 +1478,7 @@ export async function openHarness(
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {
 					...config.compaction,
+					...bootSettings.server?.compaction,
 					...callerSettings?.compaction,
 				},
 			},
