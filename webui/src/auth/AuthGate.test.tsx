@@ -380,7 +380,7 @@ describe("AuthGate", () => {
 		expect(text).not.toContain("unauthenticated");
 	});
 
-	test("claimed proxy-only + invalid_username renders the username rule", async () => {
+	test("claimed proxy-only + invalid_username renders the unusable-characters copy", async () => {
 		const harness = makeHarness({
 			onboarding: { state: "claimed", methods: ["proxy"], codeRequired: true },
 			whoamiStatus: 403,
@@ -393,8 +393,74 @@ describe("AuthGate", () => {
 			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
 		).toHaveLength(1);
 		const text = textContent(renderer.toJSON());
-		expect(text).toContain("lowercase letters, digits");
+		expect(text).toContain("the proxy's username has no usable characters");
 		expect(text).not.toContain("invalid_username");
+	});
+
+	test("onboarding shows a live derived-username preview as the user types", async () => {
+		const harness = makeHarness();
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		expect(
+			renderer.root.findAllByProps({ "data-auth-screen": "onboarding" }),
+		).toHaveLength(1);
+
+		await setValue(renderer, "user", "Alice Smith");
+		expect(textContent(renderer.toJSON())).toContain("alice-smith");
+	});
+
+	test("an unusable username shows an inline message and disables submit", async () => {
+		const harness = makeHarness();
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		await setValue(renderer, "user", "@@@");
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("needs at least one letter or digit");
+		const submit = renderer.root
+			.findAllByType("button")
+			.find((button) =>
+				JSON.stringify(button.children).includes("Set up sigrun"),
+			);
+		expect(submit).toBeDefined();
+		expect(submit!.props.disabled).toBe(true);
+	});
+
+	test("a proxy vouch whose subject differs from the user renders BOTH strings", async () => {
+		const harness = makeHarness({
+			onboarding: {
+				state: "unclaimed",
+				methods: ["proxy"],
+				codeRequired: false,
+				proxyIdentity: { user: "mike_example.com", subject: "Mike@Example.com" },
+			},
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("mike_example.com");
+		expect(text).toContain("Mike@Example.com");
+		expect(text).toContain("Continue as mike_example.com");
+	});
+
+	test("a proxy vouch whose subject equals the user renders it once", async () => {
+		const harness = makeHarness({
+			onboarding: {
+				state: "unclaimed",
+				methods: ["proxy"],
+				codeRequired: false,
+				proxyIdentity: { user: "bob", subject: "bob" },
+			},
+		});
+		const renderer = await renderAsync(
+			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
+		);
+		const text = textContent(renderer.toJSON());
+		const occurrences = text.split("bob").length - 1;
+		// The identity line + the Continue-as button = 2, no extra subject line.
+		expect(occurrences).toBe(2);
 	});
 
 	test("claimed proxy-only + user_not_provisioned renders the admin contact copy", async () => {

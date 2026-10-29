@@ -34,8 +34,8 @@ export function ProxyUnidentified(props: ProxyUnidentifiedProps) {
 					</>
 				) : cause === "invalid_username" ? (
 					<p className="auth-message">
-						The proxy supplied an invalid username. The username must contain
-						only lowercase letters, digits, and <code>._-</code>.
+						The proxy supplied an invalid username: the proxy&apos;s
+						username has no usable characters.
 					</p>
 				) : (
 					<p className="auth-message">

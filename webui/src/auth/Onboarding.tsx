@@ -10,6 +10,7 @@
  */
 
 import { useState } from "react";
+import { deriveUsername } from "@sigrun/shared/usernames";
 import { ApiError, type OnboardingState, type SigrunClient } from "../api";
 
 export function Onboarding(props: {
@@ -27,6 +28,9 @@ export function Onboarding(props: {
 	const [busy, setBusy] = useState(false);
 
 	const proxy = state.proxyIdentity;
+	const trimmedUser = user.trim();
+	const preview = trimmedUser === "" ? undefined : deriveUsername(trimmedUser);
+	const usernameUnusable = trimmedUser !== "" && preview === undefined;
 
 	async function claimProxyVouch(): Promise<void> {
 		setBusy(true);
@@ -84,6 +88,11 @@ export function Onboarding(props: {
 						{proxy.name === undefined ? "" : ` — ${proxy.name}`}
 						{proxy.email === undefined ? "" : ` · ${proxy.email}`}
 					</p>
+					{proxy.subject !== proxy.user && (
+						<p className="auth-message" data-auth-proxy="subject">
+							{proxy.subject}
+						</p>
+					)}
 					<button
 						type="button"
 						className="auth-submit"
@@ -118,6 +127,15 @@ export function Onboarding(props: {
 							onChange={(event) => setUser(event.target.value)}
 						/>
 					</label>
+					{usernameUnusable ? (
+						<p className="auth-message" data-auth-preview="invalid">
+							Your username needs at least one letter or digit.
+						</p>
+					) : preview !== undefined ? (
+						<p className="auth-message" data-auth-preview="user">
+							Your username will be <strong>{preview}</strong>
+						</p>
+					) : null}
 					<label className="auth-field">
 						Name <span className="auth-optional">(optional)</span>
 						<input
@@ -140,7 +158,7 @@ export function Onboarding(props: {
 					<button
 						type="button"
 						className="auth-submit"
-						disabled={busy}
+						disabled={busy || usernameUnusable}
 						onClick={() => void submitForm()}
 					>
 						{busy ? "Claiming…" : "Set up sigrun"}
