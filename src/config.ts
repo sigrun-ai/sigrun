@@ -1249,7 +1249,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_PORT` | `port` |
  * | `SIGRUN_WORKSPACE_PATH` | `workspacePath` |
  * | `SIGRUN_STORAGE_PATH` | `storagePath` |
-| `SIGRUN_SKIP_MIGRATION_SNAPSHOT` | — (boot escape hatch; never persisted) |
+ * | `SIGRUN_SKIP_MIGRATION_SNAPSHOT` | — (boot escape hatch; never persisted) |
  * | `SIGRUN_DATA_DIR` | `dataDir` |
  * | `SIGRUN_CACHE_DIR` | `cacheDir` |
  * | `SIGRUN_STATE_DIR` | `stateDir` |

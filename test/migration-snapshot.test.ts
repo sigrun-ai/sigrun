@@ -14,7 +14,6 @@
  */
 
 import {
-	chmod,
 	cp,
 	mkdir,
 	mkdtemp,
@@ -259,28 +258,59 @@ describe("snapshotBeforeMigration", () => {
 		expect(log.lines.join("\n").toLowerCase()).toContain("skip");
 	});
 
-	test("an unwritable snapshot directory throws MigrationSnapshotError and leaves the database byte-identical", async () => {
-		if (process.getuid?.() === 0) {
-			// chmod cannot deny root; the failure branch is covered on ordinary
-			// developer and CI users, not by a vacuous root-only assertion.
-			return;
-		}
-		const parent = await tempDir();
-		const dir = join(parent, "db");
-		await mkdir(dir);
+	test("an occupied snapshot target throws MigrationSnapshotError and leaves the database byte-identical", async () => {
+		const dir = await tempDir();
 		const storagePath = join(dir, "sigrun.db");
 		await cp(FIXTURE_DB, storagePath);
 		const before = await readFile(storagePath);
-		await chmod(dir, 0o500);
-		try {
-			await expect(
-				snapshotBeforeMigration(storagePath, opts().values),
-			).rejects.toBeInstanceOf(MigrationSnapshotError);
-			expect(await readFile(storagePath)).toEqual(before);
-			expect(await snapshots(dir)).toEqual([]);
-		} finally {
-			await chmod(dir, 0o700);
-		}
+		const log = opts();
+		const target = join(
+			dir,
+			"sigrun.db.pre-durable-schema-v2-20261028T123456789Z.bak",
+		);
+		// The exact VACUUM INTO destination is occupied, while both the DB
+		// and its directory stay writable. This reaches the snapshot catch,
+		// not the earlier read-only probe failure an unwritable dir caused.
+		await mkdir(target);
+		await expect(
+			snapshotBeforeMigration(storagePath, log.values),
+		).rejects.toBeInstanceOf(MigrationSnapshotError);
+		expect(await readFile(storagePath)).toEqual(before);
+		expect(schemaVersion(storagePath)).toBe(1);
+	});
+
+	test("openHarness rejects before migration when the snapshot target is occupied", async () => {
+		const dir = await tempDir();
+		const storagePath = join(dir, "sigrun.db");
+		await cp(FIXTURE_DB, storagePath);
+		await mkdir(
+			join(dir, "sigrun.db.pre-durable-schema-v2-20261028T123456789Z.bak"),
+		);
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		faux.setResponses([fauxAssistantMessage("fixture tick")]);
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: storagePath,
+			SIGRUN_AUTH: "none",
+			SIGRUN_WORKSPACE_PATH: dir,
+		});
+		await expect(
+			openHarness(config, {
+				identity: await seededIdentity(dir),
+				extensions: [contributor],
+				env: {},
+				settingsDir: dir,
+				now: () => new Date("2026-10-28T12:34:56.789Z"),
+			}),
+		).rejects.toBeInstanceOf(MigrationSnapshotError);
+		expect(schemaVersion(storagePath)).toBe(1);
 	});
 
 	test("two calls one millisecond apart produce distinct snapshots and preserve the first", async () => {
