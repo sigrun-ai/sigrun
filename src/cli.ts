@@ -48,9 +48,9 @@ import { dirname, join } from "node:path";
 import * as readline from "node:readline/promises";
 import { Writable } from "node:stream";
 import { resolveStoreRoots, writeFileAtomic } from "./harness/stores.js";
-import { openIdentityStores } from "./harness/identity/index.js";
+import { openIdentityStores, AccountLinkConflictError } from "./harness/identity/index.js";
 import { normalizeTypedUsername } from "./harness/identity/typed-username.js";
-import { deriveUsername } from "@sigrun/shared/usernames";
+import { deriveUsername, foldSubject } from "@sigrun/shared/usernames";
 import { pathToFileURL } from "node:url";
 import { effectiveMethods, loadConfig, type Env } from "./config.js";
 import { probeIsolation, runHelperProbe, selfTestHelper } from "./sandbox/availability.js";
@@ -76,7 +76,9 @@ export const USAGE_TEXT = `usage: sigrun [--user <name>]
        sigrun token create <name> --user <user>
        sigrun token list
        sigrun token revoke <id>
-       sigrun user add <user> [--admin] [--name <n>] [--email <e>]
+       sigrun user add [<user>] [--proxy <username>] [--admin] [--name <n>] [--email <e>]
+       sigrun user link <user> --proxy <username>
+       sigrun user unlink --proxy <username>
        sigrun user list
        sigrun provider list [--url <base>] [--token <token>]
        sigrun provider key <id> [--url <base>] [--token <token>]
@@ -100,8 +102,8 @@ export interface ParsedArgs {
 	readonly command: "run" | "serve" | "attach" | "token" | "user" | "provider";
 	readonly server?: string;
 	readonly user?: string;
-	/** The `token`/`user`/`provider` subcommand: create | list | revoke | add | key | clear. */
-	readonly sub?: "create" | "list" | "revoke" | "add" | "key" | "clear";
+	/** The `token`/`user`/`provider` subcommand. */
+	readonly sub?: "create" | "list" | "revoke" | "add" | "link" | "unlink" | "key" | "clear";
 	/** `token create <name>` — the token's display name. */
 	readonly tokenName?: string;
 	/** `token revoke <id>` / `provider key|clear <id>` — the record/provider id. */
@@ -112,6 +114,8 @@ export interface ParsedArgs {
 	readonly name?: string;
 	/** `user add --email <e>`. */
 	readonly email?: string;
+	/** `user add|link|unlink --proxy <username>` — the external identity. */
+	readonly proxy?: string;
 	/** `provider … --url <base>` — the remote server to act on. */
 	readonly url?: string;
 	/** `provider … --token <t>` — the bearer for a token-method server. */
@@ -177,8 +181,9 @@ function parseTokenArgs(argv: readonly string[]): ParsedArgs {
 }
 
 /**
- * Parse `user <sub> …` (Task 7): `add <user> [--admin] [--name <n>]
- * [--email <e>]`, `list`. One positional (the username), flags anywhere.
+ * Parse `user <sub> …`: `add [<user>] [--proxy <username>]`, explicit
+ * `link`/`unlink`, and `list`. A proxy add may omit the directory key,
+ * deriving it from the external username; ordinary add still requires it.
  */
 function parseUserArgs(argv: readonly string[]): ParsedArgs {
 	const sub = argv[0];
@@ -188,50 +193,57 @@ function parseUserArgs(argv: readonly string[]): ParsedArgs {
 		}
 		return { command: "user", sub: "list" };
 	}
-	if (sub === "add") {
+	if (sub === "add" || sub === "link" || sub === "unlink") {
 		let user: string | undefined;
+		let proxy: string | undefined;
 		let admin = false;
 		let name: string | undefined;
 		let email: string | undefined;
 		let index = 1;
 		while (index < argv.length) {
 			const arg = argv[index] as string;
-			if (arg === "--admin") {
+			if (sub === "add" && arg === "--admin") {
 				admin = true;
 				index += 1;
 				continue;
 			}
-			if (arg === "--name" || arg === "--email") {
+			if (arg === "--proxy" || (sub === "add" && (arg === "--name" || arg === "--email"))) {
 				const value = argv[index + 1];
 				if (value === undefined || value.startsWith("--")) {
 					throw usageError(`${arg} requires a value`);
 				}
-				if (arg === "--name") name = value;
+				if (arg === "--proxy") proxy = value;
+				else if (arg === "--name") name = value;
 				else email = value;
 				index += 2;
 				continue;
 			}
-			if (user === undefined && !arg.startsWith("--")) {
+			if (sub !== "unlink" && user === undefined && !arg.startsWith("--")) {
 				user = arg;
 				index += 1;
 				continue;
 			}
 			throw usageError(`unexpected argument ${JSON.stringify(arg)}`);
 		}
-		if (user === undefined) {
-			throw usageError("user add requires a <user>");
+		if (proxy === undefined) {
+			if (sub !== "add") throw usageError(`user ${sub} requires --proxy <username>`);
+			if (user === undefined) throw usageError("user add requires a <user>");
+		}
+		if (sub === "link" && user === undefined) {
+			throw usageError("user link requires a <user>");
 		}
 		return {
 			command: "user",
-			sub: "add",
-			user,
+			sub,
+			...(user === undefined ? {} : { user }),
+			...(proxy === undefined ? {} : { proxy }),
 			...(admin ? { admin } : {}),
 			...(name === undefined ? {} : { name }),
 			...(email === undefined ? {} : { email }),
 		};
 	}
 	throw usageError(
-		`unknown user subcommand ${JSON.stringify(sub ?? "")} (add, list)`,
+		`unknown user subcommand ${JSON.stringify(sub ?? "")} (add, link, unlink, list)`,
 	);
 }
 
@@ -1004,15 +1016,16 @@ async function runIdentityCommand(
 	}
 	switch (parsed.sub) {
 		case "add": {
+			const input = parsed.user ?? parsed.proxy as string;
 			const typed = normalizeTypedUsername(
-				parsed.user as string,
+				input,
 				(key) => stores.users.get(key) !== undefined,
 			);
 			if (!typed.ok) {
 				throw new Error(
 					typed.error === "invalid_username"
-						? `invalid_username: "${parsed.user as string}" derives no usable username`
-						: `username_taken: user "${parsed.user as string}" already exists`,
+						? `invalid_username: "${input}" derives no usable username`
+						: `username_taken: user "${parsed.user === undefined ? input : deriveUsername(input) ?? input}" already exists`,
 				);
 			}
 			const config = loadConfig(
@@ -1043,7 +1056,46 @@ async function runIdentityCommand(
 				...(parsed.email === undefined ? {} : { email: parsed.email }),
 				source: "cli",
 			});
+			if (parsed.proxy !== undefined) {
+				const subject = foldSubject(parsed.proxy);
+				try {
+					await stores.accounts.link({
+						provider: "proxy",
+						subject,
+						user: record.user,
+						via: "admin",
+					});
+				} catch (error) {
+					if (!(error instanceof AccountLinkConflictError)) throw error;
+					await stores.users.remove(record.user);
+					const holder = stores.accounts.lookup("proxy", subject)?.user;
+					throw new Error(
+						`account_link_conflict: proxy identity is linked to ${holder ?? "another user"}; removed user "${record.user}"`,
+					);
+				}
+			}
 			io.out?.(record.user);
+			return 0;
+		}
+		case "link": {
+			const user = deriveUsername(parsed.user as string);
+			if (user === undefined || stores.users.get(user) === undefined) {
+				throw new Error(`unknown user "${parsed.user as string}"`);
+			}
+			const link = await stores.accounts.link({
+				provider: "proxy",
+				subject: foldSubject(parsed.proxy as string),
+				user,
+				via: "admin",
+			});
+			io.out?.(`${link.provider}:${link.subject}\t${link.user}`);
+			return 0;
+		}
+		case "unlink": {
+			const subject = foldSubject(parsed.proxy as string);
+			if (!(await stores.accounts.unlink("proxy", subject))) {
+				throw new Error(`no proxy link for "${subject}"`);
+			}
 			return 0;
 		}
 		case "list": {
@@ -1054,6 +1106,8 @@ async function runIdentityCommand(
 						record.user,
 						...(record.name === undefined ? [] : [record.name]),
 						...(record.email === undefined ? [] : [record.email]),
+						...stores.accounts.listForUser(record.user)
+							.map((link) => `${link.provider}:${link.subject}`),
 					].join("\t"),
 				);
 			}

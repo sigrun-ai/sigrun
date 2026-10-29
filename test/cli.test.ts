@@ -659,6 +659,7 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(out).toEqual(["alice-smith"]);
 		expect(await cliMain(["user", "add", "Alice Smith"], env, undefined, io)).toBe(1);
 		expect(errors.join("\n")).toContain("username_taken");
+		expect(errors.join("\n")).toContain('user "alice-smith" already exists');
 		const raw = JSON.parse(await readFile(join(dir, "users.json"), "utf8"));
 		expect(raw.map((user: { user: string }) => user.user)).toEqual(["alice-smith"]);
 	});
@@ -788,6 +789,171 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/ghost/);
 		// Nothing was minted.
 		await expect(readFile(join(dir, "api-tokens.json"), "utf8")).rejects.toThrow();
+	});
+});
+
+describe("cliMain user proxy links (username derivation D4)", () => {
+	const singleUserEnv = (dir: string): NodeJS.ProcessEnv => ({
+		...storeEnv(dir),
+		SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+		SIGRUN_ISOLATION: "off",
+	});
+
+	const multiUserEnv = (dir: string): NodeJS.ProcessEnv => ({
+		...storeEnv(dir),
+		SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+		SIGRUN_ISOLATION: "auto",
+		SIGRUN_AUTH: "token",
+	});
+
+	const admittingDeps = () => stubDeps({
+		probeIsolation: async () => ({ available: true, abi: 6 }),
+	}).deps;
+
+	test("user add --proxy derives the key and writes an admin link", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		expect(await cliMain(
+			["user", "add", "--proxy", "Mike@Example.com"],
+			singleUserEnv(dir),
+			undefined,
+			io,
+		)).toBe(0);
+		expect(out).toEqual(["mike_example.com"]);
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")))
+			.toEqual([expect.objectContaining({ user: "mike_example.com", source: "cli" })]);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([{
+				provider: "proxy",
+				subject: "mike@example.com",
+				user: "mike_example.com",
+				linkedAt: expect.any(Number),
+				via: "admin",
+			}]);
+	});
+
+	test("user add --proxy with an explicit user normalises the typed key", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		expect(await cliMain(
+			["user", "add", "--proxy", "Mike@Example.com", "Mike"],
+			singleUserEnv(dir),
+			undefined,
+			io,
+		)).toBe(0);
+		expect(out).toEqual(["mike"]);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({
+				provider: "proxy",
+				subject: "mike@example.com",
+				user: "mike",
+				via: "admin",
+			})]);
+	});
+
+	test("user add --proxy refuses a derived-key collision without creating a user or link", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = singleUserEnv(dir);
+		expect(await cliMain(["user", "add", "bob"], env, undefined, io)).toBe(0);
+		expect(await cliMain(["user", "add", "--proxy", "Bob"], env, undefined, io)).toBe(1);
+		expect(errors.join("\n")).toContain("username_taken");
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8"))
+			.map((user: { user: string }) => user.user)).toEqual(["bob"]);
+		await expect(readFile(join(dir, "accounts.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("user add --proxy rolls back its new user on a held link and names the holder", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = multiUserEnv(dir);
+		const deps = admittingDeps();
+		expect(await cliMain(["user", "add", "other"], env, deps, io)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "other", "--proxy", "Held@Example.com"],
+			env,
+			deps,
+			io,
+		)).toBe(0);
+		expect(await cliMain(
+			["user", "add", "--proxy", "Held@Example.com", "fresh"],
+			env,
+			deps,
+			io,
+		)).toBe(1);
+		expect(errors.join("\n")).toContain("other");
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8"))
+			.map((user: { user: string }) => user.user)).toEqual(["other"]);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({ user: "other", subject: "held@example.com" })]);
+	});
+
+	test("user link and unlink round-trip a case-folded proxy subject", async () => {
+		const dir = await tmpConfigDir();
+		const { io } = captureIo();
+		const env = singleUserEnv(dir);
+		expect(await cliMain(["user", "add", "carol"], env, undefined, io)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "carol", "--proxy", "Carol@Example.com"],
+			env,
+			undefined,
+			io,
+		)).toBe(0);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({
+				provider: "proxy",
+				subject: "carol@example.com",
+				user: "carol",
+				via: "admin",
+			})]);
+		expect(await cliMain(
+			["user", "unlink", "--proxy", "carol@example.com"],
+			env,
+			undefined,
+			io,
+		)).toBe(0);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8"))).toEqual([]);
+	});
+
+	test("user link refuses to re-point a held proxy identity", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = multiUserEnv(dir);
+		const deps = admittingDeps();
+		expect(await cliMain(["user", "add", "carol"], env, deps, io)).toBe(0);
+		expect(await cliMain(["user", "add", "other"], env, deps, io)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "carol", "--proxy", "Carol@Example.com"],
+			env,
+			deps,
+			io,
+		)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "other", "--proxy", "carol@example.com"],
+			env,
+			deps,
+			io,
+		)).toBe(1);
+		expect(errors.join("\n")).toContain("account_link_conflict");
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({ user: "carol", subject: "carol@example.com" })]);
+	});
+
+	test("user list prints proxy links next to their users", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		const env = singleUserEnv(dir);
+		expect(await cliMain(
+			["user", "add", "--proxy", "Mike@Example.com"],
+			env,
+			undefined,
+			io,
+		)).toBe(0);
+		out.length = 0;
+		expect(await cliMain(["user", "list"], env, undefined, io)).toBe(0);
+		expect(out).toHaveLength(1);
+		expect(out[0]).toContain("mike_example.com");
+		expect(out[0]).toContain("proxy:mike@example.com");
 	});
 });
 
