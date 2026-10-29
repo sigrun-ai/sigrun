@@ -12,13 +12,11 @@
  * (tokens carry their user's rights — never their own admin flag).
  */
 
+import { isUsernameKey } from "@sigrun/shared/usernames";
 import { MutationQueue, readRecords, writeJson } from "./json-store.js";
 import type { Grant } from "../../sandbox/grants.js";
 import type { IsolationAvailability } from "../../sandbox/availability.js";
 import type { SigrunConfig } from "../../config.js";
-
-/** The username rule (spec §5.8): lowercase-first, then `[a-z0-9._-]`. */
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 /** One directory user's groups from one authenticating source. */
 export interface DirectoryGroups {
@@ -159,7 +157,7 @@ export class UserDirectory {
 	 */
 	add(user: Omit<DirectoryUser, "createdAt">): Promise<DirectoryUser> {
 		return this.mutations.run(async () => {
-			if (!USERNAME_PATTERN.test(user.user)) {
+			if (!isUsernameKey(user.user)) {
 				throw new Error(
 					`invalid username "${user.user}": must match ^[a-z0-9][a-z0-9._-]*$`,
 				);

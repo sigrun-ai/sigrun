@@ -105,6 +105,28 @@ describe("UserDirectory", () => {
 		);
 	});
 
+	test("add rejects a new username key over 128 characters", async () => {
+		const users = new UserDirectory(join(tmpDir("long-new-key"), "users.json"));
+		await expect(
+			users.add({ ...aliceUser(), user: "a".repeat(129) }),
+		).rejects.toThrow(/username/);
+		expect(users.list()).toEqual([]);
+	});
+
+	test("a legacy username key over 128 characters still loads", () => {
+		const path = join(tmpDir("legacy-long-key"), "users.json");
+		const legacy = {
+			user: "a".repeat(150),
+			name: "Legacy Long Key",
+			admin: false,
+			source: "cli" as const,
+			createdAt: 1,
+		};
+		writeFileSync(path, JSON.stringify([legacy]));
+		const users = new UserDirectory(path);
+		expect(users.get(legacy.user)).toEqual(legacy);
+	});
+
 	test("isClaimed is false until the first add", async () => {
 		const users = new UserDirectory(join(tmpDir("claimed"), "users.json"));
 		expect(users.isClaimed()).toBe(false);
@@ -445,6 +467,38 @@ describe("AccountStore", () => {
 		});
 		expect(accounts.lookup("chat:signal", "+15551234567")?.user).toBe("alice");
 		expect(accounts.lookup("login:oauth:acme", "u@x.example")?.user).toBe("bob");
+	});
+
+	test("a proxy account link round-trips", async () => {
+		const { accounts, users } = await accountStore("link-proxy");
+		await users.add({ user: "mike_example.com", admin: false, source: "proxy" });
+		const linked = await accounts.link({
+			provider: "proxy",
+			subject: "mike@example.com",
+			user: "mike_example.com",
+			via: "proxy",
+		});
+		expect(linked).toMatchObject({
+			provider: "proxy",
+			subject: "mike@example.com",
+			user: "mike_example.com",
+			via: "proxy",
+		});
+		expect(accounts.lookup("proxy", "mike@example.com")).toEqual(linked);
+	});
+
+	test("proxy provider ids do not accept a qualifier or suffix", async () => {
+		const { accounts } = await accountStore("link-proxy-validation");
+		for (const provider of ["proxy:x", "proxyx"]) {
+			await expect(
+				accounts.link({
+					provider,
+					subject: "mike@example.com",
+					user: "alice",
+					via: "proxy",
+				}),
+			).rejects.toThrow(`invalid_provider: ${provider}`);
+		}
 	});
 
 	test("re-link to the same user is a no-op", async () => {

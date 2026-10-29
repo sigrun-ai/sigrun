@@ -1012,9 +1012,9 @@ export interface TokenCreateResponse {
 
 /**
  * One external identity linked to a directory user (multi-user §11.3):
- * the `accounts.json` record verbatim. `provider` is `chat:<channel>` or
- * `login:<slug>:<id>`; `subject` is the provider's stable subject
- * (numeric id, `+E.164`, email-shaped — opaque to sigrun).
+ * the `accounts.json` record verbatim. `provider` is `proxy`,
+ * `chat:<channel>`, or `login:<slug>:<id>`; `subject` is the provider's
+ * stable subject (numeric id, `+E.164`, email-shaped — opaque to sigrun).
  *
  * Served to extensions as `host.accounts` and to users as
  * `GET /v1/auth/accounts`.
@@ -1024,7 +1024,7 @@ export interface AccountLinkWire {
 	readonly subject: string;
 	readonly user: string;
 	readonly linkedAt: number;
-	readonly via: "login" | "self" | "pairing" | "admin";
+	readonly via: "login" | "self" | "pairing" | "admin" | "proxy";
 }
 
 /**
