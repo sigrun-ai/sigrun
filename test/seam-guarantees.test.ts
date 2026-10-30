@@ -253,24 +253,25 @@ test("a doc definition WITHOUT checkpointWhen fails its second write on 1.4.0", 
 test("every core doc definition carries checkpointWhen (static count)", async () => {
 	// The cheap static half of the guard: every defineDoc/defineDocFamily
 	// call site in src/ has a checkpointWhen in the same file, 1:1.
-	const { execFileSync } = await import("node:child_process");
+	// Pure node:fs walk (no rg/cat — CI runners may not carry ripgrep).
+	const { readdir, readFile } = await import("node:fs/promises");
 	const root = join(import.meta.dirname, "..");
-	const definitions = execFileSync(
-		"rg",
-		["-n", "defineDoc(Family)?", "src", "--include-zero", "-g", "*.ts"],
-		{ cwd: root, encoding: "utf8" },
-	);
-	const files = [
-		...new Set(
-			definitions
-				.split("\n")
-				.filter((line) => line.length > 0)
-				.map((line) => line.split(":")[0]!),
-		),
-	];
+	async function tsFiles(dir: string): Promise<string[]> {
+		const out: string[] = [];
+		for (const entry of await readdir(dir, { withFileTypes: true })) {
+			if (entry.isDirectory()) out.push(...(await tsFiles(join(dir, entry.name))));
+			else if (entry.name.endsWith(".ts")) out.push(join(dir, entry.name));
+		}
+		return out;
+	}
+	const files: string[] = [];
+	for (const file of await tsFiles(join(root, "src"))) {
+		const content = await readFile(file, "utf8");
+		if (/defineDoc(Family)?</.test(content)) files.push(file);
+	}
 	expect(files.length).toBeGreaterThan(0);
 	for (const file of files) {
-		const content = execFileSync("cat", [file], { cwd: root, encoding: "utf8" });
+		const content = await readFile(file, "utf8");
 		const defineCount = (content.match(/defineDoc(Family)?</g) ?? []).length;
 		const checkpointCount = (content.match(/checkpointWhen:/g) ?? []).length;
 		expect(
