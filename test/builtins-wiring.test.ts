@@ -159,7 +159,10 @@ function acceptedSharedPeers(
 	siblingVersion: string | undefined,
 	own: string,
 ): Set<string> {
-	return name === "@sigrun/ext-gateway" && siblingVersion === "0.1.3" && own === "0.3.0"
+	return name === "@sigrun/ext-gateway" &&
+		siblingVersion !== undefined &&
+		/^0\.1\.[3-4]$/.test(siblingVersion) &&
+		own === "0.3.0"
 		? new Set(["0.2.1", "0.3.0"])
 		: new Set([own]);
 }
@@ -248,8 +251,14 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 	test("the Part A ext-gateway shared-peer exception stays narrow", () => {
 		const siblings = siblingManifests();
 		const gateway = siblings.get("@sigrun/ext-gateway");
-		expect(gateway?.manifest.version).toBe("0.1.3");
-		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"]).toBe("0.2.1");
+		// The linked checkout tracks the RELEASED gateway line: 0.1.3
+		// (Part A, exact 0.2.1 peer) and 0.1.4 (the peer-widening patch
+		// that adds 0.3.0). Both legitimately declare the 0.2.1-or-0.3.0
+		// acceptance; anything older is skew.
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-4]$/);
+		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
+			/^0\.2\.1( \|\| 0\.3\.0)?$/,
+		);
 		const accepted = acceptedSharedPeers(
 			"@sigrun/ext-gateway",
 			gateway?.manifest.version,
@@ -258,7 +267,7 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		expect(accepted.has("0.2.1")).toBe(true);
 		expect(accepted.has("0.3.0")).toBe(true);
 		expect(accepted.has("0.1.2")).toBe(false);
-		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.4", "0.3.0").has("0.2.1")).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.5", "0.3.0").has("0.2.1")).toBe(false);
 		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0").has("0.2.1")).toBe(false);
 	});
 
