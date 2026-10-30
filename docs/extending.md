@@ -382,11 +382,13 @@ keeps every link in ONE table, `<configDir>/accounts.json` (mode 0600,
 atomic writes, mtime-reload reads — the same discipline as
 `users.json`), because chat senders and login subjects are the same
 question: "who is this, in the directory?". A link records `provider`,
-`subject`, `user`, `linkedAt`, and `via` (`login`, `self`, `pairing`, or
-`admin`).
+`subject`, `user`, `linkedAt`, and `via` (`login`, `self`, `pairing`,
+`admin`, or `proxy`).
 
-Provider ids have two forms:
+Provider ids have three forms:
 
+- `proxy` — the identity authenticated by the trusted reverse proxy
+  (there is one proxy method per server, so it has no qualifier);
 - `chat:<channel>` — a chat sender (the gateway writes these);
 - `login:<slug>:<id>` — a login subject, where `slug` is the login
   extension's slug and `id` its provider id (so an extension with slug
@@ -397,9 +399,9 @@ Signal `+E.164` number, and an email-shaped subject all pass — any
 non-empty string up to 512 characters.
 
 A provider id is **lowercase, no spaces**: it must match
-`^(login|chat):[a-z0-9][a-z0-9._:-]*$`, so `chat:Telegram` is rejected
-with `invalid_provider: chat:Telegram`. Use the channel's own, already
-lowercase name.
+`^(proxy|(login|chat):[a-z0-9][a-z0-9._:-]*)$`, so `chat:Telegram` is
+rejected with `invalid_provider: chat:Telegram`. Use the channel's own,
+already lowercase name.
 
 ```ts
 await host.accounts.lookup("chat:telegram", "12345");   // AccountLinkWire | undefined

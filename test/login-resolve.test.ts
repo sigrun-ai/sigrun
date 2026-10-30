@@ -7,8 +7,11 @@ import {
 	type DirectoryUser,
 	type UserDirectory,
 } from "../src/harness/identity/users.js";
-import { resolveLogin, type LoginPolicy } from "../src/server/login/resolve.js";
-import { assignUsername } from "../src/server/login/usernames.js";
+import {
+	loginUsernameCandidate,
+	resolveLogin,
+	type LoginPolicy,
+} from "../src/server/login/resolve.js";
 import { SetupClaimStore } from "../src/server/login/setup-claim.js";
 import { effectiveAdmin } from "../src/harness/identity/groups.js";
 
@@ -22,6 +25,12 @@ class FakeDirectory {
 	addBarrier?: Promise<void>;
 	addCalls = 0;
 	claimedObservations: boolean[] = [];
+
+	async remove(user: string): Promise<void> {
+		const index = this.records.findIndex((record) => record.user === user);
+		if (index === -1) throw new Error(`unknown user "${user}"`);
+		this.records.splice(index, 1);
+	}
 
 	checkAdmission(): void {
 		this.admissionChecks++;
@@ -75,6 +84,12 @@ class FakeAccounts {
 class FakeInvites {
 	used: string[] = [];
 	constructor(readonly grants: Record<string, { admin: boolean }> = {}) {}
+	list(): Array<{ code: string; usedBy?: string }> {
+		return Object.keys(this.grants).map((code) => ({
+			code,
+			...(this.used.includes(code) ? { usedBy: "fixture-user" } : {}),
+		}));
+	}
 	async redeem(code: string, user: string): Promise<{ admin: boolean } | undefined> {
 		if (this.used.includes(code)) return undefined;
 		const grant = this.grants[code];
@@ -134,19 +149,24 @@ function result(patch: Partial<LoginResult> = {}): LoginResult {
 	};
 }
 
-describe("assignUsername", () => {
-	test("normalizes profile usernames, leading punctuation and empty candidates", () => {
-		expect(assignUsername({ username: "Alice Smith" }, "subject", () => false)).toBe("alice-smith");
-		expect(assignUsername({ username: ".x" }, "subject", () => false)).toBe("x");
-		expect(assignUsername({}, "", () => false)).toBe("user");
-		expect(assignUsername({}, "", (user) => user === "user")).toBe("user-2");
+describe("loginUsernameCandidate", () => {
+	test("derives the full email when there is no username claim", () => {
+		expect(loginUsernameCandidate({ email: "Mike@Example.com" }, "subject-1"))
+			.toBe("mike_example.com");
 	});
 
-	test("uses email local part then subject and suffixes every collision", () => {
-		expect(assignUsername({ email: "Alice@Example.COM" }, "subject", () => false)).toBe("alice");
-		expect(assignUsername({}, "Subject/123", () => false)).toBe("subject-123");
-		const taken = new Set(["alice", "alice-2", "alice-3"]);
-		expect(assignUsername({ username: "Alice" }, "other", (user) => taken.has(user))).toBe("alice-4");
+	test("normalizes the profile username", () => {
+		expect(loginUsernameCandidate({ username: "Alice Smith" }, "subject-1"))
+			.toBe("alice-smith");
+	});
+
+	test("falls through an underivable username to the email", () => {
+		expect(loginUsernameCandidate({ username: "@@@", email: "x@example.com" }, "subject-1"))
+			.toBe("x_example.com");
+	});
+
+	test("uses the fallback when no claim derives a key", () => {
+		expect(loginUsernameCandidate({}, "@@@")).toBe("user");
 	});
 });
 
@@ -218,6 +238,54 @@ describe("resolveLogin", () => {
 		expect(f.users.get("alice-2")).toMatchObject({ admin: false, source: "login" });
 		expect(f.accounts.links[0]).toMatchObject({ user: "alice-2" });
 		expect(f.accounts.links.some((link) => link.user === "alice")).toBe(false);
+	});
+
+	test("concurrent auto-provisioned first logins create one user for one subject", async () => {
+		const f = fixture();
+		let releaseAdd!: () => void;
+		f.users.addBarrier = new Promise<void>((resolve) => { releaseAdd = resolve; });
+		const input = {
+			provider: PROVIDER,
+			result: result({ profile: { email: "Mike@Example.com" } }),
+		};
+		const first = resolveLogin(input, deps(f, { autoProvision: true }));
+		await new Promise<void>((resolve) => { setImmediate(resolve); });
+		expect(f.users.addCalls).toBe(1);
+		const second = resolveLogin(input, deps(f, { autoProvision: true }));
+		await new Promise<void>((resolve) => { setImmediate(resolve); });
+		// The second login is behind the claim lock, not racing a duplicate add.
+		expect(f.users.addCalls).toBe(1);
+		releaseAdd();
+		expect(await Promise.all([first, second])).toEqual([
+			{ kind: "session", user: "mike_example.com" },
+			{ kind: "session", user: "mike_example.com" },
+		]);
+		expect(f.users.records.map((user) => user.user)).toEqual(["owner", "mike_example.com"]);
+		expect(f.accounts.links).toHaveLength(1);
+	});
+
+	test("an existing link preserves the old email-local-part username", async () => {
+		const f = fixture();
+		f.users.records.push({ user: "mike", admin: false, source: "login", createdAt: 1 });
+		f.accounts.links.push({ provider: PROVIDER, subject: "subject-1", user: "mike", via: "login" });
+		expect(await resolveLogin({
+			provider: PROVIDER,
+			result: result({ profile: { email: "Mike@Example.com" } }),
+		}, deps(f, { autoProvision: true }))).toEqual({ kind: "session", user: "mike" });
+		expect(f.users.get("mike_example.com")).toBeUndefined();
+	});
+
+	test("an invite collision is refused without consuming the invite", async () => {
+		const f = fixture({ invites: { "GOOD-CODE": { admin: false } } });
+		f.users.records.push({ user: "alice-smith", admin: false, source: "cli", createdAt: 1 });
+		expect(await resolveLogin({
+			provider: PROVIDER,
+			result: result(),
+			code: "GOOD-CODE",
+		}, deps(f))).toEqual({ kind: "refused", error: "not_allowed" });
+		expect(f.invites.list()).toEqual([{ code: "GOOD-CODE" }]);
+		expect(f.invites.used).toEqual([]);
+		expect(f.users.get("alice-smith-2")).toBeUndefined();
 	});
 
 	test("allowedGroups requires an intersection", async () => {

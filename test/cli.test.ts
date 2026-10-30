@@ -387,6 +387,15 @@ describe("cliMain run", () => {
 		]);
 	});
 
+	test("an empty SIGRUN_USER means the user is unset", async () => {
+		const { deps, calls } = stubDeps();
+		const code = await cliMain(["attach"], { SIGRUN_USER: "" }, deps);
+		expect(code).toBe(0);
+		expect(calls.launchTui).toEqual([
+			{ baseUrl: "http://localhost:3000", user: undefined },
+		]);
+	});
+
 	test("a launchTui failure shuts the booted server down (never leaves it serving)", async () => {
 		const { deps, calls } = stubDeps({
 			launchTui: async () => {
@@ -651,6 +660,19 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/bob/);
 	});
 
+	test("user add normalises typed names and refuses a collision", async () => {
+		const dir = await tmpConfigDir();
+		const { out, errors, io } = captureIo();
+		const env = { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" };
+		expect(await cliMain(["user", "add", "Alice Smith"], env, undefined, io)).toBe(0);
+		expect(out).toEqual(["alice-smith"]);
+		expect(await cliMain(["user", "add", "Alice Smith"], env, undefined, io)).toBe(1);
+		expect(errors.join("\n")).toContain("username_taken");
+		expect(errors.join("\n")).toContain('user "alice-smith" already exists');
+		const raw = JSON.parse(await readFile(join(dir, "users.json"), "utf8"));
+		expect(raw.map((user: { user: string }) => user.user)).toEqual(["alice-smith"]);
+	});
+
 	test("second user add refuses unavailable isolation with exit 1 and the message", async () => {
 		const dir = await tmpConfigDir();
 		const { errors, io } = captureIo();
@@ -750,6 +772,23 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/token/);
 	});
 
+	test("token create --user \"Mike\" normalises to mike", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		await cliMain(["user", "add", "mike"], { ...storeEnv(dir), SIGRUN_DEFAULT_MODEL: "openai/gpt-4o", SIGRUN_ISOLATION: "off" }, undefined, io);
+		out.length = 0;
+
+		expect(
+			await cliMain(["token", "create", "laptop", "--user", "Mike"], storeEnv(dir), undefined, io),
+		).toBe(0);
+		const secretLines = out.filter((line) => line.trim() !== "");
+		expect(secretLines).toHaveLength(1);
+		expect(secretLines[0]).toMatch(/^sgr_/);
+		const stored = JSON.parse(await readFile(join(dir, "api-tokens.json"), "utf8"));
+		expect(stored).toHaveLength(1);
+		expect(stored[0]).toMatchObject({ name: "laptop", user: "mike" });
+	});
+
 	test("token create for an unknown user fails loud naming the user", async () => {
 		const dir = await tmpConfigDir();
 		const { errors, io } = captureIo();
@@ -759,6 +798,173 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/ghost/);
 		// Nothing was minted.
 		await expect(readFile(join(dir, "api-tokens.json"), "utf8")).rejects.toThrow();
+	});
+});
+
+describe("cliMain user proxy links (username derivation D4)", () => {
+	const singleUserEnv = (dir: string): NodeJS.ProcessEnv => ({
+		...storeEnv(dir),
+		SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+		SIGRUN_ISOLATION: "off",
+	});
+
+	const multiUserEnv = (dir: string): NodeJS.ProcessEnv => ({
+		...storeEnv(dir),
+		SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+		SIGRUN_ISOLATION: "auto",
+		SIGRUN_AUTH: "token",
+	});
+
+	const admittingDeps = () => stubDeps({
+		probeIsolation: async () => ({ available: true, abi: 6 }),
+	}).deps;
+
+	test("user add --proxy derives the key and writes an admin link", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		expect(await cliMain(
+			["user", "add", "--proxy", "Mike@Example.com"],
+			singleUserEnv(dir),
+			undefined,
+			io,
+		)).toBe(0);
+		expect(out).toEqual(["mike_example.com"]);
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8")))
+			.toEqual([expect.objectContaining({ user: "mike_example.com", source: "cli" })]);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([{
+				provider: "proxy",
+				subject: "mike@example.com",
+				user: "mike_example.com",
+				linkedAt: expect.any(Number),
+				via: "admin",
+			}]);
+	});
+
+	test("user add --proxy with an explicit user normalises the typed key", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		expect(await cliMain(
+			["user", "add", "--proxy", "Mike@Example.com", "Mike"],
+			singleUserEnv(dir),
+			undefined,
+			io,
+		)).toBe(0);
+		expect(out).toEqual(["mike"]);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({
+				provider: "proxy",
+				subject: "mike@example.com",
+				user: "mike",
+				via: "admin",
+			})]);
+	});
+
+	test("user add --proxy refuses a derived-key collision without creating a user or link", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = singleUserEnv(dir);
+		expect(await cliMain(["user", "add", "bob"], env, undefined, io)).toBe(0);
+		expect(await cliMain(["user", "add", "--proxy", "Bob"], env, undefined, io)).toBe(1);
+		expect(errors.join("\n")).toContain("username_taken");
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8"))
+			.map((user: { user: string }) => user.user)).toEqual(["bob"]);
+		await expect(readFile(join(dir, "accounts.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("user add --proxy rolls back its new user on a held link and names the holder", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = multiUserEnv(dir);
+		const deps = admittingDeps();
+		expect(await cliMain(["user", "add", "other"], env, deps, io)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "other", "--proxy", "Held@Example.com"],
+			env,
+			deps,
+			io,
+		)).toBe(0);
+		expect(await cliMain(
+			["user", "add", "--proxy", "Held@Example.com", "fresh"],
+			env,
+			deps,
+			io,
+		)).toBe(1);
+		expect(errors).toContain(
+			'sigrun: account_link_conflict: proxy identity is linked to other; removed user "fresh"',
+		);
+		expect(JSON.parse(await readFile(join(dir, "users.json"), "utf8"))
+			.map((user: { user: string }) => user.user)).toEqual(["other"]);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({ user: "other", subject: "held@example.com" })]);
+	});
+
+	test("user link and unlink round-trip a case-folded proxy subject", async () => {
+		const dir = await tmpConfigDir();
+		const { io } = captureIo();
+		const env = singleUserEnv(dir);
+		expect(await cliMain(["user", "add", "carol"], env, undefined, io)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "carol", "--proxy", "Carol@Example.com"],
+			env,
+			undefined,
+			io,
+		)).toBe(0);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({
+				provider: "proxy",
+				subject: "carol@example.com",
+				user: "carol",
+				via: "admin",
+			})]);
+		expect(await cliMain(
+			["user", "unlink", "--proxy", "carol@example.com"],
+			env,
+			undefined,
+			io,
+		)).toBe(0);
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8"))).toEqual([]);
+	});
+
+	test("user link refuses to re-point a held proxy identity", async () => {
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		const env = multiUserEnv(dir);
+		const deps = admittingDeps();
+		expect(await cliMain(["user", "add", "carol"], env, deps, io)).toBe(0);
+		expect(await cliMain(["user", "add", "other"], env, deps, io)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "carol", "--proxy", "Carol@Example.com"],
+			env,
+			deps,
+			io,
+		)).toBe(0);
+		expect(await cliMain(
+			["user", "link", "other", "--proxy", "carol@example.com"],
+			env,
+			deps,
+			io,
+		)).toBe(1);
+		expect(errors.join("\n")).toContain("account_link_conflict");
+		expect(JSON.parse(await readFile(join(dir, "accounts.json"), "utf8")))
+			.toEqual([expect.objectContaining({ user: "carol", subject: "carol@example.com" })]);
+	});
+
+	test("user list prints proxy links next to their users", async () => {
+		const dir = await tmpConfigDir();
+		const { out, io } = captureIo();
+		const env = singleUserEnv(dir);
+		expect(await cliMain(
+			["user", "add", "--proxy", "Mike@Example.com"],
+			env,
+			undefined,
+			io,
+		)).toBe(0);
+		out.length = 0;
+		expect(await cliMain(["user", "list"], env, undefined, io)).toBe(0);
+		expect(out).toHaveLength(1);
+		expect(out[0]).toContain("mike_example.com");
+		expect(out[0]).toContain("proxy:mike@example.com");
 	});
 });
 
@@ -1254,6 +1460,26 @@ describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
 		expect(claims).toEqual([]);
 		expect(calls.launchTui).toEqual([]);
 		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("a loopback proxy-only unclaimed server keeps its no-code CLI claim path", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({
+			state: "unclaimed",
+			methods: ["proxy"],
+			codeRequired: false,
+		});
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+		);
+		expect(code).toBe(0);
+		expect(questions).toEqual(["username: ", "name (optional): ", "email (optional): "]);
+		expect(claims).toHaveLength(1);
+		expect(calls.launchTui).toHaveLength(1);
 	});
 
 	test("a token-method unclaimed server still prompts for the setup code", async () => {

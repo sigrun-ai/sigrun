@@ -212,8 +212,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/instance": "sigrun",
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
-			        "app.kubernetes.io/version": "0.2.0",
-			        "helm.sh/chart": "sigrun-0.2.0",
+			        "app.kubernetes.io/version": "0.3.0",
+			        "helm.sh/chart": "sigrun-0.3.0",
 			      },
 			      "name": "sigrun",
 			      "namespace": "sigrun",
@@ -227,8 +227,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/instance": "sigrun",
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
-			        "app.kubernetes.io/version": "0.2.0",
-			        "helm.sh/chart": "sigrun-0.2.0",
+			        "app.kubernetes.io/version": "0.3.0",
+			        "helm.sh/chart": "sigrun-0.3.0",
 			      },
 			      "name": "sigrun-data",
 			      "namespace": "sigrun",
@@ -253,8 +253,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
 			        "app.kubernetes.io/service": "sigrun",
-			        "app.kubernetes.io/version": "0.2.0",
-			        "helm.sh/chart": "sigrun-0.2.0",
+			        "app.kubernetes.io/version": "0.3.0",
+			        "helm.sh/chart": "sigrun-0.3.0",
 			      },
 			      "name": "sigrun",
 			      "namespace": "sigrun",
@@ -290,8 +290,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/instance": "sigrun",
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
-			        "app.kubernetes.io/version": "0.2.0",
-			        "helm.sh/chart": "sigrun-0.2.0",
+			        "app.kubernetes.io/version": "0.3.0",
+			        "helm.sh/chart": "sigrun-0.3.0",
 			      },
 			      "name": "sigrun",
 			      "namespace": "sigrun",
@@ -370,7 +370,7 @@ describe("charts/sigrun lint + default render", () => {
 			                  },
 			                },
 			              ],
-			              "image": "ghcr.io/sigrun-ai/sigrun:0.2.0",
+			              "image": "ghcr.io/sigrun-ai/sigrun:0.3.0",
 			              "imagePullPolicy": "IfNotPresent",
 			              "livenessProbe": {
 			                "failureThreshold": 3,
@@ -436,6 +436,7 @@ describe("charts/sigrun lint + default render", () => {
 			            "runAsUser": 1000,
 			          },
 			          "serviceAccountName": "sigrun",
+			          "terminationGracePeriodSeconds": 195,
 			          "volumes": [
 			            {
 			              "emptyDir": {},
@@ -501,6 +502,30 @@ describe("chart CiliumNetworkPolicy", () => {
 				],
 			},
 		]);
+	});
+
+	test("the CiliumNetworkPolicy follows the Service's configured controller", async () => {
+		const docs = await render([
+			"networkPolicy.enabled=true",
+			"controllers.backup.enabled=true",
+			"service.main.controller=backup",
+		]);
+		const policy = docOf(docs, "CiliumNetworkPolicy") as NetworkPolicyDoc;
+		const service = docOf(docs, "Service") as {
+			spec: { selector: Record<string, string> };
+		};
+		const cron = docOf(docs, "CronJob") as {
+			spec: {
+				jobTemplate: {
+					spec: { template: { metadata: { labels: Record<string, string> } } };
+				};
+			};
+		};
+		expect(policy.spec.endpointSelector.matchLabels).toEqual(service.spec.selector);
+		expect(service.spec.selector["app.kubernetes.io/controller"]).toBe("backup");
+		expect(policy.spec.endpointSelector.matchLabels).toMatchObject(
+			cron.spec.jobTemplate.spec.template.metadata.labels,
+		);
 	});
 
 	test("extraIngress appends the supplied rule verbatim", async () => {

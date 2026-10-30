@@ -12,13 +12,11 @@
  * (tokens carry their user's rights — never their own admin flag).
  */
 
+import { isUsernameKey } from "@sigrun/shared/usernames";
 import { MutationQueue, readRecords, writeJson } from "./json-store.js";
 import type { Grant } from "../../sandbox/grants.js";
 import type { IsolationAvailability } from "../../sandbox/availability.js";
 import type { SigrunConfig } from "../../config.js";
-
-/** The username rule (spec §5.8): lowercase-first, then `[a-z0-9._-]`. */
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 /** One directory user's groups from one authenticating source. */
 export interface DirectoryGroups {
@@ -127,9 +125,13 @@ export class UserDirectory {
 		await writeJson(this.path, records.map(withoutLegacyGroupAdmin));
 	}
 
-	/** Run the same admission guard used by add, before consuming an invite. */
+	/** Run the shared admission guard before consuming an invite. Writes nothing. */
 	checkAdmission(): void {
-		this.options.admit?.(this.list().length);
+		this.checkAdmissionFor(this.list());
+	}
+
+	private checkAdmissionFor(records: readonly DirectoryUser[]): void {
+		if (records.length >= 1) this.options.admit?.(records.length);
 	}
 
 	/** Every user, insertion order (the first add is the onboarding claim). */
@@ -159,9 +161,9 @@ export class UserDirectory {
 	 */
 	add(user: Omit<DirectoryUser, "createdAt">): Promise<DirectoryUser> {
 		return this.mutations.run(async () => {
-			if (!USERNAME_PATTERN.test(user.user)) {
+			if (!isUsernameKey(user.user)) {
 				throw new Error(
-					`invalid username "${user.user}": must match ^[a-z0-9][a-z0-9._-]*$`,
+					`invalid username "${user.user}": must match ^[a-z0-9][a-z0-9._-]*$ and be at most 128 characters`,
 				);
 			}
 			const records = this.list();
@@ -169,7 +171,7 @@ export class UserDirectory {
 				throw new Error(`user "${user.user}" already exists`);
 			}
 			if (records.length >= 1) {
-				this.options.admit?.(records.length);
+				this.checkAdmissionFor(records);
 				if (records.length === 1 && records[0]!.workspace === undefined && this.options.firstWorkspace !== undefined) {
 					records[0] = { ...records[0], workspace: this.options.firstWorkspace };
 				}

@@ -101,6 +101,7 @@ import { resolveWorkerEntry, sandboxLauncher, WorkerPool } from "../sandbox/pool
 import { IsolationState } from "../sandbox/isolation.js";
 import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.js";
 import { createAdmissionGuard } from "./identity/users.js";
+import { sweepAccountLinks } from "./identity/link-sweep.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import {
 	probeIsolation,
@@ -773,6 +774,33 @@ export async function openHarness(
 	// I/O here (each file materializes on its first write), so this is
 	// pure construction over paths boot already owns.
 	const identity = options.identity ?? openIdentityStores(roots);
+	// The account-link sweep (username-derivation Task 8): once at boot,
+	// before serving — dangling links are removed, proxy-source crash
+	// orphans are logged with their repair command (never auto-repaired:
+	// the original proxy username is not derivable from the key).
+	// BEST-EFFORT posture: a sweep failure (e.g. a corrupt accounts.json)
+	// must not crash-loop a serving deployment; the stores' own readers
+	// still fail loud on the request paths if the file is truly corrupt.
+	try {
+		const linkSweep = await sweepAccountLinks(
+			identity.users,
+			identity.accounts,
+		);
+		if (linkSweep.removedDangling > 0) {
+			console.log(
+				`identity: removed ${linkSweep.removedDangling} dangling account link(s)`,
+			);
+		}
+		for (const orphan of linkSweep.orphans) {
+			console.log(
+				`identity: proxy user "${orphan}" has no proxy link; repair with: sigrun user link ${orphan} --proxy <username>`,
+			);
+		}
+	} catch (error) {
+		console.warn(
+			`identity: account-link sweep failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 	// The caller-supplied host wins (serving spec §1: `serve()` resolves
 	// the ONE effective host — options.host → SIGRUN_LISTEN_HOST →
 	// DEFAULT_LISTEN_HOST — and passes it here). The env read below is

@@ -184,6 +184,7 @@ still override it per field.
 | — | — | *(none)* | `gitDir` is always `<configDir>/git` | Git extension checkouts clone here (pi layout). Not env-configurable. |
 | `SIGRUN_WEBUI_BUNDLE` | path | `webui/dist` | `server.webuiBundle` | Web UI bundle directory; explicit-but-missing = boot error, default-missing = API-only. |
 | `SIGRUN_CONFIG_DIR` | path | `~/.config/sigrun` | *env-only* | The settings file's own directory. |
+| `SIGRUN_API_TOKEN_USER` | username key | `sigrun` | *env-only* | User for `SIGRUN_API_TOKEN`. Must already be a valid username key (`^[a-z0-9][a-z0-9._-]*$`, at most 128 characters); invalid values fail boot with a derivation suggestion. Validated only when `SIGRUN_API_TOKEN` is non-empty. |
 | `SIGRUN_COMPACTION_ENABLED` | `true`/`false` | `true` | `server.compaction.enabled` | Context compaction on/off. |
 | `SIGRUN_COMPACTION_RESERVE_TOKENS` | positive int | `16384` | `server.compaction.reserveTokens` | Headroom reserved for the model's reply. |
 | `SIGRUN_COMPACTION_KEEP_RECENT_TOKENS` | positive int | `20000` | `server.compaction.keepRecentTokens` | Recent context retained verbatim through a compaction. |
@@ -417,6 +418,106 @@ until then. Token and session requests only read the stored record; they
 never accept groups from the request. People-scoped conversation shares may
 also name groups, matched against the same stored groups.
 
+### Usernames
+
+Every external identity — proxy header, OIDC subject, invite claim,
+CLI argument — resolves to one **directory user key**. The key is the
+stable identifier: it names the user's storage directory
+(`<dataDir>/users/<user>`), their config directories, their per-user
+extension stores, and it appears in tool registrations as
+`<slug>@<user>`, split at the **first `@`**. The key pattern is
+therefore a safety rule, not a style choice:
+
+- lowercase letters, digits, `.`, `_`, `-` only, and no `/` against
+  traversal (case-insensitive filesystems would otherwise let `Alice`
+  and `alice` collide on one directory);
+- must start with a letter or digit (no leading `.` against hidden
+  paths or `..` keys);
+- no `@` — it is the tool-registration delimiter;
+- at most 128 characters, bounding key length for storage and tool
+  names.
+
+`deriveUsername(input)` maps any input onto that pattern: Unicode NFKD
+and strip combining marks, lowercase, `@` → `_`, every other disallowed
+character → `-` (no collapsing), strip leading non-alphanumerics,
+truncate to 128. Empty result → no usable key: proxy authentication
+refuses with 403 `invalid_username`, typed forms with 400, and login
+derivation falls back to the literal key `user`. The normative vectors:
+
+| Input | Key |
+|---|---|
+| `mikemacleod` | `mikemacleod` |
+| `Mike` | `mike` |
+| `mike@example.ca` | `mike_example.ca` |
+| `mike@example.com` | `mike_example.com` |
+| `Mike.Smith@Example.COM` | `mike.smith_example.com` |
+| `mike+test@example.com` | `mike-test_example.com` |
+| `José García` | `jose-garcia` |
+| `DOMAIN\mike` | `domain-mike` |
+| `Alice Smith` | `alice-smith` |
+| `.hidden` | `hidden` |
+| `mike.` | `mike.` (valid key, unchanged) |
+| `` (empty) | `undefined` (login: `user`) |
+| `@@@` | `undefined` (login: `user`) |
+
+Derivation is idempotent and every valid key is a fixed point. On the
+proxy path, a folded subject that is itself a valid key adopts the
+existing user with that key; a derived-key collision under login
+auto-provisioning takes the next free suffix instead.
+
+**Proxy uniqueness assumption (deployment requirement).** Proxy
+identity matching is case-insensitive: the proxy's usernames are
+assumed unique case-insensitively, so `Alice` and `alice` are the same
+person. Authelia/LDAP satisfy this. On a proxy where they are distinct
+accounts, `Alice` would resolve to `alice`'s account — including admin
+rights. Verify your identity source satisfies this before enabling the
+proxy method.
+
+**Derived vs typed collisions.** When a derived key is already taken
+(proxy auto-provisioning, login auto-provisioning), the next free
+suffix is chosen automatically: `alice`, then `alice-2`, `alice-3`,
+…. Typed names — `sigrun user add`, the invite claim form, the
+onboarding claim form — **refuse** with `username_taken` instead: an
+admin choosing a name never gets silently suffixed.
+
+**Login rule.** A new login user with no username claim derives from
+the **full email** (`mike@example.com` → `mike_example.com`), never
+just the local part. Existing linked users are unchanged — links are
+matched by exact subject, not by re-deriving the key.
+
+**Recipes.** Pre-provision a proxy user (and optionally grant admin):
+
+```sh
+sigrun user add alice --proxy Alice --admin
+```
+
+Link an additional proxy identity to an existing user:
+
+```sh
+sigrun user link alice --proxy alice.smith
+```
+
+**Crash-orphan repair.** If the process crashed between writing the
+user row and writing the proxy link, the user exists but cannot
+resolve. The boot sweep logs one line per orphan:
+
+```
+identity: proxy user "alice-2" has no proxy link; repair with: sigrun user link alice-2 --proxy <username>
+```
+
+Choose the repair that matches the intended owner:
+
+- If the orphaned `-2` user should own the identity, run the printed
+  `sigrun user link <key> --proxy <username>` command.
+- If the correct account already exists, delete the duplicate as an
+  admin with `DELETE /v1/users/alice-2?transferTo=alice`, where
+  `transferTo` names that existing account and receives its transferable
+  resources.
+
+These are alternatives, not a sequence: deleting a user also removes
+its links, so linking and then deleting the same `-2` user would undo
+the repair.
+
 ### External sign-in (OIDC and OAuth 2)
 
 The web sign-in screen lists configured external providers above the token
@@ -576,7 +677,11 @@ code cannot be redeemed without a vouch), and an unvouched
 account-creating request is refused with 403
 `proxy_identity_required`. A browser reaching sigrun without a trusted
 proxy identity sees a ProxyUnidentified screen instead of a token or
-setup-code form.
+setup-code form. As a deliberate, bounded exception,
+`/v1/auth/callback/:provider` still lets a login provider with
+`policy.autoProvision` create its own non-admin account on a proxy-only
+server, although the resulting session cannot authenticate because the
+token method is off.
 
 **Sharing.** Conversations are private to their owner by default. The
 owner can share one — household-wide or with named users and groups,

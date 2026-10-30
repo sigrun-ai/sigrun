@@ -8,6 +8,7 @@ import type {
 } from "./harness/settings.js";
 import { resolveStoreRoots } from "./harness/stores.js";
 import { isLoopbackHost } from "./server/auth/loopback.js";
+import { deriveUsername, isUsernameKey } from "@sigrun/shared/usernames";
 
 /**
  * Sigrun configuration.
@@ -796,6 +797,17 @@ function parseAuth(env: Env, server?: ServerSettings["auth"]): AuthConfig {
 	}
 	const token = env.SIGRUN_API_TOKEN?.trim() || undefined;
 	const secret = env.SIGRUN_PROXY_SECRET?.trim() || undefined;
+	// The service-token user is an operator-typed identity that no request
+	// ever re-derives: it must ALREADY be a canonical username key at load
+	// time (unlike the header/CLI sources, which derive). Anything else is
+	// a config error naming the derived suggestion.
+	const serviceTokenUser = env.SIGRUN_API_TOKEN_USER?.trim() || "sigrun";
+	if (token !== undefined && !isUsernameKey(serviceTokenUser)) {
+		throw new Error(
+			`SIGRUN_API_TOKEN_USER must already be a username key, got "${serviceTokenUser}" — ` +
+				`did you mean "${deriveUsername(serviceTokenUser) ?? "sigrun"}"?`,
+		);
+	}
 	return {
 		sessionDays: server?.sessionDays ?? DEFAULT_AUTH.sessionDays,
 		methods,
@@ -825,7 +837,7 @@ function parseAuth(env: Env, server?: ServerSettings["auth"]): AuthConfig {
 			: {
 					serviceToken: {
 						token,
-					user: env.SIGRUN_API_TOKEN_USER?.trim() || "sigrun",
+						user: serviceTokenUser,
 					},
 			}),
 	};

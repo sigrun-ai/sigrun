@@ -51,8 +51,21 @@ function matchesCode(record: InviteRecord, digest: string): boolean {
 	);
 }
 
+/** Locate the valid, unused row for one code, or undefined without effects. */
+function validInviteIndex(
+	records: readonly InviteRecord[],
+	code: string,
+	now: number,
+): number {
+	const digest = hashToken(code);
+	const index = records.findIndex((record) => matchesCode(record, digest));
+	if (index === -1) return -1;
+	const record = records[index]!;
+	return record.usedBy === undefined && now <= record.expiresAt ? index : -1;
+}
+
 /**
- * The file-backed invite store. `redeem` is the single mutator; both
+ * The file-backed invite store. `redeem` is the single mutator; all three
  * methods serialize on the store's {@link MutationQueue}.
  */
 export class InviteStore {
@@ -90,6 +103,23 @@ export class InviteStore {
 	}
 
 	/**
+	 * Validate a code without consuming it: the same digest, single-use, and
+	 * expiry rules as {@link redeem}, returning its grant while leaving the row
+	 * untouched. Callers must still redeem last; this is a preflight, not a
+	 * reservation against another writer.
+	 */
+	peek(
+		code: string,
+		now: number = Date.now(),
+	): Promise<{ admin: boolean } | undefined> {
+		return this.mutations.run(async () => {
+			const records = this.list();
+			const index = validInviteIndex(records, code, now);
+			return index === -1 ? undefined : { admin: records[index]!.admin };
+		});
+	}
+
+	/**
 	 * Redeem one code for `user`: undefined when no record matches the
 	 * digest, when the row is already used (single-use, forever), or
 	 * when `now` is past `expiresAt` — and in every undefined case the
@@ -104,12 +134,9 @@ export class InviteStore {
 	): Promise<{ admin: boolean } | undefined> {
 		return this.mutations.run(async () => {
 			const records = this.list();
-			const digest = hashToken(code);
-			const index = records.findIndex((record) => matchesCode(record, digest));
-			const record = index === -1 ? undefined : records[index];
-			if (record === undefined) return undefined;
-			if (record.usedBy !== undefined) return undefined;
-			if (now > record.expiresAt) return undefined;
+			const index = validInviteIndex(records, code, now);
+			if (index === -1) return undefined;
+			const record = records[index]!;
 			records[index] = { ...record, usedBy: user };
 			await writeJson(this.path, records);
 			return { admin: record.admin };

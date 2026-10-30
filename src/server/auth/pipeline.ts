@@ -43,7 +43,9 @@
  *     the token's user must exist in the directory, else 401 (no log —
  *     token failures are not proxy diagnostics).
  *  6. **Empty list** (the naive workstation path): the trimmed
- *     `X-Sigrun-User` header verbatim, `admin: true`, method `"none"`.
+ *     `X-Sigrun-User` header DERIVED to its canonical key (`admin: true`,
+ *     method `"none"`). An unusable header (no derivable key) is a loud
+ *     400 `invalid_username`; an absent header behaves as before.
  */
 
 import { timingSafeEqual } from "node:crypto";
@@ -54,8 +56,10 @@ import { isLoopbackHost } from "./loopback.js";
 import { listedOwnHostEntries, ownHostPeerPermitted } from "./own-host.js";
 import type { Principal } from "./principal.js";
 import { ProxyRejectReason, warnProxyRejected } from "./proxy-diagnostic.js";
+import { resolveProxyUser } from "./proxy-identity.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { effectiveAdmin } from "../../harness/identity/groups.js";
+import { deriveUsername } from "@sigrun/shared/usernames";
 
 /** One header read: Fastify headers may be string | string[]; first wins. */
 function headerOf(
@@ -267,34 +271,34 @@ async function resolveProxy(
 			?.split(",")
 			.map((group) => group.trim())
 			.filter((group) => group !== "") ?? [];
-	const { users } = ctx.opened.identity;
-	// The invalid-username case (a proxy header that can't be a directory
-	// user) is a loud 403, not a 500: the proxy vouched for an identity
-	// this server can never represent. The warn's reason never carries the
-	// claimed value (spec §3: no identity-header values).
-	if (!/^[a-z0-9][a-z0-9._-]*$/.test(user)) {
-		warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
-		return { status: 403, error: "invalid_username" };
-	}
-	const existing = users.get(user);
-	if (existing === undefined && !proxy.autoProvision) {
-		warnProxyRejected(request, "untrusted identity source");
-		return { status: 403, error: "user_not_provisioned" };
-	}
+	const { users, accounts } = ctx.opened.identity;
 	let record;
 	try {
-		record = existing ??
-			(await users.add({
-				user,
+		const resolved = await resolveProxyUser(
+			{ users, accounts },
+			user,
+			{
 				...(headerOf(request, proxy.nameHeader) === undefined
 					? {}
 					: { name: headerOf(request, proxy.nameHeader) as string }),
 				...(headerOf(request, proxy.emailHeader) === undefined
 					? {}
 					: { email: headerOf(request, proxy.emailHeader) as string }),
-				admin: false,
-				source: "proxy",
-			}));
+			},
+			{ provision: proxy.autoProvision },
+		);
+		// The invalid-username case is a loud 403, not a 500: the proxy
+		// vouched for an identity this server can never represent. The warn
+		// never carries the claimed value (spec §3).
+		if (resolved.kind === "invalid") {
+			warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
+			return { status: 403, error: "invalid_username" };
+		}
+		if (resolved.kind === "not_provisioned") {
+			warnProxyRejected(request, ProxyRejectReason.UNTRUSTED_IDENTITY_SOURCE);
+			return { status: 403, error: "user_not_provisioned" };
+		}
+		record = resolved.record;
 	} catch (error) {
 		if (error instanceof AdmissionRefusedError) {
 			return { status: 403, error: error.code };
@@ -305,7 +309,7 @@ async function resolveProxy(
 	// setGroups avoids the write when the values are unchanged. Effective
 	// admin is computed over the UPDATED record, so a group exit revokes
 	// the request's grant immediately and host-side checks agree.
-	record = await users.setGroups(user, "proxy", groups);
+	record = await users.setGroups(record.user, "proxy", groups);
 	return {
 		user: record.user,
 		...(record.name === undefined ? {} : { name: record.name }),
@@ -416,8 +420,17 @@ export function registerAuthPipeline(
 		// Stage 5/6: the configured methods, in order; the empty list is
 		// the naive loopback path.
 		if (ctx.methods.length === 0) {
+			const header = headerOf(request, "x-sigrun-user");
+			// The header is an unchecked (operator-typed) source: derive the
+			// canonical key on receipt, the same rule the CLI applies before
+			// sending. An unusable value is a loud 400, never a verbatim
+			// identity; an absent header keeps today's ownerless behavior.
+			const user = header === undefined ? undefined : deriveUsername(header);
+			if (header !== undefined && user === undefined) {
+				return await reply.code(400).send({ error: "invalid_username" });
+			}
 			request.principal = {
-				user: headerOf(request, "x-sigrun-user"),
+				user,
 				admin: true,
 				service: false,
 				method: "none",

@@ -29,7 +29,7 @@ import { MutationQueue, readRecords, writeJson } from "./json-store.js";
 import type { UserDirectory } from "./users.js";
 
 /** How a link came to exist (spec §11.3). */
-export type AccountLinkVia = "login" | "self" | "pairing" | "admin";
+export type AccountLinkVia = "login" | "self" | "pairing" | "admin" | "proxy";
 
 /**
  * The allowed `via` values, as a runtime set: `accounts.json` is a file,
@@ -41,11 +41,12 @@ const VIAS: ReadonlySet<string> = new Set<AccountLinkVia>([
 	"self",
 	"pairing",
 	"admin",
+	"proxy",
 ]);
 
 /** One external identity bound to one directory user. */
 export interface AccountLink {
-	/** `chat:<channel>` or `login:<slug>:<id>` (spec §11.3). */
+	/** `proxy`, `chat:<channel>`, or `login:<slug>:<id>` (spec §11.3). */
 	readonly provider: string;
 	/** The provider's stable subject: numeric id, `+E.164`, email-shaped, … */
 	readonly subject: string;
@@ -74,8 +75,8 @@ export class AccountLinkConflictError extends Error {
 	}
 }
 
-/** `chat:<channel>` / `login:<slug>:<id>` — lowercase, no spaces. */
-const PROVIDER_PATTERN = /^(login|chat):[a-z0-9][a-z0-9._:-]*$/;
+/** `proxy` / `chat:<channel>` / `login:<slug>:<id>` — lowercase, no spaces. */
+const PROVIDER_PATTERN = /^(proxy|(login|chat):[a-z0-9][a-z0-9._:-]*)$/;
 
 /** A subject is opaque, non-empty, and bounded. */
 const SUBJECT_MAX_LENGTH = 512;

@@ -91,7 +91,6 @@ async function bootServer(options: {
 			app = await createServer(opened, config, [], {
 				listenHost: options.listenHost ?? "127.0.0.1",
 				...(options.resolver === undefined ? {} : { loginResolver: options.resolver }),
-
 				...(options.now === undefined ? {} : { loginNow: options.now }),
 			});
 			const warning =

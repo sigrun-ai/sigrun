@@ -11,7 +11,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -23,7 +23,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
-import { readSetupCode } from "../src/harness/identity/index.js";
+import { readSetupCode, type InviteRecord } from "../src/harness/identity/index.js";
 import { ensureSetupCode } from "../src/harness/identity/setup-code.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
@@ -175,6 +175,7 @@ describe("GET /v1/onboarding", () => {
 			codeRequired: false,
 			proxyIdentity: {
 				user: "michael",
+				subject: "michael",
 				name: "Michael",
 				email: "michael@example.invalid",
 			},
@@ -266,7 +267,7 @@ describe("onboarding proxy-rejection diagnostics", () => {
 				method: "GET",
 				url: "/v1/onboarding",
 				remoteAddress: "10.42.3.4",
-				headers: { "remote-user": "Bad User" },
+				headers: { "remote-user": "---" },
 			});
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(warn.mock.calls[0]!.join(" ")).toContain(
@@ -362,6 +363,91 @@ describe("onboarding own-host peer (C5)", () => {
 			expect(warn.mock.calls[0]!.join(" ")).toContain(
 				ProxyRejectReason.OWN_HOST,
 			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("derived proxy onboarding identity", () => {
+	const env = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+		SIGRUN_ISOLATION: "auto",
+	};
+	const file = { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } };
+
+	test("GET previews Mike@Example.com without writing a user or link", async () => {
+		const { app, opened } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
+		const response = await app.inject({
+			method: "GET",
+			url: "/v1/onboarding",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "Mike@Example.com" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().proxyIdentity).toEqual({
+			user: "mike_example.com",
+			subject: "Mike@Example.com",
+		});
+		expect(opened.identity.users.list()).toEqual([]);
+		expect(opened.identity.accounts.list()).toEqual([]);
+	});
+
+	test("the same vouch claims the derived admin and link without lock recursion", async () => {
+		const { app, opened } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "Mike@Example.com" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toMatchObject({ user: "mike_example.com", admin: true, source: "proxy" });
+		expect(opened.identity.accounts.lookup("proxy", "mike@example.com")).toMatchObject({
+			user: "mike_example.com",
+			via: "proxy",
+		});
+	}, 5_000);
+
+	test("configured secretHeader + missing secret yields no proxyIdentity", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({
+			env: { ...env, SIGRUN_PROXY_SECRET: "s3cret" },
+			file,
+			listenHost: "0.0.0.0",
+			isolationAvailable: true,
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "Mike@Example.com" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().proxyIdentity).toBeUndefined();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("--- yields no proxyIdentity and the unusable-identity warn", async () => {
+		resetProxyDiagnostic();
+		const { app } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "---" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().proxyIdentity).toBeUndefined();
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain("unusable identity claim");
 		} finally {
 			warn.mockRestore();
 		}
@@ -499,6 +585,28 @@ describe("POST /v1/onboarding/claim", () => {
 			admin: true,
 			source: "cli",
 		});
+	});
+
+	test("loopback claim normalises a typed username", async () => {
+		const { app } = await bootServer({ listenHost: "127.0.0.1" });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "Alice Smith" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user.user).toBe("alice-smith");
+	});
+
+	test("typed claim usernames with no usable characters are invalid", async () => {
+		const { app } = await bootServer({ listenHost: "127.0.0.1" });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "@@@" },
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_username" });
 	});
 
 	test("a configured proxy secret is required on the public claim path too", async () => {
@@ -715,9 +823,91 @@ describe("proxy-only vouch rule (C2)", () => {
 	});
 });
 
+describe("typed invite usernames", () => {
+	test("a collision refuses without consuming the invite", async () => {
+		const { app, opened, dir } = await bootServer({ listenHost: "127.0.0.1" });
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "Taken" },
+		})).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code, user: "Taken" },
+		});
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "username_taken" });
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
+	});
+
+	test("a typed invite username is normalised before redemption", async () => {
+		const { app, opened, dir } = await bootServer({
+			listenHost: "127.0.0.1",
+			env: { SIGRUN_ISOLATION: "auto" },
+			isolationAvailable: true,
+		});
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "founder" },
+		})).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code, user: "Bob Jones" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user.user).toBe("bob-jones");
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBe("bob-jones");
+		expect(opened.identity.users.get("bob-jones")).toMatchObject({ source: "invite" });
+	});
+
+	test("an invalid code has the same refusal for taken and fresh usernames", async () => {
+		const { app } = await bootServer({ listenHost: "127.0.0.1" });
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "taken" },
+		})).statusCode).toBe(200);
+		for (const user of ["taken", "fresh"]) {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				payload: { code: "ZZZZ-ZZZZ", user },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "invalid_code" });
+		}
+	});
+
+	test("an invite username with no usable characters is invalid and unconsumed", async () => {
+		const { app, opened, dir } = await bootServer({ listenHost: "127.0.0.1" });
+		expect((await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "founder" },
+		})).statusCode).toBe(200);
+		const { code } = await opened.identity.invites.create({ admin: false });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code, user: "@@@" },
+		});
+		expect(response.statusCode).toBe(400);
+		expect(response.json()).toEqual({ error: "invalid_username" });
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
+	});
+});
+
 describe("multi-user admission", () => {
 	test("second user via invite -> 409 isolation_required when unavailable", async () => {
-		const { app, opened } = await bootServer({ listenHost: "0.0.0.0", env: { SIGRUN_ISOLATION: "auto" } });
+		const { app, opened, dir } = await bootServer({ listenHost: "0.0.0.0", env: { SIGRUN_ISOLATION: "auto" } });
 		const setup = readSetupCode(opened.identity.cacheDir);
 		expect((await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code: setup, user: "alice" } })).statusCode).toBe(200);
 		const { code } = await opened.identity.invites.create({ admin: false });
@@ -725,10 +915,12 @@ describe("multi-user admission", () => {
 		expect(response.statusCode).toBe(409);
 		expect(response.json()).toEqual({ error: "isolation_required" });
 		expect(opened.identity.users.get("bob")).toBeUndefined();
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
 	});
 
 	test("second user with SIGRUN_AUTH=none -> 409 auth_required", async () => {
-		const { app, opened } = await bootServer({
+		const { app, opened, dir } = await bootServer({
 			listenHost: "127.0.0.1",
 			env: { SIGRUN_AUTH: "none", SIGRUN_ISOLATION: "auto" },
 			isolationAvailable: true,
@@ -738,6 +930,9 @@ describe("multi-user admission", () => {
 		const response = await app.inject({ method: "POST", url: "/v1/onboarding/claim", payload: { code, user: "bob" } });
 		expect(response.statusCode).toBe(409);
 		expect(response.json()).toEqual({ error: "auth_required" });
+		expect(opened.identity.users.get("bob")).toBeUndefined();
+		const rows = JSON.parse(await readFile(join(dir, "state", "invites.json"), "utf8")) as InviteRecord[];
+		expect(rows[0]?.usedBy).toBeUndefined();
 	});
 });
 
