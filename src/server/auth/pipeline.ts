@@ -51,7 +51,9 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ServerContext } from "../context.js";
 import { ipAllowed } from "./ip.js";
 import { isLoopbackHost } from "./loopback.js";
+import { listedOwnHostEntries, ownHostPeerPermitted } from "./own-host.js";
 import type { Principal } from "./principal.js";
+import { ProxyRejectReason, warnProxyRejected } from "./proxy-diagnostic.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
 import { effectiveAdmin } from "../../harness/identity/groups.js";
 
@@ -196,28 +198,6 @@ function isPublicPath(request: FastifyRequest, ctx: ServerContext): boolean {
 }
 
 /**
- * The proxy-auth rejection diagnostic (release-readiness Task 1, spec §3):
- * ONE `warn` per rejected request, naming the socket peer, the request
- * method, a short reason, and — only when Fastify already resolved it —
- * the ROUTE TEMPLATE (`routeOptions.url`, never the raw URL). The line
- * must never carry API tokens, cookies, identity-header VALUES, query
- * strings, or the full request URL; a header NAME appears only where the
- * reason itself is "that configured header was absent/wrong" (its value
- * never does). This is diagnostic logging, not evidence that the
- * configured allowlist is correct.
- */
-function warnProxyRejected(
-	request: FastifyRequest,
-	reason: string,
-): void {
-	const peer = request.socket.remoteAddress ?? "unknown";
-	const route = request.routeOptions.url;
-	console.warn(
-		`sigrun: proxy auth rejected ${request.method} request from ${peer} (${reason})${route === undefined ? "" : ` on ${route}`}`,
-	);
-}
-
-/**
  * Stage 5a (proxy): resolve the forward-auth headers, or reply with the
  * rejection. The secret header is DELETED from the request before any
  * handler (or test hook) can observe it.
@@ -244,7 +224,23 @@ async function resolveProxy(
 		ctx.methods.includes("token");
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
 		if (!attemptingToken) {
-			warnProxyRejected(request, "untrusted proxy");
+			warnProxyRejected(request, ProxyRejectReason.UNTRUSTED);
+		}
+		return { status: 401 };
+	}
+	// C5: an own-host peer (loopback or a local interface address) can
+	// originate from ANY local process, so trust through a range alone
+	// never vouches — the shared secret must be configured (its check
+	// then decides), or the exact address must be listed explicitly.
+	if (
+		!ownHostPeerPermitted(
+			request.socket.remoteAddress,
+			proxy.trustedProxies,
+			proxy.secret !== undefined && proxy.secretHeader !== undefined,
+		)
+	) {
+		if (!attemptingToken) {
+			warnProxyRejected(request, ProxyRejectReason.OWN_HOST);
 		}
 		return { status: 401 };
 	}
@@ -254,7 +250,7 @@ async function resolveProxy(
 		delete request.headers[name];
 		if (presented === undefined || !timingSafeStringEqual(presented, proxy.secret)) {
 			if (!attemptingToken) {
-				warnProxyRejected(request, `missing or wrong shared secret (${proxy.secretHeader} header)`);
+				warnProxyRejected(request, ProxyRejectReason.secretReason(proxy.secretHeader));
 			}
 			return { status: 401 };
 		}
@@ -262,7 +258,7 @@ async function resolveProxy(
 	const user = headerOf(request, proxy.userHeader);
 	if (user === undefined) {
 		if (!attemptingToken) {
-			warnProxyRejected(request, `missing identity header (${proxy.userHeader})`);
+			warnProxyRejected(request, ProxyRejectReason.missingHeaderReason(proxy.userHeader));
 		}
 		return { status: 401 };
 	}
@@ -277,7 +273,7 @@ async function resolveProxy(
 	// this server can never represent. The warn's reason never carries the
 	// claimed value (spec §3: no identity-header values).
 	if (!/^[a-z0-9][a-z0-9._-]*$/.test(user)) {
-		warnProxyRejected(request, "unusable identity claim");
+		warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
 		return { status: 403, error: "invalid_username" };
 	}
 	const existing = users.get(user);
@@ -352,6 +348,22 @@ export function registerAuthPipeline(
 	app: FastifyInstance,
 	ctx: ServerContext,
 ): void {
+	// C5 boot warning: an explicitly listed own-host trust entry WITHOUT
+	// a shared secret is the one shape where a local process can still
+	// impersonate users by connecting directly. Surface it once per
+	// entry, at registration (a boot-time config warning, not a request
+	// diagnostic — the throttled warnProxyRejected does not apply).
+	const { proxy } = ctx.config.auth;
+	if (
+		ctx.methods.includes("proxy") &&
+		!(proxy.secret !== undefined && proxy.secretHeader !== undefined)
+	) {
+		for (const entry of listedOwnHostEntries(proxy.trustedProxies)) {
+			console.warn(
+				`sigrun: trusting local address ${entry} without a shared secret lets any local process impersonate users; set server.auth.proxy.secretHeader`,
+			);
+		}
+	}
 	app.addHook("onRequest", async (request, reply) => {
 		// Stage 1: Host + Origin.
 		const hostStatus = checkHost(request, ctx);

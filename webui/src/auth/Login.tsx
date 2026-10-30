@@ -16,6 +16,7 @@ const LOGIN_ERRORS: Readonly<Record<string, string>> = {
 	auth_required: "This sigrun can't add another user yet. Ask the admin.",
 	account_link_conflict: "That account is already linked to another sigrun user.",
 	provider_error: "The sign-in provider returned an error. Try again.",
+	proxy_identity_required: "This sigrun signs people in through its sign-in proxy. Open it through the proxy.",
 };
 
 /** Map only known server codes; unknown input cannot inject provider text. */

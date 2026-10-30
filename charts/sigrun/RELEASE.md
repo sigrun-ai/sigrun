@@ -264,6 +264,21 @@ not visibility.
 
 Until the flip, pulls need a GitHub token with `read:packages`.
 
+## Proxy auth behind Cilium
+
+When sigrun runs behind a Cilium Gateway API / Ingress forward-auth
+proxy, `server.auth.proxy.trustedProxies` must list the per-node Cilium
+ingress IPs (the address the proxy connects from, out of the pod CIDR).
+If you trust the whole pod CIDR instead, enable the chart's
+`networkPolicy.enabled` so only the `ingress` entity can reach the
+Service; the default policy also admits `host` for kubelet probes.
+Remember that the `ingress` entity covers every Cilium gateway in the
+cluster, so every route to sigrun must pass through forward auth.
+The full deploy contract (header hygiene, dual-stack, own-host peers,
+diagnostic reasons, proxy-only onboarding) is in the core README's
+Authentication → Proxy method section and Authentication → Browser
+sessions and account links → Onboarding (the first claim).
+
 ## Flux wiring (pointer only)
 
 The homelab consumes the artifacts through Flux, not by hand:

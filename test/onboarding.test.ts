@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -24,9 +24,15 @@ import {
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { readSetupCode } from "../src/harness/identity/index.js";
+import { ensureSetupCode } from "../src/harness/identity/setup-code.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import {
+	ProxyRejectReason,
+	resetProxyDiagnostic,
+} from "../src/server/auth/proxy-diagnostic.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
+import { setOwnHostAddressesForTests } from "../src/server/auth/own-host.js";
 
 interface TestServer {
 	app: FastifyInstance;
@@ -102,6 +108,30 @@ describe("unclaimed boot", () => {
 		expect(existsSync(join(dir, "cache", "setup-code"))).toBe(true);
 		expect(existsSync(join(dir, "state", "setup-code"))).toBe(false);
 	});
+
+	test("a proxy-only non-loopback boot generates and logs NO setup code (C2)", async () => {
+		// A proxy-only public deployment admits accounts ONLY through a
+		// proxy vouch — a minted setup code would be an unvouched
+		// account-creation path, so boot never creates (or logs) one.
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const { opened } = await bootServer({
+				env: {
+					SIGRUN_AUTH: "proxy",
+					SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+				},
+				listenHost: "0.0.0.0",
+			});
+			expect(readSetupCode(opened.identity.cacheDir)).toBeUndefined();
+			expect(
+				log.mock.calls.some((call) =>
+					call.join(" ").includes("sigrun setup code:"),
+				),
+			).toBe(false);
+		} finally {
+			log.mockRestore();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -149,6 +179,192 @@ describe("GET /v1/onboarding", () => {
 				email: "michael@example.invalid",
 			},
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// the proxy-rejection diagnostic on the public onboarding path (C1)
+// ---------------------------------------------------------------------------
+
+describe("onboarding proxy-rejection diagnostics", () => {
+	const PROXY_ONLY_ENV = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+	};
+
+	beforeEach(() => {
+		resetProxyDiagnostic();
+	});
+
+	/** Boot a proxy-only, unclaimed server and spy the diagnostic. */
+	async function bootProxyOnly() {
+		const server = await bootServer({
+			env: PROXY_ONLY_ENV,
+			listenHost: "0.0.0.0",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		return { ...server, warn };
+	}
+
+	test("an untrusted peer warns 'untrusted proxy'", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.9.9.9",
+			});
+			expect(response.statusCode).toBe(200);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.UNTRUSTED,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a trusted peer with no remote-user warns 'missing identity header'", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+			});
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.missingHeaderReason("remote-user"),
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("an EMPTY remote-user is the missing-header reason, not unusable", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "" },
+			});
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.missingHeaderReason("remote-user"),
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("an unrepresentable remote-user warns 'unusable identity claim'", async () => {
+		const { app, warn } = await bootProxyOnly();
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "Bad User" },
+			});
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.UNUSABLE,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a CLAIMED instance emits zero onboarding warns", async () => {
+		const { app, opened, warn } = await bootProxyOnly();
+		try {
+			const code = readSetupCode(opened.identity.cacheDir);
+			const claim = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "michael" },
+				payload: { code },
+			});
+			expect(claim.statusCode).toBe(200);
+			expect(opened.identity.users.isClaimed()).toBe(true);
+			warn.mockClear();
+			for (const [remoteAddress, headers] of [
+				["10.9.9.9", {}],
+				["10.42.3.4", {}],
+				["10.42.3.4", { "remote-user": "Bad User" }],
+			] as const) {
+				await app.inject({
+					method: "GET",
+					url: "/v1/onboarding",
+					remoteAddress,
+					headers,
+				});
+			}
+			expect(warn).toHaveBeenCalledTimes(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a token-only boot emits zero proxy warns", async () => {
+		const { app } = await bootServer({ listenHost: "0.0.0.0" });
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.9.9.9",
+			});
+			expect(warn).toHaveBeenCalledTimes(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// C5: an own-host peer without the shared secret does not vouch
+// ---------------------------------------------------------------------------
+
+describe("onboarding own-host peer (C5)", () => {
+	beforeEach(() => {
+		resetProxyDiagnostic();
+		setOwnHostAddressesForTests(["10.42.9.9"]);
+	});
+
+	afterEach(() => {
+		setOwnHostAddressesForTests(undefined);
+	});
+
+	test("an own-host peer trusted only through a range, without a secret → no proxyIdentity + OWN_HOST warn", async () => {
+		const { app } = await bootServer({
+			env: {
+				SIGRUN_AUTH: "proxy",
+				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+			},
+			listenHost: "0.0.0.0",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/onboarding",
+				remoteAddress: "10.42.9.9",
+				headers: { "remote-user": "michael" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().proxyIdentity).toBeUndefined();
+			expect(response.json().codeRequired).toBe(true);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]!.join(" ")).toContain(
+				ProxyRejectReason.OWN_HOST,
+			);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 
@@ -295,6 +511,9 @@ describe("POST /v1/onboarding/claim", () => {
 			file: { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } },
 			listenHost: "0.0.0.0",
 		});
+		// The claim path now emits the shared proxy-rejection diagnostic
+		// (C1); spy it so this pre-existing test stays quiet.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		// A trusted peer WITHOUT the secret is not a proxy identity here —
 		// the pipeline never runs on public paths, so the claim route owns
 		// the same secret discipline (an in-CIDR attacker cannot self-mint
@@ -307,7 +526,9 @@ describe("POST /v1/onboarding/claim", () => {
 			payload: { user: "spoof" },
 		});
 		expect(missing.statusCode).toBe(403);
-		expect(missing.json()).toEqual({ error: "invalid_code" });
+		// C2: the proxy-only public claim path refuses EVERY unvouched
+		// claim with the dedicated code — not the setup-code error.
+		expect(missing.json()).toEqual({ error: "proxy_identity_required" });
 		// With the secret, the header identity claims admin.
 		const present = await app.inject({
 			method: "POST",
@@ -321,6 +542,176 @@ describe("POST /v1/onboarding/claim", () => {
 		});
 		expect(present.statusCode).toBe(200);
 		expect(present.json().user).toMatchObject({ user: "michael", admin: true });
+		warn.mockRestore();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// C2: proxy-only non-loopback servers refuse account creation without a vouch
+// ---------------------------------------------------------------------------
+
+describe("proxy-only vouch rule (C2)", () => {
+	const PROXY_ONLY_ENV = {
+		SIGRUN_AUTH: "proxy",
+		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+	};
+
+	beforeEach(() => {
+		resetProxyDiagnostic();
+	});
+
+	/** Boot proxy-only + non-loopback with the warn spy installed. */
+	async function bootPublicProxyOnly() {
+		const server = await bootServer({
+			env: PROXY_ONLY_ENV,
+			listenHost: "0.0.0.0",
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		return { ...server, warn };
+	}
+
+	test("unclaimed claim without vouch and no code → 403 proxy_identity_required", async () => {
+		const { app, warn } = await bootPublicProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				payload: { user: "eve" },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "proxy_identity_required" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("unclaimed claim without vouch but WITH a valid setup code → 403 proxy_identity_required", async () => {
+		const { app, opened, warn } = await bootPublicProxyOnly();
+		try {
+			// Materialize a valid setup code directly (a proxy-only public
+			// boot no longer writes one — that is the OTHER C2 assertion);
+			// the point here is that even a VALID code cannot create an
+			// account without a vouch on this posture.
+			const code = await ensureSetupCode(opened.identity.cacheDir, {});
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				payload: { code, user: "eve" },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "proxy_identity_required" });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("vouched claim (remote-user michael, peer 10.42.3.4) → 200 admin", async () => {
+		const { app, warn } = await bootPublicProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "michael" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().user).toMatchObject({
+				user: "michael",
+				admin: true,
+				source: "proxy",
+			});
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("vouched claim from an IPv4-mapped peer (::ffff:10.42.3.4) → 200 (Review Focus 1)", async () => {
+		const { app, warn } = await bootPublicProxyOnly();
+		try {
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "::ffff:10.42.3.4",
+				headers: { "remote-user": "michael" },
+			});
+			expect(response.statusCode).toBe(200);
+			expect(response.json().user).toMatchObject({
+				user: "michael",
+				admin: true,
+				source: "proxy",
+			});
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("claimed instance, invite code + user, no vouch → 403 proxy_identity_required", async () => {
+		const { app, opened, warn } = await bootPublicProxyOnly();
+		try {
+			const claimed = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				headers: { "remote-user": "michael" },
+			});
+			expect(claimed.statusCode).toBe(200);
+			const { code } = await opened.identity.invites.create({ admin: false });
+			const response = await app.inject({
+				method: "POST",
+				url: "/v1/onboarding/claim",
+				remoteAddress: "10.42.3.4",
+				payload: { code, user: "bob" },
+			});
+			expect(response.statusCode).toBe(403);
+			expect(response.json()).toEqual({ error: "proxy_identity_required" });
+			expect(opened.identity.users.get("bob")).toBeUndefined();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("loopback bind proxy-only: codeRequired false; claim with user → 200 (Review Focus 5)", async () => {
+		const { app } = await bootServer({
+			env: PROXY_ONLY_ENV,
+			listenHost: "127.0.0.1",
+		});
+		const state = await app.inject({ method: "GET", url: "/v1/onboarding" });
+		expect(state.statusCode).toBe(200);
+		expect(state.json().codeRequired).toBe(false);
+		const claim = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { user: "local" },
+		});
+		expect(claim.statusCode).toBe(200);
+		expect(claim.json().user).toMatchObject({
+			user: "local",
+			admin: true,
+			source: "cli",
+		});
+	});
+
+	test("mixed [proxy, token], unclaimed, setup code, no vouch → 200 (Review Focus 3)", async () => {
+		const { app, opened } = await bootServer({
+			env: { ...PROXY_ONLY_ENV, SIGRUN_AUTH: "proxy,token" },
+			listenHost: "0.0.0.0",
+		});
+		const code = readSetupCode(opened.identity.cacheDir);
+		expect(code).toBeDefined();
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			remoteAddress: "10.42.3.4",
+			payload: { code, user: "founder" },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json().user).toMatchObject({
+			user: "founder",
+			admin: true,
+			source: "cli",
+		});
 	});
 });
 

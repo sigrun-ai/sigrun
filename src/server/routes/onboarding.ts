@@ -20,6 +20,12 @@ import type { ServerContext } from "../context.js";
 import { withClaimLock } from "../auth/claim-lock.js";
 import { ipAllowed } from "../auth/ip.js";
 import { isLoopbackHost } from "../auth/loopback.js";
+import { ownHostPeerPermitted } from "../auth/own-host.js";
+import {
+	ProxyRejectReason,
+	warnProxyRejected,
+} from "../auth/proxy-diagnostic.js";
+import { requiresProxyVouch } from "../auth/proxy-only.js";
 import { readSetupCode, clearSetupCode } from "../../harness/identity/index.js";
 import { setupCodeMatches } from "../../harness/identity/setup-code-check.js";
 import { AdmissionRefusedError } from "../../harness/identity/users.js";
@@ -68,8 +74,28 @@ function resolveProxyIdentity(
 	ctx: ServerContext,
 ): ProxyIdentity | undefined {
 	if (!ctx.methods.includes("proxy")) return undefined;
+	// The rejection diagnostic (proxy-trust C1): while the instance is
+	// UNCLAIMED, every rejection branch reports WHY via the shared,
+	// throttled warn — these routes sit on the public path the pipeline
+	// never visits, so without this their proxy rejections are silent.
+	// Once claimed the onboarding surface no longer needs the signal.
+	const diagnose = !ctx.opened.identity.users.isClaimed();
 	const { proxy } = ctx.config.auth;
 	if (!ipAllowed(request.socket.remoteAddress, proxy.trustedProxies)) {
+		if (diagnose) warnProxyRejected(request, ProxyRejectReason.UNTRUSTED);
+		return undefined;
+	}
+	// C5: the same own-host discipline as the pipeline — an own-host
+	// peer reached through a range without the shared secret never
+	// vouches (any local process could claim the first admin).
+	if (
+		!ownHostPeerPermitted(
+			request.socket.remoteAddress,
+			proxy.trustedProxies,
+			proxy.secret !== undefined && proxy.secretHeader !== undefined,
+		)
+	) {
+		if (diagnose) warnProxyRejected(request, ProxyRejectReason.OWN_HOST);
 		return undefined;
 	}
 	if (proxy.secret !== undefined && proxy.secretHeader !== undefined) {
@@ -80,11 +106,32 @@ function resolveProxyIdentity(
 			presented === undefined ||
 			!timingSafeStringEqual(presented, proxy.secret)
 		) {
+			if (diagnose) {
+				warnProxyRejected(
+					request,
+					ProxyRejectReason.secretReason(proxy.secretHeader),
+				);
+			}
 			return undefined;
 		}
 	}
 	const user = headerOf(request, proxy.userHeader);
-	if (user === undefined || !USERNAME_PATTERN.test(user)) return undefined;
+	// An absent OR EMPTY (headerOf trims to undefined) user header is the
+	// missing-header reason; a present-but-unrepresentable claim is the
+	// unusable-claim reason. Neither line carries the claimed VALUE.
+	if (user === undefined) {
+		if (diagnose) {
+			warnProxyRejected(
+				request,
+				ProxyRejectReason.missingHeaderReason(proxy.userHeader.toLowerCase()),
+			);
+		}
+		return undefined;
+	}
+	if (!USERNAME_PATTERN.test(user)) {
+		if (diagnose) warnProxyRejected(request, ProxyRejectReason.UNUSABLE);
+		return undefined;
+	}
 	const name = headerOf(request, proxy.nameHeader);
 	const email = headerOf(request, proxy.emailHeader);
 	return {
@@ -177,6 +224,17 @@ export function registerOnboardingRoutes(
 		}
 		const proxyIdentity = resolveProxyIdentity(request, ctx);
 		const loopback = isLoopbackHost(ctx.listenHost);
+		// C2: a proxy-only non-loopback server creates accounts ONLY
+		// through a proxy vouch — refuse BEFORE code evaluation, so even
+		// a valid setup code or invite code cannot mint an account
+		// unvouched on this posture. Mixed [proxy, token] and loopback
+		// binds keep the code paths.
+		if (
+			requiresProxyVouch(ctx.methods, ctx.listenHost) &&
+			proxyIdentity === undefined
+		) {
+			return await reply.code(403).send({ error: "proxy_identity_required" });
+		}
 		// The code's validity is evaluated ONCE, BEFORE the mutex: the winner
 		// clears the setup-code file inside its critical section, so a claim
 		// that loses the race must still be recognizable as having held a

@@ -31,14 +31,25 @@ import type { EventSourceFactory } from "../stream";
 import { Login } from "./Login";
 import { LoginCode } from "./LoginCode";
 import { Onboarding } from "./Onboarding";
+import { ProxyUnidentified } from "./ProxyUnidentified";
 
-/** The gate's state machine: probe → onboarding | login → ready. */
+/** The gate's state machine: probe → onboarding | login/proxy help → ready. */
 type Gate =
 	| { readonly status: "probing" }
 	| { readonly status: "failed"; readonly message: string }
 	| { readonly status: "onboarding"; readonly state: OnboardingState }
-	| { readonly status: "login"; readonly message?: string }
-	| { readonly status: "ready"; readonly identity: WhoamiResponse };
+	| { readonly status: "login"; readonly methods: readonly string[]; readonly message?: string }
+	| {
+			readonly status: "proxy-unidentified";
+			readonly cause: "unidentified" | "invalid_username" | "not_provisioned";
+			readonly context: "boot" | "session_ended";
+	  }
+	| { readonly status: "ready"; readonly methods: readonly string[]; readonly identity: WhoamiResponse };
+
+/** The webui mirror of the server's proxy-only predicate (Task 4). */
+function isProxyOnly(methods: readonly string[]): boolean {
+	return methods.includes("proxy") && !methods.includes("token");
+}
 
 /** The same-origin §5 client (the AuthGate default; tests inject one). */
 const defaultClient = createClient();
@@ -85,14 +96,18 @@ export function AuthGate(options: AuthGateOptions = {}) {
 	const [probeNonce, setProbeNonce] = useState(0);
 
 	const flipToLogin = useCallback(() => {
-		setGate((current) =>
-			current.status === "ready"
-				? {
-						status: "login",
-						message: "Your session ended. Sign in again.",
-					}
-				: current,
-		);
+		// A mid-session 401 uses the methods retained by the ready gate.
+		setGate((current) => {
+			if (current.status !== "ready") return current;
+			if (isProxyOnly(current.methods)) {
+				return { status: "proxy-unidentified", cause: "unidentified", context: "session_ended" };
+			}
+			return {
+				status: "login",
+				methods: current.methods,
+				message: "Your session ended. Sign in again.",
+			};
+		});
 	}, []);
 
 	const client = useMemo(
@@ -103,20 +118,46 @@ export function AuthGate(options: AuthGateOptions = {}) {
 	useEffect(() => {
 		let cancelled = false;
 		void (async () => {
+			// Keep onboarding failures separate: no methods exist yet, so a
+			// whoami-style 401 must not be inferred for the public probe.
+			const onboarding = await client.getOnboarding().catch((cause: unknown) => {
+				if (cancelled) return undefined;
+				setGate({
+					status: "failed",
+					message: cause instanceof Error ? cause.message : String(cause),
+				});
+				return undefined;
+			});
+			if (onboarding === undefined || cancelled) return;
+			if (onboarding.state === "unclaimed") {
+				setGate({ status: "onboarding", state: onboarding });
+				return;
+			}
 			try {
-				const onboarding = await client.getOnboarding();
-				if (cancelled) return;
-				if (onboarding.state === "unclaimed") {
-					setGate({ status: "onboarding", state: onboarding });
-					return;
-				}
 				const identity = await client.whoami();
 				if (cancelled) return;
-				setGate({ status: "ready", identity });
+				setGate({ status: "ready", methods: onboarding.methods, identity });
 			} catch (cause) {
 				if (cancelled) return;
+				if (isProxyOnly(onboarding.methods) && cause instanceof ApiError && cause.status === 401) {
+					setGate({ status: "proxy-unidentified", cause: "unidentified", context: "boot" });
+					return;
+				}
+				if (
+					isProxyOnly(onboarding.methods) &&
+					cause instanceof ApiError &&
+					cause.status === 403 &&
+					(cause.error === "invalid_username" || cause.error === "user_not_provisioned")
+				) {
+					setGate({
+						status: "proxy-unidentified",
+						cause: cause.error === "invalid_username" ? "invalid_username" : "not_provisioned",
+						context: "boot",
+					});
+					return;
+				}
 				if (cause instanceof ApiError && cause.status === 401) {
-					setGate({ status: "login" });
+					setGate({ status: "login", methods: onboarding.methods });
 					return;
 				}
 				setGate({
@@ -169,6 +210,13 @@ export function AuthGate(options: AuthGateOptions = {}) {
 		}
 	}
 	if (gate.status === "onboarding") {
+		if (
+			isProxyOnly(gate.state.methods) &&
+			gate.state.codeRequired &&
+			gate.state.proxyIdentity === undefined
+		) {
+			return <ProxyUnidentified cause="unidentified" context="onboarding" />;
+		}
 		return (
 			<div className="auth-screen" data-auth-screen="onboarding">
 				<Onboarding
@@ -178,6 +226,9 @@ export function AuthGate(options: AuthGateOptions = {}) {
 				/>
 			</div>
 		);
+	}
+	if (gate.status === "proxy-unidentified") {
+		return <ProxyUnidentified cause={gate.cause} context={gate.context} />;
 	}
 	if (gate.status === "login") {
 		return (
@@ -195,7 +246,7 @@ export function AuthGate(options: AuthGateOptions = {}) {
 			client={client}
 			createEventSource={options.createEventSource}
 			identity={gate.identity}
-			onLogout={() => setGate({ status: "login", message: "Signed out." })}
+			onLogout={() => setGate({ status: "login", methods: gate.methods, message: "Signed out." })}
 		/>
 	);
 }

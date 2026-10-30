@@ -1090,6 +1090,7 @@ function scriptedPrompt(answers: string[]): {
 /** The onboarding fetch stub: GET answers the state; POST records the claim. */
 function onboardingFetchStub(options?: {
 	state?: "unclaimed" | "claimed";
+	methods?: readonly ("token" | "proxy")[];
 	codeRequired?: boolean;
 	claimStatus?: number;
 	claimBody?: unknown;
@@ -1120,7 +1121,7 @@ function onboardingFetchStub(options?: {
 			json: () =>
 				Promise.resolve({
 					state,
-					methods: ["token"],
+					methods: options?.methods ?? ["token"],
 					codeRequired: options?.codeRequired ?? true,
 				}),
 		};
@@ -1227,6 +1228,50 @@ describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
 		expect(errors.join("\n")).toMatch(/invalid_code/);
 		expect(calls.launchTui).toEqual([]);
 		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("a proxy-only unclaimed server without a proxy identity never prompts for an unredeemable setup code", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt([]);
+		const { fetch, claims } = onboardingFetchStub({
+			state: "unclaimed",
+			methods: ["proxy"],
+			codeRequired: true,
+		});
+		const errors: string[] = [];
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+			{ error: (text) => errors.push(text) },
+		);
+		expect(code).toBe(1);
+		expect(errors).toEqual([
+			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
+		]);
+		expect(questions).toEqual([]);
+		expect(claims).toEqual([]);
+		expect(calls.launchTui).toEqual([]);
+		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("a token-method unclaimed server still prompts for the setup code", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["ABCD-EFGH", "alice", "", ""]);
+		const { fetch } = onboardingFetchStub({
+			state: "unclaimed",
+			methods: ["token"],
+			codeRequired: true,
+		});
+		const { deps } = stubDeps({ prompt, fetch });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+		);
+		expect(code).toBe(0);
+		expect(questions[0]).toBe("setup code: ");
 	});
 
 	test("a GET that 403s setup_required is treated as unclaimed with a code", async () => {

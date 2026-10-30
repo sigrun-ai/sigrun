@@ -89,7 +89,13 @@ export interface E2EServerOptions {
 	 * onboards through the real claim route. The default boot stays the
 	 * naive workstation posture (`SIGRUN_AUTH=none` + a claimed admin).
 	 */
-	readonly auth?: { readonly setupCode: string } | { readonly claimed: true };
+	readonly auth?:
+		| { readonly setupCode: string }
+		| { readonly claimed: true }
+		| {
+				readonly proxy: { readonly trustedProxies: readonly string[] };
+				readonly claimed: true;
+		  };
 	/** U1 Task 6: boot the server with `SIGRUN_DEV=true` (the gallery's
 	 *  rail gate reads `/v1/meta`'s `dev`). */
 	readonly dev?: boolean;
@@ -251,7 +257,11 @@ async function bootOnDir(
 		// no authenticators. The auth boot (Task 8) is the token method:
 		// every /v1 call needs the session cookie the onboarding claim
 		// (or a login) sets.
-		SIGRUN_AUTH: options.auth === undefined ? "none" : "token",
+		SIGRUN_AUTH:
+			options.auth === undefined ? "none" : "proxy" in options.auth ? "proxy" : "token",
+		...(options.auth !== undefined && "proxy" in options.auth
+			? { SIGRUN_AUTH_TRUSTED_PROXIES: options.auth.proxy.trustedProxies.join(",") }
+			: {}),
 		SIGRUN_WORKSPACE_PATH: dir,
 		...(options.dev === true ? { SIGRUN_DEV: "true" } : {}),
 	}, settingsFile);

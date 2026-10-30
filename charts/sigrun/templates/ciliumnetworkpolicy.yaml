@@ -1,0 +1,35 @@
+{{/*
+Sigrun CiliumNetworkPolicy — opt-in ingress-only policy.
+
+The main controller is selected with the same labels as the Deployment's
+selector (including the bjw-s controller label), so the policy cannot drift
+onto another controller. The default admits Cilium's ingress entity and the
+host entity (kubelet HTTP probes) on the main Service port. Additional CNP
+ingress rules are appended verbatim for deployment-specific clients.
+
+REQUIRED when trustedProxies covers the pod CIDR: restricting proxy sources
+at the application layer does not prevent direct pod access.
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "bjw-s.common.lib.chart.names.fullname" . }}
+  labels:
+    {{- include "bjw-s.common.lib.metadata.allLabels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      {{- include "bjw-s.common.lib.metadata.selectorLabels" . | nindent 6 }}
+  ingress:
+    - fromEntities:
+        {{- .Values.networkPolicy.allowEntities | toYaml | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.service.main.ports.http.port | quote }}
+              protocol: TCP
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

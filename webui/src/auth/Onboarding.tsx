@@ -156,9 +156,12 @@ export function Onboarding(props: {
 	);
 }
 
-/** The user-facing spelling of a rejection: the wire's error code when it
- *  spoke one (invalid_code, already_claimed…), else the message. */
+/** The user-facing spelling of a rejection: known wire codes get fixed copy;
+ *  other errors retain their existing message. This proxy code is never raw. */
 export function messageOf(cause: unknown): string {
+	if (cause instanceof ApiError && cause.error === "proxy_identity_required") {
+		return "This sigrun signs people in through its sign-in proxy. Open it through the proxy.";
+	}
 	if (cause instanceof ApiError && cause.error !== undefined) {
 		return cause.error;
 	}
