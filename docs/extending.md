@@ -246,7 +246,7 @@ what core does with each, and where its rules are documented:
 | `conversationArchived` | `ExtensionLifecycleHandler<"conversationArchived">` | fired on archive flips (both directions) | this table |
 | `conversationIdle` | `ExtensionLifecycleHandler<"conversationIdle">` | fired per quiet period once the idle threshold passes and no run is live | this table |
 | `interactionSettled` | `ExtensionLifecycleHandler<"interactionSettled">` | fired once per terminal interaction transition (any writer: route answer, host answer, skip/expire/cancel) with `{conversationId, callId, kind, status}` | [approval-ux-seams.md](approval-ux-seams.md) |
-| `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the ordered flush window (handlers may commit); runs after workers stop | this table |
+| `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the shutdown flush window (handlers may commit); runs after workers stop, concurrently with other extensions under one shared deadline and with no guaranteed relative order | this table |
 | `userDeleted` | `ExtensionUserDeletedHandler` | fired after a user delete transferred ownership — move your per-user records here | this table |
 | `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |

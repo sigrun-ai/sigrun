@@ -158,11 +158,45 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		expect(
 			samples.some((line) => line.startsWith("sigrun_tasks_live{")),
 		).toBe(true);
+		// The full six-status vocabulary is always present (0s included),
+		// including 1.4.0's `sleeping` (Task B1 Step 6).
+		for (const status of [
+			"running",
+			"ready",
+			"waiting",
+			"sleeping",
+			"completing",
+			"blocked",
+		]) {
+			expect(samples).toContain(`sigrun_tasks_live{status="${status}"} 0`);
+		}
 		expect(
 			samples.some((line) =>
 				line.startsWith("sigrun_backup_last_success_timestamp_seconds"),
 			),
 		).toBe(false);
+		// D5: fixed label vocabularies, including zero-valued series.
+		for (const type of [
+			"session_failed", "task_faulted", "task_parked", "migration_failed",
+			"task_outdated", "task_error", "extension_error", "host_error", "listener_error",
+		]) {
+			expect(samples).toContain(`sigrun_durable_reports_total{type="${type}"} 0`);
+		}
+		for (const reason of ["missing_task", "task_too_old", "migration_failed", "restart_limit"]) {
+			expect(samples).toContain(`sigrun_tasks_blocked{reason="${reason}"} 0`);
+		}
+	});
+
+	test("increments durable report counters and counts blocked task reasons", async () => {
+		const { app, opened } = await bootServer();
+		opened.reports.onReport(new Error("parked"), {
+			type: "task_parked",
+			task: { id: 999 as never, kind: "sigrun.schedule", conversationId: 1 as never },
+		});
+		const samples = parseExposition(await getMetrics(app));
+		expect(samples).toContain('sigrun_durable_reports_total{type="task_parked"} 1');
+		expect(samples).toContain('sigrun_durable_reports_total{type="session_failed"} 0');
+		expect(samples).toContain('sigrun_tasks_blocked{reason="restart_limit"} 0');
 	});
 
 	test("a scrape racing shutdown (harness closed) answers 200 with sigrun_up 0", async () => {
@@ -273,8 +307,22 @@ describe("GET /metrics job families (W4 Task 4)", () => {
 			action: { kind: "prompt", prompt: "say ok", conversation: "new" },
 		};
 		const job = await opened.jobs.createApi(spec, "tester");
-		// The executor writes `nextRun` onto the record after its first fire;
-		// the route renders whatever the record carries — pin it directly so
+		// 1.4.0: the executor's `waiting` phase patches `nextRun` onto the
+		// record BEFORE it sleeps (D3). Let that first patch land before
+		// pinning, or the pin races the executor and the gauge reads the
+		// derived slot instead.
+		{
+			const deadline = Date.now() + 10_000;
+			for (;;) {
+				const current = await opened.jobs.get(job.id);
+				if (current?.nextRun !== undefined) break;
+				if (Date.now() > deadline) {
+					throw new Error("the executor never stamped the first nextRun");
+				}
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+		}
+		// The route renders whatever the record carries — pin it directly so
 		// the scrape is deterministic (the schedule loop is jobs-task's suite).
 		await patchJob(
 			opened.harness,

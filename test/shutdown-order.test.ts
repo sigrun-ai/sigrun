@@ -15,11 +15,11 @@
  * stop only once every settle has been delivered).
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -27,12 +27,27 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { loadConfig, type SigrunConfig } from "../src/config.js";
+import { DEFAULT_MEMORY_SEAM, loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import {
+	SHUTDOWN_SETTLE_WAIT_MS,
+	WORKER_SHUTDOWN_AWAIT_MS,
+} from "../src/harness/event-bus.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { startGateway, type GatewayHandle } from "../src/server/gateway.js";
-import { createShutdown, type ShutdownSteps } from "../src/server/shutdown.js";
+import {
+	CLOSE_APP_SHUTDOWN_CAP_MS,
+	CLOSE_HARNESS_SHUTDOWN_CAP_MS,
+	END_STREAMS_SHUTDOWN_CAP_MS,
+	GATEWAY_STOP_INTAKE_SHUTDOWN_CAP_MS,
+	GATEWAY_STOP_SHUTDOWN_CAP_MS,
+	PROVIDER_REFRESH_SHUTDOWN_CAP_MS,
+	SANDBOX_WORKERS_SHUTDOWN_CAP_MS,
+	createShutdown,
+	shutdownBudgetMs,
+	type ShutdownSteps,
+} from "../src/server/shutdown.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 const ENGINE_SPECIFIER = pathToFileURL(
@@ -83,7 +98,132 @@ function fakeSteps(order: string[], overrides?: {
 	};
 }
 
+describe("shutdownBudgetMs", () => {
+	test("equals the sum of every ordered stage cap", () => {
+		const hookDeadlineMs = 12_345;
+		// worker stop + initial drain + (settle wait and its final drain)
+		// + all extension handlers under one shared deadline.
+		const eventBusShutdownCapMs =
+			WORKER_SHUTDOWN_AWAIT_MS +
+			3 * hookDeadlineMs +
+			SHUTDOWN_SETTLE_WAIT_MS;
+		expect(shutdownBudgetMs({ hookDeadlineMs })).toBe(
+				END_STREAMS_SHUTDOWN_CAP_MS +
+					CLOSE_APP_SHUTDOWN_CAP_MS +
+					GATEWAY_STOP_INTAKE_SHUTDOWN_CAP_MS +
+					eventBusShutdownCapMs +
+					GATEWAY_STOP_SHUTDOWN_CAP_MS +
+					SANDBOX_WORKERS_SHUTDOWN_CAP_MS +
+					PROVIDER_REFRESH_SHUTDOWN_CAP_MS +
+					CLOSE_HARNESS_SHUTDOWN_CAP_MS,
+			);
+		expect(shutdownBudgetMs(DEFAULT_MEMORY_SEAM)).toBe(
+				shutdownBudgetMs({ hookDeadlineMs: 30_000 }),
+		);
+	});
+
+	test("the harness-close cap is at least four times the measured 1.4.0 fixture close", { timeout: 60_000 }, async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-shutdown-close-measure-"));
+		const storagePath = join(dir, "sigrun.db");
+		await cp(
+			join(import.meta.dirname, "fixtures", "durable-v1", "sigrun.db"),
+			storagePath,
+		);
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: storagePath,
+			SIGRUN_AUTH: "none",
+			SIGRUN_WORKSPACE_PATH: dir,
+		});
+		const opened = await openHarness(config, {
+			identity: await seededIdentity(dir),
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		let measuredMs = 0;
+		try {
+			const before = performance.now();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+			measuredMs = performance.now() - before;
+			console.info(
+				`sigrun: measured 1.4.0 durable-v1 fixture close ${measuredMs.toFixed(1)}ms; cap ${CLOSE_HARNESS_SHUTDOWN_CAP_MS}ms`,
+			);
+			expect(measuredMs).toBeGreaterThan(0);
+			expect(CLOSE_HARNESS_SHUTDOWN_CAP_MS).toBeGreaterThanOrEqual(
+				4 * measuredMs,
+			);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT).catch(() => {});
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("createShutdown", () => {
+	test("a wedged stage is abandoned at its cap and the remaining stages still run", async () => {
+		vi.useFakeTimers();
+		try {
+			const order: string[] = [];
+			const steps = fakeSteps(order);
+			let rejectClose!: (error: Error) => void;
+			steps.closeApp = () => new Promise<void>((_resolve, reject) => {
+				rejectClose = reject;
+			});
+			const error = vi.spyOn(console, "error").mockImplementation(() => {});
+			const shutdown = createShutdown(steps);
+			const closing = shutdown();
+			await vi.advanceTimersByTimeAsync(0);
+			// An early rejection is collected by createShutdown, not logged
+			// again as an abandoned stage.
+			rejectClose(new Error("early close failure"));
+			await expect(closing).rejects.toBeInstanceOf(AggregateError);
+			expect(error).not.toHaveBeenCalledWith(
+				"sigrun: shutdown stage closeApp rejected after abandonment:",
+				expect.any(Error),
+			);
+			const wedged = createShutdown({
+				...steps,
+				closeApp: () => new Promise<void>((_resolve, reject) => {
+					rejectClose = reject;
+				}),
+			});
+			const abandoned = wedged();
+			await vi.advanceTimersByTimeAsync(CLOSE_APP_SHUTDOWN_CAP_MS);
+			await abandoned;
+			expect(order.slice(7)).toEqual([
+				"endStreams",
+				"gateway.stopIntake",
+				"eventBusShutdown",
+				"gateway.stop",
+				"stopSandboxWorkers",
+				"stopProviderRefresh",
+				"closeHarness",
+			]);
+			expect(error).toHaveBeenCalledWith(
+				`sigrun: shutdown stage closeApp exceeded ${CLOSE_APP_SHUTDOWN_CAP_MS}ms — abandoning the wait`,
+			);
+			// A late rejection after abandonment is logged, never unhandled.
+			rejectClose(new Error("late close failure"));
+			await vi.runAllTimersAsync();
+			expect(error).toHaveBeenCalledWith(
+				"sigrun: shutdown stage closeApp rejected after abandonment:",
+				expect.any(Error),
+			);
+			error.mockRestore();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("runs the eight steps in order", async () => {
 		const order: string[] = [];
 		const shutdown = createShutdown(fakeSteps(order));
@@ -109,7 +249,7 @@ describe("createShutdown", () => {
 		await expect(shutdown()).rejects.toSatisfy((error: unknown) => {
 			expect(error).toBeInstanceOf(AggregateError);
 			const aggregate = error as AggregateError;
-			expect(aggregate.message).toBe("sigrun shutdown failed");
+			expect(aggregate.message).toBe("sigrun shutdown failed: closeApp");
 			expect(aggregate.errors).toEqual([failure]);
 			return true;
 		});
@@ -134,6 +274,9 @@ describe("createShutdown", () => {
 		);
 		await expect(shutdown()).rejects.toSatisfy((error: unknown) => {
 			const aggregate = error as AggregateError;
+			expect(aggregate.message).toBe(
+				"sigrun shutdown failed: gateway.stopIntake, gateway.stop",
+			);
 			expect(aggregate.errors).toEqual([intake, stop]);
 			return true;
 		});

@@ -101,6 +101,13 @@ controllers:
     # schedule, fsGroup 1000 makes the kubelet chown the sigrun-data PVC
     # to the same uid on mount.
     pod:
+      # D6 default: fixed stage caps (87s) + 3×SIGRUN_HOOK_DEADLINE (30s
+      # each) = 177s, plus the 15s margin, rounded up to five seconds. The
+      # three hooks cover the initial drain, the final live-run drain, and
+      # parallel extension handlers. SIGRUN_WORKER_DEADLINE bounds each run
+      # before the fixed worker-shutdown await. Raising SIGRUN_HOOK_DEADLINE
+      # requires raising this grace period correspondingly.
+      terminationGracePeriodSeconds: 195
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

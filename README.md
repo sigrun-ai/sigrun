@@ -175,6 +175,7 @@ still override it per field.
 | `SIGRUN_PORT` | positive int | `3000` | `server.port` | HTTP listen port. |
 | `SIGRUN_LISTEN_HOST` | host | `::` | — | HTTP listen host — the environment equivalent of the programmatic `serve({host})` option (the option wins when both are set). One resolved value drives the bind AND the auth defaults: a loopback bind derives the no-auth workstation posture, any other bind derives `token` auth. `GET /v1/meta` reports the effective listener (`listener.host`/`port`/`families`). |
 | `SIGRUN_STORAGE_PATH` | path | `<dataDir>/sigrun.db` | `server.storagePath` | SQLite database location. Relative values resolve against the data root (absolute values verbatim; the cwd-relative `data/sigrun.db` default is retired). |
+| `SIGRUN_SKIP_MIGRATION_SNAPSHOT` | `1` | *(unset)* | — | Skip the automatic pre-migration SQLite snapshot when set to `1`. Emergency escape hatch for an operator who already has an independent backup; without it, a needed snapshot failure stops boot before the one-way durable schema migration. |
 | `SIGRUN_WORKSPACE_PATH` | path | `<dataDir>/workspace` | `server.workspacePath` | Root of the static local workspace every conversation's tools run against. The default rides the data root (chart/compose deploys set the path explicitly); it is never persisted on first boot. |
 | `SIGRUN_DATA_DIR` | path | `$XDG_DATA_HOME/sigrun` or `~/.local/share/sigrun` | `server.dataDir` | Data root (the DB default and extension data dirs). Env/file values win verbatim. |
 | `SIGRUN_CACHE_DIR` | path | `$XDG_CACHE_HOME/sigrun` or `~/.cache/sigrun` | `server.cacheDir` | Cache root (regenerable; never ensured at boot). Env/file values win verbatim. |
@@ -191,6 +192,32 @@ still override it per field.
 | `SIGRUN_BACKUP_S3_BUCKET` | string | *(unset)* | `server.backup.s3.bucket` | S3 backup bucket. |
 | `SIGRUN_BACKUP_S3_PREFIX` | string | *(unset)* | `server.backup.s3.prefix` | Key prefix within the bucket. |
 | `SIGRUN_BACKUP_S3_ENDPOINT` | URL | AWS default | `server.backup.s3.endpoint` | Custom S3 endpoint (S3-compatible stores). |
+
+Per-model overrides: `server.compaction.modelOverrides` is a map keyed by
+the exact `provider/modelId` string pi-durable composes — note that a
+chain-shaped model id doubles the prefix. Use it when a small-window model
+must sit alongside the large-window default policy (lower
+`reserveTokens`/`keepRecentTokens`/`backgroundTokens`, or `enabled: false`
+for a model that must never compact):
+
+```jsonc
+"server": {
+  "compaction": {
+    "reserveTokens": 16384,
+    "modelOverrides": {
+      // Synthetic example: provider "bifrost", model id "bifrost/small-chat".
+      "bifrost/bifrost/small-chat": { "reserveTokens": 4096, "keepRecentTokens": 6000 }
+    }
+  }
+}
+```
+
+Each entry is a partial policy (the same fields and minimums as the parent
+block); unset fields inherit the global policy. Boot-time lifetime like the
+rest of compaction, and there is no env spelling. After the boot catalog
+refresh an override key that matches no known model logs one warning
+(`compaction override "<key>" matches no known model`) — never an error,
+since catalogs move.
 
 ### settings.json schema
 
@@ -218,7 +245,10 @@ still override it per field.
       "enabled": true,
       "reserveTokens": 16384,        // positive integer
       "keepRecentTokens": 20000,     // positive integer
-      "backgroundTokens": 32768      // non-negative integer (0 = off)
+      "backgroundTokens": 32768,     // non-negative integer (0 = off)
+      "modelOverrides": {            // per-model partial policies, keyed by exact provider/modelId
+        "bifrost/bifrost/small-chat": { "reserveTokens": 4096 }
+      }
     },
     "backup": { // target: { "path": "/backups" } XOR { "s3": { "bucket": "...", "prefix": "...", "endpoint": "..." } }
       "staleAfterHours": 36            // positive number: health.backup degrades past this marker age
@@ -1075,6 +1105,34 @@ launcher) is not supervised either; there the callout says "Restart
 sigrun to apply" with no button. `GET /v1/meta` reports the posture
 (`supervised`).
 
+## Parked tasks
+
+A task cut off repeatedly without progress (a crash loop) is parked by
+pi-durable's restart limit: it shows `blocked` with reason
+`restart_limit` and does not run again until an administrator retries
+it. The `SigrunTaskParked` alert fires on this. Two admin-only
+endpoints inspect and recover parked tasks:
+
+- `GET /v1/admin/tasks?state=blocked` — lists blocked tasks with
+  `{id, kind, reason, conversationId, owner?, extension?}` per row
+  (owner is the conversation's session owner when it has one; extension
+  is the registered task definition's owner when known).
+- `POST /v1/admin/tasks/:id/retry` — re-runs a restart-parked task:
+  204 on success, 404 `unknown_task` for an unknown id, 409
+  `not_parked` for a task that isn't parked (including one blocked for
+  another reason, such as `missing_task`). A retried schedule job's
+  status returns to `waiting` as the task runs again.
+
+```sh
+# List blocked tasks (admin token).
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:3000/v1/admin/tasks?state=blocked"
+
+# Retry a parked task.
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3000/v1/admin/tasks/7/retry
+```
+
 ## API sketch
 
 - `GET /v1/meta` — version, extensions, health, auth posture
@@ -1084,6 +1142,8 @@ sigrun to apply" with no button. `GET /v1/meta` reports the posture
   differs from boot) and PATCH reports `{applied, pending}`.
 - `POST /v1/admin/restart` — graceful restart (admin, supervised
   deploys only; see Restarting).
+- `GET /v1/admin/tasks?state=blocked`, `POST /v1/admin/tasks/{id}/retry`
+  — parked-task inspection and recovery (admin; see Parked tasks).
 - `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
   the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
   now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are

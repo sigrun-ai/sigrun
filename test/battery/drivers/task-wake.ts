@@ -1,26 +1,28 @@
 /**
  * Crash-battery item 7 driver (plan Task 12 step 7, spec §7 M1 battery,
  * App A "scheduled jobs must be crash-durable"): `kill -9` a task
- * mid-durable-`sleep(until)` → restart → the task wakes at (or after) the
+ * mid-durable-sleep → restart → the task wakes at (or after) the
  * deadline EXACTLY ONCE — no double-fire, no missed wake, no early wake.
  *
  * Task definition (a `defineTask` state machine, registered identically in
  * both modes; the deadline lives in the durable INPUT, recoverable from the
- * task record in either process):
+ * task record in either process), on pi-durable 1.4.0:
  * - phase `"start"`: appends the `START` marker line (guarded at-most-once
  *   by the marker FILE itself, which survives any crash), then commits the
  *   checkpoint `{phase: "sleep", deadline}` — durable progress.
- * - phase `"sleep"`: `await runtime.sleep(deadline, context)` — THE durable
- *   sleep, the crash target. On wake (or on resume past the deadline),
- *   commits `{phase: "wake", deadline}` — durable progress.
- * - phase `"wake"`: appends `WOKE:<runtime.now()>` (file-guarded
+ * - phase `"sleep"`: `await runtime.sleepUntil(deadline, {phase: "wake",
+ *   deadline}, context)` — THE durable sleep, the crash target. The phase
+ *   ENDS here: the task holds no invocation while asleep (a kill during
+ *   the sleep kills a process with no running invocation for this task).
+ * - phase `"wake"`: the post-sleep body, re-entered on wake (or on resume
+ *   past the deadline): appends `WOKE:<runtime.now()>` (file-guarded
  *   at-most-once), then commits the terminal outcome `{status:
  *   "completed", result: {wokeAt, deadline}}`.
- * A crash mid-sleep leaves the checkpoint at `{phase: "sleep"}`; the
- * reopened harness re-dispatches AT that phase (the scheduler returns
- * `running` records to `pending` at open and resumes from the checkpoint),
- * which re-sleeps to the SAME deadline — the START phase never re-runs
- * (its checkpoint transition is durable), so no second START line.
+ * A crash mid-sleep leaves the durable record `sleeping` with checkpoint
+ * `{phase: "wake", deadline}`; the reopened harness resumes the task AT
+ * the deadline (or immediately, if it already passed) — the START phase
+ * never re-runs (its checkpoint transition is durable), so no second
+ * START line.
  *
  * START/WOKE markers: the T12a execution-marker pattern, one line per
  * actual occurrence, across both processes, in `<dir>/task-wakes.count`.
@@ -132,17 +134,10 @@ function wakeTask(dir: string) {
 			},
 			sleep: async (task, runtime, context) => {
 				const deadline = task.state.checkpoint.deadline;
-				// THE durable sleep — the crash target. A resumed invocation
-				// re-enters HERE with the same deadline.
-				await runtime.sleep(deadline, context);
-				// Durable progress: hand over to the wake phase.
-				await runtime.commit(
-					() => ({
-						status: "running" as const,
-						checkpoint: { phase: "wake" as const, deadline },
-					}),
-					context,
-				);
+				// THE durable sleep — the crash target. The phase ENDS here:
+				// the resumed invocation re-enters at `wake` when the harness
+				// clock reaches the deadline (or immediately when past it).
+				await runtime.sleepUntil(deadline, { phase: "wake", deadline }, context);
 			},
 			wake: async (task, runtime, context) => {
 				const deadline = task.state.checkpoint.deadline;
@@ -202,10 +197,9 @@ async function main(): Promise<never> {
 			wakeTaskId: taskId,
 			wakeDeadline: deadline,
 		});
-		// The durable-sleep observable: the task record's checkpoint is
-		// committed at `{phase: "sleep", deadline}` (the START commit) and
-		// the START marker line exists. Only then is the sleep intent
-		// durable; `resume()` (armed by openHarness) dispatched the task.
+		// The durable-sleep observable: the task record is `sleeping` with
+		// the `wake` checkpoint durably committed by sleepUntil, and the
+		// START marker line exists. Only then is the sleep intent durable.
 		const sleepingDeadline = Date.now() + SLEEPING_DEADLINE_MS;
 		for (;;) {
 			const record = await opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
@@ -213,7 +207,8 @@ async function main(): Promise<never> {
 			const started = (await wakeMarkers(dir)).some((line) => line === "START");
 			if (
 				record !== undefined &&
-				checkpoint?.phase === "sleep" &&
+				record.state.status === "sleeping" &&
+				checkpoint?.phase === "wake" &&
 				checkpoint.deadline === deadline &&
 				started
 			) {

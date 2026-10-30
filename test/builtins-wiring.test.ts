@@ -149,6 +149,21 @@ function harnessBuiltinNames(): string[] {
 	return BUILTIN_EXTENSIONS.map((builtin) => builtin.specifier);
 }
 
+/**
+ * Part A released ext-gateway with an exact @sigrun/shared 0.2.1 peer.
+ * Leg A leaves that published sibling untouched; integration may move it
+ * directly to the 0.3.0 family version. Older shared versions remain skew.
+ */
+function acceptedSharedPeers(
+	name: string,
+	siblingVersion: string | undefined,
+	own: string,
+): Set<string> {
+	return name === "@sigrun/ext-gateway" && siblingVersion === "0.1.3" && own === "0.3.0"
+		? new Set(["0.2.1", "0.3.0"])
+		: new Set([own]);
+}
+
 /** The five sibling checkouts, keyed by declared package name. */
 function siblingManifests(): Map<string, { dir: string; manifest: MinimalManifest }> {
 	const map = new Map<string, { dir: string; manifest: MinimalManifest }>();
@@ -230,6 +245,23 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		expect(Object.fromEntries(printed)).toEqual(Object.fromEntries(declared));
 	});
 
+	test("the Part A ext-gateway shared-peer exception stays narrow", () => {
+		const siblings = siblingManifests();
+		const gateway = siblings.get("@sigrun/ext-gateway");
+		expect(gateway?.manifest.version).toBe("0.1.3");
+		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"]).toBe("0.2.1");
+		const accepted = acceptedSharedPeers(
+			"@sigrun/ext-gateway",
+			gateway?.manifest.version,
+			"0.3.0",
+		);
+		expect(accepted.has("0.2.1")).toBe(true);
+		expect(accepted.has("0.3.0")).toBe(true);
+		expect(accepted.has("0.1.2")).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.4", "0.3.0").has("0.2.1")).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0").has("0.2.1")).toBe(false);
+	});
+
 	test("no peer skew: every built-in's host peers pin core's own version of that module", () => {
 		const core = manifest(join(REPO_ROOT, "package.json"));
 		const siblings = siblingManifests();
@@ -237,18 +269,30 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 			for (const [module, pin] of Object.entries(sibling.manifest.peerDependencies ?? {})) {
 				const own = core.dependencies?.[module];
 				if (own !== undefined) {
-					// Core carries the module directly: the peer must be the
-					// same pin (exact equality — a divergent range or version is
-					// the skew class this test exists to catch).
-					expect(pin, `${name} peer ${module} == core's pin`).toBe(own);
+					// Phase-1 peers deliberately accept both host majors while
+					// core develops against 1.4.0. A range that excludes core's
+					// pin is the skew class this test exists to catch.
+					const accepted = new Set(pin.split("||").map((part) => part.trim()));
+					expect(
+						module === "@sigrun/shared"
+							? [...accepted].some((pin) =>
+								acceptedSharedPeers(name, sibling.manifest.version, own).has(pin),
+							)
+							: accepted.has(own),
+						`${name} peer ${module} accepts core's pin ${own}`,
+					).toBe(true);
 				} else {
 					// A transitive host module (e.g. @earendil-works/pi-codemode,
 					// which arrives via pi-durable): the peer must equal the
 					// version core's tree actually resolves.
 					const resolved = manifest(
 						join(REPO_ROOT, "node_modules", module, "package.json"),
-					).version;
-					expect(pin, `${name} peer ${module} == core's resolved ${resolved}`).toBe(resolved);
+					).version as string;
+					const accepted = new Set(pin.split("||").map((part) => part.trim()));
+					expect(
+						accepted.has(resolved),
+						`${name} peer ${module} accepts core's resolved ${resolved}`,
+					).toBe(true);
 				}
 			}
 		}

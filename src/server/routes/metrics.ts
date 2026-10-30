@@ -57,6 +57,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
+import { REPORT_TYPES } from "../../harness/reports.js";
 import { readBackupMarker } from "../../backup/marker.js";
 import { scanJobs } from "../../jobs/docs.js";
 import { providerAuthStatus } from "../helpers.js";
@@ -65,6 +66,8 @@ import { checkStorage } from "../readiness.js";
 
 /** The exposition content type (spec §6.9's format rule). */
 const EXPOSITION_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
+
+const BLOCKED_REASONS = ["missing_task", "task_too_old", "migration_failed", "restart_limit"] as const;
 
 /** Escape one label value per the exposition format: `\` → `\\`,
  *  `"` → `\"`, newline → `\n`. */
@@ -142,18 +145,34 @@ export function registerMetricsRoutes(
 				"Age of the oldest in-flight submission's admission (0 when none; in-process clock — a pre-restart run is invisible until it settles)",
 				[{ labels: {}, value: Math.round((oldestMs ?? 0) / 1000) }],
 			);
-			// Live tasks by scheduler state kind. The full five-kind
-			// vocabulary is emitted (0s included) for label stability.
+			// Live tasks by scheduler state kind. The full six-kind
+			// vocabulary is emitted (0s included) for label stability
+			// (1.4.0 adds `sleeping` — the durable-sleep state).
 			const taskStatuses: Record<string, number> = {
 				running: 0,
 				ready: 0,
 				waiting: 0,
+				sleeping: 0,
 				completing: 0,
 				blocked: 0,
 			};
+			const blockedReasons: Record<string, number> = Object.fromEntries(
+				BLOCKED_REASONS.map((reason) => [reason, 0]),
+			);
 			for (const task of inspection.tasks) {
 				taskStatuses[task.state.kind] = (taskStatuses[task.state.kind] ?? 0) + 1;
+				if (task.state.kind === "blocked") {
+					blockedReasons[task.state.reason] = (blockedReasons[task.state.reason] ?? 0) + 1;
+				}
 			}
+			family(
+				"sigrun_tasks_blocked",
+				"Live tasks blocked by scheduler reason",
+				Object.entries(blockedReasons).map(([reason, count]) => ({
+					labels: { reason },
+					value: count,
+				})),
+			);
 			family(
 				"sigrun_tasks_live",
 				"Live tasks by scheduler state",
@@ -216,6 +235,16 @@ export function registerMetricsRoutes(
 			"sigrun_ready",
 			"1 when the readiness storage check (the /readyz root-conversation read) succeeds",
 			[{ labels: {}, value: storage === "ok" ? 1 : 0 }],
+		);
+
+		// D5: process-local durable failure reports. Every known type is
+		// emitted, including zeros, for scrape-stable alert expressions.
+		const reportCounts = opened.reports.counts();
+		family(
+			"sigrun_durable_reports_total",
+			"Durable failure reports since process start",
+			REPORT_TYPES.map((type) => ({ labels: { type }, value: reportCounts[type] })),
+			"counter",
 		);
 
 		// Provider readiness: the shared derivation (`GET /v1/auth/check`'s

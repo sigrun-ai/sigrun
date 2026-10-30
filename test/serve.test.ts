@@ -19,7 +19,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,11 +28,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	DEFAULT_LISTEN_HOST,
 	LISTENER_PROBE_TIMEOUT_MS,
+	armRestartWatchdog,
 	listenerProbe,
 	measureListener,
 	serve,
 } from "../src/serve.js";
 import type { ListenerInfo } from "@sigrun/shared/views";
+import { DEFAULT_MEMORY_SEAM } from "../src/config.js";
+import { shutdownBudgetMs } from "../src/server/shutdown.js";
 
 // ---------------------------------------------------------------------------
 // The subsystem seam: witness the listenHost each subsystem receives.
@@ -516,6 +519,42 @@ describe("extension resolution through serve()", () => {
 		});
 		const extensions = served.meta.extensions as { name: string; status: string }[];
 		expect(extensions.find((entry) => entry.name === "sigrun-fixture-ext")).toBeUndefined();
+	});
+});
+
+describe("armRestartWatchdog", () => {
+	test("arms the computed shutdown budget and forces exit(1) when it fires", () => {
+		const budgetMs = shutdownBudgetMs(DEFAULT_MEMORY_SEAM);
+		let callback: (() => void) | undefined;
+		let armedMs: number | undefined;
+		let unrefCalls = 0;
+		const exits: number[] = [];
+		const disarm = armRestartWatchdog(budgetMs, {
+			setTimer: (cb, ms) => {
+				callback = cb;
+				armedMs = ms;
+				return { unref: () => { unrefCalls += 1; } };
+			},
+			exit: (code) => { exits.push(code); },
+		});
+		expect(armedMs).toBe(budgetMs);
+		expect(unrefCalls).toBe(1);
+		expect(exits).toEqual([]);
+		callback!();
+		expect(exits).toEqual([1]);
+		disarm();
+	});
+
+	test("serve's restart path arms shutdownBudgetMs(config)", async () => {
+		// The production wiring is deliberately checked at its composition
+		// seam: admin-restart.test.ts replaces onRestart before this callback.
+		const source = await readFile(
+			join(import.meta.dirname, "..", "src", "serve.ts"),
+			"utf8",
+		);
+		expect(source).toContain(
+			"armRestartWatchdog(shutdownBudgetMs(config.memorySeam))",
+		);
 	});
 });
 

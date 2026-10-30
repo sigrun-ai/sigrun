@@ -1,5 +1,5 @@
 import { isIanaTimeZone } from "./jobs/spec.js";
-import type { CompactionPolicy } from "@earendil-works/pi-durable";
+import type { CompactionPolicy, CompactionSettings } from "@earendil-works/pi-durable";
 import { isAbsolute, join } from "node:path";
 import type {
 	EffectiveServerSetting,
@@ -220,6 +220,13 @@ export interface SigrunConfig {
 	dataDir: string;
 	cacheDir: string;
 	stateDir: string;
+	/**
+	 * SQLite store path (`SIGRUN_STORAGE_PATH` over `server.storagePath`).
+	 * Before this store opens, boot snapshots an older durable schema unless
+	 * `SIGRUN_SKIP_MIGRATION_SNAPSHOT=1` is set (spec D4). That env-only
+	 * escape hatch is for operators with an independent backup; it never
+	 * becomes a settings-file field.
+	 */
 	storagePath: string;
 	models: SigrunModels;
 	/** Deploy-time extension package list (spec §4.1), parsed from `SIGRUN_EXTENSIONS` or the file's top-level `extensions`. */
@@ -264,8 +271,10 @@ export interface SigrunConfig {
 	 * `DEFAULT_COMPACTION_POLICY`; `backgroundTokens > 0` keeps background
 	 * compaction on (spec §3.1 "Background compaction on" — upstream starts
 	 * one `backgroundTokens` below the blocking threshold; `0` disables it).
+	 * `modelOverrides` (file-only, no env knob) tunes individual models
+	 * under pi-durable's exact `provider/modelId` key.
 	 */
-	compaction: CompactionPolicy;
+	compaction: CompactionPolicy & Pick<CompactionSettings, "modelOverrides">;
 	/**
 	 * The memory-seam bounds (spec §2/§3), parsed from the
 	 * `SIGRUN_{HOOK_DEADLINE,IDLE_THRESHOLD,WORKER_DEADLINE,QUEUE_MAX}`
@@ -925,11 +934,16 @@ export function parseBackupSections(
 function parseCompaction(
 	env: Env,
 	server?: ServerSettings["compaction"],
-): CompactionPolicy {
+): CompactionPolicy & Pick<CompactionSettings, "modelOverrides"> {
 	// Env parse first (a bad env value fails loud even when the file's
 	// value is valid); a file field applies only where its env var is
-	// absent; code defaults last.
+	// absent; code defaults last. `modelOverrides` is file-only (a map
+	// has no env spelling), passed through verbatim — pi-durable's
+	// `compactionPolicy` applies it per model at compaction time.
 	return {
+		...(server?.modelOverrides === undefined
+			? {}
+			: { modelOverrides: server.modelOverrides }),
 		enabled:
 			parseCompactionEnabled(env) ??
 			server?.enabled ??
@@ -1242,6 +1256,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_PORT` | `port` |
  * | `SIGRUN_WORKSPACE_PATH` | `workspacePath` |
  * | `SIGRUN_STORAGE_PATH` | `storagePath` |
+ * | `SIGRUN_SKIP_MIGRATION_SNAPSHOT` | — (boot escape hatch; never persisted) |
  * | `SIGRUN_DATA_DIR` | `dataDir` |
  * | `SIGRUN_CACHE_DIR` | `cacheDir` |
  * | `SIGRUN_STATE_DIR` | `stateDir` |
@@ -1423,6 +1438,13 @@ export function effectiveServerSection(
 		config.compaction.backgroundTokens,
 		["compaction", "backgroundTokens"],
 	);
+	if (config.compaction.modelOverrides !== undefined) {
+		emit(
+			"compaction.modelOverrides",
+			config.compaction.modelOverrides,
+			["compaction", "modelOverrides"],
+		);
+	}
 	emit(
 		"memorySeam.hookDeadlineMs",
 		config.memorySeam.hookDeadlineMs,

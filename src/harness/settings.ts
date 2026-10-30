@@ -652,6 +652,7 @@ function validateServer(server: unknown): void {
 			"reserveTokens",
 			"keepRecentTokens",
 			"backgroundTokens",
+			"modelOverrides",
 		]);
 		if (compaction.enabled !== undefined && typeof compaction.enabled !== "boolean") {
 			throw new SettingsValidationError("server.compaction.enabled", "must be a boolean");
@@ -662,15 +663,43 @@ function validateServer(server: unknown): void {
 			// backgroundTokens' minimum is 0 — the designed "background off"
 			// value, same as `SIGRUN_COMPACTION_BACKGROUND_TOKENS`.
 			const minimum = key === "backgroundTokens" ? 0 : 1;
-			if (
-				typeof v !== "number" ||
-				!Number.isInteger(v) ||
-				v < minimum
-			) {
+			assertIntegerMinimum(`server.compaction.${key}`, v, minimum);
+		}
+		if (compaction.modelOverrides !== undefined) {
+			const overrides = asRecord(compaction.modelOverrides);
+			if (overrides === undefined) {
 				throw new SettingsValidationError(
-					`server.compaction.${key}`,
-					minimum === 0 ? "must be a non-negative integer" : "must be a positive integer",
+					"server.compaction.modelOverrides",
+					"must be an object",
 				);
+			}
+			// Each entry is a partial policy with the SAME fields and
+			// minimums as the parent block; unknown inner keys fail naming
+			// the full `...modelOverrides.<model>.<field>` path.
+			for (const [modelKey, entry] of Object.entries(overrides)) {
+				const policy = asRecord(entry);
+				if (policy === undefined) {
+					throw new SettingsValidationError(
+						`server.compaction.modelOverrides.${modelKey}`,
+						"must be an object",
+					);
+				}
+				const prefix = `server.compaction.modelOverrides.${modelKey}.`;
+				checkKeys(prefix, policy, [
+					"enabled",
+					"reserveTokens",
+					"keepRecentTokens",
+					"backgroundTokens",
+				]);
+				if (policy.enabled !== undefined && typeof policy.enabled !== "boolean") {
+					throw new SettingsValidationError(`${prefix}enabled`, "must be a boolean");
+				}
+				for (const key of ["reserveTokens", "keepRecentTokens", "backgroundTokens"] as const) {
+					const v = policy[key];
+					if (v === undefined) continue;
+					const minimum = key === "backgroundTokens" ? 0 : 1;
+					assertIntegerMinimum(`${prefix}${key}`, v, minimum);
+				}
 			}
 		}
 	}
@@ -934,6 +963,31 @@ function isNonEmptyString(value: unknown): boolean {
 	return typeof value === "string" && value !== "";
 }
 
+/**
+ * The shared compaction numeric rule (parent block and per-model overrides):
+ * an integer at or above `minimum` — `0` for `backgroundTokens` (the designed
+ * "background off" value), `1` for the other token counts. Throws naming the
+ * full dotted field path.
+ */
+function assertIntegerMinimum(
+	field: string,
+	value: unknown,
+	minimum: 0 | 1,
+): void {
+	if (
+		typeof value !== "number" ||
+		!Number.isInteger(value) ||
+		value < minimum
+	) {
+		throw new SettingsValidationError(
+			field,
+			minimum === 0
+				? "must be a non-negative integer"
+				: "must be a positive integer",
+		);
+	}
+}
+
 function isNonEmptyStringArray(value: unknown): boolean {
 	return (
 		Array.isArray(value) &&
@@ -1123,6 +1177,10 @@ export class SettingsStore {
 							for (const [compKey, compValue] of Object.entries(
 								subValue as Record<string, unknown>,
 							)) {
+								// modelOverrides REPLACES the whole map by
+								// construction: it is a leaf value here, so this
+								// per-key assign swaps it verbatim rather than
+								// merging into the previous map.
 								if (compValue === null) delete mergedCompaction[compKey];
 								else mergedCompaction[compKey] = compValue;
 							}

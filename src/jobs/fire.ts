@@ -507,6 +507,8 @@ async function fireTaskAction(
 		}, context);
 	}
 	await patchJob(deps.harness, id, (draft) => {
+		draft.state = "waiting";
+		delete draft.reason;
 		draft.lastRun = run;
 	}, context);
 	return { outcome: "running" };

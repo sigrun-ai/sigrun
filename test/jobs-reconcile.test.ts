@@ -46,6 +46,7 @@ import { liveScheduleTasksByJob } from "../src/jobs/reconcile.js";
 import { createScheduleTask } from "../src/jobs/task.js";
 import { patchJob, readJob } from "../src/jobs/docs.js";
 import { specHash } from "../src/jobs/spec.js";
+import { createFakeClock, type FakeClock } from "./helpers/fake-clock.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { resolveWorkerEntry, testLauncher } from "../src/sandbox/pool.js";
 import { selfPackageRoot } from "../src/harness/packages.js";
@@ -83,6 +84,7 @@ interface TestRig {
 	jobs: JobsService;
 	faux: FauxProviderHandle;
 	dir: string;
+	clock: FakeClock;
 	setNow(ms: number): void;
 	now(): number;
 	close(): Promise<void>;
@@ -138,7 +140,7 @@ async function bootRig(options?: {
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_TIMEZONE: "UTC",
 	});
-	let clock = options?.startNow ?? T0;
+	const clock = createFakeClock(options?.startNow ?? T0);
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
@@ -149,17 +151,17 @@ async function bootRig(options?: {
 		...(options?.extensions === undefined
 			? {}
 			: { extensionSpecifiers: options.extensions }),
-		now: () => new Date(clock),
+		now: clock.now,
+		setTimer: clock.setTimer,
 	});
 	const rig: TestRig = {
 		opened,
 		jobs: opened.jobs,
 		faux,
 		dir,
-		setNow: (ms) => {
-			clock = ms;
-		},
-		now: () => clock,
+		clock,
+		setNow: clock.set,
+		now: clock.nowMs,
 		close: async () => {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		},
@@ -186,6 +188,23 @@ async function reboot(
 			? {}
 			: { extensions: options.extensions }),
 	});
+}
+
+/** Wait for async task/observer commits by stepping the fake clock. */
+async function until<T>(
+	clock: FakeClock,
+	read: () => Promise<T>,
+	predicate: (value: T) => boolean,
+	description: string,
+): Promise<T> {
+	for (;;) {
+		const value = await read();
+		if (predicate(value)) return value;
+		await clock.flush();
+		const settled = await read();
+		if (predicate(settled)) return settled;
+		await clock.advance(1);
+	}
 }
 
 type LiveTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
@@ -230,32 +249,20 @@ async function liveScheduleTasks(
 	return out;
 }
 
-/** Whether a task id is terminal (aborted, completed, …), polled to the bound. */
+/** Wait for an abort handler or task phase to settle. */
 async function waitTerminal(
 	rig: TestRig,
 	taskId: TaskId<unknown>,
-	timeoutMs = 5_000,
 ): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		const record = await rig.opened.harness.getTask(
-			taskId as never,
-			BACKGROUND_CONTEXT,
-		);
-		if (
+	await until(
+		rig.clock,
+		() => rig.opened.harness.getTask(taskId as never, BACKGROUND_CONTEXT),
+		(record) =>
 			record === undefined ||
 			record.state.status === "terminal" ||
-			record.state.status === "completing"
-		) {
-			return;
-		}
-		if (Date.now() > deadline) {
-			throw new Error(
-				`task ${String(taskId)} never settled (state=${JSON.stringify(record?.state)})`,
-			);
-		}
-		await new Promise((resolve) => setTimeout(resolve, 100));
-	}
+			record.state.status === "completing",
+		`task ${String(taskId)} to settle`,
+	);
 }
 
 /** Whether a task id is terminal right now (no wait). */
@@ -274,20 +281,17 @@ async function isTerminal(
 	);
 }
 
-/** Poll until no live schedule tasks remain for `jobId` (abort handlers settle asynchronously). */
+/** Wait until no live schedule tasks remain for `jobId`. */
 async function waitNoLiveTasks(
 	rig: TestRig,
 	jobId: string,
-	timeoutMs = 5_000,
 ): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if ((await liveScheduleTasks(rig, jobId)).length === 0) return;
-		if (Date.now() > deadline) {
-			throw new Error(`live schedule tasks for ${jobId} never drained`);
-		}
-		await new Promise((resolve) => setTimeout(resolve, 100));
-	}
+	await until(
+		rig.clock,
+		() => liveScheduleTasks(rig, jobId),
+		(tasks) => tasks.length === 0,
+		`live schedule tasks for ${jobId} to drain`,
+	);
 }
 
 // ─── Stage 1: sources and reconciliation ───────────────────────────────────
@@ -601,25 +605,8 @@ describe("listing — records only, never tasks", () => {
 			BACKGROUND_CONTEXT,
 		);
 		// The ghost task's first phase reads the absent record and commits
-		// terminal — bounded wait.
-		const deadline = Date.now() + 5_000;
-		for (;;) {
-			const record = await rig.opened.harness.getTask(
-				ghostTaskId as never,
-				BACKGROUND_CONTEXT,
-			);
-			if (
-				record !== undefined &&
-				(record.state.status === "terminal" ||
-					record.state.status === "completing")
-			) {
-				break;
-			}
-			if (Date.now() > deadline) {
-				throw new Error("ghost task never settled");
-			}
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		// terminal after its async storage read.
+		await waitTerminal(rig, ghostTaskId as never);
 		const listed = await rig.jobs.list();
 		expect(listed.map((job) => job.id)).not.toContain(ghost);
 		expect(listed.map((job) => job.id)).toContain(id);
@@ -679,13 +666,12 @@ describe("the taskSettled observer — task-action runs", () => {
 		const fired = await rig.jobs.runNow(id);
 		expect(fired.outcome).toBe("running");
 		// The child task runs to terminal; the observer settles the run.
-		const deadline = Date.now() + 10_000;
-		for (;;) {
-			const runs = await rig.jobs.runs(id, 20);
-			if (runs[0]?.outcome === "succeeded") break;
-			if (Date.now() > deadline) throw new Error("task run never settled succeeded");
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		await until(
+			rig.clock,
+			() => rig.jobs.runs(id, 20),
+			(runs) => runs[0]?.outcome === "succeeded",
+			"the task run to settle succeeded",
+		);
 		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
 		expect(record!.lastRun!.outcome).toBe("succeeded");
 	});
@@ -701,13 +687,12 @@ describe("the taskSettled observer — task-action runs", () => {
 		const id = "ext:fixture-jobs:tasked";
 		const fired = await rig.jobs.runNow(id);
 		expect(fired.outcome).toBe("running");
-		const deadline = Date.now() + 10_000;
-		for (;;) {
-			const runs = await rig.jobs.runs(id, 20);
-			if (runs[0]?.outcome === "failed") break;
-			if (Date.now() > deadline) throw new Error("task run never settled failed");
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		await until(
+			rig.clock,
+			() => rig.jobs.runs(id, 20),
+			(runs) => runs[0]?.outcome === "failed",
+			"the task run to settle failed",
+		);
 		const runs = await rig.jobs.runs(id, 20);
 		expect(runs[0]!.error).toBeDefined();
 		fixture.controls.boom = false;
@@ -825,26 +810,22 @@ describe("an aborted task-action run settles failed WITH the error text", () => 
 		const id = "ext:fixture-jobs:tasked";
 		const fired = await rig.jobs.runNow(id);
 		expect(fired.outcome).toBe("running");
-		// The run record carries the child task id.
-		const deadline = Date.now() + 5_000;
-		let taskId: number | undefined;
-		for (;;) {
-			const runs = await rig.jobs.runs(id, 20);
-			taskId = runs[0]?.taskId;
-			if (taskId !== undefined) break;
-			if (Date.now() > deadline) throw new Error("run record never carried the task id");
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		}
+		// The run record carries the child task id after fireJob's commit.
+		const runsWithTask = await until(
+			rig.clock,
+			() => rig.jobs.runs(id, 20),
+			(runs) => runs[0]?.taskId !== undefined,
+			"the run record to carry the task id",
+		);
+		const taskId = runsWithTask[0]!.taskId!;
 		await rig.opened.harness.abortTask(taskId as never, BACKGROUND_CONTEXT);
-		const settleDeadline = Date.now() + 10_000;
-		for (;;) {
-			const runsNow = await rig.jobs.runs(id, 20);
-			if (runsNow[0]?.outcome === "failed") break;
-			if (Date.now() > settleDeadline) {
-				throw new Error("aborted task run never settled failed");
-			}
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
+		// The abort handler settles the task, then taskSettled updates the run.
+		await until(
+			rig.clock,
+			() => rig.jobs.runs(id, 20),
+			(runsNow) => runsNow[0]?.outcome === "failed",
+			"the aborted task run to settle failed",
+		);
 		const settled = (await rig.jobs.runs(id, 20))[0]!;
 		expect(settled.outcome).toBe("failed");
 		expect(settled.error).toBe("aborted");

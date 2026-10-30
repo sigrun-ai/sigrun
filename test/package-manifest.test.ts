@@ -112,7 +112,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			"CHANGELOG.md",
 		]);
 		// Exact intra-family pins.
-		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.2.1");
+		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.3.0");
 		// Optional platform packages. The tui is a workspace member pinned
 		// to its registry version; the sandbox pair are NOT workspace
 		// members (a linked optional dep with os/cpu constraints makes
@@ -161,6 +161,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 
 	test("shared: published leaf with directory-qualified repository", () => {
 		expect(shared.name).toBe("@sigrun/shared");
+		expect(shared.version).toBe(root.version);
 		expect(shared.private).toBeUndefined();
 		expect(shared.license).toBe("MIT");
 		expect(shared.engines?.node).toBe(NODE_ENGINE);
@@ -181,7 +182,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(tui.engines?.node).toBe(NODE_ENGINE);
 		expect(tui.publishConfig).toEqual(PUBLISH_CONFIG);
 		expect(tui.files).toEqual(["dist", "CHANGELOG.md"]);
-		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.2.1");
+		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.3.0");
 		expect(tui.bin).toEqual({ "sigrun-tui": "dist/launch.js" });
 		expect(tui.repository).toEqual({
 			type: "github",

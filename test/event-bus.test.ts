@@ -220,6 +220,71 @@ describe("shutdownSequence with live runs", () => {
 		expect(order).toEqual(["runSettled", "harnessShutdown"]);
 	});
 
+	test("the final live-run drain can consume settle + hook within the event-bus budget", { timeout: 20_000 }, async () => {
+		const settleMs = 60;
+		const hookMs = 100;
+		const { bus, root, opened, faux } = await bootBus({
+			hookDeadlineMs: hookMs,
+			shutdownSettleWaitMs: settleMs,
+		});
+		const provider = withCancel(BACKGROUND_CONTEXT);
+		faux.setResponses([async () => await new Promise<AssistantMessage>((_resolve, reject) => {
+			provider.context.abortSignal?.addEventListener("abort", () => {
+				reject(new Error("aborted after the settle-budget assertion"));
+			}, { once: true });
+		})]);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// One REAL run remains live through the settle deadline. A real
+			// terminal-interaction commit after that deadline queues lifecycle
+			// work for the final drain, exactly the budgeted settle+hook path.
+			await root.submit(
+				{ type: "input", content: "remain live through the final drain" },
+				BACKGROUND_CONTEXT,
+			);
+			await vi.waitFor(() => {
+				expect(bus.oldestLiveAdmissionMs()).toBeDefined();
+			});
+			// Settle any creation/placement work before the measured sequence;
+			// the lifecycle commit below is then the only queued work.
+			await bus.drain(hookMs, BACKGROUND_CONTEXT);
+			let handled = false;
+			bus.onLifecycle(async () => {
+				handled = true;
+				// Start before the settle deadline, finish one hook later. The
+				// live run keeps the settle loop active while this drain waits.
+				await new Promise((resolve) =>
+					setTimeout(resolve, settleMs + hookMs),
+				);
+			});
+			await opened.harness.commit(async (tx) => {
+				const draft = await tx.doc(
+					InteractionDoc,
+					root.id,
+					"settle-budget",
+					"settle-budget",
+				);
+				Object.assign(draft, {
+					kind: "fixture.ask",
+					callId: "settle-budget",
+					status: "cancelled",
+					createdAt: 1,
+					settledAt: Date.now(),
+				});
+			}, BACKGROUND_CONTEXT);
+			const before = performance.now();
+			await bus.shutdownSequence(BACKGROUND_CONTEXT);
+			const elapsed = performance.now() - before;
+			expect(elapsed).toBeGreaterThanOrEqual(settleMs + hookMs - 25);
+			expect(elapsed).toBeLessThan(settleMs + hookMs + 150);
+			expect(handled).toBe(true);
+			provider.cancel();
+			await root.abort(BACKGROUND_CONTEXT);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	test("a wedged live run hits the injected bound, warns, and still closes", { timeout: 20_000 }, async () => {
 		const { bus, root, faux } = await bootBus({ shutdownSettleWaitMs: 30 });
 		const provider = withCancel(BACKGROUND_CONTEXT);
@@ -246,6 +311,72 @@ describe("shutdownSequence with live runs", () => {
 			await root.abort(BACKGROUND_CONTEXT);
 		} finally {
 			warn.mockRestore();
+		}
+	});
+});
+
+describe("harnessShutdown fan-out", () => {
+	test("handlers run concurrently under one shared deadline", { timeout: 10_000 }, async () => {
+		const hookDeadlineMs = 250;
+		const { bus } = await bootBus({ hookDeadlineMs });
+		const events: string[] = [];
+		for (const name of ["first", "second", "third"]) {
+			bus.registerExtension(name, {
+				harnessShutdown: async () => {
+					events.push(`start:${name}`);
+					await new Promise((resolve) =>
+						setTimeout(resolve, hookDeadlineMs - 100),
+					);
+					events.push(`end:${name}`);
+				},
+			});
+		}
+		const before = performance.now();
+		await bus.shutdownSequence(BACKGROUND_CONTEXT);
+		const elapsed = performance.now() - before;
+		const firstEnd = events.findIndex((event) => event.startsWith("end:"));
+		expect(firstEnd).toBeGreaterThanOrEqual(3);
+		expect(events.slice(0, firstEnd)).toEqual([
+			"start:first",
+			"start:second",
+			"start:third",
+		]);
+		expect(elapsed).toBeLessThan(2 * hookDeadlineMs);
+	});
+
+	test("one never-settling handler does not outlast the shared deadline, and other commits are durable", { timeout: 10_000 }, async () => {
+		const hookDeadlineMs = 100;
+		const { bus, root, opened } = await bootBus({ hookDeadlineMs });
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			for (const name of ["first", "second"]) {
+				bus.registerExtension(name, {
+					harnessShutdown: async (_api, context) => {
+						await root.commit(async (tx) => {
+							const draft = await tx.doc(SessionMetaDoc, root.id);
+							draft.tagged = [...draft.tagged, name];
+						}, context);
+					},
+				});
+			}
+			bus.registerExtension("wedged", {
+				harnessShutdown: () => new Promise<void>(() => {}),
+			});
+			const before = performance.now();
+			await bus.shutdownSequence(BACKGROUND_CONTEXT);
+			const elapsed = performance.now() - before;
+			expect(elapsed).toBeGreaterThanOrEqual(hookDeadlineMs - 25);
+			expect(elapsed).toBeLessThan(2 * hookDeadlineMs);
+			const meta = await opened.harness.snapshot(
+				SessionMetaDoc,
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
+			expect(meta?.tagged).toEqual(
+				expect.arrayContaining(["first", "second"]),
+			);
+		} finally {
+			error.mockRestore();
 		}
 	});
 });

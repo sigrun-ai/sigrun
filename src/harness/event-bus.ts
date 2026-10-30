@@ -82,6 +82,7 @@ import { SessionMetaDoc } from "../server/session-meta.js";
 import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
 import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
+import { toDurableContext } from "./context.js";
 import { beginUserDeletion } from "./stores.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
@@ -392,9 +393,9 @@ export interface EventBusOptions {
 }
 
 /** How long shutdown waits for in-flight worker runs before abandoning (spec §3). */
-const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
+export const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
 /** The default last-admission window (gateway spec §8.13). */
-const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
+export const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
 /** Short pause between live-run checks while the commit side lane works. */
 const SHUTDOWN_SETTLE_POLL_MS = 10;
 
@@ -738,10 +739,13 @@ export class EventBus {
 	 * 3. drain pending settles and wait (bounded) for placed live runs —
 	 *    a run settling during this last admission window delivers before
 	 *    the shutdown flush; a wedged run logs its conversation ids;
-	 * 4. deliver `harnessShutdown` to every extension in install order,
-	 *    each deadline-bounded. Handlers may commit — admission is still
-	 *    open in this window (the seal is `Harness.close`, the caller's
-	 *    next step), which is exactly the flush window the spec promises;
+	 * 4. deliver `harnessShutdown` to every extension CONCURRENTLY under
+	 *    ONE shared hook deadline (D6). Handlers may commit — admission is
+	 *    still open in this window (the seal is `Harness.close`, the
+	 *    caller's next step), which is exactly the flush window the spec
+	 *    promises — but their relative execution and commit order is not
+	 *    guaranteed. A wedged handler is abandoned at the shared deadline;
+	 *    other handlers' completed commits remain durable;
 	 * 5. close the bus (idempotent; boot's `subscribeClose` wiring makes a
 	 *    later `harness.close` a no-op here).
 	 */
@@ -757,12 +761,22 @@ export class EventBus {
 		// harnessShutdown carries no conversation: the conversation-scoped
 		// reads resolve empty and `document` serves any conversation.
 		const api = this.#apiFor(undefined);
-		for (const [name, handlers] of this.#extensions) {
-			const handler = handlers.harnessShutdown;
-			if (handler === undefined) continue;
-			await this.#bounded(`extension ${name} harnessShutdown`, () =>
-				handler(api, context),
-			);
+		const registered = [...this.#extensions.entries()].filter(
+			([, handlers]) => handlers.harnessShutdown !== undefined,
+		);
+		const calls = registered.map(([name, handlers]) =>
+			this.#bounded(`extension ${name} harnessShutdown`, () =>
+				handlers.harnessShutdown!(api, context),
+			),
+		);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const sharedDeadline = new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, Math.max(0, this.#hookDeadlineMs));
+		});
+		try {
+			await Promise.race([Promise.allSettled(calls), sharedDeadline]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
 		}
 		this.close();
 	}
@@ -1686,7 +1700,7 @@ export class EventBus {
 					token: ConversationDocToken<JsonObject>,
 					id: ConversationId,
 					context: Context,
-				) => harness.snapshot(token, id, context)) as MemoryEventApi["document"],
+				) => harness.snapshot(token, id, toDurableContext(context))) as MemoryEventApi["document"],
 			};
 		}
 		return {
@@ -1694,9 +1708,9 @@ export class EventBus {
 			entries: (query, limit, cursor, context) =>
 				this.#entriesOf(conversationId, query, limit, cursor, context),
 			// The snapshot overloads are generic per call; the narrowed shape
-			// carries one conversation-doc read, forwarded verbatim.
+			// carries one conversation-doc read with the D1 context upgrade.
 			document: ((token: ConversationDocToken<JsonObject>, id: ConversationId, context: Context) =>
-				harness.snapshot(token, id, context)) as MemoryEventApi["document"],
+				harness.snapshot(token, id, toDurableContext(context))) as MemoryEventApi["document"],
 		};
 	}
 

@@ -196,3 +196,86 @@ test("codemode nested calls reach beforeTool with call.parent", { timeout: 60_00
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+// ---------------------------------------------------------------------------
+// D2 regression guard (pi-durable 1.4.0, Task B1 Step 7)
+// ---------------------------------------------------------------------------
+
+test("a doc definition WITHOUT checkpointWhen fails its second write on 1.4.0", async () => {
+	// 1.4.0's transaction calls `change.definition.checkpointWhen(...)`
+	// UNCONDITIONALLY on every delta write (1.3.0 guarded it optionally),
+	// so a definition that omits the predicate throws while its SECOND
+	// ordinary delta commit is assembled — the write is lost, not saved.
+	// Every family definition therefore carries `checkpointWhen: () =>
+	// false` (the static count below pins that).
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-seam-checkpoint-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			env: {},
+			builtins: false,
+		});
+		try {
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			// Cast past the 1.4.0 type (which REQUIRES the predicate) to
+			// build the pre-upgrade shape deliberately.
+			const { defineDoc } = await import("@earendil-works/pi-durable");
+			type DocToken = ReturnType<typeof defineDoc<{ count: number }>>;
+			const UnguardedDoc = defineDoc<{ count: number }>({
+				kind: "sigrun.test.unguarded",
+				version: 1,
+				scope: "conversation",
+				initial: () => ({ count: 0 }),
+				// Deliberately NO checkpointWhen — the 1.3.0 shape.
+			} as unknown as Parameters<typeof defineDoc<{ count: number }>>[0]) as unknown as DocToken;
+			// First write materializes the doc (an initial/base write — no
+			// delta, so no predicate call).
+			await root.commit(async (tx) => {
+				await tx.doc(UnguardedDoc as never, root.id as never, { count: 1 });
+			}, BACKGROUND_CONTEXT);
+			// Second write is a DELTA against the loaded doc: 1.4.0 invokes
+			// the absent predicate and the commit rejects.
+			await expect(
+				root.commit(async (tx) => {
+					const draft = await tx.doc(UnguardedDoc as never, root.id);
+					(draft as { count: number }).count = 2;
+				}, BACKGROUND_CONTEXT),
+			).rejects.toThrow(/checkpointWhen/);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("every core doc definition carries checkpointWhen (static count)", async () => {
+	// The cheap static half of the guard: every defineDoc/defineDocFamily
+	// call site in src/ has a checkpointWhen in the same file, 1:1.
+	const { execFileSync } = await import("node:child_process");
+	const root = join(import.meta.dirname, "..");
+	const definitions = execFileSync(
+		"rg",
+		["-n", "defineDoc(Family)?", "src", "--include-zero", "-g", "*.ts"],
+		{ cwd: root, encoding: "utf8" },
+	);
+	const files = [
+		...new Set(
+			definitions
+				.split("\n")
+				.filter((line) => line.length > 0)
+				.map((line) => line.split(":")[0]!),
+		),
+	];
+	expect(files.length).toBeGreaterThan(0);
+	for (const file of files) {
+		const content = execFileSync("cat", [file], { cwd: root, encoding: "utf8" });
+		const defineCount = (content.match(/defineDoc(Family)?</g) ?? []).length;
+		const checkpointCount = (content.match(/checkpointWhen:/g) ?? []).length;
+		expect(
+			checkpointCount,
+			`${file}: ${defineCount} defineDoc(Family) call(s) but ${checkpointCount} checkpointWhen field(s)`,
+		).toBe(defineCount);
+	}
+});

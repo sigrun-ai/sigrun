@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+### Added
+- `ServerSettings.compaction.modelOverrides` declares per-model compaction
+  policy overrides in the shared settings wire type.
+
 ## [0.2.1] - 2026-10-28
 ### Added
 - Additive listener metadata on the meta response: host, port, and

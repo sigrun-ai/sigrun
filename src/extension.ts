@@ -221,7 +221,13 @@ export type ExtensionLifecycleHandler<K extends keyof ExtensionLifecyclePayload>
 	context: HandlerContext,
 ) => void | Promise<void>;
 
-/** A factory-result `harnessShutdown` handler (no event payload — shutdown is conversation-less). */
+/**
+ * A factory-result `harnessShutdown` handler (no event payload — shutdown is
+ * conversation-less). All extension handlers run CONCURRENTLY under one
+ * shared hook deadline, in no guaranteed relative execution or commit order.
+ * Handlers may still commit; a wedged handler is abandoned without undoing
+ * other handlers' durable commits.
+ */
 export type ExtensionHarnessShutdownHandler = (
 	api: MemoryEventApi,
 	context: HandlerContext,

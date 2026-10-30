@@ -25,6 +25,13 @@ core release (and never burns a core version number).
 Extensions and providers **first**, core last. Core's release waits for the
 registry to serve its siblings' versions (`await-registry`), so a core tag
 whose siblings are not published yet stops before it ships the image.
+Gateway's published 0.1.3 has an exact `@sigrun/shared` 0.2.1 peer, so a fresh
+registry-mode core 0.3.0 install can fail with `ERESOLVE`. Before core's
+`smoke` release gate runs, gateway must complete its phase-2b republish with a
+widened `@sigrun/shared` peer; extensions-first ordering alone does not avoid
+this skew. With the published core shape, the stale-peer case instead degrades
+to a warning because shared is bundled: npm nests core's 0.3.0 copy alongside
+the top-level 0.2.1 copy, leaving two shared copies in the install tree.
 
 1. **Extension and provider versions** — one `package.json` bump each, plus a
    CHANGELOG entry.
@@ -41,8 +48,9 @@ whose siblings are not published yet stops before it ships the image.
    A core bump that forgets the sandbox manifests or a built-in's
    `@sigrun/shared` peer fails core's own suite — that is deliberate.
 
-   The chart's `appVersion` is NOT hand-set and NOT part of the family bump:
-   `chart-release.yml` reads it from `package.json` at the tagged commit. The
+   The chart's `appVersion` is bumped WITH the core family (the in-tree value
+   tracks the current core version); `chart-release.yml` additionally re-reads
+   it from package.json at the tagged commit. The
    chart's `version` comes from the `chart-v<semver>` tag. The Dockerfile's
    version label comes from the `APP_VERSION` build-arg, derived from the tag.
 
@@ -154,6 +162,29 @@ when its version is already on the OCI registry.
 - **`smoke` red** — a registry install of core is broken (missing built-in,
   unresolvable sandbox helper, missing `@sigrun/tui`). **The image and chart
   do not ship.** This is the gate that catches a packument regression.
+
+## Core 0.3.0 storage migration and rollback
+
+The first 0.3.0 boot performs a **one-way SQLite durable-schema migration**
+for pi-durable 1.4.0. Before opening storage, boot writes a crash-consistent
+snapshot beside the database named
+`<storagePath>.pre-durable-schema-v<CURRENT>-<UTC stamp>.bak`. Snapshots are
+never deleted automatically. If a needed snapshot cannot be written, boot
+stops before migration. `SIGRUN_SKIP_MIGRATION_SNAPSHOT=1` is the emergency
+opt-out for an operator with an independent backup.
+
+**Rollback to 0.2.x (SQLite):**
+
+1. Stop sigrun.
+2. Restore the `.bak` over the database file.
+3. Remove the database's `-wal` and `-shm` sidecars.
+4. Deploy 0.2.x.
+
+Anything committed after the upgrade is lost.
+
+**JSONL storage:** there is no snapshot because its schema does not change.
+A 0.2.x process nevertheless never resumes a task left `sleeping` by 0.3.0,
+so rollback can strand that task.
 
 ## Adding a package to the family
 

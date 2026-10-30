@@ -43,6 +43,7 @@ import {
 	type InteractionAnswer,
 	type InteractionRecord,
 } from "./interactions.js";
+import { toDurableContext } from "./context.js";
 import {
 	scopedExtensionStores,
 	type ExtensionStores,
@@ -269,7 +270,9 @@ export function createSeamHost(
 		const h = await bind.harness();
 		// The caller's context gates the wait: an aborted request/tool call
 		// unwinds instead of waiting forever for a harness that never opens.
-		context.abortSignal?.throwIfAborted();
+		// Normalize here too so this accessor remains safe for future callers;
+		// each method below also normalizes its own binding for h.* forwarding.
+		toDurableContext(context).abortSignal?.throwIfAborted();
 		return h;
 	}
 
@@ -331,6 +334,7 @@ export function createSeamHost(
 			}
 			const problem = validateInteraction(record);
 			if (problem !== null) throw new SeamError("interaction", problem);
+			context = toDurableContext(context);
 			const h = await harness(context);
 			await h.commit(async (tx) => {
 				// Maintain the index in the SAME commit as the record.
@@ -348,6 +352,7 @@ export function createSeamHost(
 		},
 
 		async answerInteraction(conversationId, callId, answer, context, opts) {
+			context = toDurableContext(context);
 			const h = await harness(context);
 			return await h.commit(async (tx) => {
 				const draft = await tx.doc(
@@ -378,6 +383,7 @@ export function createSeamHost(
 		},
 
 		async settleInteraction(conversationId, callId, status, context) {
+			context = toDurableContext(context);
 			const h = await harness(context);
 			// The sweep (Review Focus 4) is INSIDE the commit, applied only on
 			// the terminal transition: sweeping before the pending check would
@@ -410,6 +416,7 @@ export function createSeamHost(
 			// path to takeSecretDelivery — an inspector (the gateway
 			// notifier, outcome edits, answer correlation) can never eat
 			// the owning extension's one-shot raw-secret delivery.
+			context = toDurableContext(context);
 			const h = await harness(context);
 			const stored = await h.snapshot(
 				InteractionDoc,
@@ -422,6 +429,7 @@ export function createSeamHost(
 		},
 
 		async snapshotInteraction(conversationId, callId, context) {
+			context = toDurableContext(context);
 			const h = await harness(context);
 			const stored = await h.snapshot(
 				InteractionDoc,
@@ -455,6 +463,7 @@ export function createSeamHost(
 					`surface key ${JSON.stringify(record.key)} is not declared by ${identity.name} (declare it in the factory result's ambientKinds)`,
 				);
 			}
+			context = toDurableContext(context);
 			const h = await harness(context);
 			await h.commit(async (tx) => {
 				// Allocation: one owner per key. The claim happens in the same
@@ -499,6 +508,7 @@ export function createSeamHost(
 					`surface key ${JSON.stringify(key)} is not declared by ${identity.name}`,
 				);
 			}
+			context = toDurableContext(context);
 			const h = await harness(context);
 			await h.commit(async (tx) => {
 				const draft = await tx.doc(AmbientDoc, conversationId, key, key);

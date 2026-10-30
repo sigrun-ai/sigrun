@@ -16,15 +16,19 @@ import {
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
+	type SetTimer,
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { wireActivity } from "./activity.js";
+import { snapshotBeforeMigration } from "./migration-snapshot.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
 import { reconcileJobs } from "../jobs/reconcile.js";
+import { applyParkedJobs } from "../jobs/parked.js";
+import { createDurableReports } from "./reports.js";
 import { registerJobObservers } from "../jobs/observe.js";
 import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
@@ -494,6 +498,8 @@ export interface OpenedHarness {
 	 * through it.
 	 */
 	readonly jobs: JobsService;
+	/** The process-local durable report counts and post-open park drain (D5). */
+	readonly reports: ReturnType<typeof createDurableReports>;
 	/**
 	 * The in-process job-run outcome counts (W4 Task 4, §6.9): outcome →
 	 * count for `sigrun_job_runs_total{outcome}` — counted from run-record
@@ -567,11 +573,13 @@ export interface OpenHarnessOptions {
 	readonly identity?: IdentityStores;
 	/**
 	 * Harness settings (pi-durable `HarnessSettings`). The compaction policy
-	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning);
-	 * every field a caller sets here wins over the config value. The four
-	 * file-backed fields (steeringMode/followUpMode/retry/stream) resolve per
-	 * access — caller-set first, then the settings FILE's live getter (Task 8a):
-	 * the file is the deployment default, this seam the test override, and an
+	 * defaults to `config.compaction` (Task 8's `SIGRUN_COMPACTION_*` tuning,
+	 * env over file); `modelOverrides` additionally falls back to the boot
+	 * file's map when config carries none (D9). Every field a caller sets
+	 * here wins over both. The four file-backed fields
+	 * (steeringMode/followUpMode/retry/stream) resolve per access —
+	 * caller-set first, then the settings FILE's live getter (Task 8a): the
+	 * file is the deployment default, this seam the test override, and an
 	 * unset field here keeps the harness reading the file's CURRENT value (a
 	 * PATCH becomes effective on the next admission without a restart).
 	 * Pass `settings: {}` (or only `compaction`) to keep the file in charge of
@@ -654,11 +662,25 @@ export interface OpenHarnessOptions {
 	 * The activity clock (UI refresh A1), default `() => new Date()` — the
 	 * seam `lastActivityAt` stamps come from, overridable so tests pin time.
 	 * Jobs Task 2: the SAME seam feeds `HarnessOptions.now` (the harness
-	 * clock `runtime.sleep`/`runtime.now()` read), so a test that pins
+	 * clock `runtime.sleepUntil`/`runtime.now()` read), so a test that pins
 	 * `now` pins BOTH the activity stamps and the schedule task's durable
 	 * waits (the jobs tests step the clock instead of waiting 60s).
 	 */
 	readonly now?: () => Date;
+	/**
+	 * The harness timer seam (pi-durable 1.4.0 `HarnessOptions.setTimer`),
+	 * passed straight to `Harness.open`. A sleeping task wakes from ONE
+	 * foreground timer armed for `until - now`, so a fake `now` alone
+	 * cannot wake it — the jobs tests inject `createFakeClock`'s `setTimer`
+	 * next to `now`. Production leaves this unset (pi-durable's
+	 * `nativeTimer`).
+	 */
+	readonly setTimer?: SetTimer;
+	/**
+	 * Observe pi-durable failure reports (D5). Composed with the boot's own
+	 * logging/counting; observer failures are contained.
+	 */
+	readonly onReport?: (error: unknown, info: import("@earendil-works/pi-durable").ReportInfo) => void;
 }
 
 /**
@@ -846,7 +868,18 @@ export async function openHarness(
 		now: () => Date.now(),
 		managed: managedPaths,
 	});
-	const storage = await openNodeSqliteStorage(config.storagePath);
+	const storage = await (async () => {
+		// D4: preserve the last schema the previous release can read BEFORE
+		// openNodeSqliteStorage applies its one-way durable migration. The
+		// injected clock keeps snapshots deterministic in tests; a needed
+		// snapshot failure aborts boot here, before any migration write.
+		await snapshotBeforeMigration(config.storagePath, {
+			env,
+			now: options.now ?? (() => new Date()),
+			log: (line) => console.log(line),
+		});
+		return await openNodeSqliteStorage(config.storagePath);
+	})();
 	const registry = createRegistry();
 	// Late-filled by the loader: factories publish through the same registry
 	// instance, and selection rewrites read the declared set LIVE.
@@ -1301,6 +1334,27 @@ export async function openHarness(
 		onReadinessChange: observeReadiness,
 		snapshotReadiness,
 	});
+	// Per-model compaction overrides (D9): after the boot refresh the
+	// catalog is as complete as boot gets, so an override key matching no
+	// known model is almost always a typo (or a stale chain name). Warn
+	// once per unmatched key — never an error: catalogs move and an
+	// unmatched override is simply inert. pi-durable's own key composition
+	// is `${provider}/${modelId}`, so a chain-shaped model id yields a
+	// doubled prefix (e.g. "bifrost/bifrost/<chain>").
+	void bootRefreshDone.then(() => {
+		const overrides =
+			config.compaction.modelOverrides ??
+			bootSettings.server?.compaction?.modelOverrides;
+		if (overrides === undefined) return;
+		const known = new Set(
+			models.getModels().map((model) => `${model.provider}/${model.id}`),
+		);
+		for (const key of Object.keys(overrides)) {
+			if (!known.has(key)) {
+				console.warn(`compaction override "${key}" matches no known model`);
+			}
+		}
+	});
 	// The boot-wired single-provider refresh (W3 Task 6): the route
 	// surface's refresh — the same bound policy `resolveServedModelRefreshing`
 	// runs on a miss, with the same readiness observation so a provider a
@@ -1366,10 +1420,16 @@ export async function openHarness(
 	const fileSettings = settingsStore.harnessSettings();
 	const callerSettings = options.settings;
 	// The ONE boot clock (options.now ?? real): the activity stamper AND
-	// the harness clock share it (the schedule task's `runtime.sleep`
-	// reads the harness clock; pinning the seam pins both — the jobs
-	// tests' time-injection lever).
+	// the harness clock share it (the schedule task's `sleepUntil`
+	// deadlines live on the harness clock; pinning the seam pins both —
+	// the jobs tests' time-injection lever).
 	const clockNow = options.now ?? (() => new Date());
+	// D5: reports may arrive inside Harness.open. The collector logs/counts
+	// synchronously and queues parks; job patches drain after binding below.
+	const reports = createDurableReports({
+		log: (line) => console.error(line),
+		onReport: options.onReport,
+	});
 	const harness = await Harness.open(
 		storage,
 		{
@@ -1377,6 +1437,8 @@ export async function openHarness(
 			registry,
 			env: envBuilder,
 			now: () => clockNow().getTime(),
+			setTimer: options.setTimer,
+			onReport: reports.onReport,
 			// Context-management policy (Task 8): config's `SIGRUN_COMPACTION_*`
 			// tuning, with any caller-set field winning over it. Upstream merges
 			// the result over `DEFAULT_COMPACTION_POLICY` per field. Task 8a: the
@@ -1388,6 +1450,14 @@ export async function openHarness(
 			// snapshots the file's boot-time values, silently freezing the
 			// queue modes and clobbering the caller seam (the round-1 defects).
 			// `extensions`/`toolExecution` have no file backing — plain passthrough.
+			// Compaction (D9): ONLY `modelOverrides` comes from the file here —
+			// it has no env spelling, so this adds a file tier without touching
+			// the four env-backed knobs' precedence (env over file, resolved by
+			// loadConfig). serve already folds the file into config; the
+			// conditional spread keeps a config-resolved map authoritative and
+			// covers direct `openHarness` boots. Read ONCE (boot-time), so a
+			// PATCH is restart-pending exactly like the other compaction keys.
+			// Order: caller seam > config (env over file) > this file fallback.
 			settings: {
 				get steeringMode() {
 					return callerSettings?.steeringMode ?? fileSettings.steeringMode;
@@ -1411,6 +1481,10 @@ export async function openHarness(
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {
 					...config.compaction,
+					...(config.compaction.modelOverrides === undefined &&
+					bootSettings.server?.compaction?.modelOverrides !== undefined
+						? { modelOverrides: bootSettings.server.compaction.modelOverrides }
+						: {}),
 					...callerSettings?.compaction,
 				},
 			},
@@ -1438,6 +1512,9 @@ export async function openHarness(
 	// JobsService — happens after this point.
 	jobRuntimeDeps.harness = harness;
 	jobRuntimeDeps.storage = storage;
+	// Drain the restart-limit parks reported during open before scheduling
+	// resumes. A failed status patch is logged and dropped by applyParkedJobs.
+	await applyParkedJobs(harness, reports.takeParked(), BACKGROUND_CONTEXT);
 	// The memory-seam event bus (Tasks 2-4): subscribe BEFORE `resume()` so
 	// recovery settles (faulted/orphaned submissions the scheduler drains)
 	// are observed like any other commit. Extension handlers register under
@@ -1729,6 +1806,7 @@ export async function openHarness(
 		userToolSweep,
 		models,
 		jobs,
+		reports,
 		jobRunTotals: () => jobRunTotals,
 		defaultModel,
 		providerCollisions: sink.collisions,

@@ -37,6 +37,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
 import { beforeAll, describe, expect, test } from "vitest";
+import { DEFAULT_MEMORY_SEAM } from "../src/config.js";
+import { shutdownBudgetMs } from "../src/server/shutdown.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,7 +53,7 @@ const COMPOSE_FILE = join(
 /** The published image every deploy artifact names. The chart's tags
  * default to the appVersion, so a default render carries this exact
  * reference — no explicit --set needed (and no REPLACEME to work around). */
-const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.2.0";
+const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.3.0";
 
 /** helm presence — a hard env requirement (no kubectl/kustomize fallback
  * exists: the manifests are templates, not static yaml). */
@@ -252,6 +254,21 @@ describe("chart Deployment", () => {
 				(c) => c.name === "main",
 		) as DeploymentDoc["spec"]["template"]["spec"]["containers"][number];
 		expect(container).toBeDefined();
+	});
+
+	test("termination grace covers the computed shutdown budget plus 15s", () => {
+		const grace = (
+			deployment.spec.template.spec as typeof deployment.spec.template.spec & {
+				terminationGracePeriodSeconds?: number;
+			}
+		).terminationGracePeriodSeconds;
+		expect(grace).toBeTypeOf("number");
+		expect(grace!).toBeGreaterThanOrEqual(
+			shutdownBudgetMs(DEFAULT_MEMORY_SEAM) / 1000 + 15,
+		);
+		// Keep the literal default and the computed contract together: the
+		// budget+15 default is rounded up to a five-second boundary.
+		expect(grace! % 5).toBe(0);
 	});
 
 	test("single replica with Recreate strategy (RWO PVC — RollingUpdate deadlocks)", () => {
@@ -656,6 +673,14 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(byName.get("SigrunJobFailed")?.expr).toBe(
 			'increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0',
 		);
+		// D5: the restart-limit park and failed-session alerts.
+		expect(byName.get("SigrunTaskParked")?.expr).toBe(
+			'sigrun_tasks_blocked{reason="restart_limit"} > 0',
+		);
+		expect(byName.get("SigrunTaskParked")?.for).toBe("5m");
+		expect(byName.get("SigrunDurableSessionFailed")?.expr).toBe(
+			'increase(sigrun_durable_reports_total{type="session_failed"}[10m]) > 0',
+		);
 
 		// The backup alert's gate: backup disabled in values ⇒ the rule is
 		// absent (an unbacked deploy would page forever on a series the
@@ -1048,7 +1073,7 @@ describe("docker compose reference", () => {
 		const doc = await composeDoc();
 		const service = doc.services.sigrun;
 		expect(service.image).toBe(
-			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.2.0}"}`,
+			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.3.0}"}`,
 		);
 		expect(service.user).toBe("${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}");
 	});

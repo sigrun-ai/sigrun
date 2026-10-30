@@ -68,6 +68,7 @@ export const AmbientDoc: ConversationDocFamilyToken<StoredAmbientRecord, string>
 		kind: "sigrun.ambient",
 		version: 1,
 		scope: "conversation",
+		checkpointWhen: () => false,
 		history: "latest",
 		fork: "current",
 		family: true,
@@ -93,6 +94,7 @@ export const AmbientOwnersDoc = defineDoc<AmbientOwners>({
 	kind: "sigrun.ambient.owners",
 	version: 1,
 	scope: "session",
+	checkpointWhen: () => false,
 	initial: () => ({ owners: {} }),
 });
 

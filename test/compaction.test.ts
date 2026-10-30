@@ -20,9 +20,10 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { DEFAULT_COMPACTION_POLICY } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
+import { DEFAULT_COMPACTION_POLICY, defineTask } from "@earendil-works/pi-durable";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
@@ -146,6 +147,95 @@ test("SIGRUN_COMPACTION_* rejects non-positive or non-integer token counts", () 
 			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
 		}).compaction.backgroundTokens,
 	).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// Boot: the resolved policy preserves env-over-file precedence (B8).
+// ---------------------------------------------------------------------------
+
+test("openHarness resolves compaction env over file and retains file modelOverrides", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-compaction-precedence-"));
+	try {
+		await writeFile(
+			join(dir, "settings.json"),
+			JSON.stringify({
+				namingModel: false,
+				server: {
+					compaction: {
+						reserveTokens: 4096,
+						modelOverrides: { "faux/m": { keepRecentTokens: 123 } },
+					},
+				},
+			}),
+		);
+		const { contributor } = fauxContributor("faux", "m", 128_000, []);
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_DATA_DIR: dir,
+			SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
+		});
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		try {
+			const root = await opened.harness.root(BACKGROUND_CONTEXT);
+			// The resolved settings object is public only through a task runtime.
+			const probe = defineTask<
+				Record<string, never>,
+				{ phase: "read" },
+				JsonValue,
+				object
+			>({
+				name: "sigrun.test.compaction-settings-probe",
+				version: 1,
+				initial: () => ({ phase: "read" }),
+				phases: {
+					read: async (_task, runtime, context) => {
+						await runtime.commit(
+							() => ({
+								status: "terminal" as const,
+								outcome: {
+									status: "completed" as const,
+									result: runtime.settings.compaction,
+								},
+							}),
+							context,
+						);
+					},
+				},
+				abort: async () => {},
+			});
+			opened.registry.install({
+				name: "sigrun.test.compaction-probe",
+				tasks: [probe],
+			});
+			const taskId = await root.commit(
+				async (tx) =>
+					await tx.createTask(probe, {}, {
+						ownership: { kind: "conversation" },
+						background: true,
+					}),
+				BACKGROUND_CONTEXT,
+			);
+			const settled = await opened.harness.waitForTask(taskId, BACKGROUND_CONTEXT);
+			expect(settled.state.outcome).toEqual({
+				status: "completed",
+				result: {
+					...DEFAULT_COMPACTION_POLICY,
+					reserveTokens: 127400,
+					modelOverrides: { "faux/m": { keepRecentTokens: 123 } },
+				},
+			});
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });
 
 // ---------------------------------------------------------------------------
@@ -504,6 +594,209 @@ test("caller settings.compaction wins over config-provided policy", async () => 
 					.map(messageText)
 					.join("\n"),
 			).toContain("filler");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Per-model overrides (server.compaction.modelOverrides)
+// ---------------------------------------------------------------------------
+
+test("modelOverrides merge into the config policy under the exact provider/modelId key", () => {
+	// The key is `${provider}/${modelId}` EXACTLY as pi-durable composes
+	// it — for a chain-shaped model id that means a doubled prefix.
+	const config = loadConfig(
+		{ SIGRUN_DEFAULT_MODEL: "acme/acme/small" },
+		{
+			server: {
+				compaction: {
+					reserveTokens: 1024,
+					modelOverrides: {
+						"acme/acme/small": { keepRecentTokens: 1, enabled: true },
+					},
+				},
+			},
+		},
+	);
+	expect(config.compaction).toEqual({
+		enabled: true,
+		reserveTokens: 1024,
+		keepRecentTokens: 20000,
+		backgroundTokens: 32768,
+		modelOverrides: {
+			"acme/acme/small": { keepRecentTokens: 1, enabled: true },
+		},
+	});
+	// Unset means absent (the defaults test above still compares against
+	// upstream's bare DEFAULT_COMPACTION_POLICY).
+	expect(loadConfig({ SIGRUN_DEFAULT_MODEL: "acme/acme/small" }).compaction)
+		.not.toHaveProperty("modelOverrides");
+});
+
+test("the boot catalog warns once per override key matching no known model", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-compaction-overrides-"));
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const { contributor } = fauxContributor("faux", "m", 128_000, [
+			fauxAssistantMessage("answer"),
+		]);
+		await disableAutoNaming(dir);
+		await writeFile(
+			join(dir, "settings.json"),
+			JSON.stringify({
+				namingModel: false,
+				server: {
+					compaction: {
+						modelOverrides: {
+							"faux/m": { keepRecentTokens: 1 },
+							"acme/acme/absent": { keepRecentTokens: 1 },
+							"acme/acme/also-absent": { enabled: false },
+						},
+					},
+				},
+			}),
+		);
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_DATA_DIR: dir,
+		});
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		try {
+			// AFTER the boot catalog refresh: only unmatched keys warn, one
+			// line each, naming the exact override key.
+			await opened.bootRefresh;
+			const lines = warn.mock.calls
+				.map((call) => String(call[0]))
+				.filter((line) => line.includes("compaction override"));
+			expect(lines.sort()).toEqual([
+				'compaction override "acme/acme/absent" matches no known model',
+				'compaction override "acme/acme/also-absent" matches no known model',
+			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		warn.mockRestore();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a per-model override applies only to its own model; another model uses the global policy", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-compaction-overrides-"));
+	try {
+		// One provider, two models: the default ("faux/other") uses the
+		// GLOBAL blocking policy (reserveTokens 127400 on a 128K window),
+		// while "faux/small"'s override disables compaction entirely.
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [
+				{ id: "other", contextWindow: 128_000 },
+				{ id: "small", contextWindow: 128_000 },
+			],
+		});
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		// Responses are appended per turn below: the default-model turns
+		// consume 1 + 2 (compaction summary + answer), the overridden
+		// model's turns consume 1 + 1.
+		faux.setResponses([fauxAssistantMessage("first answer")]);
+		await disableAutoNaming(dir);
+		await writeFile(
+			join(dir, "settings.json"),
+			JSON.stringify({
+				namingModel: false,
+				server: {
+					compaction: {
+						modelOverrides: { "faux/small": { enabled: false } },
+					},
+				},
+			}),
+		);
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/other",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
+			SIGRUN_COMPACTION_KEEP_RECENT_TOKENS: "1",
+			SIGRUN_COMPACTION_BACKGROUND_TOKENS: "0",
+			SIGRUN_CONFIG_DIR: dir,
+			SIGRUN_DATA_DIR: dir,
+		});
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settingsDir: dir,
+		});
+		try {
+			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: opened.defaultModel },
+			});
+			const long1 = `one ${"filler ".repeat(180)}`;
+			const long2 = `two ${"context ".repeat(160)}`;
+			const first = await root.submit(
+				{ type: "input", content: long1 },
+				BACKGROUND_CONTEXT,
+			);
+			expect((await first.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+
+			// Default model: the global thresholds force a blocking compaction
+			// (one summary response, then the answer).
+			faux.appendResponses([
+				fauxAssistantMessage("compacted history summary"),
+				fauxAssistantMessage("second answer"),
+			]);
+			const second = await root.submit(
+				{ type: "input", content: long2 },
+				BACKGROUND_CONTEXT,
+			);
+			expect((await second.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+			const compacted = await root.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+			expect(
+				compacted.items.some((entry) => entry.kind === "pi.compaction"),
+			).toBe(true);
+
+			// A second conversation on the overridden model: the SAME global
+			// thresholds would compact, but the override disables compaction,
+			// so the overflowing turns run straight through (no summary).
+			const smallRoot = await opened.harness.createConversation(
+				{
+					ownership: { kind: "ownerless" },
+					agent: { model: { provider: "faux", modelId: "small" } },
+				},
+				BACKGROUND_CONTEXT,
+			);
+			faux.appendResponses([fauxAssistantMessage("third answer")]);
+			const third = await smallRoot.submit(
+				{ type: "input", content: long1 },
+				BACKGROUND_CONTEXT,
+			);
+			expect((await third.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+			faux.appendResponses([fauxAssistantMessage("fourth answer")]);
+			const fourth = await smallRoot.submit(
+				{ type: "input", content: long2 },
+				BACKGROUND_CONTEXT,
+			);
+			expect((await fourth.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+			const untouched = await smallRoot.entries(
+				{},
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			expect(
+				untouched.items.some((entry) => entry.kind === "pi.compaction"),
+			).toBe(false);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}

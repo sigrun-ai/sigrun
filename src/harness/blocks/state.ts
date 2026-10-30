@@ -61,6 +61,7 @@ export const BlocksStateDoc: ConversationDocFamilyToken<BlocksState, string> =
 		kind: "sigrun.blocks.state",
 		version: 1,
 		scope: "conversation",
+		checkpointWhen: () => false,
 		history: "latest",
 		fork: "current",
 		family: true,

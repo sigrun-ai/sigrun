@@ -34,7 +34,7 @@ import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** The pi-durable version `GET /v1/meta` must report (pinned dependency). */
-const PI_DURABLE_VERSION = "1.3.0";
+const PI_DURABLE_VERSION = "1.4.0";
 
 /** The test fixture extension package's entry (loader contract: default factory). */
 const FIXTURE_SPECIFIER = pathToFileURL(
@@ -254,7 +254,7 @@ describe("GET /v1/meta", () => {
 		const meta = response.json();
 		expect(meta).toEqual({
 			harnessVersion: PI_DURABLE_VERSION,
-			version: "0.2.1",
+			version: "0.3.0",
 			schemaVersion: SCHEMA_VERSION,
 			extensions: [],
 			health: { backup: "unconfigured", memory: "ok", providers: "ok" },

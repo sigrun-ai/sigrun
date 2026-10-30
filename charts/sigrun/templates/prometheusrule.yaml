@@ -111,6 +111,30 @@ spec:
               last hour — a scheduled job failed. Check the job's
               conversation (the failure reason is in its transcript) and
               the scheduler's logs.
+        - alert: SigrunTaskParked
+          # D5: a task cut off five times without progress is parked until
+          # an administrator retries it. Readiness deliberately stays up.
+          expr: sigrun_tasks_blocked{reason="restart_limit"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: a sigrun durable task is parked
+            description: >-
+              A task has reached the restart limit and is blocked until
+              retry. Check the durable report logs and the task inspection;
+              schedule jobs also show blocked/restart_limit on their record.
+        - alert: SigrunDurableSessionFailed
+          # D5: a storage/session failure closes the durable Session.
+          expr: increase(sigrun_durable_reports_total{type="session_failed"}[10m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: a sigrun durable session failed
+            description: >-
+              A durable session_failed report was emitted within the last
+              ten minutes. Check the pod logs for the report and its stack,
+              then inspect storage health and the restart path.
 {{- if .Values.controllers.backup.enabled }}
         - alert: SigrunBackupStale
           # Gated on backup ENABLED in values: an unbacked deploy (backup
