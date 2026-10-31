@@ -75,6 +75,7 @@ import type {
 	JobWire,
 } from "@sigrun/shared/jobs";
 import type { Sharing } from "@sigrun/shared/access";
+import type { TokenCreateResponse, TokenWire } from "@sigrun/shared/views";
 
 export type {
 	MetaResponse,
@@ -118,6 +119,8 @@ export type {
 	JobRunResponse,
 	AccountLinkWire,
 	AccountsResponse,
+	TokenWire,
+	TokenCreateResponse,
 } from "@sigrun/shared/views";
 
 /** The jobs channel wire shapes (W4, spec §8.2/§8.4) — the shared leaf's
@@ -555,6 +558,19 @@ export interface SigrunClient {
 	accounts(): Promise<AccountsResponse>;
 	/** Remove one of the caller's account links. */
 	removeAccount(provider: string, subject: string): Promise<void>;
+	/**
+	 * The caller's API tokens (`GET /v1/auth/tokens` — Task 5). Browser
+	 * session records (`kind: "session"`) are the server's own session
+	 * surface; the section filters them out client-side.
+	 */
+	listTokens(): Promise<readonly TokenWire[]>;
+	/**
+	 * Mint an API token (`POST /v1/auth/tokens {name}`, 201): the secret
+	 * shows ONCE in the response — the store keeps only its digest.
+	 */
+	createToken(name: string): Promise<TokenCreateResponse>;
+	/** Revoke one token (`DELETE /v1/auth/tokens/:id`, 204). */
+	revokeToken(id: string): Promise<void>;
 	/** Complete a parked setup/invite login; the response sets the cookie. */
 	submitLoginCode(key: string, code: string): Promise<LoginCodeResponse>;
 	/** The loaded-extension inventory (`GET /v1/extensions`). */
@@ -926,6 +942,12 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				`/v1/auth/accounts?provider=${encodeURIComponent(provider)}&subject=${encodeURIComponent(subject)}`,
 				{},
 			),
+		listTokens: async () =>
+			(await get<{ tokens: readonly TokenWire[] }>("/v1/auth/tokens")).tokens,
+		createToken: (name) =>
+			send("POST", "/v1/auth/tokens", { name }) as Promise<TokenCreateResponse>,
+		revokeToken: (id) =>
+			sendVoid("DELETE", `/v1/auth/tokens/${encodeURIComponent(id)}`, {}),
 		submitLoginCode: (key, code) =>
 			send("POST", "/v1/auth/login/code", { key, code }) as Promise<LoginCodeResponse>,
 		listExtensions: () => get<ExtensionsResponseWire>("/v1/extensions"),

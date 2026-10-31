@@ -61,7 +61,7 @@ import {
 } from "@sigrun/shared/themes";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
+import { authFailureMessage, SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
 import { watchEvents } from "./sse.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
@@ -510,7 +510,10 @@ export function launchOptionsFrom(
  * The dedicated startup-failure message for a server still in its
  * unclaimed state (Task 7): a standalone `sigrun-tui` that hits the
  * setup gate exits with the `sigrun attach` onboarding hint instead of
- * a bare 403. Any other failure maps to `undefined` (the generic path).
+ * a bare 403. A 401 (Task 5) maps to the auth-failure hint — the
+ * `SIGRUN_TOKEN` is missing, expired, or revoked, and the fix is a new
+ * token in the webui's Settings → API tokens section. Any other failure
+ * maps to `undefined` (the generic path).
  */
 export function tuiStartupMessage(error: unknown): string | undefined {
 	if (error instanceof SigrunApiError && error.status === 403) {
@@ -519,7 +522,7 @@ export function tuiStartupMessage(error: unknown): string | undefined {
 			return "server is not set up — run `sigrun attach` to onboard";
 		}
 	}
-	return undefined;
+	return authFailureMessage(error);
 }
 
 /**

@@ -51,6 +51,7 @@ import { SurfaceView } from "../blocks/SurfaceView";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
 import { AccountLinksSection } from "./AccountLinksSection";
 import { ProvidersSection } from "./ProvidersSection";
+import { TokensSection } from "./TokensSection";
 import { type PrefKey, type PrefsState } from "./usePrefs";
 
 // ─── The load state ───────────────────────────────────────────────────────
@@ -488,6 +489,9 @@ function SettingsSectionBody(props: {
 	}
 	if (entry.slug === "core" && entry.id === "accounts") {
 		return <AccountLinksSection client={client} />;
+	}
+	if (entry.slug === "core" && entry.id === "tokens") {
+		return <TokensSection client={client} />;
 	}
 	return (
 		<SettingsSurfaceBody

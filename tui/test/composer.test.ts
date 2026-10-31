@@ -252,7 +252,8 @@ describe("composer submit", () => {
 		app.editor.setText("ship it");
 		app.editor.onSubmit?.("ship it");
 		await flush();
-		const lines = app.pane.render(60).join("\n");
+		// The pane wraps at 60 cols; normalize whitespace before matching.
+		const lines = app.pane.render(60).join("\n").replace(/\s+/g, " ");
 		expect(lines).toContain(
 			"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
 		);

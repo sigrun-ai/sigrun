@@ -288,13 +288,14 @@ test("create a token in Settings → API tokens and authenticate with it", async
 		await settings.getByRole("button", { name: "Create token" }).click();
 
 		// The once-only display: the secret + the CLI snippet against the
-		// page's own origin.
+		// page's own origin (the page URL minus its hash route).
 		const revealed = (await settings
 			.locator(".token-secret")
 			.textContent()) as string;
 		expect(revealed).toMatch(/^sgr_/);
-		await expect(settings.locator(".token-snippet")).toContainText(
-			`SIGRUN_TOKEN=${revealed} sigrun attach --server ${page.url().replace(/\/$/, "")}`,
+		const origin = new URL(page.url()).origin;
+		await expect(settings.locator(".token-snippet").first()).toContainText(
+			`SIGRUN_TOKEN=${revealed} sigrun attach --server ${origin}`,
 		);
 
 		// THE authentication leg: the freshly minted token reaches
