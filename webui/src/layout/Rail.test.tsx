@@ -152,6 +152,27 @@ describe("Rail", () => {
 		expect(onOpenSettings).toHaveBeenCalledTimes(1);
 	});
 
+	test("settingsActive marks the Settings button as the current page (0.4.0 Task 4)", () => {
+		// Off the settings page: a plain button, no aria-current.
+		const inactive = render(
+			<Rail meta={makeMeta()} onOpenSettings={() => {}} />,
+		);
+		const inactiveButton = inactive.root.findByProps({
+			"data-rail-section": "settings",
+		});
+		expect(inactiveButton.props.className).toBe("rail-btn");
+		expect(inactiveButton.props["aria-current"]).toBeUndefined();
+		// On the settings page: the active class + aria-current="page".
+		const active = render(
+			<Rail meta={makeMeta()} onOpenSettings={() => {}} settingsActive />,
+		);
+		const activeButton = active.root.findByProps({
+			"data-rail-section": "settings",
+		});
+		expect(activeButton.props.className).toBe("rail-btn rail-btn-active");
+		expect(activeButton.props["aria-current"]).toBe("page");
+	});
+
 	test("the Blocks gallery entry is absent without dev meta and present with dev: true (U1 Task 6)", () => {
 		const hasBlocksEntry = (root: unknown): boolean => {
 			const entries = (root as { findAllByProps(p: object): unknown[] })

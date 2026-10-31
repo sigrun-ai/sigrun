@@ -12,9 +12,9 @@
  * /v1/settings itself anymore.
  */
 
-import { act } from "react";
+import { act, useState } from "react";
 import type TestRenderer from "react-test-renderer";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	createClient,
 	type ExtensionInfoWire,
@@ -272,17 +272,31 @@ interface Rendered {
 	readonly prefs: () => ReturnType<typeof usePrefs>["prefs"];
 	readonly themeRoot: Record<string, string | undefined>;
 	readonly restarts: () => number;
+	/** Every id the nav handed to onSection, in order. */
+	readonly onSectionCalls: () => readonly string[];
 }
 
 function renderPanelWithPrefs(
 	client: ReturnType<typeof createClient>,
-	init?: { readonly admin?: boolean; readonly initialSection?: string },
+	init?: {
+		readonly admin?: boolean;
+		/** The route's section id (the controlled prop's initial value). */
+		readonly section?: string;
+		/** The route writer spy (the host defaults to a state round-trip so
+		 * nav clicks genuinely switch the section like the App would). */
+		readonly onSection?: (id: string) => void;
+	},
 ): Promise<Rendered> {
 	const themeRoot = makeThemeRoot();
 	let captured: ReturnType<typeof usePrefs> | undefined;
 	let theme: ThemeState | undefined;
 	let restarts = 0;
+	const onSectionCalls: string[] = [];
 	function Probe() {
+		// The controlled-section host: in the real shell the route owns the
+		// section and the panel's nav calls onSection back into it — the
+		// host mirrors that round trip so nav clicks land like the App.
+		const [section, setSection] = useState<string | undefined>(init?.section);
 		captured = usePrefs();
 		theme = useTheme({
 			storage: makeThemeStorage(),
@@ -295,7 +309,12 @@ function renderPanelWithPrefs(
 				prefsState={captured}
 				theme={theme}
 				{...(init?.admin === undefined ? {} : { admin: init.admin })}
-				{...(init?.initialSection === undefined ? {} : { initialSection: init.initialSection })}
+				section={section}
+				onSection={(id) => {
+					onSectionCalls.push(id);
+					init?.onSection?.(id);
+					setSection(id);
+				}}
 				onRestart={async () => {
 					restarts += 1;
 				}}
@@ -311,6 +330,7 @@ function renderPanelWithPrefs(
 		},
 		themeRoot: themeRoot.dataset,
 		restarts: () => restarts,
+		onSectionCalls: () => [...onSectionCalls],
 	}));
 }
 
@@ -491,7 +511,7 @@ describe("SettingsPanel", () => {
 			const nonAdmin = makeHarness();
 			const nonAdminRenderer = await renderPanelWithPrefs(nonAdmin.client, {
 				admin: false,
-				initialSection: "providers",
+				section: "providers",
 			});
 			expect(nonAdminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
 			expect(nonAdmin.calls.some((call) => call.input === "/v1/providers")).toBe(false);
@@ -499,7 +519,7 @@ describe("SettingsPanel", () => {
 			const admin = makeHarness();
 			const adminRenderer = await renderPanelWithPrefs(admin.client, {
 				admin: true,
-				initialSection: "providers",
+				section: "providers",
 			});
 			expect(adminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
 			expect(textContent(adminRenderer.renderer.toJSON())).toContain("no providers are loaded");
@@ -534,6 +554,44 @@ describe("SettingsPanel", () => {
 				.props.onClick();
 		});
 		expect(themeRoot.palette).toBe("fjord");
+	});
+
+	test("clicking a core nav entry calls onSection(id) and the section follows the prop (0.4.0 Task 4)", async () => {
+		const onSection = vi.fn();
+		const { client } = makeHarness();
+		const { renderer } = await renderPanelWithPrefs(client, { onSection });
+		const interfaceNav = renderer.root
+			.findAllByType("button")
+			.find(
+				(node) =>
+					node.props.className === "settings-nav-item" &&
+					node.props.children === "Interface",
+			);
+		if (interfaceNav === undefined) throw new Error("Interface nav not rendered");
+		await act(async () => {
+			interfaceNav.props.onClick();
+		});
+		expect(onSection).toHaveBeenCalledWith("interface");
+		// The controlled section switched: the Interface cove's mode
+		// buttons mount (a cove — no surface fetch needed).
+		expect(
+				renderer.root.findAllByProps({ "data-mode-option": "dark" }),
+		).toHaveLength(1);
+	});
+
+	test("the panel renders as a page — no overlay/backdrop/dialog chrome (0.4.0 Task 4)", async () => {
+		const { client } = makeHarness();
+		const renderer = await renderPanel(client);
+		expect(
+			renderer.root.findAllByProps({ className: "settings-overlay" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "panel-backdrop" }),
+		).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "settings-page" }),
+		).toHaveLength(1);
 	});
 });
 

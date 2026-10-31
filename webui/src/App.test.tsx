@@ -7,7 +7,7 @@
 
 import { act } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { App, locationHash } from "./App";
+import { App, locationHash, parseHash, routeHash } from "./App";
 import {
 	createClient,
 	type ConversationMeta,
@@ -196,12 +196,18 @@ function makeHarness(init?: {
 		} else if (input === "/v1/models") body = { models: [] };
 		else if (input === "/v1/jobs") body = { jobs: [] };
 		else if (input === "/v1/extensions") body = { extensions: [] };
-		else if (input === "/v1/settings/sections") {
+		else if (input === "/v1/auth/accounts") {
+			// The accounts cove (the boot deep-link test's target section).
+			body = { accounts: [] };
+		} else if (input === "/v1/auth/providers") {
+			body = { providers: [] };
+		} else if (input === "/v1/settings/sections") {
 			// U4 Task 4 fix wave: the shell-level Restart-wiring test opens
 			// the panel; the sections payload is the nav list (core only).
 			body = {
 				sections: [
 					{ slug: "core", id: "general", title: "General", icon: "key" },
+					{ slug: "core", id: "accounts", title: "Account links", icon: "key" },
 				],
 				index: [],
 			};
@@ -652,21 +658,32 @@ describe("App shell", () => {
 		).toHaveLength(0);
 	});
 
-	test("the rail's Settings button opens the settings panel", async () => {
+	test("the rail's Settings button opens the settings PAGE at #/settings", async () => {
 		const { client, createEventSource } = makeHarness();
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
 		expect(
-			renderer.root.findAllByProps({ className: "settings-overlay" }),
+			renderer.root.findAllByProps({ className: "settings-page" }),
 		).toHaveLength(0);
 		const settings = renderer.root.findByProps({ "aria-label": "settings" });
 		await act(async () => {
 			(settings.props as { onClick: () => unknown }).onClick();
 		});
+		// The hash is the history entry (back/forward walk it).
+		expect(locationHash()).toBe("#/settings");
 		expect(
-			renderer.root.findAllByProps({ className: "settings-overlay" }),
+			renderer.root.findAllByProps({ className: "settings-page" }),
 		).toHaveLength(1);
+		// The transcript column is REPLACED by the page (no composer dock).
+		expect(
+			renderer.root.findAllByProps({ className: "composer-slot" }),
+		).toHaveLength(0);
+		// The rail's Settings button is the current page.
+		const railButton = renderer.root.findByProps({
+			"data-rail-section": "settings",
+		});
+		expect(railButton.props["aria-current"]).toBe("page");
 	});
 
 	test("the settings panel wires the shell restart: a supervised admin sees the button and clicking it POSTs the restart", async () => {
@@ -712,6 +729,139 @@ describe("App shell", () => {
 		// app re-boots (the restart round-trip completes).
 		ready.current = true;
 	});
+
+describe("App settings route (the page at #/settings/<section>)", () => {
+	test("parseHash/routeHash round-trip: #/settings and #/settings/<section>", () => {
+		expect(parseHash("#/settings")).toEqual({ kind: "settings" });
+		expect(routeHash({ kind: "settings" })).toBe("#/settings");
+		expect(parseHash("#/settings/tokens")).toEqual({
+			kind: "settings",
+			section: "tokens",
+		});
+		expect(routeHash({ kind: "settings", section: "tokens" })).toBe(
+			"#/settings/tokens",
+		);
+		// The inverse both ways: parse(route(x)) = x for every shape.
+		expect(parseHash(routeHash({ kind: "settings", section: "accounts" }))).toEqual({
+			kind: "settings",
+			section: "accounts",
+		});
+	});
+
+	test("only ONE optional section segment: #/settings/a/b falls to the chat default", () => {
+		expect(parseHash("#/settings/a/b")).toEqual({ kind: "chat" });
+		expect(parseHash("#/settings/")).toEqual({ kind: "settings" });
+	});
+
+	test("booting on the path-form /settings?section=<id> rewrites the hash and renders that section", async () => {
+		// The server's post-account-link returnTo stays path-form; the app
+		// rewrites it to the hash route at boot (the ONLY remaining reader).
+		const replaceCalls: (string | null | undefined)[] = [];
+		const win = globalThis as unknown as {
+			location?: { hash?: string; pathname?: string; search?: string };
+			history?: {
+				pushState(d: unknown, t: string, u: string): void;
+				replaceState(d: unknown, t: string, u: string): void;
+			};
+		};
+		const originalLocation = win.location;
+		const originalHistory = win.history;
+		win.location = {
+			pathname: "/settings",
+			search: "?section=accounts",
+			hash: "",
+		};
+		win.history = {
+			pushState: () => undefined,
+			replaceState: (_d, _t, url) => {
+				replaceCalls.push(url);
+			},
+		};
+		const { client, createEventSource } = makeHarness();
+		let renderer: Awaited<ReturnType<typeof renderAsync>> | undefined;
+		try {
+			await act(async () => {
+				renderer = await renderAsync(
+					<App client={client} createEventSource={createEventSource} />,
+				);
+			});
+			// The rewrite landed: path-form → /#/settings/accounts.
+			expect(replaceCalls).toContain("/#/settings/accounts");
+			expect(locationHash()).toBe("/#/settings/accounts");
+			// The page renders ON the accounts section (the deep link's target).
+			expect(
+				renderer!.root.findAllByProps({ className: "settings-page" }),
+			).toHaveLength(1);
+			await vi.waitFor(() => {
+				expect(
+					renderer!.root.findAllByProps({
+						"data-settings-section": "accounts",
+					}),
+				).toHaveLength(1);
+			});
+		} finally {
+			win.location = originalLocation;
+			win.history = originalHistory;
+		}
+	});
+
+	test("a settings nav click pushes the section hash; browser back (popstate) restores the chat", async () => {
+		// Capture the app's popstate listener by hand (the Node host has no
+		// global addEventListener) — the SessionList harness pattern.
+		const listeners: (() => void)[] = [];
+		const win = globalThis as unknown as {
+			location?: { hash: string };
+			addEventListener?: (type: string, listener: () => void) => void;
+			removeEventListener?: (type: string, listener: () => void) => void;
+		};
+		const originalLocation = win.location;
+		const originalAdd = win.addEventListener;
+		const originalRemove = win.removeEventListener;
+		win.addEventListener = ((_type: string, listener: () => void) => {
+			listeners.push(listener);
+		}) as typeof win.addEventListener;
+		win.removeEventListener = (() => undefined) as typeof win.removeEventListener;
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		try {
+			const settings = renderer.root.findByProps({ "aria-label": "settings" });
+			await act(async () => {
+				(settings.props as { onClick: () => unknown }).onClick();
+			});
+			expect(locationHash()).toBe("#/settings");
+			// A nav entry in the page's left column pushes the section hash.
+			const nav = await vi.waitFor(() => {
+				const items = renderer.root.findAllByProps({
+					className: "settings-nav-item",
+				});
+				expect(items.length).toBeGreaterThan(0);
+				return items[0] as unknown as { props: { onClick: () => unknown } };
+			});
+			await act(async () => {
+				nav.props.onClick();
+			});
+			expect(locationHash()).toBe("#/settings/general");
+			// Browser back: the URL moves and the app's popstate handler
+			// re-parses it into the route — the chat column returns.
+			win.location = { hash: "#/c" };
+			await act(async () => {
+				for (const listener of listeners) listener();
+			});
+			expect(
+				renderer.root.findAllByProps({ className: "settings-page" }),
+			).toHaveLength(0);
+			expect(
+				renderer.root.findAllByProps({ className: "composer-slot" }),
+			).toHaveLength(1);
+		} finally {
+			win.location = originalLocation;
+			win.addEventListener = originalAdd;
+			win.removeEventListener = originalRemove;
+		}
+	});
+});
 
 describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 	function extMeta(): MetaResponse {
@@ -784,11 +934,14 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		});
 		expect(locationHash()).toBe("#/c");
 
-		// {settings} → the settings dialog opens.
+		// {settings} → the settings page route (the section id rides the hash).
 		await act(async () => {
 			onNavigate({ target: { settings: "interface" } });
 		});
-		expect(renderer.root.findAllByProps({ className: "settings-panel" }).length).toBeGreaterThan(0);
+		expect(locationHash()).toBe("#/settings/interface");
+		expect(
+			renderer.root.findAllByProps({ className: "settings-page" }).length,
+		).toBeGreaterThan(0);
 
 		// {view} → that extension view's hash route.
 		await act(async () => {
