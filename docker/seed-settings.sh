@@ -17,6 +17,10 @@
 #   alive as zombie config). `extensions` is set to FLEET_JSON
 #   unconditionally — an empty fleet writes `extensions: []`, which is
 #   how removing an extension from values removes it from the file.
+#   managed-settings.json records the TOP-LEVEL keys this re-assert owns
+#   (SETTINGS_JSON keys plus extensions, sorted and unique), so the server
+#   can lock those fields and refuse UI writes instead of silently
+#   reverting them on the next boot.
 # - settings/<slug>.json is SEED-ONCE: written only when absent. After
 #   first boot the EXTENSION owns the file (the server-mediated
 #   ExtensionSettingsStore writes there at runtime); re-asserting here
@@ -112,6 +116,12 @@ merged=$(printf '%s\n%s\n' "$existing" "$SETTINGS_JSON" |
 tmp="${SETTINGS_FILE}.tmp.$$"
 printf '%s\n' "$merged" > "$tmp"
 mv -f "$tmp" "$SETTINGS_FILE"
+
+MANAGED_FILE="$CONFIG_DIR/managed-settings.json"
+managed=$(printf '%s' "$SETTINGS_JSON" | jq -c 'keys + ["extensions"] | unique')
+tmp="${MANAGED_FILE}.tmp.$$"
+printf '%s\n' "$managed" > "$tmp"
+mv -f "$tmp" "$MANAGED_FILE"
 
 # --- seed-once per-slug settings. Word-splitting the keys is safe:
 # they were validated against the slug alphabet above, so no whitespace

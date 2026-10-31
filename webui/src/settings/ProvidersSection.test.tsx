@@ -52,7 +52,7 @@ function makeProvidersHarness(init?: {
 			},
 		]).map((entry) => [entry.provider, { ...entry }]),
 	);
-	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [] };
+	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [], managed: [] };
 	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
 	const sectionsResponse = {
 		sections: [

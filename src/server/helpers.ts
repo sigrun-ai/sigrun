@@ -269,6 +269,7 @@ export function settingsResponse(
 		toolRoster: [...new Set(names)],
 		effective: effectiveServerSection(env, file.server, config),
 		pendingRestart: pendingRestart(file, opened.settingsBootSnapshot),
+		managed: [...opened.managedSettings()],
 		...(write === undefined ? {} : { applied: write.applied, pending: write.pending }),
 	};
 }

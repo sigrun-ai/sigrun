@@ -388,6 +388,7 @@ describe("PATCH /v1/settings", () => {
 			applied: [],
 			pending: ["server.port"],
 			pendingRestart: ["server.port"],
+			managed: [],
 		});
 		// Persisted to the file…
 		const file = JSON.parse(
