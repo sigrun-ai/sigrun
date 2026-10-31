@@ -40,6 +40,10 @@ import type {
 import type { SharedExtensionStores } from "../../harness/stores.js";
 import type { SettingsStore } from "../../harness/settings.js";
 import {
+	managedKeysTouched,
+	markManagedFields,
+} from "../../settings/managed.js";
+import {
 	pendingRestart,
 	type SettingsBootSnapshot,
 } from "../../settings/pending.js";
@@ -353,6 +357,8 @@ export interface SettingsSurfaceOptions {
 		readonly bootSnapshot: SettingsBootSnapshot;
 		readonly env: Readonly<Record<string, string | undefined>>;
 		readonly toolRoster: readonly string[];
+		/** Deployment-managed top-level keys, read fresh per render/save. */
+		readonly managed: () => readonly string[];
 	};
 }
 
@@ -438,6 +444,7 @@ export function settingsSurfaceFor(
 				pendingRestart,
 				env,
 				supervised,
+				managed: [...options.core.managed()],
 			} satisfies JsonObject,
 			// The Tools section's default-tools editor binds its options
 			// here (the boot registry's tool names — the roster can only
@@ -518,6 +525,16 @@ export function settingsSurfaceFor(
 			}
 			writeDotted(patch, name, value);
 		}
+		const managedKeys = managedKeysTouched(patch, options.core.managed());
+		if (managedKeys.length > 0) {
+			return {
+				ok: false,
+				error: {
+					message: `managed by deployment: ${managedKeys.join(", ")}`,
+					field: managedKeys[0],
+				},
+			};
+		}
 		try {
 			const outcome = options.core.settings.apply(patch);
 			// The §13.2 publish rides the store's onWrite sink (boot wired
@@ -596,7 +613,7 @@ export function settingsSurfaceFor(
 		render: async (ctx): Promise<SurfaceRenderResult> => {
 			const access = accessFor(ctx.principal);
 			return {
-				tree: form,
+				tree: core === undefined ? form : markManagedFields(form, core.managed()),
 				data:
 					access === "none"
 						? {}

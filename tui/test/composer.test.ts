@@ -240,6 +240,25 @@ describe("composer submit", () => {
 		expect(lines).toContain("unserved_model");
 	});
 
+	test("a 401 response names the auth failure (Task 5: the same string as the startup path)", async () => {
+		const { app } = await boot({
+			submitResult: () =>
+				Promise.reject(
+					new SigrunApiError("POST", "/v1/conversations/1/submissions", 401, {
+						error: "unauthenticated",
+					}),
+				),
+		});
+		app.editor.setText("ship it");
+		app.editor.onSubmit?.("ship it");
+		await flush();
+		// The pane wraps at 60 cols; normalize whitespace before matching.
+		const lines = app.pane.render(60).join("\n").replace(/\s+/g, " ");
+		expect(lines).toContain(
+			"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
+		);
+	});
+
 	test("a failed submit never wedges the composer (the next submit flows)", async () => {
 		let fail = true;
 		const { app, submitCalls } = await boot({

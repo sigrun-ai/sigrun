@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
+### Changed
+- A 401 from the server surfaces as a named auth failure (the token is
+  missing, expired, or revoked — create one in Settings → API tokens)
+  at startup, in the pane's error lines, and as a terminal SSE failure
+  that never retries; forms omit disabled fields from unrelated saves.
+
 ## [0.3.0] - 2026-10-29
 ### Changed
 - No user-facing TUI changes; versioned with the core family for the

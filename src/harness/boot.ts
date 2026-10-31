@@ -122,6 +122,7 @@ import {
 	UserToolRegistry,
 } from "./user-tools.js";
 import { defaultSettingsDir, SettingsStore } from "./settings.js";
+import { readManagedKeys } from "../settings/managed.js";
 import {
 	resolveRefreshMinutes,
 	snapshotRestartKeys,
@@ -313,6 +314,8 @@ export interface OpenedHarness {
 	 * key leaves the pending list without a restart.
 	 */
 	readonly settingsBootSnapshot: ReadonlyMap<string, string>;
+	/** The deployment-managed top-level settings keys, read fresh per call. */
+	readonly managedSettings: () => readonly string[];
 	/**
 	 * Publish one `settings.changed` event (U4 §13.2): the server-side
 	 * fan-out seam — the hub publication (/v1/events) and the extension
@@ -1648,7 +1651,6 @@ export async function openHarness(
 		harness,
 		models,
 		readSettings: () => settingsStore.read(),
-		defaultModel,
 		isTaskOwned: async (id) =>
 			(await storage.conversation(id, BACKGROUND_CONTEXT))?.owner !== undefined,
 	});
@@ -1880,6 +1882,7 @@ export async function openHarness(
 		refreshProvider: refreshOneProvider,
 		stopProviderRefresh: stopCurrentProviderRefresh,
 		settingsBootSnapshot,
+		managedSettings: () => readManagedKeys(roots.configDir),
 		publishSettingsChanged,
 	};
 }

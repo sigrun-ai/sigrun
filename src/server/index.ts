@@ -328,6 +328,7 @@ export async function createServer(
 								.map((entry) => entry.tool.name),
 						),
 					],
+					managed: opened.managedSettings,
 				},
 				}),
 			),

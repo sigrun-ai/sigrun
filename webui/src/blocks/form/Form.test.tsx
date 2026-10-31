@@ -101,6 +101,25 @@ function typeInto(
 }
 
 describe("form mode: submit", () => {
+	test("omits disabled fields from dispatched values", () => {
+		const { dispatch, renderer } = makeHarness(
+			registrationForm({
+				children: [
+					{ type: "text", name: "name", label: "Name", required: true },
+					{ type: "text", name: "handle", label: "Handle", disabled: true },
+				],
+			}),
+			{ data: { registration: { name: "Acme Co", handle: "managed" } } },
+		);
+		act(() => {
+			findButton(renderer, "Register").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "submit", name: "register" },
+			{ rev: 0, values: { name: "Acme Co" } },
+		);
+	});
+
 	test("dispatches onSubmit with {values} when validation passes", () => {
 		const { dispatch, renderer } = makeHarness(registrationForm(), {
 			data: { registration: { name: "Acme Co", handle: "acme", seats: 3 } },

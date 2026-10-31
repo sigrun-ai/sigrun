@@ -22,12 +22,15 @@
  * failures (read error, mid-stream close) emit at most one `onError` per
  * connection (a read failure and the ensuing close are the same failure);
  * a non-OK status on (re)connect reports per attempt — it never opens a
- * connection. A malformed frame reports
+ * connection. A 401 on (re)connect is TERMINAL (Task 5): the auth-failure
+ * string surfaces once and the watcher stops — a revoked credential
+ * cannot recover by reconnecting, so no retry ladder fires. A malformed
+ * frame reports
  * `onError` and the stream STAYS OPEN — one bad frame must never kill the
  * transport.
  */
 
-import type { ConversationViewWire } from "./api.js";
+import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "./api.js";
 import { applyDelta, type ViewDelta } from "@sigrun/shared/view-delta";
 import type { HostEventWire } from "@sigrun/shared/views";
 
@@ -221,6 +224,13 @@ export function watchConversation(
 		}
 		if (!response.ok || response.body === null) {
 			if (closed) return;
+			// A 401 (Task 5) is terminal: a credential cannot recover by
+			// reconnecting — surface the auth-failure string ONCE and stop
+			// (never a silent retry ladder against a revoked token).
+			if (response.status === 401) {
+				handlers.onError?.(AUTH_FAILURE_MESSAGE);
+				return;
+			}
 			handlers.onError?.(
 				`conversation stream responded with status ${response.status}`,
 			);
@@ -420,6 +430,12 @@ export function watchEvents(
 		}
 		if (!response.ok || response.body === null) {
 			if (closed) return;
+			// A 401 (Task 5) is terminal — same rule as the conversation
+			// stream: the auth-failure string ONCE, never a retry ladder.
+			if (response.status === 401) {
+				handlers.onError?.(AUTH_FAILURE_MESSAGE);
+				return;
+			}
 			handlers.onError?.(
 				`events stream responded with status ${response.status}`,
 			);

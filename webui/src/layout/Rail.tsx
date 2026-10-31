@@ -51,8 +51,11 @@ function healthTitle(meta: MetaResponse): string {
 export function Rail(props: {
 	/** The served `GET /v1/meta` (extensions + health feed the dot). */
 	readonly meta: MetaResponse;
-	/** Opens the settings dialog (App owns the dialog). */
+	/** Opens the settings page (App owns the route). */
 	readonly onOpenSettings: () => void;
+	/** Whether the settings page is the current route (0.4.0 Task 4):
+	 *  the button carries `aria-current="page"` + the active class. */
+	readonly settingsActive?: boolean;
 	/** Opens the dev Blocks gallery (U1 Task 6); rendered only when
 	 *  `/v1/meta` reports `dev: true`. */
 	readonly onOpenGallery?: () => void;
@@ -178,10 +181,17 @@ export function Rail(props: {
 			)}
 			<button
 				type="button"
-				className="rail-btn"
+				className={
+					props.settingsActive === true
+						? "rail-btn rail-btn-active"
+						: "rail-btn"
+				}
 				data-rail-section="settings"
 				title="Settings"
 				aria-label="settings"
+				{...(props.settingsActive === true
+					? { "aria-current": "page" as const }
+					: {})}
 				onClick={onOpenSettings}
 			>
 				<SettingsIcon />

@@ -10,6 +10,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { SettingsValidationError } from "../../harness/settings.js";
+import { managedKeysTouched } from "../../settings/managed.js";
 import { pendingRestart as diffPendingRestart } from "../../settings/pending.js";
 import type { ServerContext } from "../context.js";
 import { settingsResponse } from "../helpers.js";
@@ -47,6 +48,12 @@ export function registerSettingsRoutes(
 			Array.isArray(body)
 		) {
 			return await reply.code(400).send({ error: "invalid_body" });
+		}
+		const managedKeys = managedKeysTouched(body, opened.managedSettings());
+		if (managedKeys.length > 0) {
+			return await reply
+				.code(409)
+				.send({ error: "managed_by_deployment", keys: managedKeys });
 		}
 		try {
 			const outcome = opened.settings.apply(body);

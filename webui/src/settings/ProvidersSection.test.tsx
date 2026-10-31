@@ -52,7 +52,7 @@ function makeProvidersHarness(init?: {
 			},
 		]).map((entry) => [entry.provider, { ...entry }]),
 	);
-	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [] };
+	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [], managed: [] };
 	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
 	const sectionsResponse = {
 		sections: [
@@ -155,30 +155,13 @@ function renderPanel(
 				prefsState={prefs}
 				theme={theme}
 				admin={admin}
+				section="providers"
+				onSection={() => {}}
 				onClose={() => {}}
 			/>
 		);
 	}
 	return renderAsync(<Probe />).then((renderer) => renderer);
-}
-
-/** Click one section-nav button. */
-async function openSection(
-renderer: TestRenderer.ReactTestRenderer,
-name: string,
-) {
-const button = renderer.root
-.findAllByType("button")
-.find(
-(node) =>
-typeof node.props.className === "string" &&
-node.props.className.startsWith("settings-nav-item") &&
-node.props.children === name,
-);
-if (button === undefined) throw new Error(`section ${name} not rendered`);
-await act(async () => {
-		button.props.onClick();
-	});
 }
 
 /** One provider's row (the fieldset by its data-provider attr). */
@@ -204,7 +187,6 @@ describe("SettingsPanel Providers section", () => {
 	test("renders one row per provider: name, readiness badge, model count (+ the tracker detail)", async () => {
 		const { client } = makeProvidersHarness();
 		const renderer = await renderPanel(client);
-		await openSection(renderer, "Providers");
 		const rows = renderer.root
 			.findAllByType("fieldset")
 			.filter((node) => node.props.className === "settings-provider");
@@ -231,7 +213,6 @@ describe("SettingsPanel Providers section", () => {
 	test("saving a key PUTs {apiKey}, clears the field, and the badge turns ready", async () => {
 		const { calls, client } = makeProvidersHarness();
 		const renderer = await renderPanel(client);
-		await openSection(renderer, "Providers");
 		const row = providerRow(renderer, "acme");
 		const input = row.findByProps({ className: "settings-provider-key" });
 		await act(async () => {
@@ -263,7 +244,6 @@ describe("SettingsPanel Providers section", () => {
 	test("the key field is write-only: password type, empty on mount, never populated from any response", async () => {
 		const { client } = makeProvidersHarness();
 		const renderer = await renderPanel(client);
-		await openSection(renderer, "Providers");
 		const inputs = renderer.root.findAllByProps({
 			className: "settings-provider-key",
 		});
@@ -278,7 +258,6 @@ describe("SettingsPanel Providers section", () => {
 	test("a rejected save surfaces the server's error and keeps the typed key (no silent success)", async () => {
 		const { client } = makeProvidersHarness({ putFails: true });
 		const renderer = await renderPanel(client);
-		await openSection(renderer, "Providers");
 		const row = providerRow(renderer, "acme");
 		const input = row.findByProps({ className: "settings-provider-key" });
 		await act(async () => {
@@ -305,7 +284,6 @@ describe("SettingsPanel Providers section", () => {
 	test("Clear DELETEs and Refresh POSTs the refresh route; both apply the response's entry", async () => {
 		const { calls, client } = makeProvidersHarness();
 		const renderer = await renderPanel(client);
-		await openSection(renderer, "Providers");
 		const row = providerRow(renderer, "acme2");
 		await act(async () => {
 			await row.findByProps({ className: "settings-provider-clear" }).props.onClick();

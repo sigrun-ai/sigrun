@@ -82,6 +82,35 @@ describe("OutlinePanel", () => {
 		renderer.unmount();
 	});
 
+test("each item's clampable text sits in an .outline-text span; the button's title carries the full text", () => {
+		const texts = [
+			"Review the rolling deploy policy end to end, then flag risks",
+			"Which generators support i18n?",
+		];
+		const renderer = render(
+			h(OutlinePanel, {
+				scrollRoot: null,
+				turns: [
+					{ entryId: 1, text: texts[0] ?? "" },
+					{ entryId: 5, text: texts[1] ?? "" },
+				],
+			}),
+		);
+		const items = renderer.root.findAllByProps({ className: "outline-item" });
+		expect(items).toHaveLength(2);
+		for (const [index, text] of texts.entries()) {
+			const item = items[index];
+			if (item === undefined) throw new Error(`no item ${index}`);
+			// The FULL text stays reachable on the button: the title tooltip.
+			expect(item.props["title"]).toBe(text);
+			// The clamp lives on the inner, unpadded span — one per item.
+			const spans = item.findAllByProps({ className: "outline-text" });
+			expect(spans).toHaveLength(1);
+			expect(spans[0]?.props["children"]).toBe(text);
+		}
+		renderer.unmount();
+	});
+
 	test("clicking the second item scrolls [data-entry-id=\"5\"] into view (block start, smooth)", () => {
 		const turn5 = fakeTurn(5, 0);
 		const renderer = render(

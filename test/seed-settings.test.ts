@@ -73,8 +73,8 @@ function run(
 
 /** Read + parse one JSON file the seeder wrote (throws if unreadable —
  * every test wants exactly that loudness). */
-async function readJson(path: string): Promise<Record<string, unknown>> {
-	return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+async function readJson(path: string): Promise<unknown> {
+	return JSON.parse(await readFile(path, "utf8")) as unknown;
 }
 
 test(
@@ -203,6 +203,36 @@ test(
 			expect(await readJson(join(configDir, "settings.json"))).toEqual({
 				extensions: [],
 			});
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+test(
+	"managed settings: records the chart's top-level keys plus extensions, sorted and unique",
+	async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-seed-managed-"));
+		const configDir = join(dir, "config");
+		try {
+			const result = await run(
+				configDir,
+				"[]",
+				'{"defaultModel":"acme/model-1","server":{"port":3000}}',
+				"{}",
+			);
+			expect(result.code).toBe(0);
+			expect(await readJson(join(configDir, "managed-settings.json"))).toEqual([
+				"defaultModel",
+				"extensions",
+				"server",
+			]);
+
+			const reseeded = await run(configDir, "[]", "{}", "{}");
+			expect(reseeded.code).toBe(0);
+			expect(await readJson(join(configDir, "managed-settings.json"))).toEqual([
+				"extensions",
+			]);
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

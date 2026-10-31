@@ -52,6 +52,7 @@ export const CORE_SECTION_IDS = [
 	"providers",
 	"extensions",
 	"accounts",
+	"tokens",
 ] as const;
 
 export type CoreSectionId = (typeof CORE_SECTION_IDS)[number];
@@ -529,6 +530,30 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 			root: {
 				type: "form",
 				id: "core-accounts-form",
+				bind: "/settings",
+				mode: "submit",
+				onSubmit: "save",
+				submitLabel: "Save",
+				children: [],
+			},
+		},
+	},
+	{
+		id: "tokens",
+		title: "API tokens",
+		// NOT "key" (General and Account links already use it); "lock" is
+		// the credential-affordance glyph from the same closed icon set.
+		icon: "lock",
+		// Per-user credential management, not an administrator-only section.
+		admin: false,
+		// The channels render their native tokens cove over this entry
+		// (the create/revoke surface is the /v1/auth/tokens route family,
+		// not a settings-object write).
+		form: {
+			v: 1,
+			root: {
+				type: "form",
+				id: "core-tokens-form",
 				bind: "/settings",
 				mode: "submit",
 				onSubmit: "save",

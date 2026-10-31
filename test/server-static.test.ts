@@ -21,7 +21,8 @@
  * smoke.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -111,6 +112,77 @@ describe("webui bundle present", () => {
 		expect(response.statusCode).toBe(200);
 		expect(response.headers["content-type"]).toContain("text/html");
 		expect(response.body).toContain("sigrun-webui-fixture");
+	});
+
+	test("GET /favicon.svg serves the brand favicon as image/svg+xml (0.4.0 Task 8)", async () => {
+		const { app } = await bootServer({ webuiBundleEnv: FIXTURE_BUNDLE });
+		const response = await app.inject({ method: "GET", url: "/favicon.svg" });
+		expect(response.statusCode).toBe(200);
+		expect(response.headers["content-type"]).toContain("image/svg+xml");
+		expect(response.body).toContain("sigrun-webui-fixture-favicon");
+	});
+
+	test("GET /manifest.webmanifest serves the web app manifest (0.4.0 Task 8)", async () => {
+		const { app } = await bootServer({ webuiBundleEnv: FIXTURE_BUNDLE });
+		const response = await app.inject({
+			method: "GET",
+			url: "/manifest.webmanifest",
+		});
+		expect(response.statusCode).toBe(200);
+		const manifest = response.json() as { name: string };
+		expect(manifest.name).toBe("sigrun-webui-fixture");
+	});
+
+	test("index.html links the brand icons and the manifest (0.4.0 Task 8)", async () => {
+		const { app } = await bootServer({ webuiBundleEnv: FIXTURE_BUNDLE });
+		const response = await app.inject({ method: "GET", url: "/" });
+		expect(response.statusCode).toBe(200);
+		const html = response.body;
+		// The favicon pair: the vector mark plus a 32px PNG fallback.
+		expect(html).toMatch(
+			/<link[^>]*rel="icon"[^>]*type="image\/svg\+xml"[^>]*>/,
+		);
+		expect(html).toMatch(
+			/<link[^>]*rel="icon"[^>]*type="image\/png"[^>]*sizes="32x32"[^>]*>/,
+		);
+		expect(html).toMatch(
+			/<link[^>]*rel="apple-touch-icon"[^>]*>/,
+		);
+		expect(html).toMatch(
+			/<link[^>]*rel="manifest"[^>]*href="[^"]*manifest\.webmanifest"[^>]*>/,
+		);
+	});
+
+	test("the REAL webui index.html carries the same links and the public assets exist (0.4.0 Task 8)", async () => {
+		// The fixture above pins the SERVING contract; this pins the real
+		// bundle source the vite build ships: webui/index.html links the
+		// brand assets and webui/public/ (which vite copies into dist/)
+		// actually carries them.
+		const html = await readFile(
+			join(import.meta.dirname, "..", "webui", "index.html"),
+			"utf8",
+		);
+		expect(html).toMatch(
+			/<link[^>]*rel="icon"[^>]*type="image\/svg\+xml"[^>]*>/,
+		);
+		expect(html).toMatch(
+			/<link[^>]*rel="icon"[^>]*type="image\/png"[^>]*sizes="32x32"[^>]*>/,
+		);
+		expect(html).toMatch(/<link[^>]*rel="apple-touch-icon"[^>]*>/);
+		expect(html).toMatch(
+			/<link[^>]*rel="manifest"[^>]*href="[^"]*manifest\.webmanifest"[^>]*>/,
+		);
+		for (const asset of [
+			"favicon.svg",
+			"favicon-32.png",
+			"apple-touch-icon.png",
+			"icon-192.png",
+			"icon-512.png",
+			"icon-maskable-512.png",
+			"manifest.webmanifest",
+		]) {
+			expect(existsSync(join(import.meta.dirname, "..", "webui", "public", asset)), asset).toBe(true);
+		}
 	});
 
 	test("GET /assets/app.js serves a static asset from the bundle root", async () => {

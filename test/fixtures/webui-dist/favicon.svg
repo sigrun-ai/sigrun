@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+	<!-- sigrun-webui-fixture-favicon: hand-written stand-in for the real
+	     favicon.svg (webui/public/), which the vite build copies into
+	     dist/. Markers only — the server tests assert shape, not art. -->
+	<rect width="24" height="24" rx="4.5" fill="#d6a24a"/>
+	<g fill="none" stroke="#0b0f13" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M4 16c3.2-1.4 6.9-4.6 8.4-8.4l.6 2.2 2.2.6"/>
+		<path d="M8.5 18.5c2.7-1.5 5.4-4.4 6.6-7.4l1.5 1.2 1.9-.3"/>
+	</g>
+</svg>

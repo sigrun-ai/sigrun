@@ -150,21 +150,47 @@ function harnessBuiltinNames(): string[] {
 }
 
 /**
- * Part A released ext-gateway with an exact @sigrun/shared 0.2.1 peer.
- * Leg A leaves that published sibling untouched; integration may move it
- * directly to the 0.3.0 family version. Older shared versions remain skew.
+ * The released ext-gateway line's @sigrun/shared peer acceptance,
+ * derived from BOTH facts the sibling manifest carries — its version
+ * AND its declared peer range — never the version alone. Part A shipped
+ * 0.1.3 with an exact 0.2.1 peer; 0.1.4 widened it to
+ * "0.2.1 || 0.3.0" (the 0.3.0 core family) and 0.1.5 widened it again
+ * to "0.3.0 || 0.4.0" (the 0.4.0 family, still co-installing with 0.3.0).
+ * A declaration is accepted when it honestly installs against core's
+ * own pin (the range CONTAINS `own`), or inside the documented Part A
+ * transitional window (core 0.3.0 against the published 0.1.3/0.1.4
+ * line still peering 0.2.1). A version bumped past its peer — e.g. a
+ * 0.1.5 still declaring "0.2.1 || 0.3.0" against core 0.4.0 — accepts
+ * NOTHING (that pairing is uninstallable: ERESOLVE), and every other
+ * sibling keeps the exact-version default branch.
  */
 function acceptedSharedPeers(
 	name: string,
 	siblingVersion: string | undefined,
+	declaredPeer: string | undefined,
 	own: string,
 ): Set<string> {
-	return name === "@sigrun/ext-gateway" &&
-		siblingVersion !== undefined &&
-		/^0\.1\.[3-4]$/.test(siblingVersion) &&
-		own === "0.3.0"
-		? new Set(["0.2.1", "0.3.0"])
-		: new Set([own]);
+	const declared = new Set(
+		(declaredPeer ?? "").split("||").map((part) => part.trim()).filter(Boolean),
+	);
+	if (name !== "@sigrun/ext-gateway") return new Set([own]);
+	// The honest case: the declared range itself installs against core's
+	// pin (this is the reviewer-pairing assertion — a 0.1.5+ line must
+	// DECLARE the core line it claims to support, not just be versioned
+	// for it).
+	if (declared.has(own)) return declared;
+	// The Part A transitional window: core 0.3.0 with the PUBLISHED
+	// gateway line still peering 0.2.1 (integration may move the sibling
+	// directly to the family version; until then the exact 0.2.1 peer is
+	// the published reality). Exactly the two released declarations.
+	if (
+		own === "0.3.0" &&
+		/^0\.1\.[3-4]$/.test(siblingVersion ?? "") &&
+		(declaredPeer === "0.2.1" || declaredPeer === "0.2.1 || 0.3.0")
+	) {
+		return declared;
+	}
+	return new Set();
 }
 
 /** The five sibling checkouts, keyed by declared package name. */
@@ -252,23 +278,64 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		const siblings = siblingManifests();
 		const gateway = siblings.get("@sigrun/ext-gateway");
 		// The linked checkout tracks the RELEASED gateway line: 0.1.3
-		// (Part A, exact 0.2.1 peer) and 0.1.4 (the peer-widening patch
-		// that adds 0.3.0). Both legitimately declare the 0.2.1-or-0.3.0
-		// acceptance; anything older is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-4]$/);
+		// (Part A, exact 0.2.1 peer), 0.1.4 (the peer-widening patch that
+		// adds 0.3.0), and 0.1.5 (the peer-widening patch that adds 0.4.0
+		// while keeping 0.3.0). Each legitimately declares its line's
+		// acceptance; anything older — or a declaration from the WRONG
+		// line — is skew.
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-5]$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			/^0\.2\.1( \|\| 0\.3\.0)?$/,
+			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0)$/,
 		);
-		const accepted = acceptedSharedPeers(
+		// The 0.4.0 core line: only the 0.1.5 declaration installs against
+		// it (the range must CONTAIN core's pin — version alone is not
+		// acceptance), and it keeps the 0.3.0 arm.
+		const atFour = acceptedSharedPeers(
 			"@sigrun/ext-gateway",
-			gateway?.manifest.version,
-			"0.3.0",
+			"0.1.5",
+			"0.3.0 || 0.4.0",
+			"0.4.0",
 		);
-		expect(accepted.has("0.2.1")).toBe(true);
-		expect(accepted.has("0.3.0")).toBe(true);
-		expect(accepted.has("0.1.2")).toBe(false);
-		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.5", "0.3.0").has("0.2.1")).toBe(false);
-		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0").has("0.2.1")).toBe(false);
+		expect(atFour.has("0.4.0")).toBe(true);
+		expect(atFour.has("0.3.0")).toBe(true);
+		expect(atFour.has("0.2.1")).toBe(false);
+		// THE poisoned pairing: a gateway bumped to 0.1.5 that still
+		// declares the 0.1.4-era range is uninstallable against shared 0.4.0
+		// (ERESOLVE) — the acceptance must be EMPTY, whatever the version
+		// says.
+		const poisoned = acceptedSharedPeers(
+			"@sigrun/ext-gateway",
+			"0.1.5",
+			"0.2.1 || 0.3.0",
+			"0.4.0",
+		);
+		expect(poisoned.size).toBe(0);
+		// The 0.3.0 core line: the 0.1.5 declaration installs honestly
+		// (its range keeps 0.3.0)…
+		expect(
+			acceptedSharedPeers("@sigrun/ext-gateway", "0.1.5", "0.3.0 || 0.4.0", "0.3.0").has(
+				"0.3.0",
+			),
+		).toBe(true);
+		// …and the published 0.1.3/0.1.4 line rides the Part A
+		// transitional window (core 0.3.0 with the sibling still peering
+		// 0.2.1): each era declaration accepts exactly its own literals.
+		expect(
+			acceptedSharedPeers("@sigrun/ext-gateway", "0.1.4", "0.2.1 || 0.3.0", "0.3.0").has(
+				"0.2.1",
+			),
+		).toBe(true);
+		expect(
+			acceptedSharedPeers("@sigrun/ext-gateway", "0.1.3", "0.2.1", "0.3.0").has("0.2.1"),
+		).toBe(true);
+		// Anything older is skew, and the exception never leaks to other
+		// built-ins.
+		expect(
+			acceptedSharedPeers("@sigrun/ext-gateway", "0.1.2", "0.2.1", "0.3.0").has("0.2.1"),
+		).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0", "0.3.0").has("0.2.1")).toBe(
+			false,
+		);
 	});
 
 	test("no peer skew: every built-in's host peers pin core's own version of that module", () => {
@@ -284,8 +351,8 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
 					expect(
 						module === "@sigrun/shared"
-							? [...accepted].some((pin) =>
-								acceptedSharedPeers(name, sibling.manifest.version, own).has(pin),
+							? [...accepted].some((entry) =>
+								acceptedSharedPeers(name, sibling.manifest.version, pin, own).has(entry),
 							)
 							: accepted.has(own),
 						`${name} peer ${module} accepts core's pin ${own}`,

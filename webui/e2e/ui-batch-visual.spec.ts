@@ -36,9 +36,27 @@ test.afterAll(async () => {
 
 test("round 2: in-place live render, autoscroll, token meta, one-line bubble", async ({ page }) => {
 	await page.goto(server.url);
+	// Let the boot default selection settle FIRST, then click New and wait
+	// for its navigation to land before typing. Task 6 made the composer
+	// live with no conversation, so a fill no longer blocks on the disabled
+	// textarea until a conversation is active — without this ordering the
+	// fill races the root-draft boot selection against the New navigation
+	// (the text can land in the root's draft and be restored away).
+	await expect(page.locator("li.session-item-active")).toHaveCount(1);
+	const beforeNew = await page
+		.locator("li.session-item-active")
+		.getAttribute("data-conversation-id");
 	await page.getByRole("button", { name: /new/i }).first().click();
 	const composer = page.locator(".composer-input");
 	await expect(composer).toHaveCount(1);
+	// The New navigation landed: the ACTIVE row is a different conversation.
+	await expect
+		.poll(() =>
+			page
+				.locator("li.session-item-active")
+				.getAttribute("data-conversation-id"),
+		)
+		.not.toBe(beforeNew);
 	await composer.waitFor({ state: "visible" });
 
 	// The user bubble: 24 chars render ONE line (the wrap bug measured 3).
@@ -84,8 +102,21 @@ test("round 2: in-place live render, autoscroll, token meta, one-line bubble", a
 
 test("composer starts one row tall and grows; timeline toggle interleaves", async ({ page }) => {
 	await page.goto(server.url);
+	// Settle the boot default BEFORE clicking New (same race as round 2:
+	// a fill that lands before the New navigation is wiped by the switch).
+	await expect(page.locator("li.session-item-active")).toHaveCount(1);
+	const beforeNew = await page
+		.locator("li.session-item-active")
+		.getAttribute("data-conversation-id");
 	// Claim + create a conversation through the UI path.
 	await page.getByRole("button", { name: /new/i }).first().click();
+	await expect
+		.poll(() =>
+			page
+				.locator("li.session-item-active")
+				.getAttribute("data-conversation-id"),
+		)
+		.not.toBe(beforeNew);
 
 	const composer = page.locator(".composer-input");
 	await composer.waitFor({ state: "visible" });
