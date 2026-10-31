@@ -51,6 +51,7 @@ describe("SkillStore", () => {
 			conversationId: 42,
 		});
 		expect(typeof entry.after).toBe("string");
+		expect(entry.before).toBeUndefined();
 		expect(await store.feed(1)).toEqual([entry]);
 		expect(await store.list()).toEqual([expect.objectContaining({
 			name: "acme-deploy",
@@ -128,6 +129,25 @@ describe("SkillStore", () => {
 		await store.apply("acme-deploy", { kind: "restore" }, { actor: "user" });
 		expect(await store.view("acme-deploy")).toBe(content());
 		expect((await store.list())[0]).toMatchObject({ archived: false });
+	});
+
+	test("undo restores archive and restore destinations", async () => {
+		const { store } = await setup();
+		await create(store);
+		const archived = await store.apply("acme-deploy", { kind: "archive", absorbedInto: "acme-release" }, { actor: "user" });
+		expect(archived.reason).toBe("acme-release");
+		await store.undo([archived.id]);
+		expect((await store.list())[0]).toMatchObject({ archived: false });
+		expect(await store.view("acme-deploy")).toBe(content());
+		await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely" }, { actor: "agent" });
+		expect(await store.view("acme-deploy")).toContain("safely");
+		const restored = await store.apply("acme-deploy", { kind: "restore" }, { actor: "user" }).catch(() => undefined);
+		expect(restored).toBeUndefined();
+		await store.apply("acme-deploy", { kind: "archive" }, { actor: "user" });
+		const restore = await store.apply("acme-deploy", { kind: "restore" }, { actor: "user" });
+		await store.undo([restore.id]);
+		expect((await store.list())[0]).toMatchObject({ archived: true });
+		await expect(store.view("acme-deploy")).rejects.toThrow();
 	});
 
 	test("undo saves current first and is itself undoable", async () => {

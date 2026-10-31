@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { curationDir, learnedSkillsDir } from "./paths.js";
 import { validSkillName } from "./names.js";
 import { scanContent } from "./scan.js";
@@ -142,9 +142,12 @@ async function readState(dir: string): Promise<State> {
 
 async function writeState(dir: string, state: State): Promise<void> {
 	await mkdir(dir, { recursive: true });
-	const path = join(dir, "state.json");
+	await writeFileAtomic(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function writeFileAtomic(path: string, text: string): Promise<void> {
 	const temp = `${path}.${randomUUID()}.tmp`;
-	await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`);
+	await writeFile(temp, text);
 	await rename(temp, path);
 }
 
@@ -167,15 +170,22 @@ async function nextVersion(dir: string, name: string): Promise<string> {
 	return `v${highest + 1}`;
 }
 
+async function versionLocation(version: string): Promise<"skills" | "archive" | undefined> {
+	try { return (await readFile(join(version, ".location"), "utf8")).trim() === "archive" ? "archive" : "skills"; }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+
 export class SkillStore {
 	private readonly options: SkillStoreOptions;
 	private readonly root: string;
 	private readonly skills: string;
+	private readonly archive: string;
 
 	constructor(options: SkillStoreOptions) {
 		this.options = options;
 		this.root = curationDir(options.userArea);
 		this.skills = learnedSkillsDir(options.userArea);
+		this.archive = join(this.root, "archive");
 	}
 
 	async list(): Promise<readonly LearnedSkillInfo[]> {
@@ -217,8 +227,7 @@ export class SkillStore {
 			skillName(name);
 			const state = await readState(this.root);
 			const archived = state.archived.includes(name);
-			const beforeRoot = join(archived ? join(this.root, "archive") : this.skills, name);
-			const root = beforeRoot;
+			const root = join(archived ? this.archive : this.skills, name);
 			if (change.kind === "create") {
 				if (await exists(root)) throw new Error(`skill already exists: ${name}`);
 				const taken = await this.options.nameTakenElsewhere(name);
@@ -239,7 +248,7 @@ export class SkillStore {
 				if (!archived) throw new Error(`skill is not archived: ${name}`);
 				const version = change.version === undefined ? undefined : join(this.root, "versions", name, change.version);
 				if (version !== undefined && !(await exists(version))) throw new Error(`unknown version: ${change.version}`);
-				return this.commit(name, "restore", meta, state, root, this.skills, undefined, version);
+				return this.commit(name, "restore", meta, state, root, join(this.skills, name), undefined, version);
 			}
 			if (archived) throw new Error(`skill is archived: ${name}`);
 			if (change.kind !== "patch" && change.kind !== "write_file" && change.kind !== "remove_file") throw new Error("unsupported skill change");
@@ -304,65 +313,85 @@ export class SkillStore {
 			const result: FeedEntry[] = [];
 			const state = await readState(this.root);
 			for (const entry of earliest.values()) {
-				const current = join(state.archived.includes(entry.skill) ? join(this.root, "archive") : this.skills, entry.skill);
+				const current = join(state.archived.includes(entry.skill) ? this.archive : this.skills, entry.skill);
 				const previous = join(this.root, "versions", entry.skill, entry.before!);
 				if (!(await exists(previous)) || !(await exists(current))) continue;
-					const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, current, current, undefined, previous);
+				const location = await versionLocation(previous);
+				if (location === undefined) throw new Error(`unknown version location: ${entry.before}`);
+				const destination = join(location === "archive" ? this.archive : this.skills, entry.skill);
+				const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, current, destination, undefined, previous);
 				result.push(next);
 			}
 			return result;
 		});
 	}
 
+	/**
+	 * Persists a change: snapshots the before state, applies the mutation,
+	 * snapshots the after state, records the feed entry and runs retention.
+	 * Every version directory carries a `.location` file recording where its
+	 * content lived (skills or archive) when the snapshot was taken, so undo
+	 * can pick the right destination and retention removes the metadata with
+	 * the snapshot it belongs to.
+	 */
 	private async commit(name: string, action: ChangeAction, meta: ChangeMeta, state: State, beforeRoot?: string, afterRoot?: string, absorbedInto?: string, restoreFrom?: string, mutate?: () => Promise<void>): Promise<FeedEntry> {
 		const versionRoot = join(this.root, "versions", name);
 		let before: string | undefined;
 		if (beforeRoot !== undefined && await exists(beforeRoot)) {
 			before = await nextVersion(this.root, name);
 			await copyTree(beforeRoot, join(versionRoot, before));
+			await writeFile(join(versionRoot, before, ".location"), beforeRoot.startsWith(this.archive + "/") ? "archive" : "skills");
 		}
 		if (mutate !== undefined) await mutate();
 		if (action === "archive") {
-			await mkdir(join(this.root, "archive"), { recursive: true });
+			await mkdir(this.archive, { recursive: true });
 			await rename(beforeRoot!, afterRoot!);
 			state.archived = [...new Set([...state.archived, name])];
 		} else if (action === "restore") {
 			await mkdir(this.skills, { recursive: true });
-			const destination = join(afterRoot!, name);
 			if (restoreFrom === undefined) {
-				await rename(beforeRoot!, destination);
+				await rename(beforeRoot!, afterRoot!);
 			} else {
-				const staged = join(this.root, `.restore-${randomUUID()}`);
-				await copyTree(restoreFrom, staged);
+				const staged = await this.stageVersion(restoreFrom);
 				await rm(beforeRoot!, { recursive: true, force: true });
-				await rename(staged, destination);
+				await rename(staged, afterRoot!);
 			}
 			state.archived = state.archived.filter((item) => item !== name);
 		} else if (action === "undo") {
-			const staged = join(this.root, `.undo-${randomUUID()}`);
-			await copyTree(restoreFrom!, staged);
-			await rm(afterRoot!, { recursive: true, force: true });
+			const staged = await this.stageVersion(restoreFrom!);
+			await rm(beforeRoot!, { recursive: true, force: true });
+			await mkdir(dirname(afterRoot!), { recursive: true });
 			await rename(staged, afterRoot!);
-			state.archived = state.archived.filter((item) => item !== name);
+			if (afterRoot!.startsWith(this.archive + "/")) state.archived = [...new Set([...state.archived, name])];
+			else state.archived = state.archived.filter((item) => item !== name);
 		}
 		let after: string | undefined;
 		if (action !== "archive") {
 			after = await nextVersion(this.root, name);
 			const current = afterRoot ?? beforeRoot!;
 			await copyTree(current, join(versionRoot, after));
+			await writeFile(join(versionRoot, after, ".location"), state.archived.includes(name) ? "archive" : "skills");
 		}
 		await writeState(this.root, state);
-		const entry: FeedEntry = { id: randomUUID(), at: this.options.now().toISOString(), actor: meta.actor, action, skill: name, ...(meta.reason === undefined ? {} : { reason: absorbedInto ?? meta.reason }), ...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }), ...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }), ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }) };
+		const entry: FeedEntry = { id: randomUUID(), at: this.options.now().toISOString(), actor: meta.actor, action, skill: name, ...(absorbedInto === undefined && meta.reason === undefined ? {} : { reason: absorbedInto ?? meta.reason }), ...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }), ...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }), ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }) };
 		await this.appendFeed(entry);
-		const versions = (await readdir(versionRoot)).sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)));
+		const versions = (await readdir(versionRoot)).filter((entry) => /^v\d+$/.test(entry)).sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)));
 		for (const old of versions.slice(VERSIONS)) await rm(join(versionRoot, old), { recursive: true, force: true });
 		return entry;
+	}
+
+	/** Copies a version snapshot to a staging directory, minus the `.location` metadata file. */
+	private async stageVersion(version: string): Promise<string> {
+		const staged = join(this.root, `.staged-${randomUUID()}`);
+		await copyTree(version, staged);
+		await rm(join(staged, ".location"), { force: true });
+		return staged;
 	}
 
 	private async appendFeed(entry: FeedEntry): Promise<void> {
 		await mkdir(this.root, { recursive: true });
 		const entries = (await readFeed(this.root)).reverse();
 		entries.push(entry);
-		await writeFile(join(this.root, "feed.jsonl"), entries.slice(-FEED_ENTRIES).map((item) => JSON.stringify(item)).join("\n") + "\n");
+		await writeFileAtomic(join(this.root, "feed.jsonl"), entries.slice(-FEED_ENTRIES).map((item) => JSON.stringify(item)).join("\n") + "\n");
 	}
 }
