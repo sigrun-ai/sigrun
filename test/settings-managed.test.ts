@@ -18,11 +18,14 @@ import {
 } from "../src/settings/managed.js";
 
 describe("readManagedKeys", () => {
-	test("an absent file manages nothing", async () => {
+	test("an absent file manages nothing, silently", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-managed-absent-"));
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
 			expect(readManagedKeys(dir)).toEqual([]);
+			expect(error).not.toHaveBeenCalled();
 		} finally {
+			error.mockRestore();
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
@@ -46,14 +49,17 @@ describe("readManagedKeys", () => {
 	test("a non-string array manages nothing; a valid file reads fresh", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-managed-fresh-"));
 		const path = join(dir, "managed-settings.json");
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
 			await writeFile(path, '["server", 1]', "utf8");
 			expect(readManagedKeys(dir)).toEqual([]);
+			expect(error).toHaveBeenCalledTimes(1);
 			await writeFile(path, '["defaultModel"]', "utf8");
 			expect(readManagedKeys(dir)).toEqual(["defaultModel"]);
 			await writeFile(path, '["server"]', "utf8");
 			expect(readManagedKeys(dir)).toEqual(["server"]);
 		} finally {
+			error.mockRestore();
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
@@ -73,6 +79,12 @@ describe("managedKeysTouched", () => {
 				["server", "defaultModel"],
 			),
 		).toEqual(["server", "defaultModel"]);
+	});
+
+	test("an explicit null still touches a managed key", () => {
+		expect(managedKeysTouched({ defaultModel: null }, ["defaultModel"])).toEqual([
+			"defaultModel",
+		]);
 	});
 });
 

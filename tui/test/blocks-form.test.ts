@@ -98,6 +98,23 @@ function textForm(): FormBlock {
 }
 
 describe("submit mode (§5.6)", () => {
+	test("omits disabled fields from dispatched values", () => {
+		const { ctx, captured } = makeCtx({ prefs: { nick: "acme", quota: 3 } });
+		const block: FormBlock = {
+			...textForm(),
+			children: [
+				{ type: "text", name: "nick", label: "Nickname", required: true },
+				{ type: "number", name: "quota", label: "Quota", min: 1, max: 10, disabled: true },
+			],
+		};
+		const form = formOf(block, ctx);
+		form.handleInput(DOWN); // disabled quota
+		form.handleInput(DOWN); // submit row
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.payload).toEqual({ values: { nick: "acme" }, rev: 0 });
+	});
+
 	test("typing edits the field; Enter on the submit row dispatches the values", () => {
 		const { ctx, captured } = makeCtx({ prefs: { nick: "" } });
 		const form = formOf(textForm(), ctx);

@@ -7,7 +7,7 @@
  * restart; a missing or malformed file manages nothing.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** The seeder's managed-key manifest, beside settings.json. */
@@ -26,7 +26,6 @@ const reportedMalformedPaths = new Set<string>();
  */
 export function readManagedKeys(configDir: string): readonly string[] {
 	const path = join(configDir, MANAGED_SETTINGS_FILE);
-	if (!existsSync(path)) return [];
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (
@@ -37,6 +36,9 @@ export function readManagedKeys(configDir: string): readonly string[] {
 		}
 		return parsed;
 	} catch (cause) {
+		// A file that is absent (including one removed between deployments)
+		// manages nothing; it is not a malformed-manifest error.
+		if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
 		if (!reportedMalformedPaths.has(path)) {
 			reportedMalformedPaths.add(path);
 			console.error(

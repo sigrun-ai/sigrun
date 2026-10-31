@@ -267,6 +267,14 @@ export class FormComponent implements Component {
 	/** Submit (validate first; a failed submit dispatches nothing). */
 	#submit(): boolean {
 		if (!this.#validate()) return false;
+		// Disabled fields are read-only presentation state, not edits.
+		// Omit deployment-managed fields from unrelated saves; the server
+		// retains its whole-request refusal as the direct-write bypass guard.
+		const submitted = Object.fromEntries(
+			this.#fields
+				.filter((field) => field.disabled !== true)
+				.map((field) => [field.name, this.#values[field.name]]),
+		);
 		this.#ctx.dispatch(
 			{
 				type: "submit",
@@ -278,7 +286,7 @@ export class FormComponent implements Component {
 			// construction-time ctx.rev is stale after the first save's
 			// refetch; a save-shaped action handler reads it, every other
 			// handler ignores it).
-			{ values: { ...this.#values }, rev: this.#currentRev() },
+			{ values: submitted, rev: this.#currentRev() },
 		);
 		return true;
 	}

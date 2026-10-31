@@ -523,6 +523,16 @@ describe("deployment-managed settings", () => {
 				managed: ["defaultModel", "server"],
 			}),
 		);
+
+		// A null is a clear attempt, not an omission: still refused.
+		const afterAccepted = await readFile(settingsPath(settingsDir), "utf8");
+		const cleared = await patch(app, { defaultModel: null });
+		expect(cleared.statusCode).toBe(409);
+		expect(cleared.json()).toEqual({
+			error: "managed_by_deployment",
+			keys: ["defaultModel"],
+		});
+		expect(await readFile(settingsPath(settingsDir), "utf8")).toBe(afterAccepted);
 	});
 });
 
