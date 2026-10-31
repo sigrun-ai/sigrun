@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Python in the image's agent userland: `python3` with `venv` and `pip`,
+  plus `uv` pinned exactly at `ghcr.io/astral-sh/uv:0.13.6` (`/uv` and
+  `/uvx` copied to `/usr/local/bin`). Agents reach for Python constantly;
+  installs go through venvs or uv, never global pip — no `pip install`
+  runs in the image and Debian's EXTERNALLY-MANAGED marker stays. The
+  image smoke now proves both plain and jailed: `python3 --version`, a
+  `python3 -m venv`, `uv venv`/`uv run` as plain runs, and a per-user
+  Landlock policy (built via `buildUserPolicy`, the same shape as the
+  sandbox integration suite) under which `python3 -m venv` and `uv venv`
+  both work inside the jail. Image size (actual, `docker image ls`):
+  the additions grow the registry-mode build of this tree from 733MB to
+  882MB on disk (155MB → 195MB content) — the isolated python3/venv/pip
+  + uv 0.13.6 delta. Against the published 0.3.0 image (760MB) the
+  total growth is 122MB, which also carries this branch's other tree
+  changes; the 0.3.0 image predates them.
+
 ## [0.3.0] - 2026-10-29
 
 ### Added
