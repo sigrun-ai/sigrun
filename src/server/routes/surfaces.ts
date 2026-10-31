@@ -673,12 +673,14 @@ export function registerSurfaceRoutes(
 				const answerPayload = (body.payload ?? null) as JsonValue;
 				const wrapped = { ok: true as const, rev: block.state.rev };
 				await answerBlock(
-						ctx,
-						id,
-						entryId,
-						body.action,
-						answerPayload,
-						actionId,
+					ctx,
+					id,
+					entryId,
+					body.action,
+					answerPayload,
+					actionId,
+					// The acting user authors the answer turn (curator P1).
+					request.principal.user,
 				);
 				if (actionId !== undefined) {
 						ctx.surfaces.chatDedupRecord(actionId, address, fingerprint, wrapped);

@@ -11,6 +11,9 @@
  *    composer route AND `host.conversations.submit`) and `fireJob`'s two
  *    prompt-action sites (src/jobs/fire.ts). Every one of those call
  *    sites is preceded by a `writePendingNote` call in the same file.
+ *    Curator Task A1 adds the attribution twin: every one of those call
+ *    sites is also preceded by a `recordAuthor(` call in the same
+ *    function, so a new turn starter can never skip attribution either.
  * 2. A behavioral pin for `fireJob` (the one turn starter that does NOT
  *    route through `submitOp`): a fixed-conversation prompt job with a
  *    pending block edit writes the note before the job's input — the
@@ -89,6 +92,15 @@ describe("the turn-starter call-site pin (spec §8.3 Where)", () => {
 					.slice(Math.max(0, index - 25), index + 8)
 					.join("\n");
 				if (!/type:\s*"input"/.test(backward)) continue;
+				// The attribution twin (curator Task A1): the same window must
+				// carry a `recordAuthor(` call — the write that lands the
+				// submitting user in the `sigrun.authors` doc before the input
+				// is admitted (a window approximation of "same function",
+				// exactly like the `type: "input"` check above it).
+				expect(
+					/recordAuthor\(/.test(backward),
+					`${file}:${index + 1} submits an input without a preceding recordAuthor call`,
+				).toBe(true);
 				sites.push({ file, line: index + 1 });
 			}
 		}

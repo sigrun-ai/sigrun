@@ -118,11 +118,13 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				const conversation = await conversationOf(id);
 				// `user` is accepted and NOT verified: extensions own their
 				// user mapping (spec §9.5) — a channel's unmapped user submits
-				// fine, and owner attribution happened at create.
+				// fine, and owner attribution happened at create. P1 records
+				// it verbatim as the input's author.
 				return await submitOp(ctx, conversation, input, {
 					...(opts?.requestId === undefined
 						? {}
 						: { requestId: opts.requestId }),
+					...(opts?.user === undefined ? {} : { user: opts.user }),
 					...(opts?.whenBusy === undefined
 						? {}
 						: { whenBusy: opts.whenBusy }),
