@@ -64,12 +64,12 @@ import {
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
-import { createSkillsExtension } from "../skills/index.js";
+import { createSkillsExtension, scanFsRoot } from "../skills/index.js";
 import { SLASH_COMMANDS } from "../server/commands.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { packagePromptRootsOf } from "../commands/templates.js";
 import { blocksToolsExtension } from "./blocks/tools.js";
-import { codingToolsExtension, searchToolsExtension } from "./tools.js";
+import { createCodingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
 	createProviderMergeSink,
@@ -104,6 +104,9 @@ import { createAdmissionGuard } from "./identity/users.js";
 import { sweepAccountLinks } from "./identity/link-sweep.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { learnedSkillsDir } from "../curation/paths.js";
+import { SkillStore } from "../curation/store.js";
+import { OverlayStore } from "../curation/overlays.js";
+import { UsageCounters } from "../curation/usage.js";
 import {
 	probeIsolation,
 	runHelperProbe,
@@ -962,6 +965,72 @@ export async function openHarness(
 		sectionMaxBytes: (): number =>
 			skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
 	};
+	// Curator A6 (P3/P4): the per-user curation wiring — one skill store,
+	// one overlay store and one usage counter set per EXISTING user,
+	// created lazily on first use and cached. `userExists` is the LIVE
+	// directory read (a removed user's factories stop resolving), and
+	// `nameTakenElsewhere` scans the host-side roots the harness owns
+	// (the user dir and the collected package roots; a conversation's
+	// workspace can only be checked through its env, which the store
+	// cannot see — the create-refusal there is the A4 store's own).
+	const skillStores = new Map<string, SkillStore>();
+	const overlayStores = new Map<string, OverlayStore>();
+	const usageCounters = new Map<string, UsageCounters>();
+	const curationOf = (user: string | undefined) => {
+		if (user === undefined || identity.users.get(user) === undefined) return undefined;
+		const userArea = managedPaths.userAreas(user);
+		let store = skillStores.get(user);
+		if (store === undefined) {
+			store = new SkillStore({
+				userArea,
+				user,
+				now: () => clockNow(),
+				nameTakenElsewhere: async (name: string): Promise<string | undefined> => {
+					for (const skill of scanFsRoot(join(roots.configDir, "skills"), "user dir")) {
+						if (skill.name === name) return "user dir";
+					}
+					for (const root of collectedSkillRoots) {
+						if (scanFsRoot(root.dir, "package").some((skill) => skill.name === name)) return root.extension;
+					}
+					return undefined;
+				},
+				userExists: () => identity.users.get(user) !== undefined,
+			});
+			skillStores.set(user, store);
+		}
+		let overlays = overlayStores.get(user);
+		if (overlays === undefined) {
+			overlays = new OverlayStore({
+				userArea,
+				user,
+				userExists: () => identity.users.get(user) !== undefined,
+				feed: store,
+			});
+			overlayStores.set(user, overlays);
+		}
+		let usage = usageCounters.get(user);
+		if (usage === undefined) {
+			usage = new UsageCounters({ userArea, user, now: () => clockNow() });
+			usageCounters.set(user, usage);
+		}
+		return { store, overlays, usage };
+	};
+	const curationSkillsOptions = {
+		...skillsOptions,
+		skillStore: (user: string | undefined) => curationOf(user)?.store,
+		overlays: (owner: string | undefined) => curationOf(owner)?.overlays,
+		usage: (owner: string | undefined) => curationOf(owner)?.usage,
+	};
+	// Curator A6 (P4): the read tool counts learned-root reads through the
+	// same per-user wiring (load_skill and /skill: count through the
+	// skills options above).
+	const codingWithUsage = createCodingToolsExtension({
+		countersOf: (owner: string | undefined) => curationOf(owner)?.usage,
+		learnedRootOf: (owner: string | undefined) =>
+			owner === undefined
+				? undefined
+				: learnedSkillsDir(managedPaths.userAreas(owner)),
+	});
 	const templateOptions = {
 		userDir: join(roots.configDir, "prompts"),
 		packageRoots: (): readonly { extension: string; dir: string }[] =>
@@ -985,8 +1054,12 @@ export async function openHarness(
 		},
 	};
 	registry.install(contextFilesExtension);
-	registry.install(createSkillsExtension(skillsOptions));
-	registry.install(codingToolsExtension);
+	// Curator A6: the skills extension carries the curation wiring
+	// (skill_manage + usage counting), and the coding tools count
+	// learned-root reads — the same extension NAMES as before, so
+	// nothing downstream observes the swap.
+	registry.install(createSkillsExtension(curationSkillsOptions));
+	registry.install(codingWithUsage);
 	registry.install(searchToolsExtension);
 	// The chat-blocks tools (UI-blocks U5 Task 1, spec §8.1): every agent
 	// can show and update interactive block surfaces in chat — the same

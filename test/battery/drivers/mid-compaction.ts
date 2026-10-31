@@ -8,13 +8,14 @@
  * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider slowed
  *    deterministically (`tokensPerSecond: 2`, `tokenSize` pinned) and the
  *    compaction policy forced through the OpenHarnessOptions.settings seam
- *    to thresholds calibrated for the core-tools era: the seven core tool
- *    schemas (pi parity) ride in every request, so the warm-up turn and
- *    turn 2 both start from a tools-sized baseline. Blocking threshold
- *    4000 (`contextWindow - reserveTokens`), background band from 2000
- *    (`blocking - backgroundTokens`), `keepRecentTokens: 1`. A short
- *    warm-up turn stays under the band; turn 2's preparation (thousands of
- *    estimated tokens, baseline plus filler) lands inside it, so upstream
+ *    to thresholds calibrated for the curator era: the eight core tool
+ *    schemas (the A6 skill_manage curation tool included) ride in every
+ *    request, so the warm-up turn and turn 2 both start from a tools-sized
+ *    baseline. Blocking threshold 4500 (`contextWindow - reserveTokens`),
+ *    background band from 2400 (`blocking - backgroundTokens`),
+ *    `keepRecentTokens: 1`. A short warm-up turn stays under the band;
+ *    turn 2's preparation (thousands of estimated tokens, baseline plus
+ *    filler) lands inside it, so upstream
  *    creates a conversation-owned BACKGROUND compaction task while turn
  *    2's generation proceeds.
  * 2. All faux responses are content-discriminating factories: the
@@ -191,13 +192,17 @@ async function main(): Promise<never> {
 			{ tokensPerSecond: 2, tokenSize: { min: 8, max: 8 } },
 			{
 			// The T8 settings seam (OpenHarnessOptions.settings): forced
-			// thresholds calibrated for the core-tools era (see header) —
-			// the seven core tool schemas ride in every request, so the
-			// old 700/300 band no longer brackets turn 2's estimate.
+			// thresholds recalibrated for the curator era (see header) — the
+			// eight core tool schemas (skill_manage included) ride in every
+			// request, so the warm-up turn's tools-sized baseline is now ~2150
+			// estimated tokens and the old 2000/4000 band put the WARM-UP itself
+			// inside it (turn 2 then queued behind the warm-up's own slow
+			// summarizer). Band 3000..5000: the warm-up stays under the floor,
+			// turn 2 (~4400, baseline plus filler) lands inside it.
 				compaction: {
-					reserveTokens: 124_000,
+					reserveTokens: 123_000,
 					keepRecentTokens: 1,
-					backgroundTokens: 2000,
+					backgroundTokens: 2_000,
 				},
 			},
 		);

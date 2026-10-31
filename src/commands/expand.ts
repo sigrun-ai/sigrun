@@ -306,6 +306,7 @@ export async function expandInput(
 	const reserved = expansion.commandNames();
 	if (reserved.has(commandName)) return { parts };
 	if (commandName.startsWith("skill:")) {
+		const skillName = commandName.slice("skill:".length);
 		const skills = await listSkills(env, context, expansion.skills, { owner });
 		// Curator A5 (P2): the owner's overlay rides on the upstream body,
 		// the same shape `load_skill` serves — discovered skills without
@@ -323,6 +324,18 @@ export async function expandInput(
 		}
 		const expanded = expandSkillCommand(text, skills, overlays);
 		if (expanded === text) return { parts };
+		// Curator A6 (P4): a `/skill:name` that actually expanded counts as
+		// usage for the owner (the discovered skill was a learned one).
+		if (owner !== undefined) {
+			const skill = skills.find((candidate) => candidate.name === skillName);
+			if (skill?.root === "learned") {
+				const usage = expansion.skills.usage?.(owner);
+				if (usage !== undefined) {
+					usage.bump(skill.name, "expand");
+					void usage.flush();
+				}
+			}
+		}
 		return {
 			parts: parts.map((part) => (part === textPart ? { type: "text", text: expanded } : part)),
 			typed: text,

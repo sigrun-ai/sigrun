@@ -78,6 +78,7 @@ import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-durable/env";
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { overlayForSkill, withOverlay } from "../curation/overlays.js";
+import { buildSkillManageTool } from "../curation/skill-tool.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
 /**
@@ -166,6 +167,18 @@ export interface SkillsOptions {
 	 * pre-A5 callers keep compiling; absent = overlays never serve.
 	 */
 	readonly overlays?: (owner: string | undefined) => import("../curation/overlays.js").OverlayStore | undefined;
+	/**
+	 * The owner's per-user skill store (curator A6, P3): what the
+	 * `skill_manage` tool reads and the curator run writes. Optional so
+	 * pre-A6 callers keep compiling; absent = `skill_manage` is not
+	 * installed.
+	 */
+	readonly skillStore?: (user: string | undefined) => import("../curation/store.js").SkillStore | undefined;
+	/**
+	 * The owner's usage counters (curator A6, P4): `load_skill` bumps
+	 * `load` for a learned-root skill. Optional; absent = no counting.
+	 */
+	readonly usage?: (owner: string | undefined) => import("../curation/usage.js").UsageCounters | undefined;
 }
 
 /** Parsed frontmatter: required fields absent when missing or empty. */
@@ -373,7 +386,7 @@ export async function scanSkills(
  * `disable-model-invocation: true` skills (the `listSkills` path); the
  * default hides them with a log, exactly like the workspace root.
  */
-function scanFsRoot(
+export function scanFsRoot(
 	root: string,
 	rootLabel: RootLabel,
 	opts?: { includeHidden?: boolean },
@@ -606,6 +619,14 @@ function buildLoadSkillTool(opts: SkillsOptions) {
 			// section is unchanged (the skill lists once, plain).
 			const overlay = await overlayForSkill(opts, owner, skill, api.env);
 			api.output(overlay === undefined ? skill.body : withOverlay(skill.body, overlay));
+			// Curator A6 (P4): a learned-root skill load counts as usage.
+			if (skill.root === "learned" && owner !== undefined) {
+				const usage = opts.usage?.(owner);
+				if (usage !== undefined) {
+					usage.bump(skill.name, "load");
+					void usage.flush();
+				}
+			}
 			return {};
 		},
 	});
@@ -625,6 +646,25 @@ export function createSkillsExtension(opts: SkillsOptions): Extension {
 				renderSkills(input, context, opts),
 			),
 		],
-		tools: [buildLoadSkillTool(opts)],
+		tools: [
+			buildLoadSkillTool(opts),
+			// Curator A6 (P3): the skill_manage tool installs once the options
+			// carry the curation wiring (a skill-store seam) — the read actions
+			// for every owned conversation, the mutating actions for curator
+			// runs.
+			...(opts.skillStore === undefined
+				? []
+				: [
+						buildSkillManageTool({
+							storesOf: (user) => {
+								const store = opts.skillStore?.(user);
+								const overlays = opts.overlays?.(user);
+								return store === undefined || overlays === undefined
+									? undefined
+									: { store, overlays };
+							},
+						}),
+				]),
+		],
 	});
 }

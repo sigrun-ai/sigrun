@@ -233,6 +233,174 @@
 																"properties": {
 																	"kind": "object",
 																	"fields": {
+																		"action": {
+																			"kind": "object",
+																			"fields": {
+																				"anyOf": {
+																					"kind": "array",
+																					"variants": [
+																						{
+																							"kind": "object",
+																							"fields": {
+																								"type": {
+																									"kind": "string"
+																								},
+																								"const": {
+																									"kind": "string"
+																								}
+																							}
+																						}
+																					]
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"name": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"file_path": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"content": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"old_text": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"new_text": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"absorbed_into": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"reason": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"overlay_root": {
+																			"kind": "object",
+																			"fields": {
+																				"anyOf": {
+																					"kind": "array",
+																					"variants": [
+																						{
+																							"kind": "object",
+																							"fields": {
+																								"type": {
+																									"kind": "string"
+																								},
+																								"const": {
+																									"kind": "string"
+																								}
+																							}
+																						}
+																					]
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		},
+																		"remove": {
+																			"kind": "object",
+																			"fields": {
+																				"type": {
+																					"kind": "string"
+																				},
+																				"description": {
+																					"kind": "string"
+																				}
+																			}
+																		}
+																	}
+																}
+															}
+														}
+													}
+												},
+												{
+													"kind": "object",
+													"fields": {
+														"name": {
+															"kind": "string"
+														},
+														"description": {
+															"kind": "string"
+														},
+														"parameters": {
+															"kind": "object",
+															"fields": {
+																"type": {
+																	"kind": "string"
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
+																},
+																"properties": {
+																	"kind": "object",
+																	"fields": {
 																		"command": {
 																			"kind": "object",
 																			"fields": {

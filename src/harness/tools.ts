@@ -37,8 +37,10 @@ import {
 	createWriteTool,
 } from "@earendil-works/pi-durable/tools";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import type { ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { ToolExecutionApi, ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-durable/env";
+import type { UsageCounters } from "../curation/usage.js";
+import { SessionMetaDoc } from "../server/session-meta.js";
 
 // ---------------------------------------------------------------------------
 // Coding tools (read/write/edit/bash)
@@ -91,11 +93,107 @@ export const imageReadTool = defineTool({
 	},
 });
 
+/**
+ * Curator A6 (P4): a `read` of a file inside the owner's learned skills
+ * root counts as skill usage. The seam: the conversation owner's
+ * counters and the learned roots per owner. A read whose ABSOLUTE path
+ * lands under the conversation owner's learned root resolves the skill
+ * name from the path's `skills/<name>/…` segment and bumps `read`.
+ * Only the read tool counts — `bash cat` never does (the documented
+ * gap: the shell path sees no skill-shaped read).
+ */
+export interface ReadUsageSeam {
+	/** The owner's counters, when the conversation has an owner with a store. */
+	readonly countersOf: (owner: string | undefined) => UsageCounters | undefined;
+	/** The learned root per owner (`<dataDir>/users/<owner>/skills`). */
+	readonly learnedRootOf: (owner: string | undefined) => string | undefined;
+}
+
+/**
+ * Wrap the read tool with learned-root usage counting. The wrapper
+ * resolves the conversation owner through the api's document reader
+ * (the SessionMeta doc — the A3 pattern), and the read's absolute path
+ * against the owner's learned root; a path inside it (a SKILL.md or a
+ * support file) bumps `read` for the owning skill. The wrapped result
+ * passes through unchanged.
+ */
+export function countReadUsage(
+	seam: ReadUsageSeam,
+	base: ToolRegistration = imageReadTool,
+): ToolRegistration {
+	return {
+		...base,
+		execute: async (args, api, context) => {
+			const result = await base.execute(args, api, context);
+			void countLearnedRead(seam, (args as { path: string }).path, api, context);
+			return result;
+		},
+	};
+}
+
+/** Bump `read` for a learned-root path, when it lands inside one. */
+async function countLearnedRead(
+	seam: ReadUsageSeam,
+	path: string,
+	api: ToolExecutionApi,
+	context: Context,
+): Promise<void> {
+	try {
+		const meta = await api.snapshot(
+			SessionMetaDoc,
+			api.conversationId,
+			context,
+		);
+		const owner = meta?.owner;
+		const counters = seam.countersOf(owner);
+		const root = seam.learnedRootOf(owner);
+		if (counters === undefined || root === undefined || api.env === undefined) return;
+		const resolved = await api.env.absolutePath(path, context);
+		if (!resolved.ok) return;
+		const skill = learnedSkillOf(resolved.value, root);
+		if (skill !== undefined) {
+			counters.bump(skill, "read");
+			void counters.flush();
+		}
+	} catch {
+		// Counting is advisory: no read ever fails because usage telemetry
+		// could not resolve the owner or the path.
+	}
+}
+
+/** The `skills/<name>/…` segment of a path inside a learned root; `undefined` outside. */
+function learnedSkillOf(absolute: string, root: string): string | undefined {
+	if (absolute === root || !absolute.startsWith(`${root}/`)) return undefined;
+	const rest = absolute.slice(root.length + 1).split("/");
+	const name = rest[0];
+	if (name === undefined || name === "") return undefined;
+	return name;
+}
+
 /** `read`, `write`, `edit`, `bash` — core-installed for every conversation. */
 export const codingToolsExtension = defineExtension({
 	name: "sigrun.coding-tools",
 	tools: [imageReadTool, createWriteTool(), createEditTool(), createBashTool()],
 });
+
+/**
+ * The coding tools with learned-root usage counting (curator A6, P4):
+ * with a {@link ReadUsageSeam} the `read` tool is wrapped so reads
+ * inside the conversation owner's learned root bump the owner's
+ * counters. Without one, the plain surface — the boot default until
+ * the curation wiring hands both seam halves.
+ */
+export function createCodingToolsExtension(options?: ReadUsageSeam) {
+	return defineExtension({
+		name: "sigrun.coding-tools",
+		tools: [
+			options === undefined ? imageReadTool : countReadUsage(options),
+			createWriteTool(),
+			createEditTool(),
+			createBashTool(),
+		],
+	});
+}
 
 // ---------------------------------------------------------------------------
 // Search tools (find/grep/ls) — pure TS over ExecutionEnv
