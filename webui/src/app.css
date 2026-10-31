@@ -1811,10 +1811,6 @@ body {
 }
 
 .outline-item {
-	display: -webkit-box;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 2;
-	overflow: hidden;
 	text-align: left;
 	border: none;
 	border-left: 2px solid transparent;
@@ -1824,6 +1820,26 @@ body {
 	color: var(--muted);
 	font: 12.5px/1.35 var(--sans);
 	cursor: pointer;
+}
+
+/* The clamp lives on the INNER, unpadded span: a line-clamped padded
+   button let line 3's top show through the bottom padding box. */
+.outline-text {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+}
+
+/* Overflowing prompts fade out (the JS measurement in OutlinePanel sets
+   data-clamped only when the span really overflows). */
+.outline-item[data-clamped="true"] .outline-text {
+	-webkit-mask-image: linear-gradient(
+		to bottom,
+		#000 calc(100% - 0.7em),
+		transparent
+	);
+	mask-image: linear-gradient(to bottom, #000 calc(100% - 0.7em), transparent);
 }
 
 .outline-item:hover,
