@@ -15,7 +15,9 @@
  * line, nothing ever rethrows into the event bus, and attempts stop at
  * {@link NAMING_MAX_ATTEMPTS}. Task-owned conversations (subagent
  * transcripts — `ConversationRecord.owner` set) are never named, and
- * `settings.namingModel: false` disables the feature outright.
+ * `settings.namingModel: false` disables the feature outright. The naming
+ * model is resolved per attempt: `settings.namingModel` when set, else the
+ * conversation's own model (which just answered, so it is known served).
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -36,7 +38,10 @@ import type {
 	ExtensionRunSettledHandler,
 	RunSettledEvent,
 } from "./event-bus.js";
-import { requireServedModel } from "./providers/index.js";
+import {
+	requireServedModel,
+	UnservedModelError,
+} from "./providers/index.js";
 import type { SettingsFile } from "./settings.js";
 
 /** The one-shot naming prompt (the plan fixes it verbatim). */
@@ -95,8 +100,6 @@ export interface AutoNamerDeps {
 	readonly models: Models;
 	/** Live settings read per run (`namingModel === false` disables). */
 	readonly readSettings: () => SettingsFile;
-	/** The boot default model — the fallback when `namingModel` is unset. */
-	readonly defaultModel: ModelRef;
 	/** Task-owned conversations (subagent transcripts) are never named. */
 	readonly isTaskOwned: (id: ConversationId) => Promise<boolean>;
 	/** Bound on one naming completion; default 20 000ms. */
@@ -122,6 +125,9 @@ export interface AutoNamer {
 export function createAutoNamer(deps: AutoNamerDeps): AutoNamer {
 	const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const log = deps.log ?? ((message: string) => console.error(message));
+	// Unserved-model skips log once per provider/modelId for the namer's
+	// lifetime (they are configuration state, not per-attempt failures).
+	const loggedUnserved = new Set<string>();
 	// The serialized naming chain: each event names after the previous one
 	// finished. nameConversation never rejects, so the chain never breaks.
 	let tail: Promise<void> = Promise.resolve();
@@ -150,11 +156,29 @@ export function createAutoNamer(deps: AutoNamerDeps): AutoNamer {
 			if (meta?.name !== undefined || meta?.autoName !== undefined) return;
 			if ((meta?.autoNameAttempts ?? 0) >= NAMING_MAX_ATTEMPTS) return;
 			const settings = deps.readSettings();
-			const ref =
+			// Resolve per attempt: the configured namingModel wins; otherwise
+			// the conversation's own model (it just answered, so it is served).
+			// With neither there is nothing to name with — skip without an
+			// attempt rather than burning one against an unknown model.
+			const ref: ModelRef | undefined =
 				typeof settings.namingModel === "string"
 					? parseModelSpec(settings.namingModel, "namingModel")
-					: deps.defaultModel;
-			const model = requireServedModel(deps.models, ref);
+					: (await conversation.agent(BACKGROUND_CONTEXT)).model;
+			if (ref === undefined) return;
+			let model: Model<Api>;
+			try {
+				model = requireServedModel(deps.models, ref);
+			} catch (error) {
+				if (!(error instanceof UnservedModelError)) throw error;
+				const key = `${ref.provider}/${ref.modelId}`;
+				if (!loggedUnserved.has(key)) {
+					loggedUnserved.add(key);
+					log(
+						`auto-name: model ${key} is not served — naming skipped (fix namingModel or the conversation's model)`,
+					);
+				}
+				return;
+			}
 			const title = await completeTitle(model, event.outcome.answer.content, event.inputTexts[0] ?? "");
 			if (title === undefined) {
 				await recordFailure(id, "the model returned no usable title");

@@ -160,6 +160,11 @@ function stubModels(served: readonly string[]) {
 			served.includes(`${provider}/${id}`)
 				? ({ provider, id } as Model<string>)
 				: undefined,
+		getModels: () =>
+			served.map((key) => {
+				const [provider, id] = key.split("/");
+				return { provider, id } as Model<string>;
+			}),
 			completeSimple: (model: Model<string>) => {
 				calls.push({ provider: model.provider, id: model.id });
 				return Promise.resolve(fauxAssistantMessage("A short title"));

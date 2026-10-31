@@ -1648,7 +1648,6 @@ export async function openHarness(
 		harness,
 		models,
 		readSettings: () => settingsStore.read(),
-		defaultModel,
 		isTaskOwned: async (id) =>
 			(await storage.conversation(id, BACKGROUND_CONTEXT))?.owner !== undefined,
 	});
