@@ -77,6 +77,7 @@ import type {
 import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-durable/env";
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { overlayForSkill, withOverlay } from "../curation/overlays.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
 /**
@@ -159,6 +160,12 @@ export interface SkillsOptions {
 	readonly packageRoots: () => readonly { extension: string; dir: string }[];
 	/** The rendered-section budget in bytes, read per render (default 4096). */
 	readonly sectionMaxBytes: () => number;
+	/**
+	 * The owner's overlay store (curator A5, P2): the addenda served
+	 * under non-learned skills' bodies for that owner. Optional so
+	 * pre-A5 callers keep compiling; absent = overlays never serve.
+	 */
+	readonly overlays?: (owner: string | undefined) => import("../curation/overlays.js").OverlayStore | undefined;
 }
 
 /** Parsed frontmatter: required fields absent when missing or empty. */
@@ -594,7 +601,11 @@ function buildLoadSkillTool(opts: SkillsOptions) {
 					`load_skill: unknown skill "${args.name}"; available skills: ${available}`,
 				);
 			}
-			api.output(skill.body);
+			// Curator A5 (P2): an overlay for this owner rides on the upstream
+			// body — upstream, then the heading, then the overlay text. The
+			// section is unchanged (the skill lists once, plain).
+			const overlay = await overlayForSkill(opts, owner, skill, api.env);
+			api.output(overlay === undefined ? skill.body : withOverlay(skill.body, overlay));
 			return {};
 		},
 	});

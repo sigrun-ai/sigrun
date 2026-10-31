@@ -327,6 +327,21 @@ export class SkillStore {
 	}
 
 	/**
+	 * Append one feed entry verbatim — the A5 overlay seam. OverlayStore
+	 * owns its files but records every change in the SAME per-user feed
+	 * (action `"overlay"`), so retention, the per-user lock and the P8
+	 * view hold for overlay changes too. Entry ids/at values are the
+	 * caller's.
+	 */
+	async appendFeedEntry(entry: FeedEntry): Promise<void> {
+		requireUser(this.options);
+		await withUserLock(this.options.user, async () => {
+			requireUser(this.options);
+			await this.appendFeed(entry);
+		});
+	}
+
+	/**
 	 * Persists a change: snapshots the before state, applies the mutation,
 	 * snapshots the after state, records the feed entry and runs retention.
 	 * Every version directory carries a `.location` file recording where its
