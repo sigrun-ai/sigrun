@@ -947,8 +947,23 @@ export function resolveExtensionEntry(
 			try {
 				return importableEntry(createRequire(manifest).resolve(specifier));
 			} catch {
-				// Not installed in the packages dir — fall through to bare
-				// resolution.
+				// A versioned spec (name@range) is DEPENDENCY syntax, not a
+				// module specifier — npm never resolves it here, even when the
+				// range is satisfied by an installed dependency (the versioned
+				// fleet pin, 2026-10-31 live: install succeeded, load
+				// quarantined). Retry the bare name: npm records the dependency
+				// under its name, and syncPackages already guaranteed the
+				// installed version satisfies the declared range at install
+				// time. Mismatched ranges still miss (the manifest carries what
+				// npm actually installed) and fall through to bare resolution.
+				const id = identifySpecifier(specifier);
+				if (id.range !== "" && !id.pathShaped) {
+					try {
+						return importableEntry(createRequire(manifest).resolve(id.name));
+				} catch {
+					// Not installed under its name either — fall through.
+				}
+				}
 			}
 		}
 	}

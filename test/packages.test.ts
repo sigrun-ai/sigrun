@@ -262,6 +262,25 @@ describe("syncPackages", () => {
 });
 
 describe("resolveExtensionEntry", () => {
+	test("a versioned spec (name@range) resolves to the installed package by name", async () => {
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		await syncPackages([FIXTURE_PKG_SPEC], packagesDir, { log: false });
+		// A versioned fleet pin installs fine (npm accepts name@version as
+		// a dependency spec) but name@version is NOT a module specifier —
+		// the resolver must retry the bare name (2026-10-31 live bug: the
+		// homelab's '@sigrun/provider-bifrost@0.2.0' quarantined at load).
+		const entry = resolveExtensionEntry("fixture-pkg@0.1.0", packagesDir);
+		expect(entry).toBeDefined();
+		expect(entry).toContain("fixture-pkg");
+		// A range the installed package does not satisfy does not resolve
+		// through the PACKAGES DIR (the bare-name retry consults the
+		// manifest's installed map, not semver). The app-tree fall-through
+		// may still find a checkout — assert only that the returned entry
+		// is NOT the packages-dir install.
+		const missed = resolveExtensionEntry("fixture-pkg@9.9.9", packagesDir);
+		expect(missed === undefined || !missed.includes("packages")).toBe(true);
+	}, 60_000);
+
 	test("a bare name resolves through the packages dir to the installed package", async () => {
 		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
 		await syncPackages([FIXTURE_PKG_SPEC], packagesDir, { log: false });
