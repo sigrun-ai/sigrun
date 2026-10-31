@@ -283,9 +283,9 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		// while keeping 0.3.0). Each legitimately declares its line's
 		// acceptance; anything older — or a declaration from the WRONG
 		// line — is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-5]$/);
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-6]$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0)$/,
+			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1)?)$/,
 		);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not
@@ -299,6 +299,15 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		expect(atFour.has("0.4.0")).toBe(true);
 		expect(atFour.has("0.3.0")).toBe(true);
 		expect(atFour.has("0.2.1")).toBe(false);
+		const atFourOne = acceptedSharedPeers(
+			"@sigrun/ext-gateway",
+			"0.1.6",
+			"0.3.0 || 0.4.0 || 0.4.1",
+			"0.4.1",
+		);
+		expect(atFourOne.has("0.4.1")).toBe(true);
+		expect(atFourOne.has("0.4.0")).toBe(true);
+		expect(atFourOne.has("0.3.0")).toBe(true);
 		// THE poisoned pairing: a gateway bumped to 0.1.5 that still
 		// declares the 0.1.4-era range is uninstallable against shared 0.4.0
 		// (ERESOLVE) — the acceptance must be EMPTY, whatever the version

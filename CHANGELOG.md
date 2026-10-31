@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-31
+
+### Fixed
+- Extension fleet entries pinned as `name@version` (e.g.
+  `@sigrun/provider-bifrost@0.2.0`) install but never LOAD: the loader
+  passed the versioned specifier to npm's module resolver, which does
+  not resolve versioned specs — the extension quarantined at boot with
+  "Cannot find package …". The resolver now retries the bare package
+  name against the packages dir (the installed version already
+  satisfied the declared range at install time). Found live on the
+  0.4.0 homelab rollout.
+
 ## [0.4.0] - 2026-10-31
 
 ### Added
