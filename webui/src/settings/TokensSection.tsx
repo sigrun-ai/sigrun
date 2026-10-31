@@ -26,6 +26,8 @@ import { messageOf } from "../auth/Onboarding";
 
 /** The once-only mint display: the secret + the CLI snippets. */
 interface RevealedToken {
+	/** The minted record's id (revoking its row clears the reveal). */
+	readonly id: string;
 	readonly token: string;
 	readonly name: string;
 }
@@ -75,7 +77,11 @@ export function TokensSection(props: { readonly client: SigrunClient }) {
 		setError(null);
 		try {
 			const minted = await client.createToken(name.trim());
-			setRevealed({ token: minted.token, name: minted.record.name });
+			setRevealed({
+				id: minted.record.id,
+				token: minted.token,
+				name: minted.record.name,
+			});
 			// The new record joins the list (the secret never rides it).
 			setTokens((current) =>
 				current === null ? current : [...current, minted.record],
@@ -98,6 +104,9 @@ export function TokensSection(props: { readonly client: SigrunClient }) {
 			setTokens((current) =>
 				current === null ? current : current.filter((token) => token.id !== id),
 			);
+			// Revoking the row whose secret is still on screen clears the
+			// reveal too — the credential is dead; its text must not linger.
+			setRevealed((current) => (current?.id === id ? null : current));
 			setPendingRevoke(null);
 		} catch (cause) {
 			setError(messageOf(cause));
@@ -123,8 +132,12 @@ export function TokensSection(props: { readonly client: SigrunClient }) {
 	}
 	// Browser sessions never list (the login flow's own surface).
 	const apiTokens = tokens.filter((token) => token.kind !== "session");
-	const origin =
+	const rawOrigin =
 		(globalThis as { location?: { origin?: string } }).location?.origin ?? "";
+	// A no-location host (tests, exotic embeds) must not dangle
+	// `--server ` with nothing: a visible placeholder beats a broken
+	// snippet.
+	const origin = rawOrigin === "" ? "<your sigrun URL>" : rawOrigin;
 	return (
 		<div className="settings-body" data-settings-section="tokens">
 			<p className="settings-note">
@@ -216,6 +229,7 @@ export function TokensSection(props: { readonly client: SigrunClient }) {
 					<input
 						type="text"
 						className="token-name-input"
+						aria-label="Token name"
 						placeholder="name (e.g. laptop, ci)"
 						value={name}
 						onChange={(event) => setName(event.target.value)}

@@ -250,7 +250,7 @@ describe("createClient", () => {
 					method: "DELETE",
 					accept: "application/json",
 					contentType: "application/json",
-				body: JSON.stringify({}),
+					body: JSON.stringify({}),
 				});
 			}
 		});

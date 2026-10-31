@@ -61,7 +61,7 @@ import {
 } from "@sigrun/shared/themes";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { authFailureMessage, SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
+import { AUTH_FAILURE_MESSAGE, authFailureMessage, SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
 import { watchEvents } from "./sse.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
@@ -154,20 +154,37 @@ function installKeybindings(): void {
  * reconnect storm shows ONE "disconnected" and ONE "reconnected", never a
  * pane full of retries. Exported for the unit test (the shell itself needs
  * a real terminal).
+ *
+ * Review F1 (Task 5 fix wave): the watcher's `onError` carries the SSE
+ * client's MESSAGE, and a 401 is terminal there — the auth failure must
+ * surface VERBATIM, never collapsed into "stream: disconnected" (a
+ * token revoked mid-session is a credential problem no reconnect fixes).
+ * The auth notice latches: after it, further errors stay silent and an
+ * `onOpen` announces nothing (there was no real reconnection to report).
  */
 export function createStreamHealthNotices(notify: (message: string) => void): {
-	onError(): void;
+	onError(message: string): void;
 	onOpen(): void;
 } {
 	let down = false;
+	let authFailed = false;
 	return {
-		onError() {
+		onError(message) {
+			if (authFailed) return;
+			if (message === AUTH_FAILURE_MESSAGE) {
+				authFailed = true;
+				notify(message);
+				return;
+			}
 			if (down) return;
 			down = true;
 			notify("stream: disconnected");
 		},
 		onOpen() {
-			if (!down) return;
+			// After the auth failure the stream is dead by design (the SSE
+			// client stops on a 401): an open here would be a different
+			// stream's noise — never report a bogus "reconnected".
+			if (authFailed || !down) return;
 			down = false;
 			notify("stream: reconnected");
 		},

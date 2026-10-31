@@ -127,21 +127,42 @@ async function typeName(
 	});
 }
 
-/** Click a button whose visible label is exactly `label`. */
+/** All concatenated string children under a rendered instance. */
+function textContentOf(node: { children?: unknown[] }): string {
+	return (node.children ?? [])
+		.map((child) =>
+			typeof child === "string"
+				? child
+				: typeof child === "object" && child !== null
+					? textContentOf(child as { children?: unknown[] })
+					: "",
+		)
+		.join("");
+}
+
+/** Click a button whose visible label is exactly `label`; `near` (a
+ *  rendered string) scopes the search to the `settings-ext-row` that
+ *  contains it — the list renders one Revoke per row, so an unscoped
+ *  label is ambiguous. */
 async function clickButton(
 	renderer: Awaited<ReturnType<typeof renderTokens>>["renderer"],
 	label: string,
+	near?: string,
 ): Promise<void> {
-	const button = renderer.root
-		.findAllByType("button")
-		.find(
-			(node) =>
-				node.props.className?.startsWith?.("token") !== false &&
-				(node.children ?? []).some(
-					(child) => typeof child === "string" && child.trim() === label,
-				),
+	const labelOf = (node: { children?: unknown[] }): boolean =>
+		(node.children ?? []).some(
+			(child) => typeof child === "string" && child.trim() === label,
 		);
-	if (button === undefined) throw new Error(`no "${label}" button`);
+	let buttons = renderer.root.findAllByType("button").filter(labelOf);
+	if (near !== undefined) {
+		const rows = renderer.root
+			.findAllByProps({ className: "settings-ext-row" })
+			.filter((row) => textContentOf(row).includes(near));
+		const inRows = new Set(rows.flatMap((row) => row.findAllByType("button")));
+		buttons = buttons.filter((button) => inRows.has(button));
+	}
+	const button = buttons[0];
+	if (button === undefined) throw new Error(`no "${label}" button near "${near}"`);
 	await act(async () => {
 		button.props.onClick();
 	});
@@ -219,6 +240,24 @@ describe("TokensSection", () => {
 			type: "text",
 		});
 		expect(input.props.value).toBe("ci");
+		// The input carries an accessible name (review F2).
+		expect(input.props["aria-label"]).toBe("Token name");
 		expect(textContent(renderer.toJSON())).toContain("laptop");
+	});
+
+	test("revoking the row whose secret is still on screen clears the reveal (review F4)", async () => {
+		const { renderer, calls } = await renderTokens();
+		await typeName(renderer, "ci");
+		await clickButton(renderer, "Create token");
+		// The mint's record (id t2) joined the list; its secret shows.
+		expect(textContent(renderer.toJSON())).toContain(SECRET);
+		// Confirm-revoke the mint's row (the revealed record, named "ci" —
+		// scoped: the list has one Revoke per row).
+		await clickButton(renderer, "Revoke", "ci");
+		await clickButton(renderer, "Confirm revoke");
+		const revoke = calls.find((call) => call.method === "DELETE");
+		expect(revoke?.input).toBe("/v1/auth/tokens/t2");
+		// The dead credential's text no longer lingers on screen.
+		expect(textContent(renderer.toJSON())).not.toContain(SECRET);
 	});
 });

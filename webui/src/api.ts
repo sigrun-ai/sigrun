@@ -68,6 +68,8 @@ import type {
 	JobRunResponse,
 	AccountLinkWire,
 	AccountsResponse,
+	TokenWire,
+	TokenCreateResponse,
 } from "@sigrun/shared/views";
 import type {
 	JobRevisionWire,
@@ -75,7 +77,6 @@ import type {
 	JobWire,
 } from "@sigrun/shared/jobs";
 import type { Sharing } from "@sigrun/shared/access";
-import type { TokenCreateResponse, TokenWire } from "@sigrun/shared/views";
 
 export type {
 	MetaResponse,
