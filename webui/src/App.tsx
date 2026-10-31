@@ -308,23 +308,39 @@ type Route =
 
 /** Parse `location.hash` into a route; garbage → the chat default.
  *  Settings carries ONE optional section segment (`#/settings/a/b` is
- *  garbage → chat) — a section id is a single path token. */
+ *  garbage → chat) — a section id is a single path token. A malformed
+ *  percent-escape (decodeURIComponent throws) is garbage → chat. */
 export function parseHash(hash: string): Route {
 	const path = hash.startsWith("#") ? hash.slice(1) : hash;
 	const settingsMatch = /^\/settings(?:\/([^/]+))?\/?$/.exec(path);
 	if (settingsMatch !== null) {
 		const section = settingsMatch[1];
-		return section === undefined
-			? { kind: "settings" }
-			: { kind: "settings", section: decodeURIComponent(section) };
+		if (section === undefined) return { kind: "settings" };
+		try {
+			return { kind: "settings", section: decodeURIComponent(section) };
+		} catch {
+			return { kind: "chat" };
+		}
 	}
 	const match = /^\/ext\/([^/]+)\/([^/?]+)(?:\?(.*))?$/.exec(path);
 	if (match === null) return { kind: "chat" };
-	const paramsRaw = match[3];
+	try {
+		return {
+			kind: "ext",
+			slug: decodeURIComponent(match[1] ?? ""),
+			id: decodeURIComponent(match[2] ?? ""),
+			params: parseExtParams(match[3]),
+		};
+	} catch {
+		return { kind: "chat" };
+	}
+}
+
+/** The ext route's `params=<json>` query (spec §7.2); anything else is
+ *  ignored (the shell stays conservative) — malformed JSON → {}. */
+function parseExtParams(paramsRaw: string | undefined): JsonObject {
 	let params: JsonObject = {};
 	if (paramsRaw !== undefined) {
-		// The route's query is a single `params=<json>` pair (spec §7.2);
-		// anything else is ignored (the shell stays conservative).
 		const paramsParam = new URLSearchParams(paramsRaw).get("params");
 		if (paramsParam !== null) {
 			try {
@@ -339,15 +355,10 @@ export function parseHash(hash: string): Route {
 			} catch {
 				// Malformed params → the empty object (the surface renders
 				// its default instance; the shell never refuses the route).
-			}
+				}
 		}
 	}
-	return {
-		kind: "ext",
-		slug: decodeURIComponent(match[1] ?? ""),
-		id: decodeURIComponent(match[2] ?? ""),
-		params,
-	};
+	return params;
 }
 
 /** Serialize a route to the hash (the back/forward history entry). */
@@ -387,8 +398,10 @@ function rewriteSettingsPathBoot(): void {
 			history?: { replaceState(d: unknown, t: string, u: string): void };
 		}
 	).history;
-	// Root-relative (`/#/settings/...`): the rewrite targets the app root
-	// regardless of the path the server served the bundle under.
+	// Root-relative (`/#/settings/...`): the rewrite lands the hash on the
+	// app root. (A bundle mounted under a sub-path would keep its pathname
+	// — this rewrites to "/" + hash, matching the single-root deploy this
+	// app ships; the hash itself is what the router reads either way.)
 	historyApi?.replaceState(null, "", `/${hash}`);
 }
 
@@ -425,6 +438,14 @@ function writeHash(hash: string, replace = false): void {
 /** The current route hash (tests + the popstate handler read it). */
 export function locationHash(): string {
 	return readHash();
+}
+
+/** Reset the fallback-hash seam (the TEST isolation hook): a test that
+ *  drove `location`/`history` stubs around the seam leaves the module
+ *  fallback holding its route — the next test must boot on a clean
+ *  hash, not the prior test's. */
+export function resetLocationHashForTest(hash = ""): void {
+	fallbackHash = hash;
 }
 
 function AppShell(options: AppOptions = {}) {
@@ -545,10 +566,11 @@ function AppShell(options: AppOptions = {}) {
 	// popstate walks back/forward through them.
 	const [route, setRoute] = useState<Route>(() => parseHash(readHash()));
 	// Whether THIS app session entered the settings page by an in-app
-	// action (rail/composer/command/target) — the page's close action
-	// history-backs when it did (there is an in-app entry to return to)
-	// and navigates to `#/c` when the page was a boot deep link.
+	// action (rail/composer/command/target) — and, on first entry, the
+	// hash the page displaced (the ✕ replaces the settings entry with
+	// it, so one click exits no matter how many sections were walked).
 	const settingsEnteredInApp = useRef(false);
+	const preSettingsHash = useRef<string | null>(null);
 	// The ONE change-event hub per app (the transports subscribe; the
 	// shared events source dispatches surface.changed into it).
 	const [extHub] = useState(() => new ExtSurfaceHub());
@@ -795,9 +817,18 @@ function AppShell(options: AppOptions = {}) {
 
 	// The popstate listener: browser back/forward re-parses the hash
 	// into route state (the rail's ext entries and the surface pages'
-	// navigate(params) both land here).
+	// navigate(params) both land here). Leaving the settings page by
+	// history (back past every settings entry) resets the ✕'s in-app
+	// entry bookkeeping — re-entering later records afresh.
 	useEffect(() => {
-		const onPop = (): void => setRoute(parseHash(readHash()));
+		const onPop = (): void => {
+			const next = parseHash(readHash());
+			if (next.kind !== "settings") {
+				settingsEnteredInApp.current = false;
+				preSettingsHash.current = null;
+			}
+			setRoute(next);
+		};
 		(globalThis as { addEventListener?: (t: string, l: () => void) => void }).addEventListener?.("popstate", onPop);
 		return () => {
 			(globalThis as { removeEventListener?: (t: string, l: () => void) => void }).removeEventListener?.("popstate", onPop);
@@ -817,10 +848,23 @@ function AppShell(options: AppOptions = {}) {
 	// entry point (the rail's Settings button, the composer's /settings
 	// command, an ext surface's {settings} target) pushes the hash route;
 	// the page's own section nav (its left column) rides the same seam.
+	// DEDUP: a navigation to the hash ALREADY in the address bar pushes
+	// nothing (re-clicking the active nav entry must not stack a history
+	// entry the close action would then have to pop past).
 	const navigateSettings = useCallback((section: string | undefined): void => {
 		const next: Route =
 			section === undefined ? { kind: "settings" } : { kind: "settings", section };
-		writeHash(routeHash(next));
+		const previous = readHash();
+		const hash = routeHash(next);
+		if (hash !== previous) writeHash(hash);
+		if (!settingsEnteredInApp.current && parseHash(previous).kind !== "settings") {
+			// First entry THIS visit from a NON-settings page: remember the
+			// hash the settings route displaced (the ✕ replaces the current
+			// settings entry with it). An EMPTY hash is the chat default —
+			// normalize to #/c so the replace always carries a real route;
+			// a boot deep link records nothing — its ✕ falls back to #/c.
+			preSettingsHash.current = previous === "" ? "#/c" : previous;
+		}
 		setRoute(next);
 		settingsEnteredInApp.current = true;
 		setDrawerOpen(false);
@@ -830,18 +874,21 @@ function AppShell(options: AppOptions = {}) {
 		(id: string): void => navigateSettings(id),
 		[navigateSettings],
 	);
-	// The page's close (✕): history back when the page was entered
-	// in-app (an in-app entry exists to return to), else the chat route
-	// (a boot deep link has nothing in-app behind it).
+	// The page's close (✕): exit in ONE click. An in-app entry REPLACES
+	// the current settings entry with the hash it displaced (a section
+	// walk leaves intermediate entries — back() would only reach the
+	// previous section, demanding repeated ✕); a boot deep link (no
+	// recorded entry) replaces with the chat route. Either way no net
+	// history entry is added and the page is gone in one click.
 	const closeSettings = useCallback((): void => {
-		const historyApi = (globalThis as { history?: { back(): void } }).history;
-		if (settingsEnteredInApp.current && historyApi !== undefined) {
-			historyApi.back();
-			return;
-		}
-		writeHash("#/c");
-		setRoute({ kind: "chat" });
+		const target =
+			settingsEnteredInApp.current && preSettingsHash.current !== null
+				? preSettingsHash.current
+				: "#/c";
+		writeHash(target, true);
+		setRoute(parseHash(target));
 		settingsEnteredInApp.current = false;
+		preSettingsHash.current = null;
 	}, []);
 
 	// The rail's extension-view ordering state (a client preference):

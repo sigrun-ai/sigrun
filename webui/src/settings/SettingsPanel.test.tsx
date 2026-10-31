@@ -654,7 +654,7 @@ describe("SettingsPanel Extensions cove", () => {
 				(node) =>
 					node.props.className ===
 						"settings-nav-item settings-nav-extension" &&
-					node.props["data-ext"] === "acme-tool",
+						node.props["data-ext"] === "acme-tool",
 			);
 		expect(row).toBeDefined();
 		await act(async () => {
@@ -663,5 +663,37 @@ describe("SettingsPanel Extensions cove", () => {
 		expect(
 			renderer.root.findAllByProps({ className: "settings-ext-settings" }),
 		).toHaveLength(1);
+	});
+
+	test("a deep link to an uncovered extension's slug opens the cove from the ROUTE alone (0.4.0 Task 4 fix)", async () => {
+		// Back/forward and bookmarks land on #/settings/<slug> with NO
+		// in-app click behind them — the cove must resolve from the
+		// fetched extension list, not an in-memory slug.
+		const harness = makeHarness({ extensions: { list: EXTENSIONS } });
+		const onSection = vi.fn();
+		const { renderer } = await renderPanelWithPrefs(harness.client, {
+			section: "acme-tool",
+			onSection,
+		});
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "settings-ext-settings" }),
+		).toHaveLength(1);
+		// And the nav row click routes through onSection (the host writes
+		// the hash — the panel never sets the section directly).
+		const row = renderer.root
+			.findAllByType("button")
+			.find(
+				(node) =>
+					node.props.className ===
+						"settings-nav-item settings-nav-extension" &&
+						node.props["data-ext"] === "acme-tool",
+			);
+		await act(async () => {
+			row!.props.onClick();
+		});
+		expect(onSection).toHaveBeenCalledWith("acme-tool");
 	});
 });

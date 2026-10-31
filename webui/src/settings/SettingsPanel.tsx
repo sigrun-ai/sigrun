@@ -143,13 +143,14 @@ export function SettingsPanel(props: {
 	// The /v1/meta snapshot (the version line in General): fetched once
 	// per open; a failure leaves the line absent, never blocks settings.
 	const [meta, setMeta] = useState<MetaResponse | null>(null);
-	// The open section. The ROUTE is the source of truth for section ids
-	// (the resolve effect below maps `section` into this state); the
-	// extension COVE (an uncovered extension's raw-JSON editor, which has
-	// no declared section id) is the one purely-internal setter — its
-	// slug ALSO routes through onSection so back/forward walk it.
+	// The open section. The ROUTE is the source of truth (the resolve
+	// effect below maps `section` into this state — deep links,
+	// back/forward, and bookmarks all resolve identically).
 	const [open, setOpen] = useState<OpenSection | null>(null);
-	const [extensionSlug, setExtensionSlug] = useState<string | null>(null);
+	// The loaded-extension list (the cove's nav rows + the resolve
+	// effect's uncovered-slug arm — the route alone decides the cove,
+	// so back/forward and deep links into it land correctly).
+	const [extensions, setExtensions] = useState<readonly ExtensionInfoWire[] | null>(null);
 	const [query, setQuery] = useState("");
 	// The General section's `meta` block (the pending-restart callout +
 	// the supervised flag): the surface's data lands here on render.
@@ -190,18 +191,40 @@ export function SettingsPanel(props: {
 					message: error instanceof Error ? error.message : String(error),
 				});
 			});
+		// The loaded-extension list feeds the cove's nav rows AND the
+		// resolve effect's uncovered-slug arm (the route alone decides).
+		client
+			.listExtensions()
+			.then((list) => {
+				if (!cancelled) setExtensions(list.extensions);
+			})
+			.catch(() => {
+				if (!cancelled) setExtensions([]);
+			});
 		return () => {
 			cancelled = true;
 		};
 	}, [client]);
 
+	// The uncovered-extension slugs (an extension WITHOUT a declared
+	// section keeps its raw-JSON editor in the cove — the spec's
+	// carry-over): the cove's reachability, derived not fetched.
+	const coveredSlugs = useMemo(() => {
+		if (load.status !== "ready") return new Set<string>();
+		return new Set(
+			load.sections.filter((s) => s.slug !== "core").map((s) => s.slug),
+		);
+	}, [load]);
+
 	// The CONTROLLED section (0.4.0 Task 4): the route owns the open
 	// section — resolved here, never set directly. Resolution mirrors the
 	// old deep-link rule: a CORE section by id first, then any declared
-	// section by id, then the extension cove's last-routed slug; the
-	// absent id (bare #/settings) and any unresolvable/hidden id (a
-	// non-admin's Providers, a stale rename) degrade to the General
-	// default — the section a principal cannot see never opens.
+	// section by id, then the COVE's uncovered-extension slug (derived
+	// from the fetched extension list — back/forward and deep links into
+	// the cove resolve identically to an in-app click); the absent id
+	// (bare #/settings) and any unresolvable/hidden id (a non-admin's
+	// Providers, a stale rename) degrade to the General default — the
+	// section a principal cannot see never opens.
 	useEffect(() => {
 		if (load.status !== "ready") return;
 		const visible = visibleSettingsSections(load.sections, admin);
@@ -211,17 +234,19 @@ export function SettingsPanel(props: {
 			);
 			if (core !== undefined) {
 				setOpen({ kind: "section", entry: core });
-				setExtensionSlug(null);
 				return;
 			}
 			const any = visible.find((entry) => entry.id === section);
 			if (any !== undefined) {
 				setOpen({ kind: "section", entry: any });
-				setExtensionSlug(null);
 				return;
 			}
-			if (extensionSlug !== null && extensionSlug === section) {
-				setOpen({ kind: "extension", slug: extensionSlug });
+			const uncovered =
+				extensions !== null && !coveredSlugs.has(section)
+					? extensions.find((entry) => entry.name === section)
+					: undefined;
+			if (uncovered !== undefined) {
+					setOpen({ kind: "extension", slug: uncovered.name });
 				return;
 			}
 		}
@@ -230,9 +255,8 @@ export function SettingsPanel(props: {
 		);
 		if (general !== undefined) {
 			setOpen({ kind: "section", entry: general });
-			setExtensionSlug(null);
 		}
-	}, [load, section, admin, extensionSlug]);
+	}, [load, section, admin, extensions, coveredSlugs]);
 
 	const results = useMemo(
 		() => (load.status === "ready" ? filterSettingsIndex(load.index, query) : []),
@@ -254,7 +278,6 @@ export function SettingsPanel(props: {
 			if (entry === undefined) return;
 			setQuery("");
 			onSection(entry.id);
-			setOpen({ kind: "section", entry });
 			// The surface loads async; the focus pass polls the body for
 			// the field element (a `[name="<key>"]` control) briefly.
 			if (hit.key !== undefined) {
@@ -386,23 +409,10 @@ export function SettingsPanel(props: {
 							    already cover it — the spec's "an extension without a
 							    section keeps its raw JSON editor". */}
 							<ExtensionCoveNav
-								client={client}
+								extensions={extensions}
 								open={open}
-								coveredSlugs={
-									new Set(
-										load.sections
-											.filter((s) => s.slug !== "core")
-											.map((s) => s.slug),
-									)
-								}
-								onOpen={(slug) => {
-									// The cove rides the route too (the slug joins the hash so
-									// back/forward walk it); the state feeds the resolve
-									// effect's slug arm.
-									setExtensionSlug(slug);
-									setOpen({ kind: "extension", slug });
-									onSection(slug);
-								}}
+								coveredSlugs={coveredSlugs}
+								onOpen={onSection}
 							/>
 						</nav>
 						<div className="settings-section" ref={bodyRef}>
@@ -780,29 +790,14 @@ function parseSettingsText(
  *  declared sections don't already cover it (the raw-JSON editor's
  *  reachability — the spec's keep-reachable rule). */
 function ExtensionCoveNav(props: {
-	readonly client: SigrunClient;
+	/** The panel's fetched extension list (one fetch serves the nav rows
+	 * AND the route resolve — the cove never fetches on its own). */
+	extensions: readonly ExtensionInfoWire[] | null;
 	readonly open: OpenSection | null;
 	readonly coveredSlugs: ReadonlySet<string>;
 	readonly onOpen: (slug: string) => void;
 }): React.ReactElement | null {
-	const { client, coveredSlugs, onOpen, open } = props;
-	const [extensions, setExtensions] = useState<readonly ExtensionInfoWire[] | null>(
-		null,
-	);
-	useEffect(() => {
-		let cancelled = false;
-		client
-			.listExtensions()
-			.then((list) => {
-				if (!cancelled) setExtensions(list.extensions);
-			})
-			.catch(() => {
-				if (!cancelled) setExtensions([]);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [client]);
+	const { extensions, coveredSlugs, onOpen, open } = props;
 	if (extensions === null) return null;
 	// An extension WITH a declared section renders under its own nav
 	// rows; the cove covers the rest (the raw-JSON editor).

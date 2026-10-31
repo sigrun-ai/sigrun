@@ -7,7 +7,7 @@
 
 import { act } from "react";
 import { describe, expect, test, vi } from "vitest";
-import { App, locationHash, parseHash, routeHash } from "./App";
+import { App, locationHash, parseHash, resetLocationHashForTest, routeHash } from "./App";
 import {
 	createClient,
 	type ConversationMeta,
@@ -753,6 +753,14 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 		expect(parseHash("#/settings/")).toEqual({ kind: "settings" });
 	});
 
+	test("a malformed percent-escape in a segment is garbage → the chat default (both route kinds)", () => {
+		// `%E0%A4%A` is a truncated UTF-8 sequence — decodeURIComponent
+		// throws; the router must fall to chat, never crash the boot.
+		expect(parseHash("#/settings/%E0%A4%A")).toEqual({ kind: "chat" });
+		expect(parseHash("#/ext/%E0%A4%A/board")).toEqual({ kind: "chat" });
+		expect(parseHash("#/ext/acme/%E0%A4%A")).toEqual({ kind: "chat" });
+	});
+
 	test("booting on the path-form /settings?section=<id> rewrites the hash and renders that section", async () => {
 		// The server's post-account-link returnTo stays path-form; the app
 		// rewrites it to the hash route at boot (the ONLY remaining reader).
@@ -810,6 +818,10 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 		} finally {
 			win.location = originalLocation;
 			win.history = originalHistory;
+			// Reset the fallback-hash seam: this test wrote
+			// `#/settings/accounts` into it — the next test must boot on
+			// the chat default, not inherit this route.
+			resetLocationHashForTest("#/c");
 		}
 	});
 
@@ -867,6 +879,93 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 			win.location = originalLocation;
 			win.addEventListener = originalAdd;
 			win.removeEventListener = originalRemove;
+			resetLocationHashForTest();
+		}
+	});
+
+	test("re-clicking the active nav entry pushes NO duplicate history entry; ✕ exits in one click", async () => {
+		// A pushState-recording history stub: the hash-owning `location`
+		// seam makes writeHash's dedup + the ✕'s replaceState observable.
+		const pushes: string[] = [];
+		const replaces: string[] = [];
+		const win = globalThis as unknown as {
+			location?: { hash: string };
+			history?: {
+				pushState(d: unknown, t: string, u: string): void;
+				replaceState(d: unknown, t: string, u: string): void;
+			};
+		};
+		const originalLocation = win.location;
+		const originalHistory = win.history;
+		win.location = { hash: "" };
+		const applyUrl = (url: string): void => {
+			if (typeof url === "string" && url.includes("#")) {
+				win.location!.hash = url.slice(url.indexOf("#"));
+			}
+		};
+		win.history = {
+			pushState: (_d, _t, url) => {
+				pushes.push(url);
+				applyUrl(url);
+			},
+			replaceState: (_d, _t, url) => {
+				replaces.push(url);
+				applyUrl(url);
+			},
+		};
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		try {
+			// Enter settings from the chat page, then re-click the rail's
+			// Settings button (already on #/settings): NO new push.
+			const settingsButton = renderer.root.findByProps({ "aria-label": "settings" });
+			await act(async () => {
+				(settingsButton.props as { onClick: () => unknown }).onClick();
+			});
+			expect(locationHash()).toBe("#/settings");
+			const pushesAfterEntry = pushes.length;
+			await act(async () => {
+				(settingsButton.props as { onClick: () => unknown }).onClick();
+			});
+			expect(pushes).toHaveLength(pushesAfterEntry); // deduped
+			// Re-clicking the ACTIVE nav entry (General) also pushes nothing.
+			const nav = await vi.waitFor(() => {
+				const items = renderer.root.findAllByProps({ className: "settings-nav-item" });
+				expect(items.length).toBeGreaterThan(0);
+				return items[0] as unknown as { props: { onClick: () => unknown } };
+			});
+			await act(async () => {
+				nav.props.onClick();
+			});
+			expect(locationHash()).toBe("#/settings/general");
+			const pushesAfterNav = pushes.length;
+			await act(async () => {
+				nav.props.onClick();
+			});
+			expect(pushes).toHaveLength(pushesAfterNav); // deduped
+			// ✕ exits in ONE click: the settings entry is REPLACED with the
+			// displaced pre-settings hash (the entry-point hash), and the
+			// chat column returns — no stacked entries to pop past.
+			const close = renderer.root.findByProps({ className: "settings-close" });
+			await act(async () => {
+				(close.props as { onClick: () => unknown }).onClick();
+			});
+			expect(locationHash()).toBe("#/c");
+			expect(
+				renderer.root.findAllByProps({ className: "settings-page" }),
+			).toHaveLength(0);
+			expect(
+				renderer.root.findAllByProps({ className: "composer-slot" }),
+			).toHaveLength(1);
+			// The replace (not push) is what exited: the last history write
+			// is a replaceState onto the chat hash.
+			expect(replaces[replaces.length - 1]).toBe("#/c");
+		} finally {
+			win.location = originalLocation;
+			win.history = originalHistory;
+			resetLocationHashForTest();
 		}
 	});
 });

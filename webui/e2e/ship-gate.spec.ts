@@ -9,7 +9,7 @@
  * popover (`[data-picker="model"]` + `data-model-id` options — the old
  * `select.composer-model` is gone), the transcript's turn roots
  * (`[data-turn-kind]`) and tool rows (`.tool-row-*`, inside the expanded
- * activity line), the header's panel toggles, and the settings dialog's
+ * activity line), the header's panel toggles, and the settings page's
  * Interface section (the theme surface the old `.theme-toggle` served).
  * Each spec boots its own E2E server (hermetic tmpdir + ephemeral port).
  */
@@ -310,26 +310,28 @@ test.describe("item 9: theme", () => {
 		page,
 	}) => {
 		await page.goto(server.url);
-		// B2+B7: the theme surface is the settings dialog's Interface
-		// section (the old header .theme-toggle + data-theme attribute are
-		// gone). Picks apply immediately via data-mode/palette/accent.
+		// B2+B7 → 0.4.0 Task 4: the theme surface is the settings PAGE's
+		// Interface section (the old header .theme-toggle + data-theme
+		// attribute are gone). Picks apply immediately via
+		// data-mode/palette/accent.
 		await page.getByRole("button", { name: "settings" }).click();
-		const dialog = page.getByRole("dialog", { name: "settings" });
-		await dialog
+		const settings = page.locator(".settings-page");
+		await expect(settings).toBeVisible();
+		await settings
 			.getByRole("button", { name: "Interface" })
 			.click();
 
 		const root = page.locator("html");
 		// Both explicit modes are exercised — at least one differs from any
 		// initial system resolution, so neither assertion is vacuous.
-		await dialog.locator('[data-mode-option="dark"]').click();
+		await settings.locator('[data-mode-option="dark"]').click();
 		await expect(root).toHaveAttribute("data-mode", "dark");
-		await dialog.locator('[data-mode-option="light"]').click();
+		await settings.locator('[data-mode-option="light"]').click();
 		await expect(root).toHaveAttribute("data-mode", "light");
-		await dialog.locator('[data-palette-option="fjord"]').click();
+		await settings.locator('[data-palette-option="fjord"]').click();
 		await expect(root).toHaveAttribute("data-palette", "fjord");
 		await expect(root).toHaveAttribute("data-mode", "light");
-		await dialog.locator('[data-accent-option="lichen"]').click();
+		await settings.locator('[data-accent-option="lichen"]').click();
 		await expect(root).toHaveAttribute("data-accent", "lichen");
 
 		// The picks persist in localStorage (the reload re-applies them).
