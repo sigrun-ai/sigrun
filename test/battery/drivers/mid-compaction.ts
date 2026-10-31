@@ -11,8 +11,8 @@
  *    to thresholds calibrated for the curator era: the eight core tool
  *    schemas (the A6 skill_manage curation tool included) ride in every
  *    request, so the warm-up turn and turn 2 both start from a tools-sized
- *    baseline. Blocking threshold 4500 (`contextWindow - reserveTokens`),
- *    background band from 2400 (`blocking - backgroundTokens`),
+ *    baseline. Blocking threshold 5000 (`contextWindow - reserveTokens`),
+ *    background band from 3000 (`blocking - backgroundTokens`),
  *    `keepRecentTokens: 1`. A short warm-up turn stays under the band;
  *    turn 2's preparation (thousands of estimated tokens, baseline plus
  *    filler) lands inside it, so upstream
