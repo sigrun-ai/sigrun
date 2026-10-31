@@ -1191,17 +1191,29 @@ describe("Composer empty state (no conversation)", () => {
 			return await realCreate();
 		};
 		let fail = true;
-		client.submit = () =>
-			fail
-				? Promise.reject(
-						new Error(
-							"sigrun api: POST /v1/conversations/3/submissions failed with status 503",
-						),
-				)
-				: Promise.resolve({} as ReturnType<typeof client.submit>);
-		const renderer = await renderEmpty(client, (id) => undefined);
+		let submits = 0;
+		const realSubmit = client.submit.bind(client);
+		client.submit = ((id: number, parts: never[], options?: unknown) => {
+			submits += 1;
+			if (fail) {
+				return Promise.reject(
+					new Error(
+						`sigrun api: POST /v1/conversations/${id}/submissions failed with status 503`,
+					),
+				);
+			}
+			return realSubmit(
+				id,
+				parts as never,
+				options as Parameters<typeof realSubmit>[2],
+			);
+		}) as typeof client.submit;
+		const navigated: number[] = [];
+		const renderer = await renderEmpty(client, (id) => navigated.push(id));
 		await typeText(renderer, "first try");
 		await clickSend(renderer);
+		// No navigation on a failed submit — the empty state stays.
+		expect(navigated).toEqual([]);
 		// The failure kept the text and surfaced the error.
 		expect(composerTextarea(renderer).props.value).toBe("first try");
 		expect(textContent(renderer.toJSON())).toContain("failed with status 503");
@@ -1211,13 +1223,17 @@ describe("Composer empty state (no conversation)", () => {
 		fail = false;
 		await clickSend(renderer);
 		expect(created).toBe(1);
+		expect(submits).toBe(2);
 		const posts = calls.filter((c) => c.input.endsWith("/submissions"));
 		expect(posts).toHaveLength(1);
 		expect(posts[0]?.input).toBe("/v1/conversations/3/submissions");
 		expect(posts[0]?.body).toBe(
-				JSON.stringify({ input: [{ type: "text", text: "first try" }] }),
+			JSON.stringify({ input: [{ type: "text", text: "first try" }] }),
 		);
 		expect(composerTextarea(renderer).props.value).toBe("");
+		// The successful retry navigates into the conversation the send
+		// created (the first send OR its retry — both land the user there).
+		expect(navigated).toEqual([3]);
 	});
 
 	test("create fails: text kept, error shown, no navigation", async () => {
@@ -1254,19 +1270,28 @@ describe("Composer empty state (no conversation)", () => {
 	test("attachments and the pickers stay inert with no conversation (guards verified)", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderEmpty(client);
-		// The file input is disabled; the model picker renders disabled.
+		// The file input is disabled; the model picker's toggle renders
+		// disabled (a native browser click never fires).
 		expect(
 			renderer.root.findByProps({ className: "composer-file-input" }).props
 				.disabled,
 		).toBe(true);
+		expect(
+			renderer.root.findByProps({ "data-picker": "model" }).props.disabled,
+		).toBe(true);
+		// The handler guards back the disabled surfaces (the test renderer
+		// fires onClick even on a disabled button): forcing the menu open and
+		// picking a model POSTs NO configure — the pick is conversation-scoped.
 		const toggle = renderer.root.findByProps({ "data-picker": "model" });
-		expect(toggle.props.disabled).toBe(true);
 		act(() => {
 			toggle.props.onClick();
 		});
-		expect(
-			renderer.root.findAllByProps({ role: "option" }),
-		).toHaveLength(0);
+		const option = renderer.root.findAllByProps({ role: "option" })[0];
+		if (option !== undefined) {
+			await act(async () => {
+				await option.props.onClick();
+			});
+		}
 		expect(
 			calls.filter((c) => c.input.endsWith("/configure")),
 		).toEqual([]);

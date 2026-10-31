@@ -229,9 +229,11 @@ function ChatCenter(props: {
 }) {
 	const { activeId, view, status, error, showThinking, timeline } = props;
 	if (activeId === null) {
+		// The empty state (Task 6): the composer below is LIVE — the first
+		// send creates the conversation, submits into it, and navigates here.
 		return (
 			<section className="chat-center">
-				<p className="chat-empty">Select or create a conversation</p>
+				<p className="chat-empty">Start a conversation — type below.</p>
 			</section>
 		);
 	}

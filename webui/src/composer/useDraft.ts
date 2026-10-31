@@ -17,6 +17,13 @@
  * - A pending text save FLUSHES on switch/unmount (the draft is never
  *   stranded in the debounce window); the flush re-reads the latest text via
  *   a ref, so a text change that races the switch still lands.
+ * - The PRE-CONVERSATION DRAFT CARRY (Task 6, the empty state): a draft
+ *   typed with no conversation belongs to no conversation, so the FIRST
+ *   null→conversation switch (the boot default selecting a row, a sidebar
+ *   navigation, the first send's own create→navigate) carries the draft
+ *   INTO the conversation selected and persists it there at once — never
+ *   wipes it. An empty pre-conversation draft is no carry (the switch
+ *   restores the served draft as before).
  * - The restore never echoes back as a PATCH (the dirty flag tracks
  *   user edits only).
  * - `clear(persist: true)` (post-submit) clears BOTH text and attachments
@@ -111,9 +118,43 @@ export function useDraft(
 		[],
 	);
 
+	// The UNANCHORED-draft tracker (Task 6, the empty state): text typed
+	// with NO conversation belongs to no conversation — it follows the user
+	// through conversation switches (a late boot default, a sidebar
+	// navigation, the New button) until something anchors it: an edit made
+	// while a conversation is active, a served-draft restore landing, or the
+	// send's clear. Without this, any typed empty-state text is silently
+	// destroyed by whichever conversation switch lands first.
+	const unanchoredRef = useRef(false);
+
 	useEffect(() => {
+		// THE UNANCHORED-DRAFT CARRY: a non-empty draft typed with no
+		// conversation carries INTO the conversation this switch selects (and
+		// persists there at once — like an attachment add, since the carry
+		// switch has no prior conversation to flush to), skipping the
+		// served-draft restore: the carried draft is newer than any served
+		// draft for a conversation the user just entered by construction. It
+		// stays unanchored — the user never deliberately attached it — so a
+		// further switch carries it along too.
+		if (
+			conversationId !== null &&
+			unanchoredRef.current &&
+			(textRef.current !== "" || attachmentsRef.current.length > 0)
+		) {
+			if (debounceRef.current !== null) {
+				clearTimeout(debounceRef.current);
+				debounceRef.current = null;
+			}
+			dirtyRef.current = false;
+			save(conversationId, textRef.current);
+			saveAttachments(conversationId, attachmentsRef.current);
+			return;
+		}
 		// Restore the served draft on mount/switch; reset the dirty state so
 		// a previous conversation's pending save cannot bleed into this one.
+		// The reset+restore path ANCHORS the draft (whatever lands belongs to
+		// this conversation).
+		unanchoredRef.current = false;
 		setTextState("");
 		textRef.current = "";
 		setAttachmentsState([]);
@@ -177,6 +218,10 @@ export function useDraft(
 			setTextState(next);
 			textRef.current = next;
 			dirtyRef.current = true;
+			// An edit with a live conversation ANCHORS the draft (it belongs to
+			// this conversation); an edit with none leaves/sets it unanchored
+			// (the empty-state text follows the user until a send consumes it).
+			unanchoredRef.current = conversationId === null;
 			if (conversationId === null) return;
 			if (debounceRef.current !== null) clearTimeout(debounceRef.current);
 			debounceRef.current = setTimeout(() => {
@@ -196,6 +241,8 @@ export function useDraft(
 			attachmentsRef.current = [];
 			editGenerationRef.current += 1;
 			dirtyRef.current = false;
+			// The send consumed the draft — nothing left to carry.
+			unanchoredRef.current = false;
 			if (debounceRef.current !== null) {
 				clearTimeout(debounceRef.current);
 				debounceRef.current = null;
