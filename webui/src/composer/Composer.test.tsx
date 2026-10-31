@@ -1098,6 +1098,181 @@ describe("Composer", () => {
 	});
 });
 
+describe("Composer empty state (no conversation)", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** Render the composer with NO active conversation (the empty state). */
+	async function renderEmpty(
+		client: ReturnType<typeof createClient>,
+		onNavigate?: (id: number) => void,
+	) {
+		return await renderAsync(
+			<Composer
+				client={client}
+				conversationId={null}
+				view={null}
+				{...(onNavigate === undefined ? {} : { onNavigate })}
+			/>,
+		);
+	}
+
+	test("the textarea is live with the normal placeholder (never 'Select a conversation')", async () => {
+		const { client } = makeHarness();
+		const renderer = await renderEmpty(client);
+		const textarea = composerTextarea(renderer);
+		expect(textarea.props.disabled).toBe(false);
+		expect(textarea.props.placeholder).toBe("Message…");
+		const send = sendButton(renderer);
+		expect(send.props["aria-disabled"]).toBe(true); // nothing typed yet
+		await typeText(renderer, "hello there");
+		expect(sendButton(renderer).props["aria-disabled"]).toBe(false);
+	});
+
+	test("first send with no conversation creates, submits, then navigates", async () => {
+		const { calls, client } = makeHarness();
+		const navigated: number[] = [];
+		const renderer = await renderEmpty(client, (id) => navigated.push(id));
+		await typeText(renderer, "hello");
+		await clickSend(renderer);
+		// The call ORDER: create → submit into the created id → navigate.
+		const createCalls = calls.filter((c) => c.input === "/v1/conversations");
+		expect(createCalls).toEqual([
+			{ input: "/v1/conversations", method: "POST", body: "{}" },
+		]);
+		const posts = calls.filter((c) => c.input.endsWith("/submissions"));
+		expect(posts).toEqual([
+			{
+				input: "/v1/conversations/3/submissions",
+				method: "POST",
+				body: JSON.stringify({ input: [{ type: "text", text: "hello" }] }),
+			},
+		]);
+		expect(navigated).toEqual([3]);
+		// Create happens BEFORE the submit (the submitted text goes into the
+		// conversation it created, never a submit-before-create race).
+		const createIndex = calls.findIndex((c) => c.input === "/v1/conversations");
+		const submitIndex = calls.findIndex((c) => c.input.endsWith("/submissions"));
+		expect(createIndex).toBeLessThan(submitIndex);
+		// The composer cleared for the new conversation.
+		expect(composerTextarea(renderer).props.value).toBe("");
+	});
+
+	test("double-click first send creates exactly one conversation (Review Focus 4)", async () => {
+		const { calls, client } = makeHarness();
+		const navigated: number[] = [];
+		const renderer = await renderEmpty(client, (id) => navigated.push(id));
+		await typeText(renderer, "double click");
+		const button = sendButton(renderer);
+		await act(async () => {
+			// Two clicks in ONE synchronous burst: the create+submit sequence
+			// is in flight, so the second must be a no-op.
+			void button.props.onClick();
+			void button.props.onClick();
+		});
+		const createCalls = calls.filter((c) => c.input === "/v1/conversations");
+		expect(createCalls).toHaveLength(1);
+		expect(
+			calls.filter((c) => c.input.endsWith("/submissions")),
+		).toHaveLength(1);
+		expect(navigated).toEqual([3]);
+	});
+
+	test("create succeeds, submit fails: text kept, error shown; retry reuses the created conversation (Review Focus 3)", async () => {
+		const { calls, client } = makeHarness();
+		let created = 0;
+		const realCreate = client.createConversation.bind(client);
+		client.createConversation = async () => {
+			created += 1;
+			return await realCreate();
+		};
+		let fail = true;
+		client.submit = () =>
+			fail
+				? Promise.reject(
+						new Error(
+							"sigrun api: POST /v1/conversations/3/submissions failed with status 503",
+						),
+				)
+				: Promise.resolve({} as ReturnType<typeof client.submit>);
+		const renderer = await renderEmpty(client, (id) => undefined);
+		await typeText(renderer, "first try");
+		await clickSend(renderer);
+		// The failure kept the text and surfaced the error.
+		expect(composerTextarea(renderer).props.value).toBe("first try");
+		expect(textContent(renderer.toJSON())).toContain("failed with status 503");
+		expect(renderer.root.findByProps({ role: "alert" })).toBeDefined();
+		// Retry: the SAME conversation (create called exactly once) and the
+		// second submit carries the same id + text.
+		fail = false;
+		await clickSend(renderer);
+		expect(created).toBe(1);
+		const posts = calls.filter((c) => c.input.endsWith("/submissions"));
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.input).toBe("/v1/conversations/3/submissions");
+		expect(posts[0]?.body).toBe(
+				JSON.stringify({ input: [{ type: "text", text: "first try" }] }),
+		);
+		expect(composerTextarea(renderer).props.value).toBe("");
+	});
+
+	test("create fails: text kept, error shown, no navigation", async () => {
+		const { calls, client } = makeHarness();
+		client.createConversation = () =>
+			Promise.reject(
+				new Error("sigrun api: POST /v1/conversations failed with status 503"),
+		);
+		const navigated: number[] = [];
+		const renderer = await renderEmpty(client, (id) => navigated.push(id));
+		await typeText(renderer, "still here");
+		await clickSend(renderer);
+		expect(composerTextarea(renderer).props.value).toBe("still here");
+		expect(textContent(renderer.toJSON())).toContain(
+			"sigrun api: POST /v1/conversations failed with status 503",
+		);
+		expect(
+			calls.filter((c) => c.input.endsWith("/submissions")),
+		).toEqual([]);
+		expect(navigated).toEqual([]);
+	});
+
+	test("typing \"/\" with no conversation opens no slash menu (it is conversation-scoped)", async () => {
+		const { client } = makeHarness();
+		const renderer = await renderEmpty(client);
+		await typeText(renderer, "/");
+		expect(
+			renderer.root.findAllByProps({
+				className: "composer-command-name",
+			}),
+		).toHaveLength(0);
+	});
+
+	test("attachments and the pickers stay inert with no conversation (guards verified)", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderEmpty(client);
+		// The file input is disabled; the model picker renders disabled.
+		expect(
+			renderer.root.findByProps({ className: "composer-file-input" }).props
+				.disabled,
+		).toBe(true);
+		const toggle = renderer.root.findByProps({ "data-picker": "model" });
+		expect(toggle.props.disabled).toBe(true);
+		act(() => {
+			toggle.props.onClick();
+		});
+		expect(
+			renderer.root.findAllByProps({ role: "option" }),
+		).toHaveLength(0);
+		expect(
+			calls.filter((c) => c.input.endsWith("/configure")),
+		).toEqual([]);
+	});
+});
+
 describe("Composer submit keys", () => {
 	test("Ctrl+Enter submits; plain Enter never does by default", async () => {
 		const { calls, client } = makeHarness();
