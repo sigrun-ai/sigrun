@@ -6,7 +6,9 @@
  * badges collapsed into one quiet indicator).
  */
 
+import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
+import type TestRenderer from "react-test-renderer";
 import type { MetaResponse } from "../api";
 import { render } from "../test-utils";
 import { Rail } from "./Rail";
@@ -43,7 +45,7 @@ function makeMeta(init?: {
 describe("Rail", () => {
 	test("renders the brand, the active Chats entry, and Settings", () => {
 		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
-		// The brand is the rune mark; its accessible name is the product name.
+		// The brand is the gull-wing mark; its accessible name is the product name.
 		const brand = renderer.root.findByProps({ className: "rail-brand" });
 		expect(brand.props.title).toBe("sigrun");
 		const chats = renderer.root.findByProps({
@@ -51,6 +53,44 @@ describe("Rail", () => {
 		});
 		expect(chats.props["aria-current"]).toBe("page");
 		expect(chats.props.title).toBe("Chats");
+	});
+
+	test("the brand mark is the gull wing — two stroke paths at weight 1.9 (0.4.0 Task 8)", () => {
+		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
+		const brand = renderer.root.findByProps({ className: "rail-brand" });
+		const svg = brand.children[0] as TestRenderer.ReactTestInstance;
+		expect(svg.type).toBe("svg");
+		// The icon set's conventions hold: 24×24 viewBox, currentColor ink,
+		// no fill, round caps/joins, the brand's single heavier weight.
+		expect(svg.props.viewBox).toBe("0 0 24 24");
+		expect(svg.props.fill).toBe("none");
+		expect(svg.props.stroke).toBe("currentColor");
+		expect(svg.props.strokeWidth).toBe(1.9);
+		expect(svg.props.strokeLinecap).toBe("round");
+		expect(svg.props.strokeLinejoin).toBe("round");
+		// The picked mark (candidate A, "Gull Wing"): a long primaries sweep
+		// rising into a short leading edge — drawn twice. The exact path
+		// literals are the pick's geometry; changing them is a brand decision.
+		const paths = svg.findAll((node) => node.type === "path");
+		expect(paths.map((path) => path.props.d)).toEqual([
+			"M4 16c3.2-1.4 6.9-4.6 8.4-8.4l.6 2.2 2.2.6",
+			"M8.5 18.5c2.7-1.5 5.4-4.4 6.6-7.4l1.5 1.2 1.9-.3",
+		]);
+	});
+
+	test("no rune or Norse-script text anywhere in the rail tree or the icon set source", () => {
+		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
+		const tree = JSON.stringify(renderer.toJSON());
+		// The Unicode Runic block (U+16A0–U+16FF) covers every Norse-script
+		// glyph the outgoing sowilo mark used.
+		expect(tree).not.toMatch(/[\u16A0-\u16FF]/);
+		expect(tree).not.toContain("sowilo");
+		// The source file too — the outgoing mark also lived in comments.
+		const source = readFileSync(new URL("./icons.tsx", import.meta.url), "utf8");
+		// The Runic block again, plus the words the old comments used.
+		expect(source).not.toMatch(/[\u16A0-\u16FF]/);
+		expect(source).not.toContain("sowilo");
+		expect(source).not.toContain("rune");
 	});
 
 	test("health dot is ok when every extension and health field is ok (unconfigured backup is not degraded)", () => {
