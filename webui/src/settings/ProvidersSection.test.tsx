@@ -155,6 +155,8 @@ function renderPanel(
 				prefsState={prefs}
 				theme={theme}
 				admin={admin}
+				section="providers"
+				onSection={() => {}}
 				onClose={() => {}}
 			/>
 		);

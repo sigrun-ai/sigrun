@@ -19,12 +19,13 @@
  *
  * Shell state: `panel` (Outline/Workspace, persisted under
  * `sigrun.panel`; clicking the active mode closes it), `drawerOpen` (the
- * ≤900px rail+sidebar drawer), `settingsOpen` (the rail's Settings button
- * — the dialog itself is B7's restyle). The theme hook (mode/palette/
+ * ≤900px rail+sidebar drawer). Settings is a main-pane PAGE on the hash
+ * router (0.4.0 Task 4): `#/settings` / `#/settings/<section>`, with
+ * back/forward riding the browser history. The theme hook (mode/palette/
  * accent) runs here for its root-application side effect.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { displayName } from "@sigrun/shared/conversations";
 import type { JsonObject } from "@sigrun/shared/blocks";
 import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
@@ -290,12 +291,14 @@ function ChatCenter(props: {
 
 /** The app shell's hash route (UI-blocks U3 Task 5): `#/c/<id>` (a
  *  conversation — the SessionList's select also lands here) and
- *  `#/ext/<slug>/<id>?params=<json>` (an extension surface view). The
+ *  `#/ext/<slug>/<id>?params=<json>` (an extension surface view), and
+ *  `#/settings[/<section>]` (0.4.0 Task 4: the settings page). The
  *  hash is the browser history entry; `navigate({params})` re-renders
  *  the surface with new params (a new hash entry, so back/forward
  *  walks them). */
 type Route =
 	| { readonly kind: "chat" }
+	| { readonly kind: "settings"; readonly section?: string }
 	| {
 			readonly kind: "ext";
 			readonly slug: string;
@@ -303,9 +306,18 @@ type Route =
 			readonly params: JsonObject;
 		};
 
-/** Parse `location.hash` into a route; garbage → the chat default. */
-function parseHash(hash: string): Route {
+/** Parse `location.hash` into a route; garbage → the chat default.
+ *  Settings carries ONE optional section segment (`#/settings/a/b` is
+ *  garbage → chat) — a section id is a single path token. */
+export function parseHash(hash: string): Route {
 	const path = hash.startsWith("#") ? hash.slice(1) : hash;
+	const settingsMatch = /^\/settings(?:\/([^/]+))?\/?$/.exec(path);
+	if (settingsMatch !== null) {
+		const section = settingsMatch[1];
+		return section === undefined
+			? { kind: "settings" }
+			: { kind: "settings", section: decodeURIComponent(section) };
+	}
 	const match = /^\/ext\/([^/]+)\/([^/?]+)(?:\?(.*))?$/.exec(path);
 	if (match === null) return { kind: "chat" };
 	const paramsRaw = match[3];
@@ -339,11 +351,45 @@ function parseHash(hash: string): Route {
 }
 
 /** Serialize a route to the hash (the back/forward history entry). */
-function routeHash(route: Route): string {
+export function routeHash(route: Route): string {
 	if (route.kind === "chat") return "#/c";
+	if (route.kind === "settings") {
+		return route.section === undefined
+			? "#/settings"
+			: `#/settings/${encodeURIComponent(route.section)}`;
+	}
 	const base = `#/ext/${encodeURIComponent(route.slug)}/${encodeURIComponent(route.id)}`;
 	if (Object.keys(route.params).length === 0) return base;
 	return `${base}?params=${encodeURIComponent(JSON.stringify(route.params))}`;
+}
+
+/**
+ * The boot path→hash rewrite (0.4.0 Task 4): the server's account-link
+ * flow redirects browsers to the PATH-form `/settings?section=<id>` deep
+ * link — the app rewrites it to the hash route (`replaceState`, never a
+ * second history entry) before the first route parse. This is the ONE
+ * remaining reader of the path form; idempotent (any other pathname is a
+ * no-op), so re-mounts (the restart recovery) never re-write.
+ */
+function rewriteSettingsPathBoot(): void {
+	const location_ = (
+		globalThis as { location?: { pathname?: string; search?: string } }
+	).location;
+	if (location_?.pathname !== "/settings") return;
+	const section = new URLSearchParams(location_.search ?? "").get("section");
+	const hash =
+		section === null || section === ""
+			? "#/settings"
+			: `#/settings/${encodeURIComponent(section)}`;
+	fallbackHash = hash;
+	const historyApi = (
+		globalThis as {
+			history?: { replaceState(d: unknown, t: string, u: string): void };
+		}
+	).history;
+	// Root-relative (`/#/settings/...`): the rewrite targets the app root
+	// regardless of the path the server served the bundle under.
+	historyApi?.replaceState(null, "", `/${hash}`);
 }
 
 /**
@@ -489,17 +535,20 @@ function AppShell(options: AppOptions = {}) {
 		boot.status === "ready" && win.location?.hash.startsWith("#/blocks")
 			? "blocks"
 			: "chats";
-	const [settingsOpen, setSettingsOpen] = useState(() =>
-		new URLSearchParams(
-			(globalThis as { location?: { pathname?: string; search?: string } }).location?.pathname === "/settings"
-				? (globalThis as { location?: { search?: string } }).location?.search ?? ""
-				: "",
-		).has("section"),
-	);
+	// The boot path→hash rewrite runs BEFORE the first route parse (the
+	// account-link returnTo lands on /settings?section=<id> — the hash
+	// route is the app's one routing surface afterwards).
+	rewriteSettingsPathBoot();
 	// The hash route (U3 Task 5): the main pane renders either the chat
-	// column or one extension surface page. `navigate({params})` pushes a
-	// new hash entry; popstate walks back/forward through them.
+	// column, one extension surface page, or the settings page
+	// (0.4.0 Task 4). `navigate({params})` pushes a new hash entry;
+	// popstate walks back/forward through them.
 	const [route, setRoute] = useState<Route>(() => parseHash(readHash()));
+	// Whether THIS app session entered the settings page by an in-app
+	// action (rail/composer/command/target) — the page's close action
+	// history-backs when it did (there is an in-app entry to return to)
+	// and navigates to `#/c` when the page was a boot deep link.
+	const settingsEnteredInApp = useRef(false);
 	// The ONE change-event hub per app (the transports subscribe; the
 	// shared events source dispatches surface.changed into it).
 	const [extHub] = useState(() => new ExtSurfaceHub());
@@ -760,7 +809,39 @@ function AppShell(options: AppOptions = {}) {
 		const next: Route = { kind: "ext", slug, id, params: {} };
 		writeHash(routeHash(next));
 		setRoute(next);
+		settingsEnteredInApp.current = false;
 		setDrawerOpen(false);
+	}, []);
+
+	// The settings page's navigation seam (0.4.0 Task 4): every in-app
+	// entry point (the rail's Settings button, the composer's /settings
+	// command, an ext surface's {settings} target) pushes the hash route;
+	// the page's own section nav (its left column) rides the same seam.
+	const navigateSettings = useCallback((section: string | undefined): void => {
+		const next: Route =
+			section === undefined ? { kind: "settings" } : { kind: "settings", section };
+		writeHash(routeHash(next));
+		setRoute(next);
+		settingsEnteredInApp.current = true;
+		setDrawerOpen(false);
+	}, []);
+	const onOpenSettings = useCallback((): void => navigateSettings(undefined), [navigateSettings]);
+	const onSettingsSection = useCallback(
+		(id: string): void => navigateSettings(id),
+		[navigateSettings],
+	);
+	// The page's close (✕): history back when the page was entered
+	// in-app (an in-app entry exists to return to), else the chat route
+	// (a boot deep link has nothing in-app behind it).
+	const closeSettings = useCallback((): void => {
+		const historyApi = (globalThis as { history?: { back(): void } }).history;
+		if (settingsEnteredInApp.current && historyApi !== undefined) {
+			historyApi.back();
+			return;
+		}
+		writeHash("#/c");
+		setRoute({ kind: "chat" });
+		settingsEnteredInApp.current = false;
 	}, []);
 
 	// The rail's extension-view ordering state (a client preference):
@@ -1023,7 +1104,8 @@ function AppShell(options: AppOptions = {}) {
 			>
 				<Rail
 					meta={boot.meta}
-					onOpenSettings={() => setSettingsOpen(true)}
+					onOpenSettings={onOpenSettings}
+					settingsActive={route.kind === "settings"}
 					onOpenGallery={
 						boot.meta.dev
 							? () => {
@@ -1075,6 +1157,24 @@ function AppShell(options: AppOptions = {}) {
 			{section === "blocks" ? (
 				<main className="main-column">
 					<GalleryView />
+				</main>
+			) : route.kind === "settings" ? (
+				// The settings PAGE (0.4.0 Task 4): the main pane's third route —
+				// the transcript column and its composer dock are REPLACED (the
+				// rail + sidebar stay; the page owns its own head + section
+				// column). The route is the persistence: back/forward walk the
+				// section ids.
+				<main className="main-column" data-route="settings">
+					<SettingsPanel
+						client={client}
+						prefsState={prefsState}
+						theme={theme}
+						admin={identity?.admin}
+						section={route.section}
+						onSection={onSettingsSection}
+						onRestart={restart}
+						onClose={closeSettings}
+					/>
 				</main>
 			) : (
 			<main className="main-column">
@@ -1149,7 +1249,14 @@ function AppShell(options: AppOptions = {}) {
 										return;
 									}
 									if ("settings" in target) {
-										setSettingsOpen(true);
+										// The {settings} target carries an optional section id; the
+										// hash route lands it (the page opens on that section).
+										const settingsSection = (target as { settings?: unknown }).settings;
+										navigateSettings(
+											typeof settingsSection === "string" && settingsSection !== ""
+												? settingsSection
+												: undefined,
+										);
 										return;
 									}
 									if ("view" in target && target.view !== null && typeof target.view === "object") {
@@ -1183,25 +1290,25 @@ function AppShell(options: AppOptions = {}) {
 							dockPadding={dockPadding}
 							attachChatTransport={attachChatTransport}
 						/>
-						{/* The scroll fade (B5): the pointer-events-none gradient +
-						    mask + 1.5px blur band over the transcript bottom, under the
-						    composer dock that overlays the scroll area. */}
-						<div className="chat-fade" aria-hidden="true" />
-						<footer className="composer-slot" ref={dockRef}>
-							<Composer
-								client={client}
-								conversationId={activeId}
-								view={view}
-								onNavigate={onSelect}
-								onOpenSettings={() => setSettingsOpen(true)}
-								enterToSend={prefsState.prefs.enterToSend}
-								readOnly={
-									list.rows.find((row) => row.id === activeId)?.access ===
-									"read"
-								}
-							/>
-						</footer>
-					</div>
+					{/* The scroll fade (B5): the pointer-events-none gradient +
+					    mask + 1.5px blur band over the transcript bottom, under the
+					    composer dock that overlays the scroll area. */}
+					<div className="chat-fade" aria-hidden="true" />
+					<footer className="composer-slot" ref={dockRef}>
+						<Composer
+							client={client}
+							conversationId={activeId}
+							view={view}
+							onNavigate={onSelect}
+							onOpenSettings={onOpenSettings}
+							enterToSend={prefsState.prefs.enterToSend}
+							readOnly={
+								list.rows.find((row) => row.id === activeId)?.access ===
+								"read"
+							}
+						/>
+					</footer>
+				</div>
 					)}
 			<RightPanel
 				mode={panel}
@@ -1261,19 +1368,6 @@ function AppShell(options: AppOptions = {}) {
 					className="panel-backdrop"
 					onClick={closePanel}
 					aria-hidden="true"
-				/>
-			)}
-			{settingsOpen && (
-				<SettingsPanel
-					client={client}
-					prefsState={prefsState}
-					theme={theme}
-					admin={identity?.admin}
-					initialSection={new URLSearchParams(
-						(globalThis as { location?: { search?: string } }).location?.search ?? "",
-					).get("section") ?? undefined}
-					onRestart={restart}
-					onClose={() => setSettingsOpen(false)}
 				/>
 			)}
 			{/* The share editor overlay (spec §5.9): the sidebar's owner-only

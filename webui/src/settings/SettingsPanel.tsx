@@ -1,12 +1,16 @@
 /**
- * SettingsPanel (UI-blocks U4 Task 4, spec §13.4): the settings editor,
- * rebuilt over the ONE settings renderer. The nav + search build from
- * `GET /v1/settings/sections` (core's sections first — General, Tools,
- * Interface, Advanced, Providers, Extensions — then every loaded
- * extension's declared sections). Each section renders as a
- * {@link SurfaceView} over its surface mount (`/v1/ext/<slug>/surfaces/
- * <id>`); the settings forms' submits carry the surface's `rev` (the
- * optimistic-concurrency token — the U4 form-submit payload).
+ * SettingsPanel (UI-blocks U4 Task 4, spec §13.4 → 0.4.0 Task 4): the
+ * settings editor, rebuilt over the ONE settings renderer — now a
+ * main-pane PAGE (no overlay/dialog chrome): the route owns the open
+ * section (`section` prop + `onSection` back into the host's router),
+ * so browser back/forward and deep links walk the section ids. The
+ * nav + search build from `GET /v1/settings/sections` (core's sections
+ * first — General, Tools, Interface, Advanced, Providers, Extensions —
+ * then every loaded extension's declared sections). Each section
+ * renders as a {@link SurfaceView} over its surface mount (`/v1/ext/
+ * <slug>/surfaces/<id>`); the settings forms' submits carry the
+ * surface's `rev` (the optimistic-concurrency token — the U4
+ * form-submit payload).
  *
  * The core coves keep their channels-native components:
  * - **Interface** binds client prefs ({@link PrefsState}) + the theme
@@ -111,18 +115,41 @@ export function SettingsPanel(props: {
 	 * makes every caller admin.
 	 */
 	readonly admin?: boolean;
-	/** Optional deep-linked core section id (the account-link return target). */
-	readonly initialSection?: string;
+	/** The route's section id (0.4.0 Task 4): the page is CONTROLLED — the
+	 * host's hash route owns the open section; absent → the panel's own
+	 * default (General). Deep links obey exactly the nav's visibility
+	 * rule (a non-admin cannot open the admin-only coves). */
+	readonly section?: string;
+	/** A nav click hands the section id to the host's router (the hash
+	 * route write lives there — back/forward walks the section ids). */
+	readonly onSection: (id: string) => void;
 	/** The App's restart action (§13.3) — the callout's Restart button. */
 	readonly onRestart?: () => Promise<void>;
+	/** The page's close (✕): the host routes it (history back when the
+	 * page was entered in-app, else the chat route). */
 	readonly onClose: () => void;
 }): React.ReactElement {
-	const { client, onClose, prefsState, theme, admin, onRestart, initialSection } = props;
+	const {
+		client,
+		onClose,
+		onSection,
+		prefsState,
+		theme,
+		admin,
+		onRestart,
+		section,
+	} = props;
 	const [load, setLoad] = useState<SectionsLoad>({ status: "loading" });
 	// The /v1/meta snapshot (the version line in General): fetched once
 	// per open; a failure leaves the line absent, never blocks settings.
 	const [meta, setMeta] = useState<MetaResponse | null>(null);
+	// The open section. The ROUTE is the source of truth for section ids
+	// (the resolve effect below maps `section` into this state); the
+	// extension COVE (an uncovered extension's raw-JSON editor, which has
+	// no declared section id) is the one purely-internal setter — its
+	// slug ALSO routes through onSection so back/forward walk it.
 	const [open, setOpen] = useState<OpenSection | null>(null);
+	const [extensionSlug, setExtensionSlug] = useState<string | null>(null);
 	const [query, setQuery] = useState("");
 	// The General section's `meta` block (the pending-restart callout +
 	// the supervised flag): the surface's data lands here on render.
@@ -155,17 +182,6 @@ export function SettingsPanel(props: {
 					sections: response.sections,
 					index: response.index,
 				});
-				// Deep links obey exactly the same visibility rule as the nav:
-				// a known non-admin cannot open the admin-only Providers cove.
-				const visibleSections = visibleSettingsSections(response.sections, admin);
-				const initial = visibleSections.find(
-					(section) => section.slug === "core" && section.id === (initialSection ?? "general"),
-				) ?? visibleSections.find(
-					(section) => section.slug === "core" && section.id === "general",
-				);
-				if (initial !== undefined) {
-					setOpen({ kind: "section", entry: initial });
-				}
 			})
 			.catch((error: unknown) => {
 				if (cancelled) return;
@@ -177,16 +193,55 @@ export function SettingsPanel(props: {
 		return () => {
 			cancelled = true;
 		};
-	}, [client, initialSection, admin]);
+	}, [client]);
+
+	// The CONTROLLED section (0.4.0 Task 4): the route owns the open
+	// section — resolved here, never set directly. Resolution mirrors the
+	// old deep-link rule: a CORE section by id first, then any declared
+	// section by id, then the extension cove's last-routed slug; the
+	// absent id (bare #/settings) and any unresolvable/hidden id (a
+	// non-admin's Providers, a stale rename) degrade to the General
+	// default — the section a principal cannot see never opens.
+	useEffect(() => {
+		if (load.status !== "ready") return;
+		const visible = visibleSettingsSections(load.sections, admin);
+		if (section !== undefined) {
+			const core = visible.find(
+				(entry) => entry.slug === "core" && entry.id === section,
+			);
+			if (core !== undefined) {
+				setOpen({ kind: "section", entry: core });
+				setExtensionSlug(null);
+				return;
+			}
+			const any = visible.find((entry) => entry.id === section);
+			if (any !== undefined) {
+				setOpen({ kind: "section", entry: any });
+				setExtensionSlug(null);
+				return;
+			}
+			if (extensionSlug !== null && extensionSlug === section) {
+				setOpen({ kind: "extension", slug: extensionSlug });
+				return;
+			}
+		}
+		const general = visible.find(
+			(entry) => entry.slug === "core" && entry.id === "general",
+		);
+		if (general !== undefined) {
+			setOpen({ kind: "section", entry: general });
+			setExtensionSlug(null);
+		}
+	}, [load, section, admin, extensionSlug]);
 
 	const results = useMemo(
 		() => (load.status === "ready" ? filterSettingsIndex(load.index, query) : []),
 		[load, query],
 	);
 
-	/** Jump to a search hit: open its section, then focus the field
-	 *  whose name matches the hit's key (the webui focus half of the
-	 *  search's resolve contract). */
+	/** Jump to a search hit: open its section (routing the id through the
+	 *  host's hash), then focus the field whose name matches the hit's
+	 *  key (the webui focus half of the search's resolve contract). */
 	const jumpTo = useCallback(
 		async (hit: SettingsSectionIndexEntryWire) => {
 			const entry =
@@ -198,6 +253,7 @@ export function SettingsPanel(props: {
 					: undefined;
 			if (entry === undefined) return;
 			setQuery("");
+			onSection(entry.id);
 			setOpen({ kind: "section", entry });
 			// The surface loads async; the focus pass polls the body for
 			// the field element (a `[name="<key>"]` control) briefly.
@@ -222,7 +278,7 @@ export function SettingsPanel(props: {
 				}
 			}
 		},
-		[load],
+		[load, onSection],
 	);
 
 	const pendingRestart = coreMeta?.pendingRestart ?? [];
@@ -237,7 +293,7 @@ export function SettingsPanel(props: {
 	}, [load, admin]);
 
 	return (
-		<div className="settings-overlay" role="dialog" aria-label="settings">
+		<div className="settings-page">
 			<div className="settings-panel">
 				<header className="settings-head">
 					<span className="settings-title">Settings</span>
@@ -298,7 +354,7 @@ export function SettingsPanel(props: {
 											? ""
 											: undefined
 									}
-									onClick={() => setOpen({ kind: "section", entry: section })}
+									onClick={() => onSection(section.id)}
 								>
 									{section.title}
 								</button>
@@ -317,8 +373,8 @@ export function SettingsPanel(props: {
 												open.entry.id === section.id
 													? ""
 													: undefined
-											}
-											onClick={() => setOpen({ kind: "section", entry: section })}
+												}
+											onClick={() => onSection(section.id)}
 										>
 											{section.title}
 										</button>
@@ -339,7 +395,14 @@ export function SettingsPanel(props: {
 											.map((s) => s.slug),
 									)
 								}
-								onOpen={(slug) => setOpen({ kind: "extension", slug })}
+								onOpen={(slug) => {
+									// The cove rides the route too (the slug joins the hash so
+									// back/forward walk it); the state feeds the resolve
+									// effect's slug arm.
+									setExtensionSlug(slug);
+									setOpen({ kind: "extension", slug });
+									onSection(slug);
+								}}
 							/>
 						</nav>
 						<div className="settings-section" ref={bodyRef}>

@@ -775,6 +775,12 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 			pushState: () => undefined,
 			replaceState: (_d, _t, url) => {
 				replaceCalls.push(url);
+				// Emulate the browser: a replaceState whose URL carries a
+				// fragment updates location.hash (the app reads the hash back
+				// through the same seam the real browser would).
+				if (typeof url === "string" && url.includes("#")) {
+					win.location!.hash = url.slice(url.indexOf("#"));
+				}
 			},
 		};
 		const { client, createEventSource } = makeHarness();
@@ -785,9 +791,11 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 					<App client={client} createEventSource={createEventSource} />,
 				);
 			});
-			// The rewrite landed: path-form → /#/settings/accounts.
+			// The rewrite landed: path-form → /#/settings/accounts (the
+			// history URL is root-relative; the hash the app reads back is
+			// the fragment).
 			expect(replaceCalls).toContain("/#/settings/accounts");
-			expect(locationHash()).toBe("/#/settings/accounts");
+			expect(locationHash()).toBe("#/settings/accounts");
 			// The page renders ON the accounts section (the deep link's target).
 			expect(
 				renderer!.root.findAllByProps({ className: "settings-page" }),

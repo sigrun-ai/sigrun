@@ -2174,6 +2174,43 @@ body {
 	.composer-slot {
 		padding: 0.5rem 16px 0.9rem;
 	}
+
+	/* The settings page's section column collapses into a TOP BAR: the
+	   layout stacks (nav above the section) and the nav scrolls
+	   horizontally — the 11rem column would crowd a phone-width pane. */
+	.settings-layout {
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.6rem 12px 0.6rem 16px;
+	}
+
+	.settings-nav {
+		flex-direction: row;
+		width: auto;
+		padding-left: 0;
+		overflow-x: auto;
+		overflow-y: hidden;
+		gap: 0.2rem;
+		flex-wrap: nowrap;
+		/* The group heading is a desktop-column artifact — the bar rows
+		   carry their own identity. */
+	}
+
+	.settings-nav .settings-nav-group {
+		flex-direction: row;
+		align-items: center;
+		gap: 0.2rem;
+	}
+
+	.settings-nav-item {
+		white-space: nowrap;
+		flex: none;
+	}
+
+	.settings-section {
+		overflow-y: auto;
+		padding: 0 4px 1.5rem 0;
+	}
 }
 
 /* ── slash-command menu (Task 7, pi parity) ──────────────────────────── */
@@ -2221,37 +2258,39 @@ body {
 	color: var(--muted);
 }
 
-/* ── settings panel (the rail-opened /v1/settings editor; B7 restyles) */
+/* ── settings page (0.4.0 Task 4: the main-pane #/settings/<section>
+   page — the rail-opened dialog is gone; a left section column that
+   becomes a top bar under 900px) */
 
-.settings-overlay {
-	position: fixed;
-	inset: 0;
-	background: rgb(0 0 0 / 40%);
+/* The page fills the main column (the chat header/transcript/composer
+   are REPLACED by it; the rail + sidebar stay). */
+.settings-page {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
 	display: flex;
-	align-items: flex-start;
-	justify-content: center;
-	padding-top: 6vh;
-	z-index: 100;
+	flex-direction: column;
+	background: var(--bg);
 }
 
 .settings-panel {
-	width: min(26rem, 92vw);
-	max-height: 82vh;
-	overflow-y: auto;
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: 12px;
-	padding: 0.75rem 0.875rem;
+	flex: 1;
+	min-height: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 0.625rem;
-	box-shadow: 0 18px 48px rgb(0 0 0 / 40%);
+	padding: 0;
 }
 
+/* The page head: the chat header's 48px bar shape (title + search). */
 .settings-head {
+	height: 48px;
+	flex: none;
 	display: flex;
 	align-items: center;
 	gap: 0.5rem;
+	padding: 0 16px 0 24px;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg);
 }
 
 .settings-title {
@@ -2276,15 +2315,20 @@ body {
 	flex-direction: column;
 	gap: 0.625rem;
 	/* Section bodies may carry wide content (the raw-JSON textarea, long
-	   notes) — never widen the panel. */
+	   notes) — never widen the page. */
 	min-width: 0;
 	max-width: 100%;
 }
 
+/* The page body: the left section column + the section pane. The
+   section pane owns the scroll (the nav column stays put). */
 .settings-layout {
+	flex: 1;
+	min-height: 0;
 	display: flex;
 	gap: 0.75rem;
 	min-width: 0;
+	padding: 0.75rem 1rem 0.75rem 0;
 }
 
 .settings-nav {
@@ -2292,6 +2336,9 @@ body {
 	flex-direction: column;
 	gap: 0.2rem;
 	flex: none;
+	width: 11rem;
+	padding-left: 0.5rem;
+	overflow-y: auto;
 }
 
 .settings-nav-item {
@@ -2314,9 +2361,19 @@ body {
 	color: var(--text);
 }
 
+/* The "My settings" group (user-scoped extension sections under one
+   heading — the nav column's subsection). */
+.settings-nav-group {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+}
+
 .settings-section {
 	flex: 1;
 	min-width: 0;
+	overflow-y: auto;
+	padding: 0 1rem 1.5rem 0.5rem;
 }
 
 .settings-field {

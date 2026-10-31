@@ -88,9 +88,11 @@ test("back returns to the conversation", async ({ page }) => {
 	await page.getByRole("button", { name: "settings" }).click();
 	await expect(page).toHaveURL(/#\/settings$/);
 	await expect(page.locator(".composer-slot")).toHaveCount(0);
-	// Browser back walks the hash history: the conversation returns.
+	// Browser back walks the hash history: the conversation returns (the
+	// boot entry is the BARE root URL — no hash — so back leaves the
+	// settings route entirely).
 	await page.goBack();
-	await expect(page).toHaveURL(/#\/c/);
+	await expect(page).not.toHaveURL(/#\/settings/);
 	await expect(page.locator(".settings-page")).toHaveCount(0);
 	await expect(page.locator(".composer-slot")).toBeVisible();
 	// Forward returns to the settings page (the history entry survives).
