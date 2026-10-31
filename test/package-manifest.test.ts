@@ -111,8 +111,11 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			"LICENSE",
 			"CHANGELOG.md",
 		]);
-		// Exact intra-family pins.
-		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.3.0");
+		// Exact intra-family pins. The @sigrun/shared pin rides the
+		// workspace leaf's own version (the test derives it — a bump that
+		// forgets the pin fails here against shared.version, not against a
+		// literal the bump would have had to update too).
+		expect(root.dependencies?.["@sigrun/shared"]).toBe(shared.version);
 		// Optional platform packages. The tui is a workspace member pinned
 		// to its registry version; the sandbox pair are NOT workspace
 		// members (a linked optional dep with os/cpu constraints makes
@@ -182,7 +185,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(tui.engines?.node).toBe(NODE_ENGINE);
 		expect(tui.publishConfig).toEqual(PUBLISH_CONFIG);
 		expect(tui.files).toEqual(["dist", "CHANGELOG.md"]);
-		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.3.0");
+		expect(tui.dependencies?.["@sigrun/shared"]).toBe(shared.version);
 		expect(tui.bin).toEqual({ "sigrun-tui": "dist/launch.js" });
 		expect(tui.repository).toEqual({
 			type: "github",

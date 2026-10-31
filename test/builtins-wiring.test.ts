@@ -150,21 +150,30 @@ function harnessBuiltinNames(): string[] {
 }
 
 /**
- * Part A released ext-gateway with an exact @sigrun/shared 0.2.1 peer.
- * Leg A leaves that published sibling untouched; integration may move it
- * directly to the 0.3.0 family version. Older shared versions remain skew.
+ * The released ext-gateway line's @sigrun/shared peer acceptance.
+ * Part A shipped 0.1.3 with an exact 0.2.1 peer; 0.1.4 widened it to
+ * "0.2.1 || 0.3.0" (the 0.3.0 core family) and 0.1.5 widens it again to
+ * "0.3.0 || 0.4.0" (the 0.4.0 family, still co-installing with 0.3.0).
+ * Every other sibling — and any shared version outside the released
+ * ranges — remains skew (the exact-version default branch).
  */
 function acceptedSharedPeers(
 	name: string,
 	siblingVersion: string | undefined,
 	own: string,
 ): Set<string> {
-	return name === "@sigrun/ext-gateway" &&
-		siblingVersion !== undefined &&
-		/^0\.1\.[3-4]$/.test(siblingVersion) &&
-		own === "0.3.0"
-		? new Set(["0.2.1", "0.3.0"])
-		: new Set([own]);
+	if (name === "@sigrun/ext-gateway" && siblingVersion !== undefined) {
+		// 0.1.5+ peers "0.3.0 || 0.4.0" — accepts either core line.
+		if (/^0\.1\.[5-9]$/.test(siblingVersion) && (own === "0.3.0" || own === "0.4.0")) {
+			return new Set(["0.3.0", "0.4.0"]);
+		}
+		// 0.1.3 (exact 0.2.1) and 0.1.4 (adds 0.3.0) — the 0.3.0 core line
+		// only; against 0.4.0 they are skew.
+		if (/^0\.1\.[3-4]$/.test(siblingVersion) && own === "0.3.0") {
+			return new Set(["0.2.1", "0.3.0"]);
+		}
+	}
+	return new Set([own]);
 }
 
 /** The five sibling checkouts, keyed by declared package name. */
@@ -252,22 +261,36 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		const siblings = siblingManifests();
 		const gateway = siblings.get("@sigrun/ext-gateway");
 		// The linked checkout tracks the RELEASED gateway line: 0.1.3
-		// (Part A, exact 0.2.1 peer) and 0.1.4 (the peer-widening patch
-		// that adds 0.3.0). Both legitimately declare the 0.2.1-or-0.3.0
-		// acceptance; anything older is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-4]$/);
+		// (Part A, exact 0.2.1 peer), 0.1.4 (the peer-widening patch that
+		// adds 0.3.0), and 0.1.5 (the peer-widening patch that adds 0.4.0
+		// while keeping 0.3.0). Each legitimately declares its line's
+		// acceptance; anything older — or a declaration from the WRONG
+		// line — is skew.
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-5]$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			/^0\.2\.1( \|\| 0\.3\.0)?$/,
+			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0)$/,
 		);
-		const accepted = acceptedSharedPeers(
-			"@sigrun/ext-gateway",
-			gateway?.manifest.version,
-			"0.3.0",
+		// The 0.4.0 core line: 0.1.5's peer accepts it (and keeps the
+		// 0.3.0 arm — the gateway co-installs with either core); the old
+		// 0.1.3/0.1.4 line is skew against 0.4.0.
+		const atFour = acceptedSharedPeers("@sigrun/ext-gateway", "0.1.5", "0.4.0");
+		expect(atFour.has("0.4.0")).toBe(true);
+		expect(atFour.has("0.3.0")).toBe(true);
+		expect(atFour.has("0.2.1")).toBe(false);
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.4", "0.4.0").has("0.3.0")).toBe(
+			false,
 		);
-		expect(accepted.has("0.2.1")).toBe(true);
-		expect(accepted.has("0.3.0")).toBe(true);
-		expect(accepted.has("0.1.2")).toBe(false);
 		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.5", "0.3.0").has("0.2.1")).toBe(false);
+		// The 0.3.0 core line keeps accepting its era's released peers
+		// until core moves past it (0.1.5 included — its range keeps 0.3.0).
+		for (const line of ["0.1.3", "0.1.4", "0.1.5"]) {
+			const atThree = acceptedSharedPeers("@sigrun/ext-gateway", line, "0.3.0");
+			expect(atThree.has("0.3.0")).toBe(true);
+		}
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.4", "0.3.0").has("0.2.1")).toBe(true);
+		// Anything older is skew, and the exception never leaks to other
+		// built-ins.
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.2", "0.3.0").has("0.2.1")).toBe(false);
 		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0").has("0.2.1")).toBe(false);
 	});
 

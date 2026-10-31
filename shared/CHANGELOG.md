@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.4.0] - 2026-10-31
 ### Added
-- The `./usernames` export for shared username derivation and validation.
+- `SettingsResponse.managed`: the deployment-managed top-level settings
+  keys (read fresh from the seeder's managed-settings.json; a missing
+  file means nothing is managed). Computed by the server, not part of
+  the PATCH type.
 
 ## [0.3.0] - 2026-10-29
 ### Added
