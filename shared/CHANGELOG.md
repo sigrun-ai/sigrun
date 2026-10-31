@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ## [0.4.0] - 2026-10-31
+
 ### Added
 - `SettingsResponse.managed`: the deployment-managed top-level settings
   keys (read fresh from the seeder's managed-settings.json; a missing
@@ -15,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the PATCH type.
 
 ## [0.3.0] - 2026-10-29
+
 ### Added
+- The `./usernames` export for shared username derivation and validation.
 - `ServerSettings.compaction.modelOverrides` declares per-model compaction
   policy overrides in the shared settings wire type.
 

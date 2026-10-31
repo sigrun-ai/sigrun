@@ -77,7 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry the gateway's bare chain name on the wire instead of the
   display id. Model references naming the old id shape must be updated
   (e.g. `settings.namingModel`, `server.defaultModel`, homelab
-  `defaultModel`).
+  `defaultModel`). (W9)
 
 ## [0.3.0] - 2026-10-29
 
