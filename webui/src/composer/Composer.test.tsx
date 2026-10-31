@@ -1286,12 +1286,26 @@ describe("Composer empty state (no conversation)", () => {
 		act(() => {
 			toggle.props.onClick();
 		});
-		const option = renderer.root.findAllByProps({ role: "option" })[0];
-		if (option !== undefined) {
-			await act(async () => {
-				await option.props.onClick();
-			});
-		}
+		// The menu OPENED (the fixture catalog's three models) — the pick
+		// below is a real click on a real option, never a vacuous pass.
+		const options = renderer.root.findAllByProps({ role: "option" });
+		expect(options).toHaveLength(3);
+		await act(async () => {
+			await options[0]!.props.onClick();
+		});
+		// The thinking picker has NO disabled prop (always rendered, B6) —
+		// its unavailability is the GUARD: force it open too and pick a level;
+		// still no configure POST.
+		const thinkingToggle = renderer.root.findByProps({
+			"data-picker": "thinking",
+		});
+		act(() => {
+			thinkingToggle.props.onClick();
+		});
+		await act(async () => {
+			await renderer.root.findByProps({ "data-thinking-level": "high" })
+				.props.onClick();
+		});
 		expect(
 			calls.filter((c) => c.input.endsWith("/configure")),
 		).toEqual([]);

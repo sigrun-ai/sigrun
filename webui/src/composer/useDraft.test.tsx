@@ -344,4 +344,42 @@ describe("useDraft", () => {
 			calls.filter((c) => c.method === "PATCH"),
 		).toEqual([]);
 	});
+
+	// THE CARRY-RUN CLEANUP LEAK (review finding 1): the carry branch must
+	// register the switch cleanup like every other run — a draft typed in
+	// the carried-into conversation AFTER the carry schedules a debounce,
+	// and the next switch must flush it to ITS conversation, never leak the
+	// timer into the following one (a leaked timer fired with saveRef already
+	// pointing at the NEW id, losing the old text and PATCHing the new
+	// conversation's draft with the post-reset empty text).
+	test("a debounce scheduled after a carry flushes to ITS conversation on switch (no timer leak into the next)", async () => {
+		const { calls, client, metaById } = makeHarness();
+		metaById.set(1, metaWithDraft(""));
+		metaById.set(2, metaWithDraft("served in two"));
+		const { renderer, getApi, switchTo } = await renderHost(client, null);
+		// Empty-state type → carry into 1.
+		await setText(renderer, getApi(), "carried words");
+		await switchTo(1);
+		expect(textContent(renderer.toJSON())).toBe("carried words");
+		// Type again IN 1 — anchors the draft and schedules the 500ms debounce.
+		await setText(renderer, getApi(), "more words in one");
+		// Switch to 2 INSIDE the debounce window: the cleanup must flush
+		// "more words in one" to 1 and cancel the timer.
+		await switchTo(2);
+		const patchesTo = (id: number) =>
+			calls.filter(
+				(c) => c.method === "PATCH" && c.input === `/v1/conversations/${id}/meta`,
+			);
+		expect(patchesTo(1).map((c) => c.body)).toContain(
+			JSON.stringify({ draft: { text: "more words in one" } }),
+		);
+		// The leaked-timer symptom: advance past the debounce window and NO
+		// further PATCH fires — 2's draft was never touched (its restore shows
+		// through untouched, and no empty-text PATCH landed on it).
+		await act(async () => {
+			vi.advanceTimersByTime(600);
+		});
+		expect(patchesTo(2)).toEqual([]);
+		expect(textContent(renderer.toJSON())).toBe("served in two");
+	});
 });
