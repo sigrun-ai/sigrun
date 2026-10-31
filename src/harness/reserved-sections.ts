@@ -39,6 +39,8 @@ export const RESERVED_EXTENSION_SLUGS = [
 	"user-settings",
 	"user-secrets",
 	"skills",
+	"versions",
+	"archive",
 	"prompts",
 	"packages",
 	"git",
