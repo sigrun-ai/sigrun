@@ -33,7 +33,7 @@ function Svg(props: IconProps & { readonly children: ReactNode }) {
 	);
 }
 
-/** The rail's brand rune (the mockup's ᛋ mark, drawn as a path). */
+/** The rail's brand mark (the gull wing — candidate A, picked 2026-10-31). */
 export function BrandMark(props: IconProps) {
 	return (
 		<svg
@@ -46,10 +46,12 @@ export function BrandMark(props: IconProps) {
 			strokeLinejoin="round"
 			aria-hidden="true"
 		>
-			{/* ᛋ (sowilo): two diagonal strokes meeting a vertical — the brand. */}
-			<path d="M8 20 16 4" />
-			<path d="M6 5.5 11 12l-5 6.5" />
-			<path d="M18 5.5 13 12l5 6.5" />
+			{/* The gull-wing brand mark (candidate A, picked 2026-10-31): a long
+			 * primaries sweep rising into a short leading edge, drawn twice —
+			 * the same two shapes ship as the favicon and the app icons
+			 * (webui/public/, rendered by webui/scripts/render-icons.mjs). */}
+			<path d="M4 16c3.2-1.4 6.9-4.6 8.4-8.4l.6 2.2 2.2.6" />
+			<path d="M8.5 18.5c2.7-1.5 5.4-4.4 6.6-7.4l1.5 1.2 1.9-.3" />
 		</svg>
 	);
 }

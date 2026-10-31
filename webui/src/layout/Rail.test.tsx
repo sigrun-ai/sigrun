@@ -8,7 +8,6 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
-import type TestRenderer from "react-test-renderer";
 import type { MetaResponse } from "../api";
 import { render } from "../test-utils";
 import { Rail } from "./Rail";
@@ -58,7 +57,7 @@ describe("Rail", () => {
 	test("the brand mark is the gull wing — two stroke paths at weight 1.9 (0.4.0 Task 8)", () => {
 		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
 		const brand = renderer.root.findByProps({ className: "rail-brand" });
-		const svg = brand.children[0] as TestRenderer.ReactTestInstance;
+		const svg = brand.findByType("svg");
 		expect(svg.type).toBe("svg");
 		// The icon set's conventions hold: 24×24 viewBox, currentColor ink,
 		// no fill, round caps/joins, the brand's single heavier weight.
