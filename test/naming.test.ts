@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AssistantMessage, Models } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
@@ -111,11 +111,15 @@ const stubApi = {
 
 /**
  * A stub Harness covering the namer's entire harness surface —
- * `snapshot` (the meta read) and `conversation().commit` (the meta write).
- * The committed draft is the live stored object, the way the doc tracker's
- * draft mutates in place inside the callback.
+ * `snapshot` (the meta read), `conversation().agent` (the conversation's
+ * own model), and `conversation().commit` (the meta write). The committed
+ * draft is the live stored object, the way the doc tracker's draft
+ * mutates in place inside the callback.
  */
-function stubHarness(initial?: Partial<SessionMeta>) {
+function stubHarness(
+	initial?: Partial<SessionMeta>,
+	agentModel?: { provider: string; modelId: string },
+) {
 	let meta: SessionMeta | undefined =
 		initial === undefined
 			? undefined
@@ -129,6 +133,9 @@ function stubHarness(initial?: Partial<SessionMeta>) {
 	const harness = {
 		snapshot: async () => (meta === undefined ? undefined : { ...meta }),
 		conversation: async () => ({
+			agent: async () => ({
+				...(agentModel === undefined ? {} : { model: agentModel }),
+			}),
 			commit: async (callback: (tx: { doc(): Promise<SessionMeta> }) => unknown) => {
 				if (meta === undefined) {
 					meta = {
@@ -145,7 +152,122 @@ function stubHarness(initial?: Partial<SessionMeta>) {
 	return { harness, commits, read: () => meta };
 }
 
+/** A served/unserved catalog fake; completions record their model. */
+function stubModels(served: readonly string[]) {
+	const calls: Array<{ provider: string; id: string }> = [];
+	const models = {
+		getModel: (provider: string, id: string) =>
+			served.includes(`${provider}/${id}`)
+				? ({ provider, id } as Model<string>)
+				: undefined,
+			completeSimple: (model: Model<string>) => {
+				calls.push({ provider: model.provider, id: model.id });
+				return Promise.resolve(fauxAssistantMessage("A short title"));
+			},
+	} as unknown as Models;
+	return { models, calls };
+}
+
 describe("createAutoNamer (stub deps)", () => {
+	test("names with the conversation's own agent model when namingModel is unset", async () => {
+		// The boot default (faux/unserved) is gone from the deps entirely;
+		// only the conversation's own agent model can serve the naming call.
+		const { models, calls } = stubModels(["acme/model-1"]);
+		const stub = stubHarness(undefined, { provider: "acme", modelId: "model-1" });
+		const namer = createAutoNamer({
+			harness: stub.harness,
+			models,
+			readSettings: () => ({}),
+			isTaskOwned: async () => false,
+		});
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		expect(calls).toEqual([{ provider: "acme", id: "model-1" }]);
+		expect(stub.read()?.autoName).toBe("A short title");
+		expect(stub.read()?.autoNameAttempts).toBeUndefined();
+	});
+
+	test("a namingModel change applies without a restart", async () => {
+		const { models, calls } = stubModels(["acme/model-1", "acme/model-2"]);
+		let settings: { namingModel?: string } = { namingModel: "acme/model-1" };
+		const stub = stubHarness(undefined, { provider: "acme", modelId: "model-1" });
+		const namer = createAutoNamer({
+			harness: stub.harness,
+			models,
+			readSettings: () => settings,
+			isTaskOwned: async () => false,
+		});
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		expect(calls).toEqual([{ provider: "acme", id: "model-1" }]);
+		// Swap in a NEW settings object (a captured-object mutation would
+		// not prove the per-attempt read).
+		settings = { namingModel: "acme/model-2" };
+		const second = stubHarness(undefined, { provider: "acme", modelId: "model-1" });
+		const namer2 = createAutoNamer({
+			harness: second.harness,
+			models,
+			readSettings: () => settings,
+			isTaskOwned: async () => false,
+		});
+		await namer2.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer2.idle();
+		expect(calls).toEqual([
+			{ provider: "acme", id: "model-1" },
+			{ provider: "acme", id: "model-2" },
+		]);
+	});
+
+	test("an unserved namingModel does not burn attempts", async () => {
+		const { models, calls } = stubModels(["acme/model-1"]);
+		let settings: { namingModel?: string } = { namingModel: "acme/missing" };
+		const logs: string[] = [];
+		const stub = stubHarness(undefined, { provider: "acme", modelId: "model-1" });
+		const namer = createAutoNamer({
+			harness: stub.harness,
+			models,
+			readSettings: () => settings,
+			isTaskOwned: async () => false,
+			log: (message) => logs.push(message),
+		});
+		// Three answered runs against the unserved model: no attempts burn
+		// and the skip log fires exactly once for acme/missing.
+		for (let run = 0; run < 3; run++) {
+			await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+			await namer.idle();
+		}
+		expect(stub.read()?.autoNameAttempts).toBeUndefined();
+		expect(calls).toHaveLength(0);
+		expect(logs).toEqual([
+			"auto-name: model acme/missing is not served — naming skipped (fix namingModel or the conversation's model)",
+		]);
+		// Once the setting is fixed, the next run names the conversation.
+		settings = { namingModel: "acme/model-1" };
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		expect(stub.read()?.autoName).toBe("A short title");
+		expect(calls).toEqual([{ provider: "acme", id: "model-1" }]);
+	});
+
+	test("no agent model and no namingModel: skip without an attempt", async () => {
+		const { models, calls } = stubModels(["acme/model-1"]);
+		const logs: string[] = [];
+		const stub = stubHarness();
+		const namer = createAutoNamer({
+			harness: stub.harness,
+			models,
+			readSettings: () => ({}),
+			isTaskOwned: async () => false,
+			log: (message) => logs.push(message),
+		});
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		expect(calls).toHaveLength(0);
+		expect(stub.read()?.autoNameAttempts).toBeUndefined();
+		expect(stub.read()?.autoName).toBeUndefined();
+		expect(logs).toHaveLength(0);
+	});
+
 	test("task-owned conversations are never named", async () => {
 		const calls: unknown[][] = [];
 		const models = {
@@ -162,7 +284,6 @@ describe("createAutoNamer (stub deps)", () => {
 			harness: stub.harness,
 			models,
 			readSettings: () => ({}),
-			defaultModel: { provider: "faux", modelId: "m" },
 			isTaskOwned: async () => true,
 		});
 		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
@@ -185,8 +306,7 @@ describe("createAutoNamer (stub deps)", () => {
 		const namer = createAutoNamer({
 			harness: stub.harness,
 			models,
-			readSettings: () => ({}),
-			defaultModel: { provider: "faux", modelId: "m" },
+			readSettings: () => ({ namingModel: "faux/m" }),
 			isTaskOwned: async () => false,
 			timeoutMs: 50,
 			log: () => {},
