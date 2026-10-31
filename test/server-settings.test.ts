@@ -16,7 +16,7 @@
  * test/server-submissions.test.ts.
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -82,6 +82,7 @@ async function bootServer(
 	};
 	const bootEnv = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
+		SIGRUN_CONFIG_DIR: dir,
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: "none",
 		SIGRUN_WORKSPACE_PATH: dir,
@@ -96,7 +97,7 @@ async function bootServer(
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
-		env: {},
+		env: { SIGRUN_CONFIG_DIR: dir },
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		settingsDir: dir,
 		settings: opts.settings,
@@ -193,6 +194,7 @@ describe("GET /v1/settings", () => {
 			// U4 §13.2: the pending-restart diff rides every GET; nothing
 			// is pending on a fresh boot.
 			pendingRestart: [],
+			managed: [],
 		});
 	});
 
@@ -312,6 +314,7 @@ describe("PATCH /v1/settings", () => {
 			applied: ["steeringMode"],
 			pending: [],
 			pendingRestart: [],
+			managed: [],
 		});
 	});
 
@@ -404,6 +407,7 @@ describe("PATCH /v1/settings", () => {
 			toolRoster: expect.any(Array),
 			effective: expect.any(Object),
 			pendingRestart: ["server.port"],
+			managed: [],
 		});
 		// Invalid server fields → 400 invalid_field naming the key.
 		for (const [body, field] of [
@@ -453,6 +457,7 @@ describe("PATCH /v1/settings", () => {
 				"defaultProvider.baseUrl",
 				"server.webuiBundle",
 			],
+			managed: [],
 		});
 		// Persisted to the file (restart-required: the running boot keeps
 		// its resolved values; these land on the NEXT boot).
@@ -478,6 +483,45 @@ describe("PATCH /v1/settings", () => {
 				field,
 			});
 		}
+	});
+});
+
+describe("deployment-managed settings", () => {
+	test("GET carries managed from the file and PATCH refuses managed keys wholesale", async () => {
+		const { app, settingsDir } = await bootServer(
+			{},
+			{ file: '{"namingModel":"acme/old-namer"}' },
+		);
+		const path = join(settingsDir, "managed-settings.json");
+		await writeFile(path, '["defaultModel"]', "utf8");
+		const response = await app.inject({ method: "GET", url: "/v1/settings" });
+		expect(response.json()).toEqual(
+			expect.objectContaining({ managed: ["defaultModel"] }),
+		);
+
+		// Fresh read on every request: no restart after the file changes.
+		await writeFile(path, '["defaultModel","server"]', "utf8");
+		const before = await readFile(settingsPath(settingsDir), "utf8");
+		const refused = await patch(app, {
+			namingModel: "acme/model-1",
+			defaultModel: "acme/model-2",
+		});
+		expect(refused.statusCode).toBe(409);
+		expect(refused.json()).toEqual({
+			error: "managed_by_deployment",
+			keys: ["defaultModel"],
+		});
+		expect(await readFile(settingsPath(settingsDir), "utf8")).toBe(before);
+
+		// An entirely unmanaged request still applies.
+		const accepted = await patch(app, { namingModel: "acme/model-1" });
+		expect(accepted.statusCode).toBe(200);
+		expect(accepted.json()).toEqual(
+			expect.objectContaining({
+				namingModel: "acme/model-1",
+				managed: ["defaultModel", "server"],
+			}),
+		);
 	});
 });
 

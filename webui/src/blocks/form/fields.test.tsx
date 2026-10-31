@@ -60,6 +60,25 @@ function inputByLabel(
 	return input;
 }
 
+describe("deployment-managed fields", () => {
+	test("a disabled text field renders its managed help", () => {
+		const { renderer } = harness(
+			[
+				{
+					type: "text",
+					name: "defaultModel",
+					label: "Default model",
+					disabled: true,
+					help: "Managed by deployment. x",
+				},
+			],
+			{ f: { defaultModel: "acme/model-1" } },
+		);
+		expect(inputByLabel(renderer, "Default model").props.disabled).toBe(true);
+		expect(textContent(renderer.toJSON())).toContain("Managed by deployment. x");
+	});
+});
+
 describe("secret (§5.6/§15)", () => {
 	test("never renders a value; shows set (stored)", () => {
 		const { renderer } = harness(

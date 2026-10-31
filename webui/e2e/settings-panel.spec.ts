@@ -73,6 +73,21 @@ test("gear opens the settings panel; edit + save persists", async ({ page }) => 
 	expect(errors).toEqual([]);
 });
 
+test("a deployment-managed key renders locked", async ({ page }) => {
+	const managed = await bootE2EServer({ managedSettings: ["defaultModel"] });
+	try {
+		await page.goto(managed.url);
+		await page.getByRole("button", { name: "settings" }).click();
+		const dialog = page.getByRole("dialog", { name: "settings" });
+		await dialog.getByRole("button", { name: "General" }).click();
+		const input = dialog.getByRole("textbox", { name: "Default model" });
+		await expect(input).toBeDisabled();
+		await expect(dialog).toContainText("Managed by deployment");
+	} finally {
+		await managed.cleanup();
+	}
+});
+
 test("the Providers section lists readiness and saves a credential write-only", async ({
 	page,
 }) => {
