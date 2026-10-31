@@ -145,6 +145,11 @@ export function createAutoNamer(deps: AutoNamerDeps): AutoNamer {
 			// name, and a model-written autoName would churn under it. The
 			// skip sits next to the isTaskOwned check per the plan.
 			if (meta?.source === "cron") return;
+			// Internal conversations (curator P5) are never named: they are
+			// invisible on every owner-keyed surface, and a name would exist
+			// only to be hidden. The bus already withholds the settle event;
+			// this is the belt-and-braces read-side gate.
+			if (meta?.internal === true) return;
 			// An absent doc (never written — reads serve nothing, defaults are
 			// free) is an unnamed conversation with zero attempts: name it.
 			if (meta?.name !== undefined || meta?.autoName !== undefined) return;

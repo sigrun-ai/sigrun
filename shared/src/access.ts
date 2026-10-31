@@ -9,6 +9,8 @@
  *
  * The rules, in order (first match wins):
  *
+ * 0. internal resource → none (curator P5: a conversation created for
+ *    curator work is invisible to EVERY caller — the superuser included);
  * 1. superuser → write;
  * 2. ownerless resource → household write (everyone);
  * 3. user === owner → write;
@@ -52,8 +54,13 @@ export interface AccessPrincipal {
  */
 export function accessOf(
 	p: AccessPrincipal,
-	r: { readonly owner?: string; readonly sharing?: Sharing },
+	r: { readonly owner?: string; readonly sharing?: Sharing; readonly internal?: true },
 ): Access {
+	// 0. Internal (curator P5): invisible to everyone, the superuser
+	// included — BEFORE any other rule can widen access. The marker is
+	// server-owned (written once in the creating commit), so no caller,
+	// share, or role can ever open an internal resource.
+	if (r.internal === true) return "none";
 	// 1. The superuser always writes.
 	if (p.superuser === true) return "write";
 	// 2. Ownerless is household-write for everyone.

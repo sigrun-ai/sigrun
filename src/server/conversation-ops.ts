@@ -600,7 +600,10 @@ export async function listConversationsOp(
 				BACKGROUND_CONTEXT,
 			);
 			const access = accessOf(caller, meta ?? {});
-			// Hidden is absent from the list (spec §5.9).
+			// Hidden is absent from the list (spec §5.9) — and internal means
+			// hidden for EVERY caller (curator P5, accessOf rule 0): the
+			// superuser and the bridge's trusted read are covered by the same
+			// line, so no caller-specific skip can drift.
 			if (access === "none") continue;
 			// The archived filter (absent = all).
 			if (
