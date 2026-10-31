@@ -274,6 +274,7 @@ export async function expandInput(
 	expansion: CommandExpansion,
 	env: ExecutionEnv | undefined,
 	context: Context,
+	owner?: string,
 ): Promise<ExpansionResult> {
 	// Only a LEADING text part starting with `/` is a command: the
 	// command is what the user typed first (attachments and later text
@@ -293,7 +294,7 @@ export async function expandInput(
 	const reserved = expansion.commandNames();
 	if (reserved.has(commandName)) return { parts };
 	if (commandName.startsWith("skill:")) {
-		const skills = await listSkills(env, context, expansion.skills);
+		const skills = await listSkills(env, context, expansion.skills, { owner });
 		const expanded = expandSkillCommand(text, skills);
 		if (expanded === text) return { parts };
 		return {

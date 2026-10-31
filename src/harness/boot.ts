@@ -103,6 +103,7 @@ import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.
 import { createAdmissionGuard } from "./identity/users.js";
 import { sweepAccountLinks } from "./identity/link-sweep.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { learnedSkillsDir } from "../curation/paths.js";
 import {
 	probeIsolation,
 	runHelperProbe,
@@ -949,6 +950,13 @@ export async function openHarness(
 	// ones, which `listSkills` includes by design).
 	const skillsOptions = {
 		userDir: join(roots.configDir, "skills"),
+		// Curator A3 (P2): the conversation owner's learned root —
+		// `<dataDir>/users/<owner>/skills`, undefined for ownerless
+		// conversations. Discovery resolves the owner per render.
+		learnedRoot: (owner: string | undefined): string | undefined =>
+			owner === undefined
+				? undefined
+				: learnedSkillsDir(managedPaths.userAreas(owner)),
 		packageRoots: (): readonly { extension: string; dir: string }[] =>
 			collectedSkillRoots,
 		sectionMaxBytes: (): number =>

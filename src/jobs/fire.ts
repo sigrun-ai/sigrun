@@ -220,11 +220,14 @@ async function jobPromptText(
 	const conversation = await deps.harness.conversation(conversationId, context);
 	if (conversation === undefined) return prompt;
 	const env = await conversationEnv(deps, conversation);
+	// Curator A3: the learned root is the conversation owner's.
+	const meta = await deps.harness.snapshot(SessionMetaDoc, conversationId, context);
 	const expansion = await expandInput(
 		[{ type: "text", text: prompt }],
 		deps.commandExpansion,
 		env,
 		context,
+		meta?.owner,
 	);
 	const part = expansion.parts[0];
 	return part !== undefined && part.type === "text" ? part.text : prompt;

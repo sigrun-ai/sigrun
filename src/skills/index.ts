@@ -3,16 +3,20 @@
  * package.
  *
  * v1 discovered ONE root: `skills/<dir>/SKILL.md` in the conversation
- * workspace. W5 Task 4 (spec §9.4) grows discovery to THREE roots, with
- * first-wins precedence in this order:
+ * workspace. W5 Task 4 (spec §9.4) grew discovery to THREE roots, and
+ * curator A3 (P2) adds a fourth — the conversation OWNER's learned
+ * skills. First-wins precedence in this order:
  *
  * 1. the WORKSPACE root — `skills/` under the conversation workspace, read
  *    through the conversation `ExecutionEnv` (the section via
  *    `PromptInput.env`, the tool via `ToolExecutionApi.env`), so discovery
  *    follows the resolved workspace;
- * 2. the USER root — `<configDir>/skills/` (a named config-root entry),
+ * 2. the LEARNED root — the owner's `<dataDir>/users/<owner>/skills/`,
+ *    read from the host filesystem; only for OWNED conversations (an
+ *    ownerless conversation has no learned root);
+ * 3. the USER root — `<configDir>/skills/` (a named config-root entry),
  *    read from the host filesystem;
- * 3. PACKAGE roots — skill directories shipped by extension packages
+ * 4. PACKAGE roots — skill directories shipped by extension packages
  *    (manifest `sigrun.skills`/`pi.skills` dirs and factory-result `skills`
  *    dirs, collected by the loader in install order), read from the host
  *    filesystem.
@@ -73,6 +77,23 @@ import type {
 import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-durable/env";
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { SessionMetaDoc } from "../server/session-meta.js";
+
+/**
+ * Resolve a conversation's owner through any `DocumentReader` (curator
+ * A3): the section's `PromptInput.read` and the tool's `ToolExecutionApi`
+ * both carry one. `undefined` for an ownerless conversation — and for a
+ * bare test double without the reader surface (no learned root then).
+ */
+async function conversationOwner(
+	read: PromptInput["read"] | ToolExecutionApi,
+	conversationId: PromptInput["conversationId"],
+	context: Context,
+): Promise<string | undefined> {
+	if (typeof read?.snapshot !== "function") return undefined;
+	const meta = await read.snapshot(SessionMetaDoc, conversationId, context);
+	return meta?.owner;
+}
 
 /** The section key the skills list renders under. */
 export const SKILLS_SECTION_KEY = "skills";
@@ -87,8 +108,11 @@ const FRONTMATTER_DELIMITER = "---";
 const SKILLS_SECTION_HEADER =
 	"Workspace skills. Call the load_skill tool with a skill's name to read its full instructions; each entry shows the skill's path, so you can also read its SKILL.md directly.";
 
-/** The three discovery roots, in precedence order (§9.4). */
-const ROOT_PRECEDENCE = ["workspace", "user dir", "package"] as const;
+/** The discovery roots, in precedence order (§9.4 + curator P2). */
+const ROOT_PRECEDENCE = ["workspace", "learned", "user dir", "package"] as const;
+
+/** One root's label — the skill's `root` field and the collision logs'. */
+type RootLabel = (typeof ROOT_PRECEDENCE)[number];
 
 /**
  * One discovered workspace skill (the workspace root's shape — other
@@ -105,6 +129,8 @@ export interface WorkspaceSkill {
 	readonly dir: string;
 	/** Frontmatter `disable-model-invocation: true` — hidden from the model. */
 	readonly disableModelInvocation: boolean;
+	/** Which discovery root supplied this skill (curator A3). */
+	readonly root: "workspace" | "user dir" | "package" | "learned";
 }
 
 /**
@@ -120,6 +146,12 @@ export interface WorkspaceSkill {
 export interface SkillsOptions {
 	/** The user-wide root: `<configDir>/skills/` (absent = the designed empty case). */
 	readonly userDir: string;
+	/**
+	 * The owner's learned root (curator P2): `<dataDir>/users/<owner>/skills`
+	 * for an owned conversation, `undefined` for an ownerless one. Optional
+	 * so pre-A3 callers keep compiling; absent = no learned root.
+	 */
+	readonly learnedRoot?: (owner: string | undefined) => string | undefined;
 	/**
 	 * Package skill roots, in install order — `{extension, dir}` pairs the
 	 * loader collected (extension slug + its skill directory).
@@ -202,6 +234,7 @@ function skillFromFile(
 	text: string,
 	displayDir: string,
 	fileLabel: string,
+	root: RootLabel,
 ): WorkspaceSkill | undefined {
 	const parsed = parseSkillFile(text);
 	if (parsed === undefined) {
@@ -226,6 +259,7 @@ function skillFromFile(
 		body: parsed.body,
 		dir: displayDir,
 		disableModelInvocation: parsed.disableModelInvocation,
+		root,
 	};
 }
 
@@ -266,7 +300,7 @@ async function readSkill(
 			cause: read.error,
 		});
 	}
-	return skillFromFile(read.value, `${SKILLS_DIRECTORY}/${dir.name}`, relative);
+	return skillFromFile(read.value, `${SKILLS_DIRECTORY}/${dir.name}`, relative, "workspace");
 }
 
 /**
@@ -334,6 +368,7 @@ export async function scanSkills(
  */
 function scanFsRoot(
 	root: string,
+	rootLabel: RootLabel,
 	opts?: { includeHidden?: boolean },
 ): WorkspaceSkill[] {
 	let entries: Dirent[];
@@ -369,7 +404,7 @@ function scanFsRoot(
 				{ cause },
 			);
 		}
-		const skill = skillFromFile(text, join(root, entry.name), file);
+		const skill = skillFromFile(text, join(root, entry.name), file, rootLabel);
 		if (skill === undefined) continue;
 		if (skill.disableModelInvocation && opts?.includeHidden !== true) {
 			console.warn(
@@ -408,12 +443,12 @@ export async function discoverSkills(
 	env: ExecutionEnv | undefined,
 	context: Context,
 	opts: SkillsOptions,
-	options?: { includeHidden?: boolean },
+	options?: { includeHidden?: boolean; owner?: string },
 ): Promise<WorkspaceSkill[]> {
-	const byName = new Map<string, { skill: WorkspaceSkill; root: (typeof ROOT_PRECEDENCE)[number]; extension?: string }>();
+	const byName = new Map<string, { skill: WorkspaceSkill; root: RootLabel; extension?: string }>();
 	const merge = (
 		skills: readonly WorkspaceSkill[],
-		root: (typeof ROOT_PRECEDENCE)[number],
+		root: RootLabel,
 		extension?: string,
 	): void => {
 		for (const skill of skills) {
@@ -441,9 +476,15 @@ export async function discoverSkills(
 	if (env !== undefined) {
 		merge(await scanSkills(env, context, options), "workspace");
 	}
-	merge(scanFsRoot(opts.userDir, options), "user dir");
+	// The learned root (curator P2): the owner's own skills, between the
+	// workspace and the deployment's user dir. Ownerless → none.
+	const learnedRoot = opts.learnedRoot?.(options?.owner);
+	if (learnedRoot !== undefined) {
+		merge(scanFsRoot(learnedRoot, "learned", options), "learned");
+	}
+	merge(scanFsRoot(opts.userDir, "user dir", options), "user dir");
 	for (const root of opts.packageRoots()) {
-		merge(scanFsRoot(root.dir, options), "package", root.extension);
+		merge(scanFsRoot(root.dir, "package", options), "package", root.extension);
 	}
 	return [...byName.values()].map((entry) => entry.skill).sort(bySkillName);
 }
@@ -459,8 +500,12 @@ export async function listSkills(
 	env: ExecutionEnv | undefined,
 	context: Context,
 	opts: SkillsOptions,
+	options?: { owner?: string },
 ): Promise<WorkspaceSkill[]> {
-	return discoverSkills(env, context, opts, { includeHidden: true });
+	return discoverSkills(env, context, opts, {
+		includeHidden: true,
+		...(options?.owner === undefined ? {} : { owner: options.owner }),
+	});
 }
 
 /**
@@ -503,13 +548,14 @@ export function renderSkillList(
 	return `(skill list truncated: ${lines.length} more not shown — call load_skill by name)`;
 }
 
-/** Section render: discover all three roots, list the winning skills. */
+/** Section render: discover all roots, list the winning skills. */
 async function renderSkills(
 	input: PromptInput,
 	context: Context,
 	opts: SkillsOptions,
 ): Promise<string | undefined> {
-	const skills = await discoverSkills(input.env, context, opts);
+	const owner = await conversationOwner(input.read, input.conversationId, context);
+	const skills = await discoverSkills(input.env, context, opts, { owner });
 	return renderSkillList(skills, opts.sectionMaxBytes());
 }
 
@@ -534,7 +580,8 @@ function buildLoadSkillTool(opts: SkillsOptions) {
 			api: ToolExecutionApi,
 			context: Context,
 		): Promise<ToolExecutionResult> {
-			const skills = await discoverSkills(api.env, context, opts);
+			const owner = await conversationOwner(api, api.conversationId, context);
+			const skills = await discoverSkills(api.env, context, opts, { owner });
 			const skill = skills.find((candidate) => candidate.name === args.name);
 			if (skill === undefined) {
 				if (skills.length === 0) {

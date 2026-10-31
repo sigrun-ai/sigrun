@@ -120,8 +120,10 @@ describe("buildUserPolicy", () => {
 				...nodeRuntimePaths(),
 				...moduleTrees,
 				defaultPackageConfig(coreRoot),
+				// Curator A3: the owner's learned skills root is read-only.
+				managed.userAreas("alice") + "/skills",
 			].filter((path, index, paths) => paths.indexOf(path) === index).sort(),
-		);
+			);
 		expect(result.policy.ro).toEqual([...result.policy.ro].sort());
 		for (const forbidden of [
 			"/dev/shm",
@@ -637,5 +639,31 @@ describe("nodeRuntimePaths", () => {
 		const canonicalLibrary = await realpath(library);
 		expect(paths).toEqual([dir, canonicalLibrary].sort());
 		expect(paths.filter((path) => path === canonicalLibrary)).toHaveLength(1);
+	});
+});
+
+describe("learned skills root grants (curator A3)", () => {
+	test("the owner's learned dir is created and granted read-only, never rw", async () => {
+		const { managed, moduleTrees } = await fixture();
+		const learned = managed.userAreas("alice") + "/skills";
+		expect(existsSync(learned)).toBe(false);
+		const result = policyFor(record("alice"), { managed, moduleTrees });
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		// Created if absent (policy build succeeds for a user with no learned dir yet).
+		expect(existsSync(learned)).toBe(true);
+		expect(result.policy.ro).toContain(await realpath(learned));
+		expect(result.policy.rw).not.toContain(await realpath(learned));
+	});
+
+	test("another user's learned root is never granted", async () => {
+		const { managed, moduleTrees } = await fixture();
+		const aliceLearned = managed.userAreas("alice") + "/skills";
+		await mkdir(aliceLearned, { recursive: true });
+		const result = policyFor(record("bob"), { managed, moduleTrees });
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.policy.ro).not.toContain(await realpath(aliceLearned));
+		expect(result.policy.rw).not.toContain(await realpath(aliceLearned));
 	});
 });

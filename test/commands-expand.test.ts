@@ -153,7 +153,8 @@ const GREET_SKILL = {
 	body: "# Greeting\n\nSay hello to the user.\n",
 	dir: "skills/greet",
 	disableModelInvocation: false,
-};
+	root: "workspace",
+} as const;
 
 const GREET_BLOCK =
 	'<skill name="greet" location="skills/greet/SKILL.md">\n' +

@@ -472,11 +472,20 @@ export async function submitOp(
 	} else {
 		try {
 			const env = await envThunk();
+			// Curator A3: the learned root resolves through the conversation
+			// OWNER (SessionMetaDoc), not the submitting user — a shared-write
+			// submitter expands against the owner's learned skills.
+			const meta = await opened.harness.snapshot(
+				SessionMetaDoc,
+				conversation.id,
+				BACKGROUND_CONTEXT,
+			);
 			expansion = await expandInput(
 				parsed.parts,
 				opened.commandExpansion,
 				env,
 				BACKGROUND_CONTEXT,
+				meta?.owner,
 			);
 		} catch (error) {
 			if (error instanceof CommandUsageError) {

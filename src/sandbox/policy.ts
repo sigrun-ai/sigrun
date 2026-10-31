@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { agentEnv } from "../harness/agent-env.js";
 import type { DirectoryUser } from "../harness/identity/users.js";
+import { learnedSkillsDir } from "../curation/paths.js";
 import type { ManagedPaths } from "./grants.js";
 import { revalidate, validateGrantPath } from "./grants.js";
 
@@ -251,6 +252,16 @@ export function buildUserPolicy(
 		if (ctx.osAccount !== undefined && path === tmp) continue;
 		mkdirSync(path, { recursive: true, mode: 0o700 });
 	}
+	// Curator A3: the owner's learned skills root exists and is granted
+	// read-only below. Created here (the designed empty case is an absent
+	// dir), validated like every other per-user path before entering
+	// policy — never another user's root.
+	const learned = learnedSkillsDir(userArea);
+	mkdirSync(learned, { recursive: true, mode: 0o700 });
+	const learnedValidation = validateUserPath(learned, record, ctx.managed);
+	if (!learnedValidation.ok) {
+		return invalidReason(learned, learnedValidation.reason);
+	}
 	const workspaceValidation = validateUserPath(requestedWorkspace, record, ctx.managed);
 	if (!workspaceValidation.ok) {
 		return invalidReason(requestedWorkspace, workspaceValidation.reason);
@@ -319,6 +330,9 @@ export function buildUserPolicy(
 		...moduleTrees.paths,
 		defaultPackageConfig(ctx.managed.coreRoot),
 		...grants.flatMap((grant) => (grant.access === "ro" ? [grant.path] : [])),
+		// Curator A3: read access to the owner's own learned skills (support
+		// files are read with ordinary file tools); writes go through P3.
+		learnedValidation.realpath,
 	]);
 	const env = agentEnv();
 	delete env.SSH_AUTH_SOCK;

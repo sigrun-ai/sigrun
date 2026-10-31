@@ -43,6 +43,7 @@ import {
 	SKILLS_SECTION_KEY,
 	SKILLS_SECTION_LIMIT_BYTES,
 	createSkillsExtension,
+	listSkills,
 	type SkillsOptions,
 } from "../src/skills/index.js";
 
@@ -63,6 +64,9 @@ function makeSkills(overrides: Partial<SkillsOptions> = {}): SkillsExtension {
 			((): readonly { extension: string; dir: string }[] => []),
 		sectionMaxBytes:
 			overrides.sectionMaxBytes ?? (() => SKILLS_SECTION_LIMIT_BYTES),
+		...(overrides.learnedRoot === undefined
+			? {}
+			: { learnedRoot: overrides.learnedRoot }),
 	});
 }
 
@@ -108,9 +112,11 @@ function loadSkillTool(ext: SkillsExtension = defaultExt) {
 
 /**
  * A fake `ToolExecutionApi` carrying exactly what `load_skill` reads: the
- * env plus the retained-output buffer.
+ * env, the retained-output buffer, and (curator A3) a DocumentReader
+ * snapshot stub that resolves the conversation owner for the learned
+ * root. `owner` defaults to undefined (ownerless → no learned root).
  */
-function toolApi(env: ExecutionEnv | undefined) {
+function toolApi(env: ExecutionEnv | undefined, owner?: string) {
 	const chunks: string[] = [];
 	const api = {
 		env,
@@ -119,6 +125,7 @@ function toolApi(env: ExecutionEnv | undefined) {
 				typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
 			);
 		},
+		snapshot: async () => (owner === undefined ? undefined : { owner }),
 	} as unknown as ToolExecutionApi;
 	return { api, chunks };
 }
@@ -879,6 +886,134 @@ test("the truncation notice may shrink the section to the notice alone", async (
 		expect(text).toContain("truncated");
 		expect(text).toContain("load_skill");
 		expect(byteLength(text ?? "")).toBeLessThanOrEqual(200);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Curator A3 (P2 part 1): the learned root — a fourth discovery root,
+// workspace > learned > user dir > package, resolved per conversation owner.
+// ---------------------------------------------------------------------------
+
+test("precedence: workspace > learned > user dir > package; each removal reveals the next", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-learned-"));
+	const workspacePath = join(dir, "workspace");
+	const learnedDir = join(dir, "learned-skills");
+	const userDir = join(dir, "user-skills");
+	const pkgDir = join(dir, "pkg", "skills");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		await writeSkill(
+			workspacePath,
+			"deploy",
+			"name: shared\ndescription: The workspace copy.",
+			"# Workspace body\n",
+		);
+		await writeRootSkill(
+			learnedDir,
+			"deploy",
+			"shared",
+			"The learned copy.",
+			"# Learned body\n",
+		);
+		await writeRootSkill(
+			userDir,
+			"deploy",
+			"shared",
+			"The user copy.",
+			"# User body\n",
+		);
+		await writeRootSkill(
+			pkgDir,
+			"deploy",
+			"shared",
+			"The package copy.",
+			"# Package body\n",
+		);
+		const ext = makeSkills({
+			userDir,
+			learnedRoot: (owner) => (owner === "alice" ? learnedDir : undefined),
+			packageRoots: () => [{ extension: "fixture-pkg", dir: pkgDir }],
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const body = async () => {
+			const { api, chunks } = toolApi(await workspaceEnv(workspacePath), "alice");
+			const result = await loadSkillTool(ext).execute(
+				{ name: "shared" },
+				api,
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.isError).toBeUndefined();
+			return chunks.join("");
+		};
+		try {
+			expect(await body()).toBe("# Workspace body\n");
+			// Remove the workspace copy: the learned root wins next.
+			await rm(join(workspacePath, "skills", "deploy"), {
+				recursive: true,
+				force: true,
+			});
+			expect(await body()).toBe("# Learned body\n");
+			// Then the user dir, then the package.
+			await rm(join(learnedDir, "deploy"), { recursive: true, force: true });
+			expect(await body()).toBe("# User body\n");
+			await rm(join(userDir, "deploy"), { recursive: true, force: true });
+			expect(await body()).toBe("# Package body\n");
+		} finally {
+			warn.mockRestore();
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a learned skill lists for its owner only; ownerless discovery has no learned root", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-skills-learned-owner-"));
+	const workspacePath = join(dir, "workspace");
+	const learnedDir = join(dir, "learned-skills");
+	try {
+		await mkdir(workspacePath, { recursive: true });
+		await writeRootSkill(
+			learnedDir,
+			"acme-deploy",
+			"acme-deploy",
+			"The acme deploy skill.",
+			"# Learned body\n",
+		);
+		const ext = makeSkills({
+			learnedRoot: (owner) => (owner === "alice" ? learnedDir : undefined),
+		});
+		const skills = await listSkills(
+			await workspaceEnv(workspacePath),
+			BACKGROUND_CONTEXT,
+			{
+				userDir: join(dir, "absent-user-dir"),
+				learnedRoot: (owner) => (owner === "alice" ? learnedDir : undefined),
+				packageRoots: () => [],
+				sectionMaxBytes: () => SKILLS_SECTION_LIMIT_BYTES,
+			},
+			{ owner: "alice" },
+		);
+		expect(skills.map((skill) => skill.name)).toContain("acme-deploy");
+		// The root label rides on the discovered skill.
+		expect(skills.find((skill) => skill.name === "acme-deploy")?.root).toBe(
+			"learned",
+		);
+		const ownerless = await listSkills(
+			await workspaceEnv(workspacePath),
+			BACKGROUND_CONTEXT,
+			{
+				userDir: join(dir, "absent-user-dir"),
+				learnedRoot: (owner) => (owner === "alice" ? learnedDir : undefined),
+				packageRoots: () => [],
+				sectionMaxBytes: () => SKILLS_SECTION_LIMIT_BYTES,
+			},
+			{ owner: undefined },
+		);
+		expect(ownerless.map((skill) => skill.name)).not.toContain("acme-deploy");
+		// The extension itself still builds with the learned root wired.
+		expect(ext.sections?.length).toBe(1);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
