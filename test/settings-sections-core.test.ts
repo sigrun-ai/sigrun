@@ -144,6 +144,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			"providers",
 			"extensions",
 			"accounts",
+			"tokens",
 		]);
 		expect(CORE_SETTINGS_SECTIONS.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
 	});
@@ -197,6 +198,13 @@ describe("core settings sections (U4 Task 4)", () => {
 		const accounts = CORE_SETTINGS_SECTIONS.find((section) => section.id === "accounts");
 		expect(accounts?.title).toBe("Account links");
 		expect(accounts?.admin).toBe(false);
+		// The tokens section (Task 5): immediately after accounts, per-user
+		// (not admin-gated), and a cove (empty form — the channels render
+		// their native component over the entry).
+		expect(CORE_SECTION_IDS.indexOf("tokens")).toBe(CORE_SECTION_IDS.indexOf("accounts") + 1);
+		const tokens = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tokens");
+		expect(tokens?.title).toBe("API tokens");
+		expect(tokens?.admin).toBe(false);
 
 		// The searchable keys render somewhere (the index's core-key
 		// rows).

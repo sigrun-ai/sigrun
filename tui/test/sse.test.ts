@@ -509,6 +509,43 @@ describe("watchConversation", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	test("a 401 on (re)connect surfaces the auth-failure text ONCE and stops retrying (Task 5)", async () => {
+		vi.useFakeTimers();
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5); // zero jitter
+		try {
+			const errors: string[] = [];
+			let calls = 0;
+			// Every connect answers 401 — the revoked-token posture.
+			const denied = vi.fn(async (): Promise<Response> => {
+				calls += 1;
+				return new Response(JSON.stringify({ error: "unauthenticated" }), {
+					status: 401,
+					headers: { "content-type": "application/json" },
+				});
+			});
+			const unwatch = watchConversation(
+				1,
+				{ onError: (message) => errors.push(message) },
+				{
+					baseUrl: "http://127.0.0.1:1",
+					reconnectBaseMs: 10,
+					fetch: denied as unknown as typeof globalThis.fetch,
+				},
+			);
+			await vi.advanceTimersByTimeAsync(1_000_000);
+			// ONE connect, ONE notice: the auth-failure string, never a
+			// silent retry ladder against a credential that cannot recover.
+			expect(calls).toBe(1);
+			expect(errors).toEqual([
+				"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
+			]);
+			unwatch();
+		} finally {
+			randomSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("authorization header (Task 7: the token seam)", () => {

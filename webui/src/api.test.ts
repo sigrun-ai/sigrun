@@ -211,6 +211,50 @@ describe("createClient", () => {
 			});
 		});
 
+		test("the token management surface (Task 5): list/create/revoke over the /v1/auth/tokens routes", async () => {
+			const record = { id: "t1", name: "laptop", user: "alice", createdAt: 123 };
+			// listTokens: GET /v1/auth/tokens, {tokens}
+			{
+				const { calls, fetchImpl } = stubFetch({ tokens: [record] });
+				const client = createClient({ fetch: fetchImpl });
+				const tokens = await client.listTokens();
+				expect(tokens).toEqual([record]);
+				expect(calls[0]).toEqual({
+					input: "/v1/auth/tokens",
+					method: "GET",
+					accept: "application/json",
+				});
+			}
+			// createToken: POST {name}, 201 TokenCreateResponse
+			{
+				const body = { token: "sgr_once", record };
+				const { calls, fetchImpl } = stubFetch(body, { status: 201 });
+				const client = createClient({ fetch: fetchImpl });
+				const minted = await client.createToken("laptop");
+				expect(minted).toEqual(body);
+				expect(calls[0]).toEqual({
+					input: "/v1/auth/tokens",
+					method: "POST",
+					accept: "application/json",
+					contentType: "application/json",
+					body: JSON.stringify({ name: "laptop" }),
+				});
+			}
+			// revokeToken: DELETE /v1/auth/tokens/:id, 204 (no body parse)
+			{
+				const { calls, fetchImpl } = stubFetch(undefined, { status: 204 });
+				const client = createClient({ fetch: fetchImpl });
+				await expect(client.revokeToken("t1")).resolves.toBeUndefined();
+				expect(calls[0]).toEqual({
+					input: "/v1/auth/tokens/t1",
+					method: "DELETE",
+					accept: "application/json",
+					contentType: "application/json",
+				body: JSON.stringify({}),
+				});
+			}
+		});
+
 		test("patchConversationMeta carries the sharing patch (scope shapes + null clear)", async () => {
 			const { calls, fetchImpl } = stubFetch({});
 			const client = createClient({ fetch: fetchImpl });

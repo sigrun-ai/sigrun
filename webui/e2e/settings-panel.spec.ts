@@ -248,3 +248,76 @@ test("the settings callout: the naming-model save needs no restart; the port sav
 	).toHaveCount(0);
 	await page.close();
 });
+
+test("create a token in Settings → API tokens and authenticate with it", async ({
+	page,
+}) => {
+	// Token-method boot (claimed): the browser needs a session to reach
+	// the settings page, so a first token (minted server-side through the
+	// harness's identity store) logs it in through the real login route.
+	const authed = await bootE2EServer({ auth: { claimed: true } });
+	try {
+		const login = await authed.opened.identity.tokens.create(
+			"e2e-login",
+			"tester",
+		);
+		await page.goto(authed.url);
+		const response = await page.evaluate<
+			number,
+			{ token: string }
+		>(async ({ token }) => {
+			const res = await fetch("/v1/auth/login", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ token }),
+			});
+			return res.status;
+		}, { token: login.token });
+		expect(response).toBe(200);
+
+		// The settings page over the cookie session; the tokens section.
+		await page.goto(authed.url);
+		await page.getByRole("button", { name: "settings" }).click();
+		const settings = page.locator(".settings-page");
+		await expect(settings).toBeVisible();
+		await settings.getByRole("button", { name: "API tokens" }).click();
+
+		// Mint through the section's create form (the real POST route).
+		const name = "e2e-cli";
+		await settings.locator(".token-name-input").fill(name);
+		await settings.getByRole("button", { name: "Create token" }).click();
+
+		// The once-only display: the secret + the CLI snippet against the
+		// page's own origin.
+		const revealed = (await settings
+			.locator(".token-secret")
+			.textContent()) as string;
+		expect(revealed).toMatch(/^sgr_/);
+		await expect(settings.locator(".token-snippet")).toContainText(
+			`SIGRUN_TOKEN=${revealed} sigrun attach --server ${page.url().replace(/\/$/, "")}`,
+		);
+
+		// THE authentication leg: the freshly minted token reaches
+		// whoami from the page as the user.
+		const whoami = await page.evaluate<
+			{ user?: string; admin?: boolean },
+			{ token: string }
+		>(async ({ token }) => {
+			const res = await fetch("/v1/auth/whoami", {
+				headers: { authorization: `Bearer ${token}` },
+			});
+			return (await res.json()) as { user?: string; admin?: boolean };
+		}, { token: revealed });
+		expect(whoami.user).toBe("tester");
+
+		// Dismiss: the secret leaves the DOM (once-only).
+		await settings.getByRole("button", { name: "Done" }).click();
+		await expect(settings.locator(".token-secret")).toHaveCount(0);
+		expect(await settings.textContent()).not.toContain(revealed);
+
+		// The new row lists by name.
+		await expect(settings).toContainText(name);
+	} finally {
+		await authed.cleanup();
+	}
+});

@@ -104,18 +104,23 @@ describe("tuiStartupMessage (Task 7: the standalone 403 setup_required exit)", (
 	test("other api errors map to undefined (the generic path prints them)", () => {
 		expect(
 			tuiStartupMessage(
-				new SigrunApiError("GET", "/v1/conversations", 401, {
-					error: "unauthenticated",
-				}),
-			),
-		).toBeUndefined();
-		expect(
-			tuiStartupMessage(
 				new SigrunApiError("GET", "/v1/conversations", 403, {
 					error: "origin_mismatch",
 				}),
 			),
 		).toBeUndefined();
+	});
+
+	test("a 401 api error maps to the auth-failure hint (Task 5)", () => {
+		expect(
+			tuiStartupMessage(
+				new SigrunApiError("GET", "/v1/auth/whoami", 401, {
+					error: "unauthenticated",
+				}),
+			),
+		).toBe(
+			"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
+		);
 	});
 
 	test("a non-api error maps to undefined", () => {
