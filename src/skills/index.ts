@@ -657,11 +657,11 @@ export function createSkillsExtension(opts: SkillsOptions): Extension {
 		tools: [
 			buildLoadSkillTool(opts),
 			// Curator A6 (P3): the skill_manage tool installs once the options
-		// carry the curation wiring (a skill-store seam) — the read actions
-		// for every owned conversation, the mutating actions for curator
-		// runs. The overlay actions resolve the CURRENT upstream through
-		// A5's machinery over the same discovery roots (the final review
-		// fix wave: hashing the learned root stored `""` for every overlay).
+			// carry the curation wiring (a skill-store seam) — the read actions
+			// for every owned conversation, the mutating actions for curator
+			// runs. The overlay actions resolve the CURRENT upstream through
+			// A5's machinery over the same discovery roots (the final review
+			// fix wave: hashing the learned root stored `""` for every overlay).
 			...(opts.skillStore === undefined
 				? []
 				: [
@@ -673,11 +673,11 @@ export function createSkillsExtension(opts: SkillsOptions): Extension {
 									? undefined
 									: { store, overlays };
 							},
-						upstreamOf: (key, env, ctx) =>
-							resolveUpstream(key, env, ctx, {
-								userDir: opts.userDir,
-								packageRoots: opts.packageRoots,
-							}),
+							upstreamOf: (key, env, ctx) =>
+								resolveUpstream(key, env, ctx, {
+									userDir: opts.userDir,
+									packageRoots: opts.packageRoots,
+								}),
 							workspaceOf: (env) => opts.workspaceRoot?.() ?? env?.cwd,
 						}),
 					]),
