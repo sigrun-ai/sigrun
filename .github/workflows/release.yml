@@ -305,6 +305,17 @@ jobs:
               esac
             fi
           fi
+      # The leaves publish from a FRESH checkout: nothing is built and
+      # no node_modules exist. `prepublishOnly` (added for the 0.4.2
+      # dist fix) runs `npm run build` in the package dir, which needs
+      # `tsc` — a workspace `npm ci` at the repo root hoists typescript
+      # for both leaf workspaces (shared/tui declare it as devDeps and
+      # have no lockfiles of their own). One install serves both leaves
+      # AND core's later registry-mode dance reuses the same tree.
+      - name: Install the workspace (leaf prepublishOnly needs tsc)
+        shell: bash
+        working-directory: sigrun
+        run: npm ci
       - name: "Publish @sigrun/shared (skip-if-live)"
         shell: bash
         working-directory: sigrun/shared
@@ -450,11 +461,13 @@ jobs:
         with:
           ref: "refs/tags/${{ needs.guard.outputs.tag }}"
           path: sigrun
-      - name: Smoke the registry install
+      - name: Smoke the registry install (global + project-install shapes)
         shell: bash
         working-directory: sigrun
         run: |
           set -euo pipefail
+          # project-install shape included: the smoke proves the HOISTED
+          # @sigrun/shared copy too (global-only checks passed 0.2.0–0.4.1).
           version="$(node -p 'require("./package.json").version')"
           sh scripts/smoke-registry.sh "${version}"
 
