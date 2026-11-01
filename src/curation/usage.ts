@@ -49,6 +49,14 @@ export interface UsageCountersOptions {
 	readonly user: string;
 	/** The clock (tests pin/advance the instant; default is the real one). */
 	readonly now?: () => Date;
+	/**
+	 * The live directory check (A4's gate, deletion's fail-closed claim):
+	 * when it reports the user removed, `flush` silently DROPS the pending
+	 * bumps instead of writing — a removed user's curation directory must
+	 * never be recreated by an in-flight counting seam's late flush.
+	 * Telemetry never throws into the void-and-forget counting seams.
+	 */
+	readonly userExists?: () => boolean;
 }
 
 /** The flush interval: writes at most once per 10 s per user. */
@@ -107,6 +115,21 @@ export class UsageCounters {
 			this.lastFlush !== undefined &&
 			at - this.lastFlush < FLUSH_INTERVAL_MS
 		) {
+			return;
+		}
+		// Fail closed for a removed user (deletion's Review Focus): the
+		// cached counters stay resolvable after `removeUserCuration`, so an
+		// in-flight seam's late flush would recreate the deleted directory
+		// as orphan state. Drop SILENTLY — telemetry must never throw into
+		// the void-and-forget counting seams — including the
+		// deadline-forced path. The gate sits AFTER the in-memory throttle
+		// (it reads the live directory synchronously, and the seams call
+		// flush opportunistically on every counted read — the cheap check
+		// must come first) but BEFORE any disk op, so nothing lands for a
+		// user who is gone. A dropped flush neither clears `pending` nor
+		// arms `lastFlush`: a later call re-checks the gate, so if the user
+		// somehow exists again the counting simply resumes.
+		if (this.options.userExists !== undefined && !this.options.userExists()) {
 			return;
 		}
 		const disk = await this.readDisk();

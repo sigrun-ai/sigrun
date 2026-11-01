@@ -15,7 +15,7 @@
  * (the curation-overlays unit-driven shapes).
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -132,6 +132,39 @@ describe("UsageCounters", () => {
 			await readFile(join(curationDir(userArea), "usage.json"), "utf8"),
 		) as { [skill: string]: { load?: number } };
 		expect(file["acme-deploy"]?.load).toBe(2);
+	});
+
+	test("userExists false -> bump and force-flush write nothing (no directory is created)", async () => {
+		const { userArea } = await setup();
+		let exists = true;
+		const counters = new UsageCounters({
+			userArea,
+			user: "alice",
+			now: () => new Date(1_000_000),
+			userExists: () => exists,
+		});
+		// An in-flight counting seam after the user's deletion (deletion
+		// removed the curation directory; the directory gate flipped): the
+		// cached counters still resolve and bump still bookkeeps in memory,
+		// but the flush must NOT recreate the deleted directory — deletion's
+		// fail-closed claim, the A4 store idiom, but SILENT (the counting
+		// seams are void-and-forget; telemetry must never throw).
+		await rm(curationDir(userArea), { recursive: true, force: true });
+		exists = false;
+		counters.bump("acme-deploy", "load");
+		await expect(counters.flush()).resolves.toBeUndefined();
+		// A counters free of the 10s throttle (the deadline-forced write
+		// shape, driven here as an unthrottled fresh instance) drops too.
+		const late = new UsageCounters({
+			userArea,
+			user: "alice",
+			now: () => new Date(1_000_000 + 60_000),
+			userExists: () => false,
+		});
+		late.bump("acme-deploy", "expand");
+		await expect(late.flush()).resolves.toBeUndefined();
+		// Nothing landed: no directory, no usage.json.
+		await expect(stat(curationDir(userArea))).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });
 

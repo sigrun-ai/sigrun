@@ -1050,7 +1050,16 @@ export async function openHarness(
 		}
 		let usage = usageCounters.get(user);
 		if (usage === undefined) {
-			usage = new UsageCounters({ userArea, user, now: () => clockNow() });
+			usage = new UsageCounters({
+				userArea,
+				user,
+				now: () => clockNow(),
+				// The A4 gate, but silent: the cached counters outlive the user
+				// (cache-first resolution), and telemetry is void-and-forget —
+				// a removed user's flush drops instead of recreating the
+				// deleted curation directory (deletion's fail-closed claim).
+				userExists: () => identity.users.get(user) !== undefined,
+			});
 			usageCounters.set(user, usage);
 		}
 		return { store, overlays, usage };
