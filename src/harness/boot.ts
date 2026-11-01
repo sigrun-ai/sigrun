@@ -107,6 +107,7 @@ import { learnedSkillsDir } from "../curation/paths.js";
 import { SkillStore } from "../curation/store.js";
 import { OverlayStore } from "../curation/overlays.js";
 import { UsageCounters } from "../curation/usage.js";
+import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
 import {
 	probeIsolation,
 	runHelperProbe,
@@ -447,6 +448,14 @@ export interface OpenedHarness {
 	 * section renders per request).
 	 */
 	readonly skillRoots: readonly { extension: string; dir: string }[];
+	/**
+	 * The curation-target registry (curator P7): every loaded
+	 * extension's `curationTargets` declaration, qualified
+	 * (`<slug>:<name>`) and attributed. `isCurationTool` is the A8
+	 * wrapping feed (`skill_manage` + every listed target tool); an
+	 * empty registry is the no-declarer deploy (core ships none).
+	 */
+	readonly curation: CurationRegistry;
 	/**
 	 * The command-expansion handle (Task 2c): the skills + template root
 	 * sets and the reserved command-name set, all read LIVE. The submit
@@ -1171,6 +1180,7 @@ export async function openHarness(
 		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
+		curationBindings,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -1229,6 +1239,11 @@ export async function openHarness(
 		},
 	);
 	perUserSlugs.push(...loadedPerUserSlugs);
+	// The curation-target registry (curator P7): the loader's validated,
+	// slug-attributed bindings folded into the ONE registry — the A8
+	// wrapping feed (isCurationTool) and the A9 host.curation surface
+	// read it. An empty fold is the no-declarer deploy.
+	const curation = buildCurationRegistry(curationBindings);
 	for (const binding of userServiceBindings) {
 		userServices.register(binding.extension, binding.services, binding.packageDir);
 	}
@@ -1951,6 +1966,7 @@ export async function openHarness(
 		channelBindings,
 		gatewayEngine,
 		skillRoots: extensionSkillRoots,
+		curation,
 		commandExpansion,
 		eventBus,
 		events,

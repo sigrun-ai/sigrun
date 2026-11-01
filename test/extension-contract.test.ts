@@ -84,4 +84,34 @@ describe("@sigrun/sigrun/extension (the documented contract type)", () => {
 		build();
 		expect(() => typecheckConsumer()).not.toThrow();
 	}, 240_000);
+
+	test("the emitted d.ts declares the curation-target contract (curator P7)", () => {
+		const declarations = readFileSync(
+				join(REPO_ROOT, "dist", "extension.d.ts"),
+				"utf8",
+		);
+		// The P7 surface: the factory-result field plus the five type
+		// names an extension imports (the consumer fixture above exercises
+		// every one — this pin catches a rename reaching the reader).
+		for (const name of [
+			"curationTargets",
+			"CurationTarget",
+			"CurationRunResult",
+			"MaintenanceBudget",
+			"MaintenanceReport",
+			"CurationChangeDetails",
+			"CurationHint",
+		]) {
+			expect(
+				declarations.includes(name),
+				`dist/extension.d.ts is missing "${name}"`,
+			).toBe(true);
+		}
+		// `MaintenanceBudget.run` RETURNS the result (the plan's refinement
+		// of the spec's Promise<void>): a target asks for operations as text
+		// and applies them itself.
+		expect(declarations).toContain(
+			"run(input: string, tools: readonly string[]): Promise<CurationRunResult>",
+		);
+	});
 });

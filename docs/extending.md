@@ -251,6 +251,7 @@ what core does with each, and where its rules are documented:
 | `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
+| `curationTargets` | `readonly CurationTarget[]` | the curator's learnable targets: listed tools are wrapped for review hints, `undo` is required at load (a target without it quarantines) | this table |
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
