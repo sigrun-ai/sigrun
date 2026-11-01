@@ -283,9 +283,9 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		// while keeping 0.3.0). Each legitimately declares its line's
 		// acceptance; anything older — or a declaration from the WRONG
 		// line — is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-6]$/);
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-7]$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1)?)$/,
+			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2)?)?)$/,
 		);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not
