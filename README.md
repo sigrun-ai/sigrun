@@ -1,19 +1,19 @@
 # Sigrun
 
-Sigrun is a **durable, multi-user personal-assistant server** built on
-[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable).
-One agent loop serves every surface — a web UI, a terminal UI, an HTTP
-API, and (via the gateway extension) chat channels — over long-lived
-conversations stored in SQLite.
-An extension model installs extra tools, providers, prompt sections,
-memory systems, and login providers at boot.
+Sigrun is a **self-hosted, multi-user personal-assistant server**. Each
+user signs in to their own conversations, settings, credentials, and
+tools, and their agent runs in its own execution jail. One agent loop
+serves every surface — a web UI, a terminal UI, an HTTP API, scheduled
+jobs, and (via the gateway extension) chat-channel adapters. The core
+stays small: memory, model providers, tools, MCP support, and login are
+extensions installed at boot.
 
-**Why use it?** Conversations survive restarts and resume where they
-stopped; memory and integrations are extension-owned and individually
-replaceable; multi-user boundaries are explicit (real authentication plus
-a per-user execution jail); and it deploys as an npm package, a Docker
-compose reference, or a Helm chart. [`docs/why.md`](docs/why.md) is the
-longer rationale.
+**Why use it?** Several people can share one install without sharing an
+agent: real authentication, per-user extensions and secrets, and a
+per-user execution jail that fails closed. Memory and integrations are
+extension-owned and individually replaceable. Conversations survive
+restarts, and it deploys as an npm package, a Docker compose reference,
+or a Helm chart. [`docs/why.md`](docs/why.md) is the longer rationale.
 
 **Status:** 0.x — useful and exercised, but extension and settings
 contracts can still evolve between minor releases. See
@@ -24,12 +24,12 @@ posture, and [`CONTRIBUTING.md`](CONTRIBUTING.md) to build and test.
 [Install](#install) and [Quickstart](#quickstart) for the model/credential
 setup every install needs.
 
-- **Durable** — conversations, submissions, and schedules live in one
-  SQLite database (`SIGRUN_STORAGE_PATH`); a restart resumes where it
-  stopped.
-- **pi-durable core** — the harness primitives (conversations, inbox
-  steering/follow-up modes, retries, streaming, compaction) come from
-  pi-durable; sigrun is the deployable shell around them.
+- **Multi-user** — token, proxy, and OIDC/GitHub/Discord sign-in, with
+  invites after the first admin claims the install; per-user extension
+  settings, secrets, and services; and a Landlock execution jail per user.
+  A second user is refused when isolation is unavailable. See
+  [Authentication](#authentication) and
+  [Multi-user execution isolation](#multi-user-execution-isolation).
 - **Extensions** — separate npm packages loaded from `SIGRUN_EXTENSIONS` (or the settings file's
   top-level `extensions` list); a failing extension is quarantined and
   reported, never a boot abort.
@@ -42,6 +42,12 @@ setup every install needs.
   API the web UI consumes (feature parity by design): conversation
   sidebar, streaming conversation pane, fork, the interaction and
   ambient seams, slash commands. See [Launch modes](#launch-modes).
+- **Restart-safe** — conversations, submissions, and schedules live in one
+  SQLite database (`SIGRUN_STORAGE_PATH`), and a restart resumes where it
+  stopped. The harness primitives (conversations, inbox steering/follow-up
+  modes, retries, streaming, compaction) come from
+  [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable);
+  sigrun is the deployable shell around them.
 
 ## Install
 
