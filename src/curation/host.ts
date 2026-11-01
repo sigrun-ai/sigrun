@@ -224,7 +224,11 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 					if (entryId !== undefined && entry.id === entryId) continue;
 					count += 1;
 				}
-				if (page.next === undefined || scanned >= MODEL_CALLS_SCAN_LIMIT) {
+				if (
+					page.next === undefined ||
+					page.items.length === 0 ||
+					scanned >= MODEL_CALLS_SCAN_LIMIT
+				) {
 					break;
 				}
 				cursor = page.next;
