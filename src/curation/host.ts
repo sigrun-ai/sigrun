@@ -357,10 +357,13 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 			// The store undo: entries with a `before` version snapshot are
 			// the revertible ones; the store's own undo takes entry ids
 			// and restores the snapshots (the A4 machinery).
-			const revertible = entries.filter((entry) => entry.before !== undefined);
+			// Hand EVERY review feed entry to the store's undo: edit entries
+			// restore their before-snapshot, create entries (before ===
+			// undefined) archive the skill — the no-delete revert the A4
+			// store owns. The store itself ignores ids it cannot revert.
 			let reverted = 0;
-			if (revertible.length > 0) {
-				const undone = await store.undo(revertible.map((entry) => entry.id));
+			if (entries.length > 0) {
+				const undone = await store.undo(entries.map((entry) => entry.id));
 				reverted = undone.length;
 			}
 			// The target undos: every change the review's TARGET tools

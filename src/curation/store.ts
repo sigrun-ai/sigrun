@@ -310,9 +310,28 @@ export class SkillStore {
 				const previous = earliest.get(entry.skill);
 				if (previous === undefined || all.indexOf(entry) > all.indexOf(previous)) earliest.set(entry.skill, entry);
 			}
+			// The create-undo companion: an undone CREATE has no before
+			// snapshot (nothing existed) — reverting it means REMOVING the
+			// skill (archive, never hard delete; restorable from versions).
+			const createdOnly = all.filter(
+				(entry) => entryIds.includes(entry.id) && entry.before === undefined && entry.action === "create",
+			);
+			for (const entry of createdOnly) {
+				if (!earliest.has(entry.skill)) earliest.set(entry.skill, entry);
+			}
 			const result: FeedEntry[] = [];
 			const state = await readState(this.root);
 			for (const entry of earliest.values()) {
+				if (entry.before === undefined) {
+					// Undo of a create: archive the skill (the no-delete
+					// rule — `restore` brings it back from versions).
+					if (state.archived.includes(entry.skill)) continue;
+					const from = join(this.skills, entry.skill);
+					if (!(await exists(from))) continue;
+					const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, from, join(this.root, "archive", entry.skill));
+					result.push(next);
+					continue;
+				}
 				const current = join(state.archived.includes(entry.skill) ? this.archive : this.skills, entry.skill);
 				const previous = join(this.root, "versions", entry.skill, entry.before!);
 				if (!(await exists(previous)) || !(await exists(current))) continue;
@@ -373,10 +392,17 @@ export class SkillStore {
 			}
 			state.archived = state.archived.filter((item) => item !== name);
 		} else if (action === "undo") {
-			const staged = await this.stageVersion(restoreFrom!);
-			await rm(beforeRoot!, { recursive: true, force: true });
-			await mkdir(dirname(afterRoot!), { recursive: true });
-			await rename(staged, afterRoot!);
+			// A create-undo (no restoreFrom): the move alone archives the
+			// skill; an edit-undo stages the before-snapshot into place.
+			if (restoreFrom !== undefined) {
+				const staged = await this.stageVersion(restoreFrom);
+				await rm(beforeRoot!, { recursive: true, force: true });
+				await mkdir(dirname(afterRoot!), { recursive: true });
+				await rename(staged, afterRoot!);
+			} else {
+				await mkdir(dirname(afterRoot!), { recursive: true });
+				await rename(beforeRoot!, afterRoot!);
+			}
 			if (afterRoot!.startsWith(this.archive + "/")) state.archived = [...new Set([...state.archived, name])];
 			else state.archived = state.archived.filter((item) => item !== name);
 		}

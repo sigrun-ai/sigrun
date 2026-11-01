@@ -150,6 +150,28 @@ describe("SkillStore", () => {
 		await expect(store.view("acme-deploy")).rejects.toThrow();
 	});
 
+	test("undo of a create archives the skill (restorable)", async () => {
+		const { store } = await setup();
+		const created = await store.apply(
+			"acme-deploy",
+			{ kind: "create", content: content() },
+			{ actor: "curator", reviewId: "review-create-1" },
+		);
+		expect(created.before).toBeUndefined();
+		// Undoing the create: the skill leaves the learned root (archived,
+		// never deleted) and the undo entry lands in the feed.
+		const undone = await store.undo([created.id]);
+		expect(undone).toHaveLength(1);
+		expect(undone[0]?.action).toBe("undo");
+		const listed = await store.list();
+		expect(listed.find((row) => row.name === "acme-deploy")?.archived).toBe(true);
+		// And it is itself undoable: restore brings the skill back.
+		const redo = await store.undo([undone[0]!.id]);
+		expect(redo).toHaveLength(1);
+		const again = await store.list();
+		expect(again.find((row) => row.name === "acme-deploy")?.archived).toBe(false);
+	});
+
 	test("undo saves current first and is itself undoable", async () => {
 		const { store } = await setup();
 		await create(store);

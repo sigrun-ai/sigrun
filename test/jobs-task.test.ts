@@ -28,7 +28,8 @@
  * fires, cron meta, deliver targets, prompt expansion), unchanged.
  */
 
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm,
+	writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
@@ -149,6 +150,16 @@ async function bootRig(options?: {
 		SIGRUN_WORKSPACE_PATH: dir,
 	});
 	const clock = createFakeClock(options?.startNow ?? T0);
+	// The curator built-in is off for this suite: its runSettled machinery
+	// (async review enqueue) interacts with the rig's frozen fake clock so
+	// the bus's drain loop never reaches quiescence (ledger: curator
+	// drain-loop issue, filed for the whole-branch review). This suite
+	// tests the jobs core, not the curator.
+	await writeFile(
+		join(dir, "settings.json"),
+		JSON.stringify({ builtinExtensions: { curator: false } }),
+		"utf8",
+	);
 	const identity = await seededIdentity(dir);
 
 	const rig = {

@@ -298,6 +298,11 @@ export function createSeamHost(
 		await bind.harness();
 		return bridgePromise;
 	};
+	// The curation surface's settled bridge host (curator P6/A9): memoized
+	// HERE — in the host closure — so every `host.curation` getter call (a
+	// FRESH proxy per read) shares one settled reference. See the getter's
+	// own comment for the sync-member discipline this serves.
+	let curationHost: SeamHost["curation"] | undefined;
 
 	return {
 		get stores() {
@@ -629,9 +634,22 @@ export function createSeamHost(
 		// curation surface is a function, so a Proxy that forwards each
 		// property read (and call) to the RESOLVED bridge host implements
 		// the whole surface with the same wait semantics as the async
-		// delegations above.
+		// delegations above. Members that return SYNCHRONOUS store objects
+		// (`skills(user)`, `overlays(user)` — store handles whose own methods
+		// are async) must come back UNAWAITED: an `async` wrapper would
+		// return a Promise of the store, and the caller's sync `.list()` —
+		// the shape the view and the targets use — would read undefined
+		// (D1's e2e found the view rendering 500 on exactly this). The
+		// settled host is memoized in the HOST closure (not the getter —
+		// every `host.curation` read returns a FRESH proxy, and a per-proxy
+		// memo would reset on each read, putting the async forwarder back
+		// in front of sync members on the second read).
 		get curation(): SeamHost["curation"] {
-			const pending = hostBridge().then((bridge) => bridge.curation);
+			if (curationHost !== undefined) return curationHost;
+			const pending = hostBridge().then((bridge) => {
+				curationHost = bridge.curation;
+				return bridge.curation;
+			});
 			// SAFETY: the Proxy target satisfies the structural member shapes
 			// because every forwarded call is an `apply` trap on the real host's
 			// own member; the cast only bridges the contract's named members.
@@ -639,26 +657,47 @@ export function createSeamHost(
 				{} as unknown as SeamHost["curation"],
 				{
 					get(_target, property) {
-					return async (...args: readonly unknown[]) => {
-						const host = await pending;
-						// SAFETY: the property is one of the contract's own function
-					// members (the surface has no data members); the bound call is
-					// the real host's, typed at the call site.
-						const member = (host as unknown as Record<string, unknown>)[
-							property as string
-						];
-						if (typeof member !== "function") {
-							throw new Error(
-								`curation: member ${String(property)} is not callable`,
+						// The settled-bridge fast path: the member itself, bound — a
+						// synchronous member (`skills`) returns its store synchronously,
+						// an async one keeps returning its promise. The property read is
+						// STILL a function either way (the surface has no data members),
+						// so callers observe the contract shape unchanged.
+						if (curationHost !== undefined) {
+							const member = (curationHost as unknown as Record<string, unknown>)[
+								property as string
+							];
+							if (typeof member !== "function") {
+									throw new Error(
+												`curation: member ${String(property)} is not callable`,
+								);
+							}
+							return (member as (...call: readonly unknown[]) => unknown).bind(
+								curationHost,
 							);
 						}
-						return (member as (...call: readonly unknown[]) => unknown).apply(
-							host,
-							[...args],
-						);
-					};
+						// The pre-bind window: every member becomes an async forwarder
+						// (the factory-body discipline — the call WAITS for the bridge;
+						// a sync-returning member reached this way resolves to its store
+						// after the wait, which the await-ing caller observes identically).
+						return async (...args: readonly unknown[]) => {
+							const resolvedHost = await pending;
+							// SAFETY: the property is one of the contract's own function
+							// members (the surface has no data members); the bound call is
+								// the real host's, typed at the call site.
+							const member = (
+								resolvedHost as unknown as Record<string, unknown>
+							)[property as string];
+							if (typeof member !== "function") {
+									throw new Error(
+									`curation: member ${String(property)} is not callable`,
+								);
+							}
+							return (
+									member as (...call: readonly unknown[]) => unknown
+							).apply(resolvedHost, [...args]);
+						};
+					},
 				},
-			},
 			);
 		},
 		// Gateway C4b: straight delegation (the bridge owns both bodies).
