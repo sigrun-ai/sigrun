@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/shared",
-	"version": "0.4.1",
+	"version": "0.4.2",
 	"description": "sigrun shared leaf package \u2014 theme tokens, turn/conversation shaping, and the channel wire types (pure leaf, zero dependencies)",
 	"type": "module",
 	"exports": {
@@ -66,7 +66,8 @@
 		}
 	},
 	"scripts": {
-		"build": "tsc -p tsconfig.build.json"
+		"build": "tsc -p tsconfig.build.json",
+		"prepublishOnly": "npm run build"
 	},
 	"devDependencies": {
 		"typescript": "^7.0.2"

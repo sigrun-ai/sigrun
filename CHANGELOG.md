@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-31
+
+### Fixed
+- `@sigrun/shared` and `@sigrun/tui` tarballs ship their `dist/`
+  again (a missing `prepublishOnly` published four-file, dist-less
+  packages since 0.2.0 — project installs quarantined `ext-gateway` on
+  `shared/dist/live.js`).
+
 ## [0.4.1] - 2026-10-31
 
 ### Fixed

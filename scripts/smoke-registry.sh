@@ -153,4 +153,48 @@ accessSync(sandboxBin, constants.X_OK);
 assert.ok(require.resolve("@sigrun/tui"), "cannot resolve @sigrun/tui");
 console.log("registry install layout OK");
 '
+
+# PROJECT-INSTALL shape (the 0.4.2 dist fix's regression arm): a global
+# install nests everything under @sigrun/sigrun/node_modules so the
+# bundled @sigrun/shared copy satisfies the built-ins — but a PROJECT
+# install hoists @sigrun/shared from the REGISTRY, and a leaf tarball
+# without dist/ quarantines ext-gateway (shared/dist/live.js) there and
+# ONLY there. This is the shape that was broken 0.2.0–0.4.1 while every
+# global-shape check passed.
+proj="$(mktemp -d)"
+cd "$proj"
+npm init -y >/dev/null
+npm install "@sigrun/sigrun@${version}" >/dev/null 2>&1
+node -e '
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+// Walk up from the project install for the HOISTED shared (the copy
+// the built-ins resolve when it is not nested under core).
+const sharedDir = join(process.cwd(), "node_modules", "@sigrun", "shared");
+let entries;
+try {
+	entries = readdirSync(join(sharedDir, "dist"));
+} catch {
+	throw new Error(
+		"@sigrun/shared tarball has no dist/ — the published leaf cannot satisfy hoisted consumers (built-ins quarantine on shared/dist/live.js)",
+	);
+}
+if (!entries.some((name) => name === "live.js")) {
+	throw new Error("@sigrun/shared/dist exists but live.js is missing");
+}
+const tuiBin = join(process.cwd(), "node_modules", "@sigrun", "tui", "dist", "launch.js");
+let binOk;
+try {
+	readdirSync(join(process.cwd(), "node_modules", "@sigrun", "tui", "dist"));
+	binOk = true;
+} catch {
+	binOk = false;
+}
+if (!binOk) {
+	throw new Error("@sigrun/tui tarball has no dist/ — sigrun-tui bin does not exist in project installs");
+}
+console.log("project-install dist check OK (shared/dist + tui/dist present)");
+'
+echo "smoke-registry: project-install shape verified"
 EOS

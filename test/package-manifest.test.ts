@@ -41,6 +41,7 @@ interface MinimalManifest {
 	engines?: { node?: string };
 	publishConfig?: Record<string, unknown>;
 	files?: string[];
+	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
 	optionalDependencies?: Record<string, string>;
@@ -176,6 +177,12 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			directory: "shared",
 		});
 		expect(shared.dependencies).toBeUndefined();
+		// The dist fix (0.4.2): both published leaves carry a
+		// prepublishOnly build — without it, a bare `npm publish` from a
+		// fresh checkout ships a tarball with NO dist/ (shared 0.2.0–0.4.1
+		// and tui 0.2.0–0.4.1 are live on the registry with exactly that
+		// defect; core only survived via bundleDependencies).
+		expect(shared.scripts?.prepublishOnly).toBe("npm run build");
 	});
 
 	test("tui: published workspace package, exact shared pin", () => {
@@ -192,6 +199,10 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			url: "git+https://github.com/sigrun-ai/sigrun.git",
 			directory: "tui",
 		});
+		expect(tui.scripts?.prepublishOnly).toBe("npm run build");
+		// The tui's bin IS a dist artifact — a tarball without dist/ ships a
+		// binary that does not exist (npm i -g @sigrun/tui@0.4.1 materializes
+		// no `sigrun-tui`). The prepublishOnly above is what guarantees it.
 	});
 
 	test("sandbox platform packages: published, version-locked to core, bin-only tarballs", () => {

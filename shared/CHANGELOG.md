@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-31
+
+### Fixed
+- The published tarball carries `dist/` again (`prepublishOnly` builds
+  before `npm publish` — releases 0.2.0–0.4.1 shipped without it).
+
 ## [0.4.1] - 2026-10-31
 
 ### Changed
