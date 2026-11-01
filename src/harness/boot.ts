@@ -109,6 +109,11 @@ import { OverlayStore } from "../curation/overlays.js";
 import { UsageCounters } from "../curation/usage.js";
 import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
 import {
+	createCurationToolFeed,
+	wrapExtensionCurationTools,
+} from "../curation/wrap.js";
+import { createCurationGateExtension, CURATION_GATE_EXTENSION } from "../curation/gate.js";
+import {
 	probeIsolation,
 	runHelperProbe,
 	selfTestHelper,
@@ -1063,11 +1068,26 @@ export async function openHarness(
 		},
 	};
 	registry.install(contextFilesExtension);
+	// Curator A8 (P9): the wrap feed — the mutable set of curation tool
+	// names, seeded with the core set and grown by the loader as each
+	// extension's curationTargets validate. The skills extension's
+	// install below wraps through it (its OWN tools: `skill_manage`);
+	// the loader wraps every extension-declared target tool at its
+	// install. `isCurationTool` on the built registry (A7) stays the
+	// read-side API — the feed is only the write-side wrap oracle.
+	const curationFeed = createCurationToolFeed();
 	// Curator A6: the skills extension carries the curation wiring
 	// (skill_manage + usage counting), and the coding tools count
 	// learned-root reads — the same extension NAMES as before, so
-	// nothing downstream observes the swap.
-	registry.install(createSkillsExtension(curationSkillsOptions));
+	// nothing downstream observes the swap. A8: the install WRAPS the
+	// curation tools (skill_manage's registration carries the hint
+	// interception; load_skill and the section are untouched).
+	registry.install(
+		wrapExtensionCurationTools(
+			createSkillsExtension(curationSkillsOptions),
+			curationFeed,
+		),
+	);
 	registry.install(codingWithUsage);
 	registry.install(searchToolsExtension);
 	// The chat-blocks tools (UI-blocks U5 Task 1, spec §8.1): every agent
@@ -1200,6 +1220,9 @@ export async function openHarness(
 		registry,
 		{
 			packagesDir,
+			// Curator A8 (P9): the wrap feed — the loader grows it with each
+			// validated target tool and wraps those tools at their install.
+			curationFeed,
 			hostContextFactory: (extensionName, kinds, priorHost) => {
 				// Two-phase, revised for the provisional identity (provider
 				// plugins Task 9 P1): the loader's PRE-import call passes the
@@ -1401,6 +1424,11 @@ export async function openHarness(
 		name: "sigrun.jobs",
 		tasks: [createScheduleTask(jobRuntimeDeps)],
 	});
+	// Curator A8 (P6 gate): the hooks-only curator-run gate — installed
+	// in the registry but NEVER in the host default selection (the
+	// settings getter below filters it like a per-user entry): only A9's
+	// producer selects it, in the internal run conversations it creates.
+	registry.install(createCurationGateExtension());
 	// The host event hub (W3 Task 4, spec §7.4): ONE per opened harness.
 	// The event bus's commit-derived events subscribe below (after the bus
 	// opens); the provider refresh paths observe readiness here — each
@@ -1601,9 +1629,15 @@ export async function openHarness(
 				get extensions() {
 					// Per-user entries are core-computed from SessionMeta.owner,
 					// never part of a host default — including an operator-supplied
-					// caller list (controller ruling: filter BOTH sources).
+					// caller list (controller ruling: filter BOTH sources). The
+					// curator-run gate (A8) is filtered the same way: it is selected
+					// ONLY in the internal run conversations A9's producer creates.
 					const selected = callerSettings?.extensions ?? registry.snapshot().installed();
-					return selected.filter((entry) => !isUserEntryName(entry.name));
+					return selected.filter(
+						(entry) =>
+							!isUserEntryName(entry.name) &&
+							entry.name !== CURATION_GATE_EXTENSION,
+					);
 				},
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {

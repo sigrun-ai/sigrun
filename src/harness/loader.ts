@@ -128,6 +128,7 @@ import {
 	RESERVED_EXTENSION_SLUGS,
 } from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
+import { wrapExtensionCurationTools } from "../curation/wrap.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
@@ -2346,6 +2347,17 @@ export interface LoadExtensionsOptions {
 	 * shape; tests that never touch a packages dir).
 	 */
 	readonly packagesDir?: string;
+	/**
+	 * The A8 wrap feed (curator P9): the mutable set of curation tool
+	 * names boot threads in — seeded with the core set (`skill_manage`)
+	 * and grown HERE, as each extension's `curationTargets` validate.
+	 * Right before `registry.install`, every tool of the installing
+	 * extension whose name is in the feed is WRAPPED
+	 * (`wrapCurationTool`): the interception travels with the tool into
+	 * every conversation, whatever its selection. Absent = no wrapping
+	 * (the direct `loadExtensions` test seam).
+	 */
+	readonly curationFeed?: Set<string>;
 	/** Optional context: the gitDir for the sync step's logging. */
 	readonly gitDir?: string;
 	/** A load failure stops any services this extension had previously started. */
@@ -2873,7 +2885,26 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					gatewayEngine = { extension: slug, engine: resolved.gateway };
 				}
 				if (extension !== undefined) {
-					registry.install(extension);
+					// Curator A8 (P9): grow the wrap feed with this extension's
+					// just-validated target tools, then WRAP every curation-tool
+					// registration at the install — its own target tools, plus any
+					// feed name it registers (a non-core `skill_manage`). Growth
+					// lives HERE, after every quarantining check, so the feed
+					// never learns a tool whose extension failed the load. The
+					// bindings below keep pairing with the UNWRAPPED object: they
+					// carry identity, never tools, and the wrap changes only
+					// `execute`.
+					if (
+						options.curationFeed !== undefined &&
+						resolved.curationTargets !== undefined
+					) {
+						for (const target of resolved.curationTargets) {
+							for (const tool of target.tools) options.curationFeed.add(tool);
+						}
+					}
+					registry.install(
+						wrapExtensionCurationTools(extension, options.curationFeed),
+					);
 				}
 				if (resolved.perUserTools === true) perUserSlugs.push(slug);
 				// Only a LOADED extension or contributor claims its slug — a

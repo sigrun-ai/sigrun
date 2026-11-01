@@ -29,8 +29,14 @@ export type QualifiedTarget = CurationTarget & {
 	readonly extension: string;
 };
 
-/** The registered tool names that are curation tools by core ownership. */
-const CORE_CURATION_TOOLS: ReadonlySet<string> = new Set(["skill_manage"]);
+/**
+ * The registered tool names that are curation tools by core ownership.
+ * Exported for the A8 wrap feed's seed (the feed starts with the core
+ * set and grows as the loader validates target tools).
+ */
+export const CORE_CURATION_TOOLS: ReadonlySet<string> = new Set([
+	"skill_manage",
+]);
 
 /** The boot-built registry over the loaded curation targets. */
 export class CurationRegistry {
