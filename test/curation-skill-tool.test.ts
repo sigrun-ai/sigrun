@@ -17,7 +17,7 @@
  * real document surface).
  */
 
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -35,7 +35,11 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { CurationRunDoc, curationRun } from "../src/curation/run-doc.js";
 import { SkillStore } from "../src/curation/store.js";
-import { OverlayStore } from "../src/curation/overlays.js";
+import {
+	OVERLAY_HEADING,
+	OverlayStore,
+	hashSkill,
+} from "../src/curation/overlays.js";
 import {
 	createSkillsExtension,
 	type SkillsOptions,
@@ -404,5 +408,159 @@ describe("skill_manage (curator P3 tool, per-run state)", () => {
 		);
 		expect(view.isError).toBe(true);
 		expect(outputText(view)).toMatch(/no owner/i);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The overlay actions against the LIVE upstream (final review fix wave):
+// the overlay action must hash the CURRENT upstream body resolved through
+// the A5 machinery (the learned root is by construction absent for an
+// overlay target — hashing it stored `""` and every tool-written overlay
+// read as drifted), and `view` must serve upstream-only names (the stored
+// overlay + the upstream body) so an overlay replace/remove can satisfy
+// read-before-write at all (the learned-root view ENOENTs for them).
+// ---------------------------------------------------------------------------
+
+describe("skill_manage overlay actions over the live upstream", () => {
+	const UPSTREAM = `---\nname: acme-upstream\ndescription: Deploy acme\n---\n# Upstream\n\nDeploy the acme way.\n`;
+
+	/** Write the user-dir upstream skill most tests overlay. */
+	async function writeUpstream(dir: string): Promise<void> {
+		await mkdir(join(dir, "config", "skills", "acme-upstream"), {
+			recursive: true,
+		});
+		await writeFile(
+			join(dir, "config", "skills", "acme-upstream", "SKILL.md"),
+			UPSTREAM,
+		);
+	}
+
+	test("overlay create hashes the CURRENT upstream body (never the learned root)", { timeout: 20_000 }, async () => {
+		const { opened, dir } = await bootHarness();
+		const alice = userOf(dir, "alice");
+		await writeUpstream(dir);
+		const tool = skillManageTool(skillsOptions(dir, new Map([["alice", alice]])));
+		const id = await runConversation(opened, {
+			user: "alice",
+			reviewId: "review-o1",
+		});
+		const { api } = toolApi(opened, id);
+		const created = await tool.execute(
+			{
+				action: "overlay",
+				name: "acme-upstream",
+				content: "Prefer the blue button.",
+				overlay_root: "user dir",
+			},
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(created.isError).toBeUndefined();
+		const stored = await alice.overlays.get({
+			root: "user dir",
+			skill: "acme-upstream",
+		});
+		expect(stored?.upstreamHash).toBe(hashSkill(UPSTREAM));
+	});
+
+	test("overlay create on a name with no live upstream is refused, naming the skill, and writes nothing", { timeout: 20_000 }, async () => {
+		const { opened, dir } = await bootHarness();
+		const alice = userOf(dir, "alice");
+		const tool = skillManageTool(skillsOptions(dir, new Map([["alice", alice]])));
+		const id = await runConversation(opened, {
+			user: "alice",
+			reviewId: "review-o2",
+		});
+		const { api } = toolApi(opened, id);
+		const refused = await tool.execute(
+			{
+				action: "overlay",
+				name: "acme-vanished",
+				content: "Notes for a skill that is not there.",
+				overlay_root: "user dir",
+			},
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(refused.isError).toBe(true);
+		expect(outputText(refused)).toContain("acme-vanished");
+		expect(await alice.overlays.list()).toEqual([]);
+	});
+
+	test("view serves the stored overlay + upstream for an upstream-only name and feeds read-before-write; replace and remove then land", { timeout: 20_000 }, async () => {
+		const { opened, dir } = await bootHarness();
+		const alice = userOf(dir, "alice");
+		await writeUpstream(dir);
+		const tool = skillManageTool(skillsOptions(dir, new Map([["alice", alice]])));
+		const id = await runConversation(opened, {
+			user: "alice",
+			reviewId: "review-o3",
+		});
+		const { api, chunks } = toolApi(opened, id);
+		// A FIRST overlay needs no prior view (it does not exist yet).
+		const created = await tool.execute(
+			{ action: "overlay", name: "acme-upstream", content: "Prefer the blue button." },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(created.isError).toBeUndefined();
+		// The learned-root view ENOENTs for this name; the tool must still
+		// serve it (upstream body + the stored overlay under the heading)...
+		const view = await tool.execute(
+			{ action: "view", name: "acme-upstream" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(view.isError).toBeUndefined();
+		const seen = chunks.join("");
+		expect(seen).toContain("Deploy the acme way.");
+		expect(seen).toContain(OVERLAY_HEADING);
+		expect(seen).toContain("Prefer the blue button.");
+		// ...and the view feeds the run's read-before-write ledger.
+		const run = await curationRun(
+			opened.harness,
+			id as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		expect(run?.viewed).toContain("acme-upstream");
+		// Replacing the EXISTING overlay now passes read-before-write.
+		const replaced = await tool.execute(
+			{ action: "overlay", name: "acme-upstream", content: "Prefer the green button." },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(replaced.isError).toBeUndefined();
+		expect(
+			(await alice.overlays.get({ root: "user dir", skill: "acme-upstream" }))
+				?.text,
+		).toBe("Prefer the green button.");
+		// And so does removing it.
+		const removed = await tool.execute(
+			{ action: "overlay", name: "acme-upstream", remove: true },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(removed.isError).toBeUndefined();
+		expect(
+			await alice.overlays.get({ root: "user dir", skill: "acme-upstream" }),
+		).toBeUndefined();
+	});
+
+	test("view of a name with no learned copy, no overlay, and no resolvable upstream still errors", { timeout: 20_000 }, async () => {
+		const { opened, dir } = await bootHarness();
+		const alice = userOf(dir, "alice");
+		const tool = skillManageTool(skillsOptions(dir, new Map([["alice", alice]])));
+		const id = await runConversation(opened, {
+			user: "alice",
+			reviewId: "review-o4",
+		});
+		const { api } = toolApi(opened, id);
+		const refused = await tool.execute(
+			{ action: "view", name: "acme-nowhere" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(refused.isError).toBe(true);
+		expect(outputText(refused)).toContain("acme-nowhere");
 	});
 });

@@ -294,9 +294,28 @@ export function createSeamHost(
 	const bridgePromise = new Promise<HostBridge>((resolve) => {
 		bridgeReleased = resolve;
 	});
-	const hostBridge = async (): Promise<HostBridge> => {
+	// The pre-bind bound: a bridge call that waits PAST this long fails
+	// loud instead of hanging forever (the jobs-task fake-clock hang's
+	// lesson). Production never sees it — `createServer` binds the bridge
+	// at boot, long inside the bound — but a serverless embed that never
+	// builds a server would otherwise await an eternally pending promise.
+	const bridgeDeadlineMs = 60_000;
+	const hostBridge = async (member: string): Promise<HostBridge> => {
 		await bind.harness();
-		return bridgePromise;
+		return await Promise.race([
+			bridgePromise,
+			new Promise<never>((_, reject) => {
+				const timer = setTimeout(() => {
+					reject(
+						new Error(
+								`seam host: ${member} — the bridge never bound after ${bridgeDeadlineMs}ms; is createServer running? (caller: ${identity.name})`,
+						),
+					);
+				}, bridgeDeadlineMs);
+				// The rejection timer never keeps the process alive.
+				if (typeof timer === "object" && "unref" in timer) timer.unref();
+			}),
+		]);
 	};
 	// The curation surface's settled bridge host (curator P6/A9): memoized
 	// HERE — in the host closure — so every `host.curation` getter call (a
@@ -540,7 +559,7 @@ export function createSeamHost(
 		// re-keyed current slug, read at call time).
 		conversations: {
 			async create(opts = {}) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.create");
 				return bridge.conversations.create({
 					...(opts.owner === undefined ? {} : { owner: opts.owner }),
 					...(opts.sharing === undefined ? {} : { sharing: opts.sharing }),
@@ -551,60 +570,60 @@ export function createSeamHost(
 				});
 			},
 			async submit(id, input, opts) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.submit");
 				return bridge.conversations.submit(id, input, opts);
 			},
 			async watch(id, listener) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.watch");
 				return bridge.conversations.watch(id, listener);
 			},
 			async list(opts) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.list");
 				return bridge.conversations.list(opts);
 			},
 			async meta(id) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.meta");
 				return bridge.conversations.meta(id);
 			},
 			// The C4a ops: straight delegation (the bridge resolves the id and
 			// runs the op its HTTP twin runs).
 			async abort(id) {
-				return (await hostBridge()).conversations.abort(id);
+				return (await hostBridge("conversations.abort")).conversations.abort(id);
 			},
 			async configure(id, opts) {
-				return (await hostBridge()).conversations.configure(id, opts);
+				return (await hostBridge("conversations.configure")).conversations.configure(id, opts);
 			},
 			async compact(id) {
-				return (await hostBridge()).conversations.compact(id);
+				return (await hostBridge("conversations.compact")).conversations.compact(id);
 			},
 			async fork(id, opts) {
-				return (await hostBridge()).conversations.fork(id, opts);
+				return (await hostBridge("conversations.fork")).conversations.fork(id, opts);
 			},
 			async patchMeta(id, patch) {
-				return (await hostBridge()).conversations.patchMeta(id, patch);
+				return (await hostBridge("conversations.patchMeta")).conversations.patchMeta(id, patch);
 			},
 			// The C4b ops: same straight delegation.
 			async upload(id, file) {
-				return (await hostBridge()).conversations.upload(id, file);
+				return (await hostBridge("conversations.upload")).conversations.upload(id, file);
 			},
 			async readFile(id, path) {
-				return (await hostBridge()).conversations.readFile(id, path);
+				return (await hostBridge("conversations.readFile")).conversations.readFile(id, path);
 			},
 		},
 		users: {
 			async list() {
-				return (await hostBridge()).users.list();
+				return (await hostBridge("users.list")).users.list();
 			},
 			async get(user) {
-				return (await hostBridge()).users.get(user);
+				return (await hostBridge("users.get")).users.get(user);
 			},
 		},
 		accounts: {
 			async lookup(provider, subject) {
-				return (await hostBridge()).accounts.lookup(provider, subject);
+				return (await hostBridge("accounts.lookup")).accounts.lookup(provider, subject);
 			},
 			async link(provider, subject, user, via) {
-				return (await hostBridge()).accounts.link(
+				return (await hostBridge("accounts.link")).accounts.link(
 					provider,
 					subject,
 					user,
@@ -612,20 +631,20 @@ export function createSeamHost(
 				);
 			},
 			async unlink(provider, subject) {
-				return (await hostBridge()).accounts.unlink(provider, subject);
+				return (await hostBridge("accounts.unlink")).accounts.unlink(provider, subject);
 			},
 			async listForUser(user) {
-				return (await hostBridge()).accounts.listForUser(user);
+				return (await hostBridge("accounts.listForUser")).accounts.listForUser(user);
 			},
 		},
 		access: {
 			async accessOf(principal, resource) {
-				return (await hostBridge()).access.accessOf(principal, resource);
+				return (await hostBridge("access.accessOf")).access.accessOf(principal, resource);
 			},
 		},
 		identity: {
 			async actingUser(conversationId) {
-				return (await hostBridge()).identity.actingUser(conversationId);
+				return (await hostBridge("identity.actingUser")).identity.actingUser(conversationId);
 			},
 		},
 		// Curator P6 (A9): the boot-built curation host through the bridge —
@@ -646,7 +665,7 @@ export function createSeamHost(
 		// in front of sync members on the second read).
 		get curation(): SeamHost["curation"] {
 			if (curationHost !== undefined) return curationHost;
-			const pending = hostBridge().then((bridge) => {
+			const pending = hostBridge("curation").then((bridge) => {
 				curationHost = bridge.curation;
 				return bridge.curation;
 			});
@@ -703,15 +722,15 @@ export function createSeamHost(
 		// Gateway C4b: straight delegation (the bridge owns both bodies).
 		models: {
 			async list() {
-				return (await hostBridge()).models.list();
+				return (await hostBridge("models.list")).models.list();
 			},
 		},
 		commands: {
 			async list() {
-				return (await hostBridge()).commands.list();
+				return (await hostBridge("commands.list")).commands.list();
 			},
 			async run(conversationId, name, args, opts) {
-				return (await hostBridge()).commands.run(
+				return (await hostBridge("commands.run")).commands.run(
 					conversationId,
 					name,
 					args,
@@ -738,7 +757,7 @@ export function createSeamHost(
 						}
 					).__sigrunSurfaceChanged?.(host.name);
 				};
-				void hostBridge()
+				void hostBridge("surfaces.changed")
 					.then((bridge) => {
 						ran();
 						bridge.surfaces.changed(identity.name, id, key, update);

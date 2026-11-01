@@ -27,12 +27,19 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import { createHash } from "node:crypto";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-durable";
 import type { ToolExecutionApi, ToolExecutionResult } from "@earendil-works/pi-durable";
+import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import type { SkillStore } from "./store.js";
-import type { OverlayStore } from "./overlays.js";
+import type { FeedEntry } from "./store.js";
+import {
+	OVERLAY_HEADING,
+	withOverlay,
+	type Overlay,
+	type OverlayKey,
+	type OverlayStore,
+} from "./overlays.js";
 import { curationRun, markViewed } from "./run-doc.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
@@ -107,12 +114,30 @@ const READ_BEFORE_WRITE = new Set([
 	"overlay",
 ]);
 
-/** What the tool needs from the host: the per-user store pair. */
+/** What the tool needs from the host: the per-user store pair + upstream reads. */
 export interface SkillManageDeps {
 	/** The conversation owner's stores (read actions). */
 	readonly storesOf: (owner: string | undefined) =>
 		| { readonly store: SkillStore; readonly overlays: OverlayStore }
 		| undefined;
+	/**
+	 * The canonical workspace path for a workspace-root overlay key
+	 * (A5's `overlayForSkill` derivation: the workspace-root accessor,
+	 * falling back to the conversation env's cwd).
+	 */
+	readonly workspaceOf: (env: ExecutionEnv | undefined) => string | undefined;
+	/**
+	 * The CURRENT upstream body + hash for an overlay key (A5's
+	 * `resolveUpstream`, wired by the skills extension with the discovery
+	 * roots): what the overlay action hashes a write against, and what
+	 * the `view` fallback serves for upstream-only names. `undefined`
+	 * when no upstream resolves (a vanished skill).
+	 */
+	readonly upstreamOf: (
+		key: OverlayKey,
+		env: ExecutionEnv | undefined,
+		ctx: Context,
+	) => Promise<{ body: string; hash: string } | undefined>;
 }
 
 /** An explicit tool error: text content the model can read and recover from. */
@@ -131,6 +156,60 @@ async function ownerOf(
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * The `view` fallback for upstream-only names (the overlay lifecycle):
+ * a name with no learned copy can still carry a stored overlay and/or a
+ * live upstream — the exact shape an overlay update/remove decision
+ * needs. Serves the upstream body with the overlay under
+ * {@link OVERLAY_HEADING} (the served shape `load_skill` uses), or the
+ * overlay alone when the upstream is currently absent (an orphan).
+ * Returns an error message naming the skill when neither exists.
+ */
+async function viewUpstreamOnly(
+	deps: SkillManageDeps,
+	stores: { readonly overlays: OverlayStore },
+	args: { name: string; overlay_root?: OverlayRoot },
+	env: ExecutionEnv | undefined,
+	ctx: Context,
+): Promise<string> {
+	// A stored overlay for this skill name: the exact root when the call
+	// names one, else whichever root holds one (that key decides).
+	const stored: Overlay | undefined =
+		args.overlay_root !== undefined
+			? await stores.overlays
+					.get({ root: args.overlay_root, skill: args.name })
+					.catch(() => undefined)
+			: (await stores.overlays.list().catch((): readonly Overlay[] => [])).find(
+					(overlay) => overlay.key.skill === args.name,
+				);
+	const key: OverlayKey = stored?.key ?? {
+		root: args.overlay_root ?? "user dir",
+		skill: args.name,
+		...(args.overlay_root === "workspace"
+			? { workspace: deps.workspaceOf(env) ?? "" }
+			: {}),
+	};
+	const upstream = await deps.upstreamOf(key, env, ctx).catch(() => undefined);
+	if (stored === undefined && upstream === undefined) {
+		return `unknown skill "${args.name}" — no learned copy, no stored overlay, and no upstream resolved in the ${key.root} root.`;
+	}
+	const notes: string[] = [
+		`(no learned copy of "${args.name}"; showing the ${key.root} upstream${stored === undefined ? "" : " with the stored overlay"})`,
+	];
+	if (stored?.orphanedSince !== undefined) {
+		notes.push("(the upstream is currently ABSENT — the overlay is orphaned)");
+	}
+	let body: string;
+	if (upstream === undefined) {
+		body = `${OVERLAY_HEADING}\n\n${stored?.text ?? ""}`;
+	} else if (stored === undefined) {
+		body = upstream.body;
+	} else {
+		body = withOverlay(upstream.body, stored.text);
+	}
+	return `${notes.join(" ")}\n\n${body}`;
 }
 
 /** Render the store's `list` result as the model-facing text. */
@@ -196,10 +275,28 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 					return {};
 				}
 				if (args.name === undefined) return error("view requires a skill name.");
-				try {
-					api.output(await stores.store.view(args.name, args.file_path ?? "SKILL.md"));
-				} catch (cause) {
-					return error(cause instanceof Error ? cause.message : String(cause));
+				const learned = await stores.store
+					.view(args.name, args.file_path ?? "SKILL.md")
+					.then(
+						(body) => body as string | undefined,
+						() => undefined as string | undefined,
+					);
+				if (learned === undefined) {
+					// Upstream-only names (the overlay lifecycle): serve the stored
+					// overlay and/or the live upstream — without this fallback the
+					// learned-root ENOENT traps an overlay update/remove in an
+					// unrecoverable "view X first" → "unknown skill" loop.
+					const served = await viewUpstreamOnly(
+						deps,
+						stores,
+						{ name: args.name, overlay_root: args.overlay_root },
+						api.env,
+						context,
+					);
+					if (served.startsWith("unknown skill")) return error(served);
+					api.output(served);
+				} else {
+					api.output(learned);
 				}
 				// A view inside a curator run feeds the read-before-write ledger.
 				const run = await curationRun(api, api.conversationId, context);
@@ -223,6 +320,18 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 				return error(`No skill store is configured for ${run.user}.`);
 			}
 			if (args.name === undefined) return error(`${args.action} requires a skill name.`);
+			// The overlay key: the workspace root path (A9) for a workspace
+			// overlay, exactly as serving keys it.
+			const overlayKey: OverlayKey | undefined =
+				args.action === "overlay"
+					? {
+							root: args.overlay_root ?? "user dir",
+							skill: args.name,
+							...(args.overlay_root === "workspace"
+								? { workspace: deps.workspaceOf(api.env) ?? "" }
+								: {}),
+						}
+					: undefined;
 			const meta = {
 				actor: "curator" as const,
 				...(run.reviewId === undefined ? {} : { reviewId: run.reviewId }),
@@ -235,18 +344,18 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 			const exists =
 				args.action === "overlay"
 					? await stores.overlays
-							.get({ root: args.overlay_root ?? "user dir", skill: args.name })
+							.get(overlayKey!)
 							.then((overlay) => overlay !== undefined)
 							.catch(() => false)
-					: (await stores.store.list().catch(() => []))
-							.some((skill) => skill.name === args.name);
+				: (await stores.store.list().catch(() => []))
+						.some((skill) => skill.name === args.name);
 			if (exists && READ_BEFORE_WRITE.has(args.action) && !run.viewed.includes(args.name)) {
 				return error(
 					`Read-before-write: view "${args.name}" before changing it in this run.`,
 				);
 			}
 			try {
-				let entry;
+				let entry: FeedEntry | undefined;
 				switch (args.action) {
 					case "create":
 						entry = await stores.store.apply(
@@ -295,25 +404,29 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 						entry = await stores.store.apply(args.name, { kind: "restore" }, meta);
 						break;
 					case "overlay": {
+						const key = overlayKey!;
 						if (args.remove === true) {
-							entry = await stores.overlays.remove(
-								{ root: args.overlay_root ?? "user dir", skill: args.name },
-								meta,
-							);
+							entry = await stores.overlays.remove(key, meta);
 							break;
 						}
 						// The upstream hash pins what the overlay was written
-						// against: the CURRENT upstream body, when one is served.
-						const body = await stores.store.view(args.name).catch(() => undefined);
+						// against: the CURRENT upstream body resolved through the
+						// A5 machinery (the workspace/user-dir/package roots). The
+						// learned root is by construction ABSENT for an overlay
+						// target — hashing it stored `""` and the first drift
+						// pass flagged every tool-written overlay.
+						const upstream = await deps.upstreamOf(key, api.env, context);
+						if (upstream === undefined) {
+							// A vanished upstream is a user-visible problem, not a ""
+							// hash: refuse the create, naming the missing skill.
+							return error(
+								`no upstream skill "${args.name}" resolved in the ${key.root} root — an overlay attaches to a skill the user does not own. Restore the upstream (or pass its real overlay_root) before writing an overlay for it.`,
+							);
+						}
 						entry = await stores.overlays.put(
-							{ root: args.overlay_root ?? "user dir", skill: args.name },
+							key,
 							args.content ?? "",
-							// A missing body (no learned copy) still writes the
-							// overlay — drift detection simply has nothing to
-							// compare against until the upstream exists.
-							body === undefined
-								? ""
-								: createHash("sha256").update(body, "utf8").digest("hex"),
+							upstream.hash,
 							meta,
 						);
 						break;
