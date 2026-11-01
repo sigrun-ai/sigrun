@@ -28,7 +28,7 @@ import type {
 	SubmissionId,
 	TaskId,
 } from "@earendil-works/pi-durable";
-import { LiveDoc } from "@earendil-works/pi-durable";
+import { AssistantEntry, LiveDoc } from "@earendil-works/pi-durable";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -114,10 +114,11 @@ async function bootServer(
 	return { app, opened, config, dir };
 }
 
-/** One owned conversation with one settled user turn. */
+/** One owned conversation with `turns` settled user turns (default 1). */
 async function ownedConversation(
 	opened: OpenedHarness,
 	user: string,
+	turns = 1,
 ): Promise<number> {
 	const conversation = await opened.harness.createConversation(
 		{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
@@ -127,12 +128,14 @@ async function ownedConversation(
 		const meta = await tx.doc(SessionMetaDoc, conversation.id);
 		meta.owner = user;
 	}, BACKGROUND_CONTEXT);
-	const submission = await conversation.submit(
-		{ type: "input", content: "the owned turn" },
-		BACKGROUND_CONTEXT,
-	);
-	const record = await submission.wait(BACKGROUND_CONTEXT);
-	expect(record.status).toBe("done");
+	for (let turn = 0; turn < turns; turn += 1) {
+		const submission = await conversation.submit(
+			{ type: "input", content: `the owned turn ${turn}` },
+			BACKGROUND_CONTEXT,
+		);
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("done");
+	}
 	return conversation.id as number;
 }
 
@@ -142,6 +145,10 @@ describe("host.curation (curator P6 surface)", () => {
 	test("eligibility, modelCallsSince and takeHints read the real docs", { timeout: 30_000 }, async () => {
 		const { app, opened } = await bootServer([
 			fauxAssistantMessage("the owned turn's answer"),
+			fauxAssistantMessage("direction turn 1"),
+			fauxAssistantMessage("direction turn 2"),
+			fauxAssistantMessage("direction turn 3"),
+			fauxAssistantMessage("direction turn 4"),
 		]);
 		const curation = app.hostBridge.curation;
 		const id = await ownedConversation(opened, "alice");
@@ -166,6 +173,71 @@ describe("host.curation (curator P6 surface)", () => {
 		expect(sinceNewest).toBe(0);
 		// takeHints on a hint-free conversation: empty.
 		expect(await curation.takeHints(id as ConversationId)).toEqual([]);
+
+		// Direction pin (the review gate's contract): the count is the
+		// assistant entries STRICTLY AFTER the anchor — never the
+		// at-or-before side. A 4-assistant-entry conversation pins every
+		// direction: oldest, mid, newest.
+		const convId = await ownedConversation(opened, "alice", 4);
+		const handle = await opened.harness.conversation(
+			convId as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		if (handle === undefined) throw new Error("conversation not found");
+		const ascPage = await handle.entries(
+			{ order: "ascending" },
+			100,
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		const anchors = ascPage.items
+			.filter((entry) => entry.kind === AssistantEntry.kind)
+			.map((entry) => entry.id);
+		expect(anchors).toHaveLength(4);
+		// No anchor: every assistant entry.
+		expect(await curation.modelCallsSince(convId as ConversationId)).toBe(4);
+		// Anchor at the OLDEST: the 3 after it.
+		expect(
+			await curation.modelCallsSince(convId as ConversationId, anchors[0]),
+		).toBe(3);
+		// Anchor mid-sequence: only the later ones.
+		expect(
+			await curation.modelCallsSince(convId as ConversationId, anchors[1]),
+		).toBe(2);
+		// Anchor at the NEWEST: none.
+		expect(
+			await curation.modelCallsSince(convId as ConversationId, anchors[3]),
+		).toBe(0);
+
+		// Cursor pin: the count is cursor-COMPLETE — a conversation past
+		// one entry page counts past the page (505 passive assistant-kind
+		// entries in one commit, the import route's own append pattern).
+		const cursorConv = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		await cursorConv.commit(async (tx) => {
+			for (let index = 0; index < 505; index += 1) {
+				await tx.appendEntry(cursorConv.id, { kind: AssistantEntry.kind });
+			}
+		}, BACKGROUND_CONTEXT);
+		expect(
+			await curation.modelCallsSince(cursorConv.id as ConversationId),
+		).toBe(505);
+		// The same walk ANCHORED at the oldest: all later ones, still
+		// cursor-complete (504 crosses the page).
+		const oldest = await cursorConv.entries(
+			{ order: "ascending" },
+			1,
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		expect(
+			await curation.modelCallsSince(
+				cursorConv.id as ConversationId,
+				oldest.items[0].id,
+			),
+		).toBe(504);
 	});
 
 	test("tools(id) serves the parent's model-visible tool names", { timeout: 30_000 }, async () => {

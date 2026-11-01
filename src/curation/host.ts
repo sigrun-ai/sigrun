@@ -25,6 +25,7 @@ import type {
 	AgentChange,
 	Conversation,
 	ConversationId,
+	Cursor,
 	EntryId,
 	Harness,
 	Registry,
@@ -87,6 +88,11 @@ export interface CurationHostDeps {
 	 */
 	readonly defaultAgent: () => AgentChange;
 }
+
+/** modelCallsSince's entry-page size (cursor-walked, never a cap). */
+const MODEL_CALLS_PAGE = 500;
+/** Scan bound for the cursor walk: a broken cursor loops, a count does not. */
+const MODEL_CALLS_SCAN_LIMIT = 10_000;
 
 /** Build the one curation host (boot constructs exactly one). */
 export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
@@ -190,24 +196,40 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 
 		async modelCallsSince(id, entryId): Promise<number> {
 			const conversation = await conversationOf(id, BACKGROUND_CONTEXT);
+			// Oldest-first from the anchor: `minEntryId` is an INCLUSIVE
+			// bound, so the anchor itself rides the first page and is
+			// filtered below — the count is the assistant entries STRICTLY
+			// after the anchor (the extension.ts contract). No anchor:
+			// the whole history.
 			const query =
 				entryId === undefined
-					? {}
-					: { maxEntryId: entryId, order: "descending" as const };
-			const page = await conversation.entries(
-				query,
-				500,
-				undefined,
-				BACKGROUND_CONTEXT,
-			);
-			// Newest-first: entries STRICTLY after the anchor (the anchor
-			// itself is excluded — modelCallsSince(entry) counts what
-			// came after it).
-			return page.items.filter(
-				(entry) =>
-					entry.kind === AssistantEntry.kind &&
-					(entryId === undefined || entry.id !== entryId),
-			).length;
+					? { order: "ascending" as const }
+					: { minEntryId: entryId, order: "ascending" as const };
+			// Cursor-complete walk (the feedOf pattern): pages until
+			// exhaustion so a long conversation never silently truncates,
+			// bounded so a cursor bug cannot loop forever.
+			let count = 0;
+			let scanned = 0;
+			let cursor: Cursor | undefined;
+			for (;;) {
+				const page = await conversation.entries(
+					query,
+					MODEL_CALLS_PAGE,
+					cursor,
+					BACKGROUND_CONTEXT,
+				);
+				for (const entry of page.items) {
+					scanned += 1;
+					if (entry.kind !== AssistantEntry.kind) continue;
+					if (entryId !== undefined && entry.id === entryId) continue;
+					count += 1;
+				}
+				if (page.next === undefined || scanned >= MODEL_CALLS_SCAN_LIMIT) {
+					break;
+				}
+				cursor = page.next;
+			}
+			return count;
 		},
 
 		async takeHints(id): Promise<readonly CurationHint[]> {
