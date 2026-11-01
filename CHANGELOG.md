@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Reworded the `pi` manifest handling so it no longer implies pi
+  extension compatibility. Sigrun reads `pi.extensions`/`pi.skills` only
+  to LOCATE files and shares the SKILL.md format; it does not implement
+  pi's `ExtensionAPI` (a pi extension's `registerTool`/`registerCommand`
+  have no counterpart here). `docs/extending.md` gains a "Not pi
+  extensions" section stating the two ABIs are unrelated and that only
+  the skills layer transfers. The `.ts` skip and empty-entry warnings now
+  say `pi manifest:` instead of `pi-compat:`.
+
 ## [0.4.2] - 2026-10-31
 
 ### Fixed

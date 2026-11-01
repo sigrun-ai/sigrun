@@ -654,8 +654,8 @@ export interface SyncPackagesOptions {
  *   skill dirs (existing directories only, resolved against the package
  *   root) when it declared any.
  * - `skills-only`: a package that declares skills and has NO loadable
- *   entry (spec §9.4 — e.g. a pi-compat package whose only pi extension
- *   is TypeScript, unimportable under plain node): nothing is imported;
+ *   entry (spec §9.4 — e.g. a package whose `pi.extensions` entry is
+ *   TypeScript, unimportable under plain node): nothing is imported;
  *   the loader records outcome `ok` and serves only the skills.
  *
  * `enabled` mirrors the source spec (always true from the sync —
@@ -1142,14 +1142,19 @@ export async function syncGit(
 }
 
 /**
- * The pi-compat `.ts` skip warning (spec §9.4): a `pi.extensions` entry
- * ending in `.ts` cannot load under plain node (the build spec removed
- * the `.ts` entry fallback) — it is skipped, keeping the package's
- * skills loadable. ONE line per skipped entry, per discovery.
+ * The `.ts` skip warning (spec §9.4): a `pi.extensions` entry ending in
+ * `.ts` cannot load under plain node (the build spec removed the `.ts`
+ * entry fallback) — it is skipped, keeping the package's skills loadable.
+ * ONE line per skipped entry, per discovery.
+ *
+ * The wording says `pi` MANIFEST rather than "pi extension" on purpose:
+ * the `pi` key is read only to LOCATE a file. Sigrun does not implement
+ * pi's extension API, so this skip is not "pi extensions don't work here";
+ * it is "this package's entry is unimportable by plain node".
  */
 function warnTsPiExtension(entry: string): void {
 	console.warn(
-		`pi-compat: skipping TypeScript pi extension ${entry} (not loadable under node); loading the package's skills only`,
+		`pi manifest: skipping TypeScript entry ${entry} (not loadable under node); loading the package's skills only`,
 	);
 }
 
@@ -1180,9 +1185,9 @@ function manifestStringArray(value: unknown): readonly string[] | undefined {
 
 /**
  * A package root's manifest skill dirs (spec §9.4): `sigrun.skills`
- * (string[]) else pi-compat `pi.skills` (string[] — same SKILL.md format,
- * so no warning), each resolved against the package root, keeping only
- * EXISTING directories. No manifest, no field, or nothing existing → [].
+ * (string[]) else the `pi`-shaped `pi.skills` (string[] — same SKILL.md
+ * format, so no warning), each resolved against the package root, keeping
+ * only EXISTING directories. No manifest, no field, or nothing existing → [].
  */
 export function manifestSkills(pkgRoot: string): readonly string[] {
 	const manifest = readDiscoveryManifest(pkgRoot);
@@ -1235,7 +1240,7 @@ export function manifestEntry(pkgRoot: string): string | undefined {
 			return join(pkgRoot, entry);
 		}
 		console.warn(
-			`pi-compat: no loadable pi extension in ${pkgRoot} (all entries are TypeScript); loading the package's skills only`,
+			`pi manifest: no loadable entry in ${pkgRoot} (all entries are TypeScript); loading the package's skills only`,
 		);
 	}
 	return undefined;

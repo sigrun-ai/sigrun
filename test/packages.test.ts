@@ -818,8 +818,8 @@ describe("the unified extensions list (settings surface)", () => {
 
 // ---------------------------------------------------------------------------
 // Core hardening W5 Task 4 (spec §9.4): manifest skill dirs, the
-// ExtensionResolution union, skills-only packages, and the pi-compat .ts
-// extension skip.
+// ExtensionResolution union, skills-only packages, and the .ts entry skip
+// for a `pi`-shaped manifest.
 // ---------------------------------------------------------------------------
 
 /** The skills-only fixture package (obra/superpowers shape). */
@@ -872,7 +872,7 @@ describe("manifest skill dirs + the ExtensionResolution union (W5 Task 4)", () =
 			// Exactly one warning, naming the skipped .ts entry.
 			const skips = warn.mock.calls
 				.map((call) => String(call[0]))
-				.filter((line) => line.includes("pi-compat: skipping TypeScript pi extension"));
+				.filter((line) => line.includes("pi manifest: skipping TypeScript entry"));
 			expect(skips).toHaveLength(1);
 			expect(skips[0]).toContain(".pi/extensions/x.ts");
 		} finally {
@@ -1012,7 +1012,7 @@ describe("manifest skill dirs + the ExtensionResolution union (W5 Task 4)", () =
 			]);
 			const skips = warn.mock.calls
 				.map((call) => String(call[0]))
-				.filter((line) => line.includes("pi-compat: skipping TypeScript pi extension"));
+				.filter((line) => line.includes("pi manifest: skipping TypeScript entry"));
 			expect(skips).toHaveLength(1);
 		} finally {
 			warn.mockRestore();

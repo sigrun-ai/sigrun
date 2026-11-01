@@ -1008,11 +1008,11 @@ Entry grammar:
   checkout `FETCH_HEAD`; present without a ref → fetch only (the
   checkout stays where you left it). Entry discovery: the object form's
   `entry` → a `sigrun` manifest (`{"sigrun": {"extension": "./index.js"}}`)
-  → a pi-compat manifest (the first non-`.ts` `pi.extensions` entry; each
+  → a `pi` manifest (the first non-`.ts` `pi.extensions` entry; each
   `.ts` entry is skipped with one warning — it cannot load under plain
   node) → `dist/index.js`.
 - **Skills from packages** — a package may ship skills instead of (or
-  beside) extension code: manifest `sigrun.skills` or pi-compat
+  beside) extension code: manifest `sigrun.skills` or the `pi`-shaped
   `pi.skills` (`["./skills"]`, the same SKILL.md format), or a
   factory-result `skills` field (absolute dirs). A package that declares
   skills and has no loadable entry is a valid **skills-only** package

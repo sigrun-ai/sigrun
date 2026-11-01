@@ -116,7 +116,7 @@ function autoEnableRemovals(
 			exposure?: unknown;
 		};
 		if (server.enabled === false || server.disabled === true) continue;
-		// @sigrun/ext-mcp's server default is "codemode"; its pi-compat
+		// @sigrun/ext-mcp's server default is "codemode"; its deprecated
 		// alias `codemode-deferred` normalizes to "codemode".
 		const exposure =
 			server.exposure === "codemode-deferred"
