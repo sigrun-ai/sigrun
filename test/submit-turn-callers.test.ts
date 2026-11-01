@@ -107,6 +107,7 @@ describe("the turn-starter call-site pin (spec §8.3 Where)", () => {
 		// The THREE sanctioned sites: submitOp (the composer route AND the
 		// host bridge share it) and fireJob's two prompt-action submits.
 		expect(sites.map((site) => site.file).sort()).toEqual([
+			"curation/runs.ts",
 			"jobs/fire.ts",
 			"jobs/fire.ts",
 			"server/conversation-ops.ts",

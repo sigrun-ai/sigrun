@@ -149,6 +149,14 @@ export interface SkillsOptions {
 	/** The user-wide root: `<configDir>/skills/` (absent = the designed empty case). */
 	readonly userDir: string;
 	/**
+	 * The canonical WORKSPACE root (curator A9): the overlay key's
+	 * workspace path — derived from the ROOT, never a conversation's
+	 * `env.cwd` (a sub-cwd conversation must match the overlay the root
+	 * keyed). Optional so pre-A9 callers keep compiling; absent falls
+	 * back to `env.cwd` (the pre-A9 behavior).
+	 */
+	readonly workspaceRoot?: () => string | undefined;
+	/**
 	 * The owner's learned root (curator P2): `<dataDir>/users/<owner>/skills`
 	 * for an owned conversation, `undefined` for an ownerless one. Optional
 	 * so pre-A3 callers keep compiling; absent = no learned root.

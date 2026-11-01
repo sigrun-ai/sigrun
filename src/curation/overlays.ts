@@ -373,10 +373,19 @@ export async function overlayForSkill(
 	if (skill.root === "learned") return undefined;
 	const store = opts.overlays?.(owner);
 	if (store === undefined) return undefined;
+	// The canonical workspace key (curator A9): the ROOT path, never
+	// `env.cwd` — a conversation whose `pi.agent.cwd` points at a
+	// subdirectory must still see the overlay written against the
+	// workspace root. The root accessor wins when present; the env's
+	// cwd is the pre-A9 fallback (the hermetic single-user boot shape).
+	const workspace =
+		skill.root === "workspace"
+			? (opts.workspaceRoot?.() ?? env?.cwd)
+			: undefined;
 	const key: OverlayKey = {
 		root: skill.root,
 		skill: skill.name,
-		...(skill.root === "workspace" && env !== undefined ? { workspace: env.cwd } : {}),
+		...(workspace === undefined ? {} : { workspace }),
 	};
 	const overlay = await store.get(key);
 	if (overlay === undefined || overlay.orphanedSince !== undefined) return undefined;

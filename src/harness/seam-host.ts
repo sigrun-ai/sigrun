@@ -191,6 +191,13 @@ export interface SeamHost {
 	readonly access: SigrunHost["access"];
 	/** The conversation's owner — who the agent acts for (§9.7). */
 	readonly identity: SigrunHost["identity"];
+	/**
+	 * The curation surface (curator P6, A9): the curator's read APIs
+	 * and run producers. Delegates to the boot-built host through the
+	 * bridge (the same lazy-bind discipline as `conversations`) — a
+	 * factory-body call WAITS, never a silent drop.
+	 */
+	readonly curation: SigrunHost["curation"];
 	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
 	readonly models: SigrunHost["models"];
 	/** The slash-command surface (gateway C4b): catalog + in-process run. */
@@ -615,6 +622,44 @@ export function createSeamHost(
 			async actingUser(conversationId) {
 				return (await hostBridge()).identity.actingUser(conversationId);
 			},
+		},
+		// Curator P6 (A9): the boot-built curation host through the bridge —
+		// the lazy member discipline (a factory-body call waits for the
+		// bridge; a post-bind call resolves at once). Every member of the
+		// curation surface is a function, so a Proxy that forwards each
+		// property read (and call) to the RESOLVED bridge host implements
+		// the whole surface with the same wait semantics as the async
+		// delegations above.
+		get curation(): SeamHost["curation"] {
+			const pending = hostBridge().then((bridge) => bridge.curation);
+			// SAFETY: the Proxy target satisfies the structural member shapes
+			// because every forwarded call is an `apply` trap on the real host's
+			// own member; the cast only bridges the contract's named members.
+			return new Proxy(
+				{} as unknown as SeamHost["curation"],
+				{
+					get(_target, property) {
+					return async (...args: readonly unknown[]) => {
+						const host = await pending;
+						// SAFETY: the property is one of the contract's own function
+					// members (the surface has no data members); the bound call is
+					// the real host's, typed at the call site.
+						const member = (host as unknown as Record<string, unknown>)[
+							property as string
+						];
+						if (typeof member !== "function") {
+							throw new Error(
+								`curation: member ${String(property)} is not callable`,
+							);
+						}
+						return (member as (...call: readonly unknown[]) => unknown).apply(
+							host,
+							[...args],
+						);
+					};
+				},
+			},
+			);
 		},
 		// Gateway C4b: straight delegation (the bridge owns both bodies).
 		models: {

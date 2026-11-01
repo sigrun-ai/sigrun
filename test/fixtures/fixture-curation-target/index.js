@@ -19,15 +19,19 @@
  *   the wrapper never lets a listed tool execute outside a run).
  * - `directs`  — every `notes_direct` execute (A8 asserts it runs).
  * - `undos`    — every `undo` call: `{user, changeId}`.
- * - `maintains`— every `maintain` call: `{user, deadline, runs}`.
+ * - `maintains`— every `maintain` call: `{user, deadline, runs, digestTexts}` — `digestTexts` records the text each `budget.run` resolved with (A9's wiring gate).
  * - `guidanceFor` — the per-user guidance map the target serves.
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
+import { randomUUID } from "node:crypto";
 
 /** `notes_write` executes: `{user, text}` per call. */
 export const writes = [];
+
+/** `notes_write` change ids: one per execute (the `details.curation` carrier). */
+export const writeChanges = [];
 
 /** `notes_direct` executes: one record per call. */
 export const directs = [];
@@ -35,7 +39,7 @@ export const directs = [];
 /** `undo` calls: `{user, changeId}` per call. */
 export const undos = [];
 
-/** `maintain` calls: `{user, deadline, runs}` per call. */
+/** `maintain` calls: `{user, deadline, runs, digestTexts}` per call. */
 export const maintains = [];
 
 /** The per-user guidance the target serves (tests may flip it). */
@@ -46,6 +50,7 @@ export const guidanceFor = {
 /** Reset every module-side record (tests own their fixtures' state). */
 export function resetTargetFixture() {
 	writes.length = 0;
+	writeChanges.length = 0;
 	directs.length = 0;
 	undos.length = 0;
 	maintains.length = 0;
@@ -60,7 +65,15 @@ const notesWrite = defineTool({
 	}),
 	async execute(args) {
 		writes.push({ text: args.text });
-		return { output: [{ type: "text", text: `noted: ${args.text}` }] };
+		// A9's run driver collects `details.curation` from tool results:
+		// every write reports a change id + summary (the P8 undo surface's
+		// convention — the fixture's change ids are random UUIDs).
+		const changeId = randomUUID();
+		writeChanges.push(changeId);
+		return {
+			output: [{ type: "text", text: `noted: ${args.text}` }],
+			details: { curation: { changeId, summary: `notes_write ${args.text}` } },
+		};
 	},
 });
 
@@ -93,10 +106,16 @@ export default function createFixtureCurationTarget() {
 				},
 				async maintain(user, ctx, budget) {
 					void ctx;
+					const digestTexts = [];
+					if (budget.runs > 0) {
+						const result = await budget.run("digest the notes", ["notes_write"]);
+						digestTexts.push(result.text);
+					}
 					maintains.push({
 						user,
 						deadline: budget.deadline,
 						runs: budget.runs,
+						digestTexts,
 					});
 					return { changes: [] };
 				},

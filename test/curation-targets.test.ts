@@ -246,8 +246,11 @@ describe("curation targets (curator P7)", () => {
 				changes: [],
 			}),
 		});
+		// A9 widened the fixture's maintain record with `digestTexts` (the
+		// budget.run round-trip the wiring gate asserts); the shape is
+		// otherwise unchanged.
 		expect(fixture.maintains).toEqual([
-			{ user: "alice", deadline: 123, runs: 2 },
+			{ user: "alice", deadline: 123, runs: 2, digestTexts: ["digest text"] },
 		]);
 		expect(report).toEqual({ changes: [] });
 	});

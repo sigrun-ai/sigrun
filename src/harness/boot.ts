@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
+	type AgentChange,
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
@@ -82,7 +83,7 @@ import type {
 	WebuiBundleCollision,
 } from "../server/static.js";
 import { EventHub } from "../server/events/hub.js";
-import { providerAuthStatus } from "../server/helpers.js";
+import { providerAuthStatus, storeAgentChange } from "../server/helpers.js";
 import {
 	bootRefresh,
 	DEFAULT_REFRESH_TIMEOUT_MS,
@@ -108,6 +109,7 @@ import { SkillStore } from "../curation/store.js";
 import { OverlayStore } from "../curation/overlays.js";
 import { UsageCounters } from "../curation/usage.js";
 import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
+import { createCurationHost } from "../curation/host.js";
 import {
 	createCurationToolFeed,
 	wrapExtensionCurationTools,
@@ -461,6 +463,14 @@ export interface OpenedHarness {
 	 * empty registry is the no-declarer deploy (core ships none).
 	 */
 	readonly curation: CurationRegistry;
+	/**
+	 * The curation host (curator P6, A9): the `host.curation` surface —
+	 * the run producers (fork review, digest, maintain) and the read
+	 * APIs over the per-user stores, the curation registry and the
+	 * durable records. ONE object per boot; the host bridge and every
+	 * seam host expose the SAME instance.
+	 */
+	readonly curationHost: import("../extension.js").SigrunCurationHost;
 	/**
 	 * The command-expansion handle (Task 2c): the skills + template root
 	 * sets and the reserved command-name set, all read LIVE. The submit
@@ -967,6 +977,11 @@ export async function openHarness(
 	// ones, which `listSkills` includes by design).
 	const skillsOptions = {
 		userDir: join(roots.configDir, "skills"),
+		// Curator A9 (P6): the canonical workspace ROOT for overlay keys —
+		// the configured default workspace (a conversation with a
+		// sub-cwd still matches the root-keyed overlay; the accessor
+		// stays live for the config's sake).
+		workspaceRoot: (): string => config.workspace.path,
 		// Curator A3 (P2): the conversation owner's learned root —
 		// `<dataDir>/users/<owner>/skills`, undefined for ownerless
 		// conversations. Discovery resolves the owner per render.
@@ -1736,6 +1751,41 @@ export async function openHarness(
 	// order). The bus's close stops delivery; the unsubscribe is unused.
 	const now = clockNow;
 	wireActivity(eventBus, harness, now);
+	// Curator A9 (P6): the ONE curation host — the `host.curation`
+	// surface over the per-user stores (curationOf), the curation
+	// registry, the jobs records and the run driver. The server's host
+	// bridge and every seam host expose the SAME instance (the bridge
+	// carries it; the seam hosts delegate). The digest producer's
+	// default agent is the create op's own store-default change (what
+	// every server-created conversation starts from): the structural
+	// `{settings, registry, providerEnv}` subset `storeAgentChange`
+	// reads, closed over the LIVE references so a settings PATCH
+	// reaches later digests without a restart.
+	// SAFETY: the cast — `storeAgentChange` reads exactly these three
+	// members (settings.read, registry.snapshot, providerEnv) and
+	// nothing else of OpenedHarness; the live closure satisfies them.
+	const curationHost = createCurationHost({
+		harness,
+		registry,
+		storage,
+		curation,
+		defaultModel,
+		stores: curationOf,
+		skillsOptions: {
+			userDir: join(roots.configDir, "skills"),
+			packageRoots: (): readonly { extension: string; dir: string }[] =>
+				collectedSkillRoots,
+		},
+		defaultAgent: (): AgentChange =>
+			storeAgentChange(
+				{
+					settings: { read: () => settingsStore.read() },
+					registry,
+					providerEnv: effectiveEnv,
+				} as unknown as Parameters<typeof storeAgentChange>[0],
+				defaultModel,
+			),
+	});
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
 		handlersByName.set(binding.extension.name, {
@@ -2001,6 +2051,7 @@ export async function openHarness(
 		gatewayEngine,
 		skillRoots: extensionSkillRoots,
 		curation,
+		curationHost,
 		commandExpansion,
 		eventBus,
 		events,
