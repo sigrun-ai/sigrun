@@ -22,6 +22,7 @@ import { transferOwnership } from "../ownership.js";
 import type { InviteResponse, UserWire } from "../views.js";
 import type { Grant } from "../../sandbox/grants.js";
 import { validateGrantPath } from "../../sandbox/grants.js";
+import { removeUserCuration } from "../../curation/deletion.js";
 
 /** The wire form of one directory user. `admin` stays the STORED flag;
  * `groupAdmin` is DERIVED from stored groups and retained for one release
@@ -306,6 +307,12 @@ export function registerUserRoutes(
 		// §10.6 step 5: data/state stay for the recipient; core owns only
 		// the departing user's credentials, settings, and every cache slug.
 		await ctx.opened.extensionStores.removeUserData(user);
+		// Curator A10 (P2): the departing user's learned skills and curation
+		// state are REMOVED, never transferred — a skill distilled from
+		// their conversations can carry their paths and preferences, so it
+		// must not load for the recipient. In-flight curator runs fail
+		// closed through the stores' user-exists gate (nothing recreated).
+		await removeUserCuration(ctx.managedPaths.userAreas(user));
 		return await reply.code(204).send();
 	});
 }

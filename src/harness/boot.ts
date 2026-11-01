@@ -1006,7 +1006,18 @@ export async function openHarness(
 	const overlayStores = new Map<string, OverlayStore>();
 	const usageCounters = new Map<string, UsageCounters>();
 	const curationOf = (user: string | undefined) => {
-		if (user === undefined || identity.users.get(user) === undefined) return undefined;
+		if (user === undefined) return undefined;
+		// Curator A10: cache-FIRST resolution — a store set captured before
+		// a user's deletion stays resolvable, so its own `userExists` gate
+		// fails every later op with "user removed" (the A4/A5 fail-closed
+		// property: an in-flight run's late write never recreates the
+		// roots). A never-seen user still needs the live directory read.
+		if (
+			skillStores.get(user) === undefined &&
+			identity.users.get(user) === undefined
+		) {
+			return undefined;
+		}
 		const userArea = managedPaths.userAreas(user);
 		let store = skillStores.get(user);
 		if (store === undefined) {

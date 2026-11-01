@@ -716,7 +716,8 @@ links, stops their worker and services, and removes their per-user tool
 entries. Extensions then receive `userDeleted` while the old record and
 secrets remain readable, so they can revoke external provider
 credentials. Finally core removes the directory record, per-user secrets,
-user-settings directory, and per-user cache directories.
+user-settings directory, per-user cache directories, and that user's
+learned skills and curation state (never transferred).
 
 **Credentials belong to a person and never transfer.** Data and state
 stay for the extension to retain, move, or delete according to its own
@@ -1192,6 +1193,22 @@ warning: commands keep their meaning. The transcript shows what you
 typed — the submission's user entry carries
 `{kind: "sigrun.user.expanded", data: {typed, command}}` while the
 model receives the expanded text.
+
+**The curator and learned skills.** Beyond the three roots above, every
+user has a private fourth root — learned skills the curator records for
+them under `<data-dir>/users/<user>/skills/`. The curator reviews the
+user's conversations (owner-authored tool calls are captured as
+"Noted" hints, never executed on the spot) and writes through the
+versioned `skill_manage` surface, so every learned skill keeps its last
+ten versions, a change feed, and one-call undo. Learned skills never
+leave their user: they are not shared, not transferred on ownership
+moves, and removed with the user on `DELETE /v1/users/{user}`. Each
+user can pause or disable the curator in their own per-user settings —
+`PUT /v1/me/extensions/curator/settings` with `{"paused": true}` stops
+new reviews until flipped back, `{"enabled": false}` turns the curator
+off entirely (both are per-user and take effect on the next run) — and
+an operator can disable it server-wide with
+`"builtinExtensions": {"curator": false}` (restart required).
 
 ## Jobs
 
