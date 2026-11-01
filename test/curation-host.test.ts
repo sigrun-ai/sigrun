@@ -1,8 +1,9 @@
 /**
  * Task A9 (curator P6): the `host.curation` surface — the read APIs
- * (eligibility, modelCallsSince, takeHints, targets, tools, skills,
- * overlays, upstream, jobSkillRefs, undoReview, usage) and the bridge
- * wiring that hands the SAME object to every extension's seam host.
+ * (eligibility, authors, modelCallsSince, takeHints, targets, tools,
+ * skills, overlays, upstream, jobSkillRefs, undoReview, usage) and the
+ * bridge wiring that hands the SAME object to every extension's seam
+ * host.
  *
  * Hermetic pattern (curation-internal.test.ts): a full server boot with
  * the fixture-curation-target extension, driven through the host
@@ -14,7 +15,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test, vi } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -24,6 +25,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import type {
 	ConversationId,
+	EntryId,
 	JsonObject,
 	SubmissionId,
 	TaskId,
@@ -40,6 +42,13 @@ import { seededIdentity } from "./helpers/identity.js";
 const TARGET_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-curation-target", "index.js"),
 ).href;
+
+// Every bootServer loads the built-in extensions, and the MCP one
+// registers a process-exit listener per boot — this file's per-test
+// boots cross Node's default 10-listener leak warning. Bounded bump,
+// not a leak: each server closes in the afterAll below.
+process.setMaxListeners(20);
+
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
@@ -238,6 +247,92 @@ describe("host.curation (curator P6 surface)", () => {
 				oldest.items[0].id,
 			),
 		).toBe(504);
+	});
+
+	/**
+	 * Poll the durable submissions until `requestId` settled `done` with
+	 * its entry placed (a bridge-submit turn: the harness-level wait of
+	 * ownedConversation over the storage scan the attribution tests use).
+	 */
+	async function waitForTurn(
+		opened: OpenedHarness,
+		conversationId: number,
+		requestId: string,
+	): Promise<{ readonly entry: number; readonly status: string }> {
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const page = await opened.storage.scanSubmissions(
+				{ conversationId: conversationId as ConversationId, order: "ascending" },
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			const record = page.items.find((item) => item.requestId === requestId);
+			if (record?.entry !== undefined && record.status === "done") return record;
+			if (Date.now() > deadline) {
+				throw new Error(`submission ${requestId} never settled done`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	}
+
+	test("authors maps every input entry to its author, unattributed to undefined", { timeout: 30_000 }, async () => {
+		const { app, opened } = await bootServer([
+			fauxAssistantMessage("alice's answer"),
+			fauxAssistantMessage("bob's answer"),
+			fauxAssistantMessage("the raw turn's answer"),
+		]);
+		const curation = app.hostBridge.curation;
+		// A mixed conversation: alice and bob each submit one turn through
+		// the host bridge (the A1 `opts.user` path — recorded verbatim),
+		// then one RAW harness submit lands with no author record (the
+		// pre-P1 shape).
+		const conversation = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		await opened.harness.commit(async (tx) => {
+			const meta = await tx.doc(SessionMetaDoc, conversation.id);
+			meta.owner = "alice";
+		}, BACKGROUND_CONTEXT);
+		const attributedTurn = async (user: string, text: string) => {
+			const record = await app.hostBridge.conversations.submit(
+				conversation.id,
+				[{ type: "text", text }],
+				{ user },
+		);
+			return (
+				await waitForTurn(opened, conversation.id as number, record.requestId!)
+			).entry;
+		};
+		const aliceEntry = await attributedTurn("alice", "how do I deploy acme sites?");
+		const bobEntry = await attributedTurn("bob", "delete every acme site now");
+		const raw = await conversation.submit(
+			{ type: "input", content: "a raw turn" },
+			BACKGROUND_CONTEXT,
+		);
+		const rawRecord = await raw.wait(BACKGROUND_CONTEXT);
+		expect(rawRecord.status).toBe("done");
+
+		// The bridge surface: every input entry → its author (P1);
+		// the raw turn reads unattributed (undefined — fail closed).
+		const authors = await curation.authors(conversation.id);
+		expect(authors.get(aliceEntry as EntryId)).toBe("alice");
+		expect(authors.get(bobEntry as EntryId)).toBe("bob");
+		expect(authors.get(rawRecord.entry!)).toBeUndefined();
+		// The presence set is EXACTLY the input entries (three turns).
+		expect(authors.size).toBe(3);
+
+		// The extension-facing shape: the seam host's curation proxy
+		// forwards the new member to the same host.
+		const seamHost = app.sigrunContext.opened.seamHosts.get(
+			"fixture-curation-target",
+		);
+		expect(seamHost).toBeDefined();
+		const fromSeam = await (
+			(seamHost as unknown as { curation: typeof curation }).curation
+		).authors(conversation.id);
+		expect(fromSeam.get(aliceEntry as EntryId)).toBe("alice");
 	});
 
 	test("tools(id) serves the parent's model-visible tool names", { timeout: 30_000 }, async () => {

@@ -557,6 +557,14 @@ export type CurationOverlayStore = {
  */
 export type SigrunCurationHost = {
 	eligibility(id: ConversationId): Promise<CurationEligibility>;
+	/**
+	 * Every user-input entry in the ACTIVE context mapped to its author
+	 * (P1). An entry admitted before attribution existed, or by an
+	 * unidentified caller, is present with `undefined` — unattributed,
+	 * never guessed (fail closed: unattributed entries are never curation
+	 * input).
+	 */
+	authors(id: ConversationId): Promise<ReadonlyMap<EntryId, string | undefined>>;
 	/** Count the conversation's assistant entries after (or all without) an anchor entry. */
 	modelCallsSince(id: ConversationId, entryId?: EntryId): Promise<number>;
 	/** Read and clear the conversation's pending review hints (A8's doc). */

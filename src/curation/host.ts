@@ -10,9 +10,9 @@
  * delegating to the bridge, the same lazy-bind discipline as
  * `conversations`).
  *
- * Read members (eligibility, modelCallsSince, takeHints, targets,
- * tools, skills, overlays, upstream, jobSkillRefs, usage) are thin
- * reads over the A1–A8 primitives. The run producers (forkReview,
+ * Read members (eligibility, authors, modelCallsSince, takeHints,
+ * targets, tools, skills, overlays, upstream, jobSkillRefs, usage) are
+ * thin reads over the A1–A8 primitives. The run producers (forkReview,
  * digestRun, maintain) delegate to the run driver (runs.ts). The store
  * subsets (`skills`, `overlays`) are the REAL per-user stores narrowed
  * to the documented members — never a re-implementation.
@@ -156,11 +156,11 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 
 	const host: SigrunCurationHost = {
 		async eligibility(id): Promise<CurationEligibility> {
-		const meta = await harness.snapshot(
-			SessionMetaDoc,
-			id,
-			BACKGROUND_CONTEXT,
-		);
+			const meta = await harness.snapshot(
+				SessionMetaDoc,
+				id,
+				BACKGROUND_CONTEXT,
+			);
 			const conversation = await conversationOf(id, BACKGROUND_CONTEXT);
 			const page = await conversation.entries(
 				{},
@@ -168,11 +168,8 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 				undefined,
 				BACKGROUND_CONTEXT,
 			);
-			const authors = await authorsOfEntries(
-				harness,
-				id,
-				BACKGROUND_CONTEXT,
-			);
+			// The same map `authors` serves: eligibility is its aggregate view.
+			const authors = await host.authors(id);
 			let unattributed = 0;
 			let ownerOnly = true;
 			for (const [, author] of authors) {
@@ -192,6 +189,10 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 					? {}
 					: { newestEntry: page.items[0].id }),
 			};
+		},
+
+		async authors(id): Promise<ReadonlyMap<EntryId, string | undefined>> {
+			return await authorsOfEntries(harness, id, BACKGROUND_CONTEXT);
 		},
 
 		async modelCallsSince(id, entryId): Promise<number> {
