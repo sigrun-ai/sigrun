@@ -311,7 +311,14 @@ describe("file jobs — declared in settings.json", () => {
 		const live = await liveScheduleTasks(rig, id);
 		expect(live).toHaveLength(1);
 		expect(live[0]!.input).toMatchObject({ jobId: id, hash: record!.hash });
-		expect(await rig.jobs.list()).toMatchObject([{ id, source: "file" }]);
+		// The list also carries the curator built-in's declared
+		// `ext:curator:curator-tick` job (extension source); the file
+		// record's own shape is asserted above it.
+		const listed = await rig.jobs.list();
+		expect(listed.find((job) => job.id === id)).toMatchObject({ id, source: "file" });
+		expect(listed.find((job) => job.id === "ext:curator:curator-tick")).toMatchObject({
+			source: "extension",
+		});
 	});
 
 	test("reboot unchanged → still one record, the same task id, no new revision", async () => {

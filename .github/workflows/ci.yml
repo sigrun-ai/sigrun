@@ -44,8 +44,8 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          for d in sigrun-ext-codemode sigrun-ext-gateway sigrun-ext-mcp \
-                   sigrun-ext-tool-search sigrun-ext-oauth; do
+          for d in sigrun-ext-codemode sigrun-ext-curator sigrun-ext-gateway \
+                   sigrun-ext-mcp sigrun-ext-tool-search sigrun-ext-oauth; do
             echo "::group::npm ci $d"
             ( cd "$d" && npm ci --ignore-scripts )
             echo "::endgroup::"
@@ -90,8 +90,8 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          for d in sigrun-ext-codemode sigrun-ext-gateway sigrun-ext-mcp \
-                   sigrun-ext-tool-search sigrun-ext-oauth; do
+          for d in sigrun-ext-codemode sigrun-ext-curator sigrun-ext-gateway \
+                   sigrun-ext-mcp sigrun-ext-tool-search sigrun-ext-oauth; do
             echo "::group::npm ci $d"
             ( cd "$d" && npm ci --ignore-scripts )
             echo "::endgroup::"

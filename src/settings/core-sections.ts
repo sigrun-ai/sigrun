@@ -511,6 +511,15 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								help: "The built-in OIDC/OAuth2 login extension — applies at restart",
 								apply: applyOf("builtinExtensions.oauth"),
 							},
+							{
+								type: "toggle",
+								// Absent means ON (the built-in set defaults enabled).
+								default: true,
+								name: "builtinExtensions.curator",
+								label: "Curator",
+								help: "The built-in curator extension — applies at restart",
+								apply: applyOf("builtinExtensions.curator"),
+							},
 						],
 					},
 				],

@@ -64,7 +64,7 @@ const MARKER = join(ROOT, ".publish-deps-applied.json");
 
 /**
  * The built-in extensions and the sibling checkout each one lives in.
- * ALL FIVE ship in core — this map is the single list every other
+ * ALL SIX ship in core — this map is the single list every other
  * enumeration (the workflows' checkouts, the lock regen, the image
  * smoke's resolve list) derives from via the `list`/`pins` modes, so a
  * new built-in lands here ONCE (test/builtins-wiring.test.ts asserts the
@@ -72,6 +72,7 @@ const MARKER = join(ROOT, ".publish-deps-applied.json");
  */
 const BUILTINS = {
 	"@sigrun/ext-codemode": "../sigrun-ext-codemode",
+	"@sigrun/ext-curator": "../sigrun-ext-curator",
 	"@sigrun/ext-gateway": "../sigrun-ext-gateway",
 	"@sigrun/ext-mcp": "../sigrun-ext-mcp",
 	"@sigrun/ext-tool-search": "../sigrun-ext-tool-search",
@@ -88,6 +89,7 @@ const BUILTINS = {
  */
 const SLUGS = {
 	"@sigrun/ext-codemode": "codemode",
+	"@sigrun/ext-curator": "curator",
 	"@sigrun/ext-gateway": "gateway",
 	"@sigrun/ext-mcp": "sigrun-mcp",
 	"@sigrun/ext-tool-search": "tool-search",

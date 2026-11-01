@@ -19,9 +19,10 @@
 # caller's file is named release.yml; the reusable workflow's own name
 # is not part of the trust configuration.
 #
-# needs-core: true ONLY for sigrun-ext-mcp, sigrun-ext-gateway and
-# sigrun-ext-oauth (file:../sigrun dev deps) and sigrun-ext-tool-search
-# (file:../sigrun-ext-mcp); see ext-ci.yml for the layout contract.
+# needs-core: true ONLY for sigrun-ext-mcp, sigrun-ext-curator,
+# sigrun-ext-gateway and sigrun-ext-oauth (file:../sigrun dev deps) and
+# sigrun-ext-tool-search (file:../sigrun-ext-mcp); see ext-ci.yml for the
+# layout contract.
 name: ext-release
 
 on:

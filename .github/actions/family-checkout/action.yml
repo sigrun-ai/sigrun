@@ -1,4 +1,4 @@
-# Composite action: check out the five built-in extension siblings next
+# Composite action: check out the six built-in extension siblings next
 # to the caller's `sigrun/` checkout, in the workspace-root sibling layout
 # the `file:../sigrun-ext-*` specifiers and publish-deps.mjs's manifest
 # reads resolve against.
@@ -31,6 +31,11 @@ runs:
       with:
         repository: sigrun-ai/sigrun-ext-codemode
         path: sigrun-ext-codemode
+    - if: ${{ inputs.exclude != 'sigrun-ext-curator' }}
+      uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-ext-curator
+        path: sigrun-ext-curator
     - if: ${{ inputs.exclude != 'sigrun-ext-gateway' }}
       uses: actions/checkout@v5
       with:

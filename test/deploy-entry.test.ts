@@ -327,6 +327,7 @@ test(
 					toolSearch: false,
 					gateway: false,
 					oauth: false,
+					curator: false,
 				},
 			}) + "\n",
 			"utf8",

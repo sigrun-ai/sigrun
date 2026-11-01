@@ -121,6 +121,7 @@ for (const name of [
 	"@sigrun/shared/themes",
 	"@sigrun/tui",
 	"@sigrun/ext-codemode",
+	"@sigrun/ext-curator",
 	"@sigrun/ext-gateway",
 	"@sigrun/ext-mcp",
 	"@sigrun/ext-tool-search",

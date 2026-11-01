@@ -311,11 +311,11 @@ export interface NotificationsSettings {
 }
 
 /**
- * The built-in extensions toggles: codemode, MCP, tool search and OAuth
- * ship WITH core. Each key defaults to `true`; `false`
- * removes the built-in entirely (absent from `/v1/extensions`, its config
- * ignored with one log line). RESTART-REQUIRED: the built-in set resolves
- * at boot, like `extensions`.
+ * The built-in extensions toggles: codemode, MCP, tool search, the
+ * gateway, OAuth and the curator ship WITH core. Each key defaults to
+ * `true`; `false` removes the built-in entirely (absent from
+ * `/v1/extensions`, its config ignored with one log line).
+ * RESTART-REQUIRED: the built-in set resolves at boot, like `extensions`.
  */
 export interface BuiltinExtensionsSettings {
 	readonly codemode?: boolean;
@@ -325,6 +325,8 @@ export interface BuiltinExtensionsSettings {
 	readonly gateway?: boolean;
 	/** OAuth login providers (multi-user M3b), default true. */
 	readonly oauth?: boolean;
+	/** Curator (Task B1): the per-user curation loops, default true. */
+	readonly curator?: boolean;
 }
 
 /**

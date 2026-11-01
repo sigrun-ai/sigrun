@@ -536,7 +536,7 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		}
 	});
 
-	test("the test job checks out all five repos in the sibling layout", () => {
+	test("the test job checks out all six repos in the sibling layout", () => {
 		const { jobs } = workflow();
 		const test = jobs.test;
 		expect(test).toBeDefined();

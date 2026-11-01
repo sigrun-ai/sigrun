@@ -194,10 +194,12 @@ describe("extension slash commands: the catalog merge", () => {
 			"thinking",
 			"jobs",
 			"settings",
-			// The gateway built-in's commands ride the merged catalog ahead
-			// of the fixture's `hello` (gateway Task 4, §8.2).
+			// The gateway built-in's commands and the curator's `/learn`
+			// (Task B1) ride the merged catalog ahead of the fixture's
+			// `hello` (gateway Task 4, §8.2).
 			"pair",
 			"link",
+			"learn",
 			"hello",
 		]);
 	});

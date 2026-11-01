@@ -731,7 +731,13 @@ test("the meta route inventories declared kinds", async () => {
 	const { app } = await bootWith([FIXTURE_SPECIFIER]);
 	const meta = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
 	expect(meta.seam).toEqual({
-		interactions: [{ extension: "sigrun-fixture-seam", kinds: ["fixture.ask"] }],
-		ambient: [{ extension: "sigrun-fixture-seam", keys: ["fixture.panel"] }],
+		interactions: [
+			{ extension: "curator", kinds: ["curator.overlay-question"] },
+			{ extension: "sigrun-fixture-seam", kinds: ["fixture.ask"] },
+		],
+		ambient: [
+			{ extension: "curator", keys: ["curator.notice"] },
+			{ extension: "sigrun-fixture-seam", keys: ["fixture.panel"] },
+		],
 	});
 });

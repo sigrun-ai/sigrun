@@ -1,5 +1,5 @@
 /**
- * Built-in wiring (release workstream Task 1.2): the five built-in
+ * Built-in wiring (release workstream Task 1.2): the six built-in
  * extensions must appear in EVERY place that enumerates them, and the
  * enumerations must agree. Finding A of the release scan was exactly
  * this drift: the gateway built-in shipped in `src/harness/builtins.ts`
@@ -205,14 +205,16 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		for (const [index, names] of rest.entries()) {
 			expect(names, `${sets[index + 1]?.[0]} equals ${sets[0]?.[0]}`).toEqual(first);
 		}
-		// The release scan's finding: FIVE built-ins, not four.
-		expect(first).toHaveLength(5);
+		// The release scan's finding: FIVE built-ins, not four; Task B1
+		// made it six (the curator is the last).
+		expect(first).toHaveLength(6);
 		expect(first).toContain("@sigrun/ext-gateway");
+		expect(first).toContain("@sigrun/ext-curator");
 	});
 
 	test("pins prints exactly one <name>@<semver> per built-in, each version from the sibling manifest", () => {
 		const pins = publishDeps("pins").trim().split(/\s+/).filter(Boolean);
-		expect(pins).toHaveLength(5);
+		expect(pins).toHaveLength(6);
 		const siblings = siblingManifests();
 		const seen = new Set<string>();
 		for (const pin of pins) {
@@ -232,7 +234,7 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 	test("slugs prints exactly the loader slugs builtins.ts declares", () => {
 		const out = publishDeps("slugs").trim();
 		const rows = out === "" ? [] : out.split("\n");
-		expect(rows, "one slug row per built-in").toHaveLength(5);
+		expect(rows, "one slug row per built-in").toHaveLength(6);
 		const printed = new Map(
 			rows.map((line) => {
 				const [name, slug] = line.split(" ");

@@ -13,7 +13,7 @@
  * - core's `files` whitelist (the runnable tarball: `dist` +
  *   `webui/dist` + the docs files; deploy assets live on GitHub, not in
  *   the tarball);
- * - the five built-in extension dependencies. Working-tree spec is
+ * - the six built-in extension dependencies. Working-tree spec is
  *   `file:../sigrun-ext-*` (the dev shape —
  *   npm refuses registry-spec + `overrides: file:` for direct deps,
  *   EOVERRIDE); the publish-time rewrite flips these to exact versions
@@ -139,6 +139,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		// The built-ins resolve from core's own tree under their scoped
 		// names (src/harness/builtins.ts keys on these).
 		expect(root.dependencies?.["@sigrun/ext-codemode"]).toMatch(builtinSpec("sigrun-ext-codemode"));
+		expect(root.dependencies?.["@sigrun/ext-curator"]).toMatch(builtinSpec("sigrun-ext-curator"));
 		expect(root.dependencies?.["@sigrun/ext-gateway"]).toMatch(builtinSpec("sigrun-ext-gateway"));
 		expect(root.dependencies?.["@sigrun/ext-mcp"]).toMatch(builtinSpec("sigrun-ext-mcp"));
 		expect(root.dependencies?.["@sigrun/ext-tool-search"]).toMatch(builtinSpec("sigrun-ext-tool-search"));
@@ -146,7 +147,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 	});
 
 	test("the built-in link nodes resolve to their sibling checkouts", () => {
-		// The five built-ins are `file:` dependencies, so npm records each as
+		// The built-ins are `file:` dependencies, so npm records each as
 		// a LINK node pointing at its sibling — never an installed copy. The
 		// package's own dependencies resolve from the sibling's node_modules
 		// (ext-oauth carries oauth4webapi there), which is why the link node

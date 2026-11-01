@@ -114,9 +114,11 @@ test("every context-taking seam method normalizes literals before commit/snapsho
 		await host.clearAmbient(root.id, "fixture.panel", literal);
 
 		// Two seeds, answer, settle, set and clear: every durable write got
-		// the full context, not the extension's structural literal.
-		expect(commit).toHaveBeenCalledTimes(6);
-		expect(snapshot).toHaveBeenCalledTimes(2);
+		// the full context, not the extension's structural literal. The
+		// seventh call is the curator built-in's tick-job reconciliation
+		// (its declared task record) — boot-time, same normalization rule.
+		expect(commit).toHaveBeenCalledTimes(7);
+		expect(snapshot).toHaveBeenCalledTimes(5);
 		for (const call of [...commit.mock.calls, ...snapshot.mock.calls]) {
 			const forwarded = call.at(-1) as Context;
 			expect(forwarded).not.toBe(literal);
@@ -132,7 +134,7 @@ test("every context-taking seam method normalizes literals before commit/snapsho
 				abortSignal: controller.signal,
 			} as unknown as Context),
 		).rejects.toThrow("caller cancelled");
-		expect(commit).toHaveBeenCalledTimes(6);
+		expect(commit).toHaveBeenCalledTimes(7);
 	} finally {
 		if (opened !== undefined) {
 			await opened.harness.close(BACKGROUND_CONTEXT);
