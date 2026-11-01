@@ -1,7 +1,7 @@
 apiVersion: v2
 name: sigrun
 description: >-
-  Sigrun — durable personal assistant harness (Node + harness + webui) with
+  Sigrun — self-hosted, multi-user personal-assistant server (Node + harness + webui) with
   sqlite storage, nightly backup, and readiness-scraped observability.
   Reference deployment for the sigrun core (spec §4.4): single replica,
   Recreate strategy, RWO block-like PVC for sqlite, ClusterIP Service.

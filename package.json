@@ -1,7 +1,7 @@
 {
 	"name": "@sigrun/sigrun",
 	"version": "0.4.2",
-	"description": "Durable personal assistant on pi-durable",
+	"description": "Self-hosted, multi-user personal-assistant server",
 	"type": "module",
 	"exports": {
 		".": "./dist/index.js",
