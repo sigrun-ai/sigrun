@@ -200,6 +200,17 @@ describe("SettingsStore", () => {
 		expect(settingsPath("/x/y")).toBe(join("/x/y", "settings.json"));
 	});
 
+	test("harnessSettings() carries no stream default (the boot getter merges it)", () => {
+		// The store stays passthrough — the DEFAULT_STREAM_TIMEOUT_MS merge
+		// lives in boot's settings getter, not the store, so the store's
+		// read stays the honest file shape (validated keys only).
+		const { store } = freshStore();
+		expect(store.harnessSettings().stream).toBeUndefined();
+		store.update({ stream: { maxRetries: 2 } });
+		// timeoutMs still absent from the STORE read: boot adds the default.
+		expect(store.harnessSettings().stream).toEqual({ maxRetries: 2 });
+	});
+
 	test("bootstrap writes the resolved server section only when the file is absent", async () => {
 		const { store, dir } = freshStore();
 		const section = {

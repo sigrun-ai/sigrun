@@ -14,6 +14,7 @@ import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
 	type AgentChange,
+	type ConversationStreamOptions,
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
@@ -89,6 +90,34 @@ import {
 	DEFAULT_REFRESH_TIMEOUT_MS,
 	refreshProvider,
 } from "./providers/refresh.js";
+/**
+ * The default per-request stream deadline (curator-eval hardening): the
+ * OpenAI SDK waits up to 10 minutes for response HEADERS by default, and
+ * a request that never reaches the provider never gets headers — the
+ * generation task wedges in phase=request. Five minutes covers long
+ * first tokens on slow providers (observed 40-60s on the eval models;
+ * reasoning models can run far longer once streaming) because the SDK's
+ * timer clears at headers arrival, not stream end.
+ */
+export const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
+
+/**
+ * The boot `stream` getter's merge, factored out for the harness-open
+ * test: caller seam over file over the default `timeoutMs`, field-wise.
+ * Returns `undefined` when nothing is set (the honest empty shape).
+ */
+export function mergeStreamSettings(
+	caller: ConversationStreamOptions | undefined,
+	file: ConversationStreamOptions | undefined,
+): ConversationStreamOptions | undefined {
+	const merged = {
+		...(caller ?? file),
+		...(caller === undefined && file?.timeoutMs === undefined
+			? { timeoutMs: DEFAULT_STREAM_TIMEOUT_MS }
+			: {}),
+	};
+	return Object.keys(merged).length > 0 ? merged : undefined;
+}
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf, selfPackageRoot } from "./packages.js";
@@ -1659,7 +1688,19 @@ export async function openHarness(
 					return callerSettings?.retry ?? fileSettings.retry;
 				},
 				get stream() {
-					return callerSettings?.stream ?? fileSettings.stream;
+					// The stream-request default (curator-eval hardening): a
+					// model request with no explicit timeout can wedge forever —
+					// the OpenAI SDK's `timeout` is a headers-arrival deadline and
+					// defaults to 10 minutes, but a request that never reaches the
+					// provider (undici socket-pool class) never gets headers to
+					// time out against, so pi-durable's generation task sits in
+					// phase=request indefinitely. `mergeStreamSettings` bounds
+					// every request with a default `timeoutMs`; the caller seam
+					// and the file each override field-wise.
+					return mergeStreamSettings(
+						callerSettings?.stream,
+						fileSettings.stream,
+					);
 				},
 				get extensions() {
 					// Per-user entries are core-computed from SessionMeta.owner,
