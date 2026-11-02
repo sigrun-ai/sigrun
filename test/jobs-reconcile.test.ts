@@ -148,6 +148,14 @@ async function bootRig(options?: {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
+		// The jobs rigs never bind the host bridge (no createServer); the
+		// curator built-in's runSettled would hostBridge-wait until its 30s
+		// hook deadline on every job run whose owner is a VALID user (A1a
+		// made ownerless/orphaned owners resolve to the primary admin, so
+		// rig owners are now always valid). Opt out of built-ins — the
+		// e2e-harness convention; the built-in surface is
+		// test/builtins.test.ts's subject.
+		builtins: false,
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
@@ -323,14 +331,11 @@ describe("file jobs — declared in settings.json", () => {
 		const live = await liveScheduleTasks(rig, id);
 		expect(live).toHaveLength(1);
 		expect(live[0]!.input).toMatchObject({ jobId: id, hash: record!.hash });
-		// The list also carries the curator built-in's declared
-		// `ext:curator:curator-tick` job (extension source); the file
-		// record's own shape is asserted above it.
+		// Built-ins are opted out (bootRig) — the list carries the file
+		// record only; the fixture-jobs extension's declared job is
+		// asserted in its own suite below.
 		const listed = await rig.jobs.list();
 		expect(listed.find((job) => job.id === id)).toMatchObject({ id, source: "file" });
-		expect(listed.find((job) => job.id === "ext:curator:curator-tick")).toMatchObject({
-			source: "extension",
-		});
 	});
 
 	test("reboot unchanged → still one record, the same task id, no new revision", async () => {
