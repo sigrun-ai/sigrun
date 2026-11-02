@@ -55,7 +55,7 @@ import type {
 } from "@sigrun/shared/ambient";
 import type { Action, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
 import type { InteractionAnswer, InteractionRecord } from "@sigrun/shared/interactions";
-import type { JobSpec } from "@sigrun/shared/jobs";
+import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
 import type {
 	AccountLinkWire,
 	ConversationSummary,
@@ -887,6 +887,16 @@ export type SubmissionInputPart =
 /** How a submit behaves when a run is already live (pi-durable's `whenBusy`). */
 export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
+/** The extension-facing, read-only projection of one live job. */
+export interface HostJobInfo {
+	readonly id: string;
+	readonly name: string;
+	/** The effective owner (ownerless jobs resolve to the primary admin). */
+	readonly owner?: string;
+	readonly enabled: boolean;
+	readonly state: JobWire["state"];
+}
+
 /**
  * The host context sigrun hands an extension factory: the scoped
  * extension stores, the interaction/ambient seam surfaces, and the
@@ -1050,6 +1060,14 @@ export interface SigrunHost {
 			readonly name?: string;
 			readonly source?: string;
 			/**
+			 * Associate this new conversation with one live job. The requested
+			 * owner must equal the job's effective owner (including both absent).
+			 * Unknown, retired, or mismatched jobs throw `ConversationOpError`
+			 * with `{error: "invalid_field", field: "job"}` before any write.
+			 * Success stamps `jobId`; it does not create a job run or `lastRun`.
+			 */
+			readonly job?: string;
+			/**
 			 * Pin the conversation's extension/tool selection (gateway C4):
 			 * names resolved against the registry — an unknown name throws a
 			 * `ConversationOpError` naming `agent.extensions`/`agent.tools`.
@@ -1145,6 +1163,11 @@ export interface SigrunHost {
 			id: ConversationId,
 			path: string,
 		): Promise<{ readonly bytes: Uint8Array; readonly mime?: string }>;
+	};
+
+	/** Read-only job lookup; retired and unknown ids resolve to `undefined`. */
+	readonly jobs: {
+		get(id: string): Promise<HostJobInfo | undefined>;
 	};
 
 	/** The user directory (admin wire form; emails are admin material). */

@@ -67,6 +67,7 @@ function effectiveAdminOf(
  */
 export interface HostBridge {
 	readonly conversations: SigrunHost["conversations"];
+	readonly jobs: SigrunHost["jobs"];
 	readonly users: SigrunHost["users"];
 	readonly accounts: SigrunHost["accounts"];
 	readonly access: SigrunHost["access"];
@@ -230,6 +231,19 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			async readFile(id, path) {
 				const conversation = await conversationOf(id);
 				return await readFileOp(ctx, conversation, path);
+			},
+		},
+		jobs: {
+			async get(id) {
+				const job = await opened.jobs.get(id);
+				if (job === undefined) return undefined;
+				return {
+					id: job.id,
+					name: job.name,
+					...(job.owner === undefined ? {} : { owner: job.owner }),
+					enabled: job.enabled,
+					state: job.state,
+				};
 			},
 		},
 		users: {

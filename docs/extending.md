@@ -860,6 +860,40 @@ silent). The warning fires on the creating fire only — a crash-recovered
 re-entry (the run record already carries its conversation) re-runs the
 submit without re-warning.
 
+### Job hooks
+
+Extensions can inspect live jobs and associate a new conversation with one
+without creating a run:
+
+```js
+const job = await host.jobs.get("ext:acme:nightly-check");
+// undefined when the id is unknown or the job has been retired
+
+if (job !== undefined) {
+	const conversationId = await host.conversations.create({
+		owner: job.owner,
+		job: job.id,
+	});
+}
+```
+
+`host.jobs.get(id)` returns only `{id, name, owner, enabled, state}`. Its
+`owner` is the job's **effective** owner: an ownerless or orphaned job
+resolves to the primary admin. A retired job resolves to `undefined`, just
+like an unknown id.
+
+Passing `job` to `host.conversations.create` requires the requested
+`owner` to equal that effective owner exactly (two absent owners count as
+equal). An unknown, retired, or owner-mismatched job throws a
+`ConversationOpError` with `{error: "invalid_field", field: "job"}` before
+any conversation or session-meta storage write. Success stamps `jobId` in
+the same commit as `owner` and `lastActivityAt`; it does not create a run
+record or change the job's `lastRun`. The stamped conversation renders the
+job-state prompt section on its next run.
+
+The HTTP `POST /v1/conversations` route does not accept this option: it
+still takes no body fields.
+
 ## HTTP routes
 
 A factory result may declare `routes` — HTTP endpoints sigrun mounts at

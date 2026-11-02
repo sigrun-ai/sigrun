@@ -140,6 +140,8 @@ export interface CreateConversationInput {
 	readonly sharing?: Sharing;
 	/** The user-facing name (a create-time `name`). */
 	readonly name?: string;
+	/** A live job whose effective owner must equal the requested owner. */
+	readonly job?: string;
 	/**
 	 * Who created the session (spec §9.5): `"user"` for HTTP creates; the
 	 * host bridge defaults it to the calling extension's slug.
@@ -237,6 +239,17 @@ export async function createConversationOp(
 	if (input.name !== undefined && typeof input.name !== "string") {
 		throw new ConversationOpError({ error: "invalid_field", field: "name" });
 	}
+	if (input.job !== undefined) {
+		// Resolve the live job (and therefore its EFFECTIVE owner) before the
+		// createConversation table write or the session-meta commit. An absent
+		// requested owner and an absent effective owner are an exact match.
+		const job = typeof input.job === "string"
+			? await opened.jobs.get(input.job)
+			: undefined;
+		if (job === undefined || input.owner !== job.owner) {
+			throw new ConversationOpError({ error: "invalid_field", field: "job" });
+		}
+	}
 	if (input.source !== undefined && typeof input.source !== "string") {
 		throw new ConversationOpError({ error: "invalid_field", field: "source" });
 	}
@@ -323,6 +336,7 @@ export async function createConversationOp(
 					: { ...input.sharing };
 		}
 		if (input.name !== undefined) draft.name = input.name;
+		if (input.job !== undefined) draft.jobId = input.job;
 		if (input.source !== undefined) draft.source = input.source;
 		await opened.rewriteUserSelection(
 			tx,

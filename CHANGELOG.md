@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Extension host job hooks: `host.jobs.get(id)` returns a read-only live-job
+  projection with its effective owner, and `host.conversations.create({job})`
+  stamps a validated job association in the session-meta creation commit.
+  Unknown, retired, and owner-mismatched jobs are rejected before storage
+  writes; creating the conversation does not create a job run or `lastRun`.
+
 ### Changed
 - Ownerless and orphaned-owner jobs now run as the primary admin; their
   runs are no longer visible to every user. The effective owner is
