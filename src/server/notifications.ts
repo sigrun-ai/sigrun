@@ -339,6 +339,27 @@ export async function notifyExtension(
 		throw new Error("notification kind must be 1..64 characters from [a-z0-9.-]");
 	}
 
+	if (input.target !== undefined) {
+		if (typeof input.target !== "object" || input.target === null || Array.isArray(input.target)) {
+			throw new Error("notification target must be an object");
+		}
+		const hasView = "view" in input.target;
+		const hasConversation = "conversation" in input.target;
+		if (hasView === hasConversation) {
+			throw new Error(
+				"notification target must have exactly one of view or conversation",
+			);
+		}
+		if (
+			(hasView && typeof input.target.view !== "string") ||
+			(hasConversation && typeof input.target.conversation !== "number")
+		) {
+			throw new Error(
+				"notification target requires a string view or a number conversation",
+			);
+		}
+	}
+
 	let conversationId: number | undefined;
 	let url: string | undefined;
 	if (input.target !== undefined && "view" in input.target) {

@@ -84,9 +84,8 @@ test("alice drags a card across lanes; bob's context shows it moved within 2s", 
 	await aliceCard.dispatchEvent("keydown", { key: "m", bubbles: true });
 	await aliceCard.dispatchEvent("keydown", { key: "ArrowRight", bubbles: true });
 	await aliceCard.dispatchEvent("keydown", { key: "Enter", bubbles: true });
-	// The card now sits in the "doing" lane: switch the compact lane
-	// switcher to "doing" to confirm.
-	await alice.locator('select[aria-label="Lane"]').selectOption("doing");
+	// At this wide viewport both lanes are visible; assert the card's
+	// actual placement rather than using compact mode's lane selector.
 	await expect(
 		alice.locator('[data-lane="doing"] [data-drag-item="c1"]'),
 	).toBeVisible();
@@ -94,7 +93,6 @@ test("alice drags a card across lanes; bob's context shows it moved within 2s", 
 	// Bob's context reflects the move within 2 s: the surface.changed
 	// event reached his stream, the since fetch returned the shared
 	// board with c1 moved.
-	await bob.locator('select[aria-label="Lane"]').selectOption("doing");
 	const bobMoved = bob.locator('[data-lane="doing"] [data-drag-item="c1"]');
 	await expect(bobMoved).toBeVisible({ timeout: 2000 });
 

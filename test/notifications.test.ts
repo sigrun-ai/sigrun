@@ -867,6 +867,33 @@ describe("host.notify extension notices (A6)", () => {
 		expect(ofType("extension")).toHaveLength(0);
 	});
 
+	test("rejects malformed runtime target discriminants", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const base = {
+			user: "bob",
+			title: "T",
+			body: "B",
+			kind: "escalation.raised",
+		} as const;
+		const invalidTargets: unknown[] = [
+			null,
+			42,
+			"inbox",
+			[],
+			{},
+			{ view: 42 },
+			{ conversation: "42" },
+			{ view: "inbox", conversation: 42 },
+			{ view: undefined, conversation: 42 },
+		];
+		for (const target of invalidTargets) {
+			await expect(
+				server.extensionHost.notify({ ...base, target } as never),
+			).rejects.toThrow("notification target");
+		}
+		expect(ofType("extension")).toHaveLength(0);
+	});
+
 	test("conversation targets set conversationId and their publicUrl deep link", { timeout: 30_000 }, async () => {
 		const server = await bootServer({
 			publicUrl: "https://example.invalid",
