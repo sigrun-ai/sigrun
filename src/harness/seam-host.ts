@@ -232,6 +232,41 @@ export interface SeamHost {
  * boot-built store trio (one per boot, from the resolved roots); the
  * host scopes it to its identity's slug — `rekey` re-scopes in place.
  */
+/**
+ * The pre-bind forwarder for the curation surface's SYNC store members
+ * (`skills(user)`, `overlays(user)`): returns the store handle at once;
+ * every method call awaits the bridge first (the shared pending promise
+ * carries the bind deadline). Method names are read off the resolved
+ * store at call time, so the forwarder stays shape-stable.
+ */
+function syncStoreForwarder(
+	pending: Promise<unknown>,
+	member: "skills" | "overlays",
+	user: string,
+): Record<string, (...args: readonly unknown[]) => Promise<unknown>> {
+	return new Proxy(
+		{},
+		{
+			get(_t, method) {
+				return async (...args: readonly unknown[]) => {
+					const resolvedHost = (await pending) as Record<string, unknown>;
+					const store = (resolvedHost[member] as (u: string) => unknown)(user) as Record<
+						string,
+						(...call: readonly unknown[]) => unknown
+					>;
+					const fn = store[method as string];
+					if (typeof fn !== "function") {
+						throw new Error(
+							`curation: store ${member}(${user}) method ${String(method)} is not callable`,
+						);
+					}
+					return fn.apply(store, [...args]);
+				};
+			},
+		},
+	);
+}
+
 export function createSeamHost(
 	identity: HostIdentity,
 	kinds: DeclaredKinds,
@@ -694,10 +729,23 @@ export function createSeamHost(
 								curationHost,
 							);
 						}
-						// The pre-bind window: every member becomes an async forwarder
-						// (the factory-body discipline — the call WAITS for the bridge;
-						// a sync-returning member reached this way resolves to its store
-						// after the wait, which the await-ing caller observes identically).
+						// The pre-bind window: every member becomes a forwarder that
+						// waits for the bridge (the factory-body discipline). The
+						// surface's SYNC store members — `skills(user)` and
+						// `overlays(user)` return store handles whose own methods are
+						// async (the shape the view and the steps call: `.list()` with
+						// no await on the store itself) — must come back as a STORE,
+						// not a promise of one (the eval's idle pass hit exactly this:
+						// the archive step read `.list` off a promise). A lazy store
+						// whose methods each await the bridge preserves the
+						// sync-return contract while keeping the wait: the caller
+						// gets the store immediately and its first method call
+						// resolves once the bridge lands (or rejects at the bind
+						// deadline through the shared pending promise).
+						if (property === "skills" || property === "overlays") {
+							return (user: string) =>
+								syncStoreForwarder(pending, property, user);
+						}
 						return async (...args: readonly unknown[]) => {
 							const resolvedHost = await pending;
 							// SAFETY: the property is one of the contract's own function

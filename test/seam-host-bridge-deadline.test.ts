@@ -64,15 +64,41 @@ test("the curation proxy's pre-bind forwarders reject the same way", async () =>
 	const host = neverBoundHost();
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	try {
-		// A pre-bind member read returns an async forwarder; calling it
-		// waits on the same bounded bridge promise.
-		const pending = host.curation.overlays("alice");
+		// A pre-bind member read returns a forwarder; SYNC store members
+		// (`overlays`) return the lazy store whose METHOD waits on the
+		// bounded bridge promise.
+		const pending = host.curation.overlays("alice").list();
 		const assertion = expect(pending).rejects.toThrow(/curation/);
 		await vi.advanceTimersByTimeAsync(BRIDGE_DEADLINE_MS);
 		await assertion;
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+test("pre-bind curation.skills(user) is a STORE (methods callable, deadline-bounded)", async () => {
+	const host = neverBoundHost();
+	const store = host.curation.skills("alice");
+	// The sync-return contract: the store comes back at once (not a
+	// promise) and every method is a function.
+	expect(typeof store).toBe("object");
+	expect(typeof store.list).toBe("function");
+	expect(typeof store.view).toBe("function");
+	// A method call waits on the bridge and rejects at the bind deadline,
+	// naming the surface (the eval idle-pass regression: `.list` used to
+	// be undefined on a promise-of-store).
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const pending = store.list();
+		const assertion = expect(pending).rejects.toThrow(/curation|bridge never bound/s);
+		await vi.advanceTimersByTimeAsync(BRIDGE_DEADLINE_MS);
+		await assertion;
+	} finally {
+		vi.useRealTimers();
+	}
+	// Same shape for overlays.
+	const overlays = host.curation.overlays("alice");
+	expect(typeof overlays.list).toBe("function");
 });
 
 test("a late bind still wins: the same member resolves once the bridge lands", async () => {
