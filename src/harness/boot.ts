@@ -63,6 +63,7 @@ import {
 } from "./seam-host.js";
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
+import { createJobStateExtension } from "./sections/job-state.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
 import { createSkillsExtension } from "../skills/index.js";
 import { SLASH_COMMANDS } from "../server/commands.js";
@@ -140,6 +141,7 @@ import {
 	defaultWorkspacePrefs,
 	toHarnessEnv,
 	type EnvBuilder,
+	type WorkspaceService,
 } from "./workspace.js";
 
 /** The idle sweep cadence (spec §2: ONE host-owned 1s interval). */
@@ -168,6 +170,7 @@ export const RESERVED_CORE_SECTION_OWNERS: Readonly<Record<string, string>> = {
 	skills: "sigrun.skills",
 	"tool-guidance": "sigrun.model-guidance",
 	"execution-guidance": "sigrun.model-guidance",
+	"job-state": "sigrun.job-state",
 };
 
 /** A live harness plus the application-owned registry it reads. */
@@ -936,6 +939,10 @@ export async function openHarness(
 	// reads it at RENDER time, long after the assignment — the skills cap
 	// is a live setting (`skills.sectionMaxBytes`, default 4KB).
 	let skillsSettings: { read(): { skills?: { sectionMaxBytes?: number } } } | undefined;
+	// The job-state section resolves its services only when a job run renders;
+	// both are constructed after the core registry installs.
+	let workspaceService: WorkspaceService | undefined;
+	let jobs: JobsService | undefined;
 	// Context-file sections (SOUL.md persona, AGENTS.md instructions), the
 	// skills convention, and the core tool surface (plan Task 1: coding
 	// tools read/write/edit/bash + search tools find/grep/ls) are all
@@ -981,6 +988,12 @@ export async function openHarness(
 		},
 	};
 	registry.install(contextFilesExtension);
+	registry.install(
+		createJobStateExtension({
+			jobsRoot: (owner) => workspaceService?.jobsRoot(owner),
+			job: async (id) => await jobs?.get(id),
+		}),
+	);
 	registry.install(createSkillsExtension(skillsOptions));
 	registry.install(codingToolsExtension);
 	registry.install(searchToolsExtension);
@@ -1432,7 +1445,7 @@ export async function openHarness(
 		stopProviderRefresh();
 	};
 	// Every tool/file/upload/job env resolves through this one decision seam.
-	const workspaceService = createWorkspaceService({
+	workspaceService = createWorkspaceService({
 		isolation: isolationState,
 		osUsers,
 		pool: sandboxPool,
@@ -1791,7 +1804,7 @@ export async function openHarness(
 			jobRunTotals.set(outcome, (jobRunTotals.get(outcome) ?? 0) + 1);
 		}
 	});
-	const jobs = createJobsService({
+	jobs = createJobsService({
 		harness,
 		storage,
 		runtime: jobRuntimeDeps,

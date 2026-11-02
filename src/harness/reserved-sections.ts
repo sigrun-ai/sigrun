@@ -21,6 +21,7 @@ export const RESERVED_CORE_SECTION_KEYS = [
 	"skills",
 	"tool-guidance",
 	"execution-guidance",
+	"job-state",
 ] as const;
 
 /**
