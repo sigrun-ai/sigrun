@@ -145,8 +145,12 @@ describe("a declared job's effective owner", () => {
 
 		const listed = await call(app, "GET", "/v1/jobs", rootAdmin);
 		expect(listed.status).toBe(200);
-		expect(listed.json.jobs).toHaveLength(1);
-		expect(listed.json.jobs[0]).toMatchObject({
+		// Merged main loads the curator built-in, which declares its own job
+		// (ext:curator:curator-tick) — assert OUR row, not the list length.
+		const row = listed.json.jobs.find(
+			(job: { id: string }) => job.id === id,
+		);
+		expect(row).toMatchObject({
 			id,
 			owner: "root-admin",
 			access: "write",

@@ -255,6 +255,9 @@ describe("learned skills root (P2)", () => {
 			);
 		}, BACKGROUND_CONTEXT);
 		const deps: JobRuntimeDeps = {
+			// Escalations A1a: ownerless jobs resolve at use time; the fixture
+			// resolver passes owners through unchanged.
+			effectiveOwner: (owner) => owner,
 			harness: opened.harness,
 			storage: opened.storage,
 			registry: opened.registry,

@@ -652,7 +652,7 @@ export function createSeamHost(
 		},
 		jobs: {
 			async get(id) {
-				return (await hostBridge()).jobs.get(id);
+				return (await hostBridge("jobs.get")).jobs.get(id);
 			},
 		},
 		users: {
@@ -797,7 +797,7 @@ export function createSeamHost(
 			},
 		},
 		async notify(input) {
-			return (await hostBridge()).notify(identity.name, input);
+			return (await hostBridge("notify")).notify(identity.name, input);
 		},
 		// The surfaces seam (UI-blocks U3 Task 4): `changed` awaits the
 		// bridge (so a factory-body call waits, never resolves early) and
