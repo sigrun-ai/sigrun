@@ -1811,6 +1811,7 @@ export async function openHarness(
 		effectiveOwner: jobEffectiveOwner,
 		rootId: rootConversationId,
 		sources: jobsSources,
+		jobsRoot: (owner) => workspaceService?.jobsRoot(owner),
 		settings: () => settingsStore.read(),
 		onChange: (jobId) => {
 			void publishJobChanged(jobId);
@@ -1832,6 +1833,7 @@ export async function openHarness(
 			runtime: jobRuntimeDeps,
 			rootId: rootConversationId,
 			sources: jobsSources,
+			jobsRoot: (owner) => workspaceService?.jobsRoot(owner),
 		},
 		BACKGROUND_CONTEXT,
 	);

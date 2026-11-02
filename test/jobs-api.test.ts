@@ -25,10 +25,12 @@
  * faux provider, tmp workspace, `app.inject()`.
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { pathToFileURL } from "node:url";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import {
@@ -38,13 +40,22 @@ import {
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { jobStateDir, removeJobState } from "../src/jobs/state-dir.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 
+// Lifecycle cases use the real removal by default. Individual failure cases
+// reject one call to pin the reset (surface) versus delete (best-effort) policy.
+vi.mock("../src/jobs/state-dir.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/jobs/state-dir.js")>();
+	return { ...actual, removeJobState: vi.fn(actual.removeJobState) };
+});
+
 interface TestServer {
 	app: FastifyInstance;
 	opened: OpenedHarness;
+	dir: string;
 	alice: string;
 	bob: string;
 }
@@ -58,6 +69,7 @@ afterAll(async () => {
 async function bootServer(options?: {
 	/** Settings-file contents, written BEFORE boot (the `file:` job source). */
 	readonly settings?: Record<string, unknown>;
+	readonly extensionSpecifiers?: readonly string[];
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-api-"));
 	if (options?.settings !== undefined) {
@@ -78,6 +90,7 @@ async function bootServer(options?: {
 	const env = {
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_DATA_DIR: join(dir, "data"),
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_AUTH: "token",
 		SIGRUN_TIMEZONE: "UTC",
@@ -88,6 +101,9 @@ async function bootServer(options?: {
 	await identity.users.add({ user: "bob", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
 		extensions: [contributor],
+		...(options?.extensionSpecifiers === undefined
+			? {}
+			: { extensionSpecifiers: options.extensionSpecifiers }),
 		env,
 		identity,
 		settingsDir: dir,
@@ -100,7 +116,16 @@ async function bootServer(options?: {
 		await opened.harness.close(BACKGROUND_CONTEXT).catch(() => {});
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened, alice: await mint("alice"), bob: await mint("bob") };
+	return { app, opened, dir, alice: await mint("alice"), bob: await mint("bob") };
+}
+
+function statePath(dir: string, owner: string, jobId: string): string {
+	return jobStateDir(join(dir, "data", "users", owner, "jobs"), jobId);
+}
+
+async function seedState(path: string): Promise<void> {
+	await mkdir(path, { recursive: true });
+	await writeFile(join(path, "notes.json"), "{}");
 }
 
 /** One injected request with auth (+ JSON content type for bodies). */
@@ -339,6 +364,76 @@ describe("declared jobs are immutable", () => {
 			status: 409,
 			json: { error: "job_declared" },
 		});
+	});
+});
+
+describe("job-state lifecycle", () => {
+	test("deleting an api job removes its populated state folder", async () => {
+		const { app, dir, alice } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());
+		const state = statePath(dir, "alice", created.json.job.id);
+		await seedState(state);
+		expect(await call(app, "DELETE", `/v1/jobs/${created.json.job.id}`, alice)).toMatchObject({ status: 204 });
+		expect(existsSync(state)).toBe(false);
+	});
+
+	test("resetState removes the folder for all three job sources; a later run may recreate it", async () => {
+		const { app, opened, dir, alice } = await bootServer({
+			settings: { jobs: [promptSpec({ name: "nightly-check", owner: "alice" })] },
+			extensionSpecifiers: [pathToFileURL(join(import.meta.dirname, "fixtures", "fixture-jobs", "index.js")).href],
+		});
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());
+		expect(created.status).toBe(201);
+		const cases = [
+			{ id: created.json.job.id, owner: "alice" },
+			{ id: "file:nightly-check", owner: "alice" },
+			{ id: "ext:fixture-jobs:tick", owner: "tester" },
+		];
+		for (const { id, owner } of cases) {
+			const state = statePath(dir, owner, id);
+			await seedState(state);
+			await opened.jobs.resetState(id);
+			expect(existsSync(state)).toBe(false);
+			// The folder is only persistent state: the next run can create it anew.
+			await seedState(state);
+			expect(existsSync(state)).toBe(true);
+		}
+		await expect(opened.jobs.resetState("api:none")).rejects.toMatchObject({ name: "JobNotFoundError" });
+	});
+
+	test("reset route: write → 204 and folder gone; read → 403; unknown → 404", async () => {
+		const { app, dir, alice, bob } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec({ sharing: { scope: "household", level: "read" } }));
+		const id = created.json.job.id;
+		const state = statePath(dir, "alice", id);
+		await seedState(state);
+		expect(await call(app, "POST", `/v1/jobs/${id}/state/reset`, bob)).toMatchObject({ status: 403, json: { error: "forbidden" } });
+		expect(await call(app, "POST", "/v1/jobs/api:none/state/reset", alice)).toMatchObject({ status: 404, json: { error: "job_not_found" } });
+		expect(await call(app, "POST", `/v1/jobs/${id}/state/reset`, alice)).toMatchObject({ status: 204 });
+		expect(existsSync(state)).toBe(false);
+	});
+
+	test("reset removal failure → 500 state_reset_failed; delete failure → 204 plus a warning naming the path", async () => {
+		const { app, dir, alice } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());
+		const id = created.json.job.id;
+		const state = statePath(dir, "alice", id);
+		await seedState(state);
+		const removal = vi.mocked(removeJobState);
+		removal.mockRejectedValueOnce(new Error("disk removal refused"));
+		const reset = await call(app, "POST", `/v1/jobs/${id}/state/reset`, alice);
+		expect(reset).toMatchObject({ status: 500, json: { error: "state_reset_failed", message: "disk removal refused" } });
+		expect(existsSync(state)).toBe(true);
+
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			removal.mockRejectedValueOnce(new Error("disk removal refused"));
+			expect(await call(app, "DELETE", `/v1/jobs/${id}`, alice)).toMatchObject({ status: 204 });
+			expect(existsSync(state)).toBe(true);
+			expect(warning.mock.calls.some((call) => call.some((part) => String(part).includes(state)))).toBe(true);
+		} finally {
+			warning.mockRestore();
+		}
 	});
 });
 

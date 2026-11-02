@@ -417,6 +417,7 @@ describe("server route table", () => {
 				"/v1/jobs/:id/revisions",
 				"/v1/jobs/:id/run",
 				"/v1/jobs/:id/runs",
+				"/v1/jobs/:id/state/reset",
 				"/v1/me/extensions/:slug/secrets",
 				"/v1/me/extensions/:slug/secrets/:key",
 				"/v1/me/extensions/:slug/settings",
