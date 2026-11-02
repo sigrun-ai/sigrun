@@ -55,34 +55,47 @@ test("alice drags a card across lanes; bob's context shows it moved within 2s", 
 	alice.on("pageerror", (cause) => aliceErrors.push(String(cause)));
 	bob.on("pageerror", (cause) => bobErrors.push(String(cause)));
 
+	// A wide viewport renders the lanes display side-by-side (regular
+	// width) so the pointer drag has both lanes on screen.
+	await alice.setViewportSize({ width: 1600, height: 900 });
+	await bob.setViewportSize({ width: 1600, height: 900 });
 	// Both open the board surface (the rail entry navigates the hash).
 	await alice.goto(`${server.url}/#/ext/fixture-surfaces-e2e/board`);
 	await bob.goto(`${server.url}/#/ext/fixture-surfaces-e2e/board`);
 
-	// The board renders its lanes + cards in both contexts.
-	const aliceCard = alice.locator('[data-card="c1"]');
-	const bobCard = bob.locator('[data-card="c1"]');
+	// The board renders its lanes + cards in both contexts (the generic
+	// lanes display keys cards by data-drag-item).
+	const aliceCard = alice.locator('[data-drag-item="c1"]');
+	const bobCard = bob.locator('[data-drag-item="c1"]');
 	await expect(aliceCard).toBeVisible();
 	await expect(bobCard).toBeVisible();
 	// c1 starts in the "todo" lane in both contexts.
 	await expect(
-		alice.locator('[data-lane="todo"] [data-card="c1"]'),
+		alice.locator('[data-lane="todo"] [data-drag-item="c1"]'),
 	).toBeVisible();
-	await expect(bob.locator('[data-lane="todo"] [data-card="c1"]')).toBeVisible();
+	await expect(bob.locator('[data-lane="todo"] [data-drag-item="c1"]')).toBeVisible();
 
-	// Alice drags c1 todo → doing. The drag posts the move action
+	// Alice moves c1 todo → doing through the keyboard move path
+	// (§12.4): `m` picks the card up, ArrowRight moves the placement
+	// cursor to the next lane, Enter drops. The keydown bubbles to the
+	// lanes container's handler, which dispatches the move action
 	// (optimistic local move + the server's accept mutates the shared
 	// board and announces surface.changed).
-	const doingLane = alice.locator('[data-lane="doing"]');
-	await aliceCard.dragTo(doingLane);
+	await aliceCard.dispatchEvent("keydown", { key: "m", bubbles: true });
+	await aliceCard.dispatchEvent("keydown", { key: "ArrowRight", bubbles: true });
+	await aliceCard.dispatchEvent("keydown", { key: "Enter", bubbles: true });
+	// The card now sits in the "doing" lane: switch the compact lane
+	// switcher to "doing" to confirm.
+	await alice.locator('select[aria-label="Lane"]').selectOption("doing");
 	await expect(
-		alice.locator('[data-lane="doing"] [data-card="c1"]'),
+		alice.locator('[data-lane="doing"] [data-drag-item="c1"]'),
 	).toBeVisible();
 
 	// Bob's context reflects the move within 2 s: the surface.changed
 	// event reached his stream, the since fetch returned the shared
 	// board with c1 moved.
-	const bobMoved = bob.locator('[data-lane="doing"] [data-card="c1"]');
+	await bob.locator('select[aria-label="Lane"]').selectOption("doing");
+	const bobMoved = bob.locator('[data-lane="doing"] [data-drag-item="c1"]');
 	await expect(bobMoved).toBeVisible({ timeout: 2000 });
 
 	expect(aliceErrors).toEqual([]);
@@ -100,11 +113,11 @@ test("a read-access principal sees the board with NO drag handles", async ({
 	});
 	const page = await context.newPage();
 	await page.goto(`${server.url}/#/ext/fixture-surfaces-e2e/board`);
-	const card = page.locator('[data-card="c1"]');
+	const card = page.locator('[data-lane="todo"] .blk-card-title').first();
 	await expect(card).toBeVisible();
-	// §6.5's read rule: no drag affordance (draggable=false, the
-	// data-draggable hook the assertion keys on).
-	await expect(card).toHaveAttribute("data-draggable", "false");
+	// §6.5's read rule: no drag affordance — a read-access card carries
+	// NO data-drag-item hook at all.
+	await expect(page.locator('[data-drag-item="c1"]')).toHaveCount(0);
 	await context.close();
 });
 

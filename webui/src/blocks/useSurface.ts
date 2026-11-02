@@ -29,6 +29,7 @@ import { useEffect, useRef, useState } from "react";
 import type {
 	Action,
 	CollectionBlock,
+	CoreTarget,
 	JsonObject,
 	JsonValue,
 	SurfaceAccess,
@@ -297,7 +298,12 @@ function applyMoveOverlay(data: JsonObject, entry: OverlayEntry): JsonObject {
 }
 
 /** The surface hook. */
-export function useSurface(transport: SurfaceTransport): SurfaceState {
+export function useSurface(
+	transport: SurfaceTransport,
+	opts?: {
+		onNavigate?: (action: { params?: JsonObject; target?: CoreTarget }) => void;
+	},
+): SurfaceState {
 	const [snapshot, setSnapshot] = useState<Snapshot>({
 		status: "loading",
 		confirmed: {},
@@ -447,6 +453,15 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 	}, [transport]);
 
 	const dispatch = (action: Action, payload: JsonValue): void => {
+		// A navigate action is shell-local: route through onNavigate and
+		// never reach the server (spec §6.1).
+		if (action.type === "navigate") {
+			opts?.onNavigate?.({
+				...(action.params === undefined ? {} : { params: action.params }),
+				...(action.target === undefined ? {} : { target: action.target }),
+			});
+			return;
+		}
 		const s = ref.current;
 		const payloadObject: JsonObject =
 			typeof payload === "object" && payload !== null && !Array.isArray(payload)
@@ -512,7 +527,23 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 						? { ...s, serverErrors: {} }
 						: s,
 				);
-				if (result.toast !== undefined) toast(result.toast);
+				// The accept outcome (toast + navigate) lands AFTER the
+				// ops apply below (spec §6.1: the accepted result's
+				// navigate routes through the shell once the data is
+				// current).
+				const finishAccept = (): void => {
+					if (result.toast !== undefined) toast(result.toast);
+					if (result.navigate !== undefined && result.navigate.type === "navigate") {
+						opts?.onNavigate?.({
+							...(result.navigate.params === undefined
+								? {}
+								: { params: result.navigate.params }),
+							...(result.navigate.target === undefined
+								? {}
+								: { target: result.navigate.target }),
+						});
+					}
+				};
 				if (!isMove) {
 					// A non-move accept (the settings save): the rev already
 					// bumped server-side, and the fresh data (the core
@@ -521,6 +552,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 					// outside the surface.changed hub (U4 Task 4 round-2).
 					setSnapshot((s) => ({ ...s, rev: result.rev }));
 					void fullRefetch();
+					finishAccept();
 					return;
 				}
 				if (result.ops !== undefined) {
@@ -537,6 +569,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 					} catch (error) {
 						if (error instanceof DataOpError) {
 							void fullRefetch();
+							finishAccept();
 							return;
 						}
 						throw error;
@@ -546,6 +579,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 						clearTimeout(timer);
 						timers.current.delete(actionId);
 					}
+					finishAccept();
 				} else {
 					// Accept without ops: keep the entry until confirmed
 					// reaches the accepted rev (no snap-back flicker).
@@ -563,6 +597,7 @@ export function useSurface(transport: SurfaceTransport): SurfaceState {
 								: entry,
 						),
 					}));
+					finishAccept();
 				}
 			})
 			.catch(() => {

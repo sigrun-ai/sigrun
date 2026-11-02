@@ -228,7 +228,7 @@ test("the served surface carries the signed proxy URL, the image renders, and th
 	// The surface renders (the interim page shows the title + the data
 	// JSON); the served data carries the REWRITTEN proxy URL — Task 1's
 	// rewriter ran over the fixture's https image source at serve time.
-	await expect(page.locator(".ext-surface-title")).toBeVisible();
+	await expect(page.locator(".ext-surface .blk-page-title")).toBeAttached();
 	const served = await page.evaluate(async () => {
 		const response = await fetch(
 			"/v1/ext/fixture-images-e2e/surfaces/shots",
@@ -261,7 +261,7 @@ test("the served surface carries the signed proxy URL, the image renders, and th
 	// The second page load re-serves from the cache: no second upstream
 	// fetch, and the image still renders.
 	await page.goto(`${server.url}/#/ext/fixture-images-e2e/shots`);
-	await expect(page.locator(".ext-surface-title")).toBeVisible();
+	await expect(page.locator(".ext-surface .blk-page-title")).toBeAttached();
 	const width2 = await page.evaluate(async (path) => {
 		const img = new Image();
 		const loaded = new Promise<number>((resolve, reject) => {

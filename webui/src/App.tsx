@@ -27,7 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { displayName } from "@sigrun/shared/conversations";
-import type { JsonObject } from "@sigrun/shared/blocks";
+import type { CoreTarget, JsonObject } from "@sigrun/shared/blocks";
 import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
 import { groupTurns } from "@sigrun/shared/turns";
 import {
@@ -929,6 +929,64 @@ function AppShell(options: AppOptions = {}) {
 		)?.refreshMs;
 	}, [extRoute, railExtEntries]);
 
+	// The extension-surface navigate seam (spec §6.1): shared by the
+	// view page and the panel host. Params-only re-renders the current
+	// surface with new params; a core target routes (conversation /
+	// job / settings / view).
+	const onExtNavigate = useCallback(
+		(action: { params?: JsonObject; target?: CoreTarget }): void => {
+			const target = action.target;
+			if (action.params !== undefined) {
+				if (extRoute === null) return;
+				const next: Route = {
+					kind: "ext",
+					slug: extRoute.slug,
+					id: extRoute.id,
+					params: action.params,
+				};
+				writeHash(routeHash(next));
+				setRoute(next);
+				return;
+			}
+			if (target !== undefined && target !== null && typeof target === "object") {
+				if ("conversation" in target && typeof target.conversation === "number") {
+					writeHash("#/c");
+					setRoute({ kind: "chat" });
+					onSelect(target.conversation);
+					return;
+				}
+				if ("job" in target) {
+					writeHash("#/c");
+					setRoute({ kind: "chat" });
+					setPanel("jobs");
+					persistPanel("jobs");
+					return;
+				}
+				if ("settings" in target) {
+					const settingsSection = (target as { settings?: unknown }).settings;
+					navigateSettings(
+						typeof settingsSection === "string" && settingsSection !== ""
+							? settingsSection
+							: undefined,
+					);
+					return;
+				}
+				if ("view" in target && target.view !== null && typeof target.view === "object") {
+					const view = target.view as { extension: string; id: string; params?: JsonObject };
+					const next: Route = {
+						kind: "ext",
+						slug: view.extension,
+						id: view.id,
+						params: view.params ?? {},
+					};
+					writeHash(routeHash(next));
+					setRoute(next);
+				}
+			}
+		},
+		[extRoute, onSelect, navigateSettings],
+	);
+
 	// The conversation select ALSO writes the hash (the browser's back
 	// returns to the surface the user came from).
 	const onSelectWithRoute = useCallback(
@@ -1262,65 +1320,7 @@ function AppShell(options: AppOptions = {}) {
 							id={extRoute.id}
 							hub={extHub}
 							transport={extTransport}
-							onNavigate={(action) => {
-								const target = action.target;
-								// The params-only form re-renders THIS surface
-								// with new params (a new hash entry).
-								if (action.params !== undefined) {
-									const next: Route = {
-										kind: "ext",
-										slug: extRoute.slug,
-										id: extRoute.id,
-										params: action.params,
-									};
-									writeHash(routeHash(next));
-									setRoute(next);
-									return;
-								}
-								// A core target (spec §6.1): conversation opens the
-								// chat route + selects; job opens the jobs panel;
-								// settings opens the dialog; view re-routes to that
-								// extension view. An inaccessible target renders the
-								// usual not-found (the surface page's own access
-								// resolution — the shell never pre-checks).
-								if (target !== undefined && target !== null && typeof target === "object") {
-									if ("conversation" in target && typeof target.conversation === "number") {
-										writeHash("#/c");
-										setRoute({ kind: "chat" });
-										onSelect(target.conversation);
-										return;
-									}
-									if ("job" in target) {
-										writeHash("#/c");
-										setRoute({ kind: "chat" });
-										setPanel("jobs");
-										persistPanel("jobs");
-										return;
-									}
-									if ("settings" in target) {
-										// The {settings} target carries an optional section id; the
-										// hash route lands it (the page opens on that section).
-										const settingsSection = (target as { settings?: unknown }).settings;
-										navigateSettings(
-											typeof settingsSection === "string" && settingsSection !== ""
-												? settingsSection
-												: undefined,
-										);
-										return;
-									}
-									if ("view" in target && target.view !== null && typeof target.view === "object") {
-										const view = target.view as { extension: string; id: string; params?: JsonObject };
-										const next: Route = {
-											kind: "ext",
-											slug: view.extension,
-											id: view.id,
-											params: view.params ?? {},
-										};
-										writeHash(routeHash(next));
-										setRoute(next);
-									}
-								}
-							}}
+							onNavigate={onExtNavigate}
 							{...(extRefreshMs === undefined ? {} : { refreshMs: extRefreshMs })}
 						/>
 					) : (
@@ -1374,6 +1374,7 @@ function AppShell(options: AppOptions = {}) {
 									slug={extPanelParts.slug}
 									id={extPanelParts.id}
 									transport={extPanelTransport}
+									onNavigate={onExtNavigate}
 									{...(panelRefreshMs === undefined
 										? {}
 										: { refreshMs: panelRefreshMs })}

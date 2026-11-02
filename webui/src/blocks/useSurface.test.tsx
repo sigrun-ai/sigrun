@@ -163,13 +163,16 @@ type MovePayload = {
 } & JsonObject;
 
 /** Mount the hook in a probe component exposing the latest state. */
-function mount(transport: SurfaceTransport): {
+function mount(
+	transport: SurfaceTransport,
+	opts?: { onNavigate?: (action: { params?: JsonObject; target?: unknown }) => void },
+): {
 	latest(): SurfaceState;
 	renderer: TestRenderer.ReactTestRenderer;
 } {
 	let latest: SurfaceState | undefined;
 	function Probe(): null {
-		latest = useSurface(transport);
+		latest = useSurface(transport, opts);
 		return null;
 	}
 	let renderer: TestRenderer.ReactTestRenderer | undefined;
@@ -590,6 +593,47 @@ describe("useSurface (spec §6.3)", () => {
 			});
 		});
 		expect(transport.fetchCalls).toEqual([1, undefined]);
+	});
+
+	test("a navigate action calls onNavigate and never reaches the transport", async () => {
+		const transport = new FakeTransport();
+		const onNavigate = vi.fn();
+		const { latest } = mount(transport, { onNavigate });
+		await settleLoad();
+		act(() => {
+			latest().dispatch(
+				{ type: "navigate", params: { tab: "dismissed" } },
+				{ tab: "dismissed" },
+			);
+		});
+		expect(onNavigate).toHaveBeenCalledWith({ params: { tab: "dismissed" } });
+		expect(transport.actCalls).toEqual([]);
+	});
+
+	test("an accepted result's navigate fires after its ops apply and its toast lands", async () => {
+		const transport = new FakeTransport();
+		transport.loadResult.data = board([task("a", "todo")]);
+		const onNavigate = vi.fn();
+		const { latest } = mount(transport, { onNavigate });
+		await settleLoad();
+		act(() => {
+			latest().dispatch(
+				MOVE,
+				movePayload("a", { group: "todo", index: 0 }, { group: "doing", index: 0 }),
+			);
+		});
+		await act(async () => {
+			transport.resolveAct({
+				ok: true,
+				rev: 2,
+				ops: [{ op: "set", path: "/tasks/0/state", value: "doing" }],
+				navigate: { type: "navigate", params: { id: "x" } },
+				toast: "Done",
+			});
+		});
+		expect(onNavigate).toHaveBeenCalledWith({ params: { id: "x" } });
+		expect(latest().toasts).toContain("Done");
+		expect(laneStates(latest().view as JsonObject, "doing")).toEqual(["a"]);
 	});
 
 	test("applyOps import sanity (the shared applier the hook delegates to)", () => {

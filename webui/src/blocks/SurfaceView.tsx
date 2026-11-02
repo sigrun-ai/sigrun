@@ -8,7 +8,11 @@
  */
 
 import { useMemo, type ReactNode } from "react";
-import type { JsonObject, SurfaceTransport } from "@sigrun/shared/blocks";
+import type {
+	CoreTarget,
+	JsonObject,
+	SurfaceTransport,
+} from "@sigrun/shared/blocks";
 import { BlockView } from "./BlockView";
 import { SurfaceActionsContext, SurfaceDataContext } from "./context";
 import { ContainerWidth } from "./width";
@@ -17,8 +21,16 @@ import { useSurface } from "./useSurface";
 /** Render the surface a transport serves (spec §6.3 states). */
 export function SurfaceView(props: {
 	readonly transport: SurfaceTransport;
+	/** The shell's navigate seam: `navigate` actions and accepted act
+	 *  results carrying `navigate` land here (spec §6.1). */
+	readonly onNavigate?: (action: {
+		params?: JsonObject;
+		target?: CoreTarget;
+	}) => void;
 }): ReactNode {
-	const surface = useSurface(props.transport);
+	const surface = useSurface(props.transport, {
+		onNavigate: props.onNavigate,
+	});
 	// The `/view/` branch (a form writing it publishes to siblings via
 	// `/view/...` bindings). `viewState` carries the view branch alone;
 	// the form strips the `/view/` prefix itself.
