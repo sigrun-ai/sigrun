@@ -196,6 +196,7 @@ async function bootRig(): Promise<{
 		commandExpansion: opened.commandExpansion,
 		envBuilder: opened.envBuilder,
 		gatewayLoaded: false,
+		effectiveOwner: (owner) => owner ?? "tester",
 	};
 	return { opened, faux, deps };
 }

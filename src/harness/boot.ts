@@ -102,6 +102,7 @@ import { IsolationState } from "../sandbox/isolation.js";
 import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.js";
 import { createAdmissionGuard } from "./identity/users.js";
 import { sweepAccountLinks } from "./identity/link-sweep.js";
+import { effectiveOwner as resolveEffectiveOwner } from "./identity/primary-admin.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import {
 	probeIsolation,
@@ -1281,6 +1282,9 @@ export async function openHarness(
 	// deps object is shared with `fireJob`'s run-now and the JobsService
 	// below (one clock, one tz, one models store).
 	const jobRuntimeDeps: JobRuntimeDeps = {
+		// Resolve declared-job owners against the live directory at each use
+		// (§6.5); no cache and no rewrite of the source's stored record.
+		effectiveOwner: (owner) => resolveEffectiveOwner(identity.users.list(), owner),
 		// SAFETY: harness + storage are assigned right after `Harness.open`
 		// returns below (the open needs the task registered, so the deps
 		// object is created first with placeholders). Every read — task
@@ -1696,6 +1700,8 @@ export async function openHarness(
 	// (an extension's declaration is its boot-time declaration).
 	const fileJobs = (): readonly JobSpec[] => settingsStore.read().jobs ?? [];
 	const jobsSources = () => ({ file: fileJobs(), extensions: jobBindings });
+	const jobEffectiveOwner = (owner: string | undefined): string | undefined =>
+		resolveEffectiveOwner(identity.users.list(), owner);
 	// The root conversation — the schedule tasks' owner (spec §8.1).
 	// `Harness.root` is idempotent (creates with `agent` on first call,
 	// returns the reserved root thereafter), so the server's own
@@ -1728,7 +1734,11 @@ export async function openHarness(
 				// SSE stream computes `accessOf` per principal and adds it. A
 				// future in-process hub subscriber must never read a fabricated
 				// access off the hub's copy.
-				const { access: _dropped, ...row } = jobWireOf(jobId, record);
+				const { access: _dropped, ...row } = jobWireOf(
+					jobId,
+					record,
+					jobEffectiveOwner(record.owner),
+				);
 				events.publish({
 					type: "job.changed",
 					job: row,
@@ -1747,7 +1757,9 @@ export async function openHarness(
 					id: jobId,
 					name: newest.spec.name,
 					source: newest.source,
-					...(newest.owner === undefined ? {} : { owner: newest.owner }),
+					...(jobEffectiveOwner(newest.owner) === undefined
+						? {}
+						: { owner: jobEffectiveOwner(newest.owner) }),
 					...(newest.sharing === undefined ? {} : { sharing: newest.sharing }),
 					schedule: newest.spec.schedule,
 					action: newest.spec.action,
@@ -1783,6 +1795,7 @@ export async function openHarness(
 		harness,
 		storage,
 		runtime: jobRuntimeDeps,
+		effectiveOwner: jobEffectiveOwner,
 		rootId: rootConversationId,
 		sources: jobsSources,
 		settings: () => settingsStore.read(),

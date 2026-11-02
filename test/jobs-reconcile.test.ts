@@ -429,7 +429,7 @@ describe("api jobs — the JobsService surface", () => {
 		const job = await rig.jobs.createApi(tickSpec(), "alice");
 		expect(job.source).toBe("api");
 		expect(job.id).toMatch(/^api:/);
-		expect(job.owner).toBe("alice");
+		expect(job.owner).toBe("tester");
 		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
 		expect(record!.version).toBe(1);
 		const live = await liveScheduleTasks(rig, job.id);
@@ -594,6 +594,7 @@ describe("listing — records only, never tasks", () => {
 						now: rig.now,
 						defaultTz: "UTC",
 						gatewayLoaded: false,
+						effectiveOwner: (owner) => owner ?? "tester",
 					}),
 					{ jobId: ghost, hash: "no-record" },
 					{
@@ -841,7 +842,7 @@ describe("multi-user job-created conversations", () => {
 		});
 		const host = rig.opened.seamHosts.get("acme");
 		if (host === undefined) throw new Error("per-user fixture host missing");
-		host.tools.setUserTools("alice", []);
+		host.tools.setUserTools("tester", []);
 		const job = await rig.jobs.createApi(tickSpec(), "alice");
 		const fired = await rig.jobs.runNow(job.id);
 		if (fired.conversationId === undefined) throw new Error("job created no conversation");
@@ -850,7 +851,7 @@ describe("multi-user job-created conversations", () => {
 			fired.conversationId as ConversationId,
 			BACKGROUND_CONTEXT,
 		);
-		expect(selectionNames(agent?.extensions)).toContain("acme@alice");
+		expect(selectionNames(agent?.extensions)).toContain("acme@tester");
 	});
 });
 
@@ -889,6 +890,7 @@ describe("fireJob re-entry on a settled run record", () => {
 				now: rig.now,
 				defaultTz: "UTC",
 				gatewayLoaded: false,
+				effectiveOwner: (owner) => owner ?? "tester",
 			},
 			job.id,
 			settledKey,

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Ownerless and orphaned-owner jobs now run as the primary admin; their
+  runs are no longer visible to every user. The effective owner is
+  resolved live without rewriting the declared record.
 - Reworded the `pi` manifest handling so it no longer implies pi
   extension compatibility. Sigrun reads `pi.extensions`/`pi.skills` only
   to LOCATE files and shares the SKILL.md format; it does not implement

@@ -322,26 +322,20 @@ describe("§5.9 job access — bob without a share", () => {
 
 describe("declared jobs are immutable", () => {
 	test("file: PATCH and DELETE → 409 job_declared; the job itself is readable", async () => {
-		const { app, alice } = await bootServer({
-			settings: {
-				jobs: [
-					{
-						name: "tick",
-						schedule: { every: "3600s" },
-						action: { kind: "prompt", prompt: "tick", conversation: "new" },
-					},
-				],
-			},
-		});
 		const id = "file:tick";
-		const got = await call(app, "GET", `/v1/jobs/${id}`, alice);
+		const { app: adminApp, opened } = await bootServer({
+			settings: { jobs: [promptSpec({ name: "tick" })] },
+		});
+		const admin = (await opened.identity.tokens.create("test", "tester")).token;
+		const got = await call(adminApp, "GET", `/v1/jobs/${id}`, admin);
 		expect(got.status).toBe(200);
+		expect(got.json.job.owner).toBe("tester");
 		expect(got.json.job.source).toBe("file");
-		expect(await call(app, "PATCH", `/v1/jobs/${id}`, alice, { enabled: false })).toMatchObject({
+		expect(await call(adminApp, "PATCH", `/v1/jobs/${id}`, admin, { enabled: false })).toMatchObject({
 			status: 409,
 			json: { error: "job_declared" },
 		});
-		expect(await call(app, "DELETE", `/v1/jobs/${id}`, alice)).toMatchObject({
+		expect(await call(adminApp, "DELETE", `/v1/jobs/${id}`, admin)).toMatchObject({
 			status: 409,
 			json: { error: "job_declared" },
 		});
