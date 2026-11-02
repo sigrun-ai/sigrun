@@ -86,6 +86,7 @@
 import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
 	ChannelContribution,
+	CurationTarget,
 	ExtensionCommandContribution,
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
@@ -127,6 +128,7 @@ import {
 	RESERVED_EXTENSION_SLUGS,
 } from "./reserved-sections.js";
 import { slugifyName } from "./stores.js";
+import { wrapExtensionCurationTools } from "../curation/wrap.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
@@ -345,6 +347,21 @@ export interface ExtensionWorkerBinding {
 	readonly workers: readonly ExtensionWorker[];
 }
 
+/**
+ * `curationTargets` declarations from one extension factory result
+ * (curator P7), attributed to the extension slug — boot folds the
+ * bindings into the ONE `CurationRegistry` (src/curation/targets.ts).
+ * A declaration that failed validation quarantined its extension, so
+ * a binding here is complete: every target carries a working `undo`
+ * and lists only tools the extension registers.
+ */
+export interface ExtensionCurationBinding {
+	/** The extension slug (the qualified target id's namespace). */
+	readonly extension: string;
+	/** The validated targets, in declaration order. */
+	readonly targets: readonly CurationTarget[];
+}
+
 /** One validated login provider, attributed with its core-qualified id. */
 export interface LoginProviderBinding {
 	readonly provider: string;
@@ -404,6 +421,15 @@ export interface LoadedExtensions {
  * contribute none. Boot merges them into the bus registration.
  */
 	readonly workerBindings: readonly ExtensionWorkerBinding[];
+	/**
+	 * `curationTargets` declarations from factory results (curator P7),
+	 * one entry per loaded extension whose result carried them — slug-
+	 * attributed, every target validated (undo present, listed tools
+	 * registered by the declaring extension, no duplicate qualified id).
+	 * Boot folds these into the one `CurationRegistry`. Quarantined
+	 * extensions contribute none.
+	 */
+	readonly curationBindings: readonly ExtensionCurationBinding[];
 	/**
 	 * Declared jobs from factory results (jobs §8.3 — the `extension`
 	 * source), one entry per loaded extension whose result carried `jobs`;
@@ -548,6 +574,8 @@ export interface ResolvedExtension {
 	readonly userServices?: readonly UserService[];
 	/** Present only when the factory result carried one (memory-seam Task 5). */
 	readonly workers?: readonly ExtensionWorker[];
+	/** Curation targets (curator P7), validated fail-loud. */
+	readonly curationTargets?: readonly CurationTarget[];
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
 	readonly providers?: readonly ProviderContribution[];
 	/** Login providers (multi-user M3b), validated fail-loud. */
@@ -652,7 +680,8 @@ type LoaderReadKeys =
 	| "gateway"
 	| "surfaces"
 	| "perUserTools"
-	| "userServices";
+	| "userServices"
+	| "curationTargets";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -829,6 +858,68 @@ function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined
  * (the §8.2 grammar), and duplicate names within one extension are
  * rejected (they would collide on the `ext:<slug>:<name>` id).
  */
+/**
+ * Validate a factory result's `curationTargets` declaration (curator
+ * P7). Absent → undefined (no targets). Present but malformed →
+ * throw; the loader quarantines the extension with the thrown message
+ * (fail-loud: an extension that THINKS it declared a curation target
+ * must not silently lose it). Per target, validation order: name,
+ * duplicate qualified name (checked at collection — the slug is
+ * unknown here), tools list, guidance, undo (REQUIRED — no undo, no
+ * magic), maintain.
+ *
+ * The REGISTERED-TOOL check (a target listing a tool its extension
+ * does not register) and the cross-extension duplicate qualified id
+ * live in the load loop, where the registry and the slug are known.
+ */
+function validateCurationTargets(
+	value: unknown,
+): readonly CurationTarget[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a curationTargets field that is not an array",
+		);
+	}
+	const targets: CurationTarget[] = [];
+	for (const entry of value) {
+		const target = entry as Partial<CurationTarget> | null;
+		const name = target?.name;
+		if (typeof name !== "string" || name.length === 0) {
+			throw new Error(
+				"extension factory returned a curation target without a name",
+			);
+		}
+		const tools = target?.tools;
+		if (
+			!Array.isArray(tools) ||
+			tools.some((tool) => typeof tool !== "string" || tool.length === 0)
+		) {
+			throw new Error(
+				`extension factory returned a curation target "${name}" whose tools is not an array of non-empty strings`,
+			);
+		}
+		if (typeof target?.guidance !== "function") {
+			throw new Error(
+				`extension factory returned a curation target "${name}" whose guidance is not a function`,
+			);
+		}
+		if (typeof target?.undo !== "function") {
+			throw new Error(`curation target "${name}" has no undo`);
+		}
+		if (
+			target?.maintain !== undefined &&
+			typeof target.maintain !== "function"
+		) {
+			throw new Error(
+				`extension factory returned a curation target "${name}" whose maintain is not a function`,
+			);
+		}
+		targets.push(entry as CurationTarget);
+	}
+	return targets;
+}
+
 function validateUserServices(value: unknown): readonly UserService[] | undefined {
 	if (value === undefined) return undefined;
 	if (!Array.isArray(value)) throw new Error("extension factory returned a userServices field that is not an array");
@@ -2121,6 +2212,10 @@ async function resolvedFromFactory(
 	}
 	// `workers` is a contract key — the candidate read needs no cast.
 	const workers = validateWorkers(candidate.workers);
+	// Curation targets (curator P7): validated without the slug (the
+	// qualified-id duplicate check runs in the load loop where the slug
+	// and the already-claimed ids are known).
+	const curationTargets = validateCurationTargets(candidate.curationTargets);
 	return {
 		...(candidate.perUserTools === undefined
 			? {}
@@ -2161,6 +2256,7 @@ async function resolvedFromFactory(
 			? {}
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
 		...(workers === undefined ? {} : { workers }),
+		...(curationTargets === undefined ? {} : { curationTargets }),
 		...(providers === undefined ? {} : { providers }),
 		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
@@ -2251,6 +2347,17 @@ export interface LoadExtensionsOptions {
 	 * shape; tests that never touch a packages dir).
 	 */
 	readonly packagesDir?: string;
+	/**
+	 * The A8 wrap feed (curator P9): the mutable set of curation tool
+	 * names boot threads in — seeded with the core set (`skill_manage`)
+	 * and grown HERE, as each extension's `curationTargets` validate.
+	 * Right before `registry.install`, every tool of the installing
+	 * extension whose name is in the feed is WRAPPED
+	 * (`wrapCurationTool`): the interception travels with the tool into
+	 * every conversation, whatever its selection. Absent = no wrapping
+	 * (the direct `loadExtensions` test seam).
+	 */
+	readonly curationFeed?: Set<string>;
 	/** Optional context: the gitDir for the sync step's logging. */
 	readonly gitDir?: string;
 	/** A load failure stops any services this extension had previously started. */
@@ -2441,6 +2548,10 @@ const runSettledBindings: ExtensionRunSettledBinding[] = [];
 const settingsChangedBindings: ExtensionSettingsChangedBinding[] = [];
 const lifecycleBindings: ExtensionLifecycleBinding[] = [];
 const workerBindings: ExtensionWorkerBinding[] = [];
+// Curation targets (curator P7): slug-attributed declarations, one
+// entry per loaded extension whose result carried them — boot folds
+// these into the ONE CurationRegistry (src/curation/targets.ts).
+const curationBindings: ExtensionCurationBinding[] = [];
 const userServiceBindings: { extension: string; services: readonly UserService[]; packageDir: string }[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
@@ -2478,6 +2589,11 @@ const skillRoots: { extension: string; dir: string }[] = [];
 // Slug → declared name, for collision rejection at load (this boot's
 // loaded set only — quarantined extensions never claim a slug).
 const slugs = new Map<string, string>();
+// Qualified curation-target ids ("<slug>:<name>", curator P7): the same
+// claimed-only-by-LOADED pattern as `slugs` — a target id names ONE
+// target, so a duplicate quarantines the later declarer instead of
+// shadowing (never last-wins).
+const curationIds = new Set<string>();
 // Channel id → slug (gateway C1): the same claimed-only-by-LOADED pattern
 // as `slugs`. Chat bindings are keyed by channel id, so a shadowing
 // adapter would inherit another adapter's chats — the collision
@@ -2726,6 +2842,40 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 				// install, exactly like the channel-id collision — a second engine
 				// leaves no registry entry, no slug claim, and no binding. First
 				// loaded wins.
+				// Curation targets (curator P7): the two slug-dependent rules
+				// check HERE — after the slug is final, BEFORE the registry
+				// install (a violation leaves no entry, no slug claim, no
+				// binding — the same point as the one-engine rule below).
+				// A target's tools list must name tools THIS extension
+				// registers (A8's wrapping rewrites registrations — an
+				// unregistered name would wrap nothing); a qualified id
+				// ("<slug>:<name>") names ONE target.
+				if (resolved.curationTargets !== undefined) {
+					const registered = new Set<string>(
+						(extension?.tools ?? []).map((tool) => tool.name),
+					);
+					// Claim each id AS it validates: an intra-list duplicate
+					// (the same name twice in one result) hits the check on
+					// its SECOND arrival, quarantining before any install.
+					const claimed = new Set<string>();
+					for (const target of resolved.curationTargets) {
+						const id = `${slug}:${target.name}`;
+						if (curationIds.has(id) || claimed.has(id)) {
+							throw new Error(
+								`duplicate curation target id "${id}" — a qualified id names one curation target`,
+							);
+						}
+						claimed.add(id);
+						const unregistered = target.tools.find(
+							(tool) => !registered.has(tool),
+						);
+						if (unregistered !== undefined) {
+							throw new Error(
+								`extension "${slug}" declares curation target "${target.name}" listing tool "${unregistered}" it does not register`,
+							);
+						}
+					}
+				}
 				if (resolved.gateway !== undefined) {
 					if (gatewayEngine !== undefined) {
 						throw new Error(
@@ -2735,7 +2885,26 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					gatewayEngine = { extension: slug, engine: resolved.gateway };
 				}
 				if (extension !== undefined) {
-					registry.install(extension);
+					// Curator A8 (P9): grow the wrap feed with this extension's
+					// just-validated target tools, then WRAP every curation-tool
+					// registration at the install — its own target tools, plus any
+					// feed name it registers (a non-core `skill_manage`). Growth
+					// lives HERE, after every quarantining check, so the feed
+					// never learns a tool whose extension failed the load. The
+					// bindings below keep pairing with the UNWRAPPED object: they
+					// carry identity, never tools, and the wrap changes only
+					// `execute`.
+					if (
+						options.curationFeed !== undefined &&
+						resolved.curationTargets !== undefined
+					) {
+						for (const target of resolved.curationTargets) {
+							for (const tool of target.tools) options.curationFeed.add(tool);
+						}
+					}
+					registry.install(
+						wrapExtensionCurationTools(extension, options.curationFeed),
+					);
 				}
 				if (resolved.perUserTools === true) perUserSlugs.push(slug);
 				// Only a LOADED extension or contributor claims its slug — a
@@ -2811,6 +2980,15 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						extension,
 						workers: resolved.workers,
 					});
+				}
+				if (resolved.curationTargets !== undefined) {
+					curationBindings.push({
+						extension: slug,
+						targets: resolved.curationTargets,
+					});
+					for (const target of resolved.curationTargets) {
+						curationIds.add(`${slug}:${target.name}`);
+					}
 				}
 			if (resolved.jobs !== undefined) {
 				jobBindings.push({ extension: slug, jobs: resolved.jobs });
@@ -2932,6 +3110,7 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
+		curationBindings,
 		jobBindings,
 		routeBindings,
 		commandBindings,

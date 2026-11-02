@@ -191,6 +191,13 @@ export interface SeamHost {
 	readonly access: SigrunHost["access"];
 	/** The conversation's owner — who the agent acts for (§9.7). */
 	readonly identity: SigrunHost["identity"];
+	/**
+	 * The curation surface (curator P6, A9): the curator's read APIs
+	 * and run producers. Delegates to the boot-built host through the
+	 * bridge (the same lazy-bind discipline as `conversations`) — a
+	 * factory-body call WAITS, never a silent drop.
+	 */
+	readonly curation: SigrunHost["curation"];
 	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
 	readonly models: SigrunHost["models"];
 	/** The slash-command surface (gateway C4b): catalog + in-process run. */
@@ -225,6 +232,41 @@ export interface SeamHost {
  * boot-built store trio (one per boot, from the resolved roots); the
  * host scopes it to its identity's slug — `rekey` re-scopes in place.
  */
+/**
+ * The pre-bind forwarder for the curation surface's SYNC store members
+ * (`skills(user)`, `overlays(user)`): returns the store handle at once;
+ * every method call awaits the bridge first (the shared pending promise
+ * carries the bind deadline). Method names are read off the resolved
+ * store at call time, so the forwarder stays shape-stable.
+ */
+function syncStoreForwarder(
+	pending: Promise<unknown>,
+	member: "skills" | "overlays",
+	user: string,
+): Record<string, (...args: readonly unknown[]) => Promise<unknown>> {
+	return new Proxy(
+		{},
+		{
+			get(_t, method) {
+				return async (...args: readonly unknown[]) => {
+					const resolvedHost = (await pending) as Record<string, unknown>;
+					const store = (resolvedHost[member] as (u: string) => unknown)(user) as Record<
+						string,
+						(...call: readonly unknown[]) => unknown
+					>;
+					const fn = store[method as string];
+					if (typeof fn !== "function") {
+						throw new Error(
+							`curation: store ${member}(${user}) method ${String(method)} is not callable`,
+						);
+					}
+					return fn.apply(store, [...args]);
+				};
+			},
+		},
+	);
+}
+
 export function createSeamHost(
 	identity: HostIdentity,
 	kinds: DeclaredKinds,
@@ -287,10 +329,34 @@ export function createSeamHost(
 	const bridgePromise = new Promise<HostBridge>((resolve) => {
 		bridgeReleased = resolve;
 	});
-	const hostBridge = async (): Promise<HostBridge> => {
+	// The pre-bind bound: a bridge call that waits PAST this long fails
+	// loud instead of hanging forever (the jobs-task fake-clock hang's
+	// lesson). Production never sees it — `createServer` binds the bridge
+	// at boot, long inside the bound — but a serverless embed that never
+	// builds a server would otherwise await an eternally pending promise.
+	const bridgeDeadlineMs = 60_000;
+	const hostBridge = async (member: string): Promise<HostBridge> => {
 		await bind.harness();
-		return bridgePromise;
+		return await Promise.race([
+			bridgePromise,
+			new Promise<never>((_, reject) => {
+				const timer = setTimeout(() => {
+					reject(
+						new Error(
+								`seam host: ${member} — the bridge never bound after ${bridgeDeadlineMs}ms; is createServer running? (caller: ${identity.name})`,
+						),
+					);
+				}, bridgeDeadlineMs);
+				// The rejection timer never keeps the process alive.
+				if (typeof timer === "object" && "unref" in timer) timer.unref();
+			}),
+		]);
 	};
+	// The curation surface's settled bridge host (curator P6/A9): memoized
+	// HERE — in the host closure — so every `host.curation` getter call (a
+	// FRESH proxy per read) shares one settled reference. See the getter's
+	// own comment for the sync-member discipline this serves.
+	let curationHost: SeamHost["curation"] | undefined;
 
 	return {
 		get stores() {
@@ -528,7 +594,7 @@ export function createSeamHost(
 		// re-keyed current slug, read at call time).
 		conversations: {
 			async create(opts = {}) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.create");
 				return bridge.conversations.create({
 					...(opts.owner === undefined ? {} : { owner: opts.owner }),
 					...(opts.sharing === undefined ? {} : { sharing: opts.sharing }),
@@ -539,60 +605,60 @@ export function createSeamHost(
 				});
 			},
 			async submit(id, input, opts) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.submit");
 				return bridge.conversations.submit(id, input, opts);
 			},
 			async watch(id, listener) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.watch");
 				return bridge.conversations.watch(id, listener);
 			},
 			async list(opts) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.list");
 				return bridge.conversations.list(opts);
 			},
 			async meta(id) {
-				const bridge = await hostBridge();
+				const bridge = await hostBridge("conversations.meta");
 				return bridge.conversations.meta(id);
 			},
 			// The C4a ops: straight delegation (the bridge resolves the id and
 			// runs the op its HTTP twin runs).
 			async abort(id) {
-				return (await hostBridge()).conversations.abort(id);
+				return (await hostBridge("conversations.abort")).conversations.abort(id);
 			},
 			async configure(id, opts) {
-				return (await hostBridge()).conversations.configure(id, opts);
+				return (await hostBridge("conversations.configure")).conversations.configure(id, opts);
 			},
 			async compact(id) {
-				return (await hostBridge()).conversations.compact(id);
+				return (await hostBridge("conversations.compact")).conversations.compact(id);
 			},
 			async fork(id, opts) {
-				return (await hostBridge()).conversations.fork(id, opts);
+				return (await hostBridge("conversations.fork")).conversations.fork(id, opts);
 			},
 			async patchMeta(id, patch) {
-				return (await hostBridge()).conversations.patchMeta(id, patch);
+				return (await hostBridge("conversations.patchMeta")).conversations.patchMeta(id, patch);
 			},
 			// The C4b ops: same straight delegation.
 			async upload(id, file) {
-				return (await hostBridge()).conversations.upload(id, file);
+				return (await hostBridge("conversations.upload")).conversations.upload(id, file);
 			},
 			async readFile(id, path) {
-				return (await hostBridge()).conversations.readFile(id, path);
+				return (await hostBridge("conversations.readFile")).conversations.readFile(id, path);
 			},
 		},
 		users: {
 			async list() {
-				return (await hostBridge()).users.list();
+				return (await hostBridge("users.list")).users.list();
 			},
 			async get(user) {
-				return (await hostBridge()).users.get(user);
+				return (await hostBridge("users.get")).users.get(user);
 			},
 		},
 		accounts: {
 			async lookup(provider, subject) {
-				return (await hostBridge()).accounts.lookup(provider, subject);
+				return (await hostBridge("accounts.lookup")).accounts.lookup(provider, subject);
 			},
 			async link(provider, subject, user, via) {
-				return (await hostBridge()).accounts.link(
+				return (await hostBridge("accounts.link")).accounts.link(
 					provider,
 					subject,
 					user,
@@ -600,34 +666,119 @@ export function createSeamHost(
 				);
 			},
 			async unlink(provider, subject) {
-				return (await hostBridge()).accounts.unlink(provider, subject);
+				return (await hostBridge("accounts.unlink")).accounts.unlink(provider, subject);
 			},
 			async listForUser(user) {
-				return (await hostBridge()).accounts.listForUser(user);
+				return (await hostBridge("accounts.listForUser")).accounts.listForUser(user);
 			},
 		},
 		access: {
 			async accessOf(principal, resource) {
-				return (await hostBridge()).access.accessOf(principal, resource);
+				return (await hostBridge("access.accessOf")).access.accessOf(principal, resource);
 			},
 		},
 		identity: {
 			async actingUser(conversationId) {
-				return (await hostBridge()).identity.actingUser(conversationId);
+				return (await hostBridge("identity.actingUser")).identity.actingUser(conversationId);
 			},
+		},
+		// Curator P6 (A9): the boot-built curation host through the bridge —
+		// the lazy member discipline (a factory-body call waits for the
+		// bridge; a post-bind call resolves at once). Every member of the
+		// curation surface is a function, so a Proxy that forwards each
+		// property read (and call) to the RESOLVED bridge host implements
+		// the whole surface with the same wait semantics as the async
+		// delegations above. Members that return SYNCHRONOUS store objects
+		// (`skills(user)`, `overlays(user)` — store handles whose own methods
+		// are async) must come back UNAWAITED: an `async` wrapper would
+		// return a Promise of the store, and the caller's sync `.list()` —
+		// the shape the view and the targets use — would read undefined
+		// (D1's e2e found the view rendering 500 on exactly this). The
+		// settled host is memoized in the HOST closure (not the getter —
+		// every `host.curation` read returns a FRESH proxy, and a per-proxy
+		// memo would reset on each read, putting the async forwarder back
+		// in front of sync members on the second read).
+		get curation(): SeamHost["curation"] {
+			if (curationHost !== undefined) return curationHost;
+			const pending = hostBridge("curation").then((bridge) => {
+				curationHost = bridge.curation;
+				return bridge.curation;
+			});
+			// SAFETY: the Proxy target satisfies the structural member shapes
+			// because every forwarded call is an `apply` trap on the real host's
+			// own member; the cast only bridges the contract's named members.
+			return new Proxy(
+				{} as unknown as SeamHost["curation"],
+				{
+					get(_target, property) {
+						// The settled-bridge fast path: the member itself, bound — a
+						// synchronous member (`skills`) returns its store synchronously,
+						// an async one keeps returning its promise. The property read is
+						// STILL a function either way (the surface has no data members),
+						// so callers observe the contract shape unchanged.
+						if (curationHost !== undefined) {
+							const member = (curationHost as unknown as Record<string, unknown>)[
+								property as string
+							];
+							if (typeof member !== "function") {
+									throw new Error(
+												`curation: member ${String(property)} is not callable`,
+								);
+							}
+							return (member as (...call: readonly unknown[]) => unknown).bind(
+								curationHost,
+							);
+						}
+						// The pre-bind window: every member becomes a forwarder that
+						// waits for the bridge (the factory-body discipline). The
+						// surface's SYNC store members — `skills(user)` and
+						// `overlays(user)` return store handles whose own methods are
+						// async (the shape the view and the steps call: `.list()` with
+						// no await on the store itself) — must come back as a STORE,
+						// not a promise of one (the eval's idle pass hit exactly this:
+						// the archive step read `.list` off a promise). A lazy store
+						// whose methods each await the bridge preserves the
+						// sync-return contract while keeping the wait: the caller
+						// gets the store immediately and its first method call
+						// resolves once the bridge lands (or rejects at the bind
+						// deadline through the shared pending promise).
+						if (property === "skills" || property === "overlays") {
+							return (user: string) =>
+								syncStoreForwarder(pending, property, user);
+						}
+						return async (...args: readonly unknown[]) => {
+							const resolvedHost = await pending;
+							// SAFETY: the property is one of the contract's own function
+							// members (the surface has no data members); the bound call is
+								// the real host's, typed at the call site.
+							const member = (
+								resolvedHost as unknown as Record<string, unknown>
+							)[property as string];
+							if (typeof member !== "function") {
+									throw new Error(
+									`curation: member ${String(property)} is not callable`,
+								);
+							}
+							return (
+									member as (...call: readonly unknown[]) => unknown
+							).apply(resolvedHost, [...args]);
+						};
+					},
+				},
+			);
 		},
 		// Gateway C4b: straight delegation (the bridge owns both bodies).
 		models: {
 			async list() {
-				return (await hostBridge()).models.list();
+				return (await hostBridge("models.list")).models.list();
 			},
 		},
 		commands: {
 			async list() {
-				return (await hostBridge()).commands.list();
+				return (await hostBridge("commands.list")).commands.list();
 			},
 			async run(conversationId, name, args, opts) {
-				return (await hostBridge()).commands.run(
+				return (await hostBridge("commands.run")).commands.run(
 					conversationId,
 					name,
 					args,
@@ -654,7 +805,7 @@ export function createSeamHost(
 						}
 					).__sigrunSurfaceChanged?.(host.name);
 				};
-				void hostBridge()
+				void hostBridge("surfaces.changed")
 					.then((bridge) => {
 						ran();
 						bridge.surfaces.changed(identity.name, id, key, update);

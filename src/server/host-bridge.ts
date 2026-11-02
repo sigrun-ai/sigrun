@@ -74,6 +74,12 @@ export interface HostBridge {
 	readonly models: SigrunHost["models"];
 	readonly commands: SigrunHost["commands"];
 	/**
+	 * The curation surface (curator P6, A9): the boot-built host —
+	 * `OpenedHarness.curationHost` verbatim (the ONE instance; every
+	 * seam host exposes the same object through this bridge).
+	 */
+	readonly curation: SigrunHost["curation"];
+	/**
 	 * The surfaces seam's server side (UI-blocks U3 Task 4): the seam
 	 * host's `surfaces.changed` delegates here — the slug is the
 	 * CALLING extension's (the seam host knows it; the bridge takes it
@@ -118,11 +124,13 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				const conversation = await conversationOf(id);
 				// `user` is accepted and NOT verified: extensions own their
 				// user mapping (spec §9.5) — a channel's unmapped user submits
-				// fine, and owner attribution happened at create.
+				// fine, and owner attribution happened at create. P1 records
+				// it verbatim as the input's author.
 				return await submitOp(ctx, conversation, input, {
 					...(opts?.requestId === undefined
 						? {}
 						: { requestId: opts.requestId }),
+					...(opts?.user === undefined ? {} : { user: opts.user }),
 					...(opts?.whenBusy === undefined
 						? {}
 						: { whenBusy: opts.whenBusy }),
@@ -358,5 +366,8 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			ctx.surfaces.bumpRev(slug, id, key, update);
 		},
 	},
+	// Curator P6 (A9): the boot-built curation host, verbatim — the
+	// ONE instance every seam host reaches through this bridge.
+	curation: ctx.opened.curationHost,
 };
 }

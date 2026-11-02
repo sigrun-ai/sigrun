@@ -204,6 +204,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "the built-in set resolves at boot (a disabled built-in never loads)",
 	},
 	{
+		key: "builtinExtensions.curator",
+		apply: "restart",
+		section: "extensions",
+		reason: "the built-in set resolves at boot (a disabled built-in never loads)",
+	},
+	{
 		key: "autoEnableCodemode",
 		apply: "live",
 		section: "tools",

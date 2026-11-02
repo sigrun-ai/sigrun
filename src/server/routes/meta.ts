@@ -195,8 +195,8 @@ export function registerMetaRoutes(
 	// templates appear the moment their files land, no reload command. The
 	// core + extension halves remain boot constants; see `commands.ts` for
 	// the scope rulings.
-	app.get("/v1/commands", async (): Promise<CommandsResponse> => {
-		// The workspace root (the first of the three) reads through a
+	app.get("/v1/commands", async (request): Promise<CommandsResponse> => {
+		// The workspace root (the first of the four) reads through a
 		// workspace env, exactly like skill discovery at generation time;
 		// the catalog scan uses the root conversation's env — the static
 		// workspace every conversation resolves to today.
@@ -208,7 +208,12 @@ export function registerMetaRoutes(
 		if (env === undefined) {
 			throw new Error("envBuilder returned no ExecutionEnv");
 		}
-		const skills = await listSkills(env, BACKGROUND_CONTEXT, expansion.skills);
+		// Curator A3: learned skills are the CALLER's — a user's `/skill:`
+		// menu shows their own learned skills and nobody else's (an
+		// unidentified caller sees none).
+		const skills = await listSkills(env, BACKGROUND_CONTEXT, expansion.skills, {
+			owner: request.principal.user,
+		});
 		const templates = expandableTemplates(
 			await discoverTemplates(env, BACKGROUND_CONTEXT, expansion.templates),
 			expansion.commandNames(),

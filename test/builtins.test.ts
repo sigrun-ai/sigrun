@@ -44,6 +44,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { SigrunHost } from "../src/extension.js";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { BUILTIN_EXTENSIONS } from "../src/harness/builtins.js";
 import { SettingsStore, SettingsValidationError, settingsPath } from "../src/harness/settings.js";
 import type { ResolvedExtensionInput } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -369,7 +370,7 @@ function siblingVersion(dir: string): string {
 }
 
 describe("default boot", () => {
-	test("loads all five built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
+	test("loads all six built-ins; /v1/extensions reports them builtin: true", { timeout: 60_000 }, async () => {
 		const { app } = await bootBuiltins();
 		const response = await app.inject({ method: "GET", url: "/v1/extensions" });
 		expect(response.statusCode).toBe(200);
@@ -383,6 +384,7 @@ describe("default boot", () => {
 		const mcp = rows.find((row) => row.name === "sigrun-mcp");
 		const toolSearch = rows.find((row) => row.name === "tool-search");
 		const oauth = rows.find((row) => row.name === "oauth");
+		const curator = rows.find((row) => row.name === "curator");
 		expect(codemode).toMatchObject({
 			status: "ok",
 			builtin: true,
@@ -403,11 +405,16 @@ describe("default boot", () => {
 			builtin: true,
 			version: siblingVersion("sigrun-ext-oauth"),
 		});
+		expect(curator).toMatchObject({
+			status: "ok",
+			builtin: true,
+			version: siblingVersion("sigrun-ext-curator"),
+		});
 		// A non-built-in outcome carries no builtin flag (the field is
 		// exactly true-or-absent).
 		const others = rows.filter(
 			(row) =>
-				!["codemode", "sigrun-mcp", "tool-search", "gateway", "oauth"].includes(
+				!["codemode", "sigrun-mcp", "tool-search", "gateway", "oauth", "curator"].includes(
 					row.name,
 				),
 		);
@@ -912,5 +919,69 @@ describe("gateway built-in (C3)", () => {
 		}
 		expect(rejected).toBeInstanceOf(SettingsValidationError);
 		expect(String(rejected)).toMatch(/builtinExtensions\.gateway/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Curator (Task B1: the sixth built-in)
+// ---------------------------------------------------------------------------
+
+describe("curator built-in (B1)", () => {
+	test("builtins load curator last", { timeout: 60_000 }, async () => {
+		// The declared order: curator is the LAST built-in (after OAuth),
+		// so its wiring observes every earlier built-in's contributions.
+		expect(BUILTIN_EXTENSIONS.at(-1)).toMatchObject({
+			key: "curator",
+			specifier: "@sigrun/ext-curator",
+			slug: "curator",
+		});
+		const { app, opened } = await bootBuiltins();
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as { name: string; status: string; builtin?: boolean }[];
+		const curator = rows.find((row) => row.name === "curator");
+		expect(curator).toMatchObject({
+			status: "ok",
+			builtin: true,
+			version: siblingVersion("sigrun-ext-curator"),
+		});
+		// The loaded registry carries the curator extension (its factory
+		// ran, not merely resolved).
+		expect(
+			opened.registry
+				.snapshot()
+				.installed()
+				.map((extension) => extension.name),
+		).toContain("curator");
+	});
+
+	test("builtinExtensions.curator=false disables it", { timeout: 60_000 }, async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { app, opened } = await bootBuiltins({
+			settings: { builtinExtensions: { curator: false } },
+		});
+		const rows = (
+			await app.inject({ method: "GET", url: "/v1/extensions" })
+		).json().extensions as { name: string; builtin?: boolean }[];
+		// Absent ENTIRELY (ruling 6, the other keys' rule).
+		expect(rows.some((row) => row.name === "curator")).toBe(false);
+		// The others still load.
+		expect(rows.some((row) => row.name === "codemode")).toBe(true);
+		expect(rows.some((row) => row.name === "sigrun-mcp")).toBe(true);
+		expect(rows.some((row) => row.name === "tool-search")).toBe(true);
+		expect(rows.some((row) => row.name === "oauth")).toBe(true);
+		// The curator extension never reached the registry.
+		expect(
+			opened.registry
+				.snapshot()
+				.installed()
+				.map((extension) => extension.name),
+		).not.toContain("curator");
+		// One log line naming the disabled built-in.
+		const lines = [...info.mock.calls, ...warn.mock.calls]
+			.map((call) => String(call[0]))
+			.filter((line) => line.includes("@sigrun/ext-curator"));
+		expect(lines).toHaveLength(1);
 	});
 });

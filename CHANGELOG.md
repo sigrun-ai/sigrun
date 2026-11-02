@@ -5,7 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-02
+
+### Added
+- **The curator** (sixth built-in, `@sigrun/ext-curator`): per-user
+  curation over learned skills and curation targets. Message attribution
+  records the submitting user per input; fork reviews (loop 1) run after
+  conversation activity past a threshold; the idle maintenance pass
+  (loop 2, the `curator-tick` job) digests mixed-authorship
+  conversations — per-entry attribution keeps other users' turns out of
+  the digest input; the versioned per-user skill store (feed, pins,
+  content scan, undo); usage telemetry; internal runs hidden from every
+  owner-keyed path; the curation-target contract (`@sigrun/memory-markdown`
+  0.2.0 is the first target: per-user USER.md/MEMORY.md with hard limits
+  and versions); notices + the undo view; hint-by-wrapping interception
+  with provable authorship.
+- A default `stream.timeoutMs` (5 minutes) via the boot settings getter:
+  a model request with no explicit timeout could wedge forever (the
+  OpenAI SDK's timeout is a headers-arrival deadline; a request that
+  never reaches the provider never gets headers). Caller seam and
+  settings file override field-wise.
+
+### Fixed
+- The seam host's pre-bind `curation.skills(user)`/`overlays(user)`
+  returned a promise of the store instead of a store (loop 2's archive
+  step read `.list` off a promise). A lazy store proxy now preserves the
+  sync-store contract through the pre-bind window.
 
 ### Changed
 - Reworded the `pi` manifest handling so it no longer implies pi
@@ -660,3 +685,4 @@ recreate).*
   surface, settings panel, command surface).
 - pi-durable upgraded 1.0.2 → 1.2.0: ToolExecutionResult `output` rename across
   core, registry-driven settings roster, `modelTools` two-layer filtering.
+

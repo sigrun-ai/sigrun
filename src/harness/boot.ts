@@ -13,6 +13,8 @@ import { join } from "node:path";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
+	type AgentChange,
+	type ConversationStreamOptions,
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
@@ -64,12 +66,12 @@ import {
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { modelGuidanceExtension } from "./sections/model-guidance.js";
-import { createSkillsExtension } from "../skills/index.js";
+import { createSkillsExtension, scanFsRoot } from "../skills/index.js";
 import { SLASH_COMMANDS } from "../server/commands.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { packagePromptRootsOf } from "../commands/templates.js";
 import { blocksToolsExtension } from "./blocks/tools.js";
-import { codingToolsExtension, searchToolsExtension } from "./tools.js";
+import { createCodingToolsExtension, searchToolsExtension } from "./tools.js";
 import {
 	collectProviders,
 	createProviderMergeSink,
@@ -82,12 +84,40 @@ import type {
 	WebuiBundleCollision,
 } from "../server/static.js";
 import { EventHub } from "../server/events/hub.js";
-import { providerAuthStatus } from "../server/helpers.js";
+import { providerAuthStatus, storeAgentChange } from "../server/helpers.js";
 import {
 	bootRefresh,
 	DEFAULT_REFRESH_TIMEOUT_MS,
 	refreshProvider,
 } from "./providers/refresh.js";
+/**
+ * The default per-request stream deadline (curator-eval hardening): the
+ * OpenAI SDK waits up to 10 minutes for response HEADERS by default, and
+ * a request that never reaches the provider never gets headers — the
+ * generation task wedges in phase=request. Five minutes covers long
+ * first tokens on slow providers (observed 40-60s on the eval models;
+ * reasoning models can run far longer once streaming) because the SDK's
+ * timer clears at headers arrival, not stream end.
+ */
+export const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
+
+/**
+ * The boot `stream` getter's merge, factored out for the harness-open
+ * test: caller seam over file over the default `timeoutMs`, field-wise.
+ * Returns `undefined` when nothing is set (the honest empty shape).
+ */
+export function mergeStreamSettings(
+	caller: ConversationStreamOptions | undefined,
+	file: ConversationStreamOptions | undefined,
+): ConversationStreamOptions | undefined {
+	const merged = {
+		...(caller ?? file),
+		...(caller === undefined && file?.timeoutMs === undefined
+			? { timeoutMs: DEFAULT_STREAM_TIMEOUT_MS }
+			: {}),
+	};
+	return Object.keys(merged).length > 0 ? merged : undefined;
+}
 import { startProviderRefresh } from "./providers/scheduler.js";
 import { fileModelsStore } from "./providers/models-store.js";
 import { packagesDirOf, selfPackageRoot } from "./packages.js";
@@ -103,6 +133,17 @@ import { probeOsUsers, type OsUsersAvailability } from "../sandbox/availability.
 import { createAdmissionGuard } from "./identity/users.js";
 import { sweepAccountLinks } from "./identity/link-sweep.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { learnedSkillsDir } from "../curation/paths.js";
+import { SkillStore } from "../curation/store.js";
+import { OverlayStore } from "../curation/overlays.js";
+import { UsageCounters } from "../curation/usage.js";
+import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
+import { createCurationHost } from "../curation/host.js";
+import {
+	createCurationToolFeed,
+	wrapExtensionCurationTools,
+} from "../curation/wrap.js";
+import { createCurationGateExtension, CURATION_GATE_EXTENSION } from "../curation/gate.js";
 import {
 	probeIsolation,
 	runHelperProbe,
@@ -446,6 +487,22 @@ export interface OpenedHarness {
 	 * section renders per request).
 	 */
 	readonly skillRoots: readonly { extension: string; dir: string }[];
+	/**
+	 * The curation-target registry (curator P7): every loaded
+	 * extension's `curationTargets` declaration, qualified
+	 * (`<slug>:<name>`) and attributed. `isCurationTool` is the A8
+	 * wrapping feed (`skill_manage` + every listed target tool); an
+	 * empty registry is the no-declarer deploy (core ships none).
+	 */
+	readonly curation: CurationRegistry;
+	/**
+	 * The curation host (curator P6, A9): the `host.curation` surface —
+	 * the run producers (fork review, digest, maintain) and the read
+	 * APIs over the per-user stores, the curation registry and the
+	 * durable records. ONE object per boot; the host bridge and every
+	 * seam host expose the SAME instance.
+	 */
+	readonly curationHost: import("../extension.js").SigrunCurationHost;
 	/**
 	 * The command-expansion handle (Task 2c): the skills + template root
 	 * sets and the reserved command-name set, all read LIVE. The submit
@@ -952,11 +1009,109 @@ export async function openHarness(
 	// ones, which `listSkills` includes by design).
 	const skillsOptions = {
 		userDir: join(roots.configDir, "skills"),
+		// Curator A9 (P6): the canonical workspace ROOT for overlay keys —
+		// the configured default workspace (a conversation with a
+		// sub-cwd still matches the root-keyed overlay; the accessor
+		// stays live for the config's sake).
+		workspaceRoot: (): string => config.workspace.path,
+		// Curator A3 (P2): the conversation owner's learned root —
+		// `<dataDir>/users/<owner>/skills`, undefined for ownerless
+		// conversations. Discovery resolves the owner per render.
+		learnedRoot: (owner: string | undefined): string | undefined =>
+			owner === undefined
+				? undefined
+				: learnedSkillsDir(managedPaths.userAreas(owner)),
 		packageRoots: (): readonly { extension: string; dir: string }[] =>
 			collectedSkillRoots,
 		sectionMaxBytes: (): number =>
 			skillsSettings?.read().skills?.sectionMaxBytes ?? 4096,
 	};
+	// Curator A6 (P3/P4): the per-user curation wiring — one skill store,
+	// one overlay store and one usage counter set per EXISTING user,
+	// created lazily on first use and cached. `userExists` is the LIVE
+	// directory read (a removed user's factories stop resolving), and
+	// `nameTakenElsewhere` scans the host-side roots the harness owns
+	// (the user dir and the collected package roots; a conversation's
+	// workspace can only be checked through its env, which the store
+	// cannot see — the create-refusal there is the A4 store's own).
+	const skillStores = new Map<string, SkillStore>();
+	const overlayStores = new Map<string, OverlayStore>();
+	const usageCounters = new Map<string, UsageCounters>();
+	const curationOf = (user: string | undefined) => {
+		if (user === undefined) return undefined;
+		// Curator A10: cache-FIRST resolution — a store set captured before
+		// a user's deletion stays resolvable, so its own `userExists` gate
+		// fails every later op with "user removed" (the A4/A5 fail-closed
+		// property: an in-flight run's late write never recreates the
+		// roots). A never-seen user still needs the live directory read.
+		if (
+			skillStores.get(user) === undefined &&
+			identity.users.get(user) === undefined
+		) {
+			return undefined;
+		}
+		const userArea = managedPaths.userAreas(user);
+		let store = skillStores.get(user);
+		if (store === undefined) {
+			store = new SkillStore({
+				userArea,
+				user,
+				now: () => clockNow(),
+				nameTakenElsewhere: async (name: string): Promise<string | undefined> => {
+					for (const skill of scanFsRoot(join(roots.configDir, "skills"), "user dir")) {
+						if (skill.name === name) return "user dir";
+					}
+					for (const root of collectedSkillRoots) {
+						if (scanFsRoot(root.dir, "package").some((skill) => skill.name === name)) return root.extension;
+					}
+					return undefined;
+				},
+				userExists: () => identity.users.get(user) !== undefined,
+			});
+			skillStores.set(user, store);
+		}
+		let overlays = overlayStores.get(user);
+		if (overlays === undefined) {
+			overlays = new OverlayStore({
+				userArea,
+				user,
+				userExists: () => identity.users.get(user) !== undefined,
+				feed: store,
+			});
+			overlayStores.set(user, overlays);
+		}
+		let usage = usageCounters.get(user);
+		if (usage === undefined) {
+			usage = new UsageCounters({
+				userArea,
+				user,
+				now: () => clockNow(),
+				// The A4 gate, but silent: the cached counters outlive the user
+				// (cache-first resolution), and telemetry is void-and-forget —
+				// a removed user's flush drops instead of recreating the
+				// deleted curation directory (deletion's fail-closed claim).
+				userExists: () => identity.users.get(user) !== undefined,
+			});
+			usageCounters.set(user, usage);
+		}
+		return { store, overlays, usage };
+	};
+	const curationSkillsOptions = {
+		...skillsOptions,
+		skillStore: (user: string | undefined) => curationOf(user)?.store,
+		overlays: (owner: string | undefined) => curationOf(owner)?.overlays,
+		usage: (owner: string | undefined) => curationOf(owner)?.usage,
+	};
+	// Curator A6 (P4): the read tool counts learned-root reads through the
+	// same per-user wiring (load_skill and /skill: count through the
+	// skills options above).
+	const codingWithUsage = createCodingToolsExtension({
+		countersOf: (owner: string | undefined) => curationOf(owner)?.usage,
+		learnedRootOf: (owner: string | undefined) =>
+			owner === undefined
+				? undefined
+				: learnedSkillsDir(managedPaths.userAreas(owner)),
+	});
 	const templateOptions = {
 		userDir: join(roots.configDir, "prompts"),
 		packageRoots: (): readonly { extension: string; dir: string }[] =>
@@ -980,8 +1135,27 @@ export async function openHarness(
 		},
 	};
 	registry.install(contextFilesExtension);
-	registry.install(createSkillsExtension(skillsOptions));
-	registry.install(codingToolsExtension);
+	// Curator A8 (P9): the wrap feed — the mutable set of curation tool
+	// names, seeded with the core set and grown by the loader as each
+	// extension's curationTargets validate. The skills extension's
+	// install below wraps through it (its OWN tools: `skill_manage`);
+	// the loader wraps every extension-declared target tool at its
+	// install. `isCurationTool` on the built registry (A7) stays the
+	// read-side API — the feed is only the write-side wrap oracle.
+	const curationFeed = createCurationToolFeed();
+	// Curator A6: the skills extension carries the curation wiring
+	// (skill_manage + usage counting), and the coding tools count
+	// learned-root reads — the same extension NAMES as before, so
+	// nothing downstream observes the swap. A8: the install WRAPS the
+	// curation tools (skill_manage's registration carries the hint
+	// interception; load_skill and the section are untouched).
+	registry.install(
+		wrapExtensionCurationTools(
+			createSkillsExtension(curationSkillsOptions),
+			curationFeed,
+		),
+	);
+	registry.install(codingWithUsage);
 	registry.install(searchToolsExtension);
 	// The chat-blocks tools (UI-blocks U5 Task 1, spec §8.1): every agent
 	// can show and update interactive block surfaces in chat — the same
@@ -1093,6 +1267,7 @@ export async function openHarness(
 		settingsChangedBindings,
 		lifecycleBindings,
 		workerBindings,
+		curationBindings,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -1112,6 +1287,9 @@ export async function openHarness(
 		registry,
 		{
 			packagesDir,
+			// Curator A8 (P9): the wrap feed — the loader grows it with each
+			// validated target tool and wraps those tools at their install.
+			curationFeed,
 			hostContextFactory: (extensionName, kinds, priorHost) => {
 				// Two-phase, revised for the provisional identity (provider
 				// plugins Task 9 P1): the loader's PRE-import call passes the
@@ -1151,6 +1329,11 @@ export async function openHarness(
 		},
 	);
 	perUserSlugs.push(...loadedPerUserSlugs);
+	// The curation-target registry (curator P7): the loader's validated,
+	// slug-attributed bindings folded into the ONE registry — the A8
+	// wrapping feed (isCurationTool) and the A9 host.curation surface
+	// read it. An empty fold is the no-declarer deploy.
+	const curation = buildCurationRegistry(curationBindings);
 	for (const binding of userServiceBindings) {
 		userServices.register(binding.extension, binding.services, binding.packageDir);
 	}
@@ -1308,6 +1491,11 @@ export async function openHarness(
 		name: "sigrun.jobs",
 		tasks: [createScheduleTask(jobRuntimeDeps)],
 	});
+	// Curator A8 (P6 gate): the hooks-only curator-run gate — installed
+	// in the registry but NEVER in the host default selection (the
+	// settings getter below filters it like a per-user entry): only A9's
+	// producer selects it, in the internal run conversations it creates.
+	registry.install(createCurationGateExtension());
 	// The host event hub (W3 Task 4, spec §7.4): ONE per opened harness.
 	// The event bus's commit-derived events subscribe below (after the bus
 	// opens); the provider refresh paths observe readiness here — each
@@ -1503,14 +1691,32 @@ export async function openHarness(
 					return callerSettings?.retry ?? fileSettings.retry;
 				},
 				get stream() {
-					return callerSettings?.stream ?? fileSettings.stream;
+					// The stream-request default (curator-eval hardening): a
+					// model request with no explicit timeout can wedge forever —
+					// the OpenAI SDK's `timeout` is a headers-arrival deadline and
+					// defaults to 10 minutes, but a request that never reaches the
+					// provider (undici socket-pool class) never gets headers to
+					// time out against, so pi-durable's generation task sits in
+					// phase=request indefinitely. `mergeStreamSettings` bounds
+					// every request with a default `timeoutMs`; the caller seam
+					// and the file each override field-wise.
+					return mergeStreamSettings(
+						callerSettings?.stream,
+						fileSettings.stream,
+					);
 				},
 				get extensions() {
 					// Per-user entries are core-computed from SessionMeta.owner,
 					// never part of a host default — including an operator-supplied
-					// caller list (controller ruling: filter BOTH sources).
+					// caller list (controller ruling: filter BOTH sources). The
+					// curator-run gate (A8) is filtered the same way: it is selected
+					// ONLY in the internal run conversations A9's producer creates.
 					const selected = callerSettings?.extensions ?? registry.snapshot().installed();
-					return selected.filter((entry) => !isUserEntryName(entry.name));
+					return selected.filter(
+						(entry) =>
+							!isUserEntryName(entry.name) &&
+							entry.name !== CURATION_GATE_EXTENSION,
+					);
 				},
 				toolExecution: callerSettings?.toolExecution,
 				compaction: {
@@ -1609,6 +1815,41 @@ export async function openHarness(
 	// order). The bus's close stops delivery; the unsubscribe is unused.
 	const now = clockNow;
 	wireActivity(eventBus, harness, now);
+	// Curator A9 (P6): the ONE curation host — the `host.curation`
+	// surface over the per-user stores (curationOf), the curation
+	// registry, the jobs records and the run driver. The server's host
+	// bridge and every seam host expose the SAME instance (the bridge
+	// carries it; the seam hosts delegate). The digest producer's
+	// default agent is the create op's own store-default change (what
+	// every server-created conversation starts from): the structural
+	// `{settings, registry, providerEnv}` subset `storeAgentChange`
+	// reads, closed over the LIVE references so a settings PATCH
+	// reaches later digests without a restart.
+	// SAFETY: the cast — `storeAgentChange` reads exactly these three
+	// members (settings.read, registry.snapshot, providerEnv) and
+	// nothing else of OpenedHarness; the live closure satisfies them.
+	const curationHost = createCurationHost({
+		harness,
+		registry,
+		storage,
+		curation,
+		defaultModel,
+		stores: curationOf,
+		skillsOptions: {
+			userDir: join(roots.configDir, "skills"),
+			packageRoots: (): readonly { extension: string; dir: string }[] =>
+				collectedSkillRoots,
+		},
+		defaultAgent: (): AgentChange =>
+			storeAgentChange(
+				{
+					settings: { read: () => settingsStore.read() },
+					registry,
+					providerEnv: effectiveEnv,
+				} as unknown as Parameters<typeof storeAgentChange>[0],
+				defaultModel,
+			),
+	});
 	const handlersByName = new Map<string, ExtensionEventHandlers>();
 	for (const binding of runSettledBindings) {
 		handlersByName.set(binding.extension.name, {
@@ -1872,6 +2113,8 @@ export async function openHarness(
 		channelBindings,
 		gatewayEngine,
 		skillRoots: extensionSkillRoots,
+		curation,
+		curationHost,
 		commandExpansion,
 		eventBus,
 		events,

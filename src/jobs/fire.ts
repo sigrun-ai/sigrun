@@ -57,6 +57,7 @@ import { expandInput } from "../commands/expand.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { noteThen } from "../server/turns/submit-turn.js";
+import { recordAuthor } from "../curation/attribution.js";
 import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
 import type { ScheduleInput, ScheduleState } from "./task.js";
 
@@ -219,11 +220,14 @@ async function jobPromptText(
 	const conversation = await deps.harness.conversation(conversationId, context);
 	if (conversation === undefined) return prompt;
 	const env = await conversationEnv(deps, conversation);
+	// Curator A3: the learned root is the conversation owner's.
+	const meta = await deps.harness.snapshot(SessionMetaDoc, conversationId, context);
 	const expansion = await expandInput(
 		[{ type: "text", text: prompt }],
 		deps.commandExpansion,
 		env,
 		context,
+		meta?.owner,
 	);
 	const part = expansion.parts[0];
 	return part !== undefined && part.type === "text" ? part.text : prompt;
@@ -307,15 +311,33 @@ async function firePrompt(
 		await noteThen(
 			deps.harness,
 			conversation,
-			() =>
-				conversation.submit(
+			// Attribution (curator P1): the job's input is authored by the
+			// job's owner — `byRequest` before the admission, `bySubmission`
+			// after, exactly like submitOp (an ownerless job records nothing).
+			async () => {
+				const requestId = `job:${fireKey}`;
+				await recordAuthor(
+					conversation,
+					{ requestId },
+					record.owner,
+					context,
+				);
+				const submission = await conversation.submit(
 					{
 						type: "input",
 						content: [{ type: "text", text: prompt }],
-						requestId: `job:${fireKey}`,
+						requestId,
 					},
 					context,
-				),
+				);
+				await recordAuthor(
+					conversation,
+					{ submissionId: submission.id },
+					record.owner,
+					context,
+				);
+				return submission;
+			},
 			context,
 		);
 		return { outcome: "running", conversationId };
@@ -389,15 +411,27 @@ async function firePrompt(
 	await noteThen(
 		deps.harness,
 		conversation,
-		() =>
-			conversation.submit(
+		// Attribution (curator P1), the twin of the fixed-conversation site
+		// above: the job's owner authors the job's input.
+		async () => {
+			const requestId = `job:${fireKey}`;
+			await recordAuthor(conversation, { requestId }, record.owner, context);
+			const submission = await conversation.submit(
 				{
 					type: "input",
 					content: [{ type: "text", text: prompt }],
-					requestId: `job:${fireKey}`,
+					requestId,
 				},
 				context,
-			),
+			);
+			await recordAuthor(
+				conversation,
+				{ submissionId: submission.id },
+				record.owner,
+				context,
+			);
+			return submission;
+		},
 		context,
 	);
 	return { outcome: "running", conversationId };

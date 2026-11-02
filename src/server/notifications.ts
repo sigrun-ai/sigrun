@@ -198,6 +198,11 @@ export function startNotifications(ctx: ServerContext): () => void {
 			opened.settings.read().notifications?.runSettled ?? "unwatched";
 		if (mode === "never") return;
 		const meta = await metaOf(conversationId);
+		// Curator P5: an internal run never notifies (no "Reply ready" for
+		// curator work). The bus already withholds the host event; this is
+		// the belt-and-braces read-side gate (a hand-published or future
+		// emit path cannot leak the run).
+		if (meta?.internal === true) return;
 		if (mode === "cron" && meta?.source !== "cron") return;
 		if (
 			mode === "unwatched" &&

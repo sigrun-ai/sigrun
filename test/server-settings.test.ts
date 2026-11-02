@@ -792,9 +792,10 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 			BACKGROUND_CONTEXT,
 		);
 		const fullAgent = await conv!.agent(BACKGROUND_CONTEXT);
-		// Every core-installed tool (7 named core tools + load_skill from
-		// the skills convention + the 2 U5 blocks tools + the gateway's two
-		// agent tools = 12) — the no-filter default for a built-in install.
+		// Every core-installed tool (7 named core tools + load_skill and
+		// the A6 skill_manage curation tool from the skills convention +
+		// the 2 U5 blocks tools + the gateway's two agent tools = 13) — the
+		// no-filter default for a built-in install.
 		expect(fullAgent.tools.map((tool) => tool.name).sort()).toEqual([
 			"bash",
 			"edit",
@@ -806,6 +807,7 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 			"read",
 			"send_message",
 			"show_blocks",
+			"skill_manage",
 			"update_blocks",
 			"write",
 		]);

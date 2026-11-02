@@ -312,6 +312,301 @@ export interface ExtensionWorker {
 }
 
 // ---------------------------------------------------------------------------
+// Curation targets (the curator contract — P7)
+// ---------------------------------------------------------------------------
+
+/**
+ * The outcome of one curator-run driven call (a fork review or a digest
+ * run): the final text (so a target can ask for operations as text and
+ * apply them itself), the changes its tools reported, and how it ended.
+ */
+export type CurationRunResult = {
+	/** How the run ended: answered, human-cancelled, failed, or deadlined. */
+	readonly status: "completed" | "cancelled" | "failed" | "deadline";
+	/** The run's final assistant text ("" when it produced none). */
+	readonly text: string;
+	/** Changes the run's tools reported, in tool-result order. */
+	readonly changes: readonly {
+		readonly changeId: string;
+		readonly summary: string;
+		/** The qualified target id the change belongs to. */
+		readonly target: string;
+	}[];
+	/** Why a non-completed run ended (the failure/cancellation reason). */
+	readonly error?: string;
+};
+
+/**
+ * The budget one `maintain` call runs under: a wall-clock deadline, a
+ * digest-run allowance, and the `run` entry point that starts one
+ * bounded internal digest run on the user's curator model and RETURNS
+ * its result (including the final text) — so the target can ask for
+ * operations as text and apply them itself.
+ */
+export interface MaintenanceBudget {
+	/** Wall-clock deadline (epoch ms); work past it is abandoned. */
+	readonly deadline: number;
+	/** Internal runs the target may start (P6 digest runs). */
+	readonly runs: number;
+	/**
+	 * Start one internal digest run on the user's curator model, bounded
+	 * to the listed tools; resolves with the run's result.
+	 */
+	run(input: string, tools: readonly string[]): Promise<CurationRunResult>;
+}
+
+/** One change a maintenance pass reports, undoable through `undo`. */
+export type MaintenanceReport = {
+	/** Changes made, each undoable through the target's `undo`. */
+	readonly changes: readonly { readonly changeId: string; readonly summary: string }[];
+	/** True when the target stopped early and wants the next pass. */
+	readonly more?: boolean;
+};
+
+/**
+ * One curation target (the curator contract, spec P7): an extension's
+ * writable per-user surface the curator learns into. The `tools` list is
+ * the interception surface — every LISTED tool call outside a curator
+ * run becomes a review hint (A8's wrapping), while an unlisted direct
+ * write tool stays the extension's own. `undo` is REQUIRED: a target
+ * without it fails the load (no undo, no magic).
+ */
+export interface CurationTarget {
+	/** Unique within the extension; core qualifies it as `<slug>:<name>`. */
+	readonly name: string;
+	/** Tools the review may call to write this target; registered by this extension. */
+	readonly tools: readonly string[];
+	/** Routing guidance for one user; `[]` = unavailable for this user. */
+	guidance(user: string): readonly string[] | Promise<readonly string[]>;
+	/** Revert one change this target reported. Required. */
+	undo(user: string, changeId: string, ctx: HandlerContext): Promise<void>;
+	/** Optional idle maintenance, called by the curator's idle pass. */
+	maintain?(
+		user: string,
+		ctx: HandlerContext,
+		budget: MaintenanceBudget,
+	): Promise<MaintenanceReport>;
+}
+
+/**
+ * The `details.curation` shape every target tool's mutating result
+ * carries: the change id for the undo surface and a one-line summary
+ * for the UI. A type alias (not an interface): the structural JSON
+ * mirror of the tool-result details field.
+ */
+export type CurationChangeDetails = {
+	readonly changeId: string;
+	readonly summary: string;
+};
+
+/**
+ * One recorded review hint (P9): an owner-authored call to a curation
+ * tool outside a curator run, captured by A8's wrapper for the next
+ * review. `args` is the verbatim tool arguments; `at` is the capture
+ * instant (ISO).
+ */
+export type CurationHint = {
+	readonly id: string;
+	readonly tool: string;
+	readonly args: JsonObject;
+	readonly at: string;
+};
+
+// ---------------------------------------------------------------------------
+// The curation host surface (curator P6, A9)
+// ---------------------------------------------------------------------------
+
+/**
+ * One change to a learned skill (the `skill_manage` mutating union,
+ * structural mirror of the store's `SkillChange`). A type alias (not
+ * an interface): the implicit index signature the JSON doc shapes need.
+ */
+export type CurationSkillChange =
+	| { readonly kind: "create"; readonly content: string }
+	| { readonly kind: "patch"; readonly old: string; readonly new: string; readonly file?: string }
+	| { readonly kind: "write_file"; readonly file: string; readonly content: string }
+	| { readonly kind: "remove_file"; readonly file: string }
+	| { readonly kind: "archive"; readonly absorbedInto?: string }
+	| { readonly kind: "restore"; readonly version?: string };
+
+/**
+ * One change-feed entry (structural mirror of the store's `FeedEntry`).
+ * The undo-relevant fields (`before`, `after`) are opaque version ids.
+ */
+export type CurationFeedEntry = {
+	readonly id: string;
+	readonly at: string;
+	readonly actor: "curator" | "agent" | "user";
+	readonly action: string;
+	readonly skill: string;
+	readonly reason?: string;
+	readonly reviewId?: string;
+	readonly conversationId?: number;
+	readonly before?: string;
+	readonly after?: string;
+};
+
+/** One learned skill's listing row (structural mirror). */
+export type CurationSkillInfo = {
+	readonly name: string;
+	readonly description: string;
+	readonly archived: boolean;
+	readonly pinned: boolean;
+	readonly bytes: number;
+	readonly createdAt: string;
+};
+
+/** Identifies one upstream skill an overlay attaches to (structural mirror). */
+export type CurationOverlayKey = {
+	readonly root: "workspace" | "user dir" | "package";
+	readonly skill: string;
+	/** The canonical workspace root path; required for workspace keys only. */
+	readonly workspace?: string;
+};
+
+/** One stored overlay (structural mirror). */
+export type CurationOverlay = {
+	readonly key: CurationOverlayKey;
+	readonly text: string;
+	readonly upstreamHash: string;
+	readonly orphanedSince?: string;
+};
+
+/** The actor-side metadata an overlay change records in the feed. */
+export type CurationOverlayMeta = {
+	readonly actor: "curator" | "agent" | "user";
+	readonly reason?: string;
+	readonly reviewId?: string;
+	readonly conversationId?: number;
+};
+
+/** The bounds and identity one curator run drives under. */
+export type CurationRunOpts = {
+	/** The instruction the run submits as its only input. */
+	readonly instruction: string;
+	/** The tools the run's gate allows (non-empty — the gate's message names them). */
+	readonly allow: readonly string[];
+	/** The tool-result budget: the run aborts at this many tool results. */
+	readonly maxToolCalls: number;
+	/** The output-token budget (advisory; see the run-driver docs). */
+	readonly maxOutputTokens: number;
+	/** The wall-clock budget in milliseconds. */
+	readonly deadlineMs: number;
+	/** The review (or digest) identity stamped on every feed entry. */
+	readonly reviewId: string;
+	/** Caller cancellation: fires → the run aborts as cancelled. */
+	readonly signal?: AbortSignal;
+};
+
+/** What a review's `eligibility` read answers. */
+export type CurationEligibility = {
+	readonly owner?: string;
+	readonly internal: boolean;
+	/** Every user entry attributed to the owner. */
+	readonly ownerOnly: boolean;
+	/** Unattributed user entries. */
+	readonly unattributed: number;
+	readonly newestEntry?: EntryId;
+};
+
+/** One served curation target, projected for the caller. */
+export type CurationTargetInfo = {
+	readonly id: string;
+	readonly tools: readonly string[];
+	readonly guidance: readonly string[];
+	readonly maintain: boolean;
+};
+
+/** The per-user skill-store subset the curation host serves. */
+export type CurationSkillStore = {
+	list(): Promise<readonly CurationSkillInfo[]>;
+	view(name: string, file?: string): Promise<string>;
+	feed(limit: number, before?: string): Promise<readonly CurationFeedEntry[]>;
+	pin(name: string, pinned: boolean): Promise<void>;
+	undo(entryIds: readonly string[]): Promise<readonly CurationFeedEntry[]>;
+	/** Apply one change as the curator (actor "curator"). */
+	apply(
+		name: string,
+		change: CurationSkillChange,
+		meta: { readonly reviewId?: string; readonly reason?: string },
+	): Promise<CurationFeedEntry>;
+};
+
+/** The per-user overlay-store subset the curation host serves. */
+export type CurationOverlayStore = {
+	list(): Promise<readonly CurationOverlay[]>;
+	get(key: CurationOverlayKey): Promise<CurationOverlay | undefined>;
+	put(
+		key: CurationOverlayKey,
+		text: string,
+		upstreamHash: string,
+		meta: CurationOverlayMeta,
+	): Promise<CurationFeedEntry>;
+	remove(key: CurationOverlayKey, meta: CurationOverlayMeta): Promise<CurationFeedEntry>;
+	markOrphans(
+		present: (key: CurationOverlayKey) => boolean,
+		now: string,
+	): Promise<void>;
+};
+
+/**
+ * The curation surface (curator P6, A9): the curator's read APIs and
+ * run producers over the curated user's per-user stores. The host
+ * owns the internals; this is the extension-facing projection — the
+ * run driver, the stores and the registry stay server-side.
+ */
+export type SigrunCurationHost = {
+	eligibility(id: ConversationId): Promise<CurationEligibility>;
+	/**
+	 * Every user-input entry in the ACTIVE context mapped to its author
+	 * (P1). An entry admitted before attribution existed, or by an
+	 * unidentified caller, is present with `undefined` — unattributed,
+	 * never guessed (fail closed: unattributed entries are never curation
+	 * input).
+	 */
+	authors(id: ConversationId): Promise<ReadonlyMap<EntryId, string | undefined>>;
+	/** Count the conversation's assistant entries after (or all without) an anchor entry. */
+	modelCallsSince(id: ConversationId, entryId?: EntryId): Promise<number>;
+	/** Read and clear the conversation's pending review hints (A8's doc). */
+	takeHints(id: ConversationId): Promise<readonly CurationHint[]>;
+	/** Targets whose tools are all in the conversation's selection (no id: all). */
+	targets(user: string, id?: ConversationId): Promise<readonly CurationTargetInfo[]>;
+	/** The conversation's model-visible tool names (for the allow-list). */
+	tools(id: ConversationId): Promise<readonly string[]>;
+	/** Fork the conversation at its newest entry and drive the review run. */
+	forkReview(
+		id: ConversationId,
+		opts: CurationRunOpts,
+	): Promise<CurationRunResult>;
+	/** A fresh internal digest conversation for `user`, driven the same way. */
+	digestRun(
+		user: string,
+		opts: CurationRunOpts & { readonly input: string; readonly model?: string },
+	): Promise<CurationRunResult>;
+	/** Run one target's maintenance pass with a digest-run budget. */
+	maintain(
+		user: string,
+		targetId: string,
+		budget: Omit<MaintenanceBudget, "run">,
+	): Promise<MaintenanceReport>;
+	/** The curated user's skill store (apply = actor "curator"). */
+	skills(user: string): CurationSkillStore;
+	/** The curated user's overlay store. */
+	overlays(user: string): CurationOverlayStore;
+	/** The current upstream body + hash for one overlay key. */
+	upstream(
+		user: string,
+		key: CurationOverlayKey,
+	): Promise<{ readonly body: string; readonly hash: string } | undefined>;
+	/** Skill names in the user's job prompts, paused jobs included. */
+	jobSkillRefs(user: string): Promise<ReadonlySet<string>>;
+	/** Revert every change one review made; the number of reverts. */
+	undoReview(user: string, reviewId: string): Promise<number>;
+	/** The skill → lastUsed ISO map (P4's counters). */
+	usage(user: string): Promise<Readonly<Record<string, string | undefined>>>;
+};
+
+// ---------------------------------------------------------------------------
 // Per-user services (multi-user M2, spec §10.3)
 // ---------------------------------------------------------------------------
 
@@ -1229,6 +1524,15 @@ export interface SigrunHost {
 			opts: { readonly user: string },
 		): Promise<{ readonly notice?: string }>;
 	};
+
+	/**
+	 * The curation surface (curator P6, A9): the curator's read APIs
+	 * (eligibility, hints, targets, tools, skills, overlays, usage, job
+	 * references) and the run producers (fork review, digest, maintain).
+	 * Binds lazily like every bridged member — a factory-body call WAITS
+	 * for the bridge, never a silent drop.
+	 */
+	readonly curation: SigrunCurationHost;
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,6 +1575,13 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly ambientKinds?: readonly string[];
 	/** Idle workers (the curator contract — `wakeOn` only, `every` retired). */
 	readonly workers?: readonly ExtensionWorker[];
+	/**
+	 * Curation targets (the curator contract, spec P7): this extension's
+	 * writable per-user surfaces the curator learns into. Every listed
+	 * tool's outside-run calls become review hints (A8's wrapping); a
+	 * target without `undo` fails the load.
+	 */
+	readonly curationTargets?: readonly CurationTarget[];
 	/** Declared jobs (the only time-based scheduler); read-only through the API under `ext:<slug>:<name>` ids. */
 	readonly jobs?: readonly JobSpec[];
 	/** HTTP routes mounted at `/v1/ext/<slug>/<path>` (lands in Task 2). */

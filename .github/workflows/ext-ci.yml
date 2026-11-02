@@ -11,8 +11,8 @@
 #         needs-core: true   # only the file:-linked repos
 #
 # needs-core is true ONLY for the repos whose devDependencies hold a
-# file:../ sibling spec (ext-mcp/ext-gateway/ext-oauth -> sigrun,
-# ext-tool-search -> sigrun-ext-mcp). For those, the job checks core out
+# file:../ sibling spec (ext-mcp/ext-curator/ext-gateway/ext-oauth ->
+# sigrun, ext-tool-search -> sigrun-ext-mcp). For those, the job checks core out
 # at path `sigrun`, checks the four OTHER built-in siblings out via the
 # family-checkout composite action with `exclude: <this repo>`, and
 # builds core first so the file: link resolves against real build

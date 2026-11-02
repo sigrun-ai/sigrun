@@ -28,10 +28,10 @@ export type { Sharing } from "./access.js";
  * `invalid_field`.
  *
  * Server-owned fields (`autoName`, `autoNameAttempts`,
- * `lastActivityAt`, `jobId`, `deliver`) are written by host code only
- * (activity.ts, the A2 auto-namer, fire.ts's job stamp); they are NOT
- * patch surface — the strict validator keeps rejecting them as
- * `invalid_field`.
+ * `lastActivityAt`, `jobId`, `deliver`, `internal`) are written by host
+ * code only (activity.ts, the A2 auto-namer, fire.ts's job stamp, the
+ * curator's creating commit); they are NOT patch surface — the strict
+ * validator keeps rejecting them as `invalid_field`.
  */
 
 /** The per-conversation session metadata (spec §5). */
@@ -86,6 +86,17 @@ export type SessionMeta = {
 	 * strict validator rejects the key as `invalid_field`.
 	 */
 	deliver?: string[];
+	/**
+	 * Server-owned internal-run marker (curator P5, spec §6.1): true on a
+	 * conversation created for curator work — hidden from every list and
+	 * view, 404 on every `:id` route for every caller (superuser
+	 * included), never named, never notified, never idle-clocked, and
+	 * absent from every event surface. Written ONCE by the curator's
+	 * creating commit (`markInternal`); the flag never changes after
+	 * creation. Never patchable — the strict validator rejects the key
+	 * as `invalid_field`.
+	 */
+	internal?: true;
 	/**
 	 * The §5.9 per-resource sharing state; absent = private (owner and
 	 * superuser only). Patchable by the OWNER or a superuser (403

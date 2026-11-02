@@ -251,6 +251,7 @@ what core does with each, and where its rules are documented:
 | `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
+| `curationTargets` | `readonly CurationTarget[]` | the curator's learnable targets: listed tools are wrapped for review hints, `undo` is required at load (a target without it quarantines) | ["Curation targets"](#curation-targets) |
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
@@ -1157,6 +1158,98 @@ declare a job with a task action`. Jobs are the only time-based
 scheduler; an extension that needs a timer declares a job with a `task`
 action (see above). Workers keep their run deadline, queued+coalesced
 wakes, and the `/v1/meta` status projection.
+
+## Curation targets
+
+A factory result may declare `curationTargets` — the writable
+**per-user** surfaces the curator learns into (a notes file, a memory,
+any record your extension keeps about one user). One target is a name,
+the tools the curator may write it with, per-user routing guidance, a
+required `undo`, and an optional idle `maintain`:
+
+```ts check
+import type {
+	CurationChangeDetails,
+	CurationTarget,
+	MaintenanceBudget,
+	MaintenanceReport,
+	SigrunExtensionResult,
+} from "@sigrun/sigrun/extension";
+
+const notes: CurationTarget = {
+	name: "notes",                    // core qualifies it "acme:notes"
+	tools: ["notes_write"],           // registered by THIS extension
+	guidance: (user) =>
+		user === "alice" ? ["Put deploy lessons in the notes target."] : [],
+	async undo(user, changeId, context) {
+		void user; void changeId; void context.abortSignal;
+		// restore the version this change replaced
+	},
+	async maintain(user, context, budget): Promise<MaintenanceReport> {
+		void user; void context.abortSignal;
+		const run: MaintenanceBudget = budget;
+		const result = await run.run(
+			"List duplicate notes as merge operations.",
+			["notes_view"],
+		);
+		// Apply the operations yourself (see the text below), reporting
+		// details.curation on each write; return what you did:
+		return { changes: [] };
+	},
+};
+
+/** The details.curation convention every mutating tool result carries. */
+const changeDetails: CurationChangeDetails = {
+	changeId: "notes:v42",
+	summary: "notes_write merged two deploy notes",
+};
+
+export default function createAcmeNotes(): SigrunExtensionResult {
+	return {
+		// …your extension, plus:
+		curationTargets: [notes],
+	};
+}
+```
+
+**The wrapping rule.** Only the tools you LIST are intercepted: every
+listed tool's call outside a curator run never executes — the owner's
+own calls are recorded as a review hint (the model is answered "Noted.
+The curator will review this after your reply."), anything else with
+"Not recorded: this is only learned from the owner's own messages."
+A direct "remember this" tool you keep OUTSIDE the target is never
+intercepted, never gated, and never undone by the curator — you own
+that write path and its undo yourself. Inside a curator run the listed
+tools execute for the run's user, confined to the run's allow list.
+
+Load requirements, all fail-loud (a violation quarantines the whole
+extension): `undo` is REQUIRED — no undo, no magic; every listed tool
+must be one this extension registers; one qualified `<slug>:<name>`
+id names exactly one target. `guidance(user)` returning `[]` makes the
+target unavailable for that user — the curator simply never runs it.
+
+**The `details.curation` convention.** Every mutating result of a
+target tool carries `details.curation = { changeId, summary }` — the
+change id is the undo key (the curator's one-review undo hands exactly
+these ids back to your `undo`), and the summary is one line for the
+activity surfaces. A target that reports no change has nothing to
+undo — return the details on every write you can revert.
+
+**`maintain` runs on text, not files.** The optional idle pass receives
+a `MaintenanceBudget` whose `run(input, tools)` starts one bounded
+internal digest run on the user's curator model and resolves with the
+run's result — including its final `text`. Ask the model for
+**operations as text** and apply them yourself (through your own tools
+or code, reporting `details.curation` as above); keep each returned
+change in the report so the pass stays undoable. `budget.deadline` is
+the wall clock — honor it, and set `more: true` when you stopped early
+and want the next pass to continue.
+
+Sigrun's own learned skills are the in-core example: `skill_manage` is
+the core-owned target tool over the per-user skill store (versions,
+the change feed, pins), and the built-in curator extension drives it.
+When a user is deleted their learned skills and curation state are
+**removed with them** — never transferred.
 
 ## Prompt sections: six keys are reserved
 

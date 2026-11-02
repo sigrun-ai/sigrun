@@ -115,7 +115,7 @@ command -v git >/dev/null 2>&1 || { echo "git is required" >&2; exit 1; }
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 core_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 workspace_root=$(CDPATH= cd -- "$core_root/.." && pwd)
-siblings="sigrun-ext-codemode sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-tool-search sigrun-ext-oauth"
+siblings="sigrun-ext-codemode sigrun-ext-curator sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-tool-search sigrun-ext-oauth"
 git -C "$core_root" cat-file -e "$revision^{commit}" 2>/dev/null || {
 	echo "core commit is not present locally: $revision" >&2
 	exit 1
@@ -213,7 +213,7 @@ abi=$(PROBE="$probe" node -e 'const p = JSON.parse(process.env.PROBE); if (!Numb
 printf 'LANDLOCK_ABI %s\n' "$abi"
 [ "$abi" -ge 6 ] || { echo "Landlock ABI >= 6 is required" >&2; exit 1; }
 
-for sibling in sigrun-ext-codemode sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-tool-search sigrun-ext-oauth; do
+for sibling in sigrun-ext-codemode sigrun-ext-curator sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-tool-search sigrun-ext-oauth; do
 	npm --prefix "$work/$sibling" ci --ignore-scripts
 done
 npm ci

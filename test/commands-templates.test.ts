@@ -216,6 +216,7 @@ describe("expandCommandEntries", () => {
 					body: "body",
 					dir: "skills/greet",
 					disableModelInvocation: false,
+					root: "workspace" as const,
 				},
 			],
 			[

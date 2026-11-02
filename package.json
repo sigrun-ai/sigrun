@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/sigrun",
-	"version": "0.4.2",
+	"version": "0.5.0",
 	"description": "Self-hosted, multi-user personal-assistant server",
 	"type": "module",
 	"exports": {
@@ -45,17 +45,18 @@
 		"@earendil-works/pi-tui": "^1.3.0",
 		"@fastify/static": "^10.1.7",
 		"@sigrun/ext-codemode": "file:../sigrun-ext-codemode",
+		"@sigrun/ext-curator": "file:../sigrun-ext-curator",
 		"@sigrun/ext-gateway": "file:../sigrun-ext-gateway",
 		"@sigrun/ext-mcp": "file:../sigrun-ext-mcp",
 		"@sigrun/ext-tool-search": "file:../sigrun-ext-tool-search",
 		"@sigrun/oauth": "file:../sigrun-ext-oauth",
-		"@sigrun/shared": "0.4.2",
+		"@sigrun/shared": "0.5.0",
 		"croner": "^10.0.1",
 		"fastify": "^5.12.7",
 		"semver": "^7.8.5",
 		"sharp": "^0.35.5",
 		"typebox": "1.3.27",
-		"@sigrun/tui": "0.4.2"
+		"@sigrun/tui": "0.5.0"
 	},
 	"bundleDependencies": [
 		"@sigrun/shared"
@@ -63,9 +64,10 @@
 	"optionalDependencies": {
 		"@sigrun/sandbox-linux-arm64": "file:./sandbox/npm/linux-arm64",
 		"@sigrun/sandbox-linux-x64": "file:./sandbox/npm/linux-x64",
-		"@sigrun/tui": "0.4.2"
+		"@sigrun/tui": "0.5.0"
 	},
 	"devDependencies": {
+		"@sigrun/memory-markdown": "file:../sigrun-memory-markdown",
 		"@types/node": "^26.6.4",
 		"@types/semver": "^7.8.0",
 		"fast-check": "^4.10.2",

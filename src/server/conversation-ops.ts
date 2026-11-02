@@ -41,6 +41,10 @@ import {
 } from "@sigrun/shared/access";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
+import {
+	ensureRequestId,
+	recordAuthor,
+} from "../curation/attribution.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
@@ -338,6 +342,13 @@ export async function createConversationOp(
 /** The submit op's options (validated inside, in the route's order). */
 export interface SubmitOpOptions {
 	readonly requestId?: string;
+	/**
+	 * The submitting user (curator P1): recorded verbatim as the input's
+	 * author — the HTTP route passes the resolved principal's user, the
+	 * host bridge `opts.user` (extensions own their user mapping), and a
+	 * block answer the acting user. `undefined` records nothing.
+	 */
+	readonly user?: string;
 	/** The raw `whenBusy` value (validated against pi-durable's union). */
 	readonly whenBusy?: unknown;
 	/** The raw `?waitMs` value (validated against the §7.1 ceiling). */
@@ -380,6 +391,9 @@ export async function submitOp(
 	if (!parsed.ok) {
 		throw new ConversationOpError({ error: "invalid_input" });
 	}
+	// Every input carries a requestId (curator P1): the caller's own id, or
+	// a generated `sigrun:` UUID — the pre-admission attribution key.
+	const requestId = ensureRequestId(opts.requestId);
 	// Spec §2/§3 binding contract: a conversation pinned to an unserved
 	// model fails explicitly AT SUBMIT — 4xx with the available ids —
 	// never a silent fallback, and never a settled no_model run surfaced
@@ -458,11 +472,20 @@ export async function submitOp(
 	} else {
 		try {
 			const env = await envThunk();
+			// Curator A3: the learned root resolves through the conversation
+			// OWNER (SessionMetaDoc), not the submitting user — a shared-write
+			// submitter expands against the owner's learned skills.
+			const meta = await opened.harness.snapshot(
+				SessionMetaDoc,
+				conversation.id,
+				BACKGROUND_CONTEXT,
+			);
 			expansion = await expandInput(
 				parsed.parts,
 				opened.commandExpansion,
 				env,
 				BACKGROUND_CONTEXT,
+				meta?.owner,
 			);
 		} catch (error) {
 			if (error instanceof CommandUsageError) {
@@ -507,13 +530,25 @@ export async function submitOp(
 	const draft: InputSubmissionDraft = {
 		type: "input",
 		content,
-		...(opts.requestId === undefined ? {} : { requestId: opts.requestId }),
+		requestId,
 		...(whenBusy === undefined ? {} : { whenBusy: whenBusy as WhenBusyMode }),
 		...(entry === undefined ? {} : { entry }),
 	};
+	// Attribution (curator P1), two writes per input: `byRequest` BEFORE the
+	// admission (the requestId exists pre-admission, so this never races; an
+	// orphan record from a failed submit is harmless) and `bySubmission`
+	// right after it returns — the key the live run's input ids resolve
+	// against. An `undefined` user records nothing (unattributed).
+	await recordAuthor(conversation, { requestId }, opts.user, BACKGROUND_CONTEXT);
 	// The submit pass-through is retired (§6.7): the memory seam's
 	// runSettled owns capture, so submissions admit directly.
 	const submission = await conversation.submit(draft, BACKGROUND_CONTEXT);
+	await recordAuthor(
+		conversation,
+		{ submissionId: submission.id },
+		opts.user,
+		BACKGROUND_CONTEXT,
+	);
 	// Admission stamps activity: the sidebar's activity sort must move the
 	// moment a prompt lands — before the run settles.
 	await touchActivity(
@@ -574,7 +609,10 @@ export async function listConversationsOp(
 				BACKGROUND_CONTEXT,
 			);
 			const access = accessOf(caller, meta ?? {});
-			// Hidden is absent from the list (spec §5.9).
+			// Hidden is absent from the list (spec §5.9) — and internal means
+			// hidden for EVERY caller (curator P5, accessOf rule 0): the
+			// superuser and the bridge's trusted read are covered by the same
+			// line, so no caller-specific skip can drift.
 			if (access === "none") continue;
 			// The archived filter (absent = all).
 			if (

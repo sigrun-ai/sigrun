@@ -3,16 +3,20 @@
  * package.
  *
  * v1 discovered ONE root: `skills/<dir>/SKILL.md` in the conversation
- * workspace. W5 Task 4 (spec §9.4) grows discovery to THREE roots, with
- * first-wins precedence in this order:
+ * workspace. W5 Task 4 (spec §9.4) grew discovery to THREE roots, and
+ * curator A3 (P2) adds a fourth — the conversation OWNER's learned
+ * skills. First-wins precedence in this order:
  *
  * 1. the WORKSPACE root — `skills/` under the conversation workspace, read
  *    through the conversation `ExecutionEnv` (the section via
  *    `PromptInput.env`, the tool via `ToolExecutionApi.env`), so discovery
  *    follows the resolved workspace;
- * 2. the USER root — `<configDir>/skills/` (a named config-root entry),
+ * 2. the LEARNED root — the owner's `<dataDir>/users/<owner>/skills/`,
+ *    read from the host filesystem; only for OWNED conversations (an
+ *    ownerless conversation has no learned root);
+ * 3. the USER root — `<configDir>/skills/` (a named config-root entry),
  *    read from the host filesystem;
- * 3. PACKAGE roots — skill directories shipped by extension packages
+ * 4. PACKAGE roots — skill directories shipped by extension packages
  *    (manifest `sigrun.skills`/`pi.skills` dirs and factory-result `skills`
  *    dirs, collected by the loader in install order), read from the host
  *    filesystem.
@@ -73,6 +77,25 @@ import type {
 import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-durable/env";
 import { type Dirent, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { overlayForSkill, resolveUpstream, withOverlay } from "../curation/overlays.js";
+import { buildSkillManageTool } from "../curation/skill-tool.js";
+import { SessionMetaDoc } from "../server/session-meta.js";
+
+/**
+ * Resolve a conversation's owner through any `DocumentReader` (curator
+ * A3): the section's `PromptInput.read` and the tool's `ToolExecutionApi`
+ * both carry one. `undefined` for an ownerless conversation — and for a
+ * bare test double without the reader surface (no learned root then).
+ */
+async function conversationOwner(
+	read: PromptInput["read"] | ToolExecutionApi,
+	conversationId: PromptInput["conversationId"],
+	context: Context,
+): Promise<string | undefined> {
+	if (typeof read?.snapshot !== "function") return undefined;
+	const meta = await read.snapshot(SessionMetaDoc, conversationId, context);
+	return meta?.owner;
+}
 
 /** The section key the skills list renders under. */
 export const SKILLS_SECTION_KEY = "skills";
@@ -87,8 +110,11 @@ const FRONTMATTER_DELIMITER = "---";
 const SKILLS_SECTION_HEADER =
 	"Workspace skills. Call the load_skill tool with a skill's name to read its full instructions; each entry shows the skill's path, so you can also read its SKILL.md directly.";
 
-/** The three discovery roots, in precedence order (§9.4). */
-const ROOT_PRECEDENCE = ["workspace", "user dir", "package"] as const;
+/** The discovery roots, in precedence order (§9.4 + curator P2). */
+const ROOT_PRECEDENCE = ["workspace", "learned", "user dir", "package"] as const;
+
+/** One root's label — the skill's `root` field and the collision logs'. */
+type RootLabel = (typeof ROOT_PRECEDENCE)[number];
 
 /**
  * One discovered workspace skill (the workspace root's shape — other
@@ -105,6 +131,8 @@ export interface WorkspaceSkill {
 	readonly dir: string;
 	/** Frontmatter `disable-model-invocation: true` — hidden from the model. */
 	readonly disableModelInvocation: boolean;
+	/** Which discovery root supplied this skill (curator A3). */
+	readonly root: "workspace" | "user dir" | "package" | "learned";
 }
 
 /**
@@ -121,12 +149,44 @@ export interface SkillsOptions {
 	/** The user-wide root: `<configDir>/skills/` (absent = the designed empty case). */
 	readonly userDir: string;
 	/**
+	 * The canonical WORKSPACE root (curator A9): the overlay key's
+	 * workspace path — derived from the ROOT, never a conversation's
+	 * `env.cwd` (a sub-cwd conversation must match the overlay the root
+	 * keyed). Optional so pre-A9 callers keep compiling; absent falls
+	 * back to `env.cwd` (the pre-A9 behavior).
+	 */
+	readonly workspaceRoot?: () => string | undefined;
+	/**
+	 * The owner's learned root (curator P2): `<dataDir>/users/<owner>/skills`
+	 * for an owned conversation, `undefined` for an ownerless one. Optional
+	 * so pre-A3 callers keep compiling; absent = no learned root.
+	 */
+	readonly learnedRoot?: (owner: string | undefined) => string | undefined;
+	/**
 	 * Package skill roots, in install order — `{extension, dir}` pairs the
 	 * loader collected (extension slug + its skill directory).
 	 */
 	readonly packageRoots: () => readonly { extension: string; dir: string }[];
 	/** The rendered-section budget in bytes, read per render (default 4096). */
 	readonly sectionMaxBytes: () => number;
+	/**
+	 * The owner's overlay store (curator A5, P2): the addenda served
+	 * under non-learned skills' bodies for that owner. Optional so
+	 * pre-A5 callers keep compiling; absent = overlays never serve.
+	 */
+	readonly overlays?: (owner: string | undefined) => import("../curation/overlays.js").OverlayStore | undefined;
+	/**
+	 * The owner's per-user skill store (curator A6, P3): what the
+	 * `skill_manage` tool reads and the curator run writes. Optional so
+	 * pre-A6 callers keep compiling; absent = `skill_manage` is not
+	 * installed.
+	 */
+	readonly skillStore?: (user: string | undefined) => import("../curation/store.js").SkillStore | undefined;
+	/**
+	 * The owner's usage counters (curator A6, P4): `load_skill` bumps
+	 * `load` for a learned-root skill. Optional; absent = no counting.
+	 */
+	readonly usage?: (owner: string | undefined) => import("../curation/usage.js").UsageCounters | undefined;
 }
 
 /** Parsed frontmatter: required fields absent when missing or empty. */
@@ -202,6 +262,7 @@ function skillFromFile(
 	text: string,
 	displayDir: string,
 	fileLabel: string,
+	root: RootLabel,
 ): WorkspaceSkill | undefined {
 	const parsed = parseSkillFile(text);
 	if (parsed === undefined) {
@@ -226,6 +287,7 @@ function skillFromFile(
 		body: parsed.body,
 		dir: displayDir,
 		disableModelInvocation: parsed.disableModelInvocation,
+		root,
 	};
 }
 
@@ -266,7 +328,7 @@ async function readSkill(
 			cause: read.error,
 		});
 	}
-	return skillFromFile(read.value, `${SKILLS_DIRECTORY}/${dir.name}`, relative);
+	return skillFromFile(read.value, `${SKILLS_DIRECTORY}/${dir.name}`, relative, "workspace");
 }
 
 /**
@@ -332,8 +394,9 @@ export async function scanSkills(
  * `disable-model-invocation: true` skills (the `listSkills` path); the
  * default hides them with a log, exactly like the workspace root.
  */
-function scanFsRoot(
+export function scanFsRoot(
 	root: string,
+	rootLabel: RootLabel,
 	opts?: { includeHidden?: boolean },
 ): WorkspaceSkill[] {
 	let entries: Dirent[];
@@ -369,7 +432,7 @@ function scanFsRoot(
 				{ cause },
 			);
 		}
-		const skill = skillFromFile(text, join(root, entry.name), file);
+		const skill = skillFromFile(text, join(root, entry.name), file, rootLabel);
 		if (skill === undefined) continue;
 		if (skill.disableModelInvocation && opts?.includeHidden !== true) {
 			console.warn(
@@ -408,12 +471,12 @@ export async function discoverSkills(
 	env: ExecutionEnv | undefined,
 	context: Context,
 	opts: SkillsOptions,
-	options?: { includeHidden?: boolean },
+	options?: { includeHidden?: boolean; owner?: string },
 ): Promise<WorkspaceSkill[]> {
-	const byName = new Map<string, { skill: WorkspaceSkill; root: (typeof ROOT_PRECEDENCE)[number]; extension?: string }>();
+	const byName = new Map<string, { skill: WorkspaceSkill; root: RootLabel; extension?: string }>();
 	const merge = (
 		skills: readonly WorkspaceSkill[],
-		root: (typeof ROOT_PRECEDENCE)[number],
+		root: RootLabel,
 		extension?: string,
 	): void => {
 		for (const skill of skills) {
@@ -441,9 +504,15 @@ export async function discoverSkills(
 	if (env !== undefined) {
 		merge(await scanSkills(env, context, options), "workspace");
 	}
-	merge(scanFsRoot(opts.userDir, options), "user dir");
+	// The learned root (curator P2): the owner's own skills, between the
+	// workspace and the deployment's user dir. Ownerless → none.
+	const learnedRoot = opts.learnedRoot?.(options?.owner);
+	if (learnedRoot !== undefined) {
+		merge(scanFsRoot(learnedRoot, "learned", options), "learned");
+	}
+	merge(scanFsRoot(opts.userDir, "user dir", options), "user dir");
 	for (const root of opts.packageRoots()) {
-		merge(scanFsRoot(root.dir, options), "package", root.extension);
+		merge(scanFsRoot(root.dir, "package", options), "package", root.extension);
 	}
 	return [...byName.values()].map((entry) => entry.skill).sort(bySkillName);
 }
@@ -459,8 +528,12 @@ export async function listSkills(
 	env: ExecutionEnv | undefined,
 	context: Context,
 	opts: SkillsOptions,
+	options?: { owner?: string },
 ): Promise<WorkspaceSkill[]> {
-	return discoverSkills(env, context, opts, { includeHidden: true });
+	return discoverSkills(env, context, opts, {
+		includeHidden: true,
+		...(options?.owner === undefined ? {} : { owner: options.owner }),
+	});
 }
 
 /**
@@ -503,13 +576,14 @@ export function renderSkillList(
 	return `(skill list truncated: ${lines.length} more not shown — call load_skill by name)`;
 }
 
-/** Section render: discover all three roots, list the winning skills. */
+/** Section render: discover all roots, list the winning skills. */
 async function renderSkills(
 	input: PromptInput,
 	context: Context,
 	opts: SkillsOptions,
 ): Promise<string | undefined> {
-	const skills = await discoverSkills(input.env, context, opts);
+	const owner = await conversationOwner(input.read, input.conversationId, context);
+	const skills = await discoverSkills(input.env, context, opts, { owner });
 	return renderSkillList(skills, opts.sectionMaxBytes());
 }
 
@@ -534,7 +608,8 @@ function buildLoadSkillTool(opts: SkillsOptions) {
 			api: ToolExecutionApi,
 			context: Context,
 		): Promise<ToolExecutionResult> {
-			const skills = await discoverSkills(api.env, context, opts);
+			const owner = await conversationOwner(api, api.conversationId, context);
+			const skills = await discoverSkills(api.env, context, opts, { owner });
 			const skill = skills.find((candidate) => candidate.name === args.name);
 			if (skill === undefined) {
 				if (skills.length === 0) {
@@ -547,7 +622,19 @@ function buildLoadSkillTool(opts: SkillsOptions) {
 					`load_skill: unknown skill "${args.name}"; available skills: ${available}`,
 				);
 			}
-			api.output(skill.body);
+			// Curator A5 (P2): an overlay for this owner rides on the upstream
+			// body — upstream, then the heading, then the overlay text. The
+			// section is unchanged (the skill lists once, plain).
+			const overlay = await overlayForSkill(opts, owner, skill, api.env);
+			api.output(overlay === undefined ? skill.body : withOverlay(skill.body, overlay));
+			// Curator A6 (P4): a learned-root skill load counts as usage.
+			if (skill.root === "learned" && owner !== undefined) {
+				const usage = opts.usage?.(owner);
+				if (usage !== undefined) {
+					usage.bump(skill.name, "load");
+					void usage.flush();
+				}
+			}
 			return {};
 		},
 	});
@@ -567,6 +654,33 @@ export function createSkillsExtension(opts: SkillsOptions): Extension {
 				renderSkills(input, context, opts),
 			),
 		],
-		tools: [buildLoadSkillTool(opts)],
+		tools: [
+			buildLoadSkillTool(opts),
+			// Curator A6 (P3): the skill_manage tool installs once the options
+			// carry the curation wiring (a skill-store seam) — the read actions
+			// for every owned conversation, the mutating actions for curator
+			// runs. The overlay actions resolve the CURRENT upstream through
+			// A5's machinery over the same discovery roots (the final review
+			// fix wave: hashing the learned root stored `""` for every overlay).
+			...(opts.skillStore === undefined
+				? []
+				: [
+						buildSkillManageTool({
+							storesOf: (user) => {
+								const store = opts.skillStore?.(user);
+								const overlays = opts.overlays?.(user);
+								return store === undefined || overlays === undefined
+									? undefined
+									: { store, overlays };
+							},
+							upstreamOf: (key, env, ctx) =>
+								resolveUpstream(key, env, ctx, {
+									userDir: opts.userDir,
+									packageRoots: opts.packageRoots,
+								}),
+							workspaceOf: (env) => opts.workspaceRoot?.() ?? env?.cwd,
+						}),
+					]),
+		],
 	});
 }

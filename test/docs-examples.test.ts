@@ -1,10 +1,14 @@
 /**
  * The docs examples contract (UI-blocks U6 Task 4): every TypeScript
  * code block in docs/extending.md tagged `ts check` must TYPE-CHECK
- * against the real `@sigrun/sigrun/blocks` builder surface — the exact
- * imports an extension author writes (src/blocks/index.ts, the
- * host-linked copy of the block set). A docs drift (a renamed builder,
- * a removed prop) fails this suite instead of reaching a reader.
+ * against the real authoring surfaces — the exact imports an
+ * extension author writes. Two subpaths are mapped to source:
+ * `@sigrun/sigrun/blocks` (src/blocks/index.ts, the host-linked copy of
+ * the block set) and `@sigrun/sigrun/extension` (src/extension.ts, the
+ * types-only extension contract — the curation-target shapes and the
+ * rest of the factory-result surface). A docs drift (a renamed
+ * builder, a removed prop, a changed contract type) fails this suite
+ * instead of reaching a reader.
  *
  * Method: extract each fenced block whose info string is exactly
  * `ts check` (a near-miss info string — one carrying the word `check`
@@ -13,10 +17,10 @@
  * silently dropping the block from coverage), write it to a scratch
  * tsconfig project under a temp dir, and run the repo's own `tsc`
  * (typescript 7 — the JS compiler API is gone, so the check shells
- * out; tsc 7 native-compile speed keeps this cheap) with a paths
- * mapping resolving `@sigrun/sigrun/blocks` to `src/blocks/index.ts`.
- * The published `exports` entry points at `dist/`, which is gitignored
- * and built by CI before tests run; the source mapping keeps this suite
+ * out; tsc 7 native-compile speed keeps this cheap) with paths
+ * mappings resolving the two subpaths to source.
+ * The published `exports` entries point at `dist/`, which is gitignored
+ * and built by CI before tests run; the source mappings keep this suite
  * independent of build order. Scratch files land under `os.tmpdir()`
  * (never the repo, so a failed run leaves nothing behind) and are
  * removed in all outcomes.
@@ -106,6 +110,7 @@ function checkExample(example: CheckedExample): { ok: boolean; output: string } 
 					typeRoots: [join(root, "node_modules", "@types")],
 					paths: {
 						"@sigrun/sigrun/blocks": [join(root, "src", "blocks", "index.ts")],
+						"@sigrun/sigrun/extension": [join(root, "src", "extension.ts")],
 					},
 				},
 				include: ["example.ts"],

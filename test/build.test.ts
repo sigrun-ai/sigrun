@@ -314,6 +314,7 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 					toolSearch: false,
 					gateway: false,
 					oauth: false,
+					curator: false,
 				},
 			}) + "\n",
 			"utf8",

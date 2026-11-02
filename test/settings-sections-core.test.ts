@@ -461,6 +461,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 						"builtinExtensions.mcp": true,
 						"builtinExtensions.toolSearch": true,
 						"builtinExtensions.oauth": true,
+						"builtinExtensions.curator": true,
 					},
 				},
 			},

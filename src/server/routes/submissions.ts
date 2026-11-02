@@ -73,6 +73,11 @@ export function registerSubmissionRoutes(
 				...(body.requestId === undefined
 					? {}
 					: { requestId: String(body.requestId) }),
+				// Attribution (curator P1): the resolved principal's user is
+				// the input's author; an unidentified caller records nothing.
+				...(request.principal.user === undefined
+					? {}
+					: { user: request.principal.user }),
 				...(body.whenBusy === undefined ? {} : { whenBusy: body.whenBusy }),
 				...( (request.query as Record<string, unknown> | undefined)?.waitMs ===
 				undefined

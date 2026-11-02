@@ -159,17 +159,20 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 			samples.some((line) => line.startsWith("sigrun_tasks_live{")),
 		).toBe(true);
 		// The full six-status vocabulary is always present (0s included),
-		// including 1.4.0's `sleeping` (Task B1 Step 6).
+		// including 1.4.0's `sleeping` (Task B1 Step 6). The curator
+		// built-in's tick job sleeps durably between fires, so `sleeping`
+		// is 1 on this deploy — every OTHER status is 0 (asserted by
+		// exclusion against the sample lines themselves).
 		for (const status of [
 			"running",
 			"ready",
 			"waiting",
-			"sleeping",
 			"completing",
 			"blocked",
 		]) {
 			expect(samples).toContain(`sigrun_tasks_live{status="${status}"} 0`);
 		}
+		expect(samples).toContain(`sigrun_tasks_live{status="sleeping"} 1`);
 		expect(
 			samples.some((line) =>
 				line.startsWith("sigrun_backup_last_success_timestamp_seconds"),
@@ -359,13 +362,22 @@ describe("GET /metrics job families (W4 Task 4)", () => {
 		expect(body).toContain("# TYPE sigrun_job_runs_total counter");
 	});
 
-	test("a deploy with no jobs serves none of the job families", async () => {
+	test("a deploy with no OPERATOR jobs serves none of the job families", async () => {
 		const { app } = await bootServer();
 		const body = await getMetrics(app);
-		expect(body).not.toContain("sigrun_job_next_run_timestamp_seconds");
+		// "No jobs" now means no operator-declared jobs: the curator
+		// built-in's `ext:curator:curator-tick` job exists on every boot
+		// (Task B1), so the schedule-timestamp families ARE served — but
+		// only for that job (its id is the sole label value), and the
+		// runs_total counter (in-process state: zero outcomes observed →
+		// omitted entirely) still is.
+		expect(body).toContain("sigrun_job_next_run_timestamp_seconds");
+		expect(body).not.toContain(
+			'sigrun_job_next_run_timestamp_seconds{id="file:tick"}',
+		);
+		// The last-run family only samples jobs that HAVE run (the
+		// backup-marker convention) — never-fired jobs serve no sample.
 		expect(body).not.toContain("sigrun_job_last_run_timestamp_seconds");
-		// The counter family is in-process state: zero outcomes observed →
-		// no samples → omitted entirely (the backup-marker convention).
 		expect(body).not.toContain("sigrun_job_runs_total");
 	});
 });

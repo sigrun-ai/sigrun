@@ -72,7 +72,8 @@ test("core installs no tool that answers interactions", async () => {
 		});
 		try {
 			// The exact core surface: coding tools (read/write/edit/bash),
-			// search tools (find/grep/ls), load_skill, and the U5 blocks tools
+			// search tools (find/grep/ls), load_skill, the A6 skill_manage
+			// curation tool, and the U5 blocks tools
 			// (show_blocks/update_blocks). Context-files,
 			// the no-op memory default, and model guidance contribute
 			// sections only; nothing here can answer a pending interaction.
@@ -90,6 +91,7 @@ test("core installs no tool that answers interactions", async () => {
 				"ls",
 				"read",
 				"show_blocks",
+				"skill_manage",
 				"update_blocks",
 				"write",
 			]);

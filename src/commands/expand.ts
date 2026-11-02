@@ -38,6 +38,7 @@ import {
 	type SkillsOptions,
 	type WorkspaceSkill,
 } from "../skills/index.js";
+import { OVERLAY_HEADING, overlayForSkill } from "../curation/overlays.js";
 import {
 	discoverTemplates,
 	type PromptTemplate,
@@ -201,10 +202,16 @@ export function expandTemplate(
  * shape): the `<skill …>` block, plus a blank line and the trimmed
  * arguments ONLY when arguments were given. An unknown skill — or any
  * other text — passes through UNCHANGED.
+ *
+ * `overlays` (curator A5, P2): the acting owner's overlay text per
+ * skill name — when present, the block's body carries the upstream
+ * body followed by `OVERLAY_HEADING` and the overlay text, the same
+ * shape `load_skill` serves. Absent = the plain pi shape.
  */
 export function expandSkillCommand(
 	text: string,
 	skills: readonly WorkspaceSkill[],
+	overlays?: ReadonlyMap<string, string>,
 ): string {
 	if (!text.startsWith("/skill:")) return text;
 	const spaceIndex = text.indexOf(" ");
@@ -214,9 +221,14 @@ export function expandSkillCommand(
 	const skill = skills.find((candidate) => candidate.name === skillName);
 	if (skill === undefined) return text;
 	const location = `${skill.dir}/SKILL.md`;
+	const overlay = overlays?.get(skill.name);
 	// Pi parity: the body is the frontmatter-stripped SKILL.md, trimmed —
 	// `</skill>` sits on its own line with no stray blank lines.
-	const body = skill.body.trim();
+	const body = (
+		overlay === undefined
+			? skill.body
+			: `${skill.body}\n${OVERLAY_HEADING}\n\n${overlay}`
+	).trim();
 	const block =
 		`<skill name="${skill.name}" location="${location}">\n` +
 		`References are relative to ${skill.dir}.\n` +
@@ -274,6 +286,7 @@ export async function expandInput(
 	expansion: CommandExpansion,
 	env: ExecutionEnv | undefined,
 	context: Context,
+	owner?: string,
 ): Promise<ExpansionResult> {
 	// Only a LEADING text part starting with `/` is a command: the
 	// command is what the user typed first (attachments and later text
@@ -293,9 +306,36 @@ export async function expandInput(
 	const reserved = expansion.commandNames();
 	if (reserved.has(commandName)) return { parts };
 	if (commandName.startsWith("skill:")) {
-		const skills = await listSkills(env, context, expansion.skills);
-		const expanded = expandSkillCommand(text, skills);
+		const skillName = commandName.slice("skill:".length);
+		const skills = await listSkills(env, context, expansion.skills, { owner });
+		// Curator A5 (P2): the owner's overlay rides on the upstream body,
+		// the same shape `load_skill` serves — discovered skills without
+		// one (or an owner without a store) map nothing, and the block
+		// keeps pi's plain shape.
+		const overlays = new Map<string, string>();
+		for (const skill of skills) {
+			const overlay = await overlayForSkill(
+				expansion.skills,
+				owner,
+				skill,
+				env,
+			);
+			if (overlay !== undefined) overlays.set(skill.name, overlay);
+		}
+		const expanded = expandSkillCommand(text, skills, overlays);
 		if (expanded === text) return { parts };
+		// Curator A6 (P4): a `/skill:name` that actually expanded counts as
+		// usage for the owner (the discovered skill was a learned one).
+		if (owner !== undefined) {
+			const skill = skills.find((candidate) => candidate.name === skillName);
+			if (skill?.root === "learned") {
+				const usage = expansion.skills.usage?.(owner);
+				if (usage !== undefined) {
+					usage.bump(skill.name, "expand");
+					void usage.flush();
+				}
+			}
+		}
 		return {
 			parts: parts.map((part) => (part === textPart ? { type: "text", text: expanded } : part)),
 			typed: text,

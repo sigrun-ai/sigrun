@@ -104,11 +104,13 @@ describe("GET /v1/commands", () => {
 			"model",
 			"thinking",
 			"jobs",
-			// U4's core settings command, then the gateway built-in's two
-			// commands (gateway Task 4, §8.2) — extension-declared, after the core table.
+			// U4's core settings command, then the built-ins' commands —
+			// the gateway's two (gateway Task 4, §8.2) and the curator's
+			// `/learn` (Task B1) — extension-declared, after the core table.
 			"settings",
 			"pair",
 			"link",
+			"learn",
 		]);
 		for (const command of body.commands) {
 			expect(typeof command.description).toBe("string");

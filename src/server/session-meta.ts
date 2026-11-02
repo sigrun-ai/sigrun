@@ -29,10 +29,10 @@
  * other's fields (the mutation line serializes commits).
  *
  * Server-owned fields (`autoName`, `autoNameAttempts`,
- * `lastActivityAt`, `jobId`, `deliver`) are written by host code only
- * (activity.ts, the A2 auto-namer, fire.ts's job stamp); they are NOT
- * patch surface — the strict validator keeps rejecting them as
- * `invalid_field`.
+ * `lastActivityAt`, `jobId`, `deliver`, `internal`) are written by host
+ * code only (activity.ts, the A2 auto-namer, fire.ts's job stamp, the
+ * curator's creating commit); they are NOT patch surface — the strict
+ * validator keeps rejecting them as `invalid_field`.
  */
 
 import type { Draft } from "@earendil-works/chord";
@@ -193,12 +193,14 @@ export function validateSessionMetaPatch(
 			case "source":
 			case "owner":
 			case "jobId":
-			case "deliver": {
-				// Server-only (spec §5.9 + gateway C7): the KEY itself is the
-				// client error, whatever the value — even a `null` clear. The
-				// job stamp fields move with the fire (fire.ts's creating
-				// commit) and the delivery targets ride the job spec, never a
-				// meta patch.
+			case "deliver":
+			case "internal": {
+				// Server-only (spec §5.9 + gateway C7 + curator P5): the KEY
+				// itself is the client error, whatever the value — even a `null`
+				// clear. The job stamp fields move with the fire (fire.ts's
+				// creating commit) and the delivery targets ride the job spec,
+				// never a meta patch; the internal-run marker moves with the
+				// curator's creating commit (markInternal) alone.
 				return { error: "invalid_field", field: key };
 			}
 			case "sharing": {

@@ -13,7 +13,9 @@
  * The surface's unnoted change records fold into `content` first and
  * `notedThrough` advances BEFORE the §8.3 note step runs — so the turn
  * sends no separate note for this surface, while changes on OTHER
- * surfaces still note. `requestId` makes a double click one turn.
+ * surfaces still note. `requestId` makes a double click one turn. The
+ * acting `user` rides through to `submitOp` as the answer's author
+ * (curator P1).
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -47,7 +49,8 @@ export type BlocksAnswerData = {
  * `skipNoteFor` (this surface notes no further this turn) and the
  * answer entry. The route owns access gating and actionId dedup; this
  * caller runs only for a located, write-accessible block whose handler
- * starts a turn.
+ * starts a turn. `user` is the acting user (curator P1): recorded as the
+ * answer input's author, `undefined` for an unidentified caller.
  *
  * The fold and the `notedThrough` advance run in ONE commit BEFORE the
  * note step (§8.4: "The surface's unnoted change records are folded into
@@ -61,6 +64,7 @@ export async function answerBlock(
 	action: string,
 	payload: JsonValue,
 	actionId: string | undefined,
+	user: string | undefined,
 ): Promise<void> {
 	const { opened } = ctx;
 	const block = await readChatBlock(opened.harness, conversationId, entryId);
@@ -116,6 +120,9 @@ export async function answerBlock(
 	}, BACKGROUND_CONTEXT);
 	await submitOp(ctx, conversation, folded.content, {
 		...(actionId === undefined ? {} : { requestId: `blocks:${actionId}` }),
+		// Attribution (curator P1): the answering user authors the answer's
+		// input turn.
+		...(user === undefined ? {} : { user }),
 		skipNoteFor: entryId,
 		entry: {
 			kind: BlocksAnswerEntry.kind,

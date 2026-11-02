@@ -18,13 +18,20 @@ import type { Provider } from "@earendil-works/pi-ai";
 import type {
 	Access,
 	AmbientRecord,
+	CurationChangeDetails,
+	CurationHint,
+	CurationRunResult,
+	CurationTarget,
 	DirectoryUserWire,
 	ExtensionCommandContribution,
 	ExtensionLifecyclePayload,
 	ExtensionRouteContribution,
 	ExtensionWorker,
+	HandlerContext,
 	InteractionRecord,
 	JobSpec,
+	MaintenanceBudget,
+	MaintenanceReport,
 	ModelEntry,
 	NotifierContribution,
 	ProviderContribution,
@@ -200,6 +207,58 @@ void [sharingLevel, userName, createdId];
 // The factory: a full result, every field, typed by the contract.
 // ---------------------------------------------------------------------------
 
+// A curation target (curator P7): the field-level pin — the target's
+// shape is specific, not `unknown`, and the budget/report result types
+// flow through `maintain`.
+const curationTarget: CurationTarget = {
+	name: "notes",
+	tools: ["notes_write"],
+	guidance: (user) => ["Put deploy lessons in the notes target.", user],
+	undo: async (user: string, changeId: string, ctx: HandlerContext) => {
+		void user;
+		void changeId;
+		ctx.abortSignal?.throwIfAborted();
+	},
+	maintain: async (
+		user: string,
+		ctx: HandlerContext,
+		budget: MaintenanceBudget,
+	): Promise<MaintenanceReport> => {
+		const deadline: number = budget.deadline;
+		const runs: number = budget.runs;
+		void deadline;
+		void runs;
+		const result: CurationRunResult = await budget.run(
+			"Prune stale notes",
+			["notes_write"],
+		);
+		const status: "completed" | "cancelled" | "failed" | "deadline" =
+			result.status;
+		const text: string = result.text;
+		void status;
+		void text;
+		ctx.abortSignal?.throwIfAborted();
+		return { changes: [{ changeId: "change-1", summary: "pruned" }] };
+	},
+};
+
+// The details.curation convention (P7/P8): a tool result's curation
+// record shape.
+const changeDetails: CurationChangeDetails = {
+	changeId: "change-1",
+	summary: "created acme-deploy",
+};
+void changeDetails.changeId;
+
+// One recorded review hint (P9): the wrapper's capture record.
+const hint: CurationHint = {
+	id: "hint-1",
+	tool: "notes_write",
+	args: { text: "remember this" },
+	at: "2026-10-31T00:00:00.000Z",
+};
+void hint.at;
+
 const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 	void host.stores.secrets;
 	void host.stores.settings;
@@ -240,6 +299,7 @@ const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 		interactionKinds: ["gating.confirm"],
 		ambientKinds: ["acme"],
 		workers: [worker],
+		curationTargets: [curationTarget],
 		jobs: [job],
 		routes: [route],
 		commands: [command],

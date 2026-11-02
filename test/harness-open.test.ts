@@ -1,10 +1,14 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { loadConfig } from "../src/config.js";
-import { openHarness } from "../src/harness/boot.js";
+import {
+	DEFAULT_STREAM_TIMEOUT_MS,
+	mergeStreamSettings,
+	openHarness,
+} from "../src/harness/boot.js";
 
 test("harness reopens persisted root conversation", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-harness-"));
@@ -32,4 +36,33 @@ test("harness reopens persisted root conversation", async () => {
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+});
+
+test("mergeStreamSettings: caller over file over the default timeoutMs", async () => {
+	// Neither seam: the default lands.
+	expect(mergeStreamSettings(undefined, undefined)).toEqual({
+		timeoutMs: DEFAULT_STREAM_TIMEOUT_MS,
+	});
+	// File carries other fields but no timeoutMs: default fills in.
+	expect(mergeStreamSettings(undefined, { maxRetries: 2 })).toEqual({
+		maxRetries: 2,
+		timeoutMs: DEFAULT_STREAM_TIMEOUT_MS,
+	});
+	// File names a timeoutMs: it wins (no default clobber).
+	expect(mergeStreamSettings(undefined, { timeoutMs: 5 })).toEqual({
+		timeoutMs: 5,
+	});
+	// Caller present (even without timeoutMs): caller wins field-wise and
+	// the FILE no longer fills the default (the caller seam replaces the
+	// file wholesale, matching the pre-hardening precedence).
+	expect(mergeStreamSettings({ maxRetries: 1 }, { timeoutMs: 5 })).toEqual({
+		maxRetries: 1,
+	});
+	expect(mergeStreamSettings({ timeoutMs: 1234 }, { timeoutMs: 5 })).toEqual({
+		timeoutMs: 1234,
+	});
+	// Caller empty object: passthrough-undefined (an explicit empty
+	// override reads as "nothing set" — matches the pre-hardening shape
+	// where `??` fell through to undefined on falsy inputs).
+	expect(mergeStreamSettings({}, { timeoutMs: 5 })).toBeUndefined();
 });

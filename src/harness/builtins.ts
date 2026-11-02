@@ -1,7 +1,7 @@
 /**
- * Built-in extensions: codemode, MCP, tool search and OAuth ship WITH
- * core — present by default, disableable via settings `builtinExtensions`,
- * replaceable by a same-named configured extension.
+ * Built-in extensions: codemode, MCP, tool search, OAuth and the curator
+ * ship WITH core — present by default, disableable via settings
+ * `builtinExtensions`, replaceable by a same-named configured extension.
  *
  * The first three mirror pi 1.3.0's built-in tool surface; OAuth adds
  * sigrun's standard OIDC/OAuth2 login providers without extra setup.
@@ -44,7 +44,7 @@ import { parsePackageSpecifier, readPackageName } from "./packages.js";
 /** One built-in extension's stable identity. */
 export interface BuiltinExtension {
 	/** The settings key (`builtinExtensions.<key>`). */
-	readonly key: "codemode" | "mcp" | "toolSearch" | "gateway" | "oauth";
+	readonly key: "codemode" | "mcp" | "toolSearch" | "gateway" | "oauth" | "curator";
 	/** The npm package name (the resolution specifier; `@sigrun/ext-*`). */
 	readonly specifier: string;
 	/** The `/v1/extensions` row name — the slug the built-in's DECLARED
@@ -56,13 +56,15 @@ export interface BuiltinExtension {
 }
 
 /**
- * The five built-ins, in load order (codemode before tool-search: both
+ * The six built-ins, in load order (codemode before tool-search: both
  * wrap pi-durable's own extensions and neither depends on the other, but
- * the order pins the tool-collision story should names ever overlap).
- * Specifiers are the published package names (Task 3) — npm keys a file:
- * dependency by the target's own manifest name, so the key must be the
- * name the packages publish under (the dev shape carries `file:` values
- * under these same keys until Task 8 publishes exact `0.1.0`s).
+ * the order pins the tool-collision story should names ever overlap;
+ * curator loads LAST — its loops observe every earlier built-in's
+ * contributions). Specifiers are the published package names (Task 3)
+ * — npm keys a file: dependency by the target's own manifest name, so
+ * the key must be the name the packages publish under (the dev shape
+ * carries `file:` values under these same keys until Task 8 publishes
+ * exact `0.1.0`s).
  */
 export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
 	{ key: "codemode", specifier: "@sigrun/ext-codemode", slug: "codemode" },
@@ -70,6 +72,7 @@ export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
 	{ key: "toolSearch", specifier: "@sigrun/ext-tool-search", slug: "tool-search" },
 	{ key: "gateway", specifier: "@sigrun/ext-gateway", slug: "gateway" },
 	{ key: "oauth", specifier: "@sigrun/oauth", slug: "oauth" },
+	{ key: "curator", specifier: "@sigrun/ext-curator", slug: "curator" },
 ];
 
 /** The outcome of resolving the built-ins against settings + configured extensions. */

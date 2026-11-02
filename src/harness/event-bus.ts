@@ -430,6 +430,23 @@ export class EventBus {
 
 	#unsubscribe: () => void;
 	#harness: Harness;
+	/**
+	 * Internal-run detection (curator P5): the SessionMeta `internal` flag,
+	 * resolved SYNCHRONOUSLY from the commit stream — every SessionMeta
+	 * document change warms the cache (see the pre-pass in `observe`), so
+	 * the arms there always find the flag of the conversation the
+	 * publication belongs to. The marker is written in the conversation's
+	 * CREATING commit and never changes (`markInternal`), so a cached
+	 * value never goes stale; `false` is cached too, keeping ordinary
+	 * traffic at zero extra reads (the bus's no-blocking-work contract
+	 * forbids a snapshot here).
+	 */
+	#internal = new Map<ConversationId, boolean>();
+
+	/** Whether `conversationId` is internal per the commit-warmed cache. */
+	#isInternal(conversationId: ConversationId): boolean {
+		return this.#internal.get(conversationId) === true;
+	}
 	#queueMax: number;
 	#hookDeadlineMs: number;
 	#idleThresholdMs: number | undefined;
@@ -1013,9 +1030,35 @@ export class EventBus {
 		try {
 			const lifecycle: LifecycleEvent[] = [];
 			const forkParents = new Map<ConversationId, ConversationId>();
+			// Curator P5, PRE-PASS: warm the internal-flag cache off every
+			// SessionMeta document change BEFORE any arm below can fire —
+			// change order within a publication is unspecified, so the
+			// conversation/submission arms must never depend on the SessionMeta
+			// change having been seen first (an internal conversation created in
+			// THIS commit emits nothing, its `conversation.created` host event
+			// included). The plain `document` arm alone: a fork's
+			// `document.copy` carries no value to read (and `internal` is never
+			// inherited — the child's own first SessionMeta commit re-warms it).
+			// The marker is written in the creating commit and never changes
+			// (`markInternal`), so a cached value never goes stale; `false` is
+			// cached too, keeping ordinary traffic at zero extra reads (the
+			// bus's no-blocking-work contract forbids a snapshot here).
+			for (const change of publication.changes) {
+				if (change.type !== "document") continue;
+				if (change.record.kind !== SessionMetaDoc.definition.kind) continue;
+				if (change.conversationId === undefined) continue;
+				this.#internal.set(
+					change.conversationId,
+					change.value?.internal === true,
+				);
+			}
 			for (const change of publication.changes) {
 				if (change.type !== "conversation") continue;
 				const record = change.value;
+				// Curator P5: an internal conversation emits nothing — not the
+				// lifecycle events, not the host event (every owner-keyed path
+				// skips internal; the SSE stream's filtering is belt-and-braces).
+				if (this.#isInternal(record.id)) continue;
 				lifecycle.push({
 					type: "conversationCreated",
 					conversationId: record.id,
@@ -1037,6 +1080,19 @@ export class EventBus {
 			}
 			for (const change of publication.changes) {
 				if (change.type !== "document" && change.type !== "document.copy") {
+					continue;
+				}
+				// Curator P5: an internal conversation emits nothing on ANY
+				// document arm — not the SessionMeta summary diffs, and not the
+				// interaction/ambient seam events either (every conversation.*
+				// host event and every derived lifecycle is withheld; the flag
+				// was warmed by the pre-pass above).
+				if (
+					change.conversationId !== undefined &&
+					this.#isInternal(change.conversationId)
+				) {
+					this.#archivedBasis.delete(change.conversationId);
+					this.#metaBasis.delete(change.conversationId);
 					continue;
 				}
 				const kind = change.record.kind;
@@ -1319,6 +1375,15 @@ export class EventBus {
 				if (change.type !== "submission") continue;
 				const value = change.value;
 				if (value.type !== "input") continue;
+				// Curator P5: an internal conversation's submissions are invisible
+				// on every surface the bus feeds — no idle bookkeeping (the run
+				// never arms the idle clock), no run.admitted/run.settled host
+				// events (the SSE stream and the notifications surface see
+				// nothing), and no settle-group enqueueing (no extension
+				// runSettled delivery — the brief's three bus gates in one skip).
+				// The flag was warmed by the pre-pass; `markInternal` runs in the
+				// creating commit, which always precedes any submission.
+				if (this.#isInternal(value.conversationId)) continue;
 				// Idle bookkeeping (Task 4): a PLACED input both stamps the
 				// admission clock and marks the run live; a terminal input marks
 				// the run end. Write-type submissions never touch either — a
