@@ -1372,6 +1372,14 @@ export interface SigrunHost {
 			readonly archived?: boolean;
 		}): Promise<readonly ConversationSummary[]>;
 		meta(id: ConversationId): Promise<SessionMeta>;
+		/** The fork-aware transcript read (trusted; enforce access yourself with `host.access.accessOf`). */
+		entries(
+			id: ConversationId,
+			query: Omit<EntryQuery, "conversationId">,
+			limit: number,
+			cursor?: Cursor,
+		): Promise<Page<EntryRecord, Cursor>>;
+		entry(id: ConversationId, entryId: EntryId): Promise<EntryRecord | undefined>;
 		/**
 		 * Withdraw/settle the conversation's active submission (gateway
 		 * C4, the abort route's op). On an idle conversation it RESOLVES

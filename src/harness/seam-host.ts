@@ -620,6 +620,17 @@ export function createSeamHost(
 				const bridge = await hostBridge("conversations.meta");
 				return bridge.conversations.meta(id);
 			},
+			async entries(id, query, limit, cursor) {
+				return (await hostBridge("conversations.entries")).conversations.entries(
+					id,
+					query,
+					limit,
+					cursor,
+				);
+			},
+			async entry(id, entryId) {
+				return (await hostBridge("conversations.entry")).conversations.entry(id, entryId);
+			},
 			// The C4a ops: straight delegation (the bridge resolves the id and
 			// runs the op its HTTP twin runs).
 			async abort(id) {

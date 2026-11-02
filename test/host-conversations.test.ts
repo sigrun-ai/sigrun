@@ -597,6 +597,64 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		expect("owner" in bareMeta).toBe(false);
 	});
 
+	test("entries() pages the transcript oldest-first with order ascending, and a fork child sees parent entries whose conversationId is the parent", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const parentId = await host.conversations.create({ owner: "alice" });
+		faux.appendResponses([fauxAssistantMessage("first turn answer")]);
+		const record = await host.conversations.submit(parentId, [
+			{ type: "text", text: "first turn" },
+		]);
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the first turn to settle",
+		);
+		const childId = await host.conversations.fork(parentId, { owner: "tester" });
+		const page = await host.conversations.entries(
+			childId,
+			{ order: "ascending" },
+			50,
+		);
+		expect(page.items[0]?.conversationId).toBe(parentId);
+		expect(page.items.some((entry) => entry.kind === "pi.user")).toBe(true);
+	});
+
+	test("entry() returns undefined for an id outside the ancestry and the record for a visible one", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const parentId = await host.conversations.create({ owner: "alice" });
+		faux.appendResponses([fauxAssistantMessage("visible entry answer")]);
+		const record = await host.conversations.submit(parentId, [
+			{ type: "text", text: "visible entry" },
+		]);
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the visible entry turn to settle",
+		);
+		const childId = await host.conversations.fork(parentId, { owner: "tester" });
+		const page = await host.conversations.entries(
+			childId,
+			{ order: "ascending" },
+			50,
+		);
+		const visible = page.items[0];
+		expect(visible).toBeDefined();
+		await expect(
+			host.conversations.entry(childId, visible!.id),
+		).resolves.toEqual(visible);
+		await expect(
+			host.conversations.entry(childId, 999999 as never),
+		).resolves.toBeUndefined();
+	});
+
+	test("entries() on an unknown id rejects with \"conversation 999999 not found\"", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		await expect(
+			host.conversations.entries(999999 as never, { order: "ascending" }, 50),
+		).rejects.toThrow("conversation 999999 not found");
+	});
+
 	test("patchMeta applies name+archived and meta reads both back; sharing from the host needs no principal (Review Focus 5)", { timeout: 30_000 }, async () => {
 		const { opened, app, aliceToken, testerToken } = await bootServer();
 		const host = channelHost(opened);

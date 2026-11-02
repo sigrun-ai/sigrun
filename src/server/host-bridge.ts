@@ -177,6 +177,25 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				await conversationOf(id);
 				return await readMetaOp(opened, id);
 			},
+			async entries(id, query, limit, cursor) {
+				const conversation = await conversationOf(id);
+				return await conversation.entries(
+					query,
+					limit,
+					cursor,
+					BACKGROUND_CONTEXT,
+				);
+			},
+			async entry(id, entryId) {
+				const conversation = await conversationOf(id);
+				const page = await conversation.entries(
+					{ minEntryId: entryId, maxEntryId: entryId },
+					1,
+					undefined,
+					BACKGROUND_CONTEXT,
+				);
+				return page.items[0];
+			},
 			// Gateway C4a: the remaining conversation ops, each the SAME op
 			// its HTTP route runs — resolved through conversationOf (unknown id
 			// → the bridge's loud `conversation <id> not found`).

@@ -293,6 +293,9 @@ effects are identical by construction:
 - `watch(id, listener)` — the SSE stream's snapshot-first shape.
 - `list({owner, archived})` / `meta(id)` — the durable listing and the
   session-meta read (a superuser-shaped view: extensions are trusted).
+- `entries(id, query, limit, cursor)` / `entry(id, entryId)`, the
+  fork-aware transcript read (trusted; enforce access yourself with
+  `host.access.accessOf`).
 - `abort(id)` — the abort route's op. On an IDLE conversation it
   resolves (chat `/stop` on an idle chat is not an error); the HTTP route
   keeps its exact 404 `no_active_submission`.
