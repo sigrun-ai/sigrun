@@ -286,7 +286,7 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		// while keeping 0.3.0). Each legitimately declares its line's
 		// acceptance; anything older — or a declaration from the WRONG
 		// line — is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-8]$/);
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.[3-9]$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
 			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0)?)?)?)$/,
 		);
