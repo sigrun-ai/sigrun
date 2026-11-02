@@ -181,6 +181,8 @@ export interface SeamHost {
 	readonly conversations: SigrunHost["conversations"];
 	/** Read-only lookup of live jobs (A5); binds lazily with the bridge. */
 	readonly jobs: SigrunHost["jobs"];
+	/** Send one explicit extension notice; validates, then enqueues delivery. */
+	readonly notify: SigrunHost["notify"];
 	/** The user directory (§9.7): list/get in admin wire form. */
 	readonly users: SigrunHost["users"];
 	/**
@@ -642,6 +644,9 @@ export function createSeamHost(
 					opts,
 				);
 			},
+		},
+		async notify(input) {
+			return (await hostBridge()).notify(identity.name, input);
 		},
 		// The surfaces seam (UI-blocks U3 Task 4): `changed` awaits the
 		// bridge (so a factory-body call waits, never resolves early) and

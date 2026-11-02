@@ -108,6 +108,8 @@ interface TestServer {
 	 * `finish`, where the watcher count decrements) before proceeding.
 	 */
 	watches: ConversationWatch[];
+	/** The fixture extension's captured host (A6 host.notify tests). */
+	extensionHost: SeamHost;
 	close: () => Promise<void>;
 }
 
@@ -216,7 +218,27 @@ async function bootServer(options?: {
 	};
 	cleanups.push(close);
 	resetNotifierEvents();
-	return { app, opened, config, port, bob, dave, faux, watches, close };
+	// A6: the seam fixture captures the real, rekeyed host instance its
+	// factory received; notify therefore exercises the production bridge.
+	const seamFixture = globalThis as {
+		__fixtureSeamHost?: SeamHost;
+	};
+	const extensionHost = seamFixture.__fixtureSeamHost;
+	if (extensionHost === undefined) {
+		throw new Error("fixture-seam did not capture its host");
+	}
+	return {
+		app,
+		opened,
+		config,
+		port,
+		bob,
+		dave,
+		faux,
+		watches,
+		extensionHost,
+		close,
+	};
 }
 
 /** The Bearer header set for one token. */
@@ -740,6 +762,172 @@ describe("run.settled structured outcome (release-readiness-2 §2)", () => {
 			(event) => event.type === "interaction.pending",
 		);
 		expect("outcome" in pending).toBe(false);
+	});
+});
+
+describe("host.notify extension notices (A6)", () => {
+	test("delivers a view deep link through the existing notifier fan-out", { timeout: 30_000 }, async () => {
+		const server = await bootServer({
+			publicUrl: "https://example.invalid",
+		});
+		resetNotifierEvents();
+		await server.extensionHost.notify({
+			user: "bob",
+			title: "T",
+			body: "B",
+			kind: "escalation.raised",
+			target: { view: "inbox", params: { id: "x" } },
+		});
+		const notice = await waitForEvent(
+			(event) => event.type === "extension",
+		);
+		expect(notice).toEqual({
+			type: "extension",
+			extension: "sigrun-fixture-seam",
+			kind: "escalation.raised",
+			conversationId: undefined,
+			jobId: undefined,
+			user: "bob",
+			title: "T",
+			body: "B",
+			url: "https://example.invalid/#/ext/sigrun-fixture-seam/inbox?params=%7B%22id%22%3A%22x%22%7D",
+		});
+		expect("callId" in notice).toBe(false);
+		expect("outcome" in notice).toBe(false);
+		expect(ofType("extension")).toHaveLength(1);
+	});
+
+	test("omits url without publicUrl, even with notifications.runSettled never", { timeout: 30_000 }, async () => {
+		const server = await bootServer({
+			notifications: { runSettled: "never" },
+		});
+		resetNotifierEvents();
+		await server.extensionHost.notify({
+			user: "bob",
+			title: "T",
+			body: "B",
+			kind: "escalation.raised",
+			target: { view: "inbox", params: {} },
+		});
+		const notice = await waitForEvent(
+			(event) => event.type === "extension",
+		);
+		expect("url" in notice).toBe(false);
+	});
+
+	test("rejects an unknown or missing user and invalid lengths", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const base = {
+			user: "bob",
+			title: "T",
+			body: "B",
+			kind: "escalation.raised",
+		} as const;
+		await expect(
+			server.extensionHost.notify({ ...base, user: "alice" }),
+		).rejects.toThrow('unknown user "alice"');
+		await expect(
+			server.extensionHost.notify({ ...base, user: undefined }),
+		).rejects.toThrow("user is required");
+		await expect(
+			server.extensionHost.notify({ ...base, title: "" }),
+		).rejects.toThrow("title");
+		await expect(
+			server.extensionHost.notify({ ...base, title: "t".repeat(201) }),
+		).rejects.toThrow("title");
+		await expect(
+			server.extensionHost.notify({ ...base, body: "b".repeat(2001) }),
+		).rejects.toThrow("body");
+		await expect(
+			server.extensionHost.notify({ ...base, kind: "" }),
+		).rejects.toThrow("kind");
+		await expect(
+			server.extensionHost.notify({ ...base, kind: "k".repeat(65) }),
+		).rejects.toThrow("kind");
+		expect(ofType("extension")).toHaveLength(0);
+	});
+
+	test('rejects an undeclared view and kind "Bad Kind"', { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const base = {
+			user: "bob",
+			title: "T",
+			body: "B",
+			kind: "escalation.raised",
+		} as const;
+		await expect(
+			server.extensionHost.notify({
+				...base,
+				target: { view: "undeclared" },
+			}),
+		).rejects.toThrow('view "undeclared"');
+		await expect(
+			server.extensionHost.notify({ ...base, kind: "Bad Kind" }),
+		).rejects.toThrow("kind");
+		expect(ofType("extension")).toHaveLength(0);
+	});
+
+	test("conversation targets set conversationId and their publicUrl deep link", { timeout: 30_000 }, async () => {
+		const server = await bootServer({
+			publicUrl: "https://example.invalid",
+		});
+		resetNotifierEvents();
+		await server.extensionHost.notify({
+			user: "bob",
+			title: "T",
+			body: "B",
+			kind: "escalation.raised",
+			target: { conversation: 42 },
+		});
+		const notice = await waitForEvent(
+			(event) => event.type === "extension",
+		);
+		expect(notice).toMatchObject({
+			type: "extension",
+			conversationId: 42,
+			url: "https://example.invalid/#/c/42",
+		});
+	});
+
+	test("enqueues delivery; a throwing notifier does not reject notify", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		resetNotifierEvents();
+		const errors = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		try {
+			await server.extensionHost.notify({
+				user: "bob",
+				title: "T",
+				body: "B",
+				kind: "escalation.raised",
+				target: { conversation: 42 },
+			});
+			const notice = await waitForEvent(
+				(event) => event.type === "extension",
+			);
+			expect(notice).toMatchObject({
+				type: "extension",
+				extension: "sigrun-fixture-seam",
+				kind: "escalation.raised",
+				conversationId: 42,
+				user: "bob",
+			});
+			expect("url" in notice).toBe(false);
+			await waitFor(
+				async () => errors.mock.calls,
+				(calls: unknown[][]) =>
+					calls.some((args) =>
+						args.some(
+							(arg) =>
+								typeof arg === "string" &&
+								arg.includes("fixture-notifier.throwing"),
+						),
+				),
+			);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 });
 

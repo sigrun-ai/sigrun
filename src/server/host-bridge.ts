@@ -41,6 +41,7 @@ import {
 	uploadOp,
 } from "./conversation-ops.js";
 import { listModels } from "./helpers.js";
+import { notifyExtension } from "./notifications.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
 import { accountLinkWire, serializeConversationView } from "./views.js";
@@ -74,6 +75,11 @@ export interface HostBridge {
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
 	readonly commands: SigrunHost["commands"];
+	/** The extension-notify server side; the seam host supplies its slug. */
+	readonly notify: (
+		slug: string,
+		input: Parameters<SigrunHost["notify"]>[0],
+	) => Promise<void>;
 	/**
 	 * The surfaces seam's server side (UI-blocks U3 Task 4): the seam
 	 * host's `surfaces.changed` delegates here — the slug is the
@@ -365,6 +371,7 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				: { notice: result.notice };
 		},
 	},
+	notify: (slug, input) => notifyExtension(ctx, slug, input),
 	surfaces: {
 		// UI-blocks U3 Task 4 (spec §7.3): the same bumpRev the actions
 		// route takes — the rev advance and the hub event are one step.

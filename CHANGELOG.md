@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `host.notify` lets extensions send validated explicit notices through
+  every declared notifier, with optional conversation or declared-view
+  deep links. Delivery is enqueued on the bounded side lane and is not
+  gated by `notifications.runSettled`.
 - Extension host job hooks: `host.jobs.get(id)` returns a read-only live-job
   projection with its effective owner, and `host.conversations.create({job})`
   stamps a validated job association in the session-meta creation commit.

@@ -476,6 +476,21 @@ export type RunSettledOutcome =
 	| { readonly status: "answered" }
 	| { readonly status: "unanswered"; readonly reason: string };
 
+/** One explicit notification an extension sends through `host.notify`. */
+export interface ExtensionNoticeInput {
+	/** A directory user; `undefined` only when the directory is empty. */
+	readonly user: string | undefined;
+	/** 1..200 characters. */
+	readonly title: string;
+	/** 0..2000 characters. */
+	readonly body: string;
+	/** 1..64 characters, each `[a-z0-9.-]`. */
+	readonly kind: string;
+	readonly target?:
+		| { readonly view: string; readonly params?: JsonObject }
+		| { readonly conversation: number };
+}
+
 /** Fields shared by every notification variant. */
 interface NotificationEventBase {
 	readonly conversationId?: number;
@@ -499,6 +514,13 @@ export type NotificationEvent = NotificationEventBase &
 				readonly callId?: string;
 		  }
 		| { readonly type: "job.failed" }
+		| {
+				readonly type: "extension";
+				/** The calling extension's slug. */
+				readonly extension: string;
+				/** The extension-defined notice kind. */
+				readonly kind: string;
+		  }
 		| {
 				readonly type: "run.settled";
 				/** Whether the run answered or not (model error, abort, …), with
@@ -1169,6 +1191,13 @@ export interface SigrunHost {
 	readonly jobs: {
 		get(id: string): Promise<HostJobInfo | undefined>;
 	};
+
+	/**
+	 * Send one explicit notice through every registered notifier. Validation
+	 * failures throw; once accepted, delivery is enqueued on the bounded side
+	 * lane and this resolves without awaiting notifier completion.
+	 */
+	notify(input: ExtensionNoticeInput): Promise<void>;
 
 	/** The user directory (admin wire form; emails are admin material). */
 	readonly users: {
