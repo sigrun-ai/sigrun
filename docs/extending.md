@@ -1326,7 +1326,9 @@ A package ships skills either through its manifest —
 }
 ```
 
-(the pi-compat `pi.skills` spells the same thing) — or through the
+(the `pi`-shaped `pi.skills` spells the same thing — note this is the
+manifest KEY, not pi extension compatibility: see "Not pi extensions"
+below) — or through the
 factory-result `skills` field (absolute directories, useful when the
 dirs only exist at runtime). Manifest dirs resolve against the package
 root; nonexistent entries are dropped. A package that declares skills
@@ -1339,6 +1341,27 @@ not resolve still quarantines.
 
 The rendered section is capped at `skills.sectionMaxBytes` (default
 4096, a live setting) with a truncation notice.
+
+### Not pi extensions
+
+Sigrun reads the `pi` manifest key (`pi.extensions`, `pi.skills`) **only to
+locate files in a package laid out for pi**, and shares the SKILL.md format
+with it. It does not implement pi's extension API, and a pi extension does
+not run here:
+
+- A **pi extension** is side-effecting: `export default function (pi:
+  ExtensionAPI) { pi.registerTool({...}) }`. It registers against pi's
+  runtime; `registerTool`, `registerCommand`, `ui`, and the rest have no
+  counterpart in sigrun's host.
+- A **sigrun extension** is a factory returning a declarative result:
+  `export default async function (host) { return { extension, providers,
+  webuiBundles, ... } }`. Nothing is registered by side effect.
+
+So `pi.extensions` in a manifest buys **entry discovery** (where the file
+is), never execution of pi extension code. What genuinely transfers is the
+**skills layer**: a package that ships SKILL.md directories through
+`sigrun.skills` or `pi.skills` loads as a skills-only package, whatever
+else its `pi.extensions` entry would have done under pi.
 
 ## Prompt templates
 

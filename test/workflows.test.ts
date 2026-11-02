@@ -350,6 +350,18 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(runs).toContain("publish-deps.mjs file");
 	});
 
+	test("the leaf publishes build what they ship: workspace install before shared/tui publish (the 0.4.2 dist fix)", () => {
+		const { jobs } = releaseWorkflow();
+		const steps = jobs["publish-npm"]?.steps ?? [];
+		const installIdx = steps.findIndex((s) => runOf(s).includes("npm ci") && s.name?.includes("Install the workspace"));
+		const sharedIdx = steps.findIndex((s) => s.name?.includes("Publish @sigrun/shared"));
+		const tuiIdx = steps.findIndex((s) => s.name?.includes("Publish @sigrun/tui"));
+		expect(installIdx, "an Install-the-workspace step must exist").toBeGreaterThan(-1);
+		// The install runs BEFORE both leaf publishes: the leaves'`prepublishOnly` builds need `tsc`, and a fresh checkout has no node_modules.
+		expect(installIdx).toBeLessThan(sharedIdx);
+		expect(installIdx).toBeLessThan(tuiIdx);
+	});
+
 	test("core's registry-mode dance keeps the manifest registry-shaped THROUGH npm ci", () => {
 		// Two coupled invariants, both learned from a real dry-run failure
 		// (the step had never executed before the extension publishes
@@ -453,6 +465,11 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(job?.needs).toEqual(["await-registry", "guard"]);
 		const runs = (job?.steps ?? []).map(runOf).join("\n");
 		expect(runs).toContain("smoke-registry.sh");
+		// The 0.4.2 dist fix: the smoke must also prove the PROJECT-install
+		// shape (hoisted @sigrun/shared from the registry). The global shape
+		// alone passed for four broken releases because core's bundled
+		// shared copy hides the defect.
+		expect(runs).toContain("project-install");
 	});
 
 	test("image needs smoke; on dry-run it needs publish-npm and never pushes", () => {

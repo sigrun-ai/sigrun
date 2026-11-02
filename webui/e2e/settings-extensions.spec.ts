@@ -5,7 +5,7 @@
  *
  * Boots the ship-gate server (e2e/harness.ts) with one extension
  * package loaded (the stores fixture — its manifest carries a version),
- * opens the settings panel's Extensions section, asserts the row, the
+ * opens the settings page's Extensions section, asserts the row, the
  * settings editor round-trip, and the write-only secret input, and
  * leaves a screenshot in the gitignored webui/test-results/.
  */
@@ -40,14 +40,16 @@ test("the Extensions section renders the loaded extension, edits settings, and s
 }) => {
 	await page.goto(server.url);
 	await page.getByRole("button", { name: "settings" }).click();
-	const dialog = page.getByRole("dialog", { name: "settings" });
-	await expect(dialog).toBeVisible();
+	// 0.4.0 Task 4: settings is a main-pane PAGE (no dialog) at
+	// #/settings; the section nav lives in its left column.
+	const settings = page.locator(".settings-page");
+	await expect(settings).toBeVisible();
 
 	// The section exists in the nav and opens.
-	await dialog.getByRole("button", { name: "Extensions" }).click();
+	await settings.getByRole("button", { name: "Extensions" }).click();
 
 	// One row per loaded extension: name + status + manifest version.
-	const row = dialog.locator(".settings-ext[data-ext=acme-tool]");
+	const row = settings.locator(".settings-ext[data-ext=acme-tool]");
 	await expect(row).toBeVisible();
 	await expect(row.locator(".settings-ext-name")).toContainText("acme-tool");
 	await expect(row.locator(".settings-ext-name")).toContainText("v0.2.0");

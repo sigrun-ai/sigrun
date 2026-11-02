@@ -403,10 +403,11 @@ describe("the auto-namer's model resolution does NOT refresh", () => {
 		return { harness, read: () => meta };
 	}
 
-	test("a naming miss fails without any fetch (regression pin)", async () => {
+	test("a naming miss skips without an attempt or any fetch (regression pin)", async () => {
 		// The naming model points at an id the fixture never serves: the
-		// namer's requireServedModel miss must record a failed attempt —
-		// proving the miss happened — WITHOUT refreshing the provider.
+		// namer's requireServedModel miss must skip naming WITHOUT burning
+		// an attempt (Task 2: unserved models are configuration state, not
+		// per-attempt failures) and WITHOUT refreshing the provider.
 		const fixture = dynamicFaux({
 			fetch: () => ["m1"],
 			baseline: ["m1"],
@@ -422,16 +423,16 @@ describe("the auto-namer's model resolution does NOT refresh", () => {
 			harness: stub.harness,
 			models,
 			readSettings: () => ({ namingModel: "acme/absent-model" }),
-			defaultModel: { provider: "acme", modelId: "m1" },
 			isTaskOwned: async () => false,
 			log: (message) => logs.push(message),
 		});
 		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
 		await namer.idle();
-		// The miss happened: one failed attempt, the UnservedModelError's
-		// message in the log…
-		expect(stub.read()?.autoNameAttempts).toBe(1);
-		expect(logs.join(" ")).toContain("not available");
+		// The miss happened: no attempt burned, the skip logged once…
+		expect(stub.read()?.autoNameAttempts).toBeUndefined();
+		expect(logs).toEqual([
+			"auto-name: model acme/absent-model is not served — naming skipped (fix namingModel or the conversation's model)",
+		]);
 		// …and the background lane never refreshed the provider.
 		expect(fixture.calls()).toBe(0);
 	});

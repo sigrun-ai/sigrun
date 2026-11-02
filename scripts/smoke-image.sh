@@ -12,14 +12,12 @@ set -eu
 image="${1-}"
 
 if [ "$#" -eq 1 ]; then
-	# The built-in resolve list (package names) and the loader-slug list,
-	# both derived on the HOST — the single source of truth is
-	# publish-deps.mjs's BUILTINS map (the container has no sibling
-	# checkouts to re-derive from). /v1/meta rows key on the loader SLUG
-	# (`codemode`, `sigrun-mcp`, …), never the package name, so the boot
-	# assertion matches on slugs; the static require.resolve check keeps
-	# the package names.
-	resolve_list="$(node scripts/publish-deps.mjs list | cut -d' ' -f1)"
+	# The loader-slug list for the boot assertion, derived on the HOST —
+	# the single source of truth is publish-deps.mjs's BUILTINS map (the
+	# container has no sibling checkouts to re-derive from). /v1/meta rows
+	# key on the loader SLUG (`codemode`, `sigrun-mcp`, …), never the
+	# package name, so the boot assertion matches on slugs; the static
+	# require.resolve check keeps the package names.
 	builtin_slugs="$(node scripts/publish-deps.mjs slugs | cut -d' ' -f2 | paste -sd, -)"
 	probe="$(docker run --rm "$image" /usr/local/lib/sigrun/sigrun-sandbox probe)"
 	PROBE="$probe" node -e '
@@ -91,6 +89,130 @@ if [ "$#" -eq 1 ]; then
 		});
 	'
 	docker rm -f sigrun-smoke >/dev/null
+	# Python + uv in the agent userland: plain checks first — the
+	# entrypoint execs "$@" (docker/entrypoint.sh), so a bare command
+	# runs exactly like the CMD — then a jailed check proving both work
+	# inside the Landlock policy a per-user agent gets. venv creation and
+	# uv write only under HOME and read only /usr; neither needs global
+	# pip (the Debian EXTERNALLY-MANAGED marker stays; agents use venvs/uv).
+	py="$(docker run --rm "$image" python3 --version 2>&1)" || {
+		echo "python3 missing from the image (exit $?): $py" >&2
+		exit 1
+	}
+	case "$py" in
+	"Python 3"*) ;;
+	*) echo "unexpected python3 --version output: $py" >&2; exit 1 ;;
+	esac
+	out="$(docker run --rm "$image" sh -c 'python3 -m venv /tmp/v && /tmp/v/bin/python -c "print(1)"' 2>&1)" || {
+		echo "python3 venv check failed (exit $?): $out" >&2
+		exit 1
+	}
+	printf "%s\n" "$out" | grep -qx 1 || {
+		echo "python3 venv check did not print 1: $out" >&2
+		exit 1
+	}
+	out="$(docker run --rm "$image" uv --version 2>&1)" || {
+		echo "uv missing from the image (exit $?): $out" >&2
+		exit 1
+	}
+	printf "%s\n" "$out" | grep -q "uv 0\.13\.6" || {
+		echo "unexpected uv --version output (want uv 0.13.6): $out" >&2
+		exit 1
+	}
+	out="$(docker run --rm "$image" sh -c 'cd /tmp && HOME=/tmp/h uv venv -q /tmp/u && uv run --no-project --python /usr/bin/python3 python -c "print(2)"' 2>&1)" || {
+		echo "uv venv/run check failed (exit $?): $out" >&2
+		exit 1
+	}
+	printf "%s\n" "$out" | grep -qx 2 || {
+		echo "uv venv/run check did not print 2: $out" >&2
+		exit 1
+	}
+	# The jailed check: buildUserPolicy for user acme over a throwaway
+	# /tmp/sg managed tree — the buildOsUserPolicy shape from
+	# test/sandbox-it/helpers.ts (store roots + storagePath + coreRoot +
+	# userAreas) — then the sandbox helper runs the python/uv pair under
+	# that policy. HOME comes from the policy itself (the helper execs
+	# the child with the policy env). Expect exit 0 and a 3 on stdout.
+	# The Landlock gate is INSIDE this container: a probe below ABI 6 here
+	# means the host kernel predates it or the docker seccomp profile
+	# blocks the landlock_* syscalls — fail loud naming that cause (never
+	# skip); the fix is --security-opt seccomp=unconfined (or a
+	# landlock-allowing profile) on exactly this docker run.
+	docker run --rm "$image" node --input-type=module -e '
+		import { spawnSync } from "node:child_process";
+		import { mkdirSync } from "node:fs";
+		import { join } from "node:path";
+		import { buildUserPolicy, defaultModuleTrees } from "/app/dist/sandbox/policy.js";
+
+		const helper = "/usr/local/lib/sigrun/sigrun-sandbox";
+		const probed = spawnSync(helper, ["probe"], { encoding: "utf8" });
+		const abi = probed.status === 0 ? JSON.parse(probed.stdout).abi : 0;
+		if (!(Number.isInteger(abi) && abi >= 6)) {
+			console.error(
+				`jailed python/uv check requires Landlock ABI >= 6 in this container; ` +
+				`sigrun-sandbox probe reported ${probed.status === 0 ? String(abi) : `exit ${probed.status}`} — ` +
+				`the host kernel predates Landlock ABI 6 or the docker seccomp profile ` +
+				`blocks the landlock_* syscalls; re-run this check with ` +
+				`--security-opt seccomp=unconfined (or a landlock-allowing profile), never skip it`,
+			);
+			process.exit(1);
+		}
+
+		const root = "/tmp/sg";
+		for (const name of ["config", "data", "cache", "state"]) {
+			mkdirSync(join(root, name), { recursive: true });
+		}
+		const managed = {
+			roots: {
+				configDir: join(root, "config"),
+				dataDir: join(root, "data"),
+				cacheDir: join(root, "cache"),
+				stateDir: join(root, "state"),
+			},
+			storagePath: join(root, "data", "sigrun.db"),
+			coreRoot: "/app",
+			userAreas: (user) => join(root, "data", "users", user),
+		};
+		const built = buildUserPolicy(
+			{ user: "acme", admin: false, source: "cli", createdAt: 1 },
+			{ managed, nodeBinDir: process.execPath, moduleTrees: defaultModuleTrees("/app") },
+		);
+		if (!built.ok) {
+			console.error(`jailed check: policy build failed: ${built.reason}`);
+			process.exit(1);
+		}
+		const policy = built.policy;
+		const serialized = JSON.stringify({
+			ro: policy.ro,
+			rw: policy.rw,
+			ensureDirs: policy.ensureDirs,
+			minAbi: 6,
+			...(policy.uid === undefined ? {} : { uid: policy.uid }),
+			...(policy.gid === undefined ? {} : { gid: policy.gid }),
+			...(policy.groups === undefined ? {} : { groups: policy.groups }),
+		});
+		const command =
+			"python3 -m venv \"$HOME/v\" && \"$HOME/v/bin/python\" -c \"print(3)\" && " +
+			"uv --version && UV_CACHE_DIR=\"$HOME/.cache/uv\" uv venv -q \"$HOME/u\"";
+		const run = spawnSync(
+			"/usr/local/lib/sigrun/sigrun-sandbox",
+			["run", "--", "sh", "-c", command],
+			{ encoding: "utf8", env: { ...policy.env, SIGRUN_SANDBOX_POLICY: serialized } },
+		);
+		if (run.error !== undefined) {
+			console.error(`jailed check: cannot spawn the sandbox helper: ${run.error.message}`);
+			process.exit(1);
+		}
+		if (run.status !== 0) {
+			console.error(`jailed python/uv check failed (exit ${run.status}):\n${run.stdout ?? ""}${run.stderr ?? ""}`);
+			process.exit(1);
+		}
+		if (!(run.stdout ?? "").split("\n").includes("3")) {
+			console.error(`jailed python/uv check did not print 3:\n${run.stdout ?? ""}${run.stderr ?? ""}`);
+			process.exit(1);
+		}
+		console.log("jailed python/uv check OK (venv + uv inside the per-user Landlock policy)");
+	'
 	exec docker run --rm -i "$image" sh -s < "$0"
 elif [ "$#" -ne 0 ]; then
 	echo "usage: smoke-image.sh [IMAGE]" >&2

@@ -108,6 +108,14 @@ export function FormBlockView(props: {
 
 	const doSubmit = (next: JsonObject): boolean => {
 		if (!validate(next)) return false;
+		// Disabled fields are read-only presentation state, not edits. In
+		// particular, deployment-managed fields must not ride an otherwise
+		// unrelated save and trigger the server's whole-request refusal.
+		const submitted = Object.fromEntries(
+			fields
+				.filter((field) => field.disabled !== true)
+				.map((field) => [field.name, next[field.name]]),
+		);
 		actions.dispatch(
 			{
 				type: "submit",
@@ -117,7 +125,7 @@ export function FormBlockView(props: {
 			// The optimistic-concurrency rev rides every submit (the
 			// surface-state rev this render is based on; a save-shaped
 			// action handler reads it, every other handler ignores it).
-			{ values: { ...next }, rev: actions.rev ?? 0 },
+			{ values: submitted, rev: actions.rev ?? 0 },
 		);
 		return true;
 	};

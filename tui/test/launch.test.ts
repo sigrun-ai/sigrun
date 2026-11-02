@@ -10,13 +10,14 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { AUTH_FAILURE_MESSAGE } from "../src/api.js";
 import { createStreamHealthNotices } from "../src/launch.js";
 
 describe("createStreamHealthNotices", () => {
 	test("error then open → exactly one disconnected + one reconnected notice", () => {
 		const notices: string[] = [];
 		const health = createStreamHealthNotices((message) => notices.push(message));
-		health.onError();
+		health.onError("conversation stream closed by the server");
 		health.onOpen();
 		expect(notices).toEqual(["stream: disconnected", "stream: reconnected"]);
 	});
@@ -25,9 +26,9 @@ describe("createStreamHealthNotices", () => {
 		const notices: string[] = [];
 		const health = createStreamHealthNotices((message) => notices.push(message));
 		// Repeated failures while down: one notice.
-		health.onError();
-		health.onError();
-		health.onError();
+		health.onError("conversation stream read failed: ECONNRESET");
+		health.onError("conversation stream closed by the server");
+		health.onError("conversation stream responded with status 503");
 		expect(notices).toEqual(["stream: disconnected"]);
 		// A healthy steady state opens silently (no "reconnected" without a
 		// prior "disconnected").
@@ -39,9 +40,9 @@ describe("createStreamHealthNotices", () => {
 	test("a later outage notices again (transitions, not latches)", () => {
 		const notices: string[] = [];
 		const health = createStreamHealthNotices((message) => notices.push(message));
-		health.onError();
+		health.onError("conversation stream closed by the server");
 		health.onOpen();
-		health.onError();
+		health.onError("conversation stream read failed: ECONNRESET");
 		health.onOpen();
 		expect(notices).toEqual([
 			"stream: disconnected",
@@ -49,6 +50,36 @@ describe("createStreamHealthNotices", () => {
 			"stream: disconnected",
 			"stream: reconnected",
 		]);
+	});
+
+	test("a plain (non-auth) watch error carries the generic transition notice (review F1)", () => {
+		const notices: string[] = [];
+		const health = createStreamHealthNotices((message) => notices.push(message));
+		health.onError("conversation stream responded with status 503");
+		health.onOpen();
+		expect(notices).toEqual(["stream: disconnected", "stream: reconnected"]);
+	});
+
+	test("the auth-failure message surfaces VERBATIM, once, and stops the transition machine (review F1)", () => {
+		const notices: string[] = [];
+		const health = createStreamHealthNotices((message) => notices.push(message));
+		health.onError(AUTH_FAILURE_MESSAGE);
+		// Repeated deliveries of the auth message (the watcher is dead, but
+		// a race could re-deliver) stay at ONE notice.
+		health.onError(AUTH_FAILURE_MESSAGE);
+		expect(notices).toEqual([AUTH_FAILURE_MESSAGE]);
+		// The stream never reconnected: an onOpen after the auth failure
+		// does NOT announce a bogus "reconnected" — the credential is the
+		// problem, not the transport.
+		health.onOpen();
+		expect(notices).toEqual([AUTH_FAILURE_MESSAGE]);
+	});
+
+	test("an unrelated message mentioning authentication is not the auth failure", () => {
+		const notices: string[] = [];
+		const health = createStreamHealthNotices((message) => notices.push(message));
+		health.onError("authentication failed (401) for some other reason");
+		expect(notices).toEqual(["stream: disconnected"]);
 	});
 });
 
@@ -104,18 +135,23 @@ describe("tuiStartupMessage (Task 7: the standalone 403 setup_required exit)", (
 	test("other api errors map to undefined (the generic path prints them)", () => {
 		expect(
 			tuiStartupMessage(
-				new SigrunApiError("GET", "/v1/conversations", 401, {
-					error: "unauthenticated",
-				}),
-			),
-		).toBeUndefined();
-		expect(
-			tuiStartupMessage(
 				new SigrunApiError("GET", "/v1/conversations", 403, {
 					error: "origin_mismatch",
 				}),
 			),
 		).toBeUndefined();
+	});
+
+	test("a 401 api error maps to the auth-failure hint (Task 5)", () => {
+		expect(
+			tuiStartupMessage(
+				new SigrunApiError("GET", "/v1/auth/whoami", 401, {
+					error: "unauthenticated",
+				}),
+			),
+		).toBe(
+			"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
+		);
 	});
 
 	test("a non-api error maps to undefined", () => {

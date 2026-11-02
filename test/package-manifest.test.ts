@@ -41,6 +41,7 @@ interface MinimalManifest {
 	engines?: { node?: string };
 	publishConfig?: Record<string, unknown>;
 	files?: string[];
+	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
 	optionalDependencies?: Record<string, string>;
@@ -111,8 +112,11 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			"LICENSE",
 			"CHANGELOG.md",
 		]);
-		// Exact intra-family pins.
-		expect(root.dependencies?.["@sigrun/shared"]).toBe("0.3.0");
+		// Exact intra-family pins. The @sigrun/shared pin rides the
+		// workspace leaf's own version (the test derives it — a bump that
+		// forgets the pin fails here against shared.version, not against a
+		// literal the bump would have had to update too).
+		expect(root.dependencies?.["@sigrun/shared"]).toBe(shared.version);
 		// Optional platform packages. The tui is a workspace member pinned
 		// to its registry version; the sandbox pair are NOT workspace
 		// members (a linked optional dep with os/cpu constraints makes
@@ -174,6 +178,12 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			directory: "shared",
 		});
 		expect(shared.dependencies).toBeUndefined();
+		// The dist fix (0.4.2): both published leaves carry a
+		// prepublishOnly build — without it, a bare `npm publish` from a
+		// fresh checkout ships a tarball with NO dist/ (shared 0.2.0–0.4.1
+		// and tui 0.2.0–0.4.1 are live on the registry with exactly that
+		// defect; core only survived via bundleDependencies).
+		expect(shared.scripts?.prepublishOnly).toBe("npm run build");
 	});
 
 	test("tui: published workspace package, exact shared pin", () => {
@@ -183,13 +193,17 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 		expect(tui.engines?.node).toBe(NODE_ENGINE);
 		expect(tui.publishConfig).toEqual(PUBLISH_CONFIG);
 		expect(tui.files).toEqual(["dist", "CHANGELOG.md"]);
-		expect(tui.dependencies?.["@sigrun/shared"]).toBe("0.3.0");
+		expect(tui.dependencies?.["@sigrun/shared"]).toBe(shared.version);
 		expect(tui.bin).toEqual({ "sigrun-tui": "dist/launch.js" });
 		expect(tui.repository).toEqual({
 			type: "github",
 			url: "git+https://github.com/sigrun-ai/sigrun.git",
 			directory: "tui",
 		});
+		expect(tui.scripts?.prepublishOnly).toBe("npm run build");
+		// The tui's bin IS a dist artifact — a tarball without dist/ ships a
+		// binary that does not exist (npm i -g @sigrun/tui@0.4.1 materializes
+		// no `sigrun-tui`). The prepublishOnly above is what guarantees it.
 	});
 
 	test("sandbox platform packages: published, version-locked to core, bin-only tarballs", () => {

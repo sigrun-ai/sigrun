@@ -780,7 +780,7 @@ test("the factory-captured host is the final host (re-key mutates in place)", as
 
 test("a skills-only git package loads ok: the .ts pi extension is skipped with one warning, its skills serve", async () => {
 	// Review Focus 4: the fixture is shaped like obra/superpowers — a
-	// pi-compat manifest whose only extension entry is TypeScript with a
+	// `pi`-shaped manifest whose only extension entry is TypeScript with a
 	// SYNTAX ERROR inside, proving the module is never imported.
 	const fixtureDir = join(import.meta.dirname, "fixtures", "fixture-skills-only");
 	const repoDir = await (async () => {
@@ -831,7 +831,7 @@ test("a skills-only git package loads ok: the .ts pi extension is skipped with o
 			]);
 			const skips = warn.mock.calls
 				.map((call) => String(call[0]))
-				.filter((line) => line.includes("pi-compat: skipping TypeScript pi extension"));
+				.filter((line) => line.includes("pi manifest: skipping TypeScript entry"));
 			expect(skips).toHaveLength(1);
 			expect(skips[0]).toContain(".pi/extensions/x.ts");
 

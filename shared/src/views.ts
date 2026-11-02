@@ -430,6 +430,13 @@ export interface SettingsResponse extends SettingsFile {
 	 */
 	readonly pendingRestart: readonly string[];
 	/**
+	 * The deployment-managed top-level settings keys. Read fresh from the
+	 * seeder's managed-settings.json on every request; a missing file means
+	 * nothing is managed. NOT a settable key: the store's validation rejects
+	 * it on PATCH (400 `invalid_field`), and the wire patch type Omits it.
+	 */
+	readonly managed: readonly string[];
+	/**
 	 * The write's own classification (§13.1) — present ONLY on a PATCH
 	 * response: which touched keys applied live vs. which are pending a
 	 * restart. NOT a settable key; absent on GET.

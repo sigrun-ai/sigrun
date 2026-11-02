@@ -296,6 +296,12 @@ export function Composer(props: {
 	// between two clicks in one burst, so the admission-flight guard reads
 	// a ref — set before the first await, released in the finally.
 	const sendingRef = useRef(false);
+	// The empty-state create path (Task 6): when the first send happens with
+	// NO conversation, the send creates one, then submits into it. If the
+	// submit fails after a successful create, the retry must reuse that
+	// conversation (never a second create) — the created id parks here until
+	// the send SUCCEEDS (clear + navigate) or the composer unmounts.
+	const pendingCreatedIdRef = useRef<number | null>(null);
 	const [uploading, setUploading] = useState(false);
 	const [commands, setCommands] = useState<readonly CommandWire[]>([]);
 	const [highlight, setHighlight] = useState(0);
@@ -451,10 +457,16 @@ export function Composer(props: {
 	/**
 	 * The slash menu state: OPEN while the draft is exactly a `/query` (a
 	 * leading slash, no whitespace yet — the first space ends the query
-	 * phase and the args phase begins). Derived from the text, so it can
-	 * never drift; `highlight` is the arrow-key index into `filtered`.
+	 * phase and the args phase begins) AND a conversation is active —
+	 * commands are conversation-scoped (Task 6: typing `/` with no
+	 * conversation sends it as plain text, the first-send create path).
+	 * Derived from the text, so it can never drift; `highlight` is the
+	 * arrow-key index into `filtered`.
 	 */
-	const slashQuery = /^\/\S*$/.test(draft.text) ? draft.text.slice(1) : null;
+	const slashQuery =
+		conversationId !== null && /^\/\S*$/.test(draft.text)
+			? draft.text.slice(1)
+			: null;
 	const filteredCommands =
 		slashQuery === null
 			? []
@@ -705,31 +717,69 @@ export function Composer(props: {
 		// until the admission resolves (answered or errored) — synchronous via
 		// the ref, so a double-click admits ONE submission. While `busy` (the
 		// view's steer report), a click is a STEER, never a double-send.
-		if (conversationId === null || (sendingRef.current && !busy)) return;
+		if (sendingRef.current && !busy) return;
 		if (text === "" && draft.attachments.length === 0) return;
-		sendingRef.current = true;
-		setSending(true);
-		setError(null);
+		// The EMPTY STATE (Task 6): the composer is live with no conversation —
+		// the first send CREATES one, submits into it, then navigates. The
+		// submit lands BEFORE the navigate (the draft hook resets on a
+		// conversation switch — capturing the text here, submitting, and only
+		// then navigating means the switch never races the submit). A create
+		// that succeeds but fails to submit keeps the pending id: a retry
+		// reuses the SAME conversation instead of stacking fresh ones.
+		const targetId = conversationId ?? pendingCreatedIdRef.current;
+		// No active conversation → this send session owns the created id from
+		// create to a SUCCESSFUL submit: navigate on success (first send OR a
+		// retry into the pending conversation — both land the user in the
+		// conversation they started). An active conversation never navigates
+		// (the pre-existing behavior — a submit stays where it is).
+		const navigateOnSuccess = conversationId === null;
 		try {
-			const parts: SubmissionInputPart[] = [
-				...draft.attachments.map(attachmentPart),
-				...(text === "" ? [] : [{ type: "text", text }]),
-			];
-			await client.submit(
-				conversationId,
-				parts,
-				busy ? { whenBusy: "steer" } : undefined,
-			);
-			// Cleared WITH persisting: the submitted text AND the tray must not
-			// resurrect from a late debounce flush OR a reload (the server meta
-			// keeps the draft until it's overwritten — persist the clear).
-			draft.clear(true);
+			sendingRef.current = true;
+			setSending(true);
+			setError(null);
+			if (targetId === null) {
+				const created = await client.createConversation();
+				pendingCreatedIdRef.current = created.id;
+				await submitInto(created.id, text, {}, navigateOnSuccess);
+			} else {
+				await submitInto(
+					targetId,
+					text,
+					busy ? { whenBusy: "steer" } : {},
+					navigateOnSuccess,
+				);
+			}
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
 			sendingRef.current = false;
 			setSending(false);
 		}
+	}
+
+	/** Submit `text` (plus the attachment tray) into `id` and finish the send:
+	 *  clear the draft (persisted — the pre-conversation draft's save is the
+	 *  null-conversation no-op, so the clear is in-memory only there, which
+	 *  the empty-state spec accepts) and release the pending created id.
+	 *  `navigate` (the create path only) then hands the conversation to
+	 *  `onNavigate`. Called ONLY under the `sendingRef` guard. */
+	async function submitInto(
+		id: number,
+		text: string,
+		options: { whenBusy?: "steer" } = {},
+		navigate = false,
+	): Promise<void> {
+		const parts: SubmissionInputPart[] = [
+			...draft.attachments.map(attachmentPart),
+			...(text === "" ? [] : [{ type: "text", text }]),
+		];
+		await client.submit(id, parts, options);
+		// Cleared WITH persisting: the submitted text AND the tray must not
+		// resurrect from a late debounce flush OR a reload (the server meta
+		// keeps the draft until it's overwritten — persist the clear).
+		draft.clear(true);
+		pendingCreatedIdRef.current = null;
+		if (navigate) onNavigate?.(id);
 	}
 
 	/**
@@ -740,12 +790,12 @@ export function Composer(props: {
 	 */
 
 	// The send button's disabled state (aria-disabled + class — see the
-	// toolbar comment): no conversation, a read-only share, an in-flight
-	// admission (while not steering), or nothing to send. A busy conversation
-	// keeps it LIVE (a click steers).
+	// toolbar comment): a read-only share, an in-flight admission (while not
+	// steering), or nothing to send. A busy conversation keeps it LIVE (a
+	// click steers) — and NO conversation keeps it live too (Task 6: the
+	// empty state's first send creates the conversation).
 	const sendDisabled =
 		readOnly ||
-		conversationId === null ||
 		(sending && !busy) ||
 		(draft.text.trim() === "" && draft.attachments.length === 0);
 
@@ -836,14 +886,12 @@ export function Composer(props: {
 					placeholder={
 						readOnly
 							? "Read-only (shared with you)"
-							: conversationId === null
-								? "Select a conversation"
-								: busy
-									? "Steer the running session…"
-									: "Message…"
+							: busy
+								? "Steer the running session…"
+								: "Message…"
 					}
 					value={draft.text}
-					disabled={conversationId === null || readOnly}
+					disabled={readOnly}
 					onChange={(event) => {
 						draft.setText(event.target.value);
 						grow(event.target);

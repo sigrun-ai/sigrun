@@ -7,6 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Reworded the `pi` manifest handling so it no longer implies pi
+  extension compatibility. Sigrun reads `pi.extensions`/`pi.skills` only
+  to LOCATE files and shares the SKILL.md format; it does not implement
+  pi's `ExtensionAPI` (a pi extension's `registerTool`/`registerCommand`
+  have no counterpart here). `docs/extending.md` gains a "Not pi
+  extensions" section stating the two ABIs are unrelated and that only
+  the skills layer transfers. The `.ts` skip and empty-entry warnings now
+  say `pi manifest:` instead of `pi-compat:`.
+
+## [0.4.2] - 2026-10-31
+
+### Fixed
+- `@sigrun/shared` and `@sigrun/tui` tarballs ship their `dist/`
+  again (a missing `prepublishOnly` published four-file, dist-less
+  packages since 0.2.0 — project installs quarantined `ext-gateway` on
+  `shared/dist/live.js`).
+
+## [0.4.1] - 2026-10-31
+
+### Fixed
+- Extension fleet entries pinned as `name@version` (e.g.
+  `@sigrun/provider-bifrost@0.2.0`) install but never LOAD: the loader
+  passed the versioned specifier to npm's module resolver, which does
+  not resolve versioned specs — the extension quarantined at boot with
+  "Cannot find package …". The resolver now retries the bare package
+  name against the packages dir (the installed version already
+  satisfied the declared range at install time). Found live on the
+  0.4.0 homelab rollout.
+
+## [0.4.0] - 2026-10-31
+
+### Added
+- Settings is a full page on the hash router (`#/settings`,
+  `#/settings/<section>`) instead of a modal: back/forward work, the
+  rail's Settings button navigates there and shows as active, and the
+  server's path-form account-link `returnTo` is rewritten to the hash
+  route at boot. (W1)
+- API tokens in Settings: a self-service list, create (the token is
+  shown once with a copy button and a ready-to-paste `sigrun attach`
+  snippet), and revoke with a confirm. The CLI's in-pod admin path is
+  unchanged. (W2)
+- Python in the image's agent userland: `python3` with `venv` and `pip`,
+  plus `uv` pinned exactly at `ghcr.io/astral-sh/uv:0.13.6` (`/uv` and
+  `/uvx` copied to `/usr/local/bin`). Agents reach for Python constantly;
+  installs go through venvs or uv, never global pip — no `pip install`
+  runs in the image and Debian's EXTERNALLY-MANAGED marker stays. The
+  image smoke now proves both plain and jailed: `python3 --version`, a
+  `python3 -m venv`, `uv venv`/`uv run` as plain runs, and a per-user
+  Landlock policy (built via `buildUserPolicy`, the same shape as the
+  sandbox integration suite) under which `python3 -m venv` and `uv venv`
+  both work inside the jail. Image size (actual, `docker image ls`):
+  the additions grow the registry-mode build of this tree from 733MB to
+  882MB on disk (155MB → 195MB content) — the isolated python3/venv/pip
+  + uv 0.13.6 delta. Against the published 0.3.0 image (760MB) the
+  total growth is 122MB, which also carries this branch's other tree
+  changes; the 0.3.0 image predates them. (W7)
+- Deployment-managed settings are visibly locked: the docker seeder
+  writes `config/managed-settings.json` (the top-level keys it asserts),
+  `SettingsResponse` gains `managed`, and both HTTP write paths refuse a
+  PATCH that touches any managed key with `409 managed_by_deployment`
+  (whole-request refusal). The webui renders managed fields read-only
+  with a "Managed by deployment" note; the TUI form omits disabled
+  fields from unrelated saves. A deployment without the file manages
+  nothing (compose users get no lock, as intended). (W10)
+
+### Changed
+- The webui's empty state keeps the composer always live: a short
+  welcome replaces "Select or create a conversation", and the first
+  send creates the conversation (the server's default model), selects
+  it, then submits the captured text; a failure leaves the text in the
+  composer with the error shown. (W4)
+- The transcript outline clamps inside the content box (an inner text
+  element owns the line clamp) and fades long prompts; the full prompt
+  stays available as the `title` tooltip. (W5)
+- New wing brand mark (the "Gull Wing" candidate, user-picked from four
+  mockups): `BrandMark`, `favicon.svg`, PNG/`apple-touch`/maskable app
+  icons and a `manifest.webmanifest`; no runes anywhere. (W6)
+- The conversation namer resolves its model per attempt —
+  `settings.namingModel` (live) → the settled conversation's own agent
+  model → skip without burning an attempt — instead of the boot-time
+  default read once. An unserved model logs once per model id and does
+  not count toward the attempt limit. (W8)
+- Per-turn model meta in the webui now shows the bare chain name (the
+  gateway-routed model) rather than the `chain/` display id, following
+  provider-bifrost 0.2.0's wire-name change.
+
+### Fixed
+- `sigrun attach` (CLI/TUI) reaches forward-auth deployments: the token
+  rides `Authorization: Bearer` on REST, the SSE stream, and both block
+  transports (no CLI change was needed; the 401 failure mode now names
+  the fix — `SIGRUN_TOKEN` is missing, expired, or revoked, with a
+  pointer to Settings → API tokens). (W3)
+
+### Breaking
+- `@sigrun/provider-bifrost` 0.2.0 changes chain model ids from
+  `bifrost/bifrost/<chain>` to `bifrost/chain/<chain>`, and requests now
+  carry the gateway's bare chain name on the wire instead of the
+  display id. Model references naming the old id shape must be updated
+  (e.g. `settings.namingModel`, `server.defaultModel`, homelab
+  `defaultModel`). (W9)
+
 ## [0.3.0] - 2026-10-29
 
 ### Added

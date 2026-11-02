@@ -117,20 +117,29 @@ ENV NODE_ENV=production \
 # ripgrep/fd/jq (search + shaping), git (required by git: extension
 # sources), sqlite3 (path-target backups + the online-safe
 # `sqlite3 .backup` snapshot), curl, unzip/zip, procps, ca-certificates
-# (TLS to model gateways). tar ships in the base. Deliberately NO
-# kubectl/helm/talosctl: their version churn is a deploy concern,
-# installed at deploy time onto persistent storage (chart values), never
-# baked here. Debian names the fd-find binary `fdfind`; the symlink
-# makes the name agents type work. docker-clean is dropped so the
-# cache-mounted archives actually persist between CI builds (it deletes
-# every downloaded .deb after each install otherwise).
+# (TLS to model gateways), and python3 with venv + pip — agents reach
+# for Python constantly, and venv/pip are what makes `python3 -m venv`
+# self-serve. Installs go through venvs or uv, NEVER global pip:
+# Debian's EXTERNALLY-MANAGED marker stays (pip refuses global
+# installs there by design), and no `pip install` runs in this image.
+# tar ships in the base. Deliberately NO kubectl/helm/talosctl: their
+# version churn is a deploy concern, installed at deploy time onto
+# persistent storage (chart values), never baked here. Debian names the
+# fd-find binary `fdfind`; the symlink makes the name agents type work.
+# docker-clean is dropped so the cache-mounted archives actually persist
+# between CI builds (it deletes every downloaded .deb after each
+# install otherwise).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl fd-find git jq procps ripgrep sqlite3 tini unzip zip \
+        ca-certificates curl fd-find git jq procps python3 python3-pip python3-venv ripgrep sqlite3 tini unzip zip \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
+# uv (pinned exactly): the fast Python path agents expect — venv and
+# project management without global pip. The distroless uv image ships
+# static /uv and /uvx binaries; both land on PATH via /usr/local/bin.
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /uvx /usr/local/bin/
 # Debian bookworm installs tini at /usr/bin/tini. The sandbox helper is
 # resolved through this explicit SIGRUN_SANDBOX_HELPER path before the
 # optional platform packages or the source-tree fallback, so the image

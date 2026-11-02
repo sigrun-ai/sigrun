@@ -8,6 +8,7 @@
 
 import { describe, expect, test } from "vitest";
 import {
+	authFailureMessage,
 	SigrunClient,
 	SigrunApiError,
 	type FetchLike,
@@ -372,5 +373,36 @@ describe("authorization header (Task 7: the token seam)", () => {
 		});
 		await client.listConversations();
 		expect(calls[0]?.authorization).toBeUndefined();
+	});
+});
+
+describe("authFailureMessage (Task 5: naming auth failures for the user)", () => {
+	test("a 401 SigrunApiError maps to the Settings → API tokens hint", () => {
+		expect(
+			authFailureMessage(
+				new SigrunApiError("GET", "/v1/auth/whoami", 401, {
+					error: "unauthenticated",
+				}),
+			),
+		).toBe(
+			"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
+		);
+	});
+
+	test("any other error maps to undefined (the caller's generic path)", () => {
+		expect(
+			authFailureMessage(
+				new SigrunApiError("GET", "/v1/conversations", 403, {
+					error: "setup_required",
+				}),
+			),
+		).toBeUndefined();
+		expect(
+			authFailureMessage(
+				new SigrunApiError("GET", "/v1/conversations", 500, {}),
+			),
+		).toBeUndefined();
+		expect(authFailureMessage(new Error("boom"))).toBeUndefined();
+		expect(authFailureMessage(undefined)).toBeUndefined();
 	});
 });

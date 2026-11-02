@@ -70,6 +70,11 @@ export interface E2EServerOptions {
 	 */
 	readonly settingsFile?: Record<string, unknown>;
 	/**
+	 * The deployment-managed top-level settings keys. Written to
+	 * `<tmpdir>/config/managed-settings.json` beside settingsFile before boot.
+	 */
+	readonly managedSettings?: readonly string[];
+	/**
 	 * Opt in to the background auto-namer. Defaults to FALSE so its completion
 	 * cannot consume a scripted foreground response. `true` leaves
 	 * `namingModel` unset (the default model) or preserves a custom model.
@@ -279,6 +284,13 @@ async function bootOnDir(
 		JSON.stringify(settingsFile, null, "\t"),
 		"utf8",
 	);
+	if (options.managedSettings !== undefined) {
+		await writeFile(
+			join(settingsDir, "managed-settings.json"),
+			JSON.stringify(options.managedSettings),
+			"utf8",
+		);
+	}
 	const opened = await openHarness(config, {
 		// The unclaimed gate 403s an empty directory under every method —
 		// the e2e boots a claimed admin ("tester") exactly like the
@@ -290,10 +302,12 @@ async function bootOnDir(
 				? await seededIdentity(dir)
 				: await unclaimedIdentity(dir),
 		extensions: [contributor],
-		env:
-			options.auth === undefined || "claimed" in options.auth
+		env: {
+			SIGRUN_CONFIG_DIR: settingsDir,
+			...(options.auth === undefined || "claimed" in options.auth
 				? {}
-				: { SIGRUN_SETUP_CODE: options.auth.setupCode },
+				: { SIGRUN_SETUP_CODE: options.auth.setupCode }),
+		},
 		settingsDir,
 		// The login e2e auto-provisions a second user: admission requires
 		// an available isolation probe, as in the in-process login tests.

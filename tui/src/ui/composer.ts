@@ -7,7 +7,7 @@
  */
 
 import type { CommandsResponse, SlashCommand, SigrunClient } from "../api.js";
-import { SigrunApiError } from "../api.js";
+import { authFailureMessage, SigrunApiError } from "../api.js";
 
 /** A parsed `/name args…` line. */
 export interface SlashInput {
@@ -113,6 +113,13 @@ export class SlashCatalog {
  * "something failed"); anything else renders its message.
  */
 export function describeCommandError(action: string, error: unknown): string {
+	// A 401 is an AUTH failure, not an action failure (Task 5): the same
+	// string the startup exit prints — the token is missing/expired/
+	// revoked and the fix is the webui's Settings → API tokens section.
+	// (Covers a token revoked MID-SESSION: the next composer action's
+	// rejection renders the hint, not a bare "failed (401)".)
+	const auth = authFailureMessage(error);
+	if (auth !== undefined) return auth;
 	if (error instanceof SigrunApiError) {
 		const body = error.body;
 		const detail =

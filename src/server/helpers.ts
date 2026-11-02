@@ -116,7 +116,7 @@ function autoEnableRemovals(
 			exposure?: unknown;
 		};
 		if (server.enabled === false || server.disabled === true) continue;
-		// @sigrun/ext-mcp's server default is "codemode"; its pi-compat
+		// @sigrun/ext-mcp's server default is "codemode"; its deprecated
 		// alias `codemode-deferred` normalizes to "codemode".
 		const exposure =
 			server.exposure === "codemode-deferred"
@@ -269,6 +269,7 @@ export function settingsResponse(
 		toolRoster: [...new Set(names)],
 		effective: effectiveServerSection(env, file.server, config),
 		pendingRestart: pendingRestart(file, opened.settingsBootSnapshot),
+		managed: [...opened.managedSettings()],
 		...(write === undefined ? {} : { applied: write.applied, pending: write.pending }),
 	};
 }

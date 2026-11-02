@@ -1,0 +1,12 @@
+{
+	"name": "sigrun-webui-fixture",
+	"short_name": "sigrun-webui-fixture",
+	"display": "standalone",
+	"icons": [
+		{
+			"src": "icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png"
+		}
+	]
+}

@@ -1,16 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="sigrun">
-	<!-- The chart's icon. A minimal mark in the webui's accent colour
-	     (--accent: #d6a24a): a rune-like vertical with two arms, evoking
-	     both a signal and the "r" of the name. No wordmark, no gradient —
-	     it has to read at 32px in a Helm repo listing. -->
-	<rect width="64" height="64" rx="14" fill="#12161c" />
-	<path
-		d="M22 46V18h13a9 9 0 0 1 0 18h-9"
-		fill="none"
-		stroke="#d6a24a"
-		stroke-width="6"
-		stroke-linecap="round"
-		stroke-linejoin="round"
-	/>
-	<path d="M33 36l10 10" fill="none" stroke="#d6a24a" stroke-width="6" stroke-linecap="round" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="sigrun">
+	<!-- The chart's icon is the app's brand mark: webui/public/favicon.svg's
+	     exact geometry (the gull wing in fjord-dark #0b0f13 on a
+	     baltic-amber #d6a24a tile, heavy 2.6 stroke). It is the small-size
+	     variant on purpose, since it has to read at 32px in a Helm repo
+	     listing. test/chart-icon.test.ts fails if the wing paths drift
+	     from the favicon. -->
+	<rect width="32" height="32" rx="6" fill="#d6a24a"/>
+	<g transform="translate(3.2 3.2) scale(1.0667)" fill="none" stroke="#0b0f13" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M4 16c3.2-1.4 6.9-4.6 8.4-8.4l.6 2.2 2.2.6"/>
+		<path d="M8.5 18.5c2.7-1.5 5.4-4.4 6.6-7.4l1.5 1.2 1.9-.3"/>
+	</g>
 </svg>

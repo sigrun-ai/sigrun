@@ -49,7 +49,7 @@ function makeHarness() {
 /** Top-level hook host; `renderer.update` switches the conversation id. */
 function Host(props: {
 	client: ReturnType<typeof createClient>;
-	conversationId: number;
+	conversationId: number | null;
 	capture: (api: UseDraftResult) => void;
 }) {
 	const draft = useDraft(props.client, props.conversationId);
@@ -61,7 +61,7 @@ function Host(props: {
 
 async function renderHost(
 	client: ReturnType<typeof createClient>,
-	initialId: number,
+	initialId: number | null,
 ) {
 	let api: UseDraftResult | undefined;
 	const capture = (next: UseDraftResult) => {
@@ -74,7 +74,7 @@ async function renderHost(
 		if (api === undefined) throw new Error("hook api not captured");
 		return api;
 	};
-	const switchTo = async (id: number) => {
+	const switchTo = async (id: number | null) => {
 		await act(async () => {
 			renderer.update(
 				<Host client={client} conversationId={id} capture={capture} />,
@@ -283,5 +283,103 @@ describe("useDraft", () => {
 		);
 		expect(getApi().attachments).toEqual([]);
 		expect(textContent(renderer.toJSON())).toBe("");
+	});
+
+	// ── The pre-conversation draft carry (Task 6, the empty state) ──
+	// A draft typed with NO conversation belongs to no conversation — the
+	// first selection event must carry it INTO the conversation selected,
+	// never wipe it.
+
+	test("a draft typed with no conversation CARRIES into the first conversation selected (never wiped)", async () => {
+		const { calls, client, metaById } = makeHarness();
+		metaById.set(5, metaWithDraft(""));
+		const { renderer, getApi, switchTo } = await renderHost(client, null);
+		await setText(renderer, getApi(), "typed before any conversation");
+		// The boot default / a sidebar navigation lands a conversation id.
+		await switchTo(5);
+		expect(textContent(renderer.toJSON())).toBe("typed before any conversation");
+		// The carried draft PERSISTS to the conversation it landed in (the
+		// carry is the one switch that cannot flush — so it saves at once,
+		// like an attachment add).
+		const patches = calls.filter((c) => c.method === "PATCH");
+		expect(patches.map((c) => c.body)).toContain(
+			JSON.stringify({ draft: { text: "typed before any conversation" } }),
+		);
+		// It was saved for id 5 (the conversation it carried into).
+		expect(patches[0]?.input).toBe("/v1/conversations/5/meta");
+	});
+
+	test("an unanchored draft keeps following the user across further switches (the boot-default race, Task 6)", async () => {
+		const { calls, client, metaById } = makeHarness();
+		metaById.set(1, metaWithDraft(""));
+		metaById.set(7, metaWithDraft(""));
+		const { renderer, getApi, switchTo } = await renderHost(client, null);
+		await setText(renderer, getApi(), "typed in the empty state");
+		// A late boot default selects the root — the draft carries in.
+		await switchTo(1);
+		expect(textContent(renderer.toJSON())).toBe("typed in the empty state");
+		// The user clicks New before sending — the draft carries AGAIN into
+		// the new conversation (it was never deliberately attached to 1).
+		await switchTo(7);
+		expect(textContent(renderer.toJSON())).toBe("typed in the empty state");
+		const patches = calls.filter((c) => c.method === "PATCH");
+		// Each carry persists the draft into the conversation it carried into
+		// (the anchoring flush may add one more for the conversation left).
+		expect(patches.map((c) => c.input)).toContain("/v1/conversations/1/meta");
+		expect(patches.map((c) => c.input)).toContain("/v1/conversations/7/meta");
+		// An edit while a conversation is ACTIVE anchors the draft: the next
+		// switch restores instead of carrying.
+		await setText(renderer, getApi(), "typed in seven");
+		await switchTo(1);
+		expect(textContent(renderer.toJSON())).toBe("");
+	});
+
+	test("an EMPTY pre-conversation draft is no carry: the switch restores as before", async () => {
+		const { calls, client, metaById } = makeHarness();
+		metaById.set(5, metaWithDraft("served words"));
+		const { renderer, switchTo } = await renderHost(client, null);
+		await switchTo(5);
+		expect(textContent(renderer.toJSON())).toBe("served words");
+		expect(
+			calls.filter((c) => c.method === "PATCH"),
+		).toEqual([]);
+	});
+
+	// THE CARRY-RUN CLEANUP LEAK (review finding 1): the carry branch must
+	// register the switch cleanup like every other run — a draft typed in
+	// the carried-into conversation AFTER the carry schedules a debounce,
+	// and the next switch must flush it to ITS conversation, never leak the
+	// timer into the following one (a leaked timer fired with saveRef already
+	// pointing at the NEW id, losing the old text and PATCHing the new
+	// conversation's draft with the post-reset empty text).
+	test("a debounce scheduled after a carry flushes to ITS conversation on switch (no timer leak into the next)", async () => {
+		const { calls, client, metaById } = makeHarness();
+		metaById.set(1, metaWithDraft(""));
+		metaById.set(2, metaWithDraft("served in two"));
+		const { renderer, getApi, switchTo } = await renderHost(client, null);
+		// Empty-state type → carry into 1.
+		await setText(renderer, getApi(), "carried words");
+		await switchTo(1);
+		expect(textContent(renderer.toJSON())).toBe("carried words");
+		// Type again IN 1 — anchors the draft and schedules the 500ms debounce.
+		await setText(renderer, getApi(), "more words in one");
+		// Switch to 2 INSIDE the debounce window: the cleanup must flush
+		// "more words in one" to 1 and cancel the timer.
+		await switchTo(2);
+		const patchesTo = (id: number) =>
+			calls.filter(
+				(c) => c.method === "PATCH" && c.input === `/v1/conversations/${id}/meta`,
+			);
+		expect(patchesTo(1).map((c) => c.body)).toContain(
+			JSON.stringify({ draft: { text: "more words in one" } }),
+		);
+		// The leaked-timer symptom: advance past the debounce window and NO
+		// further PATCH fires — 2's draft was never touched (its restore shows
+		// through untouched, and no empty-text PATCH landed on it).
+		await act(async () => {
+			vi.advanceTimersByTime(600);
+		});
+		expect(patchesTo(2)).toEqual([]);
+		expect(textContent(renderer.toJSON())).toBe("served in two");
 	});
 });

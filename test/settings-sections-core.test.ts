@@ -18,7 +18,7 @@
  * the sections list past core).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +50,7 @@ interface TestServer {
 	readonly app: FastifyInstance;
 	readonly opened: OpenedHarness;
 	readonly aliceToken: string;
+	readonly configDir: string;
 }
 
 let booted: Promise<TestServer> | undefined;
@@ -87,7 +88,7 @@ async function bootServer(): Promise<TestServer> {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened, aliceToken };
+	return { app, opened, aliceToken, configDir };
 }
 
 interface CallResult {
@@ -143,6 +144,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			"providers",
 			"extensions",
 			"accounts",
+			"tokens",
 		]);
 		expect(CORE_SETTINGS_SECTIONS.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
 	});
@@ -196,6 +198,13 @@ describe("core settings sections (U4 Task 4)", () => {
 		const accounts = CORE_SETTINGS_SECTIONS.find((section) => section.id === "accounts");
 		expect(accounts?.title).toBe("Account links");
 		expect(accounts?.admin).toBe(false);
+		// The tokens section (Task 5): immediately after accounts, per-user
+		// (not admin-gated), and a cove (empty form — the channels render
+		// their native component over the entry).
+		expect(CORE_SECTION_IDS.indexOf("tokens")).toBe(CORE_SECTION_IDS.indexOf("accounts") + 1);
+		const tokens = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tokens");
+		expect(tokens?.title).toBe("API tokens");
+		expect(tokens?.admin).toBe(false);
 
 		// The searchable keys render somewhere (the index's core-key
 		// rows).
@@ -524,6 +533,85 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		const json = JSON.stringify(tree);
 		expect(json).toContain('"$":"/toolRoster"');
 		expect(json).not.toContain('"options":[]');
+	});
+
+	test("the General section render marks a deployment-managed field disabled", async () => {
+		const { app, aliceToken, configDir } = await server();
+		const managedPath = join(configDir, "managed-settings.json");
+		await writeFile(managedPath, '["defaultModel"]', "utf8");
+		try {
+			const result = await call(app, {
+				method: "GET",
+				url: "/v1/ext/core/surfaces/general",
+				token: aliceToken,
+			});
+			expect(result.status).toBe(200);
+			const tree = (result.body as { tree: { root: unknown } }).tree;
+			const findField = (node: unknown): Record<string, unknown> | undefined => {
+				if (Array.isArray(node)) {
+					for (const child of node) {
+						const found = findField(child);
+						if (found !== undefined) return found;
+					}
+					return undefined;
+				}
+				if (typeof node !== "object" || node === null) return undefined;
+				const record = node as Record<string, unknown>;
+				if (record.name === "defaultModel") return record;
+				return findField(record.children) ?? findField(record.root);
+			};
+			const field = findField(tree.root);
+			expect(field).toMatchObject({
+				disabled: true,
+				help: expect.stringMatching(/^Managed by deployment\. /),
+			});
+			const meta = (result.body as { data: JsonObject }).data.meta as JsonObject;
+			expect(meta.managed).toEqual(["defaultModel"]);
+		} finally {
+			await rm(managedPath, { force: true });
+		}
+	});
+
+	test("a section save carrying a managed key refuses and leaves the settings file unchanged", async () => {
+		const { app, opened, aliceToken, configDir } = await server();
+		const managedPath = join(configDir, "managed-settings.json");
+		await writeFile(managedPath, '["defaultModel"]', "utf8");
+		try {
+			const render = await call(app, {
+				method: "GET",
+				url: "/v1/ext/core/surfaces/general",
+				token: aliceToken,
+			});
+			const rev = (render.body as { rev: number }).rev;
+			const before = await readFile(opened.settings.path, "utf8");
+			const save = await call(app, {
+				method: "POST",
+				url: "/v1/ext/core/surfaces/general/actions",
+				token: aliceToken,
+				payload: {
+					action: "save",
+					actionId: "core-save-managed",
+					params: {},
+					payload: {
+						rev,
+						values: {
+							namingModel: "acme/namer-unmanaged",
+							defaultModel: "acme/model-managed",
+						},
+					},
+				},
+			});
+			expect(save.body).toEqual({
+				ok: false,
+				error: {
+					message: "managed by deployment: defaultModel",
+					field: "defaultModel",
+				},
+			});
+			expect(await readFile(opened.settings.path, "utf8")).toBe(before);
+		} finally {
+			await rm(managedPath, { force: true });
+		}
 	});
 
 	test("a stale rev rejects with 'changed by someone else'", async () => {

@@ -121,6 +121,29 @@ export class SigrunApiError extends Error {
 	}
 }
 
+/**
+ * The user-facing name of an auth failure (Task 5): a 401
+ * {@link SigrunApiError} maps to {@link AUTH_FAILURE_MESSAGE} — the one
+ * string that tells the operator WHAT is wrong and WHERE to fix it (the
+ * token is missing, expired, or revoked; a new one is minted in the
+ * webui's Settings → API tokens section). Anything else (a different
+ * status, a non-api error) maps to `undefined`: the caller keeps its
+ * generic error path. Shared by the startup exit (`tuiStartupMessage`),
+ * the pane's error lines (`describeCommandError`), and the SSE
+ * reconnect policy (a 401 never retries — a credential cannot recover
+ * by reconnecting).
+ */
+export const AUTH_FAILURE_MESSAGE =
+	"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens";
+
+/** @see {@link AUTH_FAILURE_MESSAGE} */
+export function authFailureMessage(error: unknown): string | undefined {
+	if (error instanceof SigrunApiError && error.status === 401) {
+		return AUTH_FAILURE_MESSAGE;
+	}
+	return undefined;
+}
+
 /** The fetch surface the client needs (the real thing or a test stub). */
 export type FetchLike = (
 	input: string,
