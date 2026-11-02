@@ -577,8 +577,11 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		// equality from the other side).
 		const actionRepositories = actionSiblingRepositories();
 		const listedDirs = publishDepsListDirs();
+		// memory-markdown checks out with the family (core's devDependency —
+		// the curation e2e loads it) but is NOT a built-in: the action set is
+		// the built-ins PLUS the dev siblings.
 		expect(actionRepositories.map((repo) => repo.split("/")[1]).sort()).toEqual(
-			[...listedDirs].sort(),
+			[...listedDirs, "sigrun-memory-markdown"].sort(),
 		);
 	});
 

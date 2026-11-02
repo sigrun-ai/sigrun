@@ -36,6 +36,11 @@ runs:
       with:
         repository: sigrun-ai/sigrun-ext-curator
         path: sigrun-ext-curator
+    - if: ${{ inputs.exclude != 'sigrun-memory-markdown' }}
+      uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun-memory-markdown
+        path: sigrun-memory-markdown
     - if: ${{ inputs.exclude != 'sigrun-ext-gateway' }}
       uses: actions/checkout@v5
       with:

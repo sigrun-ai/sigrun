@@ -132,7 +132,7 @@ function actionBuiltinNames(): string[] {
 		const repo = String(step.with?.repository ?? "");
 		const path = String(step.with?.path ?? "");
 		expect(repo, "a sibling checkout names sigrun-ai/<repo>").toMatch(
-			/^sigrun-ai\/sigrun-ext-[a-z-]+$/,
+			/^sigrun-ai\/sigrun-(ext-)?[a-z-]+$/,
 		);
 		// The checkout path IS the sibling dir (the layout the file: specs
 		// resolve against), and it is the repository's basename.
@@ -218,10 +218,17 @@ function siblingManifests(): Map<string, { dir: string; manifest: MinimalManifes
 
 describe("built-in wiring (release workstream Task 1.2)", () => {
 	test("the four built-in enumerations agree: publish-deps list, core manifest, family-checkout action, builtins.ts", () => {
+		// memory-markdown is a DEV sibling (core's devDependency, the
+		// curation-e2e's loaded extension) — checked out with the family
+		// but never a built-in (not in publish-deps' list/pins/slugs).
+		const DEV_SIBLINGS = ["@sigrun/memory-markdown"];
 		const sets: [string, string[]][] = [
 			["publish-deps.mjs list", listNames()],
 			["package.json dependencies", manifestBuiltinNames()],
-			["family-checkout action", actionBuiltinNames()],
+			[
+				"family-checkout action (built-ins; dev siblings filtered)",
+				actionBuiltinNames().filter((dir) => !DEV_SIBLINGS.includes(dir)),
+			],
 			["src/harness/builtins.ts", harnessBuiltinNames()],
 		];
 		for (const [label, names] of sets) {
