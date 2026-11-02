@@ -1,5 +1,5 @@
 /**
- * E8 Step 3 (escalations plan): the real @sigrun/ext-escalations Inbox in a
+ * E8 Step 3 (escalations plan): the real @sigrun/escalations Inbox in a
  * browser against the real server — proves A0's generic renderer serves a
  * real extension view end to end. Boots the extension from the sibling repo's
  * built dist, raises an escalation through the real escalate tool (faux model
@@ -29,7 +29,7 @@ const EXTENSION = pathToFileURL(
 		"..",
 		"..",
 		"..",
-		"sigrun-ext-escalations",
+		"sigrun-escalations",
 		"dist",
 		"index.js",
 	),
