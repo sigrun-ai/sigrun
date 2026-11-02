@@ -7,8 +7,12 @@
  * inside the width-measuring container.
  */
 
-import { useMemo, type ReactNode } from "react";
-import type { JsonObject, SurfaceTransport } from "@sigrun/shared/blocks";
+import { useEffect, useMemo, type ReactNode } from "react";
+import type {
+	CoreTarget,
+	JsonObject,
+	SurfaceTransport,
+} from "@sigrun/shared/blocks";
 import { BlockView } from "./BlockView";
 import { SurfaceActionsContext, SurfaceDataContext } from "./context";
 import { ContainerWidth } from "./width";
@@ -17,8 +21,51 @@ import { useSurface } from "./useSurface";
 /** Render the surface a transport serves (spec §6.3 states). */
 export function SurfaceView(props: {
 	readonly transport: SurfaceTransport;
+	/** Poll for fresh data at this cadence (spec §7.3). */
+	readonly refreshMs?: number;
+	/** Host visibility gate for the poll (hidden tabs do not poll). */
+	readonly visible?: () => boolean;
+	/** Additional host cadence (the watcher keepalive). Its full-data
+	 *  refresh applies through the same surface fetch path. */
+	readonly keepaliveMs?: number;
+	/** The shell's navigate seam: `navigate` actions and accepted act
+	 *  results carrying `navigate` land here (spec §6.1). */
+	readonly onNavigate?: (action: {
+		params?: JsonObject;
+		target?: CoreTarget;
+	}) => void;
 }): ReactNode {
-	const surface = useSurface(props.transport);
+	const surface = useSurface(props.transport, {
+		onNavigate: props.onNavigate,
+		refreshMs: props.refreshMs,
+		visible: props.visible,
+	});
+	const keepaliveMs = props.keepaliveMs;
+	const visible = props.visible;
+	const refresh = surface.refresh;
+	useEffect(() => {
+		if (keepaliveMs === undefined) return undefined;
+		const timer = setInterval(() => {
+			if (visible !== undefined && !visible()) return;
+			void refresh();
+		}, keepaliveMs);
+		const doc = (
+			globalThis as {
+				document?: {
+					addEventListener(t: string, l: () => void): void;
+					removeEventListener(t: string, l: () => void): void;
+				};
+			}
+		).document;
+		const onVisibility = (): void => {
+			if (visible === undefined || visible()) void refresh();
+		};
+		doc?.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			clearInterval(timer);
+			doc?.removeEventListener("visibilitychange", onVisibility);
+		};
+	}, [keepaliveMs, visible, refresh]);
 	// The `/view/` branch (a form writing it publishes to siblings via
 	// `/view/...` bindings). `viewState` carries the view branch alone;
 	// the form strips the `/view/` prefix itself.

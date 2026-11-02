@@ -861,6 +861,40 @@ silent). The warning fires on the creating fire only — a crash-recovered
 re-entry (the run record already carries its conversation) re-runs the
 submit without re-warning.
 
+### Job hooks
+
+Extensions can inspect live jobs and associate a new conversation with one
+without creating a run:
+
+```js
+const job = await host.jobs.get("ext:acme:nightly-check");
+// undefined when the id is unknown or the job has been retired
+
+if (job !== undefined) {
+	const conversationId = await host.conversations.create({
+		owner: job.owner,
+		job: job.id,
+	});
+}
+```
+
+`host.jobs.get(id)` returns only `{id, name, owner, enabled, state}`. Its
+`owner` is the job's **effective** owner: an ownerless or orphaned job
+resolves to the primary admin. A retired job resolves to `undefined`, just
+like an unknown id.
+
+Passing `job` to `host.conversations.create` requires the requested
+`owner` to equal that effective owner exactly (two absent owners count as
+equal). An unknown, retired, or owner-mismatched job throws a
+`ConversationOpError` with `{error: "invalid_field", field: "job"}` before
+any conversation or session-meta storage write. Success stamps `jobId` in
+the same commit as `owner` and `lastActivityAt`; it does not create a run
+record or change the job's `lastRun`. The stamped conversation renders the
+job-state prompt section on its next run.
+
+The HTTP `POST /v1/conversations` route does not accept this option: it
+still takes no body fields.
+
 ## HTTP routes
 
 A factory result may declare `routes` — HTTP endpoints sigrun mounts at
@@ -1390,6 +1424,41 @@ templates”. The user dir `<config-dir>/prompts/` and the workspace's
 packages precedence as skills; a template whose name collides with a
 core or extension command is skipped with one warning.
 
+## Sending notifications
+
+An extension sends an explicit notice with `host.notify(input)`. The
+notice goes to every declared notifier as a `NotificationEvent` with
+`type: "extension"`, the calling extension's slug in `extension`, and
+your `kind`:
+
+```js
+await host.notify({
+	user: "alice",
+	title: "Review requested",
+	body: "A change is waiting for approval.",
+	kind: "escalation.raised",
+	target: { view: "inbox", params: { id: "change-1" } },
+});
+```
+
+- `user` names a directory user. It may be `undefined` only when the
+  directory is empty; an unknown or missing user in a non-empty
+  directory throws.
+- `title` is 1–200 characters, `body` 0–2000, and `kind` 1–64
+  characters drawn from `[a-z0-9.-]`. Invalid values throw.
+- `target.view` must be a view your extension declared. Its deep link
+  is `${server.publicUrl}/#/ext/<slug>/<view>`, with
+  `?params=<encodeURIComponent(JSON)>` when `params` is non-empty.
+  `target.conversation` instead links to `${server.publicUrl}/#/c/<id>`
+  and sets the event's `conversationId`. Without `server.publicUrl`,
+  the event omits `url`.
+- Validation happens before delivery. Once accepted, `notify` resolves
+  after delivery is **enqueued**, not after transports finish. With no
+  notifiers it resolves without effect. A throwing or over-deadline
+  notifier is logged and isolated and never makes `notify` reject.
+- Extension notices are **not** gated by `notifications.runSettled`:
+  that setting governs run chatter, not an extension's explicit ask.
+
 ## Notifiers
 
 A factory result may declare `notifiers` — transports core delivers
@@ -1426,6 +1495,7 @@ type NotificationEvent = {
 } & (
 	| { type: "interaction.pending"; callId?: string }  // the pending record's id
 	| { type: "job.failed" }
+	| { type: "extension"; extension: string; kind: string }  // host.notify
 	| { type: "run.settled"; outcome:
 		| { status: "answered" }
 		| { status: "unanswered"; reason: string } }     // the wire reason verbatim
@@ -1443,6 +1513,8 @@ type NotificationEvent = {
   `settings.json` PATCH reaches the next settle without a restart.
   Its `outcome` says whether the run answered; an `unanswered` outcome
   carries the settle reason (model error, abort, …) verbatim.
+  `extension` carries the calling extension's slug and notice kind;
+  see [Sending notifications](#sending-notifications).
 - **Recipients.** Each event goes to the resource's owner. For
   `interaction.pending` it also goes to every directory user with
   `write` access — anyone who can answer.

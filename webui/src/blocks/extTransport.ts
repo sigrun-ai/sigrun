@@ -57,11 +57,22 @@ export interface ExtTransportOptions {
 
 /** The base path for one surface instance (`?params=` omitted when `{}`). */
 function surfacePath(options: ExtTransportOptions): string {
-	const base = `/v1/ext/${encodeURIComponent(options.slug)}/surfaces/${encodeURIComponent(options.id)}`;
+	const base = surfaceBase(options);
 	if (options.params === undefined || Object.keys(options.params).length === 0) {
 		return base;
 	}
-	return `${base}?params=${encodeURIComponent(JSON.stringify(options.params))}`;
+	return withQuery(base, "params", paramsQuery(options));
+}
+
+/** The surface path WITHOUT any query — suffix routes (/data, /actions,
+ *  /uploads) build from this and add their own query last. */
+function surfaceBase(options: ExtTransportOptions): string {
+	return `/v1/ext/${encodeURIComponent(options.slug)}/surfaces/${encodeURIComponent(options.id)}`;
+}
+
+/** The URL-encoded params JSON (empty string when params are empty). */
+function paramsQuery(options: ExtTransportOptions): string {
+	return encodeURIComponent(JSON.stringify(options.params ?? {}));
 }
 
 /** Append `&since=` (or `?since=` when the path has no query yet). */
@@ -114,7 +125,7 @@ export function createExtTransport(options: ExtTransportOptions): SurfaceTranspo
 			return get<SurfaceLoad>(surfacePath(options));
 		},
 		fetchData(since?: number): Promise<SurfaceFetch> {
-			const path = `${surfacePath(options)}/data`;
+			const path = withQuery(`${surfaceBase(options)}/data`, "params", paramsQuery(options));
 			return get<SurfaceFetch>(
 				since === undefined ? path : withQuery(path, "since", String(since)),
 			);
@@ -125,7 +136,10 @@ export function createExtTransport(options: ExtTransportOptions): SurfaceTranspo
 			payload: JsonValue;
 			actionId: string;
 		}): Promise<SurfaceActResult> {
-			const response = await doFetch(`${surfacePath(options)}/actions`, {
+			// The params ride the BODY (the route reads body.params), never the
+			// URL — appending /actions after surfacePath() would land after the
+			// query string ("...inbox?params=…/actions" → 404, the E8 find).
+			const response = await doFetch(`${surfaceBase(options)}/actions`, {
 				method: "POST",
 				headers: { ...headers(), "content-type": "application/json" },
 				body: JSON.stringify({ ...body, params: options.params ?? {} }),
@@ -133,11 +147,10 @@ export function createExtTransport(options: ExtTransportOptions): SurfaceTranspo
 			return (await response.json()) as SurfaceActResult;
 		},
 		async upload(body: SurfaceUploadBody): Promise<SurfaceActResult> {
-			const base = surfacePath(options);
 			const path = withQuery(
-				`${base}/uploads/${encodeURIComponent(body.field)}/${encodeURIComponent(body.name)}`,
+				`${surfaceBase(options)}/uploads/${encodeURIComponent(body.field)}/${encodeURIComponent(body.name)}`,
 				"params",
-				encodeURIComponent(JSON.stringify(options.params ?? {})),
+				paramsQuery(options),
 			);
 			const response = await doFetch(path, {
 				method: "PUT",

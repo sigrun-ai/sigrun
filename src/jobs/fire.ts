@@ -101,6 +101,8 @@ export interface JobRuntimeDeps {
 		from: string | undefined,
 		to: string | undefined,
 	): Promise<void>;
+	/** Resolve absent/orphaned owners against the live directory (§6.5). */
+	effectiveOwner(owner: string | undefined): string | undefined;
 }
 
 export interface FireResult {
@@ -366,6 +368,7 @@ async function firePrompt(
 						: { thinkingLevel: action.thinking as never }),
 				},
 				init: async (tx, newId) => {
+					const owner = deps.effectiveOwner(record.owner);
 					const run: JobRunWire = {
 						...baseRun,
 						conversationId: newId as number,
@@ -378,8 +381,8 @@ async function firePrompt(
 					// takes alias-free ownership of the array.
 					meta.jobId = id;
 					if (action.deliver !== undefined) meta.deliver = [...action.deliver];
-					if (record.owner !== undefined) meta.owner = record.owner;
-					await deps.rewriteUserSelection?.(tx, newId, undefined, record.owner);
+					if (owner !== undefined) meta.owner = owner;
+					await deps.rewriteUserSelection?.(tx, newId, undefined, owner);
 					if (action.runSharing !== undefined) meta.sharing = action.runSharing;
 					meta.name = runName(record.spec.name, deps.now(), record, deps);
 				},

@@ -102,6 +102,7 @@ try {
 		now: () => clock,
 		defaultTz: "UTC",
 		gatewayLoaded: false,
+		effectiveOwner: (owner) => owner ?? "tester",
 	};
 	opened.registry.install({
 		name: "sigrun.jobs",

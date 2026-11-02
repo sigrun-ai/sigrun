@@ -71,6 +71,12 @@ export function JobsPanel(props: {
 	const [runOutcome, setRunOutcome] = useState<
 		Readonly<Record<string, string>>
 	>({});
+	const [confirmReset, setConfirmReset] = useState<string | null>(null);
+	const [resetBusy, setResetBusy] = useState(false);
+	// Reset success/error text is row-local, not the panel-wide load error.
+	const [resetMessage, setResetMessage] = useState<
+		Readonly<Record<string, string>>
+	>({});
 
 	// The list load: on mount and on every refreshToken bump (job.changed).
 	useEffect(() => {
@@ -142,6 +148,26 @@ export function JobsPanel(props: {
 			// `job.changed` lands (the token bump refetches the list).
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	}
+
+	async function resetState(job: JobWire): Promise<void> {
+		setResetBusy(true);
+		try {
+			await client.resetJobState(job.id);
+			setResetMessage((previous) => ({
+				...previous,
+				[job.id]: "State reset",
+			}));
+			setConfirmReset(null);
+		} catch (cause) {
+			setResetMessage((previous) => ({
+				...previous,
+				[job.id]: cause instanceof Error ? cause.message : String(cause),
+			}));
+			setConfirmReset(null);
+		} finally {
+			setResetBusy(false);
 		}
 	}
 
@@ -251,6 +277,7 @@ export function JobsPanel(props: {
 						const open = expanded[job.id] === true;
 						const fetched = history[job.id];
 						const outcome = runOutcome[job.id];
+						const resetNotice = resetMessage[job.id];
 						return (
 							<li key={job.id} className="job-row">
 								<button
@@ -280,15 +307,70 @@ export function JobsPanel(props: {
 											"open last run conversation",
 										)}
 									{job.access === "write" && (
-										<button
-											type="button"
-											className="job-runnow"
-											onClick={() => void runNow(job)}
-										>
-											Run now
-										</button>
+										<>
+											<button
+												type="button"
+												className="job-runnow"
+												onClick={() => void runNow(job)}
+											>
+												Run now
+											</button>
+											<button
+												type="button"
+												className="job-reset-state"
+												onClick={() => {
+													setConfirmReset(job.id);
+													setResetMessage((previous) => {
+														const next = { ...previous };
+														delete next[job.id];
+														return next;
+													});
+												}}
+											>
+												Reset state
+											</button>
+										</>
 									)}
 								</div>
+								{confirmReset === job.id && (
+									<div
+										className="job-reset-confirm"
+										role="dialog"
+										aria-label={`Reset state for ${job.name}?`}
+									>
+										<div className="job-reset-confirm-title">
+											Reset state for {job.name}?
+										</div>
+										<div className="job-reset-confirm-body">
+											This deletes the files this job keeps between runs. The job itself is not changed.
+										</div>
+										<div className="job-reset-confirm-actions">
+											<button
+												type="button"
+												disabled={resetBusy}
+												onClick={() => setConfirmReset(null)}
+											>
+												Cancel
+											</button>
+											<button
+												type="button"
+												className="job-reset-confirm-ok"
+												disabled={resetBusy}
+												onClick={() => void resetState(job)}
+											>
+												Confirm reset
+											</button>
+										</div>
+									</div>
+								)}
+								{resetNotice !== undefined && (
+									<p
+										className="job-reset-message"
+										data-job-reset-message={job.id}
+									>
+										{resetNotice}
+									</p>
+								)}
 								{open && fetched !== undefined && (
 									<div className="job-detail">
 										{renderRuns(job, fetched.runs)}

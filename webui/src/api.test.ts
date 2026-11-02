@@ -337,6 +337,21 @@ describe("createClient", () => {
 		]);
 	});
 
+	test("resetJobState POSTs the reset route and resolves on a real 204 empty body", async () => {
+		const { calls, fetchImpl } = stubFetch(undefined, { status: 204 });
+		const client = createClient({ fetch: fetchImpl });
+		await expect(client.resetJobState("api:nightly-check")).resolves.toBeUndefined();
+		expect(calls).toEqual([
+			{
+				input: "/v1/jobs/api%3Anightly-check/state/reset",
+				method: "POST",
+				accept: "application/json",
+				contentType: "application/json",
+				body: JSON.stringify({}),
+			},
+		]);
+	});
+
 	test("patchConversationMeta PATCHes a merge body", async () => {
 		const { calls, fetchImpl } = stubFetch({});
 		const client = createClient({ fetch: fetchImpl });

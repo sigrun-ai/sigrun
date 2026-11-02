@@ -179,6 +179,10 @@ export interface SeamHost {
 	 * WAITS, exactly like the seam methods above.
 	 */
 	readonly conversations: SigrunHost["conversations"];
+	/** Read-only lookup of live jobs (A5); binds lazily with the bridge. */
+	readonly jobs: SigrunHost["jobs"];
+	/** Send one explicit extension notice; validates, then enqueues delivery. */
+	readonly notify: SigrunHost["notify"];
 	/** The user directory (§9.7): list/get in admin wire form. */
 	readonly users: SigrunHost["users"];
 	/**
@@ -599,6 +603,7 @@ export function createSeamHost(
 					...(opts.owner === undefined ? {} : { owner: opts.owner }),
 					...(opts.sharing === undefined ? {} : { sharing: opts.sharing }),
 					...(opts.name === undefined ? {} : { name: opts.name }),
+					...(opts.job === undefined ? {} : { job: opts.job }),
 					...(opts.agent === undefined ? {} : { agent: opts.agent }),
 					// The source default: the CALLING extension's slug (spec §9.5).
 					source: opts.source ?? identity.name,
@@ -643,6 +648,11 @@ export function createSeamHost(
 			},
 			async readFile(id, path) {
 				return (await hostBridge("conversations.readFile")).conversations.readFile(id, path);
+			},
+		},
+		jobs: {
+			async get(id) {
+				return (await hostBridge()).jobs.get(id);
 			},
 		},
 		users: {
@@ -785,6 +795,9 @@ export function createSeamHost(
 					opts,
 				);
 			},
+		},
+		async notify(input) {
+			return (await hostBridge()).notify(identity.name, input);
 		},
 		// The surfaces seam (UI-blocks U3 Task 4): `changed` awaits the
 		// bridge (so a factory-body call waits, never resolves early) and

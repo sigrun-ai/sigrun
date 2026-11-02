@@ -71,6 +71,7 @@ test("core section order: identity first, guidance after long-term-memory", asyn
 				"identity",
 				"persona",
 				"workspace-instructions",
+				"job-state",
 				"skills",
 				"long-term-memory",
 				"tool-guidance",
@@ -86,6 +87,7 @@ test("core section order: identity first, guidance after long-term-memory", asyn
 				"identity:sigrun.context-files",
 				"persona:sigrun.context-files",
 				"workspace-instructions:sigrun.context-files",
+				"job-state:sigrun.job-state",
 				"skills:sigrun.skills",
 				"tool-guidance:sigrun.model-guidance",
 				"execution-guidance:sigrun.model-guidance",
@@ -166,6 +168,7 @@ test("guidance sections install after loadExtensions (memory section precedes th
 				"identity",
 				"persona",
 				"workspace-instructions",
+				"job-state",
 				"skills",
 				"fixture-note",
 				"long-term-memory",
@@ -193,9 +196,10 @@ test("the exported reserved-key contract matches the core surfaces", () => {
 		"skills",
 		"tool-guidance",
 		"execution-guidance",
+		"job-state",
 	]);
 	// Every reserved key has exactly one expected core owner.
 	expect([...new Set(Object.values(RESERVED_CORE_SECTION_OWNERS))].sort()).toEqual(
-		["sigrun.context-files", "sigrun.model-guidance", "sigrun.skills"],
+		["sigrun.context-files", "sigrun.job-state", "sigrun.model-guidance", "sigrun.skills"],
 	);
 });

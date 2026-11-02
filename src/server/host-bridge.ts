@@ -41,6 +41,7 @@ import {
 	uploadOp,
 } from "./conversation-ops.js";
 import { listModels } from "./helpers.js";
+import { notifyExtension } from "./notifications.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
 import { accountLinkWire, serializeConversationView } from "./views.js";
@@ -67,12 +68,18 @@ function effectiveAdminOf(
  */
 export interface HostBridge {
 	readonly conversations: SigrunHost["conversations"];
+	readonly jobs: SigrunHost["jobs"];
 	readonly users: SigrunHost["users"];
 	readonly accounts: SigrunHost["accounts"];
 	readonly access: SigrunHost["access"];
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
 	readonly commands: SigrunHost["commands"];
+	/** The extension-notify server side; the seam host supplies its slug. */
+	readonly notify: (
+		slug: string,
+		input: Parameters<SigrunHost["notify"]>[0],
+	) => Promise<void>;
 	/**
 	 * The curation surface (curator P6, A9): the boot-built host —
 	 * `OpenedHarness.curationHost` verbatim (the ONE instance; every
@@ -240,6 +247,19 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				return await readFileOp(ctx, conversation, path);
 			},
 		},
+		jobs: {
+			async get(id) {
+				const job = await opened.jobs.get(id);
+				if (job === undefined) return undefined;
+				return {
+					id: job.id,
+					name: job.name,
+					...(job.owner === undefined ? {} : { owner: job.owner }),
+					enabled: job.enabled,
+					state: job.state,
+				};
+			},
+		},
 		users: {
 			// The directory in wire form (emails are admin material; the
 			// bridge is in-process server code, the same trust as the
@@ -359,6 +379,7 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				: { notice: result.notice };
 		},
 	},
+	notify: (slug, input) => notifyExtension(ctx, slug, input),
 	surfaces: {
 		// UI-blocks U3 Task 4 (spec §7.3): the same bumpRev the actions
 		// route takes — the rev advance and the hub event are one step.

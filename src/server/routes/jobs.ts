@@ -243,6 +243,37 @@ export function registerJobRoutes(
 		}
 	});
 
+	// POST /v1/jobs/:id/state/reset — write access; any live job source.
+	// The job's definition and history stay intact; only its persistent
+	// state folder is removed. Unlike delete/transfer/reconcile cleanup,
+	// an explicit reset surfaces a failed removal to the caller.
+	app.post("/v1/jobs/:id/state/reset", async (request, reply) => {
+		const { id } = request.params as { id: string };
+		const wire = await jobs.get(id);
+		if (wire === undefined) {
+			return await deny(reply, "job_not_found");
+		}
+		const access = accessOf(accessPrincipal(request), resourceOf(wire));
+		if (access === "none") {
+			return await deny(reply, "job_not_found");
+		}
+		if (access === "read") {
+			return await deny(reply, "forbidden");
+		}
+		try {
+			await jobs.resetState(id);
+			return await reply.code(204).send();
+		} catch (error) {
+			if (error instanceof JobNotFoundError) {
+				return await deny(reply, "job_not_found");
+			}
+			return await reply.code(500).send({
+				error: "state_reset_failed",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
 	// POST /v1/jobs/:id/run — write access; fires now (overlap honored).
 	// A LIVE record is required (like PATCH/DELETE): a retired job's
 	// revision never satisfies run-now — 404, never fireJob's blocked-200

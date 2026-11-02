@@ -39,13 +39,19 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import { accessOf, type Sharing } from "@sigrun/shared/access";
 import type { SessionMeta } from "@sigrun/shared/session-meta";
 import type { JobRunWire, JobWire } from "@sigrun/shared/jobs";
-import type { NotificationEvent, NotifierContribution, RunSettledOutcome, SigrunHost } from "../extension.js";
+import type {
+	ExtensionNoticeInput,
+	NotificationEvent,
+	NotifierContribution,
+	RunSettledOutcome,
+	SigrunHost,
+} from "../extension.js";
 import type { ServerContext } from "./context.js";
 import type { HostEventWire } from "./events/types.js";
 import { SessionMetaDoc } from "./session-meta.js";
 
 /** One delivery target: a notifier plus its extension's seam host. */
-interface DeliveryTarget {
+export interface DeliveryTarget {
 	/** The contributing extension's slug (the delivery label's attribution). */
 	readonly extension: string;
 	readonly notifier: NotifierContribution;
@@ -78,6 +84,41 @@ function displayName(meta: SessionMeta | undefined, id: number): string {
 	return meta?.name ?? meta?.autoName ?? `Conversation ${id}`;
 }
 
+/** Collect every loaded notifier with its contributing extension's host. */
+export function collectTargets(ctx: ServerContext): DeliveryTarget[] {
+	const targets: DeliveryTarget[] = [];
+	for (const binding of ctx.opened.notifierBindings) {
+		// The Task 2 ext-route host semantics: the captured seam host,
+		// cast across the not-yet-bridged members.
+		const host = ctx.opened.seamHosts.get(binding.extension) as
+			| SigrunHost
+			| undefined;
+		for (const notifier of binding.notifiers) {
+			targets.push({ extension: binding.extension, notifier, host });
+		}
+	}
+	return targets;
+}
+
+/** Enqueue one per-recipient event through every notifier (never awaited). */
+export function deliverEvent(
+	ctx: ServerContext,
+	targets: readonly DeliveryTarget[],
+	event: NotificationEvent,
+): void {
+	for (const target of targets) {
+		// Fire-and-forget per transport call: one notifier's failure or
+		// hang neither blocks nor loses the others' deliveries.
+		void ctx.opened.eventBus.runBounded(
+			`notifier ${target.extension}.${target.notifier.name}`,
+			() =>
+				target.notifier.notify(event, {
+					host: target.host as SigrunHost,
+				}),
+		);
+	}
+}
+
 /**
  * Start the notifications surface. Returns its unsubscribe (the server
  * never calls it today — the surface rides the process lifetime — but
@@ -86,17 +127,7 @@ function displayName(meta: SessionMeta | undefined, id: number): string {
  */
 export function startNotifications(ctx: ServerContext): () => void {
 	const { opened, config } = ctx;
-	const targets: DeliveryTarget[] = [];
-	for (const binding of opened.notifierBindings) {
-		// The Task 2 ext-route host semantics: the captured seam host,
-		// cast across the not-yet-bridged members.
-		const host = opened.seamHosts.get(binding.extension) as
-			| SigrunHost
-			| undefined;
-		for (const notifier of binding.notifiers) {
-			targets.push({ extension: binding.extension, notifier, host });
-		}
-	}
+	const targets = collectTargets(ctx);
 	if (targets.length === 0) return () => {};
 
 	const bus = opened.eventBus;
@@ -125,17 +156,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 				// the conditional spread keeps the wire shape exact).
 				...(base.outcome === undefined ? {} : { outcome: base.outcome }),
 			} as NotificationEvent;
-			for (const target of targets) {
-				// Fire-and-forget per transport call: one notifier's failure or
-				// hang neither blocks nor loses the others' deliveries.
-				void bus.runBounded(
-					`notifier ${target.extension}.${target.notifier.name}`,
-					() =>
-						target.notifier.notify(event, {
-							host: target.host as SigrunHost,
-						}),
-				);
-			}
+			deliverEvent(ctx, targets, event);
 		}
 	};
 
@@ -286,4 +307,105 @@ export function startNotifications(ctx: ServerContext): () => void {
 		}
 	});
 	return unsubscribe;
+}
+
+/**
+ * Validate and enqueue one extension notice. The caller's promise resolves
+ * after validation and enqueueing, not after any transport has delivered.
+ */
+export async function notifyExtension(
+	ctx: ServerContext,
+	slug: string,
+	input: ExtensionNoticeInput,
+): Promise<void> {
+	const users = ctx.opened.identity.users;
+	if (users.isClaimed()) {
+		if (input.user === undefined) {
+			throw new Error("notification user is required when the directory is non-empty");
+		}
+		if (users.get(input.user) === undefined) {
+			throw new Error(`unknown user "${input.user}"`);
+		}
+	}
+	if (
+		typeof input.title !== "string" ||
+		input.title.length < 1 ||
+		input.title.length > 200
+	) {
+		throw new Error("notification title must be 1..200 characters");
+	}
+	if (
+		typeof input.body !== "string" ||
+		input.body.length > 2000
+	) {
+		throw new Error("notification body must be 0..2000 characters");
+	}
+	if (!/^[a-z0-9.-]{1,64}$/.test(input.kind)) {
+		throw new Error("notification kind must be 1..64 characters from [a-z0-9.-]");
+	}
+
+	if (input.target !== undefined) {
+		if (typeof input.target !== "object" || input.target === null || Array.isArray(input.target)) {
+			throw new Error("notification target must be an object");
+		}
+		const hasView = "view" in input.target;
+		const hasConversation = "conversation" in input.target;
+		if (hasView === hasConversation) {
+			throw new Error(
+				"notification target must have exactly one of view or conversation",
+			);
+		}
+		if (
+			(hasView && typeof input.target.view !== "string") ||
+			(hasConversation && typeof input.target.conversation !== "number")
+		) {
+			throw new Error(
+				"notification target requires a string view or a number conversation",
+			);
+		}
+	}
+
+	let conversationId: number | undefined;
+	let url: string | undefined;
+	if (input.target !== undefined && "view" in input.target) {
+		const view = input.target.view;
+		const binding = ctx.opened.extensionSurfaces.find(
+			(candidate) => candidate.extension === slug,
+		);
+		const declared = binding?.defs.some(
+			(def) => def.placement === "view" && def.id === view,
+		);
+		if (declared !== true) {
+			throw new Error(
+				`notification view "${view}" was not declared by extension "${slug}"`,
+			);
+		}
+		if (ctx.config.publicUrl !== undefined) {
+			const base =
+				`${ctx.config.publicUrl}/#/ext/${encodeURIComponent(slug)}/` +
+				encodeURIComponent(view);
+			const params = input.target.params ?? {};
+			url = Object.keys(params).length === 0
+				? base
+				: `${base}?params=${encodeURIComponent(JSON.stringify(params))}`;
+		}
+	} else {
+		conversationId = input.target?.conversation;
+		if (conversationId !== undefined && ctx.config.publicUrl !== undefined) {
+			url = `${ctx.config.publicUrl}/#/c/${conversationId}`;
+		}
+	}
+
+	const event: NotificationEvent = {
+		type: "extension",
+		extension: slug,
+		kind: input.kind,
+		conversationId,
+		jobId: undefined,
+		user: input.user,
+		title: input.title,
+		body: input.body,
+		...(url === undefined ? {} : { url }),
+	};
+	deliverEvent(ctx, collectTargets(ctx), event);
 }

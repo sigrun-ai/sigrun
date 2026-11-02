@@ -18,7 +18,8 @@
  * loading it across a reboot is the extension-source retire case.
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -42,6 +43,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { JobDeclaredError, type JobsService } from "../src/jobs/index.js";
+import { jobStateDir } from "../src/jobs/state-dir.js";
 import { liveScheduleTasksByJob } from "../src/jobs/reconcile.js";
 import { createScheduleTask } from "../src/jobs/task.js";
 import { patchJob, readJob } from "../src/jobs/docs.js";
@@ -136,6 +138,7 @@ async function bootRig(options?: {
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_DATA_DIR: join(dir, "data"),
 		SIGRUN_AUTH: "token",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_TIMEZONE: "UTC",
@@ -168,6 +171,15 @@ async function bootRig(options?: {
 	};
 	cleanups.push(rig.close);
 	return rig;
+}
+
+function statePath(dir: string, owner: string, jobId: string): string {
+	return jobStateDir(join(dir, "data", "users", owner, "jobs"), jobId);
+}
+
+async function seedState(path: string): Promise<void> {
+	await mkdir(path, { recursive: true });
+	await writeFile(join(path, "notes.json"), "{}");
 }
 
 /** Reboot the same directory: close, then boot again (new harness). */
@@ -388,16 +400,20 @@ describe("file jobs — declared in settings.json", () => {
 		expect(runs[0]!.version).toBe(2);
 	});
 
-	test("removing the declaration → record retired, task aborted", async () => {
+	test("removing the declaration → record retired, task aborted, state folder removed", async () => {
 		const rig = await bootRig({
-			settings: { jobs: [tickSpec()] },
+			settings: { jobs: [tickSpec({ owner: "alice" })] },
 		});
+		await rig.opened.identity.users.add({ user: "alice", admin: false, source: "cli" });
 		const id = "file:tick";
 		const oldTask = (await liveScheduleTasks(rig, id))[0]!;
+		const state = statePath(rig.dir, "alice", id);
+		await seedState(state);
 		const next = await reboot(rig, { settings: {} });
 		expect(await readJob(next.opened.harness, id, BACKGROUND_CONTEXT)).toBeUndefined();
 		await waitNoLiveTasks(next, id);
 		await waitTerminal(next, oldTask.id);
+		expect(existsSync(state)).toBe(false);
 	});
 });
 
@@ -436,7 +452,7 @@ describe("api jobs — the JobsService surface", () => {
 		const job = await rig.jobs.createApi(tickSpec(), "alice");
 		expect(job.source).toBe("api");
 		expect(job.id).toMatch(/^api:/);
-		expect(job.owner).toBe("alice");
+		expect(job.owner).toBe("tester");
 		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
 		expect(record!.version).toBe(1);
 		const live = await liveScheduleTasks(rig, job.id);
@@ -601,6 +617,7 @@ describe("listing — records only, never tasks", () => {
 						now: rig.now,
 						defaultTz: "UTC",
 						gatewayLoaded: false,
+						effectiveOwner: (owner) => owner ?? "tester",
 					}),
 					{ jobId: ghost, hash: "no-record" },
 					{
@@ -727,9 +744,13 @@ describe("the jobs ownership participant", () => {
 		});
 		const job = await rig.jobs.createApi(tickSpec(), "bob");
 		const oldTask = (await liveScheduleTasks(rig, job.id))[0]!;
+		const bobState = statePath(rig.dir, "bob", job.id);
+		const aliceState = statePath(rig.dir, "alice", job.id);
+		await seedState(bobState);
 		const app = await createServer(rig.opened, loadConfig({
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(rig.dir, "sigrun.db"),
+			SIGRUN_DATA_DIR: join(rig.dir, "data"),
 			SIGRUN_AUTH: "token",
 			SIGRUN_WORKSPACE_PATH: rig.dir,
 		}), [], { listenHost: "127.0.0.1" });
@@ -747,6 +768,8 @@ describe("the jobs ownership participant", () => {
 		const record = await readJob(rig.opened.harness, job.id, BACKGROUND_CONTEXT);
 		expect(record!.owner).toBe("alice");
 		expect(record!.version).toBe(2);
+		expect(existsSync(bobState)).toBe(false);
+		expect(existsSync(aliceState)).toBe(false);
 		const revisions = await rig.jobs.revisions(job.id);
 		expect(revisions[0]!.changedBy).toBe("transfer");
 		// The new hash → a NEW task; the old one aborted.
@@ -848,7 +871,7 @@ describe("multi-user job-created conversations", () => {
 		});
 		const host = rig.opened.seamHosts.get("acme");
 		if (host === undefined) throw new Error("per-user fixture host missing");
-		host.tools.setUserTools("alice", []);
+		host.tools.setUserTools("tester", []);
 		const job = await rig.jobs.createApi(tickSpec(), "alice");
 		const fired = await rig.jobs.runNow(job.id);
 		if (fired.conversationId === undefined) throw new Error("job created no conversation");
@@ -857,7 +880,7 @@ describe("multi-user job-created conversations", () => {
 			fired.conversationId as ConversationId,
 			BACKGROUND_CONTEXT,
 		);
-		expect(selectionNames(agent?.extensions)).toContain("acme@alice");
+		expect(selectionNames(agent?.extensions)).toContain("acme@tester");
 	});
 });
 
@@ -896,6 +919,7 @@ describe("fireJob re-entry on a settled run record", () => {
 				now: rig.now,
 				defaultTz: "UTC",
 				gatewayLoaded: false,
+				effectiveOwner: (owner) => owner ?? "tester",
 			},
 			job.id,
 			settledKey,
