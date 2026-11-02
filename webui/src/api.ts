@@ -620,6 +620,8 @@ export interface SigrunClient {
 	listJobs(): Promise<JobsResponse>;
 	/** Fire a job now (`POST /v1/jobs/:id/run`; write access). */
 	runJob(id: string): Promise<JobRunResponse>;
+	/** Delete a job's persisted state (`POST /v1/jobs/:id/state/reset`; 204). */
+	resetJobState(id: string): Promise<void>;
 	/** One job's runs, newest first (`GET /v1/jobs/:id/runs?limit=`). */
 	listJobRuns(
 		id: string,
@@ -1002,6 +1004,8 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			send("POST", `/v1/jobs/${encodeURIComponent(id)}/run`, {}) as Promise<
 				JobRunResponse
 		>,
+		resetJobState: (id) =>
+			sendVoid("POST", `/v1/jobs/${encodeURIComponent(id)}/state/reset`, {}),
 		listJobRuns: (id, limit) =>
 			get<JobRunsResponse>(
 				`/v1/jobs/${encodeURIComponent(id)}/runs` +

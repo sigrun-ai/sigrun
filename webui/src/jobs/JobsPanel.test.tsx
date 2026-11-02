@@ -149,7 +149,9 @@ const REVISIONS: JobRevisionWire[] = [
 
 // ─── The harness: fetch routing + call recording ───────────────────────────
 
-function makeHarness() {
+function makeHarness(
+	options: { readonly resetStateError?: string } = {},
+) {
 	const calls: { input: string; method: string }[] = [];
 	const fetchImpl: FetchLike = (input, init) => {
 		const method = init?.method ?? "GET";
@@ -161,6 +163,25 @@ function makeHarness() {
 			body = { jobs: JOBS.map((job) => ({ ...job })) };
 		} else if (route === "/v1/jobs/api:morning-brief/run" && method === "POST") {
 			body = { outcome: "running", conversationId: 99 };
+		} else if (
+			route === "/v1/jobs/api:morning-brief/state/reset" &&
+			method === "POST"
+		) {
+			if (options.resetStateError !== undefined) {
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					json: () => Promise.resolve({ error: options.resetStateError }),
+					text: () => Promise.resolve(options.resetStateError!),
+				});
+			}
+			return Promise.resolve({
+				ok: true,
+				status: 204,
+				json: () =>
+					Promise.reject(new Error("a 204 response has no JSON body")),
+				text: () => Promise.resolve(""),
+			});
 		} else if (route === "/v1/jobs/api:morning-brief/runs" && method === "GET") {
 			body = { runs: RUNS.map((run) => ({ ...run })) };
 		} else if (
@@ -268,6 +289,78 @@ describe("JobsPanel", () => {
 		expect(runCall).toBeDefined();
 		// The outcome surfaces in the row (the fire answer, not silence).
 		expect(textContent(renderer.toJSON())).toContain("running");
+	});
+
+	test("Reset state renders only for write access and its confirm calls the reset route once", async () => {
+		const harness = makeHarness();
+		const renderer = await renderPanel(harness);
+		expect(
+			renderer.root.findAllByProps({ className: "job-reset-state" }),
+		).toHaveLength(1);
+		expect(
+			renderer.root.findAll(
+				(node) => node.type === "button" && node.children.join("") === "Reset state",
+			),
+		).toHaveLength(1);
+		await act(async () => {
+			await findButton(renderer, "Reset state").props.onClick();
+		});
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("Reset state for morning-brief?");
+		expect(text).toContain(
+			"This deletes the files this job keeps between runs. The job itself is not changed.",
+		);
+		expect(
+			harness.calls.filter(
+				(call) => call.input === "/v1/jobs/api:morning-brief/state/reset",
+			),
+		).toHaveLength(0);
+		await act(async () => {
+			await findButton(renderer, "Confirm reset").props.onClick();
+		});
+		const resetCalls = harness.calls.filter(
+			(call) =>
+				call.input === "/v1/jobs/api:morning-brief/state/reset" &&
+				call.method === "POST",
+		);
+		expect(resetCalls).toHaveLength(1);
+		expect(textContent(renderer.toJSON())).toContain("State reset");
+		expect(renderer.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+	});
+
+	test("cancelling the reset confirmation calls nothing", async () => {
+		const harness = makeHarness();
+		const renderer = await renderPanel(harness);
+		await act(async () => {
+			await findButton(renderer, "Reset state").props.onClick();
+		});
+		await act(async () => {
+			await findButton(renderer, "Cancel").props.onClick();
+		});
+		expect(
+			harness.calls.filter(
+				(call) => call.input === "/v1/jobs/api:morning-brief/state/reset",
+			),
+		).toHaveLength(0);
+		expect(textContent(renderer.toJSON())).not.toContain(
+			"Reset state for morning-brief?",
+		);
+	});
+
+	test("a rejected reset shows the error text in the job row", async () => {
+		const harness = makeHarness({ resetStateError: "state_delete_failed" });
+		const renderer = await renderPanel(harness);
+		await act(async () => {
+			await findButton(renderer, "Reset state").props.onClick();
+		});
+		await act(async () => {
+			await findButton(renderer, "Confirm reset").props.onClick();
+		});
+		const row = renderer.root.findByProps({
+			"data-job-reset-message": "api:morning-brief",
+		});
+		expect(row.children.join("")).toContain("state_delete_failed");
+		expect(textContent(renderer.toJSON())).not.toContain("State reset");
 	});
 
 	test("expanding shows runs newest first with version + manual + error, and revisions with changedBy and the diff styling", async () => {
