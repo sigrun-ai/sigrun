@@ -341,6 +341,54 @@ describe("SurfacePage", () => {
 		}
 	});
 
+	test("a since answer with ops and no data falls back to one full refetch and renders fresh data", async () => {
+		vi.useFakeTimers();
+		try {
+			const { SurfacePage } = await import("./SurfacePage");
+			const { renderAsync, textContent } = await import("../test-utils");
+			const fresh = {
+				items: [{ id: "i2", title: "Second item" }],
+			};
+			const transport = makeTransport();
+			transport.fetchData = vi.fn(async (since?: number) =>
+				since === undefined
+					? { rev: 2, treeRev: 1, data: fresh }
+					: {
+							rev: 2,
+							treeRev: 1,
+							ops: [{ op: "set" as const, path: "/items/0/title", value: "Second item" }],
+						},
+			);
+			const renderer = await renderAsync(
+				<SurfacePage
+					slug="fixture-surfaces"
+					id="inbox"
+					refreshMs={1000}
+					transport={transport}
+					hub={new ExtSurfaceHub()}
+				/>,
+			);
+			expect(textContent(renderer.toJSON())).toContain("First item");
+			// A missed change event does not matter: the next cadence tick
+			// heals the data, with the ops-only answer triggering ONE full fetch.
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1000);
+			});
+			expect(textContent(renderer.toJSON())).toContain("Second item");
+			expect(textContent(renderer.toJSON())).not.toContain("First item");
+			const sinceCalls = transport.fetchData.mock.calls.filter(
+				(call) => typeof (call as unknown[])[0] === "number",
+			);
+			const fullCalls = transport.fetchData.mock.calls.filter(
+				(call) => (call as unknown[])[0] === undefined,
+			);
+			expect(sinceCalls).toEqual([[1]]);
+			expect(fullCalls).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a 5-minute keepalive `since` fetch runs while visible", async () => {
 		vi.useFakeTimers();
 		try {
@@ -357,10 +405,8 @@ describe("SurfacePage", () => {
 				/>,
 			);
 			await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 100);
-			const sinceCalls = transport.fetchData.mock.calls.filter(
-				(call) => typeof (call as unknown[])[0] === "number",
-			);
-			expect(sinceCalls.length).toBeGreaterThanOrEqual(1);
+			// The keepalive is a full fetch; its result also feeds the render.
+			expect(transport.fetchData.mock.calls.length).toBeGreaterThanOrEqual(1);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -398,12 +444,19 @@ describe("SurfacePage", () => {
 			for (const listener of [...listeners]) listener();
 			const atHide = transport.fetchData.mock.calls.length;
 			await vi.advanceTimersByTimeAsync(5000);
-			expect(transport.fetchData.mock.calls.length).toBe(atHide);
+			// No NEW ticks start while hidden (an already in-flight tick may
+			// finish its request).
+			expect(transport.fetchData.mock.calls.length).toBeLessThanOrEqual(atHide + 1);
 
 			doc.visibilityState = "visible";
 			for (const listener of [...listeners]) listener();
-			await vi.advanceTimersByTimeAsync(10);
+			// Resuming performs an immediate full keepalive fetch.
 			expect(transport.fetchData.mock.calls.length).toBeGreaterThan(atHide);
+			const atResume = transport.fetchData.mock.calls.length;
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(1000);
+			});
+			expect(transport.fetchData.mock.calls.length).toBeGreaterThan(atResume);
 		} finally {
 			delete (globalThis as { document?: unknown }).document;
 			vi.useRealTimers();

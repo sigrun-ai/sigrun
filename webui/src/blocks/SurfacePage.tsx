@@ -3,15 +3,13 @@
  * for one extension view, reached through the `#/ext/<slug>/<id>` route.
  *
  * The surface renders through the generic block renderer
- * (`SurfaceView` over the transport). The page keeps its lifecycle:
- * the declared `refreshMs` refetch cadence while visible and the
- * 5-minute watcher keepalive (`since` fetch) — both pause while the
- * tab is hidden and stop on unmount. The surface hook's own
- * `surface.changed` subscription applies data/tree updates; the
- * cadence fetches carry the current rev as `since`.
+ * (`SurfaceView` over the transport). The surface hook owns the
+ * declared `refreshMs` poll: each tick fetches since the current rev
+ * and applies the result, healing a missed surface.changed event. The
+ * 5-minute watcher keepalive applies through the same path; both
+ * cadences pause while the tab is hidden and stop on unmount.
  */
 
-import { useEffect, useRef } from "react";
 import type {
 	CoreTarget,
 	JsonObject,
@@ -49,92 +47,15 @@ export interface SurfacePageProps {
 
 /** One extension-surface page. */
 export function SurfacePage(props: SurfacePageProps): React.JSX.Element {
-	// The keepalive/cadence fetch carries the current rev as `since`
-	// (spec §7.3). The page tracks it from the transport's change
-	// events (the hook's own subscription applies the data); the ref
-	// keeps the interval from re-arming on every data change.
-	const revRef = useRef(0);
-
-	useEffect(() => {
-		let alive = true;
-		const offChanged = props.transport.onChanged((event) => {
-			revRef.current = Math.max(revRef.current, event.rev);
-		});
-		const refetch = (): void => {
-			void props.transport.fetchData(revRef.current).catch(() => undefined);
-		};
-
-		// refreshMs cadence (spec §7.3): refetch data while the surface is
-		// VISIBLE — a hidden tab pauses the timer (the visibility listener
-		// restarts it on return).
-		let refreshTimer: ReturnType<typeof setInterval> | undefined;
-		const startRefresh = (): void => {
-			if (props.refreshMs === undefined || refreshTimer !== undefined) return;
-			refreshTimer = setInterval(() => {
-				if (!alive) return;
-				refetch();
-			}, props.refreshMs);
-		};
-		const stopRefresh = (): void => {
-			if (refreshTimer !== undefined) clearInterval(refreshTimer);
-			refreshTimer = undefined;
-		};
-
-		// The 5-minute watcher keepalive (spec §7.3's 10-minute TTL
-		// margin): same visibility rule — a hidden tab's entry may lapse
-		// (the surface re-registers on return).
-		let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
-		const startKeepalive = (): void => {
-			if (keepaliveTimer !== undefined) return;
-			keepaliveTimer = setInterval(() => {
-				if (!alive) return;
-				refetch();
-			}, KEEPALIVE_MS);
-		};
-		const stopKeepalive = (): void => {
-			if (keepaliveTimer !== undefined) clearInterval(keepaliveTimer);
-			keepaliveTimer = undefined;
-		};
-
-		// Document visibility: pause both cadences while hidden, resume
-		// (with an immediate refetch — the missed window applies) on
-		// visible. The listener is absent in hosts without document.
-		const doc = (
-			globalThis as {
-				document?: {
-					addEventListener(t: string, l: () => void): void;
-					removeEventListener(t: string, l: () => void): void;
-				};
-			}
-		).document;
-		const onVisibility = (): void => {
-			if (documentVisible()) {
-				startRefresh();
-				startKeepalive();
-				refetch();
-			} else {
-				stopRefresh();
-				stopKeepalive();
-			}
-		};
-		if (documentVisible()) {
-			startRefresh();
-			startKeepalive();
-		}
-		doc?.addEventListener("visibilitychange", onVisibility);
-
-		return () => {
-			alive = false;
-			offChanged();
-			doc?.removeEventListener("visibilitychange", onVisibility);
-			stopRefresh();
-			stopKeepalive();
-		};
-	}, [props.slug, props.id, props.transport, props.hub, props.refreshMs]);
-
 	return (
 		<section className="ext-surface" data-ext-surface={`${props.slug}/${props.id}`}>
-			<SurfaceView transport={props.transport} onNavigate={props.onNavigate} />
+			<SurfaceView
+				transport={props.transport}
+				refreshMs={props.refreshMs}
+				keepaliveMs={KEEPALIVE_MS}
+				visible={documentVisible}
+				onNavigate={props.onNavigate}
+			/>
 		</section>
 	);
 }

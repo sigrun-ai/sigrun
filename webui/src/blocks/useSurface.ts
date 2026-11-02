@@ -131,6 +131,10 @@ export interface SurfaceState {
 	 *  view-only state sibling blocks read via `/view/...` bindings. */
 	setView(path: string, value: JsonValue): void;
 	retry(): void;
+	/** Refresh at the host's cadence: fetch since the current rev and
+	 *  apply the result (including the sharedData ops-only fallback).
+	 *  Watcher keepalives use this seam so they also heal missed events. */
+	refresh(): Promise<void>;
 	readonly toasts: readonly string[];
 	/** Server-side field errors from rejected actions (spec §5.6),
 	 *  keyed by field name; rendered under the named form field. */
@@ -302,6 +306,11 @@ export function useSurface(
 	transport: SurfaceTransport,
 	opts?: {
 		onNavigate?: (action: { params?: JsonObject; target?: CoreTarget }) => void;
+		/** Poll for data at this cadence, applying every result through
+		 *  the same fetch path as surface.changed (§7.3). */
+		refreshMs?: number;
+		/** Host visibility gate for polling (hidden tabs do not poll). */
+		visible?: () => boolean;
 	},
 ): SurfaceState {
 	const [snapshot, setSnapshot] = useState<Snapshot>({
@@ -345,10 +354,18 @@ export function useSurface(
 		}));
 	};
 
-	const applyFetch = (result: SurfaceFetch): void => {
+	const applyFetch = (result: SurfaceFetch, opsOnlyFallback = false): void => {
 		const s = ref.current;
 		if (result.treeRev !== s.treeRev) {
 			void doLoad();
+			return;
+		}
+		// A sharedData surface may answer a since fetch INSIDE the ops
+		// window with no data. Polls cannot apply those ops safely (a
+		// missed event leaves no announced revision), so fall back to ONE
+		// full no-since refetch (spec §7.3).
+		if (opsOnlyFallback && result.data === undefined && result.ops !== undefined) {
+			void fullRefetch();
 			return;
 		}
 		if (result.data !== undefined) {
@@ -396,6 +413,14 @@ export function useSurface(
 		}
 	};
 
+	const refresh = async (): Promise<void> => {
+		try {
+			applyFetch(await transport.fetchData(ref.current.rev), true);
+		} catch {
+			// Keep confirmed; the next tick retries.
+		}
+	};
+
 	const doLoad = async (): Promise<void> => {
 		try {
 			const result = await transport.load();
@@ -430,6 +455,15 @@ export function useSurface(
 
 	useEffect(() => {
 		void doLoad();
+		const refreshMs = opts?.refreshMs;
+		const visible = opts?.visible;
+		const poll =
+			refreshMs === undefined
+				? undefined
+				: setInterval(() => {
+						if (visible !== undefined && !visible()) return;
+						void refresh();
+					}, refreshMs);
 		const unsubscribe = transport.onChanged((event) => {
 			announcedRev.current = Math.max(announcedRev.current, event.rev);
 			if (event.treeRev !== ref.current.treeRev) {
@@ -447,10 +481,11 @@ export function useSurface(
 		const timersAtMount = timers.current;
 		return () => {
 			unsubscribe();
+			if (poll !== undefined) clearInterval(poll);
 			for (const timer of timersAtMount.values()) clearTimeout(timer);
 		};
 		// The transport is the surface's identity; a new transport re-runs.
-	}, [transport]);
+	}, [transport, opts?.refreshMs, opts?.visible]);
 
 	const dispatch = (action: Action, payload: JsonValue): void => {
 		// A navigate action is shell-local: route through onNavigate and
@@ -643,6 +678,7 @@ export function useSurface(
 			setSnapshot((s) => ({ ...s, status: "loading" }));
 			void doLoad();
 		},
+		refresh,
 		toasts: snapshot.toasts,
 		serverErrors: snapshot.serverErrors,
 	};

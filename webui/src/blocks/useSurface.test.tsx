@@ -165,7 +165,10 @@ type MovePayload = {
 /** Mount the hook in a probe component exposing the latest state. */
 function mount(
 	transport: SurfaceTransport,
-	opts?: { onNavigate?: (action: { params?: JsonObject; target?: unknown }) => void },
+	opts?: {
+		onNavigate?: (action: { params?: JsonObject; target?: unknown }) => void;
+		refreshMs?: number;
+	},
 ): {
 	latest(): SurfaceState;
 	renderer: TestRenderer.ReactTestRenderer;
@@ -313,6 +316,28 @@ describe("useSurface (spec §6.3)", () => {
 		expect(latest().view).toEqual(
 			board([{ ...task("a", "todo"), title: "Renamed" }]),
 		);
+	});
+
+	test("a missed surface.changed event heals on the next refresh tick", async () => {
+		vi.useFakeTimers();
+		const transport = new FakeTransport();
+		transport.loadResult.data = board([task("a", "todo")]);
+		const { latest } = mount(transport, { refreshMs: 1000 });
+		await settleLoad();
+		// No change event fires; the poll still fetches since the LOAD rev
+		// and applies the fresh data through the normal fetch path.
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1000);
+		});
+		expect(transport.fetchCalls).toEqual([1]);
+		await act(async () => {
+			transport.resolveFetch({
+				rev: 2,
+				treeRev: 1,
+				data: board([task("a", "doing")]),
+			});
+		});
+		expect(laneStates(latest().view as JsonObject, "doing")).toEqual(["a"]);
 	});
 
 	test("accept WITHOUT ops keeps the item placed until a fetch at >= untilRev drops the entry — no intermediate old-spot render", async () => {
