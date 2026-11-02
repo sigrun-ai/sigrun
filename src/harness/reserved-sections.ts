@@ -32,6 +32,7 @@ export const RESERVED_CORE_SECTION_KEYS = [
  */
 export const RESERVED_EXTENSION_SLUGS = [
 	"users",
+	"jobs",
 	"workspace",
 	"models",
 	"sandbox",

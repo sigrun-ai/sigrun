@@ -89,11 +89,13 @@ describe("buildUserPolicy", () => {
 		expect(result.policy.workspace).toBe(workspace);
 		expect(result.policy.home).toBe(home);
 		expect(result.policy.tmp).toBe(tmp);
+		const jobs = managed.userAreas("alice") + "/jobs";
 		expect([...result.policy.rw].sort()).toEqual(
 			[
 				workspace,
 				home,
 				tmp,
+				jobs,
 			].sort(),
 		);
 		expect(result.policy.rw).toEqual([...result.policy.rw].sort());
@@ -140,14 +142,16 @@ describe("buildUserPolicy", () => {
 		expect(result.policy.groups).toBeUndefined();
 	});
 
-	test("creates workspace, home, and tmp as 0700, without creating grant paths", async () => {
+	test("creates workspace, home, jobs, and tmp as 0700, without creating grant paths", async () => {
 		const { managed, moduleTrees } = await fixture();
 		const result = policyFor(record(), { managed, moduleTrees });
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		for (const path of [result.policy.workspace, result.policy.home, result.policy.tmp]) {
+		const jobs = join(managed.userAreas("alice"), "jobs");
+		for (const path of [result.policy.workspace, result.policy.home, result.policy.tmp, jobs]) {
 			expect((await stat(path)).mode & 0o777).toBe(0o700);
 		}
+		expect(result.policy.rw).toContain(await realpath(jobs));
 		const missingGrant = join(await tempDir(), "never-create-this-grant");
 		const missing = policyFor(
 			{ ...record(), grants: [{ path: missingGrant, access: "rw" }] },
@@ -218,6 +222,7 @@ describe("buildUserPolicy", () => {
 		expect(result.policy.rw).toContain(result.policy.tmp);
 		expect(result.policy.rw).toContain(osHome);
 		expect(result.policy.rw).not.toContain(managed.userAreas("bob") + "/home");
+		expect(result.policy.rw).not.toContain(managed.userAreas("bob") + "/jobs");
 		expect(result.policy.uid).toBe(1001);
 		expect(result.policy.gid).toBe(1002);
 		expect(result.policy.groups).toEqual([1002, 2000]);

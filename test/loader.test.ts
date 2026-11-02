@@ -20,7 +20,7 @@
  * fixtures — no network).
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1004,6 +1004,42 @@ test("a factory result with a nonexistent skill dir is quarantined", async () =>
 		}
 	} finally {
 		warn.mockRestore();
+		await rm(dir, { recursive: true, force: true });
+		await rm(fixtureDir, { recursive: true, force: true });
+	}
+});
+
+test("the core-owned jobs slug is quarantined before install", async () => {
+	const fixtureDir = await mkdtemp(join(tmpdir(), "sigrun-jobs-slug-fixture-"));
+	const entry = join(fixtureDir, "index.js");
+	await writeFile(
+		entry,
+		"import { defineExtension } from \"@earendil-works/pi-durable\";\n" +
+			"export default function createJobsSlugFixture() {\n" +
+			"\treturn { extension: defineExtension({ name: \"jobs\", tools: [] }) };\n" +
+			"}\n",
+	);
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-jobs-slug-"));
+	const specifier = pathToFileURL(entry).href;
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [specifier],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: specifier,
+					status: "quarantined",
+					error: 'reserved extension slug "jobs"',
+				},
+			]);
+			expect(opened.registry.snapshot().extension("jobs")).toBeUndefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
 		await rm(dir, { recursive: true, force: true });
 		await rm(fixtureDir, { recursive: true, force: true });
 	}
