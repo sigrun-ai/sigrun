@@ -5,9 +5,11 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import type { DirectoryUser } from "../src/harness/identity/users.js";
+import type { DirectoryUser, UserDirectory } from "../src/harness/identity/users.js";
 import { createWorkspaceService } from "../src/harness/workspace.js";
 import { jobStateDir, removeJobState } from "../src/jobs/state-dir.js";
+import { IsolationState } from "../src/sandbox/isolation.js";
+import { WorkerPool } from "../src/sandbox/pool.js";
 import type { ManagedPaths } from "../src/sandbox/grants.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -45,12 +47,27 @@ function serviceFor(
 		userAreas: (user) => join(dataDir, "users", user),
 	};
 	return createWorkspaceService({
-		isolation: {} as never,
-		pool: {} as never,
-		directory: { list: () => records } as never,
+		// The jobsRoot path never touches isolation or the worker pool (both
+		// serve forConversation only) — the real constructors, not casts.
+		isolation: new IsolationState({
+			mode: "off",
+			availability: { available: false, abi: 0, reason: "unavailable" },
+			userCount: () => records.length,
+			log: () => undefined,
+		}),
+		pool: new WorkerPool({
+			launcher: () => {
+				throw new Error("jobsRoot tests never launch a worker");
+			},
+			idleMinutes: () => 10,
+			log: () => undefined,
+			workerEntry: { command: process.execPath, args: [] },
+		}),
+		directory: { list: () => [...records] } as UserDirectory,
 		managed,
 		ownerOf: async () => undefined,
 		...options,
+		// The partial-implementation cast: jobsRoot reads only list().
 	});
 }
 
