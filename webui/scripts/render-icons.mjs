@@ -11,10 +11,12 @@
  *   icon-512.png          512   full-bleed fjord-dark, amber mark
  *   icon-maskable-512.png 512   the mark at 80% (the maskable safe zone)
  *
- * Colors come from the DEFAULT palette (fjord) + default accent
- * (baltic-amber) in shared/src/themes.ts — the same values the webui's
- * brand tile renders with. `sharp` is a workspace-root dependency
- * (src/server/images/convert.ts already uses it); no new deps.
+ * Colors come from the FJORD palette + default accent (baltic-amber) in
+ * shared/src/themes.ts — the icon set is deliberately drawn in
+ * fjord/amber regardless of the shipped default palette (polar-night);
+ * these are the values the webui's brand tile renders with. `sharp` is a
+ * workspace-root dependency (src/server/images/convert.ts already uses
+ * it); no new deps.
  *
  * Run: node webui/scripts/render-icons.mjs   (from the repo root or webui/)
  */
@@ -36,8 +38,9 @@ const WING = [
 	"M8.5 18.5c2.7-1.5 5.4-4.4 6.6-7.4l1.5 1.2 1.9-.3",
 ];
 
-// shared/src/themes.ts — fjord (the default palette) dark values + the
-// baltic-amber (the default accent) dark value.
+// shared/src/themes.ts — fjord dark values + the baltic-amber (the
+// default accent) dark value; the icon set's palette is fjord by design,
+// NOT the shipped default palette (polar-night).
 const DARK_BG = "#0b0f13";
 const AMBER = "#d6a24a";
 
