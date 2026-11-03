@@ -212,6 +212,7 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 			let count = 0;
 			let scanned = 0;
 			let cursor: Cursor | undefined;
+			let truncated = false;
 			for (;;) {
 				const page = await conversation.entries(
 					query,
@@ -225,14 +226,20 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 					if (entryId !== undefined && entry.id === entryId) continue;
 					count += 1;
 				}
-				if (
-					page.next === undefined ||
-					page.items.length === 0 ||
-					scanned >= MODEL_CALLS_SCAN_LIMIT
-				) {
+				if (page.next === undefined || page.items.length === 0) break;
+				if (scanned >= MODEL_CALLS_SCAN_LIMIT) {
+					truncated = true;
 					break;
 				}
 				cursor = page.next;
+			}
+			if (truncated) {
+				// Report, never truncate silently (the A9 ruling): the count
+				// is a LOWER bound — a review gated on it may fire early,
+				// and the operator must know the scan guard tripped.
+				console.warn(
+					`curation: modelCallsSince(${String(id)}) hit the ${MODEL_CALLS_SCAN_LIMIT}-entry scan guard — the reported count ${count} is a lower bound (the conversation is longer)`,
+				);
 			}
 			return count;
 		},
@@ -426,30 +433,46 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 		if (runId === undefined) return;
 		const conversation = await harness.conversation(runId, BACKGROUND_CONTEXT);
 		if (conversation === undefined) return;
-		const page = await conversation.entries(
-			{ order: "ascending" },
-			500,
-			undefined,
-			BACKGROUND_CONTEXT,
-		);
-		for (const entry of page.items) {
-			if (entry.kind !== "pi.tool-result") continue;
-			for (const message of entry.model ?? []) {
-				if (message.role !== "toolResult") continue;
-				// SAFETY: the tool-result details carry the A6/A8
-				// `details.curation` shape ({changeId, summary}); the
-				// structural read below only touches those two fields.
-				const details = (message as { details?: unknown }).details as
-					| { readonly curation?: CurationChangeDetails }
-					| undefined;
-				const change = details?.curation;
-				if (change === undefined) continue;
-				const target = curation.byTool(
-					(message as { toolName: string }).toolName,
-				);
-				if (target === undefined) continue;
-				await target.undo(user, change.changeId, { abortSignal: undefined });
+		// Cursor-complete walk (the A9 ruling): a run with more tool
+		// results than one page loses NOTHING — pages until exhaustion,
+		// bounded so a cursor bug cannot loop forever.
+		let cursor: Cursor | undefined;
+		let scanned = 0;
+		for (;;) {
+			const page = await conversation.entries(
+				{ order: "ascending" },
+				500,
+				cursor,
+				BACKGROUND_CONTEXT,
+			);
+			for (const entry of page.items) {
+				scanned += 1;
+				if (entry.kind !== "pi.tool-result") continue;
+				for (const message of entry.model ?? []) {
+					if (message.role !== "toolResult") continue;
+					// SAFETY: the tool-result details carry the A6/A8
+					// `details.curation` shape ({changeId, summary}); the
+					// structural read below only touches those two fields.
+					const details = (message as { details?: unknown }).details as
+						| { readonly curation?: CurationChangeDetails }
+						| undefined;
+					const change = details?.curation;
+					if (change === undefined) continue;
+					const target = curation.byTool(
+						(message as { toolName: string }).toolName,
+					);
+					if (target === undefined) continue;
+					await target.undo(user, change.changeId, { abortSignal: undefined });
+				}
 			}
+			if (page.next === undefined || page.items.length === 0) return;
+			if (scanned >= MODEL_CALLS_SCAN_LIMIT) {
+				console.warn(
+					`curation: undoTargetChanges hit the ${MODEL_CALLS_SCAN_LIMIT}-entry scan guard on review ${reviewId} — target undos beyond the guard were NOT run`,
+				);
+				return;
+			}
+			cursor = page.next;
 		}
 	}
 
