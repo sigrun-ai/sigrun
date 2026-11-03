@@ -338,6 +338,20 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 				conversationId: api.conversationId as number,
 				...(args.reason === undefined ? {} : { reason: args.reason }),
 			};
+			// Empty content: a create/write_file carrying no text records a
+			// phantom empty entry (the cleanup-pass C1). Refuse UP FRONT, at
+			// the tool boundary, naming the empty content — the store's
+			// frontmatter check would otherwise answer a create with the
+			// misleading "frontmatter is required", and a write_file would
+			// silently land an empty support file plus its feed entry.
+			if (
+				(args.action === "create" || args.action === "write_file") &&
+				(args.content ?? "") === ""
+			) {
+				return error(
+					`${args.action} ${args.name}: empty content — nothing to write.`,
+				);
+			}
 			// Read-before-write: an existing item must carry its name in the
 			// run doc's viewed ledger. A skill that does not exist yet (a
 			// create, or a first overlay) needs no prior view.

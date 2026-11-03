@@ -348,6 +348,50 @@ describe("skill_manage (curator P3 tool, per-run state)", () => {
 		).toBe(true);
 	});
 
+	test("in a curator run, an empty-text create or write_file is refused and records no feed entry", { timeout: 20_000 }, async () => {
+		const { opened, dir } = await bootHarness();
+		const alice = userOf(dir, "alice");
+		const tool = skillManageTool(skillsOptions(dir, new Map([["alice", alice]])));
+		const id = await runConversation(opened, { user: "alice", reviewId: "review-empty" });
+		const { api } = toolApi(opened, id);
+		// An empty-text create: the phantom-empty-entry class — refused,
+		// nothing on disk, no feed entry.
+		const created = await tool.execute(
+			{ action: "create", name: "acme-ghost", content: "" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(created.isError).toBe(true);
+		expect(outputText(created)).toMatch(/empty/i);
+		expect((await alice.store.list()).some((row) => row.name === "acme-ghost")).toBe(false);
+		// An empty-text write_file on an existing skill: refused the same way.
+		await alice.store.apply(
+			"acme-deploy",
+			{ kind: "create", content: ACME },
+			{ actor: "curator" },
+		);
+		await tool.execute({ action: "view", name: "acme-deploy" }, api, BACKGROUND_CONTEXT);
+		const written = await tool.execute(
+			{ action: "write_file", name: "acme-deploy", file_path: "references/runbook.md", content: "" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(written.isError).toBe(true);
+		expect(outputText(written)).toMatch(/empty/i);
+		await expect(
+			readFile(join(alice.userArea, "skills", "acme-deploy", "references", "runbook.md"), "utf8"),
+		).rejects.toThrow();
+		// Neither refusal reached the feed.
+		const entries = await alice.store.feed(10);
+		expect(
+			entries.some(
+				(entry) =>
+					(entry.action === "create" && entry.skill === "acme-ghost") ||
+					(entry.action === "write_file" && entry.skill === "acme-deploy"),
+			),
+		).toBe(false);
+	});
+
 	test("in a curator run on alice's behalf, writes land in alice's store even when the run's parent was bob-shared", { timeout: 20_000 }, async () => {
 		const { opened, dir } = await bootHarness();
 		const alice = userOf(dir, "alice");
