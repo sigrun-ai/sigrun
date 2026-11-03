@@ -288,6 +288,28 @@ describe("SkillStore", () => {
 		await expect(store.undo([first.id])).rejects.toThrow(/pruned|missing|snapshot/i);
 	});
 
+	test("a mixed undo batch reverts what it can and reports the pruned entries (never aborts the batch)", async () => {
+		const { store, userArea } = await setup();
+		await create(store, "acme-deploy", content("acme-deploy"));
+		await create(store, "acme-release", content("acme-release", "Release acme"));
+		// The PRUNED entry is the NEWER one (feed order is newest-first,
+		// so the undo loop meets it FIRST): a mid-loop abort would leave
+		// its older sibling unreverted.
+		const revertible = await store.apply("acme-deploy", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, safely." }, { actor: "agent" });
+		const pruned = await store.apply("acme-release", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, calmly." }, { actor: "agent" });
+		// Prune only the newer edit's snapshot; the older sibling's survives.
+		await rm(join(curationDir(userArea), "versions", "acme-release", pruned.before!), { recursive: true, force: true });
+		// The batch reports the pruned entry AND reverts the sibling —
+		// never a full abort.
+		await expect(store.undo([pruned.id, revertible.id])).rejects.toThrow(/pruned/);
+		// The revertible sibling DID revert (the throw named the skip,
+		// it did not abort the batch).
+		expect(await store.view("acme-deploy")).toContain("Deploy the acme way.");
+		expect(await store.view("acme-deploy")).not.toContain("safely");
+		// The pruned entry's skill is untouched (nothing to revert to).
+		expect(await store.view("acme-release")).toContain("calmly");
+	});
+
 
 	test("userExists false -> every op throws user removed and no directory is created", async () => {
 		let exists = true;

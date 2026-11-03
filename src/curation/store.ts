@@ -345,6 +345,7 @@ export class SkillStore {
 				if (!earliest.has(entry.skill)) earliest.set(entry.skill, entry);
 			}
 			const result: FeedEntry[] = [];
+			const skipped: string[] = [];
 			const state = await readState(this.root);
 			for (const entry of earliest.values()) {
 				if (entry.before === undefined) {
@@ -361,12 +362,14 @@ export class SkillStore {
 				const previous = join(this.root, "versions", entry.skill, entry.before!);
 				// A pruned snapshot (retention removed the version while its
 				// feed entry survives) or a vanished current is a REPORTED
-				// skip, never a silent zero-revert "success": the caller (the
-				// view's undo toast) must know this entry could not revert.
+				// skip, never a silent zero-revert AND never a batch abort:
+				// the siblings that CAN revert still do, and the throw below
+				// reports exactly which entries were skipped.
 				if (!(await exists(previous)) || !(await exists(current))) {
-					throw new Error(
+					skipped.push(
 						`cannot undo ${entry.action} ${entry.skill}: the version snapshot ${entry.before} was pruned — the change is no longer revertible`,
 					);
+					continue;
 				}
 				const location = await versionLocation(previous);
 				if (location === undefined) throw new Error(`unknown version location: ${entry.before}`);
@@ -374,6 +377,10 @@ export class SkillStore {
 				const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, current, destination, undefined, previous);
 				result.push(next);
 			}
+			// Report-and-continue settles HERE: every revertible entry has
+			// reverted; the skips are the throw's message (the caller's
+			// toast names what could not revert).
+			if (skipped.length > 0) throw new Error(skipped.join("; "));
 			return result;
 		});
 	}
