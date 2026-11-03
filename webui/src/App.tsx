@@ -840,18 +840,28 @@ function AppShell(options: AppOptions = {}) {
 	// The popstate listener: browser back/forward re-parses the hash
 	// into route state (the rail's tab clicks and the surface pages'
 	// navigate(params) both land here). The popped route is remembered
-	// too — the tab it belongs to is now showing at that hash.
+	// too — the tab it belongs to is now showing at that hash. A popped
+	// CHAT route carrying a conversation id reconciles the selection
+	// (the hash owns it): back between #/c/7 and #/c/2 must swap the
+	// transcript, not just the URL.
 	useEffect(() => {
 		const onPop = (): void => {
 			const next = parseHash(readHash());
 			tabMemory.remember(tabOfRoute(next), readHash());
 			setRoute(next);
+			if (
+				next.kind === "chat" &&
+				next.conversationId !== undefined &&
+				list.rows.some((row) => row.id === next.conversationId)
+			) {
+				onSelect(next.conversationId);
+			}
 		};
 		(globalThis as { addEventListener?: (t: string, l: () => void) => void }).addEventListener?.("popstate", onPop);
 		return () => {
 			(globalThis as { removeEventListener?: (t: string, l: () => void) => void }).removeEventListener?.("popstate", onPop);
 		};
-	}, [tabMemory]);
+	}, [tabMemory, list.rows, onSelect]);
 
 	// The settings tab's click routes through onOpenTab (defined below);
 	// the page's own section nav (its left column) pushes the section hash.
@@ -936,9 +946,10 @@ function AppShell(options: AppOptions = {}) {
 	);
 	// The active tab (tabs Task 1): the rail highlights it and dead-ends
 	// its click. The dev Blocks gallery is NOT a tab (its section rides
-	// its own hash outside the tab router).
+	// its own hash outside the tab router) — null is the no-tab signal,
+	// matching the pre-task chatsActive gate (no tab active there).
 	const activeTab =
-		section === "blocks" ? "chats" : tabOfRoute(route);
+		section === "blocks" ? null : tabOfRoute(route);
 
 	// The open ext view's declared refresh cadence (§7.1): read from the
 	// meta projection (never a second fetch); absent → no cadence.
@@ -1032,12 +1043,13 @@ function AppShell(options: AppOptions = {}) {
 		if (boot.status !== "ready" || activeId !== null) return;
 		if (route.kind !== "chat") return;
 		if (route.conversationId !== undefined) {
-			// The deep link wins only while the conversation is listed
-			// (a stale id leaves the default pick to fire below).
+			// The deep link wins only while the conversation is listed;
+			// an UNLISTED id (stale hash, deleted conversation) falls
+			// through to the default pick below, never a dead shell.
 			if (list.rows.some((row) => row.id === route.conversationId)) {
 				setActiveId(route.conversationId);
+				return;
 			}
-			return;
 		}
 		if (list.rows.length === 0) return;
 		const root = list.rows.find((c) => c.root);
@@ -1242,7 +1254,7 @@ function AppShell(options: AppOptions = {}) {
 				<Rail
 					meta={boot.meta}
 					onOpenTab={onOpenTab}
-					{...(section === "blocks" ? {} : { activeTab })}
+					activeTab={activeTab}
 					onOpenGallery={
 						boot.meta.dev
 							? () => {

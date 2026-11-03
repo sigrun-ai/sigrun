@@ -97,8 +97,10 @@ export function Rail(props: {
 	 *  `coreViews` rows feed the skills/jobs tabs). */
 	readonly meta: MetaResponse;
 	/** The tab the router says is current (default "chats": hosts that
-	 *  wire no routing only ever show chats). */
-	readonly activeTab?: TabId;
+	 *  wire no routing only ever show chats). An explicit `null` is the
+	 *  NO-TAB signal (the dev Blocks gallery rides a hash section outside
+	 *  the tab router — no tab is active there). */
+	readonly activeTab?: TabId | null;
 	/** A tab click hands the tab id to the host's router (the hash write
 	 *  + the tab memory live there). */
 	readonly onOpenTab?: (tab: TabId) => void;
@@ -129,7 +131,9 @@ export function Rail(props: {
 	const { meta, identity, onLogout } = props;
 	const { onOpenGallery } = props;
 	const browserSession = identity?.method === "token" || identity?.method === "session";
-	const activeTab: TabId = props.activeTab ?? "chats";
+	// undefined → the chats default; null → NO active tab (the gallery).
+	const activeTab: TabId | null =
+		props.activeTab === undefined ? "chats" : props.activeTab;
 	// The extension-view entries (U3 Task 5): after the core entries,
 	// in the user's saved order, minus the access-none set. App passes
 	// them controlled (a reorder re-renders); the fallback derivation

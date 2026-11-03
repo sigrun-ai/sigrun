@@ -86,12 +86,12 @@ describe("Rail", () => {
 		const tree = JSON.stringify(renderer.toJSON());
 		// The Unicode Runic block (U+16A0–U+16FF) covers every Norse-script
 		// glyph the outgoing sowilo mark used.
-		expect(tree).not.toMatch(/[ -᛿]/);
+		expect(tree).not.toMatch(/[\u16A0-\u16FF]/);
 		expect(tree).not.toContain("sowilo");
 		// The source file too — the outgoing mark also lived in comments.
 		const source = readFileSync(new URL("./icons.tsx", import.meta.url), "utf8");
 		// The Runic block again, plus the words the old comments used.
-		expect(source).not.toMatch(/[ -᛿]/);
+		expect(source).not.toMatch(/[\u16A0-\u16FF]/);
 		expect(source).not.toContain("sowilo");
 		expect(source).not.toContain("rune");
 	});
@@ -180,6 +180,20 @@ describe("Rail", () => {
 		expect(onLogout).toHaveBeenCalledOnce();
 	});
 
+	test("activeTab=null is the NO-TAB signal (the dev Blocks gallery): no tab is active", () => {
+		const renderer = render(<Rail meta={makeMeta()} activeTab={null} />);
+		// No active class, no aria-current anywhere — the gallery rides a
+		// hash section outside the tab router (matches the pre-task
+		// chatsActive gate: Chats is NOT active on #/blocks).
+		expect(
+			renderer.root.findAllByProps({ className: "rail-btn rail-btn-active" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAll(
+				(node) => node.props["aria-current"] !== undefined,
+			),
+		).toHaveLength(0);
+	});
 	test("tab clicks dispatch onOpenTab with the tab id; the ACTIVE tab dispatches nothing", () => {
 		const onOpenTab = vi.fn();
 		const renderer = render(

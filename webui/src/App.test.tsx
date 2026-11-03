@@ -920,6 +920,98 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 		}
 	});
 
+	test("booting at an UNLISTED #/c/999 falls back to the default conversation (stale deep link, never a dead shell)", async () => {
+		resetLocationHashForTest("#/c/999");
+		const { client, createEventSource, sources } = makeHarness();
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// The stale id matches no row: the root-default pick runs (the
+			// composer is live, never an inert shell).
+			await vi.waitFor(() => {
+				expect(sources.map((s) => s.url)).toEqual([
+					"/v1/events",
+					"/v1/conversations/1/stream",
+				]);
+			});
+			const title = renderer.root.findByProps({ className: "chat-title" });
+			expect(String(title.props.children)).toContain("Tide table rewrite");
+		} finally {
+			resetLocationHashForTest("#/c");
+		}
+	});
+
+	test("browser back to #/c/<id> reconciles the selected conversation", async () => {
+		// The popstate handler owns the reconciliation: popping from
+		// #/c/2 back to #/c/1 must swap the transcript, not just the URL.
+		const listeners: (() => void)[] = [];
+		const win = globalThis as unknown as {
+			location?: { hash: string };
+			history?: {
+				pushState(d: unknown, t: string, u: string): void;
+				replaceState(d: unknown, t: string, u: string): void;
+			};
+			addEventListener?: (type: string, listener: () => void) => void;
+			removeEventListener?: (type: string, listener: () => void) => void;
+		};
+		const originalLocation = win.location;
+		const originalHistory = win.history;
+		const originalAdd = win.addEventListener;
+		const originalRemove = win.removeEventListener;
+		win.location = { hash: "" };
+		win.history = {
+			pushState: (_d, _t, url) => {
+				if (typeof url === "string" && url.includes("#")) {
+					win.location!.hash = url.slice(url.indexOf("#"));
+				}
+			},
+			replaceState: () => undefined,
+		};
+		win.addEventListener = ((_type: string, listener: () => void) => {
+			listeners.push(listener);
+		}) as typeof win.addEventListener;
+		win.removeEventListener = (() => undefined) as typeof win.removeEventListener;
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		try {
+			// Walk forward: conv 1 (hash #/c/1), then conv 2 (hash #/c/2).
+			await clickConversation(renderer, "Tide table rewrite");
+			expect(locationHash()).toBe("#/c/1");
+			await clickConversation(renderer, "Moor line inspection");
+			expect(locationHash()).toBe("#/c/2");
+			expect(
+				String(
+					renderer.root.findByProps({ className: "chat-title" }).props
+						.children,
+				),
+			).toContain("Moor line inspection");
+			// Back: the URL moves to #/c/1 and the pop ITSELF re-selects
+			// conversation 1 (before this fix the shell stayed on conv 2).
+			win.location = { hash: "#/c/1" };
+			await act(async () => {
+				for (const listener of listeners) listener();
+			});
+			expect(locationHash()).toBe("#/c/1");
+			await vi.waitFor(() => {
+				expect(
+					String(
+						renderer.root.findByProps({ className: "chat-title" }).props
+							.children,
+					),
+				).toContain("Tide table rewrite");
+			});
+		} finally {
+			win.location = originalLocation;
+			win.history = originalHistory;
+			win.addEventListener = originalAdd;
+			win.removeEventListener = originalRemove;
+			resetLocationHashForTest();
+		}
+	});
+
 	test("Settings has no close button (tabs Task 1: the page exits via its tab, not a ✕)", async () => {
 		const { client, createEventSource } = makeHarness();
 		const renderer = await renderAsync(
@@ -1022,7 +1114,11 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 		);
 		const { SurfacePage } = await import("./blocks/SurfacePage");
 		try {
-			// 1. Select conversation 2 (the chat tab's remembered route becomes #/c/2).
+			// 1. Select conversation 1, then conversation 2 (the chat tab's
+			// remembered route becomes #/c/2 — the ACTIVE conversation when
+			// we leave the tab).
+			await clickConversation(renderer, "Tide table rewrite");
+			expect(locationHash()).toBe("#/c/1");
 			await clickConversation(renderer, "Moor line inspection");
 			expect(locationHash()).toBe("#/c/2");
 			// 2. Click the Skills tab (renders only because meta.coreViews lists it).
@@ -1064,17 +1160,35 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 				renderer.root.findAllByProps({ className: "settings-page" }),
 			).toHaveLength(0);
 			await vi.waitFor(() => renderer.root.findByType(SurfacePage));
-			// Back again: the Chats tab returns at #/c/2 with conversation 2 active.
-			win.location = { hash: "#/c/2" };
+			// Back once more: the Chats tab returns at #/c/2. The pop ITSELF
+			// must re-select conversation 2 — the active conversation at this
+			// point is 2, so assert the harder direction instead: pop FIRST
+			// to #/c/1 (the remembered walk in) and verify 1 becomes active,
+			// then forward-pop to #/c/2 and verify 2 returns. This catches a
+			// handler that updates the URL without reconciling activeId.
+			win.location = { hash: "#/c/1" };
 			await act(async () => {
 				for (const listener of listeners) listener();
 			});
-			expect(locationHash()).toBe("#/c/2");
+			expect(locationHash()).toBe("#/c/1");
 			await vi.waitFor(() => {
 				expect(
 					renderer.root.findAllByType(SurfacePage),
 				).toHaveLength(0);
 			});
+			await vi.waitFor(() => {
+				const title = renderer.root.findByProps({
+					className: "chat-title",
+				});
+				expect(String(title.props.children)).toContain(
+					"Tide table rewrite",
+				);
+			});
+			win.location = { hash: "#/c/2" };
+			await act(async () => {
+				for (const listener of listeners) listener();
+			});
+			expect(locationHash()).toBe("#/c/2");
 			await vi.waitFor(() => {
 				const title = renderer.root.findByProps({
 					className: "chat-title",
