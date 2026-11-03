@@ -134,6 +134,7 @@ function usageError(message: string): Error {
  * is a usage error.
  */
 function parseTokenArgs(argv: readonly string[]): ParsedArgs {
+	if (argv.includes("-h") || argv.includes("--help")) return { command: "help" };
 	const sub = argv[0];
 	if (sub === "list") {
 		if (argv.length !== 1) {
@@ -188,6 +189,7 @@ function parseTokenArgs(argv: readonly string[]): ParsedArgs {
  * deriving it from the external username; ordinary add still requires it.
  */
 function parseUserArgs(argv: readonly string[]): ParsedArgs {
+	if (argv.includes("-h") || argv.includes("--help")) return { command: "help" };
 	const sub = argv[0];
 	if (sub === "list") {
 		if (argv.length !== 1) {
@@ -258,6 +260,7 @@ function parseUserArgs(argv: readonly string[]): ParsedArgs {
  * note says so).
  */
 function parseProviderArgs(argv: readonly string[]): ParsedArgs {
+	if (argv.includes("-h") || argv.includes("--help")) return { command: "help" };
 	const sub = argv[0];
 	if (sub !== "list" && sub !== "key" && sub !== "clear") {
 		throw usageError(

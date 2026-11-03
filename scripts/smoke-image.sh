@@ -258,3 +258,12 @@ for (const name of [
 
 console.log("image runtime layout OK");
 '
+
+# The sigrun bin symlink: present AND its target executable (tsc emits
+# dist/cli.js without the exec bit; the Dockerfile's RUN chmod covers
+# it — this catches a recurrence, since nothing else executes the bin).
+test -x /usr/local/bin/sigrun || {
+	echo "smoke-image: /usr/local/bin/sigrun is missing or not executable" >&2
+	exit 1
+}
+echo "sigrun bin symlink OK"

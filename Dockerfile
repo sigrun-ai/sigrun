@@ -163,7 +163,11 @@ COPY --from=build /app/package.json ./package.json
 # exposed at its stable exec path (symlink — one source of truth, the
 # image dir). COPY lands mode 0644, hence the chmod.
 COPY docker/*.sh scripts/smoke-image.sh /usr/local/share/sigrun/
-RUN chmod +x /usr/local/share/sigrun/*.sh \
+# chmod covers the .sh helpers AND the CLI's dist entry: tsc emits mode
+# 0664 (no exec bit), so the sigrun symlink target needs +x explicitly
+# or exec-form `sigrun <cmd>` fails EACCES (review catch; smoke-image.sh
+# asserts test -x on the symlink).
+RUN chmod +x /usr/local/share/sigrun/*.sh /app/dist/cli.js \
     && ln -s /usr/local/share/sigrun/entrypoint.sh /usr/local/bin/sigrun-entrypoint.sh \
     && ln -s /app/dist/cli.js /usr/local/bin/sigrun
 # The volume mount points (chart PVC at /data, cache emptyDir at

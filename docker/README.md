@@ -32,6 +32,11 @@ curl -X POST http://localhost:3000/v1/onboarding/claim \
 docker compose exec sigrun sigrun token create <name> --user <your-username>
 ```
 
+(The `sigrun` bin lands on the image's PATH from the next build on; on
+published images up to 0.6.1 use
+`docker compose exec sigrun node /app/dist/cli.js token create <name> --user <your-username>`
+instead.)
+
 The `sigrun` CLI inside the container operates on the same state roots
 as the running server (`/data`, `/cache`); run it via `docker compose
 exec` (or `docker exec`) so those env-derived paths match — a bare

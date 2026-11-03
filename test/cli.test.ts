@@ -556,6 +556,15 @@ describe("cliMain usage errors", () => {
 });
 
 describe("parseArgs: token/user subcommands (Task 7)", () => {
+	test("sub-command help: token/user/provider -h parses as help (the top-level shape)", () => {
+		// A stranger probes sub-commands too — `sigrun token --help` must
+		// print usage with exit 0, not a usage error (review minor 3).
+		expect(parseArgs(["token", "--help"])).toEqual({ command: "help" });
+		expect(parseArgs(["token", "create", "-h"])).toEqual({ command: "help" });
+		expect(parseArgs(["user", "-h"])).toEqual({ command: "help" });
+		expect(parseArgs(["provider", "list", "--help"])).toEqual({ command: "help" });
+	});
+
 	test("token create <name> --user <u>", () => {
 		expect(parseArgs(["token", "create", "laptop", "--user", "alice"])).toEqual({
 			command: "token",
