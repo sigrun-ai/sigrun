@@ -1,0 +1,713 @@
+/**
+ * The `core/jobs` view (tabs+skills Task 5): the jobs surface as a
+ * core blocks view — the JobsPanel's data, re-cast data-bound so the
+ * Task 4 bump contract (`job.changed → bumpAllInstances("core",
+ * "jobs")`) refreshes clients WITHOUT a new tree. Every row the tree
+ * shows binds `{$: ...}` against the `data()` document; nothing job-
+ * specific is inlined at render time (an inlined row could never
+ * refresh — `bumpAllInstances` advances `rev` only).
+ *
+ * - The SIDEBAR is a `collection` bound to `/jobs` — the caller-
+ *   visible rows (the shared `jobs-access.ts` rule, so this view and
+ *   `GET /v1/jobs` always agree): name, schedule summary, next run,
+ *   last outcome (JobsPanel parity). `onActivate` navigates
+ *   `{job: id}`; compact widths drill in through the page's
+ *   `selection` (Task 3).
+ * - MAIN holds the selected job: a summary, the runs (newest
+ *   {@link PAGE_SIZE}, *Load more* → `runCursor`) and the revisions
+ *   (paged the same by `revCursor`). A run with a conversation carries
+ *   a `navigate {target: {conversation}}` button (a LITERAL per page —
+ *   navigate params are JSON, never bindings, and data can never ride
+ *   into them). `?params={job, revision}` selects one revision: only
+ *   it shows a `diff` block of its spec JSON against the previous
+ *   revision's (the JobsPanel before/after rule, per-page literals for
+ *   the same navigate-params reason).
+ * - `runNow`/`resetState` need WRITE access: the buttons never render
+ *   for a read caller and the handlers answer the `{forbidden}` action
+ *   error (mirroring the routes' 403). Access `none` hides the job
+ *   (absent from the sidebar; an unknown or hidden `job` param renders
+ *   the list with the main empty state "Job not found"). An anonymous
+ *   principal has no view at all (`access: "none"` — the surface
+ *   route's 404).
+ */
+
+import type { Access, AccessPrincipal } from "@sigrun/shared/access";
+import type { JsonObject, Tree } from "@sigrun/shared/blocks";
+import type {
+	JobRevisionWire,
+	JobRunWire,
+	JobSchedule,
+	JobWire,
+} from "@sigrun/shared/jobs";
+import type {
+	ActionResult,
+	Principal,
+	SurfaceContext,
+	SurfaceDef,
+	SurfaceRenderResult,
+} from "../../extension.js";
+import type { JobsService } from "../../jobs/index.js";
+import { jobAccess } from "../jobs-access.js";
+
+/** The runs page size and the revisions page size (the plan refinement). */
+export const PAGE_SIZE = 25;
+
+/** One sidebar row (the JobsPanel summary line). */
+interface JobRow {
+	readonly id: string;
+	readonly name: string;
+	readonly scheduleSummary: string;
+	readonly nextRun: string | null;
+	readonly lastOutcome: string | null;
+	readonly lastError: string | null;
+}
+
+/** One run card row. */
+interface RunRow {
+	readonly id: string;
+	readonly at: string;
+	readonly version: number;
+	readonly manual: boolean;
+	readonly outcome: string;
+	readonly error: string | null;
+	readonly conversationId: number | null;
+}
+
+/** One revision card row (JobsPanel parity: version/changedAt/changedBy). */
+interface RevisionRow {
+	readonly version: number;
+	readonly changedAt: string;
+	readonly changedBy: string;
+	readonly enabled: boolean;
+}
+
+/** The selected job's header summary. */
+interface JobHeader {
+	readonly id: string;
+	readonly name: string;
+	readonly scheduleSummary: string;
+	readonly nextRun: string | null;
+	readonly lastOutcome: string | null;
+	readonly lastError: string | null;
+	readonly state: string;
+	readonly enabled: boolean;
+	readonly version: number;
+	readonly access: "read" | "write";
+}
+
+/** One selected revision's diff (per-page literals). */
+interface SelectedDiff {
+	readonly version: number;
+	readonly before: string;
+	readonly after: string;
+}
+
+/** The `/main` data branch for a selected job (mutable while built). */
+interface MainData {
+	found: boolean;
+	job: JobHeader | null;
+	runs: {
+		items: readonly RunRow[];
+		hasMore: boolean;
+		nextRunCursor: string | null;
+	};
+	revisions: {
+		items: readonly RevisionRow[];
+		hasMore: boolean;
+		nextRevCursor: number | null;
+	};
+}
+
+/** The whole data document the tree binds against. */
+interface JobsViewData {
+	readonly jobs: readonly JobRow[];
+	readonly main: MainData;
+}
+
+/** The view's params (spec §7.3: JSON, size-capped by the route). */
+interface JobsViewParams {
+	readonly job?: string;
+	readonly revision?: number;
+	readonly revCursor?: number;
+	readonly runCursor?: string;
+}
+
+/** A schedule's summary text (the JobsPanel rule, verbatim). */
+function scheduleSummary(schedule: JobSchedule): string {
+	if ("cron" in schedule) {
+		return schedule.timezone === undefined
+			? schedule.cron
+			: `${schedule.cron} (${schedule.timezone})`;
+	}
+	if ("every" in schedule) return `every ${schedule.every}`;
+	return `at ${schedule.at}`;
+}
+
+/** One job's sidebar/header summary fields. */
+function summaryFields(row: Omit<JobWire, "access">): {
+	readonly scheduleSummary: string;
+	readonly nextRun: string | null;
+	readonly lastOutcome: string | null;
+	readonly lastError: string | null;
+} {
+	return {
+		scheduleSummary: scheduleSummary(row.schedule),
+		nextRun: row.nextRun ?? null,
+		lastOutcome: row.lastRun?.outcome ?? null,
+		lastError: row.lastError ?? row.lastRun?.error ?? null,
+	};
+}
+
+/** Whether `payload` (an action's JSON argument) is a plain object. */
+function isObject(payload: unknown): payload is Record<string, unknown> {
+	return typeof payload === "object" && payload !== null && !Array.isArray(payload);
+}
+
+/** The `{jobId}` a runNow/resetState dispatch carries. */
+function jobIdOf(payload: unknown): string | undefined {
+	if (!isObject(payload)) return undefined;
+	const jobId = payload.jobId;
+	return typeof jobId === "string" && jobId !== "" ? jobId : undefined;
+}
+
+/** Parse the instance params (loose JSON → the typed shape; bad types drop). */
+function paramsOf(params: JsonObject): JobsViewParams {
+	const out: {
+		job?: string;
+		revision?: number;
+		revCursor?: number;
+		runCursor?: string;
+	} = {};
+	if (typeof params.job === "string" && params.job !== "") out.job = params.job;
+	if (Number.isInteger(params.revision) && (params.revision as number) > 0) {
+		out.revision = params.revision as number;
+	}
+	if (Number.isInteger(params.revCursor) && (params.revCursor as number) > 0) {
+		out.revCursor = params.revCursor as number;
+	}
+	if (typeof params.runCursor === "string" && params.runCursor !== "") {
+		out.runCursor = params.runCursor;
+	}
+	return out;
+}
+
+/** One run's stable cursor + row id (fireAt is the run's unique key). */
+function runKey(run: JobRunWire): string {
+	return `${run.jobId}:${run.fireAt}`;
+}
+
+/** The run row (the JobsPanel run line: when, version, manual, outcome, error). */
+function runRow(run: JobRunWire): RunRow {
+	return {
+		id: runKey(run),
+		at: run.fireAt,
+		version: run.version,
+		manual: run.manual,
+		outcome: run.outcome,
+		error: run.error ?? null,
+		conversationId: run.conversationId ?? null,
+	};
+}
+
+/** The revision row (version, changedAt, changedBy). */
+function revisionRow(revision: JobRevisionWire): RevisionRow {
+	return {
+		version: revision.version,
+		changedAt: revision.changedAt,
+		changedBy: revision.changedBy,
+		enabled: revision.enabled,
+	};
+}
+
+/** The pretty-printed spec JSON the diff panes show (the JobsPanel print). */
+function specJson(revision: JobRevisionWire): string {
+	return JSON.stringify(revision.spec, null, 2);
+}
+
+/**
+ * Build the view's data document for one caller. The `job` header,
+ * runs and revisions only resolve when the caller can SEE the job —
+ * otherwise `found: false` (the main empty state), exactly the list's
+ * absence rule.
+ */
+async function readData(
+	jobs: JobsService,
+	principal: AccessPrincipal,
+	params: JobsViewParams,
+): Promise<JobsViewData> {
+	const rows: JobRow[] = [];
+	let selected: (Omit<JobWire, "access"> & { access: Access }) | undefined;
+	for (const wire of await jobs.list()) {
+		const { access: _stamped, ...row } = wire;
+		const access = jobAccess(principal, row);
+		if (access === "none") continue;
+		rows.push({ id: row.id, name: row.name, ...summaryFields(row) });
+		if (params.job !== undefined && row.id === params.job) {
+			selected = { ...row, access };
+		}
+	}
+
+	const main: MainData = {
+		found: false,
+		job: null,
+		runs: { items: [], hasMore: false, nextRunCursor: null },
+		revisions: { items: [], hasMore: false, nextRevCursor: null },
+	};
+	if (selected === undefined) return { jobs: rows, main };
+
+	// Runs: newest first; the cursor IS a run key (opaque to clients).
+	// The service's list is bounded by the retention cap, so the view
+	// fetches it whole and pages in memory.
+	const allRuns = await jobs.runs(selected.id, Number.MAX_SAFE_INTEGER);
+	const runStart =
+		params.runCursor === undefined
+			? 0
+			: Math.max(
+					0,
+					allRuns.findIndex((run) => runKey(run) === params.runCursor),
+				);
+	const runPage = allRuns.slice(runStart, runStart + PAGE_SIZE);
+	const nextRun = allRuns[runStart + PAGE_SIZE];
+	main.runs = {
+		items: runPage.map(runRow),
+		hasMore: nextRun !== undefined,
+		nextRunCursor: nextRun === undefined ? null : runKey(nextRun),
+	};
+
+	// Revisions: newest first, paged by PAGE_SIZE with a plain offset cursor.
+	const allRevisions = await jobs.revisions(selected.id);
+	const revStart = params.revCursor ?? 0;
+	const revPage = allRevisions.slice(revStart, revStart + PAGE_SIZE);
+	const nextRev = revStart + PAGE_SIZE;
+	main.revisions = {
+		items: revPage.map(revisionRow),
+		hasMore: nextRev < allRevisions.length,
+		nextRevCursor: nextRev < allRevisions.length ? nextRev : null,
+	};
+
+	main.found = true;
+	main.job = {
+		id: selected.id,
+		name: selected.name,
+		...summaryFields(selected),
+		state: selected.state,
+		enabled: selected.enabled,
+		version: selected.version,
+		// `none` is impossible here (selected came from the visible list);
+		// the fallback only satisfies the narrowing.
+		access: selected.access === "none" ? "read" : selected.access,
+	};
+	return { jobs: rows, main };
+}
+
+/** The one revision selected for the diff, plus its previous (baseline). */
+function selectDiff(
+	revisions: readonly JobRevisionWire[],
+	page: readonly JobRevisionWire[],
+	version: number | undefined,
+): SelectedDiff | undefined {
+	if (version === undefined) return undefined;
+	const index = page.findIndex((revision) => revision.version === version);
+	if (index === -1) return undefined;
+	const selected = page[index];
+	const previous = page[index + 1] ?? revisions[revisions.indexOf(selected) + 1];
+	if (previous === undefined) return undefined;
+	return { version, before: specJson(previous), after: specJson(selected) };
+}
+
+/** The view surface (`SurfaceDef<"view">`), built over the jobs service. */
+export function createJobsView(deps: {
+	jobs: JobsService;
+	now(): Date;
+	/** The directory-aware principal (groups included), wired in
+	 *  src/server/index.ts as `(p) => accessPrincipalOf(p,
+	 *  opened.identity.users)` — the same projection the routes use. */
+	accessPrincipal(principal: Principal): AccessPrincipal;
+}): SurfaceDef<"view"> {
+	const { jobs } = deps;
+
+	/** The caller's directory-aware principal (undefined user = anonymous). */
+	const callerOf = (ctx: SurfaceContext): AccessPrincipal | undefined => {
+		if (ctx.principal.user === undefined) return undefined;
+		return deps.accessPrincipal(ctx.principal);
+	};
+
+	/** The tree's shared, data-bound skeleton (params/access independent). */
+	const baseTree = (): {
+		v: 1;
+		root: {
+			type: "page";
+			id: "jobs-root";
+			title: "Jobs";
+			sidebar: Record<string, unknown>[];
+			main: Record<string, unknown>[];
+		};
+	} => ({
+		v: 1,
+		root: {
+			type: "page",
+			id: "jobs-root",
+			title: "Jobs",
+			sidebar: [
+				{
+					type: "collection",
+					id: "jobs",
+					display: "list",
+					items: { $: "/jobs" },
+					onActivate: { type: "navigate", params: {} },
+					item: {
+						title: { $: "./name" },
+						subtitle: { $: "./scheduleSummary" },
+						meta: [
+							{ text: { $: "./nextRun" }, icon: "clock" },
+							{ text: { $: "./lastOutcome" }, icon: "info" },
+						],
+					},
+				},
+			],
+			main: [
+				{
+					type: "collection",
+					id: "main-empty",
+					display: "list",
+					items: { $: "/main/runs/items" },
+					item: { title: { $: "./at" } },
+				},
+			],
+		},
+	});
+
+	/** The anonymous/none-access tree (an empty page; the route 404s it). */
+	const noneTree = (): Tree =>
+		// SAFETY: the tree object is a JSON literal built here; `Tree`'s
+		// interfaces lack the index signature the wire type requires, so
+		// the cast only restores that erased identity.
+		({
+			v: 1,
+			root: {
+				type: "page",
+				id: "jobs-root",
+				title: "Jobs",
+				main: [{ type: "markdown", text: "Sign in to see jobs." }],
+			},
+		}) as unknown as Tree;
+
+	/** The full tree for one resolved page (params + access + diff). */
+	const buildTree = (
+		params: JobsViewParams,
+		data: JobsViewData,
+		diff: SelectedDiff | undefined,
+	): Tree => {
+		const tree = baseTree();
+		const sidebarCollection = tree.root.sidebar[0] as Record<string, unknown>;
+		sidebarCollection.onActivate = {
+			type: "navigate",
+			...(params.job === undefined ? {} : { params: { job: params.job } }),
+		};
+		// Blocks are built as loose JSON objects (the validator owns the
+		// wire shape; the service validates every tree before serving).
+		const main: Record<string, unknown>[] = [];
+		if (data.main.found && data.main.job !== null) {
+			const job = data.main.job;
+			const runButtons: Record<string, unknown>[] = data.main.runs.items
+				.filter((run) => run.conversationId !== null)
+				.map((run) => ({
+					id: `run-open-${run.id}`,
+					label: "Conversation",
+					icon: "link",
+					action: {
+						type: "navigate",
+						target: { conversation: run.conversationId as number },
+					},
+				}));
+			const writeActions: Record<string, unknown>[] =
+				job.access === "write"
+					? [
+							{
+								id: "run-now",
+								label: "Run now",
+								icon: "refresh",
+								action: { type: "submit", name: "runNow" },
+							},
+							{
+								id: "reset-state",
+								label: "Reset state",
+								icon: "delete",
+								action: {
+									type: "submit",
+									name: "resetState",
+									confirm: {
+										title: "Reset state?",
+										body: "Reset this job's state? Its state folder is emptied.",
+									},
+								},
+							},
+						]
+					: [];
+			const revNavigate =
+				params.revision === undefined
+					? { type: "navigate", params: { job: job.id } }
+					: {
+							type: "navigate",
+							params: { job: job.id, revision: params.revision },
+						};
+			main.push(
+				{
+					type: "section",
+					id: "job-summary",
+					title: { $: "/main/job/name" },
+					children: [
+						{
+							type: "fields",
+							rows: [
+								{ label: "Schedule", value: { $: "/main/job/scheduleSummary" } },
+								{ label: "Next run", value: { $: "/main/job/nextRun" } },
+								{ label: "Last outcome", value: { $: "/main/job/lastOutcome" } },
+								{ label: "Last error", value: { $: "/main/job/lastError" } },
+								{ label: "State", value: { $: "/main/job/state" } },
+								{ label: "Version", value: { $: "/main/job/version" } },
+							],
+						},
+					],
+					...(writeActions.length === 0 ? {} : { actions: writeActions }),
+				},
+				{
+					type: "section",
+					id: "job-runs",
+					title: "Runs",
+					children: [
+						{
+							type: "collection",
+							id: "runs",
+							display: "list",
+							items: { $: "/main/runs/items" },
+							item: {
+								title: { $: "./at" },
+								subtitle: { $: "./outcome" },
+								body: { $: "./error" },
+								badges: [{ text: { $: "./manual" }, tone: "neutral" }],
+								...(runButtons.length === 0 ? {} : { actions: runButtons }),
+							},
+						},
+					],
+					...(data.main.runs.hasMore && data.main.runs.nextRunCursor !== null
+						? {
+								actions: [
+									{
+										id: "runs-more",
+										label: "Load more",
+										icon: "more",
+										action: {
+											type: "navigate",
+											params: {
+												job: job.id,
+												runCursor: data.main.runs.nextRunCursor,
+											},
+										},
+									},
+								],
+							}
+						: {}),
+				},
+				{
+					type: "section",
+					id: "job-revisions",
+					title: "Revisions",
+					children: [
+						{
+							type: "collection",
+							id: "revisions",
+							display: "list",
+							items: { $: "/main/revisions/items" },
+							onActivate: revNavigate,
+							item: {
+								title: { $: "./version" },
+								subtitle: { $: "./changedBy" },
+								meta: [{ time: { $: "./changedAt" }, format: "relative" }],
+							},
+						},
+					],
+					...(data.main.revisions.hasMore &&
+					data.main.revisions.nextRevCursor !== null
+						? {
+								actions: [
+									{
+										id: "revisions-more",
+										label: "Load more",
+										icon: "more",
+										action: {
+											type: "navigate",
+											params: {
+												job: job.id,
+												revCursor: data.main.revisions.nextRevCursor,
+											},
+										},
+									},
+								],
+							}
+						: {}),
+				},
+			);
+			if (diff !== undefined) {
+				main.push({
+					type: "section",
+					id: "revision-diff",
+					title: `Revision ${diff.version}`,
+					children: [
+						{
+							type: "diff",
+							id: "diff",
+							before: diff.before,
+							after: diff.after,
+							lang: "json",
+						},
+					],
+				});
+			}
+		} else {
+			main.push({
+				type: "section",
+				id: "job-empty",
+				children: [{ type: "markdown", text: "Job not found" }],
+			});
+		}
+		tree.root.main = main;
+		// SAFETY: the tree object is a JSON literal built here; `Tree`'s
+		// interfaces lack the index signature the wire type requires, so
+		// the cast only restores that erased identity.
+		return {
+			...tree,
+			root: {
+				...tree.root,
+				selection: {
+					selected: params.job !== undefined,
+					back: {},
+				},
+				...(data.main.found
+					? {}
+					: {
+							empty: {
+								icon: "clock",
+								title: "Job not found",
+							},
+						}),
+			},
+		} as unknown as Tree;
+	};
+
+	/** Resolve one caller's access to one job id for an action. */
+	const actionAccess = async (
+		ctx: SurfaceContext,
+		jobId: string,
+	): Promise<{ row: Omit<JobWire, "access">; access: Access } | { error: ActionResult }> => {
+		const caller = callerOf(ctx);
+		if (caller === undefined) {
+			return { error: { ok: false, error: { message: "forbidden" } } };
+		}
+		const wire = await jobs.get(jobId);
+		if (wire === undefined) {
+			return { error: { ok: false, error: { message: "job_not_found" } } };
+		}
+		const { access: _stamped, ...row } = wire;
+		const access = jobAccess(caller, row);
+		if (access === "none") {
+			return { error: { ok: false, error: { message: "job_not_found" } } };
+		}
+		if (access === "read") {
+			return { error: { ok: false, error: { message: "forbidden" } } };
+		}
+		return { row, access };
+	};
+
+	return {
+		id: "jobs",
+		title: "Jobs",
+		icon: "clock",
+		placement: "view",
+		// A principal-owned surface (§7.3): the principal folds into the
+		// instance identity so two users' views are two instances.
+		instanceKey: (params, principal) =>
+			JSON.stringify([principal.user ?? "", params]),
+		render: async (ctx: SurfaceContext) => {
+			const caller = callerOf(ctx);
+			if (caller === undefined) {
+				return { tree: noneTree(), data: {}, access: "none" };
+			}
+			const params = paramsOf(ctx.params);
+			const data = await readData(jobs, caller, params);
+			const revisions =
+				params.job === undefined || !data.main.found
+					? []
+					: await jobs.revisions(params.job);
+			const revStart = params.revCursor ?? 0;
+			const page = revisions.slice(revStart, revStart + PAGE_SIZE);
+			const diff = selectDiff(revisions, page, params.revision);
+			return {
+				tree: buildTree(params, data, diff),
+				// SAFETY: the data document is a JSON mirror (every field a
+				// literal); the interface lacks the index signature JsonObject
+				// requires, so the cast only restores that erased identity.
+				data: data as unknown as SurfaceRenderResult["data"],
+				// The surface access is ALWAYS "write" for an identified
+				// caller: the §6.3 action route 403s read-verdict surfaces
+				// outright, but this view's action rule is PER JOB (a caller
+				// may write one listed job and only read another) — the
+				// handlers enforce job-level write themselves. Read hiding
+				// is tree-level (the buttons never render), like the §6.5
+				// read rule's client half.
+				access: "write",
+			};
+		},
+		data: async (ctx: SurfaceContext) => {
+			const caller = callerOf(ctx);
+			if (caller === undefined) return { data: {}, access: "none" };
+			const params = paramsOf(ctx.params);
+			const data = await readData(jobs, caller, params);
+			return {
+				// SAFETY: same JSON-mirror cast as `render`'s (the comment there).
+				data: data as unknown as SurfaceRenderResult["data"],
+				access: "write",
+			};
+		},
+		actions: {
+			runNow: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const jobId = jobIdOf(payload);
+				if (jobId === undefined) {
+					return { ok: false, error: { message: "runNow expects {jobId}" } };
+				}
+				const resolved = await actionAccess(ctx, jobId);
+				if ("error" in resolved) return resolved.error;
+				const fired = await jobs.runNow(jobId);
+				return {
+					ok: true,
+					toast: `Run now: ${resolved.row.name} (${fired.outcome})`,
+				};
+			},
+			resetState: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const jobId = jobIdOf(payload);
+				if (jobId === undefined) {
+					return { ok: false, error: { message: "resetState expects {jobId}" } };
+				}
+				const resolved = await actionAccess(ctx, jobId);
+				if ("error" in resolved) return resolved.error;
+				try {
+					await jobs.resetState(jobId);
+				} catch (error) {
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return { ok: true, toast: `Reset state: ${resolved.row.name}` };
+			},
+		},
+	};
+}

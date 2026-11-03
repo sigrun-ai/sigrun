@@ -44,6 +44,8 @@ import type { ServerContext } from "./context.js";
 import { SseRegistry } from "./sse-registry.js";
 import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
+import { createJobsView } from "./core-views/jobs.js";
+import { accessPrincipalOf } from "./auth/access-principal.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
 import { registerAdminRoutes } from "./routes/admin.js";
@@ -334,12 +336,20 @@ export async function createServer(
 			),
 		},
 	]);
-	// The core-owned views (tabs+skills Task 4): the reserved `core`
-	// slug's `SurfaceDef<"view">` list — the built-in Jobs (Task 5) and
-	// Skills (Task 12) views. Tasks 5/12 supply their defs here; until
-	// then the list is EMPTY and `/v1/meta` + `/v1/extensions` carry no
-	// `coreViews` block.
-	surfacesService.attachCoreViews([]);
+	// The core-owned views (tabs+skills Tasks 4/5): the reserved `core`
+	// slug's `SurfaceDef<"view">` list — the built-in Jobs view (Task 5;
+	// Task 12 adds the Skills view). The jobs view shares the routes'
+	// access rule (`jobs-access.ts`) and the routes' principal
+	// projection (accessPrincipalOf over the live directory), so the
+	// view and `GET /v1/jobs` always agree on which rows a caller sees.
+	surfacesService.attachCoreViews([
+		createJobsView({
+			jobs: opened.jobs,
+			now: () => new Date(),
+			accessPrincipal: (principal) =>
+				accessPrincipalOf(principal, opened.identity.users),
+		}),
+	]);
 	app.decorate("surfaces", surfacesService);
 	// The chat-block change seam (UI-blocks U5 Task 2, spec §8.2):
 	// show_blocks/update_blocks AND the user-edit route publish
@@ -409,6 +419,16 @@ export async function createServer(
 	// the first event) and never stopped — the surface rides the server
 	// lifetime, like the routes above.
 	startNotifications(ctx);
+	// The jobs view's freshness (tabs+skills Task 5): every `job.changed`
+	// host event bumps every rendered `core/jobs` instance's rev through
+	// the bus's bounded side lane (the hub contract — no work inline);
+	// watching clients refetch the data document (the tree is static).
+	opened.events.subscribe((event) => {
+		if (event.type !== "job.changed") return;
+		void opened.eventBus.runBounded("core/jobs job.changed", () => {
+			surfacesService.bumpAllInstances("core", "jobs");
+		});
+	});
 	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
 	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
 	// env service token, the setup gate, and method resolution stamp

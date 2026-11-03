@@ -7,8 +7,10 @@
  *
  * - `GET /v1/ext/core/surfaces/<id>` renders an attached core view;
  * - `GET /v1/meta` and `GET /v1/extensions` both carry `coreViews`
- *   (id/title/icon), and `extensions[]` carries NO `core` row (the
- *   health dot is unaffected — core views are not extensions);
+ *   (id/title/icon) — since Task 5 the built-in jobs view attaches at
+ *   `createServer` time and heads the list — and `extensions[]`
+ *   carries NO `core` row (the health dot is unaffected — core views
+ *   are not extensions);
  * - `bumpAllInstances("core", id)` after two instances were rendered
  *   (params `{a:1}`, `{a:2}`) bumps BOTH revs and publishes two
  *   `surface.changed` events;
@@ -24,7 +26,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import type { JsonObject, Tree } from "@sigrun/shared/blocks";
+import type { Tree } from "@sigrun/shared/blocks";
 import type { SurfaceDef } from "../src/extension.js";
 import type { Principal } from "../src/server/auth/principal.js";
 import type {
@@ -149,7 +151,7 @@ describe("core views (tabs+skills Task 4)", () => {
 		});
 	});
 
-	test("GET /v1/meta carries coreViews; extensions[] has no core row", async () => {
+	test("GET /v1/meta carries coreViews (the built-in jobs view + the fixture); extensions[] has no core row", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, { method: "GET", url: "/v1/meta", token: aliceToken });
 		expect(result.status).toBe(200);
@@ -157,7 +159,10 @@ describe("core views (tabs+skills Task 4)", () => {
 			coreViews?: { id: string; title: string; icon: string }[];
 			extensions: { name: string }[];
 		};
+		// createServer attaches the built-in jobs view (Task 5); the
+		// test fixture attaches second (attachCoreViews order).
 		expect(meta.coreViews).toEqual([
+			{ id: "jobs", title: "Jobs", icon: "clock" },
 			{ id: "fixture", title: "Fixture view", icon: "board" },
 		]);
 		expect(meta.extensions.some((one) => one.name === "core")).toBe(false);
@@ -176,12 +181,13 @@ describe("core views (tabs+skills Task 4)", () => {
 			extensions: { name: string }[];
 		};
 		expect(body.coreViews).toEqual([
+			{ id: "jobs", title: "Jobs", icon: "clock" },
 			{ id: "fixture", title: "Fixture view", icon: "board" },
 		]);
 		expect(body.extensions.some((one) => one.name === "core")).toBe(false);
 	});
 
-	test("no coreViews block appears when no core views are attached", async () => {
+	test("a fresh server carries exactly the built-in core views (the jobs view)", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-core-views-empty-"));
 		const configDir = join(dir, "config");
 		const config = loadConfig({
@@ -208,10 +214,16 @@ describe("core views (tabs+skills Task 4)", () => {
 		});
 		const meta = await call(app, { method: "GET", url: "/v1/meta", token });
 		expect(meta.status).toBe(200);
-		expect("coreViews" in meta.body).toBe(false);
+		// Task 5 made the empty list history: a fresh server lists the
+		// built-in jobs view (Task 12's skills view lands beside it).
+		expect(meta.body.coreViews).toEqual([
+			{ id: "jobs", title: "Jobs", icon: "clock" },
+		]);
 		const list = await call(app, { method: "GET", url: "/v1/extensions", token });
 		expect(list.status).toBe(200);
-		expect("coreViews" in list.body).toBe(false);
+		expect(list.body.coreViews).toEqual([
+			{ id: "jobs", title: "Jobs", icon: "clock" },
+		]);
 	});
 });
 

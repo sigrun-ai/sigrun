@@ -3,14 +3,15 @@
  * Task 3's JobsService.
  *
  * ACCESS (§5.9, the conversations rule applied to job records): every
- * route resolves `accessOf(principal, {owner, sharing})` against the
- * job RECORD — hidden is 404 `job_not_found` on every `:id` route and
- * absence from the list (no 403 tell); a read-only caller on a write
- * route gets 403. The owner is server-stamped at create
- * (`principal.user`; a body-carried `owner` is stripped) and moves only
- * through the transfer path; `sharing` is the PATCH share surface
- * (mirrored onto the record from the merged spec, exactly like a
- * declared job).
+ * route resolves the shared rule (`jobs-access.ts` — moved out of this
+ * module for tabs+skills Task 5 so the `core/jobs` view resolves the
+ * SAME verdicts) against the job RECORD — hidden is 404
+ * `job_not_found` on every `:id` route and absence from the list (no
+ * 403 tell); a read-only caller on a write route gets 403. The owner is
+ * server-stamped at create (`principal.user`; a body-carried `owner` is
+ * stripped) and moves only through the transfer path; `sharing` is the
+ * PATCH share surface (mirrored onto the record from the merged spec,
+ * exactly like a declared job).
  *
  * The HISTORY routes (`runs`/`revisions`) answer for a RETIRED job too,
  * until retention trims its records — access is evaluated against the
@@ -23,26 +24,16 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { accessOf, type Access, type Sharing } from "@sigrun/shared/access";
 import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
 import { accessPrincipalOf } from "../auth/access-principal.js";
 import type { ServerContext } from "../context.js";
+import {
+	jobAccess,
+	resolveJob,
+	type ResolvedJob,
+} from "../jobs-access.js";
 import { JobDeclaredError, JobNotFoundError } from "../../jobs/index.js";
 import { validateJobSpec } from "../../jobs/spec.js";
-
-/** The §5.9 resource form ({owner?, sharing?}) of a job row. */
-function resourceOf(row: { owner?: string; sharing?: Sharing }) {
-	return {
-		...(row.owner === undefined ? {} : { owner: row.owner }),
-		...(row.sharing === undefined ? {} : { sharing: row.sharing }),
-	};
-}
-
-/** One job resolved for the access rule: the row + the caller's access. */
-interface ResolvedJob {
-	readonly row: Omit<JobWire, "access">;
-	readonly access: Access;
-}
 
 /**
  * The shared `:id` error mapping: unknown/hidden → 404 `job_not_found`;
@@ -78,41 +69,16 @@ export function registerJobRoutes(
 		accessPrincipalOf(request.principal, opened.identity.users);
 
 	/**
-	 * Resolve one job for the access rule: the live record's row when it
-	 * exists; for a RETIRED job (the history routes' case) the newest
-	 * revision's shape. `undefined` only when neither exists (unknown id).
+	 * Resolve one job for the access rule (the shared seam): the live
+	 * record's row when it exists; for a RETIRED job (the history
+	 * routes' case) the newest revision's shape. `undefined` only when
+	 * neither exists (unknown id).
 	 */
 	const resolve = async (
 		request: FastifyRequest,
 		id: string,
-	): Promise<ResolvedJob | undefined> => {
-		const principal = accessPrincipal(request);
-		const wire = await jobs.get(id);
-		if (wire !== undefined) {
-			const { access: _ignored, ...row } = wire;
-			return { row, access: accessOf(principal, resourceOf(row)) };
-		}
-		// Retired: the newest revision answers until retention trims it.
-		const [newest] = await jobs.revisions(id);
-		if (newest === undefined) return undefined;
-		const row: Omit<JobWire, "state" | "access"> = {
-			id,
-			name: newest.spec.name,
-			source: newest.source,
-			...(newest.owner === undefined ? {} : { owner: newest.owner }),
-			...(newest.sharing === undefined ? {} : { sharing: newest.sharing }),
-			schedule: newest.spec.schedule,
-			action: newest.spec.action,
-			enabled: newest.enabled,
-			version: newest.version,
-		};
-		return {
-			// The retired row's status went with the record; the nudge only
-			// needs identity + definition (clients refetch the list).
-			row: { ...row, state: "disabled" },
-			access: accessOf(principal, resourceOf(row)),
-		};
-	};
+	): Promise<ResolvedJob | undefined> =>
+		await resolveJob(jobs, accessPrincipal(request), id);
 
 	/** The read guard: unknown/hidden → the 404; the row otherwise. */
 	const visible = async (
@@ -133,7 +99,7 @@ export function registerJobRoutes(
 		const principal = accessPrincipal(request);
 		const visibleJobs: JobWire[] = [];
 		for (const row of await jobs.list()) {
-			const access = accessOf(principal, resourceOf(row));
+			const access = jobAccess(principal, row);
 			if (access === "none") continue;
 			visibleJobs.push({ ...row, access });
 		}
@@ -147,7 +113,7 @@ export function registerJobRoutes(
 		if (wire === undefined) {
 			return await deny(reply, "job_not_found");
 		}
-		const access = accessOf(accessPrincipal(request), resourceOf(wire));
+		const access = jobAccess(accessPrincipal(request), wire);
 		if (access === "none") {
 			return await deny(reply, "job_not_found");
 		}
@@ -253,7 +219,7 @@ export function registerJobRoutes(
 		if (wire === undefined) {
 			return await deny(reply, "job_not_found");
 		}
-		const access = accessOf(accessPrincipal(request), resourceOf(wire));
+		const access = jobAccess(accessPrincipal(request), wire);
 		if (access === "none") {
 			return await deny(reply, "job_not_found");
 		}
@@ -284,7 +250,7 @@ export function registerJobRoutes(
 		if (wire === undefined) {
 			return await deny(reply, "job_not_found");
 		}
-		const access = accessOf(accessPrincipal(request), resourceOf(wire));
+		const access = jobAccess(accessPrincipal(request), wire);
 		if (access === "none") {
 			return await deny(reply, "job_not_found");
 		}
