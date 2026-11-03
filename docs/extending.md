@@ -807,6 +807,33 @@ export default function createAcmeWebui() {
   factory result carrying `webuiBundles` and no `extension` is a valid
   contributor — identified by its `name` field.
 
+## Core views in `GET /v1/extensions` and `GET /v1/meta`
+
+Core itself attaches view surfaces — the Jobs and Skills tabs — under
+the **reserved `core` slug**. They render, refresh, and answer actions
+through the same surface machinery as your views, but they are not
+extensions: they have no outcome row, so the extensions health dot is
+unaffected, and there is no `core` row in `extensions[]`. Instead both
+`GET /v1/extensions` and `GET /v1/meta` list them under
+**`coreViews`**, one `CoreViewInfo` per view:
+
+```ts
+interface CoreViewInfo {
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+	readonly refreshMs?: number; // sparse — absent without a cadence
+}
+```
+
+It mirrors the view half of `ExtensionSurfaceInfo` minus `placement`
+(core views are always `view`) and `sharedData` (a render-time concern,
+never list-time). Channels list core views FIRST, ahead of the
+extension views, and the tab shell registers them as `#/ext/core/<id>`
+routes; the meta copy exists so the rail never fetches
+`/v1/extensions` separately. `coreViews` is **absent when no core
+views attach** — tolerate its absence like `listener`'s.
+
 ## The listener block in `GET /v1/meta`
 
 `GET /v1/meta` carries a `listener` object — `{host, port, families}` —
@@ -1288,6 +1315,25 @@ the change feed, pins), and the built-in curator extension drives it.
 When a user is deleted their learned skills and curation state are
 **removed with them** — never transferred.
 
+### The change feed is git history
+
+The store's change feed (`host.curation.skills(user).feed(limit,
+before?)`, one `CurationFeedEntry` per change) is backed by the user's
+private **git history repo** — a local-only repo with no upstream.
+On the wire:
+
+- **`id`, `before`, and `after` are commit SHAs** in that repo (`id`
+  the change's own commit; `before`/`after` its parents where they
+  exist) — feed pagination and undo both key off them.
+- **`actor` includes `"outside"`** in addition to `"curator"`,
+  `"agent"`, and `"user"`: catch-up commits the store itself did not
+  author (files edited outside the store, folded in when the Skills tab
+  opens or a run settles) record `outside` so the audit trail admits
+  what it cannot attribute.
+
+The Skills tab renders this history per skill — 25 entries per page,
+per-file diffs, and one-action restore.
+
 ## Prompt sections: six keys are reserved
 
 pi-durable composes the system message from **sections** — a key plus
@@ -1341,14 +1387,18 @@ never declare a section yourself:
 ## Skills
 
 The reserved `skills` section (owned by the core `sigrun.skills`
-extension) lists skills from THREE roots, first-wins in this order:
+extension) lists skills from the conversation's roots, first-wins in
+this order:
 
 1. **the workspace** — `skills/<dir>/SKILL.md` under the conversation's
    workspace;
-2. **the user dir** — `<configDir>/skills/<dir>/SKILL.md`, your
+2. **the owner's learned root** — `<dataDir>/users/<owner>/skills/`,
+   the curator's per-user store (an ownerless conversation has no
+   learned root);
+3. **the user dir** — `<configDir>/skills/<dir>/SKILL.md`, your
    deployment-wide skills (a named config-root entry; no extension
    involved);
-3. **package roots** — skills your package ships, in `extensions[]`
+4. **package roots** — skills your package ships, in `extensions[]`
    install order.
 
 A name present in several roots keeps the higher root's copy and logs
@@ -1724,6 +1774,18 @@ ambient envelope carries no data document, so every value in the tree
 is a literal — a binding is allowed only inside a collection's item
 template (`bind("./label")` against a literal `items` array).
 
+### `page.selection`: compact drill-in
+
+A `page` may carry **`selection: {selected, back}`** — a
+server-declared, presentation-only list-first drill-in for compact
+widths. On a compact width, `selected: false` shows the sidebar list
+full width (main hidden); `selected: true` shows main with a back arrow
+that navigates with `back` as its params. Wide widths are unchanged —
+sidebar and main sit side by side regardless of `selected`. `toText`
+ignores it (sidebar then main, as today). The core Jobs/Skills views
+use it: pick a row on the list, the detail fills the screen, the back
+arrow returns.
+
 ### The block catalog
 
 One builder per block. Every example below is a complete tree.
@@ -1950,6 +2012,12 @@ drag as it happens is right, but interrupting the agent with a turn per
 drag is not. Set `turn: true` on a `move` or `edit` only when each one
 needs an immediate reply. `turn` is valid only in the `chat` placement;
 validation rejects it anywhere else.
+
+An action handler may also return **`navigate`** on its accepted
+`ActionResult` — the channel routes it through the normal navigation
+paths. Channel gap (2026-11): the webui applies an action-result
+`navigate`; the TUI does not yet — do not make an action's effect
+depend on it.
 
 ### Access and sharedData
 
