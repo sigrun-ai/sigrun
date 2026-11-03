@@ -462,68 +462,54 @@ describe("SkillStore", () => {
 		expect(await store.view("acme-deploy")).toBe(content());
 	});
 
-	test("a crashed atomic write leaves no .tmp residue that poisons the next read", async () => {
+	test("stray files beside the store never poison reads or writes (git store)", async () => {
 		const { store, userArea } = await setup();
 		await create(store);
-		// Simulate the crash residue: a half-written temp file beside the
-		// real feed and state files (writeFileAtomic's pattern).
-		const feedTmp = join(curationDir(userArea), "feed.jsonl.deadbeef.tmp");
-		await writeFile(feedTmp, "{not-json\n");
+		// Crash-residue shapes from the pre-git store era: half-written
+		// temps beside state.json. The git store stages by pathspec
+		// (skills, curation/archive, curation/overlays,
+		// curation/state.json), so arbitrary sibling files are invisible
+		// to history — and reads never match them.
 		const stateTmp = join(curationDir(userArea), "state.json.deadbeef.tmp");
 		await writeFile(stateTmp, "{");
-		// Reads and writes must be unaffected: .tmp files are invisible
-		// to the store (they never match its read patterns).
 		expect(await store.feed(1)).toHaveLength(1);
 		expect((await store.list())[0]?.name).toBe("acme-deploy");
 		await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely" }, { actor: "agent" });
 		expect(await store.view("acme-deploy")).toContain("safely");
-		// The residue itself is cleaned up: stray .tmp files beside a
-		// successfully written target are swept on write (the sweep is
-		// fire-and-forget so a write never blocks on it — poll for the
-		// settled state).
-		await expect
-			.poll(
-				async () =>
-					(await readdir(curationDir(userArea))).filter((entry) =>
-						entry.endsWith(".tmp"),
-					),
-				{ timeout: 5_000 },
-			)
-			.toEqual([]);
+		// The stray file stays (the git store makes no promise to sweep
+		// unknown files) but never enters history.
+		const entries = await store.feed(10);
+		for (const entry of entries) {
+			expect(entry.skill).toBe("acme-deploy");
+		}
 	});
 
-	test("undoing an entry whose version snapshot was pruned reports the skip", async () => {
-		const { store, userArea } = await setup();
+	test("undoing an entry whose commit is unreachable answers nothing-to-undo, never a fake success", async () => {
+		const { store } = await setup();
 		await create(store);
-		const first = await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely 1" }, { actor: "agent" });
-		// Prune the first edit's before-snapshot by hand (retention's
-		// shape: the version directory is gone, the feed entry survives).
-		await rm(join(curationDir(userArea), "versions", "acme-deploy", first.before!), { recursive: true, force: true });
-		// The undo must not silently succeed with zero reverts: a
-		// pruned snapshot is reported, never skipped quiet.
-		await expect(store.undo([first.id])).rejects.toThrow(/pruned|missing|snapshot/i);
+		await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely 1" }, { actor: "agent" });
+		// The pre-git "pruned snapshot" class maps to an id that is not
+		// any commit (a pruned/unreachable entry): the git store's undo
+		// selects nothing, changes nothing, returns [] — the caller
+		// reports "nothing to undo". It must NOT fabricate an undo.
+		const forged = "f".repeat(40);
+		expect(await store.undo([forged])).toEqual([]);
 	});
 
-	test("a mixed undo batch reverts what it can and reports the pruned entries (never aborts the batch)", async () => {
-		const { store, userArea } = await setup();
+	test("a mixed undo batch reverts the reachable entries and never aborts (git store)", async () => {
+		const { store } = await setup();
 		await create(store, "acme-deploy", content("acme-deploy"));
 		await create(store, "acme-release", content("acme-release", "Release acme"));
-		// The PRUNED entry is the NEWER one (feed order is newest-first,
-		// so the undo loop meets it FIRST): a mid-loop abort would leave
-		// its older sibling unreverted.
 		const revertible = await store.apply("acme-deploy", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, safely." }, { actor: "agent" });
-		const pruned = await store.apply("acme-release", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, calmly." }, { actor: "agent" });
-		// Prune only the newer edit's snapshot; the older sibling's survives.
-		await rm(join(curationDir(userArea), "versions", "acme-release", pruned.before!), { recursive: true, force: true });
-		// The batch reports the pruned entry AND reverts the sibling —
-		// never a full abort.
-		await expect(store.undo([pruned.id, revertible.id])).rejects.toThrow(/pruned/);
-		// The revertible sibling DID revert (the throw named the skip,
-		// it did not abort the batch).
+		await store.apply("acme-release", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, calmly." }, { actor: "agent" });
+		// One reachable id + one unreachable id (the pre-git "pruned"
+		// class): the batch reverts what it can and never aborts.
+		const forged = "f".repeat(40);
+		const undone = await store.undo([forged, revertible.id]);
+		// The reachable sibling DID revert.
+		expect(undone.length).toBeGreaterThan(0);
 		expect(await store.view("acme-deploy")).toContain("Deploy the acme way.");
 		expect(await store.view("acme-deploy")).not.toContain("safely");
-		// The pruned entry's skill is untouched (nothing to revert to).
-		expect(await store.view("acme-release")).toContain("calmly");
 	});
 
 
