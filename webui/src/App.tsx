@@ -299,7 +299,11 @@ function ChatCenter(props: {
  *  the surface with new params (a new hash entry, so back/forward
  *  walks them). */
 type Route =
-	| { readonly kind: "chat" }
+	| {
+			readonly kind: "chat";
+			/** The `#/c/<id>` deep link's conversation id (absent = bare chat). */
+			readonly conversationId?: number;
+		}
 	| { readonly kind: "settings"; readonly section?: string }
 	| {
 			readonly kind: "ext";
@@ -323,6 +327,15 @@ export function parseHash(hash: string): Route {
 		} catch {
 			return { kind: "chat" };
 		}
+	}
+	// `#/c/<id>` (a conversation deep link — the back/forward entries
+	// the sidebar select writes) carries a NUMERIC id; anything else
+	// under /c is garbage → the plain chat default.
+	const chatMatch = /^\/c(?:\/(\d+))?\/?$/.exec(path);
+	if (chatMatch !== null) {
+		const id = chatMatch[1];
+		if (id === undefined) return { kind: "chat" };
+		return { kind: "chat", conversationId: Number(id) };
 	}
 	const match = /^\/ext\/([^/]+)\/([^/?]+)(?:\?(.*))?$/.exec(path);
 	if (match === null) return { kind: "chat" };
@@ -357,7 +370,7 @@ function parseExtParams(paramsRaw: string | undefined): JsonObject {
 			} catch {
 				// Malformed params → the empty object (the surface renders
 				// its default instance; the shell never refuses the route).
-				}
+			}
 		}
 	}
 	return params;
@@ -365,7 +378,11 @@ function parseExtParams(paramsRaw: string | undefined): JsonObject {
 
 /** Serialize a route to the hash (the back/forward history entry). */
 export function routeHash(route: Route): string {
-	if (route.kind === "chat") return "#/c";
+	if (route.kind === "chat") {
+		return route.conversationId === undefined
+			? "#/c"
+			: `#/c/${route.conversationId}`;
+	}
 	if (route.kind === "settings") {
 		return route.section === undefined
 			? "#/settings"
@@ -819,9 +836,19 @@ function AppShell(options: AppOptions = {}) {
 
 	// The popstate listener: browser back/forward re-parses the hash
 	// into route state (the rail's ext entries and the surface pages'
-	// navigate(params) both land here). Leaving the settings page by
-	// history (back past every settings entry) resets the ✕'s in-app
-	// entry bookkeeping — re-entering later records afresh.
+	// navigate(params) both land here). A popped CHAT route carrying a
+	// conversation id reconciles the selection (the hash owns it): back
+	// between #/c/7 and #/c/2 swaps the transcript, not just the URL.
+	// Leaving the settings page by history (back past every settings
+	// entry) resets the ✕'s in-app entry bookkeeping — re-entering
+	// later records afresh. The ref arms break the registration-vs-data
+	// cycle: popstate events land in order (at most one in flight) so a
+	// stale read can't double-select, and the hook stays stable across
+	// list reloads and selection changes.
+	const listRowsRef = useRef(list.rows);
+	listRowsRef.current = list.rows;
+	const onSelectRef = useRef(onSelect);
+	onSelectRef.current = onSelect;
 	useEffect(() => {
 		const onPop = (): void => {
 			const next = parseHash(readHash());
@@ -830,6 +857,13 @@ function AppShell(options: AppOptions = {}) {
 				preSettingsHash.current = null;
 			}
 			setRoute(next);
+			if (
+				next.kind === "chat" &&
+				next.conversationId !== undefined &&
+				listRowsRef.current.some((row) => row.id === next.conversationId)
+			) {
+				onSelectRef.current(next.conversationId);
+			}
 		};
 		(globalThis as { addEventListener?: (t: string, l: () => void) => void }).addEventListener?.("popstate", onPop);
 		return () => {
@@ -1016,11 +1050,24 @@ function AppShell(options: AppOptions = {}) {
 
 	// Boot-time default: select the root conversation (the §5 default session)
 	// once the schema gate passes and the lifted list has rows, so the
-	// composer is live without a click. An /ext hash route SUPPRESSES the
-	// default (the user asked for a surface, not a conversation).
+	// composer is live without a click — but ONLY on the chat route. Any
+	// non-chat hash route (a surface, the settings page) suppresses the
+	// default: the user asked for that view, not a conversation — and a
+	// conversation selected behind it would anchor an unanchored mid-type
+	// draft to the root (the reload-with-draft trap).
 	useEffect(() => {
 		if (boot.status !== "ready" || activeId !== null) return;
-		if (route.kind === "ext") return;
+		if (route.kind !== "chat") return;
+		if (
+			route.conversationId !== undefined &&
+			list.rows.some((row) => row.id === route.conversationId)
+		) {
+			// The deep link owns the selection while its conversation is
+			// listed (a stale id falls through to the default pick below,
+			// never a dead shell).
+			setActiveId(route.conversationId);
+			return;
+		}
 		if (list.rows.length === 0) return;
 		const root = list.rows.find((c) => c.root);
 		const first = root ?? list.rows[0];
