@@ -1150,10 +1150,10 @@ export async function openHarness(
 		// this first construction. Never-in-a-render: curationOf is the
 		// store factory, not a render path.
 		if (!migrations.has(user)) {
-			// Once per process: the settled promise STAYS in the map. A
-			// "nothing" migration writes no marker, so a re-arm after the
-			// user's first write would freshImport over their history
-			// (review P0). Only a FAILURE re-arms (the next curationOf
+			// Once per process: the settled promise STAYS in the map. The
+			// "nothing" branch writes the marker itself (review C1), so the
+			// on-disk state guards restarts; the in-process map guards
+			// within one boot. Only a FAILURE re-arms (the next curationOf
 			// retries).
 			const migration = migrateUserCuration(userArea, history).then(
 				() => undefined,

@@ -130,13 +130,16 @@ describe("migrateUserCuration", () => {
 		expect(files).toContain("skills/acme-deploy/SKILL.md");
 	});
 
-	test("a user with nothing to import returns nothing and writes no marker", async () => {
+	test("a user with nothing to import returns nothing and STILL writes the marker", async () => {
+		// Review C1: the marker is what protects the empty user's FIRST
+		// write from the next boot's sweep — no content, no import, but
+		// the marker must exist.
 		const { userArea, history } = await setup();
 		await mkdir(userArea, { recursive: true });
 		expect(await migrateUserCuration(userArea, history)).toBe("nothing");
-		await expect(
-			access(join(historyDir(userArea), "MIGRATED")),
-		).rejects.toMatchObject({ code: "ENOENT" });
+		await access(join(historyDir(userArea), "MIGRATED"));
+		// Nothing was imported: no repo commit.
+		await expect(git(userArea, ["rev-parse", "HEAD"])).rejects.toThrow();
 	});
 
 	test("a partial repo without MIGRATED is redone", async () => {
@@ -215,17 +218,14 @@ describe("migrateUserCuration", () => {
 		expect(log.some((commit) => commit.action === "pin")).toBe(true);
 	});
 
-	test("P0: a nothing-migration followed by a write never wipes the write's history", async () => {
-		// The boot sequence that bit: curationOf migrates an EMPTY user
-		// ("nothing", no marker), the user's first write commits, and a
-		// once-per-process migration must never re-arm to freshImport
-		// over that history. migrateUserCuration itself is re-runnable;
-		// the once-per-process rule is boot's (kept promise). This test
-		// pins the invariant the boot side relies on: after "nothing",
-		// the FIRST write's repo must survive a second migration call
-		// ONLY when boot has already settled — so the assertion here is
-		// the store-facing one: a write after "nothing" commits, and a
-		// marked repo is never discarded.
+	test("C1: a nothing-migration followed by a write survives the restart-window re-sweep", async () => {
+		// The restart-window regression (whole-branch review C1): an
+		// empty user boots → "nothing" (marker now written by the
+		// nothing branch itself) → the user's first write commits → the
+		// process restarts → the boot sweep runs migrateUserCuration
+		// AGAIN. The marker must short-circuit to "already" and the
+		// first-session commits (feed entries, undo anchors, review
+		// links) must survive — no freshImport discard.
 		const { userArea, history } = await setup();
 		await mkdir(userArea, { recursive: true });
 		expect(await migrateUserCuration(userArea, history)).toBe("nothing");
@@ -245,18 +245,16 @@ describe("migrateUserCuration", () => {
 			{ actor: "curator", reviewId: "review-first" },
 		);
 		expect(created.id).toMatch(/^[0-9a-f]{40}$/);
-		// Boot marks the migration settled by writing the marker (the
-		// once-per-process seam's on-disk equivalent); a later migration
-		// call then refuses to touch the repo.
-		const { historyDir } = await import("../src/curation/paths.js");
-		await mkdir(historyDir(userArea), { recursive: true });
-		await writeFile(join(historyDir(userArea), "MIGRATED"), new Date().toISOString() + "\n");
+		// Simulate the restart: a fresh sweep call against the same area.
+		// The nothing-branch marker is already on disk (no manual write).
 		expect(await migrateUserCuration(userArea, history)).toBe("already");
 		// The first write's commit survived: the log still names it, and
-		// its undoReview target exists.
+		// its review link (the feed's anchor) is intact.
 		const log = await history.log({ limit: 10 });
 		expect(log.some((commit) => commit.sha === created.id)).toBe(true);
 		expect(log.some((commit) => commit.reviewId === "review-first")).toBe(true);
+		const count = await git(userArea, ["rev-list", "--count", "HEAD"]);
+		expect(count.trim()).toBe("1");
 	});
 
 	test("second run returns already", async () => {
