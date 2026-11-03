@@ -1,6 +1,6 @@
 # Releasing the sigrun family
 
-Twelve repos ship together: `sigrun` (core), five built-in extensions, the
+Twelve repos ship together: `sigrun` (core), six built-in extensions, the
 memory extension, and four providers. **Pushing a `v*` tag publishes.** Each
 repo publishes itself, so a tag is the approval point and there is no separate
 publish step to remember — and no stored npm token anywhere: the workflows
