@@ -285,6 +285,11 @@ interface TestServer {
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
+	// The module-level clock is test-owned state: leave it at the wall
+	// clock so a same-process module rerun (vitest isolate off) never
+	// inherits one test's advanced value.
+	controlledNow = Date.now();
+	advanceDuringConversion = false;
 });
 
 /** Boot a hermetic server: token auth (alice), the assets fixture
