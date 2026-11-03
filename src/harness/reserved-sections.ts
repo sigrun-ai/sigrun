@@ -46,5 +46,7 @@ export const RESERVED_EXTENSION_SLUGS = [
 	"prompts",
 	"packages",
 	"git",
+	"git-home",
+	"history",
 	"core",
 ] as const;
