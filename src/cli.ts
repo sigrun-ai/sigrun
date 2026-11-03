@@ -71,7 +71,8 @@ import {
 	type PaletteName,
 } from "@sigrun/shared/themes";
 
-export const USAGE_TEXT = `usage: sigrun [--user <name>]
+export const USAGE_TEXT = `usage: sigrun [-h | --help]
+       sigrun [--user <name>]
        sigrun serve
        sigrun attach [--server <url>] [--user <name>]
        sigrun token create <name> --user <user>
@@ -100,7 +101,7 @@ export const USAGE_ERROR_PATTERN = /^usage:/;
 
 /** The parse result: which command, plus the flag-carried overrides. */
 export interface ParsedArgs {
-	readonly command: "run" | "serve" | "attach" | "token" | "user" | "provider";
+	readonly command: "run" | "serve" | "attach" | "token" | "user" | "provider" | "help";
 	readonly server?: string;
 	readonly user?: string;
 	/** The `token`/`user`/`provider` subcommand. */
@@ -319,6 +320,12 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 	if (argv[0] === "token") return parseTokenArgs(argv.slice(1));
 	if (argv[0] === "user") return parseUserArgs(argv.slice(1));
 	if (argv[0] === "provider") return parseProviderArgs(argv.slice(1));
+	// `-h`/`--help` ANYWHERE wins over every other argument: the first
+	// thing a stranger types must print usage with exit 0, never a usage
+	// error (fresh-eyes A6).
+	if (argv.includes("-h") || argv.includes("--help")) {
+		return { command: "help" };
+	}
 	let command: ParsedArgs["command"] | undefined;
 	let server: string | undefined;
 	let user: string | undefined;
@@ -1327,6 +1334,12 @@ export async function cliMain(
 
 	try {
 		switch (parsed.command) {
+			case "help": {
+				// Help goes to the DATA sink (stdout): the operator asked for
+				// it, so exit 0 — only a usage ERROR prints to stderr + exit 1.
+				io.out?.(USAGE_TEXT);
+				return 0;
+			}
 			case "serve": {
 				await realDeps.serve(env);
 				return 0;

@@ -121,6 +121,9 @@ From a source checkout the dev shape is `npm install && npm start`
 
 ## Launch modes
 
+`sigrun --help` (or `-h`) prints usage and exits 0; the same flag works
+after a subcommand (`sigrun serve --help`).
+
 The `sigrun` binary (`package.json` `bin`, run via tsx) has three
 entrypoints:
 

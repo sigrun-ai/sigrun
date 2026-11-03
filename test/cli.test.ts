@@ -107,6 +107,14 @@ describe("parseArgs", () => {
 		expect(() => parseArgs(["bogus"])).toThrowError(USAGE_ERROR_PATTERN);
 	});
 
+	test("--help and -h parse as the help command", () => {
+		expect(parseArgs(["--help"])).toEqual({ command: "help" });
+		expect(parseArgs(["-h"])).toEqual({ command: "help" });
+		// Any position: the stranger's `sigrun serve --help` must help too.
+		expect(parseArgs(["serve", "--help"])).toEqual({ command: "help" });
+		expect(parseArgs(["--user", "acme-user", "-h"])).toEqual({ command: "help" });
+	});
+
 	test("a flag without a value fails loud", () => {
 		expect(() => parseArgs(["attach", "--server"])).toThrowError(USAGE_ERROR_PATTERN);
 		expect(() => parseArgs(["--user"])).toThrowError(USAGE_ERROR_PATTERN);
@@ -488,6 +496,45 @@ describe("cliMain attach", () => {
 		const fromFile = stubDeps();
 		await cliMain(["attach"], { SIGRUN_CONFIG_DIR: dir }, fromFile.deps);
 		expect(fromFile.calls.launchTui[0]?.baseUrl).toBe("https://file.example");
+	});
+});
+
+describe("cliMain help", () => {
+	test("--help prints usage to the DATA sink and resolves 0 (never boots)", async () => {
+		const { deps, calls } = stubDeps();
+		const out: string[] = [];
+		const errors: string[] = [];
+		const code = await cliMain(["--help"], {}, deps, {
+			out: (text) => {
+				out.push(text);
+			},
+			error: (text) => {
+				errors.push(text);
+			},
+		});
+		expect(code).toBe(0);
+		expect(out.join("\n")).toContain(USAGE_TEXT.trim().split("\n")[0] ?? "");
+		expect(errors).toEqual([]);
+		expect(calls.boot).toEqual([]);
+		expect(calls.serve).toEqual([]);
+		expect(calls.launchTui).toEqual([]);
+	});
+
+	test("-h and `sigrun serve --help` print usage and resolve 0", async () => {
+		for (const argv of [["-h"], ["serve", "--help"]]) {
+			const { deps, calls } = stubDeps();
+			const out: string[] = [];
+			const code = await cliMain(argv, {}, deps, {
+				out: (text) => {
+					out.push(text);
+				},
+				error: () => {},
+			});
+			expect(code).toBe(0);
+			expect(out.join("\n")).toContain(USAGE_TEXT.trim().split("\n")[0] ?? "");
+			expect(calls.boot).toEqual([]);
+			expect(calls.serve).toEqual([]);
+		}
 	});
 });
 
