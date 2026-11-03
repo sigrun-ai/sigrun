@@ -47,6 +47,8 @@ import { SseRegistry } from "./sse-registry.js";
 import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createJobsView } from "./core-views/jobs.js";
+import { createSkillsView } from "./core-views/skills.js";
+import { learnedSkillsDir } from "../curation/paths.js";
 import { accessPrincipalOf } from "./auth/access-principal.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
@@ -338,18 +340,35 @@ export async function createServer(
 			),
 		},
 	]);
-	// The core-owned views (tabs+skills Tasks 4/5): the reserved `core`
-	// slug's `SurfaceDef<"view">` list — the built-in Jobs view (Task 5;
-	// Task 12 adds the Skills view). The jobs view shares the routes'
-	// access rule (`jobs-access.ts`) and the routes' principal
+	// The core-owned views (tabs+skills Tasks 4/5/12): the reserved `core`
+	// slug's `SurfaceDef<"view">` list — the built-in Jobs view (Task 5)
+	// and the built-in Skills view (Task 12). The jobs view shares the
+	// routes' access rule (`jobs-access.ts`) and the routes' principal
 	// projection (accessPrincipalOf over the live directory), so the
 	// view and `GET /v1/jobs` always agree on which rows a caller sees.
+	// The skills view resolves every root per CALLER (their workspace +
+	// learned repos, the deployment's config dir and package roots) and
+	// bumps every rendered instance after every write.
 	surfacesService.attachCoreViews([
 		createJobsView({
 			jobs: opened.jobs,
 			now: () => new Date(),
 			accessPrincipal: (principal) =>
 				accessPrincipalOf(principal, opened.identity.users),
+		}),
+		createSkillsView({
+			curationOf: (user) => opened.curationOf(user),
+			workspaceRoot: (user) => opened.workspaceRootOf(user),
+			workspaceHistoryFor: (user) => opened.history.workspace(user),
+			learnedDirOf: (user) => {
+				if (opened.identity.users.get(user) === undefined) return undefined;
+				return learnedSkillsDir(
+					join(opened.extensionStores.roots.dataDir, "users", user),
+				);
+			},
+			userDir: join(opened.extensionStores.roots.configDir, "skills"),
+			packageRoots: () => opened.skillRoots,
+			bump: () => surfacesService.bumpAllInstances("core", "skills"),
 		}),
 	]);
 	app.decorate("surfaces", surfacesService);

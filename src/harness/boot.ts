@@ -507,6 +507,25 @@ export interface OpenedHarness {
 	 */
 	readonly curation: CurationRegistry;
 	/**
+	 * The per-user curation wiring (tabs+skills Task 9): boot's lazy,
+	 * cached `{store, overlays, usage, history}` per EXISTING user — the
+	 * core/skills view's own-root writes go through it (the extension-
+	 * facing `curationHost` projection narrows the stores' shapes; the
+	 * server needs the full ones). Same `curationOf` the host closes
+	 * over, so stores/history are shared, never duplicated.
+	 */
+	readonly curationOf: (
+		user: string | undefined,
+	) =>
+		| { store: SkillStore; overlays: OverlayStore; usage: UsageCounters; history: GitHistory }
+		| undefined;
+	/**
+	 * The workspace ROOT selection (tabs+skills Task 10's rules 1–4):
+	 * the core/skills view's `workspaceRoot(user)` dep — the same
+	 * selection the workspace history resolves through.
+	 */
+	readonly workspaceRootOf: (owner: string | undefined) => string | undefined;
+	/**
 	 * The per-user WORKSPACE skills history (tabs+skills Task 10): the
 	 * second repo — `<workspace>/skills` under git, resolved through the
 	 * workspace service's root selection (rules 1–4) and cached per
@@ -2262,6 +2281,8 @@ export async function openHarness(
 		skillRoots: extensionSkillRoots,
 		curation,
 		curationHost,
+		curationOf,
+		workspaceRootOf: (owner) => workspaceService?.workspaceRoot(owner),
 		history: { workspace: workspaceHistoryOf },
 		commandExpansion,
 		eventBus,
