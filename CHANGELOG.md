@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-03
+
+### Fixed
+
+- Packages dirs now link `@sigrun/shared` like the other host runtime modules: the first packages-dir extension importing it at runtime (`@sigrun/recall`) quarantined without the link. One shared copy, the host's.
+
+### Changed
+
+- Release-pin bump to 0.6.1 (root, shared, tui, sandbox platform packages, chart appVersion, compose defaults).
+
 ## [0.6.0] - 2026-11-02
 
 ### Added
