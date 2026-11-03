@@ -1281,6 +1281,34 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		resetLocationHashForTest();
 	});
 
+	test("the chat header renders only on the Chats tab (tabs Task 1, whole-branch review I4)", async () => {
+		const { client, createEventSource } = makeHarness({ meta: extMeta() });
+		const { ChatHeader } = await import("./layout/ChatHeader");
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// The boot default is the Chats tab: the header is up.
+		expect(renderer.root.findAllByType(ChatHeader)).toHaveLength(1);
+		// An ext tab (the Skills/Jobs shape): the header unmounts — its
+		// panel toggles and conversation title are Chats-only (spec §1).
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		const { SurfacePage } = await import("./blocks/SurfacePage");
+		await vi.waitFor(() => renderer.root.findByType(SurfacePage));
+		expect(renderer.root.findAllByType(ChatHeader)).toHaveLength(0);
+		// Back on Chats the header returns.
+		const chats = renderer.root.findByProps({ "data-rail-section": "chats" });
+		await act(async () => {
+			(chats.props as { onClick: () => void }).onClick();
+		});
+		expect(renderer.root.findAllByType(ChatHeader)).toHaveLength(1);
+		resetLocationHashForTest();
+	});
+
 	test("an access-none surface renders the not-found state and loses its rail entry", async () => {
 		const { client, createEventSource } = makeHarness({ meta: extMeta() });
 		const renderer = await renderAsync(
@@ -1484,6 +1512,11 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 		});
 		} finally {
 			restoreFetch();
+			// This test leaves the fallback hash on the ext route — a leak
+			// the Chats-only ChatHeader gate (whole-branch review I4) makes
+			// visible downstream: a later boot onto that hash renders no
+			// chat header. Reset so the leak can't reach the restart tests.
+			resetLocationHashForTest();
 		}
 	});
 });

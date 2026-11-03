@@ -1355,26 +1355,32 @@ function AppShell(options: AppOptions = {}) {
 			// Tabs Task 1: the non-settings, non-gallery tabs share the main
 			// column — an ext surface renders full width; the Chats tab adds
 			// the transcript column, its composer dock, and the right panel.
-			<main className="main-column">
-				<ChatHeader
-					title={titleOf(list.rows, activeId)}
-					timeline={timeline}
-					onTimeline={() =>
-						setTimeline((on) => {
-							persistTimeline(!on);
-							return !on;
-						})
-					}
-					panel={panel}
-					onPanel={onPanel}
-					onRename={onRename}
-					onExport={onExport}
-					onCompact={onCompact}
-					onArchive={onArchive}
-					drawerOpen={drawerOpen}
-					onToggleDrawer={() => setDrawerOpen((open) => !open)}
-				/>
-				{shellError !== null && (
+		<main className="main-column">
+			{/* The chat header renders ONLY on the Chats tab (spec §1,
+			    whole-branch review I4): its panel toggles and conversation
+			    title are dead weight over the Skills/Jobs/ext tabs, and its
+			    ☰ drawer toggle (the phone sidebar) belongs to Chats too. */}
+			{route.kind === "chat" && (
+			<ChatHeader
+				title={titleOf(list.rows, activeId)}
+				timeline={timeline}
+				onTimeline={() =>
+					setTimeline((on) => {
+						persistTimeline(!on);
+						return !on;
+					})
+				}
+				panel={panel}
+				onPanel={onPanel}
+				onRename={onRename}
+				onExport={onExport}
+				onCompact={onCompact}
+				onArchive={onArchive}
+				drawerOpen={drawerOpen}
+				onToggleDrawer={() => setDrawerOpen((open) => !open)}
+			/>
+			)}
+			{shellError !== null && (
 					<p className="shell-error" role="alert">
 						{shellError}
 					</p>
