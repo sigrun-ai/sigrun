@@ -54,7 +54,7 @@ import type { Extension } from "@earendil-works/pi-durable";
 import type { CurationHint } from "../extension.js";
 import { authorOfSubmission } from "./attribution.js";
 import { curationRun } from "./run-doc.js";
-import { CORE_CURATION_TOOLS } from "./targets.js";
+import { CORE_CURATION_TOOLS, SKILL_MANAGE_READ_ACTIONS } from "./targets.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
 /** The answer an owner-authored call receives (contract text). */
@@ -87,12 +87,6 @@ export const HintsDoc = defineDoc<CurationHints>({
 	fork: "current",
 	initial: () => ({ hints: [] }),
 });
-
-/** `skill_manage`'s read actions — safe anywhere, never intercepted. */
-const SKILL_MANAGE_READ_ACTIONS: ReadonlySet<string> = new Set([
-	"list",
-	"view",
-]);
 
 /**
  * Whether one call passes through to the original outside a curator

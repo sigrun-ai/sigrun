@@ -41,6 +41,7 @@ import {
 	type OverlayStore,
 } from "./overlays.js";
 import { curationRun, markViewed } from "./run-doc.js";
+import { SKILL_MANAGE_READ_ACTIONS } from "./targets.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
 /** The overlay roots (the `overlay_root` parameter's union). */
@@ -262,7 +263,7 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 			// Ownerless conversations: nothing to read (and no user to write
 			// for — the mutating refusal below covers those too, but the read
 			// answer is the one the brief pins).
-			if (args.action === "list" || args.action === "view") {
+			if (SKILL_MANAGE_READ_ACTIONS.has(args.action)) {
 				if (owner === undefined) {
 					return error("This conversation has no owner, so there are no learned skills to inspect.");
 				}

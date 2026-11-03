@@ -2594,6 +2594,8 @@ const slugs = new Map<string, string>();
 // target, so a duplicate quarantines the later declarer instead of
 // shadowing (never last-wins).
 const curationIds = new Set<string>();
+/** The qualified target id owning each claimed curation tool (A8's one-target-per-tool rule). */
+const curationToolOwners = new Map<string, string>();
 // Channel id → slug (gateway C1): the same claimed-only-by-LOADED pattern
 // as `slugs`. Chat bindings are keyed by channel id, so a shadowing
 // adapter would inherit another adapter's chats — the collision
@@ -2858,6 +2860,10 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					// (the same name twice in one result) hits the check on
 					// its SECOND arrival, quarantining before any install.
 					const claimed = new Set<string>();
+					// This result's tool claims (the A8 one-target rule's
+					// intra-list half — merged into the cross-extension map
+					// only when the whole result survives).
+					const claimedTools = new Map<string, string>();
 					for (const target of resolved.curationTargets) {
 						const id = `${slug}:${target.name}`;
 						if (curationIds.has(id) || claimed.has(id)) {
@@ -2865,15 +2871,30 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 								`duplicate curation target id "${id}" — a qualified id names one curation target`,
 							);
 						}
-						claimed.add(id);
-						const unregistered = target.tools.find(
-							(tool) => !registered.has(tool),
+					claimed.add(id);
+					const unregistered = target.tools.find(
+						(tool) => !registered.has(tool),
+					);
+					if (unregistered !== undefined) {
+						throw new Error(
+							`extension "${slug}" declares curation target "${target.name}" listing tool "${unregistered}" it does not register`,
 						);
-						if (unregistered !== undefined) {
+					}
+					// A tool names ONE target (A8): two targets — across any
+					// extensions — listing the same tool leave `byTool`
+					// first-wins arbitrary and the shadowed target's undos
+					// un-actionable. Quarantine the later declarer. Intra-list
+					// claims are LOCAL (`claimedTools`) until the whole result
+					// validates — a quarantined extension never leaks a claim.
+					for (const tool of target.tools) {
+						const owner = curationToolOwners.get(tool) ?? claimedTools.get(tool);
+						if (owner !== undefined) {
 							throw new Error(
-								`extension "${slug}" declares curation target "${target.name}" listing tool "${unregistered}" it does not register`,
+								`curation tool "${tool}" is listed by both ${owner} and ${id} — a tool names one curation target`,
 							);
 						}
+						claimedTools.set(tool, id);
+					}
 					}
 				}
 				if (resolved.gateway !== undefined) {
@@ -2988,6 +3009,9 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					});
 					for (const target of resolved.curationTargets) {
 						curationIds.add(`${slug}:${target.name}`);
+						for (const tool of target.tools) {
+							curationToolOwners.set(tool, `${slug}:${target.name}`);
+						}
 					}
 				}
 			if (resolved.jobs !== undefined) {
