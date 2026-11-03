@@ -125,6 +125,7 @@ import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
 import { launchInJail } from "../sandbox/launch.js";
 import { buildUserPolicy, defaultModuleTrees } from "../sandbox/policy.js";
+import { validateGrantPath } from "../sandbox/grants.js";
 import { lookupOsAccount } from "../sandbox/os-account.js";
 import { agentEnv } from "./agent-env.js";
 import { UserServices } from "./user-services.js";
@@ -135,10 +136,16 @@ import { createAdmissionGuard } from "./identity/users.js";
 import { sweepAccountLinks } from "./identity/link-sweep.js";
 import { effectiveOwner as resolveEffectiveOwner } from "./identity/primary-admin.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
-import { learnedSkillsDir } from "../curation/paths.js";
+import { learnedSkillsDir, userRepoSpec } from "../curation/paths.js";
 import { SkillStore } from "../curation/store.js";
 import { OverlayStore } from "../curation/overlays.js";
 import { UsageCounters } from "../curation/usage.js";
+import { GitHistory } from "../history/git.js";
+import {
+	workspaceHistoryFor,
+	workspaceRepoSpec,
+} from "../history/workspace-history.js";
+import { migrateUserCuration } from "../curation/migrate.js";
 import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
 import { createCurationHost } from "../curation/host.js";
 import {
@@ -510,6 +517,36 @@ export interface OpenedHarness {
 	 * empty registry is the no-declarer deploy (core ships none).
 	 */
 	readonly curation: CurationRegistry;
+	/**
+	 * The per-user curation wiring (tabs+skills Task 9): boot's lazy,
+	 * cached `{store, overlays, usage, history}` per EXISTING user — the
+	 * core/skills view's own-root writes go through it (the extension-
+	 * facing `curationHost` projection narrows the stores' shapes; the
+	 * server needs the full ones). Same `curationOf` the host closes
+	 * over, so stores/history are shared, never duplicated.
+	 */
+	readonly curationOf: (
+		user: string | undefined,
+	) =>
+		| { store: SkillStore; overlays: OverlayStore; usage: UsageCounters; history: GitHistory }
+		| undefined;
+	/**
+	 * The workspace ROOT selection (tabs+skills Task 10's rules 1–4):
+	 * the core/skills view's `workspaceRoot(user)` dep — the same
+	 * selection the workspace history resolves through.
+	 */
+	readonly workspaceRootOf: (owner: string | undefined) => string | undefined;
+	/**
+	 * The per-user WORKSPACE skills history (tabs+skills Task 10): the
+	 * second repo — `<workspace>/skills` under git, resolved through the
+	 * workspace service's root selection (rules 1–4) and cached per
+	 * (user, workspace path). Undefined when the selection refuses
+	 * (multi-user without isolation, osUser unavailable, an invalid
+	 * stored path) — a settled run then catches up nothing.
+	 */
+	readonly history: {
+		readonly workspace: (user: string) => GitHistory | undefined;
+	};
 	/**
 	 * The curation host (curator P6, A9): the `host.curation` surface —
 	 * the run producers (fork review, digest, maintain) and the read
@@ -950,6 +987,39 @@ export async function openHarness(
 		coreRoot,
 		userAreas: (user: string) => join(roots.dataDir, "users", user),
 	};
+	// Curation seal revalidation (tabs/skills Task 8): stored workspace or
+	// grant paths that fail TODAY's validator (e.g. a pre-seal record whose
+	// workspace is the bare user area, which contains curation/) are
+	// refused per use by buildUserPolicy, silently stripping the agent's
+	// tools. Boot names every such record loudly with its repair (Task 14
+	// documents PATCH /v1/users/<u> {"workspace": "<userArea>/workspace"}).
+	for (const record of identity.users.list()) {
+		if (record.workspace !== undefined) {
+			const result = validateGrantPath(record.workspace, {
+				managed: managedPaths,
+				user: record.user,
+			});
+			if (!result.ok) {
+				console.warn(
+					`identity: user "${record.user}" workspace ${record.workspace}: ${result.reason} (agent tools unavailable until repaired; re-point to ${managedPaths.userAreas(record.user)}/workspace)`,
+				);
+			}
+		}
+		for (const grant of record.grants ?? []) {
+			const result = validateGrantPath(grant.path, {
+				managed: managedPaths,
+				user: record.user,
+				...(grant.inheritedFrom === undefined
+					? {}
+					: { inheritedFrom: grant.inheritedFrom }),
+			});
+			if (!result.ok) {
+				console.warn(
+					`identity: user "${record.user}" grant ${grant.path}: ${result.reason} (grant refused until repaired)`,
+				);
+			}
+		}
+	}
 	const userServices = new UserServices({
 		launch: (policy, command, args, serviceEnv) => {
 			if (helper === undefined) throw new Error("sandbox helper not found");
@@ -1067,6 +1137,13 @@ export async function openHarness(
 	const skillStores = new Map<string, SkillStore>();
 	const overlayStores = new Map<string, OverlayStore>();
 	const usageCounters = new Map<string, UsageCounters>();
+	const curationHistories = new Map<string, GitHistory>();
+	// Per-user migration promise (review I3): store/overlay mutations
+	// await it via their `ready` seam, so a write during a pending
+	// migration lands as its OWN commit after the import — never
+	// swallowed by the migration's discard.
+	const migrations = new Map<string, Promise<void>>();
+	const gitHomeDir = join(roots.stateDir, "git-home");
 	const curationOf = (user: string | undefined) => {
 		if (user === undefined) return undefined;
 		// Curator A10: cache-FIRST resolution — a store set captured before
@@ -1081,6 +1158,37 @@ export async function openHarness(
 			return undefined;
 		}
 		const userArea = managedPaths.userAreas(user);
+		let history = curationHistories.get(user);
+		if (history === undefined) {
+			history = new GitHistory(userRepoSpec(userArea), {
+				gitHome: gitHomeDir,
+				now: () => clockNow(),
+				log: (line) => console.warn(`curation history (${user}): ${line}`),
+			});
+			curationHistories.set(user, history);
+		}
+		// Migration (tabs+skills Task 9): the boot sweep below covers the
+		// directory users boot saw; a user created AFTER boot migrates on
+		// this first construction. Never-in-a-render: curationOf is the
+		// store factory, not a render path.
+		if (!migrations.has(user)) {
+			// Once per process: the settled promise STAYS in the map. The
+			// "nothing" branch writes the marker itself (review C1), so the
+			// on-disk state guards restarts; the in-process map guards
+			// within one boot. Only a FAILURE re-arms (the next curationOf
+			// retries).
+			const migration = migrateUserCuration(userArea, history).then(
+				() => undefined,
+				(error) => {
+					console.warn(`curation migration (${user}) failed: ${String(error)}`);
+					migrations.delete(user);
+				},
+			);
+			migrations.set(user, migration);
+		}
+		const ready = async (): Promise<void> => {
+			await migrations.get(user);
+		};
 		let store = skillStores.get(user);
 		if (store === undefined) {
 			store = new SkillStore({
@@ -1097,6 +1205,8 @@ export async function openHarness(
 					return undefined;
 				},
 				userExists: () => identity.users.get(user) !== undefined,
+				history,
+				ready,
 			});
 			skillStores.set(user, store);
 		}
@@ -1106,7 +1216,8 @@ export async function openHarness(
 				userArea,
 				user,
 				userExists: () => identity.users.get(user) !== undefined,
-				feed: store,
+				history,
+				ready,
 			});
 			overlayStores.set(user, overlays);
 		}
@@ -1124,8 +1235,54 @@ export async function openHarness(
 			});
 			usageCounters.set(user, usage);
 		}
-		return { store, overlays, usage };
+		return { store, overlays, usage, history };
 	};
+	// Workspace skills history (tabs+skills Task 10): the SECOND repo per
+	// user — `<workspace>/skills` under git, caught up on settle. Cached
+	// per (user, workspace path): a changed path is a new instance on the
+	// same gitDir, so one log follows the user across workspace moves.
+	const workspaceHistories = new Map<string, GitHistory>();
+	const workspaceHistoryOf = (user: string): GitHistory | undefined => {
+		const workspace = workspaceService?.workspaceRoot(user);
+		return workspaceHistoryFor(user, workspace, {
+			cache: workspaceHistories,
+			create: (resolved) => {
+				const history = new GitHistory(workspaceRepoSpec(managedPaths.userAreas(user), resolved), {
+					gitHome: gitHomeDir,
+					now: () => clockNow(),
+					log: (line) => console.warn(`workspace history (${user}): ${line}`),
+				});
+				// Task 12 race fix: settle the repo AT CONSTRUCTION, not on
+				// first use. Two concurrent first-uses (the view's catch-up +
+				// a write) each run prepare()'s init before either's commit:
+				// the later init lands between the earlier init and ITS
+				// commit — status reads an empty index, and the write lands
+				// with no commit. An eager empty catchUp (no-op on an
+				// existing repo, the import commit on a fresh one) makes
+				// every later use see a settled repo. Awaited BEFORE the
+				// instance returns so no first use can interleave with the
+				// init. Fail-soft like everything here: errors warn, never
+				// throw.
+				void (async () => {
+					try {
+						// settle(), never a catch-up: an init that COMMITTED
+						// would absorb a racing first edit under the init
+						// summary (the 2026-11-03 core/skills failure).
+						await history.settle();
+					} catch (error) {
+						console.warn(`workspace history (${user}) init failed: ${String(error)}`);
+					}
+				})();
+				return history;
+			},
+		});
+	};
+	// Curation history migration (tabs+skills Task 9): every directory
+	// user boot sees imports once. Users created after boot migrate on
+	// their first curationOf (the migratedUsers seam above).
+	for (const record of identity.users.list()) {
+		curationOf(record.user);
+	}
 	const curationSkillsOptions = {
 		...skillsOptions,
 		skillStore: (user: string | undefined) => curationOf(user)?.store,
@@ -1672,6 +1829,7 @@ export async function openHarness(
 		pool: sandboxPool,
 		directory: identity.users,
 		managed: managedPaths,
+		defaultWorkspacePath: config.workspace.path,
 		ownerOf: async (conversationId, read, ctx) =>
 			(await read.snapshot(SessionMetaDoc, conversationId, ctx))?.owner,
 	});
@@ -2181,6 +2339,9 @@ export async function openHarness(
 		skillRoots: extensionSkillRoots,
 		curation,
 		curationHost,
+		curationOf,
+		workspaceRootOf: (owner) => workspaceService?.workspaceRoot(owner),
+		history: { workspace: workspaceHistoryOf },
 		commandExpansion,
 		eventBus,
 		events,

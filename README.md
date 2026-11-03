@@ -1206,14 +1206,42 @@ typed — the submission's user entry carries
 `{kind: "sigrun.user.expanded", data: {typed, command}}` while the
 model receives the expanded text.
 
+**The Skills tab.** The core Skills view (`#/ext/core/skills`) is the
+management surface for all of this: every skill root the deployment
+serves, grouped — **Workspace**, **Learned**, **Config dir** (the
+deployment-wide `<config-dir>/skills/`, read-only), one group **per
+installed package** (`· <pkg>` — package skills, each row carrying the
+package badge), and **Deleted** — with
+shadowing made visible (a lower-precedence skill that never wins says
+so). Skills you own are editable in place; the deployment's shared
+roots (the config dir and packages) are read-only here, and a per-user
+**overlay** is their only write (your overlay, your precedence — other
+users are unaffected). Each history-backed skill keeps its full **git
+history**: page through it 25 entries at a time, read the per-file
+diffs of any change, and restore an old state.
+
+The tab is per-user — a caller sees their own Workspace and Learned
+roots. On the naive single-operator loopback posture (the userless
+superuser — no `X-Sigrun-User` header), the Skills tab resolves that
+caller to the **primary admin** (the earliest-created directory user
+with the admin flag — the same fallback the execution jail uses), so
+her workspace and learned skills are the ones on screen. With an empty
+directory (no claimed user yet) there is no primary admin, so the
+tab shows only the deployment's shared roots (Config dir / Packages)
+and its own empty Workspace/Learned scope.
+
+Some surface actions
+hand the channel a navigation to apply (a surface action returning
+`navigate`): the webui applies it; the TUI does not yet apply
+`ActionResult.navigate` — a known channel gap.
+
 **The curator and learned skills.** Beyond the three roots above, every
 user has a private fourth root — learned skills the curator records for
 them under `<data-dir>/users/<user>/skills/`. For skills it ranks second:
 the workspace wins over it, and it wins over the user dir and packages. The curator reviews the
 user's conversations (owner-authored tool calls are captured as
 "Noted" hints, never executed on the spot) and writes through the
-versioned `skill_manage` surface, so every learned skill keeps its last
-ten versions, a change feed, and one-call undo. Learned skills never
+versioned `skill_manage` surface. Learned skills never
 leave their user: they are not shared, not transferred on ownership
 moves, and removed with the user on `DELETE /v1/users/{user}`. Each
 user can pause or disable the curator in their own per-user settings —
@@ -1222,6 +1250,36 @@ new reviews until flipped back, `{"enabled": false}` turns the curator
 off entirely (both are per-user and take effect on the next run) — and
 an operator can disable it server-wide with
 `"builtinExtensions": {"curator": false}` (restart required).
+
+**Skill history is local git, per user.** Both writable roots keep
+their history in a private per-user git repository under the user's
+curation history dir — the learned skills, overlays, and curator state
+in one repo, the workspace's `skills/` tree in a second repo whose git
+dir lives outside the work tree. There is no remote and no upstream:
+the history is a local audit trail, not a bounded version count. Edits
+made outside the store are folded in as catch-up commits: when the tab
+opens they record actor `outside`; when a run settles, the workspace
+repo catches up with actor `agent` carrying the conversation id (only
+the workspace repo has a settle hook). History writes for the
+workspace root are keyed to the conversation's owner — ownerless
+conversations skip it. The history's tamper-resistance holds under
+active sandbox isolation (the agent's jail never grants the curation
+dir); a single-user install without isolation runs the agent
+unsandboxed — the existing trust model, nothing extra promised.
+
+**Upgrade note (curation seal).** Workspaces and grants are now
+rejected when they sit inside or contain a user's `curation/` tree — a
+record pointing at the bare user area would hand the agent the whole
+curation state, history included. A pre-existing user whose workspace
+or grant was exactly that loses its agent's tools until an admin
+re-points it; boot logs each such user and path loudly. The repair is
+one call:
+
+```sh
+curl -X PATCH localhost:3000/v1/users/<u> \
+  -H 'content-type: application/json' \
+  -d '{"workspace": "<userArea>/workspace"}'
+```
 
 ## Jobs
 
@@ -1281,9 +1339,17 @@ always maps to the exact definition it ran.
 
 **Run now:** `POST /v1/jobs/{id}/run` (write access) fires immediately
 — the same hook external triggers (CI, Alertmanager) use with a token.
-In the web UI the Jobs panel (the clock icon in the header) lists jobs
-with a “Run now” button; in the TUI `/jobs` prints the table (name,
-next run, last outcome).
+In the web UI the Jobs tab (the core `core/jobs` view, `#/ext/core/jobs`)
+lists jobs with a “Run now” button; in the TUI `/jobs` prints the table (name,
+next run, last outcome). The tab is the block-rendered twin of the
+REST surface: the sidebar lists the caller-visible jobs, selecting one
+drills into its summary, runs, and revisions (a revision view diffs its
+spec against the previous one), and a run with a conversation links
+straight to it — that action-result navigation is applied by the webui;
+the TUI does not yet apply `ActionResult.navigate` (a known channel
+gap). Access is exactly the `/v1/jobs` rule — including the naive
+single-operator posture: the userless superuser (no `X-Sigrun-User`
+header) sees and manages every job, matching the REST routes' grant.
 
 ## Restarting
 

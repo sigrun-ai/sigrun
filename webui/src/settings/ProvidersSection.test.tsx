@@ -157,7 +157,6 @@ function renderPanel(
 				admin={admin}
 				section="providers"
 				onSection={() => {}}
-				onClose={() => {}}
 			/>
 		);
 	}

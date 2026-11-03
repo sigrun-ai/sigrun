@@ -317,7 +317,7 @@ describe("fixtures validate for their placements (spec §5.7)", () => {
 					}
 					// panel forbids a page root's sidebar (§5.7); ambient's
 					// one-line rule needs `ambientPlace` (§9.2) — skip, covered below.
-					if (placement === "panel" && rootType === "page" && sample.name === "page-sidebar") continue;
+					if (placement === "panel" && rootType === "page" && sample.name.startsWith("page-")) continue;
 					// The ambient literal-rows ruling (2026-10-24): bindings are OUT
 					// of ambient outside item templates (no data document), so a
 					// fixture carrying any non-item binding never validates there.
@@ -1371,6 +1371,42 @@ describe("ambient one-line rule (spec §9.2)", () => {
 		});
 		const errs = errorsOf(validateTree(tree, { placement: "ambient", ambientPlace: "footer" }));
 		expect(errs.length).toBeGreaterThan(0);
+	});
+});
+
+// ─── page.selection (server-declared compact drill-in) ──────────────────
+
+describe("page selection", () => {
+	it("a page may declare selection {selected, back}", () => {
+		const tree = treeOf({
+			type: "page",
+			title: "Jobs",
+			main: [{ type: "markdown", text: "m" }],
+			selection: { selected: true, back: {} },
+		});
+		expect(validateTree(tree, { placement: "view" }).ok).toBe(true);
+	});
+
+	it("selection.selected must be a boolean, erroring at root.selection.selected", () => {
+		const tree = treeOf({
+			type: "page",
+			title: "Jobs",
+			main: [{ type: "markdown", text: "m" }],
+			selection: { selected: "yes", back: {} },
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "view" }));
+		expect(errs.some((e) => e.path === "root.selection.selected")).toBe(true);
+	});
+
+	it("selection.back must be an object, erroring at root.selection.back", () => {
+		const tree = treeOf({
+			type: "page",
+			title: "Jobs",
+			main: [{ type: "markdown", text: "m" }],
+			selection: { selected: false, back: "item" },
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "view" }));
+		expect(errs.some((e) => e.path === "root.selection.back")).toBe(true);
 	});
 });
 

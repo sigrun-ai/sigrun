@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LocalWorkspace } from "../config.js";
 import type { ManagedPaths } from "../sandbox/grants.js";
 import { IsolationState } from "../sandbox/isolation.js";
-import { buildUserPolicy } from "../sandbox/policy.js";
+import { buildUserPolicy, validateUserPath } from "../sandbox/policy.js";
 import type { WorkerPool } from "../sandbox/pool.js";
 import { SandboxedExecutionEnv } from "../sandbox/sandboxed-env.js";
 import { UnavailableExecutionEnv } from "../sandbox/unavailable-env.js";
@@ -34,6 +34,18 @@ export function selectRecord(
 export interface WorkspaceService {
 	/** The selected owner's persistent job-state root, if one can be used. */
 	jobsRoot(owner: string | undefined): string | undefined;
+	/**
+	 * The selected owner's workspace root for the HISTORY selection
+	 * (tabs+skills Task 10). `forConversation` cannot be reused: it needs
+	 * prefs plus an env; this selection is
+	 *   1. ≤1 directory record and isolation inactive → deps.defaultWorkspacePath
+	 *   2. >1 record and isolation inactive → undefined
+	 *   3. record is osUser and osUsers unavailable/lookup fails → undefined
+	 *   4. else record.workspace ?? osAccount?.home ?? <userArea>/workspace
+	 *      (the buildUserPolicy precedence), validateUserPath-checked —
+	 *      an invalid resolution is undefined, never a fallback.
+	 */
+	workspaceRoot(owner: string | undefined): string | undefined;
 	forConversation(
 		conversation: WorkspaceConversation,
 		prefs: WorkspacePreferences,
@@ -53,6 +65,8 @@ export interface WorkspaceServiceDeps {
 	pool: WorkerPool;
 	directory: UserDirectory;
 	managed: ManagedPaths;
+	/** The configured default workspace (config.workspace.path) — rule 1's selection. */
+	defaultWorkspacePath: string;
 	ownerOf(conversationId: ConversationId, read: DocumentReader, ctx: Context): Promise<string | undefined>;
 }
 
@@ -76,6 +90,35 @@ export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceSe
 				}
 			}
 			return join(managed.userAreas(record.user), "jobs");
+		},
+		workspaceRoot(owner) {
+			if (deps === undefined) return undefined;
+			const { directory, managed, isolation } = deps;
+			const records = directory.list();
+			const record = selectRecord(records, owner);
+			const active = isolation.active();
+			let osAccount: ReturnType<typeof lookupOsAccount>;
+			if (record?.osUser !== undefined) {
+				if (deps.osUsers?.available !== true) return undefined;
+				try {
+					osAccount = (deps.lookupAccount ?? lookupOsAccount)(record.osUser);
+				} catch {
+					return undefined;
+				}
+				if (osAccount === undefined) return undefined;
+			}
+			// Rules 1+2: without active isolation a workspace root exists
+			// only in the single-record posture — forConversation resolves
+			// the same default there (and is unavailable with more users).
+			if (osAccount === undefined && !active) {
+				return records.length <= 1 ? deps.defaultWorkspacePath : undefined;
+			}
+			if (record === undefined) return undefined;
+			const candidate =
+				record.workspace ??
+				osAccount?.home ??
+				join(managed.userAreas(record.user), "workspace");
+			return validateUserPath(candidate, record, managed).ok ? candidate : undefined;
 		},
 		async forConversation(conversation, prefs, read, ctx) {
 			const workspace = prefs.defaultWorkspace;

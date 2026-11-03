@@ -25,6 +25,7 @@
  * `server.dev`). The extension stays loaded.
  */
 
+import type { CoreViewInfo } from "@sigrun/shared/views";
 import type { JsonObject, Tree } from "@sigrun/shared/blocks";
 import type { DataOps, JsonValue } from "@sigrun/shared/blocks";
 import type { ImageSign } from "../images/rewrite.js";
@@ -38,6 +39,7 @@ import type {
 	UploadedFile,
 } from "../../extension.js";
 import type { ExtensionSurfaceBinding } from "../../harness/loader.js";
+import { coreViewInfos } from "../core-views/index.js";
 import { AccessCache } from "./access-cache.js";
 import { ActionDedup } from "./dedup.js";
 import { eventKey, instanceKey as defaultInstanceKey } from "./instance.js";
@@ -283,6 +285,46 @@ export class SurfaceService {
 		this.watchers = options?.watchers ?? new WatcherRegistry();
 		this.publishChanged = options?.publishChanged;
 		this.imageSign = options?.imageSign;
+	}
+
+	/**
+	 * Attach the core-owned views (tabs+skills Task 4): registered under
+	 * the reserved `core` slug through the same `extra` lookup the
+	 * settings surfaces use, so core views render/data/act through the
+	 * ONE code path extension surfaces do. Their defs are retained for
+	 * the `/v1/meta` + `/v1/extensions` `coreViews` projection (core
+	 * views are NOT extensions — no `extensions[]` row, so the health
+	 * dot is unaffected).
+	 */
+	attachCoreViews(defs: readonly SurfaceDef<"view">[]): void {
+		this.extra.push({ extension: "core", defs });
+		this.coreViewDefs.push(...defs);
+	}
+
+	/** The attached core-view defs (attachCoreViews order). */
+	readonly coreViewDefs: SurfaceDef<"view">[] = [];
+
+	/**
+	 * The `coreViews` wire rows (tabs+skills Task 4): id/title/icon (+
+	 * refreshMs) per attached core-view def.
+	 */
+	coreViews(): readonly CoreViewInfo[] {
+		return coreViewInfos(this.coreViewDefs);
+	}
+
+	/**
+	 * Bump every KNOWN instance of one surface (tabs+skills Task 4): the
+	 * instance table's keys are `slug\u0001id\u0001key`, so a prefix scan
+	 * finds every rendered instance; each gets a full {@link bumpRev}
+	 * (rev advance + `surface.changed` publication). A surface with NO
+	 * rendered instances is a no-op (nothing watches it).
+	 */
+	bumpAllInstances(slug: string, id: string): void {
+		const prefix = `${slug}\u0001${id}\u0001`;
+		for (const composite of this.instances.keys()) {
+			if (!composite.startsWith(prefix)) continue;
+			this.bumpRev(slug, id, composite.slice(prefix.length));
+		}
 	}
 
 	/**

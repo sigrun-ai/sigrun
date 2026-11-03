@@ -210,6 +210,13 @@ const PageBlock = Type.Object({
 			hint: Type.Optional(Type.String()),
 		}),
 	),
+	/** Server-declared compact drill-in (presentation-only). */
+	selection: Type.Optional(
+		Type.Object({
+			selected: Type.Boolean(),
+			back: Type.Object({}, { additionalProperties: true }),
+		}),
+	),
 });
 
 const StackBlock = Type.Object({

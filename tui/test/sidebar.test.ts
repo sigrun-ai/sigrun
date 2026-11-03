@@ -16,6 +16,7 @@ import type {
 	ConversationSummary,
 	SigrunClient,
 } from "../src/api.js";
+import type { ExtensionsResponse } from "@sigrun/shared/views";
 
 function summary(
 	id: number,
@@ -160,5 +161,58 @@ describe("Sidebar (C2 tree rows)", () => {
 		await sidebar.refresh();
 		expect(sidebar.cursor).toBe(1);
 		expect(sidebar.rows[sidebar.cursor]?.id).toBe(3);
+	});
+});
+
+describe("Sidebar core views (tabs+skills Task 4)", () => {
+	/** A stub client whose listExtensions carries core views + ext views. */
+	function viewsClient(): SigrunClient {
+		return {
+			listConversations(): Promise<ConversationList> {
+				return Promise.resolve({ conversations: [] });
+			},
+			listExtensions(): Promise<ExtensionsResponse> {
+				return Promise.resolve({
+					extensions: [
+						{
+							name: "fixture-surfaces",
+							status: "ok",
+							interactionKinds: [],
+							ambientKeys: [],
+							workers: [],
+							services: [],
+							surfaces: [
+								{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+							],
+						},
+					],
+					coreViews: [
+						{ id: "skills", title: "Skills", icon: "book" },
+						{ id: "jobs", title: "Jobs", icon: "clock" },
+					],
+				});
+			},
+		} as unknown as SigrunClient;
+	}
+
+	test("refreshViews lists core views FIRST (slug \"core\"), ahead of extension views", async () => {
+		const sidebar = new Sidebar(viewsClient());
+		await sidebar.refresh();
+		await sidebar.refreshViews();
+		expect(sidebar.views).toEqual([
+			{ slug: "core", id: "skills", title: "Skills" },
+			{ slug: "core", id: "jobs", title: "Jobs" },
+			{ slug: "fixture-surfaces", id: "board", title: "Acme board" },
+		]);
+	});
+
+	test("confirmView selects a core view with the core slug", async () => {
+		const sidebar = new Sidebar(viewsClient());
+		await sidebar.refresh();
+		await sidebar.refreshViews();
+		const selections: SidebarSelection[] = [];
+		sidebar.onSelect = (selection) => selections.push(selection);
+		sidebar.confirmView(1);
+		expect(selections).toEqual([{ view: { slug: "core", id: "jobs" } }]);
 	});
 });

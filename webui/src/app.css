@@ -2036,164 +2036,6 @@ body {
 	font-size: 0.8rem;
 }
 
-/* ── jobs panel (the Jobs tab's content, W4 Task 5) ─────────────────── */
-
-.jobs-panel {
-	display: flex;
-	flex-direction: column;
-	min-height: 0;
-	height: 100%;
-	padding: 0.6rem 0.8rem;
-}
-
-.jobs-list {
-	list-style: none;
-	margin: 0;
-	padding: 0;
-	overflow-y: auto;
-	flex: 1;
-	min-height: 0;
-}
-
-.job-row {
-	border-bottom: 1px solid var(--border);
-	padding: 0.35rem 0;
-}
-
-.job-summary {
-	display: grid;
-	grid-template-columns: 1fr;
-	gap: 1px;
-	border: none;
-	background: transparent;
-	text-align: left;
-	padding: 2px 4px;
-	cursor: pointer;
-	border-radius: 5px;
-	font: inherit;
-}
-
-.job-summary:hover {
-	background: var(--surface-2);
-}
-
-.job-name {
-	color: var(--text);
-	font-size: 12.5px;
-	font-weight: 500;
-}
-
-.job-schedule,
-.job-next,
-.job-last {
-	color: var(--muted);
-	font-size: 11.5px;
-	font-family: var(--mono);
-}
-
-.job-summary-side {
-	display: flex;
-	align-items: center;
-	justify-content: flex-end;
-	gap: 0.4rem;
-	padding: 0 4px 0.25rem;
-}
-
-.job-conversation {
-	background: none;
-	border: none;
-	color: var(--accent);
-	font: 11.5px var(--mono);
-	cursor: pointer;
-	padding: 0;
-	text-decoration: underline;
-}
-
-.job-runnow {
-	background: transparent;
-	border: 1px solid var(--border);
-	border-radius: 5px;
-	color: var(--text);
-	font: 11px var(--sans);
-	padding: 1px 8px;
-	cursor: pointer;
-}
-
-.job-runnow:hover {
-	border-color: var(--accent);
-	color: var(--accent);
-}
-
-.job-detail {
-	padding: 0.3rem 0.4rem 0.5rem;
-}
-
-.job-section-title {
-	margin: 0.4rem 0 0.25rem;
-	font-weight: 600;
-	font-size: 10.5px;
-	color: var(--faint);
-	text-transform: uppercase;
-	letter-spacing: 0.5px;
-}
-
-.job-run-row,
-.job-revision-meta {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.5rem;
-	align-items: baseline;
-	font: 11px var(--mono);
-	color: var(--muted);
-	padding: 1px 0;
-}
-
-.job-run-version,
-.job-revision-version {
-	color: var(--faint);
-}
-
-.job-run-manual {
-	border: 1px solid var(--border);
-	border-radius: 4px;
-	padding: 0 4px;
-	font-size: 10px;
-}
-
-.job-run-outcome[data-outcome="failed"],
-.job-run-error {
-	color: var(--danger);
-}
-
-.job-run-outcome[data-outcome="succeeded"] {
-	color: var(--ok);
-}
-
-.job-run-error {
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	max-width: 100%;
-}
-
-.job-revision-row {
-	margin: 0.25rem 0;
-}
-
-.job-revision-changedBy {
-	color: var(--text);
-}
-
-.job-revision-row .interaction-diff {
-	margin: 0.25rem 0;
-}
-
-.job-empty {
-	color: var(--faint);
-	font-size: 11.5px;
-	margin: 0.1rem 0;
-}
-
 /* ── backdrops (the ≤900px overlays' click-outside surfaces) ────────── */
 
 .drawer-backdrop,
@@ -2201,10 +2043,135 @@ body {
 	display: none;
 }
 
-/* ── narrow viewports (≤900px: drawer + overlay panel) ───────────────── */
+/* ── the phone bottom bar (tabs+skills Task 2): fixed at ≤900px ─────── */
+
+:root {
+	/* The bar's height: the bar metrics and the main column's clearing
+	   padding share the ONE number (review fix). */
+	--bottom-bar-h: 52px;
+}
+
+.bottom-bar,
+.bottom-sheet-backdrop {
+	display: none;
+}
 
 @media (max-width: 900px) {
-	/* The rail + sidebar collapse into one left drawer. */
+	/* The rail's tabs move to the bottom bar; the drawer keeps ONLY the
+	   conversation list. */
+	.side-drawer .rail {
+		display: none;
+	}
+
+	/* The drawer's list takes the full drawer width (the rail's 52px
+	   column is gone). */
+	.side-drawer .session-list {
+		width: min(320px, 85vw);
+		border-right: none;
+	}
+
+	.bottom-bar {
+		display: flex;
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 80;
+		align-items: stretch;
+		justify-content: space-around;
+		height: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom));
+		background: var(--bg);
+		border-top: 1px solid var(--border);
+		/* The iOS home indicator: the bar's own padding clears it. */
+		padding-bottom: env(safe-area-inset-bottom);
+	}
+
+	.bottom-bar-btn {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 2px;
+		padding: 6px 0 4px;
+		border: none;
+		background: transparent;
+		color: var(--faint);
+		cursor: pointer;
+	}
+
+	.bottom-bar-btn svg {
+		width: 20px;
+		height: 20px;
+	}
+
+	.bottom-bar-btn:hover,
+	.bottom-bar-btn-active {
+		color: var(--text);
+	}
+
+	.bottom-bar-btn-active {
+		box-shadow: inset 0 2px 0 var(--accent);
+	}
+
+	.bottom-bar-label {
+		font-size: 10px;
+		line-height: 1;
+	}
+
+	/* The More sheet: a bottom-anchored dialog over a dimming backdrop,
+	   above the bar. */
+	.bottom-sheet-backdrop {
+		display: flex;
+		position: fixed;
+		inset: 0;
+		z-index: 95;
+		background: rgb(0 0 0 / 35%);
+		flex-direction: column;
+		justify-content: flex-end;
+	}
+
+	.bottom-sheet {
+		background: var(--surface);
+		border-top: 1px solid var(--border);
+		border-radius: 12px 12px 0 0;
+		padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		max-height: 60vh;
+		overflow-y: auto;
+	}
+
+	.bottom-sheet-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 12px;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text);
+		cursor: pointer;
+		font-size: 1rem;
+		text-align: left;
+	}
+
+	.bottom-sheet-item:hover {
+		background: var(--surface-2);
+	}
+
+	.bottom-sheet-item svg {
+		width: 18px;
+		height: 18px;
+		color: var(--muted);
+		flex: none;
+	}
+
+	/* ── narrow viewports (≤900px: drawer + overlay panel) ──────────── */
+
+	/* The rail + sidebar collapse into one left drawer (the rail itself
+	   hides inside it — the phone's tabs live on the bottom bar). */
 	.side-drawer {
 		position: fixed;
 		top: 0;
@@ -2252,6 +2219,13 @@ body {
 
 	.chat-center {
 		padding: 20px 16px 8rem;
+	}
+
+	/* The main column clears the fixed bottom bar (the bar overlays the
+	   app root; without the padding the composer dock and the last row of
+	   any full-width surface slide under it). */
+	.main-column {
+		padding-bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom));
 	}
 
 	.chat-header {
@@ -2387,14 +2361,6 @@ body {
 
 .settings-head .spacer {
 	flex: 1;
-}
-
-.settings-close {
-	background: none;
-	border: none;
-	color: var(--muted);
-	cursor: pointer;
-	font-size: 13px;
 }
 
 .settings-body {

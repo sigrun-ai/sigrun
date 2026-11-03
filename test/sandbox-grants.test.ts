@@ -138,6 +138,48 @@ describe("validateGrantPath", () => {
 		).toEqual({ ok: false, reason: "path is inside another user's area" });
 	});
 
+	test("grants never overlap the user's curation dir", async () => {
+		const { managed } = await fixture();
+		const own = managed.userAreas("alice");
+		await mkdir(join(own, "curation", "history"), { recursive: true });
+		await mkdir(join(own, "workspace"), { recursive: true });
+		expect(reason(join(own, "curation"), managed)).toBe(
+			"path overlaps the user's curation dir",
+		);
+		expect(reason(join(own, "curation", "history"), managed)).toBe(
+			"path overlaps the user's curation dir",
+		);
+		// The bare user area contains curation/ and so is refused too.
+		expect(reason(own, managed)).toBe("path overlaps the user's curation dir");
+		// The designed workspace stays valid.
+		expect(
+			validateGrantPath(join(own, "workspace"), { managed, user: "alice" }),
+		).toEqual({ ok: true, realpath: await realpath(join(own, "workspace")) });
+	});
+
+	test("an inherited grant never overlaps the former owner's curation dir", async () => {
+		const { managed } = await fixture();
+		const inherited = join(managed.userAreas("alice"), "curation");
+		await mkdir(inherited, { recursive: true });
+		expect(
+			validateGrantPath(inherited, {
+				managed,
+				user: "bob",
+				inheritedFrom: "alice",
+			}),
+		).toEqual({ ok: false, reason: "path overlaps the user's curation dir" });
+	});
+
+	test("revalidate fails a stored workspace that is the bare user area", async () => {
+		const { managed } = await fixture();
+		const own = managed.userAreas("alice");
+		await mkdir(own, { recursive: true });
+		expect(revalidate({ ...record(), workspace: own }, managed)).toEqual({
+			ok: false,
+			reason: "path overlaps the user's curation dir",
+		});
+	});
+
 	test("an existing foreign data extension is protected in both directions", async () => {
 		const { managed } = await fixture();
 		const extension = join(managed.roots.dataDir, "acme-ext");

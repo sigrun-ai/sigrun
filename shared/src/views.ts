@@ -620,6 +620,13 @@ export interface MetaResponse {
 		}[];
 	};
 	/**
+	 * The core-owned view surfaces (tabs+skills Task 4) — the same list
+	 * `/v1/extensions` serves under `coreViews`; the meta copy exists so
+	 * the tab shell's rail never fetches `/v1/extensions` separately.
+	 * Absent when no core views attach.
+	 */
+	readonly coreViews?: readonly CoreViewInfo[];
+	/**
 	 * Boot-merge collisions (build-and-webui Task 6): name collisions among
 	 * extension-contributed webui bundles, the provider-catalog merge sink,
 	 * and extension COMMAND names (W5 Task 3). All three merges are
@@ -810,6 +817,28 @@ export interface ExtensionSurfaceInfo {
 /** The `GET /v1/extensions` payload (spec §7.7). */
 export interface ExtensionsResponse {
 	readonly extensions: readonly ExtensionInfo[];
+	/**
+	 * The core-owned view surfaces (tabs+skills Task 4): one row per
+	 * `SurfaceDef<"view">` attached under the reserved `core` slug via
+	 * `SurfaceService.attachCoreViews` (the Jobs/Skills views). Core views
+	 * are NOT `extensions[]` rows — the health dot stays unaffected — so
+	 * channels list them from here, ahead of the extension views.
+	 */
+	readonly coreViews?: readonly CoreViewInfo[];
+}
+
+/**
+ * One core-owned view surface on the wire (tabs+skills Task 4): the
+ * id/title/icon the channels' rail/tab registration reads, plus the
+ * declared refresh cadence. Mirrors the view half of
+ * `ExtensionSurfaceInfo`, minus `placement` (core views are always
+ * `view`) and `sharedData` (render-time concern, never list-time).
+ */
+export interface CoreViewInfo {
+	readonly id: string;
+	readonly title: string;
+	readonly icon: string;
+	readonly refreshMs?: number;
 }
 
 /**

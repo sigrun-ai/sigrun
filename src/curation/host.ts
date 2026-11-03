@@ -74,6 +74,7 @@ export interface CurationHostDeps {
 				readonly store: SkillStore;
 				readonly overlays: OverlayStore;
 				readonly usage: UsageCounters;
+				readonly history: import("../history/git.js").GitHistory;
 		  }
 		| undefined;
 	/** The skills-options discovery roots (upstream resolution). */
@@ -323,7 +324,9 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 				list: () => store.list(),
 				view: (name, file) => store.view(name, file),
 				feed: (limit, before) => store.feed(limit, before),
-				pin: (name, pinned) => store.pin(name, pinned),
+				pin: async (name, pinned) => {
+				await store.pin(name, pinned);
+			},
 				undo: (entryIds) => store.undo(entryIds),
 				apply: (name, change, meta) =>
 					store.apply(

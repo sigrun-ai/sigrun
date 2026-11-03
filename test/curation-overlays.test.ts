@@ -27,7 +27,8 @@ import type {
 	ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { curationDir, learnedSkillsDir } from "../src/curation/paths.js";
+import { curationDir, learnedSkillsDir, userRepoSpec } from "../src/curation/paths.js";
+import { GitHistory } from "../src/history/git.js";
 import { SkillStore } from "../src/curation/store.js";
 import {
 	OVERLAY_HEADING,
@@ -61,27 +62,32 @@ interface Setup {
 	readonly userArea: string;
 	readonly feed: SkillStore;
 	readonly overlays: OverlayStore;
+	readonly history: GitHistory;
 }
 
 /** One user's store pair (the skill feed store + its overlay store). */
 async function setup(user = "alice"): Promise<Setup> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-overlays-"));
-	cleanups.push(() => rm(dir, { recursive: true, force: true }));
+	cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 3 }));
 	const userArea = join(dir, "users", user);
+	const history = new GitHistory(userRepoSpec(userArea), {
+		gitHome: join(dir, "state", "git-home"),
+	});
 	const feed = new SkillStore({
 		userArea,
 		user,
 		now: () => new Date(),
 		nameTakenElsewhere: async () => undefined,
 		userExists: () => true,
+		history,
 	});
 	const overlays = new OverlayStore({
 		userArea,
 		user,
 		userExists: () => true,
-		feed,
+		history,
 	});
-	return { dir, userArea, feed, overlays };
+	return { dir, userArea, feed, overlays, history };
 }
 
 const UPSTREAM_BODY = "# Deploy\n\nDeploy the acme way.\n";
@@ -195,6 +201,42 @@ async function workspaceEnv(workspacePath: string) {
 // ---------------------------------------------------------------------------
 
 describe("overlay serving", () => {
+	test("put/remove commit to the same repo", async () => {
+		const { dir, feed, overlays, history } = await setup();
+		await writeUserDirSkill(dir);
+		const put = await overlays.put(
+			userDirKey(),
+			"Prefer the blue button.",
+			hashSkill(UPSTREAM_BODY),
+			{ actor: "curator", reviewId: "review-ov-1" },
+		);
+		const removed = await overlays.remove(userDirKey(), { actor: "user" });
+		// put and remove each made ONE commit in the SAME user repo, and the
+		// returned feed entries carry the commit SHAs.
+		const log = await history.log({ limit: 10 });
+		expect(log).toHaveLength(2);
+		expect(put.id).toBe(log[1]!.sha);
+		expect(removed.id).toBe(log[0]!.sha);
+		expect(log[1]).toMatchObject({
+			actor: { kind: "curator" },
+			action: "overlay",
+			skill: "acme-deploy",
+			reviewId: "review-ov-1",
+			summary: "overlay user dir:acme-deploy",
+		});
+		expect(log[0]).toMatchObject({
+			actor: { kind: "user", user: "alice" },
+			action: "overlay",
+			skill: "acme-deploy",
+			summary: "overlay user dir:acme-deploy",
+		});
+		// The commits touch the overlay file itself.
+		expect(log[1]!.paths.some((path) => path.startsWith("curation/overlays/user-dir/"))).toBe(true);
+		expect(log[0]!.paths.some((path) => path.startsWith("curation/overlays/user-dir/"))).toBe(true);
+		// And the changes still appear in the curator feed.
+		expect((await feed.feed(10)).map((entry) => entry.id)).toEqual([removed.id, put.id]);
+	});
+
 	test("load_skill serves upstream body then the heading then the overlay", async () => {
 		const { dir, userArea, feed, overlays } = await setup();
 		const userDir = await writeUserDirSkill(dir);
@@ -211,7 +253,16 @@ describe("overlay serving", () => {
 			actor: "curator",
 			reviewId: "review-1",
 		});
-		expect(await feed.feed(1)).toEqual([entry]);
+		// The feed's read-back carries the commit sha as id/after.
+		const feedPage = await feed.feed(1);
+		expect(feedPage).toHaveLength(1);
+		expect(feedPage[0]).toMatchObject({
+			id: entry.id,
+			action: "overlay",
+			skill: "acme-deploy",
+			actor: "curator",
+			reviewId: "review-1",
+		});
 		// Storage: curationDir/overlays/<root>/<sha256-of-key>.json.
 		const stored = await readdir(
 			join(curationDir(userArea), "overlays", "user-dir"),
@@ -499,12 +550,17 @@ describe("OverlayStore rules", () => {
 			now: () => new Date(),
 			nameTakenElsewhere: async () => undefined,
 			userExists: () => false,
+			history: new GitHistory(userRepoSpec(userArea), {
+				gitHome: join(dir, "state", "git-home"),
+			}),
 		});
 		const overlays = new OverlayStore({
 			userArea,
 			user: "alice",
 			userExists: () => false,
-			feed,
+			history: new GitHistory(userRepoSpec(userArea), {
+				gitHome: join(dir, "state", "git-home"),
+			}),
 		});
 		await expect(overlays.put(userDirKey(), "n", "h", { actor: "curator" })).rejects.toThrow(
 			"user removed",

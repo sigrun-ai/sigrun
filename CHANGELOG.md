@@ -15,6 +15,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Release-pin bump to 0.6.1 (root, shared, tui, sandbox platform packages, chart appVersion, compose defaults).
 
+## [Unreleased]
+
+### Added
+- **Views are tabs (webui).** The webui shell registers views as rail
+  tabs with remembered routes; the chat view keeps the conversation
+  list and right panel to itself. Below the tablet breakpoint a phone
+  bottom tab bar (with a More sheet) replaces the rail.
+- **`page.selection`** — a server-declared, presentation-only
+  list-first drill-in for compact widths (`{selected, back}` on a
+  `page`; webui and TUI render it, `toText` ignores it).
+- **Core views.** Core attaches its own view surfaces under the
+  reserved `core` slug and lists them as `coreViews` (one
+  `CoreViewInfo {id, title, icon, refreshMs?}` per view) on
+  `/v1/extensions` and `/v1/meta`; they are never `extensions[]` rows,
+  so the health dot is unaffected. `job.changed` now bumps every
+  rendered core/jobs instance.
+- **The Jobs tab** (`core/jobs`): the jobs surface as a core blocks
+  view — sidebar of the caller-visible jobs, drill-in with summary,
+  paged runs and revisions (a selected revision diffs its spec JSON
+  against the previous one), Run now / Reset state for write access,
+  and per-row navigation into a run's conversation. The Jobs panel is
+  gone.
+- **The Skills tab** (`core/skills`): every skill root the deployment
+  serves — Workspace / Learned / Config dir (the deployment-wide
+  `<config-dir>/skills/`, read-only) / one group per installed package
+  (`· <pkg>`, with a per-row package badge) / Deleted — with shadowing visible, owned-skill CRUD, per-skill git
+  history (25 entries per page, per-file diffs, restore), deleted-skill
+  restore, and per-user overlays as the only write to the read-only
+  shared roots. Some surface actions return `navigate`; the webui
+  applies that navigation, the TUI does not yet (a known channel gap).
+- **Every-root skill discovery** (`src/skills/roots.ts`): workspace,
+  learned, user dir, and every installed package's skills listed in one
+  pass, with precedence/shadowing resolution and symlink-safe reads.
+- **GitHistory** (`src/history/git.ts`) — isolated local git for
+  sigrun-owned history stores: execFile with explicit `--git-dir` /
+  `--work-tree`, a hermetic git env, per-repo locking, and fail-soft
+  writes (a broken repo is quarantined aside and re-initialized;
+  mutations never fail because history did).
+- **Curation stores on git** (Task 9): each user's learned skills,
+  overlays, and curator state live in a per-user git history repo; the
+  change feed's `actor` widens to `"outside"` and its `id`/`before`/
+  `after` are commit SHAs. A once-per-process migration imports the
+  pre-git store (the legacy files are left read-only, outside the
+  repo's pathspec).
+- **Workspace skills history** (Task 10): the workspace `skills/`
+  tree gets its own per-user repo (git dir outside the work tree),
+  caught up on settled runs and tab opens; ownerless conversations
+  skip it.
+
+### Changed
+- **The curation seal**: workspaces and grants that sit inside or
+  contain a user's `curation/` tree are rejected; boot revalidates
+  stored records and names each failing one loudly. A user whose
+  workspace was the bare user area loses agent tools until an admin
+  re-points it: `PATCH /v1/users/<u> {"workspace": "<userArea>/workspace"}`.
+  History tamper-resistance holds under active sandbox isolation; a
+  single-user install without isolation runs the agent unsandboxed
+  (the existing trust model).
+
 ## [0.6.0] - 2026-11-02
 
 ### Added

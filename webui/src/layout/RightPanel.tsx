@@ -10,7 +10,7 @@
 import type { ReactNode } from "react";
 import type { ExtViewEntry } from "./extViews";
 
-export type PanelMode = "outline" | "workspace" | "jobs";
+export type PanelMode = "outline" | "workspace";
 
 export function RightPanel(props: {
 	/** The open mode, or null when the panel is closed. */
@@ -19,8 +19,6 @@ export function RightPanel(props: {
 	readonly outline: ReactNode;
 	/** The workspace panel's content (rendered when mode === "workspace"). */
 	readonly workspace: ReactNode;
-	/** The jobs panel's content (rendered when mode === "jobs"). */
-	readonly jobs: ReactNode;
 	/**
 	 * UI-blocks U3 Task 5: the extension PANEL surfaces — one tab per
 	 * declared panel. The ACTIVE ext panel renders through `extContent`
@@ -34,7 +32,7 @@ export function RightPanel(props: {
 	/** Opens an extension panel tab. */
 	readonly onOpenExtPanel?: (slug: string, id: string) => void;
 }) {
-	const { mode, outline, workspace, jobs } = props;
+	const { mode, outline, workspace } = props;
 	const extPanels = props.extPanels ?? [];
 	// U3 Task 5: extension panel tabs keep the panel OPEN (the strip is
 	// the registration surface); a core-mode panel with no ext panels
@@ -74,9 +72,7 @@ export function RightPanel(props: {
 					? null
 					: mode === "outline"
 						? outline
-						: mode === "jobs"
-							? jobs
-							: workspace}
+						: workspace}
 		</aside>
 	);
 }

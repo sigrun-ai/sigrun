@@ -35,6 +35,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { join } from "node:path";
 import { LoginFlows } from "./login/flows.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationId } from "@earendil-works/pi-durable";
+import { SessionMetaDoc } from "./session-meta.js";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
@@ -44,6 +46,12 @@ import type { ServerContext } from "./context.js";
 import { SseRegistry } from "./sse-registry.js";
 import { storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
+import { createJobsView } from "./core-views/jobs.js";
+import { createSkillsView } from "./core-views/skills.js";
+import { learnedSkillsDir } from "../curation/paths.js";
+import { primaryAdmin } from "../harness/identity/primary-admin.js";
+import { isSuperuser } from "./auth/principal.js";
+import { accessPrincipalOf } from "./auth/access-principal.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
 import { registerAdminRoutes } from "./routes/admin.js";
@@ -341,6 +349,47 @@ export async function createServer(
 			),
 		},
 	]);
+	// The core-owned views (tabs+skills Tasks 4/5/12): the reserved `core`
+	// slug's `SurfaceDef<"view">` list — the built-in Jobs view (Task 5)
+	// and the built-in Skills view (Task 12). The jobs view shares the
+	// routes' access rule (`jobs-access.ts`) and the routes' principal
+	// projection (accessPrincipalOf over the live directory), so the
+	// view and `GET /v1/jobs` always agree on which rows a caller sees.
+	// The skills view resolves every root per CALLER (their workspace +
+	// learned repos, the deployment's config dir and package roots) and
+	// bumps every rendered instance after every write.
+	surfacesService.attachCoreViews([
+		createJobsView({
+			jobs: opened.jobs,
+			now: () => new Date(),
+			accessPrincipal: (principal) =>
+				accessPrincipalOf(principal, opened.identity.users),
+		}),
+		createSkillsView({
+			curationOf: (user) => opened.curationOf(user),
+			workspaceRoot: (user) => opened.workspaceRootOf(user),
+			workspaceHistoryFor: (user) => opened.history.workspace(user),
+			learnedDirOf: (user) => {
+				if (opened.identity.users.get(user) === undefined) return undefined;
+				return learnedSkillsDir(
+					join(opened.extensionStores.roots.dataDir, "users", user),
+				);
+			},
+			userDir: join(opened.extensionStores.roots.configDir, "skills"),
+			packageRoots: () => opened.skillRoots,
+			bump: () => surfacesService.bumpAllInstances("core", "skills"),
+			// Whole-branch review I3: the userless superuser (the naive
+			// single-operator principal) acts as the PRIMARY ADMIN — the
+			// identity package's own seam (the jail's fallback). Absent (an
+			// empty directory), the superuser keeps its own scope. An
+			// anonymous NON-superuser never resolves (access none).
+			resolveUserlessCaller: (principal) =>
+				principal.user ??
+				(isSuperuser(principal)
+					? primaryAdmin(opened.identity.users.list())?.user
+					: undefined),
+		}),
+	]);
 	app.decorate("surfaces", surfacesService);
 	// The chat-block change seam (UI-blocks U5 Task 2, spec §8.2):
 	// show_blocks/update_blocks AND the user-edit route publish
@@ -410,6 +459,42 @@ export async function createServer(
 	// the first event) and never stopped — the surface rides the server
 	// lifetime, like the routes above.
 	startNotifications(ctx);
+	// The jobs view's freshness (tabs+skills Task 5): every `job.changed`
+	// host event bumps every rendered `core/jobs` instance's rev through
+	// the bus's bounded side lane (the hub contract — no work inline);
+	// watching clients refetch the data document (the tree is static).
+	opened.events.subscribe((event) => {
+		if (event.type !== "job.changed") return;
+		void opened.eventBus.runBounded("core/jobs job.changed", () => {
+			surfacesService.bumpAllInstances("core", "jobs");
+		});
+	});
+	// Workspace skills history (tabs+skills Task 10): every settled run
+	// catches up the conversation owner's `<workspace>/skills` repo on the
+	// bus's bounded side lane. Every error is caught and logged — the
+	// settle hook NEVER throws into the event bus — and ownerless
+	// conversations (no SessionMeta owner) do nothing.
+	opened.events.subscribe((event) => {
+		if (event.type !== "run.settled") return;
+		void opened.eventBus.runBounded("history run.settled", async () => {
+			try {
+				const meta = await opened.harness.snapshot(
+					SessionMetaDoc,
+					event.conversationId as ConversationId,
+					BACKGROUND_CONTEXT,
+				);
+				const owner = meta?.owner;
+				if (owner === undefined) return;
+				await opened.history.workspace(owner)?.catchUp({
+					actor: { kind: "agent" },
+					summary: "agent changes",
+					conversationId: event.conversationId,
+				});
+			} catch (error) {
+				console.warn(`workspace history catch-up failed: ${String(error)}`);
+			}
+		});
+	});
 	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive
 	// `X-Sigrun-User` hook — Host/Origin checks, the public surface, the
 	// env service token, the setup gate, and method resolution stamp

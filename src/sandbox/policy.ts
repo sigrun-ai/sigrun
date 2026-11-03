@@ -140,7 +140,12 @@ export function defaultPackageConfig(coreRoot: string): string {
 	return join(coreRoot, "package.json");
 }
 
-function validateUserPath(
+/**
+ * One per-user path against the grant validator (Task 10 exports it:
+ * the workspace history's `workspaceRoot` resolves the SAME precedence
+ * as `buildUserPolicy` and must refuse the same paths).
+ */
+export function validateUserPath(
 	path: string,
 	record: DirectoryUser,
 	managed: ManagedPaths,

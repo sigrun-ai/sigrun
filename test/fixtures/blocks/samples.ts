@@ -56,6 +56,7 @@ const PLACEMENT_FILES: Readonly<Record<Placement, readonly string[]>> = {
 		// chat corpus (any chat-legal block is view-legal as a nested child).
 		"page",
 		"page-sidebar",
+		"page-selection",
 	],
 	panel: [
 		// panel surfaces root at `page` without `sidebar` (§5.7).

@@ -51,6 +51,7 @@ const SAMPLES: readonly string[] = [
 	"markdown",
 	"meter",
 	"page",
+	"page-selection",
 	"page-sidebar",
 	"section",
 	"stack",

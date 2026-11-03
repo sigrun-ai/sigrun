@@ -17,11 +17,10 @@
  * {@link OverlayStore.markOrphans} (present again clears the mark), and
  * removable.
  *
- * Every overlay change is recorded in the SAME per-user change feed the
- * {@link SkillStore} owns (A4): an entry with action `"overlay"` (the
- * union member exists for exactly this), appended through the store's
- * feed seam so retention and the per-user lock hold. The feed is the
- * audit record and the P8 view's data; `OverlayStore` owns the files.
+ * Every overlay change commits to the user's curation history repo
+ * (tabs+skills Task 9): one commit per put/remove with the Sigrun-*
+ * trailers, so overlay changes appear in the same feed as learned-skill
+ * changes. `OverlayStore` owns the files.
  */
 
 import { randomUUID, createHash } from "node:crypto";
@@ -29,10 +28,22 @@ import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { GitHistory } from "../history/git.js";
 import { curationDir, learnedSkillsDir } from "./paths.js";
 import { validSkillName } from "./names.js";
-import type { Actor, FeedEntry, SkillStore } from "./store.js";
+import type { Actor, FeedEntry } from "./store.js";
 import type { SkillsOptions } from "../skills/index.js";
+import type { HistoryActor } from "../history/git.js";
+
+/** The Sigrun actor shape for a history commit. */
+function historyActor(actor: Actor, user: string): HistoryActor {
+	switch (actor) {
+		case "user": return { kind: "user", user };
+		case "curator": return { kind: "curator" };
+		case "agent": return { kind: "agent" };
+		case "outside": return { kind: "outside" };
+	}
+}
 
 /**
  * The heading the served overlay follows: upstream body, then this
@@ -74,15 +85,17 @@ export interface OverlayMeta {
 	readonly conversationId?: number;
 }
 
-/** What `OverlayStore` needs: the user's area and the feed-writing skill store. */
+/** What `OverlayStore` needs: the user's area and the user's history repo. */
 export interface OverlayStoreOptions {
 	/** The owner's user area: `<dataDir>/users/<user>`. */
 	readonly userArea: string;
 	readonly user: string;
 	/** Checked before every operation; false → throws `user removed` (the A4 pattern). */
 	readonly userExists: () => boolean;
-	/** The user's skill store — overlay changes append to its feed. */
-	readonly feed: SkillStore;
+	/** The user's curation history repo — overlay changes commit here. */
+	readonly history: GitHistory;
+	/** The user's pending migration: put/remove await it (review I3). */
+	readonly ready?: () => Promise<void>;
 }
 
 /** Directory label per root kind (no spaces in path segments). */
@@ -186,23 +199,60 @@ export class OverlayStore {
 	 */
 	async put(key: OverlayKey, text: string, upstreamHash: string, meta: OverlayMeta): Promise<FeedEntry> {
 		this.requireUser();
+		await this.options.ready?.();
 		checkKey(key);
 		if (await exists(join(learnedSkillsDir(this.options.userArea), key.skill))) {
 			throw new Error(`an overlay never applies to a learned skill: ${key.skill}`);
 		}
+		// The repo's work tree must exist before the git dir can init.
+		await mkdir(curationDir(this.options.userArea), { recursive: true });
 		const overlay: OverlayFile = { key, text, upstreamHash };
-		await writeFileAtomic(this.fileOf(key), `${JSON.stringify(overlay, null, 2)}\n`);
-		return this.appendFeed(key, meta, meta.reason ?? "overlay written");
+		const summary = `overlay ${key.root}:${key.skill}`;
+		const sha = await this.options.history.write(
+			{
+				actor: historyActor(meta.actor, this.options.user),
+				summary,
+				action: "overlay",
+				skill: key.skill,
+				...(meta.reason === undefined ? {} : { reason: meta.reason }),
+				...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }),
+				...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }),
+			},
+			async () => {
+				this.requireUser();
+				await writeFileAtomic(this.fileOf(key), `${JSON.stringify(overlay, null, 2)}\n`);
+			},
+			{ kind: "outside" },
+		);
+		return this.entry(key, sha, meta, summary);
 	}
 
 	/** Remove the overlay for a key; returns the feed entry. Throws when none is stored. */
 	async remove(key: OverlayKey, meta: OverlayMeta): Promise<FeedEntry> {
 		this.requireUser();
+		await this.options.ready?.();
 		checkKey(key);
 		const file = this.fileOf(key);
 		if (!(await exists(file))) throw new Error(`unknown overlay: ${keyString(key)}`);
-		await rm(file);
-		return this.appendFeed(key, meta, meta.reason ?? "overlay removed");
+		await mkdir(curationDir(this.options.userArea), { recursive: true });
+		const summary = `overlay ${key.root}:${key.skill}`;
+		const sha = await this.options.history.write(
+			{
+				actor: historyActor(meta.actor, this.options.user),
+				summary,
+				action: "overlay",
+				skill: key.skill,
+				...(meta.reason === undefined ? {} : { reason: meta.reason }),
+				...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }),
+				...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }),
+			},
+			async () => {
+				this.requireUser();
+				await rm(file);
+			},
+			{ kind: "outside" },
+		);
+		return this.entry(key, sha, meta, summary);
 	}
 
 	/** Every stored overlay (present upstreams and orphans alike), sorted by root then name. */
@@ -278,20 +328,19 @@ export class OverlayStore {
 		};
 	}
 
-	/** Record one overlay change in the skill store's feed (the `"overlay"` action). */
-	private async appendFeed(key: OverlayKey, meta: OverlayMeta, summary: string): Promise<FeedEntry> {
-		const entry: FeedEntry = {
-			id: randomUUID(),
+	/** Record one overlay change in the user repo as an `"overlay"` entry. */
+	private entry(key: OverlayKey, sha: string | undefined, meta: OverlayMeta, summary: string): FeedEntry {
+		return {
+			id: sha ?? `(no-commit-${randomUUID()})`,
 			at: new Date().toISOString(),
 			actor: meta.actor,
 			action: "overlay",
 			skill: key.skill,
-			reason: summary,
+			reason: meta.reason ?? summary,
 			...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }),
 			...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }),
+			...(sha === undefined ? {} : { after: sha }),
 		};
-		await this.options.feed.appendFeedEntry(entry);
-		return entry;
 	}
 }
 

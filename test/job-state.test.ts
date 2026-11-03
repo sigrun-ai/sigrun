@@ -77,6 +77,7 @@ async function serviceFor(
 		directory,
 		managed,
 		ownerOf: async () => undefined,
+		defaultWorkspacePath: join(dataDir, "workspace"),
 		...options,
 	});
 }
@@ -86,13 +87,13 @@ describe("WorkspaceService.jobsRoot", () => {
 		const dataDir = await tempDir();
 		const service = await serviceFor(dataDir, [record("alice")]);
 		expect(service.jobsRoot("alice")).toBe(join(dataDir, "users", "alice", "jobs"));
-	});
+		});
 
 	test("an ownerless job uses the primary admin's managed area", async () => {
 		const dataDir = await tempDir();
 		const service = await serviceFor(dataDir, [record("root-admin", { admin: true })]);
 		expect(service.jobsRoot(undefined)).toBe(join(dataDir, "users", "root-admin", "jobs"));
-	});
+		});
 
 	test("an orphaned owner falls back to the first admin", async () => {
 		const dataDir = await tempDir();
@@ -101,7 +102,7 @@ describe("WorkspaceService.jobsRoot", () => {
 			record("root-admin", { admin: true }),
 		]);
 		expect(service.jobsRoot("ghost")).toBe(join(dataDir, "users", "root-admin", "jobs"));
-	});
+		});
 
 	test("an empty directory, or one with no selected record, uses the data root", async () => {
 		const dataDir = await tempDir();
@@ -121,7 +122,7 @@ describe("WorkspaceService.jobsRoot", () => {
 			}),
 		});
 		expect(service.jobsRoot("alice")).toBe("/home/alice-os/.local/state/sigrun/jobs");
-	});
+		});
 
 	test("an osUser with unavailable account switching has no jobs root", async () => {
 		const dataDir = await tempDir();
@@ -130,7 +131,7 @@ describe("WorkspaceService.jobsRoot", () => {
 			lookupAccount: () => { throw new Error("must not be called"); },
 		});
 		expect(service.jobsRoot("alice")).toBeUndefined();
-	});
+		});
 
 	test("a failed or missing osAccount lookup has no jobs root", async () => {
 		const dataDir = await tempDir();
@@ -145,17 +146,17 @@ describe("WorkspaceService.jobsRoot", () => {
 			lookupAccount: () => undefined,
 		});
 		expect(missing.jobsRoot("alice")).toBeUndefined();
-	});
+		});
 
 	test("a service without deps has no jobs root", () => {
 		expect(createWorkspaceService().jobsRoot("alice")).toBeUndefined();
-	});
+		});
 });
 
 describe("job state directory helpers", () => {
 	test("encodes the complete job id as one path segment", () => {
 		expect(jobStateDir("/r", "ext:acme:nightly-check")).toBe("/r/ext%3Aacme%3Anightly-check");
-	});
+		});
 
 	test("removes a populated job-state directory", async () => {
 		const root = await tempDir();
@@ -164,11 +165,11 @@ describe("job state directory helpers", () => {
 		await writeFile(join(state, "state.json"), "{}");
 		await removeJobState(root, "file:nightly-check");
 		expect(existsSync(state)).toBe(false);
-	});
+		});
 
 	test("an undefined root is a no-op", async () => {
 		await expect(removeJobState(undefined, "file:nightly-check")).resolves.toBeUndefined();
-	});
+		});
 
 	test.skipIf(process.getuid?.() === 0)("an unremovable job-state directory rejects", async () => {
 		const dir = await tempDir();
@@ -182,5 +183,5 @@ describe("job state directory helpers", () => {
 		} finally {
 			await chmod(root, 0o700);
 		}
-	});
+		});
 });

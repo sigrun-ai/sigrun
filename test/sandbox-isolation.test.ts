@@ -212,6 +212,45 @@ describe("proxy-secret transition admission", () => {
 });
 
 describe("boot refusals and fail-closed consumers", () => {
+	test("boot logs a record whose workspace is the user area", async () => {
+		const dir = await tempDir();
+		const identity = await seededIdentity(dir, "alice");
+		// Seed a pre-fix record: workspace = the bare user area, which the
+		// curation seal now refuses. Boot must name user and path loudly
+		// (the agent's tools stay unavailable until an admin re-points it,
+		// Task 14 documents `PATCH /v1/users/<u> {"workspace": ...}`).
+		const userArea = join(dir, "users", "alice");
+		await mkdir(userArea, { recursive: true });
+		await identity.users.update("alice", { workspace: userArea });
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_DATA_DIR: dir,
+		});
+		const lines: string[] = [];
+		const warn = console.warn;
+		console.warn = (line?: unknown) => { lines.push(String(line)); };
+		let opened: OpenedHarness | undefined;
+		try {
+			opened = await openHarness(config, {
+				identity,
+				env: {},
+				builtins: false,
+				isolationProbe: async () => unavailable,
+			});
+		} finally {
+			console.warn = warn;
+		}
+		try {
+			expect(lines).toContainEqual(
+				expect.stringContaining(`user "alice" workspace ${userArea}: path overlaps the user's curation dir`),
+			);
+		} finally {
+			await opened?.harness.close(BACKGROUND_CONTEXT);
+		}
+	});
+
 	test("two users and no auth refuses boot naming both fixes", async () => {
 		const dir = await tempDir();
 		const identity = await seededIdentity(dir, "alice");
@@ -358,6 +397,7 @@ describe("per-owner workspace envs", () => {
 					coreRoot,
 					userAreas: (user) => join(dir, "data", "users", user),
 				},
+				defaultWorkspacePath: join(dir, "workspace"),
 				ownerOf: async (id) => owners.get(id),
 			});
 			const prefs = defaultWorkspacePrefs(join(dir, "shared"));

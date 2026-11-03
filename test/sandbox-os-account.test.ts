@@ -203,6 +203,7 @@ async function workspaceFixture(osUsers: OsUsersAvailability, singleUser = false
 		pool,
 		directory: users,
 		managed,
+		defaultWorkspacePath: join(dir, "workspace"),
 		ownerOf: async () => "alice",
 	});
 	return { service, pool, dir, home, launchedPolicies };

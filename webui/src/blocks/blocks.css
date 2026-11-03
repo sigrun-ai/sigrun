@@ -1316,6 +1316,11 @@
 		display: block; position: absolute; inset: 0; background: var(--bg, #111);
 		z-index: 20; padding: 1rem; overflow: auto;
 	}
+	/* selection drill-in: the list is in-flow full width, not the drawer */
+	.blk-page-sidebar[data-selection="list"] {
+		display: block; position: static; background: none; z-index: auto;
+		flex: 1 1 auto; padding: 0;
+	}
 	.blk-page { position: relative; }
 }
 

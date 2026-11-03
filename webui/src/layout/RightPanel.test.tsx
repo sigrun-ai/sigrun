@@ -1,9 +1,9 @@
 /**
  * RightPanel (B2, UI refresh): the 280px docked panel right of the chat
- * pane. Pure switching: renders the outline, workspace, or jobs node
- * for the active PanelMode, nothing when the panel is closed. The
- * CONTENT (the outline list, the workspace browser, the jobs panel) is
- * App-provided — this component owns only the panel chrome.
+ * pane. Pure switching: renders the outline or workspace node for the
+ * active PanelMode, nothing when the panel is closed. The CONTENT (the
+ * outline list, the workspace browser) is App-provided — this component
+ * owns only the panel chrome.
  */
 
 import { describe, expect, test, vi } from "vitest";
@@ -17,7 +17,6 @@ describe("RightPanel", () => {
 				mode={null}
 				outline={<p>outline-body</p>}
 				workspace={<p>workspace-body</p>}
-				jobs={<p>jobs-body</p>}
 			/>,
 		);
 		expect(renderer.toJSON()).toBeNull();
@@ -29,7 +28,6 @@ describe("RightPanel", () => {
 				mode="outline"
 				outline={<p>outline-body</p>}
 				workspace={<p>workspace-body</p>}
-				jobs={<p>jobs-body</p>}
 			/>,
 		);
 		const panel = renderer.root.findByProps({ className: "right-panel" });
@@ -37,7 +35,6 @@ describe("RightPanel", () => {
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("outline-body");
 		expect(text).not.toContain("workspace-body");
-		expect(text).not.toContain("jobs-body");
 	});
 
 	test("renders the workspace node under data-panel=workspace", () => {
@@ -46,7 +43,6 @@ describe("RightPanel", () => {
 				mode="workspace"
 				outline={<p>outline-body</p>}
 				workspace={<p>workspace-body</p>}
-				jobs={<p>jobs-body</p>}
 			/>,
 		);
 		const panel = renderer.root.findByProps({ className: "right-panel" });
@@ -54,22 +50,6 @@ describe("RightPanel", () => {
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("workspace-body");
 		expect(text).not.toContain("outline-body");
-	});
-
-	test("renders the jobs node under data-panel=jobs (W4 Task 5)", () => {
-		const renderer = render(
-			<RightPanel
-				mode="jobs"
-				outline={<p>outline-body</p>}
-				workspace={<p>workspace-body</p>}
-				jobs={<p>jobs-body</p>}
-			/>,
-		);
-		const panel = renderer.root.findByProps({ className: "right-panel" });
-		expect(panel.props["data-panel"]).toBe("jobs");
-		const text = textContent(renderer.toJSON());
-		expect(text).toContain("jobs-body");
-		expect(text).not.toContain("workspace-body");
 	});
 
 describe("RightPanel extension tabs (UI-blocks U3 Task 5)", () => {
@@ -83,7 +63,6 @@ describe("RightPanel extension tabs (UI-blocks U3 Task 5)", () => {
 				mode="outline"
 				outline={<p>outline-body</p>}
 				workspace={<p>workspace-body</p>}
-				jobs={<p>jobs-body</p>}
 				extPanels={panels}
 			/>,
 		);
@@ -100,7 +79,6 @@ describe("RightPanel extension tabs (UI-blocks U3 Task 5)", () => {
 				mode="outline"
 				outline={<p>outline-body</p>}
 				workspace={<p>workspace-body</p>}
-				jobs={<p>jobs-body</p>}
 				extPanels={panels}
 				onOpenExtPanel={onOpenExtPanel}
 			/>,

@@ -55,10 +55,18 @@ import {
 	type AttachChatTransport,
 } from "./entries/chatTransportContext";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
+import { BottomBar } from "./layout/BottomBar";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
-import { extPanelEntries, extViewEntries, loadRailOrder, moveExtView, orderExtViews } from "./layout/extViews";
-import { JobsPanel } from "./jobs/JobsPanel";
+import {
+	extPanelEntries,
+	extViewEntries,
+	coreViewEntries,
+	loadRailOrder,
+	moveExtView,
+	orderExtViews,
+} from "./layout/extViews";
+import { TabMemory, tabOfRoute } from "./layout/tabs";
 import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
@@ -100,7 +108,7 @@ function loadPanel(): PanelMode | null {
 	).localStorage;
 	try {
 		const value = stored?.getItem(PANEL_STORAGE_KEY) ?? null;
-		return value === "outline" || value === "workspace" || value === "jobs"
+		return value === "outline" || value === "workspace"
 			? value
 			: null;
 	} catch {
@@ -291,13 +299,14 @@ function ChatCenter(props: {
 	);
 }
 
-/** The app shell's hash route (UI-blocks U3 Task 5): `#/c/<id>` (a
- *  conversation — the SessionList's select also lands here) and
- *  `#/ext/<slug>/<id>?params=<json>` (an extension surface view), and
- *  `#/settings[/<section>]` (0.4.0 Task 4: the settings page). The
- *  hash is the browser history entry; `navigate({params})` re-renders
- *  the surface with new params (a new hash entry, so back/forward
- *  walks them). */
+/** The app shell's hash route (UI-blocks U3 Task 5; tabs Task 1):
+ *  `#/c[/<id>]` (a conversation — the SessionList's select also lands
+ *  here; the id segment deep-links a conversation), `#/ext/<slug>/<id>?params=<json>`
+ *  (an extension surface view — the core skills/jobs views are routes
+ *  on the `core` slug), and `#/settings[/<section>]` (0.4.0 Task 4: the
+ *  settings page). The hash is the browser history entry; every route
+ *  is a TAB — `tabOfRoute` maps it, and the tab memory remembers each
+ *  tab's last route so switching back lands where the user left off. */
 type Route =
 	| {
 			readonly kind: "chat";
@@ -314,7 +323,8 @@ type Route =
 
 /** Parse `location.hash` into a route; garbage → the chat default.
  *  Settings carries ONE optional section segment (`#/settings/a/b` is
- *  garbage → chat) — a section id is a single path token. A malformed
+ *  garbage → chat) — a section id is a single path token. `#/c/<id>`
+ *  carries a numeric conversation id (tabs Task 1). A malformed
  *  percent-escape (decodeURIComponent throws) is garbage → chat. */
 export function parseHash(hash: string): Route {
 	const path = hash.startsWith("#") ? hash.slice(1) : hash;
@@ -579,17 +589,14 @@ function AppShell(options: AppOptions = {}) {
 	// account-link returnTo lands on /settings?section=<id> — the hash
 	// route is the app's one routing surface afterwards).
 	rewriteSettingsPathBoot();
-	// The hash route (U3 Task 5): the main pane renders either the chat
-	// column, one extension surface page, or the settings page
+	// The hash route (U3 Task 5; tabs Task 1): the main pane renders either
+	// the chat column, one extension surface page, or the settings page
 	// (0.4.0 Task 4). `navigate({params})` pushes a new hash entry;
-	// popstate walks back/forward through them.
+	// popstate walks back/forward through them. Every route is a TAB:
+	// the tab memory remembers each tab's last hash, so a tab switch
+	// lands where the user left off and back/forward walk the switches.
 	const [route, setRoute] = useState<Route>(() => parseHash(readHash()));
-	// Whether THIS app session entered the settings page by an in-app
-	// action (rail/composer/command/target) — and, on first entry, the
-	// hash the page displaced (the ✕ replaces the settings entry with
-	// it, so one click exits no matter how many sections were walked).
-	const settingsEnteredInApp = useRef(false);
-	const preSettingsHash = useRef<string | null>(null);
+	const [tabMemory] = useState(() => new TabMemory());
 	// The ONE change-event hub per app (the transports subscribe; the
 	// shared events source dispatches surface.changed into it).
 	const [extHub] = useState(() => new ExtSurfaceHub());
@@ -650,16 +657,9 @@ function AppShell(options: AppOptions = {}) {
 	// sidebar, the header title, and the transcript's fork parents. `busy`
 	// (the view's steer state) drives the post-run reloads — a name the
 	// auto-namer writes at settlement appears without a manual reload.
-	const [jobChanged, setJobChanged] = useState(0);
 	const list = useConversationList(client, {
 		busy: view?.steer.busy ?? false,
 		createEventSource: options.createEventSource,
-		// W4 Task 5: `job.changed` rides the hook's ONE shared
-		// `/v1/events` source — the bump is the JobsPanel's refetch token
-		// (never a second EventSource per app).
-		onJobChanged: useCallback(() => {
-			setJobChanged((token) => token + 1);
-		}, []),
 		// U3 Task 5: `surface.changed` rides the SAME source into the ext
 		// hub (the open surface page's transport fires its onChanged).
 		onSurfaceChanged: useCallback(
@@ -820,6 +820,15 @@ function AppShell(options: AppOptions = {}) {
 		setActiveId(id);
 		setDrawerOpen(false);
 	}, []);
+	// The ONE route transition seam (tabs Task 1): every hash write lands
+	// here — the write PUSHES a history entry and the tab memory records
+	// the route under its tab (back/forward then walk the tab switches
+	// WITH their remembered routes).
+	const applyRoute = useCallback((next: Route, hash: string): void => {
+		writeHash(hash);
+		tabMemory.remember(tabOfRoute(next), hash);
+		setRoute(next);
+	}, [tabMemory]);
 
 	// Panel toggling: clicking the ACTIVE mode closes the panel (null).
 	const onPanel = useCallback((mode: PanelMode) => {
@@ -835,16 +844,15 @@ function AppShell(options: AppOptions = {}) {
 	}, []);
 
 	// The popstate listener: browser back/forward re-parses the hash
-	// into route state (the rail's ext entries and the surface pages'
-	// navigate(params) both land here). A popped CHAT route carrying a
-	// conversation id reconciles the selection (the hash owns it): back
-	// between #/c/7 and #/c/2 swaps the transcript, not just the URL.
-	// Leaving the settings page by history (back past every settings
-	// entry) resets the ✕'s in-app entry bookkeeping — re-entering
-	// later records afresh. The ref arms break the registration-vs-data
-	// cycle: popstate events land in order (at most one in flight) so a
-	// stale read can't double-select, and the hook stays stable across
-	// list reloads and selection changes.
+	// into route state (the rail's tab clicks and the surface pages'
+	// navigate(params) both land here). The popped route is remembered
+	// too — the tab it belongs to is now showing at that hash. A popped
+	// CHAT route carrying a conversation id reconciles the selection
+	// (the hash owns it): back between #/c/7 and #/c/2 must swap the
+	// transcript, not just the URL. The ref arms break the
+	// registration-vs-data cycle: popstate events land in order (at most
+	// one in flight) so a stale read can't double-select, and the hook
+	// stays stable across list reloads and selection changes.
 	const listRowsRef = useRef(list.rows);
 	listRowsRef.current = list.rows;
 	const onSelectRef = useRef(onSelect);
@@ -852,10 +860,7 @@ function AppShell(options: AppOptions = {}) {
 	useEffect(() => {
 		const onPop = (): void => {
 			const next = parseHash(readHash());
-			if (next.kind !== "settings") {
-				settingsEnteredInApp.current = false;
-				preSettingsHash.current = null;
-			}
+			tabMemory.remember(tabOfRoute(next), readHash());
 			setRoute(next);
 			if (
 				next.kind === "chat" &&
@@ -869,63 +874,62 @@ function AppShell(options: AppOptions = {}) {
 		return () => {
 			(globalThis as { removeEventListener?: (t: string, l: () => void) => void }).removeEventListener?.("popstate", onPop);
 		};
-	}, []);
+	}, [tabMemory, list.rows, onSelect]);
 
-	// The rail's extension-view click: navigate to the surface's route.
-	const onOpenExtView = useCallback((slug: string, id: string): void => {
-		const next: Route = { kind: "ext", slug, id, params: {} };
-		writeHash(routeHash(next));
-		setRoute(next);
-		settingsEnteredInApp.current = false;
-		setDrawerOpen(false);
-	}, []);
+	// The settings tab's click routes through onOpenTab (defined below);
+	// the page's own section nav (its left column) pushes the section hash.
 
-	// The settings page's navigation seam (0.4.0 Task 4): every in-app
-	// entry point (the rail's Settings button, the composer's /settings
-	// command, an ext surface's {settings} target) pushes the hash route;
-	// the page's own section nav (its left column) rides the same seam.
-	// DEDUP: a navigation to the hash ALREADY in the address bar pushes
-	// nothing (re-clicking the active nav entry must not stack a history
-	// entry the close action would then have to pop past).
-	const navigateSettings = useCallback((section: string | undefined): void => {
+	// The settings page's navigation seam (0.4.0 Task 4; tabs Task 1):
+	// the settings tab's click and the page's own section nav (its left
+	// column) push the hash route; an ext surface's {settings} target
+	// rides the same seam. The tab MEMORY never records a settings
+	// section — the settings tab always opens its default (the settings
+	// page's own section resolver picks General); remembering a section
+	// would make the page's resolve effect rewrite the route again.
+	const applySettings = useCallback((section: string | undefined): void => {
 		const next: Route =
 			section === undefined ? { kind: "settings" } : { kind: "settings", section };
-		const previous = readHash();
-		const hash = routeHash(next);
-		if (hash !== previous) writeHash(hash);
-		if (!settingsEnteredInApp.current && parseHash(previous).kind !== "settings") {
-			// First entry THIS visit from a NON-settings page: remember the
-			// hash the settings route displaced (the ✕ replaces the current
-			// settings entry with it). An EMPTY hash is the chat default —
-			// normalize to #/c so the replace always carries a real route;
-			// a boot deep link records nothing — its ✕ falls back to #/c.
-			preSettingsHash.current = previous === "" ? "#/c" : previous;
-		}
+		writeHash(routeHash(next));
 		setRoute(next);
-		settingsEnteredInApp.current = true;
-		setDrawerOpen(false);
 	}, []);
-	const onOpenSettings = useCallback((): void => navigateSettings(undefined), [navigateSettings]);
+	const navigateSettings = useCallback((section: string | undefined): void => {
+		applySettings(section);
+		setDrawerOpen(false);
+	}, [applySettings]);
 	const onSettingsSection = useCallback(
 		(id: string): void => navigateSettings(id),
 		[navigateSettings],
 	);
-	// The page's close (✕): exit in ONE click. An in-app entry REPLACES
-	// the current settings entry with the hash it displaced (a section
-	// walk leaves intermediate entries — back() would only reach the
-	// previous section, demanding repeated ✕); a boot deep link (no
-	// recorded entry) replaces with the chat route. Either way no net
-	// history entry is added and the page is gone in one click.
-	const closeSettings = useCallback((): void => {
-		const target =
-			settingsEnteredInApp.current && preSettingsHash.current !== null
-				? preSettingsHash.current
-				: "#/c";
-		writeHash(target, true);
-		setRoute(parseHash(target));
-		settingsEnteredInApp.current = false;
-		preSettingsHash.current = null;
-	}, []);
+
+	// The rail's tab click (tabs Task 1): every tab navigates to its
+	// REMEMBERED route (the tab memory's hash, or the default before the
+	// tab was ever seen) via a PUSH — the rail itself dead-ends clicks
+	// on the active tab, so no duplicate entries stack.
+	const onOpenTab = useCallback(
+		(tab: ReturnType<typeof tabOfRoute>): void => {
+			if (tab === "settings") {
+				// The settings tab always opens its default (see
+				// applySettings: the page's own resolver picks the section).
+				applySettings(undefined);
+			} else {
+				const hash = tabMemory.routeFor(tab);
+				const next = parseHash(hash);
+				applyRoute(next, hash);
+				// The chats tab's remembered hash may carry a conversation id
+				// (the last selected conversation): selecting it keeps the chat
+				// column in step with the route.
+				if (next.kind === "chat" && next.conversationId !== undefined) {
+					onSelect(next.conversationId);
+				}
+			}
+			setSectionTick((tick) => tick + 1);
+			setDrawerOpen(false);
+		},
+		[tabMemory, applyRoute, applySettings, onSelect],
+	);
+	// The settings tab's click routes through onOpenTab; the page's own
+	// section nav (its left column) pushes the section hash.
+	const onOpenSettings = useCallback((): void => onOpenTab("settings"), [onOpenTab]);
 
 	// The rail's extension-view ordering state (a client preference):
 	// App owns it so the rail's keyboard reorder (Alt+Arrow) re-renders
@@ -953,6 +957,24 @@ function AppShell(options: AppOptions = {}) {
 				: [],
 		[boot, railOrder],
 	);
+	// The bottom bar's entries (tabs+skills Task 2): core views first,
+	// then the ext entries — the bar renders the skills/jobs slots only
+	// when the served meta lists them (meta.coreViews empty → no dead
+	// tabs) and sheets the rest. Undefined only when the route is the dev
+	// gallery (no active tab there; the bar takes the chats default).
+	const bottomBarEntries = useMemo(
+		() =>
+			boot.status === "ready"
+				? [...coreViewEntries(boot.meta), ...railExtEntries]
+				: [],
+		[boot, railExtEntries],
+	);
+	// The active tab (tabs Task 1): the rail highlights it and dead-ends
+	// its click. The dev Blocks gallery is NOT a tab (its section rides
+	// its own hash outside the tab router) — null is the no-tab signal,
+	// matching the pre-task chatsActive gate (no tab active there).
+	const activeTab =
+		section === "blocks" ? null : tabOfRoute(route);
 
 	// The open ext view's declared refresh cadence (§7.1): read from the
 	// meta projection (never a second fetch); absent → no cadence.
@@ -978,22 +1000,27 @@ function AppShell(options: AppOptions = {}) {
 					id: extRoute.id,
 					params: action.params,
 				};
-				writeHash(routeHash(next));
-				setRoute(next);
+				applyRoute(next, routeHash(next));
 				return;
 			}
 			if (target !== undefined && target !== null && typeof target === "object") {
 				if ("conversation" in target && typeof target.conversation === "number") {
-					writeHash("#/c");
-					setRoute({ kind: "chat" });
+					const next: Route = { kind: "chat", conversationId: target.conversation };
+					applyRoute(next, routeHash(next));
 					onSelect(target.conversation);
 					return;
 				}
 				if ("job" in target) {
-					writeHash("#/c");
-					setRoute({ kind: "chat" });
-					setPanel("jobs");
-					persistPanel("jobs");
+					// Tabs+skills Task 6: the JobsPanel is gone — a job
+					// target routes to the Jobs TAB carrying the id in the
+					// surface params (the core/jobs view's `job` selection).
+					const next: Route = {
+						kind: "ext",
+						slug: "core",
+						id: "jobs",
+						params: { job: target.job },
+					};
+					applyRoute(next, routeHash(next));
 					return;
 				}
 				if ("settings" in target) {
@@ -1013,60 +1040,49 @@ function AppShell(options: AppOptions = {}) {
 						id: view.id,
 						params: view.params ?? {},
 					};
-					writeHash(routeHash(next));
-					setRoute(next);
+					applyRoute(next, routeHash(next));
 				}
 			}
 		},
-		[extRoute, onSelect, navigateSettings],
+		[extRoute, onSelect, navigateSettings, applyRoute],
 	);
 
-	// The conversation select ALSO writes the hash (the browser's back
-	// returns to the surface the user came from).
+	// The conversation select ALSO writes the hash (tabs Task 1: the
+	// chat route CARRIES the conversation id — browser back returns to
+	// the surface the user came from, and the chats tab remembers the
+	// selected conversation).
 	const onSelectWithRoute = useCallback(
 		(id: number): void => {
-			writeHash(`#/c/${id}`);
-			setRoute({ kind: "chat" });
-			settingsEnteredInApp.current = false;
-			preSettingsHash.current = null;
+			const next: Route = { kind: "chat", conversationId: id };
+			applyRoute(next, routeHash(next));
 			setSectionTick((tick) => tick + 1);
 			onSelect(id);
 		},
-		[onSelect],
+		[applyRoute, onSelect],
 	);
-	// The rail's Chats entry: back to the chat route from any view (the
-	// selected conversation is kept — the chat tab remembers it).
-	const onOpenChats = useCallback((): void => {
-		if (readHash() !== "#/c") writeHash("#/c");
-		setRoute({ kind: "chat" });
-		settingsEnteredInApp.current = false;
-		preSettingsHash.current = null;
-		setSectionTick((tick) => tick + 1);
-		setDrawerOpen(false);
-	}, []);
 	// The conversation sidebar's select routes through the hash writer
 	// (browser back returns to a surface the user came from); the
 	// SessionList + transcript navigate callbacks use the SAME seam.
 
-	// Boot-time default: select the root conversation (the §5 default session)
-	// once the schema gate passes and the lifted list has rows, so the
-	// composer is live without a click — but ONLY on the chat route. Any
-	// non-chat hash route (a surface, the settings page) suppresses the
-	// default: the user asked for that view, not a conversation — and a
+	// Boot-time selection: a chat route carrying a conversation id selects
+	// it once the lifted list lands (tabs Task 1: the hash deep-links a
+	// conversation). Without one, the root conversation (the §5 default
+	// session) selects once the schema gate passes so the composer is live
+	// without a click. An /ext or /settings hash route SUPPRESSES the
+	// default (the user asked for another tab, not a conversation) — and a
 	// conversation selected behind it would anchor an unanchored mid-type
 	// draft to the root (the reload-with-draft trap).
 	useEffect(() => {
 		if (boot.status !== "ready" || activeId !== null) return;
 		if (route.kind !== "chat") return;
-		if (
-			route.conversationId !== undefined &&
-			list.rows.some((row) => row.id === route.conversationId)
-		) {
-			// The deep link owns the selection while its conversation is
-			// listed (a stale id falls through to the default pick below,
-			// never a dead shell).
-			setActiveId(route.conversationId);
-			return;
+		if (route.conversationId !== undefined) {
+			// The deep link wins only while the conversation is listed;
+			// an UNLISTED id (stale hash, deleted conversation) falls
+			// through to the default pick below, never a dead shell.
+			if (list.rows.some((row) => row.id === route.conversationId)) {
+				setActiveId(route.conversationId);
+				return;
+			}
 		}
 		if (list.rows.length === 0) return;
 		const root = list.rows.find((c) => c.root);
@@ -1239,6 +1255,22 @@ function AppShell(options: AppOptions = {}) {
 		void archiveConversation(activeId, true);
 	}, [activeId, archiveConversation]);
 
+	// The sign-out closure (W1 Task 8; tabs+skills Task 2): ONE callback
+	// shared by the rail footer and the bottom bar's More sheet — the
+	// rail hides at ≤900px, so the phone layout's sheet is its only
+	// sign-out surface. End the server session, then hand the flip back —
+	// a failed logout call still signs the UI out (the cookie is
+	// best-effort dead either way).
+	const onSignOut =
+		onLogout === undefined
+			? undefined
+			: () => {
+					void client
+						.logout()
+						.catch(() => undefined)
+						.finally(() => onLogout());
+				};
+
 	if (boot.status === "loading") {
 		return (
 			<div className="app-boot">
@@ -1268,15 +1300,12 @@ function AppShell(options: AppOptions = {}) {
 				className="side-drawer"
 				data-open={drawerOpen ? "" : undefined}
 			>
+				{/* Tabs+skills Task 2: below 900px the rail leaves the drawer
+				    (the bottom bar carries the tabs); CSS hides it there. */}
 				<Rail
 					meta={boot.meta}
-					onOpenSettings={onOpenSettings}
-					settingsActive={route.kind === "settings"}
-					onOpenChats={onOpenChats}
-					chatsActive={route.kind === "chat" && section !== "blocks"}
-					{...(extRoute === null
-						? {}
-						: { activeExtView: `${extRoute.slug}/${extRoute.id}` })}
+					onOpenTab={onOpenTab}
+					activeTab={activeTab}
 					onOpenGallery={
 						boot.meta.dev
 							? () => {
@@ -1291,39 +1320,30 @@ function AppShell(options: AppOptions = {}) {
 					}
 					identity={identity}
 					hiddenExtSurfaces={hiddenExtSurfaces}
-					onOpenExtView={onOpenExtView}
 					extViewEntries={railExtEntries}
 					onMoveExtView={onMoveExtView}
-					onLogout={
-						onLogout === undefined
-							? undefined
-							: () => {
-								// End the server session, then hand the flip back — a
-								// failed logout call still signs the UI out (the cookie
-								// is best-effort dead either way).
-								void client
-									.logout()
-									.catch(() => undefined)
-									.finally(() => onLogout());
-							}
-					}
+					onLogout={onSignOut}
 				/>
 				{list.error !== null && (
 					<p className="side-error" role="alert">
 						conversations unavailable: {list.error}
 					</p>
 				)}
-				<SessionList
-					rows={list.rows}
-					activeId={activeId}
-					onSelect={onSelectWithRoute}
-					onNew={onNew}
-					onRename={renameConversation}
-					onArchive={archiveConversation}
-					onFork={onFork}
-					currentUser={identity?.user}
-					onShare={setShareFor}
-				/>
+				{/* Tabs Task 1: the conversation list renders ONLY on the
+				    Chats tab — every other tab's surface is full width. */}
+				{route.kind === "chat" && (
+					<SessionList
+						rows={list.rows}
+						activeId={activeId}
+						onSelect={onSelectWithRoute}
+						onNew={onNew}
+						onRename={renameConversation}
+						onArchive={archiveConversation}
+						onFork={onFork}
+						currentUser={identity?.user}
+						onShare={setShareFor}
+					/>
+				)}
 			</div>
 			{section === "blocks" ? (
 				<main className="main-column">
@@ -1344,30 +1364,38 @@ function AppShell(options: AppOptions = {}) {
 						section={route.section}
 						onSection={onSettingsSection}
 						onRestart={restart}
-						onClose={closeSettings}
 					/>
 				</main>
 			) : (
-			<main className="main-column">
-				<ChatHeader
-					title={titleOf(list.rows, activeId)}
-					timeline={timeline}
-					onTimeline={() =>
-						setTimeline((on) => {
-							persistTimeline(!on);
-							return !on;
-						})
-					}
-					panel={panel}
-					onPanel={onPanel}
-					onRename={onRename}
-					onExport={onExport}
-					onCompact={onCompact}
-					onArchive={onArchive}
-					drawerOpen={drawerOpen}
-					onToggleDrawer={() => setDrawerOpen((open) => !open)}
-				/>
-				{shellError !== null && (
+			// Tabs Task 1: the non-settings, non-gallery tabs share the main
+			// column — an ext surface renders full width; the Chats tab adds
+			// the transcript column, its composer dock, and the right panel.
+		<main className="main-column">
+			{/* The chat header renders ONLY on the Chats tab (spec §1,
+			    whole-branch review I4): its panel toggles and conversation
+			    title are dead weight over the Skills/Jobs/ext tabs, and its
+			    ☰ drawer toggle (the phone sidebar) belongs to Chats too. */}
+			{route.kind === "chat" && (
+			<ChatHeader
+				title={titleOf(list.rows, activeId)}
+				timeline={timeline}
+				onTimeline={() =>
+					setTimeline((on) => {
+						persistTimeline(!on);
+						return !on;
+					})
+				}
+				panel={panel}
+				onPanel={onPanel}
+				onRename={onRename}
+				onExport={onExport}
+				onCompact={onCompact}
+				onArchive={onArchive}
+				drawerOpen={drawerOpen}
+				onToggleDrawer={() => setDrawerOpen((open) => !open)}
+			/>
+			)}
+			{shellError !== null && (
 					<p className="shell-error" role="alert">
 						{shellError}
 					</p>
@@ -1387,8 +1415,8 @@ function AppShell(options: AppOptions = {}) {
 							onNavigate={onExtNavigate}
 							{...(extRefreshMs === undefined ? {} : { refreshMs: extRefreshMs })}
 						/>
-					) : (
-					<div className="chat-column">
+					) : route.kind === "chat" ? (
+						<div className="chat-column">
 						<ChatCenter
 							activeId={activeId}
 							view={view}
@@ -1422,7 +1450,10 @@ function AppShell(options: AppOptions = {}) {
 						/>
 					</footer>
 				</div>
-					)}
+					) : null}
+			{/* The right panel (tabs Task 1) renders ONLY on the Chats tab —
+			    every other tab's surface is full width. */}
+			{route.kind === "chat" && (
 			<RightPanel
 				mode={panel}
 				extPanels={extPanelEntries(boot.meta.extensions)}
@@ -1456,14 +1487,8 @@ function AppShell(options: AppOptions = {}) {
 							onClose={closePanel}
 					/>
 				}
-				jobs={
-					<JobsPanel
-						client={client}
-						onNavigate={onSelect}
-						refreshToken={jobChanged}
-					/>
-				}
 			/>
+			)}
 				</div>
 			</main>
 			)}
@@ -1484,6 +1509,14 @@ function AppShell(options: AppOptions = {}) {
 					aria-hidden="true"
 				/>
 			)}
+			{/* The ≤900px bottom tab bar (tabs+skills Task 2): CSS hides it
+			    at desktop widths, where the rail carries the tabs. */}
+			<BottomBar
+				active={activeTab ?? "chats"}
+				extViews={bottomBarEntries}
+				onTab={onOpenTab}
+				{...(onSignOut === undefined ? {} : { onSignOut })}
+			/>
 			{/* The share editor overlay (spec §5.9): the sidebar's owner-only
 			    Share… action targets a row; the backdrop click closes. */}
 			{shareFor !== null &&

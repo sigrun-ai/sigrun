@@ -354,12 +354,30 @@ async function viewData(
 	server: TestServer,
 	user: string,
 ): Promise<{
-	skills: { name: string; archived: boolean }[];
 	reviews: { id: string; entries: unknown[] }[];
 }> {
 	const response = await server.app.inject({
 		method: "GET",
 		url: "/v1/ext/curator/surfaces/curator",
+		headers: auth(server.tokens, user),
+	});
+	expect(response.statusCode).toBe(200);
+	return response.json().data as never;
+}
+
+// Learned-skill rows come from the core Skills view: tabs+skills Task 13
+// removed the skills section from the curator view (management moved to
+// `core/skills`), so the cross-user isolation checks re-pointed here —
+// the assertions are unchanged, only the surface that owns the data.
+async function skillsViewData(
+	server: TestServer,
+	user: string,
+): Promise<{
+	skills: { name: string; group?: string }[];
+}> {
+	const response = await server.app.inject({
+		method: "GET",
+		url: "/v1/ext/core/surfaces/skills",
 		headers: auth(server.tokens, user),
 	});
 	expect(response.statusCode).toBe(200);
@@ -514,7 +532,9 @@ describe("the end-to-end curator path (curator built-in + memory-markdown)", () 
 		expect(notice).toBeDefined();
 		// The view groups the review's two changes under one review id...
 		const before = await viewData(server, "alice");
-		expect(before.skills.map((row) => row.name)).toContain("acme-deploy");
+		expect(
+			(await skillsViewData(server, "alice")).skills.map((row) => row.name),
+		).toContain("acme-deploy");
 		// The feed groups CORE-store changes; the memory target's change
 		// is a target-owned changeId reverted through undoReview's
 		// tool-result walk (not a feed row) — so one review can show as a
@@ -541,11 +561,13 @@ describe("the end-to-end curator path (curator built-in + memory-markdown)", () 
 			join(memoryUserDir(dir, "alice"), "USER.md"),
 		);
 		expect(restoredMemory === undefined || restoredMemory === "").toBe(true);
-		// The view lists ARCHIVED skills too (with the restore toggle) —
-		// the undone create shows as archived, not absent.
-		const after = await viewData(server, "alice");
-		const undone = after.skills.find((row) => row.name === "acme-deploy");
-		expect(undone?.archived).toBe(true);
+		// The core Skills view lists ARCHIVED learned skills too, as
+		// Deleted-group rows — the undone create shows as deleted, not
+		// absent.
+		const undone = (await skillsViewData(server, "alice")).skills.find(
+			(row) => row.name === "acme-deploy",
+		);
+		expect(undone?.group).toBe("deleted");
 	});
 
 	test("bob never sees alice's skill or memory, before or after", { timeout: 60_000 }, async () => {
@@ -587,10 +609,10 @@ describe("the end-to-end curator path (curator built-in + memory-markdown)", () 
 			),
 			fauxAssistantMessage("review done"),
 		]);
-		// BEFORE: bob's own conversation settles; his view is empty.
+		// BEFORE: bob's own conversation settles; his skills view is empty.
 		const bobs = await createConversation(server, "bob");
 		await submit(server, bobs, "bob's turn", "bob");
-		expect((await viewData(server, "bob")).skills).toEqual([]);
+		expect((await skillsViewData(server, "bob")).skills).toEqual([]);
 		// Alice's hint drives the review that writes her skill + memory.
 		const id = await createConversation(server, "alice");
 		await submit(server, id, "learn the deploy lesson", "alice");
@@ -598,25 +620,29 @@ describe("the end-to-end curator path (curator built-in + memory-markdown)", () 
 			() => readFileOrUndefined(skillPath(dir2(server), "alice", "acme-deploy")),
 			"alice's skill file",
 		);
-		expect(
-			await readFileOrUndefined(
-				join(memoryUserDir(dir2(server), "alice"), "USER.md"),
-			),
-		).toBeDefined();
-		// AFTER: bob's view still shows none of it, his memory dir holds
-		// nothing of alice's — and the control: alice's view has it.
-		const bobsAfter = await viewData(server, "bob");
+		// The skill file lands on the review's first tool call; the
+		// memory_write is the second — wait for it (scenario 1's rule).
+		await waitFor(
+			() =>
+				readFileOrUndefined(
+					join(memoryUserDir(dir2(server), "alice"), "USER.md"),
+				),
+			"alice's USER.md",
+		);
+		// AFTER: bob's skills view still shows none of it, his memory dir
+		// holds nothing of alice's — and the control: alice's views have it.
+		const bobsAfter = await skillsViewData(server, "bob");
 		expect(bobsAfter.skills.map((row) => row.name)).not.toContain(
 			"acme-deploy",
 		);
-		expect(bobsAfter.reviews).toEqual([]);
+		expect((await viewData(server, "bob")).reviews).toEqual([]);
 		expect(
 			await readFileOrUndefined(
 				join(memoryUserDir(dir2(server), "bob"), "USER.md"),
 			),
 		).toBeUndefined();
 		expect(
-			(await viewData(server, "alice")).skills.map((row) => row.name),
+			(await skillsViewData(server, "alice")).skills.map((row) => row.name),
 		).toContain("acme-deploy");
 	});
 

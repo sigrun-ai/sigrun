@@ -109,6 +109,20 @@ export interface PageEmpty {
 	hint?: string;
 }
 
+/**
+ * Server-declared list+detail drill-in (spec §12.3), presentation-only:
+ * on compact widths `selected: false` shows the sidebar list full width
+ * (main hidden); `selected: true` shows main with a back arrow that
+ * navigates with `back` as the params. Wide widths are unchanged —
+ * sidebar and main sit side by side regardless of `selected`. `toText`
+ * ignores it (sidebar then main, as today).
+ */
+export interface PageSelection {
+	readonly selected: boolean;
+	/** The params the compact back arrow navigates to. */
+	readonly back: JsonObject;
+}
+
 export interface PageBlock extends BlockBase {
 	readonly type: "page";
 	readonly title: Bindable<string>;
@@ -122,6 +136,8 @@ export interface PageBlock extends BlockBase {
 	/** Blocks for a side pane, shown when non-empty. */
 	readonly detail?: readonly Block[];
 	readonly empty?: PageEmpty;
+	/** Compact-width list+detail drill-in (see {@link PageSelection}). */
+	readonly selection?: PageSelection;
 }
 
 // ─── Layout (spec §5.2) ───────────────────────────────────────────────────

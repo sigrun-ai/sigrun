@@ -564,6 +564,30 @@ State: running
 {"count":3,"kind":"acme"}"
 `;
 
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page-selection @80 1`] = `
+"# Jobs
+acme queue
+
+## Sidebar
+acme provision
+acme build
+acme deploy
+
+acme build — the selected job's detail"
+`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page-selection @160 1`] = `
+"# Jobs
+acme queue
+
+## Sidebar
+acme provision
+acme build
+acme deploy
+
+acme build — the selected job's detail"
+`;
+
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > page-sidebar @80 1`] = `
 "# Board
 with a sidebar

@@ -1,12 +1,18 @@
 /**
- * Rail (B2, UI refresh): the 52px section rail — the brand mark, the one
- * active **Chats** entry, a spacer, the health dot, and the Settings
- * button (the settings dialog itself stays App-owned; B7 restyles it).
+ * Rail (tabs+skills Task 1): the 52px rail is the desktop TAB BAR. Every
+ * web UI view is a tab — Chats, then the core views `/v1/meta` lists
+ * (skills/jobs, Task 4's `coreViewEntries`), then the extension views,
+ * a spacer, the health dot, the identity chip, sign-out, and Settings.
+ *
+ * Tab clicks dispatch `onOpenTab(tab)`; clicking the ACTIVE tab
+ * dispatches nothing (no duplicate history entry for a view already
+ * showing). Tab glyphs render through the blocks icon set (the
+ * extension-declared `icon` name, not the title's first letter).
  *
  * W1 Task 8: the resolved identity renders here — under the token
- * method the user's name sits above the sign-out action (a session
- * cookie is a thing you can END); the naive/proxy methods carry no
- * browser-side credential to drop, so they show neither.
+ * method the user's name sits above the sign-out action; the
+ * naive/proxy methods carry no browser-side credential to drop, so
+ * they show neither.
  *
  * The health dot collapses the old TopBar's badge row into one quiet
  * indicator: `data-health="ok"` only when every extension is `ok`,
@@ -16,15 +22,18 @@
  * `backup: <status>`.
  */
 
+import type { IconName } from "@sigrun/shared/blocks";
 import type { MetaResponse, WhoamiResponse } from "../api";
+import { Icon } from "../blocks/icons";
 import { BlocksIcon, BrandMark, ChatsIcon, LogoutIcon, SettingsIcon } from "./icons";
 import {
+	coreViewEntries,
 	extViewEntries,
 	loadRailOrder,
-	moveExtView,
 	orderExtViews,
 	type ExtViewEntry,
 } from "./extViews";
+import type { TabId } from "./tabs";
 
 /** ok ⟺ every extension ok, memory/providers ok, backup not degraded. */
 function healthOf(meta: MetaResponse): "ok" | "degraded" {
@@ -48,14 +57,53 @@ function healthTitle(meta: MetaResponse): string {
 	return `${extensions} · backup: ${meta.health.backup}`;
 }
 
+/** One tab button (the rail renders the SAME button for core, ext, and
+ *  fixed tabs): active → the class + aria-current, and a dead click. */
+function TabButton(props: {
+	readonly tab: TabId;
+	readonly title: string;
+	readonly active: boolean;
+	readonly onOpenTab?: (tab: TabId) => void;
+	readonly children: React.ReactNode;
+	readonly onKeyDown?: (event: {
+		readonly altKey: boolean;
+		readonly key: string;
+		preventDefault(): void;
+	}) => void;
+}) {
+	return (
+		<button
+			type="button"
+			className={props.active ? "rail-btn rail-btn-active" : "rail-btn"}
+			data-rail-section={props.tab}
+			title={props.title}
+			aria-label={props.title.toLowerCase()}
+			{...(props.active ? { "aria-current": "page" as const } : {})}
+			onClick={() => {
+				// Clicking the ACTIVE tab dispatches nothing (no duplicate
+				// history entry for the view already showing).
+				if (props.active) return;
+				props.onOpenTab?.(props.tab);
+			}}
+			{...(props.onKeyDown === undefined ? {} : { onKeyDown: props.onKeyDown })}
+		>
+			{props.children}
+		</button>
+	);
+}
+
 export function Rail(props: {
-	/** The served `GET /v1/meta` (extensions + health feed the dot). */
+	/** The served `GET /v1/meta` (extensions + health feed the dot; the
+	 *  `coreViews` rows feed the skills/jobs tabs). */
 	readonly meta: MetaResponse;
-	/** Opens the settings page (App owns the route). */
-	readonly onOpenSettings: () => void;
-	/** Whether the settings page is the current route (0.4.0 Task 4):
-	 *  the button carries `aria-current="page"` + the active class. */
-	readonly settingsActive?: boolean;
+	/** The tab the router says is current (default "chats": hosts that
+	 *  wire no routing only ever show chats). An explicit `null` is the
+	 *  NO-TAB signal (the dev Blocks gallery rides a hash section outside
+	 *  the tab router — no tab is active there). */
+	readonly activeTab?: TabId | null;
+	/** A tab click hands the tab id to the host's router (the hash write
+	 *  + the tab memory live there). */
+	readonly onOpenTab?: (tab: TabId) => void;
 	/** Opens the dev Blocks gallery (U1 Task 6); rendered only when
 	 *  `/v1/meta` reports `dev: true`. */
 	readonly onOpenGallery?: () => void;
@@ -64,11 +112,6 @@ export function Rail(props: {
 	readonly identity?: WhoamiResponse;
 	/** Ends the browser session (App wires logout + the gate flip). */
 	readonly onLogout?: () => void;
-	/**
-	 * UI-blocks U3 Task 5: opens an extension VIEW (slug, id). Absent
-	 * in hosts that don't wire the route (the entries render inert).
-	 */
-	readonly onOpenExtView?: (slug: string, id: string) => void;
 	/**
 	 * The extension surfaces the principal cannot see (access `none`,
 	 * §6.5): `slug/id` keys. App discovers them from render-time
@@ -84,18 +127,13 @@ export function Rail(props: {
 	/** Keyboard reorder (Alt+ArrowUp/Down on a focused ext entry): App
 	 *  owns the saved-order state. */
 	readonly onMoveExtView?: (key: string, delta: -1 | 1) => void;
-	/** Returns to the chat route (App owns the route). */
-	readonly onOpenChats?: () => void;
-	/** Whether the chat route is current (default true: hosts that wire
-	 *  no routing only ever show chats). */
-	readonly chatsActive?: boolean;
-	/** The open extension view's `slug/id` key, when one is the route. */
-	readonly activeExtView?: string;
 }) {
-	const { meta, onOpenSettings, identity, onLogout } = props;
+	const { meta, identity, onLogout } = props;
 	const { onOpenGallery } = props;
 	const browserSession = identity?.method === "token" || identity?.method === "session";
-	const chatsActive = props.chatsActive ?? true;
+	// undefined → the chats default; null → NO active tab (the gallery).
+	const activeTab: TabId | null =
+		props.activeTab === undefined ? "chats" : props.activeTab;
 	// The extension-view entries (U3 Task 5): after the core entries,
 	// in the user's saved order, minus the access-none set. App passes
 	// them controlled (a reorder re-renders); the fallback derivation
@@ -105,22 +143,23 @@ export function Rail(props: {
 		props.extViewEntries ??
 		orderExtViews(extViewEntries(meta.extensions), loadRailOrder())
 	).filter((entry) => !hidden.has(`${entry.slug}/${entry.id}`));
+	// The core-view tabs (Task 4's `coreViewEntries`): render ONLY when
+	// the served meta lists them — a server without core views shows no
+	// dead tabs.
+	const coreViews = coreViewEntries(meta);
 	return (
 		<nav className="rail" aria-label="sections">
 			<span className="rail-brand" title="sigrun">
 				<BrandMark />
 			</span>
-			<button
-				type="button"
-				className={chatsActive ? "rail-btn rail-btn-active" : "rail-btn"}
-				data-rail-section="chats"
+			<TabButton
+				tab="chats"
 				title="Chats"
-				aria-label="chats"
-				{...(chatsActive ? { "aria-current": "page" as const } : {})}
-				onClick={props.onOpenChats}
+				active={activeTab === "chats"}
+				onOpenTab={props.onOpenTab}
 			>
 				<ChatsIcon />
-			</button>
+			</TabButton>
 			{meta.dev && onOpenGallery !== undefined && (
 				<button
 					type="button"
@@ -133,38 +172,47 @@ export function Rail(props: {
 					<BlocksIcon />
 				</button>
 			)}
-			{extViews.map((entry: ExtViewEntry) => (
-				<button
-					key={`${entry.slug}/${entry.id}`}
-					type="button"
-					className={
-						props.activeExtView === `${entry.slug}/${entry.id}`
-							? "rail-btn rail-btn-active"
-							: "rail-btn"
-					}
-					{...(props.activeExtView === `${entry.slug}/${entry.id}`
-						? { "aria-current": "page" as const }
-						: {})}
-					data-rail-section={`ext:${entry.slug}/${entry.id}`}
-					title={entry.title}
-					aria-label={entry.title}
-					onClick={() => props.onOpenExtView?.(entry.slug, entry.id)}
-					onKeyDown={(event) => {
-						// The reorder affordance (a client preference, §7.1):
-						// Alt+Arrow moves the entry one slot; App persists.
-						if (!event.altKey) return;
-						if (event.key === "ArrowUp") {
-							event.preventDefault();
-							props.onMoveExtView?.(`${entry.slug}/${entry.id}`, -1);
-						} else if (event.key === "ArrowDown") {
-							event.preventDefault();
-							props.onMoveExtView?.(`${entry.slug}/${entry.id}`, 1);
-						}
-					}}
-				>
-					{entry.title.slice(0, 1)}
-				</button>
-			))}
+			{coreViews.map((view) => {
+				const tab: TabId = `ext:core/${view.id}`;
+				return (
+					<TabButton
+						key={`core/${view.id}`}
+						tab={view.id === "skills" || view.id === "jobs" ? view.id : tab}
+						title={view.title}
+						active={activeTab === (view.id === "skills" || view.id === "jobs" ? view.id : tab)}
+						onOpenTab={props.onOpenTab}
+					>
+						<Icon name={view.icon as IconName} size={18} />
+					</TabButton>
+				);
+			})}
+			{extViews.map((entry: ExtViewEntry) => {
+				const tab: TabId = `ext:${entry.slug}/${entry.id}`;
+				const active = activeTab === tab;
+				return (
+					<TabButton
+						key={`${entry.slug}/${entry.id}`}
+						tab={tab}
+						title={entry.title}
+						active={active}
+						onOpenTab={props.onOpenTab}
+						onKeyDown={(event) => {
+							// The reorder affordance (a client preference, §7.1):
+							// Alt+Arrow moves the entry one slot; App persists.
+							if (!event.altKey) return;
+							if (event.key === "ArrowUp") {
+								event.preventDefault();
+								props.onMoveExtView?.(`${entry.slug}/${entry.id}`, -1);
+							} else if (event.key === "ArrowDown") {
+								event.preventDefault();
+								props.onMoveExtView?.(`${entry.slug}/${entry.id}`, 1);
+							}
+						}}
+					>
+						<Icon name={entry.icon as IconName} size={18} />
+					</TabButton>
+				);
+			})}
 			<span className="rail-spacer" />
 			<span
 				className="rail-health"
@@ -196,23 +244,14 @@ export function Rail(props: {
 					<LogoutIcon />
 				</button>
 			)}
-			<button
-				type="button"
-				className={
-					props.settingsActive === true
-						? "rail-btn rail-btn-active"
-						: "rail-btn"
-				}
-				data-rail-section="settings"
+			<TabButton
+				tab="settings"
 				title="Settings"
-				aria-label="settings"
-				{...(props.settingsActive === true
-					? { "aria-current": "page" as const }
-					: {})}
-				onClick={onOpenSettings}
+				active={activeTab === "settings"}
+				onOpenTab={props.onOpenTab}
 			>
 				<SettingsIcon />
-			</button>
+			</TabButton>
 		</nav>
 	);
 }
