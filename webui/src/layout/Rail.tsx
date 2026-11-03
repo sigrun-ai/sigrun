@@ -84,10 +84,18 @@ export function Rail(props: {
 	/** Keyboard reorder (Alt+ArrowUp/Down on a focused ext entry): App
 	 *  owns the saved-order state. */
 	readonly onMoveExtView?: (key: string, delta: -1 | 1) => void;
+	/** Returns to the chat route (App owns the route). */
+	readonly onOpenChats?: () => void;
+	/** Whether the chat route is current (default true: hosts that wire
+	 *  no routing only ever show chats). */
+	readonly chatsActive?: boolean;
+	/** The open extension view's `slug/id` key, when one is the route. */
+	readonly activeExtView?: string;
 }) {
 	const { meta, onOpenSettings, identity, onLogout } = props;
 	const { onOpenGallery } = props;
 	const browserSession = identity?.method === "token" || identity?.method === "session";
+	const chatsActive = props.chatsActive ?? true;
 	// The extension-view entries (U3 Task 5): after the core entries,
 	// in the user's saved order, minus the access-none set. App passes
 	// them controlled (a reorder re-renders); the fallback derivation
@@ -104,10 +112,12 @@ export function Rail(props: {
 			</span>
 			<button
 				type="button"
-				className="rail-btn rail-btn-active"
+				className={chatsActive ? "rail-btn rail-btn-active" : "rail-btn"}
 				data-rail-section="chats"
 				title="Chats"
-				aria-current="page"
+				aria-label="chats"
+				{...(chatsActive ? { "aria-current": "page" as const } : {})}
+				onClick={props.onOpenChats}
 			>
 				<ChatsIcon />
 			</button>
@@ -127,7 +137,14 @@ export function Rail(props: {
 				<button
 					key={`${entry.slug}/${entry.id}`}
 					type="button"
-					className="rail-btn"
+					className={
+						props.activeExtView === `${entry.slug}/${entry.id}`
+							? "rail-btn rail-btn-active"
+							: "rail-btn"
+					}
+					{...(props.activeExtView === `${entry.slug}/${entry.id}`
+						? { "aria-current": "page" as const }
+						: {})}
 					data-rail-section={`ext:${entry.slug}/${entry.id}`}
 					title={entry.title}
 					aria-label={entry.title}
