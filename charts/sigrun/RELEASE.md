@@ -25,13 +25,13 @@ core release (and never burns a core version number).
 Extensions and providers **first**, core last. Core's release waits for the
 registry to serve its siblings' versions (`await-registry`), so a core tag
 whose siblings are not published yet stops before it ships the image.
-Gateway's published 0.1.3 has an exact `@sigrun/shared` 0.2.1 peer, so a fresh
-registry-mode core 0.3.0 install can fail with `ERESOLVE`. Before core's
-`smoke` release gate runs, gateway must complete its phase-2b republish with a
-widened `@sigrun/shared` peer; extensions-first ordering alone does not avoid
-this skew. With the published core shape, the stale-peer case instead degrades
-to a warning because shared is bundled: npm nests core's 0.3.0 copy alongside
-the top-level 0.2.1 copy, leaving two shared copies in the install tree.
+A historical example of why: gateway's published 0.1.3 had an exact
+`@sigrun/shared` 0.2.1 peer, so a fresh registry-mode core 0.3.0 install could
+fail with `ERESOLVE`. Gateway's phase-2b republish widened its `@sigrun/shared`
+peer before core 0.3.0's `smoke` release gate ran; even without that
+republish, the published core shape degrades the stale-peer case to a warning
+because shared is bundled — npm nests core's 0.3.0 copy alongside the
+top-level 0.2.1 copy, leaving two shared copies in the install tree.
 
 1. **Extension and provider versions** — one `package.json` bump each, plus a
    CHANGELOG entry.
@@ -147,7 +147,7 @@ when its version is already on the OCI registry.
 
 ## What a red step means
 
-- **`guard` red** — the tag is not shaped like `v<semver>` (or `chart-v<semver>
+- **`guard` red** — the tag is not shaped like `v<semver>` (or `chart-v<semver>`
   for the chart workflow), its version does not match `package.json` /
   `Chart.yaml`, or it is not on `main`. Nothing published; no cleanup needed.
 - **`test` red in an extension** — a real clean-clone breakage in that repo.
