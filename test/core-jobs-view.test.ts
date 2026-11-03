@@ -250,6 +250,25 @@ function atPointer(data: Record<string, any>, pointer: string): unknown {
 	return node;
 }
 
+/**
+ * Channel-shape assertion (Critical 1 regression guard): walk the tree
+ * the way the channels do and assert every block carrying `actions` is
+ * a type whose CONTRACT includes them — `page`, `callout`, or a card
+ * template (never `section`, which the channels silently drop).
+ */
+function assertActionBlocksValid(root: Record<string, any>): void {
+	const BLOCKS_WITH_ACTIONS = new Set(["page", "callout"]);
+	for (const node of walk([root])) {
+		if (node.actions !== undefined && !BLOCKS_WITH_ACTIONS.has(node.type)) {
+			throw new Error(
+				`block "${node.id ?? node.type}" (type "${node.type}") carries actions — the channels silently drop them`,
+			);
+		}
+		// Card templates are not walked by the channels as blocks; their
+		// actions are validated by checkCard, not the block walk.
+	}
+}
+
 /** Wait until `check` holds (the event-bus side lane is asynchronous). */
 async function until(
 	check: () => Promise<boolean> | boolean,
@@ -544,36 +563,35 @@ describe("core/jobs actions", () => {
 			}),
 		);
 
-		// The writer's tree offers both buttons (with the reset confirm).
+		// The writer's tree offers both buttons (with the reset confirm),
+		// on a block whose CONTRACT carries actions (a callout — never a
+		// section, which silently drops them).
 		const writers = await view(app, alice, { job: job.id });
-		const buttons = findBlocks(writers.json.tree.root.main, "stack")
-			.flatMap((one) => one.children ?? [])
-			.concat(writers.json.tree.root.main);
-		const actions = buttons
-			.flatMap((one: any) => one.actions ?? [])
-			.map((one: any) => one.id);
-		expect(actions).toContain("run-now");
-		expect(actions).toContain("reset-state");
-		const summarySection = findBlocks(writers.json.tree.root.main, "section").find(
-			(one) => one.id === "job-summary",
+		const actionCallout = findBlocks(writers.json.tree.root.main, "callout").find(
+			(one) => one.id === "job-actions",
 		);
-		const offered = (summarySection?.actions ?? []).map((one: any) => one.id);
+		expect(actionCallout).toBeDefined();
+		const offered = (actionCallout?.actions ?? []).map((one: any) => one.id);
 		expect(offered).toContain("run-now");
 		expect(offered).toContain("reset-state");
-		const resetButton = (summarySection?.actions ?? []).find(
+		const resetButton = (actionCallout?.actions ?? []).find(
 			(one: any) => one.id === "reset-state",
 		);
 		expect(resetButton?.action?.confirm?.body).toBe(
 			"Reset this job's state? Its state folder is emptied.",
 		);
+		// Channel-shape assertion (Critical 1 regression guard): every
+		// block carrying `actions` in the served tree is a type whose
+		// contract includes actions (page, callout, or a card template —
+		// never a section, which the channels silently drop).
+		assertActionBlocksValid(writers.json.tree.root);
 
-		// The reader's tree hides both.
+		// The reader's tree hides both (the callout never renders).
 		const readers = await view(app, bob, { job: job.id });
-		const readActions = (readers.json.tree.root.main as any[])
-			.flatMap((one) => one.actions ?? [])
-			.map((one) => one.id);
-		expect(readActions).not.toContain("run-now");
-		expect(readActions).not.toContain("reset-state");
+		const readCallout = findBlocks(readers.json.tree.root.main, "callout").find(
+			(one) => one.id === "job-actions",
+		);
+		expect(readCallout).toBeUndefined();
 
 		// runNow as the writer fires the job (the surface renders first,
 		// so the action route's access gate has the instance cached).

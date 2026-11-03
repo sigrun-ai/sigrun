@@ -409,6 +409,13 @@ export function createJobsView(deps: {
 		const main: Record<string, unknown>[] = [];
 		if (data.main.found && data.main.job !== null) {
 			const job = data.main.job;
+			// IMPORTANT 3 (review fix): per-run conversation buttons ride
+			// the card's `actions` as per-row LITERALS. The block contract's
+			// id-uniqueness walk (validate.ts:507-517) does NOT descend into
+			// card templates (checkCard only validates the card schema + its
+			// actions array), so a per-row literal id never collides. The
+			// pattern is the only way to carry per-row conversation ids into
+			// navigate targets (bindings cannot reach navigate params).
 			const runButtons: Record<string, unknown>[] = data.main.runs.items
 				.filter((run) => run.conversationId !== null)
 				.map((run) => ({
@@ -451,7 +458,7 @@ export function createJobsView(deps: {
 							type: "navigate",
 							params: { job: job.id, revision: params.revision },
 						};
-			main.push(
+				main.push(
 				{
 					type: "section",
 					id: "job-summary",
@@ -469,8 +476,18 @@ export function createJobsView(deps: {
 							],
 						},
 					],
-					...(writeActions.length === 0 ? {} : { actions: writeActions }),
 				},
+				...(writeActions.length === 0
+					? []
+					: [
+							{
+								type: "callout",
+								id: "job-actions",
+								tone: "neutral",
+								title: "Actions",
+								actions: writeActions,
+							},
+						]),
 				{
 					type: "section",
 					id: "job-runs",
@@ -490,11 +507,17 @@ export function createJobsView(deps: {
 							},
 						},
 					],
-					...(data.main.runs.hasMore && data.main.runs.nextRunCursor !== null
-						? {
+				},
+				...(data.main.runs.hasMore && data.main.runs.nextRunCursor !== null
+					? [
+							{
+								type: "callout",
+								id: "runs-more",
+								tone: "neutral",
+								title: "More runs",
 								actions: [
 									{
-										id: "runs-more",
+										id: "runs-more-load",
 										label: "Load more",
 										icon: "more",
 										action: {
@@ -506,9 +529,9 @@ export function createJobsView(deps: {
 										},
 									},
 								],
-							}
-						: {}),
-				},
+							},
+						]
+					: []),
 				{
 					type: "section",
 					id: "job-revisions",
@@ -527,12 +550,18 @@ export function createJobsView(deps: {
 							},
 						},
 					],
-					...(data.main.revisions.hasMore &&
+				},
+				...(data.main.revisions.hasMore &&
 					data.main.revisions.nextRevCursor !== null
-						? {
+					? [
+							{
+								type: "callout",
+								id: "revisions-more",
+								tone: "neutral",
+								title: "More revisions",
 								actions: [
 									{
-										id: "revisions-more",
+										id: "revisions-more-load",
 										label: "Load more",
 										icon: "more",
 										action: {
@@ -544,9 +573,9 @@ export function createJobsView(deps: {
 										},
 									},
 								],
-							}
-						: {}),
-				},
+							},
+						]
+					: []),
 			);
 			if (diff !== undefined) {
 				main.push({
