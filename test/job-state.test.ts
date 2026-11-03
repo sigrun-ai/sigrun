@@ -34,25 +34,25 @@ function serviceFor(
 	} = {},
 ) {
 	const managed: ManagedPaths = {
-		roots: {
-			configDir: join(dataDir, "config"),
-			dataDir,
-			cacheDir: join(dataDir, "cache"),
-			stateDir: join(dataDir, "state"),
-		},
-		storagePath: join(dataDir, "sigrun.db"),
-		coreRoot: join(dataDir, "core"),
-		userAreas: (user) => join(dataDir, "users", user),
-	};
+			roots: {
+				configDir: join(dataDir, "config"),
+				dataDir,
+				cacheDir: join(dataDir, "cache"),
+				stateDir: join(dataDir, "state"),
+			},
+			storagePath: join(dataDir, "sigrun.db"),
+			coreRoot: join(dataDir, "core"),
+			userAreas: (user) => join(dataDir, "users", user),
+		};
 		return createWorkspaceService({
-		isolation: {} as never,
-		pool: {} as never,
-		directory: { list: () => records } as never,
-		managed,
-		defaultWorkspacePath: join(dataDir, "workspace"),
-		ownerOf: async () => undefined,
-		...options,
-	});
+			isolation: {} as never,
+			pool: {} as never,
+			directory: { list: () => records } as never,
+			managed,
+			defaultWorkspacePath: join(dataDir, "workspace"),
+			ownerOf: async () => undefined,
+			...options,
+		});
 }
 
 describe("WorkspaceService.jobsRoot", () => {
@@ -60,13 +60,13 @@ describe("WorkspaceService.jobsRoot", () => {
 		const dataDir = await tempDir();
 		const service = serviceFor(dataDir, [record("alice")]);
 		expect(service.jobsRoot("alice")).toBe(join(dataDir, "users", "alice", "jobs"));
-	});
+		});
 
 	test("an ownerless job uses the primary admin's managed area", async () => {
 		const dataDir = await tempDir();
 		const service = serviceFor(dataDir, [record("root-admin", { admin: true })]);
 		expect(service.jobsRoot(undefined)).toBe(join(dataDir, "users", "root-admin", "jobs"));
-	});
+		});
 
 	test("an orphaned owner falls back to the first admin", async () => {
 		const dataDir = await tempDir();
@@ -75,13 +75,13 @@ describe("WorkspaceService.jobsRoot", () => {
 			record("root-admin", { admin: true }),
 		]);
 		expect(service.jobsRoot("ghost")).toBe(join(dataDir, "users", "root-admin", "jobs"));
-	});
+		});
 
 	test("an empty directory, or one with no selected record, uses the data root", async () => {
 		const dataDir = await tempDir();
 		expect(serviceFor(dataDir, []).jobsRoot("alice")).toBe(join(dataDir, "jobs"));
 		expect(serviceFor(dataDir, [record("alice")]).jobsRoot("ghost")).toBe(join(dataDir, "jobs"));
-	});
+		});
 
 	test("an osUser's jobs live under the XDG state default in the account home", async () => {
 		const dataDir = await tempDir();
@@ -95,7 +95,7 @@ describe("WorkspaceService.jobsRoot", () => {
 			}),
 		});
 		expect(service.jobsRoot("alice")).toBe("/home/alice-os/.local/state/sigrun/jobs");
-	});
+		});
 
 	test("an osUser with unavailable account switching has no jobs root", async () => {
 		const dataDir = await tempDir();
@@ -104,32 +104,32 @@ describe("WorkspaceService.jobsRoot", () => {
 			lookupAccount: () => { throw new Error("must not be called"); },
 		});
 		expect(service.jobsRoot("alice")).toBeUndefined();
-	});
+		});
 
 	test("a failed or missing osAccount lookup has no jobs root", async () => {
 		const dataDir = await tempDir();
 		const options = { osUsers: { available: true, status: "available" } as const };
 		const throwing = serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
-			...options,
+				...options,
 			lookupAccount: () => { throw new Error("account database unavailable"); },
 		});
 		expect(throwing.jobsRoot("alice")).toBeUndefined();
 		const missing = serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
-			...options,
+				...options,
 			lookupAccount: () => undefined,
 		});
 		expect(missing.jobsRoot("alice")).toBeUndefined();
-	});
+		});
 
 	test("a service without deps has no jobs root", () => {
 		expect(createWorkspaceService().jobsRoot("alice")).toBeUndefined();
-	});
+		});
 });
 
 describe("job state directory helpers", () => {
 	test("encodes the complete job id as one path segment", () => {
 		expect(jobStateDir("/r", "ext:acme:nightly-check")).toBe("/r/ext%3Aacme%3Anightly-check");
-	});
+		});
 
 	test("removes a populated job-state directory", async () => {
 		const root = await tempDir();
@@ -138,11 +138,11 @@ describe("job state directory helpers", () => {
 		await writeFile(join(state, "state.json"), "{}");
 		await removeJobState(root, "file:nightly-check");
 		expect(existsSync(state)).toBe(false);
-	});
+		});
 
 	test("an undefined root is a no-op", async () => {
 		await expect(removeJobState(undefined, "file:nightly-check")).resolves.toBeUndefined();
-	});
+		});
 
 	test.skipIf(process.getuid?.() === 0)("an unremovable job-state directory rejects", async () => {
 		const dir = await tempDir();
@@ -156,5 +156,5 @@ describe("job state directory helpers", () => {
 		} finally {
 			await chmod(root, 0o700);
 		}
-	});
+		});
 });

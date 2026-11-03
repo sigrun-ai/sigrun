@@ -36,7 +36,7 @@ import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import type { DirectoryUser } from "../src/harness/identity/users.js";
 import { IsolationState } from "../src/sandbox/isolation.js";
-import { validateGrantPath, type ManagedPaths } from "../src/sandbox/grants.js";
+import { type ManagedPaths } from "../src/sandbox/grants.js";
 import {
 	createWorkspaceService,
 	type WorkspaceServiceDeps,
@@ -404,31 +404,51 @@ describe("workspace skills history — settle catch-up", () => {
 		const server = await bootServer([]);
 		const skillsDir = join(server.dir, "workspace", "skills");
 		await mkdir(skillsDir, { recursive: true });
-		// Break the repo: a FILE where the git dir must be a directory.
 		const spec = workspaceRepoSpec(
 			join(server.dir, "data", "users", "alice"),
 			join(server.dir, "workspace"),
 		);
-		await mkdir(join(spec.gitDir, ".."), { recursive: true });
-		await writeFile(spec.gitDir, "not a directory\n", "utf8");
 		const create = await server.app.inject({
 			method: "POST",
 			url: "/v1/conversations",
 			headers: auth(server.tokens, "alice"),
 		});
 		const conversationId = create.json().id as number;
+		// First settle: one successful catch-up, so the repo EXISTS — the
+		// failure below must hit the commit path, never recoverCorrupt's
+		// loud re-init (which would succeed, not fail).
+		await writeFile(join(skillsDir, "first.md"), "one\n", "utf8");
 		server.opened.events.publish({
 			type: "run.settled",
 			conversationId,
 			outcome: "answered",
 		});
-		// The event bus must not see a throw: publishing more events keeps
-		// working, and the failure is a log line.
+		const history = server.opened.history.workspace("alice");
 		await waitFor(async () => {
-			return warns.some((line) => line.includes("workspace history"))
+			const log = await history!.log({ limit: 10 });
+			return log.length > 0 ? log : undefined;
+		}, "the first workspace history commit");
+		// A FRESH index.lock (mtime now — under the 10-minute staleness
+		// threshold) fails only the commit: checkIndexLock's logged,
+		// swallowed path.
+		await writeFile(join(spec.gitDir, "index.lock"), "", "utf8");
+		await writeFile(join(skillsDir, "second.md"), "two\n", "utf8");
+		warns.length = 0;
+		server.opened.events.publish({
+			type: "run.settled",
+			conversationId,
+			outcome: "answered",
+		});
+		// The event bus must not see a throw: the failure is a log line.
+		await waitFor(async () => {
+			return warns.some(
+				(line) =>
+					line.includes("workspace history") &&
+					line.includes("index.lock present"),
+			)
 				? true
 				: undefined;
-		}, "the workspace history failure log");
+		}, "the index.lock failure log");
 		// The hub is still alive (the failure never escaped the side lane).
 		expect(() =>
 			server.opened.events.publish({
@@ -437,6 +457,48 @@ describe("workspace skills history — settle catch-up", () => {
 				outcome: "answered",
 			}),
 		).not.toThrow();
+	});
+
+	test("a settle catch-up prepare failure is logged once, not per settle", { timeout: 60_000 }, async () => {
+		const server = await bootServer([]);
+		// The work tree does not exist and cannot be created by the hook:
+		// prepare() fails on the readability check — the class the brief
+		// requires logged (git.ts catchUp's prepare-failure branch).
+		const create = await server.app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: auth(server.tokens, "alice"),
+		});
+		const conversationId = create.json().id as number;
+		warns.length = 0;
+		server.opened.events.publish({
+			type: "run.settled",
+			conversationId,
+			outcome: "answered",
+		});
+		await waitFor(async () => {
+			return warns.some(
+				(line) =>
+					line.includes("workspace history") &&
+					line.includes("history catch-up skipped"),
+			)
+				? true
+				: undefined;
+		}, "the prepare-failure log");
+		const logged = warns.filter((line) =>
+			line.includes("history catch-up skipped"),
+		);
+		expect(logged).toHaveLength(1);
+		// A second settle does NOT re-log (once per repo instance).
+		server.opened.events.publish({
+			type: "run.settled",
+			conversationId,
+			outcome: "answered",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(
+			warns.filter((line) => line.includes("history catch-up skipped")),
+		).toHaveLength(1);
 	});
 
 	test("a changed workspace path: the next catch-up records the new tree as one commit", { timeout: 60_000 }, async () => {
@@ -458,7 +520,6 @@ describe("workspace skills history — settle catch-up", () => {
 		const cache = new Map<string, InstanceType<typeof GitHistory>>();
 		const historyFor = (user: string, workspace: string) =>
 			workspaceHistoryFor(user, workspace, {
-				userArea: (name) => join(dir, "users", name),
 				cache,
 				create: make,
 			});

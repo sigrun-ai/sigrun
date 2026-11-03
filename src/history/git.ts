@@ -134,6 +134,8 @@ export class GitHistory {
 	private readonly gitHome: string;
 	private readonly now: () => Date;
 	private readonly logLine: (line: string) => void;
+	/** catchUp's prepare failure logs once per instance (never per settle). */
+	private prepareFailureLogged = false;
 
 	constructor(spec: GitRepoSpec, opts: GitHistoryOptions) {
 		this.spec = spec;
@@ -187,11 +189,22 @@ export class GitHistory {
 		});
 	}
 
-	/** Lock → commit uncommitted changes as meta (a catch-up). */
+	/**
+	 * Lock → commit uncommitted changes as meta (a catch-up). A prepare
+	 * failure is logged ONCE per instance (the settle-time catch-up fires
+	 * per run — the legitimate "agent never wrote skills" state must not
+	 * warn every settle) and degrades to no commit.
+	 */
 	catchUp(meta: CommitMeta): Promise<string | undefined> {
 		return this.withLock(async () => {
 			const state = await this.prepare();
-			if (!state.ok) return undefined;
+			if (!state.ok) {
+				if (!this.prepareFailureLogged) {
+					this.prepareFailureLogged = true;
+					this.logLine(`history catch-up skipped: ${state.reason}`);
+				}
+				return undefined;
+			}
 			return this.commit(meta);
 		});
 	}

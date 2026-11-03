@@ -31,8 +31,6 @@ export function workspaceRepoSpec(userArea: string, workspace: string): GitRepoS
 }
 
 export interface WorkspaceHistoryCacheDeps {
-	/** The owning user's area: `<dataDir>/users/<user>`. */
-	readonly userArea: (user: string) => string;
 	/** The caller's cache (boot holds it; tests own theirs). */
 	readonly cache: Map<string, GitHistory>;
 	/** The instance factory for a NEW (user, workspace path) pair. */
@@ -52,7 +50,8 @@ export function workspaceHistoryFor(
 	deps: WorkspaceHistoryCacheDeps,
 ): GitHistory | undefined {
 	if (workspace === undefined) return undefined;
-	const key = `${user}${workspace}`;
+	// NUL-separated: no (user, workspace) pair can collide on a boundary.
+	const key = `${user}\0${workspace}`;
 	const cached = deps.cache.get(key);
 	if (cached !== undefined) return cached;
 	const history = deps.create(workspace);

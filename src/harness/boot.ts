@@ -1204,7 +1204,6 @@ export async function openHarness(
 	const workspaceHistoryOf = (user: string): GitHistory | undefined => {
 		const workspace = workspaceService?.workspaceRoot(user);
 		return workspaceHistoryFor(user, workspace, {
-			userArea: managedPaths.userAreas,
 			cache: workspaceHistories,
 			create: (resolved) =>
 				new GitHistory(workspaceRepoSpec(managedPaths.userAreas(user), resolved), {
